@@ -198,4 +198,105 @@ describe('useChatUrlConversationBootstrap', () => {
     expect(navigate).not.toHaveBeenCalled();
     unmount();
   });
+
+  it('fetches a missing requested conversation by id and upserts it instead of toasting', async () => {
+    const { renderHook, waitFor } = await import('@testing-library/react');
+    const navigate = vi.fn();
+    const notifyInfo = vi.fn();
+    const setActiveConversationId = vi.fn();
+    const upsertConversation = vi.fn();
+    const detail = { id: 'conv-task-1', kind: 'task', task_id: 'task-1', title: 'Задача: x' };
+    const fetchConversationById = vi.fn().mockResolvedValue(detail);
+
+    const props = {
+      activeConversationId: '',
+      applyingRequestedConversationRef: { current: '' },
+      cancelPendingInitialAnchor: vi.fn(),
+      clearStoredConversationState: vi.fn(),
+      composePrefillRequested: false,
+      conversationBootstrapComplete: false,
+      conversations: [{ id: 'other' }],
+      conversationsLoading: false,
+      fetchConversationById,
+      invalidConversationRef: { current: '' },
+      isMobile: false,
+      loadConversations: vi.fn().mockResolvedValue([]),
+      locationSearch: '?task=task-1&task_detail_view=discussion',
+      mobileHistoryReadyRef: { current: false },
+      navigate,
+      notifyInfo,
+      requestedConversationHandledRef: { current: '' },
+      requestedConversationRetryRef: { current: 'conv-task-1' },
+      requestedConversationId: 'conv-task-1',
+      restoredConversationId: '',
+      restoredMobileView: 'inbox',
+      setActiveConversationId,
+      setConversationBootstrapComplete: vi.fn(),
+      setMobileView: vi.fn(),
+      syncConversationInUrl: false,
+      upsertConversation,
+      writeMobileHistoryState: vi.fn(),
+    };
+
+    const { unmount, rerender } = renderHook(
+      (currentProps) => useChatUrlConversationBootstrap(currentProps),
+      { initialProps: props },
+    );
+
+    await waitFor(() => expect(upsertConversation).toHaveBeenCalledWith(detail));
+    expect(fetchConversationById).toHaveBeenCalledWith('conv-task-1');
+    expect(notifyInfo).not.toHaveBeenCalled();
+    expect(setActiveConversationId).not.toHaveBeenCalledWith('');
+
+    // After the upserted conversation reaches the list, the bootstrap applies it.
+    rerender({ ...props, conversations: [{ id: 'other' }, detail] });
+    await waitFor(() => expect(setActiveConversationId).toHaveBeenCalledWith('conv-task-1'));
+    unmount();
+  });
+
+  it('declares the conversation unavailable only after fetch-by-id fails', async () => {
+    const { renderHook, waitFor } = await import('@testing-library/react');
+    const navigate = vi.fn();
+    const notifyInfo = vi.fn();
+    const setActiveConversationId = vi.fn();
+    const upsertConversation = vi.fn();
+    const fetchConversationById = vi.fn().mockRejectedValue(Object.assign(new Error('forbidden'), { response: { status: 403 } }));
+
+    const { unmount } = renderHook(() => useChatUrlConversationBootstrap({
+      activeConversationId: '',
+      applyingRequestedConversationRef: { current: '' },
+      cancelPendingInitialAnchor: vi.fn(),
+      clearStoredConversationState: vi.fn(),
+      composePrefillRequested: false,
+      conversationBootstrapComplete: false,
+      conversations: [],
+      conversationsLoading: false,
+      fetchConversationById,
+      invalidConversationRef: { current: '' },
+      isMobile: false,
+      loadConversations: vi.fn().mockResolvedValue([]),
+      locationSearch: '?task=task-1&task_detail_view=discussion',
+      mobileHistoryReadyRef: { current: false },
+      navigate,
+      notifyInfo,
+      requestedConversationHandledRef: { current: '' },
+      requestedConversationRetryRef: { current: 'conv-task-1' },
+      requestedConversationId: 'conv-task-1',
+      restoredConversationId: '',
+      restoredMobileView: 'inbox',
+      setActiveConversationId,
+      setConversationBootstrapComplete: vi.fn(),
+      setMobileView: vi.fn(),
+      syncConversationInUrl: false,
+      upsertConversation,
+      writeMobileHistoryState: vi.fn(),
+    }));
+
+    await waitFor(() => expect(notifyInfo).toHaveBeenCalled());
+    expect(fetchConversationById).toHaveBeenCalledWith('conv-task-1');
+    expect(upsertConversation).not.toHaveBeenCalled();
+    expect(setActiveConversationId).toHaveBeenCalledWith('');
+    expect(navigate).not.toHaveBeenCalled();
+    unmount();
+  });
 });

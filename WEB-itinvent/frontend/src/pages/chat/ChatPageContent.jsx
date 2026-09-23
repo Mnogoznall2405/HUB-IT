@@ -1055,6 +1055,7 @@ export function ChatPageContent({
     conversationBootstrapComplete,
     conversations,
     conversationsLoading,
+    fetchConversationById: chatAPI.getConversation,
     invalidConversationRef,
     isMobile,
     loadConversations,
@@ -1071,6 +1072,7 @@ export function ChatPageContent({
     setConversationBootstrapComplete,
     setMobileView,
     syncConversationInUrl: !embedded,
+    upsertConversation,
     writeMobileHistoryState,
   });
 

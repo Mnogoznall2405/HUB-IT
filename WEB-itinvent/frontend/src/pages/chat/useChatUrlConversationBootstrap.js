@@ -74,6 +74,7 @@ export default function useChatUrlConversationBootstrap({
   conversationBootstrapComplete,
   conversations,
   conversationsLoading,
+  fetchConversationById,
   invalidConversationRef,
   isMobile,
   loadConversations,
@@ -90,14 +91,71 @@ export default function useChatUrlConversationBootstrap({
   setConversationBootstrapComplete,
   setMobileView,
   syncConversationInUrl = true,
+  upsertConversation,
   writeMobileHistoryState,
 }) {
   const requestedConversationRetryInFlightRef = useRef('');
+  const requestedConversationFetchAttemptRef = useRef('');
+  const requestedConversationFetchInFlightRef = useRef('');
 
   useEffect(() => {
     if (conversationsLoading) return;
     const requestedExists = conversationExistsInList(conversations, requestedConversationId);
     const restoredExists = conversationExistsInList(conversations, restoredConversationId);
+
+    const runMissingRequestedConversation = () => {
+      handleMissingRequestedConversation({
+        conversationId: requestedConversationId,
+        applyingRequestedConversationRef,
+        cancelPendingInitialAnchor,
+        clearStoredConversationState,
+        invalidConversationRef,
+        isMobile,
+        navigate,
+        notifyInfo,
+        requestedConversationHandledRef,
+        requestedConversationRetryRef,
+        setActiveConversationId,
+        setConversationBootstrapComplete,
+        setMobileView,
+        syncConversationInUrl,
+      });
+    };
+
+    // The sidebar list only holds the first conversations page — a valid
+    // conversation (e.g. a fresh task discussion without messages) can sort
+    // below it. Verify by id before declaring it unavailable.
+    const startRequestedConversationFetch = () => {
+      if (
+        typeof fetchConversationById !== 'function'
+        || typeof upsertConversation !== 'function'
+        || !requestedConversationId
+        || requestedConversationFetchInFlightRef.current === requestedConversationId
+        || requestedConversationFetchAttemptRef.current === requestedConversationId
+      ) {
+        return false;
+      }
+      requestedConversationFetchAttemptRef.current = requestedConversationId;
+      requestedConversationFetchInFlightRef.current = requestedConversationId;
+      void Promise.resolve()
+        .then(() => fetchConversationById(requestedConversationId))
+        .then((detail) => {
+          if (conversationExistsInList([detail], requestedConversationId)) {
+            upsertConversation(detail);
+          } else {
+            runMissingRequestedConversation();
+          }
+        })
+        .catch(() => {
+          runMissingRequestedConversation();
+        })
+        .finally(() => {
+          if (requestedConversationFetchInFlightRef.current === requestedConversationId) {
+            requestedConversationFetchInFlightRef.current = '';
+          }
+        });
+      return true;
+    };
     const restoredConversation = restoredExists
       ? (Array.isArray(conversations) ? conversations : []).find(
         (conversation) => String(conversation?.id || '').trim() === String(restoredConversationId || '').trim(),
@@ -144,22 +202,9 @@ export default function useChatUrlConversationBootstrap({
             });
           return;
         }
-        handleMissingRequestedConversation({
-          conversationId: requestedConversationId,
-          applyingRequestedConversationRef,
-          cancelPendingInitialAnchor,
-          clearStoredConversationState,
-          invalidConversationRef,
-          isMobile,
-          navigate,
-          notifyInfo,
-          requestedConversationHandledRef,
-          requestedConversationRetryRef,
-          setActiveConversationId,
-          setConversationBootstrapComplete,
-          setMobileView,
-          syncConversationInUrl,
-        });
+        if (!startRequestedConversationFetch()) {
+          runMissingRequestedConversation();
+        }
         return;
       }
 
@@ -220,21 +265,9 @@ export default function useChatUrlConversationBootstrap({
           });
         return;
       }
-      handleMissingRequestedConversation({
-        conversationId: requestedConversationId,
-        applyingRequestedConversationRef,
-        cancelPendingInitialAnchor,
-        clearStoredConversationState,
-        invalidConversationRef,
-        isMobile,
-        navigate,
-        notifyInfo,
-        requestedConversationHandledRef,
-        requestedConversationRetryRef,
-        setActiveConversationId,
-        setMobileView,
-        syncConversationInUrl,
-      });
+      if (!startRequestedConversationFetch()) {
+        runMissingRequestedConversation();
+      }
       return;
     }
 
@@ -258,6 +291,7 @@ export default function useChatUrlConversationBootstrap({
     conversationBootstrapComplete,
     conversations,
     conversationsLoading,
+    fetchConversationById,
     invalidConversationRef,
     isMobile,
     loadConversations,
@@ -273,6 +307,7 @@ export default function useChatUrlConversationBootstrap({
     setConversationBootstrapComplete,
     setMobileView,
     syncConversationInUrl,
+    upsertConversation,
     writeMobileHistoryState,
   ]);
 
