@@ -28,7 +28,7 @@
 
 - Python: `pytest -q tests/test_<area>_<feature>.py`; bot — `pytest -q -c pytest.bot.ini`.
 - Frontend из `WEB-itinvent/frontend`: релевантные `npm test` / Vitest, `npm run build` по правилам ниже.
-- Desktop: `dotnet test desktop/Hub.Desktop.sln -c Release`.
+- Desktop: `dotnet test desktop/Hub.Desktop.sln -c Release` (системный `dotnet` без SDK — использовать портативный `tools/dotnet-sdk-8/dotnet.exe`).
 - Mobile: команды и проверки из `mobile-hub/README.md`.
 
 Повторять успешные проверки при новых изменениях, сбоях или конкретной непроверенной гипотезе. Не считать локальные тесты автоматически изолированными: перед запуском проверки, которая обращается к БД или сервисам, проверить её fixtures и настройки окружения.
