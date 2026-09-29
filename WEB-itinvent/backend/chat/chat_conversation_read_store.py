@@ -4,7 +4,7 @@ from __future__ import annotations
 import base64
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
 from sqlalchemy import and_, case, exists, func, or_, select
@@ -436,6 +436,10 @@ class ChatConversationReadStore:
                 .where(
                     ChatConversationUserState.user_id == normalized_user_id,
                     ChatConversationUserState.is_muted.is_(True),
+                    or_(
+                        ChatConversationUserState.muted_until.is_(None),
+                        ChatConversationUserState.muted_until > datetime.now(timezone.utc),
+                    ),
                 )
             ).scalars()
             return sorted({

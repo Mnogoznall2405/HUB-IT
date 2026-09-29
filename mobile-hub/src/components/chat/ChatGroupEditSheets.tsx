@@ -1,8 +1,10 @@
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useEffect, useMemo, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import type { ChatUserSummary } from '../../api/types';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
+import { ChatBottomSheet } from './ChatBottomSheet';
 import { ChatKeyboardAvoidingHost } from './ChatKeyboardAvoidingHost';
 
 export function ChatRenameSheet({
@@ -94,9 +96,13 @@ export function ChatMemberPickerSheet({
   };
 
   return (
-    <Modal visible={visible} animationType={reduceMotion ? 'none' : 'slide'} transparent onRequestClose={close}>
-      <ChatKeyboardAvoidingHost style={styles.backdrop}>
-        <View style={styles.sheet} accessibilityViewIsModal>
+    <ChatBottomSheet
+      visible={visible}
+      onClose={close}
+      dismissAccessibilityLabel="Закрыть выбор участников"
+      avoidKeyboard
+      sheetStyle={styles.sheet}
+    >
           <Text style={styles.title}>Добавить участников</Text>
           <TextInput
             value={query}
@@ -121,7 +127,11 @@ export function ChatMemberPickerSheet({
                   accessibilityLabel={label}
                   accessibilityState={{ checked: picked }}
                 >
-                  <Text style={styles.check}>{picked ? '✓' : ''}</Text>
+                  {picked ? (
+                    <MaterialCommunityIcons name="check" size={20} color={chatTokens.accentText} style={styles.check} />
+                  ) : (
+                    <View style={styles.check} />
+                  )}
                   <View style={styles.userText}>
                     <Text style={styles.userName}>{label}</Text>
                     <Text style={styles.userMeta}>@{user.username}</Text>
@@ -140,9 +150,7 @@ export function ChatMemberPickerSheet({
               primary
             />
           </View>
-        </View>
-      </ChatKeyboardAvoidingHost>
-    </Modal>
+    </ChatBottomSheet>
   );
 }
 
@@ -168,16 +176,15 @@ function Action({ label, onPress, disabled, primary }: {
 }
 
 const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
-  backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: chatTokens.overlayBg },
   centerBackdrop: { flex: 1, justifyContent: 'center', padding: 24, backgroundColor: chatTokens.overlayBg },
-  sheet: { maxHeight: '84%', padding: 16, borderTopLeftRadius: 22, borderTopRightRadius: 22, backgroundColor: chatTokens.panelBg },
+  sheet: { maxHeight: '84%', padding: 16, paddingTop: 8 },
   prompt: { padding: 18, borderRadius: 18, backgroundColor: chatTokens.panelBg },
   title: { marginBottom: 12, color: chatTokens.textPrimary, fontSize: 19, fontWeight: '700' },
   search: { minHeight: 46, paddingHorizontal: 13, borderRadius: 14, color: chatTokens.textPrimary, backgroundColor: chatTokens.sidebarSearchBg },
   list: { maxHeight: 400, marginTop: 8 },
   userRow: { minHeight: 54, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, borderRadius: 12 },
   selected: { backgroundColor: chatTokens.sidebarRowSoftActive },
-  check: { width: 30, color: chatTokens.accentText, fontSize: 20, fontWeight: '700' },
+  check: { width: 30 },
   userText: { flex: 1 },
   userName: { color: chatTokens.textPrimary, fontSize: 15, fontWeight: '600' },
   userMeta: { marginTop: 2, color: chatTokens.textSecondary, fontSize: 12 },

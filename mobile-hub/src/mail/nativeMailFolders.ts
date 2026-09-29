@@ -70,7 +70,7 @@ export function buildNativeMailFolderOptions(
         id,
         label: nodeLabel(node, id),
         pathLabel: path.labels.join(' / ') || nodeLabel(node, id),
-        unread: Math.max(0, Number(node.unread ?? summary[summaryKey]?.unread ?? 0)),
+        unread: Math.max(0, Number(summary[summaryKey]?.unread ?? node.unread ?? 0)),
         standard,
         wellKnown: wellKnown || (standardOrder.has(id) ? id : ''),
         favorite: Boolean(node.is_favorite),

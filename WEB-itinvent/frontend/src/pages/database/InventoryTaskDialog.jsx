@@ -32,6 +32,7 @@ export default function InventoryTaskDialog({
   open,
   employeeName,
   description,
+  descriptionLoading = false,
   onClose,
   onOpenTasks,
 }) {
@@ -40,12 +41,14 @@ export default function InventoryTaskDialog({
   const [assignee, setAssignee] = useState(null);
   const [project, setProject] = useState(null);
   const [title, setTitle] = useState('');
+  const [descriptionDraft, setDescriptionDraft] = useState('');
   const [dueAt, setDueAt] = useState('');
   const [optionsLoading, setOptionsLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [createdTaskId, setCreatedTaskId] = useState('');
   const searchSeqRef = useRef(0);
+  const descriptionDirtyRef = useRef(false);
 
   const loadAssignees = useCallback(async (query = '') => {
     const seq = ++searchSeqRef.current;
@@ -63,6 +66,8 @@ export default function InventoryTaskDialog({
   useEffect(() => {
     if (!open) return;
     setTitle(`Инвентаризация расхождений — ${employeeName || 'сотрудник'}`);
+    setDescriptionDraft(String(description || '').trim());
+    descriptionDirtyRef.current = false;
     setAssignee(null);
     setDueAt('');
     setError('');
@@ -94,6 +99,13 @@ export default function InventoryTaskDialog({
     return () => { cancelled = true; };
   }, [open, employeeName, loadAssignees]);
 
+  // Подсказки подгружаются асинхронно — обновлять черновик, пока пользователь
+  // его не трогал.
+  useEffect(() => {
+    if (!open || descriptionDirtyRef.current) return;
+    setDescriptionDraft(String(description || '').trim());
+  }, [open, description]);
+
   const canSubmit = title.trim().length >= 3 && assignee && project && !saving;
 
   const handleSubmit = useCallback(async () => {
@@ -103,7 +115,7 @@ export default function InventoryTaskDialog({
     try {
       const response = await hubTasksAPI.createTask({
         title: title.trim(),
-        description: String(description || '').trim(),
+        description: String(descriptionDraft || '').trim(),
         checklist_items: [],
         assignee_user_ids: [Number(assignee.id)].filter(Number.isInteger),
         controller_user_id: null,
@@ -124,7 +136,7 @@ export default function InventoryTaskDialog({
     } finally {
       setSaving(false);
     }
-  }, [canSubmit, title, description, assignee, project, dueAt]);
+  }, [canSubmit, title, descriptionDraft, assignee, project, dueAt]);
 
   return (
     <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="sm">
@@ -189,9 +201,21 @@ export default function InventoryTaskDialog({
               onChange={(event) => setDueAt(event.target.value)}
               InputLabelProps={{ shrink: true }}
             />
+            <TextField
+              label="Описание"
+              value={descriptionDraft}
+              onChange={(event) => {
+                descriptionDirtyRef.current = true;
+                setDescriptionDraft(event.target.value);
+              }}
+              multiline
+              minRows={6}
+              fullWidth
+            />
             <Typography variant="caption" color="text.secondary">
-              В описание попадёт текст сверки: совпадающие по парт. № расхождения, позиции только
-              в Хабе и только в 1С.
+              {descriptionLoading
+                ? 'Собираю подсказки: остатки по парт. № на складах и прежних владельцев…'
+                : 'Описание предзаполнено автоматически и редактируется после создания в карточке задачи. Ссылки станут кликабельными: голый URL (https://…) или [текст](ссылка).'}
             </Typography>
             {error ? <Alert severity="error">{error}</Alert> : null}
           </Stack>

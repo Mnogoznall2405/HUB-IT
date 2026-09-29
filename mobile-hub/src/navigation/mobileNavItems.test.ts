@@ -40,6 +40,15 @@ describe('resolveMobileNavigationItems', () => {
     ]);
   });
 
+  it('keeps a short saved selection instead of refilling it with defaults', () => {
+    const items = resolveMobileNavigationItems({
+      selectedPaths: ['/tasks', '/chat'],
+      user: admin,
+      hasPermission: allow,
+    });
+    expect(items.map((item) => item.path)).toEqual(['/tasks', '/chat', '/menu']);
+  });
+
   it('hides items without permission and still shows Menu', () => {
     const items = resolveMobileNavigationItems({
       selectedPaths: ['/dashboard', '/tasks', '/chat', '/mail'],

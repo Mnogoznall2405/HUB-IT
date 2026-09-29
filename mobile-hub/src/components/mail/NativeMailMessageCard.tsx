@@ -5,7 +5,7 @@ import type { MailAttachment, MailMessageDetail } from '../../api/mailApi';
 import { getNativeMailAttachmentImageSource, getNativeMailAttachmentVisual } from '../../mail/nativeMailAttachmentVisual';
 import { getVisibleNativeMailAttachments } from '../../mail/nativeMailAttachments';
 import { canPreviewMailAttachment } from '../../mail/nativeMailFiles';
-import { mailByteLabel, mailDateLabel, mailPreviewSender, mailSubject } from '../../mail/nativeMailModel';
+import { mailByteLabel, mailDateLabel, mailPreviewSender, mailSubject, nativeMailRecipientSummary } from '../../mail/nativeMailModel';
 import type { FluentTokens } from '../../theme/fluentTokens';
 import { NativeMailHtmlBody } from './NativeMailHtmlBody';
 
@@ -16,6 +16,7 @@ export function NativeMailMessageCard({
   reader = false,
   readerAccessory,
   busyAttachment,
+  ownEmails,
   onOpenAttachment,
   onShareAttachment,
   onPreviewAttachment,
@@ -23,6 +24,8 @@ export function NativeMailMessageCard({
 }: {
   message: MailMessageDetail;
   tokens: FluentTokens;
+  /** Адреса собственных ящиков пользователя — для «Кому: мне» в шапке читателя. */
+  ownEmails?: string[];
   compact?: boolean;
   reader?: boolean;
   readerAccessory?: ReactNode;
@@ -33,17 +36,21 @@ export function NativeMailMessageCard({
   onSaveAllAttachments?: (attachments: MailAttachment[]) => void;
 }) {
   const [detailsExpanded, setDetailsExpanded] = useState(false);
+  const ownFolder = ['sent', 'drafts'].includes(String(message.folder || '').trim().toLowerCase());
   const recipientGroups = useMemo(() => [
     { label: 'Кому', values: mergeRecipientLabels(message.to_people, message.to) },
     { label: 'Копия', values: mergeRecipientLabels(message.cc_people, message.cc) },
-    { label: 'Скрытая копия', values: mergeRecipientLabels(message.bcc_people, message.bcc) },
-  ].filter((group) => group.values.length), [message.bcc, message.bcc_people, message.cc, message.cc_people, message.to, message.to_people]);
+    ...(ownFolder ? [{ label: 'Скрытая копия', values: mergeRecipientLabels(message.bcc_people, message.bcc) }] : []),
+  ].filter((group) => group.values.length), [ownFolder, message.bcc, message.bcc_people, message.cc, message.cc_people, message.to, message.to_people]);
   const recipients = recipientGroups.find((group) => group.label === 'Кому')?.values.slice(0, compact ? 2 : 3).join(', ') || '';
   const sender = mailPreviewSender(message);
   const senderEmail = String(message.sender_person?.email || message.sender_email || message.sender || '').trim();
-  const recipientCount = useMemo(() => new Set([
-    ...recipientGroups.flatMap((group) => group.values.map((value) => value.toLocaleLowerCase())),
-  ].filter(Boolean)).size, [recipientGroups]);
+  const knownOwnEmails = useMemo(() => [
+    message.compose_context?.mailbox_email || '',
+    ...(ownEmails || []),
+  ], [message.compose_context?.mailbox_email, ownEmails]);
+  const toValues = recipientGroups.find((group) => group.label === 'Кому')?.values || [];
+  const toSummary = useMemo(() => nativeMailRecipientSummary(toValues, knownOwnEmails), [toValues, knownOwnEmails]);
   const attachments = useMemo(() => getVisibleNativeMailAttachments(message), [message]);
   const hasRichBody = Boolean(String(message.body_html || '').trim());
   const showFlatReader = reader && !compact;
@@ -71,7 +78,7 @@ export function NativeMailMessageCard({
           <Pressable
             testID={showFlatReader ? 'native-mail-recipient-details' : undefined}
             accessibilityRole="button"
-            accessibilityLabel={detailsExpanded ? 'Скрыть сведения об адресатах' : 'Показать сведения об адресатах'}
+            accessibilityLabel={`Письмо от ${sender}${toSummary.text ? `, кому ${toSummary.text}` : ''}. ${detailsExpanded ? 'Скрыть' : 'Показать'} сведения об адресатах`}
             accessibilityState={{ expanded: detailsExpanded }}
             onPress={() => setDetailsExpanded((current) => !current)}
             style={[styles.recipientSummary, showFlatReader ? styles.readerRecipientSummary : null]}
@@ -79,15 +86,18 @@ export function NativeMailMessageCard({
             {showFlatReader ? (
               <>
                 <Text numberOfLines={1} style={[styles.readerDate, { color: tokens.textSecondary }]}>{mailReaderDateLabel(message.received_at)}</Text>
-                <Text accessibilityElementsHidden style={[styles.readerMetaDot, { color: tokens.textTertiary }]}>•</Text>
-                <MaterialCommunityIcons name="account-outline" size={17} color={tokens.iconMuted} />
-                <Text
-                  testID="native-mail-recipient-count"
-                  accessibilityLabel={`Получателей: ${recipientCount}`}
-                  style={[styles.readerParticipantCount, { color: tokens.textSecondary }]}
-                >
-                  {recipientCount}
-                </Text>
+                {toSummary.text ? (
+                  <>
+                    <Text accessibilityElementsHidden style={[styles.readerMetaDot, { color: tokens.textTertiary }]}>•</Text>
+                    <Text
+                      numberOfLines={1}
+                      testID="native-mail-recipient-summary"
+                      style={[styles.readerParticipantCount, { color: tokens.textSecondary }]}
+                    >
+                      Кому: {toSummary.text}
+                    </Text>
+                  </>
+                ) : null}
               </>
             ) : (
               <Text numberOfLines={1} style={[styles.recipients, { color: tokens.textSecondary }]}> 

@@ -8,7 +8,7 @@ that are shared with the Telegram bot.
 """
 
 import logging
-from typing import Any, Optional, List
+from typing import Any, Dict, Optional, List
 from fastapi import APIRouter, HTTPException, Depends, Query, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -41,8 +41,11 @@ from backend.models.json_operations import (
     # Cartridge database
     PrinterCompatibilityResponse,
     CartridgeColorsResponse,
+    CartridgePrintersResponse,
     PrinterComponentsResponse,
     CartridgeInfoResponse,
+    CartridgeDatabaseEntryUpsert,
+    CartridgeDatabaseEntryResponse,
     # Bulk operations
     BulkWorkRequest,
     BulkOperationResponse,
@@ -902,6 +905,23 @@ async def get_printer_compatibility(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
 
+@router.get("/cartridges/printers-for/{cartridge_model}", response_model=CartridgePrintersResponse)
+async def get_printers_for_cartridge(
+    cartridge_model: str,
+    cartridge_db: CartridgeDatabase = Depends(get_cartridge_database),
+    current_user: User = Depends(get_current_active_user),
+):
+    """List printer models compatible with the given cartridge model."""
+    try:
+        return CartridgePrintersResponse(
+            cartridge_model=cartridge_model,
+            printer_models=cartridge_db.get_printers_for_cartridge(cartridge_model),
+        )
+    except Exception as e:
+        logger.error(f"Error getting printers for cartridge: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+
+
 @router.get("/cartridges/colors/{printer_model}", response_model=CartridgeColorsResponse)
 async def get_cartridge_colors(
     printer_model: str,
@@ -944,4 +964,89 @@ async def is_color_printer(
         return {"printer_model": printer_model, "is_color": is_color}
     except Exception as e:
         logger.error(f"Error checking if printer is color: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+
+
+def _cartridge_entry_response(printer_model: str, entry: Dict[str, Any]) -> CartridgeDatabaseEntryResponse:
+    compatible_models = [
+        CartridgeInfoResponse(
+            model=str(item.get('model') or ''),
+            description=str(item.get('description') or ''),
+            color=str(item.get('color') or 'Черный'),
+            page_yield=item.get('page_yield'),
+            oem_part=item.get('oem_part'),
+        )
+        for item in entry.get('compatible_models') or []
+        if isinstance(item, dict) and str(item.get('model') or '').strip()
+    ]
+    return CartridgeDatabaseEntryResponse(
+        printer_model=printer_model,
+        oem_cartridge=str(entry.get('oem_cartridge') or ''),
+        compatible_models=compatible_models,
+        is_color=bool(entry.get('is_color')),
+    )
+
+
+@router.get("/cartridges/database", response_model=List[CartridgeDatabaseEntryResponse])
+async def list_cartridge_database(
+    cartridge_db: CartridgeDatabase = Depends(get_cartridge_database),
+    current_user: User = Depends(get_current_active_user),
+):
+    """List the full cartridge compatibility table (printer -> cartridges)."""
+    try:
+        return [
+            _cartridge_entry_response(entry['printer_model'], entry)
+            for entry in cartridge_db.list_entries()
+        ]
+    except Exception as e:
+        logger.error(f"Error listing cartridge database: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+
+
+@router.put("/cartridges/database/{printer_model}", response_model=CartridgeDatabaseEntryResponse)
+async def upsert_cartridge_database_entry(
+    printer_model: str,
+    data: CartridgeDatabaseEntryUpsert,
+    cartridge_db: CartridgeDatabase = Depends(get_cartridge_database),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """Create or update one printer compatibility entry (merge-preserving)."""
+    try:
+        entry = cartridge_db.upsert_entry(
+            printer_model,
+            oem_cartridge=data.oem_cartridge,
+            compatible_models=(
+                [model.model_dump(exclude_none=False) for model in data.compatible_models]
+                if data.compatible_models is not None else None
+            ),
+            is_color=data.is_color,
+        )
+        return _cartridge_entry_response(
+            cartridge_db._normalize_printer_name(printer_model), entry
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error upserting cartridge database entry: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+
+
+@router.delete("/cartridges/database/{printer_model}")
+async def delete_cartridge_database_entry(
+    printer_model: str,
+    cartridge_db: CartridgeDatabase = Depends(get_cartridge_database),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """Delete one printer compatibility entry."""
+    try:
+        if not cartridge_db.delete_entry(printer_model):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No compatibility entry for printer: {printer_model}"
+            )
+        return {"status": "deleted", "printer_model": printer_model}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting cartridge database entry: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")

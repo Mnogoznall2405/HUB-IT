@@ -4,6 +4,7 @@ import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import DriveFileMoveOutlinedIcon from '@mui/icons-material/DriveFileMoveOutlined';
 import DriveFileRenameOutlineRoundedIcon from '@mui/icons-material/DriveFileRenameOutlineRounded';
+import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import PrintRoundedIcon from '@mui/icons-material/PrintRounded';
 import SelectAllRoundedIcon from '@mui/icons-material/SelectAllRounded';
@@ -71,6 +72,7 @@ export default function FileActionsContextMenu({
   onShare,
   onRevokeShare,
   isShared = false,
+  onAudit,
 }) {
   const [requestingAction, setRequestingAction] = useState('');
   const [openIntentMessage, setOpenIntentMessage] = useState('');
@@ -219,6 +221,17 @@ export default function FileActionsContextMenu({
         >
           <ListItemIcon><DeleteOutlineRoundedIcon fontSize="small" /></ListItemIcon>
           <ListItemText>Отключить ссылку</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onAudit === 'function' ? (
+        <MenuItem
+          data-testid="file-action-audit"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onAudit)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><HistoryRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Журнал</ListItemText>
         </MenuItem>
       ) : null}
       {typeof onToggleFavorite === 'function' ? (

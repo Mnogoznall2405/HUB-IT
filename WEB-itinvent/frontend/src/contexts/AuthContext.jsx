@@ -6,6 +6,7 @@ import { authAPI } from '../api/client';
 import { disableChatPushSubscription } from '../lib/chatNotifications';
 import { clearAllMailRecentCache } from '../lib/mailRecentCache';
 import { clearMobileOfflineCache } from '../lib/mobileOfflineCache';
+import { isMailSessionEnabled, MAIL_SESSION_CHANGED_EVENT } from '../lib/mailSession';
 
 const AuthContext = createContext(null);
 const alwaysGrantedPermissions = [
@@ -34,6 +35,7 @@ const rolePermissionFallback = {
     'chat.read',
     'chat.write',
     'chat.ai.use',
+    'kb.read',
     'mail.access',
     'settings.read',
     'company_structure.read',
@@ -110,6 +112,7 @@ const rolePermissionFallback = {
     'address_book.hire_date.read',
     'address_book.personal_phone.read',
     'address_book.personal_email.read',
+    'address_book.inn.read',
     'company_structure.read',
     'company_structure.write',
     'construction.read',
@@ -153,6 +156,7 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [mailSessionEnabled, setMailSessionEnabled] = useState(() => isMailSessionEnabled());
 
   const sessionRefreshGateRef = useRef(null);
 
@@ -294,6 +298,17 @@ export const AuthProvider = ({ children }) => {
     window.addEventListener('auth-required', onAuthRequired);
     return () => window.removeEventListener('auth-required', onAuthRequired);
   }, []);
+
+  useEffect(() => {
+    const syncMailSession = () => setMailSessionEnabled(isMailSessionEnabled());
+    window.addEventListener(MAIL_SESSION_CHANGED_EVENT, syncMailSession);
+    return () => window.removeEventListener(MAIL_SESSION_CHANGED_EVENT, syncMailSession);
+  }, []);
+
+  // The stored choice is keyed by login: re-evaluate when the user changes.
+  useEffect(() => {
+    setMailSessionEnabled(isMailSessionEnabled());
+  }, [user]);
 
   useEffect(() => {
     let cancelled = false;
@@ -577,12 +592,13 @@ export const AuthProvider = ({ children }) => {
   const hasPermission = useCallback((permission) => {
     const target = String(permission || '').trim();
     if (!target) return false;
+    if (target === 'mail.access' && !mailSessionEnabled) return false;
     if (String(user?.role || '').trim().toLowerCase() === 'admin') {
       return true;
     }
     const permissions = Array.isArray(user?.permissions) ? user.permissions : [];
     return permissions.includes(target);
-  }, [user]);
+  }, [user, mailSessionEnabled]);
 
   const hasAnyPermission = useCallback((permissions) => {
     if (!Array.isArray(permissions) || permissions.length === 0) return false;

@@ -20,6 +20,7 @@ const {
   locationAssignMock,
   locationReplaceMock,
   mockGetDesktopWindowsUsername,
+  mockIsDesktopBridgeReady,
 } = vi.hoisted(() => ({
   mockLogin: vi.fn(),
   mockStartTwoFactorSetup: vi.fn(),
@@ -38,6 +39,7 @@ const {
   locationAssignMock: vi.fn(),
   locationReplaceMock: vi.fn(),
   mockGetDesktopWindowsUsername: vi.fn(),
+  mockIsDesktopBridgeReady: vi.fn(() => false),
 }));
 
 vi.mock('qrcode', () => ({
@@ -69,7 +71,7 @@ vi.mock('../api/client', () => ({
 
 vi.mock('../lib/desktopBridge', () => ({
   getDesktopWindowsUsername: mockGetDesktopWindowsUsername,
-  isDesktopBridgeReady: () => false,
+  isDesktopBridgeReady: (...args) => mockIsDesktopBridgeReady(...args),
 }));
 
 vi.mock('../components/desktop/DesktopInstallerDownload', () => ({
@@ -208,6 +210,8 @@ describe('Login hybrid internal/external flow', () => {
     locationReplaceMock.mockReset();
     mockGetDesktopWindowsUsername.mockReset();
     mockGetDesktopWindowsUsername.mockReturnValue('');
+    mockIsDesktopBridgeReady.mockReset();
+    mockIsDesktopBridgeReady.mockReturnValue(false);
 
     mockQrToDataUrl.mockResolvedValue('data:image/png;base64,qr-image');
     mockOfferPasswordSaveForAppleKeychain.mockResolvedValue({
@@ -894,5 +898,90 @@ describe('Login hybrid internal/external flow', () => {
     const dialog = await screen.findByRole('dialog');
     expect(dialog).toBeInTheDocument();
     expect(locationAssignMock).not.toHaveBeenCalled();
+  });
+
+  it('auto-redirects to AD FS begin in desktop on internal network', async () => {
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'internal',
+      biometric_login_enabled: false,
+      client_country_code: 'RU',
+      show_vpn_hint: false,
+      windows_sso_enabled: true,
+    });
+    mockIsDesktopBridgeReady.mockReturnValue(true);
+
+    render(<Login />);
+
+    await waitFor(() => expect(locationAssignMock).toHaveBeenCalledWith('/api/v1/auth/sso/begin'));
+  });
+
+  it('does not auto-redirect in browser on internal network, only via the button', async () => {
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'internal',
+      biometric_login_enabled: false,
+      client_country_code: 'RU',
+      show_vpn_hint: false,
+      windows_sso_enabled: true,
+    });
+
+    render(<Login />);
+
+    const button = await screen.findByTestId('windows-sso-login');
+    expect(locationAssignMock).not.toHaveBeenCalled();
+    fireEvent.click(button);
+    expect(locationAssignMock).toHaveBeenCalledWith('/api/v1/auth/sso/begin');
+  });
+
+  it('does not auto-redirect again after a failed SSO attempt in the same tab', async () => {
+    sessionStorage.setItem('hubit.sso.auto_attempted', '1');
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'internal',
+      biometric_login_enabled: false,
+      client_country_code: 'RU',
+      show_vpn_hint: false,
+      windows_sso_enabled: true,
+    });
+
+    render(<Login />);
+
+    const button = await screen.findByTestId('windows-sso-login');
+    await waitFor(() => expect(locationAssignMock).not.toHaveBeenCalled());
+    fireEvent.click(button);
+    expect(locationAssignMock).toHaveBeenCalledWith('/api/v1/auth/sso/begin');
+  });
+
+  it('shows a mapped notice for sso_error and cleans the URL', async () => {
+    window.location.search = '?sso_error=not_provisioned';
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'internal',
+      biometric_login_enabled: false,
+      client_country_code: 'RU',
+      show_vpn_hint: false,
+      windows_sso_enabled: true,
+    });
+
+    render(<Login />);
+
+    expect(
+      await screen.findByText(/нет доступа в HUB-IT/),
+    ).toBeInTheDocument();
+    expect(locationAssignMock).not.toHaveBeenCalled();
+  });
+
+  it('does not offer Windows SSO on external network', async () => {
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: false,
+      client_country_code: 'RU',
+      show_vpn_hint: false,
+      windows_sso_enabled: false,
+    });
+    mockIsDesktopBridgeReady.mockReturnValue(true);
+
+    render(<Login />);
+
+    await ensurePasswordFormVisible();
+    expect(locationAssignMock).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('windows-sso-login')).not.toBeInTheDocument();
   });
 });

@@ -110,6 +110,9 @@ class PasswordVaultListResponse(BaseModel):
     items: list[PasswordVaultEntryResponse] = Field(default_factory=list)
     groups: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
+    total: int = 0
+    limit: int = 100
+    offset: int = 0
     unlocked_until: Optional[str] = None
 
 

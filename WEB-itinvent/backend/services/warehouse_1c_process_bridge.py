@@ -633,7 +633,9 @@ class Warehouse1CProcessBridge:
                 continue
             try:
                 managed_queue.close()
-                managed_queue.join_thread()
+                # Feeder can be blocked forever in _send_bytes to a dead or
+                # hung child; never join it while holding the bridge lock.
+                managed_queue.cancel_join_thread()
             except (AttributeError, OSError, ValueError):
                 pass
 

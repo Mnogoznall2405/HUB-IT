@@ -96,6 +96,9 @@ def _safe_person(person: dict[str, Any]) -> dict[str, Any]:
         "department_location": normalize_text(person.get("department_location")),
         "work_phones": _safe_contact_values(person.get("work_phones")),
         "work_emails": _safe_contact_values(person.get("work_emails")),
+        "office_room": normalize_text(person.get("office_room")),
+        "workplace_number": normalize_text(person.get("workplace_number")),
+        "office_address": normalize_text(person.get("office_address")),
     }
 
 

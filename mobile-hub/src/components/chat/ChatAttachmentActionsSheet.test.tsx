@@ -30,7 +30,7 @@ describe('ChatAttachmentActionsSheet', () => {
     expect(view.getByLabelText('Переслать')).toBeTruthy();
     expect(view.getByLabelText('Сохранить в «Мои файлы»')).toBeTruthy();
 
-    await fireEvent.press(view.getByTestId('chat-attachment-actions-backdrop'));
+    await fireEvent.press(view.getByTestId('chat-attachment-actions-backdrop', { includeHiddenElements: true }));
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(onOpen).not.toHaveBeenCalled();
 

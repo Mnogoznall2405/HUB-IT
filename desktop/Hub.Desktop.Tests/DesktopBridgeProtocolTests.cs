@@ -557,4 +557,5 @@ public sealed class DesktopBridgeProtocolTests
         Assert.Equal("file.shared", root.GetProperty("type").GetString());
         Assert.Equal(2, root.GetProperty("files").EnumerateArray().Count());
     }
+
 }

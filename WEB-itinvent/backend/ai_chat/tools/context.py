@@ -57,8 +57,21 @@ ITINVENT_TOOL_DIRECTORY_VENDORS = "itinvent.directory.vendors"
 ITINVENT_TOOL_DIRECTORY_DEPARTMENTS = "itinvent.directory.departments"
 ITINVENT_TOOL_ACTION_STATUS_CHANGE_DRAFT = "itinvent.action.status_change_draft"
 ITINVENT_TOOL_ACTION_LOCATION_CHANGE_DRAFT = "itinvent.action.location_change_draft"
+ITINVENT_TOOL_ACTION_CARTRIDGE_REPLACEMENT_DRAFT = "itinvent.action.cartridge_replacement_draft"
+ITINVENT_TOOL_ACTION_BATTERY_REPLACEMENT_DRAFT = "itinvent.action.battery_replacement_draft"
+ITINVENT_TOOL_ACTION_COMPONENT_REPLACEMENT_DRAFT = "itinvent.action.component_replacement_draft"
+ITINVENT_TOOL_ACTION_PC_CLEANING_DRAFT = "itinvent.action.pc_cleaning_draft"
 ITINVENT_TOOL_USER_BY_NAME = "itinvent.user.by_name"
 ITINVENT_TOOL_USER_FULL_CONTEXT = "itinvent.user.full_context"
+KB_TOOL_ARTICLES_SEARCH = "kb.articles.search"
+KB_TOOL_ARTICLES_GET = "kb.articles.get"
+KB_TOOL_ATTACHMENT_GET_TEXT = "kb.attachments.get_text"
+KB_TOOL_CATEGORIES_LIST = "kb.categories.list"
+VOICE_TOOL_MEETINGS_SEARCH = "voice.meetings.search"
+VOICE_TOOL_MEETING_GET = "voice.meeting.get"
+CHAT_TOOL_USERS_SEARCH = "chat.users.search"
+CHAT_TOOL_CONVERSATIONS_SEARCH = "chat.conversations.search"
+CHAT_TOOL_ACTION_MESSAGE_SEND_DRAFT = "chat.action.message_send_draft"
 MFU_TOOL_DEVICES_LIST = "mfu.devices.list"
 MFU_TOOL_DEVICE_STATUS = "mfu.device.status"
 MFU_TOOL_PAGES_MONTHLY = "mfu.pages.monthly"
@@ -104,6 +117,10 @@ DEFAULT_ITINVENT_TOOL_IDS = [
     ITINVENT_TOOL_ACTION_CONSUMABLE_QTY_DRAFT,
     ITINVENT_TOOL_ACTION_STATUS_CHANGE_DRAFT,
     ITINVENT_TOOL_ACTION_LOCATION_CHANGE_DRAFT,
+    ITINVENT_TOOL_ACTION_CARTRIDGE_REPLACEMENT_DRAFT,
+    ITINVENT_TOOL_ACTION_BATTERY_REPLACEMENT_DRAFT,
+    ITINVENT_TOOL_ACTION_COMPONENT_REPLACEMENT_DRAFT,
+    ITINVENT_TOOL_ACTION_PC_CLEANING_DRAFT,
     ITINVENT_TOOL_USER_BY_NAME,
     ITINVENT_TOOL_USER_FULL_CONTEXT,
     # AD tools (password expiry, rotation status)
@@ -139,6 +156,8 @@ AI_TOOL_GROUP_FILES = "files"
 AI_TOOL_GROUP_MFU = "mfu"
 AI_TOOL_GROUP_NETWORK = "network"
 AI_TOOL_GROUP_AD = "ad"
+AI_TOOL_GROUP_KB = "kb"
+AI_TOOL_GROUP_CHAT = "chat"
 AI_TOOL_GROUP_OTHER = "other"
 AI_TOOL_GROUPS_ALL = (
     AI_TOOL_GROUP_ITINVENT,
@@ -147,6 +166,8 @@ AI_TOOL_GROUPS_ALL = (
     AI_TOOL_GROUP_MFU,
     AI_TOOL_GROUP_NETWORK,
     AI_TOOL_GROUP_AD,
+    AI_TOOL_GROUP_KB,
+    AI_TOOL_GROUP_CHAT,
     AI_TOOL_GROUP_OTHER,
 )
 
@@ -169,6 +190,10 @@ def get_tool_group(tool_id: object) -> str:
         return AI_TOOL_GROUP_NETWORK
     if normalized.startswith("ad."):
         return AI_TOOL_GROUP_AD
+    if normalized.startswith("kb."):
+        return AI_TOOL_GROUP_KB
+    if normalized.startswith("chat."):
+        return AI_TOOL_GROUP_CHAT
     return AI_TOOL_GROUP_OTHER
 
 

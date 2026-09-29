@@ -1,5 +1,6 @@
 import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { stashMailComposePrefill } from '../../lib/mailComposePrefill';
 import useMailComposeSessionController from './useMailComposeSessionController';
 
 const createMemoryStorage = (initial = {}) => {
@@ -229,6 +230,27 @@ describe('useMailComposeSessionController', () => {
       composeSubject: 'Отчёт',
     });
     expect(result.current.composeSession.initialState.composeBody).toContain('https://example.com/report');
+    expect(navigate).toHaveBeenCalledWith('/mail?folder=inbox', { replace: true });
+  });
+
+  it('opens a stashed web prefill without sending it', () => {
+    const navigate = vi.fn();
+    stashMailComposePrefill({
+      to: [],
+      subject: 'Протокол встречи',
+      bodyPlain: 'Поручения:\n1. Подписать акт',
+    });
+    const { result } = renderComposeHook({
+      locationSearch: '?folder=inbox&compose=prefill',
+      navigate,
+    });
+
+    expect(result.current.composeOpen).toBe(true);
+    expect(result.current.composeSession.initialState).toMatchObject({
+      composeMode: 'new',
+      composeSubject: 'Протокол встречи',
+    });
+    expect(result.current.composeSession.initialState.composeBody).toContain('Подписать акт');
     expect(navigate).toHaveBeenCalledWith('/mail?folder=inbox', { replace: true });
   });
 

@@ -6,9 +6,10 @@ export function buildReplyPreview(message) {
   const messageId = String(message?.id || '').trim();
   if (!messageId) return null;
   const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
-  const kind = message?.kind === 'task_share'
-    ? 'task_share'
-    : (message?.kind === 'file' || attachments.length > 0 ? 'file' : 'text');
+  const knownKinds = new Set(['task_share', 'file', 'system', 'location', 'contact', 'poll']);
+  const kind = knownKinds.has(message?.kind)
+    ? message.kind
+    : (attachments.length > 0 ? 'file' : 'text');
   const fullName = String(message?.sender?.full_name || '').trim();
   const username = String(message?.sender?.username || '').trim();
   const senderName = fullName

@@ -1,6 +1,6 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   DEFAULT_MOBILE_BOTTOM_NAV_ITEMS,
   normalizeMobileBottomNavItems,
@@ -95,6 +95,17 @@ export function NativeAppearanceSettingsScreen() {
       onBack={() => goBackOrReplace('/(shell)/menu/settings')}
     >
       <AccountStatusText tokens={tokens} error={status.error} message={status.message} />
+      <AccountSectionCard tokens={tokens} title="Шрифт" description="Приложение использует системный шрифт и масштаб Android — отдельной настройки шрифта в приложении нет.">
+        <AccountSecondaryButton
+          tokens={tokens}
+          label="Настройки экрана Android"
+          onPress={() => {
+            void Linking.sendIntent('android.settings.DISPLAY_SETTINGS')
+              .catch(() => Linking.openSettings())
+              .catch(() => setStatus({ error: 'Не удалось открыть настройки экрана.', message: '' }));
+          }}
+        />
+      </AccountSectionCard>
       <AccountSectionCard tokens={tokens} title="Тема" description="Выберите тему нативного приложения.">
         {THEME_OPTIONS.map((option) => {
           const selected = preferences.theme_mode === option.value;
@@ -102,6 +113,9 @@ export function NativeAppearanceSettingsScreen() {
             <Pressable
               key={option.value}
               testID={`native-theme-${option.value}`}
+              accessibilityRole="radio"
+              accessibilityState={{ selected }}
+              accessibilityLabel={option.label}
               onPress={() => { void saveTheme(option.value); }}
               style={[
                 styles.choice,

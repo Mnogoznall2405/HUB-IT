@@ -5,14 +5,50 @@ import {
   getQrScannerErrorMessage,
   getQrboxDimensions,
   isIgnorableQrFrameError,
-  parseInvNoFromQrText,
+  parseDatabaseQrPayload,
   stopQrScannerInstance,
 } from './qrModel';
 
 const QR_READER_ELEMENT_ID = 'qr-reader';
 const QR_INVALID_INV_MESSAGE = 'Не удалось распознать инвентарный номер в QR-коде.';
+const CAMERA_PROMPT_TIMEOUT_MS = 20000;
 
 const noop = () => {};
+
+const getCameraPermissionState = async () => {
+  try {
+    if (typeof navigator === 'undefined' || !navigator.permissions?.query) return '';
+    const status = await navigator.permissions.query({ name: 'camera' });
+    return String(status?.state || '');
+  } catch {
+    return '';
+  }
+};
+
+// An explicit getUserMedia call is what surfaces the "Разрешить камеру" prompt
+// inside an installed PWA/WebAPK — Html5Qrcode.start() may reuse a cached denial.
+const requestCameraAccess = async () => {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(Object.assign(new Error('камера не ответила на запрос разрешения'), {
+        name: 'CameraPromptTimeout',
+      }));
+    }, CAMERA_PROMPT_TIMEOUT_MS);
+  });
+  try {
+    const stream = await Promise.race([
+      navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' },
+        audio: false,
+      }),
+      timeout,
+    ]);
+    stream?.getTracks?.().forEach((track) => track.stop());
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
 
 const buildQrLookupErrorMessage = (error, invNo) => {
   const statusCode = Number(error?.response?.status || 0);
@@ -29,8 +65,24 @@ const buildQrLookupErrorMessage = (error, invNo) => {
   return `Не удалось открыть оборудование с инв. № "${invNo}".`;
 };
 
+const buildConsumableLookupErrorMessage = (error, itemId) => {
+  const statusCode = Number(error?.response?.status || 0);
+  const apiDetail = error?.response?.data?.detail;
+
+  if (statusCode === 404) {
+    return `Расходник с ID "${itemId}" не найден.`;
+  }
+
+  if (typeof apiDetail === 'string' && apiDetail.trim()) {
+    return apiDetail;
+  }
+
+  return `Не удалось открыть расходник с ID "${itemId}".`;
+};
+
 export const useDatabaseQrScanner = ({
   onEquipmentFound = noop,
+  onConsumableFound = noop,
   notifyDatabaseError = noop,
   scannerElementId = QR_READER_ELEMENT_ID,
   autoStart = true,
@@ -42,6 +94,7 @@ export const useDatabaseQrScanner = ({
   const [qrScannerError, setQrScannerError] = useState('');
   const [qrScannerLoading, setQrScannerLoading] = useState(false);
   const [qrScannerReady, setQrScannerReady] = useState(false);
+  const [scannerRestartToken, setScannerRestartToken] = useState(0);
 
   const resetScannerState = useCallback(() => {
     qrScanProcessingRef.current = false;
@@ -61,6 +114,12 @@ export const useDatabaseQrScanner = ({
     setQrScannerOpen(false);
   }, [resetScannerState]);
 
+  const retryQrScanner = useCallback(() => {
+    resetScannerState();
+    setQrScannerOpen(true);
+    setScannerRestartToken((token) => token + 1);
+  }, [resetScannerState]);
+
   const handleQrScanSuccess = useCallback(async (decodedText) => {
     if (qrScanProcessingRef.current) return;
     qrScanProcessingRef.current = true;
@@ -68,8 +127,8 @@ export const useDatabaseQrScanner = ({
     const scannedText = String(decodedText || '').trim();
     setQrScannerResult(scannedText);
 
-    const invNo = parseInvNoFromQrText(scannedText);
-    if (!invNo) {
+    const payload = parseDatabaseQrPayload(scannedText);
+    if (!payload) {
       qrScanProcessingRef.current = false;
       setQrScannerError(QR_INVALID_INV_MESSAGE);
       return;
@@ -85,12 +144,18 @@ export const useDatabaseQrScanner = ({
 
     let found;
     try {
-      found = await equipmentAPI.getByInvNo(invNo);
+      if (payload.kind === 'consumable') {
+        found = await equipmentAPI.getConsumableById(payload.itemId);
+      } else {
+        found = await equipmentAPI.getByInvNo(payload.invNo);
+      }
       if (!found) {
         throw new Error('not_found');
       }
     } catch (error) {
-      const message = buildQrLookupErrorMessage(error, invNo);
+      const message = payload.kind === 'consumable'
+        ? buildConsumableLookupErrorMessage(error, payload.itemId)
+        : buildQrLookupErrorMessage(error, payload.invNo);
       qrScanProcessingRef.current = false;
       setQrScannerLoading(false);
       setQrScannerError(message);
@@ -108,8 +173,12 @@ export const useDatabaseQrScanner = ({
     setQrScannerError('');
     setQrScannerLoading(false);
     setQrScannerReady(false);
-    onEquipmentFound(found, invNo);
-  }, [notifyDatabaseError, onEquipmentFound]);
+    if (payload.kind === 'consumable') {
+      onConsumableFound(found);
+    } else {
+      onEquipmentFound(found, payload.invNo);
+    }
+  }, [notifyDatabaseError, onConsumableFound, onEquipmentFound]);
 
   const handleQrScanError = useCallback((errorMessage) => {
     if (!isIgnorableQrFrameError(errorMessage)) {
@@ -138,6 +207,14 @@ export const useDatabaseQrScanner = ({
           throw new Error('браузер не поддерживает доступ к камере');
         }
 
+        // Permission was blocked earlier (PWA keeps the choice): fail fast with
+        // actionable text instead of waiting on a prompt that never appears.
+        const permissionState = await getCameraPermissionState();
+        if (permissionState === 'denied') {
+          throw Object.assign(new Error('camera permission denied'), { name: 'NotAllowedError' });
+        }
+        if (!isMounted) return;
+
         await new Promise((resolve) => {
           setTimeout(resolve, 350);
         });
@@ -147,6 +224,10 @@ export const useDatabaseQrScanner = ({
         if (!readerElement) {
           throw new Error(`DOM элемент #${scannerElementId} не найден`);
         }
+
+        // Explicit request is what opens the system "Разрешить камеру" prompt in PWAs.
+        await requestCameraAccess();
+        if (!isMounted) return;
 
         const { Html5Qrcode } = await import('html5-qrcode');
         if (!isMounted) return;
@@ -196,7 +277,7 @@ export const useDatabaseQrScanner = ({
         qrScanProcessingRef.current = false;
       }
     };
-  }, [autoStart, handleQrScanError, handleQrScanSuccess, qrScannerOpen, scannerElementId]);
+  }, [autoStart, handleQrScanError, handleQrScanSuccess, qrScannerOpen, scannerElementId, scannerRestartToken]);
 
   return {
     qrScannerOpen,
@@ -206,6 +287,7 @@ export const useDatabaseQrScanner = ({
     qrScannerReady,
     openQrScanner,
     closeQrScanner,
+    retryQrScanner,
     handleQrScanSuccess,
     handleQrScanError,
   };

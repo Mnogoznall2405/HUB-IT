@@ -133,9 +133,11 @@ describe('NativeNotificationCenterScreen', () => {
   it('filters sources without changing unread state and keeps mark-all global', async () => {
     const view = await render(<NativeNotificationCenterScreen />);
     await waitFor(() => expect(view.getByText('Непрочитанных: 2')).toBeTruthy());
+    await fireEvent.press(view.getByTestId('native-notifications-filter-current'));
     await fireEvent.press(view.getByTestId('native-notifications-filter-mail'));
     expect(view.getByText('Отчёт готов')).toBeTruthy();
     expect(view.queryByText('Новый комментарий')).toBeNull();
+    await fireEvent.press(view.getByTestId('native-notifications-filter-current'));
     await fireEvent.press(view.getByTestId('native-notifications-filter-chat'));
     expect(view.getByText('В этом разделе уведомлений нет')).toBeTruthy();
     expect(view.queryByText('Всё прочитано')).toBeNull();
@@ -143,6 +145,7 @@ describe('NativeNotificationCenterScreen', () => {
     await fireEvent.press(view.getByTestId('native-notifications-mark-all'));
     await waitFor(() => expect(notificationApi.markAllHubNotificationsRead).toHaveBeenCalledTimes(1));
     expect(notificationApi.markAllMailNotificationsRead).toHaveBeenCalledWith(['box-1', 'box-2']);
+    await fireEvent.press(view.getByTestId('native-notifications-filter-current'));
     await fireEvent.press(view.getByTestId('native-notifications-filter-all'));
     expect(view.getByText('Всё прочитано')).toBeTruthy();
   });

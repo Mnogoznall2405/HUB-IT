@@ -1,3 +1,4 @@
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { ChatConversationSummary } from '../../api/types';
@@ -12,16 +13,23 @@ export const ChatConversationRow = React.memo(function ChatConversationRow({
   active,
   onPress,
   onLongPress,
+  typingText,
+  draftText,
 }: {
   item: ChatConversationSummary;
   active?: boolean;
   onPress: () => void;
   onLongPress?: () => void;
+  /** F-TYPING-INBOX: replaces the preview while someone is typing. */
+  typingText?: string;
+  /** F-DRAFT-INBOX: "Черновик: …" preview when a local draft exists. */
+  draftText?: string;
 }) {
   const chatTokens = useChatTokens();
   const styles = React.useMemo(() => createStyles(chatTokens), [chatTokens]);
   const title = item.title || `Диалог ${item.id}`;
-  const preview = stripChatMarkdownPreview(item.last_message_preview) || item.last_message_preview || 'Нет сообщений';
+  const basePreview = stripChatMarkdownPreview(item.last_message_preview) || item.last_message_preview || 'Нет сообщений';
+  const preview = typingText || (draftText ? `Черновик: ${draftText}` : basePreview);
   const unread = Number(item.unread_count || 0);
   const time = formatShortTime(item.last_message_at);
   const kindLabel = shouldShowConversationKindChip(item.kind) ? conversationKindLabel(item.kind) : '';
@@ -57,7 +65,15 @@ export const ChatConversationRow = React.memo(function ChatConversationRow({
           ) : null}
         </View>
         <View style={styles.bottom}>
-          <Text style={[styles.preview, active && styles.previewActive]} numberOfLines={1}>
+          <Text
+            style={[
+              styles.preview,
+              active && styles.previewActive,
+              !active && typingText ? styles.previewTyping : undefined,
+              !active && !typingText && draftText ? styles.previewDraft : undefined,
+            ]}
+            numberOfLines={1}
+          >
             {preview}
           </Text>
           {unread > 0 ? (
@@ -74,7 +90,11 @@ export const ChatConversationRow = React.memo(function ChatConversationRow({
           accessibilityLabel={`Действия диалога ${title}`}
           style={styles.actions}
         >
-          <Text style={[styles.actionsIcon, active && styles.titleActive]}>⋮</Text>
+          <MaterialCommunityIcons
+            name="dots-vertical"
+            size={22}
+            color={active ? '#fff' : chatTokens.textSecondary}
+          />
         </Pressable>
       ) : null}
     </Pressable>
@@ -110,6 +130,8 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   timeActive: { color: 'rgba(255,255,255,0.75)' },
   bottom: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
   preview: { flex: 1, fontSize: 14, color: chatTokens.textSecondary },
+  previewTyping: { color: chatTokens.accentText },
+  previewDraft: { color: chatTokens.dangerText },
   previewActive: { color: 'rgba(255,255,255,0.82)' },
   badge: {
     minWidth: 22,

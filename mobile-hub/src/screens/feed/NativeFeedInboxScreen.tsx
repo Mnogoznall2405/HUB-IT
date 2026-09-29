@@ -42,16 +42,17 @@ import {
   AccountStatusText,
 } from '../account/AccountChrome';
 import { useFluentTokens } from '../../theme/fluentTokens';
+import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { FeedPostCard } from '../../feed/FeedPostCard';
 import { NativeAppliedChip, NativeFilterButton } from '../../components/ui/NativeFilterControls';
 import { NativeFilterSheet } from '../../components/ui/NativeFilterSheet';
 import {
   FEED_FILTERS,
   FEED_PAGE_SIZE,
-  FEED_REACTIONS,
   type FeedFilterId,
   type FeedPost,
   type FeedReactionId,
+  pluralizeFeedUnread,
 } from '../../feed/feedFormat';
 
 const SEARCH_DEBOUNCE_MS = 300;
@@ -105,6 +106,7 @@ export function NativeFeedInboxScreen() {
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
+  const navInset = useNativeBottomNavInset();
   const allowed = hasPermission('dashboard.read');
   const canPublish = hasPermission('announcements.write');
   const canModerate = hasPermission('announcements.moderate');
@@ -384,25 +386,22 @@ export function NativeFeedInboxScreen() {
     setReactionPickerPostId((current) => current === post.id ? '' : post.id);
   }, []);
 
+  const handleSelectReaction = useCallback((post: FeedPost, reactionId: FeedReactionId) => {
+    void handleReaction(post, reactionId);
+  }, [handleReaction]);
+
   const renderFeedPost = useCallback(({ item }: ListRenderItemInfo<FeedPost>) => (
-    <View style={styles.postWithReactionPicker}>
-      <FeedPostCard
-        post={item}
-        tokens={tokens}
-        onOpen={openPost}
-        onComments={openPost}
-        onToggleReaction={offlineMode ? undefined : toggleReactionPicker}
-        onBookmark={offlineMode ? undefined : handleBookmark}
-      />
-      {reactionPickerPostId === item.id ? (
-        <View style={[styles.reactionPicker, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
-          {FEED_REACTIONS.map((reaction) => (
-            <Pressable key={reaction.id} testID={`feed-card-reaction-${item.id}-${reaction.id}`} accessibilityRole="button" accessibilityLabel={reaction.label} onPress={() => { void handleReaction(item, reaction.id); }} style={styles.reactionItem}><Text style={styles.reactionEmoji}>{reaction.emoji}</Text></Pressable>
-          ))}
-        </View>
-      ) : null}
-    </View>
-  ), [handleBookmark, handleReaction, offlineMode, openPost, reactionPickerPostId, toggleReactionPicker, tokens]);
+    <FeedPostCard
+      post={item}
+      tokens={tokens}
+      onOpen={openPost}
+      onComments={openPost}
+      onToggleReaction={offlineMode ? undefined : toggleReactionPicker}
+      onBookmark={offlineMode ? undefined : handleBookmark}
+      onSelectReaction={offlineMode ? undefined : handleSelectReaction}
+      reactionPickerOpen={reactionPickerPostId === item.id}
+    />
+  ), [handleBookmark, handleSelectReaction, offlineMode, openPost, reactionPickerPostId, toggleReactionPicker, tokens]);
 
   if (!allowed) {
     return (
@@ -423,6 +422,7 @@ export function NativeFeedInboxScreen() {
       title="Лента"
       tokens={tokens}
       scroll={false}
+      contentUnderNav
       rightAction={canPublish && !offlineMode ? (
         <Pressable
           testID="feed-create"
@@ -435,51 +435,75 @@ export function NativeFeedInboxScreen() {
         </Pressable>
       ) : undefined}
     >
-      <Text style={[styles.subtitle, { color: tokens.textSecondary }]}>
-        {unreadTotal > 0 ? `Непрочитанных: ${unreadTotal}` : `Публикаций: ${total}`}
-      </Text>
-
-      <View style={[styles.searchBox, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
-        <MaterialCommunityIcons name="magnify" size={20} color={tokens.iconMuted} />
-        <TextInput
-          testID="feed-search-input"
-          value={query}
-          onChangeText={setQuery}
-          placeholder="Поиск по ленте"
-          placeholderTextColor={tokens.textTertiary}
-          style={[styles.search, { color: tokens.textPrimary }]}
-          returnKeyType="search"
-        />
-        {query ? (
-          <Pressable onPress={() => setQuery('')} accessibilityRole="button" accessibilityLabel="Очистить поиск">
-            <MaterialCommunityIcons name="close" size={18} color={tokens.iconMuted} />
-          </Pressable>
-        ) : null}
-      </View>
-
-      <View style={styles.filters}>
+      <View style={styles.controls}>
+        <View style={[styles.searchBox, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
+          <MaterialCommunityIcons name="magnify" size={18} color={tokens.iconMuted} />
+          <TextInput
+            testID="feed-search-input"
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Поиск по ленте"
+            placeholderTextColor={tokens.textTertiary}
+            style={[styles.search, { color: tokens.textPrimary }]}
+            returnKeyType="search"
+            accessibilityLabel="Поиск по ленте"
+            accessibilityRole="search"
+          />
+          {query ? (
+            <Pressable
+              onPress={() => setQuery('')}
+              accessibilityRole="button"
+              accessibilityLabel="Очистить поиск"
+              hitSlop={12}
+              style={styles.searchClear}
+            >
+              <MaterialCommunityIcons name="close" size={18} color={tokens.iconMuted} />
+            </Pressable>
+          ) : null}
+        </View>
         <NativeFilterButton
           testID="feed-taxonomy-toggle"
           count={[filter !== 'all', Boolean(categoryId), Boolean(tag)].filter(Boolean).length}
           tokens={tokens}
           onPress={() => setFiltersOpen(true)}
+          iconOnly
         />
-        {filter !== 'all' ? (
-          <NativeAppliedChip
-            label={[...FEED_FILTERS, ...MANAGED_FILTERS].find((item) => item.id === filter)?.label || filter}
-            tokens={tokens}
-            onRemove={() => setFilter('all')}
-          />
-        ) : null}
-        {categoryId ? (
-          <NativeAppliedChip
-            label={categories.find((item) => item.id === categoryId)?.name || 'Категория'}
-            tokens={tokens}
-            onRemove={() => setCategoryId('')}
-          />
-        ) : null}
-        {tag ? <NativeAppliedChip label={`#${tag}`} tokens={tokens} onRemove={() => setTag('')} /> : null}
       </View>
+
+      {unreadTotal > 0 || filter !== 'all' || categoryId || tag ? (
+        <View style={styles.filters}>
+          {unreadTotal > 0 && filter === 'all' && !categoryId && !tag && !query.trim() ? (
+            <Pressable
+              testID="feed-unread-quick"
+              accessibilityRole="button"
+              accessibilityLabel={`Только непрочитанные: ${pluralizeFeedUnread(unreadTotal)}`}
+              onPress={() => setFilter('unread')}
+              style={({ pressed }) => [
+                styles.unreadChip,
+                { backgroundColor: tokens.accentSoft, borderColor: tokens.selectedBorder, opacity: pressed ? 0.82 : 1 },
+              ]}
+            >
+              <View style={[styles.unreadDot, { backgroundColor: tokens.primary }]} />
+              <Text style={[styles.unreadChipLabel, { color: tokens.primary }]}>Новое · {unreadTotal}</Text>
+            </Pressable>
+          ) : null}
+          {filter !== 'all' ? (
+            <NativeAppliedChip
+              label={[...FEED_FILTERS, ...MANAGED_FILTERS].find((item) => item.id === filter)?.label || filter}
+              tokens={tokens}
+              onRemove={() => setFilter('all')}
+            />
+          ) : null}
+          {categoryId ? (
+            <NativeAppliedChip
+              label={categories.find((item) => item.id === categoryId)?.name || 'Категория'}
+              tokens={tokens}
+              onRemove={() => setCategoryId('')}
+            />
+          ) : null}
+          {tag ? <NativeAppliedChip label={`#${tag}`} tokens={tokens} onRemove={() => setTag('')} /> : null}
+        </View>
+      ) : null}
 
       <NativeFilterSheet
         visible={filtersOpen}
@@ -522,16 +546,16 @@ export function NativeFeedInboxScreen() {
             title: 'Управление категориями',
             children: (
               <View>
-                <Pressable testID="feed-category-admin-toggle" accessibilityRole="button" accessibilityState={{ expanded: categoryAdminOpen }} onPress={() => setCategoryAdminOpen((value) => !value)} style={[styles.adminToggle, { borderColor: tokens.borderSoft }]}><MaterialCommunityIcons name="shape-outline" size={19} color={tokens.primary} /><Text style={{ color: tokens.primary, fontWeight: '800' }}>Изменить список категорий</Text></Pressable>
+                <Pressable testID="feed-category-admin-toggle" accessibilityRole="button" accessibilityState={{ expanded: categoryAdminOpen }} onPress={() => setCategoryAdminOpen((value) => !value)} style={[styles.adminToggle, { borderColor: tokens.borderSoft }]}><MaterialCommunityIcons name="shape-outline" size={19} color={tokens.primary} /><Text style={{ color: tokens.primary, fontWeight: '600' }}>Изменить список категорий</Text></Pressable>
                 {categoryAdminOpen ? (
                   <View style={styles.categoryAdmin}>
                     <View style={styles.categoryForm}>
                       <TextInput testID="feed-category-name" value={categoryName} onChangeText={setCategoryName} placeholder="Название категории" placeholderTextColor={tokens.textTertiary} style={[styles.categoryInput, { color: tokens.textPrimary, borderColor: tokens.border }]} />
-                      <Pressable testID="feed-category-save" accessibilityRole="button" accessibilityState={{ disabled: categoryName.trim().length < 2 || categoryBusy || offlineMode }} disabled={categoryName.trim().length < 2 || categoryBusy || offlineMode} onPress={() => { void saveCategory(); }} style={[styles.categorySave, { backgroundColor: tokens.primary }]}><MaterialCommunityIcons name="check" size={20} color="#fff" /></Pressable>
+                      <Pressable testID="feed-category-save" accessibilityRole="button" accessibilityState={{ disabled: categoryName.trim().length < 2 || categoryBusy || offlineMode }} disabled={categoryName.trim().length < 2 || categoryBusy || offlineMode} onPress={() => { void saveCategory(); }} style={[styles.categorySave, { backgroundColor: tokens.primary }]}><MaterialCommunityIcons name="check" size={20} color={tokens.onPrimary} /></Pressable>
                     </View>
                     {categories.map((category) => (
                       <View key={category.id} style={[styles.categoryRow, { borderBottomColor: tokens.borderSoft, opacity: category.is_active === false ? 0.55 : 1 }]}>
-                        <Text numberOfLines={1} style={{ color: tokens.textPrimary, fontWeight: '700', flex: 1 }}>{category.name}{category.is_active === false ? ' · скрыта' : ''}</Text>
+                        <Text numberOfLines={1} style={{ color: tokens.textPrimary, fontWeight: '600', flex: 1 }}>{category.name}{category.is_active === false ? ' · скрыта' : ''}</Text>
                         <Pressable accessibilityRole="button" accessibilityLabel={`Переименовать категорию ${category.name}`} onPress={() => { setEditingCategoryId(category.id); setCategoryName(category.name); }} style={styles.iconButton}><MaterialCommunityIcons name="pencil-outline" size={19} color={tokens.primary} /></Pressable>
                         {category.is_active !== false ? (
                           <Pressable accessibilityRole="button" accessibilityLabel={`Скрыть категорию ${category.name}`} onPress={() => deactivateCategory(category)} style={styles.iconButton}><MaterialCommunityIcons name="eye-off-outline" size={19} color={tokens.error} /></Pressable>
@@ -562,19 +586,48 @@ export function NativeFeedInboxScreen() {
           data={items}
           keyExtractor={(item) => item.id}
           keyboardShouldPersistTaps="handled"
+          onScrollBeginDrag={() => setReactionPickerPostId('')}
           refreshing={refreshing}
           onRefresh={() => { void loadPage({ reset: true }); }}
           onEndReached={() => {
             if (!offlineMode && !loadingMore && !refreshing && !loading && serverOffsetRef.current < total) void loadPage({ reset: false });
           }}
           onEndReachedThreshold={0.4}
-          contentContainerStyle={items.length === 0 ? styles.emptyList : styles.listContent}
+          contentContainerStyle={items.length === 0 ? [styles.emptyList, { paddingBottom: navInset }] : [styles.listContent, { paddingBottom: navInset }]}
           ListEmptyComponent={(
-            <Text style={[styles.empty, { color: tokens.textSecondary }]}>
-              {query.trim() || filter !== 'all'
-                ? 'По заданным условиям публикаций нет.'
-                : 'В ленте пока нет публикаций.'}
-            </Text>
+            <View style={styles.emptyBlock}>
+              <Text style={[styles.empty, { color: tokens.textSecondary }]}>
+                {query.trim() || filter !== 'all'
+                  ? 'По заданным условиям публикаций нет.'
+                  : 'В ленте пока нет публикаций.'}
+              </Text>
+              {query.trim() || filter !== 'all' || categoryId || tag ? (
+                <Pressable
+                  testID="feed-empty-reset"
+                  accessibilityRole="button"
+                  accessibilityLabel="Сбросить фильтры"
+                  onPress={() => {
+                    setQuery('');
+                    setFilter('all');
+                    setCategoryId('');
+                    setTag('');
+                  }}
+                  style={({ pressed }) => [styles.emptyAction, { borderColor: tokens.borderSoft, opacity: pressed ? 0.82 : 1 }]}
+                >
+                  <Text style={[styles.emptyActionLabel, { color: tokens.primary }]}>Сбросить фильтры</Text>
+                </Pressable>
+              ) : canPublish && !offlineMode ? (
+                <Pressable
+                  testID="feed-empty-create"
+                  accessibilityRole="button"
+                  accessibilityLabel="Создать публикацию"
+                  onPress={() => router.push('/(shell)/feed/editor' as never)}
+                  style={({ pressed }) => [styles.emptyAction, { borderColor: tokens.borderSoft, opacity: pressed ? 0.82 : 1 }]}
+                >
+                  <Text style={[styles.emptyActionLabel, { color: tokens.primary }]}>Создать публикацию</Text>
+                </Pressable>
+              ) : null}
+            </View>
           )}
           ListFooterComponent={loadingMore ? (
             <ActivityIndicator color={tokens.primary} style={{ marginVertical: 12 }} />
@@ -593,19 +646,30 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  subtitle: { fontSize: 13, fontWeight: '700', marginBottom: 10 },
+  controls: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
   searchBox: {
-    minHeight: 44,
+    flex: 1,
+    minHeight: 40,
     borderWidth: 1,
     borderRadius: 12,
     paddingHorizontal: 10,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginBottom: 8,
   },
-  search: { flex: 1, minHeight: 40, fontSize: 15 },
-  filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
+  search: { flex: 1, minHeight: 36, fontSize: 15 },
+  filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 6 },
+  unreadChip: {
+    minHeight: 34,
+    borderRadius: 17,
+    borderWidth: 1,
+    paddingHorizontal: 11,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  unreadDot: { width: 7, height: 7, borderRadius: 4 },
+  unreadChipLabel: { fontSize: 12, fontWeight: '600', fontVariant: ['tabular-nums'] },
 
   adminToggle: { minHeight: 44, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   categoryAdmin: { gap: 6 },
@@ -614,12 +678,19 @@ const styles = StyleSheet.create({
   categorySave: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   categoryRow: { minHeight: 48, borderBottomWidth: 1, flexDirection: 'row', alignItems: 'center', gap: 4 },
   iconButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  postWithReactionPicker: { gap: 6 },
-  reactionPicker: { minHeight: 52, borderWidth: 1, borderRadius: 12, padding: 6, flexDirection: 'row', justifyContent: 'space-around' },
-  reactionItem: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  reactionEmoji: { fontSize: 22 },
+  searchClear: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center' },
   list: { flex: 1 },
-  listContent: { gap: 10, paddingBottom: 8 },
+  listContent: { gap: 16, paddingBottom: 8 },
   emptyList: { flexGrow: 1, justifyContent: 'center', paddingVertical: 32 },
+  emptyBlock: { alignItems: 'center', gap: 12, paddingHorizontal: 16 },
   empty: { textAlign: 'center', fontSize: 14 },
+  emptyAction: {
+    minHeight: 44,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyActionLabel: { fontSize: 14, fontWeight: '600' },
 });

@@ -16,6 +16,19 @@ from shared.llm.env import (
     read_env,
 )
 from shared.llm.errors import OpenRouterClientError
+from shared.llm.jev_client import (
+    JevChoiceAnswer,
+    JevClient,
+    JevClientError,
+    JevDecision,
+    JevNoulAnswer,
+    JevRawAnswer,
+    JevScoreAnswer,
+    jev_choice,
+    jev_client,
+    jev_noul,
+    jev_score,
+)
 from shared.llm.models import resolve_model, resolve_model_candidates
 from shared.llm.openai_gateway import (
     OpenAiChatCompletionRequest,
@@ -28,11 +41,22 @@ __all__ = [
     "DEFAULT_AI_MODEL",
     "DEFAULT_OPENROUTER_BASE_URL",
     "DEFAULT_ROUTERAI_BASE_URL",
+    "JevChoiceAnswer",
+    "JevClient",
+    "JevClientError",
+    "JevDecision",
+    "JevNoulAnswer",
+    "JevRawAnswer",
+    "JevScoreAnswer",
     "OpenRouterClient",
     "OpenRouterClientError",
     "OpenAiChatCompletionRequest",
     "OpenAiGatewayValidationError",
     "is_image_unsupported_error",
+    "jev_choice",
+    "jev_client",
+    "jev_noul",
+    "jev_score",
     "normalize_openrouter_base_url",
     "normalize_gateway_request",
     "openrouter_client",

@@ -7,6 +7,7 @@ const normalizeText = (value) => String(value || '').trim();
 const formatShareExpiresAt = (expiresAt) => {
   const parsed = new Date(expiresAt);
   if (Number.isNaN(parsed.getTime())) return '';
+  if (parsed.getTime() - Date.now() > 3650 * 86400 * 1000) return '';
   return parsed.toLocaleString('ru-RU', {
     day: '2-digit',
     month: '2-digit',
@@ -14,6 +15,12 @@ const formatShareExpiresAt = (expiresAt) => {
     hour: '2-digit',
     minute: '2-digit',
   });
+};
+
+const isForeverShareExpiresAt = (expiresAt) => {
+  const parsed = new Date(expiresAt);
+  if (Number.isNaN(parsed.getTime())) return false;
+  return parsed.getTime() - Date.now() > 3650 * 86400 * 1000;
 };
 
 export const buildMyFilesShareMessage = ({
@@ -32,6 +39,8 @@ export const buildMyFilesShareMessage = ({
   const expiresLabel = formatShareExpiresAt(expiresAt);
   if (expiresLabel) {
     lines.push('', `Ссылка действует до ${expiresLabel}.`);
+  } else if (isForeverShareExpiresAt(expiresAt)) {
+    lines.push('', 'Ссылка бессрочная.');
   }
   return lines.join('\n');
 };

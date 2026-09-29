@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { useReducedMotion } from '../../accessibility/useReducedMotion';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import type { ChatCustomFolder } from '../../chat/chatFolders';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
-import { ChatKeyboardAvoidingHost } from './ChatKeyboardAvoidingHost';
+import { ChatBottomSheet } from './ChatBottomSheet';
 
 export function ChatFolderManagerSheet({
   visible,
@@ -23,7 +22,6 @@ export function ChatFolderManagerSheet({
   onDelete: (folderId: string) => void;
 }) {
   const { chatTokens, styles } = useChatStyles(createStyles);
-  const reduceMotion = useReducedMotion();
   const [prompt, setPrompt] = useState<{ mode: 'create' } | { mode: 'rename'; folder: ChatCustomFolder } | null>(null);
   const [name, setName] = useState('');
 
@@ -40,20 +38,13 @@ export function ChatFolderManagerSheet({
   };
 
   return (
-    <Modal
+    <ChatBottomSheet
       visible={visible}
-      animationType={reduceMotion ? 'none' : 'slide'}
-      transparent
-      onRequestClose={prompt ? closePrompt : onClose}
+      onClose={prompt ? closePrompt : onClose}
+      dismissAccessibilityLabel="Закрыть управление папками"
+      avoidKeyboard
+      sheetStyle={styles.sheet}
     >
-      <ChatKeyboardAvoidingHost style={styles.backdrop}>
-        <Pressable
-          style={StyleSheet.absoluteFill}
-          onPress={prompt ? closePrompt : onClose}
-          accessibilityRole="button"
-          accessibilityLabel="Закрыть управление папками"
-        />
-        <View style={styles.sheet} accessibilityViewIsModal>
           {prompt ? (
             <View style={styles.prompt}>
               <Text style={styles.title}>
@@ -87,7 +78,6 @@ export function ChatFolderManagerSheet({
             </View>
           ) : (
             <>
-              <View style={styles.handle} />
               <View style={styles.header}>
                 <Text style={styles.title}>Папки</Text>
                 <Pressable
@@ -133,9 +123,7 @@ export function ChatFolderManagerSheet({
               </ScrollView>
             </>
           )}
-        </View>
-      </ChatKeyboardAvoidingHost>
-    </Modal>
+    </ChatBottomSheet>
   );
 }
 
@@ -171,15 +159,9 @@ function Action({
 }
 
 const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
-  backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: chatTokens.overlayBg },
   sheet: {
     maxHeight: '84%',
-    overflow: 'hidden',
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    backgroundColor: chatTokens.panelBg,
   },
-  handle: { alignSelf: 'center', width: 38, height: 4, marginTop: 8, borderRadius: 2, backgroundColor: chatTokens.borderSoft },
   header: {
     minHeight: 52,
     flexDirection: 'row',

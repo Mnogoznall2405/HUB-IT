@@ -76,7 +76,11 @@ export default function PasswordMobileToolbar({
             ),
             sx: { height: 36, fontSize: '0.875rem' },
           }}
-          inputProps={{ 'data-testid': 'password-search-input' }}
+          inputProps={{
+            'data-testid': 'password-search-input',
+            autoComplete: 'off',
+            spellCheck: false,
+          }}
           sx={{
             '& .MuiOutlinedInput-notchedOutline': { borderRadius: 0.5 },
           }}

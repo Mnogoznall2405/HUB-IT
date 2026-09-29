@@ -10,7 +10,10 @@ import {
   mailDateLabel,
   mailDraftNeedsRichEditor,
   mailPreviewSender,
+  nativeMailRecipientSummary,
+  parseNativeMailSearchQuery,
   resolveNativeMailSwipeAction,
+  resolveNativeMailSwipeAvailability,
   splitMailRecipients,
 } from './nativeMailModel';
 
@@ -20,11 +23,11 @@ it('formats sender, timestamps and attachment sizes for compact native rows', ()
   expect(mailByteLabel(1_572_864)).toBe('1.5 МБ');
 });
 
-it('uses deliberate horizontal swipe thresholds and never swipes permanent delete in Trash', () => {
-  expect(resolveNativeMailSwipeAction(71, { isRead: false, canDelete: true })).toBeNull();
-  expect(resolveNativeMailSwipeAction(80, { isRead: false, canDelete: true })).toBe('toggle-read');
-  expect(resolveNativeMailSwipeAction(-80, { isRead: true, canDelete: true })).toBe('delete');
-  expect(resolveNativeMailSwipeAction(-80, { isRead: true, canDelete: false })).toBeNull();
+it('uses deliberate horizontal swipe thresholds, archives on the left swipe and never deletes by swipe', () => {
+  expect(resolveNativeMailSwipeAction(71, { isRead: false, canArchive: true })).toBeNull();
+  expect(resolveNativeMailSwipeAction(80, { isRead: false, canArchive: true })).toBe('toggle-read');
+  expect(resolveNativeMailSwipeAction(-80, { isRead: true, canArchive: true })).toBe('archive');
+  expect(resolveNativeMailSwipeAction(-80, { isRead: true, canArchive: false })).toBeNull();
 });
 
 it('offers delete undo only when the backend returns a new Trash message id', () => {
@@ -126,5 +129,66 @@ describe('mailCorrespondent', () => {
   it('handles a missing recipient gracefully', () => {
     const empty = { ...sentMessage, recipient_people: [], recipients: [] };
     expect(mailCorrespondent(empty, { folder: 'sent' }).label).toBe('Нет получателя');
+  });
+});
+
+describe('parseNativeMailSearchQuery', () => {
+  it('maps Russian and English operators onto backend filters', () => {
+    expect(parseNativeMailSearchQuery('от:ivan@example.com тема:"квартальный отчёт" с файлами встреча')).toEqual({
+      q: 'встреча',
+      from: 'ivan@example.com',
+      to: '',
+      subject: 'квартальный отчёт',
+      hasAttachments: true,
+    });
+    expect(parseNativeMailSearchQuery("кому:'Иван Петров' subject:смета")).toEqual({
+      q: '',
+      from: '',
+      to: 'Иван Петров',
+      subject: 'смета',
+      hasAttachments: false,
+    });
+  });
+
+  it('keeps unknown operators and free text in the query', () => {
+    expect(parseNativeMailSearchQuery('размер:10 план')).toEqual({
+      q: 'размер:10 план',
+      from: '',
+      to: '',
+      subject: '',
+      hasAttachments: false,
+    });
+    expect(parseNativeMailSearchQuery('')).toEqual({ q: '', from: '', to: '', subject: '', hasAttachments: false });
+  });
+});
+
+describe('nativeMailRecipientSummary', () => {
+  it('marks the own mailbox as «мне» and counts extra recipients', () => {
+    expect(nativeMailRecipientSummary(
+      [{ display: 'Я', email: 'me@corp.local' }, 'peer@corp.local'],
+      ['me@corp.local'],
+    )).toEqual({ text: 'мне +1', count: 2 });
+  });
+
+  it('shows the first recipient name for foreign recipients', () => {
+    expect(nativeMailRecipientSummary(['Получатель <peer@corp.local>'], ['me@corp.local'])).toEqual({ text: 'Получатель', count: 1 });
+    expect(nativeMailRecipientSummary([], ['me@corp.local'])).toEqual({ text: '', count: 0 });
+  });
+});
+
+describe('nativeMailSwipeSettings', () => {
+  it('honours configured swipe targets and disables the unavailable ones', () => {
+    expect(resolveNativeMailSwipeAction(-80, { isRead: true, canDelete: true, swipeLeft: 'delete' })).toBe('delete');
+    expect(resolveNativeMailSwipeAction(80, { isRead: true, swipeRight: 'none' })).toBeNull();
+    expect(resolveNativeMailSwipeAction(-80, { isRead: true, canDeleteForever: true, swipeLeft: 'toggle-read' })).toBe('delete-forever');
+    expect(resolveNativeMailSwipeAction(80, { isRead: true, canArchive: false, swipeRight: 'archive' })).toBeNull();
+  });
+
+  it('reports direction availability for the row capabilities', () => {
+    expect(resolveNativeMailSwipeAvailability('toggle-read', {})).toBe(true);
+    expect(resolveNativeMailSwipeAvailability('archive', { canArchive: false })).toBe(false);
+    expect(resolveNativeMailSwipeAvailability('delete', { canDeleteForever: true })).toBe(true);
+    expect(resolveNativeMailSwipeAvailability('delete', { canDelete: false, canDeleteForever: false })).toBe(false);
+    expect(resolveNativeMailSwipeAvailability('none', { canArchive: true })).toBe(false);
   });
 });

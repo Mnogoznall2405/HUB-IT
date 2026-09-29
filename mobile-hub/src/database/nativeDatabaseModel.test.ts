@@ -6,6 +6,7 @@ import {
   formatDatabaseDate,
   historyDate,
   historyDescription,
+  isPrinterLikeEquipment,
   parseInventoryQrPayload,
   parseInventoryQrText,
 } from './nativeDatabaseModel';
@@ -19,11 +20,30 @@ it('extracts an inventory number from the existing HUB QR payload', () => {
 it('extracts inventory and database scope from an equipment link', () => {
   const link = 'https://hubit.zsgp.ru/database?inv_no=INV%2F7&db_id=OBJ-ITINVENT';
   expect(parseInventoryQrPayload(link)).toEqual({
+    kind: 'equipment',
     inventoryNumber: 'INV/7',
     databaseId: 'OBJ-ITINVENT',
   });
   expect(parseInventoryQrText(link)).toBe('INV/7');
   expect(parseInventoryQrPayload('https://example.com/tasks?inv_no=INV%2F7')).toBeNull();
+});
+
+it('extracts ITEMS.ID and database scope from a consumable link', () => {
+  const link = 'https://hubit.zsgp.ru/database?consumable=4821&db_id=OBJ-ITINVENT';
+  expect(parseInventoryQrPayload(link)).toEqual({
+    kind: 'consumable',
+    itemId: 4821,
+    inventoryNumber: '',
+    databaseId: 'OBJ-ITINVENT',
+  });
+  expect(parseInventoryQrText(link)).toBe('');
+  expect(parseInventoryQrPayload('hubit://database?consumable=77&db_id=main')).toEqual({
+    kind: 'consumable',
+    itemId: 77,
+    inventoryNumber: '',
+    databaseId: 'main',
+  });
+  expect(parseInventoryQrPayload('https://hubit.zsgp.ru/database?consumable=abc')).toBeNull();
 });
 
 it('formats equipment owner and location without dangling separators', () => {
@@ -41,6 +61,13 @@ it('reads legacy movement history fields', () => {
   };
   expect(historyDescription(row)).toBe('Иванов → Петров · Изменил: operator');
   expect(historyDate(row)).toBe(formatDatabaseDate(row.CH_DATE));
+});
+
+it('detects printer and MFP equipment for the QR cartridge picker', () => {
+  expect(isPrinterLikeEquipment({ type_name: 'МФУ', model_name: 'M404', vendor_name: 'HP' } as never)).toBe(true);
+  expect(isPrinterLikeEquipment({ type_name: 'Периферия', model_name: 'LaserJet Pro', vendor_name: '' } as never)).toBe(true);
+  expect(isPrinterLikeEquipment({ type_name: 'Системный блок', model_name: 'OptiPlex', vendor_name: 'Dell' } as never)).toBe(false);
+  expect(isPrinterLikeEquipment(null)).toBe(false);
 });
 
 it('matches the established web equipment capability rules', () => {

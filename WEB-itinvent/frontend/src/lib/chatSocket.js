@@ -1,4 +1,11 @@
 import { API_V1_BASE } from '../api/client';
+import { getWsTicket } from '../api/chatWsAuth';
+import {
+  getChatContactPreviewText,
+  getChatPollPreviewText,
+  parseChatContactBody,
+  resolveChatMessagePoll,
+} from '../components/chat/chatStructuredContent';
 import { CHAT_WS_ENABLED } from './chatFeature';
 import { emitAgentDebugLog } from './debugClientLog';
 import { invalidateSWRCacheByPrefix } from './swrCache';
@@ -110,6 +117,9 @@ const buildPreviewText = (message) => {
   if (message?.is_deleted) return 'Сообщение удалено';
   if (message.kind === 'system') return String(message.body || 'Системное событие').trim() || 'Системное событие';
   if (message.kind === 'task_share') return 'Поделились задачей';
+  if (message.kind === 'location') return 'Геопозиция';
+  if (message.kind === 'contact') return getChatContactPreviewText(parseChatContactBody(message.body));
+  if (message.kind === 'poll') return getChatPollPreviewText(resolveChatMessagePoll(message));
   const body = String(message.body || '').trim();
   const attachments = Array.isArray(message.attachments) ? message.attachments : [];
   if (message.kind === 'file' && body) return body;
@@ -217,6 +227,8 @@ class ChatSocketClient {
     this.stableConnectionTimer = null;
     this.authBlocked = false;
     this.resumeRecoverInFlight = false;
+    this.socketOpenedAt = null;
+    this.failedHandshakeCount = 0;
   }
 
   hasActiveOrPendingSocket() {
@@ -377,11 +389,14 @@ class ChatSocketClient {
     if (!url) return;
     const socket = new window.WebSocket(url);
     this.socket = socket;
+    this.socketOpenedAt = null;
     this.setStatus(this.reconnectAttempt > 0 ? 'reconnecting' : 'connecting');
     socket.onopen = () => {
       if (this.socket !== socket) return;
       this.resumeRecoverInFlight = false;
       this.missedPongs = 0;
+      this.socketOpenedAt = Date.now();
+      this.failedHandshakeCount = 0;
       this.setStatus('connected');
       this.startHeartbeat();
       this.flushQueue();
@@ -448,6 +463,19 @@ class ChatSocketClient {
           closeCode,
           reason: String(event?.reason || '').slice(0, 200),
         });
+      }
+      // A WS handshake rejected with HTTP 401 surfaces as a bare 1006 in
+      // browsers. After a few instant failures refresh the session once via
+      // the shared recovery path instead of hammering the endpoint.
+      const neverOpened = !this.socketOpenedAt;
+      if (neverOpened && closeCode === 1006 && !this.manualClose && this.retainCount > 0) {
+        this.failedHandshakeCount = (this.failedHandshakeCount || 0) + 1;
+        if (this.failedHandshakeCount === 3) {
+          dispatchWindowEvent(CHAT_SOCKET_SESSION_EXPIRED_EVENT, {
+            closeCode,
+            reason: 'handshake denied, refreshing session',
+          });
+        }
       }
       if (!this.manualClose && !authBlocked && this.retainCount > 0) {
         this.scheduleReconnect();
@@ -548,6 +576,21 @@ class ChatSocketClient {
       received_at: Date.now(),
     });
 
+    if (eventType === 'chat.auth.required') {
+      // D5/W8: the bound access token expired — prove fresh auth with a ticket.
+      if (!this.wsAuthInFlight) {
+        this.wsAuthInFlight = true;
+        getWsTicket()
+          .then((wsTicket) => this.send({ type: 'chat.auth', payload: { ws_ticket: wsTicket } }))
+          .catch(() => undefined)
+          .finally(() => { this.wsAuthInFlight = false; });
+      }
+      return;
+    }
+    if (eventType === 'chat.auth.ok' || eventType === 'chat.auth.rejected') {
+      this.resolvePendingRequest(requestId, payload);
+      return;
+    }
     if (eventType === 'chat.pong') {
       this.missedPongs = 0;
       this.resolvePendingRequest(requestId, payload);
@@ -727,6 +770,7 @@ class ChatSocketClient {
     const wasBlocked = Boolean(this.authBlocked);
     this.authBlocked = false;
     this.reconnectAttempt = 0;
+    this.failedHandshakeCount = 0;
     // #region agent log
     emitAgentDebugLog({
       location: 'chatSocket.js:resetAuthBlock',

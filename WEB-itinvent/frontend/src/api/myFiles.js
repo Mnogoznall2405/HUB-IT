@@ -1,6 +1,6 @@
 import apiClient, { API_V1_BASE } from './client';
 
-const RETENTION_OPTIONS = [1, 3, 7, 10, 30];
+const RETENTION_OPTIONS = [1, 3, 7, 10, 30, 0];
 /** Transient network blips on multi‑hundred‑MB uploads need more than two short retries. */
 const UPLOAD_RETRY_DELAYS_MS = [1000, 2500, 5000, 10000, 20000];
 /** Очередь на пользователя ограничена: сессию повторяем, пока воркер освобождает слот. */
@@ -11,10 +11,10 @@ const UPLOAD_SESSION_CAPACITY_MAX_DELAY_MS = 15000;
 const UPLOAD_CHUNK_TIMEOUT_MS = 300_000;
 const UPLOAD_COMPLETE_TIMEOUT_MS = 120_000;
 const UPLOAD_PARALLEL_CHUNKS = 4;
-/** Согласовано с backend MY_FILES_MAX_FILE_BYTES; чанки идут отдельными запросами. */
-export const MY_FILES_MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024;
-
-export const formatMyFilesUploadLimitLabel = () => 'до 10 ГБ на файл, 50 ГБ всего';
+/** Без новых progress-событий дольше этого — считаем запрос повисшим и перезапускаем чанк. */
+const UPLOAD_CHUNK_STALL_MS = 120_000;
+/** Sanity-потолок клиента, совпадает с backend USER_QUOTA_MAX_BYTES; реальная граница — квота пользователя. */
+export const MY_FILES_MAX_UPLOAD_BYTES = 400 * 1024 * 1024 * 1024;
 
 const UPLOAD_RESUME_KEY = 'hubit-my-files-uploads';
 /** Совпадает с backend upload_reservation_ttl_sec; старше — сессия уже сгнила. */
@@ -89,6 +89,10 @@ const normalizeRetentionDays = (value) => {
   const days = Number(value);
   return RETENTION_OPTIONS.includes(days) ? days : 1;
 };
+
+export const formatMyFilesRetentionLabel = (days) => (
+  Number(days) === 0 ? 'Навсегда' : `${days} дн.`
+);
 
 const buildPublicPath = (token) => {
   const rawBase = String(import.meta.env.BASE_URL || '/');
@@ -174,6 +178,7 @@ const describeUploadFailure = (error, { aborted = false } = {}) => {
 
 const isRetriableUploadError = (error) => {
   if (!error) return false;
+  if (error?.code === 'ERR_STALLED') return true;
   if (error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') return false;
   const status = Number(error?.response?.status || 0);
   if (!status) return true; // network / timeout without HTTP status
@@ -212,10 +217,11 @@ const createUploadSessionWithCapacityRetry = async ({ file, retentionDays, folde
 export const myFilesRetentionOptions = RETENTION_OPTIONS;
 
 export const myFilesAPI = {
-  listFiles: async ({ folderId = null, view = '', signal } = {}) => {
+  listFiles: async ({ folderId = null, view = '', q = '', signal } = {}) => {
     const params = {};
     if (folderId) params.folder_id = folderId;
     if (view) params.view = view;
+    if (q) params.q = q;
     const response = await apiClient.get('/my-files', { params, signal });
     return response.data;
   },
@@ -243,6 +249,20 @@ export const myFilesAPI = {
   },
   deleteFolder: async (folderId) => {
     await apiClient.delete(`/my-files/folders/${encodeURIComponent(folderId)}`);
+  },
+  listFileAudit: async (fileId, { signal } = {}) => {
+    const response = await apiClient.get(
+      `/my-files/${encodeURIComponent(fileId)}/audit`,
+      { signal },
+    );
+    return response.data;
+  },
+  listAdminUserStats: async ({ limit = 200, offset = 0, q = '', signal } = {}) => {
+    const response = await apiClient.get('/my-files/admin/user-stats', {
+      params: { limit, offset, q: q || undefined },
+      signal,
+    });
+    return response.data;
   },
   updateFile: async (fileId, { name, folderId, isFavorite } = {}) => {
     const payload = {};
@@ -401,16 +421,49 @@ export const myFilesAPI = {
       const uploadTask = async (taskIndex) => {
         const { offset, end } = tasks[taskIndex];
         const chunk = file.slice(offset, end);
-        for (let attempt = 0; ; attempt += 1) {
+        const uploadChunkWithWatchdog = async () => {
+          const stallController = new AbortController();
+          const onOuterAbort = () => stallController.abort();
+          if (signal?.aborted) {
+            stallController.abort();
+          } else {
+            signal?.addEventListener?.('abort', onOuterAbort, { once: true });
+          }
+          let stalled = false;
+          let stallTimer = 0;
+          const armStallTimer = () => {
+            window.clearTimeout(stallTimer);
+            stallTimer = window.setTimeout(() => {
+              stalled = true;
+              stallController.abort();
+            }, UPLOAD_CHUNK_STALL_MS);
+          };
+          armStallTimer();
           try {
-            await myFilesAPI.uploadChunk(fileId, chunk, {
+            return await myFilesAPI.uploadChunk(fileId, chunk, {
               offset,
-              signal,
+              signal: stallController.signal,
               onUploadProgress: (event) => {
+                armStallTimer();
                 inFlight.set(taskIndex, Math.min(end - offset, Number(event?.loaded || 0)));
                 emitAggregate();
               },
             });
+          } catch (error) {
+            if (stalled && !signal?.aborted) {
+              const stalledError = new Error('Upload chunk stalled — retrying');
+              stalledError.code = 'ERR_STALLED';
+              throw stalledError;
+            }
+            throw error;
+          } finally {
+            window.clearTimeout(stallTimer);
+            signal?.removeEventListener?.('abort', onOuterAbort);
+          }
+        };
+        for (let attempt = 0; ; attempt += 1) {
+          try {
+            await uploadChunkWithWatchdog();
             inFlight.delete(taskIndex);
             confirmedBytes += end - offset;
             emitAggregate();

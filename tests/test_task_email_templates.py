@@ -57,6 +57,35 @@ def test_task_email_shows_controller_when_assigned():
     assert "Анна Контролёр" in body_html
 
 
+def test_task_email_lists_all_assignees():
+    _, body_text, body_html = build_task_email_content(
+        event_type="task.assigned",
+        task=_base_task(
+            assignees=[
+                {"user_id": 5, "username": "ivan", "full_name": "Иван Исполнитель"},
+                {"user_id": 9, "username": "dinis", "full_name": "Динис Второй"},
+            ],
+        ),
+        link="https://hubit.zsgp.ru/tasks?task=task-1",
+        format_due=lambda _: "25.06.2026 15:00",
+    )
+
+    assert "Исполнители: Иван Исполнитель, Динис Второй" in body_text
+    assert "Иван Исполнитель" in body_html
+    assert "Динис Второй" in body_html
+
+
+def test_task_email_falls_back_to_single_assignee_without_assignees_list():
+    _, body_text, _ = build_task_email_content(
+        event_type="task.assigned",
+        task=_base_task(),
+        link="https://hubit.zsgp.ru/tasks?task=task-1",
+        format_due=lambda _: "25.06.2026 15:00",
+    )
+
+    assert "Исполнитель: Иван Исполнитель" in body_text
+
+
 def test_task_email_shows_priority_only_when_not_normal():
     _, body_text_normal, body_html_normal = build_task_email_content(
         event_type="task.assigned",

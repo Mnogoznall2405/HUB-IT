@@ -70,16 +70,52 @@ export const equipmentComputersAPI = {
       offset: Number.isFinite(offset) ? Math.max(0, Math.trunc(offset)) : 0,
       include_summary: options?.includeSummary === true,
     };
+    const etag = String(options?.etag || '').trim();
+    const requestId = String(options?.requestId || '').trim();
+    const headers = {};
+    if (etag) {
+      headers['If-None-Match'] = etag;
+    }
+    if (requestId) {
+      headers['X-Request-Id'] = requestId;
+    }
     const response = await apiClient.get('/inventory/computers/search', {
       params,
       signal: options?.signal,
+      headers: Object.keys(headers).length ? headers : undefined,
+      validateStatus: (s) => s === 200 || s === 304,
     });
-    return response.data;
+    if (response.status === 304) {
+      return { notModified: true };
+    }
+    const payload = response.data;
+    const responseEtag = response.headers?.etag || response.headers?.ETag;
+    if (responseEtag && payload && typeof payload === 'object') {
+      payload.etag = responseEtag;
+    }
+    return payload;
   },
 
   getAgentComputerChanges: async (limit = 50) => {
     const response = await apiClient.get('/inventory/changes', {
       params: { limit },
+    });
+    return response.data;
+  },
+
+  getAgentComputersByInvNos: async (invNos, options = {}) => {
+    const list = (Array.isArray(invNos) ? invNos : [invNos])
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+      .slice(0, 200);
+    const params = { inv_nos: list.join(',') };
+    const dbId = String(options?.dbId || '').trim();
+    if (dbId) {
+      params.db_id = dbId;
+    }
+    const response = await apiClient.get('/inventory/computers/inv-lookup', {
+      params,
+      signal: options?.signal,
     });
     return response.data;
   },
@@ -120,6 +156,14 @@ export const equipmentComputersAPI = {
   unhideComputer: async (macAddress, options = {}) => {
     const normalizedMac = encodeURIComponent(String(macAddress || '').trim());
     const response = await apiClient.post(`/inventory/computers/${normalizedMac}/unhide`, null, {
+      signal: options?.signal,
+    });
+    return response.data;
+  },
+
+  deleteComputer: async (macAddress, options = {}) => {
+    const normalizedMac = encodeURIComponent(String(macAddress || '').trim());
+    const response = await apiClient.delete(`/inventory/computers/${normalizedMac}`, {
       signal: options?.signal,
     });
     return response.data;

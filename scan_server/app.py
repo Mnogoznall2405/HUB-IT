@@ -756,6 +756,31 @@ def _listener_watchdog(stop_signal: threading.Event) -> None:
         os._exit(70)
 
 
+def _install_listener_death_handler() -> None:
+    """Exit immediately when the Proactor accept loop destroys the listen socket.
+
+    On Windows a transient AcceptEx failure (e.g. WinError 64 when a client RSTs
+    mid-accept) makes proactor_events close the *listening* socket and never
+    re-arm accept (cpython#93758). The process stays alive but deaf; otherwise
+    only the periodic watchdog probe notices after several minutes.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    def _on_loop_exception(_loop: asyncio.AbstractEventLoop, context: Dict[str, Any]) -> None:
+        if str(context.get("message") or "") == "Accept failed on a socket":
+            logger.critical(
+                "Listener socket closed after accept error (cpython#93758); exiting for PM2 restart: %s",
+                context.get("exception"),
+            )
+            os._exit(70)
+        _loop.default_exception_handler(context)
+
+    loop.set_exception_handler(_on_loop_exception)
+
+
 def _run_startup_maintenance() -> None:
     try:
         purge_result = store.purge_all_artifacts()
@@ -782,6 +807,7 @@ def _run_startup_maintenance() -> None:
 async def lifespan(_: FastAPI):
     stop_event.clear()
     watchdog_stop_event.clear()
+    _install_listener_death_handler()
     global startup_maintenance_thread, metrics_sampler
     startup_maintenance_thread = None
     if worker is None:

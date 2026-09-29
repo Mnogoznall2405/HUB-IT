@@ -1,12 +1,7 @@
 /**
- * Client-side folder → ZIP for «Мой диск».
- * Loads fflate only while packing; preserves relative paths from webkitdirectory / folder drop.
+ * Folder drag-and-drop collection for «Мой диск»: webkitGetAsEntry traversal
+ * and relative-path helpers used by the folder upload flow.
  */
-
-/** Soft warn: packing loads folder contents in the browser before upload. */
-export const MY_FILES_FOLDER_PACK_WARN_BYTES = 200 * 1024 * 1024;
-/** Above this, store-only ZIP (no deflate) to cut CPU and peak memory during compression. */
-export const MY_FILES_FOLDER_STORE_ONLY_BYTES = 50 * 1024 * 1024;
 
 export const sanitizeZipEntryPath = (value) => {
   const normalized = String(value || '')
@@ -168,90 +163,3 @@ export const summarizeFolderSelection = (files) => {
   };
 };
 
-const readFileAsUint8Array = async (file) => {
-  if (typeof file?.arrayBuffer === 'function') {
-    const buffer = await file.arrayBuffer();
-    return new Uint8Array(buffer);
-  }
-  // jsdom / older runtimes may lack Blob.arrayBuffer().
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(new Uint8Array(reader.result));
-    reader.onerror = () => reject(reader.error || new Error('Не удалось прочитать файл'));
-    reader.readAsArrayBuffer(file);
-  });
-};
-
-const zipAsync = async (entries, options = {}) => {
-  const { zip } = await import('fflate');
-  return new Promise((resolve, reject) => {
-    zip(entries, { level: 6, ...options }, (error, data) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve(data);
-    });
-  });
-};
-
-/**
- * Build a single ZIP File from a folder FileList (webkitRelativePath required).
- * @param {File[]|FileList} files
- * @param {{ archiveName?: string, onProgress?: (ratio: number) => void }} [options]
- * @returns {Promise<File>}
- */
-export const packFolderFilesToZip = async (files, options = {}) => {
-  const list = Array.from(files || []).filter(Boolean);
-  if (list.length === 0) {
-    throw new Error('Папка пуста — нечего архивировать.');
-  }
-
-  const archiveName = sanitizeZipEntryPath(options.archiveName || resolveFolderArchiveName(list)) || 'folder.zip';
-  const safeArchiveName = archiveName.toLowerCase().endsWith('.zip') ? archiveName : `${archiveName}.zip`;
-  const totalBytes = list.reduce((sum, file) => sum + Number(file?.size || 0), 0);
-  const compressionLevel = totalBytes >= MY_FILES_FOLDER_STORE_ONLY_BYTES ? 0 : 6;
-  const entries = {};
-  let loaded = 0;
-
-  try {
-    for (const file of list) {
-      const entryPath = getFolderRelativePath(file);
-      if (!entryPath) continue;
-      if (Object.prototype.hasOwnProperty.call(entries, entryPath)) {
-        throw new Error(`В папке есть дубликат пути: ${entryPath}`);
-      }
-      entries[entryPath] = await readFileAsUint8Array(file);
-      loaded += 1;
-      if (typeof options.onProgress === 'function') {
-        options.onProgress(Math.min(0.95, loaded / list.length));
-      }
-    }
-
-    if (Object.keys(entries).length === 0) {
-      throw new Error('Не удалось прочитать файлы папки.');
-    }
-
-    const zipped = await zipAsync(entries, { level: compressionLevel });
-    if (typeof options.onProgress === 'function') {
-      options.onProgress(1);
-    }
-
-    return new File([zipped], safeArchiveName, {
-      type: 'application/zip',
-      lastModified: Date.now(),
-    });
-  } catch (error) {
-    const name = String(error?.name || '');
-    const message = String(error?.message || '');
-    if (
-      name === 'QuotaExceededError'
-      || /out of memory|allocation failed|array buffer|oom/i.test(message)
-    ) {
-      throw new Error(
-        'Не хватило памяти браузера для упаковки папки. Загрузите меньшую папку или отдельные файлы.',
-      );
-    }
-    throw error;
-  }
-};

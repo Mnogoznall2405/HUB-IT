@@ -169,3 +169,87 @@ Rollback: scripts/mobile/manage-apk-feed.ps1 -IisUpdateRoot 'C:\inetpub\wwwroot\
 Публичный post-check: manifest и APK — HTTP 200, корректные MIME, 65 429 712 байт, SHA256 `ae4e43a4b53fb9b819034b5ed3fa56d0a66cb4a763c0ed07b930f723290973db`; Range — 206 / 1024 байта. APK: https://hubit.zsgp.ru/desktop-updates/mobile/preview/1.1.31/HUB-IT-Mobile-Preview-1.1.31.apk .
 
 Предыдущий manifest 1.1.28 сохранён в `.manifest-history/latest-20260908-060457-edc7ae39402645cea1be60f3e51ca072.json` и локально в `artifacts/mobile/publish-1.1.31/latest-before.json`. Результаты публикации и внешних проверок находятся в `artifacts/mobile/publish-1.1.31/`. Настройки IIS и процессы не изменялись. Установка/автообновление на физическом устройстве не проверены.
+
+### 24.09 — публикация preview 1.1.49 (51)
+
+Опубликован preview с нативным фундаментом чата (D1: reanimated 4 + worklets, gesture-handler, keyboard-controller) и Telegram-жестами: reply/forward-свайп на UI-потоке, интерактивный back-жест, drag-to-dismiss шторки, синхронная клавиатура. Предварительно прошли 321 набор / ~2100 тестов, TypeScript; debug-сборка для smoke проверена отдельно.
+
+Первая попытка сборки упала на `AccessDeniedException` в transform-кэше Gradle (`4bcd7740…`); каталог кэша удалён, повторная сборка успешна за 18m38s.
+
+APK 70 074 586 байт (66,8 МиБ), ARM64/ARMv7, SHA-256 `5a3b718f13afd9064f3b0e9fa3bba601d1e5414b1ecc200e3e465dbf20a848a9`, подпись debug-preview `fac61745…`, режим совместимости (`-AllowDebugPreviewSigner`). Post-check `verify-published-apk.mjs`: manifest/APK HTTP 200, версия 1.1.49 (51), size/hash/signer совпадают, `verified: true`. APK: https://hubit.zsgp.ru/desktop-updates/mobile/preview/1.1.49/HUB-IT-Mobile-Preview-1.1.49.apk .
+
+Предыдущий manifest сохранён в `.manifest-history/latest-20260924-121806-c8cbc26c2ec74c3e90c7135e4da50361.json`. Rollback: `manage-apk-feed.ps1 -Action RestoreManifest -HistoryManifestPath <этот файл>`.
+
+Не проверено на устройстве: старт приложения с worklets, свайпы, интерактивный back, drag-to-dismiss, синхронная клавиатура — требуется smoke на Android.
+
+### 24.09 — публикация preview 1.1.50 (52)
+
+Фикс-релиз по ревью 1.1.49 (раздел 19 плана): worklet-краши свайпов (reply/forward/back), `GestureHandlerRootView` внутри Modal для drag-to-dismiss, клавиатура через `KeyboardStickyView`+`useReanimatedKeyboardAnimation` (композер больше не под клавиатурой), GH-миграция `FolderSwipeHost`, отложенный suspend сокетов (W12), метрика event-loop lag (I7), стыковка «хвоста» пузыря.
+
+APK 70 082 114 байт (66,8 МиБ), ARM64/ARMv7, SHA-256 `b2f34242f93d306449dd9038b591d38571b9f96cf5bec981565ba7cb5cb11872`, подпись debug-preview `fac61745…` (`-AllowDebugPreviewSigner`). Post-check `verify-published-apk.mjs`: manifest/APK HTTP 200, версия 1.1.50 (52), hash/signer совпадают, `verified: true`. APK: https://hubit.zsgp.ru/desktop-updates/mobile/preview/1.1.50/HUB-IT-Mobile-Preview-1.1.50.apk .
+
+Предыдущий manifest сохранён в `.manifest-history/` (перед публикацией — manifest 1.1.49). Rollback: `manage-apk-feed.ps1 -Action RestoreManifest`.
+
+### 25.09 — публикация preview 1.1.53 (55)
+
+Релиз S8 (фоновая доставка и докачка, полный объём A+B+C): in-flight загрузка больше не рвётся при уходе в фон; вложения грузятся чанками через существующий backend-контракт `upload-sessions` с `sessionId` на durable-строке outbox, resume по `received_chunks` и multipart-fallback; очередь исходящих дожимается headless-задачей `HUBIT_MOBILE_BACKGROUND_SYNC_TASK` (WorkManager, бюджет 120 с) — новых нативных модулей и прав манифеста не потребовалось. Backend: `client_message_id` проброшен create→manifest→`persist_file_message` (cross-session dedup + очистка materialized-дублей), починен `ChatUploadOrchestrator.get_upload_session` (падал AttributeError→500 на GET `/chat/upload-sessions/{id}`). Также в релизе: фикс «разбалтывания» списка при смене папки свайпом, альбомная сетка вложений.
+
+Проверки: backend pytest 12/12 upload-session; jest chat+lifecycle 345/345 и chat+screens 488/488; tsc чист (известные чужие WIP-ошибки mail-файлов вне scope). Локальная сборка `-AllowDebugSigning` завершилась за 42 мин: APK 70 611 437 байт (67,3 МиБ), ARM64/ARMv7, SHA-256 `8b4496d199b9329599db8bf26653b98f48a8e6f043269aab306e7881eb5609ae`, подпись debug-preview `fac61745…` (`-AllowDebugPreviewSigner`).
+
+Post-check `verify-published-apk.mjs`: manifest/APK HTTP 200, schema v2, версия 1.1.53 (55), size/hash/signer совпадают, `verified: true`. APK: https://hubit.zsgp.ru/desktop-updates/mobile/preview/1.1.53/HUB-IT-Mobile-Preview-1.1.53.apk . Предыдущий manifest 1.1.52 сохранён в `.manifest-history/`; rollback — `manage-apk-feed.ps1 -Action RestoreManifest`.
+
+Backend задеплоен тем же окном: `restart-chat-scale.ps1` — rolling-рестарт `itinvent-chat-a`/`-b` с drain фермы (по разрешению пользователя); оба узла `/health/live` и `/health/ready` → 200, `GET /api/v1/chat/upload-sessions/{id}` отвечает 401 (route смонтирован, auth). Учтите: узлы работают прямо из рабочего дерева `WEB-itinvent` — рестарт поднял весь находившийся там backend-код.
+
+Не проверено на устройстве: докачка после обрыва, фоновой drain после убийства приложения, итоговый smoke 1.1.53.
+
+### 25.09 — публикация preview 1.1.54 (56)
+
+Фикс-релиз по smoke 1.1.53 (раздел 20.7 плана): чанковая загрузка падала на устройстве — `File.slice()` строил RN `Blob` из `Uint8Array`-part, который `BlobManager` отбрасывает → ни один `PUT chunks/N` не доходил (сессии создавались, `received_bytes` оставался 0). Починено range-read через `FileHandle` (`open(ReadOnly)`+`offset`+`readBytes`) → точный `ArrayBuffer` в обоих транспортах: `nativeChatUploadSession.ts` и `nativeMyFilesTransfers.ts`. Плюс safe-area: `ChatBottomSheet` (~12 шитов: эмодзи/опросы/действия), `ChatAttachmentPanel` и `ChatComposer` не добавляли bottom-inset при edge-to-edge навигации → контент уходил под системную панель.
+
+Проверки: jest myFiles 27/27, chat upload-session 7/7, компоненты 16/16, экраны 156/156; `tsc --noEmit` чист. Локальная сборка `-AllowDebugSigning` — 21 мин: APK 70 616 353 байт (67,4 МиБ), ARM64/ARMv7, SHA-256 `90f88943ed8404b888e99593d17366ab9da1c038619110550400a35b1a95d6ba`, подпись debug-preview `fac61745…` (`-AllowDebugPreviewSigner`).
+
+Post-check `verify-published-apk.mjs`: manifest/APK HTTP 200, schema v2, версия 1.1.54 (56), size/hash/signer совпадают, `verified: true`. APK: https://hubit.zsgp.ru/desktop-updates/mobile/preview/1.1.54/HUB-IT-Mobile-Preview-1.1.54.apk . Предыдущий manifest 1.1.53 сохранён в `.manifest-history/`; rollback — `manage-apk-feed.ps1 -Action RestoreManifest`.
+
+Backend не трогали — `kind='contact'` в `ChatMessageKind` уже задеплоен с рестартом 1.1.53.
+
+Не проверено на устройстве: отправка фото gallery/camera, multi-chunk файл, обрыв→resume, kill→WorkManager drain, шиты/композер над навигацией — smoke 1.1.54.
+
+### 26.09 — публикация preview 1.1.55 (57)
+
+Фикс-релиз по уточнённой диагностике safe-area (раздел 20.7 плана, второй проход DEV-INSET-1): первый вариант инсета в `ChatBottomSheet` ставился до `sheetStyle` и перетирался потребителями (`ChatStickerPickerSheet paddingBottom:10`, `AttachmentPickerSheet 20`, action/group-edit/NewChat шиты) → эмодзи/стикеры снова уходили под навигацию. Теперь `sheetStyle` мержится через `StyleSheet.flatten`: `paddingBottom = max(consumer, inset)`; плавающие карточки (`ChatAttachmentActionsSheet`) поднимаются `marginBottom`; при открытой клавиатуре (`useKeyboardState().isVisible`) инсет гасится и в шитах `avoidKeyboard`, и в `ChatComposer` — убрана мёртвая полоса между контентом и клавиатурой.
+
+Проверки: jest chat-компоненты + экраны 302/302; `tsc --noEmit` чист. Локальная сборка `-AllowDebugSigning` — 22 мин: APK 70 616 713 байт (67,4 МиБ), ARM64/ARMv7, SHA-256 `9cec43590f162ae2be32746b848c5d4c3ff4d71084258e6b1f1fd204187a83d2`, подпись debug-preview `fac61745…` (`-AllowDebugPreviewSigner`).
+
+Post-check `verify-published-apk.mjs`: manifest/APK HTTP 200, schema v2, версия 1.1.55 (57), size/hash/signer совпадают, `verified: true`. APK: https://hubit.zsgp.ru/desktop-updates/mobile/preview/1.1.55/HUB-IT-Mobile-Preview-1.1.55.apk . Предыдущий manifest 1.1.54 сохранён в `.manifest-history/`; rollback — `manage-apk-feed.ps1 -Action RestoreManifest`. Каталог 1.1.54 остался в feed — скрипт публикации не перезаписывает версии, потому выпущен как 1.1.55.
+
+Не проверено на устройстве: полный smoke 1.1.55 — фото gallery/camera, multi-chunk файл, обрыв→resume, kill→WorkManager drain, все шиты/композер над навигацией с закрытой и открытой клавиатурой.
+
+### 26.09 — публикация preview 1.1.56 (58)
+
+Фикс-релиз по третьему проходу шитов (раздел 20.7 плана, DEV-SHEET-2): панели эмодзи/стикеров/опроса открывались, но «висели по середине» экрана — связка `Modal` (отдельное Dialog-окно) + `KeyboardStickyView` переводила `translateY` из reanimated-значения высоты клавиатуры, которое внутри dialog-окна расходилось с реальным IME (собственный поток insets окна, гонка `Keyboard.dismiss()`/фокус) → значение застывало на высоте клавиатуры и шит уезжал вверх. Три панели переведены на новый inline-хост `ChatInlineSheet`: рендер в основном окне в потоке под композером (по образцу `ChatAttachmentPanel`), `Keyboard.dismiss()` при открытии, без backdrop и без трекинга клавиатуры — `adjustResize` основного окна сам поднимает панель; при открытой клавиатуре bottom-inset гасится. Затронуты `ChatEmojiPickerSheet`, `ChatStickerPickerSheet`, `ChatPollCreateSheet`; `pollCreateVisible` поднят в `useThreadSheets` (Back-закрытие через `useThreadBack`); панели взаимоисключают друг друга и панель вложений. В `ChatBottomSheet` добавлен guard `KeyboardStickyView enabled={isVisible}` для остальных avoidKeyboard-шитов.
+
+Проверки: jest chat-компоненты + экраны 302/302; `tsc --noEmit` чист. Локальная сборка `-AllowDebugSigning` — 13 мин: APK 70 618 793 байт (67,4 МиБ), ARM64/ARMv7, SHA-256 `71d016cdc2d86f806a1b7c233214f22025a352df50690e6cda0c438ae97574cc`, подпись debug-preview `fac61745…` (`-AllowDebugPreviewSigner`).
+
+Post-check `verify-published-apk.mjs`: manifest/APK HTTP 200, schema v2, версия 1.1.56 (58), size/hash/signer совпадают, `verified: true`. APK: https://hubit.zsgp.ru/desktop-updates/mobile/preview/1.1.56/HUB-IT-Mobile-Preview-1.1.56.apk . Предыдущий manifest 1.1.55 сохранён в `.manifest-history/`; rollback — `manage-apk-feed.ps1 -Action RestoreManifest`. Каталог 1.1.55 остался в feed — скрипт публикации не перезаписывает версии.
+
+Не проверено на устройстве: smoke 1.1.56 — эмодзи/стикеры/опрос привязаны ко дну (не «в центре»), переключение панелей и вложений, Android Back закрывает панель, клавиатура открытие/закрытие без зазоров, фото gallery/camera, multi-chunk файл, обрыв→resume, kill→WorkManager drain.
+
+### 26.09 — публикация preview 1.1.57 (59)
+
+Фикс-релиз по четвёртому проходу шитов (раздел 20.7 плана, DEV-SHEET-3): (а) inline-панели «немного уходили на низ экрана» — `ChatInlineSheet` и `ChatAttachmentPanel` были в потоке, но вне `KeyboardStickyView`; в edge-to-edge окно по adjustResize не ужимается, поэтому фокус любого поля внутри панели (поиск эмодзи, поля опроса, поиск задачи, подпись вложений) открывал клавиатуру поверх панели. Обе обёрнуты в `KeyboardStickyView` — в главном окне shared-значения клавиатуры надёжны. (б) Шит «Отправить задачу» оставался на `Modal`+`avoidKeyboard` — тот же класс «висит по середине» → переведён на `ChatInlineSheet`. Дополнительно: взаимное исключение панели задач с остальными пикерами и `onInputFocus` у композера — фокус поля сообщения закрывает открытые панели (Telegram-обмен).
+
+Проверки: jest chat-компоненты + экраны 302/302; `tsc --noEmit` чист. Локальная сборка `-AllowDebugSigning` — 13 мин: APK 70 619 997 байт (67,4 МиБ), ARM64/ARMv7, SHA-256 `6e694a467a61ab6fe2f0cd21a34bae4f9410512e9adb622b1968cd2c5dc72bef`, подпись debug-preview `fac61745…` (`-AllowDebugPreviewSigner`).
+
+Post-check `verify-published-apk.mjs`: manifest/APK HTTP 200, schema v2, версия 1.1.57 (59), size/hash/signer совпадают, `verified: true`. APK: https://hubit.zsgp.ru/desktop-updates/mobile/preview/1.1.57/HUB-IT-Mobile-Preview-1.1.57.apk . Предыдущий manifest 1.1.56 сохранён в `.manifest-history/`; rollback — `manage-apk-feed.ps1 -Action RestoreManifest`. Каталог 1.1.56 остался в feed — скрипт публикации не перезаписывает версии.
+
+Не проверено на устройстве: smoke 1.1.57 — эмодзи/стикеры/опрос/задачи привязаны ко дну и едут с клавиатурой (поля внутри панелей доступны), переключение панелей, фокус поля сообщения закрывает панель, Android Back, фото gallery/camera, multi-chunk файл, обрыв→resume, kill→WorkManager drain.
+
+### 27.09 — публикация preview 1.1.58 (60)
+
+Фикс-релиз по пятому проходу шитов (DEV-SHEET-4) + остатки плана: (а) **геометрия панелей** — после обёртки в `KeyboardStickyView` (1.1.57) процентные высоты (`height:'72%'` стикеры, `maxHeight:'62–78%'` эмодзи/опрос/задача) потеряли определённую базу: родитель стал auto-height обёрткой вместо полноэкранного `Modal` → Yoga не разрешал '%' → панель схлопывалась/резалась, оставляя «пространство с фоном». `ChatInlineSheet` теперь конвертирует `height`/`maxHeight`/`minHeight` в пиксели от `useWindowDimensions().height` — та же семантика «% окна», что была у `Modal`. (б) Вошли остатки: `reorderPanelAssets` + long-press drag-reorder в полосе превью вложений (R-T8-2); `local_status:'sending'` участвует в медиа-альбомах (DEV-MEDIA-3); backend `_poll_option_index` — strict-валидация `option_index` в WS (nit из ревью; прод-эффект после рестарта chat-узлов).
+
+Проверки: `tsc --noEmit` чист; jest chat-компоненты/экраны/модуль — 640/640 (85 сьютов). Локальная сборка `-AllowDebugSigning -SkipPrebuild` — 5 мин: APK 70 631 697 байт (67,4 МиБ), ARM64/ARMv7, SHA-256 `52f953cef2d485a6dc66d13cd8863a021e0c47879325ef85ef8e911af0401b39`, подпись debug-preview `fac61745…` (`-AllowDebugPreviewSigner`).
+
+Post-check `verify-published-apk.mjs`: manifest/APK HTTP 200, schema v2, версия 1.1.58 (60), size/hash/signer совпадают, `verified: true`. APK: https://hubit.zsgp.ru/desktop-updates/mobile/preview/1.1.58/HUB-IT-Mobile-Preview-1.1.58.apk . Предыдущий manifest 1.1.57 сохранён в `.manifest-history/`; rollback — `manage-apk-feed.ps1 -Action RestoreManifest`. Каталог 1.1.57 остался в feed — скрипт публикации не перезаписывает версии.
+
+Не проверено на устройстве: smoke 1.1.58 — эмодзи/стикеры/опрос/задачи занимают заявленную высоту и доходят до нижнего края (без полосы и обрезки), поля внутри панелей над клавиатурой, drag-reorder превью вложений, альбом с sending-фото, переключение панелей, Android Back, фото gallery/camera, multi-chunk файл, обрыв→resume, kill→WorkManager drain.

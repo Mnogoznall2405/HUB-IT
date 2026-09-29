@@ -5,6 +5,8 @@ jest.mock('expo-crypto', () => ({ ...jest.requireActual('expo-crypto'), randomUU
 import * as api from '../api/chatApi';
 import type { ChatMessage } from '../api/types';
 import { clearNativeChatOutbox, createNativeChatOutbox, getNativeChatQueueState, subscribeNativeChatOutbox } from './nativeChatOutbox';
+import { resetNativeChatOutboxRowsCache } from './nativeChatStorageQueue';
+import { getChatSendTimingSummary, markChatSend, resetChatSendTiming } from '../diagnostics/chatSendTiming';
 
 jest.mock('../api/chatApi', () => ({ sendTextMessage: jest.fn() }));
 const send = jest.mocked(api.sendTextMessage);
@@ -19,6 +21,7 @@ it.each([
   const key = 'hubit_native_chat_outbox_v1';
   const raw = JSON.stringify([{ userId: 7, message: { ...message, ...damage } }]);
   await SecureStore.setItemAsync(key, raw);
+  resetNativeChatOutboxRowsCache();
   const queue = createNativeChatOutbox(7, 'chat-a');
   await expect(queue.read()).rejects.toThrow('Не удалось прочитать очередь');
   await expect(queue.send(message, send)).rejects.toThrow();
@@ -55,6 +58,7 @@ it('does not replace a reply when access changes while storage is being read', a
   const queue = createNativeChatOutbox(7, 'chat-a');
   await expect(queue.send(message, send)).rejects.toThrow();
   const raw = await SecureStore.getItemAsync('hubit_native_chat_outbox_v1');
+  resetNativeChatOutboxRowsCache();
   let finish!: (value: string | null) => void;
   let allowed = true;
   jest.mocked(SecureStore.getItemAsync).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
@@ -70,6 +74,7 @@ it.each([{ files: 'invalid', body: '' }, { files: [null], body: '' }, { files: [
   const key = 'hubit_native_chat_outbox_v1';
   const raw = JSON.stringify([{ userId: 7, message, upload }]);
   await SecureStore.setItemAsync(key, raw);
+  resetNativeChatOutboxRowsCache();
   const queue = createNativeChatOutbox(7, 'chat-a');
   await expect(queue.readUploads()).rejects.toThrow('Не удалось прочитать очередь');
   await expect(queue.send(message, send)).rejects.toThrow();
@@ -83,6 +88,7 @@ it.each([{ replyToMessageId: { id: 'm' } }, { replyPreview: { id: 123 } }, { dur
     { uri: 'file:///synthetic.pdf', name: 'Файл.pdf', mimeType: 'application/pdf', size: 10 },
   ], ...damage } }]);
   await SecureStore.setItemAsync(key, raw);
+  resetNativeChatOutboxRowsCache();
   const queue = createNativeChatOutbox(7, 'chat-a');
   await expect(queue.readUploads()).rejects.toThrow('Не удалось прочитать очередь');
   await expect(queue.discard('one')).rejects.toThrow();
@@ -154,6 +160,7 @@ it('persists before transport and restores a failed send in a new session with t
 
 it('does not send or overwrite the queue when storage cannot be read', async () => {
   jest.mocked(SecureStore.getItemAsync).mockRejectedValueOnce(new Error('Unavailable'));
+  resetNativeChatOutboxRowsCache();
   await expect(createNativeChatOutbox(7, 'chat-a').send(message, send)).rejects.toThrow();
   expect(send).not.toHaveBeenCalled();
 });
@@ -203,7 +210,7 @@ it('restores an upload and its preview from a durable copy after cache removal',
 });
 
 it('never projects a visible failure while queue() is still preparing the entry', async () => {
-  // The UI renders "Не отправлено · повторить" only for local_status 'failed'
+  // The UI renders the failure badge only for local_status 'failed'
   // without a queue state. A delivery-less entry flashes that state between the
   // initial persist and the delivery-metadata commit unless busy hides it.
   const queue = createNativeChatOutbox(7, 'chat-a');
@@ -387,6 +394,28 @@ it('rejects a late prepareUpload after logout without resurrecting the previous 
   }
 });
 
+it('records send-path marks and storage timings without message content', async () => {
+  resetChatSendTiming();
+  resetNativeChatOutboxRowsCache();
+  const queue = createNativeChatOutbox(7, 'chat-a');
+  markChatSend('one', 'tap_send');
+  await queue.queue(message);
+  await queue.deliverQueued('one', async (row) => ({ ...row.message, id: 'server-one', local_status: undefined }),
+    () => true, async () => true);
+  const summary = getChatSendTimingSummary();
+  expect(summary.sends).toBe(1);
+  expect(summary.intervals.tap_to_outbox_persisted.count).toBe(1);
+  expect(summary.intervals.tap_to_http_start.count).toBe(1);
+  expect(summary.intervals.tap_to_ack.count).toBe(1);
+  expect(summary.intervals.tap_to_ui_confirmed.count).toBe(1);
+  expect(summary.storageOps.read.count).toBeGreaterThan(0);
+  expect(summary.storageOps.write.count).toBeGreaterThan(0);
+  const encoded = JSON.stringify(summary);
+  expect(encoded).not.toContain('Привет');
+  expect(encoded).not.toContain('body_text');
+  expect(encoded).not.toContain('one');
+});
+
 it('reuses the same queued client id on prepareUpload retry without creating a second row', async () => {
   const source = new File(Paths.cache, 'retry-same-id');
   source.write('Повтор');
@@ -405,4 +434,26 @@ it('reuses the same queued client id on prepareUpload retry without creating a s
   expect(second).toEqual(first);
   expect(await queue.readUploads()).toHaveLength(1);
   expect((await queue.readUploads())[0].id).toBe('one');
+});
+
+it('persists the resumable upload session id on the durable row mid-transport', async () => {
+  const source = new File(Paths.cache, 'session-id-persist');
+  source.write('Данные для сессии');
+  const file = {
+    uri: source.uri,
+    name: 'upload.txt',
+    mimeType: 'text/plain',
+    size: source.size,
+    source: 'document' as const,
+  };
+  const queue = createNativeChatOutbox(7, 'chat-a');
+  await queue.queue(message, { files: [file], body: 'Подпись' });
+  await queue.deliverQueued('one', async (row, _signal, helpers) => {
+    await helpers.patchUpload({ sessionId: 'sess-9' });
+    return { ...row.message, id: 'server-one', local_status: undefined };
+  }, () => true, async () => false);
+  const stored = (await queue.readUploads()).find((item) => item.id === 'one');
+  expect(stored?.upload.sessionId).toBe('sess-9');
+  const raw = JSON.parse((await SecureStore.getItemAsync('hubit_native_chat_outbox_v1')) || '[]');
+  expect(raw[0]?.upload?.sessionId).toBe('sess-9');
 });

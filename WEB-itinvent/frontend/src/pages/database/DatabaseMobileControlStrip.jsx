@@ -10,7 +10,9 @@ import {
 import AddIcon from '@mui/icons-material/Add';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import MoreHorizIcon from '@mui/icons-material/MoreHoriz';
+import PrintIcon from '@mui/icons-material/Print';
 import QrCodeScannerIcon from '@mui/icons-material/QrCodeScanner';
+import TableChartIcon from '@mui/icons-material/TableChart';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 
 const noop = () => {};
@@ -28,6 +30,8 @@ function DatabaseMobileControlStrip({
   onOpenUploadAct = noop,
   onOpenAddEquipment = noop,
   onOpenAddConsumable = noop,
+  onOpenConsumableQrPrint = null,
+  onOpenCartridgeCompatibility = null,
   onOpenMore = noop,
 }) {
   const branchLabel = selectedBranch || 'Все филиалы';
@@ -100,13 +104,11 @@ function DatabaseMobileControlStrip({
         </FormControl>
       ) : null}
 
-      {!isConsumablesMode && (
-        <Tooltip title="QR Сканер">
-          <IconButton size="small" aria-label="QR" onClick={onOpenQrScanner} sx={iconButtonSx}>
-            <QrCodeScannerIcon sx={{ fontSize: 18 }} />
-          </IconButton>
-        </Tooltip>
-      )}
+      <Tooltip title="QR Сканер">
+        <IconButton size="small" aria-label="QR" onClick={onOpenQrScanner} sx={iconButtonSx}>
+          <QrCodeScannerIcon sx={{ fontSize: 18 }} />
+        </IconButton>
+      </Tooltip>
 
       {canDatabaseWrite && !isConsumablesMode && (
         <>
@@ -131,6 +133,22 @@ function DatabaseMobileControlStrip({
             </IconButton>
           </Tooltip>
         </>
+      )}
+
+      {isConsumablesMode && onOpenConsumableQrPrint && (
+        <Tooltip title="Печать QR этикеток">
+          <IconButton size="small" aria-label="QR этикетки" onClick={onOpenConsumableQrPrint} sx={iconButtonSx}>
+            <PrintIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </Tooltip>
+      )}
+
+      {isConsumablesMode && onOpenCartridgeCompatibility && (
+        <Tooltip title="Совместимость картриджей">
+          <IconButton size="small" aria-label="Совместимость картриджей" onClick={onOpenCartridgeCompatibility} sx={iconButtonSx}>
+            <TableChartIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </Tooltip>
       )}
 
       {canDatabaseWrite && isConsumablesMode && (

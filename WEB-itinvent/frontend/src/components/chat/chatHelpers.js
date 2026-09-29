@@ -1,4 +1,10 @@
 import { API_V1_BASE } from '../../api/client';
+import {
+  getChatContactPreviewText,
+  getChatPollPreviewText,
+  parseChatContactBody,
+  resolveChatMessagePoll,
+} from './chatStructuredContent';
 
 export const CHAT_FILE_ACCEPT = '.jpg,.jpeg,.png,.gif,.webp,.bmp,.mp4,.mov,.webm,.m4v,.ogg,.mp3,.wav,.aac,.m4a,.opus,.flac,.pdf,.doc,.docx,.docm,.rtf,.odt,.xls,.xlsx,.xlsm,.ods,.ppt,.pptx,.pptm,.odp,.txt,.csv,.tsv,.log,.md,.json,.xml';
 export const CHAT_MAX_FILE_COUNT = 5;
@@ -298,6 +304,9 @@ export const getMessagePreview = (message) => {
   if (message?.is_deleted) return 'Сообщение удалено';
   if (message.kind === 'system') return normalizeTrimmedChatText(message.body, 'Системное событие');
   if (message.kind === 'task_share') return 'Поделились задачей';
+  if (message.kind === 'location') return 'Геопозиция';
+  if (message.kind === 'contact') return getChatContactPreviewText(parseChatContactBody(message.body));
+  if (message.kind === 'poll') return getChatPollPreviewText(resolveChatMessagePoll(message));
   const body = normalizeTrimmedChatText(message.body);
   if (message.kind === 'file' && body) return body;
   const attachments = Array.isArray(message.attachments) ? message.attachments : [];
@@ -457,9 +466,27 @@ export const buildChatPinnedMessageKey = (userId, conversationId) => {
   return `chat:pinned-message:${normalizedUserId}:${normalizedConversationId}`;
 };
 
+// Structured kinds: backend emits readable preview body; optimistic previews
+// still carry the canonical JSON body — parse it, but never show raw JSON.
+const readableStructuredPreviewBody = (body, fallback) => {
+  const text = normalizeTrimmedChatText(body);
+  if (!text || text.startsWith('{') || text.startsWith('[')) return fallback;
+  return text;
+};
+
 export const getReplyPreviewText = (replyPreview) => {
   if (!replyPreview || typeof replyPreview !== 'object') return '';
   if (replyPreview?.is_deleted) return 'Сообщение удалено';
+  if (replyPreview.kind === 'location') return 'Геопозиция';
+  if (replyPreview.kind === 'contact') {
+    const parsed = parseChatContactBody(replyPreview.body);
+    return parsed ? getChatContactPreviewText(parsed) : readableStructuredPreviewBody(replyPreview.body, 'Контакт');
+  }
+  if (replyPreview.kind === 'poll') {
+    const parsed = resolveChatMessagePoll(replyPreview);
+    return parsed ? getChatPollPreviewText(parsed) : readableStructuredPreviewBody(replyPreview.body, 'Опрос');
+  }
+  if (replyPreview.kind === 'system') return normalizeTrimmedChatText(replyPreview.body, 'Системное событие');
   const markdownPreview = stripChatMarkdownPreview(replyPreview.task_title || replyPreview.body);
   if (markdownPreview) return markdownPreview;
   if (replyPreview.kind === 'task_share') {
@@ -493,6 +520,9 @@ export const getSearchResultPreview = (message) => {
   if (message.kind === 'task_share') {
     return normalizeTrimmedChatText(message?.task_preview?.title, 'Карточка задачи');
   }
+  if (message.kind === 'location') return 'Геопозиция';
+  if (message.kind === 'contact') return getChatContactPreviewText(parseChatContactBody(message.body));
+  if (message.kind === 'poll') return getChatPollPreviewText(resolveChatMessagePoll(message));
   const body = normalizeTrimmedChatText(message.body);
   if (message.kind === 'file' && body) return body;
   const attachments = Array.isArray(message?.attachments) ? message.attachments : [];

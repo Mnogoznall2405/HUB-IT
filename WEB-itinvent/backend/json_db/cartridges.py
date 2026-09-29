@@ -240,6 +240,40 @@ class CartridgeDatabase:
         compatibility = self.find_printer_compatibility(printer_model)
         return compatibility.is_color if compatibility else False
 
+    def get_printers_for_cartridge(self, cartridge_model: str) -> List[str]:
+        """
+        Reverse lookup: printer models compatible with a cartridge model.
+
+        Matches the cartridge against each printer's OEM cartridge and
+        compatible_models entries using normalized containment, so short
+        names like "CF283A" still match "HP CF283A".
+
+        Args:
+            cartridge_model: Cartridge model name
+
+        Returns:
+            Sorted list of printer model names
+        """
+        needle = self._normalize_printer_name(cartridge_model)
+        if not needle:
+            return []
+
+        db = self._load_database()
+        matches: List[str] = []
+        for printer_name, compatibility in db.items():
+            candidates = [compatibility.oem_cartridge]
+            candidates.extend(cart.model for cart in compatibility.compatible_models)
+            for candidate in candidates:
+                normalized = self._normalize_printer_name(candidate)
+                if normalized and (
+                    normalized == needle
+                    or needle in normalized
+                    or normalized in needle
+                ):
+                    matches.append(printer_name)
+                    break
+        return sorted(matches, key=str.lower)
+
     def get_all_printer_models(self) -> List[str]:
         """
         Get all printer models in the database.
@@ -271,3 +305,116 @@ class CartridgeDatabase:
         """
         self._cache = None
         logger.info("Cartridge database cache cleared, will reload on next access")
+
+    def _load_raw_database(self) -> Dict[str, Any]:
+        """Load the raw JSON dict for write operations (not the cached parse)."""
+        data = self.data_manager.load_json(self.CARTRIDGE_DB_FILE, default_content={})
+        return dict(data) if isinstance(data, dict) else {}
+
+    def _save_raw_database(self, data: Dict[str, Any]) -> None:
+        if not self.data_manager.save_json(self.CARTRIDGE_DB_FILE, data):
+            raise RuntimeError("Failed to save cartridge database")
+        self.reload()
+
+    def list_entries(self) -> List[Dict[str, Any]]:
+        """
+        List all compatibility entries for the management table.
+
+        Returns:
+            Sorted list of {printer_model, oem_cartridge, compatible_models, is_color}
+        """
+        db = self._load_database()
+        entries = []
+        for printer_name, compatibility in db.items():
+            entries.append({
+                'printer_model': printer_name,
+                'oem_cartridge': compatibility.oem_cartridge,
+                'is_color': compatibility.is_color,
+                'compatible_models': [
+                    {
+                        'model': cart.model,
+                        'description': cart.description,
+                        'color': cart.color,
+                        'page_yield': cart.page_yield,
+                        'oem_part': cart.oem_part,
+                    }
+                    for cart in compatibility.compatible_models
+                ],
+            })
+        return sorted(entries, key=lambda item: item['printer_model'].lower())
+
+    def upsert_entry(
+        self,
+        printer_model: str,
+        *,
+        oem_cartridge: Optional[str] = None,
+        compatible_models: Optional[List[Dict[str, Any]]] = None,
+        is_color: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create or update a printer compatibility entry.
+
+        Merges into the existing raw entry so fields the API does not manage
+        (components, fuser_models, ...) are preserved. When compatible_models
+        is provided the list is replaced, but each still-present model keeps
+        its previously stored extra fields (description, color, ...).
+
+        Returns:
+            The merged raw entry dict.
+        """
+        key = self._normalize_printer_name(printer_model)
+        if not key:
+            raise ValueError("Printer model is required")
+
+        raw = self._load_raw_database()
+        existing = raw.get(key)
+        entry = dict(existing) if isinstance(existing, dict) else {}
+
+        if oem_cartridge is not None:
+            entry['oem_cartridge'] = str(oem_cartridge).strip()
+        if is_color is not None:
+            entry['is_color'] = bool(is_color)
+        if compatible_models is not None:
+            previous = {}
+            for model_data in entry.get('compatible_models') or []:
+                if not isinstance(model_data, dict):
+                    continue
+                model_key = self._normalize_printer_name(model_data.get('model', ''))
+                if model_key:
+                    previous[model_key] = model_data
+            merged_models = []
+            for model_data in compatible_models:
+                if not isinstance(model_data, dict):
+                    continue
+                model = str(model_data.get('model') or '').strip()
+                model_key = self._normalize_printer_name(model)
+                if not model_key:
+                    continue
+                kept = dict(previous.get(model_key) or {})
+                for field, value in model_data.items():
+                    if value is not None:
+                        kept[field] = value
+                kept['model'] = model
+                merged_models.append(kept)
+            entry['compatible_models'] = merged_models
+
+        raw[key] = entry
+        self._save_raw_database(raw)
+        return entry
+
+    def delete_entry(self, printer_model: str) -> bool:
+        """
+        Remove a printer compatibility entry.
+
+        Returns:
+            True if the entry existed and was removed.
+        """
+        key = self._normalize_printer_name(printer_model)
+        if not key:
+            return False
+        raw = self._load_raw_database()
+        if key not in raw:
+            return False
+        del raw[key]
+        self._save_raw_database(raw)
+        return True

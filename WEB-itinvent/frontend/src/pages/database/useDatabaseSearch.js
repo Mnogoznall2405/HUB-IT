@@ -15,6 +15,66 @@ export const DATABASE_SEARCH_PAGE_LIMIT = 200;
 
 // Server rows (search/universal) are flat — group into the branch→location shape
 // the list renders, with the same "Не указан"/"Не указано" fallbacks.
+// Client-side type scope for the fallback path — keeps the same grouped
+// branch→location shape while dropping items outside the selected CI_TYPES row.
+export const filterGroupedByType = (grouped, typeNo) => {
+  if (typeNo == null || typeNo === '') return grouped || {};
+  const wanted = String(typeNo);
+  const out = {};
+  Object.entries(grouped || {}).forEach(([branch, locations]) => {
+    Object.entries(locations || {}).forEach(([location, items]) => {
+      const kept = (items || []).filter(
+        (item) => String(item?.type_no ?? item?.TYPE_NO ?? '') === wanted
+      );
+      if (kept.length) {
+        if (!out[branch]) out[branch] = {};
+        out[branch][location] = kept;
+      }
+    });
+  });
+  return out;
+};
+
+// Row keys per single-field scope — covers both universal-search aliases
+// (lowercase) and raw ITEMS columns from loaded list pages.
+const SEARCH_FIELD_ROW_KEYS = {
+  serial: ['serial_no', 'SERIAL_NO', 'hw_serial_no', 'HW_SERIAL_NO'],
+  model: ['model_name', 'MODEL_NAME'],
+  inv_no: ['inv_no', 'INV_NO'],
+  part_no: ['part_no', 'PART_NO'],
+  employee: ['employee_name', 'EMPL_NAME', 'OWNER_DISPLAY_NAME', 'employee_dept', 'OWNER_DEPT'],
+  branch: ['branch_name', 'BRANCH_NAME'],
+  location: ['location_name', 'LOC_NAME'],
+  status: ['status_name', 'STATUS_NAME'],
+  vendor: ['vendor_name', 'VENDOR_NAME'],
+  type: ['type_name', 'TYPE_NAME'],
+  ip: ['ip_address', 'IP_ADDRESS'],
+  mac: ['mac_address', 'MAC_ADDRESS'],
+  netbios: ['network_name', 'NETBIOS_NAME', 'domain_name', 'DOMAIN_NAME'],
+};
+
+// Field-scoped contains-match for the degraded path — mirrors the server-side
+// single-field LIKE so offline results stay consistent.
+export const filterGroupedByFieldTerm = (grouped, field, term) => {
+  const keys = SEARCH_FIELD_ROW_KEYS[String(field || '')];
+  const needle = String(term || '').trim().toLowerCase();
+  if (!keys || !needle) return grouped || {};
+  const out = {};
+  Object.entries(grouped || {}).forEach(([branch, locations]) => {
+    Object.entries(locations || {}).forEach(([location, items]) => {
+      const kept = (items || []).filter((item) => keys.some((key) => {
+        const value = item?.[key];
+        return value != null && String(value).toLowerCase().includes(needle);
+      }));
+      if (kept.length) {
+        if (!out[branch]) out[branch] = {};
+        out[branch][location] = kept;
+      }
+    });
+  });
+  return out;
+};
+
 export const groupSearchRowsByBranchLocation = (rows) => {
   const grouped = {};
   (rows || []).forEach((row) => {
@@ -44,9 +104,16 @@ export function useDatabaseSearch({
   serverSearchEnabled = true,
   debounceMs = 300,
   searchPageLimit = DATABASE_SEARCH_PAGE_LIMIT,
+  // Optional CI_TYPES.TYPE_NO scope — narrows the server search and lists the
+  // whole type when the text query is empty.
+  searchTypeNo = null,
+  // Optional single-field scope (serial/model/inv_no/...) for the text query.
+  searchField = '',
 }) {
   const debounceTimerRef = useRef(null);
   const searchQueryRef = useRef(searchQuery);
+  const searchTypeNoRef = useRef(searchTypeNo);
+  const searchFieldRef = useRef(searchField);
   const searchSeqRef = useRef(0);
   const searchNextPageRef = useRef(null);
   const searchLoadingMoreRef = useRef(false);
@@ -91,9 +158,23 @@ export function useDatabaseSearch({
   // lazily here (not memoized) so the hot path never pays the O(n) rebuild.
   const runClientFallbackSearch = useCallback(
     (query) => {
-      const sourceData = filterGroupedByBranch(allEquipmentRef.current, selectedBranchRef.current);
+      const typeNo = searchTypeNoRef.current;
+      const field = searchFieldRef.current;
+      const sourceData = filterGroupedByType(
+        filterGroupedByBranch(allEquipmentRef.current, selectedBranchRef.current),
+        typeNo,
+      );
       const { filteredData: nextFilteredData, expandedBranches, expandedLocations } =
-        buildSearchResultState(buildDatabaseSearchIndex(sourceData), query);
+        field
+          ? (() => {
+              const scoped = filterGroupedByFieldTerm(sourceData, field, query);
+              return {
+                filteredData: scoped,
+                expandedBranches: new Set(Object.keys(scoped)),
+                expandedLocations: new Set(getVisibleLocationKeys(scoped)),
+              };
+            })()
+          : buildSearchResultState(buildDatabaseSearchIndex(sourceData), query);
       setFilteredData(nextFilteredData ?? {});
       if (expandedBranches != null) setExpandedBranches(expandedBranches);
       if (expandedLocations != null) setExpandedLocations(expandedLocations);
@@ -134,9 +215,12 @@ export function useDatabaseSearch({
   const runSearchNow = useCallback(
     (query) => {
       const normalized = String(query || '').trim();
+      const typeNo = searchTypeNoRef.current;
       const seq = ++searchSeqRef.current;
 
-      if (!equipmentSearchEnabled || normalized.length < 2) {
+      const hasTerm = normalized.length >= 2;
+      const hasType = typeNo != null && typeNo !== '';
+      if (!equipmentSearchEnabled || (!hasTerm && !hasType)) {
         setAppliedSearchQuery('');
         setFilteredData(null);
         setSearchLoading(false);
@@ -161,7 +245,10 @@ export function useDatabaseSearch({
       setServerSearchDegraded(false);
 
       equipmentAPI
-        .searchUniversal(normalized, 1, searchPageLimit)
+        .searchUniversal(normalized, 1, searchPageLimit, {
+          typeNo: hasType ? typeNo : null,
+          field: searchFieldRef.current || '',
+        })
         .then((response) => {
           if (seq !== searchSeqRef.current) return;
           const grouped = filterGroupedByBranch(
@@ -200,7 +287,10 @@ export function useDatabaseSearch({
     setSearchLoadingMore(true);
 
     equipmentAPI
-      .searchUniversal(query, page, searchPageLimit)
+      .searchUniversal(query, page, searchPageLimit, {
+        typeNo: searchTypeNoRef.current,
+        field: searchFieldRef.current || '',
+      })
       .then((response) => {
         if (seq !== searchSeqRef.current) return;
         const grouped = filterGroupedByBranch(
@@ -248,7 +338,10 @@ export function useDatabaseSearch({
         return;
       }
 
-      if (String(query || '').trim().length < 2) {
+      // With a type scope a <2-char query still hits the server (type-only
+      // listing) — debounce it like normal input instead of firing per key.
+      const typeSelected = searchTypeNoRef.current != null && searchTypeNoRef.current !== '';
+      if (String(query || '').trim().length < 2 && !typeSelected) {
         cancelSearchDebounce();
         runSearchNow(query);
         return;
@@ -282,8 +375,17 @@ export function useDatabaseSearch({
     selectedBranchRef.current = selectedBranch;
   }, [selectedBranch]);
 
-  // Re-run the active server query only when the branch scope or the feature
-  // flag changes — never on load-more (runSearchNow is ref-stable to data).
+  useEffect(() => {
+    searchTypeNoRef.current = searchTypeNo;
+  }, [searchTypeNo]);
+
+  useEffect(() => {
+    searchFieldRef.current = searchField;
+  }, [searchField]);
+
+  // Re-run the active server query only when the branch scope, the type filter,
+  // the field scope or the feature flag changes — never on load-more
+  // (runSearchNow is ref-stable to data).
   useEffect(() => {
     if (!equipmentSearchEnabled) {
       cancelSearchDebounce();
@@ -291,12 +393,13 @@ export function useDatabaseSearch({
     }
     cancelSearchDebounce();
     const activeQuery = String(searchQueryRef.current || '').trim();
-    if (activeQuery.length >= 2) {
+    const typeNo = searchTypeNoRef.current;
+    if (activeQuery.length >= 2 || (typeNo != null && typeNo !== '')) {
       runSearchNow(activeQuery);
       return;
     }
     setFilteredData(null);
-  }, [equipmentSearchEnabled, selectedBranch, cancelSearchDebounce, runSearchNow, setFilteredData]);
+  }, [equipmentSearchEnabled, selectedBranch, searchTypeNo, searchField, cancelSearchDebounce, runSearchNow, setFilteredData]);
 
   useEffect(() => () => {
     cancelSearchDebounce();

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { chatAPI } from '../../api/client';
+import { CHAT_SOCKET_AI_SANDBOX_UPDATED_EVENT } from '../../lib/chatSocket';
+import { buildSandboxPermissionCard } from '../../components/chat/sandboxPermissionCard';
 import useChatForwardMessages from '../../components/chat/useChatForwardMessages';
 import useChatMessageMenuActions from '../../components/chat/useChatMessageMenuActions';
 import useChatSelectedMessageActions from '../../components/chat/useChatSelectedMessageActions';
@@ -56,6 +58,20 @@ export default function useChatMessageActionsController({
     if (!normalizedMessageId || !actionCard) return;
     patchThreadMessage(normalizedMessageId, { action_card: actionCard });
   }, [patchThreadMessage]);
+
+  useEffect(() => {
+    const normalizedConversationId = String(activeConversationId || '').trim();
+    if (!normalizedConversationId || typeof patchThreadMessage !== 'function') return undefined;
+    const handleSandboxPermissionUpdate = (event) => {
+      const card = buildSandboxPermissionCard({
+        envelope: event?.detail || {},
+        activeConversationId: normalizedConversationId,
+      });
+      if (card) patchAiActionCard(card.message_id, card);
+    };
+    window.addEventListener(CHAT_SOCKET_AI_SANDBOX_UPDATED_EVENT, handleSandboxPermissionUpdate);
+    return () => window.removeEventListener(CHAT_SOCKET_AI_SANDBOX_UPDATED_EVENT, handleSandboxPermissionUpdate);
+  }, [activeConversationId, patchThreadMessage]);
 
   const confirmAiAction = useCallback(async (actionCard, message, payloadOverrides = undefined) => {
     const actionId = String(actionCard?.id || '').trim();

@@ -1374,6 +1374,9 @@ function KnowledgeBase() {
               </Typography>
             </Box>
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+              <Button variant="outlined" href="/help">
+                ← К справке
+              </Button>
               <Button variant={tab === 'articles' ? 'contained' : 'outlined'} onClick={handleOpenInstructions}>
                 Инструкции
               </Button>

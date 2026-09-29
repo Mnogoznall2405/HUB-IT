@@ -14,7 +14,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import String as SAString, and_, case, func, or_, select
+from sqlalchemy import String as SAString, and_, case, func, or_, select, update
 from sqlalchemy.orm import joinedload, selectinload
 
 from backend.appdb.db import app_session
@@ -932,10 +932,38 @@ class TicketsService:
                 req = session.execute(query).unique().scalars().first()
                 return _request_to_dict(req)
 
-            # Apply status change
-            req.status = new_status
-            req.version += 1
-            req.updated_at = now
+            # Apply status change via a conditional UPDATE: the version check in
+            # WHERE makes the write atomic, so a concurrent change committed
+            # between our SELECT and this UPDATE yields rowcount 0 -> 409
+            # instead of a lost update (pattern: construction_work_service._claim).
+            changed = session.execute(
+                update(TicketRequest)
+                .where(
+                    TicketRequest.id == request_id,
+                    TicketRequest.version == expected_version,
+                )
+                .values(
+                    status=new_status,
+                    version=TicketRequest.version + 1,
+                    updated_at=now,
+                )
+                .execution_options(synchronize_session=False)
+            ).rowcount
+            if changed != 1:
+                current = session.execute(
+                    select(TicketRequest.version, TicketRequest.status).where(
+                        TicketRequest.id == request_id
+                    )
+                ).first()
+                if current is None:
+                    raise TicketsNotFoundError(
+                        f"Request with id={request_id} not found"
+                    )
+                raise TicketsConflictError(
+                    current_version=current[0],
+                    expected_version=expected_version,
+                    current_status=current[1],
+                )
 
             # Create history record
             history_record = TicketChangeHistory(
@@ -968,7 +996,8 @@ class TicketsService:
 
             session.flush()
 
-            # Reload with relationships for response
+            # Reload with relationships for response; populate_existing forces a
+            # refresh because the bulk UPDATE above bypassed the session state.
             query = (
                 select(TicketRequest)
                 .options(
@@ -977,6 +1006,7 @@ class TicketsService:
                     joinedload(TicketRequest.assignee),
                 )
                 .where(TicketRequest.id == request_id)
+                .execution_options(populate_existing=True)
             )
             req = session.execute(query).unique().scalars().first()
             result = _request_to_dict(req)

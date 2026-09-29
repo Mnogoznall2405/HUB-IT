@@ -49,6 +49,7 @@ class User(UserBase):
     twofa_policy: Literal["off", "all", "external_only"] = "off"
     twofa_required_for_current_request: bool = False
     avatar_url: Optional[str] = None
+    my_files_quota_bytes: Optional[int] = None
     about_onboarding_completed_at: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
@@ -90,6 +91,7 @@ class LoginModeResponse(BaseModel):
     biometric_login_enabled: bool = False
     client_country_code: Optional[str] = None
     show_vpn_hint: bool = False
+    windows_sso_enabled: bool = False
 
 
 class TwoFactorSetupStartRequest(BaseModel):
@@ -235,6 +237,7 @@ class UserCreateRequest(BaseModel):
     mailbox_login: Optional[str] = None
     mailbox_password: Optional[str] = Field(default=None, min_length=1, max_length=256)
     mail_signature_html: Optional[str] = None
+    my_files_quota_bytes: Optional[int] = Field(default=None, ge=1)
 
     @field_validator(
         "mailbox_email",
@@ -285,6 +288,7 @@ class UserUpdateRequest(BaseModel):
     mailbox_login: Optional[str] = None
     mailbox_password: Optional[str] = Field(default=None, min_length=1, max_length=256)
     mail_signature_html: Optional[str] = None
+    my_files_quota_bytes: Optional[int] = Field(default=None, ge=1)
 
     @field_validator(
         "mailbox_email",

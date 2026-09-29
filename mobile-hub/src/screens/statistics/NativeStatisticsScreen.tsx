@@ -54,10 +54,17 @@ import { useFluentTokens } from '../../theme/fluentTokens';
 import type { FluentTokens } from '../../theme/fluentTokens';
 import { AccountScreenScaffold } from '../account/AccountChrome';
 import { NativeDatabasePickerSheet } from '../../components/database/NativeDatabasePickerSheet';
-import { NativeSegmentedControl } from '../../components/ui/NativeFilterControls';
+import { NativeTabPicker } from '../../components/ui/NativeTabPicker';
 import { NativePcRemainingSheet } from './NativePcRemainingSheet';
 
 const SNAPSHOT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+const STATISTICS_TAB_ICONS: Record<string, string> = {
+  pc: 'monitor',
+  mfu: 'printer',
+  battery: 'battery-outline',
+  pc_components: 'memory',
+};
 
 function snapshotKey(databaseId: string, tab: StatisticsTab, periodDays: number): string {
   return `${databaseId || 'session'}|${tab}|${periodDays}`;
@@ -466,21 +473,28 @@ function StatisticsContent() {
         </View>
       </View>
 
-      <NativeSegmentedControl
-        options={visibleTabs}
-        selected={tab}
-        onSelect={(value) => setTab(value as StatisticsTab)}
-        tokens={tokens}
-        testIDPrefix="native-statistics-tab"
-      />
+      <View style={styles.pickerRow}>
+        <NativeTabPicker
+          options={visibleTabs.map((option) => ({ ...option, icon: STATISTICS_TAB_ICONS[option.value] }))}
+          selected={tab}
+          onSelect={(value) => setTab(value as StatisticsTab)}
+          tokens={tokens}
+          testIDPrefix="native-statistics-tab"
+          title="Раздел статистики"
+          style={styles.pickerFlex}
+        />
 
-      <NativeSegmentedControl
-        options={STATISTICS_PERIOD_OPTIONS.map((option) => ({ value: String(option.value), label: option.label }))}
-        selected={String(periodDays)}
-        onSelect={(value) => setPeriodDays(Number(value))}
-        tokens={tokens}
-        testIDPrefix="native-statistics-period"
-      />
+        <NativeTabPicker
+          options={STATISTICS_PERIOD_OPTIONS.map((option) => ({ value: String(option.value), label: option.label }))}
+          selected={String(periodDays)}
+          onSelect={(value) => setPeriodDays(Number(value))}
+          tokens={tokens}
+          testIDPrefix="native-statistics-period"
+          title="Период"
+          fallbackIcon="calendar-outline"
+          style={styles.pickerFlex}
+        />
+      </View>
 
       {currentStats && currentStats.period_days === periodDays ? (
         <Text style={[styles.periodCaption, { color: tokens.textSecondary }]}>
@@ -722,6 +736,9 @@ const styles = StyleSheet.create({
   },
   searchInput: { flex: 1, fontSize: 15, paddingVertical: 8 },
   iconButton: { padding: 4 },
+
+  pickerRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
+  pickerFlex: { flex: 1, minWidth: 0 },
 
   periodCaption: { fontSize: 12, marginBottom: 8 },
   loader: { marginVertical: 24 },

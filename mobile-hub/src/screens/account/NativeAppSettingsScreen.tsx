@@ -246,6 +246,12 @@ export function NativeAppSettingsScreen() {
     counters?: Record<string, number>;
     queueDepth?: { total?: number };
   } | undefined;
+  const chatSendTiming = diagnosticsState?.chatSendTiming as {
+    sends?: number;
+    intervals?: Record<string, { p50?: number | null }>;
+    storageOps?: Record<string, { p95?: number | null }>;
+  } | undefined;
+  const formatTimingMs = (value: number | null | undefined) => (value == null ? '—' : `${Math.round(value)} мс`);
   const snapshotScopes = Array.isArray(offlineState?.snapshotScopes)
     ? offlineState.snapshotScopes.map(String)
     : [];
@@ -565,6 +571,11 @@ export function NativeAppSettingsScreen() {
               ? 'недостаточно данных'
               : `${releaseHealth.crashFreeSessionPercent}% сессий без UI-сбоя`}
             {' · '}очередь: {releaseHealth.queueDepth?.total ?? 0}
+          </Text>
+        ) : null}
+        {(chatSendTiming?.sends || 0) > 0 ? (
+          <Text style={{ color: tokens.textSecondary, marginBottom: 10 }}>
+            {`Чат: tap→пузырь ${formatTimingMs(chatSendTiming?.intervals?.tap_to_bubble?.p50)} · tap→ответ ${formatTimingMs(chatSendTiming?.intervals?.tap_to_ack?.p50)} · очередь write p95 ${formatTimingMs(chatSendTiming?.storageOps?.write?.p95)}`}
           </Text>
         ) : null}
         <View style={styles.actions}>

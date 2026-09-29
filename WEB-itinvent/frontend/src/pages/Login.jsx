@@ -12,7 +12,7 @@ import {
   isPasskeySurfaceAvailable,
 } from '../lib/passkeyWebAuthn';
 import { emitAgentDebugLog } from '../lib/debugClientLog';
-import { getDesktopWindowsUsername } from '../lib/desktopBridge';
+import { getDesktopWindowsUsername, isDesktopBridgeReady } from '../lib/desktopBridge';
 import { resolvePostAuthenticationPath } from '../lib/aboutOnboarding';
 import {
   auditLoginPageOverlays,
@@ -517,6 +517,7 @@ function Login() {
   const [showVpnHint, setShowVpnHint] = useState(false);
   const [vpnHintDismissed, setVpnHintDismissed] = useState(readVpnHintDismissed);
   const [biometricLoginEnabled, setBiometricLoginEnabled] = useState(false);
+  const [windowsSsoEnabled, setWindowsSsoEnabled] = useState(false);
   const [loginChallengeId, setLoginChallengeId] = useState('');
   const [setupData, setSetupData] = useState(null);
   const [totpCode, setTotpCode] = useState('');
@@ -540,6 +541,7 @@ function Login() {
   const usernameInputRef = useRef(null);
   const passwordSubmitLockRef = useRef(false);
   const passkeyAttemptedRef = useRef(false);
+  const windowsSsoAttemptedRef = useRef(false);
   const authenticatedUserRef = useRef(null);
   const lastAutoSetupCodeRef = useRef('');
   const lastAutoVerifyCodeRef = useRef('');
@@ -841,6 +843,7 @@ function Login() {
         setNetworkZone(nextZone);
         setBiometricLoginEnabled(nextBiometric);
         setShowVpnHint(nextVpnHint);
+        setWindowsSsoEnabled(Boolean(mode?.windows_sso_enabled));
       } catch {
         if (cancelled) {
           return;
@@ -848,6 +851,7 @@ function Login() {
         setNetworkZone('external');
         setBiometricLoginEnabled(false);
         setShowVpnHint(false);
+        setWindowsSsoEnabled(false);
       } finally {
         if (!cancelled) {
           setLoginModeLoading(false);
@@ -969,6 +973,55 @@ function Login() {
     passkeyAttemptedRef.current = true;
     void attemptPasskeyLogin({ auto: true });
   }, [loginModeLoading, step, networkZone, biometricLoginEnabled, webAuthnReady]);
+
+  const windowsSsoAvailable = windowsSsoEnabled && networkZone === 'internal';
+  const windowsSsoAutoStart = windowsSsoAvailable && isDesktopBridgeReady();
+
+  const startWindowsSso = useCallback(() => {
+    window.location.assign('/api/v1/auth/sso/begin');
+  }, []);
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).has('sso_error')) {
+      windowsSsoAttemptedRef.current = true;
+      sessionStorage.setItem('hubit.sso.auto_attempted', '1');
+    }
+    if (
+      loginModeLoading
+      || step !== 'password'
+      || !windowsSsoAutoStart
+      || windowsSsoAttemptedRef.current
+      || sessionStorage.getItem('hubit.sso.auto_attempted') === '1'
+    ) {
+      return;
+    }
+    windowsSsoAttemptedRef.current = true;
+    sessionStorage.setItem('hubit.sso.auto_attempted', '1');
+    startWindowsSso();
+  }, [loginModeLoading, step, windowsSsoAutoStart, startWindowsSso]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const ssoError = params.get('sso_error');
+    if (!ssoError) {
+      return;
+    }
+    const messages = {
+      denied: 'Вход через Windows отменён — используйте логин и пароль.',
+      verify: 'Не удалось проверить Windows-вход — используйте логин и пароль.',
+      not_provisioned: 'Для вашей учётной записи нет доступа в HUB-IT.',
+      inactive: 'Учётная запись отключена.',
+      unavailable: 'Вход через Windows доступен только во внутренней сети.',
+    };
+    showLoginNotice('warning', messages[ssoError] || messages.verify, 6400);
+    params.delete('sso_error');
+    const nextSearch = params.toString();
+    window.history.replaceState(
+      null,
+      '',
+      `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`,
+    );
+  }, [showLoginNotice]);
 
   const redirectAfterAuthentication = (userPayload = authenticatedUserRef.current) => {
     const destination = resolvePostAuthenticationPath(userPayload);
@@ -1730,6 +1783,17 @@ function Login() {
                 {loading ? <Spinner className="h-5 w-5" /> : null}
                 <span>Войти</span>
               </button>
+              {windowsSsoAvailable ? (
+                <button
+                  type="button"
+                  data-testid="windows-sso-login"
+                  onClick={startWindowsSso}
+                  disabled={loading}
+                  className={secondaryButtonClassName}
+                >
+                  <span>Войти через Windows</span>
+                </button>
+              ) : null}
             </form>
       </div>
     );

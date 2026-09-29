@@ -221,6 +221,7 @@ public partial class App : Application
                     windowManager,
                     window,
                     downloads,
+                    policy,
                     webViewEnvironmentProvider,
                     window.CreateSecondaryWindowPlacement(),
                     route));

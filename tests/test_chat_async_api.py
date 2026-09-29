@@ -344,7 +344,7 @@ def test_slow_consumer_disconnect_closes_socket_and_unregisters(monkeypatch):
         )
 
         assert socket.closed is True
-        assert socket.close_code == 1008
+        assert socket.close_code == 1013
         assert manager.is_connection_registered(connection_id) is False
 
     asyncio.run(_exercise())

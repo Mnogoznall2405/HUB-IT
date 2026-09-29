@@ -108,6 +108,7 @@ const permissionGroups = [
       { value: 'database.read', label: 'База: просмотр' },
       { value: 'database.write', label: 'База: изменения' },
       { value: 'database.delete', label: 'База: удаление расходников' },
+      { value: 'database.ad_sync', label: 'База: синхронизация сотрудников из AD' },
       { value: 'mfu.read', label: 'МФУ: просмотр' },
       { value: 'computers.read', label: 'Компьютеры: просмотр' },
       { value: 'computers.read_all', label: 'Компьютеры: просмотр всех БД' },
@@ -137,6 +138,14 @@ const permissionGroups = [
     ],
   },
   {
+    group: 'VoiceVideo — протоколы встреч',
+    permissions: [
+      { value: 'voice.read', label: 'Протоколы: просмотр встреч и отчётов' },
+      { value: 'voice.upload', label: 'Протоколы: загрузка аудио/видео' },
+      { value: 'voice.manage', label: 'Протоколы: именование спикеров и библиотека голосов' },
+    ],
+  },
+  {
     group: 'Интеграции',
     permissions: [
       { value: 'mail.access', label: 'Почта: доступ к Exchange' },
@@ -151,6 +160,7 @@ const permissionGroups = [
       { value: 'address_book.hire_date.read', label: 'Адресная книга: просмотр даты приёма на работу' },
       { value: 'address_book.personal_phone.read', label: 'Адресная книга: просмотр личных телефонов' },
       { value: 'address_book.personal_email.read', label: 'Адресная книга: просмотр личной почты' },
+      { value: 'address_book.inn.read', label: 'Адресная книга: просмотр ИНН' },
     ],
   },
   {
@@ -219,6 +229,7 @@ const MY_FILES_PERMISSION_GROUP = {
     { value: 'my_files.write', label: 'Мой диск: загрузка и удаление' },
     { value: 'my_files.share', label: 'Мой диск: публичные ссылки' },
     { value: 'my_files.audit.read', label: 'Мой диск: журнал аудита' },
+    { value: 'my_files.stats.read', label: 'Мой диск: статистика пользователей (админ)' },
   ],
 };
 
@@ -294,6 +305,10 @@ export const AI_ITINVENT_DEFAULT_TOOLS = [
   'itinvent.directory.equipment_types',
   'itinvent.directory.statuses',
   'itinvent.analytics.summary',
+  'itinvent.action.cartridge_replacement_draft',
+  'itinvent.action.battery_replacement_draft',
+  'itinvent.action.component_replacement_draft',
+  'itinvent.action.pc_cleaning_draft',
 ];
 
 export const AI_ITINVENT_MULTI_DB_TOOL_ID = 'itinvent.equipment.search_multi_db';
@@ -327,6 +342,10 @@ export const AI_ITINVENT_TOOL_OPTIONS = [
   { id: 'itinvent.directory.departments', label: 'Справочник отделов' },
   { id: 'itinvent.action.status_change_draft', label: 'Черновик смены статуса' },
   { id: 'itinvent.action.location_change_draft', label: 'Черновик смены локации' },
+  { id: 'itinvent.action.cartridge_replacement_draft', label: 'Черновик замены картриджа' },
+  { id: 'itinvent.action.battery_replacement_draft', label: 'Черновик замены батареи' },
+  { id: 'itinvent.action.component_replacement_draft', label: 'Черновик замены комплектующей' },
+  { id: 'itinvent.action.pc_cleaning_draft', label: 'Черновик чистки ПК' },
   { id: 'itinvent.user.by_name', label: 'Поиск пользователя по имени' },
   { id: 'itinvent.user.full_context', label: 'Полный IT-контекст пользователя' },
   { id: AI_ITINVENT_MULTI_DB_TOOL_ID, label: 'Мульти-БД поиск (admin)' },
@@ -386,9 +405,27 @@ export const AI_AD_TOOL_OPTIONS = [
   { id: 'ad.user.logon_history', label: 'История входов AD' },
 ];
 
+export const AI_KB_TOOL_OPTIONS = [
+  { id: 'kb.articles.search', label: 'Поиск статей базы знаний' },
+  { id: 'kb.articles.get', label: 'Открыть статью базы знаний' },
+  { id: 'kb.attachments.get_text', label: 'Читать текст вложения статьи' },
+  { id: 'kb.categories.list', label: 'Список категорий базы знаний' },
+];
+
+export const AI_CHAT_TOOL_OPTIONS = [
+  { id: 'chat.users.search', label: 'Поиск пользователей Hub' },
+  { id: 'chat.conversations.search', label: 'Поиск диалогов Hub' },
+];
+
+export const AI_CHAT_ACTION_TOOL_OPTIONS = [
+  { id: 'chat.action.message_send_draft', label: 'Черновик сообщения в чат' },
+];
+
 export const AI_ITINVENT_TOOL_IDS = new Set(AI_ITINVENT_TOOL_OPTIONS.map((item) => item.id));
 export const AI_FILE_TOOL_IDS = new Set(AI_FILE_TOOL_OPTIONS.map((item) => item.id));
 export const AI_OFFICE_TOOL_IDS = new Set([...AI_OFFICE_TOOL_OPTIONS, ...AI_OFFICE_ACTION_TOOL_OPTIONS].map((item) => item.id));
 export const AI_MFU_TOOL_IDS = new Set(AI_MFU_TOOL_OPTIONS.map((item) => item.id));
 export const AI_NETWORK_TOOL_IDS = new Set(AI_NETWORK_TOOL_OPTIONS.map((item) => item.id));
 export const AI_AD_TOOL_IDS = new Set(AI_AD_TOOL_OPTIONS.map((item) => item.id));
+export const AI_KB_TOOL_IDS = new Set(AI_KB_TOOL_OPTIONS.map((item) => item.id));
+export const AI_CHAT_TOOL_IDS = new Set([...AI_CHAT_TOOL_OPTIONS, ...AI_CHAT_ACTION_TOOL_OPTIONS].map((item) => item.id));

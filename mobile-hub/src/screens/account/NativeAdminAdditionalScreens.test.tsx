@@ -67,8 +67,9 @@ it('edits bot settings without replacing existing tool or access configuration',
   await waitFor(() => expect(api.saveAdminAiBot).toHaveBeenCalled());
   const [id, patch] = (api.saveAdminAiBot as jest.Mock).mock.calls[0];
   expect(id).toBe('bot');
-  expect(patch).not.toHaveProperty('enabled_tools');
-  expect(patch).not.toHaveProperty('allowed_kb_scope');
+  expect(patch.enabled_tools).toEqual(['existing-tool']);
+  expect(patch.allowed_kb_scope).toEqual([]);
+  expect(patch.tool_settings).toEqual(expect.objectContaining({ multi_db_mode: 'single' }));
 });
 it('does not fetch server variables before fingerprint confirmation', async () => {
   const view = await render(<NativeAdminEnvEditor />);

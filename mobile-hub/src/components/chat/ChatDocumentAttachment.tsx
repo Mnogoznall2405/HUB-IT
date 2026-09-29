@@ -1,6 +1,7 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
+import { useChatAttachmentTransfer } from '../../chat/nativeChatAttachmentTransfers';
 import type { ChatAttachment } from '../../api/types';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
 
@@ -50,12 +51,12 @@ function transferLabel(transfer?: ChatAttachmentTransfer | null): string {
   if (transfer.status === 'failed') return transfer.action === 'upload' ? 'Не отправлено' : 'Ошибка загрузки';
   if (transfer.status === 'cancelled') return transfer.action === 'upload' ? 'Отправка отменена' : 'Загрузка отменена';
   if (transfer.action === 'upload') {
-    if (transfer.progress == null) return 'Отправка…';
-    return `Отправка ${Math.round(Math.max(0, Math.min(1, transfer.progress)) * 100)}%`;
+    if (transfer.progress == null || transfer.progress <= 0) return 'Отправка…';
+    return `Отправка ${Math.max(1, Math.round(Math.min(1, transfer.progress) * 100))}%`;
   }
   if (transfer.action === 'save') return 'Сохраняем…';
-  if (transfer.progress == null) return 'Загрузка…';
-  return `Загрузка ${Math.round(Math.max(0, Math.min(1, transfer.progress)) * 100)}%`;
+  if (transfer.progress == null || transfer.progress <= 0) return 'Загрузка…';
+  return `Загрузка ${Math.max(1, Math.round(Math.min(1, transfer.progress) * 100))}%`;
 }
 
 export function ChatDocumentAttachment({
@@ -77,20 +78,23 @@ export function ChatDocumentAttachment({
 }) {
   const { styles } = useChatStyles(createStyles);
   const reduceMotion = useReducedMotion();
+  // Progress ticks reach this row through the external store; the React prop
+  // only carries the coarser status transitions.
+  const effectiveTransfer = useChatAttachmentTransfer(attachment.id) || transfer;
   const fileName = String(attachment.file_name || 'Вложение').trim() || 'Вложение';
   const extension = getChatFileExtension(fileName, attachment.mime_type);
   const size = formatChatFileSize(attachment.file_size);
   const idleMeta = [extension, size].filter(Boolean).join(' • ');
-  const status = transferLabel(transfer);
+  const status = transferLabel(effectiveTransfer);
   const subtitle = status || idleMeta;
-  const progress = transfer?.progress == null
+  const progress = effectiveTransfer?.progress == null || effectiveTransfer.progress <= 0
     ? null
-    : Math.round(Math.max(0, Math.min(1, transfer.progress)) * 100);
+    : Math.max(1, Math.min(100, Math.round(Math.min(1, effectiveTransfer.progress) * 100)));
   const accent = FILE_EXTENSION_COLORS[extension.toLowerCase()] || '#708fa0';
-  const transferStatus = transfer?.status || (transfer ? 'active' : undefined);
+  const transferStatus = effectiveTransfer?.status || (effectiveTransfer ? 'active' : undefined);
   const busy = transferStatus === 'active';
   const failed = transferStatus === 'failed' || transferStatus === 'cancelled';
-  const transferAction = busy && transfer?.cancellable && onCancel
+  const transferAction = busy && effectiveTransfer?.cancellable && onCancel
     ? { label: `Отменить: ${fileName}`, icon: 'close' as const, onPress: onCancel }
     : failed && onRetry
       ? { label: `Повторить: ${fileName}`, icon: 'refresh' as const, onPress: onRetry }

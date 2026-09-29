@@ -17,6 +17,7 @@ import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
 import { myFilesAPI } from '../api/myFiles';
+import { formatFileSize } from '../lib/myFilesPreview';
 
 const TEXT = '#0f172a';
 const MUTED = '#64748b';
@@ -24,19 +25,6 @@ const ACCENT = '#0b70d7';
 const PANEL_BG = '#ffffff';
 const PAGE_TOP = '#f4f7fb';
 const PAGE_BOTTOM = '#e8eef5';
-
-const formatFileSize = (bytes) => {
-  const value = Number(bytes || 0);
-  if (!Number.isFinite(value) || value <= 0) return '0 Б';
-  const units = ['Б', 'КБ', 'МБ', 'ГБ'];
-  let current = value;
-  let index = 0;
-  while (current >= 1024 && index < units.length - 1) {
-    current /= 1024;
-    index += 1;
-  }
-  return `${current >= 10 || index === 0 ? current.toFixed(0) : current.toFixed(1)} ${units[index]}`;
-};
 
 const resolveError = (error) => {
   if (Number(error?.response?.status) === 429) {
@@ -51,16 +39,18 @@ export default function SharedFolder() {
   const { token = '' } = useParams();
   const [payload, setPayload] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
+  const [downloadError, setDownloadError] = useState('');
   const [downloadingId, setDownloadingId] = useState('');
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    setError('');
+    setLoadError('');
+    setDownloadError('');
     myFilesAPI.getPublicFolder(token)
       .then((data) => { if (!cancelled) setPayload(data); })
-      .catch((requestError) => { if (!cancelled) setError(resolveError(requestError)); })
+      .catch((requestError) => { if (!cancelled) setLoadError(resolveError(requestError)); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [token]);
@@ -68,6 +58,7 @@ export default function SharedFolder() {
   const handleDownload = async (file) => {
     if (downloadingId) return;
     setDownloadingId(String(file.id));
+    setDownloadError('');
     try {
       const grant = await myFilesAPI.createPublicFolderDownloadGrant(token, file.id);
       const url = myFilesAPI.buildDownloadGrantUrl(grant?.download_path);
@@ -75,7 +66,7 @@ export default function SharedFolder() {
         throw new Error('download failed');
       }
     } catch (requestError) {
-      setError(resolveError(requestError));
+      setDownloadError(resolveError(requestError));
     } finally {
       setDownloadingId('');
     }
@@ -125,11 +116,11 @@ export default function SharedFolder() {
           </Stack>
         ) : null}
 
-        {!loading && error ? (
-          <Alert severity="warning" sx={{ maxWidth: 520, mx: 'auto' }}>{error}</Alert>
+        {!loading && loadError ? (
+          <Alert severity="warning" sx={{ maxWidth: 520, mx: 'auto' }}>{loadError}</Alert>
         ) : null}
 
-        {!loading && !error && payload ? (
+        {!loading && !loadError && payload ? (
           <Paper
             elevation={0}
             sx={{
@@ -163,6 +154,16 @@ export default function SharedFolder() {
                 </Typography>
               </Box>
             </Stack>
+
+            {downloadError ? (
+              <Alert
+                severity="warning"
+                onClose={() => setDownloadError('')}
+                sx={{ mx: { xs: 2, sm: 3 }, mt: 1.5 }}
+              >
+                {downloadError}
+              </Alert>
+            ) : null}
 
             {items.length === 0 ? (
               <Typography align="center" sx={{ color: MUTED, py: 5 }}>

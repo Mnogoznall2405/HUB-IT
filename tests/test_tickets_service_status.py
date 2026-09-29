@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -241,6 +243,76 @@ class TestSystemComment:
                 )
             ).all()
             assert len(comments) == 1
+
+
+class TestConcurrentStatusChange:
+    """AUD9-009: two change_status calls racing with the same expected_version.
+
+    Exactly one must win. The loser must get TicketsConflictError instead of
+    silently overwriting the winner's transition (lost update + duplicate
+    history). Repeats widen the racy window coverage; each iteration asserts
+    the full contract.
+    """
+
+    REPEATS = 30
+
+    def test_race_same_expected_version(self, service):
+        for attempt in range(self.REPEATS):
+            req = _create_request(service, status="at_cashier")
+            barrier = threading.Barrier(2)
+            kinds: list[str] = []
+            errors: list[BaseException | None] = []
+            lock = threading.Lock()
+
+            def _run(new_status: str) -> None:
+                err: BaseException | None = None
+                try:
+                    barrier.wait(timeout=15)
+                    service.change_status(
+                        request_id=req["id"],
+                        new_status=new_status,
+                        user=service._seed["operator_user"],
+                        expected_version=req["version"],
+                    )
+                    kind = "success"
+                except TicketsConflictError:
+                    kind = "conflict"
+                except Exception as exc:  # noqa: BLE001 — collected for assertion
+                    kind = "error"
+                    err = exc
+                with lock:
+                    kinds.append(kind)
+                    errors.append(err)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                f1 = pool.submit(_run, "purchased")
+                f2 = pool.submit(_run, "cancel_purchase")
+                f1.result()
+                f2.result()
+
+            assert sorted(kinds) == ["conflict", "success"], (
+                f"attempt {attempt}: kinds={kinds} errors={errors}"
+            )
+            assert all(err is None for err in errors), errors
+
+            with service._session_factory() as session:
+                row = session.get(TicketRequest, req["id"])
+                assert row.version == req["version"] + 1
+                assert row.status in {"purchased", "cancel_purchase"}
+                history = session.scalars(
+                    select(TicketChangeHistory).where(
+                        TicketChangeHistory.request_id == req["id"],
+                        TicketChangeHistory.field_name == "status",
+                    )
+                ).all()
+                assert len(history) == 1, f"attempt {attempt}: {len(history)} history rows"
+                comments = session.scalars(
+                    select(TicketComment).where(
+                        TicketComment.request_id == req["id"],
+                        TicketComment.comment_type == "system",
+                    )
+                ).all()
+                assert len(comments) == 1, f"attempt {attempt}: {len(comments)} system comments"
 
 
 class TestNotFound:

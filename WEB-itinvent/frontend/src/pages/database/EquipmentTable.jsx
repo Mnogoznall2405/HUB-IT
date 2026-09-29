@@ -14,6 +14,7 @@ import {
 } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
+import QrCode2Icon from '@mui/icons-material/QrCode2';
 import { ActionMenu, StatusChip } from '../../components/common';
 import EmployeeNameLink from './EmployeeNameLink';
 import {
@@ -31,7 +32,7 @@ import { EmployeeCompareBadge, useEmployeeCompare } from './employeeCompareConte
 const TABLE_VIRTUALIZE_THRESHOLD = 40;
 const TABLE_MAX_HEIGHT = 520;
 const TABLE_WIDTHS = {
-  consumables: { inv: 140, type: 140, model: 200, qty: 120, actions: 96 },
+  consumables: { inv: 140, type: 140, model: 200, qty: 120, actions: 140 },
   equipment: { select: 56, inv: 120, serial: 110, partNo: 130, type: 120, model: 170, employee: 220, compare: 64, act: 56, status: 110, actions: 56 },
   equipmentMobile: { inv: 130, employee: 210, compare: 56, act: 56, status: 110, actions: 56 },
 };
@@ -48,6 +49,7 @@ const EquipmentRow = memo(function EquipmentRow({
   openingCurrentActDocNo = '',
   onEditConsumableQty = null,
   onDeleteConsumable = null,
+  onShowConsumableQr = null,
   allowSelection = true,
   dataMode = DATA_MODE_EQUIPMENT,
   canWrite = true,
@@ -109,6 +111,15 @@ const EquipmentRow = memo(function EquipmentRow({
           </Typography>
         </TableCell>
         <TableCell padding="checkbox" sx={{ width: TABLE_WIDTHS.consumables.actions, minWidth: TABLE_WIDTHS.consumables.actions }} align="right">
+          {onShowConsumableQr ? (
+            <IconButton
+              size="small"
+              aria-label={`QR-код расходника ${invNo || ''}`.trim()}
+              onClick={() => onShowConsumableQr(item)}
+            >
+              <QrCode2Icon fontSize="small" />
+            </IconButton>
+          ) : null}
           {onEditConsumableQty ? (
             <IconButton
               size="small"
@@ -260,6 +271,7 @@ const EquipmentTable = memo(function EquipmentTable({
   openingCurrentActDocNo = '',
   onEditConsumableQty = null,
   onDeleteConsumable = null,
+  onShowConsumableQr = null,
   allowSelection = true,
   dataMode = DATA_MODE_EQUIPMENT,
   canWrite = true,
@@ -523,6 +535,7 @@ const EquipmentTable = memo(function EquipmentTable({
                 openingCurrentActDocNo={openingCurrentActDocNo}
                 onEditConsumableQty={onEditConsumableQty}
                 onDeleteConsumable={onDeleteConsumable}
+                onShowConsumableQr={onShowConsumableQr}
                 allowSelection={allowSelection}
                 dataMode={dataMode}
                 canWrite={canWrite}

@@ -229,6 +229,8 @@ const ChatMessageList = memo(function ChatMessageList({
   highlightedMessageId,
   getReadTargetRef,
   onToggleReaction,
+  onPollVote,
+  onPollClose,
   onScrollToMessage,
   currentUserId,
   aiTypingStatus,
@@ -349,6 +351,8 @@ const ChatMessageList = memo(function ChatMessageList({
                   mobileInteractionsEnabled={mobileInteractionsEnabled}
                   readTargetRef={getReadTargetRef?.(item.message?.id)}
                   onToggleReactionRaw={onToggleReaction}
+                  onPollVote={onPollVote}
+                  onPollClose={onPollClose}
                   onScrollToMessage={onScrollToMessage}
                   currentUserId={currentUserId}
                 />

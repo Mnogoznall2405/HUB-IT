@@ -40,9 +40,16 @@ class BrowserProfile:
     browser: str
     profile: str
     history_path: Path
+    windows_user: str = ""
 
 
-def discover_profiles(local_app_data: Path | None = None) -> list[BrowserProfile]:
+def profile_cursor_key(profile: BrowserProfile) -> str:
+    user = str(profile.windows_user or "").strip()
+    base = f"{profile.browser}|{profile.profile}"
+    return f"{user}|{base}" if user else base
+
+
+def discover_profiles(local_app_data: Path | None = None, *, windows_user: str = "") -> list[BrowserProfile]:
     root = Path(local_app_data or os.environ.get("LOCALAPPDATA", "") or "")
     if not root.is_dir():
         return []
@@ -64,8 +71,28 @@ def discover_profiles(local_app_data: Path | None = None) -> list[BrowserProfile
                         browser=str(spec["browser"]),
                         profile=name,
                         history_path=hist,
+                        windows_user=str(windows_user or ""),
                     )
                 )
+    return found
+
+
+def discover_all_user_profiles(users_root: Path | None = None) -> list[BrowserProfile]:
+    root = Path(users_root) if users_root else Path(os.environ.get("SystemDrive", "C:") + os.sep) / "Users"
+    if not root.is_dir():
+        return []
+    skip = {"all users", "default", "default user", "public", "defaultapppool"}
+    found: list[BrowserProfile] = []
+    for child in sorted(root.iterdir()):
+        if not child.is_dir():
+            continue
+        name = child.name.strip()
+        if not name or name.lower() in skip or name.startswith("."):
+            continue
+        local_app_data = child / "AppData" / "Local"
+        if not local_app_data.is_dir():
+            continue
+        found.extend(discover_profiles(local_app_data, windows_user=name))
     return found
 
 
@@ -224,7 +251,7 @@ def bootstrap_cursors(profiles: list[BrowserProfile], work_dir: Path | None = No
     """Start from current max visit_id so first run does not dump full history."""
     cursors: dict[str, int] = {}
     for profile in profiles:
-        key = f"{profile.browser}|{profile.profile}"
+        key = profile_cursor_key(profile)
         tmp_root = Path(work_dir or tempfile.gettempdir()) / "hub_it_browser_hist"
         tmp_dir = tmp_root / f"{profile.browser}_{profile.profile}"
         copied = _copy_history_db(profile.history_path, tmp_dir)

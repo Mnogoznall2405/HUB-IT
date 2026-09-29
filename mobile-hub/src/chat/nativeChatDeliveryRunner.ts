@@ -4,15 +4,16 @@ import {
   readNativeChatOutbox,
   subscribeNativeChatOutbox,
   NATIVE_CHAT_MAX_DELIVERY_ATTEMPTS,
+  type NativeChatDeliveryHelpers,
   type NativeChatOutboxEntry,
 } from './nativeChatOutbox';
 import type { ChatMessage } from '../api/types';
 
-/** Foreground session-owned delivery, independent of the currently open dialog. */
+/** Session-owned delivery, independent of the currently open dialog. */
 export function createNativeChatDeliveryRunner(options: {
   userId: number;
   canDeliver: () => boolean;
-  transport: (entry: NativeChatOutboxEntry, signal: AbortSignal) => Promise<ChatMessage>;
+  transport: (entry: NativeChatOutboxEntry, signal: AbortSignal, helpers: NativeChatDeliveryHelpers) => Promise<ChatMessage>;
   persistConfirmed: (entry: NativeChatOutboxEntry, saved: ChatMessage) => Promise<boolean>;
   onError?: () => void;
 }) {
@@ -62,8 +63,17 @@ export function createNativeChatDeliveryRunner(options: {
         const state = row.delivery?.state;
         if (!state) continue; // No opt-in metadata on old/manual entries.
         const dialog = row.message.conversation_id;
-        if (state !== 'confirmed' && blockedDialogs.has(dialog)) continue;
-        if (state !== 'confirmed' && state !== 'cancelled') blockedDialogs.add(dialog);
+        const unconfirmed = state !== 'confirmed' && state !== 'cancelled';
+        // A row that cannot send right now (paused, retry waiting on
+        // notBefore, attempts exhausted, cancelled) must not hold the FIFO
+        // position against other live messages of the same dialog.
+        const canAttemptNow = unconfirmed && state !== 'paused'
+          && row.delivery!.attempts < NATIVE_CHAT_MAX_DELIVERY_ATTEMPTS
+          && (state !== 'retry' || (row.delivery!.notBefore || 0) <= Date.now());
+        if (canAttemptNow || row.busy) {
+          if (blockedDialogs.has(dialog)) continue;
+          blockedDialogs.add(dialog);
+        }
         if (state === 'cancelled' || state === 'paused') continue;
         const rowKey = JSON.stringify([dialog, row.message.client_message_id]);
         if (jobs.has(rowKey)) continue;

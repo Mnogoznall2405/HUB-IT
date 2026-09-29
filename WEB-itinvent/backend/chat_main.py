@@ -257,6 +257,9 @@ if rate_limit_exception is not None and rate_limit_exception_handler is not None
     app.add_exception_handler(rate_limit_exception, rate_limit_exception_handler)
 
 
+_CHAT_PROCESS_STARTED_MONOTONIC = time.monotonic()
+
+
 @app.get("/health")
 async def health_check():
     return {
@@ -264,6 +267,20 @@ async def health_check():
         "version": config.app.version,
         "runtime_role": get_runtime_role(),
         "process": "chat",
+    }
+
+
+# ARR health probes must never hang behind a slow database or realtime check:
+# a DB stall must not mark every chat node unhealthy at once (see plan I6).
+@app.get("/health/live")
+async def health_live():
+    return {
+        "status": "ok",
+        "version": config.app.version,
+        "runtime_role": get_runtime_role(),
+        "process": "chat",
+        "node": os.getenv("CHAT_REALTIME_NODE_ID") or "single",
+        "uptime_sec": round(time.monotonic() - _CHAT_PROCESS_STARTED_MONOTONIC, 1),
     }
 
 

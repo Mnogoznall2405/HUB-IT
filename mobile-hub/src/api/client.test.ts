@@ -4,6 +4,7 @@ import * as tokenStore from '../auth/tokenStore';
 import { subscribeSessionExpired } from '../auth/sessionEvents';
 import { setNativeOfflineReadOnly } from '../offline/nativeOfflinePolicy';
 import { readNativeSnapshot, writeNativeSnapshot } from '../cache/nativeSnapshotCache';
+import { getApiInflightSummary, resetApiInflight } from '../diagnostics/apiInflight';
 
 const originalAdapter = apiClient.defaults.adapter;
 
@@ -345,4 +346,63 @@ it('rejects an old successful response instead of exposing its data after accoun
   await tokenStore.setTokens('new-access', 'new-refresh');
   finish();
   await rejected;
+});
+
+describe('in-flight request accounting', () => {
+  beforeEach(() => resetApiInflight());
+
+  it('counts concurrent requests and settles back to zero', async () => {
+    await tokenStore.setTokens('access', 'refresh');
+    const releases: Array<() => void> = [];
+    let resolveBoth!: () => void;
+    const both = new Promise<void>((resolve) => { resolveBoth = resolve; });
+    apiClient.defaults.adapter = ((config: InternalAxiosRequestConfig) => new Promise((resolve) => {
+      releases.push(() => resolve(response(config, { ok: true })));
+      if (releases.length === 2) resolveBoth();
+    })) as never;
+
+    const first = apiClient.get('/inflight-one');
+    const second = apiClient.get('/inflight-two');
+    await both;
+    expect(getApiInflightSummary().current).toBe(2);
+    releases.forEach((release) => release());
+    await Promise.all([first, second]);
+
+    const summary = getApiInflightSummary();
+    expect(summary.current).toBe(0);
+    expect(summary.maxObserved).toBe(2);
+    expect(summary.started).toBe(2);
+    expect(summary.completed).toBe(2);
+  });
+
+  it('stays balanced through a 401 refresh retry', async () => {
+    await tokenStore.setTokens('expired-access', 'refresh-token');
+    jest.spyOn(axios, 'post').mockResolvedValue(response({}, {
+      access_token: 'new-access',
+      refresh_token: 'new-refresh',
+    }) as never);
+    apiClient.defaults.adapter = (async (config: InternalAxiosRequestConfig) => {
+      const authorization = String(config.headers?.Authorization || '');
+      if (authorization === 'Bearer expired-access') return unauthorized(config);
+      return response(config, { ok: true });
+    }) as never;
+
+    await apiClient.get('/protected');
+
+    const summary = getApiInflightSummary();
+    expect(summary.current).toBe(0);
+    expect(summary.completed).toBe(summary.started);
+    expect(summary.started).toBe(2);
+  });
+
+  it('does not count mutations blocked by the offline policy', async () => {
+    apiClient.defaults.adapter = (async (config: InternalAxiosRequestConfig) => response(config, { ok: true })) as never;
+    setNativeOfflineReadOnly(true);
+
+    await expect(apiClient.post('/profile/avatar', { value: 'x' })).rejects.toMatchObject({
+      code: 'HUBIT_OFFLINE_READ_ONLY',
+    });
+    expect(getApiInflightSummary().started).toBe(0);
+    expect(getApiInflightSummary().current).toBe(0);
+  });
 });

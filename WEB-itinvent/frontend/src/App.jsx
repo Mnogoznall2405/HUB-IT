@@ -54,9 +54,11 @@ import {
   loadProfileRoute,
   loadAdminRoute,
   loadScanCenterRoute,
+  loadVoiceVideoRoute,
   loadSettingsRoute,
   loadPasswordsRoute,
   loadGroupsAccessRoute,
+  loadHelpRoute,
   loadSharedFileRoute,
   loadSharedFolderRoute,
   loadStatisticsRoute,
@@ -88,6 +90,7 @@ const Statistics = lazy(loadStatisticsRoute);
 const Computers = lazy(loadComputersRoute);
 const FileEgress = lazy(loadFileEgressRoute);
 const ScanCenter = lazy(loadScanCenterRoute);
+const VoiceVideo = lazy(loadVoiceVideoRoute);
 const Mfu = lazy(loadMfuRoute);
 const Mail = lazy(loadMailRoute);
 const MobileMenu = lazy(loadMobileMenuRoute);
@@ -106,6 +109,7 @@ const GroupsAccess = lazy(loadGroupsAccessRoute);
 const MyFiles = lazy(loadMyFilesRoute);
 const SharedFile = lazy(loadSharedFileRoute);
 const SharedFolder = lazy(loadSharedFolderRoute);
+const Help = lazy(loadHelpRoute);
 
 const routePermissions = [
   { path: '/dashboard', permissions: ['dashboard.read'] },
@@ -118,6 +122,7 @@ const routePermissions = [
   { path: '/mfu', permissions: ['mfu.read'] },
   { path: '/computers', permissions: ['computers.read'] },
   { path: '/scan-center', permissions: ['scan.read'] },
+  { path: '/voice', permissions: ['voice.read'] },
   { path: '/dlp', adminOnly: true },
   { path: '/file-egress', adminOnly: true },
   { path: '/statistics', permissions: ['statistics.read'] },
@@ -634,6 +639,10 @@ function AuthenticatedAppShell() {
                   element={<PermissionRoute permission="scan.read"><ScanCenter /></PermissionRoute>}
                 />
                 <Route
+                  path="/voice"
+                  element={<PermissionRoute permission="voice.read"><VoiceVideo /></PermissionRoute>}
+                />
+                <Route
                   path="/dlp"
                   element={<PermissionRoute adminOnly><FileEgress /></PermissionRoute>}
                 />
@@ -709,11 +718,13 @@ function AuthenticatedAppShell() {
                   path="/my-files"
                   element={<PermissionRoute permission="my_files.read"><MyFiles /></PermissionRoute>}
                 />
+                <Route path="/kb" element={<Navigate to="/help" replace />} />
                 <Route
-                  path="/kb"
+                  path="/kb/manage"
                   element={<PermissionRoute permission="kb.read"><KnowledgeBase /></PermissionRoute>}
                 />
                 <Route path="/profile" element={<Profile />} />
+                <Route path="/help" element={<Help />} />
                 <Route path="/settings/:section?" element={<Settings />} />
                 <Route path="/admin/:section?" element={<AdminAreaRoute><Admin /></AdminAreaRoute>} />
                 </Route>

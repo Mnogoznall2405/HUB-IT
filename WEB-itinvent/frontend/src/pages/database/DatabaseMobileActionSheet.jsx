@@ -2,6 +2,7 @@ import { memo } from 'react';
 import { Box, Checkbox, Drawer, Typography } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import MyLocationIcon from '@mui/icons-material/MyLocation';
+import SyncIcon from '@mui/icons-material/Sync';
 
 import EnhancedFabAction from './EnhancedFabAction';
 
@@ -12,6 +13,8 @@ function DatabaseMobileActionSheet({
   open = false,
   onClose = noop,
   isConsumablesMode = false,
+  canAdSync = false,
+  onOpenAdSync = noop,
   identifyWorkspaceLoading = false,
   hasExpandedVisible = false,
   onIdentifyWorkspace = noop,
@@ -82,6 +85,15 @@ function DatabaseMobileActionSheet({
             label="Свернуть разделы"
             description="Скрыть все открытые группы"
             onClick={() => runAndClose(onCollapseAll)}
+          />
+        )}
+
+        {canAdSync && (
+          <EnhancedFabAction
+            icon={<SyncIcon />}
+            label="Синк сотрудников AD"
+            description="Загрузить пользователей AD во все базы ITINVENT"
+            onClick={() => runAndClose(onOpenAdSync)}
           />
         )}
 

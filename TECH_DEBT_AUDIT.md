@@ -1,3 +1,221 @@
+# Полный аудит HUB-IT — 2026-09-19
+
+**Область:** весь монорепозиторий (web backend/frontend, chat, bot, scan, inventory, агенты, desktop, mobile-hub, SQL/PostgreSQL/Alembic, JSON-хранилища).
+**Метод:** чтение `AGENTS.md`, `CONTEXT.md`, `documentation/technical/REPOSITORY_MAP.md`, существующего журнала `TECH_DEBT_AUDIT.md`; 4 параллельных code-scan по подсистемам с обязательной ссылкой `file:line`; выборочная верификация ключевых цитат по коду. Команды, тесты, `EXPLAIN` и runtime-проверки в этом прогоне не запускались.
+**Ограничения аудита:** это статический аудит, не pentest и не нагрузочное тестирование. Номера строк — снимок на дату прогона и могут смещаться. Пункты, где нельзя отличить долг от осознанного решения, вынесены в «Открытые вопросы».
+
+## Executive summary
+
+1. **Critical Security:** агенты scan/inventory аутентифицируются общим `api_key`, который не связан с заявленным `agent_id` (`scan_server/app.py:232`, `inventory_server/app.py:118`). Держатель одного ключа может представляться любым узлом и подделывать `hostname/branch`.
+2. **Critical Correctness:** optimistic locking в `tickets_service.py:902` реализован как check-then-act; два конкурента с одинаковым `expected_version` теряют обновление. Правильный образец уже есть в `construction_work_service.py:180`.
+3. **High Security:** письмо рендерится через `dangerouslySetInnerHTML` без санитизации внутри компонента, sandbox по умолчанию выключен (`MailHtmlBody.jsx:75`, `mailHtmlSandboxFlags.js:29`).
+4. **High Correctness:** claim очередей неатомарен там, где нет PostgreSQL: `app_push_outbox_service.py:370-392`, `scan_server/database.py:3410-3442` (SQLite-ветка `SELECT` + N `UPDATE` под локальным `RLock`).
+5. **High Perf:** поиск оборудования по SQL Server строит 16 `OR LIKE '%term%'` и `CAST(INV_NO AS VARCHAR) LIKE` (`database/equipment_search_reads.py:38-101`) — full scan по ITEMS с 7 JOIN; выигрыш от индексов/fast-path измеряется десятками раз.
+6. **High Perf:** чтения chat идут через write-пул, листинги диалогов — старый N+1-путь (`chat_serialization.py:68-116`, `chat_conversation_read_store.py:130,300-318`); цепочка включает полный скан пользователей и hub-метаданные внутри удержания коннекшна.
+7. **High Perf Frontend:** любые мутации в `Database`/`MyFiles` вызывают полный refetch (`useDatabaseEquipmentData.js:349-429`, `MyFiles.jsx:172-208`), а `Networks`/`ScanCenter` строят waterfall-цепочки запросов.
+8. **High Fragility:** runtime `CREATE TABLE/ALTER TABLE/UPDATE`-backfill выполняется при старте/в request path (hub, chat, appdb, scan) вместо Alembic.
+9. **High Fragility:** JSON-ledger `data/*.json` пишется через фиксированный `.tmp` и только in-process lock при нескольких процессах web+bot.
+10. **Позитив:** pytest-набор вырос до ~1873 тестов, scan/inventory-дубликаты синхронизированы и защищены тестами, LLM-вызовы сведены к `shared/llm` (остался legacy-путь импорта в 3 файлах).
+
+## Архитектурная модель (как есть)
+
+- **Клиенты:** React SPA `WEB-itinvent/frontend` (общий для браузера и Desktop WebView2), Expo Android `mobile-hub/`, Telegram-бот `bot/`, inventory-agent `agent.py`/`agent/`, scan sidecar `scan_agent/`.
+- **Серверы:** FastAPI `WEB-itinvent/backend` (:8001) + отдельный chat-процесс `backend/chat_main.py` (:8002), `inventory_server/` (ingest), `scan_server/` (:8011), Telegram-бот. PM2 управляет процессами; frontend — IIS.
+- **Хранилища:** SQL Server (legacy ITINVENT — source of truth оборудования), PostgreSQL `hubit_chat` (app/chat/scan runtime, TLS, `TMN-SRV-DB-06`), SQLite-dev-fallback у scan, общие JSON `data/*.json` у bot+web.
+- **Ключевая хрупкость границ:** chat может работать в legacy-режиме со схемой `public` через `schema_translate_map` (`chat/db.py:247`); scan-PG идёт через `create_all`, SQLite — через raw DDL (`scan_server/database.py:921-940`), из-за чего схемы дрейфуют.
+- **Управление конфигурацией:** корневой `.env`; настройки дополнительно читаются через `services/env_settings_service.py`.
+
+## Findings
+
+Легенда: Severity = Critical/High/Medium/Low; Effort = S (<1 день), M (1-5 дней), L (>1 недели).
+
+### Security
+
+| ID | File:Line | Severity | Effort | Описание | Рекомендация |
+|---|---|---|---|---|---|
+| AUD9-001 | `scan_server/app.py:232-234,987-1146` | Critical | L | Проверка `token in api_keys`; `agent_id/hostname/branch` из payload не сверяются с ключом | Enrollment и per-agent отзываемый credential либо mTLS; mismatch → 401; до внедрения считать ключ сетевым барьером, не идентичностью |
+| AUD9-002 | `inventory_server/app.py:118,165-216` | Critical | L | Тот же общий ключ; `dedupe_key/computer_name` не привязаны к отправителю | Единый enrollment-механизм с scan; envelope с `agent_id` и его проверка |
+| AUD9-003 | `WEB-itinvent/backend/config.py:366` | High | S | Placeholder JWT-secret как fallback; пустые значения в legacy env | Fail-fast (`ConfigurationError`) в production при placeholder/empty; тест на старт |
+| AUD9-004 | `services/docflow_dm_service_client.py:301-310`; `services/docflow_1c_client.py:388-451` | High | M | Downgrade-флаг insecure HTTP; LDAP-fallback и process-wide кэш сетевых шар для файлов 1С | Запретить fallback без пилота и аудита; шара на пользователя; логировать отказ |
+| AUD9-005 | `services/secret_crypto_service.py:178-232` | High | M | DPAPI-user привязка (не расшифровать после переезда); non-strict Fernet принимает слабые ключи | Требовать canonical Fernet strict в prod, ротация с legacy-окном, аудит доступа |
+| AUD9-006 | `MailHtmlBody.jsx:35,75`; `mailHtmlSandboxFlags.js:6,29` | High | S/M | `dangerouslySetInnerHTML` без санитизации в самом компоненте; sandbox off по умолчанию | `sanitizeMailHtmlFragment()` внутри компонента + sandbox on по умолчанию; тест XSS-payload |
+| AUD9-007 | cross-ref `SCN-001/SCN-002` | High | L | Evidence (matched patterns/OCR) хранится без приложения-шифрования | Не дублировать; довести существующий SCN-002 |
+
+### Concurrency / Correctness
+
+| ID | File:Line | Severity | Effort | Описание | Рекомендация |
+|---|---|---|---|---|---|
+| AUD9-009 | `services/tickets_service.py:890-975` | Critical | S | `SELECT → if version != expected → ... → add+flush → re-SELECT`: lost update и дубль history. **RESOLVED 2026-09-19** — условный `UPDATE ... WHERE id AND version` + `rowcount==0 → 409`; race-тест `tests/test_tickets_service_status.py::TestConcurrentStatusChange` (30 итераций, 1 победитель + 1 конфликт) | `UPDATE ... WHERE id=? AND version=?` + `rowcount==0 → 409`; образец `construction_work_service.py:180-181`; параллельный тест |
+| AUD9-010 | `services/app_push_outbox_service.py:351,370-392` | High | M | `FOR UPDATE SKIP LOCKED` только для PostgreSQL; SQLite-ветка — простой claim; stale-recover без лока | Атомарный claim для каждого backend; single-run lock; тест дублей на двух воркерах |
+| AUD9-011 | `scan_server/database.py:3410-3442` | High | M | SQLite `claim_next_jobs`: `SELECT LIMIT` + N `UPDATE` под локальным `RLock`; два процесса могут взять job дважды | Атомарный `UPDATE ... RETURNING` или prod-only PG; тест двухпроцессного claim |
+| AUD9-012 | `scan_server/database.py:3117-3231` | Medium | M | Spool-PDF пишется до `INSERT` job; уникальность закрывается fallback-проверкой, сироты чистятся компенсацией | Вставка-first по unique `event_id`, spool после коммита (tmp+rename) |
+| AUD9-013 | `appdb/db.py:410-429`; `services/auth_runtime_store_service.py:522`; `ai_sandbox/control.py:179,196` | Medium | S/M | Блокирующий `time.sleep` в retry, вызываемом из request path | `asyncio.sleep` в async-ветке, bounded retry, метрика lock_retry |
+| AUD9-014 | `chat/db.py:247-252,757-780` | High | M | `schema_translate_map chat→public` выбирается один раз и кэшируется движком; при обеих схемах возможен split-brain public/chat | Startup-assert фактической схемы, fail-closed при двух схемах, инвалидация кэша, проверка перед миграцией/`alembic check` |
+| AUD9-015 | `services/ad_groups_access_service.py:319`; `services/equipment_recent_cards_service.py:192`; `local_store.py:305,424,449`; `bot/local_json_store.py:13`; `json_db/works.py:227,648` | Medium | M | Фиксированный `.tmp` + только in-process lock: межпроцессная коллизия web+bot | `uuid.tmp + os.replace` (образец `scan_agent/agent.py:265`, `scan_server/pdf_spool.py:13`) + межпроцессный lock или перенос в PG |
+
+### Performance / SQL
+
+| ID | File:Line | Severity | Effort | Описание | Рекомендация |
+|---|---|---|---|---|---|
+| AUD9-016 | `database/equipment_search_reads.py:38-101,156-160` | High | L | 16 `OR LIKE '%term%'` + `CAST(...) LIKE` + OFFSET/FETCH: full scan ITEMS и 7 JOIN | Fast-path `isdigit → INV_NO=?` для всех входов; pg_trgm/полнотекст; явный column-list; замер EXPLAIN до/после на тестовой БД |
+| AUD9-017 | `database/queries.py:2000,2033,2067` | High | M | `SELECT TOP 50 *` по динамическому набору; `except Exception: rows=[]` без лога | Явные колонки, `logger.exception` + метрика, envelope `failed_dbs` как в `:521-535`; индекс под `ITEM_ID/DOC_NO/CREATE_DATE` |
+| AUD9-018 | `services/tickets_service.py:3076-3079` | Medium | S | N+1 `session.get(AppUser, ...)` в цикле + дополнительные запросы дашборда | Batch `IN (_)`/`joinedload`, один запрос на показатель |
+| AUD9-019 | `services/mail_service.py:3537-3558,4958,1268` | High | M/L | Bulk-операции по письмам — отдельный EWS-вызов на элемент; поиск контактов сканирует всех пользователей на каждый ввод | Batch EWS + идемпотентность; серверный поиск/кэш контактов с `TOP N` |
+| AUD9-020 | `chat/chat_serialization.py:68-116,240-256`; `chat/service.py:1233-1263`; `chat/chat_conversation_read_store.py:130,300-318` | High | M | N+1 при сериализации диалогов; fan-out проверок задач при шаринге; листинги читают через write-сессию и полный скан пользователей внутри коннекшна | Перевести все листинги на batched read-store, `chat_read_session`, batch task metadata; замер query count и p95 `/conversations` |
+| AUD9-021 | `database/connection.py:147,212-220` | High | M | `pool.get(timeout=30)` блокирует поток; `commit()` даже после `SELECT` | Раздельные read/write пулы, commit только после записи, метрика queue-wait |
+| AUD9-022 | `services/native_push_service.py:316-341,333,420` | Medium | S/M | Синхронный `urlopen(timeout=10)` в request path; гонка refresh токена без lock | `to_thread` + `threading.Lock` вокруг refresh + backoff/circuit breaker |
+| AUD9-023 | `services/act_upload_service.py:667-711`; `services/docflow_service.py:306-336` | High | L | Загрузка акта и 1С-вызовы держат HTTP до 150с/95с; повтор без идемпотентности | Background job/outbox → `202 + poll`; timeout-бюджет; `Idempotency-Key` |
+| AUD9-024 | `ai_chat/service.py:4079-4590` | High | L | DB-сессии удерживаются через LLM/tool-loop (до 45с на попытку) | Checkout после LLM, короткие транзакции, бюджет соединений, wall-clock budget |
+| AUD9-025 | `ai_chat/tools/network.py:324,463,1260`; `services/mfu_monitor_service.py:1524`; `services/transfer_service.py:280`; `services/my_files_antivirus_service.py:101` | Medium | M | Синхронные `subprocess.run` (ping/ffmpeg/ClamAV) | `await asyncio.to_thread(...)`/`run_in_threadpool` + timeout; образец `chat/link_preview.py:21-22` |
+| AUD9-026 | `bot/equipment_data_manager.py:224,264,365`; `bot/services/suggestions.py:59-71,178,223-224`; `bot/universal_database.py:309` | Medium | M | Полная загрузка JSON на каждый lookup; двойной SQL при miss; O(n*m) скоринг в Python; запрос на вариант | Индекс/кэш перемещений, один SQL с `LIMIT`, вынести скоринг в SQL или мемоизировать |
+| AUD9-027 | `chat/models.py:61,289-298,308,392-404` | Medium | M | Нет композитных/покрывающих индексов под unread/inbox/ленту реакций | Alembic-миграция с композитными индексами; перед этим проверить фактическую runtime-схему |
+| AUD9-028 | `alembic/versions/20260918_0118_inventory_search_indexes.py:62-75` и соседние | Medium | M | Индексы (btree+GIN) в одной транзакции без `CONCURRENTLY`, без preflight по объёму/локам/месту | `CREATE INDEX CONCURRENTLY` + `IF NOT EXISTS` + `lock_timeout/statement_timeout` + preflight |
+| AUD9-029 | `scan_server/scan_host_read_store.py:339-382`; `scan_server/database.py:683-747`; `scan_agent_read_store.py:328,467` | High | M | SQLite-фолбэк хостов — full-scan в Python; live-resolve SQL-контекста по каждому хосту | `IN (...)` фильтры и для SQLite; batch-resolve контекстов; cross-ref SCN-004 |
+| AUD9-030 | `scan_server/database.py:1480-1511`; `worker.py:180`; `app.py:769` | Low | S | Reconciliation spool сканирует все jobs и stat-ит каждый файл на старте | Фильтр по `status/source_kind`, индекс, пейджинг |
+| AUD9-031 | `scan_server/ocr.py:20`; `worker.py:393,497`; `document_conversion.py:53-79` | Medium | L | Глобальный OCR-пул; LibreOffice `subprocess.run(timeout=180)` держит job-тред; `future.result` до ~930с | Отдельная квота/пул для конвертации, kill по бюджету, рассмотреть ProcessPool/вынос конверта |
+| AUD9-032 | `chat/db.py:363-391` vs `chat_conversation_read_store.py:130` | Medium | S/M | `chat_read_session` (READ ONLY + statement_timeout) существует, но листинги его не используют | Перевести чтения chat на read-сессию; аудит `held>100ms` |
+
+### Архитектура и дублирование
+
+| ID | File:Line | Severity | Effort | Описание | Рекомендация |
+|---|---|---|---|---|---|
+| AUD9-033 | `services/hub_service.py:1` (~9.5k LOC), `:1075-1592` | High | L | God-module + runtime DDL задач/проектов/анонсов в request path | Слайсы по доменам (tasks/feed/push/files) с freeze-бюджетом; DDL — в Alembic |
+| AUD9-034 | `mail_service.py` (~5k), `ai_chat/service.py` (~4.9k), `warehouse_1c_service.py` (~4.8k), `database/queries.py` (~4.6k), `network_service.py` (~4.2k), `chat/service.py` (~3.4k); routers `inventory.py` (~2.9k), `equipment.py` (~2.5k), `mail.py` (~2.2k), `hub.py` (~2.2k), `auth.py` (~2.2k) | High | L | God-файлы и god-роутеры; правка в одном домене роняет соседние | Продолжить проверенный паттерн `mail_*`/`chat/*`-модулей: `router → service → store`, ежемесячные слайсы с тестами |
+| AUD9-035 | `Networks.jsx` (~3.2k), `MainLayout.jsx` (~3k), `ChatContextPanel.jsx` (~3.1k), `Mail.jsx` (~2.9k), `ScanCenterPage.jsx` (~2.4k), `Computers.jsx` (~2.2k), `ChatThread.jsx` (~1.6k), `ChatBubble.jsx` (~1.5k), `api/client.js` (~1.4k) | High | L | Крупные route-composer'ы и god-фасад API | Продолжить composer/hook-паттерн (F024/F037/F042); `client.js` — только re-export, новые импорты из доменных модулей |
+| AUD9-036 | `MainLayout.jsx:48` + `api/client.js:1-70,403-1713` | Medium | S/M | Шелл импортирует god-фасад, весь граф API попадает в initial chunk | Прямые импорты доменных модулей, tree-shaking, замер исходного bundle |
+| AUD9-037 | `chat/db.py:422-751`; `appdb/db.py:175-208`; `scan_server/db.py:46-79`; `scan_server/database.py:843-940` | High | L | Runtime `create_all/ALTER/UPDATE`-backfill при старте, включая тяжёлые `ROW_NUMBER()`-пересчёты | В prod — только Alembic; в runtime — verify; перед миграцией проверять схему, объём, locks, место |
+| AUD9-038 | `agent.py:441`; `agent/src/itinvent_agent/agent.py:498` | High | M | Scan sidecar запускается внутри процесса inventory-агента — нарушение инварианта изоляции контуров | Раздельные процессы/супервизия и раздельные env; тест изоляции рестарта |
+| AUD9-039 | `desktop/Hub.Desktop/...` + `desktopBridge.js:78,234,567-576` | Medium | S/M | Очередь shared-файлов без лимита; молчаливый drop >4096 байт; `RecreateAsync` без отмены | Cap+evict, явная ошибка `too_large`, `CancellationToken` |
+| AUD9-040 | `mobile-hub/src/components/ui/AuthenticatedRemoteImage.tsx:30-60`; `mobile-hub/src/updates/useMobileUpdater.ts` | Medium | S/M | Async cache-работа на каждую картинку без списка ключей; 30-минутный поллинг апдейтера без backoff | Мемоизация cache-keys, backoff/джиттер, отмена при unmount |
+
+### Error handling / Observability
+
+| ID | File:Line | Severity | Effort | Описание | Рекомендация |
+|---|---|---|---|---|---|
+| AUD9-041 | `scan_server/app.py:566-590,871` | Medium | M | `/health` всегда `ok`: нет worker heartbeat, DB write probe, проверки rus OCR и spool | `/health/ready` (DB ping/write, возраст worker tick, spool GB, OCR availability) + watchdog по worker/DB; cross-ref SCN-005 |
+| AUD9-042 | `database/queries.py:483,494,599,1243,1836,2484`; `equipment_current_act_reads.py:247`; `json_db/works.py:625`; `chat/message_persistence.py:340-440`; `ad_users_service.py:1631` | Medium | M | Разнородное проглатывание исключений: от `except Exception: []` до голого `except:` | Типизированные catch + `logger.warning/exception`; единый контракт ошибок (envelope/degraded) |
+| AUD9-043 | `scan_server/app.py:653,782` | Medium | M | Глобальный `RLock` ScanStore и пересоздаваемый семафор ingest — head-of-line блокировка | Split read/write lock, для PG убрать глобальный lock, async pool |
+
+### Frontend / Realtime
+
+| ID | File:Line | Severity | Effort | Описание | Рекомендация |
+|---|---|---|---|---|---|
+| AUD9-044 | `pages/MyFiles.jsx:172-208,314-489,733-771`; `pages/database/useDatabaseEquipmentData.js:349-429,523`; `useDatabaseAddWorkflows.js:45,52,448`; `useDatabaseConsumableQty.js:85`; `useTransferActJob.js:87-102` | Medium | M | Полный refetch после каждой мутации; лимит 1000 записей на перезагрузку | Точечный patch/invalidate по id, пагинация, оптимистичные обновления |
+| AUD9-045 | `pages/Networks.jsx:751-760,882-973`; `pages/scan-center/ScanCenterPage.jsx:800-1110,1450-1515`; `pages/Mfu.jsx:560-586,931` | Medium | M | Последовательные waterfall-загрузки и дублирующие reload после действий | `Promise.allSettled` независимого, единый reload, дедуп по id |
+| AUD9-046 | `vite.config.js:118-124`; `lib/routeLoaders.js:50-86`; `Networks.jsx:56-62` | Medium | M | Нет `manualChunks`; pdfjs/excalidraw/xyflow/mui-icons/quill в общем графе; синхронные импорты карты | `manualChunks(vendor/mui/pdfjs/excalidraw)`, `lazy()` для тяжёлых виджетов, prefetch по hover; замер initial JS |
+| AUD9-047 | `lib/chatSocket.js:28,507-532,576-582,838-885` | High | M | Нет dedupe по messageId; молчаливый `shift()` при переполнении очереди; отправка без request_id/ретрая; лавина SWR-инвалидаций при burst | `Map<messageId>` с ignore-дублей, coalesce инвалидаций, `request_id` + ack/retry |
+| AUD9-048 | `lib/chatSocket.js:29` vs `lib/hubRealtimeSocket.js:20-23,321-347`; `lib/taskCanvasSocket.js:3-6,149-173` | Medium | M | Расходятся коды `NON_RECONNECTABLE` (4401), heartbeat до ~75с, `bufferedAmount` без обратной связи | Единый reconnectPolicy, видимый статус reconnect, сброс missedPongs по любому сообщению |
+| AUD9-049 | `contexts/AuthContext.jsx:290-295`; `api/client.js:330-394`; `pages/ConstructionObjects.jsx:439` | Medium | S/M | Нет единого баннера expired-session/reconnect; локальные обработки 401/403 разъезжаются | Один `SessionExpiredBanner` + `recoverSocketAfterAuth()` для всех сокетов |
+| AUD9-050 | `ScanCenterPage.jsx:1251`; `MailMessageList.jsx:1271-1400`; `Mfu.jsx:426-549` | Low | S/M | Разъезжаются loading/empty/error/retry; silent refresh залипает без индикатора | Унифицированные состояния `Loading/Empty/ErrorRetry` + `aria-busy` |
+| AUD9-051 | `FeedPostCard.jsx:281-353`; `TaskCard.jsx:23-27`; `AnnouncementCard.jsx:24-26`; `ChatBubble.jsx:664-731,798` | Low | S/M | Хардкод цветов мимо `palette.mode`/токенов — тёмная тема ломается точечно | Только токены темы; визуальный regression-тест dark |
+| AUD9-052 | `services/hub_service.py:791,825-838,3915`; `chat/db.py:378`; `scan_server/database.py:897`; `docflow_1c_client.py:1314-1342` | Medium | S/M | f-string SQL (сейчас из allowlist-констант) — заготовка под ошибку при расширении | Bound-параметры и квотирование идентификаторов |
+
+### Config / Tests / Docs
+
+| ID | File:Line | Severity | Effort | Описание | Рекомендация |
+|---|---|---|---|---|---|
+| AUD9-053 | cross-ref F009 | Medium | S | `.env`-файлы в git при наличии guard-теста | Завершить вынос секретов из VCS-истории/файлов; guard оставить |
+| AUD9-054 | cross-ref F044 | Low | S | Нет unit-теста у `useDatabaseConsumableDelete.js` при наличии образца | Добавить тест по образцу delete-equipment |
+| AUD9-055 | `CONTEXT.md:162` vs `REPOSITORY_MAP.md:233` | Low | S | Дрейф документации: scan описан как «SQLite, не PostgreSQL» без оговорки о PG-схеме `scan` | Обновить формулировку после проверки фактического runtime |
+| AUD9-056 | `CONTEXT.md:297` (WRITE-CONTENTION-01) | Medium | M | Зафиксировано: create p95 > 500ms при concurrency 20; retries запрещены до профилирования | Планировать профилирование write-path перед оптимизациями чата |
+
+## Top 5 — если делать только это
+
+1. **AUD9-001/002 — привязка агентов к identity.** До внедрения: считать ключ сетевым барьером, зафиксировать это в документации; затем enrollment: (а) выдача ключа на `agent_id`, (б) dual-accept окно, (в) отзыв старого общего ключа, (г) тест mismatch → 401. Rollback: вернуть dual-accept.
+2. **AUD9-009 — optimistic locking билетов.** Конкретно: заменить `req.version != expected_version` на условный `UPDATE ... WHERE id=? AND version=?`; `rowcount==0 → 409 Conflict`; параллельный тест двух запросов с одним `expected_version`; проверить вызовы `change_status` на повторную обработку 409.
+3. **AUD9-010/011 — атомарные claim очередей.** Для PG — `UPDATE ... RETURNING`/`SKIP LOCKED`; для dev-SQLite — тот же паттерн в одной транзакции с `BEGIN IMMEDIATE`; single-run lock на воркер; тест: два процесса, один job — одна доставка.
+4. **AUD9-016+021+019+020 — самый крупный перф-выигрыш.** Порядок: сначала замеры (query count, p95, pool wait), затем fast-path поиска и индексы (на тестовой БД, с планом запроса), затем read/write пул, затем batch EWS и chat read-store. Каждый шаг — отдельный PR с before/after.
+5. **AUD9-014+037 — безопасность схем.** Перед любой миграцией: read-only проверка фактической схемы (`chat` или `public`, наличие `pg_trgm`, размеры, locks). Затем запрет runtime DDL в prod, перенос backfill в Alembic, startup-assert и fail-closed при двух схемах.
+
+## План исправления
+
+Принципы: один PR — один AUD9-пункт; никаких параллельных крупных рефакторингов в одном домене; перед production-изменениями — read-only preflight и тест на копии; все изменения схемы — через Alembic; feature flag по умолчанию `false` для новых путей.
+
+### Wave 0 — подготовка (1-3 дня)
+
+1. Зафиксировать baseline: `pytest --collect-only`, `pytest -q tests`, `npm test`, `npm run build`, query count и p95 для `/conversations`, `/equipment/search`, `/mfu`, scan hosts.
+2. Read-only проверить фактическую schema chat/app/scan на `TMN-SRV-DB-06`: `chat.chat_conversations` vs `public.chat_conversations`, размеры таблиц, индексы, дубликаты.
+3. Завести тесты-предохранители для concurrency-путей (AUD9-009/010/011) до правок.
+4. Согласовать с владельцем продукта очередь Wave 1-2.
+
+### Wave 1 — P0: безопасность и корректность (2-4 недели)
+
+| Шаг | AUD9 | Действия | Проверка |
+|---|---|---|---|
+| 1.1 | 001/002 | Enrollment-дизайн (per-agent key или mTLS), миграция выдачи, dual-accept, отзыв | pytest scan/inventory + агентский integration-тест mismatch; ручная проверка enroll |
+| 1.2 | 009 | Условный UPDATE + 409 + история | Новый параллельный pytest + регресс `tests/test_tickets*` |
+| 1.3 | 010/011 | Атомарный claim, single-run lock | Тест двух воркеров/процессов; метрика duplicate_claim=0 |
+| 1.4 | 003/005 | Fail-closed секретов в prod, strict Fernet, ротация | Тест старта с placeholder → ошибка |
+| 1.5 | 006 | Санитизация + sandbox on | Vitest XSS-payload + `npm run build` |
+| 1.6 | 004 | Запрет insecure/LDAP-fallback по умолчанию, share per-user | Юнит-тесты transport-флагов; аудит-лог отказа |
+
+### Wave 2 — P1: производительность (3-6 недель, параллельные потоки)
+
+| Шаг | AUD9 | Действия | Проверка |
+|---|---|---|---|
+| 2.1 | 016/017/021 | Fast-path поиска, индексы SQL Server (с DBA), read/write пул, commit-политика | EXPLAIN/query count before-after на тестовой БД; p95 API |
+| 2.2 | 019/026 | Batch EWS, серверный поиск контактов, кэш перемещений бота | Замер RTT/числа вызовов; pytest mail/bot |
+| 2.3 | 020/027/032 | Batched read-store, `chat_read_session`, композитные индексы | Query count и p95 `/conversations`; Alembic upgrade на копии |
+| 2.4 | 044/045/046 | Точечные обновления, Promise.allSettled, manualChunks/lazy | Vitest + build + замер initial JS/сетевых запросов |
+| 2.5 | 029/030 | IN-фильтры SQLite, batch context, reconciliation по статусам | Замер scan hosts p95, тесты scan read-store |
+| 2.6 | 013/022/025/031 | Вынос блокирующего I/O, lock токена, OCR-квоты | Профиль event-loop lag; тесты |
+| 2.7 | 023/024 | Акты/1С в job + poll, короткие DB-сессии в AI | Нагрузочный сценарий AI; контрактные тесты API |
+
+### Wave 3 — P2: архитектура и устойчивость (6-12 недель)
+
+1. God-модули: `hub_service` → по доменам; routers backend — по подресурсам; frontend — по composer/hook. KPI: LOC-бюджет на файл, freeze-правило на новые фичи.
+2. Runtime DDL → Alembic (hub/chat/appdb/scan), backfill батчами, `CONCURRENTLY` для индексов, preflight.
+3. AUD9-015: атомарная запись JSON (`uuid.tmp+replace` + межпроцессный lock) либо перевод соответствующего домена в PG.
+4. AUD9-014: защита от split-brain схем, startup-assert, fail-closed.
+5. AUD9-041/042/043: readiness, единый error-контракт, разгрузка scan lock.
+6. AUD9-037/038/039/040: изоляция scan sidecar, desktop/mobile hardening.
+
+### Wave 4 — P3: полировка (по мере ресурсов)
+
+Темы (AUD9-051), realtime-полиси (AUD9-048), expired-session (AUD9-049), состояния страниц (AUD9-050), тесты (AUD9-054), документация (AUD9-055), профилирование write-contention (AUD9-056).
+
+## Quick wins (Low effort × Medium+ severity)
+
+- [x] AUD9-009: условный UPDATE + 409 в `tickets_service.change_status` (есть готовый образец). — RESOLVED 2026-09-19
+- [ ] AUD9-006: санитизация в `MailHtmlBody` + default-on sandbox.
+- [ ] AUD9-013: убрать блокирующий `time.sleep` из async-путей.
+- [ ] AUD9-018: batch-загрузка assignee в `tickets_service`.
+- [ ] AUD9-022: `to_thread` + lock для refresh push-токена.
+- [ ] AUD9-030: фильтр статусов в reconcile spool.
+- [ ] AUD9-036: прямые импорты доменных API вместо `client.js` в `MainLayout`.
+- [ ] AUD9-046: `manualChunks` для vendor/mui/pdfjs + замер.
+- [ ] AUD9-054: unit-тест `useDatabaseConsumableDelete`.
+- [ ] AUD9-055: синхронизировать формулировки `CONTEXT.md`/`REPOSITORY_MAP.md` по scan.
+
+## Выглядит плохо, но сейчас корректно
+
+- `chat_read_session` с `SET TRANSACTION READ ONLY` и `statement_timeout` — правильный механизм, а не долг; проблема лишь в том, что листинги его не используют (AUD9-032).
+- `construction_work_service.py:180-181` — условный UPDATE с версией; это образец для AUD9-009, не долг.
+- Импорты через `backend.ai_chat.openrouter_client` — реэкспорт `shared/llm`, инвариант «только через shared/llm» не нарушен; это лишь путь миграции импортов.
+- `schema_translate_map chat→public` — легитимный legacy-механизм; опасность возникает только при наличии обеих схем, поэтому не удалять без проверки данных.
+- SQLite-fallback scan в dev — осознанное решение; долг не в самом fallback, а в дрейфе схем (AUD9-037).
+- Две копии inventory-агента (`agent.py` и `agent/src/...`) синхронизированы и защищены тестом — исторический долг F033, не текущая причина расхождений.
+- `restart-*.ps1` очищают orphan-процессы и порты — намеренное поведение, не упрощать до `pm2 restart`.
+- Partial-success bulk-операции mail с `results/errors` — корректный дизайн, добавить только идемпотентность.
+
+## Открытые вопросы
+
+1. Chat runtime на `TMN-SRV-DB-06` сейчас в схеме `chat` или всё ещё legacy `public`? Это блокер для AUD9-014/027/037.
+2. Приемлема ли для агентов модель per-agent key, или требуется mTLS с инфраструктурой сертификатов?
+3. Есть ли доступ к тестовой копии SQL Server для замеров и добавления индексов (AUD9-016/017)? Кто владелец согласования DDL?
+4. JSON-ledger `data/*.json` в prod всё ещё пишется bot и web одновременно, или часть доменов уже перенесена в PG?
+5. Какие god-модули бизнес-приоритетны для слайсинга после Wave 1-2?
+6. Для WRITE-CONTENTION-01 есть ли staging-стенд для load-теста, или профилирование делать на копии данных с локальным runner?
+
+## Что проверено в этом прогоне
+
+- Прочитаны `AGENTS.md`, `CONTEXT.md`, `REPOSITORY_MAP.md`, существующий `TECH_DEBT_AUDIT.md`.
+- Выполнены 4 параллельных code-scan (backend/API/services; frontend/realtime/desktop/mobile; scan/inventory/agents/data; bot/chat/SQL/Alembic) с цитированием `file:line`.
+- Выборочно подтверждены по коду: `_check_agent_key` (`scan_server/app.py:232-234`), `schema_translate_map` (`chat/db.py:216,247,763-769`), `time.sleep` (`appdb/db.py:429`), `with_for_update(skip_locked)` только PG (`app_push_outbox_service.py:385`), `retry_limit=min(max_attempts,2)` (`scan_server/worker.py:1032`), `version != expected_version` (`tickets_service.py:902`), `dangerouslySetInnerHTML` + sandbox default false (`MailHtmlBody.jsx:75`, `mailHtmlSandboxFlags.js:29`), `MAX_QUEUED_MESSAGES=100` (`chatSocket.js:28,849`).
+- Не запускались: тесты, сборки, `EXPLAIN`, runtime-проверки БД, нагрузочные сценарии. Все числа производительности — оценки из структуры кода, требующие замера.
+
+---
+
 # Scan Center audit delta — 2026-07-14
 
 Область этого повторного прогона: `scan_server`, `scan_agent`, unified inventory-agent/MSI и новый интерфейс Scan Center. Пользователь явно разрешил agent-approved pass, поэтому старое ограничение ниже не применялось к этому прогону. Незакоммиченные изменения других подсистем не сбрасывались и не переписывались.

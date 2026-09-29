@@ -2,6 +2,8 @@ import { useMemo, lazy, Suspense } from 'react';
 import MainLayout from '../../components/layout/MainLayout';
 import PageShell from '../../components/layout/PageShell';
 import { LoadingSpinner } from '../../components/common';
+import DatabaseAdSyncDialog from './DatabaseAdSyncDialog';
+import DatabaseDbTransferDialog from './DatabaseDbTransferDialog';
 import DatabaseDataSections from './DatabaseDataSections';
 import { EmployeeCompareProvider } from './employeeCompareContext';
 import DatabaseDialogsLayer from './DatabaseDialogsLayer';
@@ -53,10 +55,19 @@ export default function DatabasePageView({ vm }) {
     addModelsLoading,
     addUsesManualEmployee,
     addUsesManualModel,
+    adSyncError,
+    adSyncOpen,
+    adSyncResult,
+    adSyncRunning,
+    dbTransferError,
+    dbTransferOpen,
+    dbTransferResult,
+    dbTransferRunning,
     batteryHistory,
     branchOptions,
     branches,
     buildWarehouseReturnContext,
+    canAdSync,
     canAutoLoadMoreEquipment,
     canDatabaseDelete,
     canDatabaseWrite,
@@ -69,6 +80,8 @@ export default function DatabasePageView({ vm }) {
     clearRecentCards,
     clearSearch,
     closeActFilePreview,
+    closeAdSync,
+    closeDbTransfer,
     closeActionModal,
     closeAddConsumableModal,
     closeAddEquipmentModal,
@@ -78,6 +91,7 @@ export default function DatabasePageView({ vm }) {
     closeUploadActModal,
     componentHistory,
     componentType,
+    confirmAdSync,
     confirmDeleteConsumable,
     confirmDeleteEquipment,
     consumableTypeOptions,
@@ -103,6 +117,7 @@ export default function DatabasePageView({ vm }) {
     detailError,
     detailForm,
     detailHasChanges,
+    consumableQr,
     detailHistory,
     detailHistoryError,
     detailHistoryLoading,
@@ -133,6 +148,7 @@ export default function DatabasePageView({ vm }) {
     expandedCards,
     expandedLocations,
     fabSheetOpen,
+    findEquipmentByInvNo,
     getUploadActEmailStatusItemSx,
     handleActSearchOpenFile,
     handleActSearchSelect,
@@ -200,6 +216,9 @@ export default function DatabasePageView({ vm }) {
     nextEquipmentPage,
     openAddConsumableModal,
     openAddEquipmentModal,
+    openCartridgeCompatibilityDialog,
+    openAdSync,
+    openDbTransfer,
     openDeleteConsumableModal,
     openEditConsumableQtyModal,
     openUploadActModal,
@@ -229,6 +248,8 @@ export default function DatabasePageView({ vm }) {
     searchLoadingMore,
     searchQuery,
     searchScope,
+    searchTypeNo,
+    searchField,
     searchTotal,
     seededAct,
     selectedAddEmployeeOption,
@@ -252,11 +273,14 @@ export default function DatabasePageView({ vm }) {
     setDetailError,
     setDetailHistoryError,
     setDetailQrOpen,
+    submitDbTransfer,
     setDetailSuccess,
     setDetailTab,
     setEditConsumableQtyInput,
     setFabSheetOpen,
     setMobileSelectionMode,
+    setSearchTypeNo,
+    setSearchField,
     setSelectedWorkConsumable,
     setUploadActAutoEmail,
     setUploadActDownloadError,
@@ -339,6 +363,17 @@ export default function DatabasePageView({ vm }) {
     workConsumablesLoading,
   } = vm;
 
+  const dbTransferItems = useMemo(
+    () => (Array.isArray(selectedItems) ? selectedItems : [])
+      .map((invNo) => findEquipmentByInvNo?.(invNo) || { inv_no: invNo }),
+    [selectedItems, findEquipmentByInvNo],
+  );
+
+  const handleDbTransferDataChanged = () => {
+    handleClearSelection?.();
+    void refreshCurrentDbData?.({ force: true });
+  };
+
   const dataSections = useMemo(() => {
     if (Object.keys(displayData).length === 0) return null;
     return (
@@ -361,6 +396,7 @@ export default function DatabasePageView({ vm }) {
         openingCurrentActDocNo={detailActOpeningDocNo}
         onEditConsumableQty={canDatabaseWrite ? openEditConsumableQtyModal : null}
         onDeleteConsumable={canDatabaseDelete ? openDeleteConsumableModal : null}
+        onShowConsumableQr={consumableQr?.openConsumableQr}
         dataMode={dataMode}
         canWrite={canDatabaseWrite}
         canDelete={canDatabaseDelete}
@@ -374,6 +410,7 @@ export default function DatabasePageView({ vm }) {
   }, [
     canDatabaseWrite,
     canDatabaseDelete,
+    consumableQr,
     dataMode,
     displayData,
     expandedBranches,
@@ -442,6 +479,11 @@ export default function DatabasePageView({ vm }) {
           onSearchClear={clearSearch}
           searchLoading={searchLoading}
           serverSearchDegraded={serverSearchDegraded}
+          searchTypeNo={searchTypeNo}
+          onSearchTypeChange={setSearchTypeNo}
+          typeOptions={equipmentTypeOptions}
+          searchField={searchField}
+          onSearchFieldChange={setSearchField}
           dataVersionStale={dataVersionStale}
           onRefreshData={() => void refreshCurrentDbData({ force: true })}
         />
@@ -466,6 +508,8 @@ export default function DatabasePageView({ vm }) {
           isActsScope={isActsScope}
           isConsumablesMode={isConsumablesMode}
           canDatabaseWrite={canDatabaseWrite}
+          canAdSync={canAdSync}
+          onOpenAdSync={openAdSync}
           branches={branches}
           selectedBranch={selectedBranch}
           onBranchChange={handleBranchChange}
@@ -477,6 +521,8 @@ export default function DatabasePageView({ vm }) {
           onOpenUploadAct={openUploadActModal}
           onOpenAddEquipment={openAddEquipmentModal}
           onOpenAddConsumable={openAddConsumableModal}
+          onOpenConsumableQrPrint={consumableQr?.openConsumableQrPrintBatch}
+          onOpenCartridgeCompatibility={openCartridgeCompatibilityDialog}
           onOpenMore={() => setFabSheetOpen(true)}
           recentActs={recentActs}
           recentActsLoading={recentActsLoading}
@@ -515,6 +561,7 @@ export default function DatabasePageView({ vm }) {
           onPrintWithDialog={qrBatchPrint.printWithDialog}
           onOpenLocationTransfer={handleOpenLocationTransferForSelection}
           onOpenTransfer={handleOpenTransferForSelection}
+          onOpenDbTransfer={openDbTransfer}
           onOpenTransferAct={handleOpenTransferActForSelection}
           onOpenCartridge={handleOpenCartridgeForSelection}
           onOpenBattery={handleOpenBatteryForSelection}
@@ -542,6 +589,29 @@ export default function DatabasePageView({ vm }) {
         </EmployeeCompareProvider>
 
         <DatabaseDialogsLayer {...buildDialogsLayerProps(vm, { isMobile, theme, ui })} />
+
+        <DatabaseAdSyncDialog
+          open={adSyncOpen}
+          running={adSyncRunning}
+          result={adSyncResult}
+          error={adSyncError}
+          databases={databases}
+          onClose={closeAdSync}
+          onConfirm={confirmAdSync}
+        />
+
+        <DatabaseDbTransferDialog
+          open={dbTransferOpen}
+          running={dbTransferRunning}
+          result={dbTransferResult}
+          error={dbTransferError}
+          items={dbTransferItems}
+          databases={databases}
+          currentDb={db_name || String(currentDb?.id || '')}
+          onClose={closeDbTransfer}
+          onSubmit={submitDbTransfer}
+          onDataChanged={handleDbTransferDataChanged}
+        />
       </PageShell>
     </MainLayout>
   );

@@ -8,7 +8,10 @@ from fastapi.testclient import TestClient
 from backend.api import deps
 from backend.api.v1 import passwords as passwords_api
 from backend.models.auth import User
-from backend.services.password_vault_service import PasswordVaultAccessError
+from backend.services.password_vault_service import (
+    PasswordVaultAccessError,
+    PasswordVaultRateLimitError,
+)
 
 
 def _make_user(*, role: str = "viewer", permissions: list[str] | None = None) -> User:
@@ -40,10 +43,15 @@ class FakePasswordVaultService:
         self.calls: list[str] = []
         self.reveal_allowed = True
         self.mobile_update_allowed = True
+        self.unlock_rate_limited = False
 
     def list_entries(self, **kwargs):
         self.calls.append("list")
+        self.last_list_kwargs = kwargs
         return {
+            "total": 1,
+            "limit": kwargs.get("limit", 100),
+            "offset": kwargs.get("offset", 0),
             "items": [
                 {
                     "id": "entry-1",
@@ -116,7 +124,16 @@ class FakePasswordVaultService:
 
     def unlock(self, **kwargs):
         self.calls.append("unlock")
+        if self.unlock_rate_limited:
+            raise PasswordVaultRateLimitError(
+                "Too many password vault unlock attempts",
+                retry_after_seconds=300,
+            )
         return {"unlocked_until": "2026-05-28T00:05:00+00:00"}
+
+    def lock(self, **kwargs):
+        self.calls.append("lock")
+        return {"locked": True}
 
     def unlock_with_trusted_device(self, **kwargs):
         self.calls.append("unlock.webauthn")
@@ -255,6 +272,25 @@ def test_passwords_list_strips_secret_fields_from_response(monkeypatch):
     assert "password_enc" not in item
 
 
+def test_passwords_list_passes_pagination_params(monkeypatch):
+    fake = FakePasswordVaultService()
+    client = _client_for(lambda: _make_user(permissions=["passwords.read"]), fake, monkeypatch)
+
+    response = client.get("/passwords?limit=50&offset=10")
+
+    assert response.status_code == 200
+    assert fake.last_list_kwargs["limit"] == 50
+    assert fake.last_list_kwargs["offset"] == 10
+    body = response.json()
+    assert body["total"] == 1
+    assert body["limit"] == 50
+    assert body["offset"] == 10
+
+    assert client.get("/passwords?limit=0").status_code == 422
+    assert client.get("/passwords?limit=501").status_code == 422
+    assert client.get("/passwords?offset=-1").status_code == 422
+
+
 def test_read_user_cannot_write_password_entries(monkeypatch):
     fake = FakePasswordVaultService()
     client = _client_for(lambda: _make_user(permissions=["passwords.read"]), fake, monkeypatch)
@@ -348,7 +384,7 @@ def test_mobile_biometric_unlock_requires_mobile_device_headers(monkeypatch):
     assert fake.calls == ["unlock.mobile_biometric"]
 
 
-def test_mobile_update_requires_active_vault_unlock_but_web_contract_is_unchanged(monkeypatch):
+def test_mobile_update_requires_active_vault_unlock_but_web_metadata_update_does_not(monkeypatch):
     fake = FakePasswordVaultService()
     client = _client_for(lambda: _make_user(permissions=["passwords.write"]), fake, monkeypatch)
     payload = {"description": "updated"}
@@ -370,6 +406,46 @@ def test_mobile_update_requires_active_vault_unlock_but_web_contract_is_unchange
     assert mobile_update.status_code == 200
     assert denied_mobile_update.status_code == 403
     assert fake.calls == ["update", "require_unlocked", "update", "require_unlocked"]
+
+
+def test_web_password_update_requires_unlock(monkeypatch):
+    fake = FakePasswordVaultService()
+    fake.mobile_update_allowed = False
+    client = _client_for(lambda: _make_user(permissions=["passwords.write"]), fake, monkeypatch)
+
+    denied = client.patch("/passwords/entry-1", json={"password": "new-secret"})
+    assert denied.status_code == 403
+    assert fake.calls == ["require_unlocked"]
+
+    metadata_only = client.patch("/passwords/entry-1", json={"description": "updated"})
+    assert metadata_only.status_code == 200
+
+    fake.mobile_update_allowed = True
+    allowed = client.patch("/passwords/entry-1", json={"password": "new-secret"})
+    assert allowed.status_code == 200
+    assert fake.calls == ["require_unlocked", "update", "require_unlocked", "update"]
+
+
+def test_lock_endpoint_revokes_vault_unlock(monkeypatch):
+    fake = FakePasswordVaultService()
+    client = _client_for(lambda: _make_user(permissions=["passwords.read"]), fake, monkeypatch)
+
+    response = client.delete("/passwords/unlock")
+
+    assert response.status_code == 200
+    assert response.json()["locked"] is True
+    assert fake.calls == ["lock"]
+
+
+def test_unlock_rate_limit_returns_429_with_retry_after(monkeypatch):
+    fake = FakePasswordVaultService()
+    fake.unlock_rate_limited = True
+    client = _client_for(lambda: _make_user(permissions=["passwords.read"]), fake, monkeypatch)
+
+    response = client.post("/passwords/unlock", json={"totp_code": "123456"})
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "300"
 
 
 def test_password_group_endpoints_permissions(monkeypatch):

@@ -17,6 +17,7 @@ public sealed class RegistryDesktopPolicyProviderTests
         Assert.Equal(24, policy.ResolveUpdateDeferralHours(defaultHours: 24));
         Assert.True(policy.ResolveDiagnosticsExportEnabled(defaultEnabled: true));
         Assert.True(policy.ResolveNotificationFallbackEnabled(defaultEnabled: true));
+        Assert.False(policy.ResolveScreenCaptureProtectionEnabled(defaultEnabled: false));
         Assert.Equal(
             [
                 "AutostartMode",
@@ -24,6 +25,7 @@ public sealed class RegistryDesktopPolicyProviderTests
                 "UpdateDeferralHours",
                 "DiagnosticsExportEnabled",
                 "NotificationFallbackEnabled",
+                "ScreenCaptureProtectionEnabled",
             ],
             registry.ReadNames);
     }
@@ -38,6 +40,7 @@ public sealed class RegistryDesktopPolicyProviderTests
             ["UpdateDeferralHours"] = 72,
             ["DiagnosticsExportEnabled"] = 0,
             ["NotificationFallbackEnabled"] = 0,
+            ["ScreenCaptureProtectionEnabled"] = 1,
         });
 
         var policy = new RegistryDesktopPolicyProvider(registry).Load();
@@ -47,6 +50,7 @@ public sealed class RegistryDesktopPolicyProviderTests
         Assert.Equal(72, policy.ResolveUpdateDeferralHours(defaultHours: 24));
         Assert.False(policy.ResolveDiagnosticsExportEnabled(defaultEnabled: true));
         Assert.False(policy.ResolveNotificationFallbackEnabled(defaultEnabled: true));
+        Assert.True(policy.ResolveScreenCaptureProtectionEnabled(defaultEnabled: false));
     }
 
     [Fact]
@@ -59,6 +63,7 @@ public sealed class RegistryDesktopPolicyProviderTests
             ["UpdateDeferralHours"] = DesktopPolicy.MaximumUpdateDeferralHours + 1,
             ["DiagnosticsExportEnabled"] = -1,
             ["NotificationFallbackEnabled"] = 2,
+            ["ScreenCaptureProtectionEnabled"] = 7,
         });
 
         var policy = new RegistryDesktopPolicyProvider(registry).Load();
@@ -68,6 +73,7 @@ public sealed class RegistryDesktopPolicyProviderTests
         Assert.Equal(24, policy.ResolveUpdateDeferralHours(defaultHours: 24));
         Assert.True(policy.ResolveDiagnosticsExportEnabled(defaultEnabled: true));
         Assert.True(policy.ResolveNotificationFallbackEnabled(defaultEnabled: true));
+        Assert.False(policy.ResolveScreenCaptureProtectionEnabled(defaultEnabled: false));
     }
 
     [Theory]

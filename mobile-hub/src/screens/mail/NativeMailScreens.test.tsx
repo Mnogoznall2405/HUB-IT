@@ -11,6 +11,10 @@ import * as mailApi from '../../api/mailApi';
 import * as mailConfigApi from '../../api/mailConfigApi';
 import * as mailboxApi from '../../api/mailMailboxesApi';
 import { pickMailAttachments } from '../../mail/nativeMailFiles';
+import { clearNativeMailSearchHistory, pushNativeMailSearchQuery, readNativeMailSearchHistory } from '../../mail/nativeMailSearchHistory';
+import { readNativeMailSwipeSettings, writeNativeMailSwipeSettings } from '../../mail/nativeMailSwipeSettings';
+import { publishNativeMailUnreadDelta } from '../../mail/nativeMailUnreadEvents';
+import { clearPendingNativeMailUnread } from '../../mail/nativeMailUnreadPending';
 import { writeNativeEntitySnapshot } from '../../cache/nativeSnapshotCache';
 import * as snapshotCache from '../../cache/nativeSnapshotCache';
 import { NativeMailComposeScreen } from './NativeMailComposeScreen';
@@ -253,6 +257,7 @@ beforeEach(async () => {
   mockPermissions = ['mail.access'];
   mockOfflineMode = false;
   mockUserId = 1;
+  clearPendingNativeMailUnread();
   mockedParams.mockReturnValue({});
   (mailboxApi.listMailboxes as jest.Mock).mockResolvedValue([
     { id: 'box-1', label: 'Рабочая почта', mailbox_email: 'me@example.com', is_primary: true, is_active: true, unread_count: 1 },
@@ -306,6 +311,7 @@ it('loads native mail rows and opens the exact mailbox-scoped message', async ()
   expect(row.props.accessibilityActions).toEqual(expect.arrayContaining([
     { name: 'longpress', label: 'Выбрать письмо' },
     { name: 'toggleRead', label: 'Отметить прочитанным' },
+    { name: 'archive', label: 'Переместить в архив' },
     { name: 'delete', label: 'Удалить письмо' },
   ]));
   expect(StyleSheet.flatten(row.props.style)).toEqual(expect.objectContaining({ backgroundColor: '#ffffff' }));
@@ -540,13 +546,15 @@ it('loads the server folder tree and opens a custom folder natively', async () =
   })));
 });
 
-it('renders a compact unified header, one horizontal filter row and compose FAB', async () => {
+it('renders a compact unified header, a collapsible horizontal filter row and compose FAB', async () => {
   mockedParams.mockReturnValue({ mailboxId: 'box-1' });
   const view = await render(<NativeMailInboxScreen />);
   await waitFor(() => expect(view.getByTestId('native-mail-message-message-1')).toBeTruthy());
 
   expect(view.getByTestId('native-mail-search').props.placeholder).toBe('Поиск в почте');
-  expect(view.getByTestId('native-mail-filter-row').props.horizontal).toBe(true);
+  expect(view.queryByTestId('native-mail-filter-row')).toBeNull();
+  fireEvent.press(view.getByTestId('native-mail-filter-toggle'));
+  await waitFor(() => expect(view.getByTestId('native-mail-filter-row').props.horizontal).toBe(true));
   expect(StyleSheet.flatten(view.getByTestId('native-mail-filter-row').props.style)).toEqual(expect.objectContaining({ flexGrow: 0, height: 48 }));
   expect(view.getByTestId('native-mail-folder-menu')).toBeTruthy();
   expect(view.getByTestId('native-mail-account-menu')).toBeTruthy();
@@ -597,7 +605,9 @@ it('distinguishes an empty folder from empty search results', async () => {
   mockedParams.mockReturnValue({ mailboxId: 'box-1', q: 'не найдено' });
   const view = await render(<NativeMailInboxScreen />);
   await waitFor(() => expect(view.getByTestId('native-mail-search-empty')).toBeTruthy());
-  expect(view.getByText('Ничего не найдено')).toBeTruthy();
+  expect(view.getByText('Ничего не найдено по «не найдено»')).toBeTruthy();
+  fireEvent.press(view.getByTestId('native-mail-clear-search'));
+  await waitFor(() => expect(mailApi.getMailMessages).toHaveBeenLastCalledWith(expect.objectContaining({ q: '' })));
 });
 
 it('shows the dedicated empty-folder state without active filters', async () => {
@@ -718,7 +728,7 @@ it('shows a pending row, suppresses duplicate actions, and keeps the message aft
   expect(mailApi.deleteMailMessage).toHaveBeenCalledTimes(2);
 });
 
-it('swipes a message to recoverable Trash and restores the exact returned id on undo', async () => {
+it('moves a message to recoverable Trash and restores the exact returned id on undo', async () => {
   mockedParams.mockReturnValue({ mailboxId: 'box-1' });
   const view = await render(<NativeMailInboxScreen />);
   const row = await view.findByTestId('native-mail-message-message-1');
@@ -726,12 +736,37 @@ it('swipes a message to recoverable Trash and restores the exact returned id on 
   fireEvent(row, 'accessibilityAction', { nativeEvent: { actionName: 'delete' } });
   await waitFor(() => expect(mailApi.deleteMailMessage).toHaveBeenCalledWith('message-1', 'box-1', false));
   const undoButton = await view.findByTestId('native-mail-undo');
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 5_100)); });
-  expect(view.getByTestId('native-mail-undo')).toBeTruthy();
   fireEvent.press(undoButton);
 
   await waitFor(() => expect(mailApi.restoreMailMessage).toHaveBeenCalledWith('trash-message-1', 'box-1', 'inbox'));
+});
+
+it('hides the undo bar automatically after five seconds without restoring the message', async () => {
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+  const row = await view.findByTestId('native-mail-message-message-1');
+
+  fireEvent(row, 'accessibilityAction', { nativeEvent: { actionName: 'delete' } });
+  await view.findByTestId('native-mail-undo');
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 5_200)); });
+  expect(view.queryByTestId('native-mail-undo')).toBeNull();
+  expect(mailApi.restoreMailMessage).not.toHaveBeenCalled();
 }, 15_000);
+
+it('archives a message from the list and returns it to the folder on undo', async () => {
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+  const row = await view.findByTestId('native-mail-message-message-1');
+
+  fireEvent(row, 'accessibilityAction', { nativeEvent: { actionName: 'archive' } });
+  await waitFor(() => expect(mailApi.moveMailMessage).toHaveBeenCalledWith('message-1', 'box-1', 'archive'));
+  await waitFor(() => expect(view.queryByTestId('native-mail-message-message-1')).toBeNull());
+  expect(view.getByText('Письмо перемещено в архив.')).toBeTruthy();
+  expect(mailApi.deleteMailMessage).not.toHaveBeenCalled();
+
+  fireEvent.press(view.getByTestId('native-mail-undo'));
+  await waitFor(() => expect(mailApi.moveMailMessage).toHaveBeenLastCalledWith('message-1', 'box-1', 'inbox'));
+});
 
 it('lets the user dismiss undo without restoring the deleted message', async () => {
   mockedParams.mockReturnValue({ mailboxId: 'box-1' });
@@ -778,7 +813,7 @@ it('permanently deletes selected messages only when the current folder is trash'
     expect.any(Array),
   );
   const actions = alert.mock.calls[0]?.[2] as Array<{ text?: string; onPress?: () => void }>;
-  actions.find((action) => action.text === 'Удалить')?.onPress?.();
+  actions.find((action) => action.text === 'Удалить навсегда')?.onPress?.();
 
   await waitFor(() => expect(mailApi.bulkMailMessageAction).toHaveBeenCalledWith({
     mailboxId: 'box-1',
@@ -1137,6 +1172,7 @@ it('loads a conversation and replies to its latest message', async () => {
 it('expands a multiline quick reply without placing its text in route parameters', async () => {
   mockedParams.mockReturnValue({ messageId: 'message-1', mailboxId: 'box-1', folder: 'inbox' });
   const view = await render(<NativeMailMessageScreen />);
+  await fireEvent.press(await view.findByTestId('native-mail-reply'));
   const field = await view.findByTestId('native-mail-message-quick-reply');
   const text = 'Первая строка\nВторая строка';
   await fireEvent.changeText(field, text);
@@ -1178,15 +1214,19 @@ it('sends an inline formatted quick reply through the existing idempotent reply 
   }), expect.objectContaining({ idempotencyKey: expect.any(String) })));
 });
 
-it('sends a quick reply directly from a single opened message', async () => {
+it('sends a quick reply directly from a single opened message through one bottom zone', async () => {
   mockedParams.mockReturnValue({ messageId: 'message-1', mailboxId: 'box-1', folder: 'inbox' });
   const view = await render(<NativeMailMessageScreen />);
+  const zone = await view.findByTestId('native-mail-reader-bottom-zone');
+  expect(view.getByTestId('native-mail-reader-bottom-actions')).toBeTruthy();
+  expect(view.queryByTestId('native-mail-message-quick-reply-bar')).toBeNull();
+  await fireEvent.press(view.getByTestId('native-mail-reply'));
   const field = await view.findByTestId('native-mail-message-quick-reply');
   const bar = view.getByTestId('native-mail-message-quick-reply-bar');
-  const actions = view.getByTestId('native-mail-reader-bottom-actions');
   expect(field.props.multiline).toBe(true);
   expect(field.props.submitBehavior).toBe('newline');
-  expect(bar.parent).toBe(actions.parent);
+  expect(bar.parent).toBe(zone);
+  expect(view.queryByTestId('native-mail-reader-bottom-actions')).toBeNull();
 
   await act(async () => { fireEvent.changeText(field, 'Принято, спасибо'); });
   fireEvent.press(view.getByTestId('native-mail-message-send-quick-reply'));
@@ -1210,6 +1250,7 @@ it.each(['message', 'conversation'] as const)('locks concurrent %s quick replies
   const view = await render(kind === 'message' ? <NativeMailMessageScreen /> : <NativeMailConversationScreen />);
   const inputId = kind === 'message' ? 'native-mail-message-quick-reply' : 'native-mail-quick-reply';
   const sendId = kind === 'message' ? 'native-mail-message-send-quick-reply' : 'native-mail-send-quick-reply';
+  if (kind === 'message') await fireEvent.press(await view.findByTestId('native-mail-reply'));
   await fireEvent.changeText(await view.findByTestId(inputId), 'Повторяемый ответ');
   const click = view.getByTestId(sendId).props.onClick;
   const press = () => click({ nativeEvent: {}, currentTarget: 1, target: 1, stopPropagation: jest.fn() });
@@ -1239,6 +1280,7 @@ it.each(['message', 'conversation'] as const)('restores an uncertain %s send and
   const inputId = kind === 'message' ? 'native-mail-message-quick-reply' : 'native-mail-quick-reply';
   const sendId = kind === 'message' ? 'native-mail-message-send-quick-reply' : 'native-mail-send-quick-reply';
   const first = await render(screen());
+  if (kind === 'message') await fireEvent.press(await first.findByTestId('native-mail-reply'));
   await fireEvent.changeText(await first.findByTestId(inputId), 'Сохранённая попытка');
   await fireEvent.press(first.getByTestId(sendId));
   await first.findByText(/Проверьте папку «Отправленные» перед повтором/);
@@ -1322,6 +1364,7 @@ it.each(['message', 'conversation'] as const)('protects an unsaved %s quick repl
   mockedParams.mockReturnValue({ messageId: 'message-1', conversationId: 'thread-1', mailboxId: 'box-1', folder: 'inbox' });
   const view = await render(kind === 'message' ? <NativeMailMessageScreen /> : <NativeMailConversationScreen />);
   const inputId = kind === 'message' ? 'native-mail-message-quick-reply' : 'native-mail-quick-reply';
+  if (kind === 'message') await fireEvent.press(await view.findByTestId('native-mail-reply'));
   await fireEvent.changeText(await view.findByTestId(inputId), 'Ответ ещё не отправлен');
   jest.mocked(router.back).mockClear();
   await fireEvent.press(view.getByLabelText('Назад'));
@@ -1359,6 +1402,7 @@ it.each(['message', 'conversation'] as const)('restores the persisted %s quick r
   const screen = () => kind === 'message' ? <NativeMailMessageScreen /> : <NativeMailConversationScreen />;
   const inputId = kind === 'message' ? 'native-mail-message-quick-reply' : 'native-mail-quick-reply';
   const old = await render(screen());
+  if (kind === 'message') await fireEvent.press(await old.findByTestId('native-mail-reply'));
   await fireEvent.changeText(await old.findByTestId(inputId), 'Черновик\nпосле открытия');
   const session = createMailQuickReplyDraftSession({ userId: 1, mailboxId: 'box-1', kind, entityId: kind === 'message' ? 'message-1' : 'thread-1' });
   expect(await session.read()).toBe('Черновик\nпосле открытия');
@@ -1395,19 +1439,20 @@ it('loads raw message headers from the existing authenticated endpoint', async (
 it('uses a flat reader hierarchy and reveals long recipient details on demand', async () => {
   (mailApi.getMailMessage as jest.Mock).mockResolvedValue({
     ...message,
+    folder: 'sent',
     subject: 'Очень длинная тема письма, которая должна занимать не больше двух строк на узком экране',
     cc: ['copy@example.com'],
     cc_people: [{ display: 'Копия Получатель', email: 'copy@example.com' }],
     bcc: ['hidden@example.com'],
   });
-  mockedParams.mockReturnValue({ messageId: 'message-1', mailboxId: 'box-1', folder: 'inbox' });
+  mockedParams.mockReturnValue({ messageId: 'message-1', mailboxId: 'box-1', folder: 'sent' });
   const view = await render(<NativeMailMessageScreen />);
 
   const subject = await view.findByTestId('native-mail-reader-subject');
   expect(subject.props.numberOfLines).toBeUndefined();
   expect(view.getByTestId('native-mail-reader-content')).toBeTruthy();
   expect(view.getByTestId('native-mail-reader-bottom-actions')).toBeTruthy();
-  expect(view.getByTestId('native-mail-recipient-count').props.children).toBe(3);
+  expect(view.getByTestId('native-mail-recipient-summary')).toHaveTextContent('Кому: Я');
   expect(view.queryByLabelText('Переместить в архив')).toBeNull();
 
   await act(async () => { fireEvent.press(view.getByTestId('native-mail-recipient-details')); });
@@ -1430,7 +1475,8 @@ it('counts one recipient once when Exchange returns both person metadata and a f
   mockedParams.mockReturnValue({ messageId: 'message-1', mailboxId: 'box-1', folder: 'inbox' });
   const view = await render(<NativeMailMessageScreen />);
 
-  expect((await view.findByTestId('native-mail-recipient-count')).props.children).toBe(1);
+  expect(await view.findByTestId('native-mail-recipient-summary')).toHaveTextContent('Кому: Получатель');
+  expect(view.queryByText(/\+1/)).toBeNull();
 });
 
 it('shows image attachments in the letter and gives files type-specific accessible actions', async () => {
@@ -2262,4 +2308,189 @@ it.each(['user', 'source'])('does not apply a late server draft ACK after changi
   expect(view.queryByText('Чужое вложение.txt')).toBeNull();
   expect(view.queryByText('Черновик сохранён')).toBeNull();
   expect(view.getByTestId('native-mail-body').props.value).toBe('');
+});
+
+it('exposes swipe gestures in the view sheet and persists changes per user', async () => {
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+  await view.findByTestId('native-mail-message-message-1');
+  fireEvent.press(view.getByTestId('native-mail-view-menu'));
+
+  await waitFor(() => expect(view.getByTestId('native-mail-swipe-right-toggle-read').props.accessibilityState.selected).toBe(true));
+  expect(view.getByTestId('native-mail-swipe-left-archive').props.accessibilityState.selected).toBe(true);
+  expect(view.queryByTestId('native-mail-swipe-right-delete')).toBeNull();
+
+  fireEvent.press(view.getByTestId('native-mail-swipe-left-delete'));
+  await waitFor(() => expect(view.getByTestId('native-mail-swipe-left-delete').props.accessibilityState.selected).toBe(true));
+  await expect(readNativeMailSwipeSettings(1)).resolves.toEqual({ right: 'toggle-read', left: 'delete' });
+});
+
+it('applies stored swipe settings when the inbox opens', async () => {
+  await writeNativeMailSwipeSettings(1, { right: 'archive', left: 'delete' });
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+  await view.findByTestId('native-mail-message-message-1');
+  fireEvent.press(view.getByTestId('native-mail-view-menu'));
+
+  await waitFor(() => expect(view.getByTestId('native-mail-swipe-right-archive').props.accessibilityState.selected).toBe(true));
+  expect(view.getByTestId('native-mail-swipe-left-delete').props.accessibilityState.selected).toBe(true);
+  expect(view.getByTestId('native-mail-swipe-right-toggle-read').props.accessibilityState.selected).toBe(false);
+});
+
+it('replays a recent search query from local history on focus', async () => {
+  await pushNativeMailSearchQuery(1, 'box-1', 'квартальный отчёт');
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+  const input = await view.findByTestId('native-mail-search');
+  fireEvent(input, 'onFocus');
+
+  const chip = await view.findByTestId('native-mail-search-history-квартальный отчёт');
+  fireEvent.press(chip);
+
+  await waitFor(() => expect(view.getByTestId('native-mail-search').props.value).toBe('квартальный отчёт'));
+  await waitFor(() => expect(mailApi.getMailMessages).toHaveBeenLastCalledWith(expect.objectContaining({
+    mailboxId: 'box-1',
+    q: 'квартальный отчёт',
+  })), { timeout: 3_000 });
+});
+
+it('clears only the current mailbox history from the history row', async () => {
+  await pushNativeMailSearchQuery(1, 'box-1', 'история ящика');
+  await pushNativeMailSearchQuery(1, 'box-2', 'история второго');
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+  fireEvent(await view.findByTestId('native-mail-search'), 'onFocus');
+
+  fireEvent.press(await view.findByTestId('native-mail-search-history-clear'));
+
+  await waitFor(() => expect(view.queryByTestId('native-mail-search-history-история ящика')).toBeNull());
+  await expect(readNativeMailSearchHistory(1, 'box-1')).resolves.toEqual([]);
+  await expect(readNativeMailSearchHistory(1, 'box-2')).resolves.toEqual(['история второго']);
+});
+
+it('maps search operators typed in the query line to backend filters', async () => {
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+  fireEvent.changeText(await view.findByTestId('native-mail-search'), 'от:ivan@example.com тема:"квартальный отчёт" с файлами встреча');
+
+  await waitFor(() => expect(mailApi.getMailMessages).toHaveBeenLastCalledWith(expect.objectContaining({
+    mailboxId: 'box-1',
+    q: 'встреча',
+    from: 'ivan@example.com',
+    subject: 'квартальный отчёт',
+    hasAttachments: true,
+  })), { timeout: 3_000 });
+});
+
+it('offers Junk in the bulk move sheet without duplicating the backend node', async () => {
+  (mailApi.getMailFolderTree as jest.Mock).mockResolvedValue({
+    items: [
+      { id: 'inbox', label: 'Входящие', well_known_key: 'inbox', unread: 1 },
+      { id: 'junk', label: 'Спам Exchange', well_known_key: 'junk', unread: 0 },
+    ],
+  });
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+  await fireEvent(await view.findByTestId('native-mail-message-message-1'), 'onLongPress');
+  fireEvent.press(view.getByLabelText('Переместить'));
+
+  await view.findByTestId('native-mail-bulk-move-sheet');
+  const junkTargets = view.getAllByTestId('native-mail-bulk-move-target-junk');
+  expect(junkTargets.length).toBe(1);
+  expect(junkTargets[0].props.accessibilityLabel).toContain('Спам Exchange');
+});
+
+it('reverses a bulk move through the bulk endpoint on undo', async () => {
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+  await fireEvent(await view.findByTestId('native-mail-message-message-1'), 'onLongPress');
+  fireEvent.press(view.getByLabelText('Архивировать'));
+
+  await waitFor(() => expect(mailApi.bulkMailMessageAction).toHaveBeenCalledWith({
+    mailboxId: 'box-1', action: 'move', messageIds: ['message-1'], targetFolder: 'archive', permanent: false,
+  }));
+  expect(await view.findByTestId('native-mail-undo')).toBeTruthy();
+  expect(view.getByText('1 письмо перемещены в папку «Архив».')).toBeTruthy();
+
+  fireEvent.press(view.getByTestId('native-mail-undo'));
+  await waitFor(() => expect(mailApi.bulkMailMessageAction).toHaveBeenLastCalledWith({
+    mailboxId: 'box-1', action: 'move', messageIds: ['message-1'], targetFolder: 'inbox',
+  }));
+});
+
+it('reverses a bulk read through the bulk endpoint on undo', async () => {
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+  await fireEvent(await view.findByTestId('native-mail-message-message-1'), 'onLongPress');
+  fireEvent.press(view.getByLabelText('Прочитано'));
+
+  await waitFor(() => expect(mailApi.bulkMailMessageAction).toHaveBeenCalledWith({
+    mailboxId: 'box-1', action: 'read', messageIds: ['message-1'], targetFolder: '', permanent: false,
+  }));
+  fireEvent.press(await view.findByTestId('native-mail-undo'));
+  await waitFor(() => expect(mailApi.bulkMailMessageAction).toHaveBeenLastCalledWith({
+    mailboxId: 'box-1', action: 'unread', messageIds: ['message-1'],
+  }));
+});
+
+it('keeps the unread badge aligned with the server counter after a failed bulk read', async () => {
+  (mailApi.getMailFolderTree as jest.Mock).mockResolvedValue({
+    items: [{ id: 'inbox', label: 'Входящие', well_known_key: 'inbox', unread: 3 }],
+  });
+  (mailApi.getMailFolderSummary as jest.Mock).mockResolvedValue({ inbox: { total: 3, unread: 3 } });
+  (mailApi.bulkMailMessageAction as jest.Mock).mockResolvedValue({
+    ok: false,
+    failed: 1,
+    errors: [{ message_id: 'message-1', detail: 'Exchange failed' }],
+  });
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+  expect((await view.findByTestId('native-mail-folder-unread-count')).props.children).toBe(3);
+
+  await fireEvent(await view.findByTestId('native-mail-message-message-1'), 'onLongPress');
+  fireEvent.press(view.getByLabelText('Прочитано'));
+
+  await view.findByText('Не удалось применить действие к 1 письму.');
+  expect(view.getByTestId('native-mail-folder-unread-count').props.children).toBe(3);
+});
+
+it('marks the whole folder read and drops the folder badge by the reported delta', async () => {
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+  expect((await view.findByTestId('native-mail-folder-unread-count')).props.children).toBe(1);
+
+  fireEvent.press(view.getByTestId('native-mail-view-menu'));
+  fireEvent.press(await view.findByTestId('native-mail-mark-all-read'));
+
+  await waitFor(() => expect(mailApi.markAllMailMessagesRead).toHaveBeenCalledWith({ mailboxId: 'box-1', folder: 'inbox', folderScope: 'current' }));
+  await waitFor(() => expect(view.queryByTestId('native-mail-folder-unread-count')).toBeNull());
+});
+
+it('drops the inbox unread badge right after a read elsewhere and does not restore it from a lagging summary', async () => {
+  // Exchange ещё минуту отдаёт прежний счётчик: вторая выборка тоже возвращает unread=1.
+  (mailApi.getMailFolderSummary as jest.Mock)
+    .mockResolvedValueOnce({ inbox: { total: 1, unread: 1 } })
+    .mockResolvedValueOnce({ inbox: { total: 1, unread: 1 } })
+    .mockResolvedValue({ inbox: { total: 1, unread: 0 } });
+  (mailApi.getMailFolderTree as jest.Mock).mockResolvedValue({
+    items: [{ id: 'inbox', label: 'Входящие', well_known_key: 'inbox', unread: 1 }],
+  });
+  mockedParams.mockReturnValue({ mailboxId: 'box-1' });
+  const view = await render(<NativeMailInboxScreen />);
+  expect((await view.findByTestId('native-mail-folder-unread-count')).props.children).toBe(1);
+
+  // Письмо помечено прочитанным в читателе — дельта с областью видимости.
+  publishNativeMailUnreadDelta(-1, { mailboxId: 'box-1', folder: 'inbox' });
+  await waitFor(() => expect(view.queryByTestId('native-mail-folder-unread-count')).toBeNull());
+
+  // Pull-to-refresh с отстающим сервером: бейдж не должен вернуться.
+  await act(async () => { view.getByTestId('native-mail-list').props.onRefresh(); });
+  await waitFor(() => expect(mailApi.getMailFolderSummary).toHaveBeenCalledTimes(2));
+  expect(view.queryByTestId('native-mail-folder-unread-count')).toBeNull();
+  expect(view.getByTestId('native-mail-message-message-1')).toBeTruthy();
+
+  // Когда сервер подтвердил счётчик, коррекция снимается сама.
+  await act(async () => { view.getByTestId('native-mail-list').props.onRefresh(); });
+  await waitFor(() => expect(mailApi.getMailFolderSummary).toHaveBeenCalledTimes(3));
+  expect(view.queryByTestId('native-mail-folder-unread-count')).toBeNull();
 });

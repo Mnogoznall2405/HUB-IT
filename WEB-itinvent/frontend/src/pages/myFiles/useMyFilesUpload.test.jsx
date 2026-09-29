@@ -24,7 +24,7 @@ vi.mock('../../api/myFiles', () => ({
     uploadFile: mockUploadFile,
     createFolder: mockCreateFolder,
   },
-  MY_FILES_MAX_UPLOAD_BYTES: 10 * 1024 * 1024 * 1024,
+  MY_FILES_MAX_UPLOAD_BYTES: 400 * 1024 * 1024 * 1024,
 }));
 
 vi.mock('../../lib/desktopBridge', () => ({
@@ -127,7 +127,7 @@ describe('useMyFilesUpload', () => {
 
   it('reports a too-large file as a failure and keeps going', async () => {
     const { result } = renderUpload();
-    const big = makeFile('huge.bin', { size: 11 * 1024 * 1024 * 1024 });
+    const big = makeFile('huge.bin', { size: 401 * 1024 * 1024 * 1024 });
     const ok = makeFile('ok.txt');
 
     act(() => result.current.openUploadDialog([big, ok]));
@@ -202,6 +202,77 @@ describe('useMyFilesUpload', () => {
     expect(progressCb).toBeInstanceOf(Function);
   });
 
+  it('keeps only in-flight rows in progress and tracks done/total', async () => {
+    const { result } = renderUpload();
+    const files = [makeFile('a.txt'), makeFile('b.txt'), makeFile('c.txt')];
+    const pending = [];
+    mockUploadFile.mockImplementation(({ onUploadProgress }) => new Promise((resolve) => {
+      onUploadProgress({ loaded: 1, total: 2 });
+      pending.push(resolve);
+    }));
+
+    act(() => result.current.openUploadDialog(files));
+    await act(async () => { result.current.confirmUpload(); });
+
+    await waitFor(() => {
+      expect(Object.keys(result.current.uploadProgress)).toHaveLength(2);
+    });
+    expect(result.current.uploadStats).toEqual({ total: 3, done: 0 });
+
+    const first = pending.shift();
+    await act(async () => { first({ id: 'x' }); });
+    await waitFor(() => {
+      expect(result.current.uploadStats.done).toBe(1);
+      expect(Object.keys(result.current.uploadProgress)).toHaveLength(2);
+    });
+
+    await act(async () => { pending.splice(0).forEach((resolve) => resolve({ id: 'x' })); });
+    await waitFor(() => expect(result.current.uploading).toBe(false));
+    expect(result.current.uploadProgress).toEqual({});
+    expect(result.current.uploadStats).toEqual({ total: 0, done: 0 });
+  });
+
+  it('cancels an in-flight upload via abort signal', async () => {
+    const { result } = renderUpload();
+    mockUploadFile.mockImplementation(({ signal }) => new Promise((_resolve, reject) => {
+      signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    }));
+
+    act(() => result.current.openUploadDialog([makeFile('a.txt')]));
+    await act(async () => { result.current.confirmUpload(); });
+    await waitFor(() => expect(mockUploadFile).toHaveBeenCalled());
+
+    act(() => { result.current.cancelUpload(); });
+    await waitFor(() => expect(result.current.uploading).toBe(false));
+    expect(mockNotifyWarning).toHaveBeenCalledWith(
+      expect.stringContaining('отменена'),
+      expect.objectContaining({ source: 'my-files-upload-cancelled' }),
+    );
+    expect(result.current.uploadProgress).toEqual({});
+  });
+
+  it('reports folder-structure creation progress', async () => {
+    const resolvers = [];
+    mockCreateFolder.mockImplementation(({ name, parentId }) => new Promise((resolve) => {
+      resolvers.push(() => resolve({ id: `created-${name}`, name, parent_id: parentId }));
+    }));
+    const { result } = renderUpload({ allFolders: [] });
+
+    const nested = makeFile('f.txt', { path: 'A/B/f.txt' });
+    act(() => result.current.openUploadDialog([nested], { asFolder: true }));
+    await act(async () => { result.current.confirmUpload(); });
+
+    await waitFor(() => expect(result.current.prepareStats).toEqual({ total: 2, done: 0 }));
+    expect(result.current.uploading).toBe(true);
+
+    for (let guard = 0; guard < 10 && mockUploadFile.mock.calls.length === 0; guard += 1) {
+      resolvers.splice(0).forEach((resolve) => resolve());
+      await act(async () => {});
+    }
+    await waitFor(() => expect(mockUploadFile).toHaveBeenCalled());
+    expect(result.current.prepareStats).toEqual({ total: 0, done: 0 });
+  });
+
   it('notifies on upload failure and still closes the upload state', async () => {
     mockUploadFile.mockRejectedValue({ response: { status: 413 } });
     const { result } = renderUpload();
@@ -215,5 +286,23 @@ describe('useMyFilesUpload', () => {
       );
     });
     expect(result.current.uploading).toBe(false);
+  });
+
+  it('maps a server quota rejection to a friendly message', async () => {
+    mockUploadFile.mockRejectedValue({ response: { status: 400, data: { detail: 'User storage quota exceeded' } } });
+    const { result } = renderUpload({
+      quota: { used_bytes: 100, limit_bytes: 200, remaining_bytes: 100 },
+    });
+
+    act(() => result.current.openUploadDialog([makeFile('big.bin', { size: 300 })]));
+    await act(async () => { result.current.confirmUpload(); });
+
+    await waitFor(() => {
+      expect(mockNotifyWarning).toHaveBeenCalledWith(
+        expect.stringContaining('не помещается в квоту'),
+        expect.objectContaining({ source: 'my-files-upload-failed' }),
+      );
+    });
+    expect(mockUploadFile).toHaveBeenCalledTimes(1);
   });
 });

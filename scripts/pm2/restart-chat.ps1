@@ -1,13 +1,20 @@
 param(
     [int]$Port = 8002,
     [string]$ProcessName = 'itinvent-chat',
-    [string]$PreviewWorkerName = 'itinvent-preview-worker'
+    [string]$PreviewWorkerName = 'itinvent-preview-worker',
+    [ValidateSet('auto', 'single', 'dual')][string]$ChatMode = 'auto'
 )
 
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = 'C:\Project\Image_scan'
 $ecosystemBackend = Join-Path $projectRoot 'scripts\pm2\ecosystem.backend.config.js'
+
+. (Join-Path $projectRoot 'scripts\pm2\chat-runtime-mode.ps1')
+$resolvedChatMode = Get-ChatRuntimeMode -ProjectRoot $projectRoot -Override $ChatMode
+if ($resolvedChatMode -eq 'dual' -and $ProcessName -eq 'itinvent-chat') {
+    throw 'Chat runs as dual nodes itinvent-chat-a/-b in this environment. Use scripts\pm2\restart-chat-scale.ps1 (rolling). Pass -ChatMode single only to force the legacy single-node restart.'
+}
 
 function Resolve-Pm2Command {
     $preferredGlobalPm2Cmd = Join-Path $env:APPDATA 'npm\pm2.cmd'

@@ -21,7 +21,9 @@ import { useReducedMotion } from 'framer-motion';
 
 import { AttachmentCard, TaskShareCard } from './ChatCommon';
 import ChatLinkPreview, { extractFirstUrl } from './ChatLinkPreview';
+import { ChatContactCard, ChatLocationCard, ChatPollCard } from './ChatStructuredCards';
 import { renderChatPlainTextBody } from './chatPlainText';
+import { resolveChatStructuredContent } from './chatStructuredContent';
 import {
   buildChatMessageBodySurfaceSx,
   CHAT_DEFAULT_FONT_SIZES,
@@ -250,8 +252,12 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
   const warnings = Array.isArray(preview.warnings) ? preview.warnings.filter(Boolean) : [];
   const effects = Array.isArray(preview.effects) ? preview.effects.filter(Boolean) : [];
   const isOfficeMail = actionType.startsWith('office.mail.');
+  const isChatMessage = actionType === 'chat.message.send';
+  const isSandboxPermission = actionType === 'ai.sandbox.permission';
   const isTaskAction = actionType.includes('task') || Boolean(preview.task);
-  const confirmLabel = isOfficeMail
+  const confirmLabel = isSandboxPermission
+    ? 'Разрешить один раз'
+    : isOfficeMail || isChatMessage
     ? 'Подтвердить и отправить'
     : isTaskAction
       ? 'Создать'
@@ -299,6 +305,15 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
     setBusy(kind);
     try {
       await handler(card, message);
+    } finally {
+      setBusy('');
+    }
+  };
+  const runSandboxSessionConfirm = async () => {
+    if (typeof onConfirmAction !== 'function' || !card.id) return;
+    setBusy('confirm-session');
+    try {
+      await onConfirmAction(card, message, { scope: 'session' });
     } finally {
       setBusy('');
     }
@@ -456,6 +471,36 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
                   {busy === `format:${format}` ? '...' : (formatLabels[format] || format)}
                 </Button>
               ))
+            ) : isSandboxPermission ? (
+              <>
+                <Button
+                  size="small"
+                  variant="contained"
+                  onClick={() => runAction('confirm')}
+                  disabled={Boolean(busy)}
+                  sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800 }}
+                >
+                  {busy === 'confirm' ? 'Выполняю...' : 'Разрешить один раз'}
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={runSandboxSessionConfirm}
+                  disabled={Boolean(busy)}
+                  sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800 }}
+                >
+                  {busy === 'confirm-session' ? 'Выполняю...' : 'До конца сессии'}
+                </Button>
+                <Button
+                  size="small"
+                  variant="text"
+                  onClick={() => runAction('cancel')}
+                  disabled={Boolean(busy)}
+                  sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800, color: ui.textSecondary }}
+                >
+                  {busy === 'cancel' ? 'Отмена...' : 'Отклонить'}
+                </Button>
+              </>
             ) : (
               <>
                 <Button
@@ -487,6 +532,7 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
                 </Button>
               </>
             )}
+            {!isSandboxPermission ? (
             <Button
               size="small"
               variant="text"
@@ -496,8 +542,9 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
             >
               {busy === 'cancel' ? 'Отмена...' : 'Отменить'}
             </Button>
+            ) : null}
           </Stack>
-        ) : status === 'confirmed' ? (
+        ) : status === 'confirmed' && !isSandboxPermission ? (
           <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap" sx={{ pt: 0.35 }}>
             <Button
               size="small"
@@ -764,6 +811,8 @@ export function ChatBubble({
   onEditAction,
   onToggleReaction,
   onToggleReactionRaw,
+  onPollVote,
+  onPollClose,
   onScrollToMessage,
   currentUserId,
   highlighted = false,
@@ -778,6 +827,14 @@ export function ChatBubble({
   readTargetRef,
 }) {
   const task = message?.kind === 'task_share' ? message?.task_preview : null;
+  // F-GEO / F-CONTACT / F-POLL: structured kinds carry a JSON body — render cards, not raw JSON.
+  const structuredContent = resolveChatStructuredContent(message);
+  const locationPayload = structuredContent.location;
+  const contactPayload = structuredContent.contact;
+  const pollPayload = structuredContent.poll;
+  const isStructuredKind = !message?.is_deleted
+    && (locationPayload !== null || contactPayload !== null || pollPayload !== null
+      || ['location', 'contact', 'poll'].includes(String(message?.kind || '').trim()));
   const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
   const attachmentCaption = attachments.length > 0 ? String(message?.body || '').trim() : '';
   const body = String(message?.body || '').trim();
@@ -786,7 +843,7 @@ export function ChatBubble({
   const isMarkdownBody = bodyFormat === 'markdown'
     || (!hasExplicitBodyFormat && message?.kind === 'text' && attachments.length === 0 && detectChatBodyFormat(body) === 'markdown');
   const hasMarkdownTable = isMarkdownBody && hasChatMarkdownTable(body);
-  const emojiOnlyCount = !task && attachments.length === 0 ? getEmojiOnlyCount(message?.body) : 0;
+  const emojiOnlyCount = !task && !isStructuredKind && attachments.length === 0 ? getEmojiOnlyCount(message?.body) : 0;
   const showSender = !message?.is_own && conversationKind !== 'direct' && !groupedWithPrevious;
   const isOwnDirect = Boolean(message?.is_own) && conversationKind === 'direct';
   const isOwnGroup = Boolean(message?.is_own) && conversationKind !== 'direct';
@@ -803,6 +860,7 @@ export function ChatBubble({
   const bubbleBodyBottomPadding = density.bubbleBodyBottomPadding ?? 1.8;
   const bubbleReactionBodyBottomPadding = density.bubbleReactionBodyBottomPadding ?? 0.35;
   const inlineMeta = !task
+    && !isStructuredKind
     && attachments.length === 0
     && emojiOnlyCount === 0
     && !isMarkdownBody
@@ -862,6 +920,12 @@ export function ChatBubble({
     if (onToggleReactionRaw) return onToggleReactionRaw(resolvedMessageId, emoji);
   }, [onToggleReaction, onToggleReactionRaw, resolvedMessageId]);
   const effectiveToggleReaction = onToggleReaction || (onToggleReactionRaw && resolvedMessageId) ? handleToggleReaction : undefined;
+  const handlePollVote = typeof onPollVote === 'function' && resolvedMessageId
+    ? (optionIndex) => onPollVote(resolvedMessageId, optionIndex)
+    : undefined;
+  const handlePollClose = typeof onPollClose === 'function' && resolvedMessageId
+    ? () => onPollClose(resolvedMessageId)
+    : undefined;
   const showQuickActions = !selectionMode && !compactMobile && emojiOnlyCount === 0 && (typeof onOpenMessageMenu === 'function' || typeof effectiveToggleReaction === 'function');
   const shouldAnimateBubble = shouldAnimateChatBubble({
     prefersReducedMotion,
@@ -890,6 +954,7 @@ export function ChatBubble({
   const textMetaInFlow = !compactMobile
     && !inlineMeta
     && !task
+    && !isStructuredKind
     && attachments.length === 0
     && emojiOnlyCount === 0
     && Boolean(body)
@@ -1233,6 +1298,26 @@ export function ChatBubble({
 
         {task ? (
           <TaskShareCard task={task} navigate={navigate} ui={ui} theme={theme} />
+        ) : isStructuredKind ? (
+          <Stack spacing={0.9}>
+            {String(message?.kind || '').trim() === 'location' ? (
+              <ChatLocationCard location={locationPayload} ui={ui} theme={theme} isOwn={Boolean(message?.is_own)} />
+            ) : null}
+            {String(message?.kind || '').trim() === 'contact' ? (
+              <ChatContactCard contact={contactPayload} ui={ui} theme={theme} isOwn={Boolean(message?.is_own)} />
+            ) : null}
+            {String(message?.kind || '').trim() === 'poll' ? (
+              <ChatPollCard
+                poll={pollPayload}
+                ui={ui}
+                theme={theme}
+                isOwn={Boolean(message?.is_own)}
+                isOwnMessage={Boolean(message?.is_own)}
+                onVote={handlePollVote}
+                onClose={handlePollClose}
+              />
+            ) : null}
+          </Stack>
         ) : attachments.length > 0 ? (
           <Stack spacing={0.9}>
             <Box
@@ -1412,7 +1497,7 @@ export function ChatBubble({
           </Box>
         )}
 
-        {!task && attachments.length === 0 && emojiOnlyCount === 0 && body && extractFirstUrl(body) ? (
+        {!task && !isStructuredKind && attachments.length === 0 && emojiOnlyCount === 0 && body && extractFirstUrl(body) ? (
           <ChatLinkPreview
             url={extractFirstUrl(body)}
             theme={theme}

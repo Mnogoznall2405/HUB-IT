@@ -24,6 +24,7 @@ import {
 import { listMailboxes, type MailMailbox } from '../../api/mailMailboxesApi';
 import { useAuth } from '../../auth/AuthContext';
 import { buildNativeMailFolderOptions } from '../../mail/nativeMailFolders';
+import { applyPendingUnreadToFolderTree } from '../../mail/nativeMailUnreadPending';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
 import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
@@ -63,6 +64,7 @@ export function NativeMailFoldersScreen() {
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const allowed = hasPermission('mail.access');
+  const accent = tokens.scheme === 'dark' ? tokens.primaryLight : tokens.primary;
   const requestRef = useRef(0);
   const [mailboxId, setMailboxId] = useState(first(params.mailboxId));
   const [mailboxes, setMailboxes] = useState<MailMailbox[]>([]);
@@ -99,7 +101,7 @@ export function NativeMailFoldersScreen() {
       if (lease !== requestRef.current) return;
       const active = mailboxItems.filter((item) => item.is_active !== false);
       setMailboxes(active);
-      setFolderTree(tree.items);
+      setFolderTree(applyPendingUnreadToFolderTree(mailboxId, tree.items));
       if (!mailboxId) {
         const selected = active.find((item) => item.is_primary) || active[0];
         if (selected?.id) setMailboxId(String(selected.id));
@@ -245,7 +247,7 @@ export function NativeMailFoldersScreen() {
                 borderColor: mailboxId === String(mailbox.id) ? tokens.selectedBorder : tokens.borderSoft,
               }]}
             >
-              <Text style={[styles.mailboxText, { color: mailboxId === String(mailbox.id) ? tokens.primary : tokens.textSecondary }]}>{mailbox.label || mailbox.mailbox_email || 'Ящик'}</Text>
+              <Text style={[styles.mailboxText, { color: mailboxId === String(mailbox.id) ? accent : tokens.textSecondary }]}>{mailbox.label || mailbox.mailbox_email || 'Ящик'}</Text>
             </Pressable>
           ))}
         </ScrollView>
@@ -255,7 +257,7 @@ export function NativeMailFoldersScreen() {
       {status ? <Text accessibilityLiveRegion="polite" style={[styles.success, { color: tokens.success }]}>{status}</Text> : null}
       <View style={styles.createActions}>
         <CreateButton testID="native-mail-folder-create" label="Новая папка" disabled={Boolean(busyFolder) || offlineMode} tokens={tokens} onPress={() => openCreate('mailbox')} />
-        <CreateButton testID="native-mail-archive-folder-create" label="В архиве" disabled={Boolean(busyFolder) || offlineMode} tokens={tokens} onPress={() => openCreate('archive')} />
+        <CreateButton testID="native-mail-archive-folder-create" label="Новая папка в архиве" disabled={Boolean(busyFolder) || offlineMode} tokens={tokens} onPress={() => openCreate('archive')} />
       </View>
       {loading && !folderTree.length ? <View style={styles.loading}><ActivityIndicator color={tokens.primary} /></View> : null}
       {!loading && !customRows.length ? (
@@ -268,7 +270,7 @@ export function NativeMailFoldersScreen() {
             const disabled = Boolean(busyFolder) || offlineMode;
             return (
               <View key={id} testID={`native-mail-managed-folder-${id}`} style={[styles.folderRow, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
-                <MaterialCommunityIcons name={node.is_favorite ? 'folder-star' : 'folder-outline'} size={24} color={node.is_favorite ? tokens.primary : tokens.iconMuted} />
+                <MaterialCommunityIcons name={node.is_favorite ? 'folder-star' : 'folder-outline'} size={24} color={node.is_favorite ? accent : tokens.iconMuted} />
                 <View style={styles.folderText}>
                   <Text numberOfLines={2} style={[styles.folderTitle, { color: tokens.textPrimary }]}>{option.pathLabel}</Text>
                   <Text style={[styles.folderMeta, { color: tokens.textSecondary }]}>{option.unread} непрочитанных · {node.scope === 'archive' ? 'Архив' : 'Ящик'}</Text>

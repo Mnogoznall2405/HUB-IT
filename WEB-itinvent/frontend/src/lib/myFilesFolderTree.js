@@ -38,3 +38,26 @@ export const indexFoldersBySibling = (folders) => {
   });
   return map;
 };
+
+/** true, если targetId — сама папка rootId или лежит внутри её поддерева. */
+export const folderIsInsideSubtree = (folders, targetId, rootId) => {
+  const target = String(targetId || '');
+  const root = String(rootId || '');
+  if (!target || !root) return false;
+  if (target === root) return true;
+  const byId = new Map(
+    Array.from(folders || []).map((folder) => [String(folder?.id), folder]),
+  );
+  const seen = new Set();
+  let cursor = byId.get(target);
+  while (cursor) {
+    const id = String(cursor.id || '');
+    if (seen.has(id)) return false;
+    seen.add(id);
+    const parentId = String(cursor.parent_id || '');
+    if (!parentId) return false;
+    if (parentId === root) return true;
+    cursor = byId.get(parentId);
+  }
+  return false;
+};

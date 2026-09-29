@@ -9,6 +9,7 @@ import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import SecurityOutlinedIcon from '@mui/icons-material/SecurityOutlined';
 import SettingsApplicationsOutlinedIcon from '@mui/icons-material/SettingsApplicationsOutlined';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import CloudOutlinedIcon from '@mui/icons-material/CloudOutlined';
 
 export const ADMIN_AREA_PERMISSIONS = [
   'departments.manage',
@@ -17,6 +18,7 @@ export const ADMIN_AREA_PERMISSIONS = [
   'settings.ai.manage',
   'ad_users.read',
   'ad_users.manage',
+  'my_files.stats.read',
 ];
 
 export const PERSONAL_SETTINGS_SECTIONS = [
@@ -88,6 +90,14 @@ const ADMIN_SECTION_DEFINITIONS = [
     description: 'Активные входы и очистка',
     icon: <SecurityOutlinedIcon />,
     permission: 'settings.sessions.manage',
+  },
+  {
+    key: 'my-files',
+    label: 'Мой диск',
+    description: 'Занятое место и лимиты пользователей',
+    icon: <CloudOutlinedIcon />,
+    permission: 'my_files.stats.read',
+    adminOnlyFallback: true,
   },
   {
     key: 'system',

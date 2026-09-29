@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Alert,
@@ -18,6 +18,7 @@ import {
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import { equipmentRecordsAPI } from '../../api/equipmentRecords';
+import { equipmentComputersAPI } from '../../api/equipmentComputers';
 import { readFirst } from './databaseRecordModel';
 import { useEquipmentActFilePreview } from './useEquipmentActFilePreview';
 import { useMovementDetail } from './warehouse1cMovementDetail';
@@ -39,6 +40,7 @@ import {
   HUB_SORT_GETTERS,
   WH_SORT_GETTERS,
   filterHubItemsByText,
+  hubItemDatabaseMeta,
   sortRowsBy,
   toggleSortState,
 } from './employeeCompareFormat';
@@ -50,6 +52,7 @@ import useEmployeeEquipmentData from './useEmployeeEquipmentData';
 import useEmployeeWarehouseNavigation from './useEmployeeWarehouseNavigation';
 import useEmployeeEquipmentExport from './useEmployeeEquipmentExport';
 import useDiscrepanciesCopy from './useDiscrepanciesCopy';
+import useMissingWarehouseTaskText from './useMissingWarehouseTaskText';
 
 export default function EmployeeEquipmentDialog({
   open,
@@ -97,6 +100,7 @@ export default function EmployeeEquipmentDialog({
   });
   const movementDetail = useMovementDetail();
   const [inventoryTaskOpen, setInventoryTaskOpen] = useState(false);
+  const [activeUseByInvNo, setActiveUseByInvNo] = useState(null);
 
   const resetView = useCallback(() => {
     setSharedFilter('');
@@ -142,6 +146,47 @@ export default function EmployeeEquipmentDialog({
     allowCrossDatabase,
     resetView,
   });
+
+  // «В работе»: live agent computers matched to the employee's inventory
+  // numbers (same MAC/hostname join as the Computers page). Fail-soft —
+  // missing computers.read or any lookup error just hides the chips.
+  useEffect(() => {
+    if (!open || !Array.isArray(hubItems) || hubItems.length === 0) {
+      setActiveUseByInvNo(null);
+      return undefined;
+    }
+    const groups = new Map();
+    for (const item of hubItems) {
+      const invNo = String(readFirst(item, ['INV_NO', 'inv_no'], '') || '').trim();
+      if (!invNo || invNo === '-') continue;
+      const dbId = hubItemDatabaseMeta(item).databaseId || '';
+      if (!groups.has(dbId)) groups.set(dbId, new Set());
+      groups.get(dbId).add(invNo);
+    }
+    if (groups.size === 0) {
+      setActiveUseByInvNo(null);
+      return undefined;
+    }
+    let cancelled = false;
+    Promise.all(
+      [...groups.entries()].map(([dbId, invSet]) =>
+        equipmentComputersAPI
+          .getAgentComputersByInvNos([...invSet], dbId ? { dbId } : {})
+          .then((data) => (data?.items && typeof data.items === 'object' ? data.items : {}))
+          .catch(() => ({})),
+      ),
+    ).then((partials) => {
+      if (cancelled) return;
+      const merged = {};
+      for (const partial of partials) {
+        for (const [invNo, info] of Object.entries(partial)) {
+          if (invNo && !(invNo in merged)) merged[invNo] = info;
+        }
+      }
+      setActiveUseByInvNo(merged);
+    });
+    return () => { cancelled = true; };
+  }, [open, hubItems]);
 
   const filterActive = Boolean(String(sharedFilter || '').trim())
     || Boolean(typeFilter)
@@ -314,13 +359,27 @@ export default function EmployeeEquipmentDialog({
     setHistoryState((prev) => ({ ...prev, open: false }));
   }, []);
 
-  const { copiedDiscrepancies, discrepanciesText, handleCopyDiscrepancies } = useDiscrepanciesCopy({
+  const { copiedDiscrepancies, discrepanciesTaskText, handleCopyDiscrepancies } = useDiscrepanciesCopy({
     employeeName,
     comparisonComplete,
     hubItems,
     warehouseBalances,
     compareMaps,
   });
+
+  const {
+    taskText: missingWarehouseTaskText,
+    loading: missingWarehouseHintsLoading,
+  } = useMissingWarehouseTaskText({
+    active: inventoryTaskOpen && canViewWarehouse1C && !comparisonComplete,
+    employeeName,
+    hubItems,
+    warehouseCandidates,
+  });
+
+  const inventoryTaskDescription = comparisonComplete
+    ? discrepanciesTaskText
+    : missingWarehouseTaskText;
 
   return (
     <>
@@ -464,6 +523,7 @@ export default function EmployeeEquipmentDialog({
               onSort={(key) => setHubSort((prev) => toggleSortState(prev, key))}
               onOpenHistory={handleOpenHistory}
               groupByType={groupByType}
+              activeUseByInvNo={activeUseByInvNo}
             />
           </Box>
           )}
@@ -558,7 +618,7 @@ export default function EmployeeEquipmentDialog({
             <Button
               variant="text"
               onClick={() => setInventoryTaskOpen(true)}
-              disabled={!comparisonComplete}
+              disabled={!comparisonComplete && !(warehouseLoaded && warehouseStatus !== 'matched' && Array.isArray(hubItems) && hubItems.length)}
             >
               Задача на инвентаризацию
             </Button>
@@ -585,7 +645,8 @@ export default function EmployeeEquipmentDialog({
       historyState={historyState}
       onCloseHistory={handleCloseHistory}
       inventoryTaskOpen={inventoryTaskOpen}
-      discrepanciesText={discrepanciesText}
+      discrepanciesText={inventoryTaskDescription}
+      inventoryTaskDescriptionLoading={missingWarehouseHintsLoading && !comparisonComplete}
       onCloseInventoryTask={() => setInventoryTaskOpen(false)}
       onOpenTasks={() => {
         setInventoryTaskOpen(false);

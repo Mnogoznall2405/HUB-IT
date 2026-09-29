@@ -7,6 +7,8 @@ import {
   getNativeChatQueueState, readNativeChatOutbox, type NativeChatQueuedUpload,
 } from './nativeChatOutbox';
 import { mergeMessages } from './chatState';
+import { setChatAttachmentTransfer } from './nativeChatAttachmentTransfers';
+import { showNativeToast } from '../components/nativeToast';
 
 /** Queue updates/ACKs remain visible when delivery is owned by the shell. */
 export function useNativeChatOutboxMessages(
@@ -48,7 +50,7 @@ export function useNativeChatOutboxMessages(
             (message.attachments || []).forEach((attachment) => {
               if (message.local_status === 'sending') {
                 next[attachment.id] = { action: 'upload', status: 'active',
-                  progress: next[attachment.id]?.progress ?? 0, cancellable: true };
+                  progress: next[attachment.id]?.progress ?? null, cancellable: true };
               } else if (['paused', 'cancelled'].includes(getNativeChatQueueState(message) || '')) {
                 next[attachment.id] = { action: 'upload', progress: 0, cancellable: false,
                   status: getNativeChatQueueState(message) === 'cancelled' ? 'cancelled' : 'failed' };
@@ -73,7 +75,7 @@ export function useNativeChatOutboxMessages(
                 void outbox.detachReply(id, replacement, current).then(async () => {
                   if (current()) await outbox.retryDelivery(replacement, current);
                 }).catch(() => {
-                  if (current()) Alert.alert('Не удалось изменить ответ', 'Проверьте очередь перед повтором.');
+                  if (current()) showNativeToast('Не удалось изменить ответ', 'Проверьте очередь перед повтором.');
                 });
               } },
             ]);
@@ -94,13 +96,11 @@ export function useNativeChatOutboxMessages(
       if (!active || event.userId !== userId || event.message.conversation_id !== conversationId) return;
       if (event.loaded === undefined) setMessages((current) => mergeMessages(current, event.message, userId));
       if (event.loaded !== undefined) {
-        setTransfers((current) => {
-          const next = { ...current };
-          (event.message.attachments || []).forEach((attachment) => {
-            next[attachment.id] = { action: 'upload', status: 'active', cancellable: true,
-              progress: event.total && event.total > 0 ? Math.min(1, Math.max(0, event.loaded! / event.total)) : null };
-          });
-          return next;
+        // High-frequency upload ticks update only the subscribed attachment
+        // rows through the external store — no screen or list state writes.
+        (event.message.attachments || []).forEach((attachment) => {
+          setChatAttachmentTransfer(attachment.id, { action: 'upload', status: 'active', cancellable: true,
+            progress: event.total && event.total > 0 ? Math.min(1, Math.max(0, event.loaded! / event.total)) : null });
         });
       }
     });

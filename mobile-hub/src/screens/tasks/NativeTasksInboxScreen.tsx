@@ -35,6 +35,7 @@ import { NativeTaskRow } from '../../components/tasks/NativeTaskRow';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { hubRealtimeSocket } from '../../realtime/hubRealtimeSocket';
 import { TASK_STATUS_OPTIONS } from '../../tasks/taskFormat';
+import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { buildNativeTaskListSections } from '../../tasks/nativeTaskViews';
 import { useFluentTokens, type FluentTokens } from '../../theme/fluentTokens';
 import {
@@ -156,6 +157,7 @@ export function NativeTasksInboxScreen() {
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
+  const navInset = useNativeBottomNavInset();
   const allowed = hasPermission('tasks.read');
   const canCreate = hasPermission('tasks.create') || hasPermission('tasks.write');
   const canManageAll = String(user?.role || '').trim().toLowerCase() === 'admin' || hasPermission('tasks.manage_all');
@@ -488,6 +490,7 @@ export function NativeTasksInboxScreen() {
       title="Задачи"
       tokens={tokens}
       scroll={false}
+      contentUnderNav
       rightAction={(
         <View style={styles.headerActions}>
           {canCreate ? (
@@ -624,7 +627,7 @@ export function NativeTasksInboxScreen() {
             if (!loadingMore && items.length < total) void loadPage({ reset: false });
           }}
           onEndReachedThreshold={0.35}
-          contentContainerStyle={taskFeedRows.length === 0 ? styles.emptyList : styles.listContent}
+          contentContainerStyle={taskFeedRows.length === 0 ? [styles.emptyList, { paddingBottom: navInset }] : [styles.listContent, { paddingBottom: navInset }]}
           ListEmptyComponent={error ? null : (
             <View style={styles.emptyState}>
               <View style={[styles.emptyIcon, { backgroundColor: tokens.panelInset }]}>
@@ -859,8 +862,8 @@ const styles = StyleSheet.create({
   error: { flex: 1, fontSize: 13, lineHeight: 18, fontWeight: '700' },
   retryButton: { minHeight: 40, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center' },
   retryText: { fontSize: 13, fontWeight: '900' },
-  listContent: { gap: 10, paddingBottom: 8 },
-  taskSectionHeader: { minHeight: 36, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 2 },
+  listContent: { paddingBottom: 8 },
+  taskSectionHeader: { minHeight: 36, marginTop: 8, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 2 },
   taskSectionTitle: { flex: 1, fontSize: 14, fontWeight: '900' },
   taskSectionCount: { fontSize: 12, fontWeight: '900' },
   completedToggle: { minHeight: 46, borderRadius: 13, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },

@@ -694,6 +694,102 @@ def test_cleanup_expired_upload_sessions_deletes_pending_session_dir(chat_env):
     assert not service._upload_session_dir(session_id).exists()
 
 
+def test_upload_session_get_reports_received_progress(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"%PDF-1.4 demo"
+
+    created = service.create_upload_session(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        files=[{"file_name": "report.pdf", "mime_type": "application/pdf", "size": len(payload)}],
+    )
+    service.upload_session_chunk(
+        current_user_id=1,
+        session_id=created["session_id"],
+        file_id=created["files"][0]["file_id"],
+        chunk_index=0,
+        offset=0,
+        payload=payload,
+    )
+
+    status = service.get_upload_session(
+        current_user_id=1,
+        session_id=created["session_id"],
+    )
+
+    assert status["session_id"] == created["session_id"]
+    assert status["status"] == "pending"
+    assert status["files"][0]["received_bytes"] == len(payload)
+    assert status["files"][0]["received_chunks"] == [0]
+
+
+def test_upload_session_complete_propagates_client_message_id(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"%PDF-1.4 demo"
+
+    created = service.create_upload_session(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        client_message_id="mobile-upload-1",
+        files=[{"file_name": "report.pdf", "mime_type": "application/pdf", "size": len(payload)}],
+    )
+    manifest = service._load_upload_session_manifest(created["session_id"])
+    assert manifest["client_message_id"] == "mobile-upload-1"
+
+    service.upload_session_chunk(
+        current_user_id=1,
+        session_id=created["session_id"],
+        file_id=created["files"][0]["file_id"],
+        chunk_index=0,
+        offset=0,
+        payload=payload,
+    )
+    completed = service.complete_upload_session(
+        current_user_id=1,
+        session_id=created["session_id"],
+    )
+
+    assert completed["client_message_id"] == "mobile-upload-1"
+
+
+def test_upload_session_new_session_with_same_client_message_id_dedups(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"%PDF-1.4 demo"
+
+    def upload_and_complete():
+        created = service.create_upload_session(
+            current_user_id=1,
+            conversation_id=conversation["id"],
+            client_message_id="mobile-upload-dedup",
+            files=[{"file_name": "report.pdf", "mime_type": "application/pdf", "size": len(payload)}],
+        )
+        service.upload_session_chunk(
+            current_user_id=1,
+            session_id=created["session_id"],
+            file_id=created["files"][0]["file_id"],
+            chunk_index=0,
+            offset=0,
+            payload=payload,
+        )
+        return created, service.complete_upload_session(
+            current_user_id=1,
+            session_id=created["session_id"],
+        )
+
+    _, first = upload_and_complete()
+    second_session, second = upload_and_complete()
+
+    assert second["id"] == first["id"]
+    history = service.get_messages(current_user_id=1, conversation_id=conversation["id"], limit=20)
+    assert len(history["items"]) == 1
+
+    orphan_name = f"{second_session['files'][0]['file_id']}_report.pdf"
+    assert not (chat_env["attachments_root"] / conversation["id"] / orphan_name).exists()
+
+
 def test_chat_push_subscription_receives_message_push_payload(chat_env, monkeypatch):
     service = chat_env["service"]
     conversation = chat_env["direct"]

@@ -97,7 +97,7 @@ class _EndpointRealtime:
     def unsubscribe_conversation(self, connection_id: str, room_id: str) -> None:
         self.unsubscriptions.append((connection_id, room_id))
 
-    def disconnect(self, connection_id: str):
+    def disconnect(self, connection_id: str, **_kwargs):
         self.disconnected.append(connection_id)
         return {"last_connection": False}
 
@@ -119,6 +119,21 @@ class _EndpointRealtime:
         await self.websocket.send_json({
             "type": event_type,
             "payload": payload,
+            "request_id": request_id,
+        })
+
+    async def send_pong(
+        self,
+        connection_id: str,
+        *,
+        event_type: str,
+        payload: dict | None = None,
+        request_id=None,
+        **_kwargs,
+    ) -> None:
+        await self.websocket.send_json({
+            "type": event_type,
+            "payload": payload or {},
             "request_id": request_id,
         })
 
@@ -153,6 +168,7 @@ def test_hub_realtime_websocket_authenticates_and_supports_heartbeat(monkeypatch
         "user_id": 42,
         "receive_user_events": False,
         "track_presence": False,
+        "socket_kind": "hub",
     }
     assert manager.subscriptions == [("hub-connection-1", "hub:user:42")]
     assert manager.disconnected == ["hub-connection-1"]

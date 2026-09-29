@@ -1,5 +1,5 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { useEffect, useMemo, useRef } from 'react';
+import { useContext, useEffect, useMemo, useRef } from 'react';
 import {
   Animated,
   Pressable,
@@ -10,6 +10,8 @@ import {
   type LayoutChangeEvent,
 } from 'react-native';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
+import { useKeyboardState } from 'react-native-keyboard-controller';
+import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import { type VoiceHoldGesture, voiceHoldHintLabel } from '../../chat/chatVoice';
 import { type ChatTokens, useChatTokens } from '../../theme/chatTokens';
 import { ChatComposerContext } from './ChatComposerContext';
@@ -30,6 +32,8 @@ type Props = {
   busy?: boolean;
   onAttachmentPress?: () => void;
   onEmojiPress?: () => void;
+  /** Focused text input swaps open picker panels for the keyboard. */
+  onInputFocus?: () => void;
   uploadLabel?: string;
   uploadProgress?: number | null;
   onLayout?: (event: LayoutChangeEvent) => void;
@@ -59,6 +63,7 @@ export function ChatComposer({
   busy = false,
   onAttachmentPress,
   onEmojiPress,
+  onInputFocus,
   uploadLabel,
   uploadProgress,
   onLayout,
@@ -75,6 +80,8 @@ export function ChatComposer({
   onSendVoice,
 }: Props) {
   const chatTokens = useChatTokens();
+  const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
+  const keyboardState = useKeyboardState();
   const styles = useMemo(() => createStyles(chatTokens), [chatTokens]);
   const reduceMotion = useReducedMotion();
   const inputRef = useRef<TextInput>(null);
@@ -82,6 +89,7 @@ export function ChatComposer({
     if (mode) inputRef.current?.focus();
   }, [mode]);
   const inputHeight = useRef(new Animated.Value(44)).current;
+  const actionMorph = useRef(new Animated.Value(1)).current;
   const targetHeightRef = useRef(44);
   useEffect(() => () => inputHeight.stopAnimation(), [inputHeight]);
   const resizeInput = (height: number) => {
@@ -96,6 +104,15 @@ export function ChatComposer({
   const sentValueRef = useRef<symbol | null>(null);
   const hasText = Boolean(value.trim());
   const showMic = Boolean(onMicPress) && !hasText && mode !== 'edit' && !voiceRecording;
+  useEffect(() => {
+    if (reduceMotion) { actionMorph.setValue(1); return; }
+    actionMorph.setValue(0);
+    Animated.timing(actionMorph, {
+      toValue: 1,
+      duration: 140,
+      useNativeDriver: true,
+    }).start();
+  }, [actionMorph, reduceMotion, showMic, mode]);
   const sendDisabled = voiceRecording ? busy : (!hasText || busy);
   const uploadPercent = uploadProgress == null
     ? null
@@ -141,7 +158,10 @@ export function ChatComposer({
           </View>
         </View>
       ) : null}
-      <View style={styles.composer}>
+      {/* Edge-to-edge: keep the input and buttons above the system nav bar.
+          An open keyboard covers the bar itself — the inset would then be a
+          dead gap between the input row and the keyboard. */}
+      <View style={[styles.composer, { paddingBottom: keyboardState.isVisible ? 7 : Math.max(7, insets?.bottom || 0) }]}>
         {voiceRecording ? (
           <>
             <Pressable
@@ -222,6 +242,7 @@ export function ChatComposer({
                 accessibilityLabel="Текст сообщения"
                 style={[styles.input, { height: inputHeight }]}
                 onContentSizeChange={(event) => resizeInput(event.nativeEvent.contentSize.height)}
+                onFocus={onInputFocus}
                 multiline
                 maxLength={10000}
                 editable={!busy}
@@ -272,11 +293,19 @@ export function ChatComposer({
                 : mode === 'edit' ? 'Сохранить изменения' : 'Отправить сообщение'}
               accessibilityState={{ disabled: showMic ? busy : sendDisabled, busy }}
             >
-              <MaterialCommunityIcons
-                name={showMic ? 'microphone' : mode === 'edit' ? 'check' : 'send'}
-                size={22}
-                color={chatTokens.composerActionText}
-              />
+              <Animated.View style={{
+                opacity: actionMorph,
+                transform: [
+                  { rotate: actionMorph.interpolate({ inputRange: [0, 1], outputRange: ['-80deg', '0deg'] }) },
+                  { scale: actionMorph.interpolate({ inputRange: [0, 1], outputRange: [0.4, 1] }) },
+                ],
+              }}>
+                <MaterialCommunityIcons
+                  name={showMic ? 'microphone' : mode === 'edit' ? 'check' : 'send'}
+                  size={22}
+                  color={chatTokens.composerActionText}
+                />
+              </Animated.View>
             </Pressable>
           </>
         )}

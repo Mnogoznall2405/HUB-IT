@@ -8,6 +8,10 @@ vi.mock('./chatFeature', () => ({
   CHAT_WS_ENABLED: true,
 }));
 
+vi.mock('../api/chatWsAuth', () => ({
+  getWsTicket: vi.fn(() => Promise.resolve('ws-ticket-1')),
+}));
+
 class MockWebSocket {
   static CONNECTING = 0;
   static OPEN = 1;
@@ -61,6 +65,40 @@ describe('chatSocket client lifecycle', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('answers chat.auth.required once with a ws_ticket frame (D5/W8)', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const { getWsTicket } = await import('../api/chatWsAuth');
+    chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+    socket.emitOpen();
+
+    socket.onmessage?.({ data: JSON.stringify({ type: 'chat.auth.required', payload: { retry_after_ms: 30000 } }) });
+    socket.onmessage?.({ data: JSON.stringify({ type: 'chat.auth.required', payload: { retry_after_ms: 30000 } }) });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getWsTicket).toHaveBeenCalledTimes(1);
+    const authFrames = socket.sent
+      .map((raw) => JSON.parse(raw))
+      .filter((message) => message.type === 'chat.auth');
+    expect(authFrames).toHaveLength(1);
+    expect(authFrames[0].payload.ws_ticket).toBe('ws-ticket-1');
+    chatSocket.close(true);
+  });
+
+  it('does not surface chat.auth.ok/rejected as activity events', async () => {
+    const { chatSocket } = await loadChatSocket();
+    chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+    socket.emitOpen();
+    expect(() => {
+      socket.onmessage?.({ data: JSON.stringify({ type: 'chat.auth.ok' }) });
+      socket.onmessage?.({ data: JSON.stringify({ type: 'chat.auth.rejected' }) });
+    }).not.toThrow();
+    chatSocket.close(true);
   });
 
   it('ignores stale close events from a replaced socket', async () => {
@@ -446,6 +484,48 @@ describe('chatSocket client lifecycle', () => {
 
     release();
     chatSocket.close(true);
+  });
+
+  it('reconnects after a slow consumer close code 1013', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    socket.emitOpen();
+    socket.emitClose({ code: 1013, reason: 'slow consumer' });
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(chatSocket.authBlocked).toBe(false);
+    expect(MockWebSocket.instances.length).toBeGreaterThan(1);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('dispatches one session-expired event after three failed handshakes', async () => {
+    const { chatSocket, CHAT_SOCKET_SESSION_EXPIRED_EVENT } = await loadChatSocket();
+    const events = [];
+    const listener = (event) => events.push(event);
+    window.addEventListener(CHAT_SOCKET_SESSION_EXPIRED_EVENT, listener);
+    try {
+      const release = chatSocket.retain();
+      for (let i = 0; i < 3; i += 1) {
+        const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+        socket.emitClose({ code: 1006 });
+        await vi.runOnlyPendingTimersAsync();
+      }
+      expect(events).toHaveLength(1);
+      // An opened socket that later drops must not count as a failed handshake.
+      const socket = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+      socket.emitOpen();
+      socket.emitClose({ code: 1006 });
+      await vi.runOnlyPendingTimersAsync();
+      expect(events).toHaveLength(1);
+      release();
+      chatSocket.close(true);
+    } finally {
+      window.removeEventListener(CHAT_SOCKET_SESSION_EXPIRED_EVENT, listener);
+    }
   });
 
   it('does not reconnect after connection limit eviction close code 4000', async () => {

@@ -130,6 +130,33 @@ export const formatConsumableSourceLabel = (entry) => {
   return `${model} | ${type} | ${branch} / ${location} | \u041e\u0441\u0442\u0430\u0442\u043e\u043a: ${option.qty}`;
 };
 
+// Consumable cards share INV_NO space with legacy rows, so patch by ITEMS.ID
+// first and fall back to inv_no only when the id is missing.
+export const updateConsumableQtyInGrouped = (groupedData, itemId, invNo, qty) => {
+  const normalizedId = toNumberOrNull(itemId);
+  const normalizedInvNo = String(invNo || '').trim();
+  const patch = { QTY: qty, qty };
+  let touched = false;
+
+  const nextGrouped = {};
+  Object.entries(groupedData || {}).forEach(([branchName, locations]) => {
+    const nextLocations = {};
+    Object.entries(locations || {}).forEach(([locationName, items]) => {
+      nextLocations[locationName] = (items || []).map((item) => {
+        const rowId = toNumberOrNull(readFirst(item, ['ID', 'id'], null));
+        const matches = normalizedId !== null
+          ? rowId === normalizedId
+          : (normalizedInvNo && String(readFirst(item, ['INV_NO', 'inv_no'], '') || '').trim() === normalizedInvNo);
+        if (!matches) return item;
+        touched = true;
+        return { ...item, ...patch };
+      });
+    });
+    nextGrouped[branchName] = nextLocations;
+  });
+  return touched ? nextGrouped : (groupedData || {});
+};
+
 export const flattenGroupedConsumables = (grouped) => {
   const rows = [];
   Object.values(grouped || {}).forEach((locations) => {

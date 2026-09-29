@@ -244,10 +244,40 @@ class CartridgeColorsResponse(BaseModel):
     colors: List[str]
 
 
+class CartridgePrintersResponse(BaseModel):
+    """Response model for reverse cartridge-to-printer compatibility lookup."""
+    cartridge_model: str
+    printer_models: List[str]
+
+
 class PrinterComponentsResponse(BaseModel):
     """Response model for printer components."""
     printer_model: str
     components: List[str]
+
+
+class CartridgeDatabaseModelInput(BaseModel):
+    """Single compatible cartridge model inside an upsert payload."""
+    model: str
+    description: Optional[str] = None
+    color: Optional[str] = None
+    page_yield: Optional[int] = None
+    oem_part: Optional[str] = None
+
+
+class CartridgeDatabaseEntryUpsert(BaseModel):
+    """Editable fields of one printer compatibility entry."""
+    oem_cartridge: Optional[str] = None
+    compatible_models: Optional[List[CartridgeDatabaseModelInput]] = None
+    is_color: Optional[bool] = None
+
+
+class CartridgeDatabaseEntryResponse(BaseModel):
+    """Response model for one row of the compatibility table."""
+    printer_model: str
+    oem_cartridge: str = ''
+    compatible_models: List[CartridgeInfoResponse] = []
+    is_color: bool = False
 
 
 # ========== Statistics Models ==========

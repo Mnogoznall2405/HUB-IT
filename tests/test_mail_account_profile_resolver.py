@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import importlib
 import sys
@@ -15,7 +15,7 @@ if str(WEB_ROOT) not in sys.path:
 resolver_module = importlib.import_module("backend.services.mail_account_profile_resolver")
 
 
-def _resolver(primary_row=None, *, session_context=None, session_password=""):
+def _resolver(primary_row=None, *, session_context=None, session_password="", impersonation_active=None):
     return resolver_module.MailAccountProfileResolver(
         resolve_primary_mailbox_row=lambda **_kwargs: primary_row,
         normalize_mailbox_auth_mode=lambda value, default="stored_credentials": str(value or default).strip() or default,
@@ -25,6 +25,7 @@ def _resolver(primary_row=None, *, session_context=None, session_password=""):
         get_session_context=lambda _session_id, _user_id: session_context,
         resolve_session_password=lambda _session_id, _user_id: session_password,
         normalize_signature_html=lambda value: str(value or "").strip(),
+        impersonation_active=impersonation_active,
     )
 
 
@@ -142,3 +143,56 @@ def test_account_profile_resolver_primary_session_uses_session_login_and_flags_r
     assert profile["login"] == "ivanov@corp.test"
     assert profile["mail_auth_mode"] == "ad_auto"
     assert profile["mail_requires_relogin"] is True
+
+
+def _impersonating_resolver(**kwargs):
+    kwargs["impersonation_active"] = lambda: True
+    return _resolver(**kwargs)
+
+
+def test_account_profile_resolver_impersonation_needs_no_credentials():
+    resolver = _impersonating_resolver(session_context=None, session_password="")
+
+    profile = resolver.build_profile(
+        user={"id": 7, "username": "ivanov"},
+        mailbox_row={
+            "id": "primary",
+            "auth_mode": "primary_session",
+            "mailbox_email": "ivanov@example.test",
+            "mailbox_login": "",
+            "is_primary": True,
+            "is_active": True,
+        },
+        require_password=True,
+    )
+
+    assert profile["email"] == "ivanov@example.test"
+    assert profile["login"] == "ivanov@corp.test"
+    assert profile["password"] == ""
+    assert profile["mail_auth_mode"] == "impersonation"
+    assert profile["mail_impersonated"] is True
+    assert profile["mail_requires_password"] is False
+    assert profile["mail_requires_relogin"] is False
+    assert profile["mail_is_configured"] is True
+
+
+def test_account_profile_resolver_impersonation_skips_primary_credentials_chain():
+    resolver = _impersonating_resolver(primary_row=None)
+
+    profile = resolver.build_profile(
+        user={"id": 7, "username": "ivanov"},
+        mailbox_row={
+            "id": "shared",
+            "auth_mode": "primary_credentials",
+            "mailbox_email": "shared@example.test",
+            "mailbox_login": "",
+            "is_primary": False,
+            "is_active": True,
+        },
+        require_password=True,
+    )
+
+    assert profile["login"] == "shared@example.test"
+    assert profile["password"] == ""
+    assert profile["mail_auth_mode"] == "impersonation"
+    assert profile["mail_is_configured"] is True

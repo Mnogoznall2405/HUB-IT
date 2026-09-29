@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, cast, func, or_, select
+from sqlalchemy.dialects.postgresql import JSONB
 
 from backend.appdb.db import AppDatabaseConfigurationError, app_session, ensure_app_schema_initialized
 from backend.appdb.models import AppPasswordVaultAudit, AppPasswordVaultEntry, AppPasswordVaultGroup
@@ -30,8 +31,16 @@ from backend.services.user_service import user_service
 PASSWORD_VAULT_UNLOCK_TTL_SECONDS = 300
 PASSWORD_VAULT_UNLOCK_NAMESPACE = "password_vault_unlock"
 PASSWORD_VAULT_UNLOCK_RATE_NAMESPACE = "password_vault_unlock_rate"
+PASSWORD_VAULT_UNLOCK_USER_RATE_NAMESPACE = "password_vault_unlock_user_rate"
+PASSWORD_VAULT_UNLOCK_RATE_LIMIT = 5
+PASSWORD_VAULT_UNLOCK_RATE_WINDOW_SECONDS = 300
+PASSWORD_VAULT_REVEAL_RATE_NAMESPACE = "password_vault_reveal_rate"
+PASSWORD_VAULT_REVEAL_RATE_LIMIT = 20
+PASSWORD_VAULT_REVEAL_RATE_WINDOW_SECONDS = 60
 PASSWORD_VAULT_2FA_SETUP_NAMESPACE = "password_vault_2fa_setup"
 PASSWORD_VAULT_2FA_SETUP_TTL_SECONDS = 600
+PASSWORD_VAULT_LIST_LIMIT_DEFAULT = 100
+PASSWORD_VAULT_LIST_LIMIT_MAX = 500
 
 
 class PasswordVaultError(RuntimeError):
@@ -48,6 +57,14 @@ class PasswordVaultNotFoundError(PasswordVaultError):
 
 class PasswordVaultAccessError(PasswordVaultError):
     """Raised when second-factor unlock or reveal is not allowed."""
+
+
+class PasswordVaultRateLimitError(PasswordVaultAccessError):
+    """Raised when a vault rate limit is exceeded."""
+
+    def __init__(self, detail: str, *, retry_after_seconds: int) -> None:
+        super().__init__(detail)
+        self.retry_after_seconds = max(1, int(retry_after_seconds or 1))
 
 
 class PasswordVaultValidationError(PasswordVaultError):
@@ -227,6 +244,38 @@ class PasswordVaultService:
             )
         )
 
+    @staticmethod
+    def _tag_exact_filter(session, tag_name: str):
+        """Case-insensitive exact tag match inside the tags_json array.
+
+        Rows with NULL/malformed tags_json are skipped instead of failing the
+        whole query (sqlite json_valid guard; PG gets a cheap array-shape check
+        before the jsonb cast).
+        """
+        tag_key = tag_name.lower()
+        if session.get_bind().dialect.name == "postgresql":
+            safe_tags = case(
+                (
+                    AppPasswordVaultEntry.tags_json.op("~")(r"^\s*\[.*\]\s*$"),
+                    cast(AppPasswordVaultEntry.tags_json, JSONB),
+                ),
+                else_=cast("[]", JSONB),
+            )
+            elements = func.jsonb_array_elements_text(safe_tags).table_valued(
+                "value", name="tag_item"
+            )
+        else:
+            safe_tags = case(
+                (func.json_valid(AppPasswordVaultEntry.tags_json) == 1, AppPasswordVaultEntry.tags_json),
+                else_="[]",
+            )
+            elements = func.json_each(safe_tags).table_valued("value", name="tag_item")
+        return (
+            select(elements.c.value)
+            .where(func.lower(elements.c.value) == tag_key)
+            .exists()
+        )
+
     def list_entries(
         self,
         *,
@@ -234,6 +283,8 @@ class PasswordVaultService:
         group: str = "",
         tag: str = "",
         include_archived: bool = False,
+        limit: int = PASSWORD_VAULT_LIST_LIMIT_DEFAULT,
+        offset: int = 0,
         session_id: str | None = None,
         user_id: int = 0,
     ) -> dict[str, Any]:
@@ -241,6 +292,8 @@ class PasswordVaultService:
         query_text = _normalize_text(q)
         group_name = _normalize_text(group)
         tag_name = _normalize_text(tag)
+        effective_limit = max(1, min(int(limit or PASSWORD_VAULT_LIST_LIMIT_DEFAULT), PASSWORD_VAULT_LIST_LIMIT_MAX))
+        effective_offset = max(0, int(offset or 0))
         with app_session(database_url) as session:
             stmt = select(AppPasswordVaultEntry)
             if not include_archived:
@@ -251,26 +304,25 @@ class PasswordVaultService:
                     or_(
                         func.lower(AppPasswordVaultEntry.login).like(q_lower),
                         func.lower(AppPasswordVaultEntry.description).like(q_lower),
-                        func.lower(AppPasswordVaultEntry.tags_json).like(q_lower),
                     )
                 )
             if group_name:
                 stmt = stmt.where(AppPasswordVaultEntry.group_name == group_name)
+            if tag_name:
+                stmt = stmt.where(self._tag_exact_filter(session, tag_name))
+            total = int(
+                session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+            )
             rows = session.scalars(
                 stmt.order_by(
                     AppPasswordVaultEntry.group_name.asc(),
                     AppPasswordVaultEntry.login.asc(),
                     AppPasswordVaultEntry.updated_at.desc(),
                 )
+                .limit(effective_limit)
+                .offset(effective_offset)
             ).all()
             items = [self._entry_to_response(row) for row in rows]
-            if tag_name:
-                tag_key = tag_name.lower()
-                items = [
-                    item
-                    for item in items
-                    if any(str(item_tag).lower() == tag_key for item_tag in item.get("tags") or [])
-                ]
 
             group_rows = session.scalars(
                 select(AppPasswordVaultGroup)
@@ -288,6 +340,9 @@ class PasswordVaultService:
             "items": items,
             "groups": groups,
             "tags": sorted(tag_values, key=lambda value: value.lower()),
+            "total": total,
+            "limit": effective_limit,
+            "offset": effective_offset,
             "unlocked_until": self.get_unlocked_until(user_id=user_id, session_id=session_id),
         }
 
@@ -475,20 +530,56 @@ class PasswordVaultService:
     def _unlock_rate_key(self, *, user_id: int, ip_address: str) -> str:
         return f"{int(user_id)}:{_normalize_text(ip_address) or 'unknown'}"
 
+    def _user_rate_key(self, *, user_id: int) -> str:
+        return f"{int(user_id)}:user"
+
+    def _unlock_rate_targets(self, *, user_id: int, ip_address: str) -> list[tuple[str, str]]:
+        return [
+            (
+                PASSWORD_VAULT_UNLOCK_RATE_NAMESPACE,
+                self._unlock_rate_key(user_id=user_id, ip_address=ip_address),
+            ),
+            (
+                PASSWORD_VAULT_UNLOCK_USER_RATE_NAMESPACE,
+                self._user_rate_key(user_id=user_id),
+            ),
+        ]
+
     def _check_unlock_rate_limit(self, *, user_id: int, ip_address: str) -> None:
-        counter = auth_runtime_store_service.get_json(
-            PASSWORD_VAULT_UNLOCK_RATE_NAMESPACE,
-            self._unlock_rate_key(user_id=user_id, ip_address=ip_address),
-        )
-        if isinstance(counter, dict) and int(counter.get("count", 0) or 0) >= 5:
-            raise PasswordVaultAccessError("Too many password vault unlock attempts")
+        for namespace, key in self._unlock_rate_targets(user_id=user_id, ip_address=ip_address):
+            counter = auth_runtime_store_service.get_json(namespace, key)
+            if (
+                isinstance(counter, dict)
+                and int(counter.get("count", 0) or 0) >= PASSWORD_VAULT_UNLOCK_RATE_LIMIT
+            ):
+                raise PasswordVaultRateLimitError(
+                    "Too many password vault unlock attempts",
+                    retry_after_seconds=PASSWORD_VAULT_UNLOCK_RATE_WINDOW_SECONDS,
+                )
 
     def _record_unlock_failure(self, *, user_id: int, ip_address: str) -> None:
-        auth_runtime_store_service.increment_counter(
-            PASSWORD_VAULT_UNLOCK_RATE_NAMESPACE,
-            self._unlock_rate_key(user_id=user_id, ip_address=ip_address),
-            window_seconds=300,
+        for namespace, key in self._unlock_rate_targets(user_id=user_id, ip_address=ip_address):
+            auth_runtime_store_service.increment_counter(
+                namespace,
+                key,
+                window_seconds=PASSWORD_VAULT_UNLOCK_RATE_WINDOW_SECONDS,
+            )
+
+    def _reset_unlock_rate(self, *, user_id: int, ip_address: str) -> None:
+        for namespace, key in self._unlock_rate_targets(user_id=user_id, ip_address=ip_address):
+            auth_runtime_store_service.delete(namespace, key)
+
+    def _throttle_reveal(self, *, user_id: int) -> None:
+        counter = auth_runtime_store_service.increment_counter(
+            PASSWORD_VAULT_REVEAL_RATE_NAMESPACE,
+            self._user_rate_key(user_id=user_id),
+            window_seconds=PASSWORD_VAULT_REVEAL_RATE_WINDOW_SECONDS,
         )
+        if int(counter.get("count", 0) or 0) > PASSWORD_VAULT_REVEAL_RATE_LIMIT:
+            raise PasswordVaultRateLimitError(
+                "Too many password vault reveal attempts",
+                retry_after_seconds=PASSWORD_VAULT_REVEAL_RATE_WINDOW_SECONDS,
+            )
 
     def _require_unlock_eligible_user(self, *, user_id: int) -> dict[str, Any]:
         if user_id <= 0:
@@ -508,6 +599,7 @@ class PasswordVaultService:
     ) -> dict[str, str]:
         database_url = self._database_url_or_raise()
         user_id = _actor_id(actor)
+        self._reset_unlock_rate(user_id=user_id, ip_address=meta.ip_address)
         unlocked_until_dt = _utc_now() + timedelta(seconds=PASSWORD_VAULT_UNLOCK_TTL_SECONDS)
         unlocked_until = unlocked_until_dt.replace(microsecond=0).isoformat()
         payload = {
@@ -730,6 +822,15 @@ class PasswordVaultService:
             raise PasswordVaultAccessError("Password vault unlock is required")
         return unlocked_until
 
+    def lock(self, *, actor: Any, session_id: str | None, meta: PasswordVaultRequestMeta) -> dict[str, bool]:
+        user_id = _actor_id(actor)
+        for storage_key in _unlock_storage_keys(user_id=user_id, session_id=session_id):
+            auth_runtime_store_service.delete(PASSWORD_VAULT_UNLOCK_NAMESPACE, storage_key)
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            self._write_audit(session, action="lock", actor=actor, entry=None, meta=meta)
+        return {"locked": True}
+
     def reveal_entry(
         self,
         entry_id: str,
@@ -740,6 +841,7 @@ class PasswordVaultService:
         meta: PasswordVaultRequestMeta,
     ) -> dict[str, str]:
         database_url = self._database_url_or_raise()
+        self._throttle_reveal(user_id=_actor_id(actor))
         unlocked_until = self.require_unlocked(user_id=_actor_id(actor), session_id=session_id)
         action = "reveal.copy" if _normalize_text(purpose) == "copy" else "reveal.show"
         with app_session(database_url) as session:

@@ -240,3 +240,36 @@ def test_cancel_winning_last_permission_poll_never_answers_allow() -> None:
 
     assert opencode.answers == []
     assert opencode.aborts == ["opencode-session"]
+
+def test_approved_permission_restarts_stale_tool_clock(monkeypatch) -> None:
+    worker_control = _WorkerControl()
+    opencode = _OpenCodeControl()
+    active_tools = {"tool-call": 0.0}
+    monkeypatch.setattr("backend.ai_sandbox.executor.time.monotonic", lambda: 121.0)
+
+    _executor()._handle_permission(
+        job=_job(),
+        session=_session(),
+        opencode_session_id="opencode-session",
+        properties={
+            "id": "opencode-permission",
+            "sessionID": "opencode-session",
+            "permission": "bash",
+            "patterns": ["pytest -q"],
+            "tool": {"messageID": "m1", "callID": "c1"},
+        },
+        control=opencode,
+        worker_control=worker_control,
+        deadline=10**12,
+        active_tools=active_tools,
+    )
+
+    assert opencode.answers[0]["payload"] == {"response": "once", "remember": False}
+    assert active_tools == {}
+    _executor()._raise_if_tool_timed_out(
+        active_tools,
+        timeout_seconds=120,
+        control=opencode,
+        opencode_session_id="opencode-session",
+    )
+    assert opencode.aborts == []

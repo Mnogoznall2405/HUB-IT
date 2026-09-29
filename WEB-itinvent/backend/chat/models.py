@@ -21,6 +21,18 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def conversation_state_is_muted(state: object, *, now: datetime | None = None) -> bool:
+    """Effective mute flag: `muted_until` lifts the mute once it expires."""
+    if not bool(getattr(state, "is_muted", False)):
+        return False
+    muted_until = getattr(state, "muted_until", None)
+    if muted_until is None:
+        return True
+    if muted_until.tzinfo is None:
+        muted_until = muted_until.replace(tzinfo=timezone.utc)
+    return muted_until > (now or utcnow())
+
+
 class Base(DeclarativeBase):
     """Declarative base for chat tables."""
 
@@ -159,6 +171,34 @@ class ChatMessageAttachment(Base):
     duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     uploaded_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, index=True)
+
+
+class ChatPollVote(Base):
+    """One user's choice in a single-choice poll message (kind='poll')."""
+
+    __tablename__ = "chat_poll_votes"
+    __table_args__ = _table_args(
+        UniqueConstraint("message_id", "user_id", name="uq_chat_poll_votes_message_user"),
+        Index("ix_chat_poll_votes_conversation", "conversation_id", "message_id"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    message_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_messages"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    option_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 class ChatStickerPack(Base):
@@ -311,6 +351,8 @@ class ChatConversationUserState(Base):
     unread_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_muted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # F-MUTE-TIMER: NULL = muted indefinitely; expired timestamps lift the mute lazily.
+    muted_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)

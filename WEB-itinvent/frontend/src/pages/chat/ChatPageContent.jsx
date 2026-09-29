@@ -886,6 +886,8 @@ export function ChatPageContent({
 
   const {
     handleOpenPinnedMessage,
+    handlePollClose,
+    handlePollVote,
     handleToggleReaction,
     handleUnpinPinnedMessage,
   } = useChatReactionAndPinController({
@@ -1570,6 +1572,7 @@ export function ChatPageContent({
         handleUnpinPinnedMessage, highlightedMessageId, conversationMetaSubtitle, aiAwareTypingLine,
         renderDesktopRightPanel, selectedFiles, fileCaption, openFilePicker, clearSelectedFiles, preparingFiles,
         sendingFiles, fileUploadProgress, selectedFilesSummary, getReadTargetRef, handleToggleReaction, scrollToMessage,
+        handlePollVote, handlePollClose,
         emojiPickerOpen, insertEmojiAtSelection, handleSendSticker, handleSendGif, voiceRecording, voiceRecordingDuration,
         voiceRecordingLevelRef, startVoiceRecording, stopVoiceRecording, cancelVoiceRecording, bindPinnedScroll,
         showTaskPanel, showContextPanel, taskPanelTaskId, closeTaskPanel, openTaskInTasks, handleTaskPanelUpdated,
@@ -1623,6 +1626,7 @@ export function ChatPageContent({
         handleUnpinPinnedMessage, highlightedMessageId, conversationMetaSubtitle, aiAwareTypingLine,
         renderDesktopRightPanel, selectedFiles, fileCaption, openFilePicker, clearSelectedFiles, preparingFiles,
         sendingFiles, fileUploadProgress, selectedFilesSummary, getReadTargetRef, handleToggleReaction, scrollToMessage,
+        handlePollVote, handlePollClose,
         emojiPickerOpen, insertEmojiAtSelection, handleSendSticker, handleSendGif, voiceRecording, voiceRecordingDuration,
         voiceRecordingLevelRef, startVoiceRecording, stopVoiceRecording, cancelVoiceRecording, bindPinnedScroll,
         showTaskPanel, showContextPanel, taskPanelTaskId, closeTaskPanel, openTaskInTasks, handleTaskPanelUpdated,

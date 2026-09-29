@@ -36,6 +36,7 @@ from backend.services.password_vault_service import (
     PasswordVaultAccessError,
     PasswordVaultConfigurationError,
     PasswordVaultNotFoundError,
+    PasswordVaultRateLimitError,
     PasswordVaultRequestMeta,
     PasswordVaultValidationError,
     password_vault_service,
@@ -75,6 +76,12 @@ def _is_mobile_client(request: Request) -> bool:
 
 
 def _service_error_to_http(exc: Exception) -> HTTPException:
+    if isinstance(exc, PasswordVaultRateLimitError):
+        return HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        )
     if isinstance(exc, PasswordVaultConfigurationError):
         return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
     if isinstance(exc, PasswordVaultNotFoundError):
@@ -99,6 +106,8 @@ async def list_passwords(
     group: str = Query(default=""),
     tag: str = Query(default=""),
     include_archived: bool = Query(default=False),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     current_user: User = Depends(require_permission(PERM_PASSWORDS_READ)),
     session_id: str | None = Depends(get_current_session_id),
 ) -> dict[str, Any]:
@@ -109,6 +118,8 @@ async def list_passwords(
             group=group,
             tag=tag,
             include_archived=include_archived,
+            limit=limit,
+            offset=offset,
             user_id=int(current_user.id),
             session_id=session_id,
         )
@@ -143,8 +154,13 @@ async def update_password(
     session_id: str | None = Depends(get_current_session_id),
 ) -> dict[str, Any]:
     try:
+        payload_dict = _payload(payload, exclude_unset=True)
         if _is_mobile_client(request):
             _require_mobile_client_device_id(request)
+            unlock_required = True
+        else:
+            unlock_required = payload_dict.get("password") is not None
+        if unlock_required:
             await run_in_threadpool(
                 password_vault_service.require_unlocked,
                 user_id=int(current_user.id),
@@ -153,7 +169,7 @@ async def update_password(
         return await run_in_threadpool(
             password_vault_service.update_entry,
             entry_id,
-            _payload(payload, exclude_unset=True),
+            payload_dict,
             actor=current_user,
             meta=_request_meta(request),
         )
@@ -254,6 +270,23 @@ async def unlock_password_vault(
             session_id=session_id,
             totp_code=payload.totp_code,
             backup_code=payload.backup_code,
+            meta=_request_meta(request),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.delete("/unlock")
+async def lock_password_vault(
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_PASSWORDS_READ)),
+    session_id: str | None = Depends(get_current_session_id),
+) -> dict[str, bool]:
+    try:
+        return await run_in_threadpool(
+            password_vault_service.lock,
+            actor=current_user,
+            session_id=session_id,
             meta=_request_meta(request),
         )
     except Exception as exc:

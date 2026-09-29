@@ -9,6 +9,7 @@ from typing import Iterable
 PERM_DATABASE_READ = "database.read"
 PERM_DATABASE_WRITE = "database.write"
 PERM_DATABASE_DELETE = "database.delete"
+PERM_DATABASE_AD_SYNC = "database.ad_sync"
 PERM_MFU_READ = "mfu.read"
 PERM_DASHBOARD_READ = "dashboard.read"
 PERM_ANNOUNCEMENTS_READ = "announcements.read"
@@ -28,6 +29,9 @@ PERM_COMPUTERS_MANAGE = "computers.manage"
 PERM_SCAN_READ = "scan.read"
 PERM_SCAN_ACK = "scan.ack"
 PERM_SCAN_TASKS = "scan.tasks"
+PERM_VOICE_READ = "voice.read"
+PERM_VOICE_UPLOAD = "voice.upload"
+PERM_VOICE_MANAGE = "voice.manage"
 PERM_STATISTICS_READ = "statistics.read"
 PERM_KB_READ = "kb.read"
 PERM_KB_WRITE = "kb.write"
@@ -53,6 +57,7 @@ PERM_ADDRESS_BOOK_AGE_READ = "address_book.age.read"
 PERM_ADDRESS_BOOK_HIRE_DATE_READ = "address_book.hire_date.read"
 PERM_ADDRESS_BOOK_PERSONAL_PHONE_READ = "address_book.personal_phone.read"
 PERM_ADDRESS_BOOK_PERSONAL_EMAIL_READ = "address_book.personal_email.read"
+PERM_ADDRESS_BOOK_INN_READ = "address_book.inn.read"
 PERM_WAREHOUSE_1C_READ = "warehouse_1c.read"
 PERM_WAREHOUSE_1C_IT_REQUESTS_READ = "warehouse_1c.it_requests.read"
 PERM_WAREHOUSE_1C_RECONCILE_WRITE = "warehouse_1c.reconcile.write"
@@ -77,6 +82,7 @@ PERM_MY_FILES_READ = "my_files.read"
 PERM_MY_FILES_WRITE = "my_files.write"
 PERM_MY_FILES_SHARE = "my_files.share"
 PERM_MY_FILES_AUDIT_READ = "my_files.audit.read"
+PERM_MY_FILES_STATS_READ = "my_files.stats.read"
 
 _ALWAYS_GRANTED_PERMISSIONS = {
     PERM_ADDRESS_BOOK_READ,
@@ -101,6 +107,7 @@ _VIEWER_PERMISSIONS = {
     PERM_COMPANY_STRUCTURE_READ,
     PERM_DOCFLOW_READ,
     PERM_DOCFLOW_ACT,
+    PERM_KB_READ,
 }
 
 _OPERATOR_EXTRA_PERMISSIONS = {
@@ -117,7 +124,6 @@ _OPERATOR_EXTRA_PERMISSIONS = {
     PERM_SCAN_ACK,
     PERM_SCAN_TASKS,
     PERM_STATISTICS_READ,
-    PERM_KB_READ,
     PERM_KB_WRITE,
     PERM_VCS_READ,
     PERM_DOCFLOW_CREATE,
@@ -156,11 +162,17 @@ _ADMIN_EXTRA_PERMISSIONS = {
     PERM_PASSWORDS_READ,
     PERM_PASSWORDS_WRITE,
     PERM_DATABASE_DELETE,
+    PERM_DATABASE_AD_SYNC,
     PERM_MY_FILES_AUDIT_READ,
+    PERM_MY_FILES_STATS_READ,
+    PERM_VOICE_READ,
+    PERM_VOICE_UPLOAD,
+    PERM_VOICE_MANAGE,
     PERM_ADDRESS_BOOK_AGE_READ,
     PERM_ADDRESS_BOOK_HIRE_DATE_READ,
     PERM_ADDRESS_BOOK_PERSONAL_PHONE_READ,
     PERM_ADDRESS_BOOK_PERSONAL_EMAIL_READ,
+    PERM_ADDRESS_BOOK_INN_READ,
 }
 
 

@@ -1,6 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import * as chatApi from '../../api/chatApi';
 import type { ChatAiBot, ChatConversationAttachment, ChatConversationSummary, ChatMember } from '../../api/types';
 import { isAiConversation } from '../../chat/chatAiWorkspace';
@@ -20,6 +20,7 @@ import { formatChatPresenceText, isChatPresenceOnline } from '../../chat/chatTyp
 import { ChatPersonProfileFields } from './ChatParticipantProfileSheet';
 import { PresenceAvatar } from './PresenceAvatar';
 import { ChatAuthenticatedImage } from './ChatAuthenticatedImage';
+import { ChatBottomSheet } from './ChatBottomSheet';
 
 type SettingKey = 'is_muted' | 'is_pinned' | 'is_archived';
 
@@ -133,21 +134,12 @@ export function ChatConversationInfoSheet({
   };
 
   return (
-    <Modal
+    <ChatBottomSheet
       visible={visible}
-      animationType={reduceMotion ? 'none' : 'slide'}
-      transparent
-      onRequestClose={onClose}
+      onClose={onClose}
+      dismissAccessibilityLabel="Закрыть информацию о чате"
+      sheetStyle={styles.sheet}
     >
-      <View style={styles.backdrop}>
-        <Pressable
-          style={StyleSheet.absoluteFill}
-          onPress={onClose}
-          accessibilityRole="button"
-          accessibilityLabel="Закрыть информацию о чате"
-        />
-        <View style={styles.sheet} accessibilityViewIsModal>
-          <View style={styles.handle} />
           <ScrollView contentContainerStyle={styles.content}>
             <View style={styles.profile}>
               <PresenceAvatar
@@ -356,9 +348,7 @@ export function ChatConversationInfoSheet({
               )}
             </View>
           </ScrollView>
-        </View>
-      </View>
-    </Modal>
+    </ChatBottomSheet>
   );
 }
 
@@ -418,15 +408,7 @@ function ActionRow({ icon, label, onPress, disabled, danger = false }: {
 }
 
 const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
-  backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: chatTokens.overlayBg },
-  sheet: {
-    maxHeight: '92%',
-    overflow: 'hidden',
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    backgroundColor: chatTokens.panelBg,
-  },
-  handle: { alignSelf: 'center', width: 38, height: 4, marginTop: 8, borderRadius: 2, backgroundColor: chatTokens.borderSoft },
+  sheet: { maxHeight: '92%' },
   content: { paddingHorizontal: 14, paddingTop: 12, paddingBottom: 28 },
   profile: { alignItems: 'center', paddingVertical: 10 },
   title: { marginTop: 10, color: chatTokens.textPrimary, fontSize: 21, fontWeight: '700', textAlign: 'center' },

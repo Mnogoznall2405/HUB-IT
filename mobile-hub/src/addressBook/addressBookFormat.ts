@@ -21,6 +21,9 @@ export type AddressBookEntry = {
   full_name?: string | null;
   department?: string | null;
   department_location?: string | null;
+  office_address?: string | null;
+  office_room?: string | null;
+  workplace_number?: string | null;
   position?: string | null;
   age?: number | string | null;
   hire_date?: string | null;
@@ -190,6 +193,16 @@ export function buildEmployeeSubtitle(item: AddressBookEntry | null | undefined)
   const department = normalizeText(item?.department);
   if (position && department) return `${position} · ${department}`;
   return position || department || '';
+}
+
+export function buildWorkplaceLabel(item: AddressBookEntry | null | undefined): string {
+  const officeRoom = normalizeText(item?.office_room);
+  const workplaceNumber = normalizeText(item?.workplace_number);
+  return [
+    normalizeText(item?.office_address),
+    officeRoom && officeRoom !== '0' ? `каб. ${officeRoom}` : '',
+    workplaceNumber && workplaceNumber !== '0' ? `рм ${workplaceNumber}` : '',
+  ].filter(Boolean).join(' · ');
 }
 
 function formatAbsenceDay(value: unknown): string {

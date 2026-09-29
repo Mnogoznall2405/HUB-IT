@@ -273,7 +273,14 @@ def _get_computers(**overrides):
         "changed_only": False,
     }
     params.update(overrides)
-    return inventory.get_computers(**params)
+    return inventory.get_computers(request=_FakeHttp(), response=_FakeHttp(), **params)
+
+
+class _FakeHttp:
+    """Минимальный request/response для ETag-ветки endpoint'ов."""
+
+    def __init__(self):
+        self.headers = {}
 
 
 def test_sql_context_cache_without_inventory_model_is_refreshed(monkeypatch):
@@ -432,6 +439,8 @@ def test_computer_search_defers_network_lookup_until_page_items(monkeypatch):
     monkeypatch.setattr(inventory, "_resolve_network_link", fake_network_link)
 
     by_user = inventory.search_computers(
+        request=_FakeHttp(),
+        response=_FakeHttp(),
         current_user=_user(),
         db_id_selected="DB1",
         scope="all",
@@ -453,6 +462,8 @@ def test_computer_search_defers_network_lookup_until_page_items(monkeypatch):
 
     network_calls.clear()
     by_network = inventory.search_computers(
+        request=_FakeHttp(),
+        response=_FakeHttp(),
         current_user=_user(),
         db_id_selected="DB1",
         scope="all",
@@ -499,6 +510,8 @@ def test_search_pagination_returns_page_slice_without_summary(monkeypatch):
     _patch_environment(monkeypatch, now_ts)
 
     page_one = inventory.search_computers(
+        request=_FakeHttp(),
+        response=_FakeHttp(),
         current_user=_user(),
         db_id_selected="DB1",
         scope="all",
@@ -515,6 +528,8 @@ def test_search_pagination_returns_page_slice_without_summary(monkeypatch):
         include_summary=False,
     )
     page_two = inventory.search_computers(
+        request=_FakeHttp(),
+        response=_FakeHttp(),
         current_user=_user(),
         db_id_selected="DB1",
         scope="all",
@@ -544,6 +559,8 @@ def test_search_list_items_are_trimmed_and_detail_endpoint_is_full(monkeypatch):
     _patch_environment(monkeypatch, now_ts)
 
     page = inventory.search_computers(
+        request=_FakeHttp(),
+        response=_FakeHttp(),
         current_user=_user(),
         db_id_selected="DB1",
         scope="all",
@@ -582,6 +599,8 @@ def test_mobile_computers_contract_is_allowlisted_and_path_free(monkeypatch):
     _patch_environment(monkeypatch, now_ts)
 
     page = inventory.search_computers(
+        request=_FakeHttp(),
+        response=_FakeHttp(),
         current_user=_user(),
         db_id_selected="DB1",
         scope="all",
@@ -706,6 +725,59 @@ def test_hide_unhide_requires_app_store(monkeypatch):
     assert [item["hidden"] for item in fake.calls] == [True, False]
 
 
+def test_delete_computer_requires_app_store_and_deletes(monkeypatch):
+    now_ts = 1_710_000_000
+    _patch_environment(monkeypatch, now_ts)
+    try:
+        inventory.delete_computer(mac_address="AA-BB-CC-DD-EE-01", current_user=_user())
+        assert False, "expected 503"
+    except inventory.HTTPException as exc:
+        assert exc.status_code == 503
+
+    class FakeAppStore:
+        def __init__(self):
+            self.calls = []
+
+        def delete_host(self, mac_address):
+            self.calls.append(mac_address)
+            if mac_address == "MISSING":
+                return None
+            return {"mac_address": mac_address}
+
+    fake = FakeAppStore()
+    monkeypatch.setattr(inventory, "_get_inventory_app_store", lambda: fake)
+    result = inventory.delete_computer(mac_address="AA-BB-CC-DD-EE-01", current_user=_user())
+    assert result["ok"] is True
+    assert result["deleted"] is True
+    try:
+        inventory.delete_computer(mac_address="MISSING", current_user=_user())
+        assert False, "expected 404"
+    except inventory.HTTPException as exc:
+        assert exc.status_code == 404
+    assert fake.calls == ["AA-BB-CC-DD-EE-01", "MISSING"]
+
+
+def test_delete_computer_rejects_read_only_user_before_store_access(monkeypatch):
+    read_only_user = inventory.User(
+        id=2,
+        username="operator",
+        role="operator",
+        permissions=["computers.read"],
+        use_custom_permissions=True,
+        custom_permissions=["computers.read"],
+    )
+    monkeypatch.setattr(
+        inventory,
+        "_get_inventory_app_store",
+        lambda: (_ for _ in ()).throw(AssertionError("store must not be reached")),
+    )
+    try:
+        inventory.delete_computer(mac_address="AA-BB-CC-DD-EE-01", current_user=read_only_user)
+        assert False, "expected 403"
+    except inventory.HTTPException as exc:
+        assert exc.status_code == 403
+
+
 def test_hide_unhide_reject_custom_read_only_user_before_store_access(monkeypatch):
     read_only_user = inventory.User(
         id=2,
@@ -806,3 +878,222 @@ def test_upsert_host_does_not_clear_soft_hide(monkeypatch):
     assert row.hidden_at == 1_710_000_000
     assert row.hidden_by == "tester"
     assert row.hidden_reason == "noise"
+
+
+def test_inv_lookup_maps_inventory_numbers_to_live_hosts(monkeypatch):
+    now_ts = 1_710_003_000
+    _patch_environment(monkeypatch, now_ts)
+
+    from backend.database import queries as queries_module
+
+    def fake_items(inv_nos, db_id=None):
+        assert set(inv_nos) == {"101795", "201001", "301", "999999"}
+        return [
+            {
+                "inv_no": "101795",
+                "mac_address": "AA:BB:CC:DD:EE:01",
+                "network_name": "PC-01",
+                "domain_name": "",
+            },
+            {
+                "inv_no": "201001",
+                "mac_address": "",
+                "network_name": "PC-03",
+                "domain_name": "",
+            },
+            {
+                "inv_no": "301",
+                "mac_address": "",
+                "network_name": "",
+                "domain_name": "",
+                "serial_no": "MON-001",
+                "hw_serial_no": "",
+            },
+        ]
+
+    monkeypatch.setattr(queries_module, "get_equipment_items_by_inv_nos", fake_items)
+
+    payload = inventory.lookup_computers_by_inv_nos(
+        current_user=_user(),
+        inv_nos="101795,201001,301,999999",
+        db_id=None,
+    )
+
+    items = payload["items"]
+    # MAC match → PC-01 online (last seen 60s ago).
+    assert items["101795"]["hostname"] == "PC-01"
+    assert items["101795"]["status"] == "online"
+    assert items["101795"]["kind"] == "computer"
+    assert items["101795"]["user_login"] == "CORP\\petrov_aa"
+    # Hostname match → PC-03 stale (last seen 1200s ago).
+    assert items["201001"]["hostname"] == "PC-03"
+    assert items["201001"]["status"] == "stale"
+    # Monitor serial match → attached to PC-01.
+    assert items["301"]["kind"] == "monitor"
+    assert items["301"]["hostname"] == "PC-01"
+    assert items["301"]["monitor_serial_number"] == "MON-001"
+    # No agent host matches the fourth inventory number.
+    assert "999999" not in items
+
+
+def test_inv_lookup_returns_empty_map_without_inventory_numbers(monkeypatch):
+    _patch_environment(monkeypatch, 1_710_003_000)
+    payload = inventory.lookup_computers_by_inv_nos(
+        current_user=_user(),
+        inv_nos=" , ,",
+        db_id=None,
+    )
+    assert payload == {"items": {}}
+
+
+def test_inv_lookup_matches_monitor_by_serial_suffix(monkeypatch):
+    now_ts = 1_710_003_000
+    _patch_environment(monkeypatch, now_ts)
+    monkeypatch.setattr(
+        inventory,
+        "_load_inventory_snapshot",
+        lambda: {
+            "11:22:33:44:55:66": {
+                "hostname": "PC-09",
+                "mac_address": "11:22:33:44:55:66",
+                "last_seen_at": now_ts - 30,
+                "monitors": [
+                    {"serial_number": "19352", "manufacturer": "PHL", "product_code": "C156"},
+                    {"serial_number": "77777", "manufacturer": "X", "product_code": "X"},
+                    {"serial_number": "12", "manufacturer": "Y", "product_code": "Y"},
+                    {"serial_number": "7821", "manufacturer": "PHL", "product_code": "C155"},
+                    {"serial_number": "UK02145013324", "manufacturer": "PHL", "product_code": "C155"},
+                ],
+            },
+        },
+    )
+
+    from backend.database import queries as queries_module
+
+    monkeypatch.setattr(
+        queries_module,
+        "get_equipment_items_by_inv_nos",
+        lambda inv_nos, db_id=None: [
+            {"inv_no": "302", "serial_no": "UHBA2227019352", "hw_serial_no": ""},
+            {"inv_no": "303", "serial_no": "ZZ77777", "hw_serial_no": ""},
+            {"inv_no": "304", "serial_no": "YY77777", "hw_serial_no": ""},
+            {"inv_no": "305", "serial_no": "Q12", "hw_serial_no": ""},
+            {"inv_no": "306", "serial_no": "UHBA2026007821", "hw_serial_no": ""},
+            {"inv_no": "307", "serial_no": "UK0A2145013324", "hw_serial_no": ""},
+        ],
+    )
+
+    payload = inventory.lookup_computers_by_inv_nos(
+        current_user=_user(),
+        inv_nos="302,303,304,305,306,307",
+        db_id=None,
+    )
+    items = payload["items"]
+    # EDID tail of the sticker serial → suffix match (5- and 4-digit tails).
+    assert items["302"]["kind"] == "monitor"
+    assert items["302"]["monitor_match"] == "serial_suffix"
+    assert items["302"]["hostname"] == "PC-09"
+    assert items["306"]["monitor_match"] == "serial_suffix"
+    # Typo'd extra char in the stored serial → digit-tail match.
+    assert items["307"]["monitor_match"] == "serial_tail"
+    # Two different inv_no share the tail → ambiguous → skipped.
+    assert "303" not in items
+    assert "304" not in items
+    # Serial shorter than 4 chars → suffix match disabled; '12' vs 'Q12' is
+    # a suffix pair, but exact-only policy leaves it unmatched.
+    assert "305" not in items
+
+
+def test_monitor_inventory_enrichment_by_serial(monkeypatch):
+    from backend.database import queries as queries_module
+
+    def fake_items(serials, db_id=None, **kwargs):
+        assert db_id == "DB1"
+        assert kwargs.get("include_suffix") is True
+        assert "MON001" in serials
+        return [
+            {
+                "inv_no": "301",
+                "serial_no": "MON-001",
+                "hw_serial_no": "",
+                "model_name": "Dell U2422H",
+                "employee_name": "Петров А.А.",
+            },
+            {
+                "inv_no": "302",
+                "serial_no": "UHBA2227019352",
+                "hw_serial_no": "",
+                "model_name": "Philips 273V7",
+                "employee_name": "Иванова Е.Ю.",
+            },
+            {
+                "inv_no": "303",
+                "serial_no": "ZZ77777",
+                "hw_serial_no": "",
+                "model_name": "A",
+                "employee_name": "",
+            },
+            {
+                "inv_no": "304",
+                "serial_no": "YY77777",
+                "hw_serial_no": "",
+                "model_name": "B",
+                "employee_name": "",
+            },
+            {
+                "inv_no": "305",
+                "serial_no": "UHBA2026007821",
+                "hw_serial_no": "",
+                "model_name": "Philips 243V7",
+                "employee_name": "",
+            },
+            {
+                "inv_no": "306",
+                "serial_no": "UK0A2145013324",
+                "hw_serial_no": "",
+                "model_name": "Philips 243V7QDSB",
+                "employee_name": "",
+            },
+        ]
+
+    monkeypatch.setattr(queries_module, "get_equipment_items_by_serials", fake_items)
+    monitors = [
+        {"manufacturer": "Dell", "product_code": "U2422H", "serial_number": "MON-001"},
+        {"manufacturer": "PHL", "product_code": "C156", "serial_number": "19352"},
+        {"manufacturer": "X", "product_code": "X", "serial_number": "77777"},
+        {"manufacturer": "LG", "product_code": "24MP", "serial_number": "NO-MATCH"},
+        {"manufacturer": "PHL", "product_code": "C155", "serial_number": "7821"},
+        {"manufacturer": "PHL", "product_code": "C155", "serial_number": "UK02145013324"},
+    ]
+    enriched = inventory._enrich_monitors_with_inventory(monitors, "DB1")
+    assert enriched[0]["inventory_inv_no"] == "301"
+    assert enriched[0]["inventory_match"] == "serial"
+    # EDID tail of the sticker serial → suffix match.
+    assert enriched[1]["inventory_inv_no"] == "302"
+    assert enriched[1]["inventory_match"] == "serial_suffix"
+    # Two different inv_no end with the same tail → ambiguous → skipped.
+    assert "inventory_inv_no" not in enriched[2]
+    assert "inventory_inv_no" not in enriched[3]
+    # 4-digit EDID tail also suffix-matches when unique.
+    assert enriched[4]["inventory_inv_no"] == "305"
+    assert enriched[4]["inventory_match"] == "serial_suffix"
+    # Stored serial has a typo'd extra char → digit-tail match.
+    assert enriched[5]["inventory_inv_no"] == "306"
+    assert enriched[5]["inventory_match"] == "serial_tail"
+    # Matched rows carry the database they were found in.
+    assert enriched[4]["inventory_db_id"] == "DB1"
+    assert enriched[5]["inventory_db_id"] == "DB1"
+
+    # Unassigned host: probe accessible databases, same matching rules.
+    enriched_unassigned = inventory._enrich_monitors_with_inventory(monitors, "", ["DB1"])
+    assert enriched_unassigned[1]["inventory_inv_no"] == "302"
+    assert enriched_unassigned[1]["inventory_db_id"] == "DB1"
+    assert enriched_unassigned[4]["inventory_inv_no"] == "305"
+
+    monkeypatch.setattr(
+        queries_module,
+        "get_equipment_items_by_serials",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not be called")),
+    )
+    # Without a resolved database and without candidates the lookup is skipped.
+    assert inventory._enrich_monitors_with_inventory(monitors, "") == monitors

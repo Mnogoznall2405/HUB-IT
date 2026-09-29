@@ -7,9 +7,11 @@ import json
 import logging
 import mimetypes
 import os
+import queue
 import secrets
 import shutil
 import threading
+import time
 import uuid
 import warnings
 from dataclasses import dataclass
@@ -17,12 +19,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import case, delete, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from backend.appdb.db import AppDatabaseConfigurationError, app_session, ensure_app_schema_initialized, is_app_database_configured
 from backend.config import config
-from backend.appdb.models import AppMyFile, AppMyFileAudit, AppMyFileBlob, AppMyFileDownloadGrant, AppMyFileFolder, AppMyFilePreview
+from backend.services.my_files_recovery import cleanup_tmp_blob_files
+from backend.appdb.models import AppMyFile, AppMyFileAudit, AppMyFileBlob, AppMyFileDownloadGrant, AppMyFileFolder, AppMyFilePreview, AppUser
 from backend.services.hubit_storage import HubitStorageError
 from backend.services.my_files_antivirus_service import SecurityScanResult, scan_my_file
 from backend.services.my_files_storage_layout import (
@@ -30,6 +33,7 @@ from backend.services.my_files_storage_layout import (
     configured_spool_dir,
     configured_storage_dir,
     ensure_storage_ready,
+    _is_unc,
     publish_local_to_blob,
     relative_blob_path,
     relative_preview_path,
@@ -45,16 +49,21 @@ from backend.services.secret_crypto_service import (
 
 logger = logging.getLogger("backend.services.my_files_service")
 
-ALLOWED_RETENTION_DAYS = (1, 3, 7, 10, 30)
+ALLOWED_RETENTION_DAYS = (0, 1, 3, 7, 10, 30)
 DEFAULT_RETENTION_DAYS = 1
 MAX_RETENTION_DAYS = 30
+# 0 означает «Навсегда»: удаление по expires_at не срабатывает, т.к.
+# expires_at выставляется далеко в будущее (без миграции NOT NULL -> NULL).
+FOREVER_RETENTION_DAYS = 0
+FOREVER_EXPIRES_DAYS = 36500
 USER_QUOTA_BYTES = 50 * 1024 * 1024 * 1024
+# Hard ceiling for per-user quota overrides set by admins.
+USER_QUOTA_MAX_BYTES = 400 * 1024 * 1024 * 1024
 IIS_MAX_CONTENT_LENGTH_BYTES = (2**32) - 1
 # Single-request limit (also imported by chat attachments); resumable uploads
 # bypass it because each chunk is a separate request.
 MAX_FILE_SIZE_BYTES = min(USER_QUOTA_BYTES, IIS_MAX_CONTENT_LENGTH_BYTES)
-MY_FILES_MAX_FILE_BYTES = 10 * 1024 * 1024 * 1024
-UPLOAD_CHUNK_SIZE_BYTES = 4 * 1024 * 1024
+UPLOAD_CHUNK_SIZE_BYTES = 16 * 1024 * 1024
 UPLOAD_CHUNK_MAX_SIZE_BYTES = 16 * 1024 * 1024
 MAX_ZSTD_WINDOW_SIZE_BYTES = 1024 * 1024 * 1024
 CHUNK_SIZE = 1024 * 1024
@@ -166,9 +175,74 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(_normalize_text(token).encode("utf-8")).hexdigest()
 
 
-def _sha256_file(path: Path) -> tuple[str, int]:
+_SHA256_PARALLEL_MIN_BYTES = 1 * 1024 * 1024 * 1024
+_SHA256_PARALLEL_BLOCK_BYTES = 16 * 1024 * 1024
+_SHA256_PARALLEL_READERS = 4
+
+
+def _sha256_file_parallel(path: Path, *, block_size: int, readers: int, on_progress=None) -> tuple[str, int]:
+    """Ordered multi-stream hash: each reader owns every Nth block of the file.
+
+    Parallel SMB reads overlap network round-trips; hashing stays sequential
+    in block order so the digest is identical to a single-stream pass.
+    """
+    size = path.stat().st_size
+    digest = hashlib.sha256()
+    if size == 0:
+        return digest.hexdigest(), 0
+    block_count = (size + block_size - 1) // block_size
+    results: queue.Queue = queue.Queue(maxsize=readers * 2)
+    STOP = object()
+
+    def _reader(start_index: int) -> None:
+        try:
+            with path.open("rb") as handle:
+                index = start_index
+                while index < block_count:
+                    handle.seek(index * block_size)
+                    results.put((index, handle.read(block_size)))
+                    index += readers
+        finally:
+            results.put(STOP)
+
+    for i in range(readers):
+        threading.Thread(target=_reader, args=(i,), daemon=True).start()
+
+    pending: dict[int, bytes] = {}
+    next_index = 0
+    finished = 0
+    last_progress_at = time.monotonic()
+    while finished < readers:
+        item = results.get()
+        if item is STOP:
+            finished += 1
+            continue
+        index, data = item
+        pending[index] = data
+        while next_index in pending:
+            digest.update(pending.pop(next_index))
+            next_index += 1
+        if on_progress is not None:
+            now = time.monotonic()
+            if now - last_progress_at >= 20:
+                last_progress_at = now
+                on_progress()
+    if next_index != block_count:
+        raise OSError(f"Incomplete hash read for {path}")
+    return digest.hexdigest(), size
+
+
+def _sha256_file(path: Path, on_progress=None) -> tuple[str, int]:
+    if _is_unc(path) and path.stat().st_size >= _SHA256_PARALLEL_MIN_BYTES:
+        return _sha256_file_parallel(
+            path,
+            block_size=_SHA256_PARALLEL_BLOCK_BYTES,
+            readers=_SHA256_PARALLEL_READERS,
+            on_progress=on_progress,
+        )
     digest = hashlib.sha256()
     size = 0
+    last_progress_at = time.monotonic()
     with path.open("rb") as source:
         while True:
             chunk = source.read(CHUNK_SIZE)
@@ -176,6 +250,11 @@ def _sha256_file(path: Path) -> tuple[str, int]:
                 break
             size += len(chunk)
             digest.update(chunk)
+            if on_progress is not None:
+                now = time.monotonic()
+                if now - last_progress_at >= 20:
+                    last_progress_at = now
+                    on_progress()
     return digest.hexdigest(), size
 
 
@@ -187,10 +266,25 @@ def _copy_file(source: Path, target: Path) -> int:
 
 
 def _load_spool_ranges(parts_path: Path) -> list[list[int]]:
-    try:
-        raw = json.loads(parts_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
+    raw: object = None
+    last_error: OSError | None = None
+    for attempt in range(4):
+        try:
+            raw = json.loads(parts_path.read_text(encoding="utf-8"))
+            last_error = None
+            break
+        except FileNotFoundError:
+            return []
+        except ValueError as exc:
+            # Corrupt journal must not read as "no ranges": the next store would
+            # drop already acknowledged chunks and punch holes into the upload.
+            raise MyFilesCapacityError("Upload progress is temporarily busy") from exc
+        except OSError as exc:
+            # Windows sharing violation while a status read rewrites/locks the file.
+            last_error = exc
+            time.sleep(0.02 * (attempt + 1))
+    if last_error is not None:
+        raise MyFilesCapacityError("Upload progress is temporarily busy") from last_error
     ranges: list[list[int]] = []
     for item in raw if isinstance(raw, list) else []:
         if isinstance(item, (list, tuple)) and len(item) == 2:
@@ -203,8 +297,23 @@ def _load_spool_ranges(parts_path: Path) -> list[list[int]]:
 
 def _store_spool_ranges(parts_path: Path, ranges: list[list[int]]) -> None:
     tmp_path = parts_path.with_name(f"{parts_path.name}.{uuid.uuid4().hex}.tmp")
-    tmp_path.write_text(json.dumps(ranges), encoding="utf-8")
-    tmp_path.replace(parts_path)
+    try:
+        tmp_path.write_text(json.dumps(ranges), encoding="utf-8")
+        last_error: OSError | None = None
+        for attempt in range(6):
+            try:
+                tmp_path.replace(parts_path)
+                return
+            except PermissionError as exc:
+                # Windows: parts.json is briefly open for a concurrent status read.
+                last_error = exc
+                time.sleep(0.05 * (attempt + 1))
+            except OSError as exc:
+                last_error = exc
+                time.sleep(0.05 * (attempt + 1))
+        raise MyFilesCapacityError("Upload progress is temporarily busy") from last_error
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def _merge_spool_range(ranges: list[list[int]], start: int, end: int) -> list[list[int]]:
@@ -316,6 +425,8 @@ class MyFilesService:
         self._reservation_lock = threading.RLock()
         self._upload_locks = [threading.RLock() for _ in range(64)]
         self._legacy_share_migration_disabled = False
+        self._last_stale_cleanup_at = float("-inf")
+        self._last_tmp_cleanup_at = float("-inf")
 
     def _upload_lock(self, file_id: str) -> threading.RLock:
         digest = hashlib.sha256(_normalize_text(file_id).encode("utf-8")).digest()
@@ -333,6 +444,10 @@ class MyFilesService:
             raise MyFilesConfigurationError(str(exc)) from exc
 
     def _ensure_dirs(self) -> None:
+        try:
+            ensure_storage_ready(self.spool_root)
+        except HubitStorageError as exc:
+            raise MyFilesCapacityError(str(exc)) from exc
         self.spool_root.mkdir(parents=True, exist_ok=True)
         if storage_v2_enabled():
             try:
@@ -441,7 +556,7 @@ class MyFilesService:
         except Exception as exc:
             raise MyFilesValidationError("Retention days must be a number") from exc
         if days not in ALLOWED_RETENTION_DAYS or days > MAX_RETENTION_DAYS:
-            raise MyFilesValidationError("Retention days must be one of 1, 3, 7, 10 or 30")
+            raise MyFilesValidationError("Retention days must be one of 0, 1, 3, 7, 10 or 30 (0 keeps files forever)")
         return days
 
     def _preview_summary_locked(self, session, row: AppMyFile, *, preview: Any = _UNSET) -> dict[str, Any]:
@@ -495,7 +610,7 @@ class MyFilesService:
             "original_size_bytes": original_size,
             "stored_size_bytes": stored_size,
             "saved_size_bytes": max(0, original_size - stored_size) if stored_size else 0,
-            "retention_days": int(row.retention_days or DEFAULT_RETENTION_DAYS),
+            "retention_days": int(row.retention_days) if row.retention_days is not None else DEFAULT_RETENTION_DAYS,
             "folder_id": _normalize_text(getattr(row, "folder_id", "")) or None,
             "status": _normalize_text(row.status) or STATUS_QUEUED,
             "storage_mode": _normalize_text(row.storage_mode),
@@ -548,14 +663,22 @@ class MyFilesService:
             query = query.where(AppMyFile.owner_user_id == int(user_id))
         return int(session.execute(query).scalar() or 0)
 
+    def _user_quota_limit_locked(self, session, user_id: int) -> int:
+        row = session.get(AppUser, int(user_id))
+        override = int(row.my_files_quota_bytes or 0) if row is not None else 0
+        if override <= 0:
+            return USER_QUOTA_BYTES
+        return min(override, USER_QUOTA_MAX_BYTES)
+
     def quota(self, *, user_id: int) -> dict[str, int]:
         database_url = self._database_url_or_raise()
         with app_session(database_url) as session:
             used = self._quota_used_locked(session, int(user_id))
+            limit = self._user_quota_limit_locked(session, int(user_id))
         return {
             "used_bytes": used,
-            "limit_bytes": USER_QUOTA_BYTES,
-            "remaining_bytes": max(0, USER_QUOTA_BYTES - used),
+            "limit_bytes": limit,
+            "remaining_bytes": max(0, limit - used),
         }
 
     def reserve_upload(
@@ -569,9 +692,15 @@ class MyFilesService:
         retention_days: int,
         folder_id: str | None = None,
         meta: MyFilesRequestMeta | None = None,
+        reuse_existing: bool = False,
     ) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
-        self.cleanup_stale_uploads(limit=100)
+        now_monotonic = time.monotonic()
+        if now_monotonic - self._last_stale_cleanup_at > 60:
+            # Maintenance sweep on the request path: cheap when idle, but it must
+            # not run for every chunk-session open. The worker sweeps too.
+            self._last_stale_cleanup_at = now_monotonic
+            self.cleanup_stale_uploads(limit=100)
         owner_user_id = _actor_id(actor)
         if owner_user_id <= 0:
             raise MyFilesValidationError("Authenticated user is required")
@@ -581,17 +710,43 @@ class MyFilesService:
         size = int(expected_size_bytes or 0)
         if size <= 0:
             raise MyFilesValidationError("File is empty")
-        if size > MY_FILES_MAX_FILE_BYTES:
-            raise MyFilesValidationError("File exceeds upload limit")
 
         now = _utc_now()
-        expires_at = now + timedelta(days=safe_days)
+        if safe_days == FOREVER_RETENTION_DAYS:
+            expires_at = now + timedelta(days=FOREVER_EXPIRES_DAYS)
+        else:
+            expires_at = now + timedelta(days=safe_days)
         limits = config.my_files_security
         with self._reservation_lock:
             with app_session(database_url) as session:
                 self._lock_reservation_locked(session, owner_user_id)
+                if reuse_existing:
+                    # Atomic find-or-create: a concurrent retried upload of the
+                    # same file must reuse the live reservation instead of
+                    # consuming a second concurrency slot and double quota.
+                    resume_cutoff = now - timedelta(
+                        seconds=max(60, int(limits.upload_reservation_ttl_sec))
+                    )
+                    normalized_folder = _normalize_text(folder_id)
+                    resume_query = select(AppMyFile).where(
+                        AppMyFile.owner_user_id == owner_user_id,
+                        AppMyFile.status == STATUS_UPLOADING,
+                        AppMyFile.deleted_at.is_(None),
+                        AppMyFile.original_file_name == safe_name,
+                        AppMyFile.original_size_bytes == size,
+                        AppMyFile.updated_at > resume_cutoff,
+                    )
+                    if normalized_folder:
+                        resume_query = resume_query.where(AppMyFile.folder_id == normalized_folder)
+                    else:
+                        resume_query = resume_query.where(AppMyFile.folder_id.is_(None))
+                    existing = session.scalars(
+                        resume_query.order_by(AppMyFile.created_at.desc()).limit(1).with_for_update()
+                    ).first()
+                    if existing is not None:
+                        return self._response(existing, session=session)
                 used = self._quota_used_locked(session, owner_user_id)
-                if used + size > USER_QUOTA_BYTES:
+                if used + size > self._user_quota_limit_locked(session, owner_user_id):
                     raise MyFilesValidationError("User storage quota exceeded")
                 if self._count_statuses_locked(session, [STATUS_UPLOADING], user_id=owner_user_id) >= limits.max_uploading_per_user:
                     raise MyFilesCapacityError("Too many concurrent uploads for this user")
@@ -653,21 +808,28 @@ class MyFilesService:
 
     @staticmethod
     def _delete_spool_payload(path: Path) -> None:
-        path.unlink(missing_ok=True)
-        MyFilesService._spool_parts_path(path).unlink(missing_ok=True)
+        for target in (path, MyFilesService._spool_parts_path(path)):
+            try:
+                target.unlink(missing_ok=True)
+            except OSError as exc:
+                # Antivirus/indexer may hold the file open; the orphan sweeper
+                # retries later. Never mask the caller's flow with PermissionError.
+                logger.warning("Failed to remove my-file spool path=%s error=%s", target, exc)
 
     @staticmethod
     def _spool_ranges(spool_path: Path) -> list[list[int]]:
         parts_path = MyFilesService._spool_parts_path(spool_path)
         if parts_path.is_file():
             return _load_spool_ranges(parts_path)
-        if spool_path.is_file():
-            return [[0, spool_path.stat().st_size]] if spool_path.stat().st_size else []
+        # A spool file without a journal has no verifiable progress. Inferring
+        # coverage from st_size marks sparse out-of-order chunk writes as
+        # complete and punches holes into stored files.
         return []
 
     @staticmethod
-    def _upload_session_response(row: AppMyFile, spool_path: Path) -> dict[str, Any]:
-        ranges = MyFilesService._spool_ranges(spool_path)
+    def _upload_session_response(row: AppMyFile, spool_path: Path, *, ranges: list[list[int]] | None = None) -> dict[str, Any]:
+        if ranges is None:
+            ranges = MyFilesService._spool_ranges(spool_path)
         uploaded_bytes = _spool_covered_prefix(ranges)
         expected_size = int(row.original_size_bytes or 0)
         if uploaded_bytes > expected_size:
@@ -683,7 +845,7 @@ class MyFilesService:
 
     def get_upload_session(self, *, file_id: str, user_id: int) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
-        with app_session(database_url) as session:
+        with self._upload_lock(file_id), app_session(database_url) as session:
             row = self._active_upload_locked(session, file_id=file_id, user_id=user_id)
             spool_path = Path(_normalize_text(row.spool_path))
             return self._upload_session_response(row, spool_path)
@@ -711,6 +873,10 @@ class MyFilesService:
             spool_path = Path(_normalize_text(row.spool_path))
             if not _normalize_text(row.spool_path):
                 raise MyFilesValidationError("Upload payload path is missing")
+            try:
+                ensure_storage_ready(spool_path)
+            except HubitStorageError as exc:
+                raise MyFilesCapacityError(str(exc)) from exc
             spool_path.parent.mkdir(parents=True, exist_ok=True)
             expected_size = int(row.original_size_bytes or 0)
             end_offset = requested_offset + len(chunk)
@@ -729,13 +895,38 @@ class MyFilesService:
             if _spool_range_overlaps(ranges, requested_offset, end_offset):
                 raise MyFilesValidationError("Upload chunk overlaps partially stored data")
 
-            with spool_path.open("r+b" if spool_path.is_file() else "w+b") as target:
-                target.seek(requested_offset)
-                target.write(chunk)
-                target.flush()
-            _store_spool_ranges(parts_path, _merge_spool_range(ranges, requested_offset, end_offset))
+        # Chunk ranges are disjoint by the journal check above, so the slow
+        # SMB write runs outside the per-file lock; parallel chunk workers
+        # then actually overlap instead of serializing on one handle.
+        fd = os.open(spool_path, os.O_RDWR | os.O_CREAT | os.O_BINARY, 0o666)
+        try:
+            os.lseek(fd, requested_offset, os.SEEK_SET)
+            view = memoryview(chunk)
+            while view:
+                view = view[os.write(fd, view):]
+            try:
+                os.fsync(fd)
+            except OSError:
+                pass
+        finally:
+            os.close(fd)
+
+        with self._upload_lock(file_id), app_session(database_url) as session:
+            row = self._active_upload_locked(session, file_id=file_id, user_id=user_id)
+            ranges = self._spool_ranges(spool_path)
+            if _spool_range_covered(ranges, requested_offset, end_offset):
+                # A duplicate writer committed the same range first.
+                with spool_path.open("rb") as source:
+                    source.seek(requested_offset)
+                    if source.read(len(chunk)) != chunk:
+                        raise MyFilesValidationError("Upload chunk retry does not match stored data")
+                return self._upload_session_response(row, spool_path)
+            if _spool_range_overlaps(ranges, requested_offset, end_offset):
+                raise MyFilesValidationError("Upload chunk overlaps partially stored data")
+            merged = _merge_spool_range(ranges, requested_offset, end_offset)
+            _store_spool_ranges(parts_path, merged)
             row.updated_at = _utc_now()
-            return self._upload_session_response(row, spool_path)
+            return self._upload_session_response(row, spool_path, ranges=merged)
 
     def complete_upload(
         self,
@@ -748,7 +939,7 @@ class MyFilesService:
     ) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
         size = int(actual_size_bytes or 0)
-        with app_session(database_url) as session:
+        with self._upload_lock(file_id), app_session(database_url) as session:
             row = session.get(AppMyFile, _normalize_text(file_id))
             if row is None or row.owner_user_id != int(user_id) or row.deleted_at is not None:
                 raise MyFilesNotFoundError("File not found")
@@ -777,19 +968,23 @@ class MyFilesService:
     ) -> None:
         database_url = self._database_url_or_raise()
         spool_path: Path | None = None
-        with app_session(database_url) as session:
-            row = session.get(AppMyFile, _normalize_text(file_id))
-            if row is None or row.owner_user_id != int(user_id) or row.deleted_at is not None:
-                return
-            if _normalize_text(row.spool_path):
-                spool_path = Path(_normalize_text(row.spool_path))
-            row.status = STATUS_FAILED
-            row.error_text = _normalize_text(error_text)[:2000] or "Upload interrupted"
-            row.spool_path = ""
-            row.updated_at = _utc_now()
-            self._write_audit(session, action="upload_aborted", row=row, actor=actor, meta=meta)
-        if spool_path is not None:
-            self._delete_spool_payload(spool_path)
+        with self._upload_lock(file_id):
+            with app_session(database_url) as session:
+                row = session.get(AppMyFile, _normalize_text(file_id))
+                if row is None or row.owner_user_id != int(user_id) or row.deleted_at is not None:
+                    return
+                if _normalize_text(row.spool_path):
+                    spool_path = Path(_normalize_text(row.spool_path))
+                row.status = STATUS_FAILED
+                row.error_text = _normalize_text(error_text)[:2000] or "Upload interrupted"
+                row.spool_path = ""
+                row.updated_at = _utc_now()
+                self._write_audit(session, action="upload_aborted", row=row, actor=actor, meta=meta)
+            # Delete the payload only after the row stopped pointing at it and
+            # while holding the same lock appends use, so a late chunk cannot
+            # resurrect a half-deleted spool file.
+            if spool_path is not None:
+                self._delete_spool_payload(spool_path)
 
     def create_pending_upload(
         self,
@@ -1290,11 +1485,68 @@ class MyFilesService:
         user_id: int,
         folder_id: str | None = None,
         view: str = "",
+        query: str = "",
     ) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
         now = _utc_now()
         normalized_view = _normalize_text(view).lower()
+        normalized_query = _normalize_text(query)
         with app_session(database_url) as session:
+            if normalized_query:
+                # Global search across every folder — the client-side filter can
+                # only see the currently loaded folder, which makes deep trees
+                # unsearchable without a server query.
+                pattern = f"%{normalized_query.lower()}%"
+                file_query = (
+                    select(AppMyFile)
+                    .where(
+                        AppMyFile.owner_user_id == int(user_id),
+                        AppMyFile.deleted_at.is_(None),
+                        AppMyFile.expires_at > now,
+                        or_(
+                            func.lower(AppMyFile.original_file_name).like(pattern),
+                            func.lower(AppMyFile.download_file_name).like(pattern),
+                        ),
+                    )
+                    .order_by(AppMyFile.updated_at.desc())
+                    .limit(500)
+                )
+                flat_folders = session.scalars(
+                    select(AppMyFileFolder)
+                    .where(
+                        AppMyFileFolder.owner_user_id == int(user_id),
+                        AppMyFileFolder.deleted_at.is_(None),
+                        func.lower(AppMyFileFolder.name).like(pattern),
+                    )
+                    .order_by(AppMyFileFolder.name.asc())
+                ).all()
+                all_folders = self._folder_map_locked(session, owner_user_id=user_id)
+                rows = session.scalars(file_query).all()
+                blob_ids = [
+                    _normalize_text(row.blob_id)
+                    for row in rows
+                    if _normalize_text(row.blob_id)
+                ]
+                preview_map = {
+                    _normalize_text(preview_row.blob_id): preview_row
+                    for preview_row in session.scalars(
+                        select(AppMyFilePreview).where(AppMyFilePreview.blob_id.in_(set(blob_ids)))
+                    ).all()
+                } if blob_ids else {}
+                return {
+                    "items": [
+                        self._response(
+                            row,
+                            session=session,
+                            preview=preview_map.get(_normalize_text(row.blob_id)),
+                            folder_name=(all_folders.get(row.folder_id).name if all_folders.get(row.folder_id) else ""),
+                        )
+                        for row in rows
+                    ],
+                    "folders": [self._folder_response(folder_row) for folder_row in flat_folders],
+                    "breadcrumbs": [],
+                    "folder": None,
+                }
             if normalized_view in {"favorites", "recent"}:
                 file_query = select(AppMyFile).where(
                     AppMyFile.owner_user_id == int(user_id),
@@ -1435,6 +1687,153 @@ class MyFilesService:
                 .limit(max(1, min(500, int(limit or 100))))
             ).all()
             return [self._audit_response(row) for row in rows]
+
+    def list_file_audit(
+        self,
+        *,
+        file_id: str,
+        user_id: int,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            row = session.get(AppMyFile, _normalize_text(file_id))
+            if row is None or row.owner_user_id != int(user_id) or row.deleted_at is not None:
+                raise MyFilesNotFoundError("File not found")
+            rows = session.scalars(
+                select(AppMyFileAudit)
+                .where(AppMyFileAudit.file_id == row.id)
+                .order_by(AppMyFileAudit.created_at.desc(), AppMyFileAudit.id.desc())
+                .limit(max(1, min(500, int(limit or 200))))
+            ).all()
+            download_ips = session.scalars(
+                select(AppMyFileAudit.ip_address).where(
+                    AppMyFileAudit.file_id == row.id,
+                    AppMyFileAudit.action.like("%download%"),
+                )
+            ).all()
+            return {
+                "items": [self._audit_response(item) for item in rows],
+                "download_count": len(download_ips),
+                "unique_download_ips": len({ip for ip in download_ips if ip}),
+            }
+
+    def admin_user_stats(self, *, limit: int = 200, offset: int = 0, query: str = "") -> dict[str, Any]:
+        """Per-user storage aggregates for the admin My Files panel."""
+        database_url = self._database_url_or_raise()
+        now = _utc_now()
+        live_statuses = [STATUS_UPLOADING, STATUS_QUEUED, STATUS_SCANNING, STATUS_PROCESSING, STATUS_READY]
+        with app_session(database_url) as session:
+            file_agg = (
+                select(
+                    AppMyFile.owner_user_id.label("owner_user_id"),
+                    func.count(AppMyFile.id).label("files_count"),
+                    func.coalesce(func.sum(AppMyFile.original_size_bytes), 0).label("used_bytes"),
+                    func.coalesce(func.sum(case((AppMyFile.share_token_hash.is_not(None), 1), else_=0)), 0).label("shared_count"),
+                    func.coalesce(func.sum(case((AppMyFile.status == STATUS_UPLOADING, 1), else_=0)), 0).label("active_uploads"),
+                    func.max(AppMyFile.updated_at).label("last_activity_at"),
+                )
+                .where(
+                    AppMyFile.deleted_at.is_(None),
+                    AppMyFile.expires_at > now,
+                    AppMyFile.status.in_(live_statuses),
+                )
+                .group_by(AppMyFile.owner_user_id)
+                .subquery()
+            )
+            folder_agg = (
+                select(
+                    AppMyFileFolder.owner_user_id.label("owner_user_id"),
+                    func.count(AppMyFileFolder.id).label("folders_count"),
+                )
+                .where(AppMyFileFolder.deleted_at.is_(None))
+                .group_by(AppMyFileFolder.owner_user_id)
+                .subquery()
+            )
+            base = (
+                select(
+                    AppUser,
+                    file_agg.c.files_count,
+                    file_agg.c.used_bytes,
+                    file_agg.c.shared_count,
+                    file_agg.c.active_uploads,
+                    file_agg.c.last_activity_at,
+                    folder_agg.c.folders_count,
+                )
+                .join(file_agg, file_agg.c.owner_user_id == AppUser.id)
+                .outerjoin(folder_agg, folder_agg.c.owner_user_id == AppUser.id)
+            )
+            text_filter = _normalize_text(query).lower()
+            if text_filter:
+                pattern = f"%{text_filter}%"
+                base = base.where(or_(
+                    func.lower(AppUser.username).like(pattern),
+                    func.lower(func.coalesce(AppUser.full_name, "")).like(pattern),
+                ))
+            total = int(session.execute(select(func.count()).select_from(base.subquery())).scalar() or 0)
+            rows = session.execute(
+                base
+                .order_by(file_agg.c.used_bytes.desc(), AppUser.username.asc())
+                .offset(max(0, int(offset or 0)))
+                .limit(max(1, min(500, int(limit or 200))))
+            ).all()
+            items: list[dict[str, Any]] = []
+            for user_row, files_count, used_bytes, shared_count, active_uploads, last_activity_at, folders_count in rows:
+                override = int(getattr(user_row, "my_files_quota_bytes", 0) or 0)
+                items.append({
+                    "user_id": int(user_row.id),
+                    "username": _normalize_text(user_row.username),
+                    "full_name": _normalize_text(user_row.full_name) or None,
+                    "files_count": int(files_count or 0),
+                    "used_bytes": int(used_bytes or 0),
+                    "shared_count": int(shared_count or 0),
+                    "folders_count": int(folders_count or 0),
+                    "active_uploads": int(active_uploads or 0),
+                    "last_activity_at": _coerce_utc(last_activity_at),
+                    "quota_limit_bytes": override if override > 0 else USER_QUOTA_BYTES,
+                    "quota_is_custom": override > 0,
+                })
+            totals_row = session.execute(
+                select(
+                    func.coalesce(func.sum(file_agg.c.files_count), 0),
+                    func.coalesce(func.sum(file_agg.c.used_bytes), 0),
+                    func.coalesce(func.sum(file_agg.c.shared_count), 0),
+                    func.coalesce(func.sum(file_agg.c.active_uploads), 0),
+                ).select_from(file_agg)
+            ).one()
+            stored_bytes = int(session.execute(
+                select(func.coalesce(func.sum(AppMyFileBlob.stored_size_bytes), 0))
+            ).scalar() or 0)
+            processing_queue = int(session.execute(
+                select(func.count(AppMyFile.id)).where(
+                    AppMyFile.deleted_at.is_(None),
+                    AppMyFile.status.in_([STATUS_QUEUED, STATUS_SCANNING, STATUS_PROCESSING]),
+                )
+            ).scalar() or 0)
+            # Real capacity of the storage volume (UNC share / local dir) —
+            # what an admin actually watches, unlike the blob-sum above.
+            storage_total_bytes = 0
+            storage_free_bytes = 0
+            try:
+                usage = shutil.disk_usage(self.storage_root)
+                storage_total_bytes = int(usage.total)
+                storage_free_bytes = int(usage.free)
+            except OSError:
+                pass
+            return {
+                "items": items,
+                "total": total,
+                "totals": {
+                    "files_count": int(totals_row[0] or 0),
+                    "used_bytes": int(totals_row[1] or 0),
+                    "shared_count": int(totals_row[2] or 0),
+                    "active_uploads": int(totals_row[3] or 0),
+                    "stored_bytes": stored_bytes,
+                    "storage_total_bytes": storage_total_bytes,
+                    "storage_free_bytes": storage_free_bytes,
+                    "processing_queue": processing_queue,
+                },
+            }
 
     def _blob_relative_path(self, owner_user_id: int, original_sha256: str, extension: str) -> str:
         return relative_blob_path(int(owner_user_id), original_sha256, extension)
@@ -1827,13 +2226,23 @@ class MyFilesService:
         if result.status == "blocked":
             raise MyFilesValidationError("File blocked by security scan")
         if result.status != "clean" and config.my_files_security.antivirus_fail_closed:
-            raise MyFilesValidationError("File did not pass security scan")
+            if not self._security_scan_is_size_limited(result.status, result.engine):
+                raise MyFilesValidationError("File did not pass security scan")
         return result
 
     @staticmethod
-    def _security_scan_allows_access(row: AppMyFile) -> bool:
+    def _security_scan_is_size_limited(status: Any, engine: Any) -> bool:
+        return (
+            _normalize_text(status).lower() == "skipped"
+            and _normalize_text(engine) == "size-limit"
+        )
+
+    @classmethod
+    def _security_scan_allows_access(cls, row: AppMyFile) -> bool:
         scan_status = _normalize_text(row.security_scan_status).lower()
         if scan_status == "clean":
+            return True
+        if cls._security_scan_is_size_limited(row.security_scan_status, row.security_scan_engine):
             return True
         return not config.my_files_security.antivirus_fail_closed and scan_status in {"skipped", "error"}
 
@@ -1842,7 +2251,7 @@ class MyFilesService:
             return 0
         database_url = self._database_url_or_raise()
         cutoff = _utc_now() - timedelta(seconds=max(60, int(config.my_files_security.upload_reservation_ttl_sec)))
-        spool_paths: list[Path] = []
+        spool_paths: list[tuple[str, Path]] = []
         count = 0
         with app_session(database_url) as session:
             rows = session.scalars(
@@ -1854,12 +2263,21 @@ class MyFilesService:
                 )
                 .order_by(AppMyFile.updated_at.asc())
                 .limit(max(1, int(limit or 100)))
+                .with_for_update(skip_locked=True)
             ).all()
             for row in rows:
                 try:
                     with session.begin_nested():
+                        # A concurrent chunk may have refreshed the reservation
+                        # while we waited for the row lock.
+                        session.refresh(row)
+                        refreshed_at = _coerce_utc(row.updated_at)
+                        if refreshed_at and refreshed_at > cutoff:
+                            continue
+                        if row.status != STATUS_UPLOADING or row.deleted_at is not None:
+                            continue
                         if _normalize_text(row.spool_path):
-                            spool_paths.append(Path(_normalize_text(row.spool_path)))
+                            spool_paths.append((_normalize_text(row.id), Path(_normalize_text(row.spool_path))))
                         row.status = STATUS_FAILED
                         row.error_text = "Upload reservation expired"
                         row.spool_path = ""
@@ -1868,8 +2286,11 @@ class MyFilesService:
                         count += 1
                 except Exception:
                     logger.exception("Failed to expire my-file upload %s", row.id)
-        for path in spool_paths:
-            self._delete_spool_payload(path)
+        for file_id, path in spool_paths:
+            # Same lock append_upload_chunk takes, so a late chunk cannot write
+            # into a spool file we are about to delete.
+            with self._upload_lock(file_id):
+                self._delete_spool_payload(path)
         return count
 
     def recover_stale_processing(self, *, force: bool = False) -> int:
@@ -1916,6 +2337,7 @@ class MyFilesService:
             return
         self.cleanup_expired(limit=100)
         self.cleanup_stale_uploads(limit=100)
+        self.cleanup_orphan_tmp_files()
         if not self._legacy_share_migration_disabled:
             try:
                 self.migrate_legacy_share_tokens(limit=100)
@@ -1923,6 +2345,39 @@ class MyFilesService:
                 self._legacy_share_migration_disabled = True
                 logger.error("Legacy my-files share-token migration disabled: %s", exc)
         self.recover_stale_processing()
+
+    def cleanup_orphan_tmp_files(self) -> dict[str, int]:
+        """Drop stale ``*.tmp`` / ``*.tmp-*`` artifacts left by crashed writers."""
+        totals = {"scanned": 0, "removed": 0, "errors": 0}
+        now_monotonic = time.monotonic()
+        if now_monotonic - self._last_tmp_cleanup_at < 3600:
+            # Full-tree rglob on every worker cycle would hammer the storage
+            # volume; orphaned tmp files are harmless for an hour by design.
+            return totals
+        self._last_tmp_cleanup_at = now_monotonic
+        roots = [self.spool_root, self.storage_root]
+        if self.previews_root != self.storage_root:
+            roots.append(self.previews_root)
+        for root in roots:
+            try:
+                stats = cleanup_tmp_blob_files(root, max_age_sec=3600)
+            except OSError as exc:
+                logger.warning("Failed to scan tmp files under %s: %s", root, exc)
+                continue
+            for key in totals:
+                totals[key] += int(stats.get(key, 0))
+        totals["scanned"] += 1
+        try:
+            for orphan in self.spool_root.glob("*.zip"):
+                try:
+                    if time.time() - orphan.stat().st_mtime > 12 * 3600:
+                        orphan.unlink(missing_ok=True)
+                        totals["removed"] += 1
+                except OSError:
+                    totals["errors"] += 1
+        except OSError:
+            totals["errors"] += 1
+        return totals
 
     def claim_next_job(self) -> str:
         """Mark the oldest queued file as scanning; returns its id or ''."""
@@ -2214,7 +2669,7 @@ class MyFilesService:
                 with temporary_path.open("wb") as target:
                     for chunk in self.iter_zstd_download(blob_path):
                         size += len(chunk)
-                        if size > MY_FILES_MAX_FILE_BYTES:
+                        if size > USER_QUOTA_MAX_BYTES:
                             raise MyFilesValidationError("Stored payload exceeds scan limit")
                         target.write(chunk)
                 scan_path = temporary_path
@@ -2269,6 +2724,8 @@ class MyFilesService:
             row = session.get(AppMyFile, _normalize_text(file_id))
             if row is None or row.deleted_at is not None or row.status == STATUS_DELETED:
                 return None
+            if row.status == STATUS_READY:
+                return self._response(row, session=session)
             spool_path = Path(_normalize_text(row.spool_path))
             original_file_name = _normalize_text(row.original_file_name)
             mime_type = _normalize_text(row.mime_type) or "application/octet-stream"
@@ -2291,7 +2748,22 @@ class MyFilesService:
                     return None
                 row.status = STATUS_PROCESSING
                 row.updated_at = _utc_now()
-            original_sha256, actual_size = _sha256_file(spool_path)
+
+            def _processing_heartbeat() -> None:
+                try:
+                    with app_session(database_url) as hb_session:
+                        hb_session.execute(
+                            update(AppMyFile)
+                            .where(
+                                AppMyFile.id == _normalize_text(file_id),
+                                AppMyFile.status == STATUS_PROCESSING,
+                            )
+                            .values(updated_at=_utc_now())
+                        )
+                except Exception:
+                    logger.debug("Processing heartbeat failed for %s", file_id)
+
+            original_sha256, actual_size = _sha256_file(spool_path, on_progress=_processing_heartbeat)
             owner_user_id = 0
             with app_session(database_url) as session:
                 row = session.get(AppMyFile, _normalize_text(file_id))
@@ -2417,7 +2889,7 @@ class MyFilesService:
             logger.exception("Failed to process my-file upload %s", file_id)
             with app_session(database_url) as session:
                 row = session.get(AppMyFile, _normalize_text(file_id))
-                if row is not None and row.deleted_at is None:
+                if row is not None and row.deleted_at is None and row.status != STATUS_READY:
                     row.status = STATUS_FAILED
                     row.error_text = str(exc)[:2000]
                     row.spool_path = ""
@@ -3213,9 +3685,13 @@ class MyFilesService:
             "expires_in_seconds": ttl_seconds,
         }
 
-    def _build_folder_archive_locked(self, session, *, folder: AppMyFileFolder) -> Path:
-        import zipfile
-
+    def _folder_archive_plan_locked(
+        self,
+        session,
+        *,
+        folder: AppMyFileFolder,
+    ) -> list[tuple[str, Path, str]]:
+        """Resolve archive entries (arcname, blob path, storage mode) under the session."""
         now = _utc_now()
         subtree_ids = [
             folder.id,
@@ -3251,36 +3727,60 @@ class MyFilesService:
         if not files:
             raise MyFilesValidationError("Folder is empty")
 
-        archive_path = self.new_spool_path(f"{_normalize_text(folder.name) or 'folder'}.zip")
-        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        plan: list[tuple[str, Path, str]] = []
         used_names: set[str] = set()
+        for row in files:
+            base_name = _normalize_text(row.download_file_name) or _normalize_text(row.original_file_name) or "file.bin"
+            prefix = relative_dir(row.folder_id)
+            arcname = f"{prefix}/{base_name}" if prefix else base_name
+            while arcname in used_names:
+                stem, dot, ext = base_name.rpartition(".")
+                candidate = f"{stem}_copy.{ext}" if dot else f"{base_name}_copy"
+                arcname = f"{prefix}/{candidate}" if prefix else candidate
+            used_names.add(arcname)
+            payload = self._download_payload_for_row_locked(session, row)
+            plan.append((arcname, payload.path, _normalize_text(payload.mode) or STORAGE_STORED))
+        return plan
+
+    def _write_folder_archive(self, plan: list[tuple[str, Path, str]], archive_path: Path) -> None:
+        """Write the ZIP outside any DB transaction; skipped entries keep the archive valid."""
+        import zipfile
+
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        written = 0
         try:
-            with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
-                for row in files:
-                    base_name = _normalize_text(row.download_file_name) or _normalize_text(row.original_file_name) or "file.bin"
-                    prefix = relative_dir(row.folder_id)
-                    arcname = f"{prefix}/{base_name}" if prefix else base_name
-                    while arcname in used_names:
-                        stem, dot, ext = base_name.rpartition(".")
-                        candidate = f"{stem}_copy.{ext}" if dot else f"{base_name}_copy"
-                        arcname = f"{prefix}/{candidate}" if prefix else candidate
-                    used_names.add(arcname)
-                    payload = self._download_payload_for_row_locked(session, row)
-                    with archive.open(arcname, mode="w", force_zip64=True) as entry:
-                        if payload.mode == STORAGE_ZSTD:
-                            for part in self.iter_zstd_download(payload.path):
-                                entry.write(part)
-                        else:
-                            with payload.path.open("rb") as source:
-                                while True:
-                                    block = source.read(1024 * 1024)
-                                    if not block:
-                                        break
-                                    entry.write(block)
+            with zipfile.ZipFile(archive_path, "w", compresslevel=6) as archive:
+                for arcname, payload_path, mode in plan:
+                    try:
+                        entry_info = zipfile.ZipInfo(filename=arcname)
+                        entry_info.compress_type = (
+                            zipfile.ZIP_DEFLATED
+                            if _extension(arcname) not in ZSTD_SKIP_EXTENSIONS
+                            else zipfile.ZIP_STORED
+                        )
+                        with archive.open(entry_info, mode="w", force_zip64=True) as entry:
+                            if mode == STORAGE_ZSTD:
+                                for part in self.iter_zstd_download(payload_path):
+                                    entry.write(part)
+                            else:
+                                with payload_path.open("rb") as source:
+                                    while True:
+                                        block = source.read(CHUNK_SIZE)
+                                        if not block:
+                                            break
+                                        entry.write(block)
+                        written += 1
+                    except OSError as exc:
+                        # File vanished between plan and build — keep the archive usable.
+                        logger.warning("Folder archive entry skipped path=%s error=%s", payload_path, exc)
+            if written == 0:
+                raise MyFilesValidationError("Folder is empty")
         except Exception:
-            archive_path.unlink(missing_ok=True)
+            try:
+                archive_path.unlink(missing_ok=True)
+            except OSError:
+                pass
             raise
-        return archive_path
 
     def consume_download_grant(self, *, token: str, meta: MyFilesRequestMeta | None = None) -> DownloadPayload:
         database_url = self._database_url_or_raise()
@@ -3289,6 +3789,8 @@ class MyFilesService:
             raise MyFilesNotFoundError("File not found")
         token_hash = _hash_token(normalized_token)
         now = _utc_now()
+        archive_plan: list[tuple[str, Path, str]] | None = None
+        folder_name = ""
         with app_session(database_url) as session:
             grant = session.scalars(
                 select(AppMyFileDownloadGrant)
@@ -3309,22 +3811,43 @@ class MyFilesService:
                 folder = session.get(AppMyFileFolder, folder_id)
                 if folder is None or folder.owner_user_id != owner_user_id or folder.deleted_at is not None:
                     raise MyFilesNotFoundError("Folder not found")
-                archive_path = self._build_folder_archive_locked(session, folder=folder)
-                self._write_audit(session, action="folder_archive_download_started", row=None, meta=meta)
-                return DownloadPayload(
-                    path=archive_path,
-                    mode=STORAGE_STORED,
-                    file_name=f"{_normalize_text(folder.name) or 'folder'}.zip",
-                    media_type="application/zip",
-                    download_size_bytes=archive_path.stat().st_size,
-                    cleanup_after=True,
+                folder_name = _normalize_text(folder.name) or "folder"
+                # Only the plan is built under the transaction: the multi-GB ZIP
+                # write happens outside, so the grant row lock is held for
+                # milliseconds, not for the whole archive pass.
+                archive_plan = self._folder_archive_plan_locked(session, folder=folder)
+            else:
+                row = session.get(AppMyFile, file_id)
+                if row is None or row.owner_user_id != owner_user_id or row.deleted_at is not None:
+                    raise MyFilesNotFoundError("File not found")
+                payload = self._download_payload_for_row_locked(session, row)
+                self._write_audit(session, action="owner_download_started", row=row, meta=meta)
+                return payload
+
+        # A .zip in the spool is only ever a folder archive: the orphan sweeper
+        # reclaims abandoned archives by age, and cleanup_after removes them
+        # right after a successful response.
+        archive_path = self.new_spool_path(f"{folder_name}.zip")
+        self._write_folder_archive(archive_plan or [], archive_path)
+        try:
+            with app_session(database_url) as session:
+                self._write_audit(
+                    session,
+                    action="folder_archive_download_started",
+                    row=None,
+                    meta=meta,
+                    actor_user_id=owner_user_id,
                 )
-            row = session.get(AppMyFile, file_id)
-            if row is None or row.owner_user_id != owner_user_id or row.deleted_at is not None:
-                raise MyFilesNotFoundError("File not found")
-            payload = self._download_payload_for_row_locked(session, row)
-            self._write_audit(session, action="owner_download_started", row=row, meta=meta)
-            return payload
+        except Exception:
+            logger.warning("Folder archive audit write failed")
+        return DownloadPayload(
+            path=archive_path,
+            mode=STORAGE_STORED,
+            file_name=f"{folder_name}.zip",
+            media_type="application/zip",
+            download_size_bytes=archive_path.stat().st_size,
+            cleanup_after=True,
+        )
 
     def get_public_download(self, *, token: str, meta: MyFilesRequestMeta | None = None) -> DownloadPayload:
         database_url = self._database_url_or_raise()

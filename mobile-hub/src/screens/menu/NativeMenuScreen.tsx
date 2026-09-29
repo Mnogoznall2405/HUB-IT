@@ -213,7 +213,7 @@ function MobileUpdateMenuRow({
         if (state.canOpenInstallerSettings) void updater.openInstallerSettings();
         else void updater.installUpdate();
       }}
-      style={({ pressed }) => [styles.updateRow, pressed && styles.updatePressed]}
+      style={({ pressed }) => [styles.updateRow, pressed && { backgroundColor: tokens.actionHover }]}
     >
       <View style={[styles.rowIcon, { backgroundColor: tokens.accentSoft }]}>
         <MaterialCommunityIcons name="cellphone-arrow-down" size={23} color={tokens.primary} />

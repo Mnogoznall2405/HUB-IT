@@ -1,6 +1,7 @@
 """Link preview fetch with SSRF guards for chat."""
 from __future__ import annotations
 
+import concurrent.futures
 import ipaddress
 import logging
 import re
@@ -55,13 +56,27 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 _LINK_PREVIEW_OPENER = urllib.request.build_opener(_NoRedirectHandler)
 
 
+_DNS_RESOLVE_TIMEOUT_SEC = 1.5
+# Shared pool so a hung getaddrinfo does not tie the endpoint to OS DNS timeouts
+# (unresolvable names took 5-19s to return 422 — see plan P1).
+_DNS_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4,
+    thread_name_prefix="link-preview-dns",
+)
+
+
 def assert_public_http_url(raw_url: str) -> None:
     parts = urlsplit(raw_url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise HTTPException(status_code=400, detail="Invalid URL")
     port = parts.port or (443 if parts.scheme == "https" else 80)
+    future = _DNS_EXECUTOR.submit(
+        socket.getaddrinfo, parts.hostname, port, proto=socket.IPPROTO_TCP,
+    )
     try:
-        infos = socket.getaddrinfo(parts.hostname, port, proto=socket.IPPROTO_TCP)
+        infos = future.result(timeout=_DNS_RESOLVE_TIMEOUT_SEC)
+    except concurrent.futures.TimeoutError as exc:
+        raise HTTPException(status_code=422, detail="Could not resolve URL") from exc
     except OSError as exc:
         raise HTTPException(status_code=422, detail="Could not resolve URL") from exc
     for info in infos:

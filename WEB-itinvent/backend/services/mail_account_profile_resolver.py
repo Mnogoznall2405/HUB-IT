@@ -25,6 +25,7 @@ class MailAccountProfileResolver:
         get_session_context: Callable[[str, int], dict[str, Any] | None],
         resolve_session_password: Callable[[str, int], str],
         normalize_signature_html: Callable[[Any], str],
+        impersonation_active: Callable[[], bool] | None = None,
     ) -> None:
         self._resolve_primary_mailbox_row = resolve_primary_mailbox_row
         self._normalize_mailbox_auth_mode = normalize_mailbox_auth_mode
@@ -34,6 +35,7 @@ class MailAccountProfileResolver:
         self._get_session_context = get_session_context
         self._resolve_session_password = resolve_session_password
         self._normalize_signature_html = normalize_signature_html
+        self._impersonation_active = impersonation_active or (lambda: False)
 
     def _session_context(self, *, user_id: int) -> tuple[str, dict[str, Any] | None]:
         session_id = self._get_request_session_id()
@@ -130,8 +132,10 @@ class MailAccountProfileResolver:
         if not email:
             raise MailAccountProfileError("Mailbox email is not configured")
 
+        impersonated = bool(self._impersonation_active())
+
         primary_credentials: dict[str, Any] = {}
-        if auth_mode == "primary_credentials":
+        if not impersonated and auth_mode == "primary_credentials":
             primary_credentials = self.resolve_primary_credentials(
                 user=user,
                 current_mailbox_id=normalize_text(mailbox_row.get("id")),
@@ -154,7 +158,9 @@ class MailAccountProfileResolver:
         password = ""
         mail_requires_password = False
         mail_requires_relogin = False
-        if require_password:
+        if impersonated:
+            pass
+        elif require_password:
             if auth_mode == "primary_credentials":
                 password = normalize_text(primary_credentials.get("password"))
             elif auth_mode == "primary_session":
@@ -206,7 +212,9 @@ class MailAccountProfileResolver:
                 mail_requires_password = not bool(normalize_text(mailbox_row.get("mailbox_password_enc")))
 
         mail_auth_mode = (
-            "ad_auto"
+            "impersonation"
+            if impersonated
+            else "ad_auto"
             if auth_mode == "primary_session"
             else "primary_credentials"
             if auth_mode == "primary_credentials"
@@ -221,6 +229,7 @@ class MailAccountProfileResolver:
             "password": password,
             "signature": signature,
             "mail_auth_mode": mail_auth_mode,
+            "mail_impersonated": impersonated,
             "mail_requires_password": mail_requires_password,
             "mail_requires_relogin": mail_requires_relogin,
             "is_primary": to_bool(mailbox_row.get("is_primary"), default=False),

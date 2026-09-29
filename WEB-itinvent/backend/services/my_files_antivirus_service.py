@@ -205,6 +205,10 @@ def scan_my_file(path: Path) -> SecurityScanResult:
     if not path.exists() or not path.is_file():
         raise MyFilesAntivirusError("Security scan payload is missing")
 
+    max_size = int(getattr(settings, "antivirus_max_size_bytes", 0) or 0)
+    if max_size > 0 and int(path.stat().st_size) > max_size:
+        return SecurityScanResult(status="skipped", engine="size-limit")
+
     provider = str(settings.antivirus_provider or "auto").strip().lower()
     if provider not in {"auto", "kaspersky", "defender"}:
         raise MyFilesAntivirusError(f"Unsupported antivirus provider: {provider}")

@@ -225,6 +225,86 @@ describe('NativeFeedInboxScreen', () => {
     expect(view.getByTestId('feed-post-card-draft-1')).toBeTruthy();
   });
 
+  it('opens the telegram-style reaction bar on long press and closes it on backdrop', async () => {
+    const view = await render(<NativeFeedInboxScreen />);
+    await waitFor(() => expect(view.getByText('Новости компании')).toBeTruthy());
+
+    await act(async () => {
+      fireEvent(view.getByTestId('feed-post-card-post-1'), 'longPress');
+    });
+    expect(view.getByTestId('feed-card-reaction-post-1-bar')).toBeTruthy();
+
+    const backdrop = view.getByTestId('feed-card-reaction-post-1-backdrop', { includeHiddenElements: true });
+    await act(async () => { fireEvent.press(backdrop); });
+    expect(view.queryByTestId('feed-card-reaction-post-1-bar')).toBeNull();
+  });
+
+  it('expands and collapses long publication text inline', async () => {
+    (feedApi.listFeedPosts as jest.Mock).mockResolvedValue({
+      items: [{
+        ...samplePost,
+        preview: 'Анонс',
+        body: 'Очень длинный текст публикации, который не помещается в три строки превью и требует раскрытия.',
+      }],
+      total: 1,
+      unread_total: 0,
+    });
+    const view = await render(<NativeFeedInboxScreen />);
+    await waitFor(() => expect(view.getByTestId('feed-card-expand')).toBeTruthy());
+
+    await act(async () => { fireEvent.press(view.getByTestId('feed-card-expand')); });
+    expect(view.getByText('Свернуть')).toBeTruthy();
+    expect(view.getByText(/Очень длинный текст публикации/)).toBeTruthy();
+
+    await act(async () => { fireEvent.press(view.getByTestId('feed-card-expand')); });
+    expect(view.getByText('Ещё')).toBeTruthy();
+    expect(view.getByText('Анонс')).toBeTruthy();
+  });
+
+  it('shows the empty state with a next action for the current filters', async () => {
+    (feedApi.listFeedPosts as jest.Mock).mockResolvedValue({ items: [], total: 0, unread_total: 0 });
+    const view = await render(<NativeFeedInboxScreen />);
+    await waitFor(() => expect(view.getByTestId('feed-empty-create')).toBeTruthy());
+
+    await act(async () => { fireEvent.press(view.getByTestId('feed-taxonomy-toggle')); });
+    await act(async () => { fireEvent.press(view.getByTestId('feed-filter-unread')); });
+    await waitFor(() => expect(view.getByTestId('feed-empty-reset')).toBeTruthy());
+    await act(async () => { fireEvent.press(view.getByTestId('feed-empty-reset')); });
+    await waitFor(() => expect(view.getByTestId('feed-empty-create')).toBeTruthy());
+  });
+
+  it('offers a compact unread quick-filter chip with pluralized label', async () => {
+    (feedApi.listFeedPosts as jest.Mock).mockResolvedValue({
+      items: [{ ...samplePost }],
+      total: 5,
+      unread_total: 5,
+    });
+    const view = await render(<NativeFeedInboxScreen />);
+    await waitFor(() => expect(view.getByTestId('feed-unread-quick')).toBeTruthy());
+    expect(view.getByText('Новое · 5')).toBeTruthy();
+    expect(view.getByLabelText('Только непрочитанные: 5 непрочитанных публикаций')).toBeTruthy();
+
+    await act(async () => { fireEvent.press(view.getByTestId('feed-unread-quick')); });
+    await waitFor(() => expect(feedApi.listFeedPosts).toHaveBeenCalledWith(
+      expect.objectContaining({ unread_only: true }),
+    ));
+    expect(view.queryByTestId('feed-unread-quick')).toBeNull();
+  });
+
+  it('keeps the feed controls on a single compact row', async () => {
+    (feedApi.listFeedPosts as jest.Mock).mockResolvedValue({
+      items: [{ ...samplePost }],
+      total: 1,
+      unread_total: 0,
+    });
+    const view = await render(<NativeFeedInboxScreen />);
+    await waitFor(() => expect(view.getByTestId('feed-post-list')).toBeTruthy());
+    expect(view.getByTestId('feed-search-input')).toBeTruthy();
+    expect(view.getByTestId('feed-taxonomy-toggle')).toBeTruthy();
+    expect(view.queryByTestId('feed-unread-quick')).toBeNull();
+    expect(view.queryByText(/публикац/)).toBeNull();
+  });
+
   it('loads the next managed page using the server offset and removes overlapping rows', async () => {
     (feedApi.listManagedFeedPosts as jest.Mock)
       .mockResolvedValueOnce({ items: [{ ...samplePost, id: 'first', status: 'draft' }], total: 3 })
@@ -772,6 +852,7 @@ it('late post A must not replace post B', async () => {
     const view = await render(<NativeFeedPostScreen />);
     await waitFor(() => expect(view.getByTestId('feed-comment-attachment-a1')).toBeTruthy());
     await act(async () => { fireEvent.press(view.getByTestId('feed-comment-attach')); });
+    await act(async () => { fireEvent.press(view.getByTestId('feed-attach-files')); });
     await waitFor(() => expect(view.getAllByText('акт.pdf')).toHaveLength(2));
     await act(async () => { fireEvent.press(view.getByTestId('feed-comment-send')); });
     await waitFor(() => expect(feedApi.createFeedComment).toHaveBeenCalledWith('post-1', expect.objectContaining({

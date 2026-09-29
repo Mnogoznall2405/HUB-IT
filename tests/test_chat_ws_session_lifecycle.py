@@ -122,5 +122,51 @@ def test_endpoint_cancels_watchdog_when_peer_disconnects():
         exec(compile(ast.fix_missing_locations(module), str(source), "exec"), namespace)
         await asyncio.wait_for(namespace["chat_websocket"](SimpleNamespace(receive_text=receive)), 1)
         assert stopped.is_set()
-        runtime.disconnect.assert_called_once_with("c")
+        runtime.disconnect.assert_called_once_with("c", close_code=None, close_reason="peer closed")
+    asyncio.run(run())
+
+
+def test_endpoint_prefers_watchdog_reason_over_peer_disconnect_code():
+    source = Path(__file__).resolve().parents[1] / "WEB-itinvent/backend/api/v1/chat/ws.py"
+    tree = ast.parse(source.read_text(encoding="utf-8-sig"))
+    function = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef)
+                    and node.name == "chat_websocket")
+    function.decorator_list = []
+
+    async def run():
+        started = asyncio.Event()
+        class Disconnect(Exception):
+            def __init__(self):
+                self.code = 1006
+
+        async def watchdog(*args, **kwargs):
+            outcome = kwargs["outcome"]
+            outcome["close_code"] = 4401
+            outcome["close_reason"] = "session expired"
+            started.set()
+            await asyncio.Event().wait()
+
+        async def receive():
+            await started.wait()
+            raise Disconnect()
+
+        runtime = SimpleNamespace(
+            connect=AsyncMock(return_value=("c", False)), send_to_connection=AsyncMock(),
+            is_connection_registered=lambda _: True,
+            disconnect=Mock(return_value={"last_connection": False}),
+        )
+        api = SimpleNamespace(chat_realtime=runtime, _ws_is_connected=lambda _: True,
+                              CHAT_WS_SESSION_REVALIDATE_SEC=30)
+        namespace = {
+            "asyncio": asyncio, "time": time, "HTTPException": HTTPException,
+            "WebSocketDisconnect": Disconnect,
+            "get_current_user_from_websocket": AsyncMock(return_value=SimpleNamespace(id=1, is_active=True)),
+            "ensure_user_permission": lambda *a: None, "PERM_CHAT_READ": "read",
+            "chat_api": lambda: api, "extract_websocket_access_token": lambda _: "test",
+            "_ws_post_connect_bootstrap": AsyncMock(), "_ws_session_watchdog": watchdog,
+        }
+        module = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), function], type_ignores=[])
+        exec(compile(ast.fix_missing_locations(module), str(source), "exec"), namespace)
+        await asyncio.wait_for(namespace["chat_websocket"](SimpleNamespace(receive_text=receive)), 1)
+        runtime.disconnect.assert_called_once_with("c", close_code=4401, close_reason="session expired")
     asyncio.run(run())

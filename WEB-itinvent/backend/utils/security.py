@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import os
 import uuid
 from typing import Optional
 
@@ -81,8 +82,31 @@ def create_refresh_token(data: dict, expires_delta: Optional[timedelta] = None) 
     )
 
 
-def decode_access_token(token: str, *, expected_token_type: str | None = None) -> Optional[TokenData]:
-    """Decode and verify a JWT token."""
+def create_ws_ticket(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """Short-lived token_type='ws_auth' proof for in-socket re-auth (D5/W8).
+
+    Not an access token: it must never authorize REST — only prove fresh auth
+    to an already-established websocket lease.
+    """
+    if expires_delta is None:
+        ttl_sec = max(60, min(3600, int(str(
+            os.getenv("CHAT_WS_TICKET_TTL_SEC", "300") or "300"
+        ).strip() or "300")))
+        expires_delta = timedelta(seconds=ttl_sec)
+    return _encode_token(data, token_type="ws_auth", expires_delta=expires_delta)
+
+
+def decode_access_token(
+    token: str,
+    *,
+    expected_token_type: str | None = None,
+    verify_exp: bool = True,
+) -> Optional[TokenData]:
+    """Decode and verify a JWT token.
+
+    verify_exp=False is used by the WS auth lease to classify an expired-but-
+    otherwise-valid token (expired → grace window) vs a dead one.
+    """
 
     normalized = str(token or "").strip()
     if not normalized:
@@ -93,7 +117,10 @@ def decode_access_token(token: str, *, expected_token_type: str | None = None) -
         if not key:
             continue
         try:
-            payload = jwt.decode(normalized, key, algorithms=[config.jwt.algorithm])
+            payload = jwt.decode(
+                normalized, key, algorithms=[config.jwt.algorithm],
+                options={"verify_exp": verify_exp},
+            )
             token_type = str(payload.get("token_type") or "access").strip().lower() or "access"
             if expected_token_type and token_type != str(expected_token_type).strip().lower():
                 return None

@@ -233,6 +233,7 @@ export default function ScanCenterOverview({ dashboard, dashboardLoading, review
               color={agentsDeadLetterTotal >= DEAD_LETTER_WARN_TOTAL ? 'error.main' : 'text.primary'}
             />
             <PulseRow label="Скорость за 24 часа" value={`${Number(performance.throughput_per_hour || 0)} файлов/ч`} helper={`обработано: ${Number(performance.completed || 0)}`} />
+            <PulseRow label="Темп за последний час" value={`${Number(performance.throughput_last_hour || 0)} файлов/ч`} helper={`закрыто за час: ${Number(performance.completed_last_hour || 0)}`} />
             <PulseRow label="Агенты на связи" value={`${agentsOnline}/${agentsTotal}`} helper={`${coverage}% покрытия`} color={coverage >= 90 ? 'success.main' : 'warning.main'} />
             <LinearProgress variant="determinate" value={Math.max(0, Math.min(100, coverage))} color={coverage >= 90 ? 'success' : 'warning'} sx={{ mt: 0.5, height: 7, borderRadius: 4 }} />
             <PulseRow

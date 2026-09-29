@@ -44,7 +44,7 @@ describe('privacy-safe diagnostics', () => {
     ], '2026-08-22T11:00:00.000Z');
 
     expect(report).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 5,
       generatedAt: '2026-08-22T11:00:00.000Z',
       privacy: 'no-user-content-no-credentials',
       app: { version: '1.1.4', build: '6' },
@@ -58,6 +58,12 @@ describe('privacy-safe diagnostics', () => {
         schemaVersion: 1,
         status: 'unsupported',
         minAndroidApi: 30,
+      },
+      chatSendTiming: { sends: 0 },
+      apiInflight: {
+        current: 0,
+        maxObserved: 0,
+        atChatSendHttpStart: { count: 0, p50: null, p95: null },
       },
     });
     expect(JSON.stringify(report)).not.toContain('token');

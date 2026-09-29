@@ -378,6 +378,7 @@ describe('equipmentAPI.searchAgentComputers', () => {
         offset: 100,
         include_summary: true,
       },
+      validateStatus: expect.any(Function),
     });
   });
 });
@@ -462,6 +463,7 @@ describe('equipmentComputersAPI contract', () => {
         offset: 100,
         include_summary: true,
       },
+      validateStatus: expect.any(Function),
     });
   });
 

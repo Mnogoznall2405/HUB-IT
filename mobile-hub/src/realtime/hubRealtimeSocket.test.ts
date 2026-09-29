@@ -138,4 +138,78 @@ describe('HubRealtimeSocketClient', () => {
     }));
     client.disconnect();
   });
+
+  it('sends heartbeat pings with unique request_id and counts any inbound frame as alive', async () => {
+    const client = new HubRealtimeSocketClient();
+    await client.connect();
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    socket.message({ type: 'hub.realtime.connected', payload: { protocol: 1 } });
+    socket.close = jest.fn(() => { socket.readyState = MockWebSocket.CLOSED; });
+
+    const sentPings = () => socket.send.mock.calls
+      .map(([raw]) => JSON.parse(String(raw)) as { type?: string; request_id?: string })
+      .filter((message) => message.type === 'hub.realtime.ping');
+
+    await jest.advanceTimersByTimeAsync(25_000);
+    await jest.advanceTimersByTimeAsync(25_000);
+    await jest.advanceTimersByTimeAsync(25_000);
+    expect(sentPings()).toHaveLength(3);
+
+    // A non-pong frame proves the socket is alive: the missed-pong counter
+    // must restart so the next heartbeat ticks do not kill a healthy socket.
+    socket.message({ type: 'mail.unread.changed', payload: { event_id: 'mail-alive' } });
+    await jest.advanceTimersByTimeAsync(25_000);
+    await jest.advanceTimersByTimeAsync(25_000);
+    await jest.advanceTimersByTimeAsync(25_000);
+
+    expect(socket.close).not.toHaveBeenCalled();
+    expect(client.getStatus()).not.toBe('error');
+
+    const requestIds = sentPings().map((message) => message.request_id);
+    expect(requestIds.every((id) => typeof id === 'string' && id.trim().length > 0)).toBe(true);
+    expect(new Set(requestIds).size).toBe(requestIds.length);
+    client.disconnect();
+  });
+
+  it('reconnects after a 1008 slow-consumer close but stays dead on 4403 forbidden', async () => {
+    const client = new HubRealtimeSocketClient();
+    await client.connect();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    first.close(1008);
+
+    expect(client.getStatus()).toBe('reconnecting');
+    await jest.advanceTimersByTimeAsync(3_499);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    MockWebSocket.instances[1].open();
+    MockWebSocket.instances[1].close(4403);
+    expect(client.getStatus()).toBe('offline');
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    client.disconnect();
+  });
+
+  it('force-refreshes the access token after a 4401 session-expired close', async () => {
+    const tokenSpy = jest.spyOn(clientApi, 'getAuthenticatedAccessToken')
+      .mockResolvedValueOnce('stale-access')
+      .mockResolvedValue('fresh-access');
+    const client = new HubRealtimeSocketClient();
+    await client.connect();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    first.close(4401);
+
+    await jest.advanceTimersByTimeAsync(3_500);
+
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(tokenSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ forceRefresh: true }),
+    );
+    expect(MockWebSocket.instances[1].options?.headers?.Authorization).toBe('Bearer fresh-access');
+    client.disconnect();
+  });
 });

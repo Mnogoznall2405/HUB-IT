@@ -160,7 +160,9 @@ describe('AddressBook page', () => {
     expect(await screen.findByTestId('address-book-entry-list')).toBeInTheDocument();
     expect(screen.getByTestId('address-book-entry-detail')).toBeInTheDocument();
     expect(screen.getByTestId('address-book-person-meta')).toHaveTextContent('Lead specialist · 36 лет');
-    expect(screen.getByTestId('address-book-hire-date')).toHaveTextContent('Дата приёма: 17.05.2021');
+    const hireDate = screen.getByTestId('address-book-hire-date');
+    expect(hireDate).toHaveTextContent('Дата приёма');
+    expect(hireDate).toHaveTextContent('17.05.2021');
     expect(screen.getAllByText('Ivanov Ivan Ivanovich').length).toBeGreaterThan(0);
     expect(screen.getByText('Рабочий телефон')).toBeInTheDocument();
     expect(screen.getAllByText('83452384202').length).toBeGreaterThan(0);

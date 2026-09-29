@@ -5,6 +5,7 @@ import {
   Chip,
   CircularProgress,
   IconButton,
+  LinearProgress,
   Menu,
   MenuItem,
   Stack,
@@ -16,7 +17,7 @@ import MoreVertIcon from '@mui/icons-material/MoreVert';
 import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import { alpha, useTheme } from '@mui/material/styles';
-import { formatDateTime } from './passwordVaultUtils';
+import { PASSWORD_HIDE_MS, formatDateTime } from './passwordVaultUtils';
 
 export default function PasswordEntryDetail({
   entry,
@@ -24,6 +25,8 @@ export default function PasswordEntryDetail({
   revealBusy = false,
   canWrite = false,
   compact = false,
+  watermark = '',
+  revealRemainingMs = 0,
   onCopyPassword,
   onCopyLogin,
   onShow,
@@ -126,7 +129,13 @@ export default function PasswordEntryDetail({
         ) : null}
 
         <Box
+          className="vault-secret"
+          onCopy={passwordVisible ? (event) => event.preventDefault() : undefined}
+          onContextMenu={passwordVisible ? (event) => event.preventDefault() : undefined}
+          data-testid="vault-secret-field"
           sx={{
+            position: 'relative',
+            overflow: 'hidden',
             px: 1.5,
             py: 1.25,
             borderRadius: 0.5,
@@ -146,7 +155,47 @@ export default function PasswordEntryDetail({
               {passwordVisible ? revealed : masked}
             </Typography>
           )}
+          {passwordVisible && watermark ? (
+            <Box
+              aria-hidden="true"
+              className="vault-secret-watermark"
+              data-testid="vault-secret-watermark"
+              sx={{
+                position: 'absolute',
+                inset: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-evenly',
+                gap: 2,
+                overflow: 'hidden',
+                pointerEvents: 'none',
+                whiteSpace: 'nowrap',
+                fontSize: '0.6rem',
+                letterSpacing: '0.08em',
+                color: 'text.secondary',
+                opacity: 0.3,
+              }}
+            >
+              <span>{watermark}</span>
+              <span>{watermark}</span>
+              <span>{watermark}</span>
+            </Box>
+          ) : null}
         </Box>
+
+        {passwordVisible ? (
+          <Box data-testid="vault-reveal-progress">
+            <LinearProgress
+              variant="determinate"
+              value={Math.max(0, Math.min(100, (revealRemainingMs / PASSWORD_HIDE_MS) * 100))}
+              aria-label="Время до автоматического скрытия"
+              sx={{ height: 4, borderRadius: 1 }}
+            />
+            <Typography variant="caption" color="text.secondary">
+              Автоскрытие через {Math.max(0, Math.ceil(revealRemainingMs / 1000))} с
+            </Typography>
+          </Box>
+        ) : null}
 
         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
           <Button

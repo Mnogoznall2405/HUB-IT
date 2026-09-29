@@ -11,12 +11,14 @@ const {
   getEmployeeWarehouse,
   getWarehouseMovements,
   exportEmployeeEquipmentWorkbook,
+  getAgentComputersByInvNos,
 } = vi.hoisted(() => ({
   downloadEquipmentActFile: vi.fn(),
   getEmployeeEquipment: vi.fn(),
   getEmployeeWarehouse: vi.fn(),
   getWarehouseMovements: vi.fn(),
   exportEmployeeEquipmentWorkbook: vi.fn(),
+  getAgentComputersByInvNos: vi.fn(),
 }));
 
 vi.mock('../../api/equipmentSearch', () => ({
@@ -34,6 +36,10 @@ vi.mock('../../api/equipmentTransferActs', () => ({
 
 vi.mock('../../api/equipmentRecords', () => ({
   equipmentRecordsAPI: { getEquipmentHistory: vi.fn(async () => ({ history: [] })) },
+}));
+
+vi.mock('../../api/equipmentComputers', () => ({
+  equipmentComputersAPI: { getAgentComputersByInvNos },
 }));
 
 vi.mock('../../components/documentPreview/DocumentPreviewDialog', () => ({
@@ -96,6 +102,8 @@ describe('EmployeeEquipmentDialog', () => {
     });
     exportEmployeeEquipmentWorkbook.mockReset();
     exportEmployeeEquipmentWorkbook.mockResolvedValue('оборудование.xlsx');
+    getAgentComputersByInvNos.mockReset();
+    getAgentComputersByInvNos.mockResolvedValue({ items: {} });
     setMatchMedia(false);
   });
 
@@ -108,6 +116,64 @@ describe('EmployeeEquipmentDialog', () => {
         allDatabases: false,
       });
     });
+  });
+
+  it('marks equipment in use with a live agent chip', async () => {
+    getEmployeeEquipment.mockResolvedValue({
+      equipment: [
+        { INV_NO: 'INV-1', MODEL_NAME: 'ThinkPad' },
+        { INV_NO: 'INV-2', MODEL_NAME: 'Monitor' },
+      ],
+    });
+    getAgentComputersByInvNos.mockResolvedValue({
+      items: {
+        'INV-1': {
+          hostname: 'PC-01',
+          status: 'online',
+          user_login: 'CORP\\ivanova',
+          last_seen_at: 1710003000,
+        },
+      },
+    });
+
+    renderDialog(false);
+
+    await waitFor(() => {
+      expect(getAgentComputersByInvNos).toHaveBeenCalledWith(['INV-1', 'INV-2'], {});
+    });
+    expect(await screen.findByText('В работе: PC-01')).toBeInTheDocument();
+    expect(screen.getAllByText(/В работе:/)).toHaveLength(1);
+  });
+
+  it('marks a monitor item with the PC it is attached to', async () => {
+    getEmployeeEquipment.mockResolvedValue({
+      equipment: [
+        { INV_NO: 'INV-1', MODEL_NAME: 'ThinkPad' },
+        { INV_NO: 'INV-2', MODEL_NAME: 'Dell 24' },
+      ],
+    });
+    getAgentComputersByInvNos.mockResolvedValue({
+      items: {
+        'INV-1': {
+          hostname: 'PC-01',
+          status: 'online',
+          kind: 'computer',
+          user_login: 'CORP\\ivanova',
+        },
+        'INV-2': {
+          hostname: 'PC-01',
+          status: 'online',
+          kind: 'monitor',
+          monitor_manufacturer: 'Dell',
+          monitor_product_code: 'U2422H',
+        },
+      },
+    });
+
+    renderDialog(false);
+
+    expect(await screen.findByText('В работе: PC-01')).toBeInTheDocument();
+    expect(await screen.findByText('Подключён: PC-01')).toBeInTheDocument();
   });
 
   it('uses cross-database lookup only when explicitly allowed', async () => {

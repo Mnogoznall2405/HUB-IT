@@ -48,6 +48,37 @@ describe('ChatDocumentAttachment', () => {
       .toEqual({ min: 0, max: 100, now: 42, text: '42 процентов' });
   });
 
+  it('shows an indeterminate upload state instead of a stuck 0%', async () => {
+    const view = await render(
+      <ChatDocumentAttachment
+        attachment={{ id: 'pending-1', file_name: 'photo.jpg', file_size: 2048 }}
+        width={240}
+        transfer={{ action: 'upload', progress: 0, status: 'active', cancellable: true }}
+        onCancel={jest.fn()}
+      />,
+    );
+
+    expect(view.getByText('Отправка…')).toBeTruthy();
+    expect(view.queryByText(/0%/)).toBeNull();
+    expect(view.getByRole('progressbar', { name: 'Отправка…: photo.jpg' }).props.accessibilityValue)
+      .toEqual({ text: 'Отправка…' });
+  });
+
+  it('shows an indeterminate download state until progress data arrives', async () => {
+    const view = await render(
+      <ChatDocumentAttachment
+        attachment={{ id: 'attachment-2', file_name: 'report.pdf', file_size: 1024 }}
+        width={240}
+        transfer={{ action: 'open', progress: 0 }}
+        onOpen={jest.fn()}
+        onMore={jest.fn()}
+      />,
+    );
+
+    expect(view.getByText('Загрузка…')).toBeTruthy();
+    expect(view.queryByText(/0%/)).toBeNull();
+  });
+
   it('offers a 44dp cancel action during an upload', async () => {
     const onCancel = jest.fn();
     const view = await render(

@@ -8,6 +8,7 @@ param(
     [string]$InventoryUrl = 'http://127.0.0.1:8012/health',
     [string]$InventoryReadyUrl = 'http://127.0.0.1:8012/health/ready',
     [string]$ScanUrl = 'http://127.0.0.1:8011/health',
+    [ValidateSet('auto', 'single', 'dual')][string]$ChatMode = 'auto',
     [switch]$RepairBackend,
     [switch]$RepairScan
 )
@@ -16,6 +17,17 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = 'C:\Project\Image_scan'
 $script:Pm2SnapshotError = ''
+
+. (Join-Path $projectRoot 'scripts\pm2\chat-runtime-mode.ps1')
+$resolvedChatMode = Get-ChatRuntimeMode -ProjectRoot $projectRoot -Override $ChatMode
+$chatNodes = @(
+    if ($resolvedChatMode -eq 'dual') {
+        @{ Name = 'itinvent-chat-a'; Port = 8002 }
+        @{ Name = 'itinvent-chat-b'; Port = 8004 }
+    } else {
+        @{ Name = 'itinvent-chat'; Port = 8002 }
+    }
+)
 
 function Resolve-NodeCommand {
     $node = Get-Command 'node' -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
@@ -365,6 +377,117 @@ function Test-BackendPortMismatch {
     return [pscustomobject]@{ Mismatch = $false }
 }
 
+function Test-ChatFarmServers {
+    # Read-only ARR farm check: every server registered in the itinvent-chat
+    # farm must exist and listen. applicationHost.config may be unreadable from
+    # a non-elevated shell — report that as warn, not fail.
+    $configPath = Join-Path $env:WINDIR 'System32\inetsrv\config\applicationHost.config'
+    try {
+        $xml = [xml](Get-Content -LiteralPath $configPath -ErrorAction Stop)
+    } catch {
+        return [pscustomobject]@{
+            Name    = 'chat-farm'
+            Status  = 'warn'
+            Details = "cannot read applicationHost.config: $($_.Exception.Message)"
+        }
+    }
+
+    $farm = @($xml.configuration.webFarms.webFarm | Where-Object { $_.name -eq 'itinvent-chat' }) | Select-Object -First 1
+    if (-not $farm) {
+        return [pscustomobject]@{
+            Name    = 'chat-farm'
+            Status  = 'fail'
+            Details = 'webFarm itinvent-chat not found in applicationHost.config'
+        }
+    }
+
+    $failures = @()
+    $details = @()
+    foreach ($server in @($farm.server)) {
+        $address = [string]$server.address
+        # ARR keeps the port in applicationRequestRouting/@httpPort; the
+        # address attribute may also carry "host:port" in other farms.
+        $portText = [string]$server.applicationRequestRouting.httpPort
+        if (-not $portText) {
+            $portText = ($address -split ':')[-1]
+        }
+        $port = 0
+        if (-not [int]::TryParse($portText, [ref]$port) -or $port -le 0) {
+            $failures += "farm server $address has no parseable port"
+            continue
+        }
+        $listeners = Get-PortListenerPids -ListenPort $port
+        if ($listeners.Count -eq 0) {
+            $failures += "farm server $address port $port is not listening"
+        } else {
+            $details += "$address`:$port->pid$($listeners -join ',')"
+        }
+    }
+
+    if ($failures.Count -gt 0) {
+        return [pscustomobject]@{
+            Name    = 'chat-farm'
+            Status  = 'fail'
+            Details = (($failures + $details) -join '; ')
+        }
+    }
+    return [pscustomobject]@{
+        Name    = 'chat-farm'
+        Status  = 'ok'
+        Details = (($details) -join '; ')
+    }
+}
+
+function Test-SandboxControlRuntime {
+    param($Snapshot)
+
+    if ((@($Snapshot).Count -eq 0) -and $script:Pm2SnapshotError) {
+        return [pscustomobject]@{
+            Name    = 'sandbox-control'
+            Status  = 'warn'
+            Details = "PM2 snapshot unavailable: $script:Pm2SnapshotError"
+        }
+    }
+
+    $control = $Snapshot | Where-Object { $_.Name -eq 'itinvent-ai-sandbox-control' } | Select-Object -First 1
+    if (-not $control) {
+        return [pscustomobject]@{
+            Name    = 'sandbox-control'
+            Status  = 'fail'
+            Details = 'process not found in PM2; OpenCode jobs cannot fetch manifests or upload results'
+        }
+    }
+    if ($control.Status -ne 'online') {
+        return [pscustomobject]@{
+            Name    = 'sandbox-control'
+            Status  = 'fail'
+            Details = "PM2 status=$($control.Status) pid=$($control.PID) restarts=$($control.Restarts)"
+        }
+    }
+
+    $listeners = Get-PortListenerPids -ListenPort 8443
+    if ($listeners.Count -eq 0) {
+        return [pscustomobject]@{
+            Name    = 'sandbox-control'
+            Status  = 'fail'
+            Details = "PM2 online pid=$($control.PID) but port 8443 has no listener"
+        }
+    }
+    if ([int]$control.Restarts -gt 10 -and [int]$control.UptimeSec -lt 120) {
+        return [pscustomobject]@{
+            Name    = 'sandbox-control'
+            Status  = 'warn'
+            Details = "possible restart storm (restarts=$($control.Restarts), short uptime) on port 8443"
+        }
+    }
+
+    return [pscustomobject]@{
+        Name    = 'sandbox-control'
+        Status  = 'ok'
+        Details = "online pid=$($control.PID), port 8443 held by PID $($listeners -join ', ')"
+    }
+}
+
 function Get-ScanPythonProcesses {
     $rows = @(Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.exe'" -ErrorAction SilentlyContinue)
     $api = @()
@@ -468,9 +591,29 @@ $healthRows = @(
 )
 $backendChatRuntime = Test-BackendChatRuntime -Name 'backend-chat-runtime' -Url $BackendReadyUrl
 $chatRuntimeRows = @($backendChatRuntime)
-if ($backendChatRuntime.RealtimeMode -eq 'external') {
-    $healthRows += Test-HttpHealth -Name 'chat-health' -Url $ChatUrl
-    $chatRuntimeRows += Test-BackendChatRuntime -Name 'chat-runtime' -Url $ChatReadyUrl
+if ($backendChatRuntime.RealtimeMode -eq 'external' -or $resolvedChatMode -eq 'dual') {
+    $chatNodeAlive = 0
+    foreach ($node in $chatNodes) {
+        $nodeHealth = Test-HttpHealth -Name "chat-health:$($node.Name)" -Url "http://127.0.0.1:$($node.Port)/health"
+        $nodeRuntime = Test-BackendChatRuntime -Name "chat-runtime:$($node.Name)" -Url "http://127.0.0.1:$($node.Port)/health/ready"
+        $healthRows += $nodeHealth
+        $chatRuntimeRows += $nodeRuntime
+        if ($nodeRuntime -and $nodeRuntime.Status -eq 'ok') {
+            $chatNodeAlive += 1
+        }
+    }
+    if ($resolvedChatMode -eq 'dual') {
+        # A single alive node still serves users but breaks the failover
+        # contract — the cluster is only healthy with both nodes ready.
+        $nodeCount = $chatNodes.Count
+        $chatRuntimeRows += [pscustomobject]@{
+            Name         = 'chat-nodes'
+            Status       = if ($chatNodeAlive -ge $nodeCount) { 'ok' } else { 'fail' }
+            Details      = "ready=$chatNodeAlive/$nodeCount nodes (mode=$resolvedChatMode)"
+            RealtimeMode = ''
+            ServedBy     = ''
+        }
+    }
 }
 if ($BackendSecondaryUrl) {
     $healthRows += Test-HttpHealth -Name 'backend-secondary-health' -Url $BackendSecondaryUrl
@@ -483,10 +626,14 @@ if ($BackendSecondaryReadyUrl) {
 }
 $pm2RuntimeRows = @(
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-backend'
+    foreach ($chatName in (Get-ChatProcessNames -Mode $resolvedChatMode)) {
+        Get-Pm2ProcessStatus -Snapshot $snapshot -Name $chatName
+    }
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-preview-worker'
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-mail-notification-worker'
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-chat-push-worker'
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-ai-chat-worker'
+    Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-ai-sandbox-control'
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-my-files-worker'
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-hub-notifications-retention-worker'
 )
@@ -495,6 +642,17 @@ Write-Host 'Chat runtime checks:' -ForegroundColor Cyan
 @($chatRuntimeRows | Where-Object { $_ }) | Format-Table Name, Status, Details -AutoSize
 Write-Host 'Critical PM2 processes:' -ForegroundColor Cyan
 $pm2RuntimeRows | Format-Table Name, Status, Details -AutoSize
+
+Write-Host 'Chat farm checks:' -ForegroundColor Cyan
+@(Test-ChatFarmServers) | Format-Table Name, Status, Details -AutoSize
+
+Write-Host 'Sandbox control checks:' -ForegroundColor Cyan
+$sandboxControlRow = Test-SandboxControlRuntime -Snapshot $snapshot
+@($sandboxControlRow | Where-Object { $_ }) | Format-Table Name, Status, Details -AutoSize
+if ($sandboxControlRow -and $sandboxControlRow.Status -ne 'ok') {
+    Write-Host 'Sandbox control is not healthy: OpenCode jobs stall after enqueue.' -ForegroundColor Red
+    Write-Host 'Run: powershell -File scripts\pm2\restart-ai-agents.ps1' -ForegroundColor Yellow
+}
 
 Write-Host 'Scan runtime checks:' -ForegroundColor Cyan
 $scanRuntimeRows = @(
@@ -534,3 +692,16 @@ if ($portMismatch -and $portMismatch.Mismatch) {
         Write-Host 'Or:  powershell -File scripts\pm2\health-check.ps1 -RepairBackend' -ForegroundColor Yellow
     }
 }
+
+# Aggregate failures for scheduled runs (Task Scheduler sees a non-zero exit).
+# Read-only by default; repair switches throw on their own failures above.
+$healthFailures = @(
+    @($healthRows | Where-Object { $_ -and $_.Status -eq 'fail' }).Count
+    @($chatRuntimeRows | Where-Object { $_ -and $_.Status -eq 'fail' }).Count
+    @($pm2RuntimeRows | Where-Object { $_ -and $_.Status -eq 'fail' }).Count
+    @($scanRuntimeRows | Where-Object { $_ -and $_.Status -eq 'fail' }).Count
+    @(if ($sandboxControlRow -and $sandboxControlRow.Status -eq 'fail') { 1 } else { 0 })
+    @(if ($portMismatch -and $portMismatch.Mismatch) { 1 } else { 0 })
+) | Measure-Object -Sum | Select-Object -ExpandProperty Sum
+Write-Host "Health check failures: $healthFailures" -ForegroundColor $(if ($healthFailures -gt 0) { 'Red' } else { 'Green' })
+if ($healthFailures -gt 0) { exit 1 }

@@ -44,7 +44,7 @@ if __name__ == "__main__":
         print(f"[chat-read] async logging install failed: {exc}")
     host = os.getenv("BACKEND_HOST", "127.0.0.1")
     port = int(os.getenv("BACKEND_PORT", "8003"))
-    _free_stale_port_on_windows(host, port)
+    _free_stale_port_on_windows(host, port, marker="start_chat_read_server.py")
     print(f"[chat-read] Starting Chat Read surface on {host}:{port}")
     uvicorn.run(
         "backend.chat_main:app",

@@ -461,7 +461,7 @@ describe('Database equipment row helpers', () => {
     fireEvent.change(searchInput, { target: { value: 'Latitude' } });
     fireEvent.keyDown(searchInput, { key: 'Enter' });
 
-    await waitFor(() => expect(mockApi.equipmentAPI.searchUniversal).toHaveBeenCalledWith('Latitude', 1, 200));
+    await waitFor(() => expect(mockApi.equipmentAPI.searchUniversal).toHaveBeenCalledWith('Latitude', 1, 200, { typeNo: null, field: '' }));
     expect(mockApi.equipmentSearchAPI.searchByEmployee).not.toHaveBeenCalled();
     expect(await screen.findByText('Latitude 7420')).toBeInTheDocument();
   });
@@ -687,21 +687,21 @@ describe('Database equipment row helpers', () => {
     renderDatabase();
 
     await screen.findByRole('tab', { name: 'Оборудование' });
-    fireEvent.mouseDown(screen.getAllByRole('combobox')[0]);
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: 'Филиал' }));
     fireEvent.click(await screen.findByRole('option', { name: 'HQ' }));
 
     fireEvent.click(screen.getByRole('tab', { name: 'Расходники' }));
     await waitFor(() => {
-      expect(screen.getAllByRole('combobox')[0]).toHaveTextContent('HQ');
+      expect(screen.getByRole('combobox', { name: 'Филиал' })).toHaveTextContent('HQ');
     });
 
-    fireEvent.mouseDown(screen.getAllByRole('combobox')[0]);
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: 'Филиал' }));
     fireEvent.click(await screen.findByRole('option', { name: 'Remote' }));
 
     fireEvent.click(screen.getByRole('tab', { name: 'Оборудование' }));
 
     await waitFor(() => {
-      expect(screen.getAllByRole('combobox')[0]).toHaveTextContent('Remote');
+      expect(screen.getByRole('combobox', { name: 'Филиал' })).toHaveTextContent('Remote');
     });
   });
 
@@ -709,7 +709,7 @@ describe('Database equipment row helpers', () => {
     renderDatabase();
 
     await screen.findByRole('tab', { name: 'Оборудование' });
-    fireEvent.mouseDown(screen.getAllByRole('combobox')[0]);
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: 'Филиал' }));
     fireEvent.click(await screen.findByRole('option', { name: 'HQ' }));
 
     expect(localStorage.getItem('database_branch_filters')).toBe(JSON.stringify({ main: 'HQ' }));
@@ -719,9 +719,9 @@ describe('Database equipment row helpers', () => {
     renderDatabase();
 
     await screen.findByRole('tab', { name: 'Оборудование' });
-    fireEvent.mouseDown(screen.getAllByRole('combobox')[0]);
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: 'Филиал' }));
     fireEvent.click(await screen.findByRole('option', { name: 'HQ' }));
-    fireEvent.mouseDown(screen.getAllByRole('combobox')[0]);
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: 'Филиал' }));
     fireEvent.click(await screen.findByRole('option', { name: 'Все филиалы' }));
 
     expect(localStorage.getItem('database_branch_filters')).toBe(JSON.stringify({ main: '' }));
@@ -741,7 +741,7 @@ describe('Database equipment row helpers', () => {
     renderDatabase();
 
     await waitFor(() => {
-      expect(screen.getAllByRole('combobox')[0]).toHaveTextContent('Все филиалы');
+      expect(screen.getByRole('combobox', { name: 'Филиал' })).toHaveTextContent('Все филиалы');
     });
     expect(localStorage.getItem('database_branch_filters')).toBe(JSON.stringify({ main: '' }));
   });
@@ -755,7 +755,7 @@ describe('Database equipment row helpers', () => {
     renderDatabase();
 
     await waitFor(() => {
-      expect(screen.getAllByRole('combobox')[0]).toHaveTextContent('HQ');
+      expect(screen.getByRole('combobox', { name: 'Филиал' })).toHaveTextContent('HQ');
     });
   });
 
@@ -767,7 +767,7 @@ describe('Database equipment row helpers', () => {
     renderDatabase();
 
     await waitFor(() => {
-      expect(screen.getAllByRole('combobox')[0]).toHaveTextContent('Remote');
+      expect(screen.getByRole('combobox', { name: 'Филиал' })).toHaveTextContent('Remote');
     });
     expect(localStorage.getItem('database_branch_filters')).toBe(JSON.stringify({ main: 'Remote' }));
   });

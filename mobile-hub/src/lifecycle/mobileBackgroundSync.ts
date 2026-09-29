@@ -2,6 +2,8 @@ import * as BackgroundTask from 'expo-background-task';
 import * as TaskManager from 'expo-task-manager';
 import { Platform } from 'react-native';
 import * as tokenStore from '../auth/tokenStore';
+import { drainNativeChatOutboxInBackground } from '../chat/nativeChatBackgroundDrain';
+import { NATIVE_CHAT_ENABLED } from '../chat/nativeChatFeature';
 import { syncNativePushToken } from '../notifications/nativePush';
 import { showReplyFailed, showReplySent } from '../notifications/notificationActionFeedback';
 import { reconcileNativeBadge } from '../notifications/notificationBadge';
@@ -26,6 +28,12 @@ export async function runMobileBackgroundSync(): Promise<BackgroundTask.Backgrou
     const cachedUser = await tokenStore.getCachedSessionUser().catch(() => null);
     await syncPendingNotificationReplies(userId);
     await drainOfflineCommandQueue(userId);
+    // S8-C: drain the native chat outbox under the same wake. Permission is
+    // taken from the cached session user; without it there is nothing to send.
+    const permissions = cachedUser?.id === userId ? cachedUser.permissions || [] : [];
+    if (NATIVE_CHAT_ENABLED && permissions.includes('chat.read') && permissions.includes('chat.write')) {
+      await drainNativeChatOutboxInBackground(userId);
+    }
     await syncNativePushToken({ requestPermission: false });
     await reconcileNativeBadge();
     if (cachedUser?.id === userId) {

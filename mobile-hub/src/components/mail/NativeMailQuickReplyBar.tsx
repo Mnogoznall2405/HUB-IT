@@ -21,6 +21,8 @@ export function NativeMailQuickReplyBar({
   onReview,
   restoring = false,
   onRetryRestore,
+  embedded = false,
+  onCollapse,
 }: {
   testID: string;
   inputTestID: string;
@@ -40,12 +42,14 @@ export function NativeMailQuickReplyBar({
   onReview?: () => void;
   restoring?: boolean;
   onRetryRestore?: () => void;
+  embedded?: boolean;
+  onCollapse?: () => void;
 }) {
   const cannotSend = busy || disabled || !value.trim();
   return (
     <View
       testID={testID}
-      style={[styles.bar, { backgroundColor: tokens.headerBandBg, borderTopColor: tokens.borderSoft }]}
+      style={[styles.bar, embedded ? styles.barEmbedded : { backgroundColor: tokens.headerBandBg, borderTopColor: tokens.borderSoft }]}
     >
       {restoring ? <Text accessibilityLiveRegion="polite" style={{ color: tokens.textSecondary }}>Восстановление черновика…</Text> : null}
       {onRetryRestore ? <Pressable accessibilityRole="button" onPress={onRetryRestore} style={styles.expand}><Text style={{ color: tokens.primary }}>Повторить восстановление</Text></Pressable> : null}
@@ -74,7 +78,7 @@ export function NativeMailQuickReplyBar({
         </Text>
       ) : null}
       <View style={[styles.inputShell, { backgroundColor: tokens.panelInset, borderColor: tokens.borderSoft }]}>
-        <MaterialCommunityIcons name="pencil-outline" size={18} color={tokens.textSecondary} />
+        <MaterialCommunityIcons name="reply-outline" size={18} color={tokens.textSecondary} />
         <TextInput
           testID={inputTestID}
           value={value}
@@ -89,35 +93,40 @@ export function NativeMailQuickReplyBar({
           accessibilityLabel="Текст быстрого ответа"
           style={[styles.input, { color: tokens.textPrimary }]}
         />
-      </View>
-      <View style={styles.actions}>
-      {onExpand ? <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Открыть полный редактор ответа"
-        disabled={busy || disabled || pending}
-        accessibilityState={{ disabled: busy || disabled || pending }}
-        onPress={onExpand}
-        style={({ pressed }) => [styles.expand, { opacity: busy || disabled || pending ? 0.5 : pressed ? 0.8 : 1 }]}
-      ><MaterialCommunityIcons name="arrow-expand" size={20} color={tokens.primary} /><Text style={{ color: tokens.primary, fontSize: 14 }}>Полный редактор</Text></Pressable> : null}
-      <Pressable
-        testID={sendTestID}
-        accessibilityRole="button"
-        accessibilityLabel="Отправить быстрый ответ"
-        accessibilityState={{ disabled: cannotSend, busy }}
-        disabled={cannotSend}
-        onPress={onSend}
-        style={({ pressed }) => [
-          styles.send,
-          {
-            backgroundColor: tokens.primary,
-            opacity: cannotSend ? 0.5 : pressed ? 0.88 : 1,
-            transform: [{ scale: pressed && !cannotSend ? 0.96 : 1 }],
-          },
-        ]}
-      >
-        {busy ? <ActivityIndicator size="small" color="#fff" /> : <MaterialCommunityIcons name="send" size={18} color="#fff" />}
-        <Text style={styles.sendText}>{busy ? 'Отправка…' : 'Отправить'}</Text>
-      </Pressable>
+        {onCollapse ? <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Скрыть панель быстрого ответа"
+          onPress={onCollapse}
+          hitSlop={6}
+          style={({ pressed }) => [styles.iconButton, { opacity: pressed ? 0.7 : 1 }]}
+        ><MaterialCommunityIcons name="chevron-down" size={20} color={tokens.iconMuted} /></Pressable> : null}
+        {onExpand ? <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Открыть полный редактор ответа"
+          disabled={busy || disabled || pending}
+          accessibilityState={{ disabled: busy || disabled || pending }}
+          onPress={onExpand}
+          hitSlop={6}
+          style={({ pressed }) => [styles.iconButton, { opacity: busy || disabled || pending ? 0.4 : pressed ? 0.7 : 1 }]}
+        ><MaterialCommunityIcons name="arrow-expand" size={19} color={tokens.textSecondary} /></Pressable> : null}
+        <Pressable
+          testID={sendTestID}
+          accessibilityRole="button"
+          accessibilityLabel="Отправить быстрый ответ"
+          accessibilityState={{ disabled: cannotSend, busy }}
+          disabled={cannotSend}
+          onPress={onSend}
+          style={({ pressed }) => [
+            styles.send,
+            {
+              backgroundColor: cannotSend ? tokens.panelInset : tokens.primary,
+              opacity: cannotSend ? 1 : pressed ? 0.88 : 1,
+              transform: [{ scale: pressed && !cannotSend ? 0.94 : 1 }],
+            },
+          ]}
+        >
+          {busy ? <ActivityIndicator size="small" color="#fff" /> : <MaterialCommunityIcons name="send" size={16} color={cannotSend ? tokens.textTertiary : '#fff'} />}
+        </Pressable>
       </View>
     </View>
   );
@@ -133,38 +142,48 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     gap: 8,
   },
+  barEmbedded: {
+    borderTopWidth: 0,
+    backgroundColor: 'transparent',
+  },
   inputShell: {
     minWidth: 0,
-    minHeight: 48,
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 11,
+    minHeight: 44,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 24,
+    paddingLeft: 14,
+    paddingRight: 6,
+    paddingVertical: 4,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 7,
+    gap: 6,
   },
   input: {
     flex: 1,
     minWidth: 0,
-    minHeight: 40,
+    minHeight: 36,
     maxHeight: 120,
     paddingHorizontal: 0,
-    paddingVertical: 8,
+    paddingVertical: 7,
     fontSize: 16,
-    lineHeight: 22,
+    lineHeight: 21,
   },
   actions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 8 },
   expand: { minHeight: 44, paddingHorizontal: 8, marginRight: 'auto', flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'center' },
-  send: {
-    minHeight: 44,
-    borderRadius: 10,
-    paddingHorizontal: 13,
-    flexDirection: 'row',
+  iconButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
   },
-  sendText: { color: '#fff', fontSize: 12, lineHeight: 16, fontWeight: '800' },
+  send: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   status: {
     alignSelf: 'stretch',
     borderWidth: StyleSheet.hairlineWidth,

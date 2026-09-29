@@ -17,6 +17,11 @@ import uvicorn
 
 from .config import config
 
+try:
+    from shared.port_reclaim import reclaim_port_from_stale_sibling
+except Exception:
+    reclaim_port_from_stale_sibling = None
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -84,6 +89,9 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, _request_stop)
     signal.signal(signal.SIGINT, _request_stop)
+
+    if reclaim_port_from_stale_sibling is not None:
+        reclaim_port_from_stale_sibling(config.host, config.port, "-m scan_server")
 
     lock_handle = _wait_for_singleton_lock(
         config.db_path.parent / "scan_server.lock",

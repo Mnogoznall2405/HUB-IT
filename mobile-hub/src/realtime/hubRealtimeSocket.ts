@@ -1,5 +1,7 @@
+import * as Crypto from 'expo-crypto';
 import { API_V1_BASE } from '../api/config';
 import { getAuthenticatedAccessToken } from '../api/client';
+import { subscribeAccessTokenChanges } from '../auth/tokenStore';
 
 type SocketHandler = (payload: unknown) => void;
 
@@ -19,7 +21,21 @@ const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000];
 const RECONNECT_JITTER_RATIO = 0.25;
 const INITIAL_RECONNECT_SPREAD_MS = 5_000;
 const RECENT_EVENT_IDS_LIMIT = 512;
-const NON_RECONNECTABLE_CLOSE_CODES = new Set([1008, 4000, 4400, 4403, 4404]);
+// 1008 (slow consumer / rate limit) must reconnect with backoff — only
+// session/auth-class closes stay non-reconnectable.
+const NON_RECONNECTABLE_CLOSE_CODES = new Set([4000, 4400, 4403, 4404]);
+
+let pingSequence = 0;
+function createPingRequestId(): string {
+  pingSequence += 1;
+  try {
+    const nativeId = typeof Crypto.randomUUID === 'function' ? Crypto.randomUUID() : '';
+    if (typeof nativeId === 'string' && nativeId.trim()) return nativeId;
+  } catch {
+    // The counter in the fallback keeps ids unique within the client session.
+  }
+  return `ping-${Date.now().toString(36)}-${pingSequence}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 export const HUB_TASK_REALTIME_EVENT_TYPES = [
   'tasks.task.created',
@@ -66,6 +82,10 @@ export class HubRealtimeSocketClient {
   private suspended = false;
   private connectGeneration = 0;
   private missedPongs = 0;
+  private forceTokenRefresh = false;
+  private accessTokenUnsubscribe: (() => void) | null = null;
+  private lastAuthPushedToken: string | null = null;
+  private authRefreshInFlight = false;
   private status: HubRealtimeStatus = 'disconnected';
   private recentEventIds = new Map<string, number>();
   private connectionId = '';
@@ -129,6 +149,29 @@ export class HubRealtimeSocketClient {
     this.emit('status', status);
   }
 
+  // D5/W8: in-socket re-auth — a committed token refresh is pushed into the
+  // open socket so the server lease stays alive past the 15-minute exp.
+  private ensureAccessTokenListener(): void {
+    if (this.accessTokenUnsubscribe) return;
+    this.accessTokenUnsubscribe = subscribeAccessTokenChanges((token) => {
+      const normalized = String(token || '').trim();
+      if (!normalized || normalized === this.lastAuthPushedToken) return;
+      const socket = this.socket;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      this.lastAuthPushedToken = normalized;
+      this.send({ type: 'hub.realtime.auth', payload: { access_token: normalized } });
+    });
+  }
+
+  private handleAuthRequired(): void {
+    if (this.authRefreshInFlight) return;
+    this.authRefreshInFlight = true;
+    // The store listener pushes the minted token into the socket on commit.
+    void getAuthenticatedAccessToken({ forceRefresh: true })
+      .catch(() => undefined)
+      .finally(() => { this.authRefreshInFlight = false; });
+  }
+
   private claimEvent(envelope: { payload?: unknown }): boolean {
     const payload = envelope.payload && typeof envelope.payload === 'object'
       ? envelope.payload as Record<string, unknown>
@@ -172,7 +215,7 @@ export class HubRealtimeSocketClient {
         return;
       }
       this.missedPongs += 1;
-      this.send({ type: 'hub.realtime.ping', payload: {} });
+      this.send({ type: 'hub.realtime.ping', payload: {}, request_id: createPingRequestId() });
     }, HEARTBEAT_MS);
   }
 
@@ -206,6 +249,7 @@ export class HubRealtimeSocketClient {
 
   async connect(): Promise<void> {
     this.reconnectEnabled = true;
+    this.ensureAccessTokenListener();
     if (this.suspended) {
       this.emitStatus('suspended');
       return;
@@ -215,8 +259,12 @@ export class HubRealtimeSocketClient {
     this.emitStatus(this.reconnectAttempt > 0 ? 'reconnecting' : 'connecting');
 
     let token = '';
+    // A 4401 close means the server rejected the cached access token; the next
+    // connect must mint a fresh one instead of looping with the same token.
+    const forceRefresh = this.forceTokenRefresh;
+    this.forceTokenRefresh = false;
     try {
-      token = await getAuthenticatedAccessToken();
+      token = await getAuthenticatedAccessToken({ forceRefresh });
     } catch {
       if (generation !== this.connectGeneration || !this.reconnectEnabled || this.suspended) return;
       this.emitStatus('error');
@@ -251,10 +299,13 @@ export class HubRealtimeSocketClient {
         socket.close();
         return;
       }
+      this.lastAuthPushedToken = token;
       this.startHeartbeat();
     };
     socket.onmessage = (event) => {
       if (this.socket !== socket) return;
+      // Any inbound frame — not only pong — proves the socket is alive.
+      this.missedPongs = 0;
       try {
         const envelope = JSON.parse(String(event.data || '{}')) as {
           type?: string;
@@ -262,10 +313,12 @@ export class HubRealtimeSocketClient {
         };
         const eventType = String(envelope.type || '').trim();
         if (!eventType) return;
-        if (eventType === 'hub.realtime.pong') {
-          this.missedPongs = 0;
+        if (eventType === 'hub.realtime.pong') return;
+        if (eventType === 'hub.realtime.auth.required') {
+          this.handleAuthRequired();
           return;
         }
+        if (eventType === 'hub.realtime.auth.ok' || eventType === 'hub.realtime.auth.rejected') return;
         if (eventType === 'hub.realtime.connected') {
           const payload = envelope.payload && typeof envelope.payload === 'object'
             ? envelope.payload as Record<string, unknown>
@@ -310,6 +363,7 @@ export class HubRealtimeSocketClient {
       this.connectionId = '';
       this.stopHeartbeat();
       const closeCode = Number(event.code || 0);
+      if (closeCode === 4401) this.forceTokenRefresh = true;
       if (NON_RECONNECTABLE_CLOSE_CODES.has(closeCode)) {
         this.reconnectEnabled = false;
       }

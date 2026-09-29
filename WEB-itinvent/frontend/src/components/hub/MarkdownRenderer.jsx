@@ -18,7 +18,23 @@ function MarkdownRenderer({ value, compact = false, variant = 'default', linkCol
   const showCompactFade = compact && text.length > 180;
   if (!text) return null;
 
-  const markdownComponents = isChat ? {
+  const linkRenderer = ({ node: _node, href, children, ...props }) => {
+    void _node;
+    const isExternal = /^https?:\/\//i.test(String(href || ''));
+    return (
+      <a
+        href={href}
+        {...(isExternal ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
+        {...props}
+      >
+        {children}
+      </a>
+    );
+  };
+
+  const markdownComponents = {
+    a: linkRenderer,
+    ...(isChat ? {
     table({ node: _node, ...props }) {
       void _node;
       return (
@@ -57,7 +73,8 @@ function MarkdownRenderer({ value, compact = false, variant = 'default', linkCol
         </Box>
       );
     },
-  } : undefined;
+    } : {}),
+  };
 
   return (
     <Box
@@ -138,15 +155,13 @@ function MarkdownRenderer({ value, compact = false, variant = 'default', linkCol
           borderColor: ui.borderSoft,
           color: ui.mutedText,
         },
-        ...(isChat ? {
-          '& a': {
-            color: resolvedLinkColor,
-            textDecoration: 'underline',
-            textUnderlineOffset: '0.14em',
-            wordBreak: 'break-word',
-            '&:hover': { opacity: 0.88 },
-          },
-        } : {}),
+        '& a': {
+          color: resolvedLinkColor,
+          textDecoration: 'underline',
+          textUnderlineOffset: '0.14em',
+          wordBreak: 'break-word',
+          '&:hover': { opacity: 0.88 },
+        },
         ...(showCompactFade ? {
           '&::after': {
             content: '""',

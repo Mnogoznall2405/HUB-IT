@@ -18,7 +18,6 @@ vi.mock('./client', () => ({
 }));
 
 import {
-  formatMyFilesUploadLimitLabel,
   myFilesAPI,
   MY_FILES_MAX_UPLOAD_BYTES,
   myFilesRetentionOptions,
@@ -281,9 +280,8 @@ describe('myFilesAPI', () => {
     expect(myFilesRetentionOptions).toContain(30);
   });
 
-  it('uses the IIS uint32 maximum instead of the former one-gigabyte limit', () => {
-    expect(MY_FILES_MAX_UPLOAD_BYTES).toBe(10 * 1024 * 1024 * 1024);
-    expect(formatMyFilesUploadLimitLabel()).toBe('до 10 ГБ на файл, 50 ГБ всего');
+  it('keeps the client sanity bound at the backend quota ceiling', () => {
+    expect(MY_FILES_MAX_UPLOAD_BYTES).toBe(400 * 1024 * 1024 * 1024);
   });
 
   it('loads a public shared file without triggering the login redirect', async () => {

@@ -126,6 +126,22 @@ export async function getNativeChatDraft(userId: number, conversationId: string)
   return (await getNativeChatDraftState(userId, conversationId))?.text || '';
 }
 
+/** F-DRAFT-INBOX: conversation_id → one-line draft preview for the inbox row. */
+export async function listNativeChatDraftPreviews(userId: number): Promise<Map<string, string>> {
+  await waitForNativeChatStorage();
+  const drafts = await loadDrafts();
+  const result = new Map<string, string>();
+  for (const item of drafts) {
+    if (item.userId !== Number(userId)) continue;
+    const text = item.text.trim().replace(/\s+/g, ' ');
+    result.set(
+      item.conversationId,
+      text || (item.context?.files?.length ? 'Вложения' : '…'),
+    );
+  }
+  return result;
+}
+
 export async function getNativeChatDraftState(userId: number, conversationId: string): Promise<NativeChatDraft | null> {
   await waitForNativeChatStorage();
   const drafts = await loadDrafts();

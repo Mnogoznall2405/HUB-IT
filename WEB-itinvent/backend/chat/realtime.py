@@ -9,7 +9,7 @@ import logging
 import os
 import random
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from threading import RLock
@@ -45,6 +45,74 @@ _OUTBOUND_SEND_TIMEOUT_SEC = max(
     0.5,
     float(str(os.getenv("CHAT_WS_SEND_TIMEOUT_SEC", "5") or "5").strip() or "5"),
 )
+# 1013 "try again later": a backpressured client may reconnect with backoff;
+# 1008 stays reserved for real policy violations (auth, rate limit).
+_SLOW_CONSUMER_CLOSE_CODE = 1013
+_EVENT_LOOP_LAG_INTERVAL_SEC = max(
+    0.25,
+    float(str(os.getenv("CHAT_EVENT_LOOP_LAG_INTERVAL_SEC", "1") or "1").strip() or "1"),
+)
+_EVENT_LOOP_LAG_WARN_MS = max(
+    100.0,
+    float(str(os.getenv("CHAT_EVENT_LOOP_LAG_WARN_MS", "1000") or "1000").strip() or "1000"),
+)
+_EVENT_LOOP_LAG_WINDOW = max(30, int(str(os.getenv("CHAT_EVENT_LOOP_LAG_WINDOW", "120") or "120").strip() or "120"))
+
+
+class EventLoopLagMonitor:
+    """Measures event-loop scheduling delay via a periodic sleep probe.
+
+    lag_ms = elapsed - expected interval. A frozen loop (CPU starvation, long
+    synchronous work, GC) shows up as delayed wakes — matches the "both nodes
+    go silent together" incident class from I6.
+    """
+
+    def __init__(self) -> None:
+        self._task: Optional[asyncio.Task] = None
+        self._samples: deque[float] = deque(maxlen=_EVENT_LOOP_LAG_WINDOW)
+        self._last_warn_at = 0.0
+        self._lock = RLock()
+
+    def ensure_started(self) -> None:
+        if self._task is not None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._task = loop.create_task(self._run())
+
+    async def _run(self) -> None:
+        interval = _EVENT_LOOP_LAG_INTERVAL_SEC
+        expected = asyncio.get_running_loop().time() + interval
+        while True:
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                return
+            now = asyncio.get_running_loop().time()
+            lag_ms = max(0.0, (now - expected) * 1000.0)
+            expected = now + interval
+            with self._lock:
+                self._samples.append(lag_ms)
+            if lag_ms >= _EVENT_LOOP_LAG_WARN_MS:
+                wall = time.monotonic()
+                if wall - self._last_warn_at >= 30:
+                    self._last_warn_at = wall
+                    logger.warning("chat event-loop lag %.0f ms", lag_ms)
+
+    def metrics(self) -> dict[str, float]:
+        with self._lock:
+            samples = list(self._samples)
+        if not samples:
+            return {"event_loop_lag_ms_latest": 0.0, "event_loop_lag_ms_p95": 0.0, "event_loop_lag_ms_max": 0.0}
+        ordered = sorted(samples)
+        idx = min(len(ordered) - 1, max(0, int(round(0.95 * (len(ordered) - 1)))))
+        return {
+            "event_loop_lag_ms_latest": round(samples[-1], 1),
+            "event_loop_lag_ms_p95": round(ordered[idx], 1),
+            "event_loop_lag_ms_max": round(ordered[-1], 1),
+        }
 _CHAT_WS_MAX_CONNECTIONS_PER_USER = max(1, int(str(os.getenv("CHAT_WS_MAX_CONNECTIONS_PER_USER", "4") or "4").strip() or "4"))
 _TYPING_STARTED_THROTTLE_SEC = max(1.0, float(str(os.getenv("CHAT_TYPING_STARTED_THROTTLE_SEC", "2") or "2").strip() or "2"))
 _TYPING_STATE_TTL_SEC = max(2.0, float(str(os.getenv("CHAT_TYPING_STATE_TTL_SEC", "5") or "5").strip() or "5"))
@@ -122,6 +190,7 @@ class ChatRealtimeConnection:
     websocket: WebSocket
     receive_user_events: bool = True
     track_presence: bool = True
+    socket_kind: str = "chat"
     inbox_subscribed: bool = False
     conversation_ids: set[str] = field(default_factory=set)
     presence_watch_user_ids: set[int] = field(default_factory=set)
@@ -133,6 +202,7 @@ class ChatRealtimeConnection:
     coalesce_latest: dict[str, str | dict] = field(default_factory=dict)
     sender_task: asyncio.Task | None = None
     last_presence_touch_at: float = 0.0
+    connected_at: float = 0.0
     queue_full_count: int = 0
     send_timeout_count: int = 0
     coalesced_events: int = 0
@@ -532,6 +602,8 @@ class ChatRealtimeManager:
         self._send_timeout_count = 0
         self._coalesced_events = 0
         self._durable_duplicates_suppressed = 0
+        self._loop_lag_monitor = EventLoopLagMonitor()
+        self._durable_duplicates_by_type: dict[str, int] = {}
         self._queue_wait_ms_samples: list[float] = []
         self._socket_send_ms_samples: list[float] = []
         self._payload_bytes_samples: list[float] = []
@@ -611,7 +683,9 @@ class ChatRealtimeManager:
         user_id: int,
         receive_user_events: bool = True,
         track_presence: bool = True,
+        socket_kind: str = "chat",
     ) -> tuple[str, bool]:
+        self._loop_lag_monitor.ensure_started()
         await websocket.accept()
         connection_id = str(uuid4())
         normalized_user_id = int(user_id)
@@ -637,7 +711,9 @@ class ChatRealtimeManager:
             websocket=websocket,
             receive_user_events=bool(receive_user_events),
             track_presence=bool(track_presence),
+            socket_kind=str(socket_kind or "chat").strip()[:32] or "chat",
             last_presence_touch_at=_ts_now(),
+            connected_at=_ts_now(),
         )
         connection.sender_task = asyncio.create_task(
             self._run_connection_sender(connection),
@@ -712,9 +788,19 @@ class ChatRealtimeManager:
                 )
             except Exception:
                 pass
-        return self.disconnect(normalized_connection_id)
+        return self.disconnect(
+            normalized_connection_id,
+            close_code=int(close_code),
+            close_reason=close_reason,
+        )
 
-    def disconnect(self, connection_id: str) -> dict:
+    def disconnect(
+        self,
+        connection_id: str,
+        *,
+        close_code: Optional[int] = None,
+        close_reason: str = "",
+    ) -> dict:
         normalized_connection_id = str(connection_id or "").strip()
         if not normalized_connection_id:
             return {"user_id": 0, "last_connection": False}
@@ -744,6 +830,19 @@ class ChatRealtimeManager:
                 for item in self._connections.values()
             ):
                 self._ws_rate_limiters_by_user.pop(int(connection.user_id), None)
+        session_sec = (
+            max(0.0, _ts_now() - float(connection.connected_at))
+            if connection.connected_at else 0.0
+        )
+        logger.info(
+            "chat_ws_closed connection_id=%s user_id=%s socket=%s close_code=%s reason=%s session_sec=%.1f",
+            normalized_connection_id,
+            int(connection.user_id),
+            str(getattr(connection, "socket_kind", "") or "chat"),
+            int(close_code) if close_code is not None else "",
+            str(close_reason or "")[:120],
+            session_sec,
+        )
         if connection.sender_task is not None:
             connection.sender_task.cancel()
         if connection.track_presence:
@@ -966,7 +1065,7 @@ class ChatRealtimeManager:
             self._slow_consumer_disconnects += 1
             await self.disconnect_connection(
                 normalized_connection_id,
-                close_code=1008,
+                close_code=_SLOW_CONSUMER_CLOSE_CODE,
                 close_reason="slow consumer",
             )
 
@@ -1005,6 +1104,40 @@ class ChatRealtimeManager:
                 "code": str(code or "bad_request").strip() or "bad_request",
             },
             conversation_id=conversation_id,
+            request_id=request_id,
+        )
+
+    async def send_pong(
+        self,
+        connection_id: str,
+        *,
+        event_type: str,
+        payload: Optional[dict] = None,
+        request_id: Optional[str] = None,
+    ) -> None:
+        # Pong is a control frame: identical envelopes must not be suppressed by
+        # the durable dedup, and heartbeat replies must not wait behind queued
+        # message storms — the client otherwise closes a healthy socket.
+        await self._send_control_to_connection(
+            connection_id,
+            event_type=event_type,
+            payload=payload,
+            request_id=request_id,
+        )
+
+    async def send_control(
+        self,
+        connection_id: str,
+        *,
+        event_type: str,
+        payload: Optional[dict] = None,
+        request_id: Optional[str] = None,
+    ) -> None:
+        # Auth hints/acks must bypass the durable queue just like pong/acks.
+        await self._send_control_to_connection(
+            connection_id,
+            event_type=event_type,
+            payload=payload,
             request_id=request_id,
         )
 
@@ -1610,7 +1743,7 @@ class ChatRealtimeManager:
             self._slow_consumer_disconnects += 1
             await self.disconnect_connection(
                 connection_id,
-                close_code=1008,
+                close_code=_SLOW_CONSUMER_CLOSE_CODE,
                 close_reason="slow consumer",
             )
 
@@ -1639,6 +1772,10 @@ class ChatRealtimeManager:
                 connection.durable_duplicates_suppressed += 1
                 with self._lock:
                     self._durable_duplicates_suppressed += 1
+                    suppressed_type = str(envelope.get("type") or "").strip()[:64] or "unknown"
+                    if suppressed_type not in self._durable_duplicates_by_type and len(self._durable_duplicates_by_type) >= 64:
+                        suppressed_type = "__other__"
+                    self._durable_duplicates_by_type[suppressed_type] = self._durable_duplicates_by_type.get(suppressed_type, 0) + 1
                 return True
             if not durable and volatile_key:
                 # Replace latest state if a marker is already pending.
@@ -1799,6 +1936,7 @@ class ChatRealtimeManager:
                     pass
 
     def get_metrics(self) -> dict[str, int | bool | str | float]:
+        self._loop_lag_monitor.ensure_started()
         with self._lock:
             outbound_queue_depth = sum(
                 int(connection.outbound_queue.qsize())
@@ -1816,6 +1954,7 @@ class ChatRealtimeManager:
             queue_full = int(self._queue_full_count)
             send_timeouts = int(self._send_timeout_count)
             durable_duplicates_suppressed = int(self._durable_duplicates_suppressed)
+            durable_duplicates_by_type = dict(self._durable_duplicates_by_type)
         return {
             "realtime_node_id": self.node_id,
             "realtime_transport": self._realtime_transport,
@@ -1861,12 +2000,16 @@ class ChatRealtimeManager:
             "queue_full_count": int(queue_full),
             "coalesced_events": int(coalesced),
             "durable_duplicates_suppressed": durable_duplicates_suppressed,
+            "durable_duplicates_by_type": dict(sorted(
+                durable_duplicates_by_type.items(), key=lambda item: -item[1],
+            )[:10]),
             "presence_watch_count": int(presence_watch_count),
             "slow_consumer_disconnects": int(self._slow_consumer_disconnects),
             "local_connection_count": int(local_connection_count),
             "ws_rate_limited_count": int(ws_rate_limited_count),
             "ws_rate_limited_connections": int(ws_rate_limited_connections),
             "event_coalesce_enabled": bool(_CHAT_WS_EVENT_COALESCE),
+            **self._loop_lag_monitor.metrics(),
         }
 
     def record_rate_limited(self, connection_id: str) -> None:

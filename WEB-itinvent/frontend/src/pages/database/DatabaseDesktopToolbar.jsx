@@ -11,7 +11,10 @@ import {
 import AddIcon from '@mui/icons-material/Add';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import MyLocationIcon from '@mui/icons-material/MyLocation';
+import PrintIcon from '@mui/icons-material/Print';
 import QrCodeScannerIcon from '@mui/icons-material/QrCodeScanner';
+import SyncIcon from '@mui/icons-material/Sync';
+import TableChartIcon from '@mui/icons-material/TableChart';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 
 import {
@@ -26,12 +29,16 @@ function DatabaseDesktopToolbar({
   theme,
   isConsumablesMode = false,
   canDatabaseWrite = false,
+  canAdSync = false,
+  onOpenAdSync = noop,
   identifyPCLoading = false,
   onOpenQrScanner = noop,
   onIdentifyWorkspace = noop,
   onOpenUploadAct = noop,
   onOpenAddEquipment = noop,
   onOpenAddConsumable = noop,
+  onOpenConsumableQrPrint = null,
+  onOpenCartridgeCompatibility = null,
   branches = [],
   selectedBranch = '',
   onBranchChange = noop,
@@ -78,17 +85,18 @@ function DatabaseDesktopToolbar({
       })}
     >
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap', minWidth: 0 }}>
+        <Button
+          size="small"
+          variant="text"
+          startIcon={<QrCodeScannerIcon />}
+          onClick={onOpenQrScanner}
+          sx={secondarySx}
+        >
+          QR Сканер
+        </Button>
+
         {!isConsumablesMode && (
           <>
-            <Button
-              size="small"
-              variant="text"
-              startIcon={<QrCodeScannerIcon />}
-              onClick={onOpenQrScanner}
-              sx={secondarySx}
-            >
-              QR Сканер
-            </Button>
             <Button
               size="small"
               variant="text"
@@ -127,6 +135,30 @@ function DatabaseDesktopToolbar({
           </Button>
         )}
 
+        {isConsumablesMode && onOpenConsumableQrPrint && (
+          <Button
+            size="small"
+            variant="text"
+            startIcon={<PrintIcon />}
+            onClick={onOpenConsumableQrPrint}
+            sx={secondarySx}
+          >
+            QR этикетки
+          </Button>
+        )}
+
+        {isConsumablesMode && onOpenCartridgeCompatibility && (
+          <Button
+            size="small"
+            variant="text"
+            startIcon={<TableChartIcon />}
+            onClick={onOpenCartridgeCompatibility}
+            sx={secondarySx}
+          >
+            Совместимость
+          </Button>
+        )}
+
         {canDatabaseWrite && isConsumablesMode && (
           <Button
             size="small"
@@ -137,6 +169,18 @@ function DatabaseDesktopToolbar({
             sx={primarySx}
           >
             Добавить расходник
+          </Button>
+        )}
+
+        {canAdSync && (
+          <Button
+            size="small"
+            variant="text"
+            startIcon={<SyncIcon />}
+            onClick={onOpenAdSync}
+            sx={secondarySx}
+          >
+            Синк сотрудников AD
           </Button>
         )}
       </Box>
@@ -177,6 +221,7 @@ function DatabaseDesktopToolbar({
               value={selectedBranch}
               onChange={(event) => onBranchChange(event.target.value)}
               label="Филиал"
+              inputProps={{ 'aria-label': 'Филиал' }}
               displayEmpty
               renderValue={(value) => (value ? value : 'Все филиалы')}
             >

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import functools
 import hashlib
 import hmac
 import json
+import logging
 import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -56,6 +58,50 @@ MAX_DIFF_CHARS_TOTAL = 300_000
 TRANSFER_GRANT_TTL = timedelta(minutes=2)
 MAX_SANDBOX_OUTPUT_FILES = 5
 MAX_SANDBOX_OUTPUT_BYTES = 1024**3
+
+logger = logging.getLogger(__name__)
+
+# Context keys carried by public AiSandboxAppService entry points. Panel
+# endpoints already log failures at the HTTP layer, so this decorator covers
+# the chat send-message path and the private control API instead of wrapping
+# every method body in try/except.
+_FAILURE_CONTEXT_KEYS = (
+    "conversation_id",
+    "trigger_message_id",
+    "current_user_id",
+    "user_id",
+    "job_id",
+    "permission_id",
+    "file_id",
+    "grant_id",
+)
+
+
+def _log_sandbox_failures(op: str):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as exc:
+                context = " ".join(
+                    f"{key}={kwargs[key]}"
+                    for key in _FAILURE_CONTEXT_KEYS
+                    if kwargs.get(key) is not None
+                )
+                logger.error(
+                    "ai_sandbox.%s failed %s: %s: %s",
+                    op,
+                    context,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
+                raise
+
+        return wrapper
+
+    return decorator
 
 
 def _utc_now() -> datetime:
@@ -180,9 +226,10 @@ class AiSandboxAppService:
                 # isolation and authenticated-transfer setting must validate
                 # before the bot can become visible.
                 settings.validate(require_runtime_files=False)
-        except SandboxConfigurationError:
+        except SandboxConfigurationError as exc:
             # A stale previously-enabled catalog row must become hidden even if
             # an operator turns the flag on with incomplete/unsafe settings.
+            logger.warning("ai_sandbox.ensure_opencode_bot hiding bot: invalid sandbox configuration: %s", exc)
             settings = SandboxSettings(enabled=False)
         ensure_app_schema_initialized()
         now = _utc_now()
@@ -229,6 +276,11 @@ class AiSandboxAppService:
                 bot.is_enabled = bool(settings.enabled)
                 bot.updated_at = now
             ai_service._ensure_bot_user(session=db, bot=bot)
+            logger.info(
+                "ai_sandbox.ensure_opencode_bot bot_id=%s is_enabled=%s",
+                bot.id,
+                bool(bot.is_enabled),
+            )
             return ai_service._serialize_bot(bot, admin=True)
 
     def ensure_enabled(self) -> SandboxSettings:
@@ -279,6 +331,7 @@ class AiSandboxAppService:
             raise PermissionError("OpenCode bot is not available")
         return bot, mapping
 
+    @_log_sandbox_failures("enqueue_message")
     def enqueue_message(
         self,
         *,
@@ -286,6 +339,12 @@ class AiSandboxAppService:
         trigger_message_id: str,
         current_user_id: int,
     ) -> dict[str, Any]:
+        logger.info(
+            "ai_sandbox.enqueue_message conversation_id=%s user_id=%s trigger_message_id=%s",
+            conversation_id,
+            current_user_id,
+            trigger_message_id,
+        )
         settings = self.ensure_enabled()
         from backend.ai_chat.access import require_conversation_access
         require_conversation_access(conversation_id, current_user_id)
@@ -334,6 +393,13 @@ class AiSandboxAppService:
             "error_text": None,
             "updated_at": _iso(_utc_now()),
         }
+        logger.info(
+            "ai_sandbox.enqueue_accepted job_id=%s status=%s conversation_id=%s user_id=%s",
+            queued.id,
+            queued.status.value,
+            conversation_id,
+            current_user_id,
+        )
         self._publish_update(
             conversation_id=str(conversation_id),
             user_id=int(current_user_id),
@@ -342,6 +408,7 @@ class AiSandboxAppService:
         )
         return payload
 
+    @_log_sandbox_failures("get_status")
     def get_status(self, *, conversation_id: str, current_user_id: int) -> dict[str, Any]:
         # Existing jobs remain observable during rollback so the cleanup-only
         # worker and UI can converge instead of hiding an active claim.
@@ -374,6 +441,7 @@ class AiSandboxAppService:
             }
         return self._status_payload(bot=bot, job=job)
 
+    @_log_sandbox_failures("cancel_conversation")
     def cancel_conversation(self, *, conversation_id: str, current_user_id: int) -> dict[str, Any]:
         # Feature-off blocks new execution, but must not prevent the owner from
         # cancelling already-durable work left by a crashed worker.
@@ -396,6 +464,12 @@ class AiSandboxAppService:
         if job is None:
             return self.get_status(conversation_id=conversation_id, current_user_id=current_user_id)
         self.repository.cancel_job(job_id=job.id, user_id=int(current_user_id), now=_utc_now())
+        logger.info(
+            "ai_sandbox.cancel_conversation conversation_id=%s user_id=%s job_id=%s",
+            conversation_id,
+            current_user_id,
+            job.id,
+        )
         with app_session() as db:
             current = db.get(AppAiSandboxJob, job.id)
             payload = self._status_payload(bot=bot, job=current or job)
@@ -407,6 +481,7 @@ class AiSandboxAppService:
         )
         return payload
 
+    @_log_sandbox_failures("retire_conversation")
     def retire_conversation(self, *, conversation_id: str, current_user_id: int) -> None:
         """Cancel work and make the workspace immediately retention-eligible.
 
@@ -497,6 +572,7 @@ class AiSandboxAppService:
             session_row.expires_at = now
             session_row.updated_at = now
 
+    @_log_sandbox_failures("issue_job_manifest")
     def issue_job_manifest(self, *, job_id: str) -> dict[str, Any]:
         """Build a worker-only prompt manifest with one-time input grants."""
 
@@ -665,6 +741,7 @@ class AiSandboxAppService:
             "inputs": grants,
         }
 
+    @_log_sandbox_failures("consume_input_transfer")
     def consume_input_transfer(self, *, grant_id: str, raw_token: str) -> dict[str, Any]:
         claimed = self._claim_transfer_grant(
             grant_id=grant_id,
@@ -706,6 +783,7 @@ class AiSandboxAppService:
             self._finish_transfer_grant(grant_id=grant_id, status="revoked")
             raise
 
+    @_log_sandbox_failures("issue_output_upload_grant")
     def issue_output_upload_grant(self, *, job_id: str, file_id: str) -> dict[str, Any]:
         self.ensure_enabled()
         now = _utc_now()
@@ -780,6 +858,7 @@ class AiSandboxAppService:
                 "expires_at": _iso(expires_at),
             }
 
+    @_log_sandbox_failures("consume_output_upload")
     def consume_output_upload(
         self,
         *,
@@ -793,6 +872,7 @@ class AiSandboxAppService:
         )
         return self.consume_claimed_output_upload(claimed=claimed, staged_path=staged_path)
 
+    @_log_sandbox_failures("claim_output_upload")
     def claim_output_upload(self, *, grant_id: str, raw_token: str) -> dict[str, Any]:
         return self._claim_transfer_grant(
             grant_id=grant_id,
@@ -800,9 +880,11 @@ class AiSandboxAppService:
             direction="output_upload",
         )
 
+    @_log_sandbox_failures("revoke_claimed_transfer")
     def revoke_claimed_transfer(self, *, grant_id: str) -> None:
         self._finish_transfer_grant(grant_id=grant_id, status="revoked")
 
+    @_log_sandbox_failures("consume_claimed_output_upload")
     def consume_claimed_output_upload(
         self,
         *,
@@ -1085,6 +1167,38 @@ class AiSandboxAppService:
                     .order_by(AppAiSandboxPermission.requested_at.asc())
                 ).scalars()
             )
+            # Expire dead cards: the job already reached a terminal state or the
+            # linked action card expired/was lost, so nobody will ever answer.
+            # Without this the panel shows an unanswerable card forever, and a
+            # still-waiting worker hangs until the job deadline instead of
+            # proceeding with a rejection.
+            now = _utc_now()
+            live_permissions: list[AppAiSandboxPermission] = []
+            stale_permission_ids: list[str] = []
+            for permission in permissions:
+                permission_job = db.get(AppAiSandboxJob, permission.job_id)
+                if permission_job is not None and str(permission_job.status) not in ACTIVE_JOB_STATUSES:
+                    stale_permission_ids.append(permission.id)
+                    continue
+                if permission.action_id:
+                    action = db.get(AppAiPendingAction, str(permission.action_id))
+                    if action is None or self._action_expired(action, now=now):
+                        stale_permission_ids.append(permission.id)
+                        continue
+                live_permissions.append(permission)
+            if stale_permission_ids:
+                db.execute(
+                    update(AppAiSandboxPermission)
+                    .where(AppAiSandboxPermission.id.in_(stale_permission_ids))
+                    .values(status="rejected", grant_scope=None, updated_at=now)
+                )
+                logger.info(
+                    "ai_sandbox.snapshot_expired_permissions conversation_id=%s user_id=%s count=%s",
+                    conversation_id,
+                    current_user_id,
+                    len(stale_permission_ids),
+                )
+            permissions = live_permissions
 
         file_payloads = [self._file_payload(item) for item in files]
         diff_payloads: list[dict[str, Any]] = []
@@ -1194,6 +1308,13 @@ class AiSandboxAppService:
             if job is None or job.status != "waiting_permission":
                 # Stop/cancel owns the transition once the job is no longer
                 # waiting. Never approve a stale card or revive the job.
+                logger.info(
+                    "ai_sandbox.respond_permission auto-rejected permission_id=%s user_id=%s job_id=%s job_status=%s",
+                    row.id,
+                    current_user_id,
+                    row.job_id,
+                    getattr(job, "status", None),
+                )
                 row.status = "rejected"
                 row.grant_scope = None
                 row.responded_by_user_id = int(current_user_id)
@@ -1283,14 +1404,32 @@ class AiSandboxAppService:
                 "conversation_id": session_row.conversation_id,
                 "job_id": row.job_id,
             }
+            action_message_id = None
+            if row.action_id:
+                action_row = db.get(AppAiPendingAction, str(row.action_id))
+                if action_row is not None:
+                    action_message_id = str(action_row.message_id or "") or None
+            respond_payload = self._permission_payload(row)
+            logger.info(
+                "ai_sandbox.respond_permission permission_id=%s user_id=%s decision=%s scope=%s job_id=%s",
+                row.id,
+                current_user_id,
+                terminal_status,
+                terminal_scope,
+                row.job_id,
+            )
         self._publish_update(
             conversation_id=payload["conversation_id"],
             user_id=int(current_user_id),
             change="permission",
-            payload={"permission_id": payload["id"], "job_id": payload["job_id"], "status": payload["status"]},
+            payload={
+                **respond_payload,
+                "message_id": action_message_id,
+            },
         )
         return payload
 
+    @_log_sandbox_failures("create_permission_request")
     def create_permission_request(
         self,
         *,
@@ -1464,10 +1603,14 @@ class AiSandboxAppService:
             conversation_id=conversation_id,
             user_id=user_id,
             change="permission",
-            payload={"permission_id": payload["id"], "job_id": job_id, "status": payload["status"]},
+            payload={
+                **payload,
+                "message_id": message_id,
+            },
         )
         return payload
 
+    @_log_sandbox_failures("get_permission_for_worker")
     def get_permission_for_worker(self, *, job_id: str, permission_id: str) -> dict[str, Any]:
         self.ensure_enabled()
         with app_session() as db:
@@ -1504,6 +1647,7 @@ class AiSandboxAppService:
             raise ValueError("Sandbox output path is unsafe")
         return path.as_posix()
 
+    @_log_sandbox_failures("record_worker_result")
     def record_worker_result(
         self,
         *,
@@ -1639,6 +1783,7 @@ class AiSandboxAppService:
         )
         return {"message_id": None, "files": file_payloads}
 
+    @_log_sandbox_failures("finalize_worker_result")
     def finalize_worker_result(self, *, job_id: str, assistant_markdown: str) -> dict[str, Any]:
         """Idempotently publish a durably marked finalization and close it."""
 
@@ -1765,6 +1910,7 @@ class AiSandboxAppService:
             pass
         return {"message_id": message_id, "files": file_payloads}
 
+    @_log_sandbox_failures("publish_current_job_status")
     def publish_current_job_status(self, *, job_id: str) -> dict[str, Any]:
         self.ensure_enabled()
         with app_session() as db:
@@ -1797,6 +1943,7 @@ class AiSandboxAppService:
         )
         return {"job_id": job.id, "status": job.status}
 
+    @_log_sandbox_failures("get_worker_job_state")
     def get_worker_job_state(self, *, job_id: str) -> dict[str, Any]:
         """Read durable cancellation state even while execution is disabled."""
 
@@ -1984,6 +2131,25 @@ class AiSandboxAppService:
             "save_to_my_files_url": self._attachment_save_url(row),
             "availability": row.delivery_status or "not_applicable",
         }
+
+    @staticmethod
+    def _action_expired(action: AppAiPendingAction, *, now: datetime) -> bool:
+        """Mirror ai_chat.action_cards expiry without importing it (cycle).
+
+        An `executing` card is a confirm in flight and must never count as
+        dead: rejecting it here would overturn an approval being recorded.
+        """
+        status = str(getattr(action, "status", "") or "").strip().lower()
+        if status == "executing":
+            return False
+        if status != "pending":
+            return True
+        expires_at = getattr(action, "expires_at", None)
+        if expires_at is None:
+            return False
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        return expires_at <= now
 
     @staticmethod
     def _permission_payload(row: AppAiSandboxPermission) -> dict[str, Any]:

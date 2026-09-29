@@ -181,6 +181,81 @@ export function formatFeedDate(value: unknown): string {
   });
 }
 
+export function formatFeedAbsoluteDate(value: unknown, now: Date = new Date()): string {
+  if (!value) return '';
+  const parsed = new Date(String(value));
+  if (Number.isNaN(parsed.getTime())) return '';
+  const sameYear = parsed.getFullYear() === now.getFullYear();
+  const datePart = parsed.toLocaleString('ru-RU', {
+    day: 'numeric',
+    month: 'long',
+    ...(sameYear ? {} : { year: 'numeric' }),
+  });
+  const timePart = parsed.toLocaleString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  return `${datePart}, ${timePart}`;
+}
+
+export function formatFeedRelativeTime(value: unknown, now: Date = new Date()): string {
+  if (!value) return '';
+  const parsed = new Date(String(value));
+  if (Number.isNaN(parsed.getTime())) return '';
+  const diffMs = now.getTime() - parsed.getTime();
+  const future = diffMs < 0;
+  const absMs = Math.abs(diffMs);
+  const absMin = Math.floor(absMs / 60_000);
+  if (absMs < 60_000) return 'только что';
+  if (absMin < 60) return future ? `через ${absMin} мин` : `${absMin} мин назад`;
+  const absHours = Math.floor(absMin / 60);
+  if (absHours < 24) return future ? `через ${absHours} ч` : `${absHours} ч назад`;
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfThatDay = new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate()).getTime();
+  const diffDays = Math.round(Math.abs(startOfToday - startOfThatDay) / 86_400_000);
+  if (!future) {
+    if (diffDays === 1) return 'вчера';
+    if (diffDays < 7) return `${diffDays} дн назад`;
+  } else if (diffDays === 1) {
+    return 'завтра';
+  } else if (diffDays < 7) {
+    return `через ${diffDays} дн`;
+  }
+  const sameYear = parsed.getFullYear() === now.getFullYear();
+  return parsed.toLocaleString('ru-RU', {
+    day: 'numeric',
+    month: 'short',
+    ...(sameYear ? {} : { year: 'numeric' }),
+  }).replace('.', '');
+}
+
+export function formatFeedPublishedMeta(post: Pick<FeedPost, 'published_at' | 'updated_at' | 'is_updated'>, now: Date = new Date()): string {
+  const published = formatFeedRelativeTime(post.published_at, now);
+  const edited = Boolean(post.is_updated && post.updated_at && post.updated_at !== post.published_at);
+  return edited ? [published, 'изменено'].filter(Boolean).join(' · ') : published;
+}
+
+export function pluralizeFeedPublications(count: number): string {
+  const value = Math.max(0, Math.floor(Number(count) || 0));
+  const mod10 = value % 10;
+  const mod100 = value % 100;
+  const word = mod10 === 1 && mod100 !== 11
+    ? 'публикация'
+    : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
+      ? 'публикации'
+      : 'публикаций';
+  return `${value} ${word}`;
+}
+
+export function pluralizeFeedUnread(count: number): string {
+  const value = Math.max(0, Math.floor(Number(count) || 0));
+  const mod10 = value % 10;
+  const mod100 = value % 100;
+  const form = mod10 === 1 && mod100 !== 11
+    ? 'непрочитанная публикация'
+    : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)
+      ? 'непрочитанные публикации'
+      : 'непрочитанных публикаций';
+  return `${value} ${form}`;
+}
+
 export function getFeedInitials(name: unknown): string {
   const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
   return parts.slice(0, 2).map((part) => part[0]?.toLocaleUpperCase('ru-RU') || '').join('') || '?';
@@ -197,6 +272,21 @@ export function stripFeedMarkdown(value: unknown): string {
     .replace(/^\s*>\s?/gm, '')
     .replace(/[*_~]/g, '')
     .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function stripFeedMarkdownMultiline(value: unknown): string {
+  return String(value || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^\s*>\s?/gm, '')
+    .replace(/[*_~]/g, '')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 

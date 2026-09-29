@@ -30,6 +30,7 @@ vi.mock('../api/client', () => ({
     getAgentComputer: vi.fn(),
     hideComputer: vi.fn(),
     unhideComputer: vi.fn(),
+    deleteComputer: vi.fn(),
   },
 }));
 
@@ -66,6 +67,7 @@ const sampleComputer = {
   branch_name: 'Тюмень',
   location_name: 'Кабинет 12',
   database_name: 'Основная БД',
+  database_id: 'ITINVENT',
   inventory_inv_no: '101795',
   inventory_model_name: 'Dell OptiPlex 7090',
   ip_primary: '10.10.1.11',
@@ -125,7 +127,14 @@ const sampleComputer = {
     },
   ],
   monitors: [
-    { manufacturer: 'Dell', product_code: 'U2422H', serial_number: 'MON-001', serial_source: 'wmi' },
+    {
+      manufacturer: 'Dell',
+      product_code: 'U2422H',
+      serial_number: 'MON-001',
+      serial_source: 'wmi',
+      inventory_inv_no: '201777',
+      inventory_model_name: 'Dell U2422H',
+    },
   ],
   outlook_status: 'critical',
   outlook_active_path: 'D:\\Mail\\archive-user1.ost',
@@ -224,6 +233,7 @@ describe('Computers page', () => {
     equipmentAPI.getAgentComputer.mockReset();
     equipmentAPI.hideComputer.mockReset();
     equipmentAPI.unhideComputer.mockReset();
+    equipmentAPI.deleteComputer.mockReset();
     equipmentAPI.getAgentComputers.mockResolvedValue([sampleComputer]);
     equipmentAPI.searchAgentComputers.mockResolvedValue({
       items: [sampleComputer],
@@ -232,6 +242,13 @@ describe('Computers page', () => {
       offset: 0,
       has_more: false,
       next_offset: null,
+      summary: {
+        total: 1,
+        unassigned: 0,
+        statuses: { online: 1, stale: 0, offline: 0, unknown: 0 },
+        branches: { [sampleComputer.branch_name]: 1 },
+        outlook: { critical: 1 },
+      },
     });
     equipmentAPI.getComputersSummary.mockResolvedValue({
       total: 1,
@@ -242,6 +259,7 @@ describe('Computers page', () => {
     equipmentAPI.getAgentComputer.mockResolvedValue(sampleComputer);
     equipmentAPI.hideComputer.mockResolvedValue({ ok: true, is_hidden: true });
     equipmentAPI.unhideComputer.mockResolvedValue({ ok: true, is_hidden: false });
+    equipmentAPI.deleteComputer.mockResolvedValue({ ok: true, deleted: true });
     equipmentAPI.getAgentComputerChanges.mockResolvedValue({
       totals: { changed_24h: 1, changed_7d: 1, changed_30d: 1 },
       daily: [],
@@ -259,11 +277,12 @@ describe('Computers page', () => {
 
     await waitFor(() => {
       expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledTimes(1);
-      expect(equipmentAPI.getComputersSummary).toHaveBeenCalledTimes(1);
+      expect(equipmentAPI.getComputersSummary).not.toHaveBeenCalled();
     });
 
     fireEvent.click(await screen.findByText(sampleComputer.location_name));
     expect(await screen.findByText(sampleComputer.user_full_name)).toBeInTheDocument();
+    expect(screen.getByText(/Инв\. №:/)).toBeInTheDocument();
     const hostnameMatches = await screen.findAllByText(sampleComputer.hostname);
     fireEvent.click(hostnameMatches[hostnameMatches.length - 1]);
 
@@ -277,6 +296,9 @@ describe('Computers page', () => {
     expect(await screen.findByText(new RegExp(`Филиал: ${sampleComputer.branch_name}`))).toBeInTheDocument();
     expect(screen.getByText(/Загрузка CPU:/)).toBeInTheDocument();
     expect(screen.getByText(`Модель ITinvent: ${sampleComputer.inventory_model_name}`)).toBeInTheDocument();
+    expect(screen.getByText(`Инвентарный №: ${sampleComputer.inventory_inv_no}`)).toBeInTheDocument();
+    const inventoryCardLink = screen.getByRole('link', { name: 'Открыть карточку в базе' });
+    expect(inventoryCardLink).toHaveAttribute('href', `/database?inv_no=${sampleComputer.inventory_inv_no}&db_id=${sampleComputer.database_id}`);
     expect(screen.getByText(sampleComputer.outlook_active_path)).toBeInTheDocument();
     expect(screen.getByText('petrov_aa')).toBeInTheDocument();
     expect(screen.getByText('Расчет не полный')).toBeInTheDocument();
@@ -384,7 +406,9 @@ describe('Computers page', () => {
     await waitFor(() => {
       expect(screen.getByText('petrov_aa')).toBeInTheDocument();
       expect(screen.getByText('Samsung SSD')).toBeInTheDocument();
-      expect(screen.getByText(/U2422H/)).toBeInTheDocument();
+      // Модель монитора теперь встречается дважды: в заголовке и в строке «Инв. №».
+      expect(screen.getAllByText(/U2422H/).length).toBeGreaterThan(0);
+      expect(screen.getByText(/Инв\. №: 201777/)).toBeInTheDocument();
     });
 
     expect(screen.queryByText('Мониторы не обнаружены.')).not.toBeInTheDocument();
@@ -402,13 +426,13 @@ describe('Computers page', () => {
           sortDir: 'asc',
           limit: 50,
           offset: 0,
-          includeSummary: false,
+          includeSummary: true,
           hideVm172: true,
           hiddenOnly: false,
           searchFields: expect.arrayContaining(['identity', 'profiles', 'outlook']),
         })
       );
-      expect(equipmentAPI.getComputersSummary).toHaveBeenCalled();
+      expect(equipmentAPI.getComputersSummary).not.toHaveBeenCalled();
     });
 
     fireEvent.change(screen.getByLabelText('Поиск'), { target: { value: 'petrov' } });
@@ -435,7 +459,7 @@ describe('Computers page', () => {
       );
     }, { timeout: 2000 });
 
-    fireEvent.click(screen.getByText('Скрытые'));
+    fireEvent.click(screen.getByText('Архив'));
 
     await waitFor(() => {
       expect(equipmentAPI.searchAgentComputers).toHaveBeenLastCalledWith(
@@ -476,12 +500,33 @@ describe('Computers page', () => {
     const hostnameMatches = await screen.findAllByText(sampleComputer.hostname);
     fireEvent.click(hostnameMatches[hostnameMatches.length - 1]);
 
-    expect(await screen.findByRole('button', { name: 'Скрыть' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Скрыть' }));
+    expect(await screen.findByRole('button', { name: 'В архив' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'В архив' }));
 
     await waitFor(() => {
       expect(equipmentAPI.hideComputer).toHaveBeenCalledWith(sampleComputer.mac_address);
     });
+  }, 15000);
+
+  it('deletes a host from the drawer after confirmation', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      renderComputers();
+
+      fireEvent.click(await screen.findByText(sampleComputer.location_name));
+      const hostnameMatches = await screen.findAllByText(sampleComputer.hostname);
+      fireEvent.click(hostnameMatches[hostnameMatches.length - 1]);
+
+      expect(await screen.findByRole('button', { name: 'Удалить' })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Удалить' }));
+
+      await waitFor(() => {
+        expect(confirmSpy).toHaveBeenCalled();
+        expect(equipmentAPI.deleteComputer).toHaveBeenCalledWith(sampleComputer.mac_address);
+      });
+    } finally {
+      confirmSpy.mockRestore();
+    }
   }, 15000);
 
   it('does not show hide controls with read-only Computers permission', async () => {
@@ -492,8 +537,9 @@ describe('Computers page', () => {
     const hostnameMatches = await screen.findAllByText(sampleComputer.hostname);
     fireEvent.click(hostnameMatches[hostnameMatches.length - 1]);
 
-    expect(screen.queryByRole('button', { name: 'Скрыть' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Вернуть' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'В архив' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Из архива' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Удалить' })).not.toBeInTheDocument();
   }, 15000);
 
   it('loads the next page in the background when the list sentinel approaches the viewport', async () => {
@@ -531,7 +577,7 @@ describe('Computers page', () => {
 
     await waitFor(() => {
       expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledWith(
-        expect.objectContaining({ offset: 0, includeSummary: false })
+        expect.objectContaining({ offset: 0, includeSummary: true })
       );
     });
 
@@ -542,7 +588,7 @@ describe('Computers page', () => {
 
     await waitFor(() => {
       expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledWith(
-        expect.objectContaining({ offset: 1, includeSummary: false })
+        expect.objectContaining({ offset: 1, includeSummary: true })
       );
     }, { timeout: 3000 });
   }, 15000);
@@ -584,7 +630,7 @@ describe('Computers page', () => {
 
     await waitFor(() => {
       expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledWith(
-        expect.objectContaining({ offset: 0, includeSummary: false })
+        expect.objectContaining({ offset: 0, includeSummary: true })
       );
     });
 
@@ -592,7 +638,7 @@ describe('Computers page', () => {
 
     await waitFor(() => {
       expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledWith(
-        expect.objectContaining({ offset: 1, includeSummary: false })
+        expect.objectContaining({ offset: 1, includeSummary: true })
       );
     }, { timeout: 3000 });
 
@@ -604,7 +650,7 @@ describe('Computers page', () => {
 
     await waitFor(() => {
       expect(equipmentAPI.searchAgentComputers).toHaveBeenLastCalledWith(
-        expect.objectContaining({ offset: 0, limit: 2, includeSummary: false })
+        expect.objectContaining({ offset: 0, limit: 2, includeSummary: true })
       );
     });
   }, 15000);

@@ -1,21 +1,31 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
+import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
-from backend.appdb.db import app_session
-from backend.appdb.models import AppMyFile, AppMyFileAudit, AppMyFileBlob, AppMyFileDownloadGrant, AppMyFilePreview
+from backend.appdb.db import app_session, ensure_app_schema_initialized
+from backend.appdb.models import AppMyFile, AppMyFileAudit, AppMyFileBlob, AppMyFileDownloadGrant, AppMyFilePreview, AppUser
 from backend.models.auth import User
+from backend.services import my_files_service as mfs
 from backend.services.my_files_service import (
     STORAGE_ZSTD,
     MyFilesCapacityError,
     MyFilesNotFoundError,
     MyFilesService,
     MyFilesValidationError,
+    _load_spool_ranges,
+    _sha256_file,
+    _sha256_file_parallel,
+    _store_spool_ranges,
 )
 from backend.services.my_files_antivirus_service import MyFilesAntivirusError, SecurityScanResult
 from backend.services.secret_crypto_service import _build_fernet
@@ -27,6 +37,11 @@ def _configure_share_token_key(monkeypatch):
     _build_fernet.cache_clear()
     yield
     _build_fernet.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _prebuilt_app_schema(prebuilt_app_db):
+    return prebuilt_app_db
 
 
 def _sqlite_url(path: Path) -> str:
@@ -254,6 +269,111 @@ def test_chunked_upload_accepts_parallel_chunks_without_lost_ranges(tmp_path):
         actual_size_bytes=len(expected_payload),
     )
     assert completed["status"] == "queued"
+
+
+def test_store_spool_ranges_retries_transient_replace_failures(tmp_path, monkeypatch):
+    parts_path = tmp_path / "spool" / "payload.bin.parts.json"
+    parts_path.parent.mkdir(parents=True)
+    real_replace = Path.replace
+    attempts = {"count": 0}
+
+    def flaky_replace(self, target):
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise PermissionError(13, "being used by another process")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+    _store_spool_ranges(parts_path, [[0, 8]])
+
+    assert attempts["count"] == 3
+    assert json.loads(parts_path.read_text(encoding="utf-8")) == [[0, 8]]
+    assert not list(parts_path.parent.glob("*.tmp"))
+
+
+def test_store_spool_ranges_failure_cleans_tmp_and_keeps_journal(tmp_path, monkeypatch):
+    parts_path = tmp_path / "spool" / "payload.bin.parts.json"
+    parts_path.parent.mkdir(parents=True)
+    _store_spool_ranges(parts_path, [[0, 8]])
+
+    def always_fail(_self, _target):
+        raise PermissionError(13, "being used by another process")
+
+    monkeypatch.setattr(Path, "replace", always_fail)
+    with pytest.raises(MyFilesCapacityError):
+        _store_spool_ranges(parts_path, [[0, 16]])
+
+    assert json.loads(parts_path.read_text(encoding="utf-8")) == [[0, 8]]
+    assert not list(parts_path.parent.glob("*.tmp"))
+
+
+def test_load_spool_ranges_read_failure_is_not_treated_as_empty(tmp_path, monkeypatch):
+    parts_path = tmp_path / "spool" / "payload.bin.parts.json"
+    parts_path.parent.mkdir(parents=True)
+    _store_spool_ranges(parts_path, [[0, 8]])
+
+    def always_fail_read(_self, *_args, **_kwargs):
+        raise PermissionError(13, "being used by another process")
+
+    monkeypatch.setattr(Path, "read_text", always_fail_read)
+    with pytest.raises(MyFilesCapacityError):
+        _load_spool_ranges(parts_path)
+
+    monkeypatch.undo()
+    assert _load_spool_ranges(parts_path) == [[0, 8]]
+
+
+def test_load_spool_ranges_missing_file_reads_as_empty(tmp_path):
+    assert _load_spool_ranges(tmp_path / "absent.parts.json") == []
+
+
+def test_load_spool_ranges_corrupt_journal_does_not_wipe_progress(tmp_path):
+    parts_path = tmp_path / "spool" / "payload.bin.parts.json"
+    parts_path.parent.mkdir(parents=True)
+    parts_path.write_text("{corrupt", encoding="utf-8")
+    with pytest.raises(MyFilesCapacityError):
+        _load_spool_ranges(parts_path)
+
+
+def test_chunked_upload_survives_parallel_status_reads_without_lost_ranges(tmp_path):
+    service = _new_service(tmp_path)
+    spool_path = service.new_spool_path("polling.bin")
+    chunk_size = 4 * 1024 * 1024
+    chunks = [
+        hashlib.sha256(f"poll-{index}".encode("utf-8")).digest() * (chunk_size // 32)
+        for index in range(8)
+    ]
+    expected_payload = b"".join(chunks)
+    reserved = service.reserve_upload(
+        actor=_user(),
+        original_file_name="polling.bin",
+        mime_type="application/octet-stream",
+        spool_path=spool_path,
+        expected_size_bytes=len(expected_payload),
+        retention_days=1,
+    )
+
+    def send_chunk(index: int):
+        result = service.append_upload_chunk(
+            file_id=reserved["id"],
+            user_id=7,
+            offset=index * chunk_size,
+            payload=chunks[index],
+        )
+        # Status reads interleave with writes in production; the upload journal
+        # must never lose a recorded range because of them.
+        service.get_upload_session(file_id=reserved["id"], user_id=7)
+        return result
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(send_chunk, range(len(chunks))))
+
+    session_state = service.get_upload_session(file_id=reserved["id"], user_id=7)
+    assert session_state["complete"] is True
+    assert session_state["uploaded_bytes"] == len(expected_payload)
+    assert session_state["ranges"] == [[0, len(expected_payload)]]
+    assert not list(spool_path.parent.glob(f"{spool_path.name}.*.tmp"))
+    assert spool_path.read_bytes() == expected_payload
 
 
 def test_chunked_upload_is_owner_scoped(tmp_path):
@@ -620,6 +740,140 @@ def test_security_scan_error_records_failing_engine(tmp_path):
         assert row.security_scan_engine == "kaspersky-endpoint-security"
 
 
+def test_size_limit_skip_passes_fail_closed_pipeline(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "backend.services.my_files_service.config.my_files_security.antivirus_fail_closed", True
+    )
+    service = MyFilesService(
+        database_url=_sqlite_url(tmp_path / "app.db"),
+        storage_root=tmp_path / "my-files",
+        antivirus_scanner=lambda _path: SecurityScanResult(status="skipped", engine="size-limit"),
+    )
+    spool_path = _stage_upload(service, "huge.img", b"huge payload")
+    created = service.create_pending_upload(
+        actor=_user(),
+        original_file_name="huge.img",
+        mime_type="application/octet-stream",
+        spool_path=spool_path,
+        original_size_bytes=spool_path.stat().st_size,
+        retention_days=1,
+    )
+
+    result = service.process_file(created["id"])
+    assert result is not None and result["status"] == "ready"
+    with app_session(_sqlite_url(tmp_path / "app.db")) as session:
+        row = session.get(AppMyFile, created["id"])
+        assert row.security_scan_status == "skipped"
+        assert row.security_scan_engine == "size-limit"
+    share = service.create_share(file_id=created["id"], user_id=7)
+    assert share["token"]
+
+
+def test_disabled_scan_skip_still_blocked_when_fail_closed(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "backend.services.my_files_service.config.my_files_security.antivirus_fail_closed", True
+    )
+    service = MyFilesService(
+        database_url=_sqlite_url(tmp_path / "app.db"),
+        storage_root=tmp_path / "my-files",
+        antivirus_scanner=lambda _path: SecurityScanResult(status="skipped", engine="disabled"),
+    )
+    spool_path = _stage_upload(service, "plain.bin", b"plain payload")
+    created = service.create_pending_upload(
+        actor=_user(),
+        original_file_name="plain.bin",
+        mime_type="application/octet-stream",
+        spool_path=spool_path,
+        original_size_bytes=spool_path.stat().st_size,
+        retention_days=1,
+    )
+
+    assert service.process_file(created["id"]) is None
+    with app_session(_sqlite_url(tmp_path / "app.db")) as session:
+        row = session.get(AppMyFile, created["id"])
+        assert row.status == "failed"
+        assert row.security_scan_status == "skipped"
+
+
+def test_list_file_audit_tracks_public_downloads_with_ip(tmp_path):
+    service = _new_service(tmp_path)
+    spool_path = _stage_upload(service, "audit.bin", b"audit payload")
+    created = service.create_pending_upload(
+        actor=_user(),
+        original_file_name="audit.bin",
+        mime_type="application/octet-stream",
+        spool_path=spool_path,
+        original_size_bytes=spool_path.stat().st_size,
+        retention_days=1,
+    )
+    service.process_file(created["id"])
+    share = service.create_share(file_id=created["id"], user_id=7)
+
+    service.get_public_download(
+        token=share["token"],
+        meta=mfs.MyFilesRequestMeta(ip_address="203.0.113.10", user_agent="pytest-agent"),
+    )
+    service.get_public_download(
+        token=share["token"],
+        meta=mfs.MyFilesRequestMeta(ip_address="203.0.113.11", user_agent=""),
+    )
+
+    audit = service.list_file_audit(file_id=created["id"], user_id=7)
+    assert audit["download_count"] == 2
+    assert audit["unique_download_ips"] == 2
+    actions = [item["action"] for item in audit["items"]]
+    assert actions.count("public_download_started") == 2
+    download_items = [i for i in audit["items"] if i["action"] == "public_download_started"]
+    assert {i["ip_address"] for i in download_items} == {"203.0.113.10", "203.0.113.11"}
+    assert any(i["user_agent"] == "pytest-agent" for i in download_items)
+
+    with pytest.raises(MyFilesNotFoundError):
+        service.list_file_audit(file_id=created["id"], user_id=8)
+
+
+def test_sha256_parallel_matches_sequential_digest(tmp_path):
+    payload = tmp_path / "big.bin"
+    data = os.urandom(200 * 1024)
+    payload.write_bytes(data)
+    digest, size = _sha256_file_parallel(payload, block_size=16 * 1024, readers=4)
+    assert digest == hashlib.sha256(data).hexdigest()
+    assert size == len(data)
+
+
+def test_sha256_file_uses_parallel_readers_for_large_unc(tmp_path, monkeypatch):
+    monkeypatch.setattr(mfs, "_is_unc", lambda _p: True)
+    monkeypatch.setattr(mfs, "_SHA256_PARALLEL_MIN_BYTES", 0)
+    calls = []
+    original = mfs._sha256_file_parallel
+
+    def spy(path, **kwargs):
+        calls.append(1)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(mfs, "_sha256_file_parallel", spy)
+    payload = tmp_path / "p.bin"
+    payload.write_bytes(b"abc")
+    digest, size = _sha256_file(payload)
+    assert calls == [1]
+    assert digest == hashlib.sha256(b"abc").hexdigest()
+    assert size == 3
+
+
+def test_sha256_file_stays_sequential_below_threshold(tmp_path, monkeypatch):
+    monkeypatch.setattr(mfs, "_is_unc", lambda _p: True)
+    monkeypatch.setattr(mfs, "_SHA256_PARALLEL_MIN_BYTES", 10)
+    monkeypatch.setattr(
+        mfs,
+        "_sha256_file_parallel",
+        lambda *a, **kw: pytest.fail("parallel path must not run below threshold"),
+    )
+    payload = tmp_path / "small.bin"
+    payload.write_bytes(b"tiny")
+    digest, size = _sha256_file(payload)
+    assert digest == hashlib.sha256(b"tiny").hexdigest()
+    assert size == 4
+
+
 def test_existing_ready_file_is_inaccessible_until_security_backfill_completes(tmp_path, monkeypatch):
     monkeypatch.setattr("backend.services.my_files_service.config.my_files_security.antivirus_fail_closed", True)
     service = _new_service(tmp_path)
@@ -889,3 +1143,277 @@ def test_public_preview_wraps_unexpected_office_render_errors(monkeypatch, tmp_p
 
     with pytest.raises(MyFilesValidationError, match="Preview is temporarily unavailable"):
         service.get_public_preview_meta(token=share["token"])
+
+
+def test_quota_uses_per_user_override_and_caps_at_400_gib(tmp_path):
+    service = _new_service(tmp_path)
+    ensure_app_schema_initialized(_sqlite_url(tmp_path / "app.db"))
+    with app_session(_sqlite_url(tmp_path / "app.db")) as session:
+        session.add(AppUser(id=7, username="user-7", my_files_quota_bytes=100 * (1024**3)))
+        session.add(AppUser(id=8, username="user-8", my_files_quota_bytes=900 * (1024**3)))
+        session.flush()
+
+    assert service.quota(user_id=7)["limit_bytes"] == 100 * (1024**3)
+    assert service.quota(user_id=8)["limit_bytes"] == 400 * (1024**3)
+    assert service.quota(user_id=9)["limit_bytes"] == 50 * (1024**3)
+
+
+def test_reserve_upload_respects_per_user_quota_override(tmp_path):
+    service = _new_service(tmp_path)
+    ensure_app_schema_initialized(_sqlite_url(tmp_path / "app.db"))
+    with app_session(_sqlite_url(tmp_path / "app.db")) as session:
+        session.add(AppUser(id=7, username="user-7", my_files_quota_bytes=4096))
+        session.flush()
+
+    reserved = service.reserve_upload(
+        actor=_user(),
+        original_file_name="a.bin",
+        mime_type="application/octet-stream",
+        spool_path=service.new_spool_path("a.bin"),
+        expected_size_bytes=4096,
+        retention_days=1,
+    )
+    assert reserved["status"] == "uploading"
+
+    with pytest.raises(MyFilesValidationError, match="quota"):
+        service.reserve_upload(
+            actor=_user(),
+            original_file_name="b.bin",
+            mime_type="application/octet-stream",
+            spool_path=service.new_spool_path("b.bin"),
+            expected_size_bytes=1,
+            retention_days=1,
+        )
+
+
+def test_reserve_upload_allows_large_file_within_custom_quota(tmp_path):
+    service = _new_service(tmp_path)
+    ensure_app_schema_initialized(_sqlite_url(tmp_path / "app.db"))
+    with app_session(_sqlite_url(tmp_path / "app.db")) as session:
+        session.add(AppUser(id=7, username="user-7", my_files_quota_bytes=100 * (1024**3)))
+        session.flush()
+
+    # 20 GiB used to hit the former fixed 10 GiB per-file cap; now the user
+    # quota is the only bound.
+    size = 20 * (1024**3)
+    reserved = service.reserve_upload(
+        actor=_user(),
+        original_file_name="disk-image.img.gz",
+        mime_type="application/gzip",
+        spool_path=service.new_spool_path("disk-image.img.gz"),
+        expected_size_bytes=size,
+        retention_days=1,
+    )
+    assert reserved["status"] == "uploading"
+    assert service.quota(user_id=7)["used_bytes"] == size
+    service.abort_upload(file_id=reserved["id"], user_id=7)
+
+
+def test_reserve_upload_rejects_file_beyond_default_quota(tmp_path):
+    service = _new_service(tmp_path)
+    with pytest.raises(MyFilesValidationError, match="quota"):
+        service.reserve_upload(
+            actor=_user(),
+            original_file_name="huge.bin",
+            mime_type="application/octet-stream",
+            spool_path=service.new_spool_path("huge.bin"),
+            expected_size_bytes=(50 * (1024**3)) + 1,
+            retention_days=1,
+        )
+
+
+def test_reserve_upload_reuses_live_reservation_atomically(tmp_path):
+    service = _new_service(tmp_path)
+    ensure_app_schema_initialized(_sqlite_url(tmp_path / "app.db"))
+    with app_session(_sqlite_url(tmp_path / "app.db")) as session:
+        session.add(AppUser(id=7, username="user-7", my_files_quota_bytes=100 * (1024**3)))
+        session.flush()
+
+    size = 1024
+
+    def reserve() -> str:
+        result = service.reserve_upload(
+            actor=_user(),
+            original_file_name="retried.bin",
+            mime_type="application/octet-stream",
+            spool_path=service.new_spool_path("retried.bin"),
+            expected_size_bytes=size,
+            retention_days=1,
+            reuse_existing=True,
+        )
+        return str(result["id"])
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        ids = list(executor.map(lambda _index: reserve(), range(8)))
+
+    assert len(set(ids)) == 1
+    with app_session(_sqlite_url(tmp_path / "app.db")) as session:
+        live = session.scalars(
+            select(AppMyFile).where(AppMyFile.original_file_name == "retried.bin")
+        ).all()
+    assert len(live) == 1
+    assert live[0].id == ids[0]
+
+
+def test_abort_upload_removes_spool_and_rejects_late_chunks(tmp_path):
+    service = _new_service(tmp_path)
+    spool_path = service.new_spool_path("aborted.bin")
+    reserved = service.reserve_upload(
+        actor=_user(),
+        original_file_name="aborted.bin",
+        mime_type="application/octet-stream",
+        spool_path=spool_path,
+        expected_size_bytes=16,
+        retention_days=1,
+    )
+    service.append_upload_chunk(file_id=reserved["id"], user_id=7, offset=0, payload=b"0123456789abcdef")
+    parts_path = spool_path.with_name(f"{spool_path.name}.parts.json")
+
+    service.abort_upload(file_id=reserved["id"], user_id=7)
+
+    assert not spool_path.exists()
+    assert not parts_path.exists()
+    with pytest.raises(MyFilesValidationError, match="not active"):
+        service.append_upload_chunk(file_id=reserved["id"], user_id=7, offset=0, payload=b"0123456789abcdef")
+
+
+def test_cleanup_stale_uploads_keeps_refreshed_reservation(tmp_path):
+    service = _new_service(tmp_path)
+    spool_path = service.new_spool_path("stale.bin")
+    reserved = service.reserve_upload(
+        actor=_user(),
+        original_file_name="stale.bin",
+        mime_type="application/octet-stream",
+        spool_path=spool_path,
+        expected_size_bytes=8,
+        retention_days=1,
+    )
+    service.append_upload_chunk(file_id=reserved["id"], user_id=7, offset=0, payload=b"12345678")
+    stale_time = datetime.now(timezone.utc) - timedelta(hours=3)
+    database_url = _sqlite_url(tmp_path / "app.db")
+    with app_session(database_url) as session:
+        row = session.get(AppMyFile, reserved["id"])
+        row.updated_at = stale_time
+        session.flush()
+        # Simulate a chunk arriving right before the cleanup scan.
+        row.updated_at = datetime.now(timezone.utc)
+        session.flush()
+
+    assert service.cleanup_stale_uploads(limit=10) == 0
+    assert spool_path.exists()
+    with app_session(database_url) as session:
+        row = session.get(AppMyFile, reserved["id"])
+        assert row.status == "uploading"
+
+    with app_session(database_url) as session:
+        row = session.get(AppMyFile, reserved["id"])
+        row.updated_at = stale_time
+        session.flush()
+
+    assert service.cleanup_stale_uploads(limit=10) == 1
+    assert not spool_path.exists()
+    with app_session(database_url) as session:
+        row = session.get(AppMyFile, reserved["id"])
+        assert row.status == "failed"
+        assert row.error_text == "Upload reservation expired"
+
+
+def test_cleanup_orphan_tmp_files_removes_stale_tmp_only(tmp_path):
+    service = _new_service(tmp_path)
+    spool_path = service.new_spool_path("tmp-orphan.bin")
+    parts_path = spool_path.with_name(f"{spool_path.name}.parts.json")
+    stale_tmp = parts_path.with_name(f"{parts_path.name}.{uuid.uuid4().hex}.tmp")
+    stale_tmp.write_text("[]", encoding="utf-8")
+    old = time.time() - 7200
+    os.utime(stale_tmp, (old, old))
+    fresh_tmp = parts_path.with_name(f"{parts_path.name}.{uuid.uuid4().hex}.tmp")
+    fresh_tmp.write_text("[]", encoding="utf-8")
+
+    stats = service.cleanup_orphan_tmp_files()
+
+    assert stats["removed"] >= 1
+    assert not stale_tmp.exists()
+    assert fresh_tmp.exists()
+
+
+def test_cleanup_orphan_tmp_files_is_throttled(tmp_path):
+    service = _new_service(tmp_path)
+    assert service.cleanup_orphan_tmp_files()["scanned"] >= 0
+    assert service.cleanup_orphan_tmp_files() == {"scanned": 0, "removed": 0, "errors": 0}
+
+
+def test_reserve_upload_throttles_stale_cleanup(tmp_path, monkeypatch):
+    service = _new_service(tmp_path)
+    calls: list[int] = []
+    original = service.cleanup_stale_uploads
+
+    def counted(*, limit: int = 100) -> int:
+        calls.append(limit)
+        return original(limit=limit)
+
+    monkeypatch.setattr(service, "cleanup_stale_uploads", counted)
+    for index in range(3):
+        reserved = service.reserve_upload(
+            actor=_user(),
+            original_file_name=f"burst-{index}.bin",
+            mime_type="application/octet-stream",
+            spool_path=service.new_spool_path(f"burst-{index}.bin"),
+            expected_size_bytes=1,
+            retention_days=1,
+        )
+        service.abort_upload(file_id=reserved["id"], user_id=7)
+    assert len(calls) == 1
+
+
+def test_spool_ranges_without_journal_are_not_inferred_from_file_size(tmp_path):
+    service = _new_service(tmp_path)
+    spool_path = service.new_spool_path("no-journal.bin")
+    spool_path.write_bytes(b"0123456789abcdef")
+    assert service._spool_ranges(spool_path) == []
+    spool_path.with_name(f"{spool_path.name}.parts.json").unlink(missing_ok=True)
+    reserved = service.reserve_upload(
+        actor=_user(),
+        original_file_name="no-journal.bin",
+        mime_type="application/octet-stream",
+        spool_path=spool_path,
+        expected_size_bytes=16,
+        retention_days=1,
+    )
+    state = service.get_upload_session(file_id=reserved["id"], user_id=7)
+    assert state["uploaded_bytes"] == 0
+    assert state["complete"] is False
+    assert state["ranges"] == []
+
+
+def test_delete_spool_payload_survives_permission_error(tmp_path, monkeypatch):
+    service = _new_service(tmp_path)
+    spool_path = service.new_spool_path("locked.bin")
+    reserved = service.reserve_upload(
+        actor=_user(),
+        original_file_name="locked.bin",
+        mime_type="application/octet-stream",
+        spool_path=spool_path,
+        expected_size_bytes=4,
+        retention_days=1,
+    )
+    service.append_upload_chunk(file_id=reserved["id"], user_id=7, offset=0, payload=b"abcd")
+
+    def deny_unlink(self, missing_ok: bool = False):
+        raise PermissionError("file is locked by antivirus")
+
+    monkeypatch.setattr(type(spool_path), "unlink", deny_unlink)
+    service.abort_upload(file_id=reserved["id"], user_id=7)
+    with app_session(_sqlite_url(tmp_path / "app.db")) as session:
+        row = session.get(AppMyFile, reserved["id"])
+        assert row.status == "failed"
+    from backend.services.user_service import UserService
+
+    assert UserService._validate_my_files_quota_bytes(None) is None
+    assert UserService._validate_my_files_quota_bytes("") is None
+    assert UserService._validate_my_files_quota_bytes(1024) == 1024
+    with pytest.raises(ValueError):
+        UserService._validate_my_files_quota_bytes(0)
+    with pytest.raises(ValueError):
+        UserService._validate_my_files_quota_bytes(500 * (1024**3))
+    with pytest.raises(ValueError):
+        UserService._validate_my_files_quota_bytes("not-a-number")

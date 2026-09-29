@@ -8,9 +8,40 @@ import { isPhoneDeepLinkReady } from '../../lib/messengerLinks';
 import HighlightText from './HighlightText';
 import { normalizePhoneDigits, normalizeText } from './addressBookUtils';
 
+const contactRowSx = {
+  display: 'flex',
+  flexDirection: { xs: 'column', md: 'row' },
+  alignItems: { md: 'center' },
+  gap: { xs: 0.25, md: 1.25 },
+  minWidth: 0,
+};
+
+const contactLabelSx = {
+  color: 'text.secondary',
+  fontWeight: 600,
+  lineHeight: 1.2,
+  width: { md: 132 },
+  flexShrink: { md: 0 },
+};
+
+const contactValueBoxSx = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 0.75,
+  minWidth: 0,
+  flex: { md: 1 },
+};
+
+const contactValueSx = {
+  lineHeight: 1.2,
+  overflowWrap: 'anywhere',
+  minWidth: 0,
+  flex: 1,
+};
+
 export function PhoneActions({
   phones = [],
-  label,
+  fallbackLabel,
   onCopy,
   enableTelLinks = false,
   onOpenTelegram,
@@ -22,38 +53,26 @@ export function PhoneActions({
 
   return (
     <Stack spacing={0.75}>
-      <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
-        {label}
-      </Typography>
-      <Stack spacing={0.6}>
-        {items.map((phone, index) => {
-          const value = normalizeText(phone?.value);
-          const kind = normalizeText(phone?.kind);
-          const normalized = normalizeText(phone?.normalized);
-          const phoneDigits = normalized || normalizePhoneDigits(value);
-          const telValue = phoneDigits ? `+${phoneDigits}` : value;
-          const canCall = enableTelLinks && Boolean(telValue);
-          const canOpenMessenger = isPhoneDeepLinkReady(phoneDigits);
-          return (
-            <Box
-              key={`${kind}-${value}-${index}`}
-              sx={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 0.75,
-                minWidth: 0,
-              }}
-            >
-              <Box sx={{ minWidth: 0, flex: 1 }}>
-                {kind ? (
-                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', lineHeight: 1.15 }}>
-                    <HighlightText value={kind} query={query} />
-                  </Typography>
-                ) : null}
-                <Typography variant="body2" sx={{ lineHeight: 1.2, overflowWrap: 'anywhere' }}>
-                  <HighlightText value={value} query={query} />
-                </Typography>
-              </Box>
+      {items.map((phone, index) => {
+        const value = normalizeText(phone?.value);
+        const kind = normalizeText(phone?.kind);
+        const normalized = normalizeText(phone?.normalized);
+        const phoneDigits = normalized || normalizePhoneDigits(value);
+        const telValue = phoneDigits ? `+${phoneDigits}` : value;
+        const canCall = enableTelLinks && Boolean(telValue);
+        const canOpenMessenger = isPhoneDeepLinkReady(phoneDigits);
+        return (
+          <Box
+            key={`${kind}-${value}-${index}`}
+            sx={contactRowSx}
+          >
+            <Typography variant="caption" sx={contactLabelSx}>
+              <HighlightText value={kind || fallbackLabel} query={query} />
+            </Typography>
+            <Box sx={contactValueBoxSx}>
+              <Typography variant="body2" sx={contactValueSx}>
+                <HighlightText value={value} query={query} />
+              </Typography>
               {canCall ? (
                 <Tooltip title="Позвонить">
                   <IconButton
@@ -100,47 +119,35 @@ export function PhoneActions({
                 </IconButton>
               </Tooltip>
             </Box>
-          );
-        })}
-      </Stack>
+          </Box>
+        );
+      })}
     </Stack>
   );
 }
 
-export function EmailActions({ emails = [], label, onCopy, onComposeEmail, query = '' }) {
+export function EmailActions({ emails = [], fallbackLabel, onCopy, onComposeEmail, query = '' }) {
   const items = Array.isArray(emails) ? emails : [];
   if (items.length === 0) return null;
 
   return (
     <Stack spacing={0.75}>
-      <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
-        {label}
-      </Typography>
-      <Stack spacing={0.6}>
-        {items.map((email, index) => {
-          const value = normalizeText(email?.value);
-          const kind = normalizeText(email?.kind);
-          const canMail = isValidEmailRecipient(value);
-          return (
-            <Box
-              key={`${kind}-${value}-${index}`}
-              sx={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 0.75,
-                minWidth: 0,
-              }}
-            >
-              <Box sx={{ minWidth: 0, flex: 1 }}>
-                {kind ? (
-                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', lineHeight: 1.15 }}>
-                    <HighlightText value={kind} query={query} />
-                  </Typography>
-                ) : null}
-                <Typography variant="body2" sx={{ lineHeight: 1.2, overflowWrap: 'anywhere' }}>
-                  <HighlightText value={value} query={query} />
-                </Typography>
-              </Box>
+      {items.map((email, index) => {
+        const value = normalizeText(email?.value);
+        const kind = normalizeText(email?.kind);
+        const canMail = isValidEmailRecipient(value);
+        return (
+          <Box
+            key={`${kind}-${value}-${index}`}
+            sx={contactRowSx}
+          >
+            <Typography variant="caption" sx={contactLabelSx}>
+              <HighlightText value={kind || fallbackLabel} query={query} />
+            </Typography>
+            <Box sx={contactValueBoxSx}>
+              <Typography variant="body2" sx={contactValueSx}>
+                <HighlightText value={value} query={query} />
+              </Typography>
               <Tooltip title={canMail ? 'Написать в HUB' : 'Некорректный e-mail'}>
                 <span>
                   <IconButton
@@ -176,9 +183,9 @@ export function EmailActions({ emails = [], label, onCopy, onComposeEmail, query
                 </IconButton>
               </Tooltip>
             </Box>
-          );
-        })}
-      </Stack>
+          </Box>
+        );
+      })}
     </Stack>
   );
 }

@@ -10,7 +10,7 @@ export const NATIVE_DATABASE_ENABLED = resolveNativeDatabaseEnabled(process.env.
 export type NativeDatabaseDestination =
   | {
       pathname: '/(shell)/database';
-      params?: { q?: string; mode?: DatabaseViewMode };
+      params?: { q?: string; mode?: DatabaseViewMode; consumable?: string; databaseId?: string };
     }
   | {
       pathname: '/(shell)/database/[invNo]';
@@ -34,12 +34,27 @@ export function nativeDatabaseDestinationFromPortalPath(path: string): NativeDat
   }
   if (parsed.pathname !== '/database') return null;
 
-  const supported = new Set(['q', 'search', 'mode', 'tab', 'inv_no', 'invNo', 'equipment', 'db_id']);
+  const supported = new Set([
+    'q', 'search', 'mode', 'tab',
+    'inv_no', 'invNo', 'equipment',
+    'consumable', 'consumable_id', 'consumableId',
+    'db_id',
+  ]);
   if ([...parsed.searchParams.keys()].some((key) => !supported.has(key))) return null;
 
   const invNo = firstParam(parsed.searchParams, ['inv_no', 'invNo', 'equipment']);
   const databaseId = firstParam(parsed.searchParams, ['db_id']);
   if (invNo.length > 200 || databaseId.length > 100) return null;
+
+  // Consumable QR carries ITEMS.ID — legacy consumable INV_NO can repeat.
+  const consumableId = firstParam(parsed.searchParams, ['consumable', 'consumable_id', 'consumableId']);
+  if (consumableId) {
+    if (!/^\d{1,12}$/.test(consumableId)) return null;
+    return {
+      pathname: '/(shell)/database',
+      params: { consumable: consumableId, ...(databaseId ? { databaseId } : {}) },
+    };
+  }
   const tabValue = firstParam(parsed.searchParams, ['tab']);
   if (tabValue && !['general', 'works', 'acts', 'history'].includes(tabValue)) return null;
   const tab: EquipmentDetailTab | undefined = ['general', 'works', 'acts', 'history'].includes(tabValue)

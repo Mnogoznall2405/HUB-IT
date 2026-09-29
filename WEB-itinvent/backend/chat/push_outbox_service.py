@@ -11,7 +11,13 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, or_, select
 
 from backend.chat.db import chat_session
-from backend.chat.models import ChatConversation, ChatConversationUserState, ChatMessage, ChatPushOutbox
+from backend.chat.models import (
+    ChatConversation,
+    ChatConversationUserState,
+    ChatMessage,
+    ChatPushOutbox,
+    conversation_state_is_muted,
+)
 from backend.chat.push_service import chat_push_service
 from backend.chat.utils import normalize_text as _normalize_text
 from backend.services.notification_preferences_service import (
@@ -316,7 +322,7 @@ class ChatPushOutboxService:
                 if state is None:
                     return None
                 is_mention = bool(getattr(job, "is_mention", False))
-                if bool(getattr(state, "is_muted", False)) and not is_mention:
+                if conversation_state_is_muted(state) and not is_mention:
                     return "muted"
                 if bool(getattr(state, "is_archived", False)) and not is_mention:
                     return "archived"

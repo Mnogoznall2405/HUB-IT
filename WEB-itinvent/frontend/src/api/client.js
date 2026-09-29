@@ -198,6 +198,22 @@ const isScanApiRequestUrl = (value) => {
   );
 };
 
+// VoiceVideo is also served by a separate service (like scan): a stale-401 from
+// it must not tear down the main backend session after a successful refresh.
+const isVoiceApiRequestUrl = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return false;
+  const path = raw.replace(/^https?:\/\/[^/]+/i, '');
+  return (
+    path === '/voice'
+    || path.startsWith('/voice/')
+    || path.startsWith('/voice?')
+    || path === '/api/v1/voice'
+    || path.startsWith('/api/v1/voice/')
+    || path.startsWith('/api/v1/voice?')
+  );
+};
+
 const isMyFilesPublicRequestUrl = (value) => {
   const raw = String(value || '').trim();
   if (!raw) return false;
@@ -269,7 +285,7 @@ apiClient.interceptors.request.use(
     }
 
     const selectedDatabase = localStorage.getItem('selected_database');
-    if (selectedDatabase) {
+    if (selectedDatabase && config.headers['X-Database-ID'] == null) {
       config.headers['X-Database-ID'] = selectedDatabase;
     }
     if (!config.headers['X-Client-Request-ID']) {
@@ -375,10 +391,10 @@ apiClient.interceptors.response.use(
         }
       }
 
-      // Scan Center is served by a separate scan service. If the main backend
-      // refresh succeeds but the retried scan request still gets 401, keep the
-      // web session intact and let the page show its own scan loading error.
-      if (error.config?._retry && isScanApiRequestUrl(requestUrl)) {
+      // Scan Center and VoiceVideo are served by separate services. If the main
+      // backend refresh succeeds but the retried request still gets 401, keep the
+      // web session intact and let the page show its own loading error.
+      if (error.config?._retry && (isScanApiRequestUrl(requestUrl) || isVoiceApiRequestUrl(requestUrl))) {
         return Promise.reject(error);
       }
 
@@ -873,6 +889,14 @@ export const chatAPI = {
 
   get toggleReaction() {
     return chatThreadMessagesAPI.toggleReaction;
+  },
+
+  get votePoll() {
+    return chatThreadMessagesAPI.votePoll;
+  },
+
+  get closePoll() {
+    return chatThreadMessagesAPI.closePoll;
   },
 
   get listChatFolders() {
@@ -1390,6 +1414,10 @@ export const equipmentAPI = {
     return equipmentComputersAPI.getComputersSummary;
   },
 
+  get getAgentComputersByInvNos() {
+    return equipmentComputersAPI.getAgentComputersByInvNos;
+  },
+
   get getAgentComputer() {
     return equipmentComputersAPI.getAgentComputer;
   },
@@ -1400,6 +1428,10 @@ export const equipmentAPI = {
 
   get unhideComputer() {
     return equipmentComputersAPI.unhideComputer;
+  },
+
+  get deleteComputer() {
+    return equipmentComputersAPI.deleteComputer;
   },
 
   get searchBySerial() {
@@ -1564,6 +1596,10 @@ export const equipmentAPI = {
 
   get lookupConsumables() {
     return equipmentConsumablesAPI.lookupConsumables;
+  },
+
+  get getConsumableById() {
+    return equipmentConsumablesAPI.getConsumableById;
   },
 
   get consumeConsumable() {

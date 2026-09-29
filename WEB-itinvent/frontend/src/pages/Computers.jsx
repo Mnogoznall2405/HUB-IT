@@ -16,6 +16,7 @@ import {
   MenuItem,
   Paper,
   Select,
+  Skeleton,
   Stack,
   Switch,
   TextField,
@@ -35,18 +36,22 @@ import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { equipmentAPI } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
-import { useSearchParams } from 'react-router-dom';
+import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { useTheme } from '@mui/material/styles';
 import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
 
 const SEEN_CHANGES_STORAGE_KEY = 'computers_seen_changes_by_pc_v1';
 const USER_PROFILE_HIDE_SYSTEM_FOLDERS_STORAGE_KEY = 'computers_hide_system_user_profile_folders_v1';
 const HIDE_VM_172_STORAGE_KEY = 'computers_hide_vm_172';
-const AUTO_REFRESH_BASE_SEC = 60;
+const AUTO_REFRESH_BASE_SEC = 120;
 const AUTO_REFRESH_STEP_SEC = 30;
-const AUTO_REFRESH_MAX_SEC = 120;
-const SEARCH_DEBOUNCE_MS = 200;
+const AUTO_REFRESH_MAX_SEC = 300;
+const SEARCH_DEBOUNCE_MS = 500;
+const SEARCH_MIN_QUERY_LEN = 2;
 const COMPUTERS_PAGE_SIZE = 50;
+const BACKGROUND_REFRESH_MAX_ITEMS = 200;
+const SEEN_CHANGES_MAX_ENTRIES = 500;
+const SEEN_CHANGES_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const OUTLOOK_ARCHIVE_LIMIT_BYTES = 50 * 1024 * 1024 * 1024;
 const COMPUTER_SEARCH_FIELD_OPTIONS = [
   { key: 'identity', label: 'ПК' },
@@ -58,6 +63,26 @@ const COMPUTER_SEARCH_FIELD_OPTIONS = [
   { key: 'database', label: 'БД' },
 ];
 const DEFAULT_COMPUTER_SEARCH_FIELDS = COMPUTER_SEARCH_FIELD_OPTIONS.map((item) => item.key);
+const FAST_SEARCH_PRESET_FIELDS = ['identity', 'user'];
+const SEARCH_FIELD_LABELS = Object.fromEntries(COMPUTER_SEARCH_FIELD_OPTIONS.map((item) => [item.key, item.label]));
+const RECENT_SEARCHES_STORAGE_KEY = 'computers_recent_searches_v1';
+const RECENT_SEARCHES_MAX = 8;
+
+function readRecentSearches() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(RECENT_SEARCHES_STORAGE_KEY) || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item) => typeof item === 'string' && item.trim()).slice(0, RECENT_SEARCHES_MAX);
+  } catch {
+    return [];
+  }
+}
+
+function persistRecentSearches(items) {
+  try {
+    localStorage.setItem(RECENT_SEARCHES_STORAGE_KEY, JSON.stringify(items.slice(0, RECENT_SEARCHES_MAX)));
+  } catch { /* localStorage недоступен/переполнен — не блокируем поиск */ }
+}
 
 function normalizeComputersSearchInput(value) {
   return String(value || '')
@@ -555,16 +580,38 @@ function pcChangeKey(pc) {
   return `host:${host}`;
 }
 
+function evictSeenChangesMap(map) {
+  const entries = Object.entries(map || {});
+  if (entries.length === 0) return {};
+  const cutoff = Date.now() - SEEN_CHANGES_TTL_MS;
+  const fresh = entries.filter(([, ts]) => Number(ts) * 1000 >= cutoff);
+  if (fresh.length <= SEEN_CHANGES_MAX_ENTRIES) {
+    return Object.fromEntries(fresh);
+  }
+  fresh.sort((a, b) => Number(b[1]) - Number(a[1]));
+  return Object.fromEntries(fresh.slice(0, SEEN_CHANGES_MAX_ENTRIES));
+}
+
 function readSeenChangesMap() {
   try {
     const raw = localStorage.getItem(SEEN_CHANGES_STORAGE_KEY);
     if (!raw) return {};
     const data = JSON.parse(raw);
     if (!data || typeof data !== 'object') return {};
-    return data;
+    return evictSeenChangesMap(data);
   } catch {
     return {};
   }
+}
+
+function formatUpdatedAgo(ts) {
+  const diff = Math.max(0, Math.floor((Date.now() - Number(ts)) / 1000));
+  if (diff < 60) return 'только что';
+  const mins = Math.floor(diff / 60);
+  if (mins < 60) return `${mins} мин назад`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} ч назад`;
+  return `${Math.floor(hours / 24)} дн назад`;
 }
 
 function summarizeChangeEvent(event) {
@@ -614,6 +661,125 @@ function summarizeChangeEvent(event) {
   return lines;
 }
 
+const ComputerCard = React.memo(function ComputerCard({ pc, meta, unseen, ui, onOpen }) {
+  const net = pc.network_link || {};
+  const storageStats = meta?.storageStats || { total: 0, problemCount: 0 };
+  const outlookMeta = meta?.outlookMeta || {};
+  const driveUsage = meta?.driveUsage || null;
+  const outlookUsage = meta?.outlookUsage || { usedGb: 0, limitGb: 50, percent: 0 };
+  return (
+    <Grid item xs={12} sm={6} md={4} lg={3} xl={2}>
+      <Paper
+        variant="outlined"
+        onClick={() => onOpen(pc)}
+        sx={{
+          ...getOfficePanelSx(ui, {
+            p: 1.1,
+            height: '100%',
+            cursor: 'pointer',
+            boxShadow: 'none',
+            '&:hover': {
+              borderColor: ui.borderStrong,
+              bgcolor: ui.panelBg,
+              boxShadow: 'none',
+            },
+          }),
+        }}
+      >
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.7 }}>
+          <Typography variant="subtitle2" sx={{ fontWeight: 700, pr: 1, lineHeight: 1.25, wordBreak: 'break-word' }}>
+            {pc.hostname || 'Неизвестный ПК'}
+          </Typography>
+          <Chip size="small" color={statusColor(pc.status)} label={statusLabel(pc.status)} />
+        </Box>
+
+        {pc.is_unassigned && (
+          <Chip size="small" color="warning" variant="outlined" label="Без привязки" sx={{ mb: 0.7 }} />
+        )}
+
+        {Array.isArray(pc.matched_fields) && pc.matched_fields.length > 0 ? (
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.7 }}>
+            Совпадение: {pc.matched_fields.map((field) => SEARCH_FIELD_LABELS[field] || field).join(', ')}
+          </Typography>
+        ) : null}
+
+        <Typography variant="caption" sx={{ fontWeight: 600, display: 'block', wordBreak: 'break-word' }}>
+          {pc.user_full_name || 'ФИО не определено'}
+        </Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.7, wordBreak: 'break-word' }}>
+          {pc.user_login || pc.current_user || '-'}
+        </Typography>
+
+        <Stack spacing={0.35} sx={{ mb: 0.75 }}>
+          <Typography variant="caption" sx={{ display: 'block', wordBreak: 'break-word' }}>IP: <b>{resolvePcIp(pc) || '-'}</b></Typography>
+          <Typography variant="caption" sx={{ display: 'block', wordBreak: 'break-word' }}>MAC: <b>{pc.mac_address || '-'}</b></Typography>
+          <Typography variant="caption" sx={{ display: 'block', wordBreak: 'break-word' }}>БД: <b>{pc.database_name || pc.database_id || '-'}</b></Typography>
+          {pc.inventory_inv_no ? (
+            <Typography variant="caption" sx={{ display: 'block' }}>Инв. №: <b>{pc.inventory_inv_no}</b></Typography>
+          ) : null}
+          <Typography variant="caption" sx={{ display: 'block' }}>Возраст: <b>{formatAge(pc.age_seconds)}</b></Typography>
+        </Stack>
+
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.6, mb: 0.7 }}>
+          <LanIcon fontSize="small" color="action" />
+          <Typography variant="caption" color="text.secondary">
+            {net.device_code ? `${net.device_code} / ${net.port_name || 'порт ?'} / ${net.socket_code || 'розетка ?'}` : 'Сетевое подключение не определено'}
+          </Typography>
+        </Box>
+
+        <Box sx={{ mb: 0.8 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.25 }}>
+            {driveUsage
+              ? `Хранилище ${driveUsage.mountpoint}: ${driveUsage.usedGb !== null ? `${driveUsage.usedGb.toFixed(1)} / ${driveUsage.totalGb?.toFixed(1) || '-'} ГБ` : `${driveUsage.usedPercent ?? 0}%`}${driveUsage.isFallback ? ' (по первому диску)' : ''}`
+              : 'Хранилище C: нет данных'}
+          </Typography>
+          <LinearProgress
+            variant="determinate"
+            value={driveUsage?.usedPercent ?? 0}
+            color={(driveUsage?.usedPercent ?? 0) >= 90 ? 'error' : ((driveUsage?.usedPercent ?? 0) >= 75 ? 'warning' : 'primary')}
+            sx={{ height: 6, borderRadius: 4 }}
+          />
+        </Box>
+
+        {storageStats.total > 0 && (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.6, mb: 0.7 }}>
+            <StorageIcon fontSize="small" color="action" />
+            <Typography variant="caption" color="text.secondary">
+              SMART: дисков {storageStats.total}, проблемных {storageStats.problemCount}
+            </Typography>
+          </Box>
+        )}
+
+        <Box sx={{ mb: 0.8 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 0.8, mb: 0.25 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.6, minWidth: 0 }}>
+              <MailOutlineIcon fontSize="small" color="action" />
+              <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.25 }}>
+                {`Макс. архив Outlook: ${outlookUsage.usedGb.toFixed(1)} / ${outlookUsage.limitGb.toFixed(0)} ГБ`}
+              </Typography>
+            </Box>
+            <Chip size="small" color={outlookStatusColor(outlookMeta.status)} label={outlookStatusLabel(outlookMeta.status)} />
+          </Box>
+          <LinearProgress
+            variant="determinate"
+            value={outlookUsage.percent}
+            color={outlookUsage.percent >= 100 ? 'error' : (outlookUsage.percent >= 85 ? 'warning' : 'success')}
+            sx={{ height: 6, borderRadius: 4 }}
+          />
+        </Box>
+
+        {pc.has_hardware_changes && (
+          <Chip
+            size="small"
+            color={unseen ? 'warning' : 'default'}
+            label={`Изменения: ${pc.changes_count_30d || 0}`}
+          />
+        )}
+      </Paper>
+    </Grid>
+  );
+});
+
 function Computers() {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
@@ -636,6 +802,7 @@ function Computers() {
   const [q, setQ] = useState(initialQ);
   const [debouncedQuery, setDebouncedQuery] = useState(initialQ);
   const [searchFields, setSearchFields] = useState(DEFAULT_COMPUTER_SEARCH_FIELDS);
+  const [recentSearches, setRecentSearches] = useState(() => readRecentSearches());
   const [searchMeta, setSearchMeta] = useState({ total: 0, limit: COMPUTERS_PAGE_SIZE, offset: 0, has_more: false, next_offset: null });
   const [searchSummary, setSearchSummary] = useState(null);
   const [status, setStatus] = useState('all');
@@ -653,6 +820,8 @@ function Computers() {
   const [expandedLocations, setExpandedLocations] = useState({});
   const [expandedUserProfiles, setExpandedUserProfiles] = useState({});
   const [seenChangesByPc, setSeenChangesByPc] = useState(() => readSeenChangesMap());
+  const [cachedBranches, setCachedBranches] = useState([]);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
 
   const requestIdRef = useRef(0);
   const abortControllerRef = useRef(null);
@@ -664,9 +833,16 @@ function Computers() {
   const hasInitializedRef = useRef(false);
   const qRef = useRef(q);
   const debouncedQueryRef = useRef(debouncedQuery);
+  const detailRequestIdRef = useRef(0);
+  const detailAbortRef = useRef(null);
+  const loadMorePendingRef = useRef(false);
+  const handleLoadMoreRef = useRef(null);
+  const etagsRef = useRef(new Map());
 
   const scope = canViewAllComputers && showAllComputers ? 'all' : 'selected';
   const searchDebouncePending = normalizeComputersSearchInput(q) !== normalizeComputersSearchInput(debouncedQuery);
+  const isFastSearchPreset = searchFields.length === FAST_SEARCH_PRESET_FIELDS.length
+    && FAST_SEARCH_PRESET_FIELDS.every((key) => searchFields.includes(key));
 
   const clearPollTimer = useCallback(() => {
     if (pollTimerRef.current) {
@@ -695,21 +871,6 @@ function Computers() {
     debouncedQueryRef.current = debouncedQuery;
   }, [debouncedQuery]);
 
-  const loadSummary = useCallback(async ({ signal } = {}) => {
-    try {
-      const summary = await equipmentAPI.getComputersSummary({
-        ...searchFilterParams,
-        signal,
-      });
-      if (summary && typeof summary === 'object') {
-        setSearchSummary(summary);
-      }
-    } catch (err) {
-      if (isRequestAbortedError(err)) return;
-      console.error('Computers summary load failed', err);
-    }
-  }, [searchFilterParams]);
-
   const loadChangesDeferred = useCallback(() => {
     equipmentAPI.getAgentComputerChanges(50)
       .then((changeData) => {
@@ -723,15 +884,41 @@ function Computers() {
   }, []);
 
   useEffect(() => {
+    const normalized = normalizeComputersSearchInput(q);
+    if (normalized === normalizeComputersSearchInput(debouncedQueryRef.current)) return undefined;
+    if (normalized.length === 1) return undefined;
     const timer = setTimeout(() => {
-      setDebouncedQuery(normalizeComputersSearchInput(q));
+      setDebouncedQuery(normalized);
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [q]);
 
+  useEffect(() => {
+    const normalized = normalizeComputersSearchInput(debouncedQuery);
+    if (!normalized) return;
+    setRecentSearches((prev) => {
+      const next = [normalized, ...prev.filter((item) => item !== normalized)].slice(0, RECENT_SEARCHES_MAX);
+      persistRecentSearches(next);
+      return next;
+    });
+  }, [debouncedQuery]);
+
+  const handleRecentSearchClick = useCallback((queryText) => {
+    setQ(queryText);
+    setDebouncedQuery(queryText);
+  }, []);
+
+  const handleRecentSearchRemove = useCallback((queryText) => {
+    setRecentSearches((prev) => {
+      const next = prev.filter((item) => item !== queryText);
+      persistRecentSearches(next);
+      return next;
+    });
+  }, []);
+
   const getBackgroundRefreshLimit = useCallback(() => {
     const loadedCount = Number(loadedCountRef.current || 0);
-    return Math.min(500, loadedCount || COMPUTERS_PAGE_SIZE);
+    return Math.min(BACKGROUND_REFRESH_MAX_ITEMS, loadedCount || COMPUTERS_PAGE_SIZE);
   }, []);
 
   const load = useCallback(async ({
@@ -757,22 +944,46 @@ function Computers() {
       if (showFullLoader) setLoading(true);
       if (showRefreshOverlay) setRefreshing(true);
       if (append) setLoadingMore(true);
-      const pcPayload = await equipmentAPI.searchAgentComputers({
+      const requestOptions = {
         ...searchFilterParams,
         sortBy: 'hostname',
         sortDir: 'asc',
         limit,
         offset,
-        includeSummary: false,
+        includeSummary: true,
+      };
+      const etagKey = JSON.stringify(requestOptions);
+      const pcPayload = await equipmentAPI.searchAgentComputers({
+        ...requestOptions,
+        etag: etagsRef.current.get(etagKey),
+        requestId: `cmp-${requestId}`,
         signal: append ? undefined : controller.signal,
       });
       if (requestId !== requestIdRef.current) return false;
+      if (pcPayload?.notModified) {
+        setLastUpdatedAt(Date.now());
+        retryDelaySecRef.current = AUTO_REFRESH_BASE_SEC;
+        return true;
+      }
+      if (pcPayload?.etag) {
+        etagsRef.current.set(etagKey, pcPayload.etag);
+        if (etagsRef.current.size > 20) {
+          etagsRef.current.delete(etagsRef.current.keys().next().value);
+        }
+      }
       const items = Array.isArray(pcPayload?.items) ? pcPayload.items : (Array.isArray(pcPayload) ? pcPayload : []);
       setComputers((prev) => {
         const next = append ? [...prev, ...items] : items;
         loadedCountRef.current = next.length;
         return next;
       });
+      if (pcPayload && typeof pcPayload.summary === 'object' && pcPayload.summary !== null) {
+        setSearchSummary(pcPayload.summary);
+        if (!searchFilterParams.branch && pcPayload.summary.branches && typeof pcPayload.summary.branches === 'object') {
+          setCachedBranches(Object.keys(pcPayload.summary.branches));
+        }
+      }
+      setLastUpdatedAt(Date.now());
       setSearchMeta({
         total: Number(pcPayload?.total ?? items.length) || 0,
         limit: Number(pcPayload?.limit ?? limit) || limit,
@@ -795,6 +1006,10 @@ function Computers() {
         if (showRefreshOverlay) setRefreshing(false);
         if (append) setLoadingMore(false);
         inFlightRef.current = false;
+        if (loadMorePendingRef.current) {
+          loadMorePendingRef.current = false;
+          setTimeout(() => { void handleLoadMoreRef.current?.(); }, 0);
+        }
       }
     }
   }, [searchFilterParams]);
@@ -820,27 +1035,31 @@ function Computers() {
         offset: 0,
         limit: getBackgroundRefreshLimit(),
       });
-      await loadSummary();
       loadChangesDeferred();
       scheduleNextPoll(retryDelaySecRef.current);
     }, Math.max(1, nextDelaySec) * 1000);
-  }, [clearPollTimer, getBackgroundRefreshLimit, load, loadChangesDeferred, loadSummary]);
+  }, [clearPollTimer, getBackgroundRefreshLimit, load, loadChangesDeferred]);
 
   const handleManualRefresh = useCallback(async () => {
-    await Promise.all([
-      load({ withLoader: true, silent: false, append: false, offset: 0, limit: getBackgroundRefreshLimit() }),
-      loadSummary(),
-    ]);
+    await load({ withLoader: true, silent: false, append: false, offset: 0, limit: getBackgroundRefreshLimit() });
     loadChangesDeferred();
     scheduleNextPoll(retryDelaySecRef.current);
-  }, [getBackgroundRefreshLimit, load, loadChangesDeferred, loadSummary, scheduleNextPoll]);
+  }, [getBackgroundRefreshLimit, load, loadChangesDeferred, scheduleNextPoll]);
 
   const handleLoadMore = useCallback(async () => {
-    if (loadingMore || !searchMeta.has_more || inFlightRef.current) return;
+    if (loadingMore || !searchMeta.has_more) return;
+    if (inFlightRef.current) {
+      loadMorePendingRef.current = true;
+      return;
+    }
     const nextOffset = Number(searchMeta.next_offset ?? computers.length);
     if (!Number.isFinite(nextOffset) || nextOffset < 0) return;
     await load({ withLoader: false, append: true, offset: nextOffset, limit: COMPUTERS_PAGE_SIZE });
   }, [computers.length, load, loadingMore, searchMeta.has_more, searchMeta.next_offset]);
+
+  useEffect(() => {
+    handleLoadMoreRef.current = handleLoadMore;
+  }, [handleLoadMore]);
 
   useEffect(() => {
     const sentinel = loadMoreSentinelRef.current;
@@ -865,17 +1084,29 @@ function Computers() {
     setSelected(pc);
     setOpen(true);
     setDetailLoading(true);
+    const requestId = detailRequestIdRef.current + 1;
+    detailRequestIdRef.current = requestId;
+    if (detailAbortRef.current) {
+      detailAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    detailAbortRef.current = controller;
     try {
       const macAddress = String(pc.mac_address || '').trim();
       if (!macAddress) return;
-      const fullPayload = await equipmentAPI.getAgentComputer(macAddress, { scope });
+      const fullPayload = await equipmentAPI.getAgentComputer(macAddress, { scope, signal: controller.signal });
+      if (detailRequestIdRef.current !== requestId) return;
       if (fullPayload && typeof fullPayload === 'object') {
         setSelected(fullPayload);
       }
     } catch (err) {
-      console.error('Computer detail load failed', err);
+      if (!isRequestAbortedError(err)) {
+        console.error('Computer detail load failed', err);
+      }
     } finally {
-      setDetailLoading(false);
+      if (detailRequestIdRef.current === requestId) {
+        setDetailLoading(false);
+      }
     }
   }, [scope]);
 
@@ -887,16 +1118,13 @@ function Computers() {
       await equipmentAPI.hideComputer(macAddress);
       setOpen(false);
       setSelected(null);
-      await Promise.all([
-        load({ withLoader: false, silent: false, append: false, offset: 0, limit: COMPUTERS_PAGE_SIZE }),
-        loadSummary(),
-      ]);
+      await load({ withLoader: false, silent: false, append: false, offset: 0, limit: getBackgroundRefreshLimit() });
     } catch (err) {
       console.error('Computer hide failed', err);
     } finally {
       setHideActionLoading(false);
     }
-  }, [hideActionLoading, load, loadSummary, selected]);
+  }, [getBackgroundRefreshLimit, hideActionLoading, load, selected]);
 
   const handleUnhideSelected = useCallback(async () => {
     const macAddress = String(selected?.mac_address || '').trim();
@@ -906,16 +1134,36 @@ function Computers() {
       await equipmentAPI.unhideComputer(macAddress);
       setOpen(false);
       setSelected(null);
-      await Promise.all([
-        load({ withLoader: false, silent: false, append: false, offset: 0, limit: COMPUTERS_PAGE_SIZE }),
-        loadSummary(),
-      ]);
+      await load({ withLoader: false, silent: false, append: false, offset: 0, limit: getBackgroundRefreshLimit() });
     } catch (err) {
       console.error('Computer unhide failed', err);
     } finally {
       setHideActionLoading(false);
     }
-  }, [hideActionLoading, load, loadSummary, selected]);
+  }, [getBackgroundRefreshLimit, hideActionLoading, load, selected]);
+
+  const handleDeleteSelected = useCallback(async () => {
+    const macAddress = String(selected?.mac_address || '').trim();
+    if (!macAddress || hideActionLoading) return;
+    const hostname = String(selected?.hostname || '').trim() || macAddress;
+    const confirmed = window.confirm(
+      `Удалить хост «${hostname}» из инвентаря?\n\n` +
+      'Запись и история изменений будут удалены безвозвратно. ' +
+      'Если агент продолжает слать отчёты, хост появится снова — тогда используйте «В архив».'
+    );
+    if (!confirmed) return;
+    setHideActionLoading(true);
+    try {
+      await equipmentAPI.deleteComputer(macAddress);
+      setOpen(false);
+      setSelected(null);
+      await load({ withLoader: false, silent: false, append: false, offset: 0, limit: getBackgroundRefreshLimit() });
+    } catch (err) {
+      console.error('Computer delete failed', err);
+    } finally {
+      setHideActionLoading(false);
+    }
+  }, [getBackgroundRefreshLimit, hideActionLoading, load, selected]);
 
   const toggleSearchField = useCallback((fieldKey) => {
     setSearchFields((prev) => {
@@ -932,16 +1180,13 @@ function Computers() {
     let isActive = true;
     const init = async () => {
       loadedCountRef.current = 0;
-      await Promise.all([
-        load({
-          withLoader: !hasInitializedRef.current,
-          silent: false,
-          append: false,
-          offset: 0,
-          limit: COMPUTERS_PAGE_SIZE,
-        }),
-        loadSummary(),
-      ]);
+      await load({
+        withLoader: !hasInitializedRef.current,
+        silent: false,
+        append: false,
+        offset: 0,
+        limit: COMPUTERS_PAGE_SIZE,
+      });
       if (!isActive) return;
       hasInitializedRef.current = true;
       scheduleNextPoll(AUTO_REFRESH_BASE_SEC);
@@ -956,8 +1201,11 @@ function Computers() {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
+      if (detailAbortRef.current) {
+        detailAbortRef.current.abort();
+      }
     };
-  }, [clearPollTimer, load, loadChangesDeferred, loadSummary, scheduleNextPoll]);
+  }, [clearPollTimer, load, loadChangesDeferred, scheduleNextPoll]);
 
   useEffect(() => {
     const handleVisibilityChange = async () => {
@@ -976,13 +1224,12 @@ function Computers() {
         offset: 0,
         limit: getBackgroundRefreshLimit(),
       });
-      await loadSummary();
       loadChangesDeferred();
       scheduleNextPoll(retryDelaySecRef.current);
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [clearPollTimer, getBackgroundRefreshLimit, load, loadChangesDeferred, loadSummary, scheduleNextPoll]);
+  }, [clearPollTimer, getBackgroundRefreshLimit, load, loadChangesDeferred, scheduleNextPoll]);
 
   useEffect(() => {
     const reloadAfterDbSwitch = async () => {
@@ -995,10 +1242,7 @@ function Computers() {
       setSelected(null);
       setOpen(false);
       loadedCountRef.current = 0;
-      await Promise.all([
-        load({ withLoader: true, silent: false, append: false, offset: 0, limit: COMPUTERS_PAGE_SIZE }),
-        loadSummary(),
-      ]);
+      await load({ withLoader: true, silent: false, append: false, offset: 0, limit: COMPUTERS_PAGE_SIZE });
       loadChangesDeferred();
       scheduleNextPoll(AUTO_REFRESH_BASE_SEC);
     };
@@ -1018,7 +1262,7 @@ function Computers() {
       window.removeEventListener('database-changed', handleDatabaseChanged);
       window.removeEventListener('storage', handleStorage);
     };
-  }, [load, loadChangesDeferred, loadSummary, scheduleNextPoll]);
+  }, [load, loadChangesDeferred, scheduleNextPoll]);
 
   useEffect(() => {
     localStorage.setItem('computers_show_dashboard', showDashboard ? '1' : '0');
@@ -1072,39 +1316,48 @@ function Computers() {
     localStorage.setItem(SEEN_CHANGES_STORAGE_KEY, JSON.stringify(seenChangesByPc));
   }, [seenChangesByPc]);
 
-  const hasUnseenChanges = (pc) => {
+  const hasUnseenChanges = useCallback((pc) => {
     const lastTs = Number(pc?.last_change_at || 0);
     if (!lastTs) return false;
     const seenTs = Number(seenChangesByPc?.[pcChangeKey(pc)] || 0);
     return lastTs > seenTs;
-  };
+  }, [seenChangesByPc]);
 
-  const markPcChangesSeen = (pc) => {
+  const markPcChangesSeen = useCallback((pc) => {
     const ts = Number(pc?.last_change_at || 0);
     if (!ts) return;
     const key = pcChangeKey(pc);
     setSeenChangesByPc((prev) => {
       const current = Number(prev?.[key] || 0);
       if (current >= ts) return prev;
-      return { ...(prev || {}), [key]: ts };
+      return evictSeenChangesMap({ ...(prev || {}), [key]: ts });
     });
-  };
+  }, []);
 
-  const markAllChangesSeen = () => {
-    const next = { ...(seenChangesByPc || {}) };
-    computers.forEach((pc) => {
-      const ts = Number(pc?.last_change_at || 0);
-      if (!pc?.has_hardware_changes || !ts) return;
-      next[pcChangeKey(pc)] = Math.max(Number(next[pcChangeKey(pc)] || 0), ts);
+  const markAllChangesSeen = useCallback(() => {
+    setSeenChangesByPc((prev) => {
+      const next = { ...(prev || {}) };
+      computers.forEach((pc) => {
+        const ts = Number(pc?.last_change_at || 0);
+        if (!pc?.has_hardware_changes || !ts) return;
+        next[pcChangeKey(pc)] = Math.max(Number(next[pcChangeKey(pc)] || 0), ts);
+      });
+      return evictSeenChangesMap(next);
     });
-    setSeenChangesByPc(next);
-  };
+  }, [computers]);
+
+  const handleOpenComputer = useCallback((pc) => {
+    markPcChangesSeen(pc);
+    setExpandedUserProfiles({});
+    void openComputerDetail(pc);
+  }, [markPcChangesSeen, openComputerDetail]);
 
   const branches = useMemo(() => {
     const summaryBranches = searchSummary?.branches && typeof searchSummary.branches === 'object'
       ? Object.keys(searchSummary.branches)
       : [];
     const uniq = new Set([
+      ...cachedBranches,
       ...summaryBranches,
       ...computers.map((pc) => String(pc.branch_name || 'Без филиала').trim() || 'Без филиала'),
     ]);
@@ -1112,7 +1365,26 @@ function Computers() {
       uniq.add(branch);
     }
     return Array.from(uniq).sort((a, b) => a.localeCompare(b, 'ru'));
-  }, [branch, computers, searchSummary]);
+  }, [branch, cachedBranches, computers, searchSummary]);
+
+  const cardMetaByKey = useMemo(() => {
+    const map = new Map();
+    computers.forEach((pc) => {
+      const outlookMeta = resolveOutlookMeta(pc);
+      map.set(pcChangeKey(pc), {
+        storageStats: getStorageHealthStats(pc),
+        outlookMeta,
+        driveUsage: resolveCardDriveUsage(pc),
+        outlookUsage: resolveOutlookArchiveUsage(outlookMeta),
+      });
+    });
+    return map;
+  }, [computers]);
+
+  const pendingQueryLength = normalizeComputersSearchInput(q).length;
+  const searchHelperText = searchDebouncePending && pendingQueryLength === 1
+    ? 'Минимум 2 символа — или Enter'
+    : (searchDebouncePending || refreshing ? 'Обновляем список…' : undefined);
 
   const filtered = computers;
 
@@ -1223,6 +1495,11 @@ function Computers() {
               control={<Switch checked={showDashboard} onChange={(e) => setShowDashboard(e.target.checked)} />}
               label={showDashboard ? 'Скрыть дашборд' : 'Показать дашборд'}
             />
+            {lastUpdatedAt ? (
+              <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
+                Обновлено: {formatUpdatedAgo(lastUpdatedAt)}
+              </Typography>
+            ) : null}
             <Tooltip title="Обновить данные">
               <span>
                 <IconButton aria-label="Обновить данные" onClick={handleManualRefresh} disabled={loading} color="primary">
@@ -1292,6 +1569,12 @@ function Computers() {
                 label="Поиск"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter') return;
+                  const normalized = normalizeComputersSearchInput(e.currentTarget.value);
+                  if (!normalized) return;
+                  setDebouncedQuery(normalized);
+                }}
                 onPaste={(e) => {
                   const pasted = e.clipboardData?.getData('text');
                   if (pasted == null) return;
@@ -1299,7 +1582,7 @@ function Computers() {
                   setQ(normalizeComputersSearchInput(pasted));
                 }}
                 placeholder="ПК, ФИО, профиль, PST/OST, IP, MAC"
-                helperText={searchDebouncePending || refreshing ? 'Обновляем список…' : undefined}
+                helperText={searchHelperText}
               />
             </Grid>
             <Grid item xs={12} md={8}>
@@ -1322,7 +1605,36 @@ function Computers() {
                     />
                   );
                 })}
+                <Chip
+                  size="small"
+                  clickable
+                  color={isFastSearchPreset ? 'success' : 'default'}
+                  variant={isFastSearchPreset ? 'filled' : 'outlined'}
+                  label="Быстрый: ПК/пользователь"
+                  onClick={() =>
+                    setSearchFields(isFastSearchPreset ? DEFAULT_COMPUTER_SEARCH_FIELDS : FAST_SEARCH_PRESET_FIELDS)
+                  }
+                  sx={{ height: 26 }}
+                />
               </Stack>
+              {recentSearches.length > 0 ? (
+                <Stack direction="row" spacing={0.6} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 0.8 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Недавние:
+                  </Typography>
+                  {recentSearches.map((queryText) => (
+                    <Chip
+                      key={queryText}
+                      size="small"
+                      variant="outlined"
+                      label={queryText}
+                      onClick={() => handleRecentSearchClick(queryText)}
+                      onDelete={() => handleRecentSearchRemove(queryText)}
+                      sx={{ height: 24 }}
+                    />
+                  ))}
+                </Stack>
+              ) : null}
             </Grid>
             <Grid item xs={12} sm={6} md={2}>
               <FormControl fullWidth size="small">
@@ -1381,7 +1693,7 @@ function Computers() {
                   clickable
                   color={hiddenOnly ? 'warning' : 'default'}
                   variant={hiddenOnly ? 'filled' : 'outlined'}
-                  label="Скрытые"
+                  label="Архив"
                   onClick={() => setHiddenOnly((prev) => !prev)}
                   sx={{ height: 28 }}
                 />
@@ -1395,7 +1707,23 @@ function Computers() {
         ) : null}
 
         {loading ? (
-          <Box sx={{ py: 8, display: 'flex', justifyContent: 'center' }}><CircularProgress /></Box>
+          <Stack spacing={1.5}>
+            {[0, 1].map((groupIdx) => (
+              <Paper key={groupIdx} variant="outlined" sx={{ p: 1.2 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                  <Skeleton variant="text" width="18%" height={26} />
+                  <Skeleton variant="rounded" width={64} height={24} />
+                </Box>
+                <Grid container spacing={1.2}>
+                  {[0, 1, 2, 3].map((cardIdx) => (
+                    <Grid item xs={12} sm={6} md={4} lg={3} xl={2} key={cardIdx}>
+                      <Skeleton variant="rounded" height={148} />
+                    </Grid>
+                  ))}
+                </Grid>
+              </Paper>
+            ))}
+          </Stack>
         ) : grouped.length === 0 ? (
           <Paper variant="outlined" sx={{ p: 4, textAlign: 'center' }}><Typography color="text.secondary">Нет данных по выбранным фильтрам.</Typography></Paper>
         ) : (
@@ -1435,116 +1763,16 @@ function Computers() {
                         <Collapse in={isExpanded} timeout="auto" unmountOnExit>
                           <Grid container spacing={1.2} sx={{ mt: 0.5 }}>
                             {locationGroup.items.map((pc, idx) => {
-                              const net = pc.network_link || {};
-                              const storageStats = getStorageHealthStats(pc);
-                              const outlookMeta = resolveOutlookMeta(pc);
-                              const driveUsage = resolveCardDriveUsage(pc);
-                              const outlookUsage = resolveOutlookArchiveUsage(outlookMeta);
+                              const cardKey = pcChangeKey(pc);
                               return (
-                                <Grid item xs={12} sm={6} md={4} lg={3} xl={2} key={`${pc.mac_address || pc.hostname || idx}`}>
-                                  <Paper
-                                    variant="outlined"
-                                    onClick={() => {
-                                      markPcChangesSeen(pc);
-                                      setExpandedUserProfiles({});
-                                      openComputerDetail(pc);
-                                    }}
-                                    sx={{
-                                      ...getOfficePanelSx(ui, {
-                                        p: 1.1,
-                                        height: '100%',
-                                        cursor: 'pointer',
-                                        boxShadow: 'none',
-                                        '&:hover': {
-                                          borderColor: ui.borderStrong,
-                                          bgcolor: ui.panelBg,
-                                          boxShadow: 'none',
-                                        },
-                                      }),
-                                    }}
-                                  >
-                                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.7 }}>
-                                      <Typography variant="subtitle2" sx={{ fontWeight: 700, pr: 1, lineHeight: 1.25, wordBreak: 'break-word' }}>
-                                        {pc.hostname || 'Неизвестный ПК'}
-                                      </Typography>
-                                      <Chip size="small" color={statusColor(pc.status)} label={statusLabel(pc.status)} />
-                                    </Box>
-
-                                    {pc.is_unassigned && (
-                                      <Chip size="small" color="warning" variant="outlined" label="Без привязки" sx={{ mb: 0.7 }} />
-                                    )}
-
-                                    <Typography variant="caption" sx={{ fontWeight: 600, display: 'block', wordBreak: 'break-word' }}>
-                                      {pc.user_full_name || 'ФИО не определено'}
-                                    </Typography>
-                                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.7, wordBreak: 'break-word' }}>
-                                      {pc.user_login || pc.current_user || '-'}
-                                    </Typography>
-
-                                    <Stack spacing={0.35} sx={{ mb: 0.75 }}>
-                                      <Typography variant="caption" sx={{ display: 'block', wordBreak: 'break-word' }}>IP: <b>{resolvePcIp(pc) || '-'}</b></Typography>
-                                      <Typography variant="caption" sx={{ display: 'block', wordBreak: 'break-word' }}>MAC: <b>{pc.mac_address || '-'}</b></Typography>
-                                      <Typography variant="caption" sx={{ display: 'block', wordBreak: 'break-word' }}>БД: <b>{pc.database_name || pc.database_id || '-'}</b></Typography>
-                                      <Typography variant="caption" sx={{ display: 'block' }}>Возраст: <b>{formatAge(pc.age_seconds)}</b></Typography>
-                                    </Stack>
-
-                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.6, mb: 0.7 }}>
-                                      <LanIcon fontSize="small" color="action" />
-                                      <Typography variant="caption" color="text.secondary">
-                                        {net.device_code ? `${net.device_code} / ${net.port_name || 'порт ?'} / ${net.socket_code || 'розетка ?'}` : 'Сетевое подключение не определено'}
-                                      </Typography>
-                                    </Box>
-
-                                    <Box sx={{ mb: 0.8 }}>
-                                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.25 }}>
-                                        {driveUsage
-                                          ? `Хранилище ${driveUsage.mountpoint}: ${driveUsage.usedGb !== null ? `${driveUsage.usedGb.toFixed(1)} / ${driveUsage.totalGb?.toFixed(1) || '-'} ГБ` : `${driveUsage.usedPercent ?? 0}%`}${driveUsage.isFallback ? ' (по первому диску)' : ''}`
-                                          : 'Хранилище C: нет данных'}
-                                      </Typography>
-                                      <LinearProgress
-                                        variant="determinate"
-                                        value={driveUsage?.usedPercent ?? 0}
-                                        color={(driveUsage?.usedPercent ?? 0) >= 90 ? 'error' : ((driveUsage?.usedPercent ?? 0) >= 75 ? 'warning' : 'primary')}
-                                        sx={{ height: 6, borderRadius: 4 }}
-                                      />
-                                    </Box>
-
-                                    {storageStats.total > 0 && (
-                                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.6, mb: 0.7 }}>
-                                        <StorageIcon fontSize="small" color="action" />
-                                        <Typography variant="caption" color="text.secondary">
-                                          SMART: дисков {storageStats.total}, проблемных {storageStats.problemCount}
-                                        </Typography>
-                                      </Box>
-                                    )}
-
-                                    <Box sx={{ mb: 0.8 }}>
-                                      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 0.8, mb: 0.25 }}>
-                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.6, minWidth: 0 }}>
-                                          <MailOutlineIcon fontSize="small" color="action" />
-                                          <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.25 }}>
-                                            {`Макс. архив Outlook: ${outlookUsage.usedGb.toFixed(1)} / ${outlookUsage.limitGb.toFixed(0)} ГБ`}
-                                          </Typography>
-                                        </Box>
-                                        <Chip size="small" color={outlookStatusColor(outlookMeta.status)} label={outlookStatusLabel(outlookMeta.status)} />
-                                      </Box>
-                                      <LinearProgress
-                                        variant="determinate"
-                                        value={outlookUsage.percent}
-                                        color={outlookUsage.percent >= 100 ? 'error' : (outlookUsage.percent >= 85 ? 'warning' : 'success')}
-                                        sx={{ height: 6, borderRadius: 4 }}
-                                      />
-                                    </Box>
-
-                                    {pc.has_hardware_changes && (
-                                      <Chip
-                                        size="small"
-                                        color={hasUnseenChanges(pc) ? 'warning' : 'default'}
-                                        label={`Изменения: ${pc.changes_count_30d || 0}`}
-                                      />
-                                    )}
-                                  </Paper>
-                                </Grid>
+                                <ComputerCard
+                                  key={cardKey !== 'host:' ? cardKey : `row-${idx}`}
+                                  pc={pc}
+                                  meta={cardMetaByKey.get(cardKey)}
+                                  unseen={hasUnseenChanges(pc)}
+                                  ui={ui}
+                                  onOpen={handleOpenComputer}
+                                />
                               );
                             })}
                           </Grid>
@@ -1580,7 +1808,17 @@ function Computers() {
           </Stack>
         )}
 
-        <Drawer anchor="right" open={open} onClose={() => setOpen(false)}>
+        <Drawer
+          anchor="right"
+          open={open}
+          onClose={() => {
+            setOpen(false);
+            setSelected(null);
+            if (detailAbortRef.current) {
+              detailAbortRef.current.abort();
+            }
+          }}
+        >
           <Box sx={{ width: { xs: '100vw', sm: 560 }, maxWidth: '100vw', p: { xs: 2, sm: 2.5 }, bgcolor: 'background.default', height: '100%', overflowY: 'auto' }}>
             {!selected ? null : (
               <Stack spacing={1.4}>
@@ -1596,10 +1834,10 @@ function Computers() {
                       <Chip size="small" color="warning" label="Есть изменения" />
                     ) : null}
                     {selected.is_hidden || selected.hidden_at ? (
-                      <Chip size="small" color="warning" variant="outlined" label="Скрыт" />
+                      <Chip size="small" color="warning" variant="outlined" label="В архиве" />
                     ) : null}
                   </Stack>
-                  {canManageComputers ? <Stack direction="row" spacing={0.8} sx={{ mb: 0.8 }}>
+                  {canManageComputers ? <Stack direction="row" spacing={0.8} flexWrap="wrap" useFlexGap sx={{ mb: 0.8 }}>
                     {selected.is_hidden || selected.hidden_at || hiddenOnly ? (
                       <Button
                         size="small"
@@ -1608,7 +1846,7 @@ function Computers() {
                         disabled={hideActionLoading || detailLoading}
                         onClick={() => { void handleUnhideSelected(); }}
                       >
-                        Вернуть
+                        Из архива
                       </Button>
                     ) : (
                       <Button
@@ -1618,9 +1856,18 @@ function Computers() {
                         disabled={hideActionLoading || detailLoading}
                         onClick={() => { void handleHideSelected(); }}
                       >
-                        Скрыть
+                        В архив
                       </Button>
                     )}
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      color="error"
+                      disabled={hideActionLoading || detailLoading}
+                      onClick={() => { void handleDeleteSelected(); }}
+                    >
+                      Удалить
+                    </Button>
                   </Stack> : null}
                   <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.8 }}>
                     Последняя активность: {formatTs(selected.last_seen_at || selected.timestamp)} · Возраст: {formatAge(selected.age_seconds)}
@@ -1872,6 +2119,17 @@ function Computers() {
                 <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Система</Typography>
                 <Paper variant="outlined" sx={{ p: 1.4 }}>
                   <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>Модель ITinvent: {selected.inventory_model_name || '-'}</Typography>
+                  <Typography variant="body2">Инвентарный №: {selected.inventory_inv_no || '-'}</Typography>
+                  {selected.inventory_inv_no ? (
+                    <Button
+                      component={RouterLink}
+                      to={`/database?inv_no=${encodeURIComponent(selected.inventory_inv_no)}${selected.database_id ? `&db_id=${encodeURIComponent(selected.database_id)}` : ''}`}
+                      size="small"
+                      sx={{ mt: 0.4 }}
+                    >
+                      Открыть карточку в базе
+                    </Button>
+                  ) : null}
                   <Typography variant="body2">CPU: {selected.cpu_model || '-'}</Typography>
                   <Typography variant="body2">RAM: {selected.ram_gb ? `${selected.ram_gb} ГБ` : '-'}</Typography>
                   <Typography variant="body2">Серийный номер BIOS: {selected.system_serial || '-'}</Typography>
@@ -1970,9 +2228,24 @@ function Computers() {
                       <Typography variant="body2" sx={{ fontWeight: 600 }}>
                         {mon.manufacturer || 'Неизвестно'} {mon.product_code || ''}
                       </Typography>
-                      <Typography variant="caption" color="text.secondary">
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                         S/N: {mon.serial_number || '-'} {mon.serial_source ? `(${mon.serial_source})` : ''}
                       </Typography>
+                      {mon.inventory_inv_no ? (
+                        <>
+                          <Typography variant="caption" sx={{ display: 'block', fontWeight: 600 }}>
+                            {`Инв. №: ${mon.inventory_inv_no}${mon.inventory_model_name ? ` · ${mon.inventory_model_name}` : ''}`}
+                          </Typography>
+                          <Button
+                            component={RouterLink}
+                            to={`/database?inv_no=${encodeURIComponent(mon.inventory_inv_no)}${(mon.inventory_db_id || selected.database_id) ? `&db_id=${encodeURIComponent(mon.inventory_db_id || selected.database_id)}` : ''}`}
+                            size="small"
+                            sx={{ mt: 0.2 }}
+                          >
+                            Открыть в базе
+                          </Button>
+                        </>
+                      ) : null}
                     </Paper>
                   ))
                 ) : (

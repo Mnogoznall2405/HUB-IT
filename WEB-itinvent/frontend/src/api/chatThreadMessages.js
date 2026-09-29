@@ -88,6 +88,21 @@ export const chatThreadMessagesAPI = {
     );
     return response.data;
   },
+
+  votePoll: async (conversationId, messageId, optionIndex) => {
+    const response = await apiClient.post(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/poll-vote`,
+      { option_index: optionIndex },
+    );
+    return response.data;
+  },
+
+  closePoll: async (conversationId, messageId) => {
+    const response = await apiClient.post(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/poll-close`,
+    );
+    return response.data;
+  },
 };
 
 export default chatThreadMessagesAPI;

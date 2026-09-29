@@ -19,6 +19,7 @@ import SecurityRoundedIcon from '@mui/icons-material/SecurityRounded';
 import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded';
 import VerifiedUserOutlinedIcon from '@mui/icons-material/VerifiedUserOutlined';
 import DesktopInstallerDownload from '../components/desktop/DesktopInstallerDownload';
+import MobileInstallerDownload from '../components/mobile/MobileInstallerDownload';
 import { authAPI } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { resolveAfterAboutOnboardingPath } from '../lib/aboutOnboarding';
@@ -30,13 +31,13 @@ const CAPABILITIES = [
     icon: ChatBubbleOutlineRoundedIcon,
     title: 'Общение',
     text: 'Личные и групповые чаты, почта, уведомления и адресная книга в одном рабочем пространстве.',
-    items: ['Личные и групповые чаты', 'Почта и уведомления', 'Адресная книга'],
+    items: ['Личные и групповые чаты', 'Почта и уведомления', 'Лента объявлений', 'Адресная книга'],
   },
   {
     icon: TaskAltRoundedIcon,
     title: 'Работа',
     text: 'В каждой задаче собраны сроки, участники, обсуждение, чек-лист и нужные документы.',
-    items: ['Задачи и обсуждения', 'Документы и файлы', 'Просмотр и печать'],
+    items: ['Задачи и обсуждения', 'Билеты и документооборот', 'Документы и файлы', 'Просмотр и печать'],
   },
   {
     icon: ComputerRoundedIcon,
@@ -350,6 +351,7 @@ export default function About({ mode = 'onboarding' }) {
             <a href="#collaboration">Общение</a>
             <a href="#mobile">На телефоне</a>
             <a href="#desktop">Для Windows</a>
+            <a href="/help" onClick={(event) => { event.preventDefault(); navigate('/help'); }}>Справка</a>
           </nav>
           <button type="button" className="about-header__login" onClick={() => { void handleContinue(); }} disabled={completing}>
             Перейти в HUB
@@ -377,7 +379,7 @@ export default function About({ mode = 'onboarding' }) {
             ) : null}
             <ul className="about-hero__facts" aria-label="Ключевые особенности">
               <li>Работает в браузере и на телефоне</li>
-              <li>Есть приложение для Windows</li>
+              <li>Есть приложения для Windows и Android</li>
               <li>Доступ зависит от рабочих прав</li>
             </ul>
           </div>
@@ -527,8 +529,11 @@ export default function About({ mode = 'onboarding' }) {
           <div className="about-section-heading">
             <p className="about-kicker">HUB на телефоне</p>
             <h2 id="mobile-title">HUB адаптируется к экрану телефона</h2>
-            <p>Откройте HUB в мобильном браузере: задачи, чаты, почта и другие доступные разделы останутся под рукой.</p>
+            <p>Откройте HUB в мобильном браузере или установите приложение для Android — задачи, чаты, почта и другие разделы останутся под рукой.</p>
             <p className="about-data-note">На всех экранах показаны вымышленные сотрудники и тестовые данные.</p>
+          </div>
+          <div className="about-mobile-install">
+            <MobileInstallerDownload variant="section" />
           </div>
           <div className="about-mobile-gallery">
             {MOBILE_SCREENS.map((screen) => (

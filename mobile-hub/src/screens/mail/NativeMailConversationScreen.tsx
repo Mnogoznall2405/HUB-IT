@@ -146,7 +146,7 @@ function NativeMailConversationContent() {
           if (result.ok === false || Number(result.failed || 0) > 0) {
             throw new Error('Exchange не применил статус ко всем письмам переписки');
           }
-          if (folder === 'inbox') publishNativeMailUnreadDelta(-Math.max(0, Number(detail.unread_count || 0)));
+          if (folder === 'inbox') publishNativeMailUnreadDelta(-Math.max(0, Number(detail.unread_count || 0)), { mailboxId, folder });
         }).catch(() => {
           if (!isCurrent()) return;
           setConversation((current) => current?.conversation_id === detail.conversation_id ? detail : current);
@@ -314,7 +314,7 @@ function NativeMailConversationContent() {
       if (folder === 'inbox') {
         const previousUnread = Math.max(0, Number(conversation.unread_count || 0));
         const nextUnread = markRead ? 0 : Math.max(1, Number(conversation.messages_count || conversation.items.length || 1));
-        publishNativeMailUnreadDelta(nextUnread - previousUnread);
+        publishNativeMailUnreadDelta(nextUnread - previousUnread, { mailboxId, folder });
       }
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось изменить статус переписки.'));

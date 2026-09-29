@@ -42,11 +42,25 @@ export function equipmentWorkKinds(item: EquipmentRecord): EquipmentWorkKind[] {
   ]));
 }
 
+export function isPrinterLikeEquipment(item: EquipmentRecord | null | undefined): boolean {
+  if (!item) return false;
+  const text = [item.type_name, item.model_name, item.vendor_name].join(' ').toLowerCase();
+  return hasAnyKeyword(text, PRINTER_MFU_KEYWORDS);
+}
+
 export function equipmentWorkKindLabel(kind: EquipmentWorkKind): string {
   if (kind === 'cartridge') return 'Замена картриджа';
   if (kind === 'battery') return 'Замена батареи';
   if (kind === 'component') return 'Замена компонентов';
   return 'Чистка компьютера';
+}
+
+const CONSUMABLE_CARTRIDGE_TOKENS = ['картридж', 'катридж', 'тонер', 'cartridge', 'toner'];
+
+export function isCartridgeLikeConsumable(item: ConsumableRecord | null | undefined): boolean {
+  if (!item) return false;
+  const text = `${item.type_name} ${item.model_name}`.toLocaleLowerCase('ru-RU');
+  return CONSUMABLE_CARTRIDGE_TOKENS.some((token) => text.includes(token));
 }
 
 export function filterConsumables(items: ConsumableRecord[], query: string): ConsumableRecord[] {
@@ -66,6 +80,8 @@ export function filterConsumables(items: ConsumableRecord[], query: string): Con
 export type InventoryQrPayload = {
   inventoryNumber: string;
   databaseId: string;
+  kind?: 'equipment' | 'consumable';
+  itemId?: number;
 };
 
 export function parseInventoryQrPayload(value: unknown): InventoryQrPayload | null {
@@ -78,12 +94,23 @@ export function parseInventoryQrPayload(value: unknown): InventoryQrPayload | nu
       && parsed.pathname.replace(/\/+$/, '') === '/database';
     const isAppLink = parsed.protocol === 'hubit:' && parsed.hostname === 'database';
     if (isWebLink || isAppLink) {
+      const databaseId = String(parsed.searchParams.get('db_id') || '').trim();
+      if (databaseId.length > 100) return null;
+
+      // Consumable QR carries ITEMS.ID — legacy consumable INV_NO can repeat.
+      const consumableId = ['consumable', 'consumable_id', 'consumableId']
+        .map((key) => String(parsed.searchParams.get(key) || '').trim())
+        .find(Boolean) || '';
+      if (consumableId) {
+        if (!/^\d+$/.test(consumableId)) return null;
+        return { kind: 'consumable', itemId: Number(consumableId), inventoryNumber: '', databaseId };
+      }
+
       const inventoryNumber = ['inv_no', 'invNo', 'equipment']
         .map((key) => String(parsed.searchParams.get(key) || '').trim())
         .find(Boolean) || '';
-      const databaseId = String(parsed.searchParams.get('db_id') || '').trim();
-      if (!inventoryNumber || inventoryNumber.length > 200 || databaseId.length > 100) return null;
-      return { inventoryNumber, databaseId };
+      if (!inventoryNumber || inventoryNumber.length > 200) return null;
+      return { kind: 'equipment', inventoryNumber, databaseId };
     }
   } catch {
     // Continue with the established structured or plain inventory payload.
@@ -93,9 +120,9 @@ export function parseInventoryQrPayload(value: unknown): InventoryQrPayload | nu
   const match = text.match(/^INV_NO:\s*(.+)$/im);
   if (match) {
     const invNo = String(match[1] || '').trim();
-    return invNo === '-' ? null : { inventoryNumber: invNo, databaseId: '' };
+    return invNo === '-' ? null : { kind: 'equipment', inventoryNumber: invNo, databaseId: '' };
   }
-  return text.includes('\n') ? null : { inventoryNumber: text, databaseId: '' };
+  return text.includes('\n') ? null : { kind: 'equipment', inventoryNumber: text, databaseId: '' };
 }
 
 export function parseInventoryQrText(value: unknown): string {

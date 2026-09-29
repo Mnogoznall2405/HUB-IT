@@ -328,3 +328,39 @@ it('loads recent equipment snapshots and records a cleaning natively', async () 
   });
   expect(client.post).toHaveBeenCalledWith('/json/works/cleaning', expect.objectContaining({ serial_number: 'SN-1', db_name: 'OBJ' }));
 });
+
+it('passes the universal search field scope for model lookups', async () => {
+  client.get.mockResolvedValueOnce({ data: { equipment: [], total: 0, page: 1, pages: 0 } });
+  await searchEquipment('LaserJet M404', 1, 8, 'OBJ', 'model');
+  expect(client.get).toHaveBeenCalledWith('/equipment/search/universal', {
+    params: { q: 'LaserJet M404', page: 1, limit: 8, field: 'model' },
+    headers: expect.objectContaining({ 'X-Database-ID': 'OBJ' }),
+  });
+});
+
+it('consumes cartridge stock, writes the replacement history and returns qty_new', async () => {
+  client.post
+    .mockResolvedValueOnce({ data: { qty_new: 4 } })
+    .mockResolvedValueOnce({ data: { timestamp: 'now' } });
+  const equipment = {
+    id: 7, inv_no: 'INV-9', serial_no: 'SN-9', branch_name: 'Филиал', location_name: 'Кабинет',
+    employee_name: 'Иванов', type_name: 'МФУ', model_name: 'LaserJet M404', vendor_name: 'HP',
+    hw_serial_no: '', part_no: '', status_name: '', employee_dept: '', employee_email: '', ip_address: '',
+    mac_address: '', network_name: '', domain_name: '', description: '', hub_db_id: '', hub_db_name: '', raw: {},
+  };
+  const consumable = {
+    id: 55, inv_no: 'C-55', type_name: 'Картридж', model_name: 'CF283A', qty: 5,
+    branch_name: 'Филиал', location_name: 'Склад', part_no: '', description: '', raw: {},
+  };
+  const result = await recordEquipmentWork({ kind: 'cartridge', databaseId: 'OBJ', equipment, consumable });
+  expect(result.qty_new).toBe(4);
+  expect(client.post).toHaveBeenNthCalledWith(1, '/equipment/consumables/consume', {
+    item_id: 55, inv_no: 'C-55', qty: 1, reason: 'cartridge',
+  }, expect.objectContaining({ headers: expect.objectContaining({ 'X-Database-ID': 'OBJ' }) }));
+  expect(client.post).toHaveBeenNthCalledWith(2, '/json/works/cartridge', expect.objectContaining({
+    serial_number: 'SN-9',
+    inv_no: 'INV-9',
+    cartridge_model: 'CF283A',
+    additional_data: expect.objectContaining({ consumable_item_id: 55 }),
+  }));
+});

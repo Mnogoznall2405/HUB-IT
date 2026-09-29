@@ -13,9 +13,22 @@ it('keeps Native Warehouse 1C behind an explicit canary flag', () => {
 it('maps only the exact public root', () => {
   expect(nativeWarehouse1CDestinationFromPortalPath('/warehouse-1c')).toEqual({ pathname: '/(shell)/warehouse-1c' });
   expect(nativeWarehouse1CDestinationFromPortalPath('/warehouse-1c/')).toEqual({ pathname: '/(shell)/warehouse-1c' });
-  expect(nativeWarehouse1CDestinationFromPortalPath('/warehouse-1c?warehouseRef=private-ref')).toBeNull();
   expect(nativeWarehouse1CDestinationFromPortalPath('/warehouse-1c/movements')).toBeNull();
   expect(nativeWarehouse1CDestinationFromPortalPath('/warehouse-1c#balances')).toBeNull();
+});
+
+it('carries the bounded deep-link tab and refs from the web URL', () => {
+  expect(nativeWarehouse1CDestinationFromPortalPath('/warehouse-1c?tab=movements&nomenclatureRef=ref-1&warehouseRef=wh-2')).toEqual({
+    pathname: '/(shell)/warehouse-1c',
+    params: { tab: 'movements', nomenclatureRef: 'ref-1', warehouseRef: 'wh-2' },
+  });
+  expect(nativeWarehouse1CDestinationFromPortalPath('/warehouse-1c?warehouseRef=wh-1')).toEqual({
+    pathname: '/(shell)/warehouse-1c',
+    params: { warehouseRef: 'wh-1' },
+  });
+  expect(nativeWarehouse1CDestinationFromPortalPath('/warehouse-1c?tab=admin&nomenclatureRef=')).toEqual({
+    pathname: '/(shell)/warehouse-1c',
+  });
 });
 
 it('builds a web fallback without putting catalog names into the URL', () => {

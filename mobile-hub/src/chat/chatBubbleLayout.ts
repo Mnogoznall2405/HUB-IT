@@ -11,7 +11,10 @@ export type ChatBubbleGroupPosition = 'single' | 'first' | 'middle' | 'last';
 export type ChatBubbleMetaMode = 'inline' | 'overlay' | 'row';
 
 export const CHAT_PHOTO_DEFAULT_ASPECT = 1.35;
-export const CHAT_PHOTO_MIN_ASPECT = 0.62;
+// DEV-MEDIA-2: portrait photos were capped so thin (~0.62 min aspect, ~58%
+// width, height pinned to width/1.35) they rendered tiny. Telegram-like
+// portrait frames reach ~half the screen height.
+export const CHAT_PHOTO_MIN_ASPECT = 0.5;
 export const CHAT_PHOTO_MAX_ASPECT = 1.9;
 export const CHAT_STICKER_SIZE = 148;
 export const CHAT_SENDER_AVATAR_SIZE = 28;
@@ -111,14 +114,14 @@ export function resolveChatPhotoAspect(width?: number | null, height?: number | 
 
 export function resolveChatPhotoWidth(windowWidth: number): number {
   const safeWidth = Number(windowWidth || 0);
-  if (!Number.isFinite(safeWidth) || safeWidth <= 0) return 232;
-  return Math.max(164, Math.min(248, Math.round(safeWidth * 0.58)));
+  if (!Number.isFinite(safeWidth) || safeWidth <= 0) return 264;
+  return Math.max(196, Math.min(296, Math.round(safeWidth * 0.72)));
 }
 
 export function resolveChatPhotoMaxHeight(windowHeight: number): number {
   const safeHeight = Number(windowHeight || 0);
-  if (!Number.isFinite(safeHeight) || safeHeight <= 0) return 280;
-  return Math.max(220, Math.min(320, Math.round(safeHeight * 0.38)));
+  if (!Number.isFinite(safeHeight) || safeHeight <= 0) return 340;
+  return Math.max(280, Math.min(420, Math.round(safeHeight * 0.52)));
 }
 
 export function resolveChatPhotoFrame({

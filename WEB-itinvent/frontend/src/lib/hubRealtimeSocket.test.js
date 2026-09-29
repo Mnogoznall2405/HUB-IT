@@ -151,6 +151,25 @@ describe('HubRealtimeSocketClient', () => {
     release();
   });
 
+  it('reconnects after a 1008 slow-consumer close but not after 4403 forbidden', async () => {
+    const { HubRealtimeSocketClient } = await loadHubRealtimeSocket();
+    const client = new HubRealtimeSocketClient();
+    const release = client.retain();
+
+    MockWebSocket.instances[0].emitOpen();
+    MockWebSocket.instances[0].emitClose({ code: 1008 });
+    await vi.advanceTimersByTimeAsync(3_499);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    MockWebSocket.instances[1].emitOpen();
+    MockWebSocket.instances[1].emitClose({ code: 4403 });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    release();
+  });
+
   it('refreshes authorization once after a 4401 close', async () => {
     const { HubRealtimeSocketClient } = await loadHubRealtimeSocket();
     const client = new HubRealtimeSocketClient();
@@ -177,7 +196,13 @@ describe('HubRealtimeSocketClient', () => {
     await vi.advanceTimersByTimeAsync(100_000);
 
     expect(socket.readyState).toBe(MockWebSocket.CLOSED);
-    expect(JSON.parse(socket.sent[0])).toEqual({ type: 'hub.realtime.ping', payload: {} });
+    const pings = socket.sent.map((raw) => JSON.parse(raw))
+      .filter((message) => message.type === 'hub.realtime.ping');
+    expect(pings.length).toBeGreaterThanOrEqual(3);
+    expect(pings.every((message) => message.payload && typeof message.payload === 'object')).toBe(true);
+    const requestIds = pings.map((message) => message.request_id);
+    expect(requestIds.every((id) => typeof id === 'string' && id.trim().length > 0)).toBe(true);
+    expect(new Set(requestIds).size).toBe(requestIds.length);
     release();
   });
 

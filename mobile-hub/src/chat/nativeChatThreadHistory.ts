@@ -66,10 +66,10 @@ export function scheduleNativeChatThreadSnapshotWrite(
   conversationId: string,
   snapshot: NativeChatThreadSnapshot,
   options: { generation?: number; currentUserId?: number | null } = {},
-): Promise<void> {
+): Promise<boolean> {
   const owner = Number(userId || 0);
   const key = String(conversationId || '').trim();
-  if (!Number.isInteger(owner) || owner <= 0 || !key) return Promise.resolve();
+  if (!Number.isInteger(owner) || owner <= 0 || !key) return Promise.resolve(false);
   const generation = options.generation ?? writeGeneration;
   const job: ScheduledThreadWrite = {
     generation,
@@ -80,15 +80,15 @@ export function scheduleNativeChatThreadSnapshotWrite(
       messages: (snapshot.messages || []).filter((message) => !message.local_status),
     },
   };
-  const operation = writeChain.then(async () => {
-    if (job.generation !== writeGeneration) return;
+  const operation = writeChain.then(async (): Promise<boolean> => {
+    if (job.generation !== writeGeneration) return false;
     const existing = await readNativeEntitySnapshot<NativeChatThreadSnapshot>(
       'chat-thread-details',
       job.userId,
       job.conversationId,
       Number.MAX_SAFE_INTEGER,
     );
-    if (job.generation !== writeGeneration) return;
+    if (job.generation !== writeGeneration) return false;
     const mergedMessages = mergeNativeChatThreadHistory(
       existing?.data.messages || [],
       job.snapshot.messages,
@@ -107,8 +107,10 @@ export function scheduleNativeChatThreadSnapshotWrite(
       ),
     };
     await writeNativeEntitySnapshot('chat-thread-details', job.userId, job.conversationId, next);
+    return true;
   }).catch(() => {
     void recordDiagnosticEvent('native_file_error');
+    return false;
   });
   writeChain = operation.then(() => undefined, () => undefined);
   return operation;

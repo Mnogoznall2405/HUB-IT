@@ -237,7 +237,9 @@ class ChatTextMessagePersistence:
         body_format: str,
         client_message_id: str | None,
         reply_to_message_id: str | None,
+        kind: str = "text",
     ) -> TextMessagePersistenceResult:
+        kind = str(kind or "text").strip().lower()[:20] or "text"
         stage_metrics: dict[str, float] = {}
         member_user_ids: list[int] = []
         message_id = ""
@@ -398,7 +400,7 @@ class ChatTextMessagePersistence:
                         id=prepared_message_id,
                         conversation_id=written_conversation_id,
                         sender_user_id=int(current_user_id),
-                        kind="text",
+                        kind=kind,
                         body_format=body_format,
                         body=body,
                         conversation_seq=int(next_conversation_seq),
@@ -479,7 +481,7 @@ class ChatTextMessagePersistence:
                             id=prepared_message_id,
                             conversation_id=written_conversation_id,
                             sender_user_id=int(current_user_id),
-                            kind="text",
+                            kind=kind,
                             body_format=body_format,
                             body=body,
                             conversation_seq=int(next_conversation_seq),

@@ -1,3 +1,4 @@
+import { flattenGroupedConsumables } from './consumableModel';
 import {
   formatDetailDate as formatDate,
   formatDetailHistoryTransition as formatHistoryTransition,
@@ -10,6 +11,7 @@ import {
 export function buildDialogsLayerProps(vm, { isMobile, theme, ui }) {
   const {
     canDatabaseWrite,
+    displayData,
     canViewWarehouse1C,
     isAdmin,
     uploadActModalOpen,
@@ -110,6 +112,18 @@ export function buildDialogsLayerProps(vm, { isMobile, theme, ui }) {
     closeEditConsumableQtyModal,
     setEditConsumableQtyInput,
     handleEditConsumableQtySubmit,
+    consumableCardModal,
+    consumeQtyValue,
+    consumeLoading,
+    consumeError,
+    consumableQrPrinterPicker,
+    closeConsumableCard,
+    setConsumeQtyInput,
+    handleConsumableConsume,
+    openConsumableQtyEditor,
+    consumableQr,
+    cartridgeCompatOpen,
+    closeCartridgeCompatibilityDialog,
     detailModal,
     detailForm,
     detailTab,
@@ -157,6 +171,7 @@ export function buildDialogsLayerProps(vm, { isMobile, theme, ui }) {
     closeActFilePreview,
     qrScannerOpen,
     handleQrScannerClose,
+    retryQrScanner,
     qrScannerLoading,
     qrScannerReady,
     qrScannerError,
@@ -365,6 +380,49 @@ export function buildDialogsLayerProps(vm, { isMobile, theme, ui }) {
         onSubmit: handleEditConsumableQtySubmit,
       },
     },
+    consumableCard: {
+      modal: consumableCardModal,
+      props: {
+        item: consumableCardModal?.item || null,
+        loading: Boolean(consumableCardModal?.loading),
+        canWrite: canDatabaseWrite,
+        consumeQty: consumeQtyValue,
+        consumeLoading,
+        error: consumeError,
+        onClose: closeConsumableCard,
+        onConsumeQtyChange: setConsumeQtyInput,
+        onConsume: (qty) => void handleConsumableConsume(qty),
+        printerPicker: consumableQrPrinterPicker || null,
+        onEditQty: canDatabaseWrite ? openConsumableQtyEditor : null,
+      },
+    },
+    consumableQr: {
+      open: Boolean(consumableQr?.consumableQrModal?.open),
+      item: consumableQr?.consumableQrModal?.item || null,
+      printLabels: consumableQr?.consumableQrPrintLabels || [],
+      printGrid: consumableQr?.consumableQrPrintGrid || null,
+      batchDialog: {
+        open: Boolean(consumableQr?.consumableQrBatchOpen),
+        items: flattenGroupedConsumables(displayData),
+        printing: Boolean(consumableQr?.consumableQrPrinting),
+        onClose: consumableQr?.closeConsumableQrPrintBatch,
+        onPrint: consumableQr?.printConsumableQrBatch,
+      },
+      props: {
+        onClose: consumableQr?.closeConsumableQr,
+        loading: Boolean(consumableQr?.consumableQrUrlLoading),
+        url: consumableQr?.consumableQrUrl || '',
+        text: consumableQr?.consumableQrText || '',
+        fileName: consumableQr?.consumableQrFileName || 'consumable-qr.png',
+        onPrint: consumableQr?.printConsumableQr,
+        printLoading: Boolean(consumableQr?.consumableQrPrinting),
+      },
+    },
+    cartridgeCompat: {
+      open: Boolean(cartridgeCompatOpen),
+      canWrite: Boolean(canDatabaseWrite),
+      onClose: closeCartridgeCompatibilityDialog,
+    },
     detail: {
       modal: detailModal,
       props: {
@@ -461,6 +519,7 @@ export function buildDialogsLayerProps(vm, { isMobile, theme, ui }) {
       open: qrScannerOpen,
       props: {
         onClose: handleQrScannerClose,
+        onRetry: retryQrScanner,
         loading: qrScannerLoading,
         ready: qrScannerReady,
         error: qrScannerError,

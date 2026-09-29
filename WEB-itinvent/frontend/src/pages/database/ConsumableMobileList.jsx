@@ -24,6 +24,7 @@ function ConsumableMobileList({
   showBranchHeaders = true,
   onEditConsumableQty,
   onDeleteConsumable,
+  onShowConsumableQr,
   canWrite = false,
   canDelete = false,
 }) {
@@ -58,6 +59,7 @@ function ConsumableMobileList({
               item={item}
               onEditQty={onEditConsumableQty}
               onDelete={onDeleteConsumable}
+              onShowQr={onShowConsumableQr}
               canWrite={canWrite}
               canDelete={canDelete}
             />

@@ -175,9 +175,10 @@ class _EndpointRealtime(_RecordingRealtime):
         self.subscriptions: list[tuple[str, str]] = []
         self.disconnected: list[str] = []
 
-    async def connect(self, websocket, *, user_id: int):
+    async def connect(self, websocket, *, user_id: int, socket_kind: str = "chat"):
         await websocket.accept()
         self.websocket = websocket
+        self.socket_kind = socket_kind
         return "conn-1", True
 
     def subscribe_conversation(self, connection_id: str, room_id: str) -> None:
@@ -186,7 +187,7 @@ class _EndpointRealtime(_RecordingRealtime):
     def unsubscribe_conversation(self, connection_id: str, room_id: str) -> None:
         return None
 
-    def disconnect(self, connection_id: str):
+    def disconnect(self, connection_id: str, **_kwargs):
         self.disconnected.append(connection_id)
         return {"last_connection": True}
 

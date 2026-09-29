@@ -37,6 +37,36 @@ import {
   VIRTUALIZED_CARD_SX,
   VIRTUALIZED_ROW_SX,
 } from './myFilesVisual';
+
+const formatDateShort = (value) => {
+  const parsed = new Date(String(value || ''));
+  if (Number.isNaN(parsed.getTime())) return '—';
+  return parsed.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+};
+
+const getRemainingShort = (expiresAt) => {
+  const target = new Date(String(expiresAt || '')).getTime();
+  if (!Number.isFinite(target)) return '';
+  const diffMs = target - Date.now();
+  if (diffMs <= 0) return 'срок истёк';
+  const days = Math.floor(diffMs / 86400000);
+  if (days > 0) return `ещё ${days} дн.`;
+  const hours = Math.floor(diffMs / 3600000);
+  if (hours > 0) return `ещё ${hours} ч.`;
+  return 'меньше часа';
+};
+
+const getRetentionLabel = (item) => {
+  if (Number(item?.retention_days) === 0) return 'Навсегда';
+  const remaining = getRemainingShort(item?.expires_at);
+  if (!remaining) return `${item?.retention_days} дн.`;
+  return `до ${formatDateShort(item?.expires_at)} · ${remaining}`;
+};
+
+const getRetentionTitle = (item) => {
+  if (Number(item?.retention_days) === 0) return 'Хранится бессрочно, пока не удалите';
+  return `Загружен на ${item?.retention_days} дн. · хранится до ${formatDateTime(item?.expires_at)}`;
+};
 export const FolderRow = memo(function FolderRow({
   folder,
   isTrashView,
@@ -45,6 +75,7 @@ export const FolderRow = memo(function FolderRow({
   isSelected,
   isDropTarget,
   folderDropProps,
+  folderDragProps,
   navigateToFolder,
   openFolderActionsMenu,
   openRenameDialog,
@@ -62,6 +93,7 @@ export const FolderRow = memo(function FolderRow({
     <Box
       data-testid={`my-files-folder-${folder.id}`}
       {...(isTrashView ? {} : folderDropProps(folder))}
+      {...(isTrashView ? {} : folderDragProps(folder))}
       onClick={() => { if (!isTrashView) navigateToFolder(folder.id); }}
       onContextMenu={(event) => { if (!isTrashView) openFolderActionsMenu(event, folder); }}
       onKeyDown={(event) => {
@@ -340,6 +372,15 @@ export const FileRow = memo(function FileRow({
             {item.is_shared ? (
               <Chip size="small" icon={<LinkOutlinedIcon sx={{ fontSize: 12 }} />} label="ссылка" variant="outlined" sx={{ height: 18, fontSize: '0.68rem' }} />
             ) : null}
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              title={getRetentionTitle(item)}
+              data-testid={`my-files-retention-${item.id}`}
+              sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '0 0 auto' }}
+            >
+              {getRetentionLabel(item)}
+            </Typography>
             {item.folder_name ? (
               <Typography variant="caption" color="text.secondary" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {item.folder_name}
@@ -465,6 +506,7 @@ export const FolderCard = memo(function FolderCard({
   isSelected,
   isDropTarget,
   folderDropProps,
+  folderDragProps,
   navigateToFolder,
   openFolderActionsMenu,
   handleRestoreEntry,
@@ -479,6 +521,7 @@ export const FolderCard = memo(function FolderCard({
       variant="outlined"
       data-testid={`my-files-folder-${folder.id}`}
       {...(isTrashView ? {} : folderDropProps(folder))}
+      {...(isTrashView ? {} : folderDragProps(folder))}
       onClick={() => { if (!isTrashView) navigateToFolder(folder.id); }}
       onContextMenu={(event) => { if (!isTrashView) openFolderActionsMenu(event, folder); }}
       onKeyDown={(event) => {
@@ -749,6 +792,15 @@ export const FileCard = memo(function FileCard({
           </Typography>
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
             {formatFileSize(item.original_size_bytes)}
+          </Typography>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            title={getRetentionTitle(item)}
+            data-testid={`my-files-retention-${item.id}`}
+            sx={{ display: 'block' }}
+          >
+            {getRetentionLabel(item)}
           </Typography>
         </Box>
         {String(item.status || '').toLowerCase() !== 'ready' ? (

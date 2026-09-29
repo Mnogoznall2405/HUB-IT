@@ -1,5 +1,6 @@
-import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import React, { memo, useMemo, useRef } from 'react';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { ActivityIndicator, Alert, Linking, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import type { ChatAttachment, ChatMessage, ChatUserSummary } from '../../api/types';
 import { ChatDeliveryStatus } from './ChatDeliveryStatus';
 import { ChatReactionButton } from './ChatReactionButton';
@@ -19,7 +20,7 @@ import {
   isPhotoChatAttachment,
   isStickerOnlyMessage,
   resolveChatBubbleMetaMode,
-  CHAT_PHOTO_DEFAULT_ASPECT,
+  resolveChatPhotoMaxHeight,
   resolveChatPhotoWidth,
   shouldBleedBubbleMedia,
   shouldShowSenderAvatar,
@@ -30,6 +31,13 @@ import { isVideoChatAttachment, pickChatAttachmentPreviewUrl } from '../../chat/
 import { extractFirstChatUrl } from '../../chat/chatLinkPreview';
 import { isStickerChatAttachment, stickerFromChatAttachment } from '../../chat/chatStickers';
 import {
+  buildGeoIntentUrl,
+  parseContactBody,
+  parseLocationBody,
+  parsePollBody,
+} from '../../chat/chatStructuredMessage';
+import { useChatAttachmentTransfer } from '../../chat/nativeChatAttachmentTransfers';
+import {
   CHAT_BUBBLE_LONG_PRESS_MS,
   DEFAULT_CHAT_QUICK_REACTION,
   isAudioChatAttachment,
@@ -37,6 +45,7 @@ import {
   resolveChatBubbleTapAction,
 } from '../../chat/chatVoice';
 import { type ChatTokens, useChatTokens } from '../../theme/chatTokens';
+import type { ChatMediaAlbum, ChatMediaAlbumEntry } from '../../chat/chatMediaAlbum';
 import { resolveAttachmentUrl } from '../../utils/attachmentUrl';
 import { ChatMarkdownBody } from './ChatMarkdownBody';
 import { ChatVoiceNote } from './ChatVoiceNote';
@@ -71,7 +80,15 @@ export function buildChatMessageAccessibilityLabel(
       : isOwn
         ? 'Ваше сообщение'
         : senderName ? `Сообщение от ${senderName}` : 'Сообщение от участника',
-    message.is_deleted ? 'Сообщение удалено' : message.body_text,
+    message.is_deleted
+      ? 'Сообщение удалено'
+      : message.kind === 'location'
+        ? 'Геопозиция'
+        : message.kind === 'contact'
+          ? `Контакт ${parseContactBody(message.body_text || message.body)?.name || ''}`.trim()
+          : message.kind === 'poll'
+            ? `Опрос: ${message.poll?.question || parsePollBody(message.body_text || message.body)?.question || ''}`.trim()
+            : message.body_text,
     voiceAttachment ? 'Голосовое сообщение' : attachmentsCount ? `Вложений: ${attachmentsCount}` : null,
     time ? `Время ${time}` : null,
     message.edited_at && !message.is_deleted ? 'Изменено' : null,
@@ -100,10 +117,13 @@ export const ChatBubble = memo(function ChatBubble({
   onQuickReaction,
   onReplyPreviewPress,
   onTaskPress,
+  onPollVote,
+  onPollClose,
+  onReactionLongPress,
+  album,
+  onAlbumAttachmentPress,
   onConfirmAction,
   onCancelAction,
-  onRetry,
-  onDiscard,
   onSenderPress,
   groupPosition = 'single',
   showSenderAvatars = false,
@@ -132,28 +152,25 @@ export const ChatBubble = memo(function ChatBubble({
   onQuickReaction?: (emoji: string) => void;
   onReplyPreviewPress?: (messageId: string) => void;
   onTaskPress?: (taskId: string) => void;
+  onPollVote?: (optionIndex: number) => void;
+  onPollClose?: () => void;
+  /** F-REACTORS: long-press a reaction chip → "who reacted" list. */
+  onReactionLongPress?: (emoji: string, userIds: number[]) => void;
+  /** DEV-MEDIA-1: photo album rendered as one grid instead of N bubbles. */
+  album?: ChatMediaAlbum;
+  onAlbumAttachmentPress?: (entry: ChatMediaAlbumEntry) => void;
   onConfirmAction?: (actionId: string) => void;
   onCancelAction?: (actionId: string) => void;
-  onRetry?: () => void;
-  onDiscard?: () => void;
   groupPosition?: ChatBubbleGroupPosition;
 }) {
   const chatTokens = useChatTokens();
   const styles = useMemo(() => createStyles(chatTokens), [chatTokens]);
-  const { width: windowWidth, fontScale } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight, fontScale } = useWindowDimensions();
   const reactions = message.reactions || [];
   const isDeleted = Boolean(message.is_deleted);
   const attachments = isDeleted ? [] : message.attachments || [];
   const pending = message.local_status === 'sending'
     || (message.local_status === 'failed' && awaitingConnection);
-  const [delayedMessageId, setDelayedMessageId] = useState<string | null>(null);
-  useEffect(() => {
-    setDelayedMessageId(null);
-    if (!pending || offline) return;
-    const timer = setTimeout(() => setDelayedMessageId(message.id), 1500);
-    return () => clearTimeout(timer);
-  }, [message.id, pending, offline]);
-  const showPendingText = pending && (offline || delayedMessageId === message.id);
   const failed = !pending && (message.local_status === 'failed' || message.local_status === 'cancelled');
   const accessibilityLabel = buildChatMessageAccessibilityLabel(
     pending ? { ...message, local_status: offline ? 'failed' : 'sending' } : message,
@@ -170,6 +187,19 @@ export const ChatBubble = memo(function ChatBubble({
     !isOwn && message.sender && (groupPosition === 'single' || groupPosition === 'first'),
   );
   const stickerOnly = isStickerOnlyMessage(message);
+  // F-GEO / F-CONTACT: structured bodies are JSON cards, not text.
+  const locationPayload = !isDeleted && message.kind === 'location'
+    ? parseLocationBody(message.body_text || message.body)
+    : null;
+  const contactPayload = !isDeleted && message.kind === 'contact'
+    ? parseContactBody(message.body_text || message.body)
+    : null;
+  const pollPayload = !isDeleted && message.kind === 'poll'
+    ? (message.poll || parsePollBody(message.body_text || message.body))
+    : null;
+  const pollClosed = Boolean(pollPayload?.closed);
+  const pollVotable = Boolean(onPollVote) && !pollClosed;
+  const structuredCard = Boolean(locationPayload || contactPayload || pollPayload);
   const photoAttachments = attachments.filter((attachment) => isPhotoChatAttachment(attachment));
   const hasDocumentAttachments = attachments.some((attachment) => (
     !isStickerChatAttachment(attachment)
@@ -179,11 +209,12 @@ export const ChatBubble = memo(function ChatBubble({
   const lastPhotoId = photoAttachments.length
     ? photoAttachments[photoAttachments.length - 1].id
     : null;
-  const hasText = Boolean(message.body_text);
-  const markdownBody = Boolean(message.body_text && !stickerOnly && shouldRenderChatMarkdown(message));
+  const hasText = Boolean(message.body_text) && !structuredCard;
+  const markdownBody = Boolean(
+    message.body_text && !stickerOnly && !structuredCard && shouldRenderChatMarkdown(message),
+  );
   const hasTrailingBlock = Boolean(
     actionCard?.id
-    || failed || showPendingText
     || markdownBody
     || hasDocumentAttachments
     || (!isDeleted && extractFirstChatUrl(message.body_text)),
@@ -203,7 +234,11 @@ export const ChatBubble = memo(function ChatBubble({
     hasTrailingBlock,
   });
   const photoWidth = resolveChatPhotoWidth(windowWidth);
-  const photoMaxHeight = Math.round(photoWidth / CHAT_PHOTO_DEFAULT_ASPECT);
+  // DEV-MEDIA-2: cap by screen height, not photoWidth/1.35 — portraits were
+  // rendered ~114–150×184 dp, far smaller than Telegram's portrait frames.
+  const photoMaxHeight = resolveChatPhotoMaxHeight(windowHeight);
+  // DEV-MEDIA-1: 2-column mosaic; square cover cells keep the grid uniform.
+  const albumCellSize = Math.round((photoWidth - 4) / 2);
   const documentWidth = Math.round(Math.max(160, Math.min(280, windowWidth * 0.72)));
   const avatarVisible = shouldShowSenderAvatar({ isOwn, showSenderAvatars, groupPosition });
   const timeLabel = message.created_at
@@ -263,6 +298,19 @@ export const ChatBubble = memo(function ChatBubble({
       isOwn ? styles.wrapOwn : styles.wrapOther,
     ]}>
       <View style={[styles.messageRow, isOwn && styles.messageRowOwn]}>
+        {/* The tail is absolutely positioned to the row edge; the inserted
+            selection mark shifts the bubble, so the tail would visually detach
+            — hide it while selected (DEV-TAIL-1). */}
+        {groupPosition === 'last' && !selected ? (
+          <View
+            style={[styles.tail, isOwn
+              ? styles.tailOwn
+              : [styles.tailOther, !showSenderAvatars && styles.tailOtherFlush]]}
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            pointerEvents="none"
+          />
+        ) : null}
         {selected ? <View style={styles.selectedMark} accessibilityElementsHidden /> : null}
         {showSenderAvatars && !isOwn ? (
           <Pressable
@@ -372,7 +420,146 @@ export const ChatBubble = memo(function ChatBubble({
             ) : null}
           </Pressable>
         ) : null}
-        {message.body_text && !stickerOnly ? (
+        {locationPayload ? (
+          <Pressable
+            style={styles.structuredCard}
+            onPress={(event) => {
+              event.stopPropagation();
+              void Linking.openURL(buildGeoIntentUrl(locationPayload)).catch(() => undefined);
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Открыть геопозицию на карте"
+          >
+            <MaterialCommunityIcons name="map-marker-radius-outline" size={34} color={chatTokens.composerActionBg} />
+            <View style={styles.structuredCardBody}>
+              <Text style={styles.structuredCardTitle}>
+                {locationPayload.title || 'Геопозиция'}
+              </Text>
+              <Text style={styles.structuredCardMeta} numberOfLines={2}>
+                {locationPayload.address
+                  || `${locationPayload.latitude.toFixed(5)}, ${locationPayload.longitude.toFixed(5)}`}
+              </Text>
+            </View>
+          </Pressable>
+        ) : null}
+        {contactPayload ? (
+          <Pressable
+            style={styles.structuredCard}
+            onPress={(event) => {
+              event.stopPropagation();
+              if (contactPayload.phone) {
+                void Linking.openURL(`tel:${contactPayload.phone}`).catch(() => undefined);
+              }
+            }}
+            disabled={!contactPayload.phone}
+            accessibilityRole={contactPayload.phone ? 'button' : undefined}
+            accessibilityLabel={`Контакт ${contactPayload.name}`}
+          >
+            <MaterialCommunityIcons name="account-circle-outline" size={34} color={chatTokens.composerActionBg} />
+            <View style={styles.structuredCardBody}>
+              <Text style={styles.structuredCardTitle} numberOfLines={1}>
+                {contactPayload.name}
+              </Text>
+              <Text style={styles.structuredCardMeta} numberOfLines={2}>
+                {[contactPayload.phone, contactPayload.organization].filter(Boolean).join(' · ') || 'Контакт'}
+              </Text>
+            </View>
+          </Pressable>
+        ) : null}
+        {contactPayload ? (
+          <View style={styles.contactActions}>
+            <Pressable
+              style={styles.contactAction}
+              disabled={!contactPayload.phone}
+              onPress={(event) => {
+                event.stopPropagation();
+                if (contactPayload.phone) {
+                  void Linking.openURL(`sms:${contactPayload.phone}`).catch(() => undefined);
+                }
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={`Написать ${contactPayload.name}`}
+            >
+              <MaterialCommunityIcons name="message-text-outline" size={16} color={chatTokens.composerActionBg} />
+              <Text style={styles.contactActionText}>Написать</Text>
+            </Pressable>
+            <Pressable
+              style={styles.contactAction}
+              onPress={(event) => {
+                event.stopPropagation();
+                // Native "create contact" form — user confirms in the system UI,
+                // so WRITE_CONTACTS is not needed.
+                void import('expo-contacts').then((Contacts) => Contacts.Contact.presentCreateForm({
+                  givenName: contactPayload.name,
+                  phones: contactPayload.phone ? [{ label: 'mobile', number: contactPayload.phone }] : undefined,
+                })).catch(() => undefined);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={`Сохранить ${contactPayload.name} в контакты`}
+            >
+              <MaterialCommunityIcons name="account-plus-outline" size={16} color={chatTokens.composerActionBg} />
+              <Text style={styles.contactActionText}>Сохранить</Text>
+            </Pressable>
+          </View>
+        ) : null}
+        {pollPayload ? (
+          <View
+            style={styles.pollCard}
+            accessibilityLabel={`Опрос: ${pollPayload.question}, голосов ${pollPayload.total_voters}`}
+          >
+            <Text style={styles.pollQuestion}>{pollPayload.question}</Text>
+            {pollPayload.options.map((option, optionIndex) => {
+              const isMine = pollPayload.my_option_index === optionIndex;
+              const share = pollPayload.total_voters > 0
+                ? Math.round((option.votes / pollPayload.total_voters) * 100)
+                : 0;
+              return (
+                <Pressable
+                  key={optionIndex}
+                  style={styles.pollOption}
+                  onPress={(event) => {
+                    event.stopPropagation();
+                    onPollVote?.(optionIndex);
+                  }}
+                  disabled={!pollVotable}
+                  accessibilityRole={pollVotable ? 'button' : undefined}
+                  accessibilityLabel={`Вариант ${option.text}, голосов ${option.votes}`}
+                  accessibilityState={{ selected: isMine }}
+                >
+                  <View style={[styles.pollOptionFill, { width: `${Math.min(100, share)}%` }]} />
+                  <MaterialCommunityIcons
+                    name={isMine ? 'check-circle' : 'circle-outline'}
+                    size={18}
+                    color={isMine ? chatTokens.composerActionBg : chatTokens.textSecondary}
+                  />
+                  <Text style={styles.pollOptionText} numberOfLines={2}>{option.text}</Text>
+                  <Text style={styles.pollOptionMeta}>
+                    {option.votes > 0 ? `${share}% · ${option.votes}` : ''}
+                  </Text>
+                </Pressable>
+              );
+            })}
+            <Text style={styles.pollFooter}>
+              {pollClosed
+                ? `Опрос завершён · голосов: ${pollPayload.total_voters}`
+                : pollPayload.total_voters > 0 ? `Голосов: ${pollPayload.total_voters}` : 'Пока нет голосов'}
+            </Text>
+            {isOwn && !pollClosed && onPollClose ? (
+              <Pressable
+                style={styles.pollCloseButton}
+                onPress={(event) => {
+                  event.stopPropagation();
+                  onPollClose();
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Завершить опрос"
+              >
+                <Text style={styles.pollCloseText}>Завершить опрос</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
+        {message.body_text && !stickerOnly && !structuredCard ? (
           markdownBody ? (
             <ChatMarkdownBody value={message.body_text} isOwn={isOwn} deleted={isDeleted} />
           ) : (
@@ -384,10 +571,57 @@ export const ChatBubble = memo(function ChatBubble({
             </Text>
           )
         ) : null}
-        {!isDeleted && message.body_text && !stickerOnly ? (
+        {!isDeleted && message.body_text && !stickerOnly && !structuredCard ? (
           <ChatLinkPreviewCard text={message.body_text} isOwn={isOwn} />
         ) : null}
-        {attachments.map((attachment, attachmentIndex) => {
+        {album ? (
+          <View style={styles.albumWrap} testID="chat-media-album">
+            <View style={styles.albumGrid}>
+              {album.entries.map((entry, entryIndex) => {
+                const albumPreview = resolveAttachmentUrl(pickChatAttachmentPreviewUrl(entry.attachment))
+                  || String(entry.attachment.local_uri || '').trim();
+                if (!albumPreview) return null;
+                const albumVideo = isVideoChatAttachment(entry.attachment);
+                return (
+                  <Pressable
+                    key={`${entry.message.id}:${entry.attachment.id || entryIndex}`}
+                    onPress={(event) => {
+                      event.stopPropagation();
+                      onAlbumAttachmentPress?.(entry);
+                    }}
+                    disabled={!onAlbumAttachmentPress || Boolean(entry.message.local_status)}
+                    accessibilityRole={onAlbumAttachmentPress ? 'button' : undefined}
+                    accessibilityLabel={(albumVideo
+                      ? `Воспроизвести видео ${entry.attachment.file_name || ''}`
+                      : `Открыть фото ${entry.attachment.file_name || ''}`).trim()}
+                    accessibilityHint="Открывает полноэкранный просмотр"
+                    style={[styles.albumCell, { width: albumCellSize, height: albumCellSize }]}
+                  >
+                    <ChatAuthenticatedImage
+                      uri={albumPreview}
+                      style={styles.albumImage}
+                      resizeMode="cover"
+                      accessible={false}
+                    />
+                    {albumVideo ? (
+                      <View pointerEvents="none" style={styles.albumVideoBadge}>
+                        <Text style={styles.albumVideoIcon}>▶</Text>
+                        {entry.attachment.duration_seconds
+                          ? <Text style={styles.albumVideoDuration}>{formatVoiceDuration(entry.attachment.duration_seconds)}</Text>
+                          : null}
+                      </View>
+                    ) : null}
+                  </Pressable>
+                );
+              })}
+              {!album.caption ? overlayMeta : null}
+            </View>
+            {album.caption ? (
+              <Text style={[styles.text, styles.albumCaption, isOwn ? styles.textOwn : styles.textOther]}>{album.caption}</Text>
+            ) : null}
+            {album.caption ? <View style={[styles.metaRow, styles.albumCaption]}>{meta}</View> : null}
+          </View>
+        ) : attachments.map((attachment, attachmentIndex) => {
           const resolvedTransfer = attachmentTransfers?.[attachment.id]
             || (attachmentTransfer?.attachmentId === attachment.id ? attachmentTransfer : null);
           if (isStickerChatAttachment(attachment)) {
@@ -444,7 +678,7 @@ export const ChatBubble = memo(function ChatBubble({
                   {attachment.duration_seconds ? formatVoiceDuration(attachment.duration_seconds) : 'Видео'}
                 </Text>
                 {resolvedTransfer ? <AttachmentTransferOverlay
-                  transfer={resolvedTransfer} fileName={attachment.file_name || 'видео'}
+                  attachmentId={attachment.id} transfer={resolvedTransfer} fileName={attachment.file_name || 'видео'}
                   onCancel={onAttachmentTransferCancel ? () => onAttachmentTransferCancel(attachment) : undefined}
                   onRetry={onAttachmentTransferRetry ? () => onAttachmentTransferRetry(attachment) : undefined}
                 /> : null}
@@ -494,6 +728,7 @@ export const ChatBubble = memo(function ChatBubble({
                 {attachment.id === lastPhotoId ? overlayMeta : null}
                 {resolvedTransfer ? (
                   <AttachmentTransferOverlay
+                    attachmentId={attachment.id}
                     transfer={resolvedTransfer}
                     fileName={attachment.file_name || 'вложение'}
                     onCancel={onAttachmentTransferCancel
@@ -515,31 +750,6 @@ export const ChatBubble = memo(function ChatBubble({
           <View style={[styles.metaFloat, bleedMedia && styles.metaFloatBleed]} pointerEvents="none">
             {meta}
           </View>
-        ) : null}
-        {showPendingText ? (
-          <Text style={styles.retryText}>{offline ? 'Ожидает подключения' : 'Ожидает отправки'}</Text>
-        ) : null}
-        {failed && !attachments.length ? (
-          <Pressable
-            onPress={onRetry}
-            disabled={!onRetry}
-            style={({ pressed }) => [styles.retry, pressed && styles.retryPressed]}
-            accessibilityRole="button"
-            accessibilityLabel="Повторить отправку сообщения"
-          >
-            <Text style={styles.retryText}>
-              {message.local_status === 'cancelled'
-                ? 'Отправка отменена · повторить'
-                : awaitingConnection
-                  ? 'Ожидает подключения'
-                  : 'Не отправлено · повторить'}
-            </Text>
-          </Pressable>
-        ) : null}
-        {(failed || showPendingText) && onDiscard ? (
-          <Pressable onPress={onDiscard} style={styles.retry} accessibilityRole="button" accessibilityLabel="Убрать сообщение из очереди">
-            <Text style={styles.retryText}>Убрать из очереди</Text>
-          </Pressable>
         ) : null}
         {actionCard?.id ? (
           <View style={styles.actionCard}>
@@ -583,6 +793,21 @@ export const ChatBubble = memo(function ChatBubble({
           </View>
         ) : null}
         </Pressable>
+        {failed ? (
+          <Pressable
+            onPress={handlePress}
+            disabled={!pressHandler}
+            hitSlop={8}
+            style={({ pressed }) => [styles.errorBadge, pressed && styles.errorBadgePressed]}
+            accessibilityRole="button"
+            accessibilityLabel={message.local_status === 'cancelled'
+              ? 'Отправка отменена, нажмите, чтобы повторить'
+              : 'Не отправлено, нажмите, чтобы повторить'}
+            accessibilityHint="Открывает действия сообщения"
+          >
+            <MaterialCommunityIcons name="alert-circle" size={22} color={chatTokens.dangerText} />
+          </Pressable>
+        ) : null}
       </View>
       {!isDeleted && reactions.length > 0 ? (
         <View style={styles.reactions}>
@@ -590,6 +815,9 @@ export const ChatBubble = memo(function ChatBubble({
             <ChatReactionButton
               key={reaction.emoji}
               onPress={onReactionPress ? () => onReactionPress(reaction.emoji) : undefined}
+              onLongPress={onReactionLongPress
+                ? () => onReactionLongPress(reaction.emoji, reaction.user_ids || [])
+                : undefined}
               style={[styles.reaction, reaction.reacted_by_me && styles.reactionOwn]}
               label={`${reaction.reacted_by_me ? 'Убрать' : 'Добавить'} реакцию ${reaction.emoji}`}
             >
@@ -603,11 +831,13 @@ export const ChatBubble = memo(function ChatBubble({
 });
 
 function AttachmentTransferOverlay({
+  attachmentId,
   transfer,
   fileName,
   onCancel,
   onRetry,
 }: {
+  attachmentId: string;
   transfer: ChatAttachmentTransfer;
   fileName: string;
   onCancel?: () => void;
@@ -615,15 +845,18 @@ function AttachmentTransferOverlay({
 }) {
   const chatTokens = useChatTokens();
   const styles = useMemo(() => createStyles(chatTokens), [chatTokens]);
-  const status = transfer.status || 'active';
-  const progress = transfer.progress == null
+  // Progress ticks come through the external store so the parent list is
+  // not rerendered on every upload/download frame.
+  const effective = useChatAttachmentTransfer(attachmentId) || transfer;
+  const status = effective.status || 'active';
+  const progress = effective.progress == null || effective.progress <= 0
     ? null
-    : Math.round(Math.max(0, Math.min(1, transfer.progress)) * 100);
+    : Math.max(1, Math.min(100, Math.round(Math.min(1, effective.progress) * 100)));
   const active = status === 'active';
-  const action = active && transfer.cancellable && onCancel
-    ? { label: `Отменить отправку ${fileName}`, mark: '×', onPress: onCancel }
+  const action = active && effective.cancellable && onCancel
+    ? { label: `Отменить отправку ${fileName}`, icon: 'close' as const, onPress: onCancel }
     : !active && onRetry
-      ? { label: `Повторить отправку ${fileName}`, mark: '↻', onPress: onRetry }
+      ? { label: `Повторить отправку ${fileName}`, icon: 'refresh' as const, onPress: onRetry }
       : null;
   const stateLabel = active
     ? transfer.action === 'upload' ? 'Отправка' : 'Загрузка'
@@ -644,9 +877,17 @@ function AttachmentTransferOverlay({
           ? { min: 0, max: 100, now: progress, text: `${progress} процентов` }
           : undefined}
       >
-        <Text style={styles.transferMark}>{action?.mark || (progress == null ? '…' : `${progress}%`)}</Text>
+        {action?.icon ? (
+          <MaterialCommunityIcons name={action.icon} size={18} color="#fff" />
+        ) : progress != null ? (
+          <Text style={styles.transferMark}>{progress}%</Text>
+        ) : active ? (
+          <ActivityIndicator testID="chat-transfer-indeterminate" size="small" color="#fff" />
+        ) : (
+          <Text style={styles.transferMark}>…</Text>
+        )}
       </Pressable>
-      <Text style={styles.transferLabel}>{stateLabel}{active && progress != null ? ` ${progress}%` : ''}</Text>
+      <Text style={styles.transferLabel}>{stateLabel}{active ? (progress != null ? ` ${progress}%` : '…') : ''}</Text>
     </View>
   );
 }
@@ -673,14 +914,14 @@ function BubbleMeta({
   const toneStyle = tone === 'overlay'
     ? styles.metaOverlay
     : tone === 'own' ? styles.metaOwn : styles.metaOther;
-  const spinnerColor = tone === 'overlay'
+  const statusColor = tone === 'overlay'
     ? '#ffffff'
     : tone === 'own' ? chatTokens.bubbleOwnMetaText : chatTokens.bubbleOtherMetaText;
   return (
     <>
       <Text style={[styles.meta, toneStyle]}>{timeLabel}</Text>
       {edited ? <Text style={[styles.meta, toneStyle]}> · изм.</Text> : null}
-      {own ? <ChatDeliveryStatus status={sending ? 'sending' : failed ? 'failed' : read ? 'read' : 'sent'} color={spinnerColor} /> : null}
+      {own ? <ChatDeliveryStatus status={sending ? 'sending' : failed ? 'failed' : read ? 'read' : 'sent'} color={statusColor} /> : null}
     </>
   );
 }
@@ -726,10 +967,34 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   groupedBubble: { marginTop: 0 },
   groupFirstOwn: { borderBottomRightRadius: 5 },
   groupMiddleOwn: { borderTopRightRadius: 5, borderBottomRightRadius: 5 },
-  groupLastOwn: { borderTopRightRadius: 5 },
+  groupLastOwn: { borderTopRightRadius: 5, borderBottomRightRadius: 0 },
   groupFirstOther: { borderBottomLeftRadius: 5 },
   groupMiddleOther: { borderTopLeftRadius: 5, borderBottomLeftRadius: 5 },
-  groupLastOther: { borderTopLeftRadius: 5 },
+  groupLastOther: { borderTopLeftRadius: 5, borderBottomLeftRadius: 0 },
+  tail: {
+    position: 'absolute',
+    bottom: 0,
+    width: 0,
+    height: 0,
+    borderTopWidth: 0,
+    borderBottomWidth: 12,
+    borderStyle: 'solid',
+  },
+  tailOwn: {
+    right: -4,
+    borderLeftWidth: 0,
+    borderRightWidth: 10,
+    borderRightColor: 'transparent',
+    borderBottomColor: chatTokens.bubbleOwnBg,
+  },
+  tailOther: {
+    left: -4 + CHAT_SENDER_AVATAR_SIZE + 6,
+    borderRightWidth: 0,
+    borderLeftWidth: 10,
+    borderLeftColor: 'transparent',
+    borderBottomColor: chatTokens.bubbleOtherBg,
+  },
+  tailOtherFlush: { left: -4 },
   senderName: { color: chatTokens.accentText, fontSize: 13, fontWeight: '700', marginBottom: 3 },
   quote: {
     marginBottom: 6,
@@ -752,6 +1017,57 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   taskEyebrow: { color: chatTokens.accentText, fontSize: 11, fontWeight: '800' },
   taskTitle: { marginTop: 3, color: chatTokens.textPrimary, fontSize: 15, fontWeight: '700' },
   taskMeta: { marginTop: 4, color: chatTokens.textSecondary, fontSize: 12 },
+  structuredCard: {
+    minWidth: 200,
+    marginBottom: 5,
+    padding: 10,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: chatTokens.sidebarRowSoftActive,
+    borderLeftWidth: 3,
+    borderLeftColor: chatTokens.composerActionBg,
+  },
+  structuredCardBody: { flex: 1 },
+  structuredCardTitle: { color: chatTokens.textPrimary, fontSize: 15, fontWeight: '700' },
+  structuredCardMeta: { marginTop: 3, color: chatTokens.textSecondary, fontSize: 12 },
+  contactActions: { flexDirection: 'row', gap: 16, marginTop: 6, paddingHorizontal: 4 },
+  contactAction: { flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 32 },
+  contactActionText: { color: chatTokens.composerActionBg, fontSize: 13, fontWeight: '600' },
+  pollCard: {
+    minWidth: 210,
+    marginBottom: 5,
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: chatTokens.sidebarRowSoftActive,
+    borderLeftWidth: 3,
+    borderLeftColor: chatTokens.composerActionBg,
+  },
+  pollQuestion: { color: chatTokens.textPrimary, fontSize: 15, fontWeight: '700', marginBottom: 8 },
+  pollOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    marginTop: 4,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+  },
+  pollOptionFill: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: 'rgba(90,140,255,0.18)',
+  },
+  pollOptionText: { flex: 1, color: chatTokens.textPrimary, fontSize: 14 },
+  pollOptionMeta: { color: chatTokens.textSecondary, fontSize: 11 },
+  pollFooter: { marginTop: 8, color: chatTokens.textSecondary, fontSize: 12 },
+  pollCloseButton: { marginTop: 6, paddingVertical: 8, alignItems: 'center' },
+  pollCloseText: { color: chatTokens.composerActionBg, fontSize: 14, fontWeight: '600' },
   actionCard: { minWidth: 220, marginTop: 7, padding: 11, borderRadius: 12, backgroundColor: chatTokens.sidebarSearchBg },
   actionTitle: { color: chatTokens.textPrimary, fontSize: 15, fontWeight: '700' },
   actionSummary: { marginTop: 4, color: chatTokens.textSecondary, fontSize: 13, lineHeight: 18 },
@@ -768,6 +1084,28 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   textOther: { color: chatTokens.bubbleOtherText },
   deletedText: { fontStyle: 'italic', opacity: 0.72 },
   photoButton: { alignSelf: 'flex-start' },
+  // DEV-MEDIA-1/3: album mosaic — uniform square cells, photoWidth total,
+  // optional caption + meta row under the grid, video cells get a ▶ badge.
+  albumWrap: { gap: 4 },
+  albumGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 4 },
+  albumCell: { borderRadius: 8, overflow: 'hidden', backgroundColor: chatTokens.sidebarSearchBg },
+  albumImage: { width: '100%', height: '100%' },
+  albumVideoBadge: {
+    position: 'absolute',
+    left: 6,
+    bottom: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  // Caption/meta sit inside the bleed-padded bubble, so restore padding.
+  albumCaption: { paddingHorizontal: 10 },
+  albumVideoIcon: { color: '#fff', fontSize: 11, fontWeight: '700' },
+  albumVideoDuration: { color: '#fff', fontSize: 11, fontWeight: '700' },
   videoPreview: { alignSelf: 'flex-start', borderRadius: 10, overflow: 'hidden', backgroundColor: '#182229', alignItems: 'center', justifyContent: 'center' },
   videoPlay: { width: 48, height: 48, borderRadius: 24, backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center', justifyContent: 'center' },
   videoPlayIcon: { color: '#fff', fontSize: 25, marginLeft: 3 },
@@ -812,14 +1150,12 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   },
   metaSpacer: { height: 1 },
   meta: { fontSize: 11 },
-  metaSpinner: { width: 13, height: 13, marginRight: 3, transform: [{ scale: 0.66 }] },
   metaOwn: { color: chatTokens.bubbleOwnMetaText },
   metaOther: { color: chatTokens.bubbleOtherMetaText },
   metaOverlay: { color: '#ffffff' },
   metaRead: { fontWeight: '700' },
-  retry: { minHeight: 44, justifyContent: 'center', alignItems: 'flex-end' },
-  retryPressed: { transform: [{ scale: 0.96 }], opacity: 0.85 },
-  retryText: { color: '#b3261e', fontSize: 12, fontWeight: '700' },
+  errorBadge: { marginHorizontal: 5, marginBottom: 4, alignItems: 'center', justifyContent: 'center' },
+  errorBadgePressed: { transform: [{ scale: 0.92 }], opacity: 0.8 },
   reactions: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 4 },
   reaction: {
     backgroundColor: chatTokens.reactionBg,

@@ -82,12 +82,16 @@ class ChatUploadOrchestrator:
         files: list[dict[str, Any]],
         body: Optional[str] = None,
         reply_to_message_id: Optional[str] = None,
+        client_message_id: Optional[str] = None,
     ) -> dict[str, Any]:
-        
+
         self._service._maybe_cleanup_upload_sessions()
         normalized_body = _normalize_text(body)
         if len(normalized_body) > CHAT_MAX_MESSAGE_BODY_LENGTH:
             raise ValueError(f"Message body must be at most {CHAT_MAX_MESSAGE_BODY_LENGTH} characters")
+        normalized_client_message_id = _normalize_text(client_message_id) or None
+        if normalized_client_message_id and len(normalized_client_message_id) > 128:
+            raise ValueError("client_message_id must be at most 128 characters")
         file_items = list(files or [])
         if not file_items:
             raise ValueError("At least one file is required")
@@ -134,6 +138,7 @@ class ChatUploadOrchestrator:
             "current_user_id": int(current_user_id),
             "body": normalized_body,
             "reply_to_message_id": normalized_reply_to_message_id,
+            "client_message_id": normalized_client_message_id,
             "chunk_size_bytes": self._service.upload_session_chunk_size_bytes,
             "created_at": _iso(now) or "",
             "updated_at": _iso(now) or "",
@@ -151,8 +156,13 @@ class ChatUploadOrchestrator:
         current_user_id: int,
         session_id: str,
     ) -> dict[str, Any]:
-        self._ensure_available()
-        return self._upload_orchestrator.get_upload_session(current_user_id=current_user_id, session_id=session_id)
+        self._service._maybe_cleanup_upload_sessions()
+        lock = self._service._get_upload_session_lock(session_id)
+        with lock:
+            manifest = self._service._load_upload_session_manifest(session_id)
+            self._service._require_upload_session_access(manifest, current_user_id=int(current_user_id))
+            self._service._ensure_upload_session_active(manifest)
+            return self._service._serialize_upload_session(manifest)
 
     def upload_session_chunk(
         self,
@@ -252,15 +262,23 @@ class ChatUploadOrchestrator:
                     conversation_id=conversation_id,
                     body=_normalize_text(manifest.get("body")),
                     prepared=prepared,
+                    client_message_id=_normalize_text(manifest.get("client_message_id")) or None,
                     reply_to_message_id=_normalize_text(manifest.get("reply_to_message_id")) or None,
                 )
                 payload = persisted_file.payload
                 self._service._set_request_meta(conversation_kind=persisted_file.conversation_kind)
+                if persisted_file.dedup_hit:
+                    # The deterministic message already owns its attachments;
+                    # drop this session's materialized duplicate bytes.
+                    self._service._upload_session_completion.cleanup_prepared_files(prepared)
 
             manifest["status"] = "completed"
             manifest["message_id"] = _normalize_text(payload.get("id"))
             manifest["updated_at"] = _iso(_utc_now()) or ""
             self._service._write_upload_session_manifest(manifest)
+            if persisted_file.dedup_hit:
+                self._service._set_request_meta(upload_session_completed_now=False)
+                return payload
             self._service._set_request_meta(upload_session_completed_now=True)
             self._service._postprocess_file_message(
                 current_user_id=int(current_user_id),

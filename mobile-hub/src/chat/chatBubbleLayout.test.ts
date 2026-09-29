@@ -189,31 +189,32 @@ describe('chatBubbleLayout photo sizing', () => {
   });
 
   it('scales the photo with the screen but stays within bounds', () => {
-    expect(resolveChatPhotoWidth(360)).toBe(209);
-    expect(resolveChatPhotoWidth(1000)).toBe(248);
-    expect(resolveChatPhotoWidth(200)).toBe(164);
-    expect(resolveChatPhotoWidth(0)).toBe(232);
+    expect(resolveChatPhotoWidth(360)).toBe(259);
+    expect(resolveChatPhotoWidth(1000)).toBe(296);
+    expect(resolveChatPhotoWidth(200)).toBe(196);
+    expect(resolveChatPhotoWidth(0)).toBe(264);
   });
 
   it('caps portrait previews by viewport height without stretching them', () => {
-    expect(resolveChatPhotoMaxHeight(800)).toBe(304);
-    expect(resolveChatPhotoMaxHeight(1200)).toBe(320);
-    expect(resolveChatPhotoMaxHeight(500)).toBe(220);
+    expect(resolveChatPhotoMaxHeight(800)).toBe(416);
+    expect(resolveChatPhotoMaxHeight(1200)).toBe(420);
+    expect(resolveChatPhotoMaxHeight(500)).toBe(280);
+    // Portrait frame ≈ Telegram: ~half the screen height, aspect kept.
     expect(resolveChatPhotoFrame({
-      maxWidth: 209,
-      maxHeight: 304,
+      maxWidth: 259,
+      maxHeight: 416,
       sourceWidth: 1080,
       sourceHeight: 2400,
-    })).toEqual({ width: 188, height: 304 });
+    })).toEqual({ width: 208, height: 416 });
   });
 
   it('keeps a landscape preview compact at its natural display ratio', () => {
     expect(resolveChatPhotoFrame({
-      maxWidth: 209,
-      maxHeight: 304,
+      maxWidth: 259,
+      maxHeight: 416,
       sourceWidth: 1600,
       sourceHeight: 1200,
-    })).toEqual({ width: 209, height: 157 });
+    })).toEqual({ width: 259, height: 194 });
   });
 });
 

@@ -49,11 +49,14 @@ describe('DatabaseMobileControlStrip', () => {
     });
   });
 
-  it('shows consumable add action in consumables mode', () => {
-    renderStrip({ isConsumablesMode: true });
+  it('keeps the shared QR scanner and shows consumable add in consumables mode', () => {
+    const handlers = renderStrip({ isConsumablesMode: true });
 
-    expect(screen.queryByRole('button', { name: 'QR' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'QR' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Добавить' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'QR' }));
+    expect(handlers.onOpenQrScanner).toHaveBeenCalledTimes(1);
   });
 
   it('delegates quick action callbacks', () => {

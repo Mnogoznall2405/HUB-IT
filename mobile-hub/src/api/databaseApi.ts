@@ -537,11 +537,61 @@ export async function updateConsumableQuantity(
   return asRecord(data) as { qty_old?: number; qty_new?: number; message?: string };
 }
 
-export async function searchEquipment(query: string, page = 1, limit = 50, databaseId?: string): Promise<EquipmentPage> {
+export async function getConsumableById(
+  itemId: number | string,
+  databaseId?: string,
+): Promise<ConsumableRecord | null> {
+  const normalized = Number(itemId);
+  if (!Number.isInteger(normalized) || normalized <= 0) return null;
+  const { data } = await apiClient.get(
+    `/equipment/consumables/${encodeURIComponent(String(normalized))}`,
+    databaseHeaders(databaseId),
+  );
+  return normalizeConsumableRecord(data);
+}
+
+export async function consumeConsumableStock(
+  item: Pick<ConsumableRecord, 'id' | 'inv_no'>,
+  qty: number,
+  databaseId?: string,
+): Promise<{ qty_old?: number; qty_new?: number; message?: string }> {
+  if (!Number.isInteger(qty) || qty <= 0) throw new Error('Количество должно быть целым числом больше 0');
+  const { data } = await apiClient.post('/equipment/consumables/consume', {
+    item_id: item.id,
+    inv_no: item.inv_no || undefined,
+    qty,
+    reason: 'qr_scan',
+  }, databaseHeaders(databaseId));
+  return asRecord(data) as { qty_old?: number; qty_new?: number; message?: string };
+}
+
+export async function listCompatiblePrinterModels(
+  cartridgeModel: string,
+  databaseId?: string,
+): Promise<string[]> {
+  const model = asText(cartridgeModel);
+  if (!model) return [];
+  const { data } = await apiClient.get(
+    `/json/cartridges/printers-for/${encodeURIComponent(model)}`,
+    databaseHeaders(databaseId),
+  );
+  const row = asRecord(data);
+  return Array.isArray(row.printer_models)
+    ? row.printer_models.map((entry) => asText(entry)).filter(Boolean)
+    : [];
+}
+
+export async function searchEquipment(
+  query: string,
+  page = 1,
+  limit = 50,
+  databaseId?: string,
+  field?: string,
+): Promise<EquipmentPage> {
   const q = asText(query);
   if (!q) return { equipment: [], total: 0, page: 1, pages: 0 };
   const { data } = await apiClient.get('/equipment/search/universal', {
-    params: { q, page, limit },
+    params: { q, page, limit, field: asText(field) || undefined },
     ...databaseHeaders(databaseId),
   });
   return normalizeEquipmentPage(data);
@@ -552,6 +602,26 @@ export async function searchEquipmentBySerial(query: string): Promise<EquipmentR
   if (!q) return [];
   const { data } = await apiClient.get('/equipment/search/serial', { params: { q } });
   return normalizeEquipmentList(asRecord(data).equipment);
+}
+
+export async function getEmployeeEquipmentByOwner(
+  ownerNo: number,
+  options: { employeeName?: string; databaseId?: string; signal?: AbortSignal } = {},
+): Promise<{ equipment: EquipmentRecord[]; dbErrors: string[] }> {
+  const normalized = Math.trunc(Number(ownerNo));
+  if (!Number.isFinite(normalized) || normalized <= 0) throw new Error('Не указан сотрудник');
+  const { data } = await apiClient.get(`/equipment/employee/${normalized}/items`, {
+    params: { employee_name: asText(options.employeeName) || undefined },
+    signal: options.signal,
+    ...databaseHeaders(options.databaseId),
+  });
+  const body = asRecord(data);
+  const rows = Array.isArray(data) ? data : body.equipment;
+  const dbErrors = (Array.isArray(body.db_errors) ? body.db_errors : [])
+    .map((value) => asText(value))
+    .filter(Boolean)
+    .slice(0, 10);
+  return { equipment: normalizeEquipmentList(rows), dbErrors };
 }
 
 export async function getEquipment(invNo: string, databaseId?: string): Promise<EquipmentRecord> {
@@ -1080,7 +1150,7 @@ export async function recordEquipmentWork({
   componentType,
   componentName,
   componentModel,
-}: EquipmentWorkPayload): Promise<void> {
+}: EquipmentWorkPayload): Promise<{ qty_new?: number }> {
   const serialNumber = asText(equipment.serial_no);
   const common = {
     serial_number: serialNumber,
@@ -1099,15 +1169,16 @@ export async function recordEquipmentWork({
   if (kind !== 'cartridge' && !serialNumber) throw new Error('В карточке не указан серийный номер');
   if (kind === 'cleaning' || kind === 'battery') {
     await apiClient.post(`/json/works/${kind}`, common);
-    return;
+    return {};
   }
   if (!consumable?.id) throw new Error('Выберите расходник');
-  await apiClient.post('/equipment/consumables/consume', {
+  const { data: consumeResult } = await apiClient.post('/equipment/consumables/consume', {
     item_id: consumable.id,
     inv_no: consumable.inv_no || undefined,
     qty: 1,
     reason: kind,
   }, databaseHeaders(databaseId));
+  const qty_new = asNumber(asRecord(consumeResult).qty_new) ?? undefined;
   const additional_data = {
     consumable_item_id: consumable.id,
     consumable_inv_no: consumable.inv_no,
@@ -1126,7 +1197,7 @@ export async function recordEquipmentWork({
       detection_source: 'sql-consumables',
       additional_data,
     });
-    return;
+    return { qty_new };
   }
   const normalizedComponentType = asText(componentType);
   const normalizedComponentModel = asText(componentModel) || consumable.model_name;
@@ -1141,4 +1212,5 @@ export async function recordEquipmentWork({
     detection_source: 'sql-consumables',
     additional_data,
   });
+  return { qty_new };
 }

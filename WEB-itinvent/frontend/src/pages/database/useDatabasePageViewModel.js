@@ -12,6 +12,8 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { createNavigateToastAction } from '../../components/feedback/toastActions';
 import { getOfficeSubtlePanelSx } from '../../theme/officeUiTokens';
 import { toInvNo } from './equipmentModel';
+import { useDatabaseAdSync } from './useDatabaseAdSync';
+import { useDatabaseDbTransfer } from './useDatabaseDbTransfer';
 import { useDatabaseLookups } from './useDatabaseLookups';
 import { useDatabaseSelection } from './useDatabaseSelection';
 import { DATABASE_SWR_STALE_TIME_MS } from './useDatabaseEquipmentData';
@@ -61,6 +63,7 @@ export function useDatabasePageViewModel() {
   } = useNotification();
   const canDatabaseWrite = hasPermission('database.write');
   const canDatabaseDelete = hasPermission('database.delete');
+  const canAdSync = hasPermission('database.ad_sync');
   const canViewWarehouse1C = hasPermission('warehouse_1c.read');
   const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
   const location = useLocation();
@@ -187,6 +190,10 @@ export function useDatabasePageViewModel() {
     notifyDatabaseError,
   });
 
+  const adSync = useDatabaseAdSync({ notifyDatabaseError });
+
+  const dbTransfer = useDatabaseDbTransfer({ notifyDatabaseError });
+
   // Кэш карточек для быстрого перехода из поиска актов (не ждём полный список Инвентаря).
   const actEquipmentCacheRef = useRef(new Map());
 
@@ -302,8 +309,11 @@ export function useDatabasePageViewModel() {
     ...list,
     ...dialogs,
     ...employee,
+    ...adSync,
+    ...dbTransfer,
     canDatabaseWrite,
     canDatabaseDelete,
+    canAdSync,
     canViewWarehouse1C,
     isAdmin,
     db_name,

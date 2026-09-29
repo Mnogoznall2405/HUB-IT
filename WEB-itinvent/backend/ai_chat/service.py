@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -22,6 +23,7 @@ from backend.ai_chat.artifact_generator import GeneratedFileError, build_generat
 from backend.ai_chat.document_extractors import extract_text_from_path
 from backend.ai_chat.openrouter_client import OpenRouterClientError, openrouter_client
 from backend.ai_chat.retrieval_interface import ai_kb_retrieval
+from shared.llm import jev_client, jev_noul
 from backend.ai_chat.tools import ai_tool_registry
 from backend.ai_chat.tools.context import (
     AI_TOOL_MULTI_DB_MODE_SINGLE,
@@ -34,6 +36,8 @@ from backend.ai_chat.tools.context import (
     AI_TOOL_GROUP_MFU,
     AI_TOOL_GROUP_NETWORK,
     AI_TOOL_GROUP_AD,
+    AI_TOOL_GROUP_KB,
+    AI_TOOL_GROUP_CHAT,
     AI_TOOL_GROUP_OTHER,
     AiToolExecutionContext,
     DEFAULT_ITINVENT_TOOL_IDS,
@@ -649,16 +653,10 @@ AI_ROUTING_SCHEMA = {
 _ROUTING_MAX_TOKENS = int(os.environ.get("AI_ROUTING_MAX_TOKENS", "80"))
 
 
-def _route_tool_groups(
-    *,
-    trigger_text: str,
-    available_groups: set[str],
-    model: str,
-) -> set[str]:
+def _keyword_routed_groups(trigger_text: str, *, available_groups: set[str]) -> set[str] | None:
+    """Deterministic keyword routing; None when no keyword guarantees hit."""
     force_files = AI_TOOL_GROUP_FILES in available_groups and _has_report_file_intent(trigger_text)
     force_ad = AI_TOOL_GROUP_AD in available_groups and _has_ad_password_intent(trigger_text)
-    if len(available_groups) <= 1:
-        return set(available_groups)
     if force_ad:
         routed = {AI_TOOL_GROUP_AD}
         if force_files:
@@ -811,7 +809,22 @@ def _route_tool_groups(
                 if force_files:
                     routed.add(AI_TOOL_GROUP_FILES)
                 return routed
+    return None
 
+
+def _route_tool_groups(
+    *,
+    trigger_text: str,
+    available_groups: set[str],
+    model: str,
+) -> set[str]:
+    if len(available_groups) <= 1:
+        return set(available_groups)
+    keyword_routed = _keyword_routed_groups(trigger_text, available_groups=available_groups)
+    if keyword_routed is not None:
+        return keyword_routed
+
+    force_files = AI_TOOL_GROUP_FILES in available_groups and _has_report_file_intent(trigger_text)
     groups_list = sorted(available_groups)
     system_prompt = (
         "You are a tool-group router. Given a user message and available tool groups, "
@@ -857,6 +870,155 @@ def _route_tool_groups(
     if force_files and AI_TOOL_GROUP_FILES in available_groups:
         fallback.add(AI_TOOL_GROUP_FILES)
     return fallback or set(available_groups)
+
+
+_JEV_GROUP_QUESTIONS: dict[str, str] = {
+    AI_TOOL_GROUP_ITINVENT: "Нужны ли данные ITinvent: оборудование/техника, сотрудники, компьютеры и их локальные данные (профили, pst-архивы, папки почты), инвентарные или серийные номера, филиалы, локации, история перемещений?",
+    AI_TOOL_GROUP_OFFICE: "Нужна ли работа с почтой, задачами, календарём, контактами или проектами?",
+    AI_TOOL_GROUP_FILES: "Нужно ли создать или конвертировать файл/отчёт/выгрузку (xlsx, csv, pdf, docx)?",
+    AI_TOOL_GROUP_MFU: "Запрос про принтеры и МФУ: картриджи, тонер, счётчики страниц, SNMP, печать?",
+    AI_TOOL_GROUP_NETWORK: "Запрос про сеть: ping, IP/MAC, порты, коммутаторы, VLAN, DNS, сертификаты, состояние серверов?",
+    AI_TOOL_GROUP_AD: "Запрос про Active Directory: пароли, блокировки, разблокировка, группы, история входов?",
+    AI_TOOL_GROUP_KB: "Нужны ли статьи базы знаний: инструкции, FAQ, решения типовых проблем, справочные материалы?",
+    AI_TOOL_GROUP_CHAT: "Нужна ли отправка сообщения в Hub-чат коллеге или в групповой диалог?",
+}
+
+
+def _jev_routing_enabled() -> bool:
+    return str(os.environ.get("AI_JEV_ROUTING", "0") or "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _jev_routing_threshold() -> float:
+    try:
+        value = float(os.environ.get("AI_JEV_ROUTING_THRESHOLD", "0.5") or 0.5)
+    except (TypeError, ValueError):
+        value = 0.5
+    return min(0.95, max(0.05, value))
+
+
+def _jev_routing_timeout_sec() -> float:
+    try:
+        value = float(os.environ.get("AI_JEV_ROUTING_TIMEOUT_SEC", "8") or 8)
+    except (TypeError, ValueError):
+        value = 8.0
+    return min(60.0, max(1.0, value))
+
+
+def _route_tool_groups_jev(*, trigger_text: str, available_groups: set[str]) -> set[str] | None:
+    """Jev System One routing. None means keep default behavior."""
+    if not _jev_routing_enabled() or len(available_groups) <= 1:
+        return None
+    normalized = _normalize_text(trigger_text)
+    if not normalized or not jev_client.is_configured():
+        return None
+    questions = {
+        f"g_{group}": jev_noul(instructions)
+        for group, instructions in _JEV_GROUP_QUESTIONS.items()
+        if group in available_groups
+    }
+    if not questions:
+        return None
+    try:
+        started_at = time.perf_counter()
+        decision = jev_client.decide(
+            state={"user_message": normalized[:1500]},
+            questions=questions,
+            timeout=_jev_routing_timeout_sec(),
+        )
+    except Exception as exc:
+        logger.warning("ai_jev_routing failed; keeping all tool groups: %s", exc)
+        return None
+    threshold = _jev_routing_threshold()
+    probs: dict[str, float] = {}
+    routed: set[str] = set()
+    for group in available_groups:
+        answer = decision.answers.get(f"g_{group}")
+        probability = float(getattr(answer, "probability", 0.0) or 0.0)
+        probs[group] = round(probability, 3)
+        if probability >= threshold:
+            routed.add(group)
+    if AI_TOOL_GROUP_OTHER in available_groups:
+        routed.add(AI_TOOL_GROUP_OTHER)
+    logger.info(
+        "ai_jev_routing probs=%s routed=%s latency_ms=%.0f model=%s",
+        probs,
+        sorted(routed),
+        (time.perf_counter() - started_at) * 1000,
+        decision.model,
+    )
+    return routed or None
+
+
+def _jev_routing_mode() -> str:
+    """Jev routing granularity: 'group' (default) or 'tool' (per-tool selection)."""
+    return str(os.environ.get("AI_JEV_ROUTING_MODE", "group") or "group").strip().lower()
+
+
+# Resolver/utility tools that must stay available when Jev picks concrete tools:
+# drafts and most lookups depend on entity/database resolution.
+_JEV_ALWAYS_KEEP_TOOLS = frozenset(
+    {
+        "itinvent.entity.resolve",
+        "itinvent.database.current",
+    }
+)
+
+
+def _route_tools_jev(*, trigger_text: str, tool_specs: list[dict[str, Any]]) -> set[str] | None:
+    """Return Jev-selected tool ids for AI_JEV_ROUTING_MODE=tool; None keeps default routing."""
+    if not _jev_routing_enabled() or _jev_routing_mode() != "tool":
+        return None
+    normalized = _normalize_text(trigger_text)
+    if not normalized or not jev_client.is_configured():
+        return None
+    specs = [
+        spec
+        for spec in list(tool_specs or [])
+        if _normalize_text((spec or {}).get("tool_id"))
+    ]
+    if not specs or len(specs) > 200:
+        return None
+    questions: dict[str, dict[str, Any]] = {}
+    key_to_tool: dict[str, str] = {}
+    for index, spec in enumerate(specs):
+        tool_id = _normalize_text(spec.get("tool_id"))
+        description = _normalize_text(spec.get("description"))[:200]
+        key = f"t{index:02d}"
+        questions[key] = jev_noul(f"Нужен ли инструмент '{tool_id}'? {description}")
+        key_to_tool[key] = tool_id
+    try:
+        started_at = time.perf_counter()
+        decision = jev_client.decide(
+            state={"user_message": normalized[:1500]},
+            questions=questions,
+            timeout=_jev_routing_timeout_sec(),
+        )
+    except Exception as exc:
+        logger.warning("ai_jev_routing(mode=tool) failed; keeping all tools: %s", exc)
+        return None
+    threshold = _jev_routing_threshold()
+    enabled_ids = set(key_to_tool.values())
+    selected = {
+        tool_id
+        for key, tool_id in key_to_tool.items()
+        if float(getattr(decision.answers.get(key), "probability", 0.0) or 0.0) >= threshold
+    }
+    selected |= _JEV_ALWAYS_KEEP_TOOLS & enabled_ids
+    if not selected:
+        return None
+    logger.info(
+        "ai_jev_routing(mode=tool) selected=%s/%s latency_ms=%.0f model=%s",
+        len(selected),
+        len(enabled_ids),
+        (time.perf_counter() - started_at) * 1000,
+        decision.model,
+    )
+    return selected
 
 
 def _truncate(value: object, limit: int = 12000) -> str:
@@ -1804,6 +1966,12 @@ class AiChatService:
     def __init__(self) -> None:
         self._attachment_text_cache: dict[str, str] = {}
         self._attachment_text_cache_limit = 256
+        # GET /ai/bots walked users, bots, per-bot ACL and mappings on every call;
+        # under a DB stall that stacked into 56s responses (plan P1). A short
+        # per-user TTL keeps the list cheap while staying fresh enough for UI.
+        self._bots_list_cache: dict[int, tuple[float, dict[str, Any]]] = {}
+        self._bots_list_cache_ttl_sec = 20.0
+        self._bots_list_cache_lock = threading.Lock()
 
     def initialize_runtime(self) -> None:
         ensure_app_schema_initialized()
@@ -1830,7 +1998,11 @@ class AiChatService:
 
             ai_sandbox_app_service.ensure_opencode_bot(ai_service=self)
         except Exception as exc:
-            logger.warning("Skipping OpenCode sandbox bootstrap: %s", exc)
+            logger.warning(
+                "Skipping OpenCode sandbox bootstrap: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
 
     def ensure_default_bot(self) -> dict[str, Any]:
         ensure_app_schema_initialized()
@@ -2058,8 +2230,21 @@ class AiChatService:
     def get_openrouter_status(self) -> dict[str, Any]:
         return openrouter_client.get_status()
 
+    def _invalidate_bots_list_cache(self, user_id: int | None = None) -> None:
+        with self._bots_list_cache_lock:
+            if user_id is None:
+                self._bots_list_cache.clear()
+            else:
+                self._bots_list_cache.pop(int(user_id), None)
+
     def list_bots(self, *, current_user_id: int | None = None) -> dict[str, Any]:
         self.initialize_runtime()
+        cache_key = int(current_user_id or 0)
+        now = time.monotonic()
+        with self._bots_list_cache_lock:
+            cached = self._bots_list_cache.get(cache_key)
+            if cached and now - cached[0] < self._bots_list_cache_ttl_sec:
+                return cached[1]
         def _load_rows() -> tuple[list[AppAiBot], dict[str, list[str]]]:
             with app_session() as session:
                 apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=5000)
@@ -2104,7 +2289,7 @@ class AiChatService:
 
         rows, conversation_ids_by_bot = run_with_transient_lock_retry(_load_rows)
         status = self.get_openrouter_status()
-        return {
+        result = {
             "items": [
                 self._serialize_bot(
                     item,
@@ -2116,6 +2301,12 @@ class AiChatService:
             ],
             "configured": bool(status["configured"]),
         }
+        with self._bots_list_cache_lock:
+            self._bots_list_cache[cache_key] = (now, result)
+            while len(self._bots_list_cache) > 512:
+                oldest = min(self._bots_list_cache, key=lambda key: self._bots_list_cache[key][0])
+                self._bots_list_cache.pop(oldest, None)
+        return result
 
     def list_admin_bots(self) -> list[dict[str, Any]]:
         self.initialize_runtime()
@@ -2360,6 +2551,7 @@ class AiChatService:
                 )
             )
             session.flush()
+        self._invalidate_bots_list_cache(int(current_user_id))
         return chat_service.get_conversation_summary(
             current_user_id=int(current_user_id),
             conversation_id=conversation_id,
@@ -2557,6 +2749,8 @@ class AiChatService:
                     AppAiBotConversation.user_id == int(current_user_id),
                 )
             )
+        if deleted:
+            self._invalidate_bots_list_cache(int(current_user_id))
         return deleted
 
     def get_conversation_status(self, *, conversation_id: str, current_user_id: int) -> dict[str, Any]:
@@ -3836,6 +4030,29 @@ class AiChatService:
         # With ~50 tools modern models (GPT-4o, Claude 3.5+) handle this well.
         # The LLM decides which tools to call based on the user's message.
         routed_groups = set(available_tool_groups)
+        jev_selected_tools = _route_tools_jev(
+            trigger_text=trigger_text_for_routing,
+            tool_specs=all_tool_specs,
+        )
+        jev_routed = (
+            None
+            if jev_selected_tools is not None
+            else _route_tool_groups_jev(
+                trigger_text=trigger_text_for_routing,
+                available_groups=available_tool_groups,
+            )
+        )
+        keyword_groups = (
+            _keyword_routed_groups(
+                trigger_text_for_routing,
+                available_groups=available_tool_groups,
+            )
+            or set()
+            if (jev_selected_tools is not None or jev_routed is not None)
+            else set()
+        )
+        if jev_routed is not None:
+            routed_groups = jev_routed | keyword_groups
         _log_ai_run_timing("tool_routing", routing_started_at, run_id=run_id)
         logger.info(
             "ai_tool_routing run_id=%s available=%s routed=%s",
@@ -3843,10 +4060,22 @@ class AiChatService:
             sorted(available_tool_groups),
             sorted(routed_groups),
         )
-        tool_specs = [
-            item for item in all_tool_specs
-            if get_tool_group((item or {}).get("tool_id")) in routed_groups
-        ]
+        if jev_selected_tools is not None:
+            keep_tool_ids = set(jev_selected_tools) | {
+                _normalize_text(item.get("tool_id"))
+                for item in all_tool_specs
+                if get_tool_group((item or {}).get("tool_id")) in keyword_groups
+            }
+            tool_specs = [
+                item
+                for item in all_tool_specs
+                if _normalize_text((item or {}).get("tool_id")) in keep_tool_ids
+            ]
+        else:
+            tool_specs = [
+                item for item in all_tool_specs
+                if get_tool_group((item or {}).get("tool_id")) in routed_groups
+            ]
         itinvent_tool_specs = [
             item for item in tool_specs if _is_itinvent_tool_id((item or {}).get("tool_id"))
         ]
@@ -3865,6 +4094,12 @@ class AiChatService:
         ad_tool_specs = [
             item for item in tool_specs if _is_ad_tool_id((item or {}).get("tool_id"))
         ]
+        kb_tool_specs = [
+            item for item in tool_specs if get_tool_group((item or {}).get("tool_id")) == AI_TOOL_GROUP_KB
+        ]
+        chat_tool_specs = [
+            item for item in tool_specs if get_tool_group((item or {}).get("tool_id")) == AI_TOOL_GROUP_CHAT
+        ]
         other_tool_specs = [
             item
             for item in tool_specs
@@ -3874,6 +4109,8 @@ class AiChatService:
             and not _is_mfu_tool_id((item or {}).get("tool_id"))
             and not _is_network_tool_id((item or {}).get("tool_id"))
             and not _is_ad_tool_id((item or {}).get("tool_id"))
+            and get_tool_group((item or {}).get("tool_id"))
+            not in {AI_TOOL_GROUP_KB, AI_TOOL_GROUP_CHAT}
         ]
         # Tool descriptions share the same 32k input budget as dialogue and files.
         itinvent_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(itinvent_tool_specs), 3500)
@@ -3882,6 +4119,8 @@ class AiChatService:
         mfu_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(mfu_tool_specs), 400)
         network_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(network_tool_specs), 400)
         ad_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(ad_tool_specs), 400)
+        kb_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(kb_tool_specs), 800)
+        chat_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(chat_tool_specs), 800)
         other_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(other_tool_specs), 300)
         file_tools_available = bool(file_tool_specs) and bool(tool_context.allow_generated_artifacts)
         current_database_meta = next(
@@ -4022,6 +4261,29 @@ class AiChatService:
                     (
                         AI_AD_TOOL_ROUTING_GUIDE
                         if ad_tool_specs
+                        else ""
+                    ),
+                    (
+                        f"Enabled knowledge base tools:\n{kb_tool_specs_text}"
+                        if kb_tool_specs
+                        else ""
+                    ),
+                    (
+                        "Use kb tools when the user asks for instructions, known-issue fixes or reference docs: "
+                        "search articles first, then open the relevant one."
+                        if kb_tool_specs
+                        else ""
+                    ),
+                    (
+                        f"Enabled Hub chat tools:\n{chat_tool_specs_text}"
+                        if chat_tool_specs
+                        else ""
+                    ),
+                    (
+                        "To message a colleague or group, resolve the recipient with chat.users.search or "
+                        "chat.conversations.search, then create chat.action.message_send_draft. "
+                        "Never claim a message was sent before the user confirms the action card."
+                        if chat_tool_specs
                         else ""
                     ),
                     (

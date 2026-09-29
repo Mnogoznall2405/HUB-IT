@@ -58,6 +58,7 @@ const formatExpiresAt = (expiresAt) => {
   if (!expiresAt) return '';
   const parsed = new Date(expiresAt);
   if (Number.isNaN(parsed.getTime())) return '';
+  if (parsed.getTime() - Date.now() > 3650 * 86400 * 1000) return '';
   return parsed.toLocaleString('ru-RU', {
     day: '2-digit',
     month: '2-digit',
@@ -65,6 +66,12 @@ const formatExpiresAt = (expiresAt) => {
     hour: '2-digit',
     minute: '2-digit',
   });
+};
+
+const isForeverExpiresAt = (expiresAt) => {
+  const parsed = new Date(expiresAt);
+  if (Number.isNaN(parsed.getTime())) return false;
+  return parsed.getTime() - Date.now() > 3650 * 86400 * 1000;
 };
 
 const useDebouncedValue = (value, delayMs = SEARCH_DEBOUNCE_MS) => {
@@ -118,6 +125,7 @@ export default function MyFilesShareDialog({
     [expiresAt, fileName, url],
   );
   const expiresLabel = useMemo(() => formatExpiresAt(expiresAt), [expiresAt]);
+  const isForeverShare = useMemo(() => isForeverExpiresAt(expiresAt), [expiresAt]);
 
   useEffect(() => {
     if (!open) return;
@@ -322,9 +330,11 @@ export default function MyFilesShareDialog({
               </Typography>
             </Paper>
             <Typography variant="caption" color="text.secondary">
-              {expiresLabel
-                ? `Открывается без входа · до ${expiresLabel}`
-                : 'Открывается без входа'}
+              {isForeverShare
+                ? 'Открывается без входа · бессрочно'
+                : expiresLabel
+                  ? `Открывается без входа · до ${expiresLabel}`
+                  : 'Открывается без входа'}
             </Typography>
             {copyState === 'error' ? (
               <Typography variant="caption" color="warning.main">

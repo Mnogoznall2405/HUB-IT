@@ -1,0 +1,37 @@
+# VoiceVideo dependencies
+# PyTorch с CUDA: ставится отдельно (см. README/инструкцию):
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+
+# ML / аудио
+torch
+torchaudio
+whisperx
+pyannote.audio
+demucs
+librosa
+soundfile
+scipy
+omegaconf
+numpy
+
+# Утилиты аудио
+pydub
+ffmpeg-python
+
+# LLM API (OpenRouter через OpenAI-совместимый клиент)
+openai
+
+# Отчеты
+jinja2
+reportlab
+weasyprint; sys_platform != 'win32'
+
+# Системные
+psutil
+tqdm
+python-dotenv
+requests
+
+# Сепарация вокала (audio-separator: Kim Vocal 2, RoFormer)
+audio-separator
+audioread

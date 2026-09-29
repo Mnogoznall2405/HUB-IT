@@ -42,6 +42,7 @@ import {
   SCAN_CENTER_SECTIONS,
 } from '../../scanCenter/nativeScanCenterModel';
 import { useFluentTokens } from '../../theme/fluentTokens';
+import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { NativeFilterChip, NativeSegmentedControl } from '../../components/ui/NativeFilterControls';
 import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
 
@@ -64,6 +65,7 @@ export function NativeScanCenterScreen() {
   const { hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
+  const navInset = useNativeBottomNavInset();
   const canRead = hasPermission('scan.read');
   const canAck = hasPermission('scan.ack');
   const canRunTasks = hasPermission('scan.tasks');
@@ -363,13 +365,14 @@ export function NativeScanCenterScreen() {
       title="Scan Center"
       tokens={tokens}
       scroll={false}
+      contentUnderNav
     >
       {sectionTabs}
       {stateMessages}
       {section === 'overview' ? (
         <ScrollView
           testID="native-scan-overview"
-          contentContainerStyle={styles.overview}
+          contentContainerStyle={[styles.overview, { paddingBottom: navInset }]}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refreshCurrent} tintColor={tokens.primary} />}
         >
           {loading && !dashboard ? <View style={styles.loading}><ActivityIndicator color={tokens.primary} /><Text style={[styles.emptyText, { color: tokens.textSecondary }]}>Загружаем состояние контура…</Text></View> : null}
@@ -430,7 +433,7 @@ export function NativeScanCenterScreen() {
           testID={`native-scan-list-${section}`}
           data={rows}
           keyExtractor={scanRowKey}
-          contentContainerStyle={rows.length ? styles.list : styles.emptyList}
+          contentContainerStyle={rows.length ? [styles.list, { paddingBottom: navInset }] : [styles.emptyList, { paddingBottom: navInset }]}
           refreshing={refreshing}
           onRefresh={refreshCurrent}
           onEndReached={() => {

@@ -5,6 +5,7 @@ namespace Hub.Desktop.Security;
 public enum NavigationDisposition
 {
     TrustedOrigin,
+    SsoRedirect,
     ExternalBrowser,
     Blocked,
 }
@@ -12,11 +13,13 @@ public enum NavigationDisposition
 public sealed class NavigationPolicy
 {
     private readonly string _trustedOrigin;
+    private readonly string? _ssoAuthorityOrigin;
 
-    public NavigationPolicy(Uri trustedBaseUri)
+    public NavigationPolicy(Uri trustedBaseUri, Uri? ssoAuthority = null)
     {
         ArgumentNullException.ThrowIfNull(trustedBaseUri);
         _trustedOrigin = NormalizeOrigin(trustedBaseUri);
+        _ssoAuthorityOrigin = ssoAuthority is null ? null : NormalizeOrigin(ssoAuthority);
         TrustedOriginForLog = $"{trustedBaseUri.Scheme}://{trustedBaseUri.IdnHost}:{trustedBaseUri.Port}";
     }
 
@@ -34,9 +37,26 @@ public sealed class NavigationPolicy
             return NavigationDisposition.TrustedOrigin;
         }
 
+        if (IsSsoRedirect(uri))
+        {
+            return NavigationDisposition.SsoRedirect;
+        }
+
         return IsAllowedExternalScheme(uri)
             ? NavigationDisposition.ExternalBrowser
             : NavigationDisposition.Blocked;
+    }
+
+    /// <summary>
+    /// In-window navigation to the AD FS authority is allowed only under /adfs/
+    /// (authorize, WIA, signout). The origin stays untrusted: no bridge messages,
+    /// no external-scheme launches, no downloads.
+    /// </summary>
+    public bool IsSsoRedirect(Uri uri)
+    {
+        return _ssoAuthorityOrigin is not null
+            && string.Equals(_ssoAuthorityOrigin, NormalizeOrigin(uri), StringComparison.Ordinal)
+            && uri.AbsolutePath.StartsWith("/adfs/", StringComparison.OrdinalIgnoreCase);
     }
 
     public bool IsTrustedOrigin(Uri uri)

@@ -59,6 +59,7 @@ from backend.models.equipment import (
     UploadedActEmailSendRequest,
     UploadedActEmailSendResponse,
     TransferActReminderResponse,
+    TransferToDbRequest,
     EquipmentActSearchResponse,
     EquipmentGroupedListResponse,
     EquipmentCurrentActsRequest,
@@ -67,11 +68,13 @@ from backend.models.equipment import (
 )
 from backend.services.transfer_service import (
     get_act_records,
+    generate_transfer_acts,
     generate_transfer_acts_without_move,
     get_act_record,
     send_transfer_acts_email,
     send_binary_file_email,
 )
+from backend.services.equipment_db_transfer_service import transfer_items_to_db
 from backend.services.equipment_transfer_execution_service import (
     EquipmentTransferExecutionError,
     execute_equipment_transfer,
@@ -856,9 +859,11 @@ async def search_by_serial(
 
 @router.get("/search/universal")
 async def search_universal(
-    q: str = Query(..., min_length=1, description="Search term"),
+    q: str = Query("", description="Search term"),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(50, ge=1, le=200, description="Results per page"),
+    type_no: Optional[int] = Query(None, description="Optional CI_TYPES.TYPE_NO filter"),
+    field: Optional[str] = Query(None, description="Optional single-field search scope"),
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user)
 ):
@@ -869,14 +874,18 @@ async def search_universal(
         q: Search term
         page: Page number
         limit: Results per page
+        type_no: Optional equipment type filter (with an empty q lists the type)
+        field: Optional field scope (serial, model, inv_no, ...)
 
     Returns:
         Equipment list with pagination
     """
-    if not q or len(q.strip()) == 0:
+    if (not q or len(q.strip()) == 0) and type_no is None:
         return {"equipment": [], "total": 0, "page": 1, "pages": 0}
 
-    result = await run_in_threadpool(queries.search_equipment_universal, q, page, limit, db_id)
+    result = await run_in_threadpool(
+        queries.search_equipment_universal, q, page, limit, db_id, type_no, field
+    )
     if isinstance(result, dict):
         result["data_version"] = get_equipment_data_version(db_id)
     return result
@@ -1214,7 +1223,7 @@ async def clear_recent_equipment_acts(
 @router.get("/branches", response_model=list[Branch])
 async def get_branches(
     response: Response,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user)
 ):
     """
@@ -1232,7 +1241,7 @@ async def get_branches(
 async def get_all_locations(
     response: Response,
     branch_no: Optional[str] = Query(None, description="Optional branch number to prioritize used locations"),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user)
 ):
     """
@@ -1377,7 +1386,7 @@ async def get_statuses(
 async def search_owners(
     q: str = Query(..., min_length=1, description="Owner name or department"),
     limit: int = Query(20, ge=1, le=100, description="Results per page"),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user),
 ):
     """
@@ -1765,6 +1774,22 @@ async def delete_consumable(
     if code == "invalid_item_id":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+
+
+@router.get("/consumables/{item_id}", response_model=ConsumableLookupItem)
+async def get_consumable_by_id(
+    item_id: int,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    _: User = Depends(get_current_active_user),
+):
+    """Get one consumable card (CI_TYPE=4) by ITEMS.ID — used by QR deep links."""
+    row = await run_in_threadpool(queries.get_consumable_by_id, item_id, db_id)
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Consumable with ID {item_id} not found",
+        )
+    return row
 
 
 @router.get("/branches-list")
@@ -2215,6 +2240,161 @@ async def send_transfer_acts(
         employee_email=employee_email,
     )
     return TransferEmailResult(**result)
+
+
+@router.post("/transfer/to-db")
+async def transfer_equipment_to_db(
+    payload: TransferToDbRequest,
+    db_id: Optional[str] = Depends(get_current_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """
+    Move equipment to another ITINVENT database: the item gets a fresh INV_NO
+    in the target DB, its history (CI_HISTORY, acts, moves, files, comments)
+    is copied over, a receipt act is created there and the row is removed from
+    the source DB.
+    """
+    inv_nos = _normalize_inv_nos(payload.inv_nos)
+    if not inv_nos:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No inventory numbers provided")
+
+    target_db = str(payload.target_db or "").strip()
+    if target_db not in (queries.get_available_databases() or {}):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown target_db")
+    source_db = str(db_id or "").strip()
+    if not source_db:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Source database is not resolved")
+    if target_db == source_db:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="target_db must differ from the current database")
+
+    if payload.target_owner_no is None and not str(payload.new_owner_name or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="target_owner_no or new_owner_name is required",
+        )
+    if payload.target_branch_no is not None and not await run_in_threadpool(
+        queries.get_branch_by_no, int(payload.target_branch_no), target_db
+    ):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid target_branch_no")
+    if payload.target_loc_no is not None and not await run_in_threadpool(
+        queries.get_location_by_no, int(payload.target_loc_no), target_db
+    ):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid target_loc_no")
+    if payload.target_branch_no is not None and payload.target_loc_no is not None and not await run_in_threadpool(
+        queries.is_location_in_branch, int(payload.target_loc_no), int(payload.target_branch_no), target_db
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="target_loc_no does not belong to target_branch_no",
+        )
+    if payload.target_owner_no is not None and not await run_in_threadpool(
+        queries.get_owner_by_no, int(payload.target_owner_no), target_db
+    ):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid target_owner_no")
+
+    changed_by = str(getattr(current_user, "username", "") or "IT-WEB")
+    try:
+        report = await run_in_threadpool(
+            transfer_items_to_db,
+            source_db_id=source_db,
+            target_db_id=target_db,
+            inv_nos=inv_nos,
+            target_owner_no=int(payload.target_owner_no) if payload.target_owner_no is not None else None,
+            target_owner_name=str(payload.new_owner_name or "").strip() or None,
+            target_owner_dept=str(payload.new_owner_dept or "").strip() or None,
+            target_branch_no=int(payload.target_branch_no) if payload.target_branch_no is not None else None,
+            target_loc_no=int(payload.target_loc_no) if payload.target_loc_no is not None else None,
+            changed_by=changed_by,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("transfer-to-db failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка переноса: {exc}",
+        ) from exc
+
+    # Act files (DOCX/PDF) for the moved items, registered for download/email.
+    act_items = [
+        item["act_item"]
+        for item in report.get("items") or []
+        if item.get("status") in ("ok", "partial") and item.get("act_item")
+    ]
+    owner_row = None
+    if report.get("resolved_owner_no") is not None:
+        owner_row = await run_in_threadpool(queries.get_owner_by_no, int(report["resolved_owner_no"]), target_db)
+    new_employee_name = (
+        (owner_row or {}).get("OWNER_DISPLAY_NAME")
+        or (owner_row or {}).get("owner_display_name")
+        or str(payload.new_owner_name or "").strip()
+    )
+    new_employee_dept = str((owner_row or {}).get("OWNER_DEPT") or (owner_row or {}).get("owner_dept") or "")
+    new_employee_email = None
+    if report.get("resolved_owner_no") is not None:
+        new_employee_email = await run_in_threadpool(
+            queries.get_owner_email_by_no, int(report["resolved_owner_no"]), target_db
+        )
+    acts: list[dict[str, Any]] = []
+    if act_items:
+        try:
+            acts = await run_in_threadpool(
+                generate_transfer_acts,
+                act_items,
+                new_employee_name,
+                new_employee_dept,
+                new_employee_email,
+                target_db,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("transfer-to-db act generation failed: %s", exc)
+            report["acts_error"] = str(exc)
+
+    # Acceptance task for the receiving side.
+    task_payload = None
+    assignee_ids = [int(v) for v in (payload.task_assignee_user_ids or []) if str(v).strip().isdigit() or isinstance(v, int)]
+    if assignee_ids and act_items:
+        try:
+            from backend.services.hub_service import hub_service
+
+            items_desc = "; ".join(
+                f"{a.get('model_name') or 'предмет'} (инв. {a.get('inv_no')})" for a in act_items[:20]
+            )
+            actor = {
+                "id": int(current_user.id),
+                "username": str(getattr(current_user, "username", "") or ""),
+                "full_name": str(getattr(current_user, "full_name", "") or ""),
+                "role": str(getattr(current_user, "role", "") or ""),
+                "department": str(getattr(current_user, "department", "") or ""),
+                "permissions": list(getattr(current_user, "permissions", []) or []),
+                "custom_permissions": list(getattr(current_user, "permissions", []) or []),
+                "use_custom_permissions": True,
+            }
+            comment_text = str(payload.comment or "").strip()
+            description = (
+                f"Перенос техники из базы {source_db} в {target_db}. "
+                f"Позиции: {items_desc}. "
+                f"Акт оприходования № {report.get('act_doc_no') or '-'}."
+                + (f" Комментарий: {comment_text}" if comment_text else "")
+            )
+            project = await run_in_threadpool(hub_service.ensure_transfer_act_reminder_task_project)
+            task = await run_in_threadpool(
+                hub_service.create_task,
+                title=f"Принять технику в базе {target_db}",
+                description=description[:4000],
+                assignee_user_id=assignee_ids[0],
+                assignee_user_ids=assignee_ids,
+                controller_user_id=0,
+                due_at=str(payload.task_due_at or "").strip() or None,
+                project_id=str(project.get("id") or hub_service._DEFAULT_TASK_PROJECT_ID),
+                actor=actor,
+            )
+            task_payload = {"id": task.get("id"), "title": task.get("title")}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("transfer-to-db task creation failed: %s", exc)
+            report["task_error"] = str(exc)
+
+    report["acts"] = acts
+    report["task"] = task_payload
+    return report
 
 
 @router.get("/transfer/reminders/{reminder_id}", response_model=TransferActReminderResponse)

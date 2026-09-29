@@ -1,10 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
-import { unzipSync, strFromU8 } from 'fflate';
+import { describe, expect, it } from 'vitest';
 import {
   collectDataTransferFiles,
   getFolderRelativePath,
   isFolderFileSelection,
-  packFolderFilesToZip,
   resolveFolderArchiveName,
   sanitizeZipEntryPath,
   summarizeFolderSelection,
@@ -41,50 +39,6 @@ describe('myFilesFolderZip', () => {
     expect(resolveFolderArchiveName(folderFiles)).toBe('Docs.zip');
     expect(getFolderRelativePath(folderFiles[1])).toBe('Docs/sub/b.txt');
     expect(summarizeFolderSelection(folderFiles).fileCount).toBe(2);
-  });
-
-  it('packs folder files into a zip preserving relative paths', async () => {
-    const onProgress = vi.fn();
-    const files = [
-      makeFolderFile('Reports/readme.txt', 'hello'),
-      makeFolderFile('Reports/data/list.csv', 'a,b\n1,2\n'),
-    ];
-
-    const archive = await packFolderFilesToZip(files, { onProgress });
-    expect(archive.name).toBe('Reports.zip');
-    expect(archive.type).toBe('application/zip');
-    expect(onProgress).toHaveBeenCalled();
-    expect(onProgress).toHaveBeenLastCalledWith(1);
-
-    const archiveBytes = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(new Uint8Array(reader.result));
-      reader.onerror = () => reject(reader.error || new Error('read failed'));
-      reader.readAsArrayBuffer(archive);
-    });
-    const unpacked = unzipSync(archiveBytes);
-    expect(Object.keys(unpacked).sort()).toEqual([
-      'Reports/data/list.csv',
-      'Reports/readme.txt',
-    ]);
-    expect(strFromU8(unpacked['Reports/readme.txt'])).toBe('hello');
-  });
-
-  it('rejects empty folder selections', async () => {
-    await expect(packFolderFilesToZip([])).rejects.toThrow(/пуста/i);
-  });
-
-  it('maps browser memory failures to a clear Russian error', async () => {
-    const file = makeFolderFile('Big/a.bin', 'x');
-    Object.defineProperty(file, 'arrayBuffer', {
-      configurable: true,
-      value: async () => {
-        const error = new Error('Array buffer allocation failed');
-        error.name = 'RangeError';
-        throw error;
-      },
-    });
-    await expect(packFolderFilesToZip([file])).rejects.toThrow(/памяти браузера/i);
   });
 
   it('collects dropped folder entries via webkitGetAsEntry', async () => {

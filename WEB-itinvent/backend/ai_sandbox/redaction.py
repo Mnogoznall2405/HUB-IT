@@ -22,7 +22,9 @@ def redact_text(value: object, *, max_length: int = 2_000) -> str:
     text = _ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}=[REDACTED]", text)
     text = _URL_CREDENTIAL_RE.sub(r"\1[REDACTED]@", text)
     if len(text) > max_length:
-        text = text[:max_length].rstrip() + "…"
+        # Reserve one slot for the ellipsis so the result never exceeds
+        # max_length (DB columns like operation VARCHAR(128) rely on it).
+        text = text[: max(max_length - 1, 0)].rstrip() + "…"
     return text
 
 

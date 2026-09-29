@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
+from backend.chat.models import conversation_state_is_muted
 from backend.chat.utils import normalize_text as _normalize_text
 
 
@@ -54,7 +55,7 @@ def build_chat_notification_recipient_plans(
         if (
             not is_mentioned
             and (
-                bool(getattr(state, "is_muted", False))
+                conversation_state_is_muted(state)
                 or bool(getattr(state, "is_archived", False))
             )
         ):

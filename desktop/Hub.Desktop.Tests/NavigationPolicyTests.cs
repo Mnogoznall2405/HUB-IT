@@ -47,6 +47,54 @@ public sealed class NavigationPolicyTests
         Assert.True(_policy.TryGetExternalUri(uri, out _));
     }
 
+    [Fact]
+    public void AllowsConfiguredAdfsAuthorityUnderAdfsPath()
+    {
+        var policy = new NavigationPolicy(
+            new Uri("https://hubit.zsgp.ru/"),
+            new Uri("https://sso.zsgp.ru"));
+
+        Assert.Equal(
+            NavigationDisposition.SsoRedirect,
+            policy.Evaluate("https://sso.zsgp.ru/adfs/oauth2/authorize?client_id=x"));
+        Assert.Equal(
+            NavigationDisposition.SsoRedirect,
+            policy.Evaluate("https://sso.zsgp.ru/adfs/ls/wia"));
+    }
+
+    [Fact]
+    public void SsoRedirectDoesNotGrantBridgeTrust()
+    {
+        var policy = new NavigationPolicy(
+            new Uri("https://hubit.zsgp.ru/"),
+            new Uri("https://sso.zsgp.ru"));
+
+        Assert.False(policy.IsTrustedOrigin(new Uri("https://sso.zsgp.ru/adfs/oauth2/authorize")));
+    }
+
+    [Theory]
+    [InlineData("https://sso.zsgp.ru/")]
+    [InlineData("https://sso.zsgp.ru/admin")]
+    [InlineData("https://sso.zsgp.ru.evil.example/adfs/oauth2/authorize")]
+    [InlineData("https://sso.zsgp.ru:8443/adfs/oauth2/authorize")]
+    [InlineData("https://evil.example/adfs/oauth2/authorize")]
+    public void SendsNonAdfsOrForeignUrisToSystemBrowser(string uri)
+    {
+        var policy = new NavigationPolicy(
+            new Uri("https://hubit.zsgp.ru/"),
+            new Uri("https://sso.zsgp.ru"));
+
+        Assert.Equal(NavigationDisposition.ExternalBrowser, policy.Evaluate(uri));
+    }
+
+    [Fact]
+    public void BlocksAdfsNavigationWhenAuthorityIsNotConfigured()
+    {
+        Assert.Equal(
+            NavigationDisposition.ExternalBrowser,
+            _policy.Evaluate("https://sso.zsgp.ru/adfs/oauth2/authorize?client_id=x"));
+    }
+
     [Theory]
     [InlineData("http://hubit.zsgp.ru/")]
     [InlineData("http://10.109.0.116.evil.example/")]

@@ -17,6 +17,7 @@ import {
 } from 'react-native';
 import { useAuth } from '../../auth/AuthContext';
 import type { ChatSocketStatus } from '../../chat/chatSocket';
+import { countStalledChatSends } from '../../diagnostics/chatSendTiming';
 import { hubRealtimeSocket, type HubRealtimeStatus } from '../../realtime/hubRealtimeSocket';
 import { useAppFluentTokens, type FluentTokens } from '../../theme/fluentTokens';
 
@@ -38,19 +39,21 @@ export function resolveHubConnectionPresentation(input: {
   hubStatus: HubRealtimeStatus;
   chatStatus?: ChatSocketStatus;
   chatEnabled?: boolean;
+  sendStalled?: boolean;
 }): HubConnectionPresentation {
   const { offlineMode, apiOnline = false, hubStatus } = input;
   if (offlineMode) {
     return { kind: 'offline', label: 'Нет сети · офлайн-данные доступны' };
   }
   if (hubStatus === 'connected') {
-    return DEFAULT_PRESENTATION;
+    return input.sendStalled ? { kind: 'connecting', label: 'Соединение…' } : DEFAULT_PRESENTATION;
   }
   if (hubStatus === 'error' || hubStatus === 'offline' || hubStatus === 'reconnecting' || hubStatus === 'suspended') {
     return apiOnline
       ? { kind: 'degraded', label: 'На связи · без мгновенных обновлений' }
       : { kind: 'degraded', label: 'Связь нестабильна' };
   }
+  if (input.sendStalled) return { kind: 'connecting', label: 'Соединение…' };
   if (apiOnline) return DEFAULT_PRESENTATION;
   return { kind: 'connecting', label: 'Подключение…' };
 }
@@ -58,16 +61,27 @@ export function resolveHubConnectionPresentation(input: {
 export function HubConnectionProvider({ children }: { children: ReactNode }) {
   const { offlineMode, user } = useAuth();
   const [hubStatus, setHubStatus] = useState<HubRealtimeStatus>(hubRealtimeSocket.getStatus());
+  const [sendStalled, setSendStalled] = useState(false);
 
   useEffect(() => hubRealtimeSocket.on('status', (next) => {
     setHubStatus(String(next || 'disconnected') as HubRealtimeStatus);
   }), []);
 
+  // A socket can stay silent-healthy while HTTP is dead: poll the send-path
+  // marks so a stuck send still surfaces as a connection problem.
+  useEffect(() => {
+    const update = () => setSendStalled(countStalledChatSends() > 0);
+    update();
+    const timer = setInterval(update, 1_000);
+    return () => clearInterval(timer);
+  }, []);
+
   const presentation = useMemo(() => resolveHubConnectionPresentation({
     offlineMode,
     apiOnline: Boolean(user && !offlineMode),
     hubStatus,
-  }), [hubStatus, offlineMode, user]);
+    sendStalled,
+  }), [hubStatus, offlineMode, user, sendStalled]);
 
   return (
     <HubConnectionContext.Provider value={presentation}>

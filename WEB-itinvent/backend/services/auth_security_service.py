@@ -673,6 +673,48 @@ class AuthSecurityService:
             send_login_alert=False,
         )
 
+    def complete_windows_sso_login(
+        self,
+        *,
+        user: dict[str, Any],
+        ip_address: str,
+        user_agent: str,
+        network_zone: str,
+        client_device_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Issue ordinary tokens for a domain user verified by the SSO relay.
+
+        The relay's Kerberos-verified assertion has already been validated
+        (signature, expiry, one-time nonce) before this call; no password is
+        available, so the mail session context is skipped until the user logs
+        in with a password once.
+        """
+        if not bool(user.get("is_active", True)):
+            raise AuthSecurityError("User is inactive")
+        effective_zone = str(network_zone or "external").strip().lower() or "external"
+        effective_policy = resolve_twofa_policy()
+        return self._complete_login(
+            challenge={
+                "challenge_id": None,
+                "user_id": int(user.get("id") or 0),
+                "username": str(user.get("username") or ""),
+                "role": str(user.get("role") or "viewer"),
+                "auth_source": str(user.get("auth_source") or "local"),
+                "ip_address": str(ip_address or ""),
+                "user_agent": str(user_agent or ""),
+                "network_zone": effective_zone,
+                "twofa_policy": effective_policy,
+                "twofa_required_for_current_request": is_twofa_required_for_zone(
+                    effective_zone,
+                    policy=effective_policy,
+                ),
+            },
+            user=user,
+            auth_method="windows_sso",
+            device_id=None,
+            client_device_id=client_device_id,
+        )
+
     def finalize_trusted_device_login(
         self,
         challenge_id: str,

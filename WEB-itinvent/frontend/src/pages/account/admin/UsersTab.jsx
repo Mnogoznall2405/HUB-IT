@@ -56,6 +56,7 @@ import {
   createUserDraftFromItem,
   getDbName,
   matchesUserSearch,
+  myFilesQuotaGbToBytes,
   normalizePermissions,
 } from '../accountUserModel';
 import MetricTile from '../shared/MetricTile';
@@ -201,10 +202,12 @@ export default function UsersTab({
       telegram_id: String(draft.telegram_id || '').trim(),
       assigned_database: draft.assigned_database || '',
       custom_permissions: normalizePermissions(draft.custom_permissions),
+      my_files_quota_bytes: myFilesQuotaGbToBytes(draft.my_files_quota_gb),
     };
 
     if (payload.username.length < 3) return;
     if (payload.telegram_id && !Number.isInteger(Number(payload.telegram_id))) return;
+    if (payload.my_files_quota_bytes === undefined) return;
 
     const result = editorMode === 'create'
       ? await onCreateUser(payload)

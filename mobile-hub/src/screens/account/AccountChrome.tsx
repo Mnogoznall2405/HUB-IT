@@ -28,6 +28,7 @@ export function AccountScreenScaffold({
   scroll = true,
   footer,
   includeBottomNav,
+  contentUnderNav = false,
   backTestID = 'account-header-back',
 }: {
   title: string;
@@ -40,12 +41,15 @@ export function AccountScreenScaffold({
   scroll?: boolean;
   footer?: ReactNode;
   includeBottomNav?: boolean;
+  /** Lets inner content reach the screen edge beneath the floating bar —
+      the owning list must reserve the nav inset itself. */
+  contentUnderNav?: boolean;
   backTestID?: string;
 }) {
   const navHidden = useBottomNavHidden();
   const navInset = useNativeBottomNavInset();
   const safeInsets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
-  const reserveNav = includeBottomNav ?? !navHidden;
+  const reserveNav = (includeBottomNav ?? !navHidden) && !contentUnderNav;
   const bottomInset = reserveNav ? navInset : (safeInsets?.bottom || 0);
   const body = (
     <View style={[styles.body, { paddingBottom: bottomInset + 12 }]}>
@@ -167,6 +171,67 @@ export function AccountActionRow({
   );
 }
 
+export function AccountNavGroup({ tokens, title, children }: {
+  tokens: FluentTokens;
+  title?: string;
+  children: ReactNode;
+}) {
+  return (
+    <View style={styles.navGroup}>
+      {title ? (
+        <Text accessibilityRole="header" style={[styles.navGroupTitle, { color: tokens.textSecondary }]}>{title}</Text>
+      ) : null}
+      <View style={[styles.navGroupCard, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
+        {children}
+      </View>
+    </View>
+  );
+}
+
+export function AccountNavRow({
+  tokens,
+  icon,
+  iconColor,
+  iconBackground,
+  label,
+  subtitle,
+  onPress,
+  danger,
+  testID,
+}: {
+  tokens: FluentTokens;
+  icon?: ComponentProps<typeof MaterialCommunityIcons>['name'];
+  iconColor?: string;
+  iconBackground?: string;
+  label: string;
+  subtitle?: string;
+  onPress: () => void;
+  danger?: boolean;
+  testID?: string;
+}) {
+  const tint = danger ? tokens.error : iconColor || tokens.primary;
+  return (
+    <Pressable
+      testID={testID}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      style={({ pressed }) => [styles.navRow, pressed && { backgroundColor: tokens.actionHover }]}
+    >
+      {icon ? (
+        <View style={[styles.navRowIcon, { backgroundColor: iconBackground || tokens.accentSoft }]}>
+          <MaterialCommunityIcons name={icon} size={22} color={tint} />
+        </View>
+      ) : null}
+      <View style={styles.rowText}>
+        <Text style={[styles.navRowLabel, { color: danger ? tokens.error : tokens.textPrimary }]}>{label}</Text>
+        {subtitle ? <Text style={[styles.rowSub, { color: tokens.textSecondary }]}>{subtitle}</Text> : null}
+      </View>
+      <MaterialCommunityIcons name="chevron-right" size={21} color={tokens.iconMuted} />
+    </Pressable>
+  );
+}
+
 export function AccountField({
   tokens,
   label,
@@ -193,8 +258,8 @@ export function AccountStatusText({
   error?: string;
   message?: string;
 }) {
-  if (error) return <Text style={[styles.status, { color: tokens.error }]}>{error}</Text>;
-  if (message) return <Text style={[styles.status, { color: tokens.success }]}>{message}</Text>;
+  if (error) return <Text accessibilityRole="alert" accessibilityLiveRegion="polite" style={[styles.status, { color: tokens.error }]}>{error}</Text>;
+  if (message) return <Text accessibilityRole="text" accessibilityLiveRegion="polite" style={[styles.status, { color: tokens.success }]}>{message}</Text>;
   return null;
 }
 
@@ -232,7 +297,7 @@ export function AccountPrimaryButton({
         },
       ]}
     >
-      {loading ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.buttonLabel}>{label}</Text>}
+      {loading ? <ActivityIndicator size="small" color={tokens.onPrimary} /> : <Text style={[styles.buttonLabel, { color: tokens.onPrimary }]}>{label}</Text>}
     </Pressable>
   );
 }
@@ -333,6 +398,26 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
   },
+  navGroup: { gap: 7 },
+  navGroupTitle: {
+    paddingHorizontal: 8,
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  navGroupCard: { borderRadius: 22, borderWidth: 1, overflow: 'hidden', paddingVertical: 5 },
+  navRow: {
+    minHeight: 56,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 13,
+  },
+  navRowIcon: { width: 38, height: 38, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  navRowLabel: { fontSize: 16, lineHeight: 21, fontWeight: '700' },
   rowText: { flex: 1, minWidth: 0 },
   rowLabel: { fontWeight: '700', fontSize: 15 },
   rowSub: { marginTop: 2, fontSize: 12 },
@@ -347,7 +432,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 14,
   },
-  buttonLabel: { color: '#fff', fontWeight: '800', fontSize: 14 },
+  buttonLabel: { fontWeight: '800', fontSize: 14 },
   buttonSecondary: {
     backgroundColor: 'transparent',
     borderWidth: 1,

@@ -155,6 +155,7 @@ Read-only COM bridge прогревается в фоне при запуске 
 | `WAREHOUSE_1C_CATALOG_APP_STORAGE` | `auto` |
 | `WAREHOUSE_1C_RECONCILE_ALLOWED_DB_IDS` | пусто — `scope=all` выключен |
 | `WAREHOUSE_1C_PROCESS_BRIDGE_ENABLED` | `0` (включать после controlled rollout) |
+| `WAREHOUSE_1C_QUERY_TIMEOUT_SECONDS` | 45 с |
 | `WAREHOUSE_1C_BRIDGE_QUEUE_LIMIT` | 16 запросов |
 | `WAREHOUSE_1C_BRIDGE_FAILURE_THRESHOLD` | 4 |
 | `WAREHOUSE_1C_BRIDGE_COOLDOWN_SECONDS` | 60 с |

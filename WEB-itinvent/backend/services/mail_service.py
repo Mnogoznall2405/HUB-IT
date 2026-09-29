@@ -508,6 +508,7 @@ class MailService:
                 user_id=int(user_id),
             ),
             normalize_signature_html=_normalize_signature_html,
+            impersonation_active=lambda: self.mail_impersonation_active,
         )
         self._message_content = MailMessageContent()
         self._message_serializer = MailMessageSerializer(
@@ -1167,6 +1168,19 @@ class MailService:
         )
 
     @property
+    def mail_impersonation_user(self) -> str:
+        return _normalize_text(os.getenv("MAIL_IMPERSONATION_USER"))
+
+    @property
+    def mail_impersonation_password(self) -> str:
+        return str(os.getenv("MAIL_IMPERSONATION_PASSWORD") or "")
+
+    @property
+    def mail_impersonation_active(self) -> bool:
+        enabled = _normalize_text(os.getenv("MAIL_IMPERSONATION_ENABLED")).lower() in {"1", "true", "yes", "on"}
+        return enabled and bool(self.mail_impersonation_user and self.mail_impersonation_password)
+
+    @property
     def it_request_recipients(self) -> list[str]:
         return _parse_recipients(os.getenv("MAIL_IT_RECIPIENTS", ""))
 
@@ -1550,7 +1564,7 @@ class MailService:
         if not password:
             raise MailServiceError("Mailbox password is required", code="MAIL_PASSWORD_REQUIRED", status_code=409)
         try:
-            account = self._create_account(email=email, login=login, password=password)
+            account = self._create_account(email=email, login=login, password=password, impersonate=False)
             self._probe_inbox_sample(account)
         except MailServiceError:
             raise
@@ -2060,8 +2074,14 @@ class MailService:
         finally:
             BaseProtocol.HTTP_ADAPTER_CLS = old_adapter
 
-    def _create_account(self, *, email: str, login: str, password: str):
+    def _create_account(self, *, email: str, login: str, password: str, impersonate: bool | None = None):
         from backend.services.mail_observability import record_mail_create_account_ms
+
+        if impersonate is None:
+            impersonate = self.mail_impersonation_active
+        if impersonate:
+            login = self.mail_impersonation_user
+            password = self.mail_impersonation_password
 
         self._configure_exchange_http_adapter_for_runtime()
         started_at = time.perf_counter()
@@ -2073,6 +2093,7 @@ class MailService:
                 ews_url=self.exchange_ews_url,
                 exchange_host=self.exchange_host,
                 protocol_context=self._exchange_protocol_context(),
+                impersonate=impersonate,
             )
         except ExchangeTransportError as exc:
             raise MailServiceError(str(exc)) from exc
@@ -5067,7 +5088,10 @@ class MailService:
         mail_requires_relogin = False
         password_enc = _normalize_text(user.get("mailbox_password_enc"))
         auth_mode = self._legacy_user_mail_auth_mode(user)
-        if auth_mode == "primary_session":
+        if self.mail_impersonation_active:
+            mail_is_configured = bool(mailbox_email and effective_mailbox_login)
+            mail_auth_mode = "impersonation"
+        elif auth_mode == "primary_session":
             session_id = get_request_session_id()
             session_context = session_auth_context_service.get_session_context(
                 session_id,

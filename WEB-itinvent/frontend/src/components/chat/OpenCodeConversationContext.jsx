@@ -179,6 +179,7 @@ export default function OpenCodeConversationContext({ conversationId, refreshKey
               const canAttach = deliveryReady
                 && ['output', 'changed', 'archive'].includes(text(file?.kind).toLowerCase());
               const { messageId, attachmentId } = attachmentReference(file);
+              const alreadyAttached = Boolean(messageId && attachmentId) || availability === 'attached';
               return (
                 <Box key={id || path} sx={{ ml: depth * 1.25, p: 0.75, border: 1, borderColor: 'divider', borderRadius: 1.5 }}>
                   <Stack direction="row" alignItems="center" gap={0.75}>
@@ -193,7 +194,7 @@ export default function OpenCodeConversationContext({ conversationId, refreshKey
                         Скачать
                       </Button>
                     ) : null}
-                    {id && ['output', 'changed', 'archive'].includes(text(file?.kind).toLowerCase()) ? (
+                    {id && ['output', 'changed', 'archive'].includes(text(file?.kind).toLowerCase()) && !alreadyAttached ? (
                       <Button
                         startIcon={<AttachFileRoundedIcon />}
                         disabled={!canAttach || sandbox.busyKey === `attach:${id}`}
@@ -202,6 +203,9 @@ export default function OpenCodeConversationContext({ conversationId, refreshKey
                       >
                         Прикрепить
                       </Button>
+                    ) : null}
+                    {alreadyAttached ? (
+                      <Chip size="small" color="success" variant="outlined" label="Прикреплено" />
                     ) : null}
                     {deliveryReady && messageId && attachmentId ? (
                       <Button

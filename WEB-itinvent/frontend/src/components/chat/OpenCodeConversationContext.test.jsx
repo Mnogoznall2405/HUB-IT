@@ -39,6 +39,11 @@ describe('OpenCodeConversationContext', () => {
         download_url: '/api/v1/chat/ai/sandbox/files/file-1/download',
         message_id: 'message-1',
         attachment_id: 'attachment-1',
+      }, {
+        id: 'file-new',
+        path: 'notes.txt',
+        kind: 'output',
+        download_url: '/api/v1/chat/ai/sandbox/files/file-new/download',
       }],
       diff: [{ path: 'src/report.py', diff: '+print("ready")' }],
       pending_permissions: [{ id: 'permission-1', tool: 'bash', command: 'pytest -q' }],
@@ -83,7 +88,7 @@ describe('OpenCodeConversationContext', () => {
     ));
 
     fireEvent.click(screen.getByRole('button', { name: 'Прикрепить' }));
-    await waitFor(() => expect(chatAiSandboxAPI.attachFile).toHaveBeenCalledWith('file-1'));
+    await waitFor(() => expect(chatAiSandboxAPI.attachFile).toHaveBeenCalledWith('file-new'));
 
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить в Мои файлы' }));
     await waitFor(() => expect(chatDirectoryAPI.saveAttachmentToMyFiles).toHaveBeenCalledWith(
@@ -155,9 +160,37 @@ describe('OpenCodeConversationContext', () => {
     expect(screen.getByText('Недоступен')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Скачать' })).not.toBeInTheDocument();
     const attachButtons = screen.getAllByRole('button', { name: 'Прикрепить' });
-    expect(attachButtons).toHaveLength(2);
+    expect(attachButtons).toHaveLength(1);
     attachButtons.forEach((button) => expect(button).toBeDisabled());
+    expect(screen.getByText('Прикреплено')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Сохранить в Мои файлы' })).not.toBeInTheDocument();
+  });
+
+  it('marks an already attached output as attached instead of offering a duplicate attach', async () => {
+    chatAiSandboxAPI.getConversation.mockResolvedValue({
+      enabled: true,
+      files: [{
+        id: 'file-attached',
+        path: 'result.txt',
+        kind: 'output',
+        availability: 'attached',
+        message_id: 'message-attached',
+        attachment_id: 'attachment-attached',
+        download_url: '/api/v1/chat/messages/message-attached/attachments/attachment-attached/file',
+      }],
+      diff: [],
+      pending_permissions: [],
+    });
+
+    render(
+      <ThemeProvider theme={theme}>
+        <OpenCodeConversationContext conversationId="conversation-attached" />
+      </ThemeProvider>,
+    );
+
+    expect(await screen.findByText('Прикреплено')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Прикрепить' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Скачать' })).toBeInTheDocument();
   });
 
   it('treats a 404 as a quiet feature-off state', async () => {

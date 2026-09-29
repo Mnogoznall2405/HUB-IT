@@ -1,10 +1,16 @@
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { router } from 'expo-router';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { IconButton } from 'react-native-paper';
-import { HubConnectionInline } from '../layout/HubConnectionHeader';
+import type { ChatSocketStatus } from '../../chat/chatSocket';
+import { useHubConnectionPresentation } from '../layout/HubConnectionHeader';
 import { type ChatTokens, useChatTokens } from '../../theme/chatTokens';
 import { PresenceAvatar } from './PresenceAvatar';
+
+// Telegram shows the connection state for ~1s before it replaces the title,
+// so a brief reconnect blip never flashes in the header.
+const CONNECTION_STATUS_DELAY_MS = 1_000;
 
 export function ChatHeader({
   title,
@@ -14,17 +20,39 @@ export function ChatHeader({
   onBack,
   onOpenInfo,
   onSearch,
+  socketStatus,
+  subtitleExtra,
 }: {
   title: string;
   subtitle?: string;
+  subtitleExtra?: ReactNode;
   avatarUrl?: string | null;
   muted?: boolean;
   onBack?: () => void;
   onOpenInfo?: () => void;
   onSearch?: () => void;
+  socketStatus?: ChatSocketStatus;
 }) {
   const chatTokens = useChatTokens();
   const styles = useMemo(() => createStyles(chatTokens), [chatTokens]);
+  const presentation = useHubConnectionPresentation();
+  const socketDown = socketStatus !== undefined && socketStatus !== 'connected';
+  const connectionDown = presentation.kind !== 'online' || socketDown;
+  const [statusVisible, setStatusVisible] = useState(false);
+  useEffect(() => {
+    if (!connectionDown) {
+      setStatusVisible(false);
+      return;
+    }
+    const timer = setTimeout(() => setStatusVisible(true), CONNECTION_STATUS_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [connectionDown]);
+  const connectionTitle = presentation.kind === 'offline'
+    ? 'Ожидание сети…'
+    : socketDown || presentation.kind === 'connecting'
+      ? 'Соединение…'
+      : 'Обновление…';
+
   return (
     <View style={styles.wrap}>
       <IconButton icon="arrow-left" onPress={onBack || (() => router.back())} accessibilityLabel="Назад к чатам" />
@@ -40,11 +68,23 @@ export function ChatHeader({
         <View style={styles.textBlock}>
           <View style={styles.titleRow}>
             <Text style={styles.title} numberOfLines={1} accessibilityRole="header">
-              {title}
+              {statusVisible ? connectionTitle : title}
             </Text>
-            {muted ? <Text style={styles.muted} accessibilityLabel="Уведомления выключены">⌁</Text> : null}
+            {muted ? (
+              <MaterialCommunityIcons
+                name="bell-off-outline"
+                size={15}
+                color={chatTokens.textSecondary}
+                accessibilityLabel="Уведомления выключены"
+              />
+            ) : null}
           </View>
-          <HubConnectionInline onlineLabel={subtitle} style={styles.subtitle} />
+          {subtitle ? (
+            <View style={styles.subtitleRow}>
+              <Text style={styles.subtitle} numberOfLines={1}>{subtitle}</Text>
+              {subtitleExtra}
+            </View>
+          ) : null}
         </View>
       </Pressable>
       {onSearch ? (
@@ -78,6 +118,7 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   textBlock: { flex: 1, minWidth: 0 },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   title: { flexShrink: 1, fontSize: 17, fontWeight: '600', color: chatTokens.textPrimary },
-  subtitle: { marginTop: 2 },
+  subtitleRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
+  subtitle: { fontSize: 13, lineHeight: 16, color: chatTokens.textSecondary },
   muted: { color: chatTokens.textSecondary, fontSize: 15 },
 });

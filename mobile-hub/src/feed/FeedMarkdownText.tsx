@@ -15,6 +15,7 @@ function parseBlocks(value: string): MarkdownBlock[] {
   const blocks: MarkdownBlock[] = [];
   const codeLines: string[] = [];
   let inCode = false;
+  let prevLineBlank = false;
   String(value || '').replace(/\r\n?/g, '\n').split('\n').forEach((line, index) => {
     if (/^\s*```/.test(line)) {
       if (inCode) {
@@ -22,6 +23,7 @@ function parseBlocks(value: string): MarkdownBlock[] {
         codeLines.length = 0;
       }
       inCode = !inCode;
+      prevLineBlank = true;
       return;
     }
     if (inCode) {
@@ -33,12 +35,32 @@ function parseBlocks(value: string): MarkdownBlock[] {
     const bullet = line.match(/^\s*[-*+]\s+(.+)$/);
     const number = line.match(/^\s*(\d+)[.)]\s+(.+)$/);
     const quote = line.match(/^\s*>\s?(.*)$/);
-    if (heading) blocks.push({ key: `heading-${index}`, kind: 'heading', text: heading[2], level: heading[1].length });
-    else if (check) blocks.push({ key: `check-${index}`, kind: 'check', text: check[2], checked: check[1].toLowerCase() === 'x' });
-    else if (bullet) blocks.push({ key: `bullet-${index}`, kind: 'bullet', text: bullet[1] });
-    else if (number) blocks.push({ key: `number-${index}`, kind: 'number', text: number[2], level: Number(number[1]) });
-    else if (quote) blocks.push({ key: `quote-${index}`, kind: 'quote', text: quote[1] });
-    else if (line.trim()) blocks.push({ key: `paragraph-${index}`, kind: 'paragraph', text: line.trim() });
+    if (heading) {
+      blocks.push({ key: `heading-${index}`, kind: 'heading', text: heading[2], level: heading[1].length });
+      prevLineBlank = true;
+    } else if (check) {
+      blocks.push({ key: `check-${index}`, kind: 'check', text: check[2], checked: check[1].toLowerCase() === 'x' });
+      prevLineBlank = true;
+    } else if (bullet) {
+      blocks.push({ key: `bullet-${index}`, kind: 'bullet', text: bullet[1] });
+      prevLineBlank = true;
+    } else if (number) {
+      blocks.push({ key: `number-${index}`, kind: 'number', text: number[2], level: Number(number[1]) });
+      prevLineBlank = true;
+    } else if (quote) {
+      blocks.push({ key: `quote-${index}`, kind: 'quote', text: quote[1] });
+      prevLineBlank = true;
+    } else if (line.trim()) {
+      const last = blocks[blocks.length - 1];
+      if (!prevLineBlank && last && last.kind === 'paragraph') {
+        last.text += `\n${line.trim()}`;
+      } else {
+        blocks.push({ key: `paragraph-${index}`, kind: 'paragraph', text: line.trim() });
+      }
+      prevLineBlank = false;
+    } else {
+      prevLineBlank = true;
+    }
   });
   if (inCode || codeLines.length > 0) blocks.push({ key: 'code-last', kind: 'code', text: codeLines.join('\n') });
   return blocks;

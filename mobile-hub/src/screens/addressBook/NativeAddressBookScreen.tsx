@@ -17,6 +17,7 @@ import { formatApiError } from '../../api/formatError';
 import {
   getCompleteAddressBook,
   getAddressBookStatus,
+  searchAddressBook,
   syncAddressBook,
   type AddressBookSearchResponse,
   type AddressBookStatus,
@@ -39,7 +40,9 @@ import {
   AccountScreenScaffold,
   AccountSectionCard,
   AccountStatusText,
+  AccountSubpage,
 } from '../account/AccountChrome';
+import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { useFluentTokens, type FluentTokens } from '../../theme/fluentTokens';
 import { AddressBookEntryDetail } from '../../addressBook/AddressBookEntryDetail';
 import { AddressBookEntryRow } from '../../addressBook/AddressBookEntryRow';
@@ -48,6 +51,7 @@ import {
   getEntryKey,
   isValidEmailRecipient,
   SEARCH_DEBOUNCE_MS,
+  SEARCH_LIMIT,
   type AddressBookEntry,
 } from '../../addressBook/addressBookFormat';
 import { openExternalUrl, openTelegramChat } from '../../addressBook/messengerLinks';
@@ -60,7 +64,7 @@ import {
   type AddressBookChatLink,
 } from '../../addressBook/openAddressBookChat';
 
-const SEARCH_PLACEHOLDER = 'ФИО, должность, подразделение, город, телефон или e-mail';
+const SEARCH_PLACEHOLDER = 'ФИО, должность, подразделение, город, место, телефон или e-mail';
 
 function normalizeDirectorySearch(value: unknown): string {
   return String(value || '')
@@ -85,6 +89,9 @@ function filterAddressBookEntries(items: AddressBookEntry[], query: string): Add
       item.position,
       item.department,
       item.department_location,
+      item.office_address,
+      item.office_room,
+      item.workplace_number,
       ...contacts,
     ].join(' '));
     return tokens.every((token) => haystack.includes(token));
@@ -163,12 +170,19 @@ export function NativeAddressBookScreen() {
   const [selectedKey, setSelectedKey] = useState('');
   const [selectedItem, setSelectedItem] = useState<AddressBookEntry | null>(null);
   const [chatBusyKey, setChatBusyKey] = useState('');
+  const [remoteItems, setRemoteItems] = useState<AddressBookEntry[]>([]);
+  const [remoteLoading, setRemoteLoading] = useState(false);
   const searchRequestRef = useRef(0);
+  const remoteSearchRef = useRef(0);
+  const remoteAbortRef = useRef<AbortController | null>(null);
   const debouncedQuery = useDebouncedValue(query);
+  const listInset = useNativeBottomNavInset();
   const userId = Number(user?.id || 0);
   const items = useMemo(
-    () => filterAddressBookEntries(directoryItems, debouncedQuery),
-    [debouncedQuery, directoryItems],
+    () => (directoryItems.length
+      ? filterAddressBookEntries(directoryItems, debouncedQuery)
+      : remoteItems),
+    [debouncedQuery, directoryItems, remoteItems],
   );
 
   const loadStatus = useCallback(async () => {
@@ -209,6 +223,21 @@ export function NativeAddressBookScreen() {
         return;
       }
 
+      // Дешёвая проверка свежести: если снимок на устройстве совпадает с
+      // серверным updated_at, полная выгрузка не нужна.
+      if (hadCachedSnapshot) {
+        try {
+          const remoteStatus = await getAddressBookStatus();
+          if (requestId !== searchRequestRef.current) return;
+          setStatus(remoteStatus);
+          if (remoteStatus?.updated_at && remoteStatus.updated_at === snapshot?.data.updated_at) {
+            return;
+          }
+        } catch {
+          // Статус опционален — при ошибке делаем полную перезагрузку.
+        }
+      }
+
       const data = await getCompleteAddressBook();
       if (requestId !== searchRequestRef.current) return;
       setDirectoryItems(data.items);
@@ -242,6 +271,32 @@ export function NativeAddressBookScreen() {
   useEffect(() => {
     if (allowed) void loadStatus();
   }, [allowed, loadStatus]);
+
+  // Пока локальный снимок ещё не загружен, ищем на сервере — иначе первый
+  // ввод ждал бы полной выгрузки всей адресной книги.
+  useEffect(() => {
+    remoteAbortRef.current?.abort();
+    const requestId = ++remoteSearchRef.current;
+    const normalized = debouncedQuery.trim();
+    if (!normalized || directoryItems.length > 0 || offlineMode || !allowed) {
+      setRemoteItems([]);
+      setRemoteLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    remoteAbortRef.current = controller;
+    setRemoteLoading(true);
+    void searchAddressBook({ q: normalized, limit: SEARCH_LIMIT, signal: controller.signal })
+      .then((result) => {
+        if (requestId === remoteSearchRef.current && !controller.signal.aborted) setRemoteItems(result.items);
+      })
+      .catch(() => {
+        if (requestId === remoteSearchRef.current && !controller.signal.aborted) setRemoteItems([]);
+      })
+      .finally(() => {
+        if (requestId === remoteSearchRef.current && !controller.signal.aborted) setRemoteLoading(false);
+      });
+  }, [allowed, debouncedQuery, directoryItems.length, offlineMode]);
 
   useAndroidBackHandler(() => {
     if (selectedItem) {
@@ -419,41 +474,16 @@ export function NativeAddressBookScreen() {
     );
   }
 
-  if (selectedItem) {
-    const selectedIndex = items.findIndex((item, index) => getEntryKey(item, index) === selectedKey);
-    return (
-      <AccountScreenScaffold
-        title={selectedItem.full_name || 'Сотрудник'}
-        tokens={tokens}
-        onBack={() => {
-          setSelectedKey('');
-          setSelectedItem(null);
-        }}
-      >
-        <AccountStatusText tokens={tokens} error={error} message={message} />
-        <AddressBookEntryDetail
-          item={selectedItem}
-          query={query}
-          tokens={tokens}
-          onCopy={(value) => { void handleCopy(value); }}
-          onCall={handleCall}
-          onOpenTelegram={handleOpenTelegram}
-          onOpenMax={(digits) => { void handleOpenMax(digits); }}
-          onComposeEmail={handleComposeEmail}
-          onOpenExternalMail={handleOpenExternalMail}
-          showChatAction={canUseChat}
-          chatBusy={Boolean(chatBusyKey)}
-          onOpenChat={() => { void handleOpenChat(selectedItem, selectedIndex < 0 ? 0 : selectedIndex); }}
-        />
-      </AccountScreenScaffold>
-    );
-  }
+  const selectedIndex = selectedItem
+    ? items.findIndex((item, index) => getEntryKey(item, index) === selectedKey)
+    : -1;
 
   return (
     <AccountScreenScaffold
       title="Адресная книга"
       tokens={tokens}
       scroll={false}
+      contentUnderNav
     >
       <View style={[styles.searchBox, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
         <MaterialCommunityIcons name="magnify" size={20} color={tokens.iconMuted} />
@@ -477,6 +507,11 @@ export function NativeAddressBookScreen() {
       <Text style={[styles.updated, { color: tokens.textTertiary }]}>
         Обновлено: {formatDateTime(status?.updated_at)}
       </Text>
+      {loading && remoteItems.length > 0 ? (
+        <Text style={[styles.updated, { color: tokens.textSecondary }]}>
+          Показаны результаты сервера — адресная книга ещё загружается.
+        </Text>
+      ) : null}
       {isAdmin ? <Pressable testID="address-book-sync" onPress={() => { void handleSync(); }} disabled={syncing || offlineMode} accessibilityRole="button" accessibilityLabel="Обновить из 1С" accessibilityState={{ disabled: syncing || offlineMode, busy: syncing }} style={{ minHeight: 44, flexDirection: 'row', gap: 8, alignItems: 'center', marginBottom: 8 }}>
         {syncing ? <ActivityIndicator color={tokens.primary} /> : <MaterialCommunityIcons name="database-sync-outline" size={20} color={tokens.primary} />}
         <Text style={{ color: tokens.primary }}>Синхронизировать с 1С</Text>
@@ -501,7 +536,7 @@ export function NativeAddressBookScreen() {
           keyboardShouldPersistTaps="handled"
           refreshing={refreshing}
           onRefresh={() => { void loadItems('refresh'); }}
-          contentContainerStyle={items.length === 0 ? styles.emptyList : undefined}
+          contentContainerStyle={[items.length === 0 ? styles.emptyList : null, { paddingBottom: listInset + 8 }]}
           ListEmptyComponent={(
             <Text style={[styles.empty, { color: tokens.textSecondary }]}>
               {query.trim() ? 'По вашему запросу сотрудники не найдены.' : 'В адресной книге пока нет записей.'}
@@ -510,6 +545,35 @@ export function NativeAddressBookScreen() {
           renderItem={renderAddressBookItem}
         />
       )}
+      <AccountSubpage
+        visible={Boolean(selectedItem)}
+        title={selectedItem?.full_name || 'Сотрудник'}
+        tokens={tokens}
+        onClose={() => {
+          setSelectedKey('');
+          setSelectedItem(null);
+        }}
+      >
+        {selectedItem ? (
+          <>
+            <AccountStatusText tokens={tokens} error={error} message={message} />
+            <AddressBookEntryDetail
+              item={selectedItem}
+              query={query}
+              tokens={tokens}
+              onCopy={(value) => { void handleCopy(value); }}
+              onCall={handleCall}
+              onOpenTelegram={handleOpenTelegram}
+              onOpenMax={(digits) => { void handleOpenMax(digits); }}
+              onComposeEmail={handleComposeEmail}
+              onOpenExternalMail={handleOpenExternalMail}
+              showChatAction={canUseChat}
+              chatBusy={Boolean(chatBusyKey)}
+              onOpenChat={() => { void handleOpenChat(selectedItem, selectedIndex < 0 ? 0 : selectedIndex); }}
+            />
+          </>
+        ) : null}
+      </AccountSubpage>
     </AccountScreenScaffold>
   );
 }

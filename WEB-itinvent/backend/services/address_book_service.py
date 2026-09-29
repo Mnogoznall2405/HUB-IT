@@ -487,6 +487,7 @@ def dismissed_employee_query(surname_count: int) -> str:
     ПРЕДСТАВЛЕНИЕ(Текущие.Сотрудник) КАК FullName,
     Текущие.Сотрудник КАК EmployeeRef,
     Текущие.Сотрудник.Код КАК EmployeeCode,
+    Текущие.ФизическоеЛицо.Отчество КАК MiddleName,
     Текущие.ДатаПриема КАК HireDate,
     Текущие.ДатаУвольнения КАК DismissalDate,
     ПРЕДСТАВЛЕНИЕ(Текущие.ТекущееПодразделение) КАК Department,
@@ -530,6 +531,7 @@ def employee_query() -> str:
 ВЫБРАТЬ РАЗЛИЧНЫЕ
     Текущие.Сотрудник КАК FullName,
     Текущие.Сотрудник.Код КАК EmployeeCode,
+    Текущие.ФизическоеЛицо.Отчество КАК MiddleName,
     Текущие.ДатаПриема КАК HireDate,
     Текущие.ДатаУвольнения КАК DismissalDate,
     ЕСТЬNULL(
@@ -553,7 +555,11 @@ def employee_query() -> str:
             Прием.Должность,
             ЕСТЬNULL(ПриемСписком.Должность, Текущие.ТекущаяДолжность)
         )
-    ) КАК Position
+    ) КАК Position,
+    Текущие.Сотрудник.СДП_НомерКабинета КАК OfficeRoom,
+    Текущие.Сотрудник.СДП_НомерРабочегоМеста КАК WorkplaceNumber,
+    Текущие.Сотрудник.СДП_PUID КАК WorkplaceId,
+    ПРЕДСТАВЛЕНИЕ(Текущие.Сотрудник.СДП_АдресОфиса) КАК OfficeAddress
 ИЗ
     РегистрСведений.ТекущиеКадровыеДанныеСотрудников КАК Текущие
 
@@ -665,6 +671,7 @@ def personal_profile_query() -> str:
     return """
 ВЫБРАТЬ РАЗЛИЧНЫЕ
     Текущие.Сотрудник.Код КАК EmployeeCode,
+    Текущие.ФизическоеЛицо.ИНН КАК Inn,
     Текущие.ФизическоеЛицо.ДатаРождения КАК DateOfBirth,
     Текущие.ФизическоеЛицо.МестоРождения КАК BirthPlace,
     Адреса.Вид КАК AddressKind,
@@ -721,6 +728,7 @@ PERSONAL_CACHE_KEYS = (
     "issuer_code",
     "issue_date",
     "registration_address",
+    "inn",
 )
 
 
@@ -784,6 +792,37 @@ def is_passport_document_kind(kind: Any) -> bool:
     return "паспорт" in text
 
 
+AGE_TOKEN_RE = re.compile(r"^(\d{1,3})\s*[-–—]\s*(\d{1,3})$")
+
+# Ranking weight of an age-token hit. Exact age intent (e.g. query "25" for
+# 25-year-olds) must outrank incidental numeric text hits (phone digits,
+# room/code fragments: code prefix 60-70 + phone 35 + email 40 can reach
+# ~145). Person names never contain digits, so no genuine name match is
+# demoted by this.
+AGE_MATCH_SCORE = 200
+
+
+def parse_age_token(token: Any) -> tuple[int, int] | None:
+    """Parse a search token as an age ('35') or an age range ('30-40', '30–40')."""
+    text = normalize_search_text(token)
+    if not text:
+        return None
+    if text.isdigit():
+        value = int(text)
+        if value > 120:
+            return None
+        return value, value
+    match = AGE_TOKEN_RE.match(text)
+    if not match:
+        return None
+    start, end = int(match.group(1)), int(match.group(2))
+    if start > end:
+        start, end = end, start
+    if end > 120:
+        return None
+    return start, end
+
+
 def clean_zup_birth_place(value: Any) -> str:
     """Normalize ZUP birth place like ``0,г. Тюмень,,,`` → ``г. Тюмень``."""
     text = normalize_text(value)
@@ -806,8 +845,11 @@ def merge_personal_profile_records(records: list[dict[str, str]]) -> dict[str, d
                 "date_of_birth": "",
                 "birth_place": "",
                 "registration_address": "",
+                "inn": "",
             },
         )
+        if not current["inn"] and record.get("inn"):
+            current["inn"] = normalize_text(record.get("inn"))
         if not current["date_of_birth"] and record.get("date_of_birth"):
             current["date_of_birth"] = normalize_text(record.get("date_of_birth"))
         if not current["birth_place"] and record.get("birth_place"):
@@ -990,6 +1032,7 @@ class AddressBookService:
         offset: int = 0,
         include_age: bool = True,
         include_hire_date: bool = False,
+        include_inn: bool = False,
         include_personal_emails: bool = True,
         include_personal_phones: bool = True,
     ) -> dict[str, Any]:
@@ -1003,6 +1046,11 @@ class AddressBookService:
         safe_offset = max(0, int(offset or 0))
 
         if tokens:
+            def item_age(item: dict[str, Any]) -> int | None:
+                if not include_age:
+                    return None
+                return self._search_age(item, personal_by_code)
+
             items = [
                 item
                 for item in items
@@ -1011,6 +1059,7 @@ class AddressBookService:
                     tokens,
                     include_personal_emails=include_personal_emails,
                     include_personal_phones=include_personal_phones,
+                    age=item_age(item),
                 )
             ]
             items.sort(
@@ -1020,6 +1069,7 @@ class AddressBookService:
                         tokens,
                         include_personal_emails=include_personal_emails,
                         include_personal_phones=include_personal_phones,
+                        age=item_age(item),
                     ),
                     normalize_search_text(item.get("full_name")),
                     normalize_search_text(item.get("employee_code")),
@@ -1040,6 +1090,7 @@ class AddressBookService:
                     personal_by_code,
                     include_age=include_age,
                     include_hire_date=include_hire_date,
+                    include_inn=include_inn,
                     include_personal_emails=include_personal_emails,
                     include_personal_phones=include_personal_phones,
                 )
@@ -1058,6 +1109,7 @@ class AddressBookService:
         *,
         include_age: bool = True,
         include_hire_date: bool = False,
+        include_inn: bool = False,
         include_personal_emails: bool = True,
         include_personal_phones: bool = True,
     ) -> dict[str, Any]:
@@ -1079,6 +1131,7 @@ class AddressBookService:
                 personal_by_code,
                 include_age=include_age,
                 include_hire_date=include_hire_date,
+                include_inn=include_inn,
                 include_personal_emails=include_personal_emails,
                 include_personal_phones=include_personal_phones,
             )
@@ -1101,6 +1154,7 @@ class AddressBookService:
         *,
         include_age: bool = True,
         include_hire_date: bool = False,
+        include_inn: bool = False,
         include_personal_emails: bool = True,
         include_personal_phones: bool = True,
     ) -> dict[str, Any]:
@@ -1124,6 +1178,10 @@ class AddressBookService:
             hire_date = normalize_text(item.get("hire_date"))[:10]
             if hire_date:
                 public_item["hire_date"] = hire_date
+        if include_inn and isinstance(personal, dict):
+            inn = normalize_text(personal.get("inn"))
+            if inn:
+                public_item["inn"] = inn
         return public_item
 
     def _matches_query(
@@ -1133,6 +1191,7 @@ class AddressBookService:
         *,
         include_personal_emails: bool = True,
         include_personal_phones: bool = True,
+        age: int | None = None,
     ) -> bool:
         phones = list(item.get("work_phones") or [])
         emails = list(item.get("work_emails") or [])
@@ -1149,6 +1208,11 @@ class AddressBookService:
                     normalize_text(item.get("department_location")),
                     normalize_text(item.get("position")),
                     normalize_text(item.get("employee_code")),
+                    normalize_text(item.get("office_room")),
+                    normalize_text(item.get("workplace_number")),
+                    normalize_text(item.get("workplace_id")),
+                    normalize_text(item.get("office_address")),
+                    normalize_text(item.get("middle_name")),
                     " ".join(normalize_text(phone.get("value")) for phone in phones if isinstance(phone, dict)),
                     " ".join(normalize_text(phone.get("kind")) for phone in phones if isinstance(phone, dict)),
                     " ".join(normalize_text(email.get("value")) for email in emails if isinstance(email, dict)),
@@ -1174,6 +1238,9 @@ class AddressBookService:
             if token_phone and token_phone in phone_digits:
                 continue
             if token_email and token_email in email_addresses:
+                continue
+            age_range = parse_age_token(token)
+            if age_range is not None and age is not None and age_range[0] <= age <= age_range[1]:
                 continue
             return False
         return True
@@ -1242,6 +1309,24 @@ class AddressBookService:
                 score += 25
         return score
 
+    @staticmethod
+    def _age_match_score(age: int | None, tokens: list[str]) -> int:
+        if age is None:
+            return 0
+        score = 0
+        for token in tokens:
+            age_range = parse_age_token(token)
+            if age_range is not None and age_range[0] <= age <= age_range[1]:
+                score += AGE_MATCH_SCORE
+        return score
+
+    @staticmethod
+    def _search_age(item: dict[str, Any], personal_by_code: dict[str, Any]) -> int | None:
+        personal = personal_by_code.get(normalize_text(item.get("employee_code")))
+        if not isinstance(personal, dict):
+            return None
+        return calculate_age(personal.get("date_of_birth"))
+
     def _query_score(
         self,
         item: dict[str, Any],
@@ -1249,6 +1334,7 @@ class AddressBookService:
         *,
         include_personal_emails: bool = True,
         include_personal_phones: bool = True,
+        age: int | None = None,
     ) -> int:
         phones = list(item.get("work_phones") or [])
         emails = list(item.get("work_emails") or [])
@@ -1265,6 +1351,7 @@ class AddressBookService:
             + self._field_match_score(item.get("department_location"), tokens, contains_score=30)
             + self._phone_match_score(phones, tokens)
             + self._email_match_score(emails, tokens)
+            + self._age_match_score(age, tokens)
         )
 
     def list_people_by_department_codes(
@@ -1603,12 +1690,17 @@ class AddressBookService:
             row = {
                 "full_name": one_c_text(connection, selection.FullName),
                 "_employee_code": one_c_text(connection, selection.EmployeeCode),
+                "middle_name": one_c_text(connection, getattr(selection, "MiddleName", None)),
                 "hire_date": one_c_date_iso(connection, selection.HireDate),
                 "dismissal_date": one_c_date_iso(connection, getattr(selection, "DismissalDate", None)),
                 "department": one_c_text(connection, selection.Department),
                 "department_code": one_c_text(connection, selection.DepartmentCode),
                 "department_location": one_c_text(connection, selection.DepartmentLocation),
                 "position": one_c_text(connection, selection.Position),
+                "office_room": one_c_text(connection, getattr(selection, "OfficeRoom", None)),
+                "workplace_number": one_c_text(connection, getattr(selection, "WorkplaceNumber", None)),
+                "workplace_id": one_c_text(connection, getattr(selection, "WorkplaceId", None)),
+                "office_address": one_c_text(connection, getattr(selection, "OfficeAddress", None)),
             }
             employee_ref = getattr(selection, "EmployeeRef", None)
             if employee_ref is not None:
@@ -1745,6 +1837,7 @@ class AddressBookService:
                 profile_records.append(
                     {
                         "employee_code": one_c_text(connection, selection.EmployeeCode),
+                        "inn": one_c_text(connection, getattr(selection, "Inn", None)),
                         "date_of_birth": one_c_date_iso(connection, selection.DateOfBirth),
                         "birth_place": one_c_text(connection, selection.BirthPlace),
                         "address_kind": one_c_text(connection, selection.AddressKind),

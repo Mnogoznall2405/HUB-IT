@@ -4,6 +4,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { FluentTokens } from '../theme/fluentTokens';
 import { AddressBookHighlight } from './AddressBookHighlight';
 import {
+  buildWorkplaceLabel,
   formatAbsenceLabel,
   formatAge,
   formatDate,
@@ -63,6 +64,7 @@ export function AddressBookEntryDetail({
   const canTelegram = Boolean(primaryPhone?.digits && isPhoneDeepLinkReady(primaryPhone.digits));
   const canMail = Boolean(primaryEmail?.value && isValidEmailRecipient(primaryEmail.value));
   const meta = [item.position || 'Должность не указана', ageLabel].filter(Boolean).join(' · ');
+  const workplaceLabel = buildWorkplaceLabel(item);
 
   return (
     <View testID="address-book-entry-detail" style={styles.root}>
@@ -154,6 +156,20 @@ export function AddressBookEntryDetail({
           </View>
         ) : null}
       </View>
+
+      {workplaceLabel ? (
+        <View testID="address-book-workplace" style={styles.workplace}>
+          <MaterialCommunityIcons name="map-marker-outline" size={20} color={tokens.iconMuted} />
+          <View style={styles.contactText}>
+            <Text style={[styles.kind, { color: tokens.textSecondary }]}>Рабочее место</Text>
+            <AddressBookHighlight
+              value={workplaceLabel}
+              query={query}
+              style={[styles.value, styles.workplaceValue, { color: tokens.textPrimary }]}
+            />
+          </View>
+        </View>
+      ) : null}
 
       <PhoneActions
         tokens={tokens}
@@ -444,6 +460,12 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   tagText: { fontSize: 12, fontWeight: '700' },
+  workplace: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  workplaceValue: { fontWeight: '600' },
   group: { gap: 8 },
   groupLabel: { fontSize: 12, fontWeight: '800' },
   contactRow: {

@@ -10,13 +10,13 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 
 from backend.api.deps import (
-    assert_access_token_still_valid,
     ensure_user_permission,
     extract_websocket_access_token,
     get_current_user_from_websocket,
 )
 from backend.api.v1.chat._common import _deny_ws_handshake
 from backend.chat.realtime import chat_realtime
+from backend.chat.ws_auth import WsSessionLease
 from backend.realtime.hub import (
     HUB_REALTIME_PROTOCOL_VERSION,
     hub_task_presence_room_id,
@@ -136,6 +136,8 @@ async def hub_realtime_websocket(websocket: WebSocket):
 
     connection_id = ""
     room_id = ""
+    close_code = None
+    close_reason = ""
     joined_task_ids: set[str] = set()
     try:
         connection_id, _ = await chat_realtime.connect(
@@ -143,6 +145,7 @@ async def hub_realtime_websocket(websocket: WebSocket):
             user_id=int(current_user.id),
             receive_user_events=False,
             track_presence=False,
+            socket_kind="hub",
         )
         room_id = hub_user_room_id(int(current_user.id))
         chat_realtime.subscribe_conversation(connection_id, room_id)
@@ -157,19 +160,25 @@ async def hub_realtime_websocket(websocket: WebSocket):
         )
 
         access_token = extract_websocket_access_token(websocket)
+        ws_auth_lease = WsSessionLease(access_token, user_id=int(current_user.id))
         command_count = 0
         last_session_check_at = time.monotonic()
         while True:
             try:
                 raw_message = await websocket.receive_text()
-            except WebSocketDisconnect:
+            except WebSocketDisconnect as exc:
+                close_code = getattr(exc, "code", None)
+                close_reason = "peer closed"
                 break
             except RuntimeError as exc:
                 if "WebSocket is not connected" in str(exc):
+                    close_reason = "socket lost"
                     break
                 raise
 
             if len(raw_message.encode("utf-8")) > _MAX_PAYLOAD_BYTES:
+                close_code = 1009
+                close_reason = "hub realtime payload too large"
                 await websocket.close(code=1009, reason="hub realtime payload too large")
                 break
 
@@ -182,6 +191,8 @@ async def hub_realtime_websocket(websocket: WebSocket):
                     code="rate_limited",
                 )
                 if int(limiter.violations) >= _MAX_RATE_LIMIT_VIOLATIONS:
+                    close_code = 1008
+                    close_reason = "hub realtime rate limit exceeded"
                     await websocket.close(code=1008, reason="hub realtime rate limit exceeded")
                     break
                 continue
@@ -204,11 +215,29 @@ async def hub_realtime_websocket(websocket: WebSocket):
                 command_count = 0
                 last_session_check_at = now
                 try:
-                    await run_in_threadpool(assert_access_token_still_valid, access_token)
-                except HTTPException:
+                    lease_status = await run_in_threadpool(ws_auth_lease.revalidate)
+                except Exception:
+                    close_code = 1011
+                    close_reason = "session validation unavailable"
+                    await websocket.close(code=1011, reason="session validation unavailable")
+                    break
+                if lease_status == "dead":
+                    close_code = 4401
+                    close_reason = "session expired"
                     await websocket.close(code=4401, reason="session expired")
                     break
+                if lease_status == "grace":
+                    await chat_realtime.send_control(
+                        connection_id,
+                        event_type="hub.realtime.auth.required",
+                        payload={
+                            "protocol": HUB_REALTIME_PROTOCOL_VERSION,
+                            "retry_after_ms": ws_auth_lease.grace_remaining_ms() or 30_000,
+                        },
+                    )
                 if not current_user.is_active:
+                    close_code = 4400
+                    close_reason = "inactive user"
                     await websocket.close(code=4400, reason="inactive user")
                     break
                 for joined_task_id in tuple(joined_task_ids):
@@ -236,8 +265,19 @@ async def hub_realtime_websocket(websocket: WebSocket):
             payload = envelope.get("payload")
             if not isinstance(payload, dict):
                 payload = {}
+            if message_type == "hub.realtime.auth":
+                try:
+                    auth_ok = await run_in_threadpool(ws_auth_lease.apply_auth_payload, payload)
+                except Exception:
+                    auth_ok = False
+                await chat_realtime.send_control(
+                    connection_id,
+                    event_type="hub.realtime.auth.ok" if auth_ok else "hub.realtime.auth.rejected",
+                    request_id=request_id,
+                )
+                continue
             if message_type == "hub.realtime.ping":
-                await chat_realtime.send_to_connection(
+                await chat_realtime.send_pong(
                     connection_id,
                     event_type="hub.realtime.pong",
                     payload={"protocol": HUB_REALTIME_PROTOCOL_VERSION},
@@ -329,8 +369,9 @@ async def hub_realtime_websocket(websocket: WebSocket):
                 code="invalid_command",
                 request_id=request_id,
             )
-    except WebSocketDisconnect:
-        pass
+    except WebSocketDisconnect as exc:
+        close_code = getattr(exc, "code", None)
+        close_reason = "peer closed"
     finally:
         for joined_task_id in tuple(joined_task_ids):
             try:
@@ -346,4 +387,4 @@ async def hub_realtime_websocket(websocket: WebSocket):
         if room_id and connection_id:
             chat_realtime.unsubscribe_conversation(connection_id, room_id)
         if connection_id:
-            chat_realtime.disconnect(connection_id)
+            chat_realtime.disconnect(connection_id, close_code=close_code, close_reason=close_reason)

@@ -1,17 +1,24 @@
 import {
   buildFeedPostPath,
+  formatFeedAbsoluteDate,
   formatFeedDate,
+  formatFeedPublishedMeta,
+  formatFeedRelativeTime,
   getFeedInitials,
   getFeedReactionGroups,
   normalizeFeedComment,
   normalizeFeedPost,
+  pluralizeFeedPublications,
+  pluralizeFeedUnread,
   stripFeedMarkdown,
+  stripFeedMarkdownMultiline,
 } from './feedFormat';
 import { nativeFeedDestinationFromPortalPath } from './nativeFeedRoutes';
 
 describe('feedFormat', () => {
   it('strips markdown for previews', () => {
     expect(stripFeedMarkdown('## Hello **world**\n\n- item')).toBe('Hello world item');
+    expect(stripFeedMarkdownMultiline('## Hello\nвторая строка\n\nновый абзац')).toBe('Hello\nвторая строка\n\nновый абзац');
   });
 
   it('formats initials and share path', () => {
@@ -46,6 +53,50 @@ describe('feedFormat', () => {
 
   it('formats feed dates in Russian locale', () => {
     expect(formatFeedDate('2026-08-06T10:00:00Z')).toMatch(/2026|август|6/i);
+  });
+
+  it('formats relative publication time like a social feed', () => {
+    const now = new Date('2026-08-06T12:00:00Z');
+    expect(formatFeedRelativeTime('2026-08-06T11:59:40Z', now)).toBe('только что');
+    expect(formatFeedRelativeTime('2026-08-06T11:30:00Z', now)).toBe('30 мин назад');
+    expect(formatFeedRelativeTime('2026-08-06T09:00:00Z', now)).toBe('3 ч назад');
+    expect(formatFeedRelativeTime('2026-08-05T12:00:00Z', now)).toBe('вчера');
+    expect(formatFeedRelativeTime('2026-08-03T12:00:00Z', now)).toBe('3 дн назад');
+    expect(formatFeedRelativeTime('2026-07-01T12:00:00Z', now)).toMatch(/1\s*(июл|июля|июл\.)/i);
+    expect(formatFeedRelativeTime('2025-07-01T12:00:00Z', now)).toMatch(/2025/);
+    expect(formatFeedRelativeTime('2026-08-06T12:30:00Z', now)).toBe('через 30 мин');
+    expect(formatFeedRelativeTime('2026-08-06T15:00:00Z', now)).toBe('через 3 ч');
+    expect(formatFeedRelativeTime('2026-08-07T12:00:00Z', now)).toBe('завтра');
+    expect(formatFeedRelativeTime('2026-08-09T12:00:00Z', now)).toBe('через 3 дн');
+    expect(formatFeedRelativeTime('', now)).toBe('');
+    expect(formatFeedRelativeTime('not-a-date', now)).toBe('');
+  });
+
+  it('formats absolute dates with year only outside the current year', () => {
+    const now = new Date('2026-08-06T12:00:00Z');
+    expect(formatFeedAbsoluteDate('2026-08-06T10:00:00Z', now)).toMatch(/август/);
+    expect(formatFeedAbsoluteDate('2026-08-06T10:00:00Z', now)).not.toMatch(/2026/);
+    expect(formatFeedAbsoluteDate('2025-08-06T10:00:00Z', now)).toMatch(/2025/);
+  });
+
+  it('marks edited publications and pluralizes counters', () => {
+    const now = new Date('2026-08-06T12:00:00Z');
+    expect(formatFeedPublishedMeta({
+      published_at: '2026-08-06T11:30:00Z',
+      updated_at: '2026-08-06T11:40:00Z',
+      is_updated: true,
+    }, now)).toBe('30 мин назад · изменено');
+    expect(formatFeedPublishedMeta({
+      published_at: '2026-08-06T11:30:00Z',
+      updated_at: '2026-08-06T11:30:00Z',
+      is_updated: true,
+    }, now)).toBe('30 мин назад');
+    expect(pluralizeFeedPublications(1)).toBe('1 публикация');
+    expect(pluralizeFeedPublications(3)).toBe('3 публикации');
+    expect(pluralizeFeedPublications(12)).toBe('12 публикаций');
+    expect(pluralizeFeedUnread(1)).toBe('1 непрочитанная публикация');
+    expect(pluralizeFeedUnread(2)).toBe('2 непрочитанные публикации');
+    expect(pluralizeFeedUnread(5)).toBe('5 непрочитанных публикаций');
   });
 
   it('normalizes backend comment author and reply fields', () => {

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { NativeModal } from '../../components/ui/NativeModal';
 import {
   ActivityIndicator,
   Alert,
   FlatList,
+  KeyboardAvoidingView,
   Pressable,
   ScrollView,
   Share,
@@ -41,6 +43,7 @@ import {
   writeNativeEntitySnapshot,
 } from '../../cache/nativeSnapshotCache';
 import { useAndroidBackHandler } from '../../chat/useAndroidBackHandler';
+import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import {
   AccountLoading,
@@ -56,13 +59,17 @@ import {
   downloadNativeFeedAttachment,
   openNativeFeedFile,
   pickNativeFeedFiles,
+  pickNativeFeedImages,
+  resolveNativeFeedImageUri,
 } from '../../feed/nativeFeedFiles';
+import { NativeMailImageViewer } from '../../components/mail/NativeMailImageViewer';
 import {
   FEED_COMMENT_PAGE_SIZE,
   FEED_REACTIONS,
   buildFeedPostPath,
   getFeedInitials,
   getFeedReaction,
+  isImageAttachment,
   type FeedAttachment,
   type FeedComment,
   type FeedPost,
@@ -118,6 +125,10 @@ function FeedPostContent() {
   const [busyCommentId, setBusyCommentId] = useState('');
   const [commentReactionPickerId, setCommentReactionPickerId] = useState('');
   const [openingAttachmentId, setOpeningAttachmentId] = useState('');
+  const [imageViewerEntries, setImageViewerEntries] = useState<Array<{ key: string; attachment: FeedAttachment; commentId?: string }>>([]);
+  const [imageViewerKey, setImageViewerKey] = useState('');
+  const [imageViewerUris, setImageViewerUris] = useState<Record<string, string>>({});
+  const [attachSheetOpen, setAttachSheetOpen] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [reactionPickerOpen, setReactionPickerOpen] = useState(false);
@@ -627,18 +638,38 @@ function FeedPostContent() {
     }
   }, [busyCommentId, offlineMode, patchComment, postId]);
 
-  const handlePickFiles = useCallback(async () => {
+  const addCommentFiles = useCallback((picked: FeedUploadFile[]) => {
+    setCommentFiles((current) => {
+      const known = new Set(current.map((item) => item.uri));
+      return [...current, ...picked.filter((item) => !known.has(item.uri))];
+    });
+  }, []);
+
+  const handlePickFiles = useCallback(async (source: 'photos' | 'files' = 'files') => {
     if (offlineMode) return;
     try {
-      const picked = await pickNativeFeedFiles();
-      setCommentFiles((current) => {
-        const known = new Set(current.map((item) => item.uri));
-        return [...current, ...picked.filter((item) => !known.has(item.uri))];
-      });
+      addCommentFiles(source === 'photos' ? await pickNativeFeedImages() : await pickNativeFeedFiles());
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось выбрать вложение.'));
     }
-  }, [offlineMode]);
+  }, [addCommentFiles, offlineMode]);
+
+  const handleAttachPress = useCallback(() => {
+    setAttachSheetOpen(true);
+  }, []);
+
+  const openImageGallery = useCallback((attachment: FeedAttachment, siblings: FeedAttachment[], commentId?: string) => {
+    const entries = siblings
+      .filter(isImageAttachment)
+      .map((item) => ({
+        key: `${commentId || 'post'}:${String(item.id)}`,
+        attachment: item,
+        commentId,
+      }));
+    if (!entries.length) return;
+    setImageViewerEntries(entries);
+    setImageViewerKey(`${commentId || 'post'}:${String(attachment.id)}`);
+  }, []);
 
   const handleOpenAttachment = useCallback(async (
     attachment: FeedAttachment,
@@ -646,6 +677,14 @@ function FeedPostContent() {
   ) => {
     const attachmentId = String(attachment.id || '').trim();
     if (!postId || !attachmentId || openingAttachmentId) return;
+    if (isImageAttachment(attachment)) {
+      const comment = commentId
+        ? [...comments, ...Object.values(replies).flat()].find((item) => String(item.id) === commentId)
+        : null;
+      const siblings = commentId ? (comment?.attachments || [attachment]) : (post?.attachments || [attachment]);
+      openImageGallery(attachment, siblings, commentId);
+      return;
+    }
     setOpeningAttachmentId(attachmentId);
     try {
       const file = await downloadNativeFeedAttachment(postId, attachment, commentId);
@@ -655,7 +694,34 @@ function FeedPostContent() {
     } finally {
       setOpeningAttachmentId('');
     }
-  }, [openingAttachmentId, postId]);
+  }, [comments, openingAttachmentId, openImageGallery, post?.attachments, postId, replies]);
+
+  const imageViewerEntry = imageViewerEntries.find((item) => item.key === imageViewerKey) || null;
+  useEffect(() => {
+    if (!postId || !imageViewerEntry || imageViewerUris[imageViewerEntry.key]) return undefined;
+    let active = true;
+    void resolveNativeFeedImageUri(postId, imageViewerEntry.attachment, imageViewerEntry.commentId)
+      .then((uri) => {
+        if (active) setImageViewerUris((current) => ({ ...current, [imageViewerEntry.key]: uri }));
+      })
+      .catch((cause) => {
+        if (active) setError(formatApiError(cause, 'Не удалось загрузить изображение.'));
+      });
+    return () => { active = false; };
+  }, [imageViewerEntry, imageViewerUris, postId]);
+
+  const imageViewerItems = imageViewerEntries.map((entry) => ({
+    key: entry.key,
+    name: entry.attachment.file_name || 'Фото',
+    uri: imageViewerUris[entry.key] || '',
+  }));
+
+  const openCurrentImage = useCallback(() => {
+    if (!postId || !imageViewerEntry) return;
+    void downloadNativeFeedAttachment(postId, imageViewerEntry.attachment, imageViewerEntry.commentId)
+      .then((file) => openNativeFeedFile(file, imageViewerEntry.attachment.file_mime))
+      .catch((cause) => setError(formatApiError(cause, 'Не удалось открыть вложение.')));
+  }, [imageViewerEntry, postId]);
 
   if (!allowed) {
     return (
@@ -737,10 +803,13 @@ function FeedPostContent() {
       ) : !post ? (
         <AccountStatusText tokens={tokens} error={error || 'Публикация не найдена.'} />
       ) : (
-        <View style={styles.flex}>
+        <KeyboardAvoidingView
+          style={[styles.flex, styles.screenBleed, { marginBottom: -(bottomInset + 12) }]}
+          {...chatKeyboardAvoidingProps()}
+        >
           <FlatList
             style={styles.flex}
-            contentContainerStyle={{ gap: 12, paddingBottom: bottomInset + 88 }}
+            contentContainerStyle={{ gap: 12, paddingHorizontal: 12, paddingTop: 12, paddingBottom: bottomInset + 16 }}
             keyboardShouldPersistTaps="handled"
             data={comments.flatMap(comment => [{ comment, isReply: false }, ...(expandedRoots.has(comment.id) ? (replies[comment.id] || []).map(reply => ({ comment: reply, isReply: true })) : [])])}
             keyExtractor={row => `${row.isReply ? 'reply' : 'root'}:${row.comment.id}`}
@@ -817,24 +886,10 @@ function FeedPostContent() {
               onToggleReaction={offlineMode ? undefined : () => setReactionPickerOpen((value) => !value)}
               onBookmark={offlineMode ? undefined : () => { void handleBookmark(); }}
               onAcknowledge={offlineMode ? undefined : () => { void handleAcknowledge(); }}
+              onSelectReaction={offlineMode ? undefined : (_post, reactionType) => { void handleReaction(reactionType); }}
+              onOpenImage={(_post, attachment) => openImageGallery(attachment, post.attachments || [])}
+              reactionPickerOpen={reactionPickerOpen}
             />
-
-            {reactionPickerOpen ? (
-              <View style={[styles.reactionPicker, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
-                {FEED_REACTIONS.map((reaction) => (
-                  <Pressable
-                    key={reaction.id}
-                    testID={`feed-reaction-${reaction.id}`}
-                    onPress={() => { void handleReaction(reaction.id); }}
-                    style={styles.reactionItem}
-                    accessibilityRole="button"
-                    accessibilityLabel={reaction.label}
-                  >
-                    <Text style={styles.reactionEmoji}>{reaction.emoji}</Text>
-                  </Pressable>
-                ))}
-              </View>
-            ) : null}
 
             {post.poll?.options?.length ? (
               <View style={[styles.pollCard, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
@@ -885,7 +940,7 @@ function FeedPostContent() {
                     onPress={() => { void submitPollVote(pollDraftOptionIds); }}
                     style={[styles.pollSubmit, { backgroundColor: tokens.primary }]}
                   >
-                    {pollVoting ? <ActivityIndicator color="#fff" /> : <Text style={styles.pollSubmitText}>Сохранить выбор</Text>}
+                    {pollVoting ? <ActivityIndicator color={tokens.onPrimary} /> : <Text style={[styles.pollSubmitText, { color: tokens.onPrimary }]}>Сохранить выбор</Text>}
                   </Pressable>
                 ) : null}
                 <Text style={{ color: tokens.textSecondary, fontSize: 12 }}>
@@ -969,10 +1024,10 @@ function FeedPostContent() {
               </AccountSectionCard>
             ) : null}
 
-            {Array.isArray(post.attachments) && post.attachments.length > 0 ? (
+            {(post.attachments || []).filter((item) => !isImageAttachment(item)).length > 0 ? (
               <View style={[styles.postAttachments, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
                 <Text style={[styles.sectionLabel, { color: tokens.textPrimary }]}>Вложения</Text>
-                {post.attachments.map((attachment) => (
+                {(post.attachments || []).filter((item) => !isImageAttachment(item)).map((attachment) => (
                   <Pressable
                     key={String(attachment.id)}
                     testID={`feed-post-attachment-${attachment.id}`}
@@ -1142,7 +1197,7 @@ function FeedPostContent() {
                 {
                   backgroundColor: tokens.navBg,
                   borderTopColor: tokens.borderSoft,
-                  paddingBottom: Math.max(8, bottomInset ? 8 : 8),
+                  paddingBottom: bottomInset + 8,
                 },
               ]}
             >
@@ -1184,8 +1239,8 @@ function FeedPostContent() {
                 <Pressable
                   testID="feed-comment-attach"
                   accessibilityRole="button"
-                  accessibilityLabel="Прикрепить файлы"
-                  onPress={() => { void handlePickFiles(); }}
+                  accessibilityLabel="Прикрепить фото или файл"
+                  onPress={handleAttachPress}
                   style={styles.attachButton}
                 >
                   <MaterialCommunityIcons name="paperclip" size={20} color={tokens.textSecondary} />
@@ -1216,12 +1271,58 @@ function FeedPostContent() {
                     },
                   ]}
                 >
-                  {sending ? <ActivityIndicator color="#fff" size="small" /> : <MaterialCommunityIcons name="send" size={18} color="#fff" />}
+                  {sending ? <ActivityIndicator color={tokens.onPrimary} size="small" /> : <MaterialCommunityIcons name="send" size={18} color={tokens.onPrimary} />}
                 </Pressable>
               </View>
             </View>
           ) : null}
-        </View>
+          <NativeModal visible={attachSheetOpen} transparent animationType="slide" onRequestClose={() => setAttachSheetOpen(false)}>
+            <View style={styles.attachBackdrop}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Закрыть выбор вложения"
+                onPress={() => setAttachSheetOpen(false)}
+                style={StyleSheet.absoluteFill}
+              />
+              <View
+                testID="feed-attach-sheet"
+                accessibilityViewIsModal
+                style={[styles.attachSheet, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft, paddingBottom: Math.max(16, bottomInset + 4) }]}
+              >
+                {([
+                  { source: 'photos', icon: 'image-multiple-outline', title: 'Фото из галереи', subtitle: 'До 10 изображений за раз' },
+                  { source: 'files', icon: 'paperclip', title: 'Файл', subtitle: 'Документы, архивы и другие файлы до 20 МБ' },
+                ] as const).map((option) => (
+                  <Pressable
+                    key={option.source}
+                    testID={`feed-attach-${option.source}`}
+                    accessibilityRole="button"
+                    accessibilityLabel={option.title}
+                    onPress={() => {
+                      setAttachSheetOpen(false);
+                      void handlePickFiles(option.source);
+                    }}
+                    style={({ pressed }) => [styles.attachOption, pressed && { backgroundColor: tokens.actionHover }]}
+                  >
+                    <MaterialCommunityIcons name={option.icon} size={22} color={tokens.primary} />
+                    <View style={styles.attachOptionText}>
+                      <Text style={{ color: tokens.textPrimary, fontWeight: '800' }}>{option.title}</Text>
+                      <Text style={{ color: tokens.textSecondary, fontSize: 12, marginTop: 1 }}>{option.subtitle}</Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          </NativeModal>
+          <NativeMailImageViewer
+            items={imageViewerItems}
+            currentKey={imageViewerKey}
+            loading={Boolean(imageViewerKey) && !imageViewerUris[imageViewerKey]}
+            onChange={setImageViewerKey}
+            onClose={() => { setImageViewerKey(''); setImageViewerEntries([]); }}
+            onOpen={imageViewerEntry ? openCurrentImage : undefined}
+          />
+        </KeyboardAvoidingView>
       )}
     </AccountScreenScaffold>
   );
@@ -1229,6 +1330,7 @@ function FeedPostContent() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
+  screenBleed: { marginHorizontal: -12, marginTop: -12 },
   headerActions: { flexDirection: 'row', alignItems: 'center' },
   headerAction: {
     width: 44,
@@ -1236,20 +1338,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  reactionPicker: {
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: 8,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  reactionItem: {
-    width: 40,
-    height: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  reactionEmoji: { fontSize: 22 },
   detailsToggle: {
     minHeight: 44,
     borderWidth: 1,
@@ -1319,6 +1407,25 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 6,
   },
+  attachBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.48)' },
+  attachSheet: {
+    borderWidth: 1,
+    borderBottomWidth: 0,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 10,
+    paddingTop: 10,
+    gap: 2,
+  },
+  attachOption: {
+    minHeight: 54,
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  attachOptionText: { flex: 1, minWidth: 0 },
   sectionLabel: { fontSize: 15, fontWeight: '800' },
   attachmentButton: {
     minHeight: 44,
@@ -1334,12 +1441,12 @@ const styles = StyleSheet.create({
   pollProgressTrack: { height: 4, borderRadius: 2, overflow: 'hidden' },
   pollProgressFill: { height: 4, borderRadius: 2 },
   pollSubmit: { minHeight: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  pollSubmitText: { color: '#fff', fontWeight: '800' },
+  pollSubmitText: { fontWeight: '700' },
   attachmentButtonText: { flex: 1, fontSize: 13, fontWeight: '700' },
   composer: {
     borderTopWidth: 1,
     paddingTop: 8,
-    paddingHorizontal: 4,
+    paddingHorizontal: 12,
     gap: 4,
   },
   composerRow: {
@@ -1359,8 +1466,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  selectedFiles: { gap: 6, paddingLeft: 52, paddingRight: 4 },
-  selectedFile: {
+  selectedFiles: { gap: 6, paddingLeft: 52, paddingRight: 4 },  selectedFile: {
     minHeight: 40,
     borderRadius: 10,
     paddingHorizontal: 10,

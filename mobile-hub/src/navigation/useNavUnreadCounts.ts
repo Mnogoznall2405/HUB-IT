@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { chatSocket } from '../chat/chatSocket';
 import { applyNativeMailUnreadChange, subscribeNativeMailUnread } from '../mail/nativeMailUnreadEvents';
+import { applyPendingNativeMailUnread } from '../mail/nativeMailUnreadPending';
 import { setNativeBadgeCount } from '../notifications/notificationBadge';
 import { getNativeUnreadSnapshot, nativeUnreadTotal } from '../notifications/nativeUnreadSnapshot';
 import { hubRealtimeSocket } from '../realtime/hubRealtimeSocket';
@@ -44,9 +45,12 @@ export function useNavUnreadCounts(): NavUnreadCounts {
     const canReadMail = hasPermission('mail.access');
     const snapshot = await getNativeUnreadSnapshot({ canReadChat, canReadMail, force });
     if (!mountedRef.current) return;
-    setCounts(snapshot);
+    // Серверный счётчик почты может отставать от локально применённых дельт
+    // (Exchange обновляет unread с задержкой) — корректируем до подтверждения.
+    const corrected = { ...snapshot, mail_unread: applyPendingNativeMailUnread(null, null, snapshot.mail_unread) };
+    setCounts(corrected);
     if (snapshot.successful_sources > 0) {
-      void setNativeBadgeCount(nativeUnreadTotal(snapshot));
+      void setNativeBadgeCount(nativeUnreadTotal(corrected));
     }
   }, [hasPermission, user]);
 

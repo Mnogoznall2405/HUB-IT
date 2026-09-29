@@ -11,10 +11,12 @@ import {
   Typography,
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
+import QrCodeScannerIcon from '@mui/icons-material/QrCodeScanner';
 
 function QrScannerDialog({
   open,
   onClose,
+  onRetry = null,
   isMobile = false,
   loading = false,
   ready = false,
@@ -46,7 +48,7 @@ function QrScannerDialog({
       <DialogContent sx={{ pt: 2 }}>
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center' }}>
           <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center' }}>
-            Наведите камеру на QR-код оборудования
+            Наведите камеру на QR-код оборудования или расходника
           </Typography>
 
           <Box
@@ -116,6 +118,11 @@ function QrScannerDialog({
         </Box>
       </DialogContent>
       <DialogActions sx={{ p: 2 }}>
+        {error && onRetry ? (
+          <Button onClick={onRetry} variant="contained" startIcon={<QrCodeScannerIcon />}>
+            Разрешить доступ к камере
+          </Button>
+        ) : null}
         <Button onClick={onClose} variant="outlined" color="inherit">
           Закрыть
         </Button>

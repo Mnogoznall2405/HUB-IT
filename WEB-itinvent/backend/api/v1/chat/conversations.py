@@ -111,6 +111,7 @@ async def update_chat_conversation_settings(
             conversation_id=conversation_id,
             is_pinned=payload.is_pinned,
             is_muted=payload.is_muted,
+            muted_until=payload.muted_until,
             is_archived=payload.is_archived,
         )
         await chat_api()._publish_conversation_updated(

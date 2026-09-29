@@ -5,6 +5,7 @@ import { type FluentColorScheme, useAppFluentTokens } from './fluentTokens';
 export function createChatTokens(scheme: FluentColorScheme) {
   const dark = scheme === 'dark';
   return {
+    scheme,
     pageBg: dark ? '#0e1621' : '#e7ebf0',
     panelBg: dark ? '#17212b' : '#ffffff',
     sidebarBg: dark ? '#17212b' : '#ffffff',
@@ -27,18 +28,18 @@ export function createChatTokens(scheme: FluentColorScheme) {
     composerActionBg: dark ? '#2b5278' : '#0f79bd',
     composerActionText: '#ffffff',
     textPrimary: dark ? '#f2f5f7' : '#111b21',
-    textSecondary: dark ? '#8f9ba8' : '#707579',
-    accentText: dark ? '#64b5ef' : '#3390ec',
+    textSecondary: dark ? '#8f9ba8' : '#6a7074',
+    accentText: dark ? '#64b5ef' : '#1c72c2',
     statusReadText: dark ? '#64b5ef' : '#3390ec',
     borderSoft: dark ? 'rgba(255,255,255,0.12)' : 'rgba(175,186,197,0.36)',
     overlayBg: 'rgba(0,0,0,0.44)',
     datePillBg: dark ? 'rgba(23,33,43,0.9)' : 'rgba(255,255,255,0.9)',
     reactionBg: dark ? '#242f3d' : '#ffffff',
     reactionSelectedBg: dark ? '#2b5278' : '#e3f2fd',
-    dangerText: dark ? '#ff7b7b' : '#d94d4d',
+    dangerText: dark ? '#ff7b7b' : '#c93b3b',
     warningBg: dark ? '#3a2f16' : '#fff4d6',
     warningText: dark ? '#ffd58a' : '#7a4b00',
-    online: '#31b545',
+    online: '#2a9d3f',
   } as const;
 }
 

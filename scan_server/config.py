@@ -85,12 +85,16 @@ class ScanServerConfig:
     worker_interval_sec: int
     scan_job_max_workers: int
     ocr_enabled: bool
+    ocr_cache_enabled: bool
+    ocr_cache_retention_days: int
     ocr_tesseract_cmd: str
     ocr_lang: str
     ocr_max_processes: int
     ocr_timeout_sec: int
     ocr_dpi: int
     ocr_only_if_no_text: bool
+    ocr_tiny_image_min_pixels: int
+    ocr_tiny_image_dry_run: bool
     pdf_max_bytes: int
     worker_memory_limit_mb: int
     agent_package_path: str
@@ -267,6 +271,10 @@ class ScanServerConfig:
                 ),
             ),
             ocr_enabled=_to_bool(os.getenv("SCAN_OCR_ENABLED", "1"), True),
+            ocr_cache_enabled=_to_bool(os.getenv("SCAN_OCR_CACHE_ENABLED", "1"), True),
+            ocr_cache_retention_days=max(
+                1, _to_int(os.getenv("SCAN_OCR_CACHE_RETENTION_DAYS", "14"), 14)
+            ),
             ocr_tesseract_cmd=str(
                 os.getenv("SCAN_OCR_TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
             ).strip(),
@@ -284,6 +292,10 @@ class ScanServerConfig:
             ocr_timeout_sec=max(5, min(300, _to_int(os.getenv("SCAN_OCR_TIMEOUT_SEC", "45"), 45))),
             ocr_dpi=max(100, min(600, _to_int(os.getenv("SCAN_OCR_DPI", "300"), 300))),
             ocr_only_if_no_text=_to_bool(os.getenv("SCAN_OCR_ONLY_IF_NO_TEXT", "1"), True),
+            ocr_tiny_image_min_pixels=max(
+                0, _to_int(os.getenv("SCAN_OCR_TINY_IMAGE_MIN_PIXELS", "500000"), 500000)
+            ),
+            ocr_tiny_image_dry_run=_to_bool(os.getenv("SCAN_OCR_TINY_IMAGE_DRY_RUN", "1"), True),
             pdf_max_bytes=max(
                 1024 * 1024,
                 _to_int(os.getenv("SCAN_PDF_MAX_BYTES", str(50 * 1024 * 1024)), 50 * 1024 * 1024),

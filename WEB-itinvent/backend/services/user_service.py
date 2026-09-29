@@ -36,6 +36,7 @@ from backend.appdb.models import (
 from local_store import get_local_store
 from backend.config import config
 from backend.services.authorization_service import authorization_service
+from backend.services.my_files_service import USER_QUOTA_MAX_BYTES
 from backend.services.secret_crypto_service import SecretCryptoError, encrypt_secret
 from backend.services.session_auth_context_service import normalize_exchange_login
 
@@ -214,6 +215,18 @@ class UserService:
         self._invalidate_users_cache()
 
     @staticmethod
+    def _validate_my_files_quota_bytes(value: object) -> Optional[int]:
+        if value in (None, ""):
+            return None
+        try:
+            quota = int(value)
+        except (TypeError, ValueError):
+            raise ValueError("my_files_quota_bytes must be an integer") from None
+        if quota <= 0 or quota > USER_QUOTA_MAX_BYTES:
+            raise ValueError("my_files_quota_bytes must be between 1 and 400 GiB")
+        return quota
+
+    @staticmethod
     def _normalize_delegate_role_type(value: object) -> str:
         normalized = str(value or "").strip().lower()
         if normalized not in {"assistant", "deputy"}:
@@ -369,6 +382,7 @@ class UserService:
             "password_hash": str(row.password_hash or ""),
             "password_salt": str(row.password_salt or ""),
             "avatar_url": row.avatar_url or None,
+            "my_files_quota_bytes": row.my_files_quota_bytes,
             "about_onboarding_completed_at": (
                 row.about_onboarding_completed_at.isoformat()
                 if row.about_onboarding_completed_at
@@ -409,6 +423,8 @@ class UserService:
             if about_onboarding_completed_at
             else None
         )
+        my_files_quota = payload.get("my_files_quota_bytes")
+        row.my_files_quota_bytes = int(my_files_quota) if my_files_quota is not None and my_files_quota != "" else None
         mail_updated_at = str(payload.get("mail_updated_at") or "").strip()
         row.mail_updated_at = datetime.fromisoformat(mail_updated_at) if mail_updated_at else None
         created_at = str(payload.get("created_at") or "").strip()
@@ -467,6 +483,7 @@ class UserService:
             "discoverable_trusted_devices_count": int(user.get("discoverable_trusted_devices_count", 0) or 0),
             "twofa_enforced": bool(config.security.twofa_enforced),
             "avatar_url": (str(user.get("avatar_url") or "").strip() or None),
+            "my_files_quota_bytes": user.get("my_files_quota_bytes"),
             "about_onboarding_completed_at": (
                 str(user.get("about_onboarding_completed_at") or "").strip() or None
             ),
@@ -1158,6 +1175,7 @@ class UserService:
         mailbox_login: Optional[str] = None,
         mailbox_password: Optional[str] = None,
         mail_signature_html: Optional[str] = None,
+        my_files_quota_bytes: Optional[int] = None,
     ) -> dict:
         normalized = self._normalize_username(username)
         if not normalized:
@@ -1199,6 +1217,7 @@ class UserService:
             "mailbox_password_enc": mailbox_password_enc,
             "mail_signature_html": (str(mail_signature_html or "").strip() or None),
             "mail_updated_at": now if (mailbox_email or mailbox_login or mailbox_password_enc or mail_signature_html) else None,
+            "my_files_quota_bytes": self._validate_my_files_quota_bytes(my_files_quota_bytes),
             "password_hash": password_hash,
             "password_salt": salt,
             "about_onboarding_completed_at": None,
@@ -1278,6 +1297,7 @@ class UserService:
         totp_secret_enc: Optional[str] | object = _UNSET,
         is_2fa_enabled: Optional[bool] | object = _UNSET,
         twofa_enabled_at: Optional[str] | object = _UNSET,
+        my_files_quota_bytes: Optional[int] | object = _UNSET,
     ) -> Optional[dict]:
         users = self._load_users()
         updated_user: Optional[dict] = None
@@ -1343,6 +1363,8 @@ class UserService:
                 user["is_2fa_enabled"] = bool(is_2fa_enabled)
             if twofa_enabled_at is not _UNSET:
                 user["twofa_enabled_at"] = (str(twofa_enabled_at or "").strip() or None)
+            if my_files_quota_bytes is not _UNSET:
+                user["my_files_quota_bytes"] = self._validate_my_files_quota_bytes(my_files_quota_bytes)
             user["updated_at"] = _utc_now_iso()
             updated_user = user
             break

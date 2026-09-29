@@ -1,6 +1,8 @@
 """Owner-scoped OpenCode sandbox panel and permission endpoints."""
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from backend.ai_sandbox.schemas import (
@@ -17,6 +19,20 @@ from backend.services.authorization_service import PERM_CHAT_AI_USE
 
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
+
+
+def _log_sandbox_error(op: str, exc: Exception, **context: object) -> None:
+    details = " ".join(f"{key}={value}" for key, value in context.items())
+    logger.error(
+        "ai_sandbox.%s failed %s: %s: %s",
+        op,
+        details,
+        type(exc).__name__,
+        exc,
+        exc_info=True,
+    )
 
 
 def _sandbox_service():
@@ -46,6 +62,12 @@ async def get_ai_sandbox_conversation(
             current_user_id=int(current_user.id),
         )
     except Exception as exc:
+        _log_sandbox_error(
+            "conversation_snapshot",
+            exc,
+            conversation_id=conversation_id,
+            user_id=int(current_user.id),
+        )
         _raise_sandbox_error(exc)
 
 
@@ -67,6 +89,14 @@ async def respond_ai_sandbox_permission(
             scope=payload.scope,
         )
     except Exception as exc:
+        _log_sandbox_error(
+            "respond_permission",
+            exc,
+            permission_id=permission_id,
+            user_id=int(current_user.id),
+            decision=payload.decision,
+            scope=payload.scope,
+        )
         _raise_sandbox_error(exc)
 
 
@@ -86,6 +116,12 @@ async def attach_ai_sandbox_archive(
             current_user_id=int(current_user.id),
         )
     except Exception as exc:
+        _log_sandbox_error(
+            "request_archive",
+            exc,
+            conversation_id=conversation_id,
+            user_id=int(current_user.id),
+        )
         _raise_sandbox_error(exc)
 
 
@@ -105,5 +141,11 @@ async def attach_ai_sandbox_file(
             current_user_id=int(current_user.id),
         )
     except Exception as exc:
+        _log_sandbox_error(
+            "request_file_attach",
+            exc,
+            file_id=file_id,
+            user_id=int(current_user.id),
+        )
         _raise_sandbox_error(exc)
 

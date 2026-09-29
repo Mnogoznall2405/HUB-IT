@@ -36,9 +36,18 @@ def test_gateway_forces_hub_model_and_caps_output_tokens():
 
     assert normalized["model"] == "openai/gpt-approved"
     assert normalized["max_tokens"] == 2_000
-    assert normalized["messages"] == [{"role": "user", "content": "Проверь файл", "tool_calls": []}]
+    assert normalized["messages"] == [{"role": "user", "content": "Проверь файл"}]
     assert normalized["tools"][0]["function"]["name"] == "read"
     assert normalized["tool_choice"] == {"type": "function", "function": {"name": "read"}}
+
+
+def test_gateway_drops_empty_tool_calls_for_strict_providers():
+    assistant = {"role": "assistant", "content": "done", "tool_calls": []}
+    normalized = normalize_gateway_request(
+        {"messages": [assistant], "stream": True},
+        forced_model="deepseek-v4.1-flash",
+    )
+    assert normalized["messages"] == [{"role": "assistant", "content": "done"}]
 
 
 @pytest.mark.parametrize(

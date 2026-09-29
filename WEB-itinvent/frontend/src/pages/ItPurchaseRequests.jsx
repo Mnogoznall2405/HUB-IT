@@ -90,12 +90,6 @@ const formatQuantity = (value) => new Intl.NumberFormat('ru-RU', {
   maximumFractionDigits: 3,
 }).format(Number(value) || 0);
 
-const formatMoney = (value) => new Intl.NumberFormat('ru-RU', {
-  style: 'currency',
-  currency: 'RUB',
-  maximumFractionDigits: 2,
-}).format(Number(value) || 0);
-
 const formatPositionsCount = (value) => {
   const count = Number(value) || 0;
   const remainder100 = count % 100;
@@ -498,7 +492,6 @@ function EventRow({ event }) {
         {event.manager_name ? ` · закупщик: ${event.manager_name}` : ''}
         {event.supplier_name ? ` · поставщик: ${event.supplier_name}` : ''}
         {route ? ` · ${route}` : ''}
-        {Number(event.amount) > 0 ? ` · ${formatMoney(event.amount)}` : ''}
       </Typography>
       {nomenclature.length ? (
         <Typography variant="caption" color="text.secondary" component="div">
@@ -772,7 +765,6 @@ function RequestDetail({ request, loading, error, onBack, showBack }) {
             <MetaValue label="Ответственный">{request.responsible_name}</MetaValue>
             <MetaValue label="Закупщик">{request.manager_names?.join(', ')}</MetaValue>
             <MetaValue label="Поставщик">{request.supplier_names?.join(', ') || request.supplier_name}</MetaValue>
-            {Number(request.ordered_cost) > 0 ? <MetaValue label="Сумма заказов">{formatMoney(request.ordered_cost)}</MetaValue> : null}
             <MetaValue label="Фактическая поставка">{formatDate(request.factual_delivery_date)}</MetaValue>
           </Box>
           {request.comment ? <MetaValue label="Комментарий">{request.comment}</MetaValue> : null}

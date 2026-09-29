@@ -40,6 +40,7 @@ from backend.models.my_files import (
     MyFileUpdateRequest,
     MyFileUploadSessionCreateRequest,
     MyFileUploadSessionResponse,
+    MyFilesAdminStatsResponse,
     PublicMyFilePreviewResponse,
     PublicMyFileResponse,
     PublicMyFolderResponse,
@@ -48,6 +49,7 @@ from backend.services.authorization_service import (
     PERM_MY_FILES_AUDIT_READ,
     PERM_MY_FILES_READ,
     PERM_MY_FILES_SHARE,
+    PERM_MY_FILES_STATS_READ,
     PERM_MY_FILES_WRITE,
 )
 from backend.services.my_files_service import (
@@ -140,10 +142,16 @@ async def _stream_request_to_spool(request: Request, spool_path: Path, *, expect
                     raise MyFilesValidationError("Uploaded file size does not match reservation")
                 target.write(chunk)
     except Exception:
-        spool_path.unlink(missing_ok=True)
+        try:
+            spool_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise
     if size != int(expected_size):
-        spool_path.unlink(missing_ok=True)
+        try:
+            spool_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise MyFilesValidationError("Uploaded file size does not match reservation")
     return size
 
@@ -258,6 +266,7 @@ def _download_response(payload, request: Request | None = None) -> Response:
 async def list_my_files(
     folder_id: str | None = Query(default=None, max_length=64),
     view: str = Query(default="", max_length=16),
+    q: str = Query(default="", max_length=128),
     current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
 ) -> dict:
     try:
@@ -266,6 +275,7 @@ async def list_my_files(
             user_id=int(current_user.id),
             folder_id=folder_id,
             view=view,
+            query=q,
         )
     except Exception as exc:
         raise _service_error_to_http(exc) from exc
@@ -613,6 +623,41 @@ async def list_my_files_audit(
         raise _service_error_to_http(exc) from exc
 
 
+@router.get("/admin/user-stats", response_model=MyFilesAdminStatsResponse)
+async def list_my_files_admin_user_stats(
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    q: str = Query(default="", max_length=128),
+    _: User = Depends(require_permission(PERM_MY_FILES_STATS_READ)),
+) -> dict:
+    try:
+        return await run_in_threadpool(
+            my_files_service.admin_user_stats,
+            limit=limit,
+            offset=offset,
+            query=q,
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.get("/{file_id}/audit", response_model=MyFileAuditResponse)
+async def list_my_file_audit(
+    file_id: str,
+    limit: int = Query(default=200, ge=1, le=500),
+    current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
+) -> dict:
+    try:
+        return await run_in_threadpool(
+            my_files_service.list_file_audit,
+            file_id=file_id,
+            user_id=int(current_user.id),
+            limit=limit,
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
 @router.post("", response_model=MyFileResponse, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=MyFileResponse, status_code=status.HTTP_201_CREATED)
 async def upload_my_file(
@@ -650,7 +695,10 @@ async def upload_my_file(
             meta=_request_meta(request),
         )
     except BaseException as exc:
-        spool_path.unlink(missing_ok=True)
+        try:
+            spool_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         if reserved_file_id:
             try:
                 await run_in_threadpool(
@@ -692,6 +740,7 @@ async def create_my_file_upload_session(
             retention_days=payload.retention_days,
             folder_id=payload.folder_id,
             meta=_request_meta(request),
+            reuse_existing=True,
         )
         return await run_in_threadpool(
             my_files_service.get_upload_session,

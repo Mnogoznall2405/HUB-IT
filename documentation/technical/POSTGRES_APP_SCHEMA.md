@@ -14,14 +14,15 @@
 
 ## Снимок БД (авто)
 
-_Обновлено: 2026-09-17 06:35 UTC_ · инстанс `10.103.0.10:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
+_Обновлено: 2026-09-29 06:23 UTC_ · инстанс `10.103.0.10:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
 
 | Схема | Таблиц | Кратко |
 |-------|--------|--------|
 | **`app`** | **154** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
 | **`chat`** | **4** | Мессенджер, outbox, push |
 | **`system`** | **8** | Alembic, auth runtime, MFU, session Exchange, чекпоинты |
-| **`scan`** | **9** | — |
+| **`scan`** | **10** | — |
+| **`voice`** | **4** | — |
 
 Полные колонки: [POSTGRES_APP_SCHEMA_DDL.md](./POSTGRES_APP_SCHEMA_DDL.md).
 
@@ -278,7 +279,7 @@ _Обновлено: 2026-09-17 06:35 UTC_ · инстанс `10.103.0.10:5432/h
 | `migration_checkpoints` | Чекпоинты миграций |
 | `session_auth_context` | Exchange login + encrypted password для сессии |
 
-## Схема `scan` (9 таблиц)
+## Схема `scan` (10 таблиц)
 
 ### Таблицы
 
@@ -290,9 +291,21 @@ _Обновлено: 2026-09-17 06:35 UTC_ · инстанс `10.103.0.10:5432/h
 | `scan_findings` | — |
 | `scan_incidents` | — |
 | `scan_jobs` | — |
+| `scan_ocr_cache` | — |
 | `scan_task_file_observations` | — |
 | `scan_task_system_metrics` | — |
 | `scan_tasks` | — |
+
+## Схема `voice` (4 таблиц)
+
+### Таблицы
+
+| Таблица | Назначение |
+|---------|------------|
+| `alembic_version` | Текущая ревизия Alembic |
+| `share_links` | — |
+| `voice_assignment_statuses` | — |
+| `voice_jobs` | — |
 
 <!-- pg-schema-docs:auto:end -->
 
@@ -360,7 +373,7 @@ chat.chat_event_outbox ── доставка событий подписчик
 
 <!-- pg-schema-docs:history:begin -->
 
-- **2026-09-17:** авто-синхронизация с `10.103.0.10:5432/hubit_chat` (`app` 154, `chat` 4, `system` 8).
+- **2026-09-29:** авто-синхронизация с `10.103.0.10:5432/hubit_chat` (`app` 154, `chat` 4, `system` 8).
 
 <!-- pg-schema-docs:history:end -->
 

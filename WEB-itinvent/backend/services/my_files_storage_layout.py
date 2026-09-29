@@ -116,6 +116,22 @@ def _is_unc(path: Path) -> bool:
     return text.startswith("\\\\") or text.startswith("//")
 
 
+def _unc_share_root(path: Path) -> str:
+    """Lowercase '//server/share' prefix for UNC paths, '' otherwise."""
+    text = str(path).replace("/", "\\")
+    if not text.startswith("\\\\"):
+        return ""
+    parts = [part for part in text.split("\\") if part]
+    if len(parts) < 2:
+        return ""
+    return "\\\\" + "\\".join(parts[:2]).lower()
+
+
+def _same_unc_share(source: Path, destination: Path) -> bool:
+    source_root = _unc_share_root(source)
+    return bool(source_root) and source_root == _unc_share_root(destination)
+
+
 def ensure_storage_ready(path: Path) -> None:
     if _is_unc(path) or (storage_v2_enabled() and hubit_storage_configured()):
         ensure_connected(path if _is_unc(path) else configured_storage_dir())
@@ -143,6 +159,20 @@ def publish_local_to_blob(
         raise FileNotFoundError(str(source))
 
     ensure_storage_ready(destination)
+
+    if _same_unc_share(source, destination):
+        # Spool and blob on one UNC share: a server-side rename is atomic and
+        # skips the full copy+verify cycle; the caller's sha256 pass already
+        # established content integrity.
+        if expected_size is not None and int(source.stat().st_size) != int(expected_size):
+            raise ValueError("Published blob size mismatch")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            source.unlink(missing_ok=True)
+            return destination
+        os.replace(source, destination)
+        return destination
+
     ensure_free_space_for_path(int(source.stat().st_size), path=destination.parent)
     destination.parent.mkdir(parents=True, exist_ok=True)
 

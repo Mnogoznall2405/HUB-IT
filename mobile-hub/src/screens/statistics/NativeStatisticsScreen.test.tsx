@@ -136,10 +136,12 @@ it('switches tabs and periods, reloading per selection', async () => {
   const view = await render(<NativeStatisticsScreen />);
   await waitFor(() => expect(view.getByText('Центральный')).toBeTruthy());
 
+  await fireEvent.press(view.getByTestId('native-statistics-tab-current'));
   await fireEvent.press(view.getByTestId('native-statistics-tab-mfu'));
   await waitFor(() => expect(view.getByText('Canon MF443')).toBeTruthy());
   expect(statisticsApi.fetchStatistics).toHaveBeenCalledWith('mfu', expect.objectContaining({ periodDays: 90 }));
 
+  await fireEvent.press(view.getByTestId('native-statistics-period-current'));
   await fireEvent.press(view.getByTestId('native-statistics-period-30'));
   await waitFor(() => expect(statisticsApi.fetchStatistics).toHaveBeenCalledWith(
     'mfu', expect.objectContaining({ periodDays: 30 }),
@@ -151,6 +153,8 @@ it('hides the mfu tab without mfu.read permission', async () => {
   mockPermissions = ['statistics.read'];
   const view = await render(<NativeStatisticsScreen />);
   await waitFor(() => expect(view.getByText('Центральный')).toBeTruthy());
+  await fireEvent.press(view.getByTestId('native-statistics-tab-current'));
+  expect(view.getByTestId('native-statistics-tab-pc')).toBeTruthy();
   expect(view.queryByTestId('native-statistics-tab-mfu')).toBeNull();
   await view.unmount();
 });

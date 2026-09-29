@@ -23,12 +23,17 @@ import { buildOfficeUiTokens, getOfficeSubtlePanelSx } from '../../../theme/offi
 import {
   AI_AD_TOOL_OPTIONS,
   AI_AD_TOOL_IDS,
+  AI_CHAT_ACTION_TOOL_OPTIONS,
+  AI_CHAT_TOOL_OPTIONS,
+  AI_CHAT_TOOL_IDS,
   AI_FILE_TOOL_OPTIONS,
   AI_FILE_TOOL_IDS,
   AI_ITINVENT_DEFAULT_TOOLS,
   AI_ITINVENT_MULTI_DB_TOOL_ID,
   AI_ITINVENT_TOOL_OPTIONS,
   AI_ITINVENT_TOOL_IDS,
+  AI_KB_TOOL_OPTIONS,
+  AI_KB_TOOL_IDS,
   AI_MFU_TOOL_OPTIONS,
   AI_MFU_TOOL_IDS,
   AI_NETWORK_TOOL_OPTIONS,
@@ -40,9 +45,11 @@ import {
 import {
   createAiBotDraft,
   getAiBotAdTools,
+  getAiBotChatTools,
   getAiBotEnabledTools,
   getAiBotFileTools,
   getAiBotItinventTools,
+  getAiBotKbTools,
   getAiBotMfuTools,
   getAiBotNetworkTools,
   getAiBotOfficeTools,
@@ -197,6 +204,26 @@ export function AiBotsAdminSection({
 
     const mfuToolsEnabled = getAiBotMfuTools(draft).length > 0;
     const networkToolsEnabled = getAiBotNetworkTools(draft).length > 0;
+    const kbToolsEnabled = getAiBotKbTools(draft).length > 0;
+    const chatToolsEnabled = getAiBotChatTools(draft).length > 0;
+
+    const toggleKbTools = (checked) => {
+      const kbIds = AI_KB_TOOL_OPTIONS.map((item) => item.id);
+      if (checked) {
+        onChange('enabled_tools', Array.from(new Set([...enabledTools, ...kbIds])));
+        return;
+      }
+      onChange('enabled_tools', enabledTools.filter((item) => !AI_KB_TOOL_IDS.has(item)));
+    };
+
+    const toggleChatTools = (checked) => {
+      const chatIds = [...AI_CHAT_TOOL_OPTIONS, ...AI_CHAT_ACTION_TOOL_OPTIONS].map((item) => item.id);
+      if (checked) {
+        onChange('enabled_tools', Array.from(new Set([...enabledTools, ...chatIds])));
+        return;
+      }
+      onChange('enabled_tools', enabledTools.filter((item) => !AI_CHAT_TOOL_IDS.has(item)));
+    };
 
     const toggleMfuTools = (checked) => {
       const mfuIds = AI_MFU_TOOL_OPTIONS.map((item) => item.id);
@@ -566,6 +593,106 @@ export function AiBotsAdminSection({
                     </Grid>
                   ))}
                 </Grid>
+              </Collapse>
+            </Stack>
+          </Paper>
+        </Grid>
+        <Grid item xs={12}>
+          <Paper variant="outlined" sx={getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '12px' })}>
+            <Stack spacing={1.1}>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'flex-start', md: 'center' }}>
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>База знаний</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Поиск и чтение статей базы знаний, включая текст внутри вложений. Только чтение.
+                  </Typography>
+                </Box>
+                <FormControlLabel
+                  control={<Switch checked={kbToolsEnabled} onChange={(event) => toggleKbTools(event.target.checked)} />}
+                  label="Инструменты базы знаний"
+                />
+              </Stack>
+              <Collapse in={kbToolsEnabled} unmountOnExit>
+                <Grid container spacing={0.5}>
+                  {AI_KB_TOOL_OPTIONS.map((tool) => (
+                    <Grid item xs={12} md={6} key={tool.id}>
+                      <FormControlLabel
+                        control={(
+                          <Checkbox
+                            size="small"
+                            checked={enabledTools.includes(tool.id)}
+                            onChange={(event) => toggleOfficeTool(tool.id, event.target.checked)}
+                          />
+                        )}
+                        label={tool.label}
+                      />
+                    </Grid>
+                  ))}
+                </Grid>
+              </Collapse>
+            </Stack>
+          </Paper>
+        </Grid>
+        <Grid item xs={12}>
+          <Paper variant="outlined" sx={getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '12px' })}>
+            <Stack spacing={1.1}>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'flex-start', md: 'center' }}>
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Сообщения Hub-чата</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Отправка сообщений коллегам и в групповые диалоги через карточку подтверждения.
+                  </Typography>
+                </Box>
+                <FormControlLabel
+                  control={<Switch checked={chatToolsEnabled} onChange={(event) => toggleChatTools(event.target.checked)} />}
+                  label="Инструменты чата"
+                />
+              </Stack>
+              <Collapse in={chatToolsEnabled} unmountOnExit>
+                <Stack spacing={1.1}>
+                  <Box>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 800 }}>
+                      Только чтение
+                    </Typography>
+                    <Grid container spacing={0.5}>
+                      {AI_CHAT_TOOL_OPTIONS.map((tool) => (
+                        <Grid item xs={12} md={6} key={tool.id}>
+                          <FormControlLabel
+                            control={(
+                              <Checkbox
+                                size="small"
+                                checked={enabledTools.includes(tool.id)}
+                                onChange={(event) => toggleOfficeTool(tool.id, event.target.checked)}
+                              />
+                            )}
+                            label={tool.label}
+                          />
+                        </Grid>
+                      ))}
+                    </Grid>
+                  </Box>
+                  <Box>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 800 }}>
+                      Действия с подтверждением
+                    </Typography>
+                    <Grid container spacing={0.5}>
+                      {AI_CHAT_ACTION_TOOL_OPTIONS.map((tool) => (
+                        <Grid item xs={12} md={6} key={tool.id}>
+                          <FormControlLabel
+                            control={(
+                              <Checkbox
+                                size="small"
+                                checked={enabledTools.includes(tool.id)}
+                                onChange={(event) => toggleOfficeTool(tool.id, event.target.checked)}
+                              />
+                            )}
+                            label={tool.label}
+                          />
+                        </Grid>
+                      ))}
+                    </Grid>
+                  </Box>
+                </Stack>
               </Collapse>
             </Stack>
           </Paper>

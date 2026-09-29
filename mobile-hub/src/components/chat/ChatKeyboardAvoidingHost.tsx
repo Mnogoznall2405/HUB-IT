@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
-import { KeyboardAvoidingView, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
+import { StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
 import { useChatKeyboardMotion } from '../../chat/useChatKeyboardMotion';
 

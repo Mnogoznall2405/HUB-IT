@@ -145,13 +145,24 @@ function portalPathFromNativeRoute(destination: string): string | null {
       return '/groups-access';
     }
     if (parsed.pathname === '/warehouse-1c' || parsed.pathname === '/(shell)/warehouse-1c') {
-      return '/warehouse-1c';
+      const query = new URLSearchParams();
+      const tab = parsed.searchParams.get('tab');
+      if (tab) query.set('tab', tab);
+      const nomenclatureRef = parsed.searchParams.get('nomenclatureRef');
+      if (nomenclatureRef) query.set('nomenclatureRef', nomenclatureRef);
+      const warehouseRef = parsed.searchParams.get('warehouseRef');
+      if (warehouseRef) query.set('warehouseRef', warehouseRef);
+      const suffix = query.toString();
+      return `/warehouse-1c${suffix ? `?${suffix}` : ''}`;
     }
     if (parsed.pathname === '/mfu' || parsed.pathname === '/(shell)/mfu') {
       return '/mfu';
     }
     if (parsed.pathname === '/statistics' || parsed.pathname === '/(shell)/statistics') {
       return '/statistics';
+    }
+    if (parsed.pathname === '/help' || parsed.pathname === '/(shell)/help') {
+      return '/help';
     }
     const databaseMatch = parsed.pathname.match(/^(?:\/\(shell\))?\/database\/([^/]+)$/);
     if (databaseMatch) {

@@ -158,6 +158,38 @@ def test_process_bridge_counts_remote_failure_and_opens_circuit():
         bridge.shutdown()
 
 
+def test_process_bridge_stop_does_not_join_stuck_queue_feeder():
+    """A feeder blocked in _send_bytes to a dead child must not wedge the lock."""
+
+    class StuckFeederQueue:
+        def __init__(self):
+            self.cancelled = False
+
+        def close(self):
+            pass
+
+        def join_thread(self):
+            threading.Event().wait(30)
+
+        def cancel_join_thread(self):
+            self.cancelled = True
+
+    bridge = _bridge()
+    request_queue = StuckFeederQueue()
+    response_queue = StuckFeederQueue()
+    try:
+        with bridge._lock:
+            bridge._request_queue = request_queue
+            bridge._response_queue = response_queue
+            started = time.monotonic()
+            bridge._stop_process_locked(grace_seconds=0)
+        assert time.monotonic() - started < 5
+        assert request_queue.cancelled
+        assert response_queue.cancelled
+    finally:
+        bridge.shutdown()
+
+
 def test_warehouse_dispatcher_warmup_opens_the_read_connection(monkeypatch):
     calls = []
 

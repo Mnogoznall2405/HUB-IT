@@ -167,8 +167,17 @@ def normalize_gateway_request(
 
     requested_output = request.max_completion_tokens or request.max_tokens or 4_000
     output_cap = max(1, min(int(maximum_output_tokens), MAX_GATEWAY_OUTPUT_TOKENS))
+    messages: list[dict[str, Any]] = []
+    for item in request.messages:
+        dumped = item.model_dump(mode="json", exclude_none=True)
+        # Strict providers (e.g. DeepSeek via OpenCode Go) reject an explicit
+        # empty tool_calls array with 400; an empty array is equivalent to an
+        # absent field in OpenAI semantics, so drop it before forwarding.
+        if isinstance(dumped.get("tool_calls"), list) and not dumped["tool_calls"]:
+            dumped.pop("tool_calls", None)
+        messages.append(dumped)
     normalized: dict[str, Any] = {
-        "messages": [item.model_dump(mode="json", exclude_none=True) for item in request.messages],
+        "messages": messages,
         "model": resolved_model,
         "temperature": float(request.temperature),
         "max_tokens": min(int(requested_output), output_cap),

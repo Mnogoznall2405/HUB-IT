@@ -52,7 +52,7 @@ it('keeps the server retention allowlist', () => {
 });
 
 it('uses the chunked upload reservation limit from the backend', () => {
-  expect(MY_FILES_MAX_FILE_BYTES).toBe(10 * 1024 * 1024 * 1024);
+  expect(MY_FILES_MAX_FILE_BYTES).toBe(400 * 1024 * 1024 * 1024);
 });
 
 it('builds only a trusted public HUB path', () => {

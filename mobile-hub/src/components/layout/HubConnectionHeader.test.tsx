@@ -52,6 +52,30 @@ describe('HubConnectionHeader', () => {
     })).toEqual(expect.objectContaining({ kind: 'degraded', label: 'Связь нестабильна' }));
   });
 
+  it('reports connecting while a chat send is stalled despite live realtime', () => {
+    expect(resolveHubConnectionPresentation({
+      offlineMode: false,
+      apiOnline: true,
+      hubStatus: 'connected',
+      sendStalled: true,
+    })).toEqual(expect.objectContaining({ kind: 'connecting', label: 'Соединение…' }));
+  });
+
+  it('keeps the explicit offline and degraded states above a stalled send', () => {
+    expect(resolveHubConnectionPresentation({
+      offlineMode: true,
+      apiOnline: true,
+      hubStatus: 'connected',
+      sendStalled: true,
+    })).toEqual(expect.objectContaining({ kind: 'offline' }));
+    expect(resolveHubConnectionPresentation({
+      offlineMode: false,
+      apiOnline: true,
+      hubStatus: 'reconnecting',
+      sendStalled: true,
+    })).toEqual(expect.objectContaining({ kind: 'degraded' }));
+  });
+
   it('prioritizes the device offline state', () => {
     expect(resolveHubConnectionPresentation({
       offlineMode: true,

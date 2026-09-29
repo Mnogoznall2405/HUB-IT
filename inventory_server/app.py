@@ -5,6 +5,7 @@ import json
 import logging
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -140,9 +141,12 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Inventory Ingest Server", lifespan=lifespan)
 
+_ready_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="inventory-ready")
+_READY_STATS_TIMEOUT_SEC = 10.0
+
 
 @app.get("/health")
-def health() -> dict:
+async def health() -> dict:
     return {
         "status": "ok" if worker.is_alive() else "degraded",
         "worker_alive": worker.is_alive(),
@@ -150,8 +154,22 @@ def health() -> dict:
 
 
 @app.get("/health/ready")
-def health_ready() -> dict:
-    stats = store.queue_stats()
+async def health_ready() -> dict:
+    try:
+        stats = await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(_ready_executor, store.queue_stats),
+            timeout=_READY_STATS_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError:
+        return {
+            "status": "degraded",
+            "queue_depth": None,
+            "oldest_queued_age_sec": None,
+            "dead_letter_count": None,
+            "worker_alive": worker.is_alive(),
+            "last_successful_flush_at": worker.last_successful_flush_at,
+            "stats_timed_out": True,
+        }
     return {
         "status": "ok" if worker.is_alive() else "degraded",
         "queue_depth": stats["queue_depth"],
@@ -183,6 +201,10 @@ def receive_inventory(
     }
 
 
+def _ingest_fs_egress_events(events: List[Dict[str, Any]]) -> int:
+    return _get_egress_store().ingest_file_left(events)
+
+
 @app.post("/api/v1/inventory/fs-egress")
 async def receive_fs_egress(request: Request, x_api_key: Optional[str] = Header(None)) -> dict:
     _check_agent_key(x_api_key)
@@ -190,7 +212,7 @@ async def receive_fs_egress(request: Request, x_api_key: Optional[str] = Header(
     events = body.get("events") if isinstance(body, dict) else None
     if not isinstance(events, list):
         raise HTTPException(status_code=400, detail="events list required")
-    inserted = _get_egress_store().ingest_file_left(events)
+    inserted = await asyncio.to_thread(_ingest_fs_egress_events, events)
     return {"success": True, "inserted": inserted}
 
 
@@ -212,12 +234,7 @@ def list_fs_egress(
     return {"success": True, "items": items, "total": len(items)}
 
 
-@app.post("/api/v1/inventory/telegram-probe")
-async def receive_telegram_probe(request: Request, x_api_key: Optional[str] = Header(None)) -> dict:
-    _check_agent_key(x_api_key)
-    payload = await request.json()
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="JSON object required")
+def _process_telegram_probe_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     try:
         from backend.services import fs_egress_store_service as web_store
 
@@ -276,6 +293,15 @@ async def receive_telegram_probe(request: Request, x_api_key: Optional[str] = He
     }
 
 
+@app.post("/api/v1/inventory/telegram-probe")
+async def receive_telegram_probe(request: Request, x_api_key: Optional[str] = Header(None)) -> dict:
+    _check_agent_key(x_api_key)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON object required")
+    return await asyncio.to_thread(_process_telegram_probe_payload, payload)
+
+
 @app.get("/api/v1/inventory/telegram-probe")
 def list_telegram_probe(
     computer_name: str = "",
@@ -298,12 +324,7 @@ def telegram_probe_report(computer_name: str, x_api_key: Optional[str] = Header(
     return HTMLResponse(content=row.get("html") or "")
 
 
-@app.post("/api/v1/inventory/browser-probe")
-async def receive_browser_probe(request: Request, x_api_key: Optional[str] = Header(None)) -> dict:
-    _check_agent_key(x_api_key)
-    payload = await request.json()
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="JSON object required")
+def _process_browser_probe_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     try:
         from backend.services import fs_egress_store_service as web_store
 
@@ -354,6 +375,15 @@ async def receive_browser_probe(request: Request, x_api_key: Optional[str] = Hea
     }
 
 
+@app.post("/api/v1/inventory/browser-probe")
+async def receive_browser_probe(request: Request, x_api_key: Optional[str] = Header(None)) -> dict:
+    _check_agent_key(x_api_key)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON object required")
+    return await asyncio.to_thread(_process_browser_probe_payload, payload)
+
+
 @app.get("/api/v1/inventory/browser-probe")
 def list_browser_probe(
     computer_name: str = "",
@@ -372,12 +402,7 @@ def list_browser_probe(
     return {"success": True, "items": items, "total": len(items)}
 
 
-@app.post("/api/v1/inventory/max-probe")
-async def receive_max_probe(request: Request, x_api_key: Optional[str] = Header(None)) -> dict:
-    _check_agent_key(x_api_key)
-    payload = await request.json()
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="JSON object required")
+def _process_max_probe_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     try:
         from backend.services import fs_egress_store_service as web_store
 
@@ -422,6 +447,15 @@ async def receive_max_probe(request: Request, x_api_key: Optional[str] = Header(
         "media": media_count,
         "computer_name": computer_name,
     }
+
+
+@app.post("/api/v1/inventory/max-probe")
+async def receive_max_probe(request: Request, x_api_key: Optional[str] = Header(None)) -> dict:
+    _check_agent_key(x_api_key)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="JSON object required")
+    return await asyncio.to_thread(_process_max_probe_payload, payload)
 
 
 @app.get("/api/v1/inventory/max-probe")

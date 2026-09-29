@@ -1,4 +1,5 @@
 import { API_V1_BASE, authAPI } from '../api/client';
+import { getWsTicket } from '../api/chatWsAuth';
 
 const HEARTBEAT_MS = 25_000;
 const MAX_MISSED_PONGS = 3;
@@ -81,6 +82,18 @@ export class TaskCanvasSocketClient {
       }
       if (!envelope || typeof envelope !== 'object') return;
       if (envelope.type === 'task_canvas.pong') this.missedPongs = 0;
+      if (envelope.type === 'task_canvas.auth.required') {
+        // D5/W8: the bound access token expired — prove fresh auth with a ticket.
+        if (!this.wsAuthInFlight) {
+          this.wsAuthInFlight = true;
+          getWsTicket()
+            .then((wsTicket) => this.send({ type: 'task_canvas.auth', payload: { ws_ticket: wsTicket } }))
+            .catch(() => undefined)
+            .finally(() => { this.wsAuthInFlight = false; });
+        }
+        return;
+      }
+      if (envelope.type === 'task_canvas.auth.ok' || envelope.type === 'task_canvas.auth.rejected') return;
       if (envelope.type === 'task_canvas.connected') {
         this.setStatus('connected');
         if (this.stableConnectionTimer) browserWindow.clearTimeout(this.stableConnectionTimer);

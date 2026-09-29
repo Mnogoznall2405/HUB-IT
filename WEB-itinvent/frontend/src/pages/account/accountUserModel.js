@@ -58,7 +58,22 @@ export function createEmptyUserDraft() {
     use_custom_permissions: false,
     custom_permissions: [],
     task_delegate_links: [],
+    my_files_quota_gb: '',
   };
+}
+
+export function myFilesQuotaBytesToGb(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
+  return String(Number((bytes / (1024 ** 3)).toFixed(2)));
+}
+
+export function myFilesQuotaGbToBytes(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  const gb = Number(text);
+  if (!Number.isFinite(gb) || gb <= 0 || gb > 400) return undefined;
+  return Math.round(gb * (1024 ** 3));
 }
 
 export function createUserDraftFromItem(item) {
@@ -82,6 +97,7 @@ export function createUserDraftFromItem(item) {
     use_custom_permissions: Boolean(item.use_custom_permissions),
     custom_permissions: normalizePermissions(item.custom_permissions),
     task_delegate_links: normalizeTaskDelegateLinks(item.task_delegate_links),
+    my_files_quota_gb: myFilesQuotaBytesToGb(item.my_files_quota_bytes),
     created_at: item.created_at || null,
     updated_at: item.updated_at || null,
     mail_updated_at: item.mail_updated_at || null,

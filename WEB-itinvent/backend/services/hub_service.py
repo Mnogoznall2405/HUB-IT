@@ -4264,15 +4264,14 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
 
         normalized_q = _normalize_text(q).lower()
         tokens = [token for token in normalized_q.split() if token]
-        if not tokens:
-            return {"items": [], "total": 0, "limit": limited}
 
         matched: list[dict[str, Any]] = []
         total = 0
         for row in self._iter_assignee_source_rows(department_id=department_id):
-            haystack = self._user_row_search_text(row)
-            if not all(token in haystack for token in tokens):
-                continue
+            if tokens:
+                haystack = self._user_row_search_text(row)
+                if not all(token in haystack for token in tokens):
+                    continue
             total += 1
             if len(matched) < limited:
                 matched.append(self._build_assignee_directory_row(row, include_department_id=False))

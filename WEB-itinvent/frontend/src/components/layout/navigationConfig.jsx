@@ -22,6 +22,8 @@ import DomainOutlinedIcon from '@mui/icons-material/DomainOutlined';
 import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined';
 import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
 import ExitToAppOutlinedIcon from '@mui/icons-material/ExitToAppOutlined';
+import HelpOutlineOutlinedIcon from '@mui/icons-material/HelpOutlineOutlined';
+import RecordVoiceOverOutlinedIcon from '@mui/icons-material/RecordVoiceOverOutlined';
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
 import { CHAT_FEATURE_ENABLED } from '../../lib/chatFeature';
 import { INVENTORY_SECTION_LABEL } from '../../lib/appBranding';
@@ -55,11 +57,13 @@ export const navigationItems = [
   { path: '/mfu', label: 'МФУ', shortLabel: 'МФУ', icon: <PrintIcon />, permission: 'mfu.read', group: 'tools' },
   { path: '/computers', label: 'Компьютеры', shortLabel: 'ПК', icon: <ComputerIcon />, permission: 'computers.read', group: 'tools' },
   { path: '/scan-center', label: 'Scan Center', shortLabel: 'Scan', icon: <ShieldIcon />, permission: 'scan.read', group: 'tools' },
+  { path: '/voice', label: 'Протоколы встреч', shortLabel: 'Протоколы', icon: <RecordVoiceOverOutlinedIcon />, permission: 'voice.read', group: 'tools' },
   // Temporarily admin-only while DLP probe UX is unfinished.
   { path: '/dlp', label: 'DLP', shortLabel: 'DLP', icon: <ExitToAppOutlinedIcon />, permission: 'scan.read', adminOnly: true, group: 'tools' },
   { path: '/statistics', label: 'Статистика', shortLabel: 'Статистика', icon: <BarChartIcon />, permission: 'statistics.read', group: 'tools' },
-  { path: '/kb', label: 'IT База знаний', shortLabel: 'База знаний', icon: <MenuBookIcon />, permission: 'kb.read', group: 'tools' },
+  { path: '/kb/manage', label: 'База знаний: управление', shortLabel: 'База знаний', icon: <MenuBookIcon />, permission: 'kb.write', group: 'tools' },
   { path: '/warehouse-1c', label: 'Склад 1С', shortLabel: 'Склад 1С', icon: <Inventory2OutlinedIcon />, permission: 'warehouse_1c.read', group: 'tools' },
+  { path: '/help', label: 'Справка и база знаний', shortLabel: 'Справка', icon: <HelpOutlineOutlinedIcon />, group: 'tools' },
 ];
 
 export const mobileMenuNavigationItem = {

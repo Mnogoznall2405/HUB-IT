@@ -90,3 +90,15 @@ def test_chat_attachment_verifier_fails_closed_on_non_clean_antivirus_result(
             conversation_id="conversation-input-1",
         )
 
+
+def test_redact_text_never_exceeds_max_length_for_varchar_columns() -> None:
+    from backend.ai_sandbox.redaction import redact_text
+
+    assert redact_text("short", max_length=128) == "short"
+    assert redact_text("x" * 128, max_length=128) == "x" * 128
+    truncated = redact_text("y" * 200, max_length=128)
+    assert len(truncated) <= 128
+    assert truncated.endswith("…")
+    heredoc = "python3 <<'PY'\n" + "print(1)\n" * 40
+    assert len(redact_text(heredoc, max_length=128)) <= 128
+    assert "token=[REDACTED]" in redact_text("token=secret-value", max_length=128)

@@ -21,6 +21,11 @@ export default function DatabasePageHeader({
   onSearchClear,
   searchLoading,
   serverSearchDegraded,
+  searchTypeNo,
+  onSearchTypeChange,
+  typeOptions,
+  searchField,
+  onSearchFieldChange,
   dataVersionStale,
   onRefreshData,
 }) {
@@ -71,6 +76,11 @@ export default function DatabasePageHeader({
         onClear={onSearchClear}
         loading={searchLoading}
         degraded={serverSearchDegraded}
+        typeOptions={typeOptions}
+        searchTypeNo={searchTypeNo}
+        onSearchTypeChange={onSearchTypeChange}
+        searchField={searchField}
+        onSearchFieldChange={onSearchFieldChange}
       />
 
       {dataVersionStale && (

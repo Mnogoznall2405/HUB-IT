@@ -144,9 +144,10 @@ def create_exchange_account(
     ews_url: str,
     exchange_host: str,
     protocol_context: AbstractContextManager[Any],
+    impersonate: bool = False,
 ):
     try:
-        from exchangelib import Account, Configuration, Credentials, DELEGATE, NTLM
+        from exchangelib import Account, Configuration, Credentials, DELEGATE, IMPERSONATION, NTLM
     except Exception as exc:
         raise ExchangeTransportError("exchangelib package is not installed") from exc
 
@@ -168,5 +169,5 @@ def create_exchange_account(
             primary_smtp_address=email,
             config=cfg,
             autodiscover=False,
-            access_type=DELEGATE,
+            access_type=IMPERSONATION if impersonate else DELEGATE,
         )

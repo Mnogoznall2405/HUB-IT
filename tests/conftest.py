@@ -51,6 +51,54 @@ def temp_dir():
     shutil.rmtree(temp_path, ignore_errors=True)
 
 
+_APP_SCHEMA_TEMPLATE_DB: Path | None = None
+
+
+def app_schema_template_db() -> Path:
+    """Schema-initialized sqlite template; copied into tmp_path by tests that want it."""
+    global _APP_SCHEMA_TEMPLATE_DB
+    if _APP_SCHEMA_TEMPLATE_DB is None or not _APP_SCHEMA_TEMPLATE_DB.exists():
+        import tempfile
+
+        from backend.appdb.db import ensure_app_schema_initialized, get_app_engine
+
+        template_dir = Path(tempfile.mkdtemp(prefix="app-schema-template-"))
+        db_path = template_dir / "app.db"
+        url = f"sqlite:///{db_path.as_posix()}"
+        ensure_app_schema_initialized(url)
+        get_app_engine(url).dispose()
+        _APP_SCHEMA_TEMPLATE_DB = db_path
+    return _APP_SCHEMA_TEMPLATE_DB
+
+
+@pytest.fixture
+def prebuilt_app_db(tmp_path):
+    """Copy the schema template into tmp_path/app.db and release file locks after."""
+    db_path = tmp_path / "app.db"
+    shutil.copyfile(app_schema_template_db(), db_path)
+    yield db_path
+    try:
+        from backend.appdb.db import get_app_engine
+
+        get_app_engine(f"sqlite:///{db_path.as_posix()}").dispose()
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _dispose_app_engines_after_test():
+    """Release sqlite file handles so tmp_path cleanup works on Windows."""
+    yield
+    app_db_module = sys.modules.get("backend.appdb.db")
+    engines = getattr(app_db_module, "_engines", None) if app_db_module is not None else None
+    if isinstance(engines, dict):
+        for engine in list(engines.values()):
+            try:
+                engine.dispose()
+            except Exception:
+                pass
+
+
 @pytest.fixture
 def temp_json_file(temp_dir):
     """Временный JSON файл"""

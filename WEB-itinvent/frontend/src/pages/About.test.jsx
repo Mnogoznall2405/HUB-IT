@@ -24,6 +24,10 @@ vi.mock('../components/desktop/DesktopInstallerDownload', () => ({
   default: () => <a href="/desktop-updates/stable/test.exe">Скачать для Windows</a>,
 }));
 
+vi.mock('../components/mobile/MobileInstallerDownload', () => ({
+  default: () => <a href="/mobile-updates/stable/test.apk">Скачать для Android</a>,
+}));
+
 import About from './About';
 
 describe('About page', () => {

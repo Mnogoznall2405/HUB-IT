@@ -1,11 +1,18 @@
-import { Suspense, lazy } from 'react';
+import { Suspense, lazy, useCallback, useMemo } from 'react';
 import { alpha } from '@mui/material';
 
 import EquipmentQrPrintPortal from './EquipmentQrPrintPortal';
+import {
+  buildConsumableQrLabelContent,
+  buildConsumableQrLabelDataUrl,
+} from './equipmentQrLabel';
 
 const UploadActDialog = lazy(() => import('./UploadActDialog'));
 const ActionDialog = lazy(() => import('./ActionDialog'));
 const DetailQrDialog = lazy(() => import('./DetailQrDialog'));
+const ConsumableQrResultDialog = lazy(() => import('./ConsumableQrResultDialog'));
+const ConsumableQrPrintDialog = lazy(() => import('./ConsumableQrPrintDialog'));
+const CartridgeCompatibilityDialog = lazy(() => import('./CartridgeCompatibilityDialog'));
 const EquipmentQrPrintFeedback = lazy(() => import('./EquipmentQrPrintFeedback'));
 const DeleteEquipmentDialog = lazy(() => import('./DeleteEquipmentDialog'));
 const DeleteConsumableDialog = lazy(() => import('./DeleteConsumableDialog'));
@@ -40,11 +47,27 @@ export default function DatabaseDialogsLayer({
   actFilePreview,
   qrScanner,
   detailQr,
+  consumableCard,
+  consumableQr,
+  cartridgeCompat,
   qrBatchPrint,
   deleteEquipment,
   deleteConsumable,
   actionDialog,
 }) {
+  const consumableQrLabelContent = useMemo(
+    () => (consumableQr?.item ? buildConsumableQrLabelContent(consumableQr.item) : null),
+    [consumableQr?.item]
+  );
+  const qrPrintLabels = useMemo(
+    () => [...(qrBatchPrint?.labels || []), ...(consumableQr?.printLabels || [])],
+    [consumableQr?.printLabels, qrBatchPrint?.labels]
+  );
+  const buildConsumableLabel = useCallback(
+    (qrDataUrl) => buildConsumableQrLabelDataUrl({ consumable: consumableQr?.item, qrDataUrl }),
+    [consumableQr?.item]
+  );
+
   return (
     <>
       {uploadAct.modalOpen && (
@@ -164,7 +187,57 @@ export default function DatabaseDialogsLayer({
         </Suspense>
       )}
 
-      <EquipmentQrPrintPortal labels={qrBatchPrint.labels} />
+      {consumableCard?.modal?.open && (
+        <Suspense fallback={null}>
+          <ConsumableQrResultDialog
+            open={consumableCard.modal.open}
+            isMobile={isMobile}
+            {...consumableCard.props}
+          />
+        </Suspense>
+      )}
+
+      {consumableQr?.open && (
+        <Suspense fallback={null}>
+          <DetailQrDialog
+            open={consumableQr.open}
+            isMobile={isMobile}
+            title="QR-код расходника"
+            labelContent={consumableQrLabelContent}
+            buildLabelDataUrl={buildConsumableLabel}
+            {...consumableQr.props}
+          />
+        </Suspense>
+      )}
+
+      {consumableQr?.batchDialog?.open && (
+        <Suspense fallback={null}>
+          <ConsumableQrPrintDialog
+            open={consumableQr.batchDialog.open}
+            items={consumableQr.batchDialog.items}
+            printing={consumableQr.batchDialog.printing}
+            isMobile={isMobile}
+            onClose={consumableQr.batchDialog.onClose}
+            onPrint={consumableQr.batchDialog.onPrint}
+          />
+        </Suspense>
+      )}
+
+      {cartridgeCompat?.open && (
+        <Suspense fallback={null}>
+          <CartridgeCompatibilityDialog
+            open={cartridgeCompat.open}
+            canWrite={cartridgeCompat.canWrite}
+            isMobile={isMobile}
+            onClose={cartridgeCompat.onClose}
+          />
+        </Suspense>
+      )}
+
+      <EquipmentQrPrintPortal
+        labels={qrPrintLabels}
+        {...((consumableQr?.printLabels || []).length && consumableQr?.printGrid ? consumableQr.printGrid : {})}
+      />
       {qrBatchPrint.feedback && (
         <Suspense fallback={null}>
           <EquipmentQrPrintFeedback

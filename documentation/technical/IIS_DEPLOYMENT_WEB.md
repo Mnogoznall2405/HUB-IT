@@ -67,13 +67,34 @@ VITE_BASE_PATH=/itinvent/
 
 Важно: в ARR должен быть включен Proxy (`Server Proxy Settings` -> `Enable proxy`).
 
-## 7. Проверка после публикации
+## 7. Ферма чата `itinvent-chat` (ARR)
+
+Chat API работает в dual-режиме через ARR-ферму `itinvent-chat` в
+`applicationHost.config` (элемент `configuration/webFarms`, создаётся скриптом
+`scripts\iis\configure-chat-arr-farm.ps1`):
+
+- Серверы: `127.0.0.1` (`httpPort=8002`, узел `itinvent-chat-a`) и `localhost`
+  (`httpPort=8004`, узел `itinvent-chat-b`). Второй сервер записан как
+  `localhost`, потому что ARR требует уникальный адрес сервера внутри фермы —
+  `127.0.0.1` дважды указать нельзя.
+- Балансировка: weighted round robin (вес 100/100), без affinity, без ARR-кэша,
+  proxy timeout 1 ч — сохраняет долгоживущие WebSocket-соединения.
+- Health-check фермы: `/health/ready` каждые 5 с, таймаут 3 с. Рекомендуемый
+  перевод на `/health/live` (лёгкий, без обращений к БД — см.
+  `MOBILE_CHAT_TELEGRAM_PARITY_PLAN.md` I6), чтобы медленная БД не выключала
+  оба узла одновременно.
+- Правило `Chat API Reverse Proxy` направляет `/api/v1/chat*` на
+  `http://itinvent-chat/api/v1/chat{R:1}`.
+- Контроль: `scripts\pm2\health-check.ps1` строка `chat-farm` — каждый сервер
+  фермы обязан существовать и слушать свой порт.
+
+## 8. Проверка после публикации
 - `https://your-domain/` открывает frontend
 - (если виртуальная папка) `https://your-domain/itinvent/` открывает frontend
 - `https://your-domain/api/v1/auth/me` отвечает backend (401 без токена — это нормально)
 - Вход в веб-интерфейс работает, API уходит через `/api/*`
 
-## 8. Частые ошибки
+## 9. Частые ошибки
 - `502` на `/api/*`: не запущена служба `itinvent-backend` или ARR Proxy выключен
 - `404` на роуты React: не попал `web.config` в `dist`
 - пустая страница с заголовком сайта: чаще всего неверный `VITE_BASE_PATH` или приложение развернуто в виртуальной папке без `basename`

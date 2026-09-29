@@ -1,4 +1,5 @@
 import { API_V1_BASE, authAPI } from '../api/client';
+import { getWsTicket } from '../api/chatWsAuth';
 
 export const HUB_REALTIME_NOTIFICATION_EVENT = 'hub-realtime-notification-created';
 export const HUB_REALTIME_TASK_EVENT = 'hub-realtime-task-changed';
@@ -24,7 +25,9 @@ const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000];
 const RECONNECT_JITTER_RATIO = 0.25;
 const INITIAL_RECONNECT_SPREAD_MS = 5_000;
 const STABLE_CONNECTION_MS = 5_000;
-const NON_RECONNECTABLE_CLOSE_CODES = new Set([1008, 4000, 4400, 4403, 4404]);
+// 1008 (slow consumer / rate limit) must reconnect with backoff — only
+// session/auth-class closes stay non-reconnectable.
+const NON_RECONNECTABLE_CLOSE_CODES = new Set([4000, 4400, 4403, 4404]);
 const AUTH_TOKEN_REFRESHED_EVENT = 'auth-token-refreshed';
 const RECENT_EVENT_IDS_LIMIT = 512;
 const TASK_EVENT_TYPES = new Set(['tasks.task.created', 'tasks.task.updated', 'tasks.task.deleted']);
@@ -38,6 +41,17 @@ const TASK_PRESENCE_EVENT_TYPES = new Set([
   'tasks.presence.heartbeat',
   'tasks.presence.left',
 ]);
+
+const createRequestId = () => {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+  } catch {
+    // Fallback below.
+  }
+  return `hub-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+};
 
 const browserWindow = typeof globalThis.window === 'undefined' ? null : globalThis.window;
 
@@ -199,6 +213,18 @@ export class HubRealtimeSocketClient {
       this.missedPongs = 0;
       return;
     }
+    if (eventType === 'hub.realtime.auth.required') {
+      // D5/W8: the bound access token expired — prove fresh auth with a ticket.
+      if (!this.wsAuthInFlight) {
+        this.wsAuthInFlight = true;
+        getWsTicket()
+          .then((wsTicket) => this.send({ type: 'hub.realtime.auth', payload: { ws_ticket: wsTicket } }))
+          .catch(() => undefined)
+          .finally(() => { this.wsAuthInFlight = false; });
+      }
+      return;
+    }
+    if (eventType === 'hub.realtime.auth.ok' || eventType === 'hub.realtime.auth.rejected') return;
     if (eventType === 'hub.realtime.connected') {
       this.connectionId = String(envelope?.payload?.connection_id || '').trim();
       this.connectionStable = false;
@@ -328,7 +354,7 @@ export class HubRealtimeSocketClient {
         return;
       }
       this.missedPongs += 1;
-      this.send({ type: 'hub.realtime.ping', payload: {} });
+      this.send({ type: 'hub.realtime.ping', payload: {}, request_id: createRequestId() });
     }, HEARTBEAT_MS);
   }
 

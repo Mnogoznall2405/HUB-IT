@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -268,12 +269,20 @@ class ConcreteSandboxJobExecutor:
             self._raise_if_shutdown()
             inspect_workspace_tree(workspace, maximum_bytes=self.settings.limits.workspace_bytes)
             outputs = self._changed_files(workspace, baseline=baseline, diff=diff)
+            if not answer and not outputs:
+                logger = logging.getLogger(__name__)
+                logger.info("sandbox empty result job=%s session=%s", job.id, session.id)
             return self._deliver_outputs(
                 job=job,
                 workspace=workspace,
                 outputs=outputs,
                 opencode_session_id=session_id,
-                assistant_markdown=answer or "OpenCode завершил работу.",
+                assistant_markdown=answer
+                or (
+                    "OpenCode завершил работу."
+                    if outputs
+                    else "OpenCode завершил работу без результата: уточните запрос или начните новый диалог."
+                ),
                 worker_control=worker_control,
                 transfer=transfer,
             )
@@ -494,6 +503,7 @@ class ConcreteSandboxJobExecutor:
                         control=control,
                         worker_control=worker_control,
                         deadline=deadline,
+                        active_tools=active_tools,
                     )
                 elif event_type == "message.updated":
                     message_id = str(nested.get("id") or "")
@@ -574,6 +584,7 @@ class ConcreteSandboxJobExecutor:
         control: OpenCodeHttpControlClient,
         worker_control: SandboxWorkerControlClient,
         deadline: float,
+        active_tools: dict[str, float] | None = None,
     ) -> None:
         permission_value = properties.get("permission")
         nested = permission_value if isinstance(permission_value, dict) else properties
@@ -634,6 +645,12 @@ class ConcreteSandboxJobExecutor:
             permission_id=opencode_permission_id,
             payload=permission_response_payload(approved=approved, scope=scope),
         )
+        if approved and active_tools is not None:
+            # The tool clock may have been armed when OpenCode first reported
+            # the call as running, long before the user answered the card.
+            # Restart the command budget only after the approved tool is
+            # actually released for execution.
+            active_tools.clear()
 
     def _raise_if_cancelled(
         self,

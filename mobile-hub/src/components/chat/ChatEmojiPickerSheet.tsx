@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Image, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { useReducedMotion } from '../../accessibility/useReducedMotion';
+import { ActivityIndicator, FlatList, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { filterEmojiGroups } from '../../chat/chatEmoji';
 import { fetchChatGifs, type ChatGifItem } from '../../chat/chatGiphy';
 import { buildEmojiPickerRows, type EmojiPickerRow } from '../../chat/chatPickerRows';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
-import { ChatKeyboardAvoidingHost } from './ChatKeyboardAvoidingHost';
+import { ChatInlineSheet } from './ChatInlineSheet';
 
 export function ChatEmojiPickerSheet({
   visible,
@@ -21,7 +20,6 @@ export function ChatEmojiPickerSheet({
   onOpenStickers?: () => void;
 }) {
   const { chatTokens, styles } = useChatStyles(createStyles);
-  const reduceMotion = useReducedMotion();
   const [tab, setTab] = useState<'emoji' | 'gif'>('emoji');
   const [emojiQuery, setEmojiQuery] = useState('');
   const [gifQuery, setGifQuery] = useState('');
@@ -69,11 +67,14 @@ export function ChatEmojiPickerSheet({
   }, [gifQuery, onSelectGif, tab, visible]);
 
   return (
-    <Modal visible={visible} animationType={reduceMotion ? 'none' : 'slide'} transparent onRequestClose={onClose}>
-      <ChatKeyboardAvoidingHost style={styles.backdrop}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Закрыть эмодзи" />
-        <View style={[styles.sheet, (tab === 'gif' || emojiQuery) && styles.sheetTall]} accessibilityViewIsModal>
-          <View style={styles.tabs}>
+    <ChatInlineSheet
+      visible={visible}
+      onClose={onClose}
+      dismissAccessibilityLabel="Закрыть эмодзи"
+      sheetStyle={[styles.sheet, (tab === 'gif' || emojiQuery) && styles.sheetTall]}
+      contentStyle={styles.content}
+    >
+      <View style={styles.tabs}>
             <Pressable
               onPress={() => setTab('emoji')}
               style={[styles.tab, tab === 'emoji' && styles.tabActive]}
@@ -127,6 +128,7 @@ export function ChatEmojiPickerSheet({
                   initialNumToRender={9}
                   maxToRenderPerBatch={6}
                   windowSize={5}
+                  style={styles.list}
                   contentContainerStyle={styles.gifGrid}
                   columnWrapperStyle={styles.gifRow}
                   renderItem={({ item: gif }) => (
@@ -164,19 +166,18 @@ export function ChatEmojiPickerSheet({
                 maxToRenderPerBatch={6}
                 updateCellsBatchingPeriod={32}
                 windowSize={5}
+                style={styles.list}
                 ListEmptyComponent={<Text style={styles.empty}>Эмодзи не найдены</Text>}
               />
             </>
           )}
-        </View>
-      </ChatKeyboardAvoidingHost>
-    </Modal>
+    </ChatInlineSheet>
   );
 }
 
 const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
-  backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: chatTokens.overlayBg },
-  sheet: { maxHeight: '62%', padding: 14, borderTopLeftRadius: 22, borderTopRightRadius: 22, backgroundColor: chatTokens.panelBg },
+  sheet: { maxHeight: '62%' },
+  content: { padding: 14 },
   sheetTall: { maxHeight: '72%' },
   tabs: { flexDirection: 'row', gap: 8, marginBottom: 8 },
   tab: {
@@ -202,6 +203,9 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   loader: { marginVertical: 24 },
   groupTitle: { marginTop: 6, marginBottom: 4, color: chatTokens.textSecondary, fontSize: 13, fontWeight: '700' },
   grid: { flexDirection: 'row', flexWrap: 'wrap' },
+  // flexGrow:0 — FlatList base style flexGrow:1 inflated the sheet to
+  // maxHeight, leaving a dead zone under short content (DEV-SHEET-1).
+  list: { flexGrow: 0, flexShrink: 1 },
   gifGrid: { paddingBottom: 12 },
   gifRow: { gap: 8, marginBottom: 8 },
   gifButton: { width: '31%', aspectRatio: 1, borderRadius: 10, overflow: 'hidden' },

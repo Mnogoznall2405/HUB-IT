@@ -1,5 +1,6 @@
 import useRequestGuard from '../lib/useRequestGuard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { buildOfficeUiTokens, getOfficeCodeBlockSx } from '../theme/officeUiTokens';
 import {
   Alert,
@@ -53,6 +54,8 @@ import { useWebAuthnAvailability } from '../lib/useWebAuthnAvailability';
 import {
   PASSWORD_HIDE_MS,
   buildGroupCounts,
+  buildSecretWatermark,
+  copyPasswordWithAutoClear,
   isUnlockedUntilActive,
   isVaultDecryptError,
   isVaultUnlockRequiredError,
@@ -60,6 +63,7 @@ import {
   normalizeText,
   pickActiveUnlockedUntil,
   readStoredVaultUnlockUntil,
+  retryPendingClipboardClear,
   writeStoredVaultUnlockUntil,
 } from '../components/passwords/passwordVaultUtils';
 import { passwordsAPI } from '../api/passwords';
@@ -67,6 +71,7 @@ import { hideScrollbarSx } from '../lib/hideScrollbarSx';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
 const DEFAULT_PASSWORD_LENGTH = 20;
+const ENTRIES_PAGE_SIZE = 100;
 const LOWER = 'abcdefghijkmnopqrstuvwxyz';
 const UPPER = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
 const DIGITS = '23456789';
@@ -183,8 +188,10 @@ function Passwords() {
   const [searchParams, setSearchParams] = useSearchParams();
   const activeSection = searchParams.get('section') === 'ad-expiry' ? 'ad-expiry' : 'vault';
   const { user, hasPermission, refreshSession } = useAuth();
-  const { notifySuccess, notifyWarning, notifyApiError } = useNotification();
+  const { notifySuccess, notifyInfo, notifyWarning, notifyApiError } = useNotification();
   const [entries, setEntries] = useState([]);
+  const [entriesTotal, setEntriesTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [groups, setGroups] = useState([]);
   const [tags, setTags] = useState([]);
   const [auditItems, setAuditItems] = useState([]);
@@ -198,6 +205,8 @@ function Passwords() {
   const [saving, setSaving] = useState(false);
   const [revealBusyId, setRevealBusyId] = useState('');
   const [revealedPasswords, setRevealedPasswords] = useState({});
+  const [revealExpiresAt, setRevealExpiresAt] = useState({});
+  const [privacyCoverActive, setPrivacyCoverActive] = useState(false);
   const [entryDialogOpen, setEntryDialogOpen] = useState(false);
   const [formMode, setFormMode] = useState('create');
   const [form, setForm] = useState(emptyForm);
@@ -271,11 +280,13 @@ function Passwords() {
     Object.values(hideTimersRef.current).forEach((timerId) => window.clearTimeout(timerId));
   }, []);
 
+  const hasRevealedSecrets = Object.keys(revealedPasswords).length > 0;
+
   useEffect(() => {
-    if (!isUnlocked) return undefined;
+    if (!isUnlocked && !hasRevealedSecrets) return undefined;
     const timer = window.setInterval(() => setNowTs(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [isUnlocked]);
+  }, [hasRevealedSecrets, isUnlocked]);
 
   const loadAudit = useCallback(async () => {
     if (!isAdmin) return;
@@ -292,9 +303,13 @@ function Passwords() {
 
   const beginEntries = useRequestGuard(JSON.stringify([query, selectedGroup, selectedTag, includeArchived]));
 
-  const loadEntries = useCallback(async () => {
+  const loadEntries = useCallback(async ({ offset = 0, append = false } = {}) => {
     const isCurrent = beginEntries();
-    setLoading(true);
+    if (append) {
+      setLoadingMore(true);
+    } else {
+      setLoading(true);
+    }
     try {
       const [payload, groupsPayload] = await Promise.all([
         passwordsAPI.getEntries({
@@ -302,33 +317,49 @@ function Passwords() {
           group: selectedGroup,
           tag: selectedTag,
           include_archived: includeArchived,
+          limit: ENTRIES_PAGE_SIZE,
+          offset,
         }),
-        passwordsAPI.getGroups(),
+        append ? Promise.resolve(null) : passwordsAPI.getGroups(),
       ]);
       if (!isCurrent()) return;
-      const configuredGroups = (Array.isArray(groupsPayload?.items) ? groupsPayload.items : [])
-        .map((item) => normalizeText(item?.name))
-        .filter(Boolean);
-      const responseGroups = Array.isArray(payload?.groups) ? payload.groups.map(normalizeText).filter(Boolean) : [];
-      const nextGroups = configuredGroups.length ? configuredGroups : responseGroups;
-      setEntries((Array.isArray(payload?.items) ? payload.items : []).map(normalizeEntry));
-      setGroups(nextGroups);
-      setTags(Array.isArray(payload?.tags) ? payload.tags.map(normalizeText).filter(Boolean) : []);
-      syncUnlockedUntil(payload?.unlocked_until);
-      if (selectedGroup && !nextGroups.includes(selectedGroup)) {
-        setSelectedGroup('');
+      const pageItems = (Array.isArray(payload?.items) ? payload.items : []).map(normalizeEntry);
+      setEntries((prev) => (append ? [...prev, ...pageItems] : pageItems));
+      setEntriesTotal(Number(payload?.total ?? (offset + pageItems.length)) || 0);
+      if (!append) {
+        const configuredGroups = (Array.isArray(groupsPayload?.items) ? groupsPayload.items : [])
+          .map((item) => normalizeText(item?.name))
+          .filter(Boolean);
+        const responseGroups = Array.isArray(payload?.groups) ? payload.groups.map(normalizeText).filter(Boolean) : [];
+        const nextGroups = configuredGroups.length ? configuredGroups : responseGroups;
+        setGroups(nextGroups);
+        setTags(Array.isArray(payload?.tags) ? payload.tags.map(normalizeText).filter(Boolean) : []);
+        if (selectedGroup && !nextGroups.includes(selectedGroup)) {
+          setSelectedGroup('');
+        }
       }
+      syncUnlockedUntil(payload?.unlocked_until);
     } catch (error) {
       if (!isCurrent()) return;
       notifyApiError(error, 'Не удалось загрузить список паролей.', { dedupeMode: 'recent' });
     } finally {
-      if (isCurrent()) setLoading(false);
+      if (isCurrent()) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   }, [beginEntries, debouncedQuery, includeArchived, notifyApiError, selectedGroup, selectedTag, syncUnlockedUntil]);
 
   useEffect(() => {
     loadEntries();
   }, [loadEntries]);
+
+  const handleLoadMore = useCallback(() => {
+    if (loadingMore || loading) return;
+    void loadEntries({ offset: entries.length, append: true });
+  }, [entries.length, loadEntries, loading, loadingMore]);
+
+  const hasMoreEntries = entries.length < entriesTotal;
 
   useEffect(() => {
     if (auditExpanded) {
@@ -367,6 +398,12 @@ function Passwords() {
   const selectedRevealBusy = Boolean(
     selectedEntry && revealBusyId.startsWith(`${selectedEntry.id}:`),
   );
+  const selectedRevealRemainingMs = useMemo(() => {
+    if (!selectedEntry) return 0;
+    const expiresAt = revealExpiresAt[selectedEntry.id] || 0;
+    return Math.max(0, expiresAt - nowTs);
+  }, [nowTs, revealExpiresAt, selectedEntry]);
+  const secretWatermark = buildSecretWatermark(user?.username, nowTs);
 
   const resetTagInput = useCallback(() => {
     setTagInputValue('');
@@ -494,20 +531,79 @@ function Passwords() {
       delete next[entryId];
       return next;
     });
+    setRevealExpiresAt((prev) => {
+      const next = { ...prev };
+      delete next[entryId];
+      return next;
+    });
   };
 
   const scheduleHide = (entryId) => {
     window.clearTimeout(hideTimersRef.current[entryId]);
     hideTimersRef.current[entryId] = window.setTimeout(() => hidePassword(entryId), PASSWORD_HIDE_MS);
+    setRevealExpiresAt((prev) => ({ ...prev, [entryId]: Date.now() + PASSWORD_HIDE_MS }));
   };
 
+  const hideAllPasswords = useCallback(() => {
+    Object.values(hideTimersRef.current).forEach((timerId) => window.clearTimeout(timerId));
+    hideTimersRef.current = {};
+    setRevealedPasswords({});
+    setRevealExpiresAt({});
+  }, []);
+
+  useEffect(() => {
+    const cover = () => {
+      document.documentElement.classList.add('vault-privacy-blur');
+      hideAllPasswords();
+      setPrivacyCoverActive(true);
+    };
+    const uncover = () => {
+      if (document.hidden || !document.hasFocus()) return;
+      document.documentElement.classList.remove('vault-privacy-blur');
+      setPrivacyCoverActive(false);
+      retryPendingClipboardClear({
+        onCleared: () => notifyInfo('Буфер обмена очищен.', { source: 'passwords', dedupeMode: 'none' }),
+        onClearFailed: () => notifyWarning(
+          'Буфер обмена не очищен — вернитесь на вкладку для очистки.',
+          { source: 'passwords', dedupeMode: 'recent' },
+        ),
+      });
+    };
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        cover();
+      } else {
+        uncover();
+      }
+    };
+    const handlePrint = () => hideAllPasswords();
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', cover);
+    window.addEventListener('focus', uncover);
+    window.addEventListener('beforeprint', handlePrint);
+    window.addEventListener('afterprint', handlePrint);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', cover);
+      window.removeEventListener('focus', uncover);
+      window.removeEventListener('beforeprint', handlePrint);
+      window.removeEventListener('afterprint', handlePrint);
+      document.documentElement.classList.remove('vault-privacy-blur');
+    };
+  }, [hideAllPasswords, notifyInfo, notifyWarning]);
+
   const copyPassword = async (value) => {
-    if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
+    const copied = await copyPasswordWithAutoClear(value, {
+      onCleared: () => notifyInfo('Буфер обмена очищен.', { source: 'passwords', dedupeMode: 'none' }),
+      onClearFailed: () => notifyWarning(
+        'Буфер обмена не очищен — вернитесь на вкладку для очистки.',
+        { source: 'passwords', dedupeMode: 'none' },
+      ),
+    });
+    if (!copied) {
       notifyWarning('Буфер обмена недоступен в этом браузере.', { source: 'passwords', dedupeMode: 'none' });
-      return false;
     }
-    await navigator.clipboard.writeText(value);
-    return true;
+    return copied;
   };
 
   const loadUnlockSetup = useCallback(async () => {
@@ -627,10 +723,9 @@ function Passwords() {
     if (nextReveal?.entry) {
       await revealEntry(nextReveal.entry, nextReveal.purpose);
     }
-    await loadEntries();
     syncUnlockedUntil(resolvedUnlock);
     await loadAudit();
-  }, [loadAudit, loadEntries, notifySuccess, pendingReveal, revealEntry, syncUnlockedUntil]);
+  }, [loadAudit, notifySuccess, pendingReveal, revealEntry, syncUnlockedUntil]);
 
   const handleUnlock = async () => {
     const code = unlockCode.trim();
@@ -785,8 +880,8 @@ function Passwords() {
                 <TextField
                   fullWidth
                   size="small"
-                  label="Поиск по логину, описанию или тегам"
-                  placeholder="Нажмите / для фокуса"
+                  label="Поиск по логину или описанию"
+                  placeholder="Нажмите / для фокуса. Теги — точным фильтром справа"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   inputRef={searchInputRef}
@@ -797,7 +892,11 @@ function Passwords() {
                       </InputAdornment>
                     ),
                   }}
-                  inputProps={{ 'data-testid': 'password-search-input' }}
+                  inputProps={{
+                    'data-testid': 'password-search-input',
+                    autoComplete: 'off',
+                    spellCheck: false,
+                  }}
                 />
                 <FormControlLabel
                   control={<Switch checked={includeArchived} onChange={(event) => setIncludeArchived(event.target.checked)} />}
@@ -868,7 +967,7 @@ function Passwords() {
                     groupCounts={groupCounts}
                     selectedGroup={selectedGroup}
                     selectedTag={selectedTag}
-                    totalCount={visibleEntries.length}
+                    totalCount={entriesTotal}
                     onSelectGroup={setSelectedGroup}
                     onSelectTag={setSelectedTag}
                     canManageGroups={isAdmin}
@@ -908,6 +1007,18 @@ function Passwords() {
                   compact={isMobile}
                   onSelect={handleSelectEntry}
                 />
+                {hasMoreEntries ? (
+                  <Box sx={{ display: 'flex', justifyContent: 'center', py: 1 }}>
+                    <Button
+                      size="small"
+                      onClick={handleLoadMore}
+                      disabled={loadingMore}
+                      data-testid="password-entries-load-more"
+                    >
+                      {loadingMore ? 'Загрузка…' : `Показать ещё (${entriesTotal - entries.length})`}
+                    </Button>
+                  </Box>
+                ) : null}
               </Box>
             </Grid>
 
@@ -936,6 +1047,8 @@ function Passwords() {
                     entry={selectedEntry}
                     revealed={selectedEntry ? revealedPasswords[selectedEntry.id] : ''}
                     revealBusy={selectedRevealBusy}
+                    watermark={secretWatermark}
+                    revealRemainingMs={selectedRevealRemainingMs}
                     canWrite={canWrite && selectedEntry && !selectedEntry.is_archived}
                     onCopyPassword={(entry) => requestReveal(entry, 'copy')}
                     onCopyLogin={handleCopyLogin}
@@ -962,6 +1075,18 @@ function Passwords() {
         </Box>
         </>
         )}
+
+        {privacyCoverActive ? createPortal(
+          <Box
+            className="vault-blur-overlay"
+            data-testid="vault-blur-overlay"
+            role="status"
+          >
+            <Typography variant="h6" fontWeight={800}>Скрыто</Typography>
+            <Typography variant="body2">Вернитесь на вкладку, чтобы продолжить работу с паролями.</Typography>
+          </Box>,
+          document.body,
+        ) : null}
       </PageShell>
 
       <Dialog
@@ -1027,7 +1152,11 @@ function Passwords() {
                   required
                   fullWidth
                   InputLabelProps={passwordEntryLabelProps}
-                  inputProps={{ 'data-testid': 'password-form-login' }}
+                  inputProps={{
+                    'data-testid': 'password-form-login',
+                    autoComplete: 'off',
+                    spellCheck: false,
+                  }}
                 />
                 <Autocomplete
                   multiple
@@ -1095,7 +1224,11 @@ function Passwords() {
                   required={formMode !== 'edit'}
                   helperText={formMode === 'edit' ? 'Оставьте пустым, чтобы не менять пароль.' : ''}
                   InputLabelProps={passwordEntryLabelProps}
-                  inputProps={{ 'data-testid': 'password-form-password' }}
+                  inputProps={{
+                    'data-testid': 'password-form-password',
+                    autoComplete: 'new-password',
+                    spellCheck: false,
+                  }}
                   fullWidth
                 />
                 <TextField
@@ -1146,6 +1279,9 @@ function Passwords() {
                   </IconButton>
                 </Stack>
                 <Box
+                  className="vault-secret"
+                  onCopy={generatedPassword ? (event) => event.preventDefault() : undefined}
+                  onContextMenu={generatedPassword ? (event) => event.preventDefault() : undefined}
                   sx={getOfficeCodeBlockSx(ui, {
                     mt: 1.5,
                     minHeight: 42,
@@ -1270,7 +1406,7 @@ function Passwords() {
               groupCounts={groupCounts}
               selectedGroup={selectedGroup}
               selectedTag={selectedTag}
-              totalCount={visibleEntries.length}
+              totalCount={entriesTotal}
               onSelectGroup={(group) => {
                 setSelectedGroup(group);
               }}
@@ -1299,6 +1435,8 @@ function Passwords() {
         entry={selectedEntry}
         revealed={selectedEntry ? revealedPasswords[selectedEntry.id] : ''}
         revealBusy={selectedRevealBusy}
+        watermark={secretWatermark}
+        revealRemainingMs={selectedRevealRemainingMs}
         canWrite={canWrite && selectedEntry && !selectedEntry.is_archived}
         onClose={() => setMobileSheetOpen(false)}
         onCopyPassword={(entry) => requestReveal(entry, 'copy')}

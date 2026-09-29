@@ -1,12 +1,23 @@
 param(
-    [switch]$SaveState
+    [switch]$SaveState,
+    [ValidateSet('auto', 'single', 'dual')][string]$ChatMode = 'auto',
+    [switch]$WhatIf
 )
 
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = 'C:\Project\Image_scan'
 $ecosystemAll = Join-Path $projectRoot 'scripts\pm2\ecosystem.all.config.js'
-$processNames = @('itinvent-backend', 'itinvent-chat', 'itinvent-preview-worker', 'itinvent-mail-notification-worker', 'itinvent-chat-push-worker', 'itinvent-ai-chat-worker', 'itinvent-my-files-worker', 'itinvent-hub-notifications-retention-worker', 'itinvent-inventory', 'itinvent-scan', 'itinvent-scan-worker', 'itinvent-bot')
+. (Join-Path $projectRoot 'scripts\pm2\chat-runtime-mode.ps1')
+$resolvedChatMode = Get-ChatRuntimeMode -ProjectRoot $projectRoot -Override $ChatMode
+$processNames = @('itinvent-backend') + (Get-ChatProcessNames -Mode $resolvedChatMode) + @('itinvent-preview-worker', 'itinvent-mail-notification-worker', 'itinvent-chat-push-worker', 'itinvent-ai-chat-worker', 'itinvent-my-files-worker', 'itinvent-hub-notifications-retention-worker', 'itinvent-inventory', 'itinvent-scan', 'itinvent-scan-worker', 'itinvent-bot')
+
+if ($WhatIf) {
+    Write-Host "[WhatIf] chat mode: $resolvedChatMode" -ForegroundColor Cyan
+    Write-Host "[WhatIf] managed processes: $($processNames -join ', ')"
+    Write-Host '[WhatIf] would run: pm2 kill; clear-pm2-orphans.ps1; stop orphan notification workers; pm2 start ecosystem.all.config.js (chat apps resolved by mode)'
+    return
+}
 
 function Add-LocalNodeToPath {
     if (Get-Command 'node' -ErrorAction SilentlyContinue) {
@@ -69,8 +80,13 @@ function Get-Pm2Snapshot {
         return @()
     }
 
+    # ConvertFrom-Json в Windows PowerShell 5.1 падает на ключах pm2_env,
+    # различающихся только регистром (username/USERNAME).
     try {
-        $rows = @(($jlistRaw -join "`n") | ConvertFrom-Json -Depth 10)
+        Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
+        $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+        $serializer.MaxJsonLength = [int]::MaxValue
+        $rows = @($serializer.DeserializeObject(($jlistRaw -join "`n")))
     } catch {
         return @()
     }
@@ -78,12 +94,18 @@ function Get-Pm2Snapshot {
     return @(
         $rows | ForEach-Object {
             if (-not $_) { return }
+            $pm2Env = $_['pm2_env']
+            $monit = $_['monit']
+            $memoryMb = $null
+            if ($monit -and $null -ne $monit['memory']) {
+                $memoryMb = '{0:N1}' -f ([double]$monit['memory'] / 1MB)
+            }
             [pscustomobject]@{
-                Name      = $_.name
-                Status    = $_.pm2_env.status
-                PID       = $_.pid
-                MemoryMB  = '{0:N1}' -f ((($_.monit.memory) | ForEach-Object { [double]$_ }) / 1MB)
-                Restarts  = $_.pm2_env.restart_time
+                Name      = $_['name']
+                Status    = if ($pm2Env) { $pm2Env['status'] } else { $null }
+                PID       = $_['pid']
+                MemoryMB  = $memoryMb
+                Restarts  = if ($pm2Env) { $pm2Env['restart_time'] } else { $null }
             }
         }
     )

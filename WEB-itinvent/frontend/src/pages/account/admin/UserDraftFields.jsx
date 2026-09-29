@@ -164,6 +164,18 @@ export default function UserDraftFields({ draft, onChange, dbOptions, linkedSess
           <Grid item xs={12} md={4}>
             <FormControlLabel control={<Switch checked={Boolean(draft.use_custom_permissions)} onChange={(event) => onChange('use_custom_permissions', event.target.checked)} />} label="Индивидуальные права" />
           </Grid>
+          <Grid item xs={12} md={4}>
+            <TextField
+              fullWidth
+              size="small"
+              type="number"
+              label="Лимит «Мой диск», ГБ"
+              helperText="Пусто — стандартные 50 ГБ. Максимум 400 ГБ."
+              inputProps={{ min: 1, max: 400 }}
+              value={draft.my_files_quota_gb}
+              onChange={(event) => onChange('my_files_quota_gb', event.target.value)}
+            />
+          </Grid>
         </Grid>
 
         {Boolean(draft.use_custom_permissions) ? (

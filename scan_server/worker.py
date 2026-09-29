@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
+from io import BytesIO
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from concurrent.futures.process import BrokenProcessPool
 import json
@@ -16,7 +18,7 @@ from .config import SCAN_JOB_MAX_WORKERS_LIMIT, ScanServerConfig
 from .database import MISSING_TRANSIENT_PDF_PAYLOAD, ScanStore
 from .document_conversion import DocumentConversionError, convert_document_to_pdf
 from .memory_guard import memory_pressure_active
-from .ocr import OcrNonRetryableError, is_tesseract_available, ocr_pdf_bytes_detailed
+from .ocr import FOCUSED_REGION_DPI, OcrNonRetryableError, is_tesseract_available, ocr_pdf_bytes_detailed
 from .patterns import (
     allowed_pattern_ids,
     classify_severity,
@@ -435,6 +437,25 @@ class ScanWorker(threading.Thread):
             return
         logger.info(message, *args)
 
+    @staticmethod
+    def _tiny_image_size(raw: bytes) -> Optional[Tuple[int, int]]:
+        """Dimensions of an image-job payload, or None when unreadable.
+
+        Header-only read (no rasterization). Any failure returns None so the
+        caller always falls through to the normal path (fail-open = keep
+        checking). Multi-frame images report the first frame.
+        """
+        if Image is None or not raw:
+            return None
+        try:
+            with Image.open(BytesIO(bytes(raw))) as img:
+                width, height = int(img.width or 0), int(img.height or 0)
+            if width > 0 and height > 0:
+                return (width, height)
+        except Exception:
+            pass
+        return None
+
     def _run_inline_ocr_job(self, pdf_bytes: bytes, artifact_path: Optional[Path]) -> Tuple[str, str]:
         if not self._ocr_available:
             return OcrTextResult("", "ocr_error")
@@ -462,6 +483,7 @@ class ScanWorker(threading.Thread):
             return self._run_inline_ocr_job(pdf_bytes, artifact_path)
         try:
             logger.debug("Starting OCR for artifact=%s, pdf_bytes=%d", artifact_path, len(pdf_bytes))
+            submit_at = time.perf_counter()
             future = pool.submit(
                 _ocr_pdf_job,
                 pdf_bytes,
@@ -473,7 +495,20 @@ class ScanWorker(threading.Thread):
             # One page can run full-page OCR plus four focused sparse-text passes.
             # Keep the outer process timeout above the worst-case three-page budget.
             result = future.result(timeout=max(30, int(self.config.ocr_timeout_sec) * 20 + 30))
-            return self._normalize_ocr_result(result)
+            pool_wall_ms = (time.perf_counter() - submit_at) * 1000.0
+            normalized = self._normalize_ocr_result(result)
+            try:
+                inner_duration_ms = 0.0
+                if isinstance(result, dict):
+                    inner_metrics = result.get("metrics")
+                    if isinstance(inner_metrics, dict):
+                        inner_duration_ms = float(inner_metrics.get("duration_ms") or 0.0)
+                # submit→result wall minus in-worker time = queueing inside the
+                # OCR pool. Diagnostic only; never affects verdicts.
+                normalized.metrics["pool_wait_ms"] = round(max(0.0, pool_wall_ms - inner_duration_ms), 1)
+            except Exception:
+                pass
+            return normalized
         except OcrNonRetryableError as exc:
             logger.warning("OCR rejected non-retryable PDF artifact=%s: %s", artifact_path, exc)
             return OcrTextResult("", "ocr_error_non_retryable")
@@ -506,6 +541,133 @@ class ScanWorker(threading.Thread):
         if text:
             return OcrTextResult(text, "ocr_text_ready", metrics)
         return OcrTextResult("", "ocr_blank", metrics)
+
+    OCR_CACHE_MAX_TEXT_CHARS = 128_000
+
+    def _ocr_cache_key(self, pdf_bytes: bytes) -> Optional[Tuple[str, str, str]]:
+        """Cache key for deterministic OCR work, or None when caching is off.
+
+        Key = (sha256 of processed bytes, analysis version, OCR settings
+        profile). Pattern rules are intentionally NOT part of the key: matching
+        is a pure function of text and is always re-applied fresh on a hit,
+        so rule edits never go stale.
+        """
+        if not getattr(self.config, "ocr_cache_enabled", True):
+            return None
+        if not pdf_bytes:
+            return None
+        try:
+            content_hash = hashlib.sha256(bytes(pdf_bytes)).hexdigest()
+        except Exception:
+            return None
+        lang = str(getattr(self.config, "ocr_lang", "") or "rus").strip() or "rus"
+        try:
+            dpi = int(getattr(self.config, "ocr_dpi", 0) or 0)
+        except Exception:
+            dpi = 0
+        try:
+            focused_dpi = int(FOCUSED_REGION_DPI or 0)
+        except Exception:
+            focused_dpi = 0
+        profile = f"{lang}|{dpi}|{focused_dpi}|{int(SCAN_OCR_PAGE_LIMIT or 3)}"
+        return (content_hash, str(SCAN_ANALYSIS_VERSION or ""), profile)
+
+    def _ocr_cache_lookup(self, pdf_bytes: bytes) -> Optional[Dict[str, Any]]:
+        key = self._ocr_cache_key(pdf_bytes)
+        if key is None:
+            return None
+        getter = getattr(self.store, "get_ocr_cache_entry", None)
+        if not callable(getter):
+            return None
+        try:
+            entry = getter(*key)
+        except Exception as exc:
+            logger.warning("OCR cache lookup failed: %s", exc)
+            return None
+        if not isinstance(entry, dict):
+            return None
+        text = str(entry.get("ocr_text") or "")
+        # Only complete results are cached, so outcome derives exactly:
+        # non-empty text -> text_ready, empty text -> confirmed blank.
+        outcome = "ocr_text_ready" if text else "ocr_blank"
+        page_outcomes = entry.get("page_outcomes")
+        if not isinstance(page_outcomes, list):
+            return None
+        return {"text": text, "outcome": outcome, "page_outcomes": page_outcomes,
+                "metrics": entry.get("ocr_metrics") if isinstance(entry.get("ocr_metrics"), dict) else {},
+                "cache_key": key}
+
+    def _ocr_cache_store(
+        self,
+        pdf_bytes: bytes,
+        ocr_text: str,
+        ocr_outcome: str,
+        page_outcomes: Any,
+        ocr_metrics: Any,
+    ) -> None:
+        # Only complete, deterministic results are cached. Errors, timeouts and
+        # partial (nonblank_no_text) outcomes are never stored: they may be
+        # transient and must be re-evaluated (VLM fallback re-checks them).
+        if ocr_outcome not in {"ocr_text_ready", "ocr_blank"}:
+            return
+        if ocr_outcome == "ocr_text_ready" and not str(ocr_text or "").strip():
+            return
+        if len(str(ocr_text or "")) > self.OCR_CACHE_MAX_TEXT_CHARS:
+            return
+        key = self._ocr_cache_key(pdf_bytes)
+        if key is None:
+            return
+        if not isinstance(page_outcomes, list):
+            return
+        putter = getattr(self.store, "put_ocr_cache_entry", None)
+        if not callable(putter):
+            return
+        try:
+            metrics = dict(ocr_metrics or {}) if isinstance(ocr_metrics, dict) else {}
+            for noisy in ("duration_ms", "pool_wait_ms"):
+                metrics.pop(noisy, None)
+            putter(
+                content_hash=key[0],
+                analysis_version=key[1],
+                ocr_profile=key[2],
+                ocr_text=str(ocr_text or ""),
+                page_outcomes=page_outcomes,
+                ocr_metrics=metrics,
+            )
+        except Exception as exc:
+            logger.warning("OCR cache store failed: %s", exc)
+
+    def _ocr_text_cached_or_run(
+        self, pdf_bytes: bytes, artifact_path: Optional[Path] = None
+    ) -> Tuple[str, str]:
+        cached = self._ocr_cache_lookup(pdf_bytes)
+        if cached is not None:
+            logger.info(
+                "OCR cache hit artifact=%s text_chars=%s",
+                artifact_path or "<memory>",
+                len(cached["text"]),
+            )
+            cached_metrics = dict(cached.get("metrics") or {})
+            cached_metrics["page_outcomes"] = cached.get("page_outcomes") or []
+            cached_metrics["cache_hit"] = True
+            cached_metrics["pool_wait_ms"] = 0.0
+            cache_key = cached.get("cache_key")
+            notifier = getattr(self.store, "note_ocr_cache_hit", None)
+            if cache_key and callable(notifier):
+                try:
+                    notifier(*cache_key)
+                except Exception as exc:
+                    logger.debug("OCR cache hit note skipped: %s", exc)
+            return OcrTextResult(cached["text"], cached["outcome"], cached_metrics)
+        ocr_result = self._ocr_text_from_pdf_bytes(pdf_bytes, artifact_path=artifact_path)
+        try:
+            ocr_text, ocr_outcome = ocr_result
+            metrics = getattr(ocr_result, "metrics", {})
+            page_outcomes = metrics.get("page_outcomes") if isinstance(metrics, dict) else None
+            self._ocr_cache_store(pdf_bytes, ocr_text, ocr_outcome, page_outcomes, metrics)
+        except Exception as exc:
+            logger.warning("OCR cache store skipped: %s", exc)
+        return ocr_result
 
     def _collect_pdf_matches(
         self,
@@ -551,11 +713,12 @@ class ScanWorker(threading.Thread):
 
         logger.debug("Starting OCR for PDF artifact=%s", artifact_path or "<memory>")
         ocr_started = time.perf_counter()
-        ocr_result = self._ocr_text_from_pdf_bytes(pdf_bytes, artifact_path=artifact_path)
+        ocr_result = self._ocr_text_cached_or_run(pdf_bytes, artifact_path=artifact_path)
         ocr_text, ocr_outcome = ocr_result
         ocr_metrics = getattr(ocr_result, "metrics", {})
         metrics["ocr_ms"] = round((time.perf_counter() - ocr_started) * 1000.0, 1)
         metrics["ocr"] = ocr_metrics
+        metrics["ocr_cache"] = "hit" if ocr_metrics.get("cache_hit") else "miss"
         if not ocr_text:
             if ocr_outcome == "ocr_blank":
                 return {
@@ -739,6 +902,45 @@ class ScanWorker(threading.Thread):
                         error_text=reason,
                     )
                 return
+
+            if source_kind == "image" and pdf_bytes:
+                # Tiny-image gate (dry-run by default): images too small to hold
+                # readable document text burn a full OCR pipeline for nothing
+                # (prod: zero incidents below 5 MP on 8k image jobs/day).
+                # Dry-run only records the marker; enforce mode skips OCR.
+                tiny_limit = int(getattr(self.config, "ocr_tiny_image_min_pixels", 0) or 0)
+                tiny_size = self._tiny_image_size(pdf_bytes) if tiny_limit > 0 else None
+                if tiny_size is not None and tiny_size[0] * tiny_size[1] < tiny_limit:
+                    tiny_info = {
+                        "width": tiny_size[0],
+                        "height": tiny_size[1],
+                        "pixels": tiny_size[0] * tiny_size[1],
+                        "min_pixels": tiny_limit,
+                    }
+                    if getattr(self.config, "ocr_tiny_image_dry_run", True):
+                        tiny_info["would_skip"] = True
+                        job_metrics["tiny_image"] = tiny_info
+                        logger.debug(
+                            "Tiny image would skip OCR job_id=%s size=%sx%s",
+                            job_id, tiny_size[0], tiny_size[1],
+                        )
+                    else:
+                        tiny_info["skipped"] = True
+                        job_metrics["tiny_image"] = tiny_info
+                        self._log_pdf_outcome(
+                            "ocr_skipped_tiny_image",
+                            artifact_path=None,
+                            detail=f"size={tiny_size[0]}x{tiny_size[1]} limit={tiny_limit}px",
+                        )
+                        finalize_terminal(
+                            job_id=job_id,
+                            status="done_clean",
+                            summary=(
+                                "OCR пропущен: изображение меньше "
+                                f"{tiny_limit} пикселей ({tiny_size[0]}x{tiny_size[1]})"
+                            ),
+                        )
+                        return
 
             if source_kind in {"image", "office"} and pdf_bytes:
                 try:

@@ -4,6 +4,7 @@ import { router } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import * as api from '../../api/chatApi';
 import { clearNativeChatOutbox, createNativeChatOutbox } from '../../chat/nativeChatOutbox';
+import { resetNativeChatOutboxRowsCache } from '../../chat/nativeChatStorageQueue';
 import { NativeChatOutboxWithDelivery as NativeChatOutboxScreen } from '../../test/NativeChatWithDelivery';
 import { inspectNativeChatDraftFiles } from '../../chat/nativeChatDraftFiles';
 
@@ -11,7 +12,14 @@ let mockAllowed = true;
 let mockOffline = false;
 let mockUserId = 7;
 jest.mock('../../auth/AuthContext', () => ({ useAuth: () => ({ user: { id: mockUserId }, hasPermission: () => mockAllowed, offlineMode: mockOffline }) }));
-jest.mock('../../api/chatApi', () => ({ sendTextMessage: jest.fn(), sendFileMessage: jest.fn() }));
+jest.mock('../../api/chatApi', () => ({
+  sendTextMessage: jest.fn(), sendFileMessage: jest.fn(),
+  createChatUploadSession: jest.fn(async () => {
+    throw Object.assign(new Error('upload sessions unavailable'), { response: { status: 404 } });
+  }),
+  getChatUploadSession: jest.fn(), uploadChatFileChunk: jest.fn(),
+  completeChatUploadSession: jest.fn(), cancelChatUploadSession: jest.fn(),
+}));
 jest.mock('../../chat/nativeChatDraftFiles', () => ({
   persistNativeChatDraftFiles: async (_user: number, files: unknown) => files,
   deleteUnreferencedChatFiles: async () => undefined,
@@ -31,6 +39,7 @@ it.each(['text', 'file'].flatMap((kind) => ['access', 'offline', 'user', 'return
   const raw = await SecureStore.getItemAsync('hubit_native_chat_outbox_v1');
   let finish!: (value: string | null) => void;
   jest.mocked(SecureStore.getItemAsync).mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+  resetNativeChatOutboxRowsCache();
   await fireEvent.press(view.getByLabelText('Повторить отправку'));
   if (change === 'offline') mockOffline = true;
   else if (change === 'user') mockUserId = 8;
@@ -147,6 +156,7 @@ it('confirms local removal and does not send while offline', async () => {
 
 it('distinguishes a read error from an empty queue and supports refresh', async () => {
   jest.mocked(SecureStore.getItemAsync).mockRejectedValueOnce(new Error('Storage'));
+  resetNativeChatOutboxRowsCache();
   const view = await render(<NativeChatOutboxScreen />);
   await waitFor(() => expect(view.getByText('Не удалось прочитать очередь. Сохранённые сообщения не удалены.')).toBeTruthy());
   expect(view.queryByText('Нет сообщений, ожидающих отправки')).toBeNull();

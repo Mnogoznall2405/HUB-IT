@@ -1150,6 +1150,25 @@ class ScanStore:
                 CREATE INDEX IF NOT EXISTS idx_scan_artifacts_job
                     ON scan_artifacts(job_id);
 
+                -- OCR result dedup cache: complete results only (all pages
+                -- text|blank). Pattern matching is always re-applied fresh on
+                -- the cached text, so rule edits never go stale.
+                CREATE TABLE IF NOT EXISTS scan_ocr_cache (
+                    content_hash TEXT NOT NULL,
+                    analysis_version TEXT NOT NULL DEFAULT '',
+                    ocr_profile TEXT NOT NULL DEFAULT '',
+                    ocr_text TEXT NOT NULL DEFAULT '',
+                    page_outcomes_json TEXT NOT NULL DEFAULT '[]',
+                    ocr_metrics_json TEXT NOT NULL DEFAULT '{}',
+                    hit_count INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL DEFAULT 0,
+                    last_hit_at INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (content_hash, analysis_version, ocr_profile)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_scan_ocr_cache_created
+                    ON scan_ocr_cache(created_at);
+
                 CREATE INDEX IF NOT EXISTS idx_scan_agents_last_seen
                     ON scan_agents(last_seen_at DESC);
                 """
@@ -3479,6 +3498,125 @@ class ScanStore:
         payload = _json_loads(row["payload_json"], {})
         return payload if isinstance(payload, dict) else {}
 
+    def get_ocr_cache_entry(
+        self, content_hash: str, analysis_version: str, ocr_profile: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return cached complete OCR result or None (read-only, no writes)."""
+        key_hash = str(content_hash or "").strip()
+        if not key_hash:
+            return None
+
+        def _read() -> Optional[Dict[str, Any]]:
+            with self._lock, self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT ocr_text, page_outcomes_json, ocr_metrics_json,
+                           hit_count, created_at, last_hit_at
+                    FROM scan_ocr_cache
+                    WHERE content_hash=? AND analysis_version=? AND ocr_profile=?
+                    LIMIT 1
+                    """,
+                    (
+                        key_hash,
+                        str(analysis_version or ""),
+                        str(ocr_profile or ""),
+                    ),
+                ).fetchone()
+            if row is None:
+                return None
+            try:
+                page_outcomes = _json_loads(row["page_outcomes_json"], [])
+                ocr_metrics = _json_loads(row["ocr_metrics_json"], {})
+            except Exception:
+                return None
+            if not isinstance(page_outcomes, list) or not isinstance(ocr_metrics, dict):
+                return None
+            return {
+                "ocr_text": str(row["ocr_text"] or ""),
+                "page_outcomes": page_outcomes,
+                "ocr_metrics": ocr_metrics,
+                "hit_count": int(row["hit_count"] or 0),
+            }
+
+        try:
+            return _read()
+        except Exception:
+            logger.warning("OCR cache lookup failed", exc_info=True)
+            return None
+
+    def note_ocr_cache_hit(
+        self, content_hash: str, analysis_version: str, ocr_profile: str
+    ) -> None:
+        """Best-effort hit stats update; failures never break the job path."""
+        key_hash = str(content_hash or "").strip()
+        if not key_hash:
+            return
+
+        def _write() -> None:
+            with self._lock, self._connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE scan_ocr_cache
+                    SET hit_count=hit_count+1, last_hit_at=?
+                    WHERE content_hash=? AND analysis_version=? AND ocr_profile=?
+                    """,
+                    (_now_ts(), key_hash, str(analysis_version or ""), str(ocr_profile or "")),
+                )
+                conn.commit()
+
+        try:
+            self._run_write_transaction("ocr_cache_hit", _write)
+        except Exception:
+            logger.warning("OCR cache hit update failed", exc_info=True)
+
+    def put_ocr_cache_entry(
+        self,
+        *,
+        content_hash: str,
+        analysis_version: str,
+        ocr_profile: str,
+        ocr_text: str,
+        page_outcomes: Any,
+        ocr_metrics: Any,
+    ) -> None:
+        """Insert a complete OCR result; first writer wins (no overwrite)."""
+        key_hash = str(content_hash or "").strip()
+        if not key_hash:
+            return
+        if not isinstance(page_outcomes, list):
+            return
+        now_ts = _now_ts()
+
+        def _write() -> None:
+            with self._lock, self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO scan_ocr_cache(
+                        content_hash, analysis_version, ocr_profile,
+                        ocr_text, page_outcomes_json, ocr_metrics_json,
+                        hit_count, created_at, last_hit_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+                    ON CONFLICT (content_hash, analysis_version, ocr_profile)
+                    DO NOTHING
+                    """,
+                    (
+                        key_hash,
+                        str(analysis_version or ""),
+                        str(ocr_profile or ""),
+                        str(ocr_text or ""),
+                        _json_dumps(page_outcomes),
+                        _json_dumps(dict(ocr_metrics or {})),
+                        now_ts,
+                        now_ts,
+                    ),
+                )
+                conn.commit()
+
+        try:
+            self._run_write_transaction("ocr_cache_put", _write)
+        except Exception:
+            logger.warning("OCR cache store failed", exc_info=True)
+
     def finalize_job(
         self,
         *,
@@ -5124,6 +5262,18 @@ class ScanStore:
             # and blob deserialization dominated first-hit map/ser time.
             recent_task_results = []
             completed_24h_row = {"c": int(completed_24h_from_jobs)}
+            # Current pace (last 60 min) next to the 24h average: one indexed
+            # COUNT, same final-status predicate on both backends.
+            completed_1h_row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS c
+                FROM scan_jobs
+                WHERE status IN ({", ".join("?" for _ in FINAL_JOB_STATUSES)})
+                  AND COALESCE(finished_at, created_at) >= ?
+                """,
+                [*FINAL_JOB_STATUSES, int(now_ts - 3600)],
+            ).fetchone()
+            completed_1h = int((completed_1h_row["c"] if completed_1h_row else 0) or 0)
             # Bound metrics_json deserialization: finished sample only (OCR DPI / ocr_ms).
             # Cold-path caps (samples_capped already advertised in payload).
             perf_sample_limit = min(_DASHBOARD_PERFORMANCE_SAMPLE_LIMIT, 150)
@@ -5327,6 +5477,8 @@ class ScanStore:
             "samples_capped": True,
             "completed": completed_24h,
             "throughput_per_hour": round(completed_24h / 24.0, 1),
+            "completed_last_hour": completed_1h,
+            "throughput_last_hour": round(completed_1h / 1.0, 1),
             "pending_oldest_age_sec": max(0, pending_oldest_age_sec),
             "queue_wait_ms": {
                 "p50": _percentile(queue_wait_values, 0.50),
@@ -5474,15 +5626,18 @@ class ScanStore:
         clean_job_retention_days: Optional[int] = None,
         failed_job_retention_days: Optional[int] = None,
         incident_retention_days: Optional[int] = None,
+        ocr_cache_retention_days: Optional[int] = None,
         batch_size: int = 1000,
         dry_run: bool = False,
     ) -> Dict[str, int]:
         incident_days = max(1, int(incident_retention_days or retention_days))
         clean_days = max(1, int(clean_job_retention_days or _env_int("SCAN_CLEAN_JOB_RETENTION_DAYS", 14)))
         failed_days = max(1, int(failed_job_retention_days or _env_int("SCAN_FAILED_JOB_RETENTION_DAYS", 30)))
+        cache_days = max(1, int(ocr_cache_retention_days or _env_int("SCAN_OCR_CACHE_RETENTION_DAYS", 14)))
         clean_cutoff = _now_ts() - clean_days * 24 * 60 * 60
         failed_cutoff = _now_ts() - failed_days * 24 * 60 * 60
         incident_cutoff = _now_ts() - incident_days * 24 * 60 * 60
+        cache_cutoff = _now_ts() - cache_days * 24 * 60 * 60
         task_cutoff = min(failed_cutoff, incident_cutoff)
 
         specs = [
@@ -5524,6 +5679,15 @@ class ScanStore:
                 "status='done_with_incident' AND created_at < ?",
                 (incident_cutoff,),
             ),
+            # OCR dedup cache: derived data only (source jobs keep their own rows).
+            # Rules are always re-applied fresh on the cached text, so eviction
+            # only costs recompute, never verdicts.
+            (
+                "ocr_cache",
+                "scan_ocr_cache",
+                "created_at < ?",
+                (cache_cutoff,),
+            ),
         ]
 
         result = {
@@ -5537,6 +5701,7 @@ class ScanStore:
             "jobs_clean": 0,
             "jobs_failed": 0,
             "jobs_with_incident": 0,
+            "ocr_cache": 0,
         }
 
         def _write() -> Dict[str, int]:

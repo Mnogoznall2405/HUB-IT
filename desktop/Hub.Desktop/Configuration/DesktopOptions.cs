@@ -12,7 +12,12 @@ public sealed record DesktopUpdateOptions(
     TimeSpan CheckInterval,
     TimeSpan RetryDelay);
 
-public sealed record DesktopOptions(Uri BaseUri, DesktopUpdateOptions Updates)
+public sealed record DesktopAdfsOptions(Uri? Authority)
+{
+    public bool Enabled => Authority is not null;
+}
+
+public sealed record DesktopOptions(Uri BaseUri, DesktopUpdateOptions Updates, DesktopAdfsOptions Adfs)
 {
     private const string ConfigurationFileName = "appsettings.json";
     private static readonly Uri ProductionBaseUri = new("https://hubit.zsgp.ru/");
@@ -28,7 +33,7 @@ public sealed record DesktopOptions(Uri BaseUri, DesktopUpdateOptions Updates)
 
 #if DEBUG
         baseUrl = Environment.GetEnvironmentVariable("HUB_DESKTOP_BASE_URL") ?? baseUrl;
-        return FromBaseUrl(baseUrl, allowHttpLoopback: true);
+        return FromBaseUrl(baseUrl, allowHttpLoopback: true, adfs: ParseAdfs(document));
 #else
 #if PERF_BENCH
         if (DesktopPerfBench.IsEnabled)
@@ -55,7 +60,7 @@ public sealed record DesktopOptions(Uri BaseUri, DesktopUpdateOptions Updates)
             throw new InvalidOperationException("Release update manifest path is fixed.");
         }
 
-        return options;
+        return options with { Adfs = ParseAdfs(document) };
 #endif
     }
 
@@ -71,7 +76,10 @@ public sealed record DesktopOptions(Uri BaseUri, DesktopUpdateOptions Updates)
         return options;
     }
 
-    public static DesktopOptions FromBaseUrl(string? baseUrl, bool allowHttpLoopback = false)
+    public static DesktopOptions FromBaseUrl(
+        string? baseUrl,
+        bool allowHttpLoopback = false,
+        DesktopAdfsOptions? adfs = null)
     {
         if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri))
         {
@@ -112,14 +120,40 @@ public sealed record DesktopOptions(Uri BaseUri, DesktopUpdateOptions Updates)
                 InitialDelayMinimum: TimeSpan.FromSeconds(30),
                 InitialDelayMaximum: TimeSpan.FromSeconds(120),
                 CheckInterval: TimeSpan.FromHours(12),
-                RetryDelay: TimeSpan.FromMinutes(15)));
+                RetryDelay: TimeSpan.FromMinutes(15)),
+            adfs ?? new DesktopAdfsOptions(null));
+    }
+
+    private static DesktopAdfsOptions ParseAdfs(ConfigurationDocument document)
+    {
+        var authority = document.Adfs?.Authority;
+        if (string.IsNullOrWhiteSpace(authority))
+        {
+            return new DesktopAdfsOptions(null);
+        }
+
+        if (!Uri.TryCreate(authority, UriKind.Absolute, out var authorityUri)
+            || authorityUri.Scheme is not ("https")
+            || !string.IsNullOrEmpty(authorityUri.UserInfo)
+            || !string.IsNullOrEmpty(authorityUri.Query)
+            || !string.IsNullOrEmpty(authorityUri.Fragment)
+            || authorityUri.AbsolutePath is not ("" or "/"))
+        {
+            throw new InvalidOperationException("Adfs.Authority must be an https origin like https://sso.zsgp.ru.");
+        }
+
+        return new DesktopAdfsOptions(authorityUri);
     }
 
     private sealed record ConfigurationDocument(
         string? BaseUrl,
-        UpdateConfigurationDocument? Updates);
+        UpdateConfigurationDocument? Updates,
+        AdfsConfigurationDocument? Adfs);
 
     private sealed record UpdateConfigurationDocument(
         bool? Enabled,
         string? ManifestPath);
+
+    private sealed record AdfsConfigurationDocument(
+        string? Authority);
 }

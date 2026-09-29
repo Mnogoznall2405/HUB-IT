@@ -1,72 +1,67 @@
-import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState, StyleSheet, View } from 'react-native';
+import { openNativeFile, shareNativeFile } from '../../files/nativeAttachmentDownloads';
 import {
-  ActivityIndicator,
-  AppState,
-  FlatList,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
-import {
-  getWarehouse1CCatalogStatus,
-  searchWarehouse1CCatalog,
+  getWarehouse1CBalances,
+  getWarehouse1CDismissedWarehouses,
+  getWarehouse1CMovementDetail,
+  getWarehouse1CMovements,
+  type Warehouse1CBalance,
   type Warehouse1CCatalogItem,
-  type Warehouse1CCatalogKind,
-  type Warehouse1CCatalogStatus,
+  type Warehouse1CDismissedWarehouse,
+  type Warehouse1CListMeta,
+  type Warehouse1CMovement,
+  type Warehouse1CMovementDetail,
+  type Warehouse1CMovementFile,
 } from '../../api/warehouse1cApi';
 import { formatApiError } from '../../api/formatError';
 import { useAuth } from '../../auth/AuthContext';
-import { NativeWarehouse1CCatalogCard } from '../../components/warehouse1c/NativeWarehouse1CCards';
+import { NativeWarehouse1CBalancesPanel } from '../../components/warehouse1c/NativeWarehouse1CBalancesPanel';
+import { NativeWarehouse1CCatalogPanel } from '../../components/warehouse1c/NativeWarehouse1CCatalogPanel';
+import { NativeWarehouse1CDismissedPanel } from '../../components/warehouse1c/NativeWarehouse1CDismissedPanel';
+import { NativeWarehouse1CMovementDetailSheet } from '../../components/warehouse1c/NativeWarehouse1CMovementDetailSheet';
+import {
+  movementPeriodDates,
+  NativeWarehouse1CMovementsPanel,
+  type Warehouse1cMovementPeriod,
+} from '../../components/warehouse1c/NativeWarehouse1CMovementsPanel';
+import { NativeWarehouse1CPickerSheet } from '../../components/warehouse1c/NativeWarehouse1CPickerSheet';
+import { NativeTabPicker } from '../../components/ui/NativeTabPicker';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
+import {
+  downloadNativeWarehouse1cFile,
+  downloadNativeWarehouse1cPreview,
+} from '../../warehouse1c/nativeWarehouse1cFiles';
 import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
 
-const SEARCH_LIMIT = 30;
+const BALANCES_LIMIT = 200;
+const MOVEMENTS_LIMIT = 100;
 
-function formatDateTime(value: string): string {
-  if (!value) return 'Нет подтверждённого снимка';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('ru-RU');
+type Warehouse1cTab = 'balances' | 'movements' | 'dismissed' | 'catalog';
+type PickerTarget = 'balNom' | 'balWh' | 'movNom' | 'movWh';
+
+const TAB_OPTIONS: { value: Warehouse1cTab; label: string; icon: string }[] = [
+  { value: 'balances', label: 'Остатки', icon: 'package-variant' },
+  { value: 'movements', label: 'Движения', icon: 'swap-horizontal' },
+  { value: 'dismissed', label: 'Уволенные', icon: 'account-off-outline' },
+  { value: 'catalog', label: 'Каталог', icon: 'book-open-variant-outline' },
+];
+
+function normalizeTab(value: unknown): Warehouse1cTab {
+  const tab = String(value || '').trim().toLowerCase();
+  return (TAB_OPTIONS.some((option) => option.value === tab) ? tab : 'balances') as Warehouse1cTab;
 }
 
-function statusCopy(status: Warehouse1CCatalogStatus | null): { title: string; detail: string; tone: 'normal' | 'warning' | 'error' } {
-  if (!status) return { title: 'Статус не загружен', detail: 'Полнота каталога пока не подтверждена.', tone: 'warning' };
-  const detail = `Снимок: ${formatDateTime(status.updated_at)}`;
-  if (status.status === 'ok') return { title: 'Каталог актуален', detail, tone: 'normal' };
-  if (status.status === 'stale') return { title: 'Каталог давно не обновлялся', detail, tone: 'warning' };
-  if (status.status === 'incomplete') return { title: 'Каталог загружен не полностью', detail, tone: 'warning' };
-  if (status.status === 'error') return { title: 'Последнее обновление завершилось с ошибкой', detail, tone: 'error' };
-  return { title: 'Полнота каталога не подтверждена', detail, tone: 'warning' };
+function singleParam(value: string | string[] | undefined): string {
+  return Array.isArray(value) ? String(value[0] || '') : String(value || '');
 }
 
-function ModeButton({
-  label,
-  selected,
-  onPress,
-  tokens,
-}: {
-  label: string;
-  selected: boolean;
-  onPress: () => void;
-  tokens: ReturnType<typeof useFluentTokens>;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityState={{ selected }}
-      style={[
-        styles.modeButton,
-        { backgroundColor: selected ? tokens.primary : tokens.panelSolid, borderColor: selected ? tokens.primary : tokens.border },
-      ]}
-    >
-      <Text style={[styles.modeText, { color: selected ? '#fff' : tokens.textPrimary }]}>{label}</Text>
-    </Pressable>
-  );
+function prefillItem(refValue: string | string[] | undefined, nameValue: string | string[] | undefined): Warehouse1CCatalogItem | null {
+  const ref = singleParam(refValue).trim();
+  if (!ref || ref === '00000000-0000-0000-0000-000000000000') return null;
+  return { ref: ref.slice(0, 64), code: '', name: singleParam(nameValue).trim().slice(0, 500) };
 }
 
 export function NativeWarehouse1CScreen() {
@@ -74,102 +69,297 @@ export function NativeWarehouse1CScreen() {
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const canRead = hasPermission('warehouse_1c.read');
-  const [kind, setKind] = useState<Warehouse1CCatalogKind>('nomenclature');
-  const [queryDraft, setQueryDraft] = useState('');
-  const [query, setQuery] = useState('');
-  const [items, setItems] = useState<Warehouse1CCatalogItem[]>([]);
-  const [status, setStatus] = useState<Warehouse1CCatalogStatus | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState('');
-  const [statusError, setStatusError] = useState('');
-  const [revision, setRevision] = useState(0);
-  const [statusRevision, setStatusRevision] = useState(0);
-  const searchGenerationRef = useRef(0);
-  const searchAbortRef = useRef<AbortController | null>(null);
-  const statusAbortRef = useRef<AbortController | null>(null);
+  const params = useLocalSearchParams<{
+    tab?: string | string[];
+    nomenclatureRef?: string | string[];
+    nomenclatureName?: string | string[];
+    warehouseRef?: string | string[];
+    warehouseName?: string | string[];
+  }>();
+
+  const initialTab = normalizeTab(singleParam(params.tab));
+  const [tab, setTab] = useState<Warehouse1cTab>(initialTab);
+
+  const [balNomenclature, setBalNomenclature] = useState<Warehouse1CCatalogItem | null>(
+    () => (initialTab === 'balances' ? prefillItem(params.nomenclatureRef, params.nomenclatureName) : null),
+  );
+  const [balWarehouse, setBalWarehouse] = useState<Warehouse1CCatalogItem | null>(
+    () => (initialTab === 'balances' ? prefillItem(params.warehouseRef, params.warehouseName) : null),
+  );
+  const [balQueryDraft, setBalQueryDraft] = useState('');
+  const [balItems, setBalItems] = useState<Warehouse1CBalance[]>([]);
+  const [balMeta, setBalMeta] = useState<Warehouse1CListMeta | null>(null);
+  const [balLoading, setBalLoading] = useState(false);
+  const [balRefreshing, setBalRefreshing] = useState(false);
+  const [balError, setBalError] = useState('');
+  const [balSearched, setBalSearched] = useState(false);
+  const [balRevision, setBalRevision] = useState(0);
+  const balGenerationRef = useRef(0);
+  const balAbortRef = useRef<AbortController | null>(null);
+
+  const [movNomenclature, setMovNomenclature] = useState<Warehouse1CCatalogItem | null>(
+    () => (initialTab === 'movements' ? prefillItem(params.nomenclatureRef, params.nomenclatureName) : null),
+  );
+  const [movWarehouse, setMovWarehouse] = useState<Warehouse1CCatalogItem | null>(
+    () => (initialTab === 'movements' ? prefillItem(params.warehouseRef, params.warehouseName) : null),
+  );
+  const [movPeriod, setMovPeriod] = useState<Warehouse1cMovementPeriod>('all');
+  const [movItems, setMovItems] = useState<Warehouse1CMovement[]>([]);
+  const [movMeta, setMovMeta] = useState<Warehouse1CListMeta | null>(null);
+  const [movLoading, setMovLoading] = useState(false);
+  const [movRefreshing, setMovRefreshing] = useState(false);
+  const [movLoadingMore, setMovLoadingMore] = useState(false);
+  const [movError, setMovError] = useState('');
+  const [movSearched, setMovSearched] = useState(false);
+  const [movRevision, setMovRevision] = useState(0);
+  const movGenerationRef = useRef(0);
+  const movAbortRef = useRef<AbortController | null>(null);
+  const movAutoSearchRef = useRef(false);
+
+  const [disItems, setDisItems] = useState<Warehouse1CDismissedWarehouse[]>([]);
+  const [disMeta, setDisMeta] = useState<Warehouse1CListMeta | null>(null);
+  const [disLoading, setDisLoading] = useState(false);
+  const [disRefreshing, setDisRefreshing] = useState(false);
+  const [disError, setDisError] = useState('');
+  const [disRequested, setDisRequested] = useState(false);
+  const [disRevision, setDisRevision] = useState(0);
+  const [disExpanded, setDisExpanded] = useState<Set<string>>(new Set());
+  const disGenerationRef = useRef(0);
+  const disAbortRef = useRef<AbortController | null>(null);
+
+  const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null);
+  const [detailMovement, setDetailMovement] = useState<Warehouse1CMovement | null>(null);
+  const [detailData, setDetailData] = useState<Warehouse1CMovementDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
+  const [busyFileKey, setBusyFileKey] = useState('');
+  const detailSequenceRef = useRef(0);
+  const detailAbortRef = useRef<AbortController | null>(null);
+
   const focusedRef = useRef(false);
   const firstFocusRef = useRef(true);
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setQuery(queryDraft.replace(/\s+/g, ' ').trim().slice(0, 200));
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [queryDraft]);
-
-  useEffect(() => {
-    if (!canRead || offlineMode) {
-      statusAbortRef.current?.abort();
-      setStatus(null);
-      return;
-    }
-    statusAbortRef.current?.abort();
+  const loadBalances = useCallback(() => {
+    balGenerationRef.current += 1;
+    const requestId = balGenerationRef.current;
+    balAbortRef.current?.abort();
+    if (!canRead || offlineMode) return;
     const controller = new AbortController();
-    statusAbortRef.current = controller;
-    setStatusError('');
-    void getWarehouse1CCatalogStatus({ signal: controller.signal }).then((result) => {
-      if (!controller.signal.aborted) setStatus(result);
+    balAbortRef.current = controller;
+    setBalLoading(true);
+    setBalError('');
+    setBalSearched(true);
+    void getWarehouse1CBalances({
+      nomenclatureRef: balNomenclature?.ref || '',
+      warehouseRef: balWarehouse?.ref || '',
+      query: balQueryDraft,
+      limit: BALANCES_LIMIT,
+      signal: controller.signal,
+    }).then((result) => {
+      if (requestId === balGenerationRef.current && !controller.signal.aborted) {
+        setBalItems(result.items);
+        setBalMeta(result.meta);
+      }
     }).catch((cause) => {
-      if (!controller.signal.aborted) setStatusError(formatApiError(cause, 'Не удалось получить состояние каталога 1С.'));
-    });
-    return () => controller.abort();
-  }, [canRead, offlineMode, statusRevision]);
-
-  useEffect(() => {
-    const normalized = query.trim();
-    searchGenerationRef.current += 1;
-    const requestId = searchGenerationRef.current;
-    searchAbortRef.current?.abort();
-    if (!canRead || offlineMode || normalized.length < 2) {
-      setItems([]);
-      setLoading(false);
-      setRefreshing(false);
-      setError('');
-      return;
-    }
-    const controller = new AbortController();
-    searchAbortRef.current = controller;
-    setLoading(true);
-    setError('');
-    void searchWarehouse1CCatalog({ kind, query: normalized, limit: SEARCH_LIMIT, signal: controller.signal }).then((result) => {
-      if (requestId === searchGenerationRef.current && !controller.signal.aborted) setItems(result);
-    }).catch((cause) => {
-      if (requestId === searchGenerationRef.current && !controller.signal.aborted) {
-        setItems([]);
-        setError(formatApiError(cause, 'Не удалось выполнить поиск в каталоге 1С.'));
+      if (requestId === balGenerationRef.current && !controller.signal.aborted) {
+        setBalItems([]);
+        setBalMeta(null);
+        setBalError(formatApiError(cause, 'Не удалось загрузить остатки 1С.'));
       }
     }).finally(() => {
-      if (requestId === searchGenerationRef.current && !controller.signal.aborted) {
-        setLoading(false);
-        setRefreshing(false);
+      if (requestId === balGenerationRef.current && !controller.signal.aborted) {
+        setBalLoading(false);
+        setBalRefreshing(false);
       }
     });
-    return () => controller.abort();
-  }, [canRead, kind, offlineMode, query, revision]);
+  }, [balNomenclature, balQueryDraft, balWarehouse, canRead, offlineMode]);
+
+  const loadMovements = useCallback((cursor = '') => {
+    if (!movNomenclature?.ref) return;
+    movGenerationRef.current += 1;
+    const requestId = movGenerationRef.current;
+    movAbortRef.current?.abort();
+    if (!canRead || offlineMode) return;
+    const controller = new AbortController();
+    movAbortRef.current = controller;
+    if (cursor) setMovLoadingMore(true);
+    else setMovLoading(true);
+    setMovError('');
+    setMovSearched(true);
+    const { dateFrom, dateTo } = movementPeriodDates(movPeriod);
+    void getWarehouse1CMovements({
+      nomenclatureRef: movNomenclature.ref,
+      warehouseRef: movWarehouse?.ref || '',
+      dateFrom,
+      dateTo,
+      limit: MOVEMENTS_LIMIT,
+      cursor,
+      signal: controller.signal,
+    }).then((result) => {
+      if (requestId === movGenerationRef.current && !controller.signal.aborted) {
+        setMovItems((current) => (cursor ? [...current, ...result.items] : result.items));
+        setMovMeta(result.meta);
+      }
+    }).catch((cause) => {
+      if (requestId === movGenerationRef.current && !controller.signal.aborted) {
+        if (!cursor) setMovItems([]);
+        setMovMeta(null);
+        setMovError(formatApiError(cause, 'Не удалось загрузить движения 1С.'));
+      }
+    }).finally(() => {
+      if (requestId === movGenerationRef.current && !controller.signal.aborted) {
+        setMovLoading(false);
+        setMovRefreshing(false);
+        setMovLoadingMore(false);
+      }
+    });
+  }, [canRead, movNomenclature?.ref, movPeriod, movWarehouse?.ref, offlineMode]);
+
+  const loadDismissed = useCallback(() => {
+    disGenerationRef.current += 1;
+    const requestId = disGenerationRef.current;
+    disAbortRef.current?.abort();
+    if (!canRead || offlineMode) return;
+    const controller = new AbortController();
+    disAbortRef.current = controller;
+    setDisLoading(true);
+    setDisError('');
+    void getWarehouse1CDismissedWarehouses({ signal: controller.signal }).then((result) => {
+      if (requestId === disGenerationRef.current && !controller.signal.aborted) {
+        setDisItems(result.items);
+        setDisMeta(result.meta);
+      }
+    }).catch((cause) => {
+      if (requestId === disGenerationRef.current && !controller.signal.aborted) {
+        setDisItems([]);
+        setDisMeta(null);
+        setDisError(formatApiError(cause, 'Не удалось загрузить склады уволенных сотрудников.'));
+      }
+    }).finally(() => {
+      if (requestId === disGenerationRef.current && !controller.signal.aborted) {
+        setDisLoading(false);
+        setDisRefreshing(false);
+      }
+    });
+  }, [canRead, offlineMode]);
+
+  useEffect(() => {
+    if (tab === 'dismissed' && !disRequested) {
+      setDisRequested(true);
+      loadDismissed();
+    }
+  }, [disRequested, loadDismissed, tab]);
+
+  useEffect(() => {
+    if (tab === 'movements' && movAutoSearchRef.current && movNomenclature?.ref) {
+      movAutoSearchRef.current = false;
+      loadMovements();
+    }
+  }, [loadMovements, movNomenclature?.ref, tab]);
+
+  useEffect(() => {
+    if (tab === 'balances' && !balSearched && balNomenclature && initialTab === 'balances') {
+      loadBalances();
+    }
+  }, [balNomenclature, balSearched, initialTab, loadBalances, tab]);
+
+  useEffect(() => {
+    if (tab === 'movements' && !movSearched && movNomenclature?.ref && initialTab === 'movements') {
+      loadMovements();
+    }
+  }, [initialTab, loadMovements, movNomenclature?.ref, movSearched, tab]);
 
   const cancelRequests = useCallback(() => {
-    searchGenerationRef.current += 1;
-    searchAbortRef.current?.abort();
-    statusAbortRef.current?.abort();
-    setLoading(false);
-    setRefreshing(false);
+    balGenerationRef.current += 1;
+    balAbortRef.current?.abort();
+    movGenerationRef.current += 1;
+    movAbortRef.current?.abort();
+    disGenerationRef.current += 1;
+    disAbortRef.current?.abort();
+    detailSequenceRef.current += 1;
+    detailAbortRef.current?.abort();
+    setBalLoading(false);
+    setBalRefreshing(false);
+    setMovLoading(false);
+    setMovRefreshing(false);
+    setMovLoadingMore(false);
+    setDisLoading(false);
+    setDisRefreshing(false);
+    setDetailLoading(false);
+    setBusyFileKey('');
   }, []);
 
-  const refresh = useCallback(() => {
-    if (offlineMode || !canRead) return;
-    setRefreshing(query.length >= 2);
-    setRevision((value) => value + 1);
-    setStatusRevision((value) => value + 1);
-  }, [canRead, offlineMode, query.length]);
+  const openMovementsForBalance = useCallback((item: Warehouse1CBalance) => {
+    setMovNomenclature({ ref: item.nomenclatureRef, code: item.nomenclatureCode, name: item.nomenclatureName });
+    setMovWarehouse(item.warehouseRef ? { ref: item.warehouseRef, code: '', name: item.warehouseName } : null);
+    movAutoSearchRef.current = true;
+    setTab('movements');
+  }, []);
+
+  const openMovementDetail = useCallback((movement: Warehouse1CMovement) => {
+    if (!movement.canOpenDetail || !movement.registrarRef) return;
+    detailSequenceRef.current += 1;
+    const sequence = detailSequenceRef.current;
+    detailAbortRef.current?.abort();
+    const controller = new AbortController();
+    detailAbortRef.current = controller;
+    setDetailMovement(movement);
+    setDetailData(null);
+    setDetailError('');
+    setBusyFileKey('');
+    setDetailLoading(true);
+    void getWarehouse1CMovementDetail(movement.registrarRef, { signal: controller.signal }).then((detail) => {
+      if (detailSequenceRef.current !== sequence || controller.signal.aborted) return;
+      setDetailData(detail);
+    }).catch((cause) => {
+      if (detailSequenceRef.current !== sequence || controller.signal.aborted) return;
+      setDetailError(formatApiError(cause, 'Не удалось загрузить карточку документа.'));
+    }).finally(() => {
+      if (detailSequenceRef.current === sequence && !controller.signal.aborted) setDetailLoading(false);
+    });
+  }, []);
+
+  const closeMovementDetail = useCallback(() => {
+    detailSequenceRef.current += 1;
+    detailAbortRef.current?.abort();
+    setDetailMovement(null);
+    setDetailData(null);
+    setDetailLoading(false);
+    setDetailError('');
+    setBusyFileKey('');
+  }, []);
+
+  const downloadFile = useCallback(async (registrarRef: string, file: Warehouse1CMovementFile) => {
+    const fileKey = file.ref || file.name;
+    if (!fileKey || busyFileKey) return;
+    setBusyFileKey(fileKey);
+    try {
+      const downloaded = await downloadNativeWarehouse1cFile(registrarRef, file);
+      await shareNativeFile(downloaded, file.name || 'file.bin', file.contentType);
+    } catch (cause) {
+      setDetailError(formatApiError(cause, 'Не удалось скачать файл из 1С.'));
+    } finally {
+      setBusyFileKey('');
+    }
+  }, [busyFileKey]);
+
+  const previewFile = useCallback(async (registrarRef: string, file: Warehouse1CMovementFile) => {
+    const fileKey = file.ref || file.name;
+    if (!fileKey || busyFileKey) return;
+    setBusyFileKey(fileKey);
+    try {
+      const downloaded = await downloadNativeWarehouse1cPreview(registrarRef, file);
+      await openNativeFile(downloaded, 'application/pdf');
+    } catch (cause) {
+      setDetailError(formatApiError(cause, 'Не удалось открыть файл из 1С.'));
+    } finally {
+      setBusyFileKey('');
+    }
+  }, [busyFileKey]);
 
   useFocusEffect(useCallback(() => {
     focusedRef.current = true;
     if (firstFocusRef.current) firstFocusRef.current = false;
-    else {
-      setRevision((value) => value + 1);
-      setStatusRevision((value) => value + 1);
-    }
     return () => {
       focusedRef.current = false;
       cancelRequests();
@@ -180,11 +370,6 @@ export function NativeWarehouse1CScreen() {
     const subscription = AppState.addEventListener('change', (stateValue) => {
       if (stateValue !== 'active') {
         cancelRequests();
-        return;
-      }
-      if (focusedRef.current) {
-        setRevision((value) => value + 1);
-        setStatusRevision((value) => value + 1);
       }
     });
     return () => subscription.remove();
@@ -193,9 +378,9 @@ export function NativeWarehouse1CScreen() {
   useEffect(() => {
     if (canRead) return;
     cancelRequests();
-    setItems([]);
-    setQueryDraft('');
-    setQuery('');
+    setBalItems([]);
+    setMovItems([]);
+    setDisItems([]);
   }, [canRead, cancelRequests]);
 
   if (!canRead) {
@@ -206,118 +391,126 @@ export function NativeWarehouse1CScreen() {
     );
   }
 
-  const statusMessage = statusCopy(status);
-  const statusColor = statusMessage.tone === 'error'
-    ? tokens.error
-    : (statusMessage.tone === 'warning' ? tokens.warning : tokens.primary);
-
-  const header = (
-    <View style={styles.header}>
-      {offlineMode ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.warning }]}>Требуется сеть: каталог 1С не сохраняется на устройстве.</Text> : null}
-      {error ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.error }]}>{error}</Text> : null}
-      {statusError ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.error }]}>{statusError}</Text> : null}
-      <View accessibilityRole="tablist" style={styles.modes}>
-        <ModeButton label="Номенклатура" selected={kind === 'nomenclature'} onPress={() => { setKind('nomenclature'); setQueryDraft(''); setQuery(''); }} tokens={tokens} />
-        <ModeButton label="Склады" selected={kind === 'warehouses'} onPress={() => { setKind('warehouses'); setQueryDraft(''); setQuery(''); }} tokens={tokens} />
-      </View>
-      <View style={[styles.search, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}>
-        <MaterialCommunityIcons name="magnify" size={21} color={tokens.iconMuted} />
-        <TextInput
-          testID="native-warehouse-1c-search"
-          value={queryDraft}
-          onChangeText={setQueryDraft}
-          editable={!offlineMode}
-          placeholder={kind === 'warehouses' ? 'Название склада' : 'Код или название'}
-          placeholderTextColor={tokens.textTertiary}
-          accessibilityLabel={kind === 'warehouses' ? 'Поиск склада 1С' : 'Поиск номенклатуры 1С'}
-          returnKeyType="search"
-          style={[styles.searchInput, { color: tokens.textPrimary }]}
-        />
-        {queryDraft ? <Pressable onPress={() => { setQueryDraft(''); setQuery(''); }} accessibilityRole="button" accessibilityLabel="Очистить поиск" style={styles.iconButton}><MaterialCommunityIcons name="close" size={20} color={tokens.iconMuted} /></Pressable> : null}
-      </View>
-      <Text accessibilityLiveRegion="polite" style={{ color: statusColor, fontSize: 12 }}>{statusMessage.title} · {statusMessage.detail}</Text>
-      <AccountSectionCard tokens={tokens} title="О каталоге" collapsible>
-      <View style={[styles.boundary, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
-        <MaterialCommunityIcons name="database-search-outline" size={23} color={tokens.primary} />
-        <View style={styles.flex}>
-          <Text style={[styles.boundaryTitle, { color: tokens.textPrimary }]}>Без live-запросов к 1С</Text>
-          <Text style={[styles.boundaryText, { color: tokens.textSecondary }]}>Доступен безопасный поиск по снимку справочников. Остатки, движения, сотрудники, вложения и сверка пока не поддерживаются на мобильном устройстве.</Text>
-        </View>
-      </View>
-      <View style={[styles.statusCard, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}>
-        <View style={[styles.statusIcon, { backgroundColor: tokens.panelInset }]}><MaterialCommunityIcons name="database-clock-outline" size={22} color={statusColor} /></View>
-        <View style={styles.flex}>
-          <Text accessibilityLiveRegion="polite" style={[styles.statusTitle, { color: statusColor }]}>{statusMessage.title}</Text>
-          <Text style={[styles.statusDetail, { color: tokens.textSecondary }]}>{statusMessage.detail}</Text>
-          {status && status.status !== 'unknown' ? (
-            <Text style={[styles.statusCounts, { color: tokens.textSecondary }]}>Номенклатура: {status.nomenclature_count} · Склады: {status.warehouses_count}</Text>
-          ) : null}
-        </View>
-      </View>
-      </AccountSectionCard>
-      {query.length < 2 ? <Text style={[styles.hint, { color: tokens.textSecondary }]}>Введите минимум 2 символа.</Text> : null}
-      {query.length >= 2 ? <Text accessibilityLiveRegion="polite" style={[styles.count, { color: tokens.textSecondary }]}>Найдено: {items.length}</Text> : null}
-      {items.length >= SEARCH_LIMIT ? <Text accessibilityRole="alert" style={[styles.notice, { color: tokens.warning }]}>Показаны первые {SEARCH_LIMIT} совпадений. Уточните запрос, если нужной записи нет.</Text> : null}
-      {loading && items.length === 0 ? <View style={styles.loading}><ActivityIndicator color={tokens.primary} /><Text style={[styles.hint, { color: tokens.textSecondary }]}>Ищем в снимке каталога…</Text></View> : null}
-      {!loading && error && items.length === 0 ? <Pressable testID="native-warehouse-1c-retry" disabled={offlineMode} onPress={refresh} accessibilityRole="button" style={[styles.primaryAction, { backgroundColor: tokens.primary, opacity: offlineMode ? 0.5 : 1 }]}><Text style={styles.primaryActionText}>Повторить</Text></Pressable> : null}
-    </View>
-  );
+  const pickerKind = pickerTarget === 'balWh' || pickerTarget === 'movWh' ? 'warehouses' : 'nomenclature';
+  const onPickerSelect = (item: Warehouse1CCatalogItem) => {
+    if (pickerTarget === 'balNom') setBalNomenclature(item);
+    else if (pickerTarget === 'balWh') setBalWarehouse(item);
+    else if (pickerTarget === 'movNom') setMovNomenclature(item);
+    else if (pickerTarget === 'movWh') setMovWarehouse(item);
+    setPickerTarget(null);
+  };
 
   return (
-    <AccountScreenScaffold
-      title="Склад 1С"
-      tokens={tokens}
-      scroll={false}
-    >
-      <FlatList
-        initialNumToRender={12}
-        maxToRenderPerBatch={10}
-        windowSize={7}
-        testID="native-warehouse-1c-list"
-        data={items}
-        keyExtractor={(item) => item.ref}
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={items.length ? styles.list : styles.emptyList}
-        ListHeaderComponent={header}
-        ListEmptyComponent={!loading && !error && query.length >= 2 && !offlineMode ? <Text style={[styles.empty, { color: tokens.textSecondary }]}>По запросу ничего не найдено.</Text> : null}
-        renderItem={({ item }) => (
-          <NativeWarehouse1CCatalogCard
-            item={item}
-            kind={kind}
-            tokens={tokens}
-          />
-        )}
-        refreshing={refreshing}
-        onRefresh={refresh}
+    <AccountScreenScaffold title="Склад 1С" tokens={tokens} scroll={false} contentUnderNav>
+      <View style={styles.tabs}>
+        <NativeTabPicker
+          options={TAB_OPTIONS}
+          selected={tab}
+          onSelect={(value) => setTab(value as Warehouse1cTab)}
+          tokens={tokens}
+          testIDPrefix="native-warehouse-1c-tab"
+          title="Раздел склада 1С"
+        />
+      </View>
+      {tab === 'balances' ? (
+        <NativeWarehouse1CBalancesPanel
+          tokens={tokens}
+          offline={offlineMode}
+          nomenclature={balNomenclature}
+          warehouse={balWarehouse}
+          onPickNomenclature={() => setPickerTarget('balNom')}
+          onPickWarehouse={() => setPickerTarget('balWh')}
+          onClearNomenclature={() => setBalNomenclature(null)}
+          onClearWarehouse={() => setBalWarehouse(null)}
+          queryDraft={balQueryDraft}
+          onQueryDraft={setBalQueryDraft}
+          searched={balSearched}
+          loading={balLoading}
+          refreshing={balRefreshing}
+          error={balError}
+          items={balItems}
+          meta={balMeta}
+          onSearch={loadBalances}
+          onRefresh={() => { setBalRefreshing(true); loadBalances(); }}
+          onOpenMovements={openMovementsForBalance}
+        />
+      ) : null}
+      {tab === 'movements' ? (
+        <NativeWarehouse1CMovementsPanel
+          tokens={tokens}
+          offline={offlineMode}
+          nomenclature={movNomenclature}
+          warehouse={movWarehouse}
+          period={movPeriod}
+          onPickNomenclature={() => setPickerTarget('movNom')}
+          onPickWarehouse={() => setPickerTarget('movWh')}
+          onClearNomenclature={() => setMovNomenclature(null)}
+          onClearWarehouse={() => setMovWarehouse(null)}
+          onSelectPeriod={setMovPeriod}
+          searched={movSearched}
+          loading={movLoading}
+          refreshing={movRefreshing}
+          loadingMore={movLoadingMore}
+          error={movError}
+          items={movItems}
+          meta={movMeta}
+          onSearch={() => loadMovements()}
+          onRefresh={() => { setMovRefreshing(true); loadMovements(); }}
+          onLoadMore={() => { if (movMeta?.nextCursor) loadMovements(movMeta.nextCursor); }}
+          onOpenDetail={openMovementDetail}
+        />
+      ) : null}
+      {tab === 'dismissed' ? (
+        <NativeWarehouse1CDismissedPanel
+          tokens={tokens}
+          offline={offlineMode}
+          loading={disLoading}
+          refreshing={disRefreshing}
+          error={disError}
+          items={disItems}
+          meta={disMeta}
+          expandedRefs={disExpanded}
+          onToggle={(key) => setDisExpanded((current) => {
+            const next = new Set(current);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            return next;
+          })}
+          onRefresh={() => { setDisRefreshing(true); loadDismissed(); }}
+        />
+      ) : null}
+      {tab === 'catalog' ? (
+        <NativeWarehouse1CCatalogPanel
+          tokens={tokens}
+          canRead={canRead}
+          offline={offlineMode}
+          active={tab === 'catalog'}
+        />
+      ) : null}
+
+      <NativeWarehouse1CPickerSheet
+        visible={pickerTarget !== null}
+        kind={pickerKind}
+        tokens={tokens}
+        onClose={() => setPickerTarget(null)}
+        onSelect={onPickerSelect}
+      />
+      <NativeWarehouse1CMovementDetailSheet
+        visible={detailMovement !== null}
+        movement={detailMovement}
+        detail={detailData}
+        loading={detailLoading}
+        error={detailError}
+        busyFileKey={busyFileKey}
+        onClose={closeMovementDetail}
+        onDownloadFile={downloadFile}
+        onPreviewFile={previewFile}
+        tokens={tokens}
       />
     </AccountScreenScaffold>
   );
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1 },
-  header: { gap: 9, paddingBottom: 10 },
-  notice: { fontSize: 12, lineHeight: 17, fontWeight: '700' },
-  boundary: { minHeight: 82, borderWidth: 1, borderRadius: 15, padding: 12, flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
-  boundaryTitle: { fontSize: 14, lineHeight: 19, fontWeight: '800' },
-  boundaryText: { marginTop: 2, fontSize: 11, lineHeight: 16 },
-  statusCard: { minHeight: 88, borderWidth: 1, borderRadius: 16, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  statusIcon: { width: 42, height: 42, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
-  statusTitle: { fontSize: 13, lineHeight: 18, fontWeight: '900' },
-  statusDetail: { marginTop: 2, fontSize: 11, lineHeight: 16 },
-  statusCounts: { marginTop: 3, fontSize: 11, lineHeight: 16, fontWeight: '700' },
-  modes: { flexDirection: 'row', gap: 8 },
-  modeButton: { flex: 1, minHeight: 44, borderWidth: 1, borderRadius: 13, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center' },
-  modeText: { fontSize: 12, lineHeight: 17, fontWeight: '800', textAlign: 'center' },
-  search: { minHeight: 48, borderWidth: 1, borderRadius: 13, paddingLeft: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  searchInput: { flex: 1, minHeight: 46, fontSize: 15 },
-  iconButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  hint: { fontSize: 12, lineHeight: 17 },
-  count: { minHeight: 24, fontSize: 12, lineHeight: 18, fontWeight: '700' },
-  loading: { minHeight: 96, alignItems: 'center', justifyContent: 'center', gap: 8 },
-  primaryAction: { minHeight: 44, borderRadius: 12, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center' },
-  primaryActionText: { color: '#fff', fontSize: 13, fontWeight: '800' },
-  list: { gap: 9, paddingBottom: 8 },
-  emptyList: { flexGrow: 1, paddingBottom: 60 },
-  empty: { paddingVertical: 22, textAlign: 'center', fontSize: 13, lineHeight: 19 },
+  tabs: { paddingBottom: 10 },
 });

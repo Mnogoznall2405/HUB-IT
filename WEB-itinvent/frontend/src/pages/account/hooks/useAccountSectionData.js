@@ -72,6 +72,7 @@ export function useAccountSectionData(area = 'settings') {
   const canManageAiBots = isAdmin || hasPermission('settings.ai.manage');
   const canManageDepartments = isAdmin || hasPermission('departments.manage');
   const canAccessMail = hasPermission('mail.access');
+  const canReadMyFilesAudit = isAdmin || hasPermission('my_files.stats.read');
   const adminSections = useMemo(
     () => getAvailableAdminSections({ user, hasPermission }),
     [hasPermission, user],
@@ -538,6 +539,7 @@ export function useAccountSectionData(area = 'settings') {
         is_active: Boolean(draft.is_active),
         use_custom_permissions: Boolean(draft.use_custom_permissions),
         custom_permissions: normalizePermissions(draft.custom_permissions),
+        my_files_quota_bytes: draft.my_files_quota_bytes ?? null,
       };
       if (payload.auth_source !== 'ldap' && String(payload.password || '').length < 6) {
         notifyInfo('Для локального пользователя нужен пароль не короче 6 символов.', {
@@ -594,6 +596,7 @@ export function useAccountSectionData(area = 'settings') {
         is_active: Boolean(draft.is_active),
         use_custom_permissions: Boolean(draft.use_custom_permissions),
         custom_permissions: normalizePermissions(draft.custom_permissions),
+        my_files_quota_bytes: draft.my_files_quota_bytes ?? null,
       };
       const updated = await authAPI.updateUser(userId, payload);
       await authAPI.updateTaskDelegates(
@@ -927,6 +930,7 @@ export function useAccountSectionData(area = 'settings') {
     canManageSessions,
     canManageAiBots,
     canManageDepartments,
+    canReadMyFilesAudit,
     canAccessMail,
     adminSections,
     activeSection,

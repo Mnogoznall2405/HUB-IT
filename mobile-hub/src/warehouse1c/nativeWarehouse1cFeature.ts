@@ -8,7 +8,20 @@ export const NATIVE_WAREHOUSE_1C_ENABLED = resolveNativeWarehouse1CEnabled(
   process.env.EXPO_PUBLIC_NATIVE_WAREHOUSE_1C_ENABLED,
 );
 
-export type NativeWarehouse1CDestination = { pathname: '/(shell)/warehouse-1c' };
+const WAREHOUSE_1C_TABS = new Set(['balances', 'movements', 'dismissed', 'catalog']);
+
+export type NativeWarehouse1CDestination = {
+  pathname: '/(shell)/warehouse-1c';
+  params?: {
+    tab?: 'balances' | 'movements' | 'dismissed' | 'catalog';
+    nomenclatureRef?: string;
+    warehouseRef?: string;
+  };
+};
+
+function boundedRef(value: string | null): string {
+  return String(value || '').trim().slice(0, 64);
+}
 
 export function nativeWarehouse1CDestinationFromPortalPath(path: string): NativeWarehouse1CDestination | null {
   let parsed: URL;
@@ -17,8 +30,18 @@ export function nativeWarehouse1CDestinationFromPortalPath(path: string): Native
   } catch {
     return null;
   }
-  if (!['/warehouse-1c', '/warehouse-1c/'].includes(parsed.pathname) || parsed.search || parsed.hash) return null;
-  return { pathname: '/(shell)/warehouse-1c' };
+  if (!['/warehouse-1c', '/warehouse-1c/'].includes(parsed.pathname) || parsed.hash) return null;
+  const params: NonNullable<NativeWarehouse1CDestination['params']> = {};
+  const tab = parsed.searchParams.get('tab');
+  if (tab && WAREHOUSE_1C_TABS.has(tab)) params.tab = tab as NonNullable<NativeWarehouse1CDestination['params']>['tab'];
+  const nomenclatureRef = boundedRef(parsed.searchParams.get('nomenclatureRef'));
+  if (nomenclatureRef) params.nomenclatureRef = nomenclatureRef;
+  const warehouseRef = boundedRef(parsed.searchParams.get('warehouseRef'));
+  if (warehouseRef) params.warehouseRef = warehouseRef;
+  return {
+    pathname: '/(shell)/warehouse-1c',
+    ...(Object.keys(params).length ? { params } : {}),
+  };
 }
 
 export function warehouse1CPortalPath(options: { kind?: 'nomenclature' | 'warehouses'; ref?: string } = {}): string {

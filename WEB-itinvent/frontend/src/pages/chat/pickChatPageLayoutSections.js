@@ -139,6 +139,8 @@ export function pickChatPageLayoutSections(input) {
       selectedFilesSummary: input.selectedFilesSummary,
       getReadTargetRef: input.getReadTargetRef,
       handleToggleReaction: input.handleToggleReaction,
+      handlePollVote: input.handlePollVote,
+      handlePollClose: input.handlePollClose,
       scrollToMessage: input.scrollToMessage,
       emojiPickerOpen: input.emojiPickerOpen,
       insertEmojiAtSelection: input.insertEmojiAtSelection,

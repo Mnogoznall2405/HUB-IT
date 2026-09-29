@@ -32,6 +32,7 @@ import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
 import { NativePasswordEntryCard } from '../../components/passwords/NativePasswordEntryCard';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
+import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { NativeAppliedChip, NativeFilterButton } from '../../components/ui/NativeFilterControls';
 import { NativeFilterSheet } from '../../components/ui/NativeFilterSheet';
 import { AccountField, AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
@@ -109,6 +110,7 @@ export function NativePasswordsScreen() {
   const { biometricEnabled, hasPermission, offlineMode, user } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
+  const navInset = useNativeBottomNavInset();
   const canRead = hasPermission('passwords.read');
   const canWrite = hasPermission('passwords.write');
   const [entries, setEntries] = useState<PasswordVaultEntry[]>([]);
@@ -532,6 +534,7 @@ export function NativePasswordsScreen() {
       tokens={tokens}
       rightAction={<Pressable accessibilityRole="button" accessibilityLabel="Защита паролей" onPress={() => Alert.alert('Защищено отпечатком', 'Пароль загружается после подтверждения личности. Он не сохраняется в офлайн-кэше и скрывается при сворачивании приложения.')} style={styles.iconButton}><MaterialCommunityIcons name="shield-lock-outline" size={23} color={tokens.primary} /></Pressable>}
       scroll={false}
+      contentUnderNav
     >
       <FlatList
         initialNumToRender={12}
@@ -541,7 +544,7 @@ export function NativePasswordsScreen() {
         data={entries}
         keyExtractor={(entry) => entry.id}
         keyboardShouldPersistTaps="handled"
-        contentContainerStyle={entries.length ? styles.list : styles.emptyList}
+        contentContainerStyle={entries.length ? [styles.list, { paddingBottom: navInset }] : [styles.emptyList, { paddingBottom: navInset }]}
         ListHeaderComponent={header}
         ListEmptyComponent={!loading && !error ? <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>{query || group || tag ? 'По фильтрам ничего не найдено.' : 'В хранилище пока нет записей.'}</Text> : null}
         renderItem={renderEntry}

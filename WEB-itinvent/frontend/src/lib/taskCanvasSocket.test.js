@@ -129,6 +129,17 @@ describe('TaskCanvasSocketClient', () => {
     client.close();
   });
 
+  it('reconnects after a slow consumer close code 1013', async () => {
+    const { TaskCanvasSocketClient } = await loadTaskCanvasSocket();
+    const client = new TaskCanvasSocketClient({ taskId: 'task-1' });
+    client.connect();
+
+    MockWebSocket.instances[0].emitClose({ code: 1013, reason: 'slow consumer' });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    client.close();
+  });
+
   it('refreshes authorization and reconnects after a 4401 close', async () => {
     const { TaskCanvasSocketClient } = await loadTaskCanvasSocket();
     const onStatus = vi.fn();

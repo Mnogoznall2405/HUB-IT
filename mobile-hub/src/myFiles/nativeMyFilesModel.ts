@@ -1,11 +1,11 @@
 import type { MyFileRecord } from '../api/myFilesApi';
 import { API_V1_BASE } from '../api/config';
 
-export const MY_FILES_RETENTION_OPTIONS = [1, 3, 7, 10, 30] as const;
-// Uploads go through chunked /my-files/upload-sessions: the ceiling is the
-// backend reservation limit (my_files_service.MY_FILES_MAX_FILE_BYTES), not the
-// IIS single-request content-length cap.
-export const MY_FILES_MAX_FILE_BYTES = 10 * 1024 * 1024 * 1024;
+export const MY_FILES_RETENTION_OPTIONS = [1, 3, 7, 10, 30, 0] as const;
+// Uploads go through chunked /my-files/upload-sessions: this client-side sanity
+// bound matches the backend quota ceiling (my_files_service.USER_QUOTA_MAX_BYTES).
+// The effective bound is the user's storage quota, enforced at reservation.
+export const MY_FILES_MAX_FILE_BYTES = 400 * 1024 * 1024 * 1024;
 export const MY_FILES_TEXT_PREVIEW_MAX_BYTES = 1024 * 1024;
 export const MY_FILES_ACTIVE_STATUSES = new Set(['uploading', 'queued', 'scanning', 'processing']);
 
@@ -140,6 +140,11 @@ export function isMyFileProcessing(item: MyFileRecord): boolean {
 export function normalizeMyFilesRetention(value: unknown): number {
   const parsed = Number(value);
   return MY_FILES_RETENTION_OPTIONS.includes(parsed as never) ? parsed : 1;
+}
+
+export function formatMyFilesRetentionLabel(days: number, pluralize: (n: number, forms: [string, string, string]) => string): string {
+  if (Number(days) === 0) return 'Навсегда';
+  return `${days} ${pluralize(days, ['день', 'дня', 'дней'])}`;
 }
 
 export function buildMyFilePublicUrl(token: string, trustedOrigin: string): string {

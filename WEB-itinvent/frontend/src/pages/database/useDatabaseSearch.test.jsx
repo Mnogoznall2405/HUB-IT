@@ -119,7 +119,7 @@ describe('useDatabaseSearch (server-primary)', () => {
       vi.advanceTimersByTime(50);
     });
 
-    expect(equipmentAPI.searchUniversal).toHaveBeenCalledWith('laser', 1, 200);
+    expect(equipmentAPI.searchUniversal).toHaveBeenCalledWith('laser', 1, 200, { typeNo: null, field: '' });
     expect(result.current.appliedSearchQuery).toBe('laser');
     expect(result.current.filteredData).toEqual({ HQ: { Office: [serverPrinterRow] } });
     expect(setExpandedBranches).toHaveBeenLastCalledWith(new Set(['HQ']));
@@ -198,7 +198,7 @@ describe('useDatabaseSearch (server-primary)', () => {
       await Promise.resolve();
     });
 
-    expect(equipmentAPI.searchUniversal).toHaveBeenLastCalledWith('printer', 1, 200);
+    expect(equipmentAPI.searchUniversal).toHaveBeenLastCalledWith('printer', 1, 200, { typeNo: null, field: '' });
     expect(result.current.filteredData).toEqual({ Remote: { Stock: [serverRemoteRow] } });
     expect(setExpandedBranches).toHaveBeenLastCalledWith(new Set(['Remote']));
   });
@@ -285,7 +285,7 @@ describe('useDatabaseSearch (server-primary)', () => {
       result.current.loadMoreSearchResults();
     });
 
-    expect(equipmentAPI.searchUniversal).toHaveBeenLastCalledWith('printer', 2, 200);
+    expect(equipmentAPI.searchUniversal).toHaveBeenLastCalledWith('printer', 2, 200, { typeNo: null, field: '' });
     expect(result.current.filteredData).toEqual({
       HQ: { Office: [serverPrinterRow] },
       Remote: { Stock: [serverRemoteRow] },

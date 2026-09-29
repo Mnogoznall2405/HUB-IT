@@ -18,6 +18,13 @@ export const equipmentConsumablesAPI = {
     return response.data;
   },
 
+  getConsumableById: async (itemId) => {
+    const response = await apiClient.get(
+      `/equipment/consumables/${encodeURIComponent(String(itemId ?? ''))}`
+    );
+    return response.data;
+  },
+
   consumeConsumable: async (payload) => {
     const response = await apiClient.post('/equipment/consumables/consume', payload);
     return response.data;

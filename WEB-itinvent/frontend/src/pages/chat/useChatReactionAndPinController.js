@@ -26,6 +26,37 @@ export default function useChatReactionAndPinController({
     }
   }, [activeConversationIdRef, notifyApiError, setMessages]);
 
+  const handlePollVote = useCallback(async (messageId, optionIndex) => {
+    const conversationId = String(activeConversationIdRef.current || '').trim();
+    const index = Number(optionIndex);
+    if (!conversationId || !messageId || !Number.isInteger(index) || index < 0) return;
+    try {
+      const result = await chatAPI.votePoll(conversationId, messageId, index);
+      if (result?.message_id && result?.poll) {
+        setMessages((current) => current.map((msg) => (
+          msg.id === result.message_id ? { ...msg, poll: result.poll } : msg
+        )));
+      }
+    } catch (error) {
+      notifyApiError(error, 'Не удалось проголосовать в опросе.');
+    }
+  }, [activeConversationIdRef, notifyApiError, setMessages]);
+
+  const handlePollClose = useCallback(async (messageId) => {
+    const conversationId = String(activeConversationIdRef.current || '').trim();
+    if (!conversationId || !messageId) return;
+    try {
+      const result = await chatAPI.closePoll(conversationId, messageId);
+      if (result?.message_id && result?.poll) {
+        setMessages((current) => current.map((msg) => (
+          msg.id === result.message_id ? { ...msg, poll: result.poll } : msg
+        )));
+      }
+    } catch (error) {
+      notifyApiError(error, 'Не удалось завершить опрос.');
+    }
+  }, [activeConversationIdRef, notifyApiError, setMessages]);
+
   const handleOpenPinnedMessage = useCallback(async () => {
     const normalizedMessageId = String(pinnedMessage?.id || '').trim();
     if (!normalizedMessageId) return;
@@ -50,6 +81,8 @@ export default function useChatReactionAndPinController({
 
   return {
     handleOpenPinnedMessage,
+    handlePollClose,
+    handlePollVote,
     handleToggleReaction,
     handleUnpinPinnedMessage,
   };

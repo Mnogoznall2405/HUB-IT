@@ -73,6 +73,7 @@ import {
   buildMyFilePublicFolderUrl,
   buildMyFilePublicUrl,
   formatMyFileSize,
+  formatMyFilesRetentionLabel,
   isMyFileProcessing,
   MY_FILES_RETENTION_OPTIONS,
   myFileMimeType,
@@ -101,6 +102,7 @@ import {
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { shareNativeText } from '../../share/nativeOutgoingShare';
 import { useFluentTokens } from '../../theme/fluentTokens';
+import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { NativeSegmentedControl } from '../../components/ui/NativeFilterControls';
 import { AccountScreenScaffold, AccountSectionCard, AccountSubpage } from '../account/AccountChrome';
 
@@ -146,6 +148,7 @@ function NativeMyFilesContent() {
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
+  const navInset = useNativeBottomNavInset();
   const canRead = hasPermission('my_files.read');
   const canWrite = hasPermission('my_files.write');
   const canShare = hasPermission('my_files.share');
@@ -1227,6 +1230,7 @@ function NativeMyFilesContent() {
       title="Мои файлы"
       tokens={tokens}
       scroll={false}
+      contentUnderNav
     >
       <NativeMyFilePreviewModal preview={preview} tokens={tokens} onClose={() => setPreview(null)} />
       {offlineMode ? <Text accessibilityRole="alert" style={[styles.warning, { color: tokens.warning }]}>Автономный режим: показан сохранённый список. Файлы со статусом «Офлайн» можно открыть и отправить без сети.</Text> : null}
@@ -1277,14 +1281,14 @@ function NativeMyFilesContent() {
         {error ? <Text accessibilityRole="alert" style={{ color: tokens.error }}>{error}</Text> : null}
         {notice ? <Text accessibilityLiveRegion="polite" style={{ color: tokens.success }}>{notice}</Text> : null}
         <Text style={{ color: tokens.textSecondary, marginBottom: 12 }}>
-          Выберите срок хранения перед загрузкой. После его окончания файлы автоматически удаляются, максимум через 30 дней.
+          Выберите срок хранения перед загрузкой. При выборе «Навсегда» файлы не удаляются автоматически и занимают место в квоте; остальные сроки удаляются автоматически, максимум через 30 дней.
           {currentFolder ? ` Загрузка в папку «${currentFolder.name}».` : ''}
         </Text>
       {canWrite ? (
         <View style={styles.uploadBlock}>
           <Text style={[styles.sectionLabel, { color: tokens.textSecondary }]}>Срок хранения нового файла</Text>
           <NativeSegmentedControl
-            options={MY_FILES_RETENTION_OPTIONS.map((days) => ({ value: String(days), label: `${days} ${russianPlural(days, ['день', 'дня', 'дней'])}` }))}
+            options={MY_FILES_RETENTION_OPTIONS.map((days) => ({ value: String(days), label: formatMyFilesRetentionLabel(days, russianPlural) }))}
             selected={String(retentionDays)}
             onSelect={(value) => { if (!uploadState) setRetentionDays(Number(value)); }}
             tokens={tokens}
@@ -1409,7 +1413,7 @@ function NativeMyFilesContent() {
           maxToRenderPerBatch={10}
           windowSize={9}
           removeClippedSubviews
-          contentContainerStyle={listRows.length ? styles.listContent : styles.emptyContent}
+          contentContainerStyle={listRows.length ? [styles.listContent, { paddingBottom: navInset }] : [styles.emptyContent, { paddingBottom: navInset }]}
           ListEmptyComponent={(
             <View style={styles.emptyBody}>
               <MaterialCommunityIcons name={view === 'trash' ? 'delete-empty-outline' : 'folder-open-outline'} size={42} color={tokens.iconMuted} />

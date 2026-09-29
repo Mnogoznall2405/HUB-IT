@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 
 from backend.appdb.db import app_session, ensure_app_schema_initialized
 from backend.appdb.models import (
@@ -190,84 +191,45 @@ class AppInventoryStore:
             rows = session.scalars(stmt).all()
             return [self._row_payload(row) for row in rows]
 
-    def search_host_keys(self, query: str, search_fields: set[str], db_ids: list[str] | None = None) -> set[str] | None:
-        needle = _normalize_text(query).lower()
-        if not needle:
+    @staticmethod
+    def _folded_search_expr(column):
+        """lower() + ё→е: зеркало _fold_search_text для SQL LIKE-паттернов."""
+        return func.replace(func.lower(column), "ё", "е")
+
+    def search_host_keys(
+        self,
+        query: str,
+        search_fields: set[str],
+        db_ids: list[str] | None = None,
+        include_payload: bool = False,
+    ) -> set[str] | None:
+        """Возвращает mac-ключи хостов по индексным LIKE-колонкам.
+
+        Запрос разбивается на токены по пробелам (фолдинг: lower + ё→е) и
+        трактуется как AND: ключи по каждому токену пересекаются — пересечение
+        надмножеств остаётся надмножеством AND-ответа, точность даёт
+        Python-фильтр на стороне API.
+        """
+        tokens = [
+            token
+            for token in re.split(r"\s+", _normalize_text(query).lower().replace("ё", "е"))
+            if token
+        ]
+        if not tokens:
             return None
         fields = set(search_fields or set())
         if "network" in fields:
             return None
-        pattern = f"%{needle}%"
-        keys: set[str] = set()
         with app_session(self._database_url) as session:
-            if "identity" in fields or "user" in fields:
-                host_conditions = []
-                if "identity" in fields:
-                    host_conditions.extend(
-                        [
-                            func.lower(AppInventoryHost.hostname).like(pattern),
-                            func.lower(AppInventoryHost.mac_address).like(pattern),
-                            func.lower(AppInventoryHost.ip_primary).like(pattern),
-                        ]
-                    )
-                if "user" in fields:
-                    host_conditions.extend(
-                        [
-                            func.lower(AppInventoryHost.user_login).like(pattern),
-                            func.lower(AppInventoryHost.user_full_name).like(pattern),
-                        ]
-                    )
-                if host_conditions:
-                    keys.update(
-                        str(item or "")
-                        for item in session.scalars(
-                            select(AppInventoryHost.mac_address).where(or_(*host_conditions))
-                        ).all()
-                    )
-            if "profiles" in fields:
-                keys.update(
-                    str(item or "")
-                    for item in session.scalars(
-                        select(AppInventoryUserProfile.mac_address).where(
-                            or_(
-                                func.lower(AppInventoryUserProfile.user_name).like(pattern),
-                                func.lower(AppInventoryUserProfile.profile_path).like(pattern),
-                            )
-                        )
-                    ).all()
-                )
-            if "outlook" in fields:
-                keys.update(
-                    str(item or "")
-                    for item in session.scalars(
-                        select(AppInventoryOutlookFile.mac_address).where(
-                            or_(
-                                func.lower(AppInventoryOutlookFile.file_path).like(pattern),
-                                func.lower(AppInventoryOutlookFile.file_type).like(pattern),
-                                func.lower(AppInventoryOutlookFile.kind).like(pattern),
-                            )
-                        )
-                    ).all()
-                )
-            if "location" in fields or "database" in fields:
-                context_conditions = []
-                if "location" in fields:
-                    context_conditions.extend(
-                        [
-                            func.lower(AppInventoryHostSqlContext.branch_name).like(pattern),
-                            func.lower(AppInventoryHostSqlContext.location_name).like(pattern),
-                        ]
-                    )
-                if "database" in fields:
-                    context_conditions.append(func.lower(AppInventoryHostSqlContext.db_id).like(pattern))
-                if context_conditions:
-                    keys.update(
-                        str(item or "")
-                        for item in session.scalars(
-                            select(AppInventoryHostSqlContext.mac_address).where(or_(*context_conditions))
-                        ).all()
-                    )
-        result = {item for item in keys if item}
+            result: set[str] | None = None
+            for token in tokens:
+                token_keys = self._search_token_host_keys(session, token, fields, include_payload)
+                if token_keys is None:
+                    return None
+                result = token_keys if result is None else (result & token_keys)
+                if not result:
+                    return set()
+        result = result or set()
         if db_ids:
             scoped = self.list_mac_addresses_for_db_ids(db_ids)
             if scoped:
@@ -275,6 +237,109 @@ class AppInventoryStore:
             else:
                 return set()
         return result
+
+    def _search_token_host_keys(
+        self,
+        session,
+        token: str,
+        fields: set[str],
+        include_payload: bool,
+    ) -> set[str] | None:
+        # SQLite lower() — только ASCII: LIKE по кириллице надёжно не сматчится,
+        # поэтому честно просим полный скан вместо пустого кандидат-набора.
+        if session.bind.dialect.name == "sqlite" and any(ord(ch) > 127 for ch in token):
+            return None
+        folded = self._folded_search_expr
+        pattern = f"%{token}%"
+        escaped_pattern = (
+            f"%{token.replace(chr(92), chr(92) * 2)}%"
+            if "\\" in token
+            else pattern
+        )
+        keys: set[str] = set()
+        host_conditions = []
+        if "identity" in fields:
+            host_conditions.extend(
+                [
+                    folded(AppInventoryHost.hostname).like(pattern),
+                    folded(AppInventoryHost.mac_address).like(pattern),
+                    folded(AppInventoryHost.ip_primary).like(pattern),
+                ]
+            )
+            # MAC без разделителей: 'aabbccddeeff' матчит 'AA:BB:CC:DD:EE:FF'.
+            if len(token) >= 4 and re.fullmatch(r"[0-9a-f]+", token):
+                host_conditions.append(
+                    func.replace(
+                        func.replace(func.lower(AppInventoryHost.mac_address), ":", ""),
+                        "-",
+                        "",
+                    ).like(pattern)
+                )
+        if "user" in fields:
+            host_conditions.extend(
+                [
+                    folded(AppInventoryHost.user_login).like(pattern),
+                    folded(AppInventoryHost.user_full_name).like(pattern),
+                ]
+            )
+        if include_payload and fields & {"identity", "user", "profiles", "outlook"}:
+            # payload_json покрывает payload-поля: ip_list, current_user, папки профилей, производные outlook-пути
+            host_conditions.append(folded(AppInventoryHost.payload_json).like(pattern))
+            if escaped_pattern != pattern:
+                host_conditions.append(func.lower(AppInventoryHost.payload_json).like(escaped_pattern))
+        if host_conditions:
+            keys.update(
+                str(item or "")
+                for item in session.scalars(
+                    select(AppInventoryHost.mac_address).where(or_(*host_conditions))
+                ).all()
+            )
+        if "profiles" in fields:
+            keys.update(
+                str(item or "")
+                for item in session.scalars(
+                    select(AppInventoryUserProfile.mac_address).where(
+                        or_(
+                            folded(AppInventoryUserProfile.user_name).like(pattern),
+                            folded(AppInventoryUserProfile.profile_path).like(pattern),
+                        )
+                    )
+                ).all()
+            )
+        if "outlook" in fields:
+            keys.update(
+                str(item or "")
+                for item in session.scalars(
+                    select(AppInventoryOutlookFile.mac_address).where(
+                        or_(
+                            folded(AppInventoryOutlookFile.file_path).like(pattern),
+                            folded(AppInventoryOutlookFile.file_type).like(pattern),
+                            folded(AppInventoryOutlookFile.kind).like(pattern),
+                        )
+                    )
+                ).all()
+            )
+        if "location" in fields or "database" in fields or "user" in fields:
+            context_conditions = []
+            if "location" in fields:
+                context_conditions.extend(
+                    [
+                        folded(AppInventoryHostSqlContext.branch_name).like(pattern),
+                        folded(AppInventoryHostSqlContext.location_name).like(pattern),
+                    ]
+                )
+            if "database" in fields:
+                context_conditions.append(folded(AppInventoryHostSqlContext.db_id).like(pattern))
+            if "user" in fields:
+                context_conditions.append(folded(AppInventoryHostSqlContext.employee_name).like(pattern))
+            if context_conditions:
+                keys.update(
+                    str(item or "")
+                    for item in session.scalars(
+                        select(AppInventoryHostSqlContext.mac_address).where(or_(*context_conditions))
+                    ).all()
+                )
+        return {item for item in keys if item}
 
     def list_mac_addresses_for_db_ids(
         self,
@@ -295,6 +360,174 @@ class AppInventoryStore:
                 stmt = stmt.where(func.lower(AppInventoryHostSqlContext.branch_name) == branch_value)
             rows = session.scalars(stmt.distinct()).all()
         return {str(item or "").strip() for item in rows if str(item or "").strip()}
+
+    def list_unassigned_host_keys(self, db_ids: list[str] | None = None) -> set[str]:
+        """Return host MACs that have no SQL context in the given databases."""
+        normalized_db_ids = [_normalize_text(item) for item in db_ids or [] if _normalize_text(item)] if db_ids is not None else None
+        with app_session(self._database_url) as session:
+            ctx_macs = select(AppInventoryHostSqlContext.mac_address).where(
+                AppInventoryHostSqlContext.mac_address != ""
+            )
+            ctx_hostnames = select(func.lower(AppInventoryHostSqlContext.hostname)).where(
+                AppInventoryHostSqlContext.hostname != ""
+            )
+            if normalized_db_ids:
+                ctx_macs = ctx_macs.where(AppInventoryHostSqlContext.db_id.in_(normalized_db_ids))
+                ctx_hostnames = ctx_hostnames.where(AppInventoryHostSqlContext.db_id.in_(normalized_db_ids))
+            stmt = select(AppInventoryHost.mac_address).where(
+                AppInventoryHost.mac_address.notin_(ctx_macs),
+                or_(
+                    AppInventoryHost.hostname.is_(None),
+                    func.lower(AppInventoryHost.hostname).notin_(ctx_hostnames),
+                ),
+            )
+            rows = session.scalars(stmt).all()
+        return {str(item or "").strip() for item in rows if str(item or "").strip()}
+
+    def list_host_keys_for_context(
+        self,
+        db_ids: list[str],
+        *,
+        branch_name: str | None = None,
+    ) -> set[str]:
+        """Return host MACs having an SQL context in the given databases (optionally by branch)."""
+        normalized_db_ids = [_normalize_text(item) for item in db_ids or [] if _normalize_text(item)]
+        if not normalized_db_ids:
+            return set()
+        branch_value = _normalize_text(branch_name).lower()
+        with app_session(self._database_url) as session:
+            ctx_stmt = select(
+                AppInventoryHostSqlContext.mac_address,
+                AppInventoryHostSqlContext.hostname,
+            ).where(AppInventoryHostSqlContext.db_id.in_(normalized_db_ids))
+            # SQLite lower() — только ASCII: кириллическая ветка не сматчится,
+            # поэтому там отдаём всех по db_ids (Python-фильтр сузит по ветке).
+            if branch_value and session.bind.dialect.name != "sqlite":
+                ctx_stmt = ctx_stmt.where(
+                    func.lower(AppInventoryHostSqlContext.branch_name) == branch_value
+                )
+            ctx_rows = session.execute(ctx_stmt.distinct()).all()
+            ctx_macs = {str(item[0] or "").strip() for item in ctx_rows}
+            ctx_macs.discard("")
+            ctx_hostnames = {str(item[1] or "").strip() for item in ctx_rows}
+            ctx_hostnames.discard("")
+            ctx_hostnames_lower = {item.lower() for item in ctx_hostnames}
+            conditions = []
+            if ctx_macs:
+                conditions.append(AppInventoryHost.mac_address.in_(ctx_macs))
+            if ctx_hostnames:
+                conditions.append(
+                    or_(
+                        func.lower(AppInventoryHost.hostname).in_(ctx_hostnames_lower),
+                        AppInventoryHost.hostname.in_(ctx_hostnames),
+                    )
+                )
+            if not conditions:
+                return set()
+            stmt = select(AppInventoryHost.mac_address).where(or_(*conditions))
+            rows = session.scalars(stmt).all()
+        return {str(item or "").strip() for item in rows if str(item or "").strip()}
+
+    def list_host_keys_by_status(
+        self,
+        status_value: str,
+        *,
+        now_ts: int,
+        online_max_age_seconds: int,
+        stale_max_age_seconds: int,
+    ) -> set[str]:
+        """Return host MACs whose last_seen_at matches the computed status bucket."""
+        value = _normalize_text(status_value).lower()
+        online_cutoff = int(now_ts) - int(online_max_age_seconds)
+        stale_cutoff = int(now_ts) - int(stale_max_age_seconds)
+        if value == "online":
+            cond = AppInventoryHost.last_seen_at >= online_cutoff
+        elif value == "stale":
+            cond = and_(
+                AppInventoryHost.last_seen_at >= stale_cutoff,
+                AppInventoryHost.last_seen_at < online_cutoff,
+            )
+        elif value == "offline":
+            cond = and_(
+                AppInventoryHost.last_seen_at > 0,
+                AppInventoryHost.last_seen_at < stale_cutoff,
+            )
+        elif value == "unknown":
+            cond = or_(
+                AppInventoryHost.last_seen_at.is_(None),
+                AppInventoryHost.last_seen_at <= 0,
+            )
+        else:
+            return set()
+        # NULL-колонку включаем всегда: payload.timestamp может дать любой статус,
+        # финальную проверку делает Python-фильтр по обогащённой записи.
+        stmt = select(AppInventoryHost.mac_address).where(
+            or_(cond, AppInventoryHost.last_seen_at.is_(None))
+        )
+        with app_session(self._database_url) as session:
+            rows = session.scalars(stmt).all()
+        return {str(item or "").strip() for item in rows if str(item or "").strip()}
+
+    def list_changed_host_keys(self, since_ts: int) -> set[str]:
+        """Return host MACs that have change events with detected_at >= since_ts."""
+        with app_session(self._database_url) as session:
+            rows = session.execute(
+                select(AppInventoryChangeEvent.mac_address, AppInventoryChangeEvent.hostname)
+                .where(AppInventoryChangeEvent.detected_at >= int(since_ts))
+                .distinct()
+            ).all()
+            event_macs = {_normalize_mac(str(item[0] or "")) for item in rows}
+            event_macs.discard("")
+            event_hosts_raw = {str(item[1] or "").strip() for item in rows if not item[0]}
+            event_hosts_raw.discard("")
+            event_hosts_lower = {item.lower() for item in event_hosts_raw}
+            conditions = []
+            if event_macs:
+                conditions.append(AppInventoryHost.mac_address.in_(event_macs))
+            if event_hosts_raw:
+                conditions.append(
+                    or_(
+                        func.lower(AppInventoryHost.hostname).in_(event_hosts_lower),
+                        AppInventoryHost.hostname.in_(event_hosts_raw),
+                    )
+                )
+            if not conditions:
+                return set()
+            stmt = select(AppInventoryHost.mac_address).where(or_(*conditions))
+            matched = session.scalars(stmt).all()
+        return {str(item or "").strip() for item in matched if str(item or "").strip()}
+
+    def data_version_probe(self) -> tuple:
+        """Light fingerprint of inventory tables for caching/ETag validation."""
+        with app_session(self._database_url) as session:
+            host_max, host_count, hidden_count = session.execute(
+                select(
+                    func.max(AppInventoryHost.updated_at),
+                    func.count(),
+                    func.count(AppInventoryHost.hidden_at),
+                ).select_from(AppInventoryHost)
+            ).one()
+            ctx_max, ctx_count = session.execute(
+                select(
+                    func.max(AppInventoryHostSqlContext.updated_at),
+                    func.count(),
+                ).select_from(AppInventoryHostSqlContext)
+            ).one()
+            ev_max, ev_count = session.execute(
+                select(
+                    func.max(AppInventoryChangeEvent.detected_at),
+                    func.count(),
+                ).select_from(AppInventoryChangeEvent)
+            ).one()
+        return (
+            str(host_max or ""),
+            int(host_count or 0),
+            int(hidden_count or 0),
+            str(ctx_max or ""),
+            int(ctx_count or 0),
+            int(ev_max or 0),
+            int(ev_count or 0),
+        )
 
     def get_sql_context(self, *, mac_address: str, hostname: str, db_id: str) -> Optional[dict[str, Any]]:
         normalized_mac = _normalize_mac(mac_address)
@@ -495,6 +728,36 @@ class AppInventoryStore:
             session.flush()
             return self._row_payload(row)
 
+    def delete_host(self, mac_address: str) -> Optional[dict[str, Any]]:
+        """Полностью удалить хост и связанные строки (профили, outlook,
+        sql-контексты, события изменений). Агент может пересоздать хост
+        следующим отчётом — для скрытия без удаления используется hidden."""
+        host_key = _normalize_mac(mac_address)
+        if not host_key:
+            return None
+        with app_session(self._database_url) as session:
+            row = session.get(AppInventoryHost, host_key)
+            if row is None:
+                return None
+            hostname = _normalize_text(row.hostname).lower()
+            payload = self._row_payload(row)
+            session.execute(
+                delete(AppInventoryUserProfile).where(AppInventoryUserProfile.mac_address == host_key)
+            )
+            session.execute(
+                delete(AppInventoryOutlookFile).where(AppInventoryOutlookFile.mac_address == host_key)
+            )
+            ctx_filters = [AppInventoryHostSqlContext.mac_address == host_key]
+            if hostname:
+                ctx_filters.append(AppInventoryHostSqlContext.hostname == hostname)
+            session.execute(delete(AppInventoryHostSqlContext).where(or_(*ctx_filters)))
+            event_filters = [AppInventoryChangeEvent.mac_address == host_key]
+            if hostname:
+                event_filters.append(func.lower(AppInventoryChangeEvent.hostname) == hostname)
+            session.execute(delete(AppInventoryChangeEvent).where(or_(*event_filters)))
+            session.delete(row)
+            return payload
+
     def touch_host_presence(
         self,
         mac_address: str,
@@ -535,10 +798,13 @@ class AppInventoryStore:
             row.updated_at = now
             return True
 
-    def list_change_events(self) -> list[dict[str, Any]]:
+    def list_change_events(self, since_ts: int | None = None) -> list[dict[str, Any]]:
         with app_session(self._database_url) as session:
+            stmt = select(AppInventoryChangeEvent)
+            if since_ts is not None:
+                stmt = stmt.where(AppInventoryChangeEvent.detected_at >= int(since_ts))
             rows = session.scalars(
-                select(AppInventoryChangeEvent).order_by(
+                stmt.order_by(
                     AppInventoryChangeEvent.detected_at.desc(),
                     AppInventoryChangeEvent.event_id.desc(),
                 )

@@ -19,6 +19,8 @@ import { normalizeActionTargets } from './databaseListModel';
 import { executeMaintenanceAction, getActionErrorMessage } from './actionExecution';
 import { useDatabaseAddWorkflows } from './useDatabaseAddWorkflows';
 import { useDatabaseConsumableQty } from './useDatabaseConsumableQty';
+import { useConsumableCard } from './useConsumableCard';
+import { useConsumableQrLabel } from './useConsumableQrLabel';
 import { useDatabaseDeleteEquipment } from './useDatabaseDeleteEquipment';
 import { useDatabaseConsumableDelete } from './useDatabaseConsumableDelete';
 import { useDatabaseDetailRuntime } from './useDatabaseDetailRuntime';
@@ -221,6 +223,26 @@ export function useDatabaseDialogController({
     notifyDatabaseSuccess,
   });
 
+  const consumableCard = useConsumableCard({
+    canDatabaseWrite,
+    location,
+    dbName,
+    currentDb,
+    setAllEquipment,
+    setFilteredData,
+    notifyDatabaseSuccess,
+    notifyDatabaseError,
+    openEditConsumableQtyModal: consumableQty.openEditConsumableQtyModal,
+  });
+
+  const consumableQr = useConsumableQrLabel({
+    databaseId: dbName || currentDb?.id || '',
+  });
+
+  const [cartridgeCompatOpen, setCartridgeCompatOpen] = useState(false);
+  const openCartridgeCompatibilityDialog = useCallback(() => setCartridgeCompatOpen(true), []);
+  const closeCartridgeCompatibilityDialog = useCallback(() => setCartridgeCompatOpen(false), []);
+
   const consumableDelete = useDatabaseConsumableDelete({
     canDatabaseDelete,
     fetchAllEquipment,
@@ -235,6 +257,7 @@ export function useDatabaseDialogController({
 
   const qrScanner = useDatabaseQrScanner({
     onEquipmentFound: handleQrEquipmentFound,
+    onConsumableFound: consumableCard.openConsumableCard,
     notifyDatabaseError,
   });
 
@@ -442,11 +465,18 @@ export function useDatabaseDialogController({
     ...transfer,
     ...addWorkflows,
     ...consumableQty,
+    ...consumableCard,
     ...consumableDelete,
     ...qrScanner,
+    handleQrScannerOpen: qrScanner.openQrScanner,
+    handleQrScannerClose: qrScanner.closeQrScanner,
     ...deleteEquipment,
     ...maintenance,
     qrBatchPrint,
+    consumableQr,
+    cartridgeCompatOpen,
+    openCartridgeCompatibilityDialog,
+    closeCartridgeCompatibilityDialog,
     actionModal,
     actionLoading,
     actionError,

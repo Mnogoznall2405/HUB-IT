@@ -281,6 +281,9 @@ export function NativeSecuritySettingsScreen() {
           <Pressable
             key={value}
             disabled={!biometricEnabled || !lockEnabled}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: timeoutSeconds === value, disabled: !biometricEnabled || !lockEnabled }}
+            accessibilityLabel={APP_LOCK_TIMEOUT_LABELS[value]}
             onPress={() => {
               void (async () => {
                 try {

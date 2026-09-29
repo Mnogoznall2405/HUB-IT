@@ -72,6 +72,7 @@ import {
 } from '../../files/nativeFilePicker';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
+import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
 
 const SEARCH_DEBOUNCE_MS = 250;
@@ -97,6 +98,7 @@ export function NativeCompanyStructureScreen() {
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
+  const navInset = useNativeBottomNavInset();
   const canRead = hasPermission('company_structure.read');
   const canWrite = hasPermission('company_structure.write');
   const [fullPathOpen, setFullPathOpen] = useState(false);
@@ -694,6 +696,7 @@ export function NativeCompanyStructureScreen() {
       title="Структура компании"
       tokens={tokens}
       scroll={false}
+      contentUnderNav
       onBack={selectedPath.length > 1 ? goToParent : undefined}
       rightAction={(
         <View style={styles.headerActions}>
@@ -792,7 +795,7 @@ export function NativeCompanyStructureScreen() {
           keyboardShouldPersistTaps="handled"
           refreshing={refreshing}
           onRefresh={() => { void loadTree(true); }}
-          contentContainerStyle={listItems.length ? styles.list : styles.emptyList}
+          contentContainerStyle={listItems.length ? [styles.list, { paddingBottom: navInset }] : [styles.emptyList, { paddingBottom: navInset }]}
           ListHeaderComponent={searchMode ? (
             <View style={styles.listHeader}>
               <Text style={[styles.sectionTitle, { color: tokens.textPrimary }]}>Результаты · {searchTotal}</Text>

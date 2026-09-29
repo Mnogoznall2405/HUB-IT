@@ -1,6 +1,7 @@
 """Focused regression tests for My Files per-user blob storage v2."""
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,11 @@ from backend.appdb.models import AppMyFile, AppMyFileBlob
 from backend.models.auth import User
 from backend.services.my_files_antivirus_service import SecurityScanResult
 from backend.services.my_files_service import MyFilesService
-from backend.services.my_files_storage_layout import publish_local_to_blob
+from backend.services.my_files_storage_layout import (
+    _same_unc_share,
+    _unc_share_root,
+    publish_local_to_blob,
+)
 from backend.services.secret_crypto_service import _build_fernet
 
 
@@ -21,6 +26,11 @@ def _configure_share_token_key(monkeypatch):
     _build_fernet.cache_clear()
     yield
     _build_fernet.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _prebuilt_app_schema(prebuilt_app_db):
+    return prebuilt_app_db
 
 
 def _sqlite_url(path: Path) -> str:
@@ -109,6 +119,74 @@ def test_delete_user_a_does_not_remove_user_b_blob(tmp_path: Path):
         blob_b = session.get(AppMyFileBlob, blob_b_id)
         assert blob_b is not None
         assert blob_b.ref_count == 1
+
+
+def test_unc_share_root_parsing():
+    assert _unc_share_root(Path(r"\\10.1.2.3\hubit\spool\x.bin")) == r"\\10.1.2.3\hubit"
+    assert _unc_share_root(Path("//NAS/Share/dir/y.bin")) == r"\\nas\share"
+    assert _unc_share_root(Path(r"C:\local\x.bin")) == ""
+    assert _unc_share_root(Path(r"\\srv")) == ""
+
+
+def test_same_unc_share_matches_share_prefix_only():
+    assert _same_unc_share(Path(r"\\s\hubit\spool\a"), Path(r"\\S\HUBIT\users\b\c"))
+    assert not _same_unc_share(Path(r"\\s\hubit\a"), Path(r"\\s\other\b"))
+    assert not _same_unc_share(Path(r"\\s1\hubit\a"), Path(r"\\s2\hubit\b"))
+    assert not _same_unc_share(Path(r"C:\x\a"), Path(r"C:\x\b"))
+
+
+def test_publish_same_unc_share_uses_rename(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        "backend.services.my_files_storage_layout._same_unc_share", lambda _s, _d: True
+    )
+    source = tmp_path / "spool" / "x.bin"
+    source.parent.mkdir(parents=True)
+    payload = b"rename-me"
+    source.write_bytes(payload)
+    sha = hashlib.sha256(payload).hexdigest()
+    destination = tmp_path / "users" / "1" / "blobs" / "re" / "na" / "rename.bin"
+    result = publish_local_to_blob(
+        source=source,
+        destination=destination,
+        expected_sha256=sha,
+        expected_size=len(payload),
+    )
+    assert result == destination
+    assert destination.read_bytes() == payload
+    assert not source.exists()
+    assert list(tmp_path.rglob("*.tmp-*")) == []
+
+
+def test_publish_same_unc_share_size_mismatch_keeps_source(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        "backend.services.my_files_storage_layout._same_unc_share", lambda _s, _d: True
+    )
+    source = tmp_path / "src.bin"
+    source.write_bytes(b"abc")
+    destination = tmp_path / "users" / "1" / "blobs" / "deadbeef.bin"
+    with pytest.raises(ValueError, match="size mismatch"):
+        publish_local_to_blob(
+            source=source,
+            destination=destination,
+            expected_sha256="0" * 64,
+            expected_size=999,
+        )
+    assert source.exists()
+    assert not destination.exists()
+
+
+def test_process_file_on_ready_row_is_noop(tmp_path: Path):
+    service = _new_service(tmp_path)
+    uploaded = _upload(service, _user(7), "a.bin", b"same-bytes")
+    again = service.process_file(uploaded["id"])
+    assert again is not None
+    assert again["status"] == "ready"
+    with app_session(_sqlite_url(tmp_path / "app.db")) as session:
+        row = session.get(AppMyFile, uploaded["id"])
+        assert row.status == "ready"
+        blob = session.get(AppMyFileBlob, row.blob_id)
+        assert blob.ref_count == 1
+        assert service._resolve_stored_path(blob.storage_path).exists()
 
 
 def test_publish_sha_mismatch_does_not_leave_final(tmp_path: Path):

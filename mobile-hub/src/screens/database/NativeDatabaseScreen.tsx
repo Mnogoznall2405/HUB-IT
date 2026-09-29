@@ -18,12 +18,16 @@ import {
 } from 'react-native';
 import {
   getCurrentDatabase,
+  consumeConsumableStock,
   deleteConsumable,
+  getConsumableById,
+  listCompatiblePrinterModels,
   listRecentEquipmentCards,
   listRecentEquipmentActs,
   listAvailableDatabases,
   listConsumables,
   listEquipment,
+  recordEquipmentWork,
   searchEquipment,
   searchEquipmentActs,
   switchDatabase,
@@ -59,7 +63,7 @@ import { NativeEquipmentRow } from '../../components/database/NativeEquipmentRow
 import { openNativeFile } from '../../files/nativeAttachmentDownloads';
 import { downloadEquipmentAct } from '../../database/nativeDatabaseFiles';
 import { nativeEquipmentDestination } from '../../database/nativeDatabaseFeature';
-import { filterConsumables, parseInventoryQrPayload, type DatabaseViewMode, type InventoryQrPayload } from '../../database/nativeDatabaseModel';
+import { filterConsumables, isCartridgeLikeConsumable, isPrinterLikeEquipment, parseInventoryQrPayload, type DatabaseViewMode, type InventoryQrPayload } from '../../database/nativeDatabaseModel';
 import {
   filterNativeActs,
   filterNativeEquipment,
@@ -76,6 +80,50 @@ import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChr
 
 const SEARCH_DEBOUNCE_MS = 500;
 const SEARCH_LIMIT = 50;
+const MFU_MODEL_LOOKUPS = 8;
+const MFU_MODEL_LOOKUP_LIMIT = 8;
+const MFU_SUGGESTED_LIMIT = 12;
+const MFU_SEARCH_LIMIT = 20;
+
+// QR write-off of a cartridge needs a concrete MFU unit, not just a model:
+// identical models can sit in different branches, so dedupe by inv_no/id and
+// surface units stored where the consumable lives first.
+function mfuKey(item: EquipmentRecord): string {
+  const invNo = String(item.inv_no || '').trim();
+  return invNo ? `inv:${invNo}` : `id:${item.id}`;
+}
+
+function dedupeMfu(rows: EquipmentRecord[]): EquipmentRecord[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = mfuKey(row);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function sortMfuByStorage(rows: EquipmentRecord[], branch?: string, location?: string): EquipmentRecord[] {
+  const wantBranch = String(branch || '').trim().toLowerCase();
+  const wantLocation = String(location || '').trim().toLowerCase();
+  return rows
+    .map((row, index) => {
+      const sameBranch = Boolean(wantBranch) && (row.branch_name || '').trim().toLowerCase() === wantBranch;
+      const sameLocation = Boolean(wantLocation) && (row.location_name || '').trim().toLowerCase() === wantLocation;
+      const rank = sameBranch && sameLocation ? 0 : sameBranch || sameLocation ? 1 : 2;
+      return { row, index, rank };
+    })
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map(({ row }) => row);
+}
+
+function mfuSubtitle(item: EquipmentRecord): string {
+  return [
+    item.inv_no ? `инв. ${item.inv_no}` : '',
+    [item.branch_name, item.location_name].filter(Boolean).join(' · '),
+    item.employee_name,
+  ].filter(Boolean).join(' · ');
+}
 
 function first(value: string | string[] | undefined): string {
   return String(Array.isArray(value) ? value[0] : value || '').trim();
@@ -93,7 +141,12 @@ function useDebouncedValue(value: string): string {
 export function NativeDatabaseScreen() {
   const { width, fontScale } = useWindowDimensions();
   const stackModeTabs = (width - 32) / Math.max(fontScale, 1) < 300;
-  const params = useLocalSearchParams<{ q?: string | string[]; mode?: string | string[] }>();
+  const params = useLocalSearchParams<{
+    q?: string | string[];
+    mode?: string | string[];
+    consumable?: string | string[];
+    databaseId?: string | string[];
+  }>();
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
@@ -132,6 +185,18 @@ export function NativeDatabaseScreen() {
   const [selectedInvNos, setSelectedInvNos] = useState<Set<string>>(() => new Set());
   const [uploadActOpen, setUploadActOpen] = useState(false);
   const [qrScannerOpen, setQrScannerOpen] = useState(false);
+  const [scanCard, setScanCard] = useState<ConsumableRecord | null>(null);
+  const [scanCardBusy, setScanCardBusy] = useState(false);
+  const [scanCardPrinters, setScanCardPrinters] = useState<string[] | null>(null);
+  const [scanCardMfu, setScanCardMfu] = useState<EquipmentRecord | null>(null);
+  const [scanCardMfuSuggested, setScanCardMfuSuggested] = useState<EquipmentRecord[]>([]);
+  const [scanCardMfuQuery, setScanCardMfuQuery] = useState('');
+  const [scanCardMfuResults, setScanCardMfuResults] = useState<EquipmentRecord[] | null>(null);
+  const [scanCardMfuSearching, setScanCardMfuSearching] = useState(false);
+  const scanCardMfuSearchSeq = useRef(0);
+  const debouncedMfuQuery = useDebouncedValue(scanCardMfuQuery);
+  const [scanCardDbId, setScanCardDbId] = useState('');
+  const [quantityDatabaseId, setQuantityDatabaseId] = useState('');
   const requestRef = useRef(0);
   const equipmentPageRef = useRef(1);
   const busyActRef = useRef<number | null>(null);
@@ -449,9 +514,175 @@ export function NativeDatabaseScreen() {
     router.push(nativeEquipmentDestination(invNo, 'general', currentDatabase?.id) as never);
   }, [currentDatabase?.id, offlineMode]);
 
+  const openConsumableFromQr = useCallback(async (payload: InventoryQrPayload) => {
+    setQrScannerOpen(false);
+    setError('');
+    if (!payload.itemId) {
+      setError('QR-код расходника не содержит ID позиции.');
+      return;
+    }
+    if (offlineMode) {
+      setError('В автономном режиме карточка расходника недоступна — нужна сеть.');
+      return;
+    }
+    const targetDatabaseId = payload.databaseId || currentDatabase?.id || '';
+    setScanCardBusy(true);
+    setScanCardPrinters(null);
+    setScanCardMfu(null);
+    setScanCardMfuSuggested([]);
+    setScanCardMfuQuery('');
+    setScanCardMfuResults(null);
+    setScanCardMfuSearching(false);
+    try {
+      const item = await getConsumableById(payload.itemId, targetDatabaseId || undefined);
+      if (!item) {
+        setError(`Расходник с ID ${payload.itemId} не найден.`);
+        return;
+      }
+      setScanCard(item);
+      setScanCardDbId(targetDatabaseId);
+      if (isCartridgeLikeConsumable(item) && item.model_name) {
+        void listCompatiblePrinterModels(item.model_name, targetDatabaseId || undefined)
+          .then(setScanCardPrinters)
+          .catch(() => setScanCardPrinters([]));
+      }
+    } catch (cause) {
+      setError(formatApiError(cause, `Не удалось открыть расходник с ID ${payload.itemId}.`));
+    } finally {
+      setScanCardBusy(false);
+    }
+  }, [currentDatabase?.id, offlineMode]);
+
+  const deepConsumable = first(params.consumable);
+  const deepDatabaseId = first(params.databaseId);
+  const deepConsumableRef = useRef('');
+  useEffect(() => {
+    const signature = `${deepConsumable}|${deepDatabaseId}`;
+    if (!deepConsumable || deepConsumableRef.current === signature) return;
+    deepConsumableRef.current = signature;
+    void openConsumableFromQr({
+      kind: 'consumable',
+      itemId: Number(deepConsumable),
+      inventoryNumber: '',
+      databaseId: deepDatabaseId,
+    });
+  }, [deepConsumable, deepDatabaseId, openConsumableFromQr]);
+
+  // Reset the MFU picker whenever the scan card closes or a new one opens.
+  useEffect(() => {
+    if (scanCard) return;
+    setScanCardMfu(null);
+    setScanCardMfuSuggested([]);
+    setScanCardMfuQuery('');
+    setScanCardMfuResults(null);
+    setScanCardMfuSearching(false);
+  }, [scanCard]);
+
+  // Compatible printer models -> concrete inventory units the user picks from.
+  useEffect(() => {
+    if (!scanCard || !isCartridgeLikeConsumable(scanCard) || !Array.isArray(scanCardPrinters)) return undefined;
+    if (!scanCardPrinters.length) {
+      setScanCardMfuSuggested([]);
+      return undefined;
+    }
+    let cancelled = false;
+    const dbId = scanCardDbId || currentDatabase?.id;
+    void Promise.all(
+      scanCardPrinters.slice(0, MFU_MODEL_LOOKUPS).map((model) =>
+        searchEquipment(model, 1, MFU_MODEL_LOOKUP_LIMIT, dbId, 'model')
+          .then((page) => page.equipment)
+          .catch(() => [] as EquipmentRecord[]),
+      ),
+    ).then((groups) => {
+      if (cancelled) return;
+      const rows = sortMfuByStorage(
+        dedupeMfu(groups.flat()).filter(isPrinterLikeEquipment),
+        scanCard.branch_name,
+        scanCard.location_name,
+      );
+      setScanCardMfuSuggested(rows.slice(0, MFU_SUGGESTED_LIMIT));
+    });
+    return () => { cancelled = true; };
+  }, [scanCard, scanCardDbId, scanCardPrinters, currentDatabase?.id]);
+
+  // Free search covers model / inv_no / serial / branch / location so an
+  // incomplete compatibility table never blocks a legitimate write-off.
+  useEffect(() => {
+    const query = debouncedMfuQuery.trim();
+    if (!scanCard || !isCartridgeLikeConsumable(scanCard) || !query) {
+      scanCardMfuSearchSeq.current += 1;
+      setScanCardMfuResults(null);
+      setScanCardMfuSearching(false);
+      return undefined;
+    }
+    const seq = ++scanCardMfuSearchSeq.current;
+    setScanCardMfuSearching(true);
+    void searchEquipment(query, 1, MFU_SEARCH_LIMIT, scanCardDbId || currentDatabase?.id)
+      .then((page) => {
+        if (seq === scanCardMfuSearchSeq.current) {
+          setScanCardMfuResults(dedupeMfu(page.equipment).filter(isPrinterLikeEquipment));
+        }
+      })
+      .catch(() => {
+        if (seq === scanCardMfuSearchSeq.current) setScanCardMfuResults([]);
+      })
+      .finally(() => {
+        if (seq === scanCardMfuSearchSeq.current) setScanCardMfuSearching(false);
+      });
+    return undefined;
+  }, [debouncedMfuQuery, scanCard, scanCardDbId, currentDatabase?.id]);
+
+  const consumeFromScanCard = useCallback(async () => {
+    if (!scanCard || scanCardBusy || offlineMode || !canWrite) return;
+    const cartridgeLike = isCartridgeLikeConsumable(scanCard);
+    if (cartridgeLike && !scanCardMfu) {
+      setError('Выберите МФУ, в которую устанавливается расходник.');
+      return;
+    }
+    setScanCardBusy(true);
+    setError('');
+    const targetDatabaseId = scanCardDbId || currentDatabase?.id;
+    try {
+      let nextQty: number;
+      if (cartridgeLike && scanCardMfu) {
+        const result = await recordEquipmentWork({
+          kind: 'cartridge',
+          equipment: scanCardMfu,
+          consumable: scanCard,
+          databaseId: targetDatabaseId,
+        });
+        nextQty = typeof result?.qty_new === 'number' ? result.qty_new : Math.max(0, scanCard.qty - 1);
+        setNotice(`Списано: ${scanCard.model_name || scanCard.type_name || 'расходник'} → ${scanCardMfu.model_name || 'МФУ'} (инв. ${scanCardMfu.inv_no}). Остаток: ${nextQty}.`);
+      } else {
+        const result = await consumeConsumableStock(scanCard, 1, targetDatabaseId);
+        nextQty = typeof result.qty_new === 'number' ? result.qty_new : Math.max(0, scanCard.qty - 1);
+        setNotice(`Списано: ${scanCard.model_name || scanCard.type_name || 'расходник'}. Остаток: ${nextQty}.`);
+      }
+      setScanCard((current) => (current ? { ...current, qty: nextQty } : current));
+      setConsumables((current) => current.map((item) => (item.id === scanCard.id ? { ...item, qty: nextQty } : item)));
+    } catch (cause) {
+      setError(formatApiError(cause, 'Не удалось списать расходник.'));
+      // Stock may already have been deducted before a history-write failure —
+      // resync the displayed qty so the card never shows a stale remainder.
+      void getConsumableById(scanCard.id, targetDatabaseId || undefined)
+        .then((fresh) => {
+          if (!fresh) return;
+          setScanCard(fresh);
+          setConsumables((current) => current.map((item) => (item.id === fresh.id ? { ...item, qty: fresh.qty } : item)));
+        })
+        .catch(() => undefined);
+    } finally {
+      setScanCardBusy(false);
+    }
+  }, [canWrite, currentDatabase?.id, offlineMode, scanCard, scanCardBusy, scanCardDbId, scanCardMfu]);
+
   const openEquipmentFromQr = useCallback(async (payload: InventoryQrPayload) => {
     setQrScannerOpen(false);
     setError('');
+    if (payload.kind === 'consumable') {
+      await openConsumableFromQr(payload);
+      return;
+    }
     const targetDatabaseId = payload.databaseId || currentDatabase?.id || '';
     const userId = Number(user?.id || 0);
     if (offlineMode && userId && targetDatabaseId) {
@@ -497,7 +728,7 @@ export function NativeDatabaseScreen() {
       'general',
       targetDatabaseId,
     ) as never);
-  }, [currentDatabase?.id, equipment, offlineMode, user?.id]);
+  }, [currentDatabase?.id, equipment, offlineMode, openConsumableFromQr, user?.id]);
 
   const toggleEquipmentSelection = useCallback((invNo: string) => {
     setSelectedInvNos((current) => {
@@ -541,7 +772,7 @@ export function NativeDatabaseScreen() {
     setQuantityBusy(true);
     setError('');
     try {
-      await updateConsumableQuantity(quantityItem, qty, currentDatabase?.id);
+      await updateConsumableQuantity(quantityItem, qty, quantityDatabaseId || currentDatabase?.id);
       setConsumables((current) => current.map((item) => item.id === quantityItem.id ? { ...item, qty } : item));
       setQuantityItem(null);
       setNotice('Остаток расходника обновлён.');
@@ -550,7 +781,7 @@ export function NativeDatabaseScreen() {
     } finally {
       setQuantityBusy(false);
     }
-  }, [currentDatabase?.id, offlineMode, quantityBusy, quantityDraft, quantityItem]);
+  }, [currentDatabase?.id, offlineMode, quantityBusy, quantityDatabaseId, quantityDraft, quantityItem]);
 
   const pasteInventoryCode = useCallback(async () => {
     const payload = parseInventoryQrPayload(await Clipboard.getStringAsync());
@@ -606,10 +837,11 @@ export function NativeDatabaseScreen() {
     />
   ), [canWrite, handleEquipmentLongPress, handleEquipmentPress, offlineMode, selectedInvNos, selectionMode, tokens]);
 
-  const editConsumableQuantity = useCallback((item: ConsumableRecord) => {
+  const editConsumableQuantity = useCallback((item: ConsumableRecord, databaseId?: string) => {
     setQuantityItem(item);
     setQuantityDraft(String(item.qty));
-  }, []);
+    setQuantityDatabaseId(databaseId ?? currentDatabase?.id ?? '');
+  }, [currentDatabase?.id]);
 
   const requestConsumableDelete = useCallback((item: ConsumableRecord) => {
     setDeleteItem(item);
@@ -647,6 +879,7 @@ export function NativeDatabaseScreen() {
       title="Инвентарь"
       tokens={tokens}
       scroll={false}
+      contentUnderNav
       rightAction={(
         <Pressable
           testID="native-database-header-selector"
@@ -831,7 +1064,7 @@ export function NativeDatabaseScreen() {
           onRefresh={() => { void loadContent(true); }}
           onEndReached={() => { if (hasMoreEquipment && !loadingMore && !loading) void loadContent(false, true); }}
           onEndReachedThreshold={0.35}
-          contentContainerStyle={equipment.length ? styles.listContent : [styles.emptyContent, { paddingBottom: emptyListInset }]}
+          contentContainerStyle={equipment.length ? [styles.listContent, { paddingBottom: emptyListInset }] : [styles.emptyContent, { paddingBottom: emptyListInset }]}
           ListEmptyComponent={<Text style={[styles.empty, { color: tokens.textSecondary }]}>{emptyMessage}</Text>}
           ListFooterComponent={loadingMore ? <ActivityIndicator style={styles.footer} color={accentColor} /> : null}
           renderItem={renderEquipmentRow}
@@ -847,7 +1080,7 @@ export function NativeDatabaseScreen() {
           keyboardShouldPersistTaps="handled"
           refreshing={refreshing}
           onRefresh={() => { void loadContent(true); }}
-          contentContainerStyle={visibleConsumables.length ? styles.listContent : [styles.emptyContent, { paddingBottom: emptyListInset }]}
+          contentContainerStyle={visibleConsumables.length ? [styles.listContent, { paddingBottom: emptyListInset }] : [styles.emptyContent, { paddingBottom: emptyListInset }]}
           ListEmptyComponent={<Text style={[styles.empty, { color: tokens.textSecondary }]}>{emptyMessage}</Text>}
           renderItem={renderConsumableRow}
         />
@@ -862,7 +1095,7 @@ export function NativeDatabaseScreen() {
           keyboardShouldPersistTaps="handled"
           refreshing={refreshing}
           onRefresh={() => { void loadContent(true); }}
-          contentContainerStyle={acts.length ? styles.listContent : [styles.emptyContent, { paddingBottom: emptyListInset }]}
+          contentContainerStyle={acts.length ? [styles.listContent, { paddingBottom: emptyListInset }] : [styles.emptyContent, { paddingBottom: emptyListInset }]}
           ListEmptyComponent={<Text style={[styles.empty, { color: tokens.textSecondary }]}>{emptyMessage}</Text>}
           renderItem={renderEquipmentAct}
         />
@@ -961,6 +1194,160 @@ export function NativeDatabaseScreen() {
           </View>
         </View>
       </Modal>
+      <Modal
+        visible={Boolean(scanCard) || scanCardBusy}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { if (!scanCardBusy) { setScanCard(null); setScanCardDbId(''); } }}
+        accessibilityViewIsModal
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.quantityDialog, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}>
+            {scanCard ? (
+              <>
+                <Text accessibilityRole="header" style={[styles.quantityTitle, { color: tokens.textPrimary }]}>
+                  {scanCard.model_name || scanCard.type_name || 'Расходник'}
+                </Text>
+                <Text style={[styles.quantityDescription, { color: tokens.textSecondary }]}>
+                  {[scanCard.type_name, [scanCard.branch_name, scanCard.location_name].filter(Boolean).join(' · ')]
+                    .filter(Boolean).join(' · ') || 'Местоположение не указано'}
+                </Text>
+                <Text accessibilityLiveRegion="polite" style={[styles.scanCardQty, { color: accentColor }]}>
+                  {scanCard.qty} шт.
+                </Text>
+                {scanCard.inv_no || scanCard.id ? (
+                  <Text style={[styles.quantityDescription, { color: tokens.textTertiary }]}>
+                    {[scanCard.inv_no ? `Инв. № ${scanCard.inv_no}` : '', `ID ${scanCard.id}`].filter(Boolean).join(' · ')}
+                  </Text>
+                ) : null}
+                {isCartridgeLikeConsumable(scanCard) ? (
+                  <View style={styles.scanCardCompat}>
+                    <Text style={[styles.quantityDescription, { color: tokens.textSecondary }]}>Подходит к:</Text>
+                    {scanCardPrinters === null ? (
+                      <Text style={[styles.deleteHint, { color: tokens.textTertiary }]}>Проверяем совместимость…</Text>
+                    ) : scanCardPrinters.length ? (
+                      <Text style={[styles.scanCardCompatText, { color: tokens.textPrimary }]}>
+                        {scanCardPrinters.join(', ')}
+                      </Text>
+                    ) : (
+                      <Text style={[styles.deleteHint, { color: tokens.textTertiary }]}>Совместимость не найдена.</Text>
+                    )}
+                  </View>
+                ) : null}
+                {canWrite && isCartridgeLikeConsumable(scanCard) ? (
+                  <View style={styles.scanCardMfu}>
+                    <Text style={[styles.scanCardCompatTitle, { color: tokens.textSecondary }]}>МФУ для списания</Text>
+                    {scanCardMfu ? (
+                      <View style={[styles.scanCardMfuSelected, { borderColor: accentColor, backgroundColor: tokens.panelInset }]}>
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text style={[styles.scanCardCompatText, { color: tokens.textPrimary }]}>{scanCardMfu.model_name || 'МФУ'}</Text>
+                          <Text style={[styles.deleteHint, { color: tokens.textSecondary, marginTop: 2 }]}>{mfuSubtitle(scanCardMfu)}</Text>
+                        </View>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel="Выбрать другую МФУ"
+                          disabled={scanCardBusy}
+                          onPress={() => setScanCardMfu(null)}
+                          style={styles.scanCardMfuClear}
+                        >
+                          <MaterialCommunityIcons color={tokens.textSecondary} name="close" size={18} />
+                        </Pressable>
+                      </View>
+                    ) : (
+                      <>
+                        <TextInput
+                          accessibilityLabel="Поиск МФУ"
+                          editable={!scanCardBusy}
+                          onChangeText={setScanCardMfuQuery}
+                          placeholder="Модель, инв. №, серийник или локация"
+                          placeholderTextColor={tokens.textTertiary}
+                          style={[styles.scanCardMfuInput, { backgroundColor: tokens.pageBg, borderColor: tokens.border, color: tokens.textPrimary }]}
+                          value={scanCardMfuQuery}
+                        />
+                        {scanCardMfuSearching ? <ActivityIndicator color={accentColor} size="small" style={{ alignSelf: 'flex-start', marginTop: 4 }} /> : null}
+                        {(() => {
+                          const freeSearchActive = Boolean(debouncedMfuQuery.trim());
+                          const rows = freeSearchActive ? (scanCardMfuResults ?? []) : scanCardMfuSuggested;
+                          if (!rows.length) {
+                            return (
+                              <Text style={[styles.deleteHint, { color: tokens.textTertiary }]}>
+                                {freeSearchActive
+                                  ? (scanCardMfuSearching ? 'Ищем МФУ…' : 'МФУ не найдены — уточните запрос.')
+                                  : 'Выберите МФУ через поиск — без неё списание недоступно.'}
+                              </Text>
+                            );
+                          }
+                          return (
+                            <ScrollView keyboardShouldPersistTaps="handled" nestedScrollEnabled style={styles.scanCardMfuList}>
+                              {!freeSearchActive ? (
+                                <Text style={[styles.deleteHint, { color: tokens.textTertiary, marginBottom: 4 }]}>Подходящие МФУ:</Text>
+                              ) : null}
+                              {rows.map((mfu) => (
+                                <Pressable
+                                  accessibilityRole="button"
+                                  disabled={scanCardBusy}
+                                  key={mfuKey(mfu)}
+                                  onPress={() => setScanCardMfu(mfu)}
+                                  style={({ pressed }) => [
+                                    styles.scanCardMfuRow,
+                                    { backgroundColor: tokens.panelInset, borderColor: tokens.borderSoft, opacity: pressed ? 0.7 : 1 },
+                                  ]}
+                                >
+                                  <Text style={[styles.scanCardCompatText, { color: tokens.textPrimary }]}>{mfu.model_name || 'МФУ'}</Text>
+                                  <Text style={[styles.deleteHint, { color: tokens.textSecondary, marginTop: 1 }]}>{mfuSubtitle(mfu)}</Text>
+                                </Pressable>
+                              ))}
+                            </ScrollView>
+                          );
+                        })()}
+                      </>
+                    )}
+                  </View>
+                ) : null}
+                <View style={styles.dialogActions}>
+                  <Pressable disabled={scanCardBusy} accessibilityRole="button" onPress={() => { setScanCard(null); setScanCardDbId(''); }} style={styles.dialogButton}>
+                    <Text style={[styles.dialogButtonText, { color: tokens.textSecondary }]}>Закрыть</Text>
+                  </Pressable>
+                  {canWrite ? (
+                    <Pressable
+                      disabled={scanCardBusy || offlineMode}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Установить остаток ${scanCard.model_name || 'расходника'}`}
+                      onPress={() => {
+                        const target = scanCard;
+                        const targetDatabaseId = scanCardDbId;
+                        setScanCard(null);
+                        setScanCardDbId('');
+                        editConsumableQuantity(target, targetDatabaseId || undefined);
+                      }}
+                      style={styles.dialogButton}
+                    >
+                      <Text style={[styles.dialogButtonText, { color: accentColor }]}>Остаток</Text>
+                    </Pressable>
+                  ) : null}
+                  {canWrite ? (
+                    <Pressable
+                      testID="native-consumable-scan-consume"
+                      disabled={scanCardBusy || offlineMode || scanCard.qty <= 0 || (isCartridgeLikeConsumable(scanCard) && !scanCardMfu)}
+                      accessibilityRole="button"
+                      accessibilityState={{ disabled: scanCardBusy || offlineMode || scanCard.qty <= 0 || (isCartridgeLikeConsumable(scanCard) && !scanCardMfu) }}
+                      accessibilityLabel={`Списать 1 штуку ${scanCard.model_name || 'расходника'}`}
+                      onPress={() => { void consumeFromScanCard(); }}
+                      style={[styles.dialogButton, { backgroundColor: tokens.primary }]}
+                    >
+                      {scanCardBusy ? <ActivityIndicator size="small" color="#fff" /> : <Text style={[styles.dialogButtonText, { color: '#fff' }]}>Списать 1</Text>}
+                    </Pressable>
+                  ) : null}
+                </View>
+              </>
+            ) : (
+              <View style={styles.scanCardCenter}>
+                <ActivityIndicator color={accentColor} />
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
       <NativeDatabaseCreateModal
         visible={createOpen}
         initialKind={mode === 'consumables' ? 'consumable' : 'equipment'}
@@ -1048,6 +1435,17 @@ const styles = StyleSheet.create({
   quantityDescription: { marginTop: 5, fontSize: 13, lineHeight: 18 },
   deleteHint: { marginTop: 9, fontSize: 12, lineHeight: 17 },
   quantityInput: { minHeight: 50, marginTop: 16, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, fontSize: 18, fontWeight: '800' },
+  scanCardQty: { marginTop: 12, fontSize: 34, lineHeight: 40, fontWeight: '900', fontVariant: ['tabular-nums'] },
+  scanCardCenter: { alignItems: 'center', justifyContent: 'center', paddingVertical: 24 },
+  scanCardCompat: { marginTop: 10, gap: 4 },
+  scanCardCompatText: { fontSize: 13, lineHeight: 18, fontWeight: '700' },
+  scanCardCompatTitle: { fontSize: 11, lineHeight: 15, fontWeight: '700' },
+  scanCardMfu: { marginTop: 10, gap: 6 },
+  scanCardMfuInput: { minHeight: 44, borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, fontSize: 14 },
+  scanCardMfuList: { maxHeight: 190, flexGrow: 0 },
+  scanCardMfuRow: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, marginBottom: 6 },
+  scanCardMfuSelected: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1.5, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },
+  scanCardMfuClear: { minWidth: 40, minHeight: 40, alignItems: 'center', justifyContent: 'center' },
   dialogActions: { marginTop: 18, flexDirection: 'row', justifyContent: 'flex-end', gap: 9 },
   dialogButton: { minWidth: 104, minHeight: 46, borderRadius: 12, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 14 },
   dialogButtonText: { fontSize: 13, fontWeight: '900' },

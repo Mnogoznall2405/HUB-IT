@@ -83,7 +83,10 @@ def _save_attachment_to_my_files(
             meta=meta,
         )
     except BaseException:
-        spool_path.unlink(missing_ok=True)
+        try:
+            spool_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         if reserved_file_id:
             try:
                 my_files_service.abort_upload(

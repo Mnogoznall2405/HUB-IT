@@ -24,13 +24,18 @@ class SettingsService:
     DEFAULT_DASHBOARD_SECTIONS = ["attention", "tasks", "communication", "news"]
     DASHBOARD_MOBILE_SECTION_KEYS = ("urgent", "announcements", "tasks")
     MOBILE_BOTTOM_NAV_ITEM_PATHS = (
+        "/construction",
         "/dashboard",
+        "/feed",
         "/tasks",
         "/tickets",
         "/chat",
         "/mail",
+        "/docflow",
         "/address-book",
+        "/company-structure",
         "/passwords",
+        "/groups-access",
         "/my-files",
         "/database",
         "/networks",
@@ -38,6 +43,7 @@ class SettingsService:
         "/mfu",
         "/computers",
         "/scan-center",
+        "/warehouse-1c",
         "/statistics",
         "/kb",
     )

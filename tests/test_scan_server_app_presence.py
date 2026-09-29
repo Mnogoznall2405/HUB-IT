@@ -652,3 +652,38 @@ def test_timing_headers_invalid_bool_stays_disabled(monkeypatch):
                        "client": ("127.0.0.1", 123), "server": ("127.0.0.1", 80)})
     response = asyncio.run(middleware.dispatch(request, _call_next))
     assert "X-Scan-Request-Total-Ms" not in response.headers
+
+
+def test_listener_death_handler_exits_on_accept_failure(monkeypatch):
+    exits: list[int] = []
+    monkeypatch.setattr(scan_app.os, "_exit", lambda code: exits.append(code))
+
+    async def _run():
+        scan_app._install_listener_death_handler()
+        loop = asyncio.get_running_loop()
+        loop.call_exception_handler(
+            {
+                "message": "Accept failed on a socket",
+                "exception": OSError(64, "The specified network name is no longer available"),
+            }
+        )
+        await asyncio.sleep(0)
+
+    asyncio.run(_run())
+
+    assert exits == [70]
+
+
+def test_listener_death_handler_delegates_other_errors(monkeypatch):
+    exits: list[int] = []
+    monkeypatch.setattr(scan_app.os, "_exit", lambda code: exits.append(code))
+
+    async def _run():
+        scan_app._install_listener_death_handler()
+        loop = asyncio.get_running_loop()
+        loop.call_exception_handler({"message": "unrelated loop error", "exception": ValueError("x")})
+        await asyncio.sleep(0)
+
+    asyncio.run(_run())
+
+    assert exits == []

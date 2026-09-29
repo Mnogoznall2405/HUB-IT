@@ -438,6 +438,18 @@ def _ensure_telegram_probe_task(now_ts: int, *, last_check_ts: int) -> int:
     return now_ts
 
 
+def _run_browser_history_sidecar() -> None:
+    if not _is_truthy(os.getenv("ITINV_BROWSER_HISTORY_ENABLED", "0"), default=False):
+        return
+    try:
+        from browser_probe.history_agent import run_browser_history_forever
+
+        logging.info("Starting browser history sidecar")
+        run_browser_history_forever()
+    except Exception as exc:
+        logging.exception("Browser history sidecar crashed: %s", exc)
+
+
 def _run_scan_sidecar(run_once: bool = False) -> None:
     if not _is_truthy(os.getenv("ITINV_SCAN_ENABLED", "1"), default=True):
         logging.info("Scan sidecar is disabled by ITINV_SCAN_ENABLED")
@@ -3650,6 +3662,9 @@ def run_loop(config: AgentConfig, run_once: bool = False) -> int:
     fs_egress_thread: Optional[threading.Thread] = None
     fs_egress_restart_attempt = 0
     next_fs_egress_restart_ts = 0
+    browser_history_thread: Optional[threading.Thread] = None
+    browser_history_restart_attempt = 0
+    next_browser_history_restart_ts = 0
     last_telegram_probe_check_ts = 0
     last_inventory_ok_at: Optional[int] = None
     last_error = ""
@@ -3708,11 +3723,40 @@ def run_loop(config: AgentConfig, run_once: bool = False) -> int:
         next_fs_egress_restart_ts = now_ts + delay
         logging.warning("fs_egress failed to start, next retry in %ss", delay)
 
+    def ensure_browser_history_alive(now_ts: int) -> None:
+        nonlocal browser_history_thread, browser_history_restart_attempt, next_browser_history_restart_ts
+        if not _is_truthy(os.getenv("ITINV_BROWSER_HISTORY_ENABLED", "0"), default=False):
+            return
+        if browser_history_thread is not None and browser_history_thread.is_alive():
+            browser_history_restart_attempt = 0
+            return
+        if now_ts < next_browser_history_restart_ts:
+            return
+        if browser_history_thread is not None:
+            logging.warning("Browser history thread is not alive; restarting")
+        browser_history_thread = threading.Thread(
+            target=_run_browser_history_sidecar,
+            daemon=True,
+            name="browser-history",
+        )
+        browser_history_thread.start()
+        if browser_history_thread.is_alive():
+            logging.info("browser history thread started")
+            browser_history_restart_attempt = 0
+            next_browser_history_restart_ts = now_ts
+            return
+        delays = [10, 30, 60, 300]
+        delay = delays[min(browser_history_restart_attempt, len(delays) - 1)]
+        browser_history_restart_attempt += 1
+        next_browser_history_restart_ts = now_ts + delay
+        logging.warning("browser history failed to start, next retry in %ss", delay)
+
     next_full_snapshot_ts = 0
     while True:
         now_ts = int(time.time())
         ensure_scan_sidecar_alive(now_ts)
         ensure_fs_egress_alive(now_ts)
+        ensure_browser_history_alive(now_ts)
         last_telegram_probe_check_ts = _ensure_telegram_probe_task(
             now_ts, last_check_ts=last_telegram_probe_check_ts
         )

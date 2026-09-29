@@ -40,7 +40,7 @@ function isSnapshotEndpointUnavailable(cause: unknown): boolean {
 }
 
 export async function searchAddressBook(
-  options: { q?: string; limit?: number; offset?: number } = {},
+  options: { q?: string; limit?: number; offset?: number; signal?: AbortSignal } = {},
 ): Promise<AddressBookSearchResponse> {
   const { data } = await apiClient.get<AddressBookSearchResponse>('/address-book/search', {
     params: {
@@ -48,6 +48,7 @@ export async function searchAddressBook(
       limit: options.limit ?? ADDRESS_BOOK_SEARCH_LIMIT,
       ...(options.offset == null ? {} : { offset: Math.max(0, Number(options.offset || 0)) }),
     },
+    signal: options.signal,
   });
   return normalizeAddressBookResponse(data);
 }

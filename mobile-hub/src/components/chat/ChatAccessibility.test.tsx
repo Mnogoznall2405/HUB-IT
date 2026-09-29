@@ -46,6 +46,44 @@ describe('native Chat accessibility', () => {
     expect(own.getByLabelText(/Ваше сообщение.*Готово.*Прочитано/)).toBeTruthy();
   });
 
+  it('announces pending and failed delivery without inline error text', async () => {
+    const pending = await render(
+      <ChatBubble
+        isOwn
+        message={{
+          id: 'pending-1',
+          conversation_id: 'conversation-1',
+          sender_user_id: 1,
+          body_text: 'Ещё отправляется',
+          created_at: '2026-08-23T08:03:00Z',
+          local_status: 'sending',
+        }}
+      />,
+    );
+
+    expect(pending.getByLabelText(/Ваше сообщение.*Ещё отправляется.*Отправляется/)).toBeTruthy();
+    expect(pending.getByLabelText('Сообщение отправляется')).toBeTruthy();
+    expect(pending.queryByText('Ожидает отправки')).toBeNull();
+
+    const failed = await render(
+      <ChatBubble
+        isOwn
+        message={{
+          id: 'failed-1',
+          conversation_id: 'conversation-1',
+          sender_user_id: 1,
+          body_text: 'Не ушло',
+          created_at: '2026-08-23T08:04:00Z',
+          local_status: 'failed',
+        }}
+      />,
+    );
+
+    expect(failed.getByLabelText(/Ваше сообщение.*Не ушло.*Не отправлено/)).toBeTruthy();
+    expect(failed.getByLabelText('Не отправлено, нажмите, чтобы повторить')).toBeTruthy();
+    expect(failed.queryByText('Не отправлено · повторить')).toBeNull();
+  });
+
   it('exposes determinate upload progress to TalkBack', async () => {
     const screen = await render(
       <ChatComposer

@@ -218,7 +218,7 @@ export function NativeMfuScreen() {
   );
 
   return (
-    <AccountScreenScaffold title="МФУ" tokens={tokens} scroll={false} rightAction={(
+    <AccountScreenScaffold title="МФУ" tokens={tokens} scroll={false} contentUnderNav rightAction={(
       <Pressable accessibilityRole="button" accessibilityLabel="О разделе МФУ" onPress={() => Alert.alert('МФУ', `Доступны состояние, расходники, счётчики и история. Списание расходника и запись работы пока недоступны.${payload?.generated_at ? `\nОбновлено: ${formatDateTime(payload.generated_at)}` : ''}`)} style={styles.iconButton}>
         <MaterialCommunityIcons name="information-outline" size={23} color={tokens.iconMuted} />
       </Pressable>
@@ -227,7 +227,7 @@ export function NativeMfuScreen() {
         initialNumToRender={12}
         maxToRenderPerBatch={10}
         windowSize={7}
-        testID="native-mfu-list" data={filtered} keyExtractor={(device) => device.key} keyboardShouldPersistTaps="handled" contentContainerStyle={filtered.length ? styles.list : [styles.emptyList, { paddingBottom: emptyListInset }]} ListHeaderComponent={header} ListEmptyComponent={!loading && !error && !offlineMode ? <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>{payload?.totals.devices === 0 ? 'В выбранной базе пока нет МФУ.' : 'По выбранным фильтрам устройства не найдены.'}</Text> : null} renderItem={renderDevice} refreshing={refreshing} onRefresh={refresh} />
+        testID="native-mfu-list" data={filtered} keyExtractor={(device) => device.key} keyboardShouldPersistTaps="handled" contentContainerStyle={filtered.length ? [styles.list, { paddingBottom: emptyListInset }] : [styles.emptyList, { paddingBottom: emptyListInset }]} ListHeaderComponent={header} ListEmptyComponent={!loading && !error && !offlineMode ? <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>{payload?.totals.devices === 0 ? 'В выбранной базе пока нет МФУ.' : 'По выбранным фильтрам устройства не найдены.'}</Text> : null} renderItem={renderDevice} refreshing={refreshing} onRefresh={refresh} />
       <Modal visible={Boolean(selected)} transparent animationType="slide" onRequestClose={closeDevice}>{selected ? <DeviceDetails device={selected} tokens={tokens} onClose={closeDevice} /> : null}</Modal>
       <NativeFilterSheet
         visible={filtersOpen}

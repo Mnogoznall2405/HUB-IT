@@ -1,9 +1,16 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useRef } from 'react';
-import { Animated, PanResponder, StyleSheet } from 'react-native';
+import { type ReactNode, useCallback, useEffect, useRef } from 'react';
+import { StyleSheet, useWindowDimensions } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import {
   folderSwipeDirection,
-  shouldKeepHorizontalSwipe,
   shouldLockInboxRefresh,
   shouldStartFolderSwipe,
   shouldTriggerFolderSwipe,
@@ -11,7 +18,7 @@ import {
 
 export function FolderSwipeHost({
   enabled = true,
-  capture = false,
+  capture: _capture = false,
   fill = true,
   onSwipeFolder,
   onSwipeEngage,
@@ -24,111 +31,146 @@ export function FolderSwipeHost({
   onSwipeEngage?: (engaged: boolean) => void;
   children: ReactNode;
 }) {
-  const engaged = useRef(false);
-  const granted = useRef(false);
-  const mounted = useRef(true);
-  const enabledRef = useRef(enabled);
-  enabledRef.current = enabled;
-  const translateX = useRef(new Animated.Value(0)).current;
-  const reduceMotion = useReducedMotion();
-  const origin = useRef<{ x: number; y: number } | null>(null);
   const onSwipeFolderRef = useRef(onSwipeFolder);
   const onSwipeEngageRef = useRef(onSwipeEngage);
   onSwipeFolderRef.current = onSwipeFolder;
   onSwipeEngageRef.current = onSwipeEngage;
+  const translateX = useSharedValue(0);
+  const engagedFlag = useSharedValue(0);
+  // Pager commit runs a slide-out → swap → slide-in sequence; onFinalize must
+  // not interrupt it with its spring-back (that was the "big bounce" bug).
+  const committedFlag = useSharedValue(0);
+  const originX = useSharedValue(-1);
+  const originY = useSharedValue(-1);
+  const reduceMotion = useReducedMotion();
+  const { width: screenWidth } = useWindowDimensions();
+  // JS-side origin for the refresh-lock heuristic (RN touch props run on JS).
+  const jsOrigin = useRef<{ x: number; y: number } | null>(null);
 
   const setEngaged = useCallback((next: boolean) => {
-    if (engaged.current === next) return;
-    engaged.current = next;
     onSwipeEngageRef.current?.(next);
   }, []);
-  const reset = useCallback((incomingOffset?: number) => {
-    granted.current = false;
-    origin.current = null;
-    setEngaged(false);
-    translateX.stopAnimation();
-    if (incomingOffset !== undefined && !reduceMotion) translateX.setValue(incomingOffset);
-    if (reduceMotion) translateX.setValue(0);
-    else Animated.spring(translateX, { toValue: 0, tension: 150, friction: 20, useNativeDriver: true }).start();
-  }, [reduceMotion, setEngaged, translateX]);
-  useEffect(() => { if (!enabled) reset(); }, [enabled, reset]);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-      granted.current = false;
-      origin.current = null;
-      setEngaged(false);
-      translateX.stopAnimation();
-    };
-  }, [setEngaged, translateX]);
+  const fireSwipe = useCallback((direction: 'prev' | 'next') => {
+    onSwipeFolderRef.current(direction);
+  }, []);
 
-  const panResponder = useMemo(() => PanResponder.create({
-    onMoveShouldSetPanResponder: (_, gesture) => {
-      const start = mounted.current && enabledRef.current && gesture.numberActiveTouches <= 1 && shouldStartFolderSwipe(gesture.dx, gesture.dy);
-      if (start) setEngaged(true);
-      return start;
-    },
-    onMoveShouldSetPanResponderCapture: (_, gesture) => {
-      const start = mounted.current && enabledRef.current && capture && gesture.numberActiveTouches <= 1 && shouldStartFolderSwipe(gesture.dx, gesture.dy);
-      if (start) setEngaged(true);
-      return start;
-    },
-    onPanResponderGrant: () => {
-      if (!mounted.current || !enabledRef.current) return;
-      granted.current = true;
-      translateX.stopAnimation();
-      setEngaged(true);
-    },
-    onPanResponderMove: (_, gesture) => {
-      if (!enabledRef.current || gesture.numberActiveTouches > 1) { reset(); return; }
-      if (!reduceMotion && granted.current) translateX.setValue(Math.max(-56, Math.min(56, gesture.dx * 0.3)));
-    },
-    onPanResponderRelease: (_, gesture) => {
-      if (!mounted.current) return;
-      const commit = mounted.current && enabledRef.current && granted.current
-        && shouldTriggerFolderSwipe(gesture.dx, gesture.vx) && shouldStartFolderSwipe(gesture.dx, gesture.dy);
-      reset(commit ? (gesture.dx < 0 ? 24 : -24) : undefined);
-      if (commit) {
-        onSwipeFolderRef.current(folderSwipeDirection(gesture.dx));
+  useEffect(() => {
+    if (enabled) return;
+    translateX.value = 0;
+    engagedFlag.value = 0;
+    onSwipeEngageRef.current?.(false);
+  }, [enabled, engagedFlag, translateX]);
+
+  // B-T2-1: the folder swipe moved to Gesture Handler — the same UI-thread
+  // stack as message/back swipes — so it no longer fights the responder lock.
+  const gesture = Gesture.Pan()
+    .enabled(enabled)
+    .manualActivation(true)
+    .onTouchesDown((event) => {
+      'worklet';
+      const touch = event.allTouches[0];
+      if (touch) { originX.value = touch.x; originY.value = touch.y; }
+    })
+    .onTouchesMove((event, manager) => {
+      'worklet';
+      if (event.allTouches.length > 1 || originX.value < 0) { manager.fail(); return; }
+      const touch = event.changedTouches[0];
+      if (!touch) return;
+      const dx = touch.x - originX.value;
+      const dy = touch.y - originY.value;
+      if (shouldStartFolderSwipe(dx, dy)) {
+        manager.activate();
+      } else if (Math.abs(dy) > 18 && Math.abs(dy) > Math.abs(dx)) {
+        manager.fail();
       }
-    },
-    onPanResponderTerminate: () => {
-      reset();
-    },
-    onPanResponderTerminationRequest: (_, gesture) => (
-      !engaged.current || !shouldKeepHorizontalSwipe(gesture.dx, gesture.dy)
-    ),
-  }), [capture, reduceMotion, reset, setEngaged, translateX]);
+    })
+    .onUpdate((event) => {
+      'worklet';
+      if (engagedFlag.value === 0) {
+        engagedFlag.value = 1;
+        runOnJS(setEngaged)(true);
+      }
+      // DEV-FOLDER-1: follow the finger 1:1 (pager style) instead of the old
+      // rubber band ±56dp — the visible "wobble" came from translation*0.3.
+      if (!reduceMotion) {
+        translateX.value = Math.max(-screenWidth, Math.min(screenWidth, event.translationX));
+      }
+    })
+    .onEnd((event) => {
+      'worklet';
+      if (!enabled) {
+        engagedFlag.value = 0;
+        if (reduceMotion) translateX.value = 0;
+        else translateX.value = withSpring(0, { damping: 20, stiffness: 260 });
+        return;
+      }
+      const commit = shouldTriggerFolderSwipe(event.translationX, event.velocityX)
+        && shouldStartFolderSwipe(event.translationX, event.translationY);
+      if (engagedFlag.value) runOnJS(setEngaged)(false);
+      engagedFlag.value = 0;
+      if (commit && !reduceMotion) {
+        // DEV-FOLDER-1: pager transition — the current list slides out along
+        // the swipe, the new folder slides in from the opposite edge without
+        // the old spring-return wobble.
+        committedFlag.value = 1;
+        const direction = folderSwipeDirection(event.translationX);
+        const out = event.translationX > 0 ? screenWidth : -screenWidth;
+        translateX.value = withTiming(out, { duration: 140 }, () => {
+          'worklet';
+          translateX.value = -out;
+          runOnJS(fireSwipe)(direction);
+          translateX.value = withTiming(0, { duration: 180 }, () => {
+            'worklet';
+            committedFlag.value = 0;
+          });
+        });
+        return;
+      }
+      if (reduceMotion) translateX.value = 0;
+      else translateX.value = withSpring(0, { damping: 20, stiffness: 260 });
+      if (commit) runOnJS(fireSwipe)(folderSwipeDirection(event.translationX));
+    })
+    .onFinalize(() => {
+      'worklet';
+      originX.value = -1;
+      originY.value = -1;
+      if (engagedFlag.value) {
+        engagedFlag.value = 0;
+        runOnJS(setEngaged)(false);
+      }
+      if (committedFlag.value) return; // pager commit owns translateX now
+      if (translateX.value !== 0) {
+        translateX.value = reduceMotion ? 0 : withSpring(0, { damping: 20, stiffness: 260 });
+      }
+    });
+
+  const hostStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: translateX.value }],
+  }));
 
   return (
-    <Animated.View
-      style={[fill ? styles.fill : undefined, { transform: [{ translateX }] }]}
-      {...(enabled ? panResponder.panHandlers : undefined)}
-      onTouchStart={(event) => {
-        if (!enabled) return;
-        const touch = event.nativeEvent.touches[0];
-        origin.current = touch ? { x: touch.pageX, y: touch.pageY } : null;
-      }}
-      onTouchMove={(event) => {
-        if (!enabled || !origin.current) return;
-        if (event.nativeEvent.touches.length > 1) { reset(); return; }
-        const touch = event.nativeEvent.touches[0];
-        if (!touch) return;
-        const dx = touch.pageX - origin.current.x;
-        const dy = touch.pageY - origin.current.y;
-        if (!granted.current) setEngaged(shouldLockInboxRefresh(dx, dy));
-      }}
-      onTouchEnd={() => {
-        origin.current = null;
-        setEngaged(false);
-      }}
-      onTouchCancel={() => {
-        reset();
-      }}
-    >
-      {children}
-    </Animated.View>
+    <GestureDetector gesture={gesture}>
+      <Animated.View
+        style={[fill ? styles.fill : undefined, hostStyle]}
+        onTouchStart={(event) => {
+          if (!enabled) return;
+          const touch = event.nativeEvent.touches[0];
+          jsOrigin.current = touch ? { x: touch.pageX, y: touch.pageY } : null;
+        }}
+        onTouchMove={(event) => {
+          if (!enabled || !jsOrigin.current) return;
+          const touch = event.nativeEvent.touches[0];
+          if (!touch || event.nativeEvent.touches.length > 1) return;
+          const dx = touch.pageX - jsOrigin.current.x;
+          const dy = touch.pageY - jsOrigin.current.y;
+          if (shouldLockInboxRefresh(dx, dy)) setEngaged(true);
+        }}
+        onTouchEnd={() => { jsOrigin.current = null; }}
+        onTouchCancel={() => { jsOrigin.current = null; }}
+      >
+        {children}
+      </Animated.View>
+    </GestureDetector>
   );
 }
 

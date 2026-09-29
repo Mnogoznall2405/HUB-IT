@@ -241,3 +241,27 @@ class ScanArtifact(Base):
 
     __table_args__ = (Index("idx_scan_artifacts_job", "job_id"),)
 
+
+class ScanOcrCache(Base):
+    """Dedup cache of complete OCR results keyed by processed-bytes hash.
+
+    Only stores results where every page rendered as text|blank (fully
+    deterministic for identical bytes + pipeline version + OCR profile).
+    Pattern matching is always re-applied fresh on the cached text, so rule
+    edits never go stale — no patterns fingerprint in the key by design.
+    """
+
+    __tablename__ = "scan_ocr_cache"
+
+    content_hash: Mapped[str] = mapped_column(Text, primary_key=True)
+    analysis_version: Mapped[str] = mapped_column(Text, primary_key=True)
+    ocr_profile: Mapped[str] = mapped_column(Text, primary_key=True)
+    ocr_text: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    page_outcomes_json: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'[]'"))
+    ocr_metrics_json: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'{}'"))
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    last_hit_at: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+
+    __table_args__ = (Index("idx_scan_ocr_cache_created", "created_at"),)
+

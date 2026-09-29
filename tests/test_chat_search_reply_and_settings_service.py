@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -339,6 +340,56 @@ def test_conversation_settings_update_flags_and_muted_chat_skips_notifications(c
     polled = hub_service.poll_notifications(user_id=1, limit=50)
     chat_items = [item for item in polled["items"] if item.get("entity_type") == "chat"]
     assert chat_items == []
+
+
+def test_muted_until_expires_and_future_deadline_mutes(chat_env):
+    """F-MUTE-TIMER: future deadline mutes and auto-expires; unmute clears it."""
+    from datetime import timedelta
+
+    service = chat_env["service"]
+    hub_service = chat_env["hub_service"]
+    conversation = chat_env["direct"]
+
+    future = (chat_service_module._utc_now() + timedelta(hours=1)).isoformat()
+    muted = service.update_conversation_settings(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        muted_until=datetime.fromisoformat(future),
+    )
+    assert muted["is_muted"] is True
+    assert muted["muted_until"]
+
+    snapshot_muted = service.get_realtime_snapshot(current_user_id=1)
+    assert snapshot_muted["muted_conversation_ids"] == [conversation["id"]]
+
+    past = (chat_service_module._utc_now() - timedelta(seconds=1)).isoformat()
+    expired = service.update_conversation_settings(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        muted_until=datetime.fromisoformat(past),
+    )
+    assert expired["is_muted"] is False
+
+    # A stale deadline must not linger: serialization and the muted-id list
+    # report the conversation as unmuted.
+    listed = service.list_conversations(current_user_id=1, limit=20)["items"]
+    assert listed[0]["is_muted"] is False
+    snapshot_expired = service.get_realtime_snapshot(current_user_id=1)
+    assert conversation["id"] not in snapshot_expired["muted_conversation_ids"]
+
+    # Explicit unmute clears the deadline.
+    service.update_conversation_settings(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        muted_until=datetime.fromisoformat(future),
+    )
+    unmuted = service.update_conversation_settings(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        is_muted=False,
+    )
+    assert unmuted["is_muted"] is False
+    assert unmuted["muted_until"] is None
 
 
 def test_delete_direct_conversation_removes_history_for_all_members(chat_env):

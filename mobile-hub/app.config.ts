@@ -27,7 +27,12 @@ const config: ExpoConfig = {
     versionCode: mobileVersion.versionCode,
     softwareKeyboardLayoutMode: 'resize',
     ...androidHttpsAppLinks,
-    permissions: ['android.permission.REQUEST_INSTALL_PACKAGES'],
+    permissions: [
+    'android.permission.REQUEST_INSTALL_PACKAGES',
+    // F-CONTACT: read-only contact picking; the expo-contacts plugin would
+    // also add WRITE_CONTACTS, which we don't need.
+    'android.permission.READ_CONTACTS',
+  ],
     blockedPermissions: [
       'android.permission.SYSTEM_ALERT_WINDOW',
     ],
@@ -69,6 +74,19 @@ const config: ExpoConfig = {
       },
     ],
     'expo-sharing',
+    [
+      'expo-media-library',
+      {
+        photosPermission: 'Разрешить HUB-IT показывать и сохранять фото и видео.',
+        savePhotosPermission: 'Разрешить HUB-IT сохранять вложения в галерею.',
+      },
+    ],
+    [
+      'expo-location',
+      {
+        locationWhenInUsePermission: 'Разрешить HUB-IT определять местоположение для отправки геопозиции.',
+      },
+    ],
     'expo-status-bar',
     [
       'expo-navigation-bar',

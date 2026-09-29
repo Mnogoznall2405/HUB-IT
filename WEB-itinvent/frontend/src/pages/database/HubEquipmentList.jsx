@@ -36,6 +36,50 @@ export function CompareQtyNote({ breakdown }) {
   );
 }
 
+export function ActiveUseChip({ info }) {
+  if (!info || typeof info !== 'object') return null;
+  const hostname = String(info.hostname || '').trim();
+  if (!hostname) return null;
+  const status = String(info.status || '').trim();
+  const isMonitor = String(info.kind || '') === 'monitor';
+  const user = String(info.user_login || info.current_user || '').trim();
+  const lastSeen = Number(info.last_seen_at || 0);
+  const monitorLabel = [info.monitor_manufacturer, info.monitor_product_code]
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .join(' ');
+  const title = [
+    isMonitor ? `Монитор: ${monitorLabel || info.monitor_serial_number || '-'}` : `ПК: ${hostname}`,
+    isMonitor ? `Подключён к: ${hostname}` : '',
+    info.monitor_match === 'serial_suffix' ? 'Совпадение по хвосту серийника' : '',
+    info.monitor_match === 'serial_tail' ? 'Совпадение по цифрам серийника' : '',
+    user ? `Пользователь: ${user}` : '',
+    lastSeen > 0 ? `Отчёт агента: ${new Date(lastSeen * 1000).toLocaleString('ru-RU')}` : '',
+  ].filter(Boolean).join('\n');
+  const label = isMonitor
+    ? `Подключён: ${hostname}`
+    : status === 'online' ? `В работе: ${hostname}` : `ПК: ${hostname}`;
+  return (
+    <Tooltip title={title} sx={{ whiteSpace: 'pre-line' }}>
+      <Chip
+        size="small"
+        variant="outlined"
+        color={status === 'online' ? 'success' : status === 'stale' ? 'warning' : 'default'}
+        label={label}
+        sx={{
+          height: 20,
+          maxWidth: '100%',
+          '& .MuiChip-label': {
+            px: 0.75,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          },
+        }}
+      />
+    </Tooltip>
+  );
+}
+
 export function HubDbChip({ item, show }) {
   if (!show) return null;
   const { dbName, isCurrentDb } = hubItemDatabaseMeta(item);
@@ -59,6 +103,7 @@ export function HubEquipmentMobileRow({
   showDbChip = false,
   compareMaps = null,
   onOpenHistory,
+  activeUseInfo = null,
 }) {
   const [expanded, setExpanded] = useState(false);
   const invNo = readFirst(item, ['INV_NO', 'inv_no'], '-');
@@ -107,6 +152,7 @@ export function HubEquipmentMobileRow({
               {invNo}
             </Typography>
             <HubDbChip item={item} show={showDbChip} />
+            <ActiveUseChip info={activeUseInfo} />
           </Stack>
           <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block' }}>
             {model}
@@ -187,6 +233,7 @@ export function HubEquipmentTable({
   onSort,
   onOpenHistory,
   groupByType = false,
+  activeUseByInvNo = null,
 }) {
   const showDbChip = useMemo(() => {
     const ids = new Set(
@@ -280,6 +327,7 @@ export function HubEquipmentTable({
                   showDbChip={showDbChip}
                   compareMaps={compareMaps}
                   onOpenHistory={onOpenHistory}
+                  activeUseInfo={activeUseByInvNo?.[invNo] || null}
                 />
               );
             })}
@@ -370,6 +418,11 @@ export function HubEquipmentTable({
                   {readFirst(item, ['MODEL_NAME', 'model_name'], '-')}
                   {rowStatus === 'diff' ? (
                     <CompareQtyNote breakdown={compareQtyBreakdown(partNo, compareMaps)} />
+                  ) : null}
+                  {activeUseByInvNo?.[invNo] ? (
+                    <Box sx={{ mt: 0.35, maxWidth: 240 }}>
+                      <ActiveUseChip info={activeUseByInvNo[invNo]} />
+                    </Box>
                   ) : null}
                 </TableCell>
                 <TableCell>{readFirst(item, ['TYPE_NAME', 'type_name'], '-')}</TableCell>

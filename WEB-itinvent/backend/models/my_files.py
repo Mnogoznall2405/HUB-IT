@@ -163,3 +163,36 @@ class MyFileAuditItemResponse(BaseModel):
 
 class MyFileAuditResponse(BaseModel):
     items: list[MyFileAuditItemResponse] = Field(default_factory=list)
+    download_count: int = 0
+    unique_download_ips: int = 0
+
+
+class MyFilesAdminUserStat(BaseModel):
+    user_id: int
+    username: str
+    full_name: str | None = None
+    files_count: int = 0
+    used_bytes: int = 0
+    shared_count: int = 0
+    folders_count: int = 0
+    active_uploads: int = 0
+    last_activity_at: datetime | None = None
+    quota_limit_bytes: int = 0
+    quota_is_custom: bool = False
+
+
+class MyFilesAdminTotals(BaseModel):
+    files_count: int = 0
+    used_bytes: int = 0
+    stored_bytes: int = 0
+    storage_total_bytes: int = 0
+    storage_free_bytes: int = 0
+    shared_count: int = 0
+    active_uploads: int = 0
+    processing_queue: int = 0
+
+
+class MyFilesAdminStatsResponse(BaseModel):
+    items: list[MyFilesAdminUserStat] = Field(default_factory=list)
+    total: int = 0
+    totals: MyFilesAdminTotals = Field(default_factory=MyFilesAdminTotals)

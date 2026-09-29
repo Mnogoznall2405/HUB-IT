@@ -14,6 +14,7 @@ import {
   IconButton,
   InputAdornment,
   LinearProgress,
+  Link,
   ListItemIcon,
   ListItemText,
   Menu,
@@ -423,6 +424,10 @@ function CredentialDialog({ open, profile, mobile, onClose, onSaved }) {
                 ),
               }}
             />
+            <Typography variant="body2" color="text.secondary">
+              Нет доступа? Запросите пароль у технической поддержки — напишите на{' '}
+              <Link href="mailto:it@zsgp.ru" underline="always">it@zsgp.ru</Link>.
+            </Typography>
             {testResult?.connected ? (
               <Alert severity="success" role="status">Подключение к базе {testResult.configuration} работает.</Alert>
             ) : null}
@@ -1841,6 +1846,8 @@ export default function Docflow() {
           {!profileLoading && !profileError && !profile?.configured ? (
             <Alert severity="info" sx={{ flexShrink: 0 }}>
               Введите личные данные 1С, чтобы увидеть только назначенные вам задания.
+              Для получения доступа запросите пароль у технической поддержки — напишите на{' '}
+              <Link href="mailto:it@zsgp.ru" underline="always">it@zsgp.ru</Link>.
             </Alert>
           ) : null}
 

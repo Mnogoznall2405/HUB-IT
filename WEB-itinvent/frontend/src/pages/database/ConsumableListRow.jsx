@@ -2,6 +2,7 @@ import { memo } from 'react';
 import { Box, Chip, IconButton, Typography } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
+import QrCode2Icon from '@mui/icons-material/QrCode2';
 
 import { readFirst } from './databaseRecordModel';
 import { toInvNo } from './equipmentModel';
@@ -10,6 +11,7 @@ function ConsumableListRow({
   item,
   onEditQty,
   onDelete,
+  onShowQr,
   canWrite = false,
   canDelete = false,
 }) {
@@ -42,6 +44,15 @@ function ConsumableListRow({
         </Typography>
       </Box>
       <Chip label={qty} size="small" color="primary" variant="outlined" sx={{ minWidth: 40 }} />
+      {onShowQr ? (
+        <IconButton
+          size="small"
+          aria-label={`QR-код расходника ${invNo}`}
+          onClick={() => onShowQr(item)}
+        >
+          <QrCode2Icon fontSize="small" />
+        </IconButton>
+      ) : null}
       {canWrite && onEditQty ? (
         <IconButton
           size="small"

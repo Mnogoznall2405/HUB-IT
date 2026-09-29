@@ -65,6 +65,7 @@ from backend.chat.models import (
     ChatMessageAttachment,
     ChatMessageRead,
     ChatMessageReaction,
+    ChatPollVote,
     ChatPushOutbox,
 )
 from backend.chat.message_persistence import (
@@ -115,6 +116,78 @@ def _utc_now() -> datetime:
 def _normalize_body_format(value: object, default: str = "plain") -> str:
     normalized = _normalize_text(value).lower() or default
     return normalized if normalized in {"plain", "markdown"} else "plain"
+
+
+def _normalize_location_body(body: str) -> str:
+    """kind='location' carries canonical JSON {latitude, longitude[, title]}."""
+    try:
+        data = json.loads(body)
+    except Exception:
+        raise ValueError("Location message requires a JSON body")
+    if not isinstance(data, dict):
+        raise ValueError("Location message requires a JSON object body")
+    try:
+        latitude = float(data.get("latitude"))
+        longitude = float(data.get("longitude"))
+    except (TypeError, ValueError):
+        raise ValueError("Location message requires numeric latitude/longitude")
+    if not (-90.0 <= latitude <= 90.0 and -180.0 <= longitude <= 180.0):
+        raise ValueError("Location coordinates are out of range")
+    normalized: dict[str, Any] = {"latitude": latitude, "longitude": longitude}
+    title = _normalize_text(data.get("title"))
+    address = _normalize_text(data.get("address"))
+    if title:
+        normalized["title"] = title[:200]
+    if address:
+        normalized["address"] = address[:400]
+    return json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+
+
+def _normalize_contact_body(body: str) -> str:
+    """kind='contact' carries canonical JSON {name[, phone][, organization]}."""
+    try:
+        data = json.loads(body)
+    except Exception:
+        raise ValueError("Contact message requires a JSON body")
+    if not isinstance(data, dict):
+        raise ValueError("Contact message requires a JSON object body")
+    name = _normalize_text(data.get("name"))
+    if not name:
+        raise ValueError("Contact message requires a non-empty name")
+    normalized: dict[str, Any] = {"name": name[:200]}
+    phone = _normalize_text(data.get("phone"))
+    organization = _normalize_text(data.get("organization"))
+    if phone:
+        normalized["phone"] = phone[:80]
+    if organization:
+        normalized["organization"] = organization[:200]
+    return json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+
+
+def _normalize_poll_body(body: str) -> str:
+    """kind='poll' carries canonical JSON {question, options[], anonymous}."""
+    try:
+        data = json.loads(body)
+    except Exception:
+        raise ValueError("Poll message requires a JSON body")
+    if not isinstance(data, dict):
+        raise ValueError("Poll message requires a JSON object body")
+    question = _normalize_text(data.get("question"))
+    if not question:
+        raise ValueError("Poll question is required")
+    raw_options = data.get("options")
+    if not isinstance(raw_options, list):
+        raise ValueError("Poll options must be a list")
+    options = [_normalize_text(item)[:100] for item in raw_options]
+    options = [item for item in options if item]
+    if not (2 <= len(options) <= 10):
+        raise ValueError("Poll requires between 2 and 10 options")
+    normalized = {
+        "question": question[:300],
+        "options": options,
+        "anonymous": bool(data.get("anonymous", False)),
+    }
+    return json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
 
 
 def _normalize_member_role(value: object) -> str:
@@ -1867,6 +1940,181 @@ class ChatService:
                 ],
             }
 
+    def _build_poll_payload(
+        self,
+        *,
+        message_id: str,
+        body: str,
+        current_user_id: int,
+    ) -> dict | None:
+        """Aggregated poll state for serialization; per-user `my_option_index`."""
+        try:
+            data = json.loads(_normalize_text(body))
+        except Exception:
+            return None
+        options = [_normalize_text(item) for item in (data.get("options") or [])]
+        question = _normalize_text(data.get("question"))
+        if not question or not options:
+            return None
+        normalized_message_id = _normalize_text(message_id)
+        with chat_session() as session:
+            rows = session.execute(
+                select(ChatPollVote).where(ChatPollVote.message_id == normalized_message_id)
+            ).scalars().all()
+        counts = [0] * len(options)
+        voters: set[int] = set()
+        my_option: int | None = None
+        for row in rows:
+            index = int(row.option_index)
+            if 0 <= index < len(options):
+                counts[index] += 1
+                voters.add(int(row.user_id))
+            if int(row.user_id) == int(current_user_id):
+                my_option = index
+        return {
+            "question": question,
+            "options": [{"text": text, "votes": counts[i]} for i, text in enumerate(options)],
+            "anonymous": bool(data.get("anonymous", False)),
+            "closed": bool(data.get("closed", False)),
+            "total_voters": len(voters),
+            "my_option_index": my_option,
+        }
+
+    def vote_poll(
+        self,
+        *,
+        current_user_id: int,
+        conversation_id: str,
+        message_id: str,
+        option_index: int,
+    ) -> dict:
+        """Set/retract the caller's vote in a kind='poll' message."""
+        self._ensure_available()
+        normalized_conversation_id = _normalize_text(conversation_id)
+        normalized_message_id = _normalize_text(message_id)
+        if not normalized_conversation_id or not normalized_message_id:
+            raise ValueError("conversation_id and message_id are required")
+        with chat_session() as session:
+            self._lock_conversation_for_write(session=session, conversation_id=normalized_conversation_id)
+            self._require_membership(
+                session=session,
+                conversation_id=normalized_conversation_id,
+                current_user_id=int(current_user_id),
+            )
+            message = session.execute(
+                select(ChatMessage).where(
+                    ChatMessage.id == normalized_message_id,
+                    ChatMessage.conversation_id == normalized_conversation_id,
+                )
+            ).scalar_one_or_none()
+            if message is None or message.is_deleted:
+                raise LookupError(f"Message {normalized_message_id!r} not found")
+            if self._normalize_message_kind(message.kind) != "poll":
+                raise ValueError("Message is not a poll")
+            try:
+                data = json.loads(_normalize_text(message.body))
+            except Exception:
+                data = {}
+            if data.get("closed"):
+                raise ValueError("Poll is closed")
+            options = [_normalize_text(item) for item in (data.get("options") or [])]
+            index = int(option_index)
+            if index < 0 or index >= len(options):
+                raise ValueError("Poll option index is out of range")
+            existing = session.execute(
+                select(ChatPollVote).where(
+                    ChatPollVote.message_id == normalized_message_id,
+                    ChatPollVote.user_id == int(current_user_id),
+                )
+            ).scalar_one_or_none()
+            if existing is not None and int(existing.option_index) == index:
+                session.delete(existing)
+                action = "retracted"
+            elif existing is not None:
+                existing.option_index = index
+                session.add(existing)
+                action = "changed"
+            else:
+                session.add(ChatPollVote(
+                    id=str(uuid4()),
+                    message_id=normalized_message_id,
+                    conversation_id=normalized_conversation_id,
+                    user_id=int(current_user_id),
+                    option_index=index,
+                ))
+                action = "voted"
+            session.flush()
+            body = message.body
+            session.commit()
+        return {
+            "message_id": normalized_message_id,
+            "conversation_id": normalized_conversation_id,
+            "action": action,
+            "poll": self._build_poll_payload(
+                message_id=normalized_message_id,
+                body=body,
+                current_user_id=int(current_user_id),
+            ),
+        }
+
+    def close_poll(
+        self,
+        *,
+        current_user_id: int,
+        conversation_id: str,
+        message_id: str,
+    ) -> dict:
+        """R-POLL-2: the poll author (or admin) stops the vote. The 'closed'
+        flag lives in the canonical body JSON so history stays consistent."""
+        self._ensure_available()
+        normalized_conversation_id = _normalize_text(conversation_id)
+        normalized_message_id = _normalize_text(message_id)
+        if not normalized_conversation_id or not normalized_message_id:
+            raise ValueError("conversation_id and message_id are required")
+        with chat_session() as session:
+            self._lock_conversation_for_write(session=session, conversation_id=normalized_conversation_id)
+            self._require_membership(
+                session=session,
+                conversation_id=normalized_conversation_id,
+                current_user_id=int(current_user_id),
+            )
+            message = session.execute(
+                select(ChatMessage).where(
+                    ChatMessage.id == normalized_message_id,
+                    ChatMessage.conversation_id == normalized_conversation_id,
+                )
+            ).scalar_one_or_none()
+            if message is None or message.is_deleted:
+                raise LookupError(f"Message {normalized_message_id!r} not found")
+            if self._normalize_message_kind(message.kind) != "poll":
+                raise ValueError("Message is not a poll")
+            if int(message.sender_user_id) != int(current_user_id):
+                raise PermissionError("Only the poll author can close it")
+            try:
+                data = json.loads(_normalize_text(message.body))
+            except Exception:
+                raise ValueError("Poll body is not readable")
+            if data.get("closed"):
+                already = True
+            else:
+                data["closed"] = True
+                message.body = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+                session.add(message)
+                session.flush()
+                already = False
+            body = message.body
+            session.commit()
+        return {
+            "message_id": normalized_message_id,
+            "conversation_id": normalized_conversation_id,
+            "action": "already_closed" if already else "closed",
+            "poll": self._build_poll_payload(
+                message_id=normalized_message_id,
+                body=body,
+                current_user_id=int(current_user_id),
+            ),
+        }
+
     def get_message_read_delta(self, *, conversation_id: str, message_id: str) -> dict:
         self._ensure_available()
         return self._thread_reads.get_message_read_delta(
@@ -1967,9 +2215,10 @@ class ChatService:
         files: list[dict[str, Any]],
         body: Optional[str] = None,
         reply_to_message_id: Optional[str] = None,
+        client_message_id: Optional[str] = None,
     ) -> dict[str, Any]:
         self._ensure_available()
-        return self._upload_orchestrator.create_upload_session(current_user_id=current_user_id, conversation_id=conversation_id, files=files, body=body, reply_to_message_id=reply_to_message_id)
+        return self._upload_orchestrator.create_upload_session(current_user_id=current_user_id, conversation_id=conversation_id, files=files, body=body, reply_to_message_id=reply_to_message_id, client_message_id=client_message_id)
     def get_upload_session(
         self,
         *,
@@ -2265,10 +2514,24 @@ class ChatService:
         client_message_id: Optional[str] = None,
         reply_to_message_id: Optional[str] = None,
         defer_push_notifications: bool = False,
+        kind: str = "text",
     ) -> dict:
         self._ensure_available()
         normalized_body = _normalize_text(body)
-        normalized_body_format = _normalize_body_format(body_format)
+        normalized_kind = self._normalize_message_kind(kind)
+        if normalized_kind not in {"text", "location", "contact", "poll"}:
+            normalized_kind = "text"
+        if normalized_kind == "location":
+            normalized_body = _normalize_location_body(normalized_body)
+            normalized_body_format = "plain"
+        elif normalized_kind == "contact":
+            normalized_body = _normalize_contact_body(normalized_body)
+            normalized_body_format = "plain"
+        elif normalized_kind == "poll":
+            normalized_body = _normalize_poll_body(normalized_body)
+            normalized_body_format = "plain"
+        else:
+            normalized_body_format = _normalize_body_format(body_format)
         normalized_client_message_id = _normalize_text(client_message_id) or None
         if not normalized_body:
             raise ValueError("Message body is required")
@@ -2285,12 +2548,21 @@ class ChatService:
             body_format=normalized_body_format,
             client_message_id=normalized_client_message_id,
             reply_to_message_id=reply_to_message_id,
+            kind=normalized_kind,
         )
         payload = persisted.payload
         message_id = persisted.message_id
         member_user_ids = persisted.member_user_ids
         dedup_hit = persisted.dedup_hit
         stage_metrics.update(persisted.stage_metrics)
+        if normalized_kind == "poll" and not dedup_hit:
+            # The lean ACK payload has no poll field; attach the fresh aggregate
+            # so REST/WS acks and the realtime fan-out carry it.
+            payload["poll"] = self._build_poll_payload(
+                message_id=message_id,
+                body=normalized_body,
+                current_user_id=int(current_user_id),
+            )
 
         # Presence / cache invalidation must not delay ACK — schedule after critical enqueue.
         stage_metrics["invalidate_ms"] = 0.0
@@ -2515,6 +2787,7 @@ class ChatService:
         conversation_id: str,
         is_pinned: Optional[bool] = None,
         is_muted: Optional[bool] = None,
+        muted_until: Optional[datetime] = None,
         is_archived: Optional[bool] = None,
     ) -> dict:
         self._ensure_available()
@@ -2534,6 +2807,17 @@ class ChatService:
                 state.is_pinned = bool(is_pinned)
             if is_muted is not None:
                 state.is_muted = bool(is_muted)
+            if muted_until is not None:
+                if muted_until.tzinfo is None:
+                    muted_until = muted_until.replace(tzinfo=timezone.utc)
+                # A future deadline mutes even if is_muted wasn't sent; a past
+                # one or an explicit unmute clears the deadline.
+                state.is_muted = muted_until > _utc_now()
+                state.muted_until = muted_until
+            elif is_muted is False:
+                state.muted_until = None
+            elif is_muted is True:
+                state.muted_until = None  # explicit re-mute = indefinite
             if is_archived is not None:
                 state.is_archived = bool(is_archived)
             session.flush()
@@ -3047,7 +3331,7 @@ class ChatService:
         sender_fallback: dict,
     ) -> dict:
         sender = users_by_id.get(int(message.sender_user_id)) or sender_fallback
-        sender_name = self._get_short_user_name(sender) or CHAT_UNKNOWN_SENDER_NAME
+        sender_name = _display_user_name(sender)
         message_kind = self._normalize_message_kind(getattr(message, "kind", "text"))
         is_deleted = bool(getattr(message, "is_deleted", False))
         body = (
@@ -3071,6 +3355,8 @@ class ChatService:
                 body = f"Файлы: {attachments_count}"
             else:
                 body = "Файлы"
+        elif message_kind in {"location", "contact", "poll"}:
+            body = self._structured_kind_preview_text(message_kind=message_kind, message=message)
         return {
             "id": message.id,
             "sender_name": sender_name,
@@ -3079,6 +3365,26 @@ class ChatService:
             "task_title": task_title,
             "attachments_count": attachments_count,
         }
+
+    def _structured_kind_preview_text(self, *, message_kind: str, message: ChatMessage) -> str:
+        """F-GEO/F-CONTACT/F-POLL: reply/forward quotes must be readable text,
+        not truncated body JSON (same labels as the inbox preview)."""
+        raw_body = _normalize_text(getattr(message, "body", ""))
+        if message_kind == "location":
+            return "Геопозиция"
+        try:
+            data = json.loads(raw_body or "{}")
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        if message_kind == "contact":
+            contact_name = _normalize_text(data.get("name"))
+            return f"Контакт: {contact_name}" if contact_name else "Контакт"
+        if message_kind == "poll":
+            poll_question = _normalize_text(data.get("question"))
+            return f"Опрос: {poll_question}" if poll_question else "Опрос"
+        return _truncate_text(_strip_markdown_preview(raw_body), limit=120)
 
     def _build_message_search_haystack(
         self,
@@ -3365,12 +3671,8 @@ class ChatService:
     @staticmethod
     def _normalize_message_kind(value: object) -> str:
         normalized = _normalize_text(value).lower()
-        if normalized == "task_share":
-            return "task_share"
-        if normalized == "file":
-            return "file"
-        if normalized == "system":
-            return "system"
+        if normalized in {"task_share", "file", "system", "location", "contact", "poll"}:
+            return normalized
         return "text"
 
     def _deserialize_task_preview(self, raw_value: object) -> Optional[dict]:

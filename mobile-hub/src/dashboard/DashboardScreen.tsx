@@ -19,6 +19,9 @@ import { formatApiError } from '../api/formatError';
 import { useAuth } from '../auth/AuthContext';
 import { readNativeSnapshot, writeNativeSnapshot } from '../cache/nativeSnapshotCache';
 import { NATIVE_CHAT_ENABLED } from '../chat/nativeChatFeature';
+import { NativeDatabaseQrScannerModal } from '../components/database/NativeDatabaseQrScannerModal';
+import { NATIVE_DATABASE_ENABLED } from '../database/nativeDatabaseFeature';
+import type { InventoryQrPayload } from '../database/nativeDatabaseModel';
 import { openNativeNotifications, openPortalPath } from '../navigation/moduleRegistry';
 import { useNativeBottomNavInset } from '../navigation/useNativeBottomNavInset';
 import { getNativeUnreadSnapshot } from '../notifications/nativeUnreadSnapshot';
@@ -101,6 +104,24 @@ function DashboardContent() {
   const canReadChat = NATIVE_CHAT_ENABLED && hasPermission('chat.read');
   const canReadNews = hasPermission('dashboard.read');
   const canReadDocflow = hasPermission('docflow.read');
+  const canScanInventoryQr = NATIVE_DATABASE_ENABLED && hasPermission('database.read');
+  const [qrScannerOpen, setQrScannerOpen] = useState(false);
+
+  const handleQrScanned = useCallback((payload: InventoryQrPayload) => {
+    setQrScannerOpen(false);
+    const search = new URLSearchParams();
+    if (payload.kind === 'consumable') {
+      const itemId = Number(payload.itemId);
+      if (!Number.isInteger(itemId) || itemId <= 0) return;
+      search.set('consumable', String(itemId));
+    } else {
+      const invNo = String(payload.inventoryNumber || '').trim();
+      if (!invNo) return;
+      search.set('inv_no', invNo);
+    }
+    if (payload.databaseId) search.set('db_id', payload.databaseId);
+    openPortalPath(`/database?${search.toString()}`);
+  }, []);
 
   const persistDashboardSnapshot = useCallback((nextDocflow = docflowSummaryRef.current) => {
     const userId = Number(user?.id || 0);
@@ -329,6 +350,8 @@ function DashboardContent() {
           canCreateTasks={canCreateTasks}
           canReadChat={canReadChat}
           canReadMail={canReadMail}
+          canScanQr={canScanInventoryQr}
+          onScanQr={() => setQrScannerOpen(true)}
           onRefresh={() => { void loadDashboard(); }}
           onCustomize={() => setCustomizeOpen(true)}
         />
@@ -402,6 +425,12 @@ function DashboardContent() {
         onClose={() => setCustomizeOpen(false)}
         onSave={(next) => { void handleSaveSections(next); }}
       />
+      <NativeDatabaseQrScannerModal
+        visible={qrScannerOpen}
+        tokens={tokens}
+        onClose={() => setQrScannerOpen(false)}
+        onScanned={handleQrScanned}
+      />
     </SafeAreaView>
   );
 }
@@ -414,6 +443,8 @@ function TodayHeader({
   canCreateTasks,
   canReadChat,
   canReadMail,
+  canScanQr,
+  onScanQr,
   onRefresh,
   onCustomize,
 }: {
@@ -424,6 +455,8 @@ function TodayHeader({
   canCreateTasks: boolean;
   canReadChat: boolean;
   canReadMail: boolean;
+  canScanQr?: boolean;
+  onScanQr?: () => void;
   onRefresh: () => void;
   onCustomize: () => void;
 }) {
@@ -449,7 +482,7 @@ function TodayHeader({
           <RoundButton tokens={tokens} icon="tune" label="Настроить главную" onPress={onCustomize} />
         </View>
       </View>
-      {canCreateTasks || canReadChat || canReadMail ? (
+      {canCreateTasks || canReadChat || canReadMail || canScanQr ? (
         <View style={styles.quickRow}>
           {canCreateTasks ? (
             <Pressable
@@ -477,6 +510,15 @@ function TodayHeader({
               label="Написать письмо"
               bordered
               onPress={() => openPortalPath('/mail?compose=new')}
+            />
+          ) : null}
+          {canScanQr && onScanQr ? (
+            <RoundButton
+              tokens={tokens}
+              icon="qrcode-scan"
+              label="Сканировать QR"
+              bordered
+              onPress={onScanQr}
             />
           ) : null}
         </View>

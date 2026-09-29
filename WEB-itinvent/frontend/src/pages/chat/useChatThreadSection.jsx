@@ -91,6 +91,8 @@ export default function useChatThreadSection(ctx) {
     selectedFilesSummary,
     getReadTargetRef,
     handleToggleReaction,
+    handlePollVote,
+    handlePollClose,
     scrollToMessage,
     emojiPickerOpen,
     insertEmojiAtSelection,
@@ -226,6 +228,8 @@ export default function useChatThreadSection(ctx) {
         selectedFilesSummary={selectedFilesSummary}
         getReadTargetRef={getReadTargetRef}
         onToggleReaction={handleToggleReaction}
+        onPollVote={handlePollVote}
+        onPollClose={handlePollClose}
         onScrollToMessage={scrollToMessage}
         currentUserId={user?.id}
         mobileEmojiPickerOpen={isMobile && emojiPickerOpen}
@@ -288,6 +292,8 @@ export default function useChatThreadSection(ctx) {
       handleSendSticker,
       handleThreadScroll,
       handleToggleReaction,
+      handlePollVote,
+      handlePollClose,
       handleUnpinPinnedMessage,
       highlightedMessageId,
       insertEmojiAtSelection,

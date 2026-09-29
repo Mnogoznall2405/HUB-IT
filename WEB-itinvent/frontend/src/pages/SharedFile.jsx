@@ -16,6 +16,7 @@ import CheckOutlinedIcon from '@mui/icons-material/CheckOutlined';
 import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
 import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
 import { myFilesAPI } from '../api/myFiles';
+import { formatFileSize } from '../lib/myFilesPreview';
 import DocumentPreviewDialog from '../components/documentPreview/DocumentPreviewDialog';
 import { getMailAttachmentVisual } from '../components/mail/mailAttachmentVisuals';
 import MailOfficePreviewTeaser from '../components/mail/MailOfficePreviewTeaser';
@@ -37,19 +38,6 @@ const PAGE_BOTTOM = '#e8eef5';
 
 const RATE_LIMIT_MESSAGE = 'Слишком много запросов. Попробуйте скачать через несколько минут.';
 const PREVIEW_UNAVAILABLE_MESSAGE = 'Предпросмотр не удалось подготовить. Файл можно скачать.';
-
-const formatFileSize = (bytes) => {
-  const value = Number(bytes || 0);
-  if (!Number.isFinite(value) || value <= 0) return '0 Б';
-  const units = ['Б', 'КБ', 'МБ', 'ГБ'];
-  let current = value;
-  let index = 0;
-  while (current >= 1024 && index < units.length - 1) {
-    current /= 1024;
-    index += 1;
-  }
-  return `${current >= 10 || index === 0 ? current.toFixed(0) : current.toFixed(1)} ${units[index]}`;
-};
 
 const isRateLimitedError = (error) => Number(error?.response?.status) === 429;
 
@@ -76,6 +64,7 @@ const formatCountdown = (expiresAt, nowMs) => {
   if (!Number.isFinite(target)) return '';
   const diffMs = target - nowMs;
   if (diffMs <= 0) return 'Срок хранения истёк';
+  if (diffMs > 3650 * 86400 * 1000) return 'Доступ бессрочный';
 
   const totalSeconds = Math.floor(diffMs / 1000);
   const days = Math.floor(totalSeconds / 86400);

@@ -108,6 +108,7 @@ export const SETTINGS_PERMISSION_GROUPS: PermissionGroup[] = [
       { value: 'address_book.hire_date.read', label: 'Адресная книга: просмотр даты приёма на работу' },
       { value: 'address_book.personal_phone.read', label: 'Адресная книга: просмотр личных телефонов' },
       { value: 'address_book.personal_email.read', label: 'Адресная книга: просмотр личной почты' },
+      { value: 'address_book.inn.read', label: 'Адресная книга: просмотр ИНН' },
     ],
   },
   {

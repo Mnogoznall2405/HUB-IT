@@ -125,7 +125,8 @@ export function filterMovementDocsByText(docs, filterText) {
 }
 
 // Текстовая выгрузка расхождений сверки Хаб↔1С для буфера обмена.
-export function buildDiscrepanciesText({ employeeName, comparisonComplete, hubItems, warehouseBalances, compareMaps }) {
+// makeInvLink опционально превращает инв. № в markdown-ссылку на карточку.
+export function buildDiscrepanciesText({ employeeName, comparisonComplete, hubItems, warehouseBalances, compareMaps, makeInvLink }) {
   const lines = [`Сверка с 1С — ${employeeName || 'сотрудник'}`];
   if (!comparisonComplete) {
     lines.push('Полный снимок остатков 1С недоступен; итоговая сверка не сформирована.');
@@ -141,13 +142,73 @@ export function buildDiscrepanciesText({ employeeName, comparisonComplete, hubIt
     const tail = status === 'diff' && breakdown
       ? `Хаб: ${breakdown.hubCount} / 1С: ${formatWarehouseQty(breakdown.qty1c)}`
       : 'только в Хабе';
-    lines.push(`• ${invNo} · ${model} — ${tail}`);
+    const href = typeof makeInvLink === 'function' ? makeInvLink(item, invNo) : '';
+    const invLabel = href ? `[${invNo}](${href})` : invNo;
+    lines.push(`• ${invLabel} · ${model} — ${tail}`);
   }
   for (const row of Array.isArray(warehouseBalances) ? warehouseBalances : []) {
     if (resolve1cRowStatus(row?.nomenclature_code, compareMaps) !== 'only_1c') continue;
     lines.push(`• ${row?.nomenclature_code || '—'} ${row?.nomenclature_name || ''} — только в 1С (${formatWarehouseQty(row?.qty_balance)})`);
   }
   if (lines.length === 1) lines.push('Расхождений нет.');
+  return lines.join('\n');
+}
+
+// Текст задачи для случая «склад 1С не найден»: создать склад + переместить,
+// подсказки по складам с остатками и прежним владельцам.
+export function buildMissingWarehouseTaskText({
+  employeeName,
+  hubItems,
+  codeHints,
+  previousOwners,
+  warehouseCandidates,
+  makeInvLink,
+}) {
+  const lines = [`Склад 1С не найден — ${employeeName || 'сотрудник'}`];
+  lines.push('Нужно: создать склад 1С за сотрудником и переместить туда оборудование.');
+  const candidateNames = (Array.isArray(warehouseCandidates) ? warehouseCandidates : [])
+    .map((c) => String(c?.name || c?.warehouse_name || '').trim())
+    .filter(Boolean)
+    .slice(0, 5);
+  if (candidateNames.length) {
+    lines.push(`Возможные склады в 1С: ${candidateNames.join('; ')}`);
+  }
+  const items = Array.isArray(hubItems) ? hubItems : [];
+  lines.push('', `Оборудование в Хабе (${items.length}):`);
+  for (const item of items.slice(0, 40)) {
+    const invNo = readFirst(item, ['INV_NO', 'inv_no'], '-');
+    const model = readFirst(item, ['MODEL_NAME', 'model_name'], '');
+    const partNo = readFirst(item, ['PART_NO', 'part_no'], '');
+    const href = typeof makeInvLink === 'function' ? makeInvLink(item, invNo) : '';
+    const invLabel = href ? `[${invNo}](${href})` : invNo;
+    const prev = ((previousOwners || {})[invNo] || []).join(', ');
+    const tail = [
+      partNo ? `парт. № ${partNo}` : '',
+      prev ? `раньше: ${prev}` : '',
+    ].filter(Boolean).join(' · ');
+    lines.push(`• ${invLabel} · ${model}${tail ? ` — ${tail}` : ''}`);
+  }
+  const hints = Array.isArray(codeHints) ? codeHints : [];
+  if (hints.length) {
+    lines.push('', 'Где могут лежать остатки (по парт. №):');
+    for (const hint of hints) {
+      const warehouses = Array.isArray(hint?.warehouses) ? hint.warehouses : [];
+      const suggested = warehouses.filter((w) => !w.has_in_hub);
+      for (const w of suggested.slice(0, 5)) {
+        const who = w.employee_name ? ` (${w.employee_name})` : '';
+        lines.push(`• ${hint.code}: склад «${w.warehouse_name}»${who} — ${formatWarehouseQty(w.qty)} шт., в Хабе у него такой позиции нет`);
+      }
+      if (!warehouses.length) {
+        lines.push(hint.balances_error
+          ? `• ${hint.code}: не удалось получить остатки из 1С (${hint.balances_error})`
+          : `• ${hint.code}: на складах 1С остатков не найдено`);
+      }
+      const holders = (hint.hub_holders || []).slice(0, 5);
+      if (holders.length) {
+        lines.push(`  в Хабе есть у: ${holders.map((h) => `${h.employee_name} (${h.count} шт.)`).join(', ')}`);
+      }
+    }
+  }
   return lines.join('\n');
 }
 

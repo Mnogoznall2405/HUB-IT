@@ -1,6 +1,6 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-09-17 06:35 UTC_  
+_Сгенерировано: 2026-09-29 06:23 UTC_  
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@10.103.0.10:5432/hubit_chat?sslmode=require` (`10.103.0.10:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
@@ -1322,6 +1322,8 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `reactions_enabled` | integer | no | `1` |
 | `publication_notified_at` | text | yes | `` |
 | `category_id` | text | yes | `` |
+| `audience_department_codes` | text | no | `'[]'::text` |
+| `audience_cities` | text | no | `'[]'::text` |
 
 - **Primary key:** `id`
 - **Indexes:**
@@ -1666,6 +1668,15 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
   - `ix_app_inventory_host_sql_contexts_db_id`: (db_id)
   - `ix_app_inventory_host_sql_contexts_hostname`: (hostname)
   - `ix_app_inventory_host_sql_contexts_mac_address`: (mac_address)
+  - `ix_app_inventory_sql_ctx_branch_trgm`: (branch_name)
+  - `ix_app_inventory_sql_ctx_db_branch`: (db_id, branch_name)
+  - `ix_app_inventory_sql_ctx_db_id_trgm`: (db_id)
+  - `ix_app_inventory_sql_ctx_db_mac`: (db_id, mac_address)
+  - `ix_app_inventory_sql_ctx_employee_trgm`: (employee_name)
+  - `ix_app_inventory_sql_ctx_host_db`: (hostname, db_id)
+  - `ix_app_inventory_sql_ctx_location_trgm`: (location_name)
+  - `ix_app_inventory_sql_ctx_mac_db`: (mac_address, db_id)
+  - `ix_app_inventory_sql_ctx_updated_at`: (updated_at)
   - `uq_app_inventory_host_sql_context` UNIQUE: (mac_address, hostname, db_id)
 
 ---
@@ -1692,10 +1703,15 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 - **Indexes:**
   - `ix_app_inventory_hosts_hidden_at`: (hidden_at)
   - `ix_app_inventory_hosts_hostname`: (hostname)
+  - `ix_app_inventory_hosts_hostname_trgm`: (hostname)
   - `ix_app_inventory_hosts_ip_primary`: (ip_primary)
+  - `ix_app_inventory_hosts_ip_primary_trgm`: (ip_primary)
   - `ix_app_inventory_hosts_last_seen_at`: (last_seen_at)
+  - `ix_app_inventory_hosts_updated_at`: (updated_at)
   - `ix_app_inventory_hosts_user_full_name`: (user_full_name)
+  - `ix_app_inventory_hosts_user_full_name_trgm`: (user_full_name)
   - `ix_app_inventory_hosts_user_login`: (user_login)
+  - `ix_app_inventory_hosts_user_login_trgm`: (user_login)
 
 ---
 
@@ -1714,11 +1730,14 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 - **Primary key:** `id`
 - **Indexes:**
+  - `ix_app_inventory_outlook_file_path_trgm`: (file_path)
+  - `ix_app_inventory_outlook_file_type_trgm`: (file_type)
   - `ix_app_inventory_outlook_files_file_path`: (file_path)
   - `ix_app_inventory_outlook_files_file_type`: (file_type)
   - `ix_app_inventory_outlook_files_kind`: (kind)
   - `ix_app_inventory_outlook_files_mac_address`: (mac_address)
   - `ix_app_inventory_outlook_files_size_bytes`: (size_bytes)
+  - `ix_app_inventory_outlook_mac_kind`: (mac_address, kind)
 
 ---
 
@@ -1739,6 +1758,9 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 - **Primary key:** `id`
 - **Indexes:**
+  - `ix_app_inventory_profiles_mac_user`: (mac_address, user_name)
+  - `ix_app_inventory_profiles_profile_path_trgm`: (profile_path)
+  - `ix_app_inventory_profiles_user_name_trgm`: (user_name)
   - `ix_app_inventory_user_profiles_mac_address`: (mac_address)
   - `ix_app_inventory_user_profiles_profile_path`: (profile_path)
   - `ix_app_inventory_user_profiles_user_name`: (user_name)
@@ -3586,6 +3608,7 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `twofa_enabled_at` | timestamptz | yes | `` |
 | `avatar_url` | varchar(512) | yes | `` |
 | `about_onboarding_completed_at` | timestamptz | yes | `` |
+| `my_files_quota_bytes` | bigint | yes | `` |
 
 - **Primary key:** `id`
 - **Indexes:**
@@ -3852,7 +3875,7 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 ---
 
-## Schema `scan` (9 tables)
+## Schema `scan` (10 tables)
 
 ### `scan.alembic_version`
 
@@ -3998,6 +4021,26 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 ---
 
+### `scan.scan_ocr_cache`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `content_hash` **PK** | text | no | `` |
+| `analysis_version` **PK** | text | no | `` |
+| `ocr_profile` **PK** | text | no | `` |
+| `ocr_text` | text | no | `''::text` |
+| `page_outcomes_json` | text | no | `'[]'::text` |
+| `ocr_metrics_json` | text | no | `'{}'::text` |
+| `hit_count` | integer | no | `0` |
+| `created_at` | bigint | no | `0` |
+| `last_hit_at` | bigint | no | `0` |
+
+- **Primary key:** `content_hash, analysis_version, ocr_profile`
+- **Indexes:**
+  - `idx_scan_ocr_cache_created`: (created_at)
+
+---
+
 ### `scan.scan_task_file_observations`
 
 | Column | Type | Nullable | Default |
@@ -4080,5 +4123,91 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
   - `idx_scan_tasks_agent_status_ttl_updated`: (agent_id, status, ttl_at, updated_at, created_at)
   - `idx_scan_tasks_dedupe`: (agent_id, dedupe_key)
   - `idx_scan_tasks_ttl`: (ttl_at)
+
+---
+
+## Schema `voice` (4 tables)
+
+### `voice.alembic_version`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `version_num` **PK** | varchar(32) | no | `` |
+
+- **Primary key:** `version_num`
+
+---
+
+### `voice.share_links`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `token` **PK** | varchar(64) | no | `` |
+| `base_filename` | varchar(512) | no | `` |
+| `created_by` | varchar(256) | yes | `` |
+| `created_at` | timestamptz | no | `now()` |
+| `expires_at` | timestamptz | no | `` |
+
+- **Primary key:** `token`
+- **Indexes:**
+  - `ix_share_links_expires_at`: (expires_at)
+
+---
+
+### `voice.voice_assignment_statuses`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(36) | no | `` |
+| `base_filename` | varchar(512) | no | `` |
+| `num` | varchar(16) | no | `` |
+| `status` | varchar(16) | no | `` |
+| `comment` | text | yes | `` |
+| `marked_by` | varchar(256) | yes | `` |
+| `created_at` | timestamptz | no | `now()` |
+| `updated_at` | timestamptz | no | `now()` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_voice_assignment_statuses_base`: (base_filename)
+  - `uq_voice_assignment_statuses_base_num` UNIQUE: (base_filename, num)
+
+---
+
+### `voice.voice_jobs`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(36) | no | `` |
+| `kind` | varchar(16) | no | `` |
+| `status` | varchar(16) | no | `` |
+| `base_filename` | varchar(512) | yes | `` |
+| `original_filename` | varchar(1024) | yes | `` |
+| `stored_path` | text | yes | `` |
+| `file_size` | bigint | yes | `` |
+| `settings` | json | yes | `` |
+| `speaker_map` | json | yes | `` |
+| `enroll` | json | yes | `` |
+| `parent_job_id` | varchar(36) | yes | `` |
+| `result` | json | yes | `` |
+| `stage` | varchar(64) | yes | `` |
+| `progress` | integer | no | `` |
+| `error` | text | yes | `` |
+| `log_tail` | text | yes | `` |
+| `cancel_requested` | boolean | no | `` |
+| `created_by` | varchar(256) | yes | `` |
+| `created_at` | timestamptz | no | `now()` |
+| `started_at` | timestamptz | yes | `` |
+| `finished_at` | timestamptz | yes | `` |
+| `updated_at` | timestamptz | no | `now()` |
+| `archive_path` | text | yes | `` |
+| `archive_at` | timestamptz | yes | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_voice_jobs_archive_at`: (archive_at)
+  - `ix_voice_jobs_created_at`: (created_at)
+  - `ix_voice_jobs_status`: (status)
+  - `ix_voice_voice_jobs_base_filename`: (base_filename)
 
 ---

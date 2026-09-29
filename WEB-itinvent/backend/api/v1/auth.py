@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+import asyncio
 import hashlib
 import logging
 import secrets
@@ -74,8 +75,10 @@ from backend.services.mobile_biometric_session_service import (
     MobileBiometricSessionError,
     mobile_biometric_session_service,
 )
+from backend.services.adfs_sso_service import WindowsSsoError, adfs_sso_service
 from backend.services.ad_sync_service import run_ad_sync
 from backend.services.authorization_service import (
+    PERM_DATABASE_AD_SYNC,
     PERM_SETTINGS_SESSIONS_MANAGE,
     PERM_SETTINGS_USERS_MANAGE,
 )
@@ -821,12 +824,142 @@ async def get_login_mode(request: Request):
         client_ip=str(network_context.client_ip or ""),
         network_zone=network_zone,
     )
+    windows_sso_available = bool(
+        network_zone == "internal" and adfs_sso_service.is_configured()
+    )
     return LoginModeResponse(
         network_zone=network_zone,
         biometric_login_enabled=bool(biometric_enabled),
         client_country_code=geo.country_code,
         show_vpn_hint=bool(geo.show_vpn_hint),
+        windows_sso_enabled=windows_sso_available,
     )
+
+
+def _sso_login_redirect(error_code: str) -> RedirectResponse:
+    return RedirectResponse(f"/login?sso_error={error_code}", status_code=302)
+
+
+@router.get("/sso/begin")
+async def sso_begin(request: Request):
+    """Start the AD FS OIDC authorization-code flow (internal network only).
+
+    The browser/WebView is redirected to AD FS; domain-joined clients get
+    silent Windows Integrated Authentication, everyone else gets the AD FS
+    forms login page. State, nonce and PKCE verifier are stored one-time in
+    the auth runtime store.
+    """
+    if not adfs_sso_service.is_configured():
+        raise HTTPException(status_code=404, detail="Not found")
+    network_context = build_request_network_context(request)
+    if str(network_context.network_zone or "").strip().lower() != "internal":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Windows SSO is only available in the internal network",
+        )
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_windows_sso",
+        key=_passkey_rate_limit_key(client_ip=network_context.client_ip, request=request),
+        limit=20,
+        window_seconds=60,
+        request=request,
+    )
+    try:
+        authorize_url = await run_in_threadpool(adfs_sso_service.begin_flow)
+    except WindowsSsoError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return RedirectResponse(authorize_url, status_code=302)
+
+
+@router.get("/sso/callback")
+async def sso_callback(
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+):
+    """Complete the AD FS flow and redirect home with a regular session."""
+    if not adfs_sso_service.is_configured():
+        raise HTTPException(status_code=404, detail="Not found")
+    network_context = build_request_network_context(request)
+    ip_address = network_context.client_ip
+    if str(network_context.network_zone or "").strip().lower() != "internal":
+        return _sso_login_redirect("unavailable")
+    await run_in_threadpool(
+        _enforce_rate_limit,
+        namespace="auth_windows_sso",
+        key=_passkey_rate_limit_key(client_ip=ip_address, request=request),
+        limit=20,
+        window_seconds=60,
+        request=request,
+    )
+
+    if error or not code or not state:
+        logger.warning("Windows SSO callback denied by AD FS client_ip=%s error=%s", ip_address, error)
+        return _sso_login_redirect("denied")
+
+    try:
+        principal = await run_in_threadpool(
+            adfs_sso_service.complete_flow,
+            code=code,
+            state=state,
+        )
+    except WindowsSsoError as exc:
+        logger.warning(
+            "Windows SSO verification failed client_ip=%s reason=%s",
+            ip_address,
+            str(exc),
+        )
+        return _sso_login_redirect("verify")
+
+    username = str(principal.get("username") or "")
+    raw_user = await run_in_threadpool(user_service.get_by_username, username)
+    if not raw_user or str(raw_user.get("auth_source") or "").strip().lower() != "ldap":
+        logger.warning("Windows SSO unknown or non-ldap user client_ip=%s", ip_address)
+        return _sso_login_redirect("not_provisioned")
+    if not raw_user.get("is_active", True):
+        return _sso_login_redirect("inactive")
+    ensure_admin_ip_allowed(
+        raw_user,
+        client_ip=ip_address,
+        via_forwarded_header=bool(getattr(network_context, "via_forwarded_header", False)),
+        entrypoint="windows-sso",
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Access denied from this network",
+    )
+    try:
+        login_result = await run_in_threadpool(
+            auth_security_service.complete_windows_sso_login,
+            user=raw_user,
+            ip_address=ip_address,
+            user_agent=request.headers.get("user-agent", ""),
+            network_zone=network_context.network_zone,
+            client_device_id=_resolve_client_device_id(request),
+        )
+    except AuthSecurityError as exc:
+        logger.warning("Windows SSO session issuance failed client_ip=%s reason=%s", ip_address, exc)
+        return _sso_login_redirect("verify")
+    if str(login_result.get("status") or "") != "authenticated":
+        return _sso_login_redirect("denied")
+
+    await run_in_threadpool(_apply_default_database, login_result["user"])
+    logger.info("Windows SSO login username=%s client_ip=%s", username, ip_address)
+    redirect = RedirectResponse("/", status_code=302)
+    _deliver_client_device_id(
+        request,
+        redirect,
+        login_result.get("client_device_id"),
+    )
+    _apply_auth_delivery(
+        request,
+        redirect,
+        access_token=str(login_result.get("access_token") or ""),
+        refresh_token=str(login_result.get("refresh_token") or ""),
+        access_ttl_seconds=int(login_result.get("access_ttl_seconds") or 0),
+        refresh_ttl_seconds=int(login_result.get("refresh_ttl_seconds") or 0),
+    )
+    return redirect
 
 
 @router.post("/passkey-login/options")
@@ -2114,6 +2247,7 @@ async def create_user(
             mailbox_login=payload.mailbox_login,
             mailbox_password=payload.mailbox_password,
             mail_signature_html=payload.mail_signature_html,
+            my_files_quota_bytes=payload.my_files_quota_bytes,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2224,11 +2358,11 @@ async def update_user_task_delegates(
 
 @router.post("/sync-ad")
 async def trigger_ad_sync(
-    current_user: User = Depends(require_permission(PERM_SETTINGS_USERS_MANAGE)),
+    current_user: User = Depends(require_permission(PERM_DATABASE_AD_SYNC)),
 ):
     """
     Manually trigger Active Directory synchronization.
-    Requires users management permission.
+    Requires database.ad_sync permission.
     """
     try:
         # Run blocking I/O in thread pool

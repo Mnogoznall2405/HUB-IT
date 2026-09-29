@@ -24,7 +24,7 @@ def build_command(image: str, env_file: Path) -> list[str]:
     if not check_configuration(values, role='gateway')['configuration_ok']:
         raise ValueError('Gateway configuration preflight failed')
     return [
-        '/usr/bin/podman', 'run', '--rm', '--pull=never', '--name=hub-ai-llm-gateway',
+        '/usr/bin/podman', 'run', '--rm', '--replace', '--pull=never', '--name=hub-ai-llm-gateway',
         '--user=10001:10001', '--userns=keep-id:uid=10001,gid=10001',
         '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
         '--pids-limit=128', '--cpus=1', '--memory=1073741824', '--memory-swap=1073741824',

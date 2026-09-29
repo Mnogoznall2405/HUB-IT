@@ -4,6 +4,8 @@ import * as SecureStore from 'expo-secure-store';
 import * as Sharing from 'expo-sharing';
 import { Platform } from 'react-native';
 import { makeSnapshotDiagnostic, normalizeSnapshotDiagnostic, type SnapshotDiagnostic, type SnapshotDiagnosticMetrics } from './snapshotDiagnostic';
+import { getChatSendTimingSummary, resetChatSendTiming, type ChatSendTimingSummary } from './chatSendTiming';
+import { getApiInflightSummary, resetApiInflight, type ApiInflightSummary } from './apiInflight';
 import {
   getAndroidProcessHealthSnapshot,
   normalizeAndroidProcessHealth,
@@ -60,7 +62,7 @@ export type DiagnosticEvent = {
 };
 
 export type DiagnosticReport = {
-  schemaVersion: 3;
+  schemaVersion: 5;
   generatedAt: string;
   app: {
     version: string;
@@ -72,6 +74,8 @@ export type DiagnosticReport = {
   events: DiagnosticEvent[];
   releaseHealth: ReleaseHealthSnapshot;
   androidProcessHealth: AndroidProcessHealthSnapshot;
+  chatSendTiming: ChatSendTimingSummary;
+  apiInflight: ApiInflightSummary;
 };
 
 let releaseHealthMutation = Promise.resolve();
@@ -246,6 +250,8 @@ export async function getDiagnosticEventCount(): Promise<number> {
 export async function clearDiagnosticEvents(): Promise<void> {
   await diagnosticMutation;
   await releaseHealthMutation.catch(() => undefined);
+  resetChatSendTiming();
+  resetApiInflight();
   await Promise.all([
     SecureStore.deleteItemAsync(STORAGE_KEY),
     SecureStore.deleteItemAsync(RELEASE_HEALTH_STORAGE_KEY),
@@ -257,9 +263,11 @@ export function buildDiagnosticReport(
   generatedAt = new Date().toISOString(),
   releaseHealth = buildReleaseHealthSnapshot(normalizeReleaseHealth(null)),
   androidProcessHealth = normalizeAndroidProcessHealth({ supported: false, entries: [] }),
+  chatSendTiming = getChatSendTimingSummary(),
+  apiInflight = getApiInflightSummary(),
 ): DiagnosticReport {
   return {
-    schemaVersion: 3,
+    schemaVersion: 5,
     generatedAt,
     app: {
       version: String(Application.nativeApplicationVersion || 'unknown'),
@@ -271,6 +279,8 @@ export function buildDiagnosticReport(
     events: normalizeEvents(events),
     releaseHealth,
     androidProcessHealth,
+    chatSendTiming,
+    apiInflight,
   };
 }
 

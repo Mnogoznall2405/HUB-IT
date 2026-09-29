@@ -29,6 +29,7 @@
 
 - [Chat load test](./HUB_CHAT_LOAD_TEST.md)
 - [Mail load test](./MAIL_LOAD_TEST.md)
+- [Нативная почта: план до ощущения Gmail](./MOBILE_HUB_NATIVE_MAIL_GMAIL_FEEL_PLAN.md)
 - [Scan GPO deployment](./SCAN_GPO_DEPLOYMENT.md)
 - [Windows Chat PostgreSQL setup](./POSTGRES_CHAT_WINDOWS_SETUP.md)
 

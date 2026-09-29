@@ -49,6 +49,19 @@ ACTION_OFFICE_TASK_STATUS = "office.task.status"
 ACTION_REPORT_FORMAT_CHOICE = "ai.report.format_choice"
 ACTION_DOC_CONVERT_FORMAT_CHOICE = "ai.doc.convert.format_choice"
 ACTION_SANDBOX_PERMISSION = "ai.sandbox.permission"
+ACTION_WORKS_CARTRIDGE = "itinvent.works.cartridge"
+ACTION_WORKS_BATTERY = "itinvent.works.battery"
+ACTION_WORKS_COMPONENT = "itinvent.works.component"
+ACTION_WORKS_PC_CLEANING = "itinvent.works.pc_cleaning"
+ACTION_CHAT_MESSAGE_SEND = "chat.message.send"
+ACTION_WORKS_TYPES = frozenset(
+    {
+        ACTION_WORKS_CARTRIDGE,
+        ACTION_WORKS_BATTERY,
+        ACTION_WORKS_COMPONENT,
+        ACTION_WORKS_PC_CLEANING,
+    }
+)
 
 DRAFT_EXPIRES_IN = timedelta(hours=1)
 REPORT_FORMAT_CHOICES = ("xlsx", "pdf", "docx", "csv", "txt", "md", "json")
@@ -1068,6 +1081,347 @@ def build_office_task_draft(
     )
 
 
+_WORKS_ACTION_TITLES = {
+    ACTION_WORKS_CARTRIDGE: "Замена картриджа",
+    ACTION_WORKS_BATTERY: "Замена батареи",
+    ACTION_WORKS_COMPONENT: "Замена комплектующей",
+    ACTION_WORKS_PC_CLEANING: "Чистка ПК",
+}
+
+
+def _equip_field(item: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        text = _normalize_text(value)
+        if text:
+            return text
+    return ""
+
+
+def _resolve_works_equipment(*, database_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    inv_no = _normalize_text(payload.get("inv_no"))
+    serial = _normalize_text(payload.get("serial_number") or payload.get("serial_no"))
+    if inv_no:
+        item = queries.get_equipment_by_inv(inv_no, database_id)
+        if isinstance(item, dict):
+            return item
+        raise ValueError(f"Equipment not found by inventory number: {inv_no}")
+    if serial:
+        rows = list(queries.search_equipment_by_serial(serial, database_id) or [])
+        normalized_serial = serial.casefold()
+        for row in rows:
+            row_serial = _equip_field(row, "SERIAL_NO", "serial_no", "serial_number").casefold()
+            if row_serial == normalized_serial:
+                return row
+        if rows:
+            return rows[0]
+        raise ValueError(f"Equipment not found by serial number: {serial}")
+    raise ValueError("inv_no or serial_number is required")
+
+
+def _build_works_preview(*, action_type: str, payload: dict[str, Any], database_id: str, item: dict[str, Any]) -> dict[str, Any]:
+    model = _equip_field(item, "MODEL_NAME", "model_name", "ITEM_NAME", "item_name")
+    inv_no = _equip_field(item, "INV_NO", "inv_no") or _normalize_text(payload.get("inv_no"))
+    serial = _equip_field(item, "SERIAL_NO", "serial_no", "serial_number") or _normalize_text(payload.get("serial_number"))
+    details: dict[str, Any] = {}
+    if action_type == ACTION_WORKS_CARTRIDGE:
+        details = {
+            "cartridge_color": _normalize_text(payload.get("cartridge_color")) or None,
+            "component_type": _normalize_text(payload.get("component_type")) or None,
+            "component_color": _normalize_text(payload.get("component_color")) or None,
+            "cartridge_model": _normalize_text(payload.get("cartridge_model")) or None,
+        }
+    elif action_type == ACTION_WORKS_COMPONENT:
+        details = {
+            "component_type": _normalize_text(payload.get("component_type")) or None,
+            "component_model": _normalize_text(payload.get("component_model")) or None,
+            "component_name": _normalize_text(payload.get("component_name")) or None,
+        }
+    title = _WORKS_ACTION_TITLES.get(action_type, "Операция обслуживания")
+    return {
+        "title": title,
+        "summary": f"{title}: {model or serial or inv_no}",
+        "database_id": database_id,
+        "effects": ["запись операции в журнал работ", "отметка в карточке оборудования"],
+        "equipment": {
+            "inv_no": inv_no or None,
+            "serial_no": serial or None,
+            "model": model or None,
+            "branch": _equip_field(item, "BRANCH_NAME", "branch_name", "branch") or None,
+            "location": _equip_field(item, "LOCATION_NAME", "location_name", "location") or None,
+            "employee": _equip_field(item, "OWNER_DISPLAY_NAME", "FIO", "employee_name", "owner_display_name") or None,
+        },
+        "details": details,
+        "comment": _normalize_text(payload.get("comment")) or None,
+    }
+
+
+def build_works_draft(
+    *,
+    action_type: str,
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+    database_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    if action_type not in ACTION_WORKS_TYPES:
+        raise ValueError(f"Unsupported works action_type: {action_type}")
+    item = _resolve_works_equipment(database_id=database_id, payload=payload)
+    normalized_payload = {
+        "inv_no": _equip_field(item, "INV_NO", "inv_no") or _normalize_text(payload.get("inv_no")),
+        "serial_number": _equip_field(item, "SERIAL_NO", "serial_no", "serial_number") or _normalize_text(payload.get("serial_number")),
+        "model_name": _equip_field(item, "MODEL_NAME", "model_name", "ITEM_NAME", "item_name"),
+        "manufacturer": _equip_field(item, "MANUFACTURER", "manufacturer", "VENDOR_NAME", "vendor_name"),
+        "hw_serial_no": _equip_field(item, "HW_SERIAL_NO", "hw_serial_no"),
+        "equipment_id": _to_int(item.get("ID") or item.get("id") or item.get("EQUIPMENT_ID") or item.get("equipment_id")),
+        "current_description": _equip_field(item, "DESCRIPTION", "description", "DESCR", "descr"),
+        "branch": _equip_field(item, "BRANCH_NAME", "branch_name", "branch"),
+        "location": _equip_field(item, "LOCATION_NAME", "location_name", "location"),
+        "employee": _equip_field(item, "OWNER_DISPLAY_NAME", "FIO", "employee_name", "owner_display_name") or _normalize_text(payload.get("employee")),
+        "db_name": _normalize_text(database_id),
+        "comment": _normalize_text(payload.get("comment")) or None,
+    }
+    if action_type == ACTION_WORKS_CARTRIDGE:
+        normalized_payload.update(
+            {
+                "cartridge_color": _normalize_text(payload.get("cartridge_color")) or None,
+                "component_type": _normalize_text(payload.get("component_type")) or None,
+                "component_color": _normalize_text(payload.get("component_color")) or None,
+                "cartridge_model": _normalize_text(payload.get("cartridge_model")) or None,
+            }
+        )
+    elif action_type == ACTION_WORKS_COMPONENT:
+        normalized_payload.update(
+            {
+                "component_type": _normalize_text(payload.get("component_type")) or None,
+                "component_model": _normalize_text(payload.get("component_model")) or None,
+                "component_name": _normalize_text(payload.get("component_name")) or None,
+            }
+        )
+    return create_pending_action(
+        action_type=action_type,
+        conversation_id=conversation_id,
+        run_id=run_id,
+        requester_user_id=requester_user_id,
+        database_id=database_id,
+        payload=normalized_payload,
+        preview=_build_works_preview(
+            action_type=action_type,
+            payload=normalized_payload,
+            database_id=database_id,
+            item=item,
+        ),
+    )
+
+
+def _execute_works_action(*, action_type: str, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
+    _require_permission(current_user, PERM_DATABASE_WRITE)
+    from backend.json_db.works import WorksManager
+
+    manager = WorksManager()
+    serial = _normalize_text(payload.get("serial_number"))
+    inv_no = _normalize_text(payload.get("inv_no"))
+    common = {
+        "inv_no": inv_no or None,
+        "db_name": _normalize_text(payload.get("db_name")) or None,
+        "branch": _normalize_text(payload.get("branch")),
+        "location": _normalize_text(payload.get("location")),
+        "additional_data": {"comment": _normalize_text(payload.get("comment"))} if _normalize_text(payload.get("comment")) else None,
+        "equipment_id": _to_int(payload.get("equipment_id")),
+        "current_description": _normalize_text(payload.get("current_description")) or None,
+        "hw_serial_no": _normalize_text(payload.get("hw_serial_no")) or None,
+        "model_name": _normalize_text(payload.get("model_name")) or None,
+        "manufacturer": _normalize_text(payload.get("manufacturer")) or None,
+    }
+    if action_type == ACTION_WORKS_CARTRIDGE:
+        record = manager.add_cartridge_replacement(
+            printer_model=_normalize_text(payload.get("model_name")) or serial or inv_no,
+            cartridge_color=_normalize_text(payload.get("cartridge_color")),
+            serial_number=serial or None,
+            component_type=_normalize_text(payload.get("component_type")) or None,
+            component_color=_normalize_text(payload.get("component_color")) or None,
+            cartridge_model=_normalize_text(payload.get("cartridge_model")) or None,
+            detection_source="ai_chat",
+            employee=_normalize_text(payload.get("employee")) or None,
+            **common,
+        )
+    elif action_type == ACTION_WORKS_BATTERY:
+        if not serial:
+            raise ValueError("serial_number is required for battery replacement")
+        record = manager.add_battery_replacement(
+            serial_number=serial,
+            employee=_normalize_text(payload.get("employee")) or None,
+            **common,
+        )
+    elif action_type == ACTION_WORKS_COMPONENT:
+        if not serial:
+            raise ValueError("serial_number is required for component replacement")
+        record = manager.add_component_replacement(
+            serial_number=serial,
+            component_type=_normalize_text(payload.get("component_type")),
+            component_model=_normalize_text(payload.get("component_model")),
+            component_name=_normalize_text(payload.get("component_name")) or None,
+            employee=_normalize_text(payload.get("employee")) or None,
+            **common,
+        )
+    elif action_type == ACTION_WORKS_PC_CLEANING:
+        if not serial:
+            raise ValueError("serial_number is required for PC cleaning")
+        record = manager.add_pc_cleaning(
+            serial_number=serial,
+            employee=_normalize_text(payload.get("employee")),
+            **common,
+        )
+    else:
+        raise ValueError(f"Unsupported works action_type: {action_type}")
+    return {"success": True, "record": record}
+
+
+def build_chat_message_draft(
+    *,
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    text = _normalize_text(payload.get("text"))[:4000]
+    if not text:
+        raise ValueError("text is required")
+    peer_user_id = _to_int(payload.get("peer_user_id"))
+    target_conversation_id = _normalize_text(payload.get("conversation_id"))
+    peer_name = _normalize_text(payload.get("peer_name"))
+    conversation_title = _normalize_text(payload.get("conversation_title"))
+
+    from backend.services.user_service import user_service
+
+    if not peer_user_id and not target_conversation_id:
+        if peer_name:
+            result = user_service.search_users(query=peer_name, limit=10, status="active")
+            items = result.get("items") if isinstance(result, dict) else list(result or [])
+            candidates = [
+                user
+                for user in (items or [])
+                if isinstance(user, dict) and int(user.get("id") or 0) > 0 and int(user.get("id") or 0) != requester_user_id
+            ]
+            if len(candidates) == 1:
+                peer_user_id = int(candidates[0].get("id") or 0) or None
+            elif not candidates:
+                raise ValueError(f"User not found: {peer_name}")
+            else:
+                names = ", ".join(
+                    _normalize_text(user.get("display_name") or user.get("full_name") or user.get("username"))
+                    for user in candidates[:5]
+                )
+                raise ValueError(f"Несколько пользователей подходят под '{peer_name}': {names}. Уточните.")
+        elif conversation_title:
+            from backend.chat.service import chat_service
+
+            result = chat_service.list_conversations(
+                current_user_id=int(requester_user_id),
+                q=conversation_title,
+                limit=10,
+            )
+            items = (
+                result.get("items") or result.get("conversations") or []
+                if isinstance(result, dict)
+                else []
+            )
+            conversations = [item for item in items if isinstance(item, dict)]
+            if not conversations:
+                raise ValueError(f"Conversation not found: {conversation_title}")
+            exact = next(
+                (
+                    item
+                    for item in conversations
+                    if _normalize_text(item.get("title") or item.get("name")).casefold() == conversation_title.casefold()
+                ),
+                conversations[0],
+            )
+            target_conversation_id = _normalize_text(exact.get("id") or exact.get("conversation_id"))
+            if not target_conversation_id:
+                raise ValueError("Conversation is not resolved")
+        else:
+            raise ValueError("peer_user_id, peer_name, conversation_id or conversation_title is required")
+
+    target_label = ""
+    if peer_user_id:
+        user = user_service.get_by_id(int(peer_user_id)) or {}
+        target_label = (
+            _normalize_text(user.get("display_name") or user.get("full_name"))
+            or _normalize_text(user.get("username"))
+            or f"user #{peer_user_id}"
+        )
+    else:
+        target_label = conversation_title or target_conversation_id
+
+    normalized_payload = {
+        "text": text,
+        "peer_user_id": peer_user_id,
+        "conversation_id": target_conversation_id or None,
+        "target_label": target_label,
+    }
+    preview = {
+        "title": "Отправка сообщения",
+        "summary": f"{target_label}: {text[:200]}",
+        "effects": ["отправка сообщения в Hub-чат"],
+        "target": {
+            "label": target_label,
+            "peer_user_id": peer_user_id,
+            "conversation_id": target_conversation_id or None,
+        },
+        "text_preview": text[:500],
+    }
+    return create_pending_action(
+        action_type=ACTION_CHAT_MESSAGE_SEND,
+        conversation_id=conversation_id,
+        run_id=run_id,
+        requester_user_id=requester_user_id,
+        database_id=None,
+        payload=normalized_payload,
+        preview=preview,
+    )
+
+
+def _execute_chat_message_send(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
+    _require_permission(current_user, PERM_CHAT_WRITE)
+    from backend.chat.service import chat_service
+
+    current_user_id = int(_user_attr(current_user, "id", 0) or 0)
+    text = _normalize_text(payload.get("text"))
+    if not text:
+        raise ValueError("text is required")
+    conversation_id = _normalize_text(payload.get("conversation_id"))
+    if not conversation_id:
+        peer_user_id = _to_int(payload.get("peer_user_id"))
+        if not peer_user_id:
+            raise ValueError("Message recipient is not resolved")
+        conversation = chat_service.create_direct_conversation(
+            current_user_id=current_user_id,
+            peer_user_id=int(peer_user_id),
+        )
+        conversation_id = _normalize_text(
+            conversation.get("id") or conversation.get("conversation_id")
+        )
+        if not conversation_id:
+            raise ValueError("Direct conversation was not resolved")
+    message = chat_service.send_message(
+        current_user_id=current_user_id,
+        conversation_id=conversation_id,
+        body=text,
+    )
+    return {
+        "success": True,
+        "message": {
+            "id": _normalize_text(message.get("id")) or None,
+            "conversation_id": conversation_id,
+        },
+        "conversation_id": conversation_id,
+    }
+
+
 def _execute_transfer(*, payload: dict[str, Any], database_id: str, current_user: Any) -> dict[str, Any]:
     return execute_equipment_transfer(
         payload=payload,
@@ -1596,7 +1950,10 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
 
     payload = _json_loads(row.payload_json, {}) or {}
     database_id = _normalize_text(row.database_id)
-    if row.action_type in {ACTION_TRANSFER, ACTION_CONSUMABLE_CONSUME, ACTION_CONSUMABLE_QTY} and not database_id:
+    if (
+        row.action_type in {ACTION_TRANSFER, ACTION_CONSUMABLE_CONSUME, ACTION_CONSUMABLE_QTY}
+        or row.action_type in ACTION_WORKS_TYPES
+    ) and not database_id:
         error = ValueError("Action database is not resolved")
         result = {"success": False, "message": str(error)}
     else:
@@ -1640,6 +1997,14 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
                 result = _execute_office_task_comment(payload=payload, current_user=current_user)
             elif row.action_type == ACTION_OFFICE_TASK_STATUS:
                 result = _execute_office_task_status(payload=payload, current_user=current_user)
+            elif row.action_type in ACTION_WORKS_TYPES:
+                result = _execute_works_action(
+                    action_type=row.action_type,
+                    payload=payload,
+                    current_user=current_user,
+                )
+            elif row.action_type == ACTION_CHAT_MESSAGE_SEND:
+                result = _execute_chat_message_send(payload=payload, current_user=current_user)
             elif row.action_type == ACTION_SANDBOX_PERMISSION:
                 _require_permission(current_user, PERM_CHAT_AI_USE)
                 permission_id = _normalize_text(payload.get("permission_id"))

@@ -7,6 +7,7 @@ import { useDatabaseQrScanner } from './useDatabaseQrScanner';
 vi.mock('../../api/client', () => ({
   equipmentAPI: {
     getByInvNo: vi.fn(),
+    getConsumableById: vi.fn(),
   },
 }));
 
@@ -85,6 +86,42 @@ describe('useDatabaseQrScanner', () => {
     expect(result.current.qrScannerError).toBe('');
     expect(result.current.qrScannerLoading).toBe(false);
     expect(result.current.qrScannerReady).toBe(false);
+  });
+
+  it('loads a consumable card by ITEMS.ID and calls onConsumableFound', async () => {
+    const found = { id: 4821, model_name: 'CF283A', qty: 7 };
+    const onConsumableFound = vi.fn();
+    const onEquipmentFound = vi.fn();
+    equipmentAPI.getConsumableById.mockResolvedValue(found);
+    const { result } = renderQrHook({ onConsumableFound, onEquipmentFound });
+
+    await act(async () => {
+      await result.current.handleQrScanSuccess('https://hubit.zsgp.ru/database?consumable=4821&db_id=OBJ-ITINVENT');
+    });
+
+    expect(equipmentAPI.getConsumableById).toHaveBeenCalledWith('4821');
+    expect(equipmentAPI.getByInvNo).not.toHaveBeenCalled();
+    expect(onConsumableFound).toHaveBeenCalledWith(found);
+    expect(onEquipmentFound).not.toHaveBeenCalled();
+    expect(result.current.qrScannerOpen).toBe(false);
+    expect(result.current.qrScannerError).toBe('');
+  });
+
+  it('reports consumable 404 lookups without touching the equipment flow', async () => {
+    const notifyDatabaseError = vi.fn();
+    equipmentAPI.getConsumableById.mockRejectedValue({
+      response: { status: 404, data: {} },
+    });
+    const { result } = renderQrHook({ notifyDatabaseError });
+
+    await act(async () => {
+      await result.current.handleQrScanSuccess('https://hubit.zsgp.ru/database?consumable=999');
+    });
+
+    expect(equipmentAPI.getConsumableById).toHaveBeenCalledWith('999');
+    expect(equipmentAPI.getByInvNo).not.toHaveBeenCalled();
+    expect(result.current.qrScannerError).toContain('999');
+    expect(notifyDatabaseError).toHaveBeenCalledWith(expect.stringContaining('999'));
   });
 
   it('reports 404 lookup errors through scanner state and notification callback', async () => {

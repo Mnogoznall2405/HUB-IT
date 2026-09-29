@@ -424,3 +424,28 @@ def test_queue_job_concurrent_same_event_id_under_null_lock(temp_dir, monkeypatc
             (event_id,),
         ).fetchone()["c"]
     assert int(total) == 1
+
+
+def test_dashboard_reports_last_hour_throughput(temp_dir):
+    store = _make_store(temp_dir)
+    performance = (store.dashboard().get("performance") or {})
+    assert performance.get("completed_last_hour") == 0
+    assert performance.get("throughput_last_hour") == 0
+
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "file_path": r"C:\a.pdf",
+            "file_name": "a.pdf",
+            "file_hash": "h-hour",
+            "file_size": 1,
+            "source_kind": "pdf_slice",
+            "event_id": "evt-hour-1",
+        }
+    )
+    store.finalize_job(job_id=queued["job_id"], status="done_clean", summary="ok")
+
+    performance = (store.dashboard().get("performance") or {})
+    assert performance.get("completed_last_hour") == 1
+    assert performance.get("throughput_last_hour") == 1.0

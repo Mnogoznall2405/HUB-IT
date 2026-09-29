@@ -10,6 +10,7 @@ export type TypingEnvelope = {
     user_id?: number;
     sender_name?: string;
     is_typing?: boolean;
+    expires_in_ms?: number;
     conversation_id?: string;
   };
 };
@@ -19,6 +20,7 @@ export function parseTypingEnvelope(envelope: unknown): {
   userId: number;
   name: string;
   isTyping: boolean;
+  expiresInMs: number;
 } | null {
   const value = (envelope || {}) as TypingEnvelope;
   const payload = value.payload || {};
@@ -26,11 +28,13 @@ export function parseTypingEnvelope(envelope: unknown): {
   const userId = Number(payload.user_id || 0);
   const name = String(payload.sender_name || '').trim();
   if (!conversationId || !Number.isInteger(userId) || userId <= 0) return null;
+  const expiresInMs = Number(payload.expires_in_ms);
+  const ttl = Number.isFinite(expiresInMs) && expiresInMs > 0 ? expiresInMs : 5000;
   const isTyping = String(value.type || '').trim() === 'chat.typing.started' || Boolean(payload.is_typing);
   if (String(value.type || '').trim() === 'chat.typing.stopped') {
-    return { conversationId, userId, name, isTyping: false };
+    return { conversationId, userId, name, isTyping: false, expiresInMs: 0 };
   }
-  return { conversationId, userId, name, isTyping };
+  return { conversationId, userId, name, isTyping, expiresInMs: ttl };
 }
 
 export function applyTypingParticipant(
@@ -111,7 +115,7 @@ export function formatPresenceSubtitle(presence?: {
   is_online?: boolean;
   last_seen_at?: string | null;
 } | null): string {
-  if (!presence) return 'HUB-IT Chat';
+  if (!presence) return '';
   if (isChatPresenceOnline(presence)) return 'в сети';
   const raw = String(presence.last_seen_at || '').trim();
   if (!raw) return 'не в сети';

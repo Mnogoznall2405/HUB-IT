@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -567,6 +567,53 @@ describe('ChatBubble', () => {
     ['Excel (XLSX)', 'CSV', 'Word (DOCX)', 'PDF', 'Текст (TXT)', 'Markdown', 'JSON'].forEach((label) => {
       expect(screen.getByRole('button', { name: label })).toBeInTheDocument();
     });
+  });
+
+  it('offers inline allow-once, session and reject actions on a sandbox permission card', async () => {
+    const onConfirmAction = vi.fn();
+    const onCancelAction = vi.fn();
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="ai"
+        message={{
+          id: 'msg-sandbox-permission',
+          kind: 'text',
+          body: 'OpenCode запрашивает разрешение на действие: workspace/result-test.txt',
+          is_own: false,
+          action_card: {
+            id: 'action-sandbox-1',
+            action_type: 'ai.sandbox.permission',
+            status: 'pending',
+            preview: {
+              title: 'Разрешить действие OpenCode',
+              summary: 'workspace/result-test.txt',
+              tool: 'edit',
+            },
+          },
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+        onConfirmAction={onConfirmAction}
+        onCancelAction={onCancelAction}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Разрешить один раз' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'До конца сессии' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Отклонить' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Изменить' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Открыть' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'До конца сессии' }));
+    await waitFor(() => expect(onConfirmAction).toHaveBeenCalledTimes(1));
+    expect(onConfirmAction.mock.calls[0][2]).toEqual({ scope: 'session' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Отклонить' }));
+    await waitFor(() => expect(onCancelAction).toHaveBeenCalledTimes(1));
   });
 
   it('shows an executing action as read-only while the backend owns execution', () => {

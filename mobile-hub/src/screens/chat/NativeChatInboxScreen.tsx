@@ -1,8 +1,7 @@
-import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { router } from 'expo-router';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  AppState,
   Alert,
   FlatList,
   KeyboardAvoidingView,
@@ -20,31 +19,14 @@ import * as chatApi from '../../api/chatApi';
 import { formatApiError } from '../../api/formatError';
 import type {
   ChatConversationSummary,
-  ChatConversationPage,
-  ChatFolderListResponse,
   ChatGlobalMessageSearchHit,
-  ChatUserSummary,
 } from '../../api/types';
 import { useAuth } from '../../auth/AuthContext';
-import { readNativeSnapshot, writeNativeSnapshot } from '../../cache/nativeSnapshotCache';
-import {
-  readNativeChatInboxSnapshot,
-  writeNativeChatInboxSnapshot,
-} from '../../chat/nativeChatInboxSnapshot';
-import { getActiveChatFolderKey, setActiveChatFolderKey } from '../../chat/chatActiveFolder';
-import {
-  getActiveNativeChatConversationId,
-  subscribeNativeChatConversationRead,
-} from '../../chat/chatActiveConversation';
 import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
 import {
   DEFAULT_CHAT_FOLDER_KEY,
-  buildConversationIdsByFolder,
   buildFolderUnreadCounts,
   filterConversationsByFolder,
-  resolveFolderSwipeTarget,
-  toggleConversationIdInFolderMap,
-  type ChatCustomFolder,
 } from '../../chat/chatFolders';
 import {
   countAiUnread,
@@ -56,22 +38,22 @@ import {
 import { filterConversationsByLocalQuery } from '../../chat/nativeChatLocalSearch';
 import { ChatRenameSheet } from '../../components/chat/ChatGroupEditSheets';
 import { AiConversationActionsSheet } from '../../components/chat/AiConversationActionsSheet';
-import type { ChatAiBot } from '../../api/types';
-import { nextInboxRowSettings } from '../../chat/chatGestures';
-import { applyConversationEnvelope, clearConversationUnread } from '../../chat/chatState';
 import { useAndroidBackHandler } from '../../chat/useAndroidBackHandler';
-import { chatSocket, shouldUseChatHttpFallback, type ChatSocketStatus } from '../../chat/chatSocket';
 import { ChatConversationActionsSheet } from '../../components/chat/ChatConversationActionsSheet';
 import { SwipeableConversationRow } from '../../components/chat/SwipeableConversationRow';
 import { ChatFolderAssignSheet } from '../../components/chat/ChatFolderAssignSheet';
 import { ChatFolderManagerSheet } from '../../components/chat/ChatFolderManagerSheet';
 import { ChatFolderTabs } from '../../components/chat/ChatFolderTabs';
 import { ChatWorkspaceTabs } from '../../components/chat/ChatWorkspaceTabs';
+import { ChatConversationSkeleton } from '../../components/chat/ChatListSkeleton';
 import { FolderSwipeHost } from '../../components/chat/FolderSwipeHost';
 import { NewChatSheet } from '../../components/chat/NewChatSheet';
 import { HubConnectionInline } from '../../components/layout/HubConnectionHeader';
 import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { type ChatTokens, useChatTokens } from '../../theme/chatTokens';
+import { useInboxData } from './useInboxData';
+import { useInboxFolders } from './useInboxFolders';
+import { useInboxActions } from './useInboxActions';
 
 type InboxListRow =
   | { key: string; type: 'header'; title: string }
@@ -85,265 +67,122 @@ export function NativeChatInboxScreen() {
   const ownerId = Number(user?.id || 0);
   const ownerRef = useRef(ownerId);
   ownerRef.current = ownerId;
-  const [hydratedOwner, setHydratedOwner] = useState<number | null>(null);
-  const [snapshotRevision, setSnapshotRevision] = useState(0);
-  const removedConversationIdsRef = useRef(new Set<string>());
-  const pendingSnapshotRef = useRef<{
-    owner: number; page: ChatConversationPage; removedConversationIds: string[];
-  } | null>(null);
-  const flushInboxSnapshot = useCallback(() => {
-    const pending = pendingSnapshotRef.current;
-    pendingSnapshotRef.current = null;
-    if (!pending || ownerRef.current !== pending.owner) return;
-    void writeNativeChatInboxSnapshot(pending.owner, pending.page, {
-      removedConversationIds: pending.removedConversationIds,
-      isCurrent: () => ownerRef.current === pending.owner,
-    }).catch(() => undefined);
-  }, []);
   const bottomInset = useNativeBottomNavInset();
   const mountedRef = useRef(true);
-  const loadingMoreRef = useRef(false);
-  const loadStartingRef = useRef(false);
-  const loadScopeRef = useRef<{ owner: number } | null>(null);
-  const foldersStartingRef = useRef(false);
-  const foldersScopeRef = useRef<{ owner: number } | null>(null);
-  const loadInFlightRef = useRef<Promise<void> | null>(null);
-  const foldersInFlightRef = useRef<Promise<void> | null>(null);
-  const connectedOnceRef = useRef(chatSocket.getStatus() === 'connected');
-  const [items, setItems] = useState<ChatConversationSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [error, setError] = useState('');
-  const [status, setStatus] = useState<ChatSocketStatus>(chatSocket.getStatus());
-  const [activeFolderKey, setActiveFolderKey] = useState(DEFAULT_CHAT_FOLDER_KEY);
-  const [customFolders, setCustomFolders] = useState<ChatCustomFolder[]>([]);
-  const [conversationIdsByFolder, setConversationIdsByFolder] = useState<Record<string, string[]>>({});
-  const [search, setSearch] = useState('');
-  const [searchItems, setSearchItems] = useState<ChatConversationSummary[] | null>(null);
-  const [searchMessages, setSearchMessages] = useState<ChatGlobalMessageSearchHit[]>([]);
-  const [searching, setSearching] = useState(false);
-  const [systemUnreadCounts, setSystemUnreadCounts] = useState<Record<string, number>>({});
-  const [folderManagerOpen, setFolderManagerOpen] = useState(false);
-  const [folderBusy, setFolderBusy] = useState(false);
-  const [assignConversation, setAssignConversation] = useState<ChatConversationSummary | null>(null);
-  const [newChatOpen, setNewChatOpen] = useState(false);
-  const [users, setUsers] = useState<ChatUserSummary[]>([]);
-  const [bots, setBots] = useState<ChatAiBot[]>([]);
-  const [aiActionConversation, setAiActionConversation] = useState<ChatConversationSummary | null>(null);
-  const [actionConversation, setActionConversation] = useState<ChatConversationSummary | null>(null);
-  const [aiRenameConversation, setAiRenameConversation] = useState<ChatConversationSummary | null>(null);
-  const [aiBusy, setAiBusy] = useState(false);
   const [workspace, setWorkspace] = useState<ChatWorkspaceKey>('chats');
-  const [aiArchiveOpen, setAiArchiveOpen] = useState(false);
-  const [folderSwipeActive, setFolderSwipeActive] = useState(false);
-  const searchRequestRef = useRef(0);
-  const itemsRef = useRef(items);
-  itemsRef.current = items;
-  const remoteSearchItemsRef = useRef<ChatConversationSummary[]>([]);
 
-  const load = useCallback(async (mode: 'initial' | 'refresh' | 'silent' = 'initial') => {
-    const userId = Number(user?.id || 0);
-    if (ownerRef.current !== userId) return;
-    if (loadScopeRef.current?.owner !== userId) {
-      loadScopeRef.current = { owner: userId };
-      loadStartingRef.current = false;
-      loadInFlightRef.current = null;
-      loadingMoreRef.current = false;
-      setLoadingMore(false);
-      setItems([]);
-      setHydratedOwner(null);
-      setHasMore(false);
-      setNextCursor(null);
-      setError('');
-    }
-    const scope = loadScopeRef.current;
-    const isCurrent = () => mountedRef.current && ownerRef.current === userId && loadScopeRef.current === scope;
-    if (loadStartingRef.current && !loadInFlightRef.current) return;
-    if (loadInFlightRef.current) {
-      if (mode === 'refresh') setRefreshing(true);
-      await loadInFlightRef.current;
-      if (mode === 'refresh' && isCurrent()) setRefreshing(false);
-      return;
-    }
-    loadStartingRef.current = true;
-    if (mode === 'initial') setLoading(true);
-    if (mode === 'refresh') setRefreshing(true);
-    let cached = false;
-    if (mode === 'initial' && userId) {
-      const snapshot = await readNativeChatInboxSnapshot(userId);
-      if (!isCurrent()) return;
-      if (snapshot) {
-        cached = true;
-        setItems(snapshot.data.items);
-        setHasMore(snapshot.data.has_more);
-        setNextCursor(snapshot.data.next_cursor);
-        setHydratedOwner(userId);
-        setLoading(false);
-      }
-    }
-    if (offlineMode) {
-      if (isCurrent()) {
-        if (!cached && mode !== 'silent') {
-          setError('Нет подключения и сохранённых диалогов.');
-        }
-        if (mode === 'initial') setLoading(false);
-        if (mode === 'refresh') setRefreshing(false);
-      }
-      loadStartingRef.current = false;
-      return;
-    }
-    const request = chatApi.getConversationPage({ limit: 50 });
-    loadInFlightRef.current = request.then(() => undefined, () => undefined);
-    try {
-      const page = await request;
-      if (!isCurrent()) return;
-      page.items.forEach((item) => removedConversationIdsRef.current.delete(item.id));
-      if (mode === 'silent') {
-        setItems((current) => {
-          const byId = new Map(current.map((item) => [item.id, item]));
-          page.items.forEach((item) => byId.set(item.id, { ...byId.get(item.id), ...item }));
-          return [...byId.values()];
-        });
-      } else {
-        setItems(page.items);
-      }
-      setHasMore(page.has_more);
-      setNextCursor(page.next_cursor);
-      setHydratedOwner(userId);
-      setError('');
-      if (userId) void writeNativeChatInboxSnapshot(userId, page);
-    } catch (cause) {
-      if (isCurrent() && mode !== 'silent') {
-        setError(cached
-          ? 'Нет подключения. Показаны сохранённые диалоги.'
-          : formatApiError(cause, 'Не удалось загрузить диалоги'));
-      }
-    } finally {
-      if (isCurrent()) {
-        loadStartingRef.current = false;
-        loadInFlightRef.current = null;
-        if (mode === 'initial') setLoading(false);
-        if (mode === 'refresh') setRefreshing(false);
-      }
-    }
-  }, [offlineMode, user?.id]);
+  const folders = useInboxFolders({
+    userId: ownerId,
+    offlineMode,
+    mountedRef,
+    ownerRef,
+    workspace,
+  });
+  const {
+    activeFolderKey,
+    setActiveFolderKey,
+    customFolders,
+    conversationIdsByFolder,
+    systemUnreadCounts,
+    setSystemUnreadCounts,
+    folderManagerOpen,
+    setFolderManagerOpen,
+    folderBusy,
+    assignConversation,
+    setAssignConversation,
+    folderSwipeActive,
+    setFolderSwipeActive,
+    loadFolders,
+    changeFolder,
+    swipeFolder,
+    createFolder,
+    renameFolder,
+    deleteFolder,
+    toggleFolderMembership,
+    openFolderAssign,
+  } = folders;
 
-  const loadMore = useCallback(async () => {
-    if (offlineMode || !hasMore || !nextCursor || loadingMoreRef.current) return;
-    const userId = Number(user?.id || 0);
-    loadingMoreRef.current = true;
-    setLoadingMore(true);
-    try {
-      const page = await chatApi.getConversationPage({ cursor: nextCursor, limit: 50 });
-      if (!mountedRef.current || ownerRef.current !== userId) return;
-      page.items.forEach((item) => removedConversationIdsRef.current.delete(item.id));
-      setItems((current) => {
-        const byId = new Map(current.map((item) => [item.id, item]));
-        page.items.forEach((item) => byId.set(item.id, { ...byId.get(item.id), ...item }));
-        const merged = [...byId.values()];
-        if (userId) {
-          void writeNativeChatInboxSnapshot(userId, {
-            items: merged,
-            has_more: page.has_more,
-            next_cursor: page.next_cursor,
-          });
-        }
-        return merged;
-      });
-      setHasMore(page.has_more);
-      setNextCursor(page.next_cursor);
-    } catch (cause) {
-      if (mountedRef.current && ownerRef.current === userId) setError(formatApiError(cause, 'Не удалось загрузить следующие диалоги'));
-    } finally {
-      if (ownerRef.current === userId) {
-        loadingMoreRef.current = false;
-        if (mountedRef.current) setLoadingMore(false);
-      }
-    }
-  }, [hasMore, nextCursor, offlineMode, user?.id]);
+  const data = useInboxData({
+    userId: ownerId,
+    offlineMode,
+    mountedRef,
+    ownerRef,
+    setActiveFolderKey,
+    loadFolders,
+    onConversationRead: useCallback(() => setSystemUnreadCounts({}), [setSystemUnreadCounts]),
+  });
+  const {
+    items,
+    setItems,
+    itemsRef,
+    loading,
+    refreshing,
+    loadingMore,
+    error,
+    setError,
+    load,
+    loadMore,
+    remoteSearchItemsRef,
+    typingByConversation,
+    draftPreviews,
+  } = data;
 
-  const loadFolders = useCallback(async () => {
-    const userId = Number(user?.id || 0);
-    if (ownerRef.current !== userId) return;
-    if (foldersScopeRef.current?.owner !== userId) {
-      foldersScopeRef.current = { owner: userId };
-      foldersStartingRef.current = false;
-      foldersInFlightRef.current = null;
-      setCustomFolders([]);
-      setConversationIdsByFolder({});
-      setSystemUnreadCounts({});
-      setActiveFolderKey(DEFAULT_CHAT_FOLDER_KEY);
-    }
-    const scope = foldersScopeRef.current;
-    const isCurrent = () => mountedRef.current && ownerRef.current === userId && foldersScopeRef.current === scope;
-    if (foldersStartingRef.current && !foldersInFlightRef.current) return;
-    if (foldersInFlightRef.current) {
-      await foldersInFlightRef.current;
-      return;
-    }
-    foldersStartingRef.current = true;
-    let cached = false;
-    const applyFolders = (payload: ChatFolderListResponse) => {
-      setCustomFolders(payload.items);
-      setConversationIdsByFolder(buildConversationIdsByFolder(
-        payload.items,
-        payload.conversation_ids_by_folder,
-      ));
-      setSystemUnreadCounts(payload.folder_unread_counts || {});
-    };
-    if (userId) {
-      const snapshot = await readNativeSnapshot<ChatFolderListResponse>('chat-folders', userId).catch(() => null);
-      if (!isCurrent()) return;
-      if (snapshot) {
-        cached = true;
-        applyFolders(snapshot.data);
-      }
-    }
-    if (offlineMode) {
-      if (isCurrent()) foldersStartingRef.current = false;
-      return;
-    }
-    const request = chatApi.listChatFolders();
-    foldersInFlightRef.current = request.then(() => undefined, () => undefined);
-    try {
-      const payload = await request;
-      if (!isCurrent()) return;
-      applyFolders(payload);
-      if (userId) void writeNativeSnapshot('chat-folders', userId, payload);
-    } catch {
-      if (isCurrent() && !cached) {
-        setCustomFolders([]);
-        setConversationIdsByFolder({});
-        setSystemUnreadCounts({});
-      }
-    } finally {
-      if (isCurrent()) {
-        foldersStartingRef.current = false;
-        foldersInFlightRef.current = null;
-      }
-    }
-  }, [offlineMode, user?.id]);
-
-  const changeFolder = useCallback((folderKey: string) => {
-    setActiveFolderKey(folderKey);
-    const userId = Number(user?.id || 0);
-    if (userId) void setActiveChatFolderKey(userId, folderKey);
-  }, [user?.id]);
-
-  const swipeFolder = useCallback((direction: 'prev' | 'next') => {
-    if (workspace !== 'chats') return;
-    const nextKey = resolveFolderSwipeTarget(activeFolderKey, direction, customFolders);
-    if (nextKey) changeFolder(nextKey);
-  }, [activeFolderKey, changeFolder, customFolders, workspace]);
+  const actions = useInboxActions({
+    userId: ownerId,
+    offlineMode,
+    mountedRef,
+    ownerRef,
+    workspace,
+    items,
+    itemsRef,
+    remoteSearchItemsRef,
+    setItems,
+    setError,
+    load,
+    loadMore,
+    loadFolders,
+  });
+  const {
+    search,
+    setSearch,
+    searchItems,
+    searchMessages,
+    searching,
+    aiArchiveOpen,
+    setAiArchiveOpen,
+    newChatOpen,
+    setNewChatOpen,
+    users,
+    bots,
+    aiActionConversation,
+    setAiActionConversation,
+    actionConversation,
+    setActionConversation,
+    aiRenameConversation,
+    setAiRenameConversation,
+    aiBusy,
+    resetAiContext,
+    deleteAiConversation,
+    renameAiConversation,
+    applyConversationSettings,
+    goConversation,
+    openConversation,
+    openConversationActions,
+    muteConversation,
+    archiveConversation,
+    pinConversation,
+    toggleReadConversation,
+    refreshInbox,
+    handleEndReached,
+    openNewChat,
+    searchNewChatUsers,
+  } = actions;
 
   const changeWorkspace = useCallback((nextWorkspace: ChatWorkspaceKey) => {
     setWorkspace(nextWorkspace);
     if (nextWorkspace === 'ai') setAiArchiveOpen(false);
     setFolderSwipeActive(false);
-  }, []);
+  }, [setAiArchiveOpen, setFolderSwipeActive]);
 
   const leaveInbox = useCallback(() => {
     if (assignConversation) {
@@ -360,194 +199,10 @@ export function NativeChatInboxScreen() {
     }
     router.replace('/(shell)/dashboard');
     return true;
-  }, [assignConversation, folderManagerOpen, newChatOpen]);
+  }, [assignConversation, folderManagerOpen, newChatOpen, setAssignConversation,
+    setFolderManagerOpen, setNewChatOpen]);
 
   useAndroidBackHandler(leaveInbox);
-
-  useEffect(() => {
-    let active = true;
-    mountedRef.current = true;
-    void load();
-    void loadFolders();
-    const userId = Number(user?.id || 0);
-    if (userId) {
-      void getActiveChatFolderKey(userId).then((folderKey) => {
-        if (active && mountedRef.current && ownerRef.current === userId) setActiveFolderKey(folderKey);
-      });
-    }
-    chatSocket.subscribeInbox();
-    void chatSocket.connect();
-
-    const offStatus = chatSocket.on('status', (next) => {
-      const nextStatus = next as ChatSocketStatus;
-      setStatus(nextStatus);
-      if (nextStatus !== 'connected') return;
-      if (connectedOnceRef.current) {
-        void load('silent');
-        void loadFolders();
-      } else {
-        connectedOnceRef.current = true;
-      }
-    });
-    const applyEnvelope = (envelope: unknown) => {
-      if (ownerRef.current !== Number(user?.id || 0)) return;
-      const remoteIds = new Set(remoteSearchItemsRef.current.map((item) => item.id));
-      if (remoteIds.size) {
-        remoteSearchItemsRef.current = applyConversationEnvelope(
-          remoteSearchItemsRef.current, envelope, user?.id, getActiveNativeChatConversationId(),
-        ).items.filter((item) => remoteIds.has(item.id));
-      }
-      const payload = (envelope as { payload?: { conversation?: { id?: string }; item?: { id?: string } } })?.payload;
-      const restoredId = String(payload?.conversation?.id || payload?.item?.id || '').trim();
-      if (restoredId) removedConversationIdsRef.current.delete(restoredId);
-      setItems((current) => applyConversationEnvelope(
-        current,
-        envelope,
-        user?.id,
-        getActiveNativeChatConversationId(),
-      ).items);
-      setSnapshotRevision((revision) => revision + 1);
-    };
-    const offUpdated = chatSocket.on('chat.conversation.updated', applyEnvelope);
-    const offMessage = chatSocket.on('chat.message.created', applyEnvelope);
-    const offEdited = chatSocket.on('chat.message.updated', applyEnvelope);
-    const offDeleted = chatSocket.on('chat.message.deleted', applyEnvelope);
-    const offRemoved = chatSocket.on('chat.conversation.removed', (envelope: unknown) => {
-      const conversationId = String(
-        (envelope as { payload?: { conversation_id?: string } })?.payload?.conversation_id || '',
-      ).trim();
-      if (conversationId && ownerRef.current === Number(user?.id || 0)) {
-        removedConversationIdsRef.current.add(conversationId);
-        remoteSearchItemsRef.current = remoteSearchItemsRef.current.filter((item) => item.id !== conversationId);
-        setItems((current) => current.filter((item) => item.id !== conversationId));
-        setSnapshotRevision((revision) => revision + 1);
-      }
-    });
-    const offConversationRead = subscribeNativeChatConversationRead((conversationId) => {
-      if (ownerRef.current !== Number(user?.id || 0)) return;
-      remoteSearchItemsRef.current = clearConversationUnread(remoteSearchItemsRef.current, conversationId);
-      setItems((current) => clearConversationUnread(current, conversationId));
-      setSnapshotRevision((revision) => revision + 1);
-      setSystemUnreadCounts({});
-    });
-
-    return () => {
-      active = false;
-      mountedRef.current = false;
-      offStatus();
-      offUpdated();
-      offMessage();
-      offEdited();
-      offDeleted();
-      offRemoved();
-      offConversationRead();
-    };
-  }, [load, loadFolders, user?.id]);
-
-  useEffect(() => {
-    if (!shouldUseChatHttpFallback(status)) return undefined;
-    void load('silent');
-    void loadFolders();
-    const timer = setInterval(() => {
-      void load('silent');
-      void loadFolders();
-    }, 20_000);
-    return () => clearInterval(timer);
-  }, [load, loadFolders, status]);
-
-  useFocusEffect(useCallback(() => {
-    void load('silent');
-    void loadFolders();
-  }, [load, loadFolders]));
-
-  useEffect(() => {
-    if (!snapshotRevision || hydratedOwner !== ownerId || ownerId <= 0) return;
-    pendingSnapshotRef.current = {
-      owner: ownerId,
-      page: { items, has_more: hasMore, next_cursor: nextCursor },
-      removedConversationIds: [...removedConversationIdsRef.current],
-    };
-    const timer = setTimeout(flushInboxSnapshot, 250);
-    return () => clearTimeout(timer);
-  }, [snapshotRevision, hydratedOwner, ownerId, items, hasMore, nextCursor, flushInboxSnapshot]);
-
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', (state) => {
-      if (state !== 'active') flushInboxSnapshot();
-    });
-    return () => {
-      subscription.remove();
-      flushInboxSnapshot();
-    };
-  }, [flushInboxSnapshot]);
-
-  useEffect(() => {
-    removedConversationIdsRef.current.clear();
-  }, [ownerId]);
-
-  const mergeSearchResults = useCallback((local: ChatConversationSummary[]) => {
-    const byId = new Map<string, ChatConversationSummary>();
-    [...local, ...remoteSearchItemsRef.current].forEach((item) => {
-      if (item?.id) byId.set(item.id, item);
-    });
-    return [...byId.values()];
-  }, []);
-
-  useEffect(() => {
-    const query = search.trim();
-    if (!query || workspace === 'ai') {
-      remoteSearchItemsRef.current = [];
-      searchRequestRef.current += 1;
-      setSearchItems(null);
-      setSearchMessages([]);
-      setSearching(false);
-      return undefined;
-    }
-    const local = filterConversationsByLocalQuery(itemsRef.current, query);
-    remoteSearchItemsRef.current = [];
-    const requestId = ++searchRequestRef.current;
-    // Immediate local filter so offline/saved titles stay findable (OFF-06).
-    setSearchItems(local);
-    setSearchMessages([]);
-    if (offlineMode) {
-      setSearching(false);
-      return undefined;
-    }
-    setSearching(true);
-    const timer = setTimeout(() => {
-      void Promise.all([
-        chatApi.getConversationPage({ query, limit: 50 }),
-        chatApi.searchMessagesGlobal(query, 20).catch(() => []),
-      ]).then(([page, messages]) => {
-        if (!mountedRef.current || ownerRef.current !== ownerId || requestId !== searchRequestRef.current) return;
-        const remote = page.items || [];
-        remoteSearchItemsRef.current = remote;
-        setSearchItems(mergeSearchResults(filterConversationsByLocalQuery(itemsRef.current, query)));
-        setSearchMessages(messages);
-        setSearching(false);
-      }).catch((cause) => {
-        if (!mountedRef.current || ownerRef.current !== ownerId || requestId !== searchRequestRef.current) return;
-        setSearching(false);
-        // Keep local results; only surface an error when nothing local matched.
-        if (!filterConversationsByLocalQuery(itemsRef.current, query).length) {
-          setError(formatApiError(cause, 'Не удалось найти диалоги'));
-        }
-      });
-    }, 350);
-    return () => {
-      clearTimeout(timer);
-      if (searchRequestRef.current === requestId) searchRequestRef.current += 1;
-    };
-  }, [mergeSearchResults, offlineMode, ownerId, search, workspace]);
-
-  // Realtime inbox updates only refresh local matches. They must not cancel
-  // the pending debounce or restart an in-flight remote search.
-  useEffect(() => {
-    const query = search.trim();
-    if (query && workspace !== 'ai') {
-      setSearchItems(mergeSearchResults(filterConversationsByLocalQuery(items, query)));
-    }
-  }, [items, mergeSearchResults, ownerId, search, workspace]);
 
   const unreadCounts = useMemo(
     () => buildFolderUnreadCounts(items, customFolders, conversationIdsByFolder, systemUnreadCounts),
@@ -613,225 +268,6 @@ export function NativeChatInboxScreen() {
     return rows;
   }, [filtered, search, searchMessages, workspace]);
 
-  const createFolder = useCallback(async (name: string) => {
-    setFolderBusy(true);
-    try {
-      await chatApi.createChatFolder(name);
-      await loadFolders();
-    } catch (cause) {
-      Alert.alert('Не удалось создать папку', formatApiError(cause, 'Повторите попытку'));
-    } finally {
-      if (mountedRef.current) setFolderBusy(false);
-    }
-  }, [loadFolders]);
-
-  const renameFolder = useCallback(async (folderId: string, name: string) => {
-    setFolderBusy(true);
-    try {
-      await chatApi.updateChatFolder(folderId, { name });
-      await loadFolders();
-    } catch (cause) {
-      Alert.alert('Не удалось переименовать папку', formatApiError(cause, 'Повторите попытку'));
-    } finally {
-      if (mountedRef.current) setFolderBusy(false);
-    }
-  }, [loadFolders]);
-
-  const deleteFolder = useCallback((folderId: string) => {
-    const folder = customFolders.find((item) => item.id === folderId);
-    Alert.alert(
-      'Удалить папку?',
-      folder ? `Папка «${folder.name}» будет удалена. Диалоги останутся на месте.` : 'Папка будет удалена.',
-      [
-        { text: 'Отмена', style: 'cancel' },
-        {
-          text: 'Удалить',
-          style: 'destructive',
-          onPress: () => {
-            void (async () => {
-              setFolderBusy(true);
-              try {
-                await chatApi.deleteChatFolder(folderId);
-                if (activeFolderKey === folderId) changeFolder(DEFAULT_CHAT_FOLDER_KEY);
-                await loadFolders();
-              } catch (cause) {
-                Alert.alert('Не удалось удалить папку', formatApiError(cause, 'Повторите попытку'));
-              } finally {
-                if (mountedRef.current) setFolderBusy(false);
-              }
-            })();
-          },
-        },
-      ],
-    );
-  }, [activeFolderKey, changeFolder, customFolders, loadFolders]);
-
-  const toggleFolderMembership = useCallback(async (folderId: string, included: boolean) => {
-    const conversationId = String(assignConversation?.id || '').trim();
-    if (!conversationId) return;
-    setConversationIdsByFolder((current) => (
-      toggleConversationIdInFolderMap(current, folderId, conversationId, included)
-    ));
-    try {
-      if (included) await chatApi.addFolderConversation(folderId, conversationId);
-      else await chatApi.removeFolderConversation(folderId, conversationId);
-      await loadFolders();
-    } catch (cause) {
-      await loadFolders();
-      Alert.alert('Не удалось обновить папку', formatApiError(cause, 'Повторите попытку'));
-    }
-  }, [assignConversation?.id, loadFolders]);
-
-  const openFolderAssign = useCallback((item: ChatConversationSummary) => {
-    if (!customFolders.length) {
-      Alert.alert('Папки', 'Сначала создайте папку.', [
-        { text: 'Создать', onPress: () => setFolderManagerOpen(true) },
-        { text: 'Отмена', style: 'cancel' },
-      ]);
-      return;
-    }
-    setAssignConversation(item);
-  }, [customFolders.length]);
-
-  const resetAiContext = useCallback((item: ChatConversationSummary) => {
-    Alert.alert(
-      'Сбросить контекст?',
-      'Старые сообщения останутся видимыми, но помощник перестанет учитывать их в новых ответах.',
-      [
-        { text: 'Отмена', style: 'cancel' },
-        {
-          text: 'Сбросить',
-          onPress: () => {
-            void (async () => {
-              setAiBusy(true);
-              try {
-                await chatApi.resetAiConversationContext(item.id);
-                if (mountedRef.current) {
-                  Alert.alert('Контекст сброшен', 'Новые ответы не будут учитывать предыдущую историю.');
-                }
-              } catch (cause) {
-                if (mountedRef.current) {
-                  Alert.alert('Не удалось сбросить контекст', formatApiError(cause, 'Повторите попытку'));
-                }
-              } finally {
-                if (mountedRef.current) setAiBusy(false);
-              }
-            })();
-          },
-        },
-      ],
-    );
-  }, []);
-
-  const deleteAiConversation = useCallback((item: ChatConversationSummary) => {
-    Alert.alert(
-      'Удалить AI-чат?',
-      'Диалог будет удалён без возможности восстановления.',
-      [
-        { text: 'Отмена', style: 'cancel' },
-        {
-          text: 'Удалить',
-          style: 'destructive',
-          onPress: () => {
-            void (async () => {
-              setAiBusy(true);
-              try {
-                await chatApi.deleteAiConversation(item.id);
-                if (!mountedRef.current) return;
-                setItems((current) => current.filter((row) => row.id !== item.id));
-              } catch (cause) {
-                if (mountedRef.current) {
-                  Alert.alert('Не удалось удалить чат', formatApiError(cause, 'Повторите попытку'));
-                }
-              } finally {
-                if (mountedRef.current) setAiBusy(false);
-              }
-            })();
-          },
-        },
-      ],
-    );
-  }, []);
-
-  const renameAiConversation = useCallback(async (nextTitle: string) => {
-    if (!aiRenameConversation || !nextTitle.trim() || aiBusy) return;
-    setAiBusy(true);
-    try {
-      const updated = await chatApi.renameAiConversation(aiRenameConversation.id, nextTitle.trim());
-      if (!mountedRef.current) return;
-      setItems((current) => current.map((row) => (row.id === updated.id ? { ...row, ...updated } : row)));
-      setAiRenameConversation(null);
-    } catch (cause) {
-      if (mountedRef.current) {
-        Alert.alert('Не удалось переименовать AI-диалог', formatApiError(cause, 'Повторите попытку'));
-      }
-    } finally {
-      if (mountedRef.current) setAiBusy(false);
-    }
-  }, [aiBusy, aiRenameConversation]);
-
-  const applyConversationSettings = useCallback(async (
-    item: ChatConversationSummary,
-    settings: { is_pinned?: boolean; is_muted?: boolean; is_archived?: boolean },
-  ) => {
-    setItems((current) => current.map((row) => (
-      row.id === item.id ? { ...row, ...settings } : row
-    )));
-    try {
-      const updated = await chatApi.updateConversationSettings(item.id, settings);
-      if (!mountedRef.current) return;
-      setItems((current) => current.map((row) => (
-        row.id === item.id ? { ...row, ...updated } : row
-      )));
-    } catch (cause) {
-      if (mountedRef.current) {
-        await load('silent');
-        Alert.alert('Не удалось обновить диалог', formatApiError(cause, 'Повторите попытку'));
-      }
-    }
-  }, [load]);
-
-  const applyRowSwipe = useCallback(async (
-    item: ChatConversationSummary,
-    action: 'mute' | 'archive',
-  ) => {
-    const settings = nextInboxRowSettings(item, action);
-    await applyConversationSettings(item, settings);
-  }, [applyConversationSettings]);
-
-  const goConversation = useCallback((conversationId: string, messageId?: string) => {
-    router.push({
-      pathname: '/(shell)/chat/[conversationId]',
-      params: messageId ? { conversationId, messageId } : { conversationId },
-    });
-  }, []);
-
-  const openConversation = useCallback((item: ChatConversationSummary) => {
-    goConversation(item.id);
-  }, [goConversation]);
-
-  const openConversationActions = useCallback((item: ChatConversationSummary) => {
-    if (isAiConversation(item)) setAiActionConversation(item);
-    else setActionConversation(item);
-  }, []);
-
-  const muteConversation = useCallback((item: ChatConversationSummary) => {
-    void applyRowSwipe(item, 'mute');
-  }, [applyRowSwipe]);
-
-  const archiveConversation = useCallback((item: ChatConversationSummary) => {
-    void applyRowSwipe(item, 'archive');
-  }, [applyRowSwipe]);
-
-  const refreshInbox = useCallback(() => {
-    void load('refresh');
-    void loadFolders();
-  }, [load, loadFolders]);
-
-  const handleEndReached = useCallback(() => {
-    if (!searchItems) void loadMore();
-  }, [loadMore, searchItems]);
-
   const listContentStyle = useMemo(() => ({ paddingBottom: bottomInset }), [bottomInset]);
 
   const renderInboxRow = useCallback(({ item }: ListRenderItemInfo<InboxListRow>) => {
@@ -860,44 +296,24 @@ export function NativeChatInboxScreen() {
         onLongPress={openConversationActions}
         onMute={muteConversation}
         onArchive={archiveConversation}
+        onRead={toggleReadConversation}
+        onPin={pinConversation}
+        typingText={typingByConversation[item.item.id] || undefined}
+        draftText={draftPreviews.get(item.item.id) || undefined}
       />
     );
   }, [
     archiveConversation,
+    draftPreviews,
     goConversation,
     muteConversation,
     openConversation,
     openConversationActions,
+    pinConversation,
     styles,
+    toggleReadConversation,
+    typingByConversation,
   ]);
-
-  const openNewChat = useCallback(async () => {
-    try {
-      if (workspace === 'ai') {
-        const aiBots = await chatApi.getAiBots();
-        setUsers([]);
-        setBots(aiBots);
-        setNewChatOpen(true);
-        return;
-      }
-      const [chatUsers, aiBots] = await Promise.all([
-        chatApi.getChatUsers(),
-        chatApi.getAiBots().catch(() => []),
-      ]);
-      setUsers(chatUsers);
-      setBots(aiBots);
-      setNewChatOpen(true);
-    } catch (cause) {
-      Alert.alert(
-        workspace === 'ai' ? 'Не удалось открыть AI-чат' : 'Не удалось создать диалог',
-        formatApiError(cause, 'Повторите попытку'),
-      );
-    }
-  }, [workspace]);
-
-  const searchNewChatUsers = useCallback((query: string) => (
-    chatApi.getChatUsers({ query, limit: 50 })
-  ), []);
 
   const emptyLabel = workspace === 'ai'
     ? (search.trim()
@@ -975,8 +391,7 @@ export function NativeChatInboxScreen() {
 
       {loading ? (
         <View style={[styles.center, { paddingBottom: bottomInset }]} accessibilityLiveRegion="polite">
-          <ActivityIndicator color={chatTokens.composerActionBg} />
-          <Text style={styles.stateText}>Загружаем диалоги…</Text>
+          <ChatConversationSkeleton />
         </View>
       ) : error && items.length === 0 ? (
         <View style={[styles.center, { paddingBottom: bottomInset }]} accessibilityLiveRegion="assertive">
@@ -1052,9 +467,14 @@ export function NativeChatInboxScreen() {
           setActionConversation(null);
           void applyConversationSettings(item, { is_pinned: !Boolean(item.is_pinned) });
         }}
-        onToggleMute={(item) => {
+        onToggleMute={(item, mutedUntil) => {
           setActionConversation(null);
-          void applyConversationSettings(item, { is_muted: !Boolean(item.is_muted) });
+          void applyConversationSettings(
+            item,
+            mutedUntil === undefined
+              ? { is_muted: !Boolean(item.is_muted) }
+              : { is_muted: true, muted_until: mutedUntil },
+          );
         }}
         onToggleArchive={(item) => {
           setActionConversation(null);

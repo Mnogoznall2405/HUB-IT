@@ -13,6 +13,11 @@ from backend.services.my_files_service import (
 from backend.services.my_files_antivirus_service import SecurityScanResult
 
 
+@pytest.fixture(autouse=True)
+def _prebuilt_app_schema(prebuilt_app_db):
+    return prebuilt_app_db
+
+
 def _sqlite_url(path: Path) -> str:
     return f"sqlite:///{path.as_posix()}"
 
@@ -329,3 +334,85 @@ def test_folder_archive_grant_builds_zip(tmp_path):
     retry = service.consume_download_grant(token=grant["token"])
     assert retry.file_name == "Внешняя.zip"
     retry.path.unlink(missing_ok=True)
+
+
+def test_folder_archive_stores_already_compressed_entries(tmp_path):
+    import zipfile
+
+    service = _new_service(tmp_path)
+    folder = service.create_folder(actor=_user(), name="Архив")
+    text_item = _upload(service, "note.txt", folder_id=folder["id"])
+    packed_item = _upload(service, "pack.gz", folder_id=folder["id"])
+    for item in (text_item, packed_item):
+        service.process_file(item["id"])
+
+    grant = service.create_folder_archive_grant(folder_id=folder["id"], user_id=7, actor=_user())
+    payload = service.consume_download_grant(token=grant["token"])
+    with zipfile.ZipFile(payload.path) as archive:
+        compression_by_name = {info.filename: info.compress_type for info in archive.infolist()}
+    payload.path.unlink(missing_ok=True)
+
+    assert compression_by_name["pack.gz"] == zipfile.ZIP_STORED
+    assert compression_by_name["note.txt"] == zipfile.ZIP_DEFLATED
+
+
+def test_admin_user_stats_aggregates_storage_per_user(tmp_path):
+    from backend.appdb.db import app_session
+    from backend.appdb.models import AppUser
+
+    service = _new_service(tmp_path)
+    with app_session(service._database_url) as session:
+        session.add(AppUser(id=7, username="user-7", full_name="User Seven", my_files_quota_bytes=12345))
+        session.add(AppUser(id=9, username="user-9", full_name="User Nine"))
+        session.commit()
+
+    first = _upload(service, "first.bin")
+    second = _upload(service, "second.bin")
+    service.process_file(first["id"])
+    service.process_file(second["id"])
+
+    stats = service.admin_user_stats()
+    assert stats["total"] == 1
+    item = stats["items"][0]
+    assert item["user_id"] == 7
+    assert item["username"] == "user-7"
+    assert item["full_name"] == "User Seven"
+    assert item["files_count"] == 2
+    assert item["used_bytes"] == 2 * len(b"payload")
+    assert item["quota_limit_bytes"] == 12345
+    assert item["quota_is_custom"] is True
+    assert item["last_activity_at"] is not None
+    totals = stats["totals"]
+    assert totals["files_count"] == 2
+    assert totals["used_bytes"] == 2 * len(b"payload")
+    # Same content deduplicates to one blob — physical stays below logical.
+    assert 0 < totals["stored_bytes"] <= totals["used_bytes"]
+    # Real disk capacity of the storage root is reported alongside blob sums.
+    assert totals["storage_total_bytes"] > 0
+    assert totals["storage_free_bytes"] > 0
+
+    filtered = service.admin_user_stats(query="nine")
+    assert filtered["total"] == 0
+    assert filtered["items"] == []
+
+
+def test_list_files_global_search_finds_nested_files(tmp_path):
+    service = _new_service(tmp_path)
+    outer = service.create_folder(actor=_user(), name="Внешняя")
+    inner = service.create_folder(actor=_user(), name="Внутренняя", parent_id=outer["id"])
+    nested = _upload(service, "quarterly-report.pdf", folder_id=inner["id"])
+    other = _upload(service, "other.bin")
+    service.process_file(nested["id"])
+    service.process_file(other["id"])
+
+    found = service.list_files(user_id=7, query="QUARTER")
+    names = [item["original_file_name"] for item in found["items"]]
+    assert names == ["quarterly-report.pdf"]
+    assert found["items"][0]["folder_name"] == "Внутренняя"
+
+    folder_hits = service.list_files(user_id=7, query="нутрен")
+    assert [folder["name"] for folder in folder_hits["folders"]] == ["Внутренняя"]
+
+    empty = service.list_files(user_id=7, query="nothing-matches")
+    assert empty["items"] == []
+    assert empty["folders"] == []

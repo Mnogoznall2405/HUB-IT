@@ -248,9 +248,18 @@ export function AppLifecycle() {
   }, [nativeChatActive, user]);
 
   useEffect(() => {
+    // W12: sockets survive brief backgrounding (file pickers, camera,
+    // permission dialogs, notification shade — 'inactive' is ignored; on
+    // 'background' the suspend is deferred and cancelled on return).
+    const SUSPEND_DELAY_MS = 45_000;
+    let suspendTimer: ReturnType<typeof setTimeout> | null = null;
+    const cancelSuspend = () => {
+      if (suspendTimer !== null) { clearTimeout(suspendTimer); suspendTimer = null; }
+    };
     const subscription = AppState.addEventListener('change', (nextState) => {
       if (!user) return;
       if (nextState === 'active') {
+        cancelSuspend();
         void syncNativePushToken({ requestPermission: false });
         void reconcileNativeBadge({ force: true });
         void drainOfflineCommandQueue(user.id);
@@ -258,12 +267,16 @@ export function AppLifecycle() {
         refreshReadCaches();
         if (nativeChatActive) void chatSocket.resume();
         void hubRealtimeSocket.resume();
-      } else {
-        hubRealtimeSocket.suspend();
-        if (nativeChatActive) chatSocket.suspend();
+      } else if (nextState === 'background') {
+        cancelSuspend();
+        suspendTimer = setTimeout(() => {
+          suspendTimer = null;
+          hubRealtimeSocket.suspend();
+          if (nativeChatActive) chatSocket.suspend();
+        }, SUSPEND_DELAY_MS);
       }
     });
-    return () => subscription.remove();
+    return () => { cancelSuspend(); subscription.remove(); };
   }, [nativeChatActive, user]);
 
   return null;

@@ -25,6 +25,7 @@ import { useAuth } from '../../auth/AuthContext';
 import { HubTextField } from '../../components/ui/HubTextField';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
+import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import {
   AccountLoading,
   AccountPrimaryButton,
@@ -121,6 +122,7 @@ function NativeAdminUsersScreenContent() {
   const { user, hasPermission } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
+  const navInset = useNativeBottomNavInset();
   const allowed = canAccessAdminSection('users', { user, hasPermission });
   const [users, setUsers] = useState<userAdminApi.AdminUser[]>([]);
   const [usersTotal, setUsersTotal] = useState(0);
@@ -470,7 +472,13 @@ function NativeAdminUsersScreenContent() {
           </View>
           {draft.use_custom_permissions ? SETTINGS_PERMISSION_GROUPS.map((group) => (
             <View key={group.group}>
-              <Pressable onPress={() => setExpandedGroup((current) => current === group.group ? '' : group.group)} style={styles.groupHeader}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ expanded: expandedGroup === group.group }}
+                accessibilityLabel={group.group}
+                onPress={() => setExpandedGroup((current) => current === group.group ? '' : group.group)}
+                style={styles.groupHeader}
+              >
                 <Text style={{ color: tokens.textPrimary, fontWeight: '800' }}>{group.group}</Text>
               </Pressable>
               {expandedGroup === group.group ? group.permissions.map((permission) => {
@@ -579,10 +587,11 @@ function NativeAdminUsersScreenContent() {
       onRefresh={() => { void loadUsers(0); }}
       refreshing={loading}
       scroll={false}
+      contentUnderNav
     >
       <FlatList data={users} keyExtractor={item => String(item.id)} initialNumToRender={12} maxToRenderPerBatch={10} windowSize={7}
         keyboardShouldPersistTaps="handled" refreshing={loading} onRefresh={() => { void loadUsers(0); }}
-        contentContainerStyle={{ gap: 10 }} ListHeaderComponent={<View style={{ gap: 10 }}>
+        contentContainerStyle={{ gap: 10, paddingBottom: navInset }} ListHeaderComponent={<View style={{ gap: 10 }}>
       <AccountStatusText tokens={tokens} error={status.error} message={status.message} />
       <HubTextField label="Поиск" value={search} onChangeText={setSearch} />
       <View style={styles.filters}>

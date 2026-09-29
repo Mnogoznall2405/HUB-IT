@@ -8,6 +8,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'WEB-itinvent'))
+sys.path.insert(0, str(ROOT))
+
+try:
+    from shared.port_reclaim import reclaim_port_from_stale_sibling
+except Exception:
+    reclaim_port_from_stale_sibling = None
 
 
 def control_options(values: dict[str, str]) -> dict:
@@ -39,4 +45,6 @@ if __name__ == '__main__':
     except Exception as exc:
         print(f'Sandbox control configuration preflight failed ({type(exc).__name__})', file=sys.stderr)
         raise SystemExit(1)
+    if reclaim_port_from_stale_sibling is not None:
+        reclaim_port_from_stale_sibling(options['host'], options['port'], 'start_control.py')
     uvicorn.run('backend.ai_sandbox_internal_main:app', **options)

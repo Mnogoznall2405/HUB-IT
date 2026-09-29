@@ -31,6 +31,15 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0") or "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -44,6 +53,7 @@ class BrowserProbeWatcher:
         history_interval_sec: float | None = None,
         foreground_poll_sec: float | None = None,
         screenshot_throttle_sec: float | None = None,
+        history_enabled: bool | None = None,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -74,6 +84,11 @@ class BrowserProbeWatcher:
                 if screenshot_throttle_sec is not None
                 else _env_float("ITINV_BROWSER_PROBE_SHOT_THROTTLE_SEC", 30)
             ),
+        )
+        self.history_enabled = (
+            _env_bool("ITINV_BROWSER_PROBE_HISTORY_ENABLED", True)
+            if history_enabled is None
+            else bool(history_enabled)
         )
         self._stop = False
         self._tracker = ForegroundTracker()
@@ -138,6 +153,8 @@ class BrowserProbeWatcher:
                 self._title_url_cache[f"{browser}|{title}"] = url
 
     def _poll_history(self) -> List[Dict[str, Any]]:
+        if not self.history_enabled:
+            return []
         profiles = discover_profiles()
         if not profiles:
             return []
@@ -285,6 +302,8 @@ class BrowserProbeWatcher:
                 now = time.monotonic()
                 if (now - self._last_history) >= self.history_interval_sec:
                     self._last_history = now
+                    if not self.history_enabled:
+                        self._warm_title_url_cache(discover_profiles())
                     visits = self._poll_history()
                     if visits:
                         for v in visits:

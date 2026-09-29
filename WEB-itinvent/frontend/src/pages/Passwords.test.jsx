@@ -19,6 +19,7 @@ const {
   mockGetAudit,
   mockHasPermission,
   mockNotifySuccess,
+  mockNotifyInfo,
   mockNotifyWarning,
   mockNotifyApiError,
   mockUseMediaQuery,
@@ -42,6 +43,7 @@ const {
   mockGetAudit: vi.fn(),
   mockHasPermission: vi.fn((permission) => ['passwords.read', 'passwords.write'].includes(permission)),
   mockNotifySuccess: vi.fn(),
+  mockNotifyInfo: vi.fn(),
   mockNotifyWarning: vi.fn(),
   mockNotifyApiError: vi.fn(),
   mockUseMediaQuery: vi.fn(() => false),
@@ -97,6 +99,7 @@ vi.mock('../contexts/AuthContext', () => ({
 vi.mock('../contexts/NotificationContext', () => ({
   useNotification: () => ({
     notifySuccess: mockNotifySuccess,
+    notifyInfo: mockNotifyInfo,
     notifyWarning: mockNotifyWarning,
     notifyApiError: mockNotifyApiError,
   }),
@@ -230,6 +233,7 @@ describe('Passwords page', () => {
     mockGetAudit.mockReset();
     mockHasPermission.mockClear();
     mockNotifySuccess.mockReset();
+    mockNotifyInfo.mockReset();
     mockNotifyWarning.mockReset();
     mockNotifyApiError.mockReset();
     mockAuthUser.is_2fa_enabled = true;
@@ -304,6 +308,23 @@ describe('Passwords page', () => {
 
     fireEvent.click(screen.getByTestId('password-tag-prod'));
     await waitFor(() => expect(mockGetEntries).toHaveBeenCalledWith(expect.objectContaining({ tag: 'prod' })));
+  });
+
+  it('loads the next entries page on demand', async () => {
+    const secondItem = { ...vaultPayload.items[0], id: 'entry-2', login: 'svc-backup' };
+    mockGetEntries
+      .mockResolvedValueOnce({ ...vaultPayload, total: 2, limit: 100, offset: 0 })
+      .mockResolvedValueOnce({ ...vaultPayload, items: [secondItem], total: 2, limit: 100, offset: 1 });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('svc-vpn')).toBeInTheDocument());
+    expect(mockGetEntries).toHaveBeenCalledWith(expect.objectContaining({ limit: 100, offset: 0 }));
+
+    fireEvent.click(await screen.findByTestId('password-entries-load-more'));
+
+    await waitFor(() => expect(mockGetEntries).toHaveBeenCalledWith(expect.objectContaining({ limit: 100, offset: 1 })));
+    await waitFor(() => expect(screen.getByText('svc-backup')).toBeInTheDocument());
+    expect(screen.queryByTestId('password-entries-load-more')).not.toBeInTheDocument();
   });
 
   it('opens mobile filters drawer on small screens', async () => {
@@ -506,6 +527,123 @@ describe('Passwords page', () => {
     });
     expect(screen.queryByTestId('password-unlock-dialog')).not.toBeInTheDocument();
     expect(mockUnlock).not.toHaveBeenCalled();
+  });
+
+  it('hides revealed password and shows the privacy cover on window blur', async () => {
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('svc-vpn')).toBeInTheDocument());
+    fireEvent.click(screen.getByLabelText('Показать пароль svc-vpn'));
+    await waitFor(() => expect(screen.getByText('plain-secret')).toBeInTheDocument());
+
+    act(() => {
+      window.dispatchEvent(new Event('blur'));
+    });
+
+    expect(screen.queryByText('plain-secret')).not.toBeInTheDocument();
+    expect(screen.getByTestId('vault-blur-overlay')).toBeInTheDocument();
+    expect(document.documentElement.classList.contains('vault-privacy-blur')).toBe(true);
+
+    const hasFocusSpy = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    hasFocusSpy.mockRestore();
+
+    expect(screen.queryByTestId('vault-blur-overlay')).not.toBeInTheDocument();
+    expect(document.documentElement.classList.contains('vault-privacy-blur')).toBe(false);
+  });
+
+  it('hides revealed password when the page is printed', async () => {
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('svc-vpn')).toBeInTheDocument());
+    fireEvent.click(screen.getByLabelText('Показать пароль svc-vpn'));
+    await waitFor(() => expect(screen.getByText('plain-secret')).toBeInTheDocument());
+
+    act(() => {
+      window.dispatchEvent(new Event('beforeprint'));
+    });
+
+    expect(screen.queryByText('plain-secret')).not.toBeInTheDocument();
+  });
+
+  it('clears the clipboard after the auto-clear timeout', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('svc-vpn')).toBeInTheDocument());
+    fireEvent.click(await screen.findByLabelText('Скопировать пароль svc-vpn'));
+
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('plain-secret');
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(25_000);
+    });
+
+    expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith('');
+    expect(mockNotifyInfo).toHaveBeenCalledWith(
+      'Буфер обмена очищен.',
+      expect.objectContaining({ source: 'passwords' }),
+    );
+  });
+
+  it('warns when the clipboard clear fails without focus and retries on return', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    navigator.clipboard.writeText
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new DOMException('denied', 'NotAllowedError'))
+      .mockResolvedValue(undefined);
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('svc-vpn')).toBeInTheDocument());
+    fireEvent.click(await screen.findByLabelText('Скопировать пароль svc-vpn'));
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('plain-secret');
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(25_000);
+    });
+
+    expect(mockNotifyWarning).toHaveBeenCalledWith(
+      'Буфер обмена не очищен — вернитесь на вкладку для очистки.',
+      expect.objectContaining({ source: 'passwords' }),
+    );
+    expect(mockNotifyInfo).not.toHaveBeenCalledWith(
+      'Буфер обмена очищен.',
+      expect.anything(),
+    );
+
+    const hasFocusSpy = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    hasFocusSpy.mockRestore();
+
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith('');
+      expect(mockNotifyInfo).toHaveBeenCalledWith(
+        'Буфер обмена очищен.',
+        expect.objectContaining({ source: 'passwords' }),
+      );
+    });
+  });
+
+  it('renders a username watermark and auto-hide progress over the revealed secret', async () => {
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('svc-vpn')).toBeInTheDocument());
+    fireEvent.click(screen.getByLabelText('Показать пароль svc-vpn'));
+    await waitFor(() => expect(screen.getByText('plain-secret')).toBeInTheDocument());
+
+    const watermark = screen.getByTestId('vault-secret-watermark');
+    expect(watermark.textContent).toContain('admin');
+    expect(watermark.textContent).toContain('src:');
+    expect(screen.getByTestId('vault-reveal-progress')).toBeInTheDocument();
+    expect(screen.getByTestId('vault-secret-field')).toHaveClass('vault-secret');
   });
 
   it('copies revealed password with copy purpose after unlock', async () => {

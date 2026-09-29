@@ -318,6 +318,19 @@ export const warehouse1cAPI = {
     return data;
   },
 
+  getMissingWarehouseHints: async ({ codes = [], invNos = [], employeeName = '', signal } = {}) => {
+    const { data } = await apiClient.get('/warehouse-1c/missing-warehouse-hints', {
+      params: {
+        codes: (Array.isArray(codes) ? codes : []).join(','),
+        inv_nos: (Array.isArray(invNos) ? invNos : []).join(','),
+        employee_name: employeeName,
+      },
+      timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS,
+      ...(signal ? { signal } : {}),
+    });
+    return data;
+  },
+
   matchNomenclatureToHub: async ({
     nomenclatureCode = '',
     nomenclatureName = '',

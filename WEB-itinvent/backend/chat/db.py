@@ -630,6 +630,8 @@ def _ensure_chat_user_state_columns(engine) -> None:
         statements.append(f"ALTER TABLE {table_name} ADD COLUMN last_read_seq BIGINT NOT NULL DEFAULT 0")
     if "unread_count" not in columns:
         statements.append(f"ALTER TABLE {table_name} ADD COLUMN unread_count INTEGER NOT NULL DEFAULT 0")
+    if "muted_until" not in columns:
+        statements.append(f"ALTER TABLE {table_name} ADD COLUMN muted_until TIMESTAMP NULL")
     with engine.begin() as connection:
         for statement in statements:
             connection.execute(text(statement))

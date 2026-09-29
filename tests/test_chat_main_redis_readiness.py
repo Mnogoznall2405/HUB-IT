@@ -50,6 +50,21 @@ def _patch_chat_health(
     monkeypatch.setattr(chat_main.to_thread, "run_sync", _run_sync)
 
 
+def test_health_live_is_db_free_and_reports_node_uptime(monkeypatch):
+    monkeypatch.setenv("CHAT_REALTIME_NODE_ID", "chat-a")
+
+    payload = asyncio.run(chat_main.health_live())
+
+    assert isinstance(payload, dict)
+    assert payload["status"] == "ok"
+    assert payload["process"] == "chat"
+    assert payload["node"] == "chat-a"
+    assert payload["uptime_sec"] >= 0
+    # Liveness must not depend on DB/realtime checks: none of those keys leak in.
+    assert "chat" not in payload
+    assert "realtime_required" not in payload
+
+
 def test_strict_readiness_returns_503_until_redis_pubsub_is_ready(monkeypatch):
     monkeypatch.setenv("CHAT_REDIS_REQUIRED", "1")
     _patch_chat_health(monkeypatch, redis_available=False, pubsub_subscribed=False)

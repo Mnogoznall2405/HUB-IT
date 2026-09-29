@@ -130,10 +130,28 @@ def _event_copy(event_type: str, *, notification_body: str = "") -> tuple[str, s
     )
 
 
+def _assignee_names(task: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    assignees = task.get("assignees")
+    if isinstance(assignees, list):
+        for entry in assignees:
+            if not isinstance(entry, dict):
+                continue
+            name = _normalize_text(entry.get("full_name")) or _normalize_text(entry.get("username"))
+            if name and name not in names:
+                names.append(name)
+    if not names:
+        fallback = _person_name(task, "assignee")
+        if fallback:
+            names.append(fallback)
+    return names
+
+
 def _build_field_rows(task: dict[str, Any], *, due_text: str) -> list[tuple[str, str]]:
+    assignee_names = _assignee_names(task)
     rows: list[tuple[str, str]] = [
         ("Статус", _status_label(task.get("status"))),
-        ("Исполнитель", _person_name(task, "assignee") or "—"),
+        ("Исполнители" if len(assignee_names) > 1 else "Исполнитель", ", ".join(assignee_names) or "—"),
     ]
     creator = _person_name(task, "created_by")
     if creator:

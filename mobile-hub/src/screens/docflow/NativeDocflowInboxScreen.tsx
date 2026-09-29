@@ -40,6 +40,7 @@ import {
 } from '../../docflow/nativeDocflowModel';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
+import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { hubRealtimeSocket } from '../../realtime/hubRealtimeSocket';
 import {
   AccountPrimaryButton,
@@ -80,6 +81,7 @@ export function NativeDocflowInboxScreen() {
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
+  const navInset = useNativeBottomNavInset();
   const canRead = hasPermission('docflow.read');
   const canCreate = hasPermission('docflow.create');
   const [profile, setProfile] = useState<DocflowCredentialProfile | null>(null);
@@ -406,6 +408,7 @@ export function NativeDocflowInboxScreen() {
       rightAction={canCreate && profile?.configured ? <Pressable testID="native-docflow-create-assignment" accessibilityRole="button" accessibilityLabel="Создать поручение" onPress={() => router.push('/(shell)/docflow/create' as never)} style={styles.searchAction}><MaterialCommunityIcons name="plus" size={24} color={tokens.primary} /></Pressable> : undefined}
       tokens={tokens}
       scroll={false}
+      contentUnderNav
     >
       {error ? (
         <View style={[styles.errorBox, { borderColor: tokens.error }]}>
@@ -474,7 +477,7 @@ export function NativeDocflowInboxScreen() {
             keyExtractor={(item) => item.ref}
             refreshing={refreshing}
             onRefresh={() => { void refreshAll(); }}
-            contentContainerStyle={tasks.length ? styles.list : styles.emptyList}
+            contentContainerStyle={tasks.length ? [styles.list, { paddingBottom: navInset }] : [styles.emptyList, { paddingBottom: navInset }]}
             renderItem={renderTask}
             ListEmptyComponent={loadingTasks ? (
               <View style={styles.empty}><ActivityIndicator color={tokens.primary} /><Text style={[styles.emptyText, { color: tokens.textSecondary }]}>Первое подключение к 1С может занять до минуты…</Text></View>

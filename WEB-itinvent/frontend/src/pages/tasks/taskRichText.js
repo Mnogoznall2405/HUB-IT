@@ -3,8 +3,21 @@ const escapeEditorHtml = (value) => String(value || '')
   .replace(/</g, '&lt;')
   .replace(/>/g, '&gt;');
 
+const sanitizeLinkHref = (value) => {
+  const href = String(value || '').trim();
+  if (!href) return '';
+  if (/^(https?:\/\/|mailto:|tel:|\/|#)/i.test(href)) return href;
+  return '';
+};
+
 const applyInlineMarkdownToHtml = (value) => {
   let nextValue = escapeEditorHtml(value);
+  nextValue = nextValue.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (match, text, href) => {
+    const safeHref = sanitizeLinkHref(href);
+    return safeHref
+      ? `<a href="${safeHref}" target="_blank" rel="noopener noreferrer">${text}</a>`
+      : match;
+  });
   nextValue = nextValue.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   nextValue = nextValue.replace(/~~([^~]+)~~/g, '<s>$1</s>');
   nextValue = nextValue.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
@@ -63,6 +76,11 @@ const editorNodeToMarkdown = (node) => {
   if (tagName === 'strong' || tagName === 'b') return `**${childText()}**`;
   if (tagName === 'em' || tagName === 'i') return `*${childText()}*`;
   if (tagName === 's' || tagName === 'strike' || tagName === 'del') return `~~${childText()}~~`;
+  if (tagName === 'a') {
+    const href = String(node.getAttribute?.('href') || '').trim();
+    const text = childText().trim() || href;
+    return href ? `[${text}](${href})` : text;
+  }
   if (tagName === 'li') return childText().trim();
   if (tagName === 'ul') {
     return Array.from(node.children || [])
@@ -105,6 +123,7 @@ export const editorHtmlToMarkdown = (html) => {
 };
 
 export const stripMarkdownForPreview = (value) => String(value || '')
+  .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '$1')
   .replace(/\*\*([^*]+)\*\*/g, '$1')
   .replace(/~~([^~]+)~~/g, '$1')
   .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1$2')

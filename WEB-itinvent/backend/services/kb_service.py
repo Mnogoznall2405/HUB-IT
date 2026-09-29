@@ -36,6 +36,10 @@ KB_DEFAULT_CATEGORIES = [
     {"id": "network", "title": "Сеть", "description": "DNS, DHCP, маршрутизация, доступ", "order": 80},
     {"id": "monitoring", "title": "Мониторинг", "description": "Алерты, реакция, проверки", "order": 90},
     {"id": "backup", "title": "Резервные копии", "description": "Backup/restore процедуры", "order": 100},
+    {"id": "instructions", "title": "Инструкции", "description": "Инструкции и памятки с корпоративного портала", "order": 110},
+    {"id": "normative", "title": "Нормативные акты", "description": "Приказы, положения и нормативные документы", "order": 120},
+    {"id": "forms", "title": "Формы заявлений", "description": "Бланки и шаблоны заявлений", "order": 130},
+    {"id": "library", "title": "Корпоративная библиотека", "description": "Книги и материалы для развития", "order": 140},
 ]
 
 KB_DEFAULT_SERVICES = [

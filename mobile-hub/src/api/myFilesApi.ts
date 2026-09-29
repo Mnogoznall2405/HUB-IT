@@ -415,7 +415,7 @@ export async function createMyFileUploadSession(input: {
   const { data } = await apiClient.post('/my-files/upload-sessions', {
     file_name: asText(input.fileName) || 'file.bin',
     file_size: Math.max(0, Math.trunc(Number(input.fileSize) || 0)),
-    retention_days: Math.trunc(Number(input.retentionDays) || 1),
+    retention_days: Number.isFinite(Number(input.retentionDays)) ? Math.trunc(Number(input.retentionDays)) : 1,
     mime_type: asText(input.mimeType) || 'application/octet-stream',
     folder_id: asText(input.folderId) || null,
   }, { signal: input.signal });
@@ -441,7 +441,7 @@ export async function getMyFileUploadSession(
 
 export async function uploadMyFileChunk(
   fileId: string,
-  chunk: Blob,
+  chunk: ArrayBuffer | ArrayBufferView,
   options: {
     offset: number;
     signal?: AbortSignal;

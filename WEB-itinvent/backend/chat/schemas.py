@@ -1,6 +1,7 @@
 """Pydantic models for chat API."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -29,10 +30,13 @@ class ChatMemberResponse(BaseModel):
     joined_at: str
 
 
+ChatMessageKind = Literal["text", "task_share", "file", "system", "location", "contact", "poll"]
+
+
 class ChatReplyPreview(BaseModel):
     id: str
     sender_name: str
-    kind: Literal["text", "task_share", "file"] = "text"
+    kind: ChatMessageKind = "text"
     body: str = ""
     task_title: Optional[str] = None
     attachments_count: int = 0
@@ -41,7 +45,7 @@ class ChatReplyPreview(BaseModel):
 class ChatForwardPreview(BaseModel):
     id: str
     sender_name: str
-    kind: Literal["text", "task_share", "file"] = "text"
+    kind: ChatMessageKind = "text"
     body: str = ""
     task_title: Optional[str] = None
     attachments_count: int = 0
@@ -66,13 +70,27 @@ class ChatReactionToggleResponse(BaseModel):
     reactions: list[ChatReactionSummary] = Field(default_factory=list)
 
 
+class ChatPollOption(BaseModel):
+    text: str = ""
+    votes: int = 0
+
+
+class ChatPollPayload(BaseModel):
+    question: str = ""
+    options: list[ChatPollOption] = Field(default_factory=list)
+    anonymous: bool = False
+    closed: bool = False
+    total_voters: int = 0
+    my_option_index: Optional[int] = None
+
+
 class ChatMessageResponse(BaseModel):
     id: str
     conversation_id: str
     conversation_kind: Optional[Literal["direct", "group", "ai", "notes", "task"]] = None
     task_id: Optional[str] = None
     conversation_seq: int = 0
-    kind: Literal["text", "task_share", "file", "system"] = "text"
+    kind: ChatMessageKind = "text"
     body_format: Literal["plain", "markdown"] = "plain"
     client_message_id: Optional[str] = None
     sender: ChatUserSummary
@@ -89,6 +107,7 @@ class ChatMessageResponse(BaseModel):
     reply_preview: Optional["ChatReplyPreview"] = None
     forward_preview: Optional["ChatForwardPreview"] = None
     task_preview: Optional["ChatTaskPreview"] = None
+    poll: Optional["ChatPollPayload"] = None
     attachments: list["ChatAttachmentResponse"] = Field(default_factory=list)
     action_card: Optional[dict[str, Any]] = None
     reactions: list[ChatReactionSummary] = Field(default_factory=list)
@@ -118,6 +137,7 @@ class ChatConversationSummary(BaseModel):
     online_member_count: int = 0
     is_pinned: bool = False
     is_muted: bool = False
+    muted_until: Optional[datetime] = None
     is_archived: bool = False
     pinned_message_id: Optional[str] = None
     viewer_member_role: Optional[str] = None
@@ -310,6 +330,7 @@ class UpdateConversationProfileRequest(BaseModel):
 class SendMessageRequest(BaseModel):
     body: str = Field(..., min_length=1, max_length=12000)
     body_format: Literal["plain", "markdown"] = "plain"
+    kind: Literal["text", "location", "contact", "poll"] = "text"
     client_message_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     reply_to_message_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
 
@@ -323,6 +344,10 @@ class SendMessageRequest(BaseModel):
     def _normalize_optional_message_id(cls, value):
         text = str(value or "").strip()
         return text or None
+
+
+class PollVoteRequest(BaseModel):
+    option_index: int = Field(..., ge=0, le=9)
 
 
 class EditMessageRequest(BaseModel):
@@ -387,6 +412,7 @@ class TaskShareMessageRequest(BaseModel):
 class UpdateConversationSettingsRequest(BaseModel):
     is_pinned: Optional[bool] = None
     is_muted: Optional[bool] = None
+    muted_until: Optional[datetime] = None
     is_archived: Optional[bool] = None
 
 
@@ -482,9 +508,10 @@ class ChatUploadSessionFileRequest(BaseModel):
 class ChatUploadSessionCreateRequest(BaseModel):
     body: Optional[str] = Field(default=None, max_length=12000)
     reply_to_message_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    client_message_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     files: list[ChatUploadSessionFileRequest] = Field(default_factory=list)
 
-    @field_validator("body", "reply_to_message_id", mode="before")
+    @field_validator("body", "reply_to_message_id", "client_message_id", mode="before")
     @classmethod
     def _normalize_text(cls, value):
         text = str(value or "").strip()

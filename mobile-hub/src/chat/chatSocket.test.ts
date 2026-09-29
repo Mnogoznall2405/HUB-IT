@@ -11,7 +11,7 @@ class MockWebSocket {
   readyState = 0;
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event?: { code?: number }) => void) | null = null;
   onerror: (() => void) | null = null;
   send = jest.fn();
 
@@ -38,6 +38,9 @@ const originalWebSocket = global.WebSocket;
 
 beforeEach(async () => {
   jest.useFakeTimers();
+  // Deterministic jitter: random()=0 yields base*0.75 and zero initial spread,
+  // so every nominal advance in the tests still crosses the timer deadline.
+  jest.spyOn(Math, 'random').mockReturnValue(0);
   MockWebSocket.instances = [];
   Object.defineProperty(global, 'WebSocket', { configurable: true, value: MockWebSocket });
   await tokenStore.setTokens('socket-access', 'socket-refresh');
@@ -45,6 +48,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   jest.useRealTimers();
+  jest.restoreAllMocks();
   Object.defineProperty(global, 'WebSocket', { configurable: true, value: originalWebSocket });
 });
 
@@ -112,6 +116,22 @@ describe('ChatSocketClient lifecycle', () => {
     expect(shouldUseChatHttpFallback('connected')).toBe(false);
     expect(shouldUseChatHttpFallback('connecting')).toBe(false);
     expect(shouldUseChatHttpFallback('suspended')).toBe(false);
+  });
+
+  it('spreads the first reconnect over jitter plus an initial window', async () => {
+    jest.spyOn(Math, 'random').mockReturnValue(0.5);
+    const client = new ChatSocketClient();
+    await client.connect();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    first.close();
+
+    // random=0.5 → jitter 0, initial spread 2500 → delay 3500ms.
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await jest.advanceTimersByTimeAsync(2500);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    client.disconnect();
   });
 
   it('reconnects after an unexpected close', async () => {
@@ -195,6 +215,109 @@ describe('ChatSocketClient lifecycle', () => {
 
     await jest.advanceTimersByTimeAsync(1_000);
     expect(MockWebSocket.instances).toHaveLength(2);
+    client.disconnect();
+  });
+
+  it('force-refreshes the access token after a 4401 session-expired close', async () => {
+    const tokenSpy = jest.spyOn(clientApi, 'getAuthenticatedAccessToken')
+      .mockResolvedValueOnce('stale-access')
+      .mockResolvedValue('fresh-access');
+    const client = new ChatSocketClient();
+    await client.connect();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    first.onclose?.({ code: 4401 });
+
+    await jest.advanceTimersByTimeAsync(1_000);
+
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(tokenSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ forceRefresh: true }),
+    );
+    expect(MockWebSocket.instances[1].options?.headers?.Authorization).toBe('Bearer fresh-access');
+    client.disconnect();
+  });
+
+  it('sends heartbeat pings with a unique request_id', async () => {
+    const client = new ChatSocketClient();
+    await client.connect();
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+
+    for (let index = 0; index < 4; index += 1) {
+      await jest.advanceTimersByTimeAsync(25_000);
+      socket.onmessage?.({ data: JSON.stringify({ type: 'chat.pong' }) });
+    }
+
+    const pings = socket.send.mock.calls
+      .map(([raw]) => JSON.parse(String(raw)) as { type?: string; request_id?: string })
+      .filter((message) => message.type === 'chat.ping');
+    expect(pings.length).toBeGreaterThanOrEqual(4);
+    const requestIds = pings.map((message) => message.request_id);
+    expect(requestIds.every((id) => typeof id === 'string' && id.trim().length > 0)).toBe(true);
+    expect(new Set(requestIds).size).toBe(requestIds.length);
+    client.disconnect();
+  });
+
+  it('pushes a committed token refresh into the open socket (D5/W8)', async () => {
+    const client = new ChatSocketClient();
+    await client.connect();
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+
+    await tokenStore.setTokens('renewed-access', 'renewed-refresh');
+
+    const authFrames = socket.send.mock.calls
+      .map(([raw]) => JSON.parse(String(raw)) as { type?: string; payload?: Record<string, unknown> })
+      .filter((message) => message.type === 'chat.auth');
+    expect(authFrames).toHaveLength(1);
+    expect(authFrames[0].payload?.access_token).toBe('renewed-access');
+    client.disconnect();
+  });
+
+  it('does not push chat.auth while the socket is not open', async () => {
+    const client = new ChatSocketClient();
+    await client.connect();
+    const socket = MockWebSocket.instances[0];
+    // still CONNECTING
+    await tokenStore.setTokens('renewed-access-2', 'renewed-refresh-2');
+    const authFrames = socket.send.mock.calls
+      .map(([raw]) => JSON.parse(String(raw)) as { type?: string })
+      .filter((message) => message.type === 'chat.auth');
+    expect(authFrames).toHaveLength(0);
+    client.disconnect();
+  });
+
+  it('answers chat.auth.required with a forced token refresh', async () => {
+    const tokenSpy = jest.spyOn(clientApi, 'getAuthenticatedAccessToken')
+      .mockResolvedValueOnce('handshake-access')
+      .mockResolvedValue('renewed-after-hint');
+    const client = new ChatSocketClient();
+    await client.connect();
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+
+    socket.onmessage?.({ data: JSON.stringify({ type: 'chat.auth.required', payload: { retry_after_ms: 30000 } }) });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(tokenSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ forceRefresh: true }),
+    );
+    client.disconnect();
+  });
+
+  it('does not surface chat.auth.ok/rejected to subscribers', async () => {
+    const client = new ChatSocketClient();
+    const received = jest.fn();
+    client.on('chat.auth.ok', received);
+    client.on('chat.auth.rejected', received);
+    await client.connect();
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    socket.onmessage?.({ data: JSON.stringify({ type: 'chat.auth.ok' }) });
+    socket.onmessage?.({ data: JSON.stringify({ type: 'chat.auth.rejected' }) });
+    expect(received).not.toHaveBeenCalled();
     client.disconnect();
   });
 

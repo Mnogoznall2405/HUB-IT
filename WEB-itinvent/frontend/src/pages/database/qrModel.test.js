@@ -2,12 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import QRCode from 'qrcode';
 
 import {
+  buildConsumableQrLink,
   buildEquipmentQrDataUrl,
   buildEquipmentQrLink,
   buildEquipmentQrText,
   getQrScannerErrorMessage,
   getQrboxDimensions,
   isIgnorableQrFrameError,
+  parseDatabaseQrPayload,
   parseInvNoFromQrText,
   parseEquipmentQrLink,
   stopQrScannerInstance,
@@ -58,6 +60,61 @@ describe('qrModel', () => {
     expect(parseInvNoFromQrText(link)).toBe('INV/7');
   });
 
+  it('builds and parses a consumable link carrying ITEMS.ID', () => {
+    const link = buildConsumableQrLink(
+      { ID: 4821, INV_NO: 'C-9' },
+      { origin: 'https://hubit.zsgp.ru', databaseId: 'OBJ-ITINVENT' },
+    );
+
+    expect(link).toBe('https://hubit.zsgp.ru/database?consumable=4821&db_id=OBJ-ITINVENT');
+    expect(parseDatabaseQrPayload(link)).toEqual({
+      kind: 'consumable',
+      itemId: '4821',
+      invNo: '',
+      databaseId: 'OBJ-ITINVENT',
+      tab: 'general',
+    });
+    expect(parseInvNoFromQrText(link)).toBeNull();
+    expect(parseEquipmentQrLink(link)).toBeNull();
+  });
+
+  it('rejects consumable links without a numeric ITEMS.ID', () => {
+    expect(buildConsumableQrLink({ ID: 'abc' }, { origin: 'https://hubit.zsgp.ru' })).toBe('');
+    expect(buildConsumableQrLink({ INV_NO: 'C-9' }, { origin: 'https://hubit.zsgp.ru' })).toBe('');
+    expect(parseDatabaseQrPayload('https://hubit.zsgp.ru/database?consumable=abc')).toBeNull();
+  });
+
+  it('keeps equipment payload kind for legacy links and plain text', () => {
+    expect(parseDatabaseQrPayload('https://hubit.zsgp.ru/database?inv_no=INV%2F7&db_id=main')).toEqual({
+      kind: 'equipment',
+      itemId: '',
+      invNo: 'INV/7',
+      databaseId: 'main',
+      tab: 'general',
+    });
+    expect(parseDatabaseQrPayload('INV_NO: 1001\nSERIAL_NO: SN-1')).toEqual({
+      kind: 'equipment',
+      itemId: '',
+      invNo: '1001',
+      databaseId: '',
+      tab: 'general',
+    });
+    expect(parseDatabaseQrPayload('2002')).toEqual({
+      kind: 'equipment',
+      itemId: '',
+      invNo: '2002',
+      databaseId: '',
+      tab: 'general',
+    });
+    expect(parseDatabaseQrPayload('hubit://database?consumable=77&db_id=main')).toEqual({
+      kind: 'consumable',
+      itemId: '77',
+      invNo: '',
+      databaseId: 'main',
+      tab: 'general',
+    });
+  });
+
   it('accepts the app scheme while rejecting unrelated URLs', () => {
     expect(parseEquipmentQrLink('hubit://database?inv_no=1001&db_id=main&tab=history')).toEqual({
       invNo: '1001',
@@ -85,12 +142,19 @@ describe('qrModel', () => {
     expect(isIgnorableQrFrameError('fatal camera error')).toBe(false);
   });
 
-  it('shows browser hint for denied camera permission', () => {
+  it('shows site-settings hint for denied camera permission', () => {
     const message = getQrScannerErrorMessage(new Error(
       'Error getting userMedia, error = NotAllowedError: Permission denied',
     ));
-    expect(message).toContain('браузере');
+    expect(message).toContain('настройки сайта');
     expect(message).toContain('камере');
+  });
+
+  it('maps a hanging camera prompt to a retry hint', () => {
+    const timeoutError = new Error('камера не ответила на запрос разрешения');
+    timeoutError.name = 'CameraPromptTimeout';
+    const message = getQrScannerErrorMessage(timeoutError);
+    expect(message).toContain('Разрешить доступ к камере');
   });
 
   it('keeps QR scanner box dimensions bounded', () => {

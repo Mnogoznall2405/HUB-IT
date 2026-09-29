@@ -9,6 +9,7 @@ import { readNativeEntitySnapshot, writeNativeEntitySnapshot, formatNativeSnapsh
 import { constructionHref } from '../../construction/nativeConstructionRoutes';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
+import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { AccountActionRow, AccountScreenScaffold, AccountSectionCard, AccountSecondaryButton } from '../account/AccountChrome';
 import { goBackOrReplace } from '../account/accountBack';
 import { NativeConstructionWorkPanel } from './NativeConstructionWorkPanel';
@@ -30,6 +31,7 @@ function ConstructionContent({ objectId, groupRef, requestRef, tab }: Constructi
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
+  const navInset = useNativeBottomNavInset();
   const allowed = hasPermission('construction.read');
   const [query, setQuery] = useState('');
   const [draft, setDraft] = useState('');
@@ -169,14 +171,14 @@ function ConstructionContent({ objectId, groupRef, requestRef, tab }: Constructi
       {content?.page?.cache?.state === 'stale' ? <Text style={mutedStyle}>Данные 1С могут быть устаревшими.</Text> : null}
     </>}
   </View>;
-  return <AccountScreenScaffold title={title} tokens={tokens} onBack={back} scroll={false}>
+  return <AccountScreenScaffold title={title} tokens={tokens} onBack={back} scroll={false} contentUnderNav>
     {tabs}
     <FlatList
       initialNumToRender={12}
       maxToRenderPerBatch={10}
       windowSize={7}
       data={allowed ? content?.page?.items || [] : []} keyExtractor={row => 'object_ref' in row ? row.object_ref : row.request_ref}
-      ListHeaderComponent={header} contentContainerStyle={{ gap: 12, paddingBottom: 16 }}
+      ListHeaderComponent={header} contentContainerStyle={{ gap: 12, paddingBottom: navInset + 16 }}
       refreshing={loading && Boolean(content)} onRefresh={allowed && !offlineMode ? refresh : undefined}
       renderItem={({ item }) => 'object_ref' in item ? <AccountSectionCard tokens={tokens}>
         {item.kind === 'project' ? <AccountActionRow tokens={tokens} icon="office-building-outline" label={item.name}

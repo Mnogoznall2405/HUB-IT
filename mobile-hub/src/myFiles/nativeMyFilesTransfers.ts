@@ -1,5 +1,5 @@
 import * as DocumentPicker from 'expo-document-picker';
-import { Directory, File, Paths } from 'expo-file-system';
+import { Directory, File, FileMode, Paths } from 'expo-file-system';
 import { Platform } from 'react-native';
 import HubitFolderZip from '../../modules/hubit-folder-zip';
 import { API_V1_BASE, HUB_WEB_ORIGIN } from '../api/config';
@@ -33,6 +33,17 @@ const UPLOAD_SESSION_CAPACITY_MAX_RETRIES = 40;
 const UPLOAD_SESSION_CAPACITY_FALLBACK_MS = 5_000;
 const UPLOAD_SESSION_CAPACITY_MAX_DELAY_MS = 15_000;
 const UPLOAD_RESUME_FILE_NAME = 'hubit-my-files-upload-resume.json';
+
+function readChunkBytes(source: File, offset: number, length: number): ArrayBuffer {
+  const handle = source.open(FileMode.ReadOnly);
+  try {
+    handle.offset = Math.max(0, Math.trunc(offset));
+    const bytes = handle.readBytes(Math.max(0, Math.trunc(length)));
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  } finally {
+    try { handle.close(); } catch { /* no-op */ }
+  }
+}
 
 export type NativeMyFileUpload = {
   uri: string;
@@ -97,7 +108,7 @@ export async function pickNativeMyFiles(): Promise<NativeMyFileUpload[]> {
     const size = Math.max(0, Number(asset.size || file.size || 0));
     const name = sanitizeNativeFileName(asset.name || file.name || 'file.bin');
     if (!file.exists || size <= 0) throw new Error(`Файл «${name}» пустой или недоступен`);
-    if (size > MY_FILES_MAX_FILE_BYTES) throw new Error(`Файл «${name}» превышает лимит 10 ГБ`);
+    if (size > MY_FILES_MAX_FILE_BYTES) throw new Error(`Файл «${name}» превышает лимит 400 ГБ`);
     return {
       uri: asset.uri,
       name,
@@ -119,7 +130,7 @@ export async function pickNativeMyFilesFolder(): Promise<NativeMyFileUpload | nu
   const size = Math.max(0, Number(asset.size || file.size || 0));
   const name = sanitizeNativeFileName(asset.name || `${asset.folderName || 'folder'}.zip`);
   if (!file.exists || size <= 0) throw new Error(`Архив «${name}» пустой или недоступен`);
-  if (size > MY_FILES_MAX_FILE_BYTES) throw new Error(`Архив «${name}» превышает лимит 10 ГБ`);
+  if (size > MY_FILES_MAX_FILE_BYTES) throw new Error(`Архив «${name}» превышает лимит 400 ГБ`);
   return {
     uri: asset.uri,
     name,
@@ -310,7 +321,7 @@ export async function uploadNativeMyFile(
   const source = new File(picked.uri);
   const actualSize = Math.max(0, Number(source.size || picked.size || 0));
   if (!source.exists || actualSize <= 0) throw new Error('Файл пустой или недоступен');
-  if (actualSize > MY_FILES_MAX_FILE_BYTES) throw new Error('Размер файла превышает лимит 10 ГБ');
+  if (actualSize > MY_FILES_MAX_FILE_BYTES) throw new Error('Размер файла превышает лимит 400 ГБ');
   const signal = options.signal;
   const safeName = sanitizeNativeFileName(picked.name);
   const mimeType = picked.mimeType || source.type || 'application/octet-stream';
@@ -338,7 +349,10 @@ export async function uploadNativeMyFile(
     emitUploadProgress(options.onProgress, uploadedBytes, actualSize);
     while (uploadedBytes < actualSize) {
       const chunkOffset = uploadedBytes;
-      const chunk = source.slice(chunkOffset, Math.min(actualSize, chunkOffset + chunkSizeBytes));
+      // File.slice() wraps bytes in an RN Blob whose ArrayBufferView parts are
+      // rejected by RN's BlobManager. A FileHandle range read + exact
+      // ArrayBuffer is what the RN XHR layer can actually send.
+      const chunk = readChunkBytes(source, chunkOffset, Math.min(chunkSizeBytes, actualSize - chunkOffset));
       let acknowledged = false;
       let lastError: unknown = null;
 
@@ -348,7 +362,7 @@ export async function uploadNativeMyFile(
             offset: chunkOffset,
             signal,
             onUploadProgress: (event) => {
-              const sent = Math.min(chunk.size, Number(event?.loaded || 0));
+              const sent = Math.min(chunk.byteLength, Number(event?.loaded || 0));
               emitUploadProgress(options.onProgress, chunkOffset + sent, actualSize);
             },
           });

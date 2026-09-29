@@ -1,8 +1,7 @@
 import { useContext } from 'react';
-import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaInsetsContext } from 'react-native-safe-area-context';
-import { ChatKeyboardAvoidingHost } from './ChatKeyboardAvoidingHost';
-import { useReducedMotion } from '../../accessibility/useReducedMotion';
+import { ChatBottomSheet } from './ChatBottomSheet';
 import type { NativePickedFile } from '../../files/nativeFilePicker';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
 
@@ -38,25 +37,17 @@ export function ChatAttachmentDraftSheet({
   onSend: () => void;
 }) {
   const { chatTokens, styles } = useChatStyles(createStyles);
-  const reduceMotion = useReducedMotion();
   const insets = useContext(SafeAreaInsetsContext);
   const progressText = progress == null ? '' : ` ${Math.round(progress * 100)}%`;
 
   return (
-    <Modal
+    <ChatBottomSheet
       visible={visible}
-      transparent
-      animationType={reduceMotion ? 'none' : 'slide'}
-      onRequestClose={busy ? undefined : onCancel}
+      onClose={busy ? () => {} : onCancel}
+      dismissAccessibilityLabel="Закрыть предпросмотр вложений"
+      avoidKeyboard
+      sheetStyle={[styles.sheet, { paddingBottom: Math.max(20, (insets?.bottom || 0) + 12) }]}
     >
-      <ChatKeyboardAvoidingHost style={styles.backdrop}>
-        <Pressable
-          style={StyleSheet.absoluteFill}
-          onPress={busy ? undefined : onCancel}
-          accessibilityRole="button"
-          accessibilityLabel="Закрыть предпросмотр вложений"
-        />
-        <View style={[styles.sheet, { paddingBottom: Math.max(20, (insets?.bottom || 0) + 12) }]} accessibilityViewIsModal>
           <View style={styles.header}>
             <Text style={styles.title}>{files.length > 1 ? `Выбрано файлов: ${files.length}` : 'Вложение'}</Text>
             <Pressable
@@ -121,22 +112,16 @@ export function ChatAttachmentDraftSheet({
           >
             <Text style={styles.sendText}>{busy ? `Отправляем${progressText}` : error ? 'Повторить' : 'Отправить'}</Text>
           </Pressable>
-        </View>
-      </ChatKeyboardAvoidingHost>
-    </Modal>
+    </ChatBottomSheet>
   );
 }
 
 const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
-  backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.44)' },
   sheet: {
     maxHeight: '78%',
     paddingHorizontal: 16,
     paddingTop: 12,
     paddingBottom: 20,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    backgroundColor: chatTokens.panelBg,
   },
   header: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   title: { color: chatTokens.textPrimary, fontSize: 17, fontWeight: '700' },

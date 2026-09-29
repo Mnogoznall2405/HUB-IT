@@ -94,6 +94,7 @@ export type ChatConversationSummary = {
   is_group?: boolean;
   is_pinned?: boolean;
   is_muted?: boolean;
+  muted_until?: string | null;
   is_archived?: boolean;
   pinned_message_id?: string | null;
   online_member_count?: number;
@@ -170,8 +171,16 @@ export type ChatMessage = {
   sender_user_id: number;
   conversation_seq?: number;
   client_message_id?: string | null;
-  kind?: 'text' | 'task_share' | 'file' | 'system';
+  kind?: 'text' | 'task_share' | 'file' | 'system' | 'location' | 'contact' | 'poll';
   body_format?: 'plain' | 'markdown';
+  poll?: {
+    question: string;
+    options: Array<{ text: string; votes: number }>;
+    anonymous?: boolean;
+    closed?: boolean;
+    total_voters: number;
+    my_option_index: number | null;
+  } | null;
   /** Normalized mobile field. The backend field is `body`. */
   body_text?: string | null;
   body?: string | null;
@@ -192,6 +201,7 @@ export type ChatMessage = {
     user_ids?: number[];
     reacted_by_me?: boolean;
   }>;
+  mentioned_user_ids?: number[];
   delivery_status?: 'sent' | 'read' | null;
   read_by_count?: number;
   reply_preview?: {

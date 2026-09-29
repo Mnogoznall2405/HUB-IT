@@ -58,6 +58,51 @@ describe('MessageActionsSheet reactions', () => {
   });
 });
 
+describe('MessageActionsSheet pending delivery actions', () => {
+  const failedMessage: ChatMessage = { ...message, local_status: 'failed' };
+
+  it('offers retry and delete for a failed message instead of regular actions', async () => {
+    const onRetry = jest.fn();
+    const onDiscardPending = jest.fn();
+    const onClose = jest.fn();
+    const view = await renderActions({
+      message: failedMessage, onRetry, onDiscardPending, onClose,
+    });
+
+    expect(view.queryByLabelText('Переслать')).toBeNull();
+    expect(view.queryByLabelText('Копировать текст')).toBeNull();
+    expect(view.queryByText('Для этого сообщения действия недоступны')).toBeNull();
+
+    await fireEvent.press(view.getByLabelText('Повторить'));
+    expect(onRetry).toHaveBeenCalledWith(failedMessage);
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    await fireEvent.press(view.getByLabelText('Удалить'));
+    expect(onDiscardPending).toHaveBeenCalledWith(failedMessage);
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it('offers queue removal for a message still waiting for connection', async () => {
+    const onDiscardPending = jest.fn();
+    const queuedMessage: ChatMessage = { ...message, local_status: 'failed' };
+    const view = await renderActions({ message: queuedMessage, onDiscardPending });
+
+    expect(view.queryByLabelText('Повторить')).toBeNull();
+    await fireEvent.press(view.getByLabelText('Убрать из очереди'));
+    expect(onDiscardPending).toHaveBeenCalledWith(queuedMessage);
+  });
+
+  it('does not offer discard for a message still sending', async () => {
+    const onDiscardPending = jest.fn();
+    const view = await renderActions({
+      message: { ...message, local_status: 'sending' },
+      onDiscardPending,
+    });
+    expect(view.queryByLabelText('Убрать из очереди')).toBeNull();
+    expect(view.queryByLabelText('Удалить')).toBeNull();
+  });
+});
+
 it('keeps all actions in a scrollable menu inside a keyboard-sized viewport', async () => {
   const view = await renderActions({ anchor: { x: 200, y: 650, width: 100, height: 70 } });
   await fireEvent(view.getByTestId('chat-message-actions-viewport'), 'layout', { nativeEvent: { layout: { width: 320, height: 260 } } });

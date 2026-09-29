@@ -3,6 +3,7 @@ import * as tokenStore from '../auth/tokenStore';
 import { syncNativePushToken } from '../notifications/nativePush';
 import { reconcileNativeBadge } from '../notifications/notificationBadge';
 import { drainPendingChatReplies } from '../notifications/pendingNotificationReplies';
+import { drainNativeChatOutboxInBackground } from '../chat/nativeChatBackgroundDrain';
 import { drainOfflineCommandQueue } from '../offline/offlineCommandQueue';
 import { refreshNativeReadCaches } from '../offline/nativeReadCacheRefresh';
 import { refreshStaleNativeOfflineData } from '../offline/nativeOfflineBackgroundRefresh';
@@ -30,6 +31,9 @@ jest.mock('../notifications/notificationActionFeedback', () => ({
   showReplySent: jest.fn(async () => undefined),
   showReplyFailed: jest.fn(async () => undefined),
 }));
+jest.mock('../chat/nativeChatBackgroundDrain', () => ({
+  drainNativeChatOutboxInBackground: jest.fn(async () => undefined),
+}));
 
 it('uses the active session owner and runs only safe background synchronization', async () => {
   jest.spyOn(tokenStore, 'getSessionUserId').mockResolvedValueOnce(7);
@@ -55,4 +59,18 @@ it('uses the active session owner and runs only safe background synchronization'
     permissions: ['address_book.read', 'database.read'],
     isAdmin: false,
   });
+  expect(drainNativeChatOutboxInBackground).not.toHaveBeenCalled();
+});
+
+it('drains the native chat outbox only when the session user may write chat', async () => {
+  jest.spyOn(tokenStore, 'getSessionUserId').mockResolvedValueOnce(7);
+  jest.spyOn(tokenStore, 'getCachedSessionUser').mockResolvedValueOnce({
+    id: 7,
+    username: 'mobile-test',
+    role: 'user',
+    permissions: ['chat.read', 'chat.write'],
+  });
+
+  await expect(runMobileBackgroundSync()).resolves.toBe(BackgroundTask.BackgroundTaskResult.Success);
+  expect(drainNativeChatOutboxInBackground).toHaveBeenCalledWith(7);
 });

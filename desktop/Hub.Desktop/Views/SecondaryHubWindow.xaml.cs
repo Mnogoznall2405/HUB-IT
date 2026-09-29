@@ -36,6 +36,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
     private readonly DesktopWindowController _windowController;
     private readonly DesktopWindowPlacementService _windowPlacement = new();
     private readonly DesktopWindowPlacement _initialPlacement;
+    private readonly DesktopPolicy _policy;
     private readonly DesktopPrintService _printing = new();
     private readonly DesktopTaskbarProgress _downloadTaskbarProgress = new();
     private readonly WebViewRecoveryPolicy _webViewRecovery = new();
@@ -52,6 +53,8 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
     private bool _requiresReset;
     private bool _recoveryInProgress;
     private bool _hardReloadInProgress;
+    private bool _screenCaptureProtectionApplied;
+    private bool _screenCaptureDeferredLogged;
 
     public SecondaryHubWindow(
         DesktopOptions options,
@@ -59,6 +62,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         DesktopWindowManager windowManager,
         IDesktopGlobalActions globalActions,
         DesktopDownloadCoordinator downloads,
+        DesktopPolicy policy,
         DesktopWebViewEnvironmentProvider environmentProvider,
         DesktopWindowPlacement initialPlacement,
         string? initialRoute)
@@ -68,6 +72,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         _windowManager = windowManager ?? throw new ArgumentNullException(nameof(windowManager));
         _globalActions = globalActions ?? throw new ArgumentNullException(nameof(globalActions));
         _downloads = downloads ?? throw new ArgumentNullException(nameof(downloads));
+        _policy = policy ?? throw new ArgumentNullException(nameof(policy));
         _initialPlacement = initialPlacement
             ?? throw new ArgumentNullException(nameof(initialPlacement));
         _lastSafeRoute = DesktopBridgeProtocol.IsValidInternalRoute(initialRoute)
@@ -314,6 +319,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
             {
                 HideError();
                 SaveLastSafeRoute(_webView?.CoreWebView2?.Source);
+                UpdateScreenCaptureProtection(_webView?.CoreWebView2?.Source);
                 return;
             }
 
@@ -332,8 +338,42 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         }
     }
 
-    private void Core_HistoryChanged(object? sender, object e) =>
-        SaveLastSafeRoute((sender as CoreWebView2)?.Source);
+    private void Core_HistoryChanged(object? sender, object e)
+    {
+        var source = (sender as CoreWebView2)?.Source;
+        SaveLastSafeRoute(source);
+        UpdateScreenCaptureProtection(source);
+    }
+
+    private void UpdateScreenCaptureProtection(string? source)
+    {
+        if (!_policy.ResolveScreenCaptureProtectionEnabled(defaultEnabled: true))
+        {
+            return;
+        }
+
+        var protect = DesktopScreenCaptureProtection.IsVaultSource(_options.BaseUri, source);
+        if (protect == _screenCaptureProtectionApplied)
+        {
+            return;
+        }
+
+        var applied = DesktopScreenCaptureProtection.TryApply(this, protect);
+        if (applied == true)
+        {
+            _screenCaptureProtectionApplied = protect;
+            _screenCaptureDeferredLogged = false;
+        }
+        else if (applied == false)
+        {
+            DesktopLog.Warning("Screen capture protection affinity could not be updated");
+        }
+        else if (!_screenCaptureDeferredLogged)
+        {
+            _screenCaptureDeferredLogged = true;
+            DesktopLog.Info("Screen capture protection deferred until the window handle is ready");
+        }
+    }
 
     private void Core_NewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs e)
     {

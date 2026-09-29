@@ -102,7 +102,8 @@ export type NativeModuleHref =
   | NativeGroupsAccessDestination
   | NativeWarehouse1CDestination
   | NativeMfuDestination
-  | NativeStatisticsDestination;
+  | NativeStatisticsDestination
+  | { pathname: '/(shell)/help' };
 
 function nativeRootFallback(pathname: string): NativeModuleHref {
   if (pathname === '/feed' || pathname.startsWith('/feed/')) return { pathname: '/(shell)/feed' };
@@ -149,6 +150,7 @@ export function hrefForPortalPath(
   if (pathname === '/dashboard') return { pathname: '/(shell)/dashboard' };
   if (pathname === '/menu') return { pathname: '/(shell)/menu' };
   if (pathname === '/address-book') return { pathname: '/(shell)/address-book' };
+  if (pathname === '/help' || pathname.startsWith('/help/')) return { pathname: '/(shell)/help' };
 
   const feedHref = nativeFeedDestinationFromPortalPath(normalized);
   if (feedHref) return feedHref;
@@ -301,6 +303,8 @@ function routePathFromHref(href: NativeModuleHref): string {
     const query = new URLSearchParams();
     if (href.params?.q) query.set('q', href.params.q);
     if (href.params?.mode) query.set('mode', href.params.mode);
+    if (href.params?.consumable) query.set('consumable', href.params.consumable);
+    if (href.params?.databaseId) query.set('db_id', href.params.databaseId);
     const suffix = query.toString();
     return `/database${suffix ? `?${suffix}` : ''}`;
   }
@@ -330,9 +334,17 @@ function routePathFromHref(href: NativeModuleHref): string {
   }
   if (href.pathname === '/(shell)/passwords') return '/passwords';
   if (href.pathname === '/(shell)/groups-access') return '/groups-access';
-  if (href.pathname === '/(shell)/warehouse-1c') return '/warehouse-1c';
+  if (href.pathname === '/(shell)/warehouse-1c') {
+    const query = new URLSearchParams();
+    if (href.params?.tab) query.set('tab', href.params.tab);
+    if (href.params?.nomenclatureRef) query.set('nomenclatureRef', href.params.nomenclatureRef);
+    if (href.params?.warehouseRef) query.set('warehouseRef', href.params.warehouseRef);
+    const suffix = query.toString();
+    return `/warehouse-1c${suffix ? `?${suffix}` : ''}`;
+  }
   if (href.pathname === '/(shell)/mfu') return '/mfu';
   if (href.pathname === '/(shell)/statistics') return '/statistics';
+  if (href.pathname === '/(shell)/help') return '/help';
   if (href.pathname === '/(shell)/chat') return '/chat';
   if (href.pathname === '/(shell)/chat/[conversationId]') {
     const query = href.params.messageId

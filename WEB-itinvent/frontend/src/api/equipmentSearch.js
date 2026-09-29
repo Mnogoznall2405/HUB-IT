@@ -8,9 +8,15 @@ export const equipmentSearchAPI = {
     return response.data;
   },
 
-  searchUniversal: async (query, page = 1, limit = 50) => {
+  searchUniversal: async (query, page = 1, limit = 50, { typeNo, field } = {}) => {
     const response = await apiClient.get('/equipment/search/universal', {
-      params: { q: query, page, limit },
+      params: {
+        q: query,
+        page,
+        limit,
+        ...(typeNo != null && typeNo !== '' ? { type_no: typeNo } : {}),
+        ...(field ? { field } : {}),
+      },
     });
     return response.data;
   },

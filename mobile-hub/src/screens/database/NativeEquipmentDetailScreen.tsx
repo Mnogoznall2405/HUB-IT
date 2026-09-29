@@ -41,6 +41,7 @@ import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
 import { NativeEquipmentActCard } from '../../components/database/NativeEquipmentActCard';
 import { NativeEquipmentActions } from '../../components/database/NativeEquipmentActions';
 import { NativeEquipmentWorkHistoryCard } from '../../components/database/NativeEquipmentWorkHistoryCard';
+import { NativeEmployeeCompareSheet } from '../../components/warehouse1c/NativeEmployeeCompareSheet';
 import { downloadEquipmentAct } from '../../database/nativeDatabaseFiles';
 import {
   equipmentLocation,
@@ -100,6 +101,7 @@ function EquipmentDetailContent() {
   const requestRef = useRef(0);
   const tabRequests = useRef(new Map<EquipmentDetailTab, number>());
   const canWrite = hasPermission('database.write');
+  const canViewWarehouse1C = hasPermission('warehouse_1c.read');
   const canDeleteEquipment = String(user?.role || '').trim().toLowerCase() === 'admin';
   const [tab, setTab] = useState<EquipmentDetailTab>(asDetailTab(first(params.tab)));
   const [databaseId, setDatabaseId] = useState(requestedDatabaseId);
@@ -126,6 +128,7 @@ function EquipmentDetailContent() {
   const [editStatuses, setEditStatuses] = useState<EquipmentStatusOption[]>([]);
   const [ownerQuery, setOwnerQuery] = useState('');
   const [ownerOptions, setOwnerOptions] = useState<EquipmentOwnerOption[]>([]);
+  const [employeeCompareOpen, setEmployeeCompareOpen] = useState(false);
 
   const applyCachedDetail = useCallback((snapshot: NativeEquipmentDetailSnapshot) => {
     setDatabaseId(snapshot.databaseId);
@@ -526,7 +529,26 @@ function EquipmentDetailContent() {
                 <AccountField tokens={tokens} label="Part number" value={equipment.part_no} />
               </AccountSectionCard>
               <AccountSectionCard tokens={tokens} title="Сотрудник и размещение">
-                <AccountField tokens={tokens} label="Сотрудник" value={equipmentOwner(equipment)} />
+                {canViewWarehouse1C && equipment.employee_name ? (
+                  <Pressable
+                    testID="native-equipment-employee-compare"
+                    accessibilityRole="button"
+                    accessibilityLabel={`Сотрудник: ${equipmentOwner(equipment)}. Открыть склад сотрудника в Хабе и 1С`}
+                    accessibilityState={{ disabled: offlineMode }}
+                    disabled={offlineMode}
+                    onPress={() => setEmployeeCompareOpen(true)}
+                    style={({ pressed }) => [styles.employeeCompareRow, { opacity: offlineMode ? 0.5 : pressed ? 0.75 : 1 }]}
+                  >
+                    <View style={styles.employeeCompareText}>
+                      <Text style={[styles.employeeCompareLabel, { color: tokens.textSecondary }]}>Сотрудник</Text>
+                      <Text style={[styles.employeeCompareValue, { color: tokens.textPrimary }]}>{equipmentOwner(equipment)}</Text>
+                      <Text style={[styles.employeeCompareHint, { color: tokens.primary }]}>Склад в Хабе и в 1С</Text>
+                    </View>
+                    <MaterialCommunityIcons name="chevron-right" size={20} color={tokens.iconMuted} />
+                  </Pressable>
+                ) : (
+                  <AccountField tokens={tokens} label="Сотрудник" value={equipmentOwner(equipment)} />
+                )}
                 <AccountField tokens={tokens} label="Размещение" value={equipmentLocation(equipment)} />
                 <AccountField tokens={tokens} label="E-mail" value={equipment.employee_email} />
               </AccountSectionCard>
@@ -748,6 +770,16 @@ function EquipmentDetailContent() {
           </ScrollView>
         </KeyboardAvoidingView>
       </Modal>
+      <NativeEmployeeCompareSheet
+        visible={employeeCompareOpen}
+        ownerNo={equipment?.empl_no ?? null}
+        employeeName={equipment?.employee_name || ''}
+        databaseId={databaseId}
+        canViewWarehouse1C={canViewWarehouse1C}
+        offline={offlineMode}
+        tokens={tokens}
+        onClose={() => setEmployeeCompareOpen(false)}
+      />
     </AccountScreenScaffold>
   );
 }
@@ -795,6 +827,11 @@ function EmptyTab({ tokens, label, onRetry }: { tokens: ReturnType<typeof useFlu
 
 const styles = StyleSheet.create({
   headerAction: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  employeeCompareRow: { minHeight: 48, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  employeeCompareText: { flex: 1, minWidth: 0 },
+  employeeCompareLabel: { fontSize: 12, fontWeight: '600' },
+  employeeCompareValue: { marginTop: 2, fontSize: 15, fontWeight: '700' },
+  employeeCompareHint: { marginTop: 2, fontSize: 12, fontWeight: '700' },
   warning: { fontSize: 12, lineHeight: 17, fontWeight: '700' },
   error: { fontSize: 12, lineHeight: 17, fontWeight: '700' },
   workNotice: { marginBottom: 8, fontSize: 12, lineHeight: 17, fontWeight: '600' },

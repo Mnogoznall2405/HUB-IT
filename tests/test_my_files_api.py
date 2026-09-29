@@ -195,6 +195,7 @@ class FakeMyFilesService:
         retention_days: int,
         folder_id: str | None = None,
         meta=None,
+        reuse_existing: bool = False,
     ):
         self.upload = {
             "actor_id": actor.id,

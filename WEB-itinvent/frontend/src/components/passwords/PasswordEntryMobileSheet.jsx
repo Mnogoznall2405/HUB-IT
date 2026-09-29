@@ -10,6 +10,8 @@ export default function PasswordEntryMobileSheet({
   revealed = '',
   revealBusy = false,
   canWrite = false,
+  watermark = '',
+  revealRemainingMs = 0,
   onClose,
   onCopyPassword,
   onCopyLogin,
@@ -48,6 +50,8 @@ export default function PasswordEntryMobileSheet({
           revealed={revealed}
           revealBusy={revealBusy}
           canWrite={canWrite}
+          watermark={watermark}
+          revealRemainingMs={revealRemainingMs}
           compact
           onCopyPassword={onCopyPassword}
           onCopyLogin={onCopyLogin}

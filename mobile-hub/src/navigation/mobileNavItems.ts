@@ -58,6 +58,7 @@ export const navigationItems: MobileNavItem[] = [
   ...whenNative(NATIVE_SCAN_CENTER_ENABLED, { path: '/scan-center', label: 'Scan Center', shortLabel: 'Scan', icon: 'shield-search', permission: 'scan.read', group: 'tools' }),
   ...whenNative(NATIVE_WAREHOUSE_1C_ENABLED, { path: '/warehouse-1c', label: 'Склад 1С', shortLabel: 'Склад 1С', icon: 'package-variant-closed', permission: 'warehouse_1c.read', group: 'tools' }),
   ...whenNative(NATIVE_STATISTICS_ENABLED, { path: '/statistics', label: 'Статистика', shortLabel: 'Статистика', icon: 'chart-bar', permission: 'statistics.read', group: 'tools' }),
+  { path: '/help', label: 'Справка', shortLabel: 'Справка', icon: 'help-circle-outline', permission: 'kb.read', group: 'tools' },
 ];
 
 export const mobileMenuNavigationItem: MobileNavItem = {
@@ -129,9 +130,13 @@ export function resolveMobileNavigationItems({
     }
   };
 
-  (Array.isArray(selectedPaths) ? selectedPaths : DEFAULT_MOBILE_BOTTOM_NAV_ITEMS).forEach(addVisiblePath);
-  DEFAULT_MOBILE_BOTTOM_NAV_ITEMS.forEach(addVisiblePath);
-  visibleItems.forEach((item) => addVisiblePath(item.path));
+  (Array.isArray(selectedPaths) ? selectedPaths : []).forEach(addVisiblePath);
+  // Backfill defaults only when no valid selection was stored, so a saved
+  // selection does not resurrect removed items like "Главная".
+  if (selectedPathSet.size === 0) {
+    DEFAULT_MOBILE_BOTTOM_NAV_ITEMS.forEach(addVisiblePath);
+    visibleItems.forEach((item) => addVisiblePath(item.path));
+  }
 
   return [
     ...visibleItems.filter((item) => selectedPathSet.has(item.path)).slice(0, 4),

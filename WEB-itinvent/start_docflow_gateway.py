@@ -28,8 +28,19 @@ os.environ["DOCFLOW_GATEWAY_PROCESS"] = "1"
 
 import uvicorn
 
+try:
+    from shared.port_reclaim import reclaim_port_from_stale_sibling
+except Exception:
+    reclaim_port_from_stale_sibling = None
+
 
 if __name__ == "__main__":
+    if reclaim_port_from_stale_sibling is not None:
+        reclaim_port_from_stale_sibling(
+            str(os.getenv("DOCFLOW_GATEWAY_HOST", "127.0.0.1") or "127.0.0.1"),
+            int(os.getenv("DOCFLOW_GATEWAY_PORT", "8013") or 8013),
+            "start_docflow_gateway.py",
+        )
     uvicorn.run(
         "backend.internal_docflow_gateway:app",
         host=str(os.getenv("DOCFLOW_GATEWAY_HOST", "127.0.0.1") or "127.0.0.1"),

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Image,
   Keyboard,
-  KeyboardAvoidingView,
   Platform,
   Pressable,
   StyleSheet,
@@ -15,12 +16,15 @@ import {
   type NativeSyntheticEvent,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { KeyboardStickyView, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
+import Animated, { useAnimatedStyle } from 'react-native-reanimated';
 import { router } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import * as chatApi from '../../api/chatApi';
 import { HUB_WEB_ORIGIN } from '../../api/config';
 import { formatApiError } from '../../api/formatError';
 import { recordDiagnosticEvent } from '../../diagnostics/diagnostics';
+import { markChatSend } from '../../diagnostics/chatSendTiming';
 import type {
   ChatAiBot,
   ChatAttachment,
@@ -53,7 +57,6 @@ import {
   shouldRequestBottomAnchor,
   shouldUseMaintainVisibleContentPosition,
 } from '../../chat/chatListAnchor';
-import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
 import { useChatKeyboardMotion } from '../../chat/useChatKeyboardMotion';
 import {
   getActiveNativeChatConversationId,
@@ -62,11 +65,11 @@ import {
   subscribeNativeChatConversationRead,
 } from '../../chat/chatActiveConversation';
 import { nextChatThreadBackAction } from '../../chat/chatGestures';
+import { findUnreadMentionMessageId } from '../../chat/chatMentions';
 import { detectChatBodyFormat } from '../../chat/chatMarkdown';
 import { shouldShowSenderAvatarsForKind } from '../../chat/chatBubbleLayout';
 import { downloadGifToCache, type ChatGifItem } from '../../chat/chatGiphy';
 import { getRecentStickerIds, rememberRecentSticker } from '../../chat/chatStickers';
-import { AttachmentPickerSheet } from '../../components/chat/AttachmentPickerSheet';
 import { ChatAttachmentDraftSheet } from '../../components/chat/ChatAttachmentDraftSheet';
 import type { ChatAttachmentTransfer } from '../../components/chat/ChatDocumentAttachment';
 import {
@@ -103,6 +106,22 @@ import {
 import { useNativeChatDraftAutosave } from '../../chat/useNativeChatDraftAutosave';
 import { createNativeChatOutbox, getNativeChatQueueState } from '../../chat/nativeChatOutbox';
 import { useNativeChatOutboxMessages } from '../../chat/useNativeChatOutboxMessages';
+import { setChatAttachmentTransfer, syncChatAttachmentTransfers } from '../../chat/nativeChatAttachmentTransfers';
+import { useThreadSelection } from './useThreadSelection';
+import { useThreadForward } from './useThreadForward';
+import { useThreadComposerState } from './useThreadComposerState';
+import { useThreadHistory } from './useThreadHistory';
+import { useThreadSend } from './useThreadSend';
+import { useThreadRealtime } from './useThreadRealtime';
+import { useThreadSheets } from './useThreadSheets';
+import { useThreadMessageActions } from './useThreadMessageActions';
+import { useThreadAttachments } from './useThreadAttachments';
+import { useThreadSearch } from './useThreadSearch';
+import { useThreadScrollAnchor } from './useThreadScrollAnchor';
+import { useThreadBack } from './useThreadBack';
+import { useThreadRender } from './useThreadRender';
+import { ChatThreadOverlays } from './ChatThreadOverlays';
+import { NativeToastHost, showNativeToast } from '../../components/nativeToast';
 import { useUnsavedFormGuard } from '../../navigation/useUnsavedFormGuard';
 import { getPinnedChatMessageId, setPinnedChatMessageId } from '../../chat/chatPinnedMessages';
 import {
@@ -122,10 +141,13 @@ import { ChatParticipantProfileSheet } from '../../components/chat/ChatParticipa
 import { ChatEmojiPickerSheet } from '../../components/chat/ChatEmojiPickerSheet';
 import { ChatMemberPickerSheet, ChatRenameSheet } from '../../components/chat/ChatGroupEditSheets';
 import { ChatHeader } from '../../components/chat/ChatHeader';
+import { TypingDots } from '../../components/chat/TypingDots';
+import { ChatJumpToBottomButton } from '../../components/chat/ChatJumpToBottomButton';
+import { ChatThreadSkeleton } from '../../components/chat/ChatListSkeleton';
 import { ChatMediaViewer } from '../../components/chat/ChatMediaViewer';
 import { ChatAttachmentActionsSheet } from '../../components/chat/ChatAttachmentActionsSheet';
 import { ChatSelectionHeader } from '../../components/chat/ChatSelectionHeader';
-import { EdgeBackSwipeOverlay } from '../../components/chat/EdgeBackSwipeOverlay';
+import { ChatInteractiveBackGesture } from '../../components/chat/ChatInteractiveBackGesture';
 import {
   ChatMentionSuggestions,
   getTrailingMentionQuery,
@@ -165,7 +187,7 @@ function createClientMessageId(): string {
   return `mobile-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
-type PendingAttachmentUpload = {
+export type PendingAttachmentUpload = {
   files: NativePickedFile[];
   mediaKind?: PendingAttachmentMediaKind;
   durationSeconds?: number;
@@ -174,7 +196,7 @@ type PendingAttachmentUpload = {
   replyPreview?: ChatMessage['reply_preview'];
 };
 
-type FailedAttachmentAction = {
+export type FailedAttachmentAction = {
   messageId: string;
   attachment: ChatAttachment;
   action: 'open' | 'share' | 'save';
@@ -183,6 +205,7 @@ type FailedAttachmentAction = {
 type ChatThreadSnapshot = NativeChatThreadSnapshot;
 
 const CHAT_LIST_MAINTAIN_VISIBLE_POSITION = { minIndexForVisible: 0 };
+const CHAT_LIST_VIEWABILITY_CONFIG = { itemVisiblePercentThreshold: 10 };
 
 function chatMessageKey(message: ChatMessage): string {
   return chatMessageMotionKey(message);
@@ -212,7 +235,7 @@ export function NativeChatThreadScreen({
   const styles = useMemo(() => createStyles(chatTokens), [chatTokens]);
   const { user, hasPermission, offlineMode } = useAuth();
   const historySessionGeneration = useMemo(() => getNativeChatThreadHistoryGeneration(), [user?.id]);
-  const loadedThreadScopeRef = useRef('');
+
   const [conversation, setConversation] = useState<ChatConversationSummary | null>(null);
   const aiAccess = useAiAgentAccess(conversationId, conversation?.id === conversationId && isAiConversation(conversation), user?.id, offlineMode);
   const canCompose = hasPermission('chat.write') && aiAccess.allowed;
@@ -221,8 +244,13 @@ export function NativeChatThreadScreen({
   const reduceMotionRef = useRef(reduceMotion);
   reduceMotionRef.current = reduceMotion;
   useChatKeyboardMotion();
-  const [voiceRecording, setVoiceRecording] = useState(false);
-  const cancelVoiceRef = useRef<(() => void) | null>(null);
+  // Single keyboard mechanism (RV1-5): the window does not resize under
+  // edge-to-edge, so the composer rides the keyboard via KeyboardStickyView
+  // and the list is padded on the UI thread by the same animation.
+  const { height: keyboardHeight } = useReanimatedKeyboardAnimation();
+  const listKeyboardStyle = useAnimatedStyle(() => ({
+    paddingBottom: -keyboardHeight.value,
+  }));
   const mountedRef = useRef(true);
   const sendScope = useMemo(() => Symbol('chat-send-scope'), [conversationId, user?.id, canCompose]);
   const currentSendScopeRef = useRef(sendScope);
@@ -230,159 +258,107 @@ export function NativeChatThreadScreen({
   const isCurrentSendScope = useCallback(() => mountedRef.current && canCompose && currentSendScopeRef.current === sendScope, [canCompose, sendScope]);
   const serverPinKnownRef = useRef(false);
   const listRef = useRef<FlatList<ChatMessage>>(null);
-  const loadingOlderRef = useRef(false);
-  const loadingNewerRef = useRef(false);
+
   const nearBottomRef = useRef(!messageId);
   const markedReadRef = useRef('');
   const knownMessageIdsRef = useRef(new Set<string>());
   const messageEnterMotionsRef = useRef(new Map<string, ChatMessageEnterKind>());
   const messageAnimationReadyRef = useRef(false);
-  const [draftHydrated, setDraftHydrated] = useState(false);
-  const [draftError, setDraftError] = useState('');
   const outboxTitleRef = useRef('Диалог');
   const outbox = useMemo(() => createNativeChatOutbox(Number(user?.id || 0), conversationId, () => outboxTitleRef.current), [user?.id, conversationId]);
-  const textRevisionRef = useRef(0);
-  const draftBeforeEditRef = useRef('');
   const pendingBottomAnchorRef = useRef(false);
   const pendingAnchorAnimatedRef = useRef(false);
   const pendingAnchorGenerationRef = useRef(0);
   const pendingAnchorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const connectedOnceRef = useRef(chatSocket.getStatus() === 'connected');
-  const reconnectSyncRef = useRef<number | null>(null);
-  const mediaManifestGenerationRef = useRef(0);
-  const mediaManifestLoadingRef = useRef(false);
-  const mediaManifestHasMoreRef = useRef(false);
-  const mediaManifestCursorRef = useRef<string | null>(null);
-  const mediaManifestKindRef = useRef<'image' | 'video'>('image');
-  const attachmentDraftClientMessageIdRef = useRef('');
+
   const pendingAttachmentUploadsRef = useRef(new Map<string, PendingAttachmentUpload>());
   const uploadControllersRef = useRef(new Map<string, AbortController>());
   const downloadControllersRef = useRef(new Map<string, AbortController>());
-  const failedAttachmentActionsRef = useRef(new Map<string, FailedAttachmentAction>());
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
   const markReadRef = useRef<(latest?: ChatMessage | null) => void>(() => undefined);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [title, setTitle] = useState('Chat');
   outboxTitleRef.current = title === 'Chat' ? 'Диалог' : title;
-  const [text, setTextState] = useState('');
-  const setText = useCallback((value: string | ((previous: string) => string)) => {
-    textRevisionRef.current += 1;
-    setTextState(value);
-  }, []);
+  const composerState = useThreadComposerState({
+    conversationId,
+    userId: user?.id,
+    canWrite,
+    offlineMode,
+    sendScope,
+    messages,
+  });
+  const {
+    draftHydrated,
+    draftError,
+    setDraftError,
+    text,
+    setText,
+    setTextState,
+    textRevisionRef,
+    draftBeforeEditRef,
+    composerMode,
+    setComposerMode,
+    pendingComposerSendRef,
+    attachmentDraftSendRef,
+    composerBusy,
+    composerBusyRef,
+    setComposerBusy,
+    attachmentPickerVisible,
+    setAttachmentPickerVisible,
+    attachmentDraftFiles,
+    setAttachmentDraftFiles,
+    attachmentDraftError,
+    setAttachmentDraftError,
+    imageEditorFile,
+    setImageEditorFile,
+    voiceRecording,
+    cancelVoiceRef,
+    typingIdleRef,
+    typingActiveRef,
+    stopOutgoingTyping,
+    handleComposerText,
+    mentionQuery,
+    startReply,
+    startEdit,
+    cancelComposerMode,
+    handleVoiceRecordingChange,
+  } = composerState;
   const [actionMessage, setActionMessage] = useState<ChatMessage | null>(null);
   const [actionAnchor, setActionAnchor] = useState<ChatMenuAnchor | null>(null);
   const [aiBots, setAiBots] = useState<ChatAiBot[]>([]);
-  const [composerMode, setComposerModeState] = useState<{
-    type: 'reply' | 'edit';
-    message: ChatMessage;
-  } | null>(null);
-  const setComposerMode = useCallback((value: typeof composerMode) => {
-    textRevisionRef.current += 1;
-    setComposerModeState(value);
-  }, []);
-  useEffect(() => {
-    if (!composerMode || composerMode.message.is_deleted) return;
-    const source = messages.find((message) => message.id === composerMode.message.id);
-    if (!source?.is_deleted) return;
-    setComposerMode({ ...composerMode, message: { ...composerMode.message, is_deleted: true, body_text: 'Сообщение удалено' } });
-  }, [composerMode, messages, setComposerMode]);
-  const pendingComposerSendRef = useRef<symbol | null>(null);
-  const attachmentDraftSendRef = useRef(false);
-  const [composerBusy, updateComposerBusy] = useState(false);
-  const composerBusyRef = useRef(false);
-  const setComposerBusy = useCallback((value: boolean) => {
-    composerBusyRef.current = value;
-    updateComposerBusy(value);
-  }, []);
-  useEffect(() => { setComposerBusy(false); }, [sendScope, setComposerBusy]);
-  const [attachmentPickerVisible, setAttachmentPickerVisible] = useState(false);
-  const [attachmentDraftFiles, setAttachmentDraftFilesState] = useState<NativePickedFile[]>([]);
-  const setAttachmentDraftFiles = useCallback((files: NativePickedFile[] | ((current: NativePickedFile[]) => NativePickedFile[])) => {
-    textRevisionRef.current += 1;
-    setAttachmentDraftFilesState(files);
-  }, []);
-  const [attachmentDraftError, setAttachmentDraftError] = useState('');
-  const [imageEditorFile, setImageEditorFile] = useState<NativePickedFile | null>(null);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<ChatMessage[]>([]);
-  const [searching, setSearching] = useState(false);
-  const [searchCompleted, setSearchCompleted] = useState(false);
-  const searchRequestRef = useRef(0);
-  useEffect(() => {
-    searchRequestRef.current += 1;
-    setSearching(false);
-    return () => { searchRequestRef.current += 1; };
-  }, [searchQuery, searchOpen, offlineMode, conversationId, user?.id]);
-  useEffect(() => {
-    setSearchOpen(false);
-    setSearchQuery('');
-    setSearchResults([]);
-    setSearchCompleted(false);
-  }, [conversationId, user?.id]);
-  const [forwardSource, setForwardSource] = useState<ChatMessage | null>(null);
-  const [forwardQueue, setForwardQueue] = useState<ChatMessage[]>([]);
-  const [forwardConversations, setForwardConversations] = useState<ChatConversationSummary[]>([]);
-  const [forwarding, setForwarding] = useState(false);
-  const forwardInFlightRef = useRef(false);
-  const [forwardProgress, setForwardProgress] = useState<{ target: ChatConversationSummary; completed: number; total: number } | null>(null);
-  const [forwardError, setForwardError] = useState('');
-  useEffect(() => {
-    forwardInFlightRef.current = false;
-    setForwarding(false);
-    setForwardSource(null);
-    setForwardQueue([]);
-    setForwardProgress(null);
-    setForwardError('');
-  }, [sendScope]);
   const [attachmentTransfers, setAttachmentTransfers] = useState<Record<string, ChatAttachmentTransfer>>({});
   const attachmentTransfersRef = useRef<Record<string, ChatAttachmentTransfer>>({});
   attachmentTransfersRef.current = attachmentTransfers;
+  // Coarse status transitions mirror into the per-attachment external store;
+  // progress ticks bypass this state entirely and only rerender their row.
+  useEffect(() => { syncChatAttachmentTransfers(attachmentTransfers); }, [attachmentTransfers]);
   const [unreadBoundaryId, setUnreadBoundaryId] = useState<string | null>(null);
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const [newMessageCount, setNewMessageCount] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [threadHydrated, setThreadHydrated] = useState(false);
-  const [historyUnavailableOffline, setHistoryUnavailableOffline] = useState(false);
-  const [loadingOlder, setLoadingOlder] = useState(false);
-  const [hasNewer, setHasNewer] = useState(false);
-  const [newerCursor, setNewerCursor] = useState<string | null>(null);
-  const [hasOlder, setHasOlder] = useState(false);
-  const [olderCursor, setOlderCursor] = useState<string | null>(null);
   const [focusAnchorId, setFocusAnchorId] = useState<string | null>(messageId || null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
-  const [error, setError] = useState('');
-  const [status, setStatus] = useState<ChatSocketStatus>(chatSocket.getStatus());
-  const [infoVisible, setInfoVisible] = useState(false);
-  useEffect(() => { setInfoVisible(false); }, [conversationId, user?.id]);
-  const [profileMember, setProfileMember] = useState<ChatMember | null>(null);
-  const [conversationBusy, setConversationBusy] = useState(false);
-  const [renameVisible, setRenameVisible] = useState(false);
-  const [memberPickerVisible, setMemberPickerVisible] = useState(false);
-  const [chatUsers, setChatUsers] = useState<ChatUserSummary[]>([]);
-  const [taskPickerVisible, setTaskPickerVisible] = useState(false);
-  const [shareableTasks, setShareableTasks] = useState<ChatTaskPreview[]>([]);
-  const [taskPickerLoading, setTaskPickerLoading] = useState(false);
-  const [stickerPickerVisible, setStickerPickerVisible] = useState(false);
-  const [stickerPacks, setStickerPacks] = useState<ChatStickerPack[]>([]);
-  const [stickerPickerLoading, setStickerPickerLoading] = useState(false);
-  const [stickerImporting, setStickerImporting] = useState(false);
-  const [recentStickerIds, setRecentStickerIds] = useState<string[]>([]);
   const [pinnedMessageId, setPinnedMessageId] = useState<string | null>(null);
-  const [emojiPickerVisible, setEmojiPickerVisible] = useState(false);
-  const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
-  const [mediaViewer, setMediaViewer] = useState<ChatMediaItem | null>(null);
-  const [mediaViewerItems, setMediaViewerItems] = useState<ChatMediaItem[] | null>(null);
-  const [attachmentActionTarget, setAttachmentActionTarget] = useState<{
-    message: ChatMessage;
-    attachment: ChatAttachment;
-  } | null>(null);
-  const [typingParticipants, setTypingParticipants] = useState<Array<{ userId: number; name: string }>>([]);
+  const selection = useThreadSelection({
+    conversationId,
+    conversationKind: conversation?.kind,
+    userId: user?.id,
+    mountedRef,
+    messages,
+    setActionMessage,
+    setMessages,
+  });
+  const {
+    selectedMessageIds,
+    selectedMessages,
+    clearSelection,
+    startSelection,
+    toggleSelection,
+    copySelected,
+    deleteSelected,
+    setSelectedMessageIds,
+  } = selection;
   const [holdVisiblePosition, setHoldVisiblePosition] = useState(false);
-  const typingIdleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const typingActiveRef = useRef(false);
-  const incomingTypingTimeoutsRef = useRef(new Map<number, ReturnType<typeof setTimeout>>());
 
   const draftAutosave = useNativeChatDraftAutosave(
     Number(user?.id || 0), conversationId, text,
@@ -406,37 +382,6 @@ export function NativeChatThreadScreen({
   const leaveInFlightRef = useRef(false);
   useNativeChatOutboxMessages(outbox, Number(user?.id || 0), conversationId,
     setMessages, pendingAttachmentUploadsRef, setAttachmentTransfers, canWrite);
-  const loadGenerationRef = useRef(0);
-  const historyNavigationRef = useRef(0);
-  const accumulatedMessagesRef = useRef<ChatMessage[]>([]);
-  const historyMayHaveGapsRef = useRef(false);
-  const leaveThread = useCallback(() => {
-    if (leaveInFlightRef.current) return;
-    requestLeave(() => {
-      if (leaveInFlightRef.current || !mountedRef.current) return;
-      leaveInFlightRef.current = true;
-      const latest = findLatestIncomingMessage(messagesRef.current, user?.id);
-      notifyNativeChatConversationRead(conversationId);
-      Keyboard.dismiss();
-      if (router.canGoBack?.()) router.back();
-      else router.replace('/(shell)/chat');
-      if (!offlineMode && latest?.id) {
-        void chatApi.markConversationRead(conversationId, latest.id).catch(() => undefined);
-      }
-    });
-  }, [conversationId, offlineMode, requestLeave, user?.id]);
-
-  useEffect(() => {
-    leaveInFlightRef.current = false;
-    loadGenerationRef.current += 1;
-    accumulatedMessagesRef.current = [];
-    historyMayHaveGapsRef.current = false;
-    loadedThreadScopeRef.current = '';
-    setThreadHydrated(false);
-    setMessages([]);
-    setConversation(null);
-    setTitle('Chat');
-  }, [conversationId, user?.id]);
 
   const anchorToBottom = useCallback((animated = false, complete = false) => {
     listRef.current?.scrollToOffset({ offset: 0, animated });
@@ -463,68 +408,30 @@ export function NativeChatThreadScreen({
     }, 320);
   }, [anchorToBottom]);
 
-  useEffect(() => {
-    setDraftHydrated(false);
-    setDraftError('');
-    const initialRevision = textRevisionRef.current;
-    let active = true;
-    const userId = Number(user?.id || 0);
-    if (!userId) return () => { active = false; };
-    void getNativeChatDraftState(userId, conversationId).then((draft) => {
-      if (!active) return;
-      if (textRevisionRef.current === initialRevision) {
-        setTextState(draft?.text || '');
-        setComposerMode(draft?.context?.mode || null);
-        draftBeforeEditRef.current = draft?.context?.beforeEditText || '';
-        setAttachmentDraftFiles(draft?.context?.files || []);
-      }
-      setDraftHydrated(true);
-    }).catch(() => {
-      if (active) setDraftError('Не удалось прочитать черновик. Откройте диалог снова, чтобы повторить.');
-    });
-    return () => { active = false; };
-  }, [conversationId, user?.id]);
-
-  const stopOutgoingTyping = useCallback(() => {
-    if (typingIdleRef.current) {
-      clearTimeout(typingIdleRef.current);
-      typingIdleRef.current = null;
-    }
-    if (typingActiveRef.current) {
-      typingActiveRef.current = false;
-      chatSocket.sendTyping(conversationId, false);
-    }
-  }, [conversationId]);
-
-  const handleComposerText = useCallback((value: string) => {
-    setText(value);
-    if (!canWrite || composerMode?.type === 'edit') return;
-    if (!value.trim()) {
-      stopOutgoingTyping();
-      return;
-    }
-    if (!typingActiveRef.current) {
-      typingActiveRef.current = true;
-      chatSocket.sendTyping(conversationId, true);
-    }
-    if (typingIdleRef.current) clearTimeout(typingIdleRef.current);
-    typingIdleRef.current = setTimeout(() => {
-      typingActiveRef.current = false;
-      chatSocket.sendTyping(conversationId, false);
-      typingIdleRef.current = null;
-    }, 2000);
-  }, [canWrite, composerMode?.type, conversationId, stopOutgoingTyping]);
-
-  const mentionQuery = useMemo(() => getTrailingMentionQuery(text), [text]);
-
-  useEffect(() => {
-    if (mentionQuery === null || chatUsers.length) return;
-    let active = true;
-    void chatApi.getChatUsers().then((users) => {
-      if (active) setChatUsers(users);
-    }).catch(() => undefined);
-    return () => { active = false; };
-  }, [chatUsers.length, mentionQuery]);
+  const forward = useThreadForward({
+    conversationId,
+    sendScope,
+    isCurrentSendScope,
+    userId: user?.id,
+    requestBottomAnchor,
+    setMessages,
+    setSelectedMessageIds,
+  });
+  const {
+    forwardSource,
+    forwardQueue,
+    forwardConversations,
+    forwarding,
+    forwardProgress,
+    forwardError,
+    forwardInFlightRef,
+    openForward,
+    forwardToConversation,
+    setForwardSource,
+    setForwardQueue,
+    setForwardProgress,
+    setForwardError,
+  } = forward;
 
   useEffect(() => {
     let active = true;
@@ -576,2048 +483,411 @@ export function NativeChatThreadScreen({
     };
   }, [conversationId]);
 
-  const loadInitial = useCallback(async () => {
-    const generation = ++loadGenerationRef.current;
-    historyNavigationRef.current += 1;
-    loadingOlderRef.current = false;
-    loadingNewerRef.current = false;
-    setLoadingOlder(false);
-    const scopeUserId = Number(user?.id || 0);
-    const scopeConversationId = conversationId;
-    const isCurrentLoad = () => (
-      mountedRef.current
-      && loadGenerationRef.current === generation
-      && Number(user?.id || 0) === scopeUserId
-      && conversationId === scopeConversationId
-    );
-    messageAnimationReadyRef.current = false;
-    setLoading(true);
-    setError('');
-    setHistoryUnavailableOffline(false);
-    let hadCachedSnapshot = false;
-    let loadedLiveMessages = false;
-    try {
-      const userId = scopeUserId;
-      const cached = userId
-        ? await readNativeEntitySnapshot<ChatThreadSnapshot>(
-          'chat-thread-details',
-          userId,
-          conversationId,
-          Number.MAX_SAFE_INTEGER,
-        )
-        : null;
-      if (!isCurrentLoad()) return;
-      if (cached) {
-        hadCachedSnapshot = true;
-        const normalized = mergeMessages([], cached.data.messages || [], user?.id);
-        accumulatedMessagesRef.current = normalized;
-        historyMayHaveGapsRef.current = Boolean(cached.data.historyMayHaveGaps);
-        knownMessageIdsRef.current = new Set(normalized.map((entry) => entry.id));
-        setMessages((current) => mergeMessages(normalized, current, user?.id));
-        setConversation(cached.data.conversation || null);
-        setTitle(cached.data.title || cached.data.conversation?.title || 'Chat');
-        setHasOlder(Boolean(cached.data.hasOlder));
-        setOlderCursor(cached.data.olderCursor || null);
-        setHasNewer(Boolean(cached.data.hasNewer));
-        setNewerCursor(cached.data.newerCursor || null);
-        setUnreadBoundaryId(cached.data.unreadBoundaryId || null);
-        setFocusAnchorId(messageId || cached.data.focusAnchorId || null);
-        setPinnedMessageId(cached.data.pinnedMessageId || null);
-        nearBottomRef.current = !cached.data.hasNewer;
-        setShowJumpToBottom(Boolean(cached.data.hasNewer));
-        setNewMessageCount(0);
-        messageAnimationReadyRef.current = true;
-        loadedThreadScopeRef.current = JSON.stringify([scopeUserId, scopeConversationId]);
-        setThreadHydrated(true);
-        setLoading(false);
-      }
-      try {
-        const queued = await outbox.read();
-        const uploads = await outbox.readUploads();
-        if (!isCurrentLoad()) return;
-        uploads.forEach(({ id, upload }) => pendingAttachmentUploadsRef.current.set(id, upload));
-        setMessages((current) => {
-          const merged = mergeMessages(queued, current, userId);
-          accumulatedMessagesRef.current = mergeNativeChatThreadHistory(
-            accumulatedMessagesRef.current,
-            merged,
-            userId,
-          );
-          return merged;
-        });
-      } catch {
-        if (isCurrentLoad()) setDraftError('Не удалось восстановить исходящие сообщения. Откройте диалог снова, чтобы повторить.');
-      }
-      if (offlineMode) {
-        if (!hadCachedSnapshot && isCurrentLoad()) {
-          setHistoryUnavailableOffline(true);
-        }
-        return;
-      }
-
-      const conversationResultPromise = chatApi.getConversation(conversationId).then(
-        (value) => ({ value, error: null as unknown }),
-        (error: unknown) => ({ value: null, error }),
-      );
-      const page = messageId
-        ? await chatApi.getThreadBootstrap(conversationId, {
-          focusMessageId: messageId,
-          limit: 80,
-          lightweight: false,
-        })
-        : await chatApi.getMessagesPage(conversationId, { limit: 80 });
-      if (!isCurrentLoad()) return;
-      loadedLiveMessages = true;
-      const normalized = mergeMessages([], page.items, user?.id);
-      void outbox.acknowledge(normalized).catch(() => undefined);
-      setMessages((current) => {
-        const merged = mergeMessages(current, normalized, user?.id);
-        knownMessageIdsRef.current = new Set(merged.map((entry) => entry.id));
-        accumulatedMessagesRef.current = mergeNativeChatThreadHistory(
-          accumulatedMessagesRef.current,
-          merged,
-          user?.id,
-        );
-        historyMayHaveGapsRef.current = Boolean(page.has_older || page.has_newer || historyMayHaveGapsRef.current);
-        return merged;
-      });
-      messageAnimationReadyRef.current = true;
-      loadedThreadScopeRef.current = JSON.stringify([scopeUserId, scopeConversationId]);
-      setThreadHydrated(true);
-      setLoading(false);
-      const pagePinnedMessageId = 'pinned_message_id' in page
-        ? (page as { pinned_message_id?: string | null }).pinned_message_id
-        : undefined;
-      const rawPinnedMessageId = pagePinnedMessageId;
-      if (rawPinnedMessageId !== undefined) {
-        const serverPinnedMessageId = String(rawPinnedMessageId || '').trim() || null;
-        serverPinKnownRef.current = true;
-        setPinnedMessageId(serverPinnedMessageId);
-        if (userId) void setPinnedChatMessageId(userId, conversationId, serverPinnedMessageId);
-      }
-      setUnreadBoundaryId(getUnreadBoundaryMessageId(normalized, page.viewer_last_read_message_id));
-      setHasOlder(page.has_older);
-      setOlderCursor(page.older_cursor_message_id);
-      setHasNewer(page.has_newer);
-      setNewerCursor(page.newer_cursor_message_id);
-      const responseAnchorId = 'initial_anchor_message_id' in page
-        ? String(page.initial_anchor_message_id || '').trim()
-        : '';
-      setFocusAnchorId(responseAnchorId || messageId || null);
-      nearBottomRef.current = !page.has_newer;
-      setShowJumpToBottom(page.has_newer);
-      setNewMessageCount(0);
-      if (!page.has_newer) {
-        requestBottomAnchor();
-        markRead(findLatestIncomingMessage(normalized, user?.id));
-      }
-
-      const conversationResult = await conversationResultPromise;
-      if (!isCurrentLoad()) return;
-      if (conversationResult.value) {
-        const liveConversation = conversationResult.value;
-        setConversation(liveConversation);
-        setTitle(liveConversation.title || 'Chat');
-        if (liveConversation.pinned_message_id !== undefined) {
-          const serverPinnedMessageId = String(liveConversation.pinned_message_id || '').trim() || null;
-          serverPinKnownRef.current = true;
-          setPinnedMessageId(serverPinnedMessageId);
-          if (userId) void setPinnedChatMessageId(userId, conversationId, serverPinnedMessageId);
-        }
-        if (isAiConversation(liveConversation)) {
-          void chatApi.getAiBots().then((bots) => {
-            if (isCurrentLoad()) setAiBots(bots);
-          }).catch(() => undefined);
-        }
-      }
-    } catch (cause) {
-      if (isCurrentLoad() && !hadCachedSnapshot && !loadedLiveMessages) {
-        if (offlineMode) {
-          setHistoryUnavailableOffline(true);
-        } else {
-          setError(formatApiError(cause, 'Не удалось загрузить сообщения'));
-        }
-      }
-    } finally {
-      if (isCurrentLoad()) setLoading(false);
-    }
-  }, [conversationId, markRead, messageId, offlineMode, outbox, requestBottomAnchor, user?.id]);
-
-  const pendingHistoryWriteRef = useRef<{
-    userId: number; conversationId: string; generation: number; snapshot: ChatThreadSnapshot;
-  } | null>(null);
-  const flushHistoryWrite = useCallback(() => {
-    const pending = pendingHistoryWriteRef.current;
-    if (!pending) return;
-    pendingHistoryWriteRef.current = null;
-    void scheduleNativeChatThreadSnapshotWrite(pending.userId, pending.conversationId,
-      pending.snapshot, { generation: pending.generation, currentUserId: pending.userId });
-  }, []);
-  useEffect(() => {
-    const userId = Number(user?.id || 0);
-    if (!threadHydrated || historyUnavailableOffline || userId <= 0
-      || loadedThreadScopeRef.current !== JSON.stringify([userId, conversationId])
-      || historySessionGeneration !== getNativeChatThreadHistoryGeneration()) return;
-    accumulatedMessagesRef.current = mergeNativeChatThreadHistory(
-      accumulatedMessagesRef.current, messages.filter((message) => !message.local_status), userId,
-    );
-    pendingHistoryWriteRef.current = {
-      userId, conversationId, generation: historySessionGeneration,
-      snapshot: { conversation, title, messages: [...accumulatedMessagesRef.current],
-        hasOlder, olderCursor, hasNewer, newerCursor, unreadBoundaryId,
-        focusAnchorId, pinnedMessageId,
-        historyMayHaveGaps: historyMayHaveGapsRef.current || hasOlder || hasNewer },
-    };
-    const timer = setTimeout(flushHistoryWrite, 250);
-    return () => clearTimeout(timer);
-  }, [conversation, conversationId, focusAnchorId, hasNewer, hasOlder, messages,
-    newerCursor, olderCursor, pinnedMessageId, threadHydrated, historyUnavailableOffline,
-    title, unreadBoundaryId, user?.id, historySessionGeneration, flushHistoryWrite]);
-  useEffect(() => () => { flushHistoryWrite(); }, [conversationId, user?.id, flushHistoryWrite]);
-
-  const loadOlder = useCallback(async () => {
-    if (offlineMode || !hasOlder || !olderCursor || loadingOlderRef.current) return;
-    const generation = loadGenerationRef.current;
-    const navigation = historyNavigationRef.current;
-    const isCurrentHistory = () => mountedRef.current
-      && generation === loadGenerationRef.current
-      && navigation === historyNavigationRef.current;
-    loadingOlderRef.current = true;
-    setLoadingOlder(true);
-    try {
-      const page = await chatApi.getMessagesPage(conversationId, {
-        beforeMessageId: olderCursor,
-        limit: 80,
-      });
-      if (!isCurrentHistory()) return;
-      if (page.cursor_invalid) {
-        await loadInitial();
-        return;
-      }
-      page.items.forEach((item) => knownMessageIdsRef.current.add(item.id));
-      setHoldVisiblePosition(true);
-      setMessages((current) => {
-        const merged = mergeMessages(current, page.items, user?.id);
-        accumulatedMessagesRef.current = mergeNativeChatThreadHistory(
-          accumulatedMessagesRef.current,
-          page.items,
-          user?.id,
-        );
-        historyMayHaveGapsRef.current = Boolean(historyMayHaveGapsRef.current || page.has_older);
-        return merged;
-      });
-      setHasOlder(page.has_older);
-      setOlderCursor(page.older_cursor_message_id);
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          if (isCurrentHistory()) setHoldVisiblePosition(false);
-        });
-      });
-    } catch (cause) {
-      if (isCurrentHistory()) setError(formatApiError(cause, 'Не удалось загрузить предыдущие сообщения'));
-    } finally {
-      if (isCurrentHistory()) {
-        loadingOlderRef.current = false;
-        setLoadingOlder(false);
-      }
-    }
-  }, [conversationId, hasOlder, loadInitial, offlineMode, olderCursor, user?.id]);
-
-  const loadNewer = useCallback(async () => {
-    if (offlineMode || !hasNewer || !newerCursor || loadingNewerRef.current) return;
-    const generation = loadGenerationRef.current;
-    const navigation = historyNavigationRef.current;
-    const isCurrentHistory = () => mountedRef.current
-      && generation === loadGenerationRef.current
-      && navigation === historyNavigationRef.current;
-    loadingNewerRef.current = true;
-    try {
-      const page = await chatApi.getMessagesPage(conversationId, {
-        afterMessageId: newerCursor,
-        limit: 80,
-      });
-      if (!isCurrentHistory()) return;
-      if (page.cursor_invalid) {
-        await loadInitial();
-        return;
-      }
-      page.items.forEach((item) => knownMessageIdsRef.current.add(item.id));
-      setMessages((current) => {
-        const merged = mergeMessages(current, page.items, user?.id);
-        accumulatedMessagesRef.current = mergeNativeChatThreadHistory(
-          accumulatedMessagesRef.current,
-          page.items,
-          user?.id,
-        );
-        historyMayHaveGapsRef.current = Boolean(historyMayHaveGapsRef.current || page.has_newer);
-        return merged;
-      });
-      setHasNewer(page.has_newer);
-      setNewerCursor(page.newer_cursor_message_id);
-      if (!page.has_newer) {
-        nearBottomRef.current = true;
-        setShowJumpToBottom(false);
-        setNewMessageCount(0);
-        markRead(findLatestIncomingMessage(mergeMessages([], page.items, user?.id), user?.id));
-      }
-    } catch (cause) {
-      if (isCurrentHistory()) setError(formatApiError(cause, 'Не удалось загрузить новые сообщения'));
-    } finally {
-      if (isCurrentHistory()) loadingNewerRef.current = false;
-    }
-  }, [conversationId, hasNewer, loadInitial, markRead, newerCursor, offlineMode, user?.id]);
-
-  const syncLatestMessages = useCallback(async () => {
-    const generation = loadGenerationRef.current;
-    const navigation = historyNavigationRef.current;
-    const previousWindow = messagesRef.current.filter((message) => !message.local_status);
-    const previousIds = new Set(previousWindow.map((message) => message.id));
-    if (offlineMode || reconnectSyncRef.current === generation) return;
-    reconnectSyncRef.current = generation;
-    try {
-      const page = await chatApi.getMessagesPage(conversationId, { limit: 80 });
-      if (!mountedRef.current || loadGenerationRef.current !== generation
-        || historyNavigationRef.current !== navigation) return;
-      const latestIds = new Set(page.items.map((message) => message.id));
-      const latestWindow = mergeMessages([], page.items, user?.id);
-      const oldestLatest = latestWindow[latestWindow.length - 1];
-      const olderWindowHead = previousWindow.find((message) => !latestIds.has(message.id));
-      // A fresh WS message may already overlap the top of this REST page. Only
-      // an overlap at its older boundary connects the old window to the new one.
-      const disconnectedWindow = page.has_older && olderWindowHead && oldestLatest
-        && !previousWindow.some((message) => message.id === oldestLatest.id);
-      if (disconnectedWindow) {
-        historyMayHaveGapsRef.current = true;
-        accumulatedMessagesRef.current = mergeNativeChatThreadHistory(
-          accumulatedMessagesRef.current, page.items, user?.id,
-        );
-        if (!nearBottomRef.current) {
-          // Keep the reader's window continuous. Forward pagination fills the gap.
-          setHasNewer(true);
-          setNewerCursor(olderWindowHead.id);
-          setMessages((current) => current.filter((message) => message.local_status || !latestIds.has(message.id)));
-          setShowJumpToBottom(true);
-          return;
-        }
-        // At the bottom show the latest page, with its own older boundary. Merging
-        // disconnected windows would make missing messages unreachable by scrolling.
-        historyNavigationRef.current += 1;
-        loadingOlderRef.current = false;
-        loadingNewerRef.current = false;
-        setLoadingOlder(false);
-        setHasOlder(page.has_older);
-        setOlderCursor(page.older_cursor_message_id);
-        setHasNewer(page.has_newer);
-        setNewerCursor(page.newer_cursor_message_id);
-      }
-      page.items.forEach((message) => {
-        const isNew = !knownMessageIdsRef.current.has(message.id);
-        if (
-          messageAnimationReadyRef.current
-          && nearBottomRef.current
-          && isNew
-          && resolveChatMessageIsOwn(message, user?.id) !== true
-        ) {
-          messageEnterMotionsRef.current.set(chatMessageMotionKey(message), 'incoming');
-        }
-        knownMessageIdsRef.current.add(message.id);
-      });
-      setMessages((current) => mergeMessages(
-        disconnectedWindow ? current.filter((message) => message.local_status || !previousIds.has(message.id)) : current,
-        page.items, user?.id,
-      ));
-      if (nearBottomRef.current && !page.has_newer) {
-        requestBottomAnchor('incoming');
-        markRead(findLatestIncomingMessage(mergeMessages([], page.items, user?.id), user?.id));
-      }
-    } catch {
-      // The reconnect banner remains the source of truth; the next reconnect/focus retries the catch-up.
-    } finally {
-      if (reconnectSyncRef.current === generation) reconnectSyncRef.current = null;
-    }
-  }, [conversationId, markRead, offlineMode, requestBottomAnchor, user?.id]);
-
-  useEffect(() => {
-    if (loading || !focusAnchorId) return;
-    const index = messages.findIndex((item) => item.id === focusAnchorId);
-    if (index < 0) return;
-    const timer = setTimeout(() => {
-      listRef.current?.scrollToIndex({ index, animated: false, viewPosition: 0.5 });
-      setHighlightedMessageId(focusAnchorId);
-      setFocusAnchorId(null);
-      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
-      highlightTimerRef.current = setTimeout(() => {
-        if (mountedRef.current) setHighlightedMessageId(null);
-        highlightTimerRef.current = null;
-      }, 2200);
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [focusAnchorId, loading, messages]);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    markedReadRef.current = '';
-    void loadInitial();
-    if (offlineMode) {
-      setStatus('offline');
-      return () => {
-        mountedRef.current = false;
-        loadGenerationRef.current += 1;
-        incomingTypingTimeoutsRef.current.forEach((timer) => clearTimeout(timer));
-        incomingTypingTimeoutsRef.current.clear();
-        if (typingIdleRef.current) clearTimeout(typingIdleRef.current);
-        if (pendingAnchorTimerRef.current) clearTimeout(pendingAnchorTimerRef.current);
-        if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
-      };
-    }
-    chatSocket.subscribeConversation(conversationId);
-    void chatSocket.connect();
-
-    const offStatus = chatSocket.on('status', (next) => {
-      const nextStatus = next as ChatSocketStatus;
-      setStatus(nextStatus);
-      if (nextStatus !== 'connected') return;
-      if (connectedOnceRef.current) void syncLatestMessages();
-      else connectedOnceRef.current = true;
-    });
-    const applyMessage = (envelope: unknown, countAsNew = false) => {
-      const message = messageFromEnvelope(envelope);
-      if (!message || message.conversation_id !== conversationId) return;
-      const isNew = !knownMessageIdsRef.current.has(message.id);
-      if (
-        messageAnimationReadyRef.current
-        && nearBottomRef.current
-        && countAsNew
-        && isNew
-        && resolveChatMessageIsOwn(message, user?.id) !== true
-      ) {
-        messageEnterMotionsRef.current.set(chatMessageMotionKey(message), 'incoming');
-      }
-      knownMessageIdsRef.current.add(message.id);
-      setMessages((current) => mergeMessages(current, message, user?.id));
-      if (nearBottomRef.current) {
-        requestBottomAnchor();
-        markRead(message);
-      }
-      else if (countAsNew && isNew) {
-        setNewMessageCount((current) => current + 1);
-        setShowJumpToBottom(true);
-      }
-    };
-    const applyExisting = (envelope: unknown) => {
-      const message = messageFromEnvelope(envelope);
-      if (!message || message.conversation_id !== conversationId) return;
-      // Edits/deletes only patch the loaded window: inserting a message the
-      // user never loaded would place a stray bubble outside its page context.
-      setMessages((current) => (
-        current.some((item) => item.id === message.id)
-          ? mergeMessages(current, message, user?.id)
-          : current
-      ));
-    };
-    const offCreated = chatSocket.on('chat.message.created', (envelope) => applyMessage(envelope, true));
-    const offUpdated = chatSocket.on('chat.message.updated', applyExisting);
-    const offDeleted = chatSocket.on('chat.message.deleted', applyExisting);
-    const offReaction = chatSocket.on('chat.message.reaction', (envelope: unknown) => {
-      setMessages((current) => applyReactionEnvelope(current, envelope).items);
-    });
-    const applyTyping = (envelope: unknown) => {
-      const parsed = parseTypingEnvelope(envelope);
-      if (!parsed || parsed.conversationId !== conversationId || parsed.userId === Number(user?.id || 0)) {
-        return;
-      }
-      const existing = incomingTypingTimeoutsRef.current.get(parsed.userId);
-      if (existing) clearTimeout(existing);
-      setTypingParticipants((current) => applyTypingParticipant(
-        current,
-        { userId: parsed.userId, name: parsed.name || 'Участник' },
-        parsed.isTyping,
-      ));
-      if (parsed.isTyping) {
-        incomingTypingTimeoutsRef.current.set(parsed.userId, setTimeout(() => {
-          setTypingParticipants((current) => applyTypingParticipant(
-            current,
-            { userId: parsed.userId, name: parsed.name || 'Участник' },
-            false,
-          ));
-          incomingTypingTimeoutsRef.current.delete(parsed.userId);
-        }, 4000));
-      } else {
-        incomingTypingTimeoutsRef.current.delete(parsed.userId);
-      }
-    };
-    const offTypingStarted = chatSocket.on('chat.typing.started', applyTyping);
-    const offTypingStopped = chatSocket.on('chat.typing.stopped', applyTyping);
-    const offPresence = chatSocket.on('chat.presence.updated', (envelope: unknown) => {
-      const parsed = parsePresenceEnvelope(envelope);
-      if (!parsed) return;
-      setConversation((current) => {
-        if (!current) return current;
-        if (current.direct_peer?.id === parsed.userId) {
-          return { ...current, direct_peer: { ...current.direct_peer, presence: parsed.presence } };
-        }
-        if (!current.members?.length) return current;
-        return {
-          ...current,
-          members: current.members.map((member) => (
-            member.user.id === parsed.userId
-              ? { ...member, user: { ...member.user, presence: parsed.presence } }
-              : member
-          )),
-        };
-      });
-    });
-
-    return () => {
-      mountedRef.current = false;
-      loadGenerationRef.current += 1;
-      incomingTypingTimeoutsRef.current.forEach((timer) => clearTimeout(timer));
-      incomingTypingTimeoutsRef.current.clear();
-      if (typingIdleRef.current) clearTimeout(typingIdleRef.current);
-      if (pendingAnchorTimerRef.current) clearTimeout(pendingAnchorTimerRef.current);
-      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
-      // Persisted uploads belong to the session delivery host.
-      uploadControllersRef.current.clear();
-      downloadControllersRef.current.forEach((controller) => controller.abort());
-      downloadControllersRef.current.clear();
-      if (typingActiveRef.current) chatSocket.sendTyping(conversationId, false);
-      typingActiveRef.current = false;
-      offStatus();
-      offCreated();
-      offUpdated();
-      offDeleted();
-      offReaction();
-      offTypingStarted();
-      offTypingStopped();
-      offPresence();
-      chatSocket.unsubscribeConversation(conversationId);
-    };
-  }, [conversationId, loadInitial, markRead, offlineMode, requestBottomAnchor, syncLatestMessages, user?.id]);
-
-  useEffect(() => {
-    if (offlineMode || !shouldUseChatHttpFallback(status)) return undefined;
-    void syncLatestMessages();
-    const timer = setInterval(() => {
-      void syncLatestMessages();
-    }, 15_000);
-    return () => clearInterval(timer);
-  }, [offlineMode, status, syncLatestMessages]);
-
-  const sendBody = useCallback(async (
-    body: string,
-    clientMessageId = createClientMessageId(),
-    replyPreview?: ChatMessage['reply_preview'],
-    animateFromComposer = true,
-    onPersisted?: () => void,
-  ): Promise<void> => {
-    const trimmed = body.trim();
-    if (!trimmed || !isCurrentSendScope()) return;
-    stopOutgoingTyping();
-    const pendingId = `pending:${clientMessageId}`;
-    const pending: ChatMessage = {
-      id: pendingId,
-      conversation_id: conversationId,
-      sender_user_id: Number(user?.id || 0),
-      sender: user ? {
-        id: user.id,
-        username: user.username,
-        full_name: user.full_name,
-        avatar_url: user.avatar_url,
-      } : null,
-      body: trimmed,
-      body_text: trimmed,
-      body_format: detectChatBodyFormat(trimmed),
-      created_at: new Date().toISOString(),
-      client_message_id: clientMessageId,
-      is_own: true,
-      local_status: 'sending',
-      attachments: [],
-      reactions: [],
-      reply_preview: replyPreview || null,
-    };
-    if (animateFromComposer) {
-      messageEnterMotionsRef.current.set(chatMessageMotionKey(pending), 'outgoing');
-    }
-    requestBottomAnchor('own-send');
-    setMessages((current) => mergeMessages(
-      current.filter((message) => message.id !== pendingId),
-      pending,
-      user?.id,
-    ));
-    knownMessageIdsRef.current.add(pendingId);
-    try {
-      const queued = await outbox.queue(pending);
-      if (!isCurrentSendScope()) return;
-      if (getNativeChatQueueState(queued.message) !== 'cancelled') onPersisted?.();
-      setMessages((current) => mergeMessages(current, queued.message, user?.id));
-    } catch (cause) {
-      if (!isCurrentSendScope()) return;
-      setMessages((current) => current.map((message) => (
-        message.id === pendingId ? { ...message, local_status: 'failed' } : message
-      )));
-      Alert.alert('Не удалось сохранить сообщение',
-        formatApiError(cause, 'Текст остался в поле ввода. Сообщение не поставлено в очередь.'));
-    }
-  }, [isCurrentSendScope, conversationId, outbox, requestBottomAnchor, stopOutgoingTyping, user]);
-
-  const startReply = useCallback((message: ChatMessage) => {
-    if (composerBusyRef.current) return;
-    if (composerMode?.type === 'edit') {
-      setText(draftBeforeEditRef.current);
-      draftBeforeEditRef.current = '';
-    }
-    setComposerMode({ type: 'reply', message });
-  }, [composerBusy, composerMode?.type]);
-
-  const startEdit = useCallback((message: ChatMessage) => {
-    if (composerBusyRef.current) return;
-    if (offlineMode) {
-      Alert.alert('Нет сети', 'Редактирование сообщения на сервере недоступно офлайн. Локальный черновик можно продолжить.');
-      return;
-    }
-    if (composerMode?.type !== 'edit') draftBeforeEditRef.current = text;
-    setComposerMode({ type: 'edit', message });
-    setText(message.body_text || '');
-  }, [composerBusy, composerMode?.type, offlineMode, text]);
-
-  const cancelComposerMode = useCallback(() => {
-    if (composerBusyRef.current) return;
-    if (composerMode?.type === 'edit') {
-      setText(draftBeforeEditRef.current);
-      draftBeforeEditRef.current = '';
-    }
-    setComposerMode(null);
-  }, [composerMode?.type]);
-
-  const toggleReaction = useCallback(async (message: ChatMessage, emoji: string) => {
-    if (!isCurrentSendScope() || !canWrite || message.is_deleted || message.local_status) return;
-    const previousReactions = message.reactions || [];
-    setMessages((current) => current.map((item) => (
-      item.id === message.id
-        ? { ...item, reactions: toggleReactionOptimistic(item.reactions, emoji, user?.id) }
-        : item
-    )));
-    try {
-      const reactions = await chatApi.toggleReaction(conversationId, message.id, emoji);
-      if (!isCurrentSendScope()) return;
-      setMessages((current) => current.map((item) => (
-        item.id === message.id ? { ...item, reactions } : item
-      )));
-    } catch (cause) {
-      if (!isCurrentSendScope()) return;
-      setMessages((current) => current.map((item) => (
-        item.id === message.id ? { ...item, reactions: previousReactions } : item
-      )));
-      Alert.alert('Не удалось изменить реакцию', formatApiError(cause, 'Повторите попытку'));
-    }
-  }, [isCurrentSendScope, canWrite, conversationId, user?.id]);
-
-  const requestDelete = useCallback((message: ChatMessage) => {
-    Alert.alert(
-      'Удалить сообщение?',
-      'Текст и вложения будут скрыты у всех участников диалога.',
-      [
-        { text: 'Отмена', style: 'cancel' },
-        {
-          text: 'Удалить',
-          style: 'destructive',
-          onPress: () => {
-            if (!isCurrentSendScope()) return;
-            void chatApi.deleteMessage(conversationId, message.id)
-              .then((deleted) => {
-                if (isCurrentSendScope()) {
-                  setMessages((current) => mergeMessages(current, deleted, user?.id));
-                }
-              })
-              .catch((cause) => {
-                if (isCurrentSendScope()) {
-                  Alert.alert('Не удалось удалить сообщение', formatApiError(cause, 'Повторите попытку'));
-                }
-              });
-          },
-        },
-      ],
-    );
-  }, [isCurrentSendScope, conversationId, user?.id]);
-
-  const discardPendingMessage = useCallback((message: ChatMessage) => {
-    const id = message.client_message_id;
-    if (!id || !message.local_status || message.local_status === 'sending') return;
-    Alert.alert('Убрать сообщение из очереди?', 'Повторная отправка будет недоступна. Если сервер уже получил сообщение, оно останется в переписке.', [
-      { text: 'Оставить', style: 'cancel' },
-      { text: 'Убрать', style: 'destructive', onPress: () => {
-        if (!mountedRef.current || uploadControllersRef.current.has(id)) return;
-        void outbox.discard(id).then(() => {
-          if (!mountedRef.current) return;
-          pendingAttachmentUploadsRef.current.delete(id);
-          setMessages((current) => current.filter((item) => !(item.client_message_id === id && item.local_status)));
-        }).catch(() => {
-          if (mountedRef.current) Alert.alert('Не удалось убрать сообщение', 'Дождитесь завершения отправки или повторите действие.');
-        });
-      } },
-    ]);
-  }, [outbox]);
-
-  const sendMessage = useCallback(async () => {
-    if (composerBusyRef.current || !isCurrentSendScope()) return;
-    const body = text.trim();
-    if (!body) return;
-
-    if (composerMode?.type === 'edit') {
-      if (offlineMode) {
-        Alert.alert('Нет сети', 'Сохранение правки на сервере недоступно офлайн.');
-        return;
-      }
-      if (composerMode.message.is_deleted) {
-        Alert.alert('Сообщение удалено', 'Сохранить изменения нельзя. Текст правки остался в поле ввода. Отмена редактирования вернёт ваш обычный черновик.');
-        return;
-      }
-      setComposerBusy(true);
-      try {
-        const saved = await chatApi.editMessage(conversationId, composerMode.message.id, body);
-        if (!isCurrentSendScope()) return;
-        setMessages((current) => mergeMessages(current, saved, user?.id));
-        setText(draftBeforeEditRef.current);
-        draftBeforeEditRef.current = '';
-        setComposerMode(null);
-      } catch (cause) {
-        if (isCurrentSendScope()) {
-          Alert.alert('Не удалось сохранить изменения', formatApiError(cause, 'Повторите попытку'));
-        }
-      } finally {
-        if (isCurrentSendScope()) setComposerBusy(false);
-      }
-      return;
-    }
-
-    const replyMessage = composerMode?.type === 'reply' ? composerMode.message : null;
-    if (pendingComposerSendRef.current) return;
-    const submission = Symbol('composer-send');
-    pendingComposerSendRef.current = submission;
-    const replyPreview = replyMessage ? {
-      id: replyMessage.id,
-      sender_name: replyMessage.sender?.full_name || replyMessage.sender?.username || 'Сообщение',
-      kind: replyMessage.kind === 'file' || replyMessage.kind === 'task_share' ? replyMessage.kind : 'text' as const,
-      body: replyMessage.body_text || '',
-      attachments_count: replyMessage.attachments?.length || 0,
-    } : undefined;
-    const revision = textRevisionRef.current;
-    // Show the bubble immediately, but retain the composer until it is durable.
-    const sending = sendBody(body, undefined, replyPreview, true, () => {
-      if (pendingComposerSendRef.current === submission) pendingComposerSendRef.current = null;
-      if (!mountedRef.current || revision !== textRevisionRef.current) return;
-      setText('');
-      setComposerMode(null);
-      if (user?.id) void clearNativeChatDraft(user.id, conversationId).catch(() => undefined);
-    });
-    try { await sending; }
-    finally { if (pendingComposerSendRef.current === submission) pendingComposerSendRef.current = null; }
-  }, [isCurrentSendScope, composerMode, conversationId, offlineMode, sendBody, text, user?.id]);
-
-  const setAttachmentTransfersForIds = useCallback((
-    attachmentIds: string[],
-    transfer: ChatAttachmentTransfer,
-  ) => {
-    setAttachmentTransfers((current) => {
-      const next = { ...current };
-      attachmentIds.forEach((attachmentId) => {
-        next[attachmentId] = transfer;
-      });
-      return next;
-    });
-  }, []);
-
-  const clearAttachmentTransfersForIds = useCallback((attachmentIds: string[]) => {
-    setAttachmentTransfers((current) => {
-      if (!attachmentIds.some((attachmentId) => current[attachmentId])) return current;
-      const next = { ...current };
-      attachmentIds.forEach((attachmentId) => delete next[attachmentId]);
-      return next;
-    });
-  }, []);
-
-  const sendPickedFiles = useCallback(async (
-    files: NativePickedFile[],
-    extra: {
-      mediaKind?: PendingAttachmentMediaKind;
-      durationSeconds?: number;
-      clientMessageId?: string;
-      body?: string;
-      replyToMessageId?: string;
-      replyPreview?: ChatMessage['reply_preview'];
-    } = {},
-  ): Promise<boolean> => {
-    if (!files.length || !isCurrentSendScope()) return false;
-    const clientMessageId = extra.clientMessageId || createClientMessageId();
-    const previousUpload = pendingAttachmentUploadsRef.current.get(clientMessageId);
-    const replyMessage = !previousUpload && composerMode?.type === 'reply' ? composerMode.message : null;
-    const replyPreview = extra.replyPreview ?? previousUpload?.replyPreview ?? (replyMessage ? {
-      id: replyMessage.id,
-      sender_name: replyMessage.sender?.full_name || replyMessage.sender?.username || 'Сообщение',
-      kind: replyMessage.kind === 'file' || replyMessage.kind === 'task_share' ? replyMessage.kind : 'text' as const,
-      body: replyMessage.body_text || '',
-      attachments_count: replyMessage.attachments?.length || 0,
-    } : undefined);
-    const upload: PendingAttachmentUpload = previousUpload || {
-      files: [...files],
-      mediaKind: extra.mediaKind,
-      durationSeconds: extra.durationSeconds,
-      body: extra.body ?? text,
-      replyToMessageId: extra.replyToMessageId || replyMessage?.id,
-      replyPreview,
-    };
-    pendingAttachmentUploadsRef.current.set(clientMessageId, upload);
-
-    const pending = buildPendingAttachmentMessage({
-      conversationId,
-      clientMessageId,
-      files: upload.files,
-      mediaKind: upload.mediaKind,
-      body: upload.body,
-      bodyFormat: detectChatBodyFormat(upload.body),
-      replyPreview: upload.replyPreview,
-      sender: user ? {
-        id: user.id,
-        username: user.username,
-        full_name: user.full_name,
-        avatar_url: user.avatar_url,
-      } : null,
-    });
-    const attachmentIds = (pending.attachments || []).map((attachment) => attachment.id);
-    const controller = new AbortController();
-    uploadControllersRef.current.get(clientMessageId)?.abort();
-    uploadControllersRef.current.set(clientMessageId, controller);
-    setAttachmentTransfersForIds(attachmentIds, {
-      action: 'upload',
-      progress: 0,
-      status: 'active',
-      cancellable: true,
-    });
-    stopOutgoingTyping();
-    requestBottomAnchor('own-send');
-    const composerRevision = textRevisionRef.current;
-    if (!previousUpload) {
-      messageEnterMotionsRef.current.set(chatMessageMotionKey(pending), 'outgoing');
-    }
-    knownMessageIdsRef.current.add(pending.id);
-    setMessages((current) => mergeMessages(
-      current.filter((message) => message.id !== pending.id),
-      pending,
-      user?.id,
-    ));
-
-    try {
-      const queued = await outbox.queue(pending, upload);
-      if (!isCurrentSendScope()) return false;
-      const durableUpload = queued.upload;
-      if (!durableUpload) throw new Error('Не удалось восстановить сохранённое вложение');
-      pendingAttachmentUploadsRef.current.set(clientMessageId, durableUpload);
-      setMessages((current) => mergeMessages(current, queued.message, user?.id));
-      clearAttachmentTransfersForIds(attachmentIds);
-      if (getNativeChatQueueState(queued.message) !== 'cancelled'
-        && !previousUpload && composerRevision === textRevisionRef.current) {
-        setText('');
-        setComposerMode(null);
-        setAttachmentDraftFiles([]);
-        if (user?.id) void clearNativeChatDraft(user.id, conversationId).catch(() => undefined);
-      }
-      return getNativeChatQueueState(queued.message) !== 'cancelled';
-    } catch (cause) {
-      if (!isCurrentSendScope()) return false;
-      const cancelled = controller.signal.aborted;
-      setMessages((current) => current.map((message) => message.id === pending.id
-        ? { ...message, local_status: cancelled ? 'cancelled' : 'failed' } : message));
-      setAttachmentTransfersForIds(attachmentIds, {
-        action: 'upload', progress: 0, status: cancelled ? 'cancelled' : 'failed', cancellable: false,
-      });
-      if (!cancelled) {
-        void recordDiagnosticEvent('native_file_error');
-        Alert.alert('Не удалось сохранить вложение', formatApiError(cause,
-          'Файл не поставлен в очередь. Повторите сохранение на устройстве.'));
-      }
-      return false;
-    } finally {
-      if (uploadControllersRef.current.get(clientMessageId) === controller) {
-        uploadControllersRef.current.delete(clientMessageId);
-      }
-    }
-  }, [isCurrentSendScope, clearAttachmentTransfersForIds, composerMode, conversationId,
-    outbox, requestBottomAnchor, setAttachmentTransfersForIds, stopOutgoingTyping, text, user]);
-
-  const sendPickedFile = useCallback(async (
-    file: NativePickedFile | null,
-    extra: { mediaKind?: 'image' | 'video' | 'file' | 'audio'; durationSeconds?: number } = {},
-  ) => {
-    if (file) await sendPickedFiles([file], { ...extra, clientMessageId: createClientMessageId() });
-  }, [sendPickedFiles]);
-
-  const cancelPendingAttachmentUpload = useCallback((message: ChatMessage) => {
-    const clientMessageId = String(message.client_message_id || '').trim();
-    if (!clientMessageId) return;
-    uploadControllersRef.current.get(clientMessageId)?.abort();
-    void outbox.cancelDelivery(clientMessageId).catch(() => {
-      if (mountedRef.current) Alert.alert('Не удалось отменить отправку', 'Повторите действие.');
-    });
-  }, [outbox]);
-
-  const retryPendingAttachmentUpload = useCallback((message: ChatMessage) => {
-    const clientMessageId = String(message.client_message_id || '').trim();
-    if (clientMessageId && getNativeChatQueueState(message)) {
-      void outbox.retryDelivery(clientMessageId).catch(() => {
-        if (mountedRef.current) Alert.alert('Не удалось повторить отправку', 'Дождитесь завершения текущей операции.');
-      });
-      return;
-    }
-    const pending = pendingAttachmentUploadsRef.current.get(clientMessageId);
-    if (!clientMessageId || !pending) return;
-    void sendPickedFiles(pending.files, {
-      clientMessageId,
-      mediaKind: pending.mediaKind,
-      durationSeconds: pending.durationSeconds,
-      body: pending.body,
-      replyToMessageId: pending.replyToMessageId,
-      replyPreview: pending.replyPreview,
-    });
-  }, [outbox, sendPickedFiles]);
-
-  const pickAndSendAttachment = useCallback(async (source: NativeAttachmentSource) => {
-    setAttachmentPickerVisible(false);
-    try {
-      const files = await pickNativeAttachments(source);
-      if (!files.length || !isCurrentSendScope()) return;
-      if (files.length === 1 && (source === 'camera' || source === 'gallery') && files[0].mimeType.startsWith('image/')) {
-        setImageEditorFile(files[0]);
-        return;
-      }
-      if (files.length > 1) {
-        setAttachmentDraftError('');
-        attachmentDraftClientMessageIdRef.current = createClientMessageId();
-        setAttachmentDraftFiles(files);
-        return;
-      }
-      await sendPickedFile(files[0]);
-    } catch (cause) {
-      if (!mountedRef.current) return;
-      if (cause instanceof NativeFilePermissionError) {
-        Alert.alert(
-          'Нет доступа к камере',
-          'Разрешите HUB-IT использовать камеру в настройках Android.',
-          [
-            { text: 'Отмена', style: 'cancel' },
-            { text: 'Открыть настройки', onPress: () => void openAppPermissionSettings() },
-          ],
-        );
-      } else {
-        Alert.alert('Не удалось отправить вложение', formatApiError(cause, 'Повторите попытку'));
-      }
-    }
-  }, [isCurrentSendScope, sendPickedFile]);
-
-  const sendAttachmentDraft = useCallback(async () => {
-    if (!attachmentDraftFiles.length || attachmentDraftSendRef.current) return;
-    attachmentDraftSendRef.current = true;
-    setComposerBusy(true);
-    const files = attachmentDraftFiles;
-    const clientMessageId = attachmentDraftClientMessageIdRef.current || createClientMessageId();
-    attachmentDraftClientMessageIdRef.current = '';
-    setAttachmentDraftError('');
-    try { await sendPickedFiles(files, { clientMessageId }); }
-    finally {
-      attachmentDraftSendRef.current = false;
-      if (mountedRef.current) setComposerBusy(false);
-    }
-  }, [attachmentDraftFiles, sendPickedFiles]);
-
-  const handleVoiceRecordingChange = useCallback((recording: boolean) => {
-    setVoiceRecording(recording);
-  }, []);
-
-  const sendGif = useCallback(async (gif: ChatGifItem) => {
-    setEmojiPickerVisible(false);
-    try {
-      const file = await downloadGifToCache(gif);
-      await sendPickedFile(file);
-    } catch (cause) {
-      if (mountedRef.current) {
-        Alert.alert('Не удалось отправить GIF', formatApiError(cause, 'Повторите попытку'));
-      }
-    }
-  }, [sendPickedFile]);
-
-  const runSearch = useCallback(async () => {
-    const query = searchQuery.trim();
-    if (!query || searching) return;
-    const request = ++searchRequestRef.current;
-    const currentSearch = () => mountedRef.current && searchRequestRef.current === request;
-    setSearching(true);
-    setSearchCompleted(false);
-    if (offlineMode) {
-      const normalizedQuery = query.toLocaleLowerCase('ru-RU');
-      const corpus = accumulatedMessagesRef.current.length
-        ? accumulatedMessagesRef.current
-        : messages;
-      setSearchResults(corpus.filter((message) => (
-        String(message.body_text || '').toLocaleLowerCase('ru-RU').includes(normalizedQuery)
-      )));
-      setSearchCompleted(true);
-      setSearching(false);
-      return;
-    }
-    try {
-      const results = await chatApi.searchMessages(conversationId, query);
-      if (currentSearch()) {
-        setSearchResults(results);
-        setSearchCompleted(true);
-      }
-    } catch (cause) {
-      if (currentSearch()) {
-        Alert.alert('Не удалось выполнить поиск', formatApiError(cause, 'Повторите попытку'));
-      }
-    } finally {
-      if (currentSearch()) setSearching(false);
-    }
-  }, [conversationId, messages, offlineMode, searchQuery, searching]);
-
-  const focusSearchResult = useCallback(async (message: ChatMessage) => {
-    if (offlineMode && (
-      messages.some((item) => item.id === message.id)
-      || accumulatedMessagesRef.current.some((item) => item.id === message.id)
-    )) {
-      // Prefer showing from accumulated history when the current window lacks the hit.
-      if (!messages.some((item) => item.id === message.id)) {
-        setMessages((current) => mergeMessages(
-          accumulatedMessagesRef.current,
-          current.filter((item) => item.local_status),
-          user?.id,
-        ));
-      }
-      setFocusAnchorId(message.id);
-      setSearchOpen(false);
-      setSearchResults([]);
-      setSearchCompleted(false);
-      return;
-    }
-    if (offlineMode) {
-      Alert.alert('Сообщение не сохранено', 'Для загрузки этого участка переписки нужно подключение.');
-      return;
-    }
-    const generation = loadGenerationRef.current;
-    const navigation = ++historyNavigationRef.current;
-    loadingOlderRef.current = false;
-    loadingNewerRef.current = false;
-    setLoadingOlder(false);
-    const isCurrentHistory = () => mountedRef.current
-      && generation === loadGenerationRef.current
-      && navigation === historyNavigationRef.current;
-    setSearching(true);
-    try {
-      const page = await chatApi.getThreadBootstrap(conversationId, {
-        focusMessageId: message.id,
-        limit: 80,
-        lightweight: false,
-      });
-      if (!isCurrentHistory()) return;
-      const normalized = mergeMessages([], page.items, user?.id);
-      knownMessageIdsRef.current = new Set([
-        ...knownMessageIdsRef.current,
-        ...normalized.map((item) => item.id),
-      ]);
-      accumulatedMessagesRef.current = mergeNativeChatThreadHistory(
-        accumulatedMessagesRef.current,
-        normalized,
-        user?.id,
-      );
-      historyMayHaveGapsRef.current = Boolean(
-        historyMayHaveGapsRef.current || page.has_older || page.has_newer,
-      );
-      // Display window only — durable history stays in accumulatedMessagesRef.
-      // Keep queued locals: the page never contains them and the outbox would
-      // otherwise re-insert them on its next notify, flashing the rows.
-      setMessages((current) => mergeMessages(
-        normalized,
-        current.filter((item) => item.local_status),
-        user?.id,
-      ));
-      setHasOlder(page.has_older);
-      setOlderCursor(page.older_cursor_message_id);
-      setHasNewer(page.has_newer);
-      setNewerCursor(page.newer_cursor_message_id);
-      setFocusAnchorId(page.initial_anchor_message_id || message.id);
-      nearBottomRef.current = !page.has_newer;
-      setShowJumpToBottom(page.has_newer);
-      setSearchOpen(false);
-      setSearchResults([]);
-      setSearchCompleted(false);
-    } catch (cause) {
-      if (isCurrentHistory()) {
-        Alert.alert('Не удалось перейти к сообщению', formatApiError(cause, 'Повторите попытку'));
-      }
-    } finally {
-      if (isCurrentHistory()) setSearching(false);
-    }
-  }, [conversationId, messages, offlineMode, user?.id]);
-
-  const focusMessageById = useCallback(async (targetMessageId: string) => {
-    const normalizedId = String(targetMessageId || '').trim();
-    if (!normalizedId) return;
-    if (messages.some((message) => message.id === normalizedId)) {
-      setFocusAnchorId(normalizedId);
-      return;
-    }
-    if (accumulatedMessagesRef.current.some((message) => message.id === normalizedId)) {
-      setMessages((current) => mergeMessages(
-        accumulatedMessagesRef.current,
-        current.filter((item) => item.local_status),
-        user?.id,
-      ));
-      setFocusAnchorId(normalizedId);
-      return;
-    }
-    await focusSearchResult({
-      id: normalizedId,
-      conversation_id: conversationId,
-      sender_user_id: 0,
-    });
-  }, [conversationId, focusSearchResult, messages, user?.id]);
-
-  const jumpToBottom = useCallback(async () => {
-    if (offlineMode) {
-      const local = mergeMessages(accumulatedMessagesRef.current, messages, user?.id);
-      if (!local.length) return;
-      setMessages(local);
-      setFocusAnchorId(local[0].id);
-      setShowJumpToBottom(false);
-      setNewMessageCount(0);
-      return;
-    }
-    if (!hasNewer) {
-      listRef.current?.scrollToOffset({ offset: 0, animated: !reduceMotion });
-      nearBottomRef.current = true;
-      setShowJumpToBottom(false);
-      setNewMessageCount(0);
-      markRead(findLatestIncomingMessage(messages, user?.id));
-      return;
-    }
-    const generation = loadGenerationRef.current;
-    const navigation = ++historyNavigationRef.current;
-    loadingOlderRef.current = false;
-    loadingNewerRef.current = false;
-    setLoadingOlder(false);
-    const isCurrentHistory = () => mountedRef.current
-      && generation === loadGenerationRef.current
-      && navigation === historyNavigationRef.current;
-    try {
-      const page = await chatApi.getMessagesPage(conversationId, { limit: 80 });
-      if (!isCurrentHistory()) return;
-      const normalized = mergeMessages([], page.items, user?.id);
-      knownMessageIdsRef.current = new Set([
-        ...knownMessageIdsRef.current,
-        ...normalized.map((item) => item.id),
-      ]);
-      accumulatedMessagesRef.current = mergeNativeChatThreadHistory(
-        accumulatedMessagesRef.current,
-        normalized,
-        user?.id,
-      );
-      historyMayHaveGapsRef.current = Boolean(
-        historyMayHaveGapsRef.current || page.has_older || page.has_newer,
-      );
-      setMessages((current) => mergeMessages(
-        normalized,
-        current.filter((item) => item.local_status),
-        user?.id,
-      ));
-      setHasOlder(page.has_older);
-      setOlderCursor(page.older_cursor_message_id);
-      setHasNewer(page.has_newer);
-      setNewerCursor(page.newer_cursor_message_id);
-      nearBottomRef.current = !page.has_newer;
-      setShowJumpToBottom(page.has_newer);
-      setNewMessageCount(0);
-      markRead(findLatestIncomingMessage(normalized, user?.id));
-    } catch (cause) {
-      if (isCurrentHistory()) {
-        Alert.alert('Не удалось перейти к новым сообщениям', formatApiError(cause, 'Повторите попытку'));
-      }
-    }
-  }, [conversationId, hasNewer, markRead, messages, offlineMode, reduceMotion, user?.id]);
-
-  const openForward = useCallback(async (message: ChatMessage | ChatMessage[]) => {
-    if (!isCurrentSendScope() || forwardInFlightRef.current) return;
-    try {
-      const conversations = await chatApi.getConversations();
-      if (!isCurrentSendScope()) return;
-      setForwardConversations(conversations);
-      setForwardProgress(null);
-      setForwardError('');
-      const queue = Array.isArray(message) ? message : [message];
-      setForwardSource(queue[0] || null);
-      setForwardQueue(queue);
-    } catch (cause) {
-      if (isCurrentSendScope()) {
-        Alert.alert('Не удалось загрузить диалоги', formatApiError(cause, 'Повторите попытку'));
-      }
-    }
-  }, [isCurrentSendScope]);
-
-  const forwardToConversation = useCallback(async (target: ChatConversationSummary) => {
-    const queue = forwardQueue.length ? forwardQueue : (forwardSource ? [forwardSource] : []);
-    if (!isCurrentSendScope() || !queue.length || forwardInFlightRef.current || forwarding) return;
-    if (forwardProgress && forwardProgress.target.id !== target.id) return;
-    forwardInFlightRef.current = true;
-    setForwarding(true);
-    setForwardError('');
-    const completedBefore = forwardProgress?.completed || 0;
-    const total = forwardProgress?.total || queue.length;
-    let completed = 0;
-    try {
-      for (const item of queue) {
-        const forwarded = await chatApi.forwardMessage(target.id, item.id);
-        if (!isCurrentSendScope()) return;
-        completed += 1;
-        // Commit each ACK before starting the next request; never replay these items.
-        setForwardQueue(queue.slice(completed));
-        setForwardProgress({ target, completed: completedBefore + completed, total });
-        setSelectedMessageIds((current) => current.filter((id) => id !== item.id));
-        if (target.id === conversationId) {
-          requestBottomAnchor('own-send');
-          setMessages((current) => mergeMessages(current, forwarded, user?.id));
-        }
-      }
-      setForwardSource(null);
-      setForwardQueue([]);
-      setForwardProgress(null);
-      setSelectedMessageIds([]);
-      Alert.alert(
-        total > 1 ? 'Сообщения пересланы' : 'Сообщение переслано',
-        `Диалог: ${target.title || 'Без названия'}`,
-      );
-    } catch {
-      if (isCurrentSendScope()) {
-        setForwardQueue(queue.slice(completed));
-        setForwardSource(queue[completed] || null);
-        setForwardProgress({ target, completed: completedBefore + completed, total });
-        setForwardError('Не получено подтверждение следующего сообщения. Проверьте диалог перед повтором: оно могло быть доставлено. Уже подтверждённые сообщения повторно не отправятся.');
-      }
-    } finally {
-      if (isCurrentSendScope()) {
-        forwardInFlightRef.current = false;
-        setForwarding(false);
-      }
-    }
-  }, [isCurrentSendScope, conversationId, forwardQueue, forwardSource, forwardProgress, forwarding, requestBottomAnchor, user?.id]);
-
-  const openConversationInfo = useCallback(() => {
-    setInfoVisible(true);
-    if (offlineMode) return;
-    const generation = loadGenerationRef.current;
-    void chatApi.getConversation(conversationId).then((details) => {
-      if (!mountedRef.current || loadGenerationRef.current !== generation) return;
-      setConversation(details);
-      setTitle(details.title || 'Chat');
-    }).catch(() => undefined);
-  }, [conversationId, offlineMode]);
-
-  const updateConversationSetting = useCallback(async (
-    key: 'is_muted' | 'is_pinned' | 'is_archived',
-    value: boolean,
-  ) => {
-    if (conversationBusy) return;
-    setConversationBusy(true);
-    try {
-      const updated = await chatApi.updateConversationSettings(conversationId, { [key]: value });
-      if (mountedRef.current) setConversation(updated);
-    } catch (cause) {
-      if (mountedRef.current) {
-        Alert.alert('Не удалось изменить настройки чата', formatApiError(cause, 'Повторите попытку'));
-      }
-    } finally {
-      if (mountedRef.current) setConversationBusy(false);
-    }
-  }, [conversationBusy, conversationId]);
-
-  const renameGroup = useCallback(async (nextTitle: string) => {
-    if (!nextTitle.trim() || conversationBusy) return;
-    setConversationBusy(true);
-    try {
-      const updated = isAiConversation(conversation)
-        ? await chatApi.renameAiConversation(conversationId, nextTitle.trim())
-        : await chatApi.updateGroupProfile(conversationId, nextTitle.trim());
-      if (!mountedRef.current) return;
-      setConversation(updated);
-      setTitle(updated.title || nextTitle.trim());
-      setRenameVisible(false);
-    } catch (cause) {
-      if (mountedRef.current) {
-        Alert.alert('Не удалось изменить название', formatApiError(cause, 'Повторите попытку'));
-      }
-    } finally {
-      if (mountedRef.current) setConversationBusy(false);
-    }
-  }, [conversation, conversationBusy, conversationId]);
-
-  const resetAiContext = useCallback(() => {
-    Alert.alert(
-      'Сбросить контекст?',
-      'Старые сообщения останутся видимыми, но помощник перестанет учитывать их в новых ответах.',
-      [
-        { text: 'Отмена', style: 'cancel' },
-        {
-          text: 'Сбросить',
-          onPress: () => {
-            void (async () => {
-              setConversationBusy(true);
-              try {
-                await chatApi.resetAiConversationContext(conversationId);
-                if (mountedRef.current) {
-                  setInfoVisible(false);
-                  Alert.alert('Контекст сброшен', 'Новые ответы не будут учитывать предыдущую историю.');
-                }
-              } catch (cause) {
-                if (mountedRef.current) {
-                  Alert.alert('Не удалось сбросить контекст', formatApiError(cause, 'Повторите попытку'));
-                }
-              } finally {
-                if (mountedRef.current) setConversationBusy(false);
-              }
-            })();
-          },
-        },
-      ],
-    );
-  }, [conversationId]);
-
-  const deleteAiConversation = useCallback(() => {
-    Alert.alert(
-      'Удалить AI-чат?',
-      'Диалог будет удалён без возможности восстановления.',
-      [
-        { text: 'Отмена', style: 'cancel' },
-        {
-          text: 'Удалить',
-          style: 'destructive',
-          onPress: () => {
-            void (async () => {
-              setConversationBusy(true);
-              try {
-                await chatApi.deleteAiConversation(conversationId);
-                if (mountedRef.current) {
-                  setInfoVisible(false);
-                  router.back();
-                }
-              } catch (cause) {
-                if (mountedRef.current) {
-                  Alert.alert('Не удалось удалить чат', formatApiError(cause, 'Повторите попытку'));
-                }
-              } finally {
-                if (mountedRef.current) setConversationBusy(false);
-              }
-            })();
-          },
-        },
-      ],
-    );
-  }, [conversationId]);
-
-  const openMemberPicker = useCallback(async () => {
-    setConversationBusy(true);
-    try {
-      const users = await chatApi.getChatUsers();
-      if (!mountedRef.current) return;
-      setChatUsers(users);
-      setMemberPickerVisible(true);
-    } catch (cause) {
-      if (mountedRef.current) {
-        Alert.alert('Не удалось загрузить пользователей', formatApiError(cause, 'Повторите попытку'));
-      }
-    } finally {
-      if (mountedRef.current) setConversationBusy(false);
-    }
-  }, []);
-
-  const addMembers = useCallback(async (userIds: number[]) => {
-    if (!userIds.length || conversationBusy) return;
-    setConversationBusy(true);
-    try {
-      const updated = await chatApi.addGroupMembers(conversationId, userIds);
-      if (!mountedRef.current) return;
-      setConversation(updated);
-      setMemberPickerVisible(false);
-    } catch (cause) {
-      if (mountedRef.current) {
-        Alert.alert('Не удалось добавить участников', formatApiError(cause, 'Повторите попытку'));
-      }
-    } finally {
-      if (mountedRef.current) setConversationBusy(false);
-    }
-  }, [conversationBusy, conversationId]);
-
-  const updateMember = useCallback(async (
-    member: ChatMember,
-    action: 'promote' | 'demote' | 'remove' | 'transfer',
-  ) => {
-    if (conversationBusy) return;
-    setConversationBusy(true);
-    try {
-      const updated = action === 'remove'
-        ? await chatApi.removeGroupMember(conversationId, member.user.id)
-        : action === 'transfer'
-          ? await chatApi.transferGroupOwnership(conversationId, member.user.id)
-          : await chatApi.updateGroupMemberRole(
-            conversationId,
-            member.user.id,
-            action === 'promote' ? 'moderator' : 'member',
-          );
-      if (mountedRef.current) setConversation(updated);
-    } catch (cause) {
-      if (mountedRef.current) {
-        Alert.alert('Не удалось изменить участника', formatApiError(cause, 'Повторите попытку'));
-      }
-    } finally {
-      if (mountedRef.current) setConversationBusy(false);
-    }
-  }, [conversationBusy, conversationId]);
-
-  const openPersonProfile = useCallback((user: ChatUserSummary) => {
-    const members = conversation?.members || conversation?.member_preview || [];
-    const existing = members.find((member) => member.user.id === user.id);
-    if (existing) {
-      setProfileMember(existing);
-      return;
-    }
-    if (conversation?.direct_peer?.id === user.id) {
-      setProfileMember({ user: conversation.direct_peer, member_role: 'member' });
-      return;
-    }
-    setProfileMember({ user, member_role: 'member' });
-  }, [conversation]);
-
-  const openMemberActions = useCallback((member: ChatMember) => {
-    const viewerRole = conversation?.viewer_member_role;
-    const buttons: Array<{
-      text: string;
-      style?: 'default' | 'cancel' | 'destructive';
-      onPress?: () => void;
-    }> = [];
-    if (member.member_role === 'moderator') {
-      buttons.push({ text: 'Сделать участником', onPress: () => void updateMember(member, 'demote') });
-    } else {
-      buttons.push({ text: 'Сделать администратором', onPress: () => void updateMember(member, 'promote') });
-    }
-    if (viewerRole === 'owner') {
-      buttons.push({ text: 'Передать права владельца', onPress: () => void updateMember(member, 'transfer') });
-    }
-    buttons.push({ text: 'Удалить из группы', style: 'destructive', onPress: () => void updateMember(member, 'remove') });
-    buttons.push({ text: 'Отмена', style: 'cancel' });
-    Alert.alert(member.user.full_name || member.user.username, 'Управление участником', buttons);
-  }, [conversation?.viewer_member_role, updateMember]);
-
-  const requestLeaveGroup = useCallback(() => {
-    Alert.alert('Покинуть группу?', 'Вы перестанете получать новые сообщения этой группы.', [
-      { text: 'Отмена', style: 'cancel' },
-      {
-        text: 'Покинуть',
-        style: 'destructive',
-        onPress: () => {
-          setConversationBusy(true);
-          void chatApi.leaveGroup(conversationId).then(() => {
-            if (!mountedRef.current) return;
-            setInfoVisible(false);
-            router.replace('/chat');
-          }).catch((cause) => {
-            if (mountedRef.current) Alert.alert('Не удалось покинуть группу', formatApiError(cause, 'Повторите попытку'));
-          }).finally(() => {
-            if (mountedRef.current) setConversationBusy(false);
-          });
-        },
-      },
-    ]);
-  }, [conversationId]);
-
-  const openTask = useCallback((taskId: string) => {
-    router.push({ pathname: '/tasks/[taskId]', params: { taskId } });
-  }, []);
-
-  const loadShareableTasks = useCallback(async (query = '') => {
-    setTaskPickerLoading(true);
-    try {
-      const tasks = await chatApi.getShareableTasks(conversationId, query);
-      if (mountedRef.current) setShareableTasks(tasks);
-    } catch (cause) {
-      if (mountedRef.current) Alert.alert('Не удалось загрузить задачи', formatApiError(cause, 'Повторите попытку'));
-    } finally {
-      if (mountedRef.current) setTaskPickerLoading(false);
-    }
-  }, [conversationId]);
-
-  const openTaskPicker = useCallback(() => {
-    setAttachmentPickerVisible(false);
-    setTaskPickerVisible(true);
-    void loadShareableTasks();
-  }, [loadShareableTasks]);
-
-  const shareTask = useCallback(async (task: ChatTaskPreview) => {
-    if (!isCurrentSendScope() || composerBusyRef.current) return;
-    setComposerBusy(true);
-    try {
-      const replyToMessageId = composerMode?.type === 'reply' ? composerMode.message.id : undefined;
-      const saved = await chatApi.shareTask(conversationId, task.id, replyToMessageId);
-      if (!isCurrentSendScope()) return;
-      requestBottomAnchor('own-send');
-      setMessages((current) => mergeMessages(current, saved, user?.id));
-      setTaskPickerVisible(false);
-      setComposerMode(null);
-    } catch (cause) {
-      if (isCurrentSendScope()) Alert.alert('Не удалось отправить задачу', formatApiError(cause, 'Повторите попытку'));
-    } finally {
-      if (isCurrentSendScope()) setComposerBusy(false);
-    }
-  }, [composerMode, isCurrentSendScope, conversationId, requestBottomAnchor, user?.id]);
-
-  const openStickerPicker = useCallback(async () => {
-    setAttachmentPickerVisible(false);
-    setEmojiPickerVisible(false);
-    setStickerPickerVisible(true);
-    setStickerPickerLoading(true);
-    try {
-      const [packs, recent] = await Promise.all([
-        chatApi.getStickerPacks(),
-        user?.id ? getRecentStickerIds(user.id) : Promise.resolve([]),
-      ]);
-      if (mountedRef.current) {
-        setStickerPacks(packs);
-        setRecentStickerIds(recent);
-      }
-    } catch (cause) {
-      if (mountedRef.current) Alert.alert('Не удалось загрузить стикеры', formatApiError(cause, 'Повторите попытку'));
-    } finally {
-      if (mountedRef.current) setStickerPickerLoading(false);
-    }
-  }, [user?.id]);
-
-  const importStickerPack = useCallback(async (source: string) => {
-    setStickerImporting(true);
-    try {
-      const packs = await chatApi.importStickerPack(source);
-      if (mountedRef.current) setStickerPacks(packs);
-    } catch (cause) {
-      if (mountedRef.current) Alert.alert('Не удалось добавить набор', formatApiError(cause, 'Проверьте ссылку и повторите'));
-    } finally {
-      if (mountedRef.current) setStickerImporting(false);
-    }
-  }, []);
-
-  const removeStickerPack = useCallback((pack: ChatStickerPack) => {
-    Alert.alert(
-      'Удалить набор?',
-      `Набор «${pack.title}» будет убран из вашего списка.`,
-      [
-        { text: 'Отмена', style: 'cancel' },
-        {
-          text: 'Удалить',
-          style: 'destructive',
-          onPress: () => {
-            void chatApi.removeStickerPack(pack.id)
-              .then(() => chatApi.getStickerPacks())
-              .then((packs) => {
-                if (mountedRef.current) setStickerPacks(packs);
-              })
-              .catch((cause) => {
-                if (mountedRef.current) {
-                  Alert.alert('Не удалось удалить набор', formatApiError(cause, 'Повторите попытку'));
-                }
-              });
-          },
-        },
-      ],
-    );
-  }, []);
-
-  const sendSticker = useCallback(async (sticker: ChatSticker) => {
-    if (!isCurrentSendScope() || composerBusyRef.current) return;
-    setStickerPickerVisible(false);
-    setComposerBusy(true);
-    try {
-      const replyToMessageId = composerMode?.type === 'reply' ? composerMode.message.id : undefined;
-      const saved = await chatApi.sendSticker(conversationId, sticker.id, replyToMessageId);
-      if (!isCurrentSendScope()) return;
-      if (user?.id) {
-        void rememberRecentSticker(user.id, sticker.id).then((recent) => {
-          if (isCurrentSendScope()) setRecentStickerIds(recent);
-        }).catch(() => undefined);
-      }
-      requestBottomAnchor('own-send');
-      setMessages((current) => mergeMessages(current, {
-        ...saved,
-        is_own: true,
-        sender_user_id: saved.sender_user_id || Number(user?.id || 0),
-      }, user?.id));
-      setComposerMode(null);
-    } catch (cause) {
-      if (isCurrentSendScope()) Alert.alert('Не удалось отправить стикер', formatApiError(cause, 'Повторите попытку'));
-    } finally {
-      if (isCurrentSendScope()) setComposerBusy(false);
-    }
-  }, [composerMode, isCurrentSendScope, conversationId, requestBottomAnchor, user?.id]);
-
-  const copyMessageText = useCallback((message: ChatMessage) => {
-    void Clipboard.setStringAsync(message.body_text || '').then(() => {
-      if (mountedRef.current) Alert.alert('Скопировано', 'Текст сообщения скопирован.');
-    });
-  }, []);
-
-  const copyMessageLink = useCallback((message: ChatMessage) => {
-    const link = `${HUB_WEB_ORIGIN}/chat?conversation=${encodeURIComponent(conversationId)}&message=${encodeURIComponent(message.id)}`;
-    void Clipboard.setStringAsync(link).then(() => {
-      if (mountedRef.current) Alert.alert('Ссылка скопирована', 'Можно отправить её другому участнику HUB-IT.');
-    });
-  }, [conversationId]);
-
-  const prepareReport = useCallback((message: ChatMessage) => {
-    const payload = [
-      `Диалог: ${conversationId}`,
-      `Сообщение: ${message.id}`,
-      `Автор: ${message.sender?.full_name || message.sender?.username || message.sender_user_id}`,
-      `Текст: ${message.body_text || '(без текста)'}`,
-    ].join('\n');
-    void Clipboard.setStringAsync(payload).then(() => {
-      if (mountedRef.current) Alert.alert('Данные жалобы скопированы', 'Передайте их администратору HUB-IT.');
-    });
-  }, [conversationId]);
-
-  const showMessageReads = useCallback(async (message: ChatMessage) => {
-    try {
-      const reads = await chatApi.getMessageReads(message.id);
-      if (!mountedRef.current) return;
-      Alert.alert(
-        'Кто прочитал',
-        reads.length
-          ? reads.map((item) => `${item.user.full_name || item.user.username} · ${new Date(item.read_at).toLocaleString('ru-RU')}`).join('\n')
-          : 'Пока никто не прочитал сообщение.',
-      );
-    } catch (cause) {
-      if (mountedRef.current) Alert.alert('Не удалось загрузить прочтения', formatApiError(cause, 'Повторите попытку'));
-    }
-  }, []);
-
-  const togglePinnedMessage = useCallback((message: ChatMessage) => {
-    const userId = Number(user?.id || 0);
-    if (!userId) return;
-    const next = pinnedMessageId === message.id ? null : message.id;
-    setPinnedMessageId(next);
-    void setPinnedChatMessageId(userId, conversationId, next);
-    void chatApi.setPinnedMessage(conversationId, next).then((updated) => {
-      if (!mountedRef.current || updated.pinned_message_id === undefined) return;
-      serverPinKnownRef.current = true;
-      setPinnedMessageId(updated.pinned_message_id);
-      void setPinnedChatMessageId(userId, conversationId, updated.pinned_message_id);
-    }).catch(() => undefined);
-  }, [conversationId, pinnedMessageId, user?.id]);
-
-  const unpinMessage = useCallback(() => {
-    const userId = Number(user?.id || 0);
-    const previous = pinnedMessageId;
-    if (!userId || !previous) return;
-    setPinnedMessageId(null);
-    void setPinnedChatMessageId(userId, conversationId, null);
-    void chatApi.setPinnedMessage(conversationId, null).then((updated) => {
-      if (!mountedRef.current) return;
-      serverPinKnownRef.current = true;
-      const next = updated.pinned_message_id || null;
-      setPinnedMessageId(next);
-      void setPinnedChatMessageId(userId, conversationId, next);
-    }).catch(() => {
-      if (!mountedRef.current) return;
-      setPinnedMessageId(previous);
-      void setPinnedChatMessageId(userId, conversationId, previous);
-    });
-  }, [conversationId, pinnedMessageId, user?.id]);
-
-  const runAiAction = useCallback(async (actionId: string, action: 'confirm' | 'cancel') => {
-    setMessages((current) => current.map((message) => {
-      const card = message.action_card as { id?: string } | null | undefined;
-      return card?.id === actionId
-        ? {
-          ...message,
-          action_card: {
-            ...message.action_card,
-            status: action === 'confirm' ? 'executing' : 'cancelled',
-          },
-        }
-        : message;
-    }));
-    try {
-      if (action === 'confirm') await chatApi.confirmAiAction(actionId);
-      else await chatApi.cancelAiAction(actionId);
-    } catch (cause) {
-      if (mountedRef.current) {
-        Alert.alert('Не удалось выполнить действие AI', formatApiError(cause, 'Повторите попытку'));
-        void loadInitial();
-      }
-    }
-  }, [loadInitial]);
-
-  const runAttachmentAction = useCallback(async (
-    messageIdValue: string,
-    attachment: ChatAttachment,
-    action: 'open' | 'share' | 'save',
-  ) => {
-    if (attachmentTransfersRef.current[attachment.id]?.status === 'active') return;
-    const controller = action === 'save' ? null : new AbortController();
-    if (controller) {
-      downloadControllersRef.current.get(attachment.id)?.abort();
-      downloadControllersRef.current.set(attachment.id, controller);
-    }
-    failedAttachmentActionsRef.current.set(attachment.id, { messageId: messageIdValue, attachment, action });
-    setAttachmentTransfers((current) => ({
-      ...current,
-      [attachment.id]: {
-        action,
-        progress: action === 'save' ? null : 0,
-        status: 'active',
-        cancellable: Boolean(controller),
-      },
-    }));
-    let completed = false;
-    try {
-      if (action === 'save') {
-        await chatApi.saveAttachmentToMyFiles(messageIdValue, attachment.id);
-        if (mountedRef.current) Alert.alert('Сохранено', 'Вложение добавлено в «Мои файлы».');
-        completed = true;
-        return;
-      }
-      const file = await downloadChatAttachment(attachment, {
-        signal: controller?.signal,
-        onProgress: (progress) => {
-          if (!mountedRef.current || downloadControllersRef.current.get(attachment.id) !== controller) return;
-          setAttachmentTransfers((current) => ({
-            ...current,
-            [attachment.id]: {
-              action,
-              progress: progress.progress,
-              status: 'active',
-              cancellable: true,
-            },
-          }));
-        },
-      });
-      if (!mountedRef.current || downloadControllersRef.current.get(attachment.id) !== controller) return;
-      if (action === 'share') {
-        await shareNativeFile(file, attachment.file_name || 'hubit-file', attachment.mime_type);
-      } else {
-        await openNativeFile(file, attachment.mime_type);
-      }
-      completed = true;
-    } catch (cause) {
-      if (!mountedRef.current) return;
-      if (controller && downloadControllersRef.current.get(attachment.id) !== controller) return;
-      const cancelled = isAttachmentTransferAbort(cause, controller?.signal);
-      setAttachmentTransfers((current) => ({
-        ...current,
-        [attachment.id]: {
-          action,
-          progress: current[attachment.id]?.progress ?? 0,
-          status: cancelled ? 'cancelled' : 'failed',
-          cancellable: false,
-        },
-      }));
-    } finally {
-      if (controller && downloadControllersRef.current.get(attachment.id) === controller) {
-        downloadControllersRef.current.delete(attachment.id);
-      }
-      if (completed && mountedRef.current) {
-        failedAttachmentActionsRef.current.delete(attachment.id);
-        setAttachmentTransfers((current) => {
-          if (!current[attachment.id]) return current;
-          const next = { ...current };
-          delete next[attachment.id];
-          return next;
-        });
-      }
-    }
-  }, []);
-
-  const cancelAttachmentTransfer = useCallback((message: ChatMessage, attachment: ChatAttachment) => {
-    if (message.local_status === 'sending') {
-      cancelPendingAttachmentUpload(message);
-      return;
-    }
-    downloadControllersRef.current.get(attachment.id)?.abort();
-  }, [cancelPendingAttachmentUpload]);
-
-  const retryAttachmentTransfer = useCallback((message: ChatMessage, attachment: ChatAttachment) => {
-    if (message.local_status === 'failed' || message.local_status === 'cancelled') {
-      retryPendingAttachmentUpload(message);
-      return;
-    }
-    const failedAction = failedAttachmentActionsRef.current.get(attachment.id);
-    if (!failedAction) return;
-    void runAttachmentAction(failedAction.messageId, failedAction.attachment, failedAction.action);
-  }, [retryPendingAttachmentUpload, runAttachmentAction]);
-
-  const loadMoreMediaManifest = useCallback(async (restart = false) => {
-    if (offlineMode) {
-      mediaManifestHasMoreRef.current = false;
-      return;
-    }
-    if (mediaManifestLoadingRef.current) return;
-    if (!restart && !mediaManifestHasMoreRef.current) return;
-    const generation = mediaManifestGenerationRef.current;
-    mediaManifestLoadingRef.current = true;
-    try {
-      const page = await chatApi.getConversationAttachments(conversationId, {
-        kind: mediaManifestKindRef.current,
-        limit: 48,
-        beforeAttachmentId: restart ? undefined : mediaManifestCursorRef.current || undefined,
-      });
-      if (!mountedRef.current || generation !== mediaManifestGenerationRef.current) return;
-      const nextItems = page.items.map((entry) => mediaItemFromConversationAttachment(entry, conversationId));
-      setMediaViewerItems((current) => mergeChatMediaItems(current || [], nextItems));
-      mediaManifestHasMoreRef.current = page.has_more;
-      mediaManifestCursorRef.current = page.next_before_attachment_id;
-    } catch {
-      if (generation === mediaManifestGenerationRef.current) mediaManifestHasMoreRef.current = false;
-    } finally {
-      if (generation === mediaManifestGenerationRef.current) mediaManifestLoadingRef.current = false;
-    }
-  }, [conversationId, offlineMode]);
-
-  const openMediaViewer = useCallback((
-    nextItem: ChatMediaItem,
-    seedItems: ChatMediaItem[] = [],
-  ) => {
-    const imageKind = isImageChatAttachment(nextItem.attachment);
-    mediaManifestGenerationRef.current += 1;
-    mediaManifestLoadingRef.current = false;
-    mediaManifestHasMoreRef.current = !offlineMode;
-    mediaManifestCursorRef.current = null;
-    mediaManifestKindRef.current = imageKind ? 'image' : 'video';
-    const localCorpus = accumulatedMessagesRef.current.length
-      ? accumulatedMessagesRef.current
-      : messagesRef.current;
-    const localItems = collectThreadMedia(localCorpus).filter((entry) => (
-      isImageChatAttachment(entry.attachment) === imageKind
-    ));
-    setMediaViewerItems(mergeChatMediaItems(seedItems, localItems, [nextItem]));
-    setMediaViewer(nextItem);
-    if (!offlineMode) void loadMoreMediaManifest(true);
-  }, [loadMoreMediaManifest, offlineMode]);
-
-  const closeMediaViewer = useCallback(() => {
-    mediaManifestGenerationRef.current += 1;
-    mediaManifestLoadingRef.current = false;
-    mediaManifestHasMoreRef.current = false;
-    mediaManifestCursorRef.current = null;
-    setMediaViewer(null);
-    setMediaViewerItems(null);
-  }, []);
-
-  const openAttachmentActions = useCallback((message: ChatMessage, attachment: ChatAttachment) => {
-    if (selectedMessageIds.length) {
-      setSelectedMessageIds((current) => toggleSelectedMessageId(current, message.id));
-      return;
-    }
-    if (isMediaChatAttachment(attachment)) {
-      openMediaViewer({ message, attachment });
-      return;
-    }
-    setAttachmentActionTarget({ message, attachment });
-  }, [openMediaViewer, selectedMessageIds.length]);
-
-  const openAttachment = useCallback((message: ChatMessage, attachment: ChatAttachment) => {
-    if (selectedMessageIds.length) {
-      setSelectedMessageIds((current) => toggleSelectedMessageId(current, message.id));
-      return;
-    }
-    if (isMediaChatAttachment(attachment)) {
-      openMediaViewer({ message, attachment });
-      return;
-    }
-    setAttachmentActionTarget({ message, attachment });
-  }, [openMediaViewer, selectedMessageIds.length]);
-
-  const selectedMessages = useMemo(
-    () => selectedMessagesFromIds(messages, selectedMessageIds),
-    [messages, selectedMessageIds],
-  );
-
-  const clearSelection = useCallback(() => setSelectedMessageIds([]), []);
-
-  const startSelection = useCallback((message: ChatMessage) => {
-    if (!canSelectChatMessage(message)) return;
-    void hapticSelection();
-    setActionMessage(null);
-    setSelectedMessageIds((current) => (
-      current.length ? toggleSelectedMessageId(current, message.id) : startMessageSelection(message.id)
-    ));
-  }, []);
-
-  const toggleSelection = useCallback((message: ChatMessage) => {
-    if (!canSelectChatMessage(message)) return;
-    setSelectedMessageIds((current) => toggleSelectedMessageId(current, message.id));
-  }, []);
-
-  const copySelected = useCallback(() => {
-    const textValue = getSelectedMessagesCopyText(selectedMessages);
-    if (!textValue) {
-      Alert.alert('Нечего копировать', 'В выбранных сообщениях нет текста.');
-      return;
-    }
-    void Clipboard.setStringAsync(textValue).then(() => {
-      if (mountedRef.current) {
-        Alert.alert('Скопировано', 'Текст выбранных сообщений скопирован.');
-        clearSelection();
-      }
-    });
-  }, [clearSelection, selectedMessages]);
-
-  const deleteSelected = useCallback(() => {
-    const deletable = selectedMessages.filter((message) => canSelectChatMessage(message));
-    if (!canDeleteSelectedMessages(deletable, {
-      conversationKind: conversation?.kind,
-      currentUserId: user?.id,
-    })) {
-      Alert.alert('Нельзя удалить', 'Среди выбранных есть сообщения, которые нельзя удалить.');
-      return;
-    }
-    const confirmLabel = deletable.length === 1
-      ? 'Удалить сообщение?'
-      : `Удалить ${deletable.length} сообщений?`;
-    Alert.alert(
-      confirmLabel,
-      'Текст и вложения будут скрыты у всех участников диалога.',
-      [
-        { text: 'Отмена', style: 'cancel' },
-        {
-          text: 'Удалить',
-          style: 'destructive',
-          onPress: () => {
-            void Promise.all(deletable.map((message) => chatApi.deleteMessage(conversationId, message.id)))
-              .then((deleted) => {
-                if (!mountedRef.current) return;
-                setMessages((current) => mergeMessages(current, deleted, user?.id));
-                clearSelection();
-              })
-              .catch((cause) => {
-                if (mountedRef.current) {
-                  Alert.alert('Не удалось удалить сообщение', formatApiError(cause, 'Повторите попытку'));
-                }
-              });
-          },
-        },
-      ],
-    );
-  }, [clearSelection, conversation?.kind, conversationId, selectedMessages, user?.id]);
-
-  const closeThreadLayer = useCallback((layer: ReturnType<typeof nextChatThreadBackAction>) => {
-    if (layer === 'viewer') {
-      closeMediaViewer();
-      return;
-    }
-    if (layer === 'voice') {
-      cancelVoiceRef.current?.();
-      return;
-    }
-    if (layer === 'sheet') {
-      if (attachmentActionTarget) {
-        setAttachmentActionTarget(null);
-        return;
-      }
-      setActionMessage(null);
-      return;
-    }
-    if (layer === 'forward') {
-      if (forwardInFlightRef.current) return;
-      setForwardProgress(null);
-      setForwardError('');
-      setForwardSource(null);
-      setForwardQueue([]);
-      return;
-    }
-    if (layer === 'search') {
-      setSearchOpen(false);
-      setSearchResults([]);
-      setSearchCompleted(false);
-      return;
-    }
-    if (layer === 'selection') {
-      clearSelection();
-      return;
-    }
-    if (layer === 'picker') {
-      if (attachmentDraftFiles.length) {
-        attachmentDraftClientMessageIdRef.current = '';
-        setAttachmentDraftFiles([]);
-        setAttachmentDraftError('');
-        return;
-      }
-      if (profileMember) {
-        setProfileMember(null);
-        return;
-      }
-      setAttachmentPickerVisible(false);
-      setEmojiPickerVisible(false);
-      setInfoVisible(false);
-      setRenameVisible(false);
-      setMemberPickerVisible(false);
-      setTaskPickerVisible(false);
-      setStickerPickerVisible(false);
-      setImageEditorFile(null);
-      return;
-    }
-    leaveThread();
-  }, [attachmentActionTarget, attachmentDraftFiles.length, clearSelection, closeMediaViewer, leaveThread, profileMember]);
-
-  const handleThreadBack = useCallback(() => {
-    const pickerOpen = attachmentPickerVisible
-      || attachmentDraftFiles.length > 0
-      || emojiPickerVisible
-      || infoVisible
-      || renameVisible
-      || memberPickerVisible
-      || taskPickerVisible
-      || stickerPickerVisible
-      || Boolean(imageEditorFile)
-      || Boolean(profileMember);
-    const action = nextChatThreadBackAction({
-      viewer: Boolean(mediaViewer),
-      voice: voiceRecording,
-      sheet: Boolean(actionMessage || attachmentActionTarget),
-      forward: Boolean(forwardSource),
-      search: searchOpen,
-      selection: selectedMessageIds.length > 0,
-      picker: pickerOpen,
-    });
-    closeThreadLayer(action);
-    return true;
-  }, [
-    actionMessage,
-    attachmentActionTarget,
-    attachmentPickerVisible,
-    attachmentDraftFiles.length,
-    closeThreadLayer,
-    emojiPickerVisible,
-    forwardSource,
+  const {
+    loading,
+    threadHydrated,
+    historyUnavailableOffline,
+    loadingOlder,
+    hasNewer,
+    newerCursor,
+    hasOlder,
+    olderCursor,
+    loadGenerationRef,
+    historyNavigationRef,
+    accumulatedMessagesRef,
+    historyMayHaveGapsRef,
+    loadingOlderRef,
+    loadingNewerRef,
+    reconnectSyncRef,
+    loadedThreadScopeRef,
+    setLoadingOlder,
+    setThreadHydrated,
+    setHasNewer,
+    setNewerCursor,
+    setHasOlder,
+    setOlderCursor,
+    loadInitial,
+    loadOlder,
+    loadNewer,
+    syncLatestMessages,
+    flushHistoryWrite,
+    error,
+    setError,
+  } = useThreadHistory({
+    conversationId,
+    userId: user?.id,
+    messageId,
+    offlineMode,
+    historySessionGeneration,
+    mountedRef,
+    nearBottomRef,
+    knownMessageIdsRef,
+    messageAnimationReadyRef,
+    messageEnterMotionsRef,
+    serverPinKnownRef,
+    leaveInFlightRef,
+    pendingAttachmentUploadsRef,
+    messagesRef,
+    outbox,
+    markRead,
+    requestBottomAnchor,
+    conversation,
+    title,
+    messages,
+    pinnedMessageId,
+    focusAnchorId,
+    unreadBoundaryId,
+    setMessages,
+    setConversation,
+    setTitle,
+    setUnreadBoundaryId,
+    setFocusAnchorId,
+    setPinnedMessageId,
+    setShowJumpToBottom,
+    setNewMessageCount,
+    setHoldVisiblePosition,
+    setAiBots,
+    setDraftError,
+  });
+
+
+  const { status, typingParticipants } = useThreadRealtime({
+    conversationId,
+    userId: user?.id,
+    offlineMode,
+    mountedRef,
+    markedReadRef,
+    knownMessageIdsRef,
+    messageAnimationReadyRef,
+    messageEnterMotionsRef,
+    nearBottomRef,
+    loadGenerationRef,
+    typingIdleRef,
+    typingActiveRef,
+    pendingAnchorTimerRef,
+    highlightTimerRef,
+    uploadControllersRef,
+    downloadControllersRef,
+    loadInitial,
+    syncLatestMessages,
+    markRead,
+    requestBottomAnchor,
+    setMessages,
+    setConversation,
+    setNewMessageCount,
+    setShowJumpToBottom,
+  });
+
+
+  const sheets = useThreadSheets({
+    conversationId,
+    userId: user?.id,
+    offlineMode,
+    mountedRef,
+    loadGenerationRef,
+    isCurrentSendScope,
+    conversation,
+    mentionQuery,
+    requestBottomAnchor,
+    setMessages,
+    setConversation,
+    setTitle,
+    composer: composerState,
+  });
+  const {
     infoVisible,
-    mediaViewer,
-    memberPickerVisible,
-    renameVisible,
-    searchOpen,
-    selectedMessageIds.length,
-    imageEditorFile,
-    stickerPickerVisible,
-    taskPickerVisible,
+    setInfoVisible,
     profileMember,
+    setProfileMember,
+    conversationBusy,
+    renameVisible,
+    setRenameVisible,
+    memberPickerVisible,
+    setMemberPickerVisible,
+    chatUsers,
+    taskPickerVisible,
+    setTaskPickerVisible,
+    shareableTasks,
+    taskPickerLoading,
+    stickerPickerVisible,
+    setStickerPickerVisible,
+    stickerPacks,
+    stickerPickerLoading,
+    stickerImporting,
+    recentStickerIds,
+    emojiPickerVisible,
+    setEmojiPickerVisible,
+    setPollCreateVisible,
+    openConversationInfo,
+    updateConversationSetting,
+    renameGroup,
+    resetAiContext,
+    deleteAiConversation,
+    openMemberPicker,
+    addMembers,
+    updateMember,
+    openPersonProfile,
+    openMemberActions,
+    requestLeaveGroup,
+    openTask,
+    loadShareableTasks,
+    openTaskPicker,
+    shareTask,
+    openStickerPicker,
+    importStickerPack,
+    removeStickerPack,
+    sendSticker,
+  } = sheets;
+
+  const send = useThreadSend({
+    conversationId,
+    user,
+    canWrite,
+    offlineMode,
+    isCurrentSendScope,
+    mountedRef,
+    outbox,
+    requestBottomAnchor,
+    setMessages,
+    messageEnterMotionsRef,
+    knownMessageIdsRef,
+    pendingAttachmentUploadsRef,
+    uploadControllersRef,
+    setAttachmentTransfers,
+    setEmojiPickerVisible,
+    composer: composerState,
+  });
+  const {
+    sendMessage,
+    sendPickedFiles,
+    sendPickedFile,
+    toggleReaction,
+    requestDelete,
+    discardPendingMessage,
+    cancelPendingAttachmentUpload,
+    retryPendingAttachmentUpload,
+    retryPendingMessage,
+    pickAndSendAttachment,
+    sendAttachmentDraft,
+    sendGif,
+    attachmentDraftClientMessageIdRef,
+  } = send;
+
+
+  const searchState = useThreadSearch({
+    conversationId,
+    userId: user?.id,
+    offlineMode,
+    mountedRef,
+    accumulatedMessagesRef,
+    messages,
+  });
+  const {
+    searchOpen,
+    setSearchOpen,
+    searchQuery,
+    setSearchQuery,
+    searchResults,
+    searching,
+    searchCompleted,
+    runSearch,
+    setSearchResults,
+    setSearchCompleted,
+  } = searchState;
+  const {
+    focusSearchResult,
+    focusMessageById,
+    jumpToBottom,
+    returnAnchorId,
+    returnToAnchor,
+    handleViewableItemsChanged,
+    handleMessageListEndReached,
+    handleMessageListScroll,
+    handleMessageScrollFailure,
+    handleMessageListLayoutChange,
+    handleMessageContentSizeChange,
+  } = useThreadScrollAnchor({
+    conversationId,
+    userId: user?.id,
+    offlineMode,
+    reduceMotion,
+    mountedRef,
+    loading,
+    messages,
+    setMessages,
+    listRef,
+    nearBottomRef,
+    knownMessageIdsRef,
+    highlightTimerRef,
+    pendingBottomAnchorRef,
+    pendingAnchorAnimatedRef,
+    pendingAnchorGenerationRef,
+    pendingAnchorTimerRef,
+    anchorToBottom,
+    loadGenerationRef,
+    historyNavigationRef,
+    accumulatedMessagesRef,
+    historyMayHaveGapsRef,
+    loadingOlderRef,
+    loadingNewerRef,
+    setLoadingOlder,
+    hasNewer,
+    setHasOlder,
+    setOlderCursor,
+    setHasNewer,
+    setNewerCursor,
+    loadOlder,
+    loadNewer,
+    focusAnchorId,
+    setFocusAnchorId,
+    setHighlightedMessageId,
+    setShowJumpToBottom,
+    setNewMessageCount,
+    markRead,
+    search: searchState,
+  });
+
+
+
+  const messageActions = useThreadMessageActions({
+    conversationId,
+    userId: user?.id,
+    mountedRef,
+    pinnedMessageId,
+    setPinnedMessageId,
+    serverPinKnownRef,
+    setMessages,
+    loadInitial,
+  });
+  const {
+    copyMessageText,
+    copyMessageLink,
+    prepareReport,
+    showMessageReads,
+    togglePinnedMessage,
+    unpinMessage,
+    runAiAction,
+  } = messageActions;
+
+
+  const attachments = useThreadAttachments({
+    conversationId,
+    offlineMode,
+    mountedRef,
+    accumulatedMessagesRef,
+    messagesRef,
+    attachmentTransfersRef,
+    downloadControllersRef,
+    setAttachmentTransfers,
+    selectedMessageIdsLength: selectedMessageIds.length,
+    setSelectedMessageIds,
+    cancelPendingAttachmentUpload,
+    retryPendingAttachmentUpload,
+  });
+  const {
+    mediaViewer,
+    setMediaViewer,
+    mediaViewerItems,
+    attachmentActionTarget,
+    setAttachmentActionTarget,
+    runAttachmentAction,
+    cancelAttachmentTransfer,
+    retryAttachmentTransfer,
+    loadMoreMediaManifest,
+    openMediaViewer,
+    closeMediaViewer,
+    openAttachmentActions,
+    openAttachment,
+  } = attachments;
+  const {
+    leaveThread,
+    closeThreadLayer,
+    handleThreadBack,
+  } = useThreadBack({
+    conversationId,
+    userId: user?.id,
+    offlineMode,
+    mountedRef,
+    leaveInFlightRef,
+    requestLeave,
+    messagesRef,
+    actionMessage,
+    setActionMessage,
     voiceRecording,
-  ]);
+    attachmentDraftClientMessageIdRef,
+    sheets,
+    composer: composerState,
+    forward,
+    selection,
+    search: searchState,
+    attachments,
+  });
 
-  useAndroidBackHandler(handleThreadBack);
-
-  const showSenderAvatars = shouldShowSenderAvatarsForKind(conversation?.kind);
-  const rowDecorations = useMemo(
-    () => buildChatThreadRowDecorations(messages, unreadBoundaryId),
-    [messages, unreadBoundaryId],
+  // F-REACTORS: long-press a reaction chip → "who reacted" (names from the
+  // member/user directory already loaded for mentions and the header).
+  const reactorNameById = useMemo(() => {
+    const map = new Map<number, string>();
+    (chatUsers || []).forEach((entry) => {
+      map.set(Number(entry.id), String(entry.full_name || entry.username || `Участник ${entry.id}`));
+    });
+    (conversation?.members || []).forEach((member) => {
+      map.set(Number(member.user.id), String(member.user.full_name || member.user.username || `Участник ${member.user.id}`));
+    });
+    if (user?.id) map.set(Number(user.id), 'Вы');
+    return map;
+  }, [chatUsers, conversation?.members, user?.id]);
+  // F-MENTION-JUMP: "@" button → first (oldest) unread mention of me.
+  const unreadMentionMessageId = useMemo(
+    () => findUnreadMentionMessageId(
+      messages,
+      Number(user?.id || 0),
+      Number(conversation?.viewer_last_read_seq || 0),
+    ),
+    [conversation?.viewer_last_read_seq, messages, user?.id],
   );
+
+  const showReactionUsers = useCallback((message: ChatMessage, emoji: string, userIds: number[]) => {
+    const names = (userIds || [])
+      .map((id) => reactorNameById.get(Number(id)) || `Участник ${id}`);
+    Alert.alert(
+      `Реакция ${emoji}`,
+      names.length ? names.join('\n') : 'Нет данных об авторах реакции',
+    );
+  }, [reactorNameById]);
+
+  const { renderMessage, renderLiftedBubble } = useThreadRender({
+    conversation,
+    userId: user?.id,
+    canWrite,
+    canCompose,
+    offlineMode,
+    reduceMotion,
+    messages,
+    unreadBoundaryId,
+    selectedMessageIds,
+    highlightedMessageId,
+    attachmentTransfersRef,
+    messageEnterMotionsRef,
+    setActionMessage,
+    setActionAnchor,
+    focusMessageById,
+    openAttachment,
+    openAttachmentActions,
+    openForward,
+    openPersonProfile,
+    openTask,
+    votePoll: send.votePoll,
+    closePoll: send.closePoll,
+    runAiAction,
+    cancelAttachmentTransfer,
+    retryAttachmentTransfer,
+    startReply,
+    startSelection,
+    toggleReaction,
+    toggleSelection,
+    showReactionUsers,
+    styles,
+  });
   const listEmptyMessage = historyUnavailableOffline
     ? 'Переписка не сохранена на устройстве'
     : 'Сообщений пока нет';
@@ -2625,212 +895,7 @@ export function NativeChatThreadScreen({
     () => <ChatEmptyState message={listEmptyMessage} />,
     [listEmptyMessage],
   );
-  const selectedMessageIdsRef = useRef(selectedMessageIds);
-  selectedMessageIdsRef.current = selectedMessageIds;
-  const highlightedMessageIdRef = useRef(highlightedMessageId);
-  highlightedMessageIdRef.current = highlightedMessageId;
-  const messageActionsRef = useRef({
-    discardPendingMessage,
-    canWrite,
-    offlineMode,
-    cancelAttachmentTransfer,
-    conversationKind: conversation?.kind,
-    currentUserId: user?.id,
-    showSenderAvatars,
-    focusMessageById,
-    openAttachment,
-    openAttachmentActions,
-    openForward,
-    openPersonProfile,
-    openTask,
-    runAiAction,
-    retryAttachmentTransfer,
-    retryPendingAttachmentUpload,
-    sendBody,
-    startReply,
-    startSelection,
-    toggleReaction,
-    toggleSelection,
-  });
-  messageActionsRef.current = {
-    discardPendingMessage,
-    canWrite,
-    offlineMode,
-    cancelAttachmentTransfer,
-    conversationKind: conversation?.kind,
-    currentUserId: user?.id,
-    showSenderAvatars,
-    focusMessageById,
-    openAttachment,
-    openAttachmentActions,
-    openForward,
-    openPersonProfile,
-    openTask,
-    runAiAction,
-    retryAttachmentTransfer,
-    retryPendingAttachmentUpload,
-    sendBody,
-    startReply,
-    startSelection,
-    toggleReaction,
-    toggleSelection,
-  };
 
-  const finishMessageEnterMotion = useCallback((motionKey: string) => {
-    messageEnterMotionsRef.current.delete(motionKey);
-  }, []);
-
-  const renderMessage = useCallback(({ item, index }: ListRenderItemInfo<ChatMessage>) => {
-    const decoration = rowDecorations[index];
-    const actions = messageActionsRef.current;
-    const selectedIds = selectedMessageIdsRef.current;
-    const isOwn = Boolean(resolveChatMessageIsOwn(item, actions.currentUserId));
-    const selecting = selectedIds.length > 0;
-    const selected = selectedIds.includes(item.id);
-    const openActions = item.kind === 'system' || item.local_status
-      ? undefined
-      : () => {
-        setActionAnchor(null);
-        setActionMessage(item);
-      };
-    const motionKey = chatMessageMotionKey(item);
-    const enterKind = messageEnterMotionsRef.current.get(motionKey);
-    const bubble = (
-      <SwipeableChatBubble
-        message={item}
-        isOwn={isOwn}
-        selected={selected}
-        highlighted={item.id === highlightedMessageIdRef.current}
-        swipeEnabled={!selecting}
-        showSenderAvatars={actions.showSenderAvatars}
-        groupPosition={decoration?.groupPosition || 'single'}
-        onSwipeReply={canCompose && !item.is_deleted && !item.local_status && item.kind !== 'system'
-          ? () => actions.startReply(item)
-          : undefined}
-        onSwipeForward={!item.is_deleted && !item.local_status && item.kind !== 'system'
-          ? () => void actions.openForward(item)
-          : undefined}
-        onPress={selecting ? () => actions.toggleSelection(item) : openActions}
-        onActionsAnchor={(next) => setActionAnchor(next)}
-        onLongPress={canSelectChatMessage(item) ? () => actions.startSelection(item) : openActions}
-        onReactionPress={actions.canWrite && !item.local_status ? (emoji) => void actions.toggleReaction(item, emoji) : undefined}
-        onQuickReaction={actions.canWrite && !selecting && !item.local_status ? (emoji) => {
-          setActionMessage(null);
-          void actions.toggleReaction(item, emoji);
-        } : undefined}
-        onReplyPreviewPress={(targetId) => void actions.focusMessageById(targetId)}
-        attachmentTransfers={attachmentTransfersRef.current}
-        onAttachmentTransferCancel={(attachment) => actions.cancelAttachmentTransfer(item, attachment)}
-        onAttachmentTransferRetry={(attachment) => actions.retryAttachmentTransfer(item, attachment)}
-        onAttachmentOpen={!item.local_status
-          ? (attachment) => actions.openAttachment(item, attachment)
-          : undefined}
-        onAttachmentPress={!item.local_status
-          ? (attachment) => actions.openAttachmentActions(item, attachment)
-          : undefined}
-        onSenderPress={actions.showSenderAvatars || actions.conversationKind === 'direct'
-          ? (sender) => actions.openPersonProfile(sender)
-          : undefined}
-        onTaskPress={actions.openTask}
-        onDiscard={() => actions.discardPendingMessage(item)}
-        onConfirmAction={(actionId) => void actions.runAiAction(actionId, 'confirm')}
-        onCancelAction={(actionId) => void actions.runAiAction(actionId, 'cancel')}
-        awaitingConnection={['queued', 'retry'].includes(getNativeChatQueueState(item) || '')}
-        offline={actions.offlineMode}
-        onRetry={(item.local_status === 'failed' || item.local_status === 'cancelled')
-          ? (['queued', 'retry'].includes(getNativeChatQueueState(item) || '')
-            ? undefined
-            : item.attachments?.length
-              ? () => actions.retryPendingAttachmentUpload(item)
-              : () => void actions.sendBody(
-                item.body_text || '',
-                item.client_message_id || undefined,
-                item.reply_preview || undefined,
-                false,
-              ))
-          : undefined}
-      />
-    );
-    return (
-      <View>
-        {decoration?.showDate ? (
-          <View style={styles.dateSeparator} accessibilityRole="text">
-            <Text style={styles.dateSeparatorText}>{decoration.dateLabel}</Text>
-          </View>
-        ) : null}
-        {decoration?.unreadBoundary ? (
-          <View style={styles.unreadSeparator} accessibilityLiveRegion="polite">
-            <View style={styles.unreadLine} />
-            <Text style={styles.unreadText}>Непрочитанные сообщения</Text>
-            <View style={styles.unreadLine} />
-          </View>
-        ) : null}
-        {(
-          <ChatMessageEnterMotion
-            motionKey={motionKey}
-            kind={enterKind}
-            reduceMotion={reduceMotion}
-            onFinished={finishMessageEnterMotion}
-          >
-            {bubble}
-          </ChatMessageEnterMotion>
-        )}
-      </View>
-    );
-  }, [canCompose, finishMessageEnterMotion, reduceMotion, rowDecorations, styles]);
-
-  const handleMessageListEndReached = useCallback(() => {
-    void loadOlder();
-  }, [loadOlder]);
-
-  const handleMessageListScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const nearBottom = event.nativeEvent.contentOffset.y < 96;
-    const nextNearBottom = nearBottom && !hasNewer;
-    if (!nextNearBottom && pendingBottomAnchorRef.current) {
-      pendingBottomAnchorRef.current = false;
-      pendingAnchorGenerationRef.current += 1;
-      if (pendingAnchorTimerRef.current) clearTimeout(pendingAnchorTimerRef.current);
-      pendingAnchorTimerRef.current = null;
-    }
-    if (nearBottomRef.current !== nextNearBottom) {
-      nearBottomRef.current = nextNearBottom;
-      setShowJumpToBottom(!nextNearBottom);
-      if (nextNearBottom) {
-        setNewMessageCount(0);
-        markRead(findLatestIncomingMessage(messages, user?.id));
-      }
-    }
-    if (nearBottom && hasNewer) void loadNewer();
-  }, [hasNewer, loadNewer, markRead, messages]);
-
-  const handleMessageScrollFailure = useCallback((info: {
-    averageItemLength: number;
-    index: number;
-  }) => {
-    listRef.current?.scrollToOffset({
-      offset: Math.max(0, info.averageItemLength * info.index),
-      animated: false,
-    });
-  }, []);
-
-  const handleMessageListLayoutChange = useCallback(() => {
-    if (pendingBottomAnchorRef.current) {
-      anchorToBottom(pendingAnchorAnimatedRef.current);
-    } else if (nearBottomRef.current) {
-      anchorToBottom(false);
-    }
-  }, [anchorToBottom]);
-
-  const handleMessageContentSizeChange = useCallback(() => {
-    if (!pendingBottomAnchorRef.current) return;
-    const generation = pendingAnchorGenerationRef.current;
-    requestAnimationFrame(() => {
-      if (pendingAnchorGenerationRef.current !== generation) return;
-      if (pendingAnchorTimerRef.current) clearTimeout(pendingAnchorTimerRef.current);
-      pendingAnchorTimerRef.current = null;
-      anchorToBottom(pendingAnchorAnimatedRef.current, true);
-    });
-  }, [anchorToBottom]);
 
   const olderMessagesLoader = useMemo(() => loadingOlder ? (
     <ActivityIndicator style={styles.olderLoader} color={chatTokens.composerActionBg} />
@@ -2842,19 +907,21 @@ export function NativeChatThreadScreen({
   const threadMedia = useMemo(() => collectThreadMedia(messages), [messages]);
   const viewerMediaItems = mediaViewerItems ?? threadMedia;
   const typingLine = formatTypingLine(typingParticipants);
-  const headerSubtitle = status === 'connected'
-    ? typingLine
-      || (conversation?.kind === 'group'
-        ? `${conversation.member_count || conversation.members?.length || 0} участников · ${conversation.online_member_count || 0} онлайн`
-        : formatPresenceSubtitle(conversation?.direct_peer?.presence))
-    : undefined;
+  const headerSubtitle = typingLine
+    || (conversation?.kind === 'group'
+      ? `${conversation.member_count || conversation.members?.length || 0} участников · ${conversation.online_member_count || 0} онлайн`
+      : formatPresenceSubtitle(conversation?.direct_peer?.presence))
+    || undefined;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-      <KeyboardAvoidingView
+      <ChatInteractiveBackGesture
+        enabled={!selectedMessageIds.length && !mediaViewer && !voiceRecording}
+        onBack={handleThreadBack}
+      >
+      <View
         testID="native-chat-thread-keyboard"
         style={styles.container}
-        {...chatKeyboardAvoidingProps()}
       >
         {selectedMessageIds.length ? (
           <ChatSelectionHeader
@@ -2878,8 +945,10 @@ export function NativeChatThreadScreen({
           <ChatHeader
             title={title}
             subtitle={headerSubtitle}
+            subtitleExtra={typingLine ? <TypingDots /> : undefined}
             avatarUrl={conversation?.avatar_url}
             muted={conversation?.is_muted}
+            socketStatus={status}
             onBack={handleThreadBack}
             onSearch={() => {
               setSearchOpen((current) => !current);
@@ -2935,8 +1004,7 @@ export function NativeChatThreadScreen({
 
         {loading ? (
           <View style={styles.center} accessibilityLiveRegion="polite">
-            <ActivityIndicator color={chatTokens.composerActionBg} />
-            <Text style={styles.stateText}>Загружаем переписку…</Text>
+            <ChatThreadSkeleton />
           </View>
         ) : error && messages.length === 0 ? (
           <View style={styles.center} accessibilityLiveRegion="assertive">
@@ -2951,7 +1019,14 @@ export function NativeChatThreadScreen({
             </Pressable>
           </View>
         ) : (
-          <View style={styles.listWrap}>
+          <Animated.View style={[styles.listWrap, listKeyboardStyle]}>
+          <Image
+            source={require('../../../assets/chat-pattern.png')}
+            style={styles.pattern}
+            resizeMode="repeat"
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+          />
           <FlatList
             ref={listRef}
             testID="native-chat-message-list"
@@ -2960,10 +1035,12 @@ export function NativeChatThreadScreen({
             inverted
             contentContainerStyle={styles.list}
             renderItem={renderMessage}
-            extraData={`${selectedMessageIds.join('\0')}|${unreadBoundaryId}|${canWrite}|${offlineMode}|${highlightedMessageId || ''}|${JSON.stringify(attachmentTransfers)}`}
+            extraData={`${selectedMessageIds.join('\0')}|${unreadBoundaryId}|${canWrite}|${offlineMode}|${highlightedMessageId || ''}`}
             onEndReached={handleMessageListEndReached}
             onEndReachedThreshold={0.35}
             onScroll={handleMessageListScroll}
+            onViewableItemsChanged={handleViewableItemsChanged.current}
+            viewabilityConfig={CHAT_LIST_VIEWABILITY_CONFIG}
             onLayout={handleMessageListLayoutChange}
             onContentSizeChange={handleMessageContentSizeChange}
             scrollEventThrottle={32}
@@ -2985,27 +1062,47 @@ export function NativeChatThreadScreen({
             ListEmptyComponent={listEmptyComponent}
             ListFooterComponent={olderMessagesLoader}
           />
-          <EdgeBackSwipeOverlay
-            enabled={!selectedMessageIds.length && !mediaViewer && !voiceRecording}
-            onBack={handleThreadBack}
-          />
-          </View>
+          </Animated.View>
         )}
 
-        {showJumpToBottom && !loading ? (
-          <Pressable
+        {!loading ? (
+          <ChatJumpToBottomButton
+            visible={showJumpToBottom}
+            count={newMessageCount}
             onPress={() => void jumpToBottom()}
-            style={({ pressed }) => [styles.jumpButton, pressed && styles.pressed]}
+          />
+        ) : null}
+
+        {/* F-MENTION-JUMP: "@" chip → first unread mention. */}
+        {unreadMentionMessageId ? (
+          <Pressable
+            style={styles.mentionJumpButton}
+            onPress={() => void focusMessageById(unreadMentionMessageId)}
             accessibilityRole="button"
-            accessibilityLabel={newMessageCount > 0
-              ? `Перейти вниз. Новых сообщений: ${newMessageCount}`
-              : 'Перейти к последним сообщениям'}
+            accessibilityLabel="Перейти к упоминанию"
           >
-            <Text style={styles.jumpIcon}>↓</Text>
-            {newMessageCount > 0 ? <Text style={styles.jumpCount}>{newMessageCount}</Text> : null}
+            <Text style={styles.mentionJumpText}>@</Text>
           </Pressable>
         ) : null}
 
+        {/* F-JUMPBACK: "back to where I was" chip after a reply/search jump. */}
+        {returnAnchorId ? (
+          <Pressable
+            style={styles.returnAnchorChip}
+            onPress={() => void returnToAnchor()}
+            accessibilityRole="button"
+            accessibilityLabel="Вернуться к исходному сообщению"
+          >
+            <MaterialCommunityIcons
+              name="arrow-u-left-top"
+              size={16}
+              color={chatTokens.accentText}
+            />
+            <Text style={styles.returnAnchorText}>Назад к сообщению</Text>
+          </Pressable>
+        ) : null}
+
+        <KeyboardStickyView>
         {canCompose ? (
           <>
           {offlineMode ? (
@@ -3048,8 +1145,30 @@ export function NativeChatThreadScreen({
             busy={composerBusy}
             onAttachmentPress={composerMode?.type === 'edit'
               ? undefined
-              : () => setAttachmentPickerVisible(true)}
-            onEmojiPress={composerMode?.type === 'edit' ? undefined : () => { Keyboard.dismiss(); setEmojiPickerVisible(true); }}
+              : () => {
+                // Picker panels are mutually exclusive (Telegram swaps them).
+                setEmojiPickerVisible(false);
+                setStickerPickerVisible(false);
+                setPollCreateVisible(false);
+                setTaskPickerVisible(false);
+                setAttachmentPickerVisible(true);
+              }}
+            onEmojiPress={composerMode?.type === 'edit' ? undefined : () => {
+              Keyboard.dismiss();
+              setAttachmentPickerVisible(false);
+              setStickerPickerVisible(false);
+              setPollCreateVisible(false);
+              setTaskPickerVisible(false);
+              setEmojiPickerVisible(true);
+            }}
+            onInputFocus={() => {
+              // The input takes the keyboard slot — open pickers close (Telegram swap).
+              setAttachmentPickerVisible(false);
+              setEmojiPickerVisible(false);
+              setStickerPickerVisible(false);
+              setPollCreateVisible(false);
+              setTaskPickerVisible(false);
+            }}
             canRecord={canCompose && composerMode?.type !== 'edit'}
             onSendVoiceFile={sendPickedFile}
             onRecordingChange={handleVoiceRecordingChange}
@@ -3066,241 +1185,32 @@ export function NativeChatThreadScreen({
               : 'У вас нет права отправлять сообщения'}</Text>
           </View>
         )}
-        <MessageActionsSheet
-          message={actionMessage}
-          isOwn={Boolean(actionMessage && resolveChatMessageIsOwn(actionMessage, user?.id))}
-          anchor={actionAnchor}
-          onClose={() => {
-            setActionMessage(null);
-            setActionAnchor(null);
-          }}
-          onReply={startReply}
-          onEdit={startEdit}
-          onDelete={requestDelete}
-          onForward={(message) => void openForward(message)}
-          onReaction={(message, emoji) => void toggleReaction(message, emoji)}
-          onCopyText={copyMessageText}
-          onCopyLink={copyMessageLink}
-          onPin={togglePinnedMessage}
-          onReads={(message) => void showMessageReads(message)}
-          onOpenTask={(message) => {
-            if (message.task_preview?.id) openTask(message.task_preview.id);
-          }}
-          onReport={prepareReport}
-          onSelect={startSelection}
-          pinnedMessageId={pinnedMessageId}
-        />
-        <ChatAttachmentActionsSheet
-          attachment={attachmentActionTarget?.attachment || null}
-          onClose={() => setAttachmentActionTarget(null)}
-          onOpen={() => {
-            if (!attachmentActionTarget) return;
-            void runAttachmentAction(
-              attachmentActionTarget.message.id,
-              attachmentActionTarget.attachment,
-              'open',
-            );
-          }}
-          onShare={() => {
-            if (!attachmentActionTarget) return;
-            void runAttachmentAction(
-              attachmentActionTarget.message.id,
-              attachmentActionTarget.attachment,
-              'share',
-            );
-          }}
-          onForward={() => {
-            if (!attachmentActionTarget) return;
-            void openForward(attachmentActionTarget.message);
-          }}
-          onSave={() => {
-            if (!attachmentActionTarget) return;
-            void runAttachmentAction(
-              attachmentActionTarget.message.id,
-              attachmentActionTarget.attachment,
-              'save',
-            );
-          }}
-        />
-        <AttachmentPickerSheet
-          visible={attachmentPickerVisible}
-          onClose={() => setAttachmentPickerVisible(false)}
-          onPick={(source) => void pickAndSendAttachment(source)}
-          onTask={openTaskPicker}
-          onSticker={() => void openStickerPicker()}
-        />
-        <ChatAttachmentDraftSheet
-          visible={attachmentDraftFiles.length > 0 && !imageEditorFile}
-          files={attachmentDraftFiles}
-          caption={text}
-          busy={composerBusy}
-          error={attachmentDraftError}
-          onChangeCaption={setText}
-          onEdit={(index) => {
-            const file = attachmentDraftFiles[index];
-            if (file?.mimeType.startsWith('image/') && !composerBusy) setImageEditorFile(file);
-          }}
-          onRemove={(index) => {
-            setAttachmentDraftFiles((current) => {
-              const next = current.filter((_, itemIndex) => itemIndex !== index);
-              if (!next.length) {
-                attachmentDraftClientMessageIdRef.current = '';
-                setAttachmentDraftError('');
-              }
-              return next;
-            });
-          }}
-          onCancel={() => {
-            attachmentDraftClientMessageIdRef.current = '';
-            setAttachmentDraftFiles([]);
-            setAttachmentDraftError('');
-          }}
-          onSend={() => void sendAttachmentDraft()}
-        />
-        <ForwardMessageSheet
-          message={forwardSource}
-          count={forwardQueue.length || (forwardSource ? 1 : 0)}
-          conversations={forwardProgress ? [forwardProgress.target] : forwardConversations}
-          status={forwardProgress ? `Подтверждено: ${forwardProgress.completed} из ${forwardProgress.total}. Осталось: ${forwardProgress.total - forwardProgress.completed}.` : ''}
-          error={forwardError}
-          busy={forwarding}
-          onClose={() => {
-            if (forwardInFlightRef.current) return;
-            setForwardProgress(null);
-            setForwardError('');
-            setForwardSource(null);
-            setForwardQueue([]);
-          }}
-          onForward={(conversation) => void forwardToConversation(conversation)}
-        />
-        <ChatMediaViewer
-          item={mediaViewer}
-          items={viewerMediaItems}
-          onChange={setMediaViewer}
-          onClose={closeMediaViewer}
-          onRequestMore={() => void loadMoreMediaManifest()}
-          onOpen={() => {
-            if (!mediaViewer) return;
-            void runAttachmentAction(mediaViewer.message.id, mediaViewer.attachment, 'open');
-          }}
-          onShare={() => {
-            if (!mediaViewer) return;
-            void runAttachmentAction(mediaViewer.message.id, mediaViewer.attachment, 'share');
-          }}
-          onSave={() => {
-            if (!mediaViewer) return;
-            void runAttachmentAction(mediaViewer.message.id, mediaViewer.attachment, 'save');
-          }}
-          onForward={() => {
-            if (!mediaViewer) return;
-            const message = mediaViewer.message;
-            closeMediaViewer();
-            void openForward(message);
-          }}
-        />
-        <ChatConversationInfoSheet
-          visible={infoVisible}
+        </KeyboardStickyView>
+        <ChatThreadOverlays
+          conversationId={conversationId}
           conversation={conversation}
-          currentUserId={user?.id}
-          busy={conversationBusy}
-          onClose={() => setInfoVisible(false)}
-          onToggleSetting={(key, value) => void updateConversationSetting(key, value)}
-          onRename={() => {
-            setInfoVisible(false);
-            setRenameVisible(true);
-          }}
-          onResetAiContext={isAiConversation(conversation) ? resetAiContext : undefined}
-          onDeleteAi={isAiConversation(conversation) ? deleteAiConversation : undefined}
-          aiBot={resolveAiBotForConversation(aiBots, conversation?.id)}
-          onAddMembers={() => {
-            setInfoVisible(false);
-            void openMemberPicker();
-          }}
-          onMemberPress={(member) => openPersonProfile(member.user)}
-          onMemberManage={openMemberActions}
-          onLeave={requestLeaveGroup}
-          onOpenAttachment={(attachment, galleryItems) => {
-            const nextItems = (galleryItems.length ? galleryItems : [attachment])
-              .map((item) => mediaItemFromConversationAttachment(item, conversationId));
-            setInfoVisible(false);
-            openMediaViewer(mediaItemFromConversationAttachment(attachment, conversationId), nextItems);
-          }}
+          title={title}
+          userId={user?.id}
+          aiBots={aiBots}
+          actionMessage={actionMessage}
+          actionAnchor={actionAnchor}
+          setActionMessage={setActionMessage}
+          setActionAnchor={setActionAnchor}
+          pinnedMessageId={pinnedMessageId}
+          viewerMediaItems={viewerMediaItems}
+          renderBubble={renderLiftedBubble}
+          isCurrentSendScope={isCurrentSendScope}
+          sheets={sheets}
+          composer={composerState}
+          forward={forward}
+          attachments={attachments}
+          messageActions={messageActions}
+          send={send}
+          selection={selection}
         />
-        <ChatParticipantProfileSheet
-          visible={Boolean(profileMember)}
-          member={profileMember}
-          isGroup={conversation?.kind === 'group' || conversation?.kind === 'task'}
-          onClose={() => setProfileMember(null)}
-        />
-        <ChatRenameSheet
-          visible={renameVisible}
-          initialTitle={conversation?.title || title}
-          busy={conversationBusy}
-          heading={isAiConversation(conversation) ? 'Название диалога' : 'Название группы'}
-          inputLabel={isAiConversation(conversation) ? 'Новое название диалога' : 'Новое название группы'}
-          onClose={() => setRenameVisible(false)}
-          onSave={(nextTitle) => void renameGroup(nextTitle)}
-        />
-        <ChatMemberPickerSheet
-          visible={memberPickerVisible}
-          users={chatUsers}
-          excludedUserIds={(conversation?.members || []).map((member) => member.user.id)}
-          busy={conversationBusy}
-          onClose={() => setMemberPickerVisible(false)}
-          onAdd={(userIds) => void addMembers(userIds)}
-        />
-        <ChatTaskShareSheet
-          visible={taskPickerVisible}
-          tasks={shareableTasks}
-          loading={taskPickerLoading}
-          onClose={() => setTaskPickerVisible(false)}
-          onSearch={(query) => void loadShareableTasks(query)}
-          onShare={(task) => void shareTask(task)}
-        />
-        <ChatStickerPickerSheet
-          visible={stickerPickerVisible}
-          packs={stickerPacks}
-          recentIds={recentStickerIds}
-          loading={stickerPickerLoading}
-          importing={stickerImporting}
-          onClose={() => setStickerPickerVisible(false)}
-          onSend={(sticker) => void sendSticker(sticker)}
-          onImport={(source) => void importStickerPack(source)}
-          onRemove={removeStickerPack}
-        />
-        <ChatEmojiPickerSheet
-          visible={emojiPickerVisible}
-          onClose={() => setEmojiPickerVisible(false)}
-          onSelect={(emoji) => {
-            setText((current) => `${current}${emoji}`);
-            setEmojiPickerVisible(false);
-          }}
-          onSelectGif={(gif) => void sendGif(gif)}
-          onOpenStickers={() => void openStickerPicker()}
-        />
-        <ChatImageEditorSheet
-          file={imageEditorFile}
-          busy={composerBusy}
-          caption={text}
-          onChangeCaption={setText}
-          confirmLabel={attachmentDraftFiles.some((file) => file === imageEditorFile) ? 'Сохранить фото' : 'Отправить фото'}
-          onCancel={() => setImageEditorFile(null)}
-          onConfirm={async (file) => {
-            if (!isCurrentSendScope()) return;
-            if (attachmentDraftFiles.some((item) => item === imageEditorFile)) {
-              setAttachmentDraftFiles((files) => files.map((item) => item === imageEditorFile ? file : item));
-              setImageEditorFile(null);
-              return;
-            }
-            setComposerBusy(true);
-            try {
-              if (await sendPickedFiles([file])) setImageEditorFile(null);
-            } finally {
-              if (isCurrentSendScope()) setComposerBusy(false);
-            }
-          }}
-        />
-      </KeyboardAvoidingView>
+      </View>
+      </ChatInteractiveBackGesture>
+      <NativeToastHost />
     </SafeAreaView>
   );
 }
@@ -3309,10 +1219,57 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: chatTokens.threadBg },
   container: { flex: 1, backgroundColor: chatTokens.threadBg, overflow: 'visible' },
   listWrap: { flex: 1 },
+  pattern: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    opacity: chatTokens.scheme === 'dark' ? 0.10 : 0.05,
+  },
   list: { flexGrow: 1, justifyContent: 'flex-start', paddingHorizontal: 12, paddingVertical: 8 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 },
   errorTitle: { color: chatTokens.textPrimary, fontSize: 18, fontWeight: '700', textAlign: 'center' },
   draftError: { color: chatTokens.textPrimary, fontSize: 13, lineHeight: 18, paddingHorizontal: 14, paddingVertical: 8 },
+  returnAnchorChip: {
+    position: 'absolute',
+    right: 16,
+    bottom: 136,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 18,
+    backgroundColor: chatTokens.panelBg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: chatTokens.borderSoft,
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+  },
+  returnAnchorText: { color: chatTokens.accentText, fontSize: 13, fontWeight: '600' },
+  mentionJumpButton: {
+    position: 'absolute',
+    right: 76,
+    bottom: 76,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: chatTokens.panelBg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: chatTokens.borderSoft,
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOpacity: 0.22,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+  },
+  mentionJumpText: { color: chatTokens.accentText, fontSize: 20, fontWeight: '700' },
   draftRetry: { minHeight: 44, justifyContent: 'center' },
   stateText: { color: chatTokens.textSecondary, fontSize: 14, lineHeight: 20, textAlign: 'center' },
   retryButton: {
@@ -3343,24 +1300,6 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   unreadSeparator: { flexDirection: 'row', alignItems: 'center', gap: 8, marginVertical: 8 },
   unreadLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: chatTokens.composerActionBg },
   unreadText: { color: chatTokens.accentText, fontSize: 12, fontWeight: '700' },
-  jumpButton: {
-    position: 'absolute',
-    right: 16,
-    bottom: 76,
-    minWidth: 48,
-    height: 48,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-    borderRadius: 24,
-    backgroundColor: chatTokens.panelBg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: chatTokens.borderSoft,
-    elevation: 4,
-  },
-  jumpIcon: { color: chatTokens.accentText, fontSize: 24, fontWeight: '700' },
-  jumpCount: { marginLeft: 4, color: chatTokens.accentText, fontSize: 13, fontWeight: '800' },
   pinnedBar: {
     minHeight: 52,
     flexDirection: 'row',

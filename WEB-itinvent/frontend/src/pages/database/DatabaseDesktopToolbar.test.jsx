@@ -53,7 +53,7 @@ describe('DatabaseDesktopToolbar', () => {
     });
 
     expect(screen.queryByRole('button', { name: 'Добавить расходник' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /QR/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /QR/ })).toBeInTheDocument();
   });
 
   it('calls branch change handler from the branch select', () => {

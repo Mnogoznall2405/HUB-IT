@@ -27,6 +27,7 @@ import {
 } from '../../api/mailConfigApi';
 import { listMailboxes, type MailMailbox } from '../../api/mailMailboxesApi';
 import { useAuth } from '../../auth/AuthContext';
+import { MAILBOX_AUTH_LABELS } from '../../account/accountFormat';
 import { sanitizeMailSignatureHtml } from '../../mail/nativeMailSignature';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
@@ -37,12 +38,18 @@ function first(value: string | string[] | undefined): string {
   return String(Array.isArray(value) ? value[0] : value || '').trim();
 }
 
+function mailAuthModeLabel(value: string | null | undefined): string {
+  const normalized = String(value || '').trim() as keyof typeof MAILBOX_AUTH_LABELS;
+  return MAILBOX_AUTH_LABELS[normalized] || 'Не указана';
+}
+
 export function NativeMailSettingsScreen() {
   const params = useLocalSearchParams<{ mailboxId?: string | string[] }>();
   const { hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const allowed = hasPermission('mail.access');
+  const accent = tokens.scheme === 'dark' ? tokens.primaryLight : tokens.primary;
   const [mailboxId, setMailboxId] = useState(first(params.mailboxId));
   const [mailboxes, setMailboxes] = useState<MailMailbox[]>([]);
   const [config, setConfig] = useState<NativeMailConfig | null>(null);
@@ -282,7 +289,7 @@ export function NativeMailSettingsScreen() {
                 opacity: pressed ? 0.75 : 1,
               }]}
             >
-              <Text style={[styles.mailboxChipText, { color: mailboxId === String(mailbox.id) ? tokens.primary : tokens.textSecondary }]}>{mailbox.label || mailbox.mailbox_email || 'Ящик'}</Text>
+              <Text style={[styles.mailboxChipText, { color: mailboxId === String(mailbox.id) ? accent : tokens.textSecondary }]}>{mailbox.label || mailbox.mailbox_email || 'Ящик'}</Text>
             </Pressable>
           ))}
         </View>
@@ -295,7 +302,7 @@ export function NativeMailSettingsScreen() {
           <View style={styles.rows}>
             <ConfigRow label="Адрес" value={config.mailbox_email || 'Не указан'} tokens={tokens} />
             <ConfigRow label="Логин" value={config.effective_mailbox_login || config.mailbox_login || 'Не указан'} tokens={tokens} />
-            <ConfigRow label="Авторизация" value={config.mail_auth_mode || config.auth_mode || 'Не указана'} tokens={tokens} />
+            <ConfigRow label="Авторизация" value={mailAuthModeLabel(config.mail_auth_mode || config.auth_mode)} tokens={tokens} />
             <ConfigRow label="Подпись" value={config.mail_signature_html ? 'Настроена' : 'Не настроена'} tokens={tokens} />
             {config.mail_requires_password || config.mail_requires_relogin ? (
               <Text accessibilityRole="alert" style={[styles.warning, { color: tokens.warning }]}>Введите актуальный корпоративный пароль, чтобы восстановить подключение к Exchange.</Text>

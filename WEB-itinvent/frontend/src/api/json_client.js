@@ -370,6 +370,41 @@ export const jsonAPI = {
    */
   isColorPrinter: (printerModel) =>
     apiClient.get(`/json/cartridges/is-color/${encodeURIComponent(printerModel)}`),
+
+  /**
+   * Get printer models compatible with a cartridge model (reverse lookup)
+   * @param {string} cartridgeModel - Cartridge model name
+   * @returns {Promise<Object>} Object with printer_models array
+   */
+  getPrintersForCartridge: (cartridgeModel) =>
+    apiClient.get(`/json/cartridges/printers-for/${encodeURIComponent(cartridgeModel)}`),
+
+  /**
+   * List the full cartridge compatibility table (printer -> cartridges)
+   * @returns {Promise<Array>} List of compatibility entries
+   */
+  getCartridgeDatabase: () =>
+    apiClient.get('/json/cartridges/database'),
+
+  /**
+   * Create or update one printer compatibility entry
+   * @param {string} printerModel - Printer model name (dict key, normalized server-side)
+   * @param {Object} data - Entry fields
+   * @param {string} [data.oem_cartridge] - OEM cartridge model
+   * @param {Array} [data.compatible_models] - List of {model, description?, color?, page_yield?, oem_part?}
+   * @param {boolean} [data.is_color] - Whether the printer is color
+   * @returns {Promise<Object>} Saved entry
+   */
+  upsertCartridgeDatabaseEntry: (printerModel, data) =>
+    apiClient.put(`/json/cartridges/database/${encodeURIComponent(printerModel)}`, data),
+
+  /**
+   * Delete one printer compatibility entry
+   * @param {string} printerModel - Printer model name
+   * @returns {Promise<Object>} Deletion status
+   */
+  deleteCartridgeDatabaseEntry: (printerModel) =>
+    apiClient.delete(`/json/cartridges/database/${encodeURIComponent(printerModel)}`),
 };
 
 export default jsonAPI;

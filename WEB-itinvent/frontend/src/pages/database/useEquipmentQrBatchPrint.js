@@ -28,7 +28,7 @@ const openBrowserPrintDialog = () => {
   }
 };
 
-const openPrintDialog = async () => {
+export const openPrintDialog = async () => {
   if (isDesktopCapabilityAvailable(DESKTOP_EQUIPMENT_QR_PRINT_CAPABILITY)) {
     const result = await requestDesktopEquipmentQrPrint('dialog');
     if (result.accepted) return result;

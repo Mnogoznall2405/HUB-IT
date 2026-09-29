@@ -1,4 +1,4 @@
-import { Avatar, Box, Chip, IconButton, Stack, Tooltip, Typography } from '@mui/material';
+import { Avatar, Box, Chip, IconButton, Stack, Tooltip, Typography, useMediaQuery } from '@mui/material';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import MailOutlineIcon from '@mui/icons-material/MailOutline';
 import PhoneIcon from '@mui/icons-material/Phone';
@@ -30,6 +30,7 @@ export default function AddressBookEntryRow({
   chatBusy = false,
 }) {
   const theme = useTheme();
+  const compactActions = useMediaQuery(theme.breakpoints.down('sm'));
   const primaryPhone = pickQuickActionPhone(item);
   const primaryEmail = pickPrimaryEmail(item);
   const subtitle = buildEmployeeSubtitle(item);
@@ -87,13 +88,17 @@ export default function AddressBookEntryRow({
       </Avatar>
 
       <Box sx={{ minWidth: 0, flex: 1 }}>
-        <Typography variant="body2" fontWeight={700} noWrap>
-          <HighlightText value={item.full_name} query={query} />
-        </Typography>
-        {subtitle ? (
-          <Typography variant="caption" color="text.secondary" noWrap display="block">
-            <HighlightText value={subtitle} query={query} />
+        <Tooltip title={item.full_name}>
+          <Typography variant="body2" fontWeight={700} noWrap>
+            <HighlightText value={item.full_name} query={query} />
           </Typography>
+        </Tooltip>
+        {subtitle ? (
+          <Tooltip title={subtitle}>
+            <Typography variant="caption" color="text.secondary" noWrap display="block">
+              <HighlightText value={subtitle} query={query} />
+            </Typography>
+          </Tooltip>
         ) : null}
         {absenceLabel ? (
           <Chip
@@ -126,7 +131,7 @@ export default function AddressBookEntryRow({
             </span>
           </Tooltip>
         ) : null}
-        {primaryPhone ? (
+        {primaryPhone && !compactActions ? (
           <Tooltip title={canTelegram ? 'Telegram' : 'Номер не подходит для Telegram'}>
             <span onClick={stopAction} onKeyDown={stopAction}>
               <IconButton
@@ -141,7 +146,7 @@ export default function AddressBookEntryRow({
             </span>
           </Tooltip>
         ) : null}
-        {primaryEmail ? (
+        {primaryEmail && !compactActions ? (
           <Tooltip title={canMail ? 'Написать в HUB' : 'Некорректный e-mail'}>
             <span onClick={stopAction} onKeyDown={stopAction}>
               <IconButton

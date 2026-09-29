@@ -1,61 +1,54 @@
 import { act, render } from '@testing-library/react-native';
-import { Animated, PanResponder, type PanResponderCallbacks, type PanResponderGestureState, type GestureResponderEvent } from 'react-native';
 import { lockChatVoiceSurface, unlockChatVoiceSurface } from '../../chat/chatVoice';
-import { SwipeableChatBubble } from './SwipeableChatBubble';
+import {
+  applySwipeResistance,
+  fireSwipe,
+  resolveSwipeRelease,
+  REPLY_THRESHOLD,
+  SwipeableChatBubble,
+} from './SwipeableChatBubble';
 
 let mockReducedMotion = false;
 jest.mock('../../accessibility/useReducedMotion', () => ({ useReducedMotion: () => mockReducedMotion }));
 const message = { id: 'message-1', conversation_id: 'c1', sender_user_id: 1, body_text: 'Swipe me' };
-let handlers: PanResponderCallbacks;
-const event = {} as GestureResponderEvent;
-const gesture = { dx: 50, dy: 0 } as PanResponderGestureState;
-beforeEach(() => {
-  mockReducedMotion = false;
-  jest.spyOn(PanResponder, 'create').mockImplementation((config) => { handlers = config; return { panHandlers: {} }; });
-  jest.spyOn(Animated, 'spring').mockReturnValue({ start: jest.fn(), stop: jest.fn(), reset: jest.fn() });
-});
-afterEach(() => jest.restoreAllMocks());
+beforeEach(() => { mockReducedMotion = false; });
 
-it.each(['disabled', 'message', 'voice', 'terminated'] as const)('cancels the acquired reply gesture after %s', async (change) => {
+it.each([true, false])('renders the bubble with reply and forward indicators (reduceMotion=%s)', async (reduceMotion) => {
+  mockReducedMotion = reduceMotion;
+  const view = await render(<SwipeableChatBubble isOwn={false} message={message} onSwipeReply={() => {}} onSwipeForward={() => {}} />);
+  expect(view.getByText('Swipe me')).toBeTruthy();
+});
+
+it('resolves a release at the reply threshold and resists overdrag', () => {
+  expect(resolveSwipeRelease(REPLY_THRESHOLD, { canReply: true, canForward: false })).toBe('reply');
+  expect(resolveSwipeRelease(-REPLY_THRESHOLD, { canReply: true, canForward: true })).toBe('forward');
+  expect(resolveSwipeRelease(-REPLY_THRESHOLD, { canReply: true, canForward: false })).toBeNull();
+  expect(resolveSwipeRelease(20, { canReply: true, canForward: true })).toBeNull();
+});
+
+it('applies rubber-band resistance past the offset cap', () => {
+  const min = -60;
+  const max = 60;
+  expect(applySwipeResistance(30, min, max)).toBe(30);
+  expect(applySwipeResistance(80, min, max)).toBeGreaterThan(60);
+  expect(applySwipeResistance(80, min, max)).toBeLessThanOrEqual(74);
+  expect(applySwipeResistance(-200, min, max)).toBeGreaterThanOrEqual(min - 14);
+});
+
+it('does not fire while the voice surface is locked', async () => {
   const reply = jest.fn();
-  const view = await render(<SwipeableChatBubble isOwn={false} message={message} onSwipeReply={reply} />);
-  const acquired = handlers;
-  await act(async () => { acquired.onPanResponderGrant?.(event, gesture); acquired.onPanResponderMove?.(event, gesture); });
-  if (change === 'disabled') await view.rerender(<SwipeableChatBubble isOwn={false} message={message} onSwipeReply={reply} swipeEnabled={false} />);
-  if (change === 'message') await view.rerender(<SwipeableChatBubble isOwn={false} message={{ ...message, id: 'message-2' }} onSwipeReply={reply} />);
-  if (change === 'voice') lockChatVoiceSurface();
-  if (change === 'terminated') await act(async () => { acquired.onPanResponderTerminate?.(event, gesture); });
-  try {
-    await act(async () => { acquired.onPanResponderRelease?.(event, gesture); });
-    expect(reply).not.toHaveBeenCalled();
-  } finally { if (change === 'voice') unlockChatVoiceSurface(); await view.unmount(); }
-});
-
-it('invokes the latest callback once and skips spring when reduced motion changes during a swipe', async () => {
-  const oldReply = jest.fn(), newReply = jest.fn();
-  const view = await render(<SwipeableChatBubble isOwn={false} message={message} onSwipeReply={oldReply} />);
-  const acquired = handlers;
-  await act(async () => { acquired.onPanResponderGrant?.(event, gesture); acquired.onPanResponderMove?.(event, gesture); });
-  mockReducedMotion = true;
-  await view.rerender(<SwipeableChatBubble isOwn={false} message={message} onSwipeReply={newReply} />);
-  await act(async () => { acquired.onPanResponderRelease?.(event, gesture); acquired.onPanResponderRelease?.(event, gesture); });
-  expect(oldReply).not.toHaveBeenCalled();
-  expect(newReply).toHaveBeenCalledTimes(1);
-  expect(Animated.spring).not.toHaveBeenCalled();
-});
-
-it('forwards a deliberate left gesture once and ignores a vertical takeover', async () => {
   const forward = jest.fn();
-  await render(<SwipeableChatBubble isOwn={false} message={message} onSwipeForward={forward} />);
-  await act(async () => {
-    handlers.onPanResponderGrant?.(event, gesture);
-    handlers.onPanResponderRelease?.(event, { ...gesture, dx: -50 });
-    handlers.onPanResponderRelease?.(event, { ...gesture, dx: -50 });
-  });
-  expect(forward).toHaveBeenCalledTimes(1);
-  await act(async () => {
-    handlers.onPanResponderGrant?.(event, gesture);
-    handlers.onPanResponderRelease?.(event, { ...gesture, dx: -50, dy: 90 });
-  });
+  lockChatVoiceSurface();
+  try {
+    fireSwipe('reply', reply, forward);
+    fireSwipe('forward', reply, forward);
+  } finally {
+    unlockChatVoiceSurface();
+  }
+  expect(reply).not.toHaveBeenCalled();
+  expect(forward).not.toHaveBeenCalled();
+  fireSwipe('reply', reply, forward);
+  fireSwipe('forward', reply, forward);
+  expect(reply).toHaveBeenCalledTimes(1);
   expect(forward).toHaveBeenCalledTimes(1);
 });

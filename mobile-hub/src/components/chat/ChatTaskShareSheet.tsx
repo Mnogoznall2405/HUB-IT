@@ -1,9 +1,8 @@
 import { useMemo, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import type { ChatTaskPreview } from '../../api/types';
-import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
-import { ChatKeyboardAvoidingHost } from './ChatKeyboardAvoidingHost';
+import { ChatInlineSheet } from './ChatInlineSheet';
 
 export function ChatTaskShareSheet({
   visible,
@@ -21,7 +20,6 @@ export function ChatTaskShareSheet({
   onShare: (task: ChatTaskPreview) => void;
 }) {
   const { chatTokens, styles } = useChatStyles(createStyles);
-  const reduceMotion = useReducedMotion();
   const [query, setQuery] = useState('');
   const normalized = query.trim().toLowerCase();
   const filtered = useMemo(() => normalized
@@ -29,10 +27,12 @@ export function ChatTaskShareSheet({
     : tasks, [normalized, tasks]);
 
   return (
-    <Modal visible={visible} animationType={reduceMotion ? 'none' : 'slide'} transparent onRequestClose={onClose}>
-      <ChatKeyboardAvoidingHost style={styles.backdrop}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Закрыть выбор задачи" />
-        <View style={styles.sheet} accessibilityViewIsModal>
+    <ChatInlineSheet
+      visible={visible}
+      onClose={onClose}
+      dismissAccessibilityLabel="Закрыть выбор задачи"
+      sheetStyle={styles.sheet}
+    >
           <Text style={styles.title}>Отправить задачу</Text>
           <TextInput
             value={query}
@@ -61,15 +61,12 @@ export function ChatTaskShareSheet({
             ))}
             {!loading && !filtered.length ? <Text style={styles.empty}>Задачи не найдены</Text> : null}
           </ScrollView>
-        </View>
-      </ChatKeyboardAvoidingHost>
-    </Modal>
+    </ChatInlineSheet>
   );
 }
 
 const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
-  backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: chatTokens.overlayBg },
-  sheet: { maxHeight: '78%', padding: 16, borderTopLeftRadius: 22, borderTopRightRadius: 22, backgroundColor: chatTokens.panelBg },
+  sheet: { maxHeight: '78%', padding: 16, paddingTop: 8 },
   title: { marginBottom: 12, color: chatTokens.textPrimary, fontSize: 19, fontWeight: '700' },
   search: { minHeight: 46, paddingHorizontal: 13, borderRadius: 15, color: chatTokens.textPrimary, backgroundColor: chatTokens.sidebarSearchBg },
   list: { marginTop: 8 },

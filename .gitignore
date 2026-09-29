@@ -140,6 +140,19 @@ data/*.sqlite3
 data/*.db-shm
 data/*.db-wal
 data/scan_server/
+
+# VoiceVideo pipeline: code is tracked, runtime data/models/secrets are not.
+voice_video/input/
+voice_video/output/
+voice_video/processed/
+voice_video/temp/
+voice_video/logs/
+voice_video/checkpoints/
+voice_video/models/
+voice_video/reference_voices/
+voice_video/unassigned_speakers/
+voice_video/voice_fingerprints/
+voice_video/data/
 data/scan_server/*.backup_*
 /archive/
 /backups/
@@ -193,6 +206,11 @@ WEB-itinvent/uploads/
 /desktop/**/bin/
 /desktop/**/obj/
 /desktop/.vs/
+
+# SSO relay build artifacts
+/sso_relay/bin/
+/sso_relay/obj/
+/sso_relay/publish/
 
 # Recovery / session temp artifacts
 _restored_from_git_*/

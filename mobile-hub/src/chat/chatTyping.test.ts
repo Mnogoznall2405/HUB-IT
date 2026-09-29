@@ -18,7 +18,14 @@ describe('native chat typing', () => {
       userId: 7,
       name: 'Мария',
       isTyping: true,
+      expiresInMs: 5000,
     });
+    // R-TYPING-2: server TTL is honoured instead of a fixed client guess.
+    expect(parseTypingEnvelope({
+      type: 'chat.typing.started',
+      conversation_id: 'c1',
+      payload: { user_id: 7, sender_name: 'Мария', expires_in_ms: 9000 },
+    })?.expiresInMs).toBe(9000);
     expect(parseTypingEnvelope({
       type: 'chat.typing.stopped',
       conversation_id: 'c1',
@@ -37,7 +44,7 @@ describe('native chat typing', () => {
   it('formats a compact presence subtitle', () => {
     expect(formatPresenceSubtitle({ status: 'online' })).toBe('в сети');
     expect(formatPresenceSubtitle({ last_seen_at: new Date().toISOString() })).toBe('был(а) только что');
-    expect(formatPresenceSubtitle(null)).toBe('HUB-IT Chat');
+    expect(formatPresenceSubtitle(null)).toBe('');
   });
 
   it('formats a full person presence line like the web profile', () => {

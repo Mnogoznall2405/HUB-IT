@@ -92,7 +92,7 @@ def build_lean_message_payload(
     is_own = sender_id > 0 and sender_id == viewer_id
     created = created_at if isinstance(created_at, str) else (_iso(created_at) or "")
     normalized_kind = _normalize_text(kind, "text") or "text"
-    if normalized_kind not in {"text", "task_share", "file", "system"}:
+    if normalized_kind not in {"text", "task_share", "file", "system", "location", "contact", "poll"}:
         normalized_kind = "text"
     return {
         "id": _normalize_text(message_id),

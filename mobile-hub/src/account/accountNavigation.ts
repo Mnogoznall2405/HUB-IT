@@ -88,6 +88,27 @@ export const ADMIN_SECTION_DEFINITIONS: AccountSection[] = [
   },
 ];
 
+export type AccountNavTone = { foreground: string; background: string };
+
+export const ACCOUNT_NAV_TONES: Record<string, AccountNavTone> = {
+  appearance: { foreground: '#7f6df2', background: 'rgba(127, 109, 242, 0.18)' },
+  notifications: { foreground: '#ff9f1a', background: 'rgba(255, 159, 26, 0.18)' },
+  security: { foreground: '#36b37e', background: 'rgba(54, 179, 126, 0.18)' },
+  app: { foreground: '#4aa3ff', background: 'rgba(74, 163, 255, 0.18)' },
+  about: { foreground: '#22a6c7', background: 'rgba(34, 166, 199, 0.18)' },
+  admin: { foreground: '#7f6df2', background: 'rgba(127, 109, 242, 0.18)' },
+  users: { foreground: '#4aa3ff', background: 'rgba(74, 163, 255, 0.18)' },
+  departments: { foreground: '#22a6c7', background: 'rgba(34, 166, 199, 0.18)' },
+  'ad-users': { foreground: '#36b37e', background: 'rgba(54, 179, 126, 0.18)' },
+  sessions: { foreground: '#ef5b70', background: 'rgba(239, 91, 112, 0.18)' },
+  'ai-bots': { foreground: '#7f6df2', background: 'rgba(127, 109, 242, 0.18)' },
+  system: { foreground: '#8a94a6', background: 'rgba(138, 148, 166, 0.18)' },
+};
+
+export function accountNavTone(key: string): AccountNavTone {
+  return ACCOUNT_NAV_TONES[key] || { foreground: '#4aa3ff', background: 'rgba(74, 163, 255, 0.18)' };
+}
+
 export { ADMIN_AREA_PERMISSIONS, canAccessAdminArea, isAdminUser };
 
 export function getAvailableAdminSections({

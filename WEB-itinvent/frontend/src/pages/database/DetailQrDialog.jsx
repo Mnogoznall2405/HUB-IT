@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Box,
@@ -17,6 +17,17 @@ import {
   buildEquipmentQrLabelDataUrl,
 } from './equipmentQrLabel';
 
+const toGenericLabelContent = (equipment) => {
+  const base = buildEquipmentQrLabelContent(equipment);
+  return {
+    brandName: base.brandName,
+    topCaption: 'Инв. №',
+    topValue: base.invNo,
+    bottomCaption: 'Серийный номер',
+    bottomValue: base.serialNo,
+  };
+};
+
 function DetailQrDialog({
   open,
   onClose,
@@ -26,15 +37,31 @@ function DetailQrDialog({
   text = '',
   fileName = 'equipment-qr.png',
   equipment = null,
+  title = 'QR-код оборудования',
+  labelContent = null,
+  buildLabelDataUrl = null,
+  onPrint = null,
+  printLoading = false,
 }) {
-  const label = useMemo(() => buildEquipmentQrLabelContent(equipment), [equipment]);
-  const serialFontSize = label.serialNo.length > 32
+  const label = useMemo(
+    () => labelContent || toGenericLabelContent(equipment),
+    [equipment, labelContent]
+  );
+  const qrOnly = Boolean(label.qrOnly);
+  const bottomFontSize = String(label.bottomValue || '').length > 32
     ? { xs: 14, sm: 18 }
-    : label.serialNo.length > 22
+    : String(label.bottomValue || '').length > 22
       ? { xs: 17, sm: 22 }
       : { xs: 22, sm: 28 };
   const [downloadUrl, setDownloadUrl] = useState('');
   const [downloadLoading, setDownloadLoading] = useState(false);
+
+  const buildLabel = useCallback(
+    (qrDataUrl) => (buildLabelDataUrl
+      ? buildLabelDataUrl(qrDataUrl)
+      : buildEquipmentQrLabelDataUrl({ equipment, qrDataUrl })),
+    [buildLabelDataUrl, equipment]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -45,7 +72,7 @@ function DetailQrDialog({
     }
 
     setDownloadLoading(true);
-    buildEquipmentQrLabelDataUrl({ equipment, qrDataUrl: url })
+    buildLabel(url)
       .then((nextUrl) => {
         if (!cancelled) setDownloadUrl(nextUrl);
       })
@@ -60,7 +87,7 @@ function DetailQrDialog({
     return () => {
       cancelled = true;
     };
-  }, [equipment, loading, open, url]);
+  }, [buildLabel, loading, open, url]);
 
   return (
     <Dialog
@@ -70,31 +97,77 @@ function DetailQrDialog({
       fullWidth
       fullScreen={isMobile}
     >
-      <DialogTitle>QR-код оборудования</DialogTitle>
+      <DialogTitle>{title}</DialogTitle>
       <DialogContent sx={{ pt: 2, overscrollBehavior: 'contain' }}>
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'center' }}>
           <Box
-            aria-label={`Инвентарная этикетка ${label.invNo}`}
+            aria-label={qrOnly ? 'QR-этикетка расходника' : `Инвентарная этикетка ${label.topValue}`}
             sx={{
               width: '100%',
               maxWidth: 500,
               aspectRatio: '1 / 1',
               mx: 'auto',
               display: 'grid',
-              gridTemplateRows: 'auto auto minmax(0, 1fr) auto',
+              gridTemplateRows: qrOnly
+                ? (label.modelName ? 'minmax(0, 1fr) auto' : 'minmax(0, 1fr)')
+                : 'auto auto minmax(0, 1fr) auto',
               justifyItems: 'center',
               gap: { xs: 0.5, sm: 1 },
               bgcolor: '#fff',
               color: '#000',
-              border: '2px solid #000',
+              border: qrOnly ? 'none' : '2px solid #000',
               borderRadius: 0,
               boxSizing: 'border-box',
-              px: { xs: 1.5, sm: 2 },
-              py: { xs: 2.25, sm: 2.75 },
+              px: qrOnly ? 0 : { xs: 1.5, sm: 2 },
+              py: qrOnly ? 0 : { xs: 2.25, sm: 2.75 },
               boxShadow: 'none',
               overflow: 'hidden',
             }}
           >
+            {qrOnly ? (
+              loading ? (
+                <Box sx={{ alignSelf: 'center', display: 'grid', placeItems: 'center' }}>
+                  <CircularProgress />
+                </Box>
+              ) : url ? (
+                <>
+                  <Box
+                    component="img"
+                    src={url}
+                    alt={title}
+                    sx={{
+                      display: 'block',
+                      width: '100%',
+                      aspectRatio: '1 / 1',
+                      backgroundColor: '#fff',
+                      alignSelf: 'stretch',
+                    }}
+                  />
+                  {label.modelName ? (
+                    <Typography
+                      component="div"
+                      translate="no"
+                      sx={{
+                        fontSize: { xs: 13, sm: 16 },
+                        lineHeight: 1.15,
+                        fontWeight: 800,
+                        textAlign: 'center',
+                        overflowWrap: 'anywhere',
+                        px: 0.5,
+                        pb: 0.5,
+                      }}
+                    >
+                      {label.modelName}
+                    </Typography>
+                  ) : null}
+                </>
+              ) : (
+                <Alert severity="warning" sx={{ width: '100%', alignSelf: 'center' }}>
+                  Недостаточно данных для генерации QR-кода.
+                </Alert>
+              )
+            ) : (
+            <>
             <Box
               aria-label={label.brandName}
               sx={{
@@ -138,7 +211,7 @@ function DetailQrDialog({
                   letterSpacing: '0.04em',
                 }}
               >
-                Инв. №
+                {label.topCaption}
               </Typography>
               <Typography
                 component="dd"
@@ -152,7 +225,7 @@ function DetailQrDialog({
                   overflowWrap: 'anywhere',
                 }}
               >
-                {label.invNo}
+                {label.topValue}
               </Typography>
             </Box>
 
@@ -173,7 +246,7 @@ function DetailQrDialog({
                 <Box
                   component="img"
                   src={url}
-                  alt={`QR-код оборудования ${label.invNo}`}
+                  alt={`${title} ${label.topValue}`}
                   sx={{
                     display: 'block',
                     width: '100%',
@@ -199,7 +272,7 @@ function DetailQrDialog({
                   letterSpacing: '0.04em',
                 }}
               >
-                Серийный номер
+                {label.bottomCaption}
               </Typography>
               <Typography
                 component="dd"
@@ -207,7 +280,7 @@ function DetailQrDialog({
                   m: 0,
                   mt: 0.25,
                   color: '#000',
-                  fontSize: serialFontSize,
+                  fontSize: bottomFontSize,
                   lineHeight: 1.1,
                   fontWeight: 800,
                   fontVariantNumeric: 'tabular-nums',
@@ -216,9 +289,11 @@ function DetailQrDialog({
                   maxWidth: '100%',
                 }}
               >
-                {label.serialNo}
+                {label.bottomValue}
               </Typography>
             </Box>
+            </>
+            )}
           </Box>
 
           <TextField
@@ -244,11 +319,20 @@ function DetailQrDialog({
         <Button onClick={onClose} variant="outlined">
           Закрыть
         </Button>
+        {onPrint ? (
+          <Button
+            onClick={onPrint}
+            variant="contained"
+            disabled={!url || loading || printLoading}
+          >
+            {printLoading ? 'Печать…' : 'Печать'}
+          </Button>
+        ) : null}
         <Button
           component="a"
           href={downloadUrl || '#'}
           download={fileName}
-          variant="contained"
+          variant={onPrint ? 'outlined' : 'contained'}
           disabled={!downloadUrl || loading || downloadLoading}
         >
           {downloadLoading ? 'Готовим PNG…' : 'Скачать этикетку PNG'}

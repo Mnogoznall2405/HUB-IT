@@ -223,6 +223,9 @@ export function NativeAdminDepartmentsScreen() {
         return (
           <Pressable
             key={String(item.id)}
+            accessibilityRole="button"
+            accessibilityState={{ selected }}
+            accessibilityLabel={`Отдел ${item.name || item.id}`}
             onPress={() => setSelectedId(String(item.id))}
             style={[
               styles.row,

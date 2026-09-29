@@ -6,6 +6,7 @@ import {
   clearNativeChatDraft,
   getNativeChatDraft,
   getNativeChatDraftState,
+  listNativeChatDraftPreviews,
   setNativeChatDraft,
 } from './chatDrafts';
 
@@ -64,6 +65,18 @@ it('does not expose the malformed JSON content in a storage error', async () => 
   await SecureStore.setItemAsync(key, raw);
   await expect(getNativeChatDraft(7, 'chat-a')).rejects.toThrow(/^Не удалось прочитать черновики$/);
   expect(await SecureStore.getItemAsync(key)).toBe(raw);
+  await clearAllNativeChatDrafts();
+});
+
+it('lists one-line draft previews for the inbox, scoped to the user', async () => {
+  await clearAllNativeChatDrafts();
+  await setNativeChatDraft(7, 'chat-a', '  Первая\nстрока\nчерновика ');
+  await setNativeChatDraft(7, 'chat-b', 'Второй черновик');
+  await setNativeChatDraft(8, 'chat-a', 'Чужой пользователь');
+  const previews = await listNativeChatDraftPreviews(7);
+  expect(previews.get('chat-a')).toBe('Первая строка черновика');
+  expect(previews.get('chat-b')).toBe('Второй черновик');
+  expect(previews.has('chat-c')).toBe(false);
   await clearAllNativeChatDrafts();
 });
 

@@ -50,6 +50,16 @@ jest.mock('expo-file-system', () => {
       const size = Math.max(0, Math.min(this.size, end ?? this.size) - Math.max(0, start ?? 0));
       return { size } as Blob;
     }
+    open() {
+      const file = this;
+      return {
+        offset: 0,
+        readBytes(length: number) {
+          return new Uint8Array(Math.max(0, Math.min(Number(length) || 0, file.size - Number(this.offset) || 0)));
+        },
+        close() {},
+      };
+    }
     create() { if (!mockFiles.has(this.uri)) mockFiles.set(this.uri, { size: 0, text: '' }); }
     write(content: string | Uint8Array) {
       const text = typeof content === 'string' ? content : new TextDecoder().decode(content);
@@ -62,6 +72,7 @@ jest.mock('expo-file-system', () => {
   return {
     Directory: MockDirectory,
     File: MockFile,
+    FileMode: { ReadOnly: 'r' },
     Paths: { cache: 'file:///cache', document: 'file:///document' },
     UploadType: { BINARY_CONTENT: 0 },
   };
@@ -207,7 +218,7 @@ describe('resumable upload sessions', () => {
     jest.mocked(createMyFileUploadSession).mockResolvedValue(uploadSession());
     jest.mocked(getMyFileUploadSession).mockResolvedValue(uploadSession());
     jest.mocked(uploadMyFileChunk).mockImplementation(async (_id, chunk, options) =>
-      uploadSession({ uploaded_bytes: options.offset + chunk.size }));
+      uploadSession({ uploaded_bytes: options.offset + chunk.byteLength }));
     jest.mocked(completeMyFileUploadSession).mockResolvedValue(uploadedFile as never);
     jest.mocked(cancelMyFileUploadSession).mockResolvedValue(undefined);
   });
@@ -257,7 +268,7 @@ describe('resumable upload sessions', () => {
   it('recovers an acknowledged chunk through the session status after a transport failure', async () => {
     jest.mocked(uploadMyFileChunk)
       .mockRejectedValueOnce(Object.assign(new Error('Network Error'), { isAxiosError: true, code: 'ERR_NETWORK', response: undefined }))
-      .mockImplementation(async (_id, chunk, options) => uploadSession({ uploaded_bytes: options.offset + chunk.size }));
+      .mockImplementation(async (_id, chunk, options) => uploadSession({ uploaded_bytes: options.offset + chunk.byteLength }));
     jest.mocked(getMyFileUploadSession).mockResolvedValueOnce(uploadSession({ uploaded_bytes: 8 }));
 
     const record = await uploadNativeMyFile(pickedFile, 7, {});

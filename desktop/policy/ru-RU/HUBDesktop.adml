@@ -19,6 +19,8 @@
       <string id="DiagnosticsExportEnabled_Explain">Разрешает или запрещает пользователю создавать очищенный ZIP-архив диагностики. Просмотр локального состояния приложения остаётся доступен.</string>
       <string id="NotificationFallbackEnabled_Name">Закреплённое fallback-уведомление</string>
       <string id="NotificationFallbackEnabled_Explain">Разрешает или запрещает тематическое уведомление HUB, используемое когда Windows App SDK toast недоступен. Системный toast не отключается.</string>
+      <string id="ScreenCaptureProtectionEnabled_Name">Защита от скриншотов на странице паролей</string>
+      <string id="ScreenCaptureProtectionEnabled_Explain">Управляет SetWindowDisplayAffinity(WDA_MONITOR) для окна HUB, пока открыт раздел «Пароли»: на скриншотах и при демонстрации экрана окно отображается чёрным прямоугольником. Защита включена по умолчанию — политика позволяет её отключить (0) или принудительно включить (1). На части конфигураций (RDP, отдельные GPU-драйверы) может давать чёрный экран в самом окне — проверять на целевой ОС.</string>
     </stringTable>
     <presentationTable>
       <presentation id="AutostartMode">

@@ -1,6 +1,8 @@
 import { useReducedMotion } from '../src/accessibility/useReducedMotion';
 import '../src/notifications/notificationBackgroundTask';
 import '../src/lifecycle/mobileBackgroundSync';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { Stack } from 'expo-router';
 import { useMemo } from 'react';
 import { StatusBar } from 'expo-status-bar';
@@ -21,13 +23,17 @@ import { AndroidSystemUi } from '../src/lifecycle/AndroidSystemUi';
 
 export default function RootLayout() {
   return (
-    <AuthProvider>
-      <PreferencesProvider>
-        <MobileUpdateProvider>
-          <ThemedRoot />
-        </MobileUpdateProvider>
-      </PreferencesProvider>
-    </AuthProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <KeyboardProvider>
+        <AuthProvider>
+          <PreferencesProvider>
+            <MobileUpdateProvider>
+              <ThemedRoot />
+            </MobileUpdateProvider>
+          </PreferencesProvider>
+        </AuthProvider>
+      </KeyboardProvider>
+    </GestureHandlerRootView>
   );
 }
 

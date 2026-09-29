@@ -79,5 +79,16 @@
       <enabledValue><decimal value="1" /></enabledValue>
       <disabledValue><decimal value="0" /></disabledValue>
     </policy>
+    <policy name="ScreenCaptureProtectionEnabled"
+            class="Machine"
+            displayName="$(string.ScreenCaptureProtectionEnabled_Name)"
+            explainText="$(string.ScreenCaptureProtectionEnabled_Explain)"
+            key="Software\Policies\HUB-IT\Desktop"
+            valueName="ScreenCaptureProtectionEnabled">
+      <parentCategory ref="HUBDesktop" />
+      <supportedOn ref="SUPPORTED_HUB_DESKTOP" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
   </policies>
 </policyDefinitions>

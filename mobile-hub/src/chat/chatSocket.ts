@@ -1,5 +1,7 @@
+import * as Crypto from 'expo-crypto';
 import { API_V1_BASE } from '../api/config';
 import { getAuthenticatedAccessToken } from '../api/client';
+import { subscribeAccessTokenChanges } from '../auth/tokenStore';
 
 type SocketHandler = (payload: unknown) => void;
 export type ChatSocketStatus =
@@ -19,7 +21,21 @@ const HEARTBEAT_MS = 25_000;
 const HEARTBEAT_TIMEOUT_MS = 60_000;
 const CONNECT_TIMEOUT_MS = 15_000;
 const RECONNECT_DELAYS = [1000, 2000, 5000, 10000, 20000, 30000];
+const RECONNECT_JITTER_RATIO = 0.25;
+const INITIAL_RECONNECT_SPREAD_MS = 5_000;
 const MAX_BUFFERED_BYTES = 256 * 1024;
+
+let pingSequence = 0;
+function createPingRequestId(): string {
+  pingSequence += 1;
+  try {
+    const nativeId = typeof Crypto.randomUUID === 'function' ? Crypto.randomUUID() : '';
+    if (typeof nativeId === 'string' && nativeId.trim()) return nativeId;
+  } catch {
+    // The counter in the fallback keeps ids unique within the client session.
+  }
+  return `ping-${Date.now().toString(36)}-${pingSequence}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 function buildWsUrl(): string {
   const base = new URL(API_V1_BASE);
@@ -41,6 +57,10 @@ export class ChatSocketClient {
   private reconnectEnabled = false;
   private suspended = false;
   private connectGeneration = 0;
+  private forceTokenRefresh = false;
+  private accessTokenUnsubscribe: (() => void) | null = null;
+  private lastAuthPushedToken: string | null = null;
+  private authRefreshInFlight = false;
   private status: ChatSocketStatus = 'disconnected';
   private wantInbox = false;
   private conversationIds = new Set<string>();
@@ -62,13 +82,42 @@ export class ChatSocketClient {
     this.emit('status', status);
   }
 
+  // D5/W8: in-socket re-auth — a committed token refresh is pushed into the
+  // open socket so the server lease stays alive past the 15-minute exp.
+  private ensureAccessTokenListener() {
+    if (this.accessTokenUnsubscribe) return;
+    this.accessTokenUnsubscribe = subscribeAccessTokenChanges((token) => {
+      const normalized = String(token || '').trim();
+      if (!normalized || normalized === this.lastAuthPushedToken) return;
+      const socket = this.socket;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      this.lastAuthPushedToken = normalized;
+      this.send({ type: 'chat.auth', payload: { access_token: normalized } });
+    });
+  }
+
+  private handleAuthRequired() {
+    if (this.authRefreshInFlight) return;
+    this.authRefreshInFlight = true;
+    // The store listener pushes the minted token into the socket on commit.
+    void getAuthenticatedAccessToken({ forceRefresh: true })
+      .catch(() => undefined)
+      .finally(() => { this.authRefreshInFlight = false; });
+  }
+
   getStatus(): ChatSocketStatus {
     return this.status;
   }
 
   private scheduleReconnect() {
     if (this.reconnectTimer || !this.reconnectEnabled || this.suspended) return;
-    const delay = RECONNECT_DELAYS[Math.min(this.reconnectAttempt, RECONNECT_DELAYS.length - 1)];
+    // Jitter + initial spread keep hundreds of clients from hitting the farm
+    // on the same ladder step after an outage or cold start.
+    const baseDelay = RECONNECT_DELAYS[Math.min(this.reconnectAttempt, RECONNECT_DELAYS.length - 1)];
+    const jitter = baseDelay * RECONNECT_JITTER_RATIO * ((Math.random() * 2) - 1);
+    const initialSpread = this.reconnectAttempt === 0 ? Math.random() * INITIAL_RECONNECT_SPREAD_MS : 0;
+    const maxDelay = RECONNECT_DELAYS[RECONNECT_DELAYS.length - 1];
+    const delay = Math.max(0, Math.min(maxDelay, baseDelay + jitter + initialSpread));
     this.reconnectAttempt += 1;
     this.emitStatus('reconnecting');
     this.reconnectTimer = setTimeout(() => {
@@ -87,7 +136,7 @@ export class ChatSocketClient {
         this.abandonSocket(socket);
         return;
       }
-      this.send({ type: 'chat.ping' });
+      this.send({ type: 'chat.ping', request_id: createPingRequestId() });
     }, HEARTBEAT_MS);
   }
 
@@ -181,6 +230,7 @@ export class ChatSocketClient {
 
   async connect() {
     this.reconnectEnabled = true;
+    this.ensureAccessTokenListener();
     if (this.suspended) {
       this.emitStatus('suspended');
       return;
@@ -189,8 +239,12 @@ export class ChatSocketClient {
     const generation = ++this.connectGeneration;
     this.emitStatus(this.reconnectAttempt > 0 ? 'reconnecting' : 'connecting');
     let token = '';
+    // A 4401 close means the server rejected the cached access token; the next
+    // connect must mint a fresh one instead of looping with the same token.
+    const forceRefresh = this.forceTokenRefresh;
+    this.forceTokenRefresh = false;
     try {
-      token = await getAuthenticatedAccessToken();
+      token = await getAuthenticatedAccessToken({ forceRefresh });
     } catch {
       if (generation !== this.connectGeneration || !this.reconnectEnabled || this.suspended) return;
       this.emitStatus('error');
@@ -231,6 +285,7 @@ export class ChatSocketClient {
       }
       this.clearConnectWatchdog();
       this.reconnectAttempt = 0;
+      this.lastAuthPushedToken = token;
       this.startHeartbeat();
       if (this.wantInbox) this.subscribeInbox();
       this.conversationIds.forEach((id) => this.subscribeConversation(id));
@@ -249,14 +304,21 @@ export class ChatSocketClient {
         const eventType = String(envelope?.type || '').trim();
         if (!eventType) return;
         if (eventType === 'chat.pong' || eventType === 'chat.command.ok') return;
+        if (eventType === 'chat.auth.required') {
+          this.handleAuthRequired();
+          return;
+        }
+        // Internal control frames — nothing for UI subscribers.
+        if (eventType === 'chat.auth.ok' || eventType === 'chat.auth.rejected') return;
         this.emit(eventType, envelope);
       } catch {
         // ignore malformed frames
       }
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event?: { code?: number }) => {
       if (this.socket !== socket) return;
+      if (Number(event?.code || 0) === 4401) this.forceTokenRefresh = true;
       this.socket = null;
       this.clearConnectWatchdog();
       this.stopHeartbeat();

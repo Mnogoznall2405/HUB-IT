@@ -10,12 +10,12 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 
 from backend.api.deps import (
-    assert_access_token_still_valid,
     ensure_user_permission,
     extract_websocket_access_token,
     get_current_user_from_websocket,
 )
 from backend.api.v1.chat._common import _deny_ws_handshake
+from backend.chat.ws_auth import WsSessionLease
 from backend.services.authorization_service import PERM_TASKS_READ
 from backend.task_canvas.realtime import (
     TASK_CANVAS_MAX_WS_BYTES,
@@ -68,11 +68,14 @@ async def task_canvas_websocket(websocket: WebSocket, task_id: str):
 
     connection_id = ""
     room_id = ""
+    close_code = None
+    close_reason = ""
     joined = False
     try:
         connection_id, _ = await task_canvas_realtime.realtime.connect(
             websocket,
             user_id=int(current_user.id),
+            socket_kind="task_canvas",
         )
         room_id = task_canvas_realtime.room_id(task_id)
         task_canvas_realtime.realtime.subscribe_conversation(connection_id, room_id)
@@ -98,6 +101,7 @@ async def task_canvas_websocket(websocket: WebSocket, task_id: str):
 
         limiter = TaskCanvasWsRateLimiter()
         access_token = extract_websocket_access_token(websocket)
+        ws_auth_lease = WsSessionLease(access_token, user_id=int(current_user.id))
         command_count = 0
         last_session_check_at = time.monotonic()
         last_access_check_at = last_session_check_at
@@ -105,15 +109,20 @@ async def task_canvas_websocket(websocket: WebSocket, task_id: str):
         while True:
             try:
                 raw_message = await websocket.receive_text()
-            except WebSocketDisconnect:
+            except WebSocketDisconnect as exc:
+                close_code = getattr(exc, "code", None)
+                close_reason = "peer closed"
                 break
             except RuntimeError as exc:
                 if "WebSocket is not connected" in str(exc):
+                    close_reason = "socket lost"
                     break
                 raise
 
             raw_message_bytes = len(raw_message.encode("utf-8"))
             if raw_message_bytes > TASK_CANVAS_MAX_WS_BYTES:
+                close_code = 1009
+                close_reason = "task canvas payload too large"
                 await websocket.close(code=1009, reason="task canvas payload too large")
                 break
 
@@ -125,6 +134,8 @@ async def task_canvas_websocket(websocket: WebSocket, task_id: str):
                     code="rate_limited",
                 )
                 if limiter.violations >= _MAX_RATE_LIMIT_VIOLATIONS:
+                    close_code = 1008
+                    close_reason = "task canvas rate limit exceeded"
                     await websocket.close(code=1008, reason="task canvas rate limit exceeded")
                     break
                 continue
@@ -144,10 +155,26 @@ async def task_canvas_websocket(websocket: WebSocket, task_id: str):
                 command_count = 0
                 last_session_check_at = now
                 try:
-                    await run_in_threadpool(assert_access_token_still_valid, access_token)
-                except HTTPException:
+                    lease_status = await run_in_threadpool(ws_auth_lease.revalidate)
+                except Exception:
+                    close_code = 1011
+                    close_reason = "session validation unavailable"
+                    await websocket.close(code=1011, reason="session validation unavailable")
+                    break
+                if lease_status == "dead":
+                    close_code = 4401
+                    close_reason = "session expired"
                     await websocket.close(code=4401, reason="session expired")
                     break
+                if lease_status == "grace":
+                    await task_canvas_realtime.realtime.send_control(
+                        connection_id,
+                        event_type="task_canvas.auth.required",
+                        payload={
+                            "protocol": TASK_CANVAS_PROTOCOL_VERSION,
+                            "retry_after_ms": ws_auth_lease.grace_remaining_ms() or 30_000,
+                        },
+                    )
 
             message_type = str(envelope.get("type") or "").strip()
             request_id = str(envelope.get("request_id") or "").strip() or None
@@ -156,8 +183,19 @@ async def task_canvas_websocket(websocket: WebSocket, task_id: str):
                 payload = {}
 
             try:
+                if message_type == "task_canvas.auth":
+                    try:
+                        auth_ok = await run_in_threadpool(ws_auth_lease.apply_auth_payload, payload)
+                    except Exception:
+                        auth_ok = False
+                    await task_canvas_realtime.realtime.send_control(
+                        connection_id,
+                        event_type="task_canvas.auth.ok" if auth_ok else "task_canvas.auth.rejected",
+                        request_id=request_id,
+                    )
+                    continue
                 if message_type == "task_canvas.ping":
-                    await task_canvas_realtime.realtime.send_to_connection(
+                    await task_canvas_realtime.realtime.send_pong(
                         connection_id,
                         event_type="task_canvas.pong",
                         payload={"protocol": TASK_CANVAS_PROTOCOL_VERSION},
@@ -199,8 +237,9 @@ async def task_canvas_websocket(websocket: WebSocket, task_id: str):
                 await _send_error(connection_id, detail=str(exc), code="invalid_command", request_id=request_id)
             except Exception:
                 await _send_error(connection_id, detail="Task canvas command failed", code="command_failed", request_id=request_id)
-    except WebSocketDisconnect:
-        pass
+    except WebSocketDisconnect as exc:
+        close_code = getattr(exc, "code", None)
+        close_reason = "peer closed"
     finally:
         if joined and connection_id:
             try:
@@ -214,4 +253,8 @@ async def task_canvas_websocket(websocket: WebSocket, task_id: str):
                 pass
             if room_id:
                 task_canvas_realtime.realtime.unsubscribe_conversation(connection_id, room_id)
-            task_canvas_realtime.realtime.disconnect(connection_id)
+            task_canvas_realtime.realtime.disconnect(
+                connection_id,
+                close_code=close_code,
+                close_reason=close_reason,
+            )

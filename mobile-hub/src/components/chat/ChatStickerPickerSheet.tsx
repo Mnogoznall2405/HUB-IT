@@ -1,10 +1,7 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Animated,
   FlatList,
-  Modal,
-  PanResponder,
   Pressable,
   StyleSheet,
   Text,
@@ -12,12 +9,10 @@ import {
   View,
 } from 'react-native';
 import type { ChatSticker, ChatStickerPack } from '../../api/types';
-import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import { buildStickerPickerRows, type StickerPickerRow } from '../../chat/chatPickerRows';
 import { collectRecentStickers } from '../../chat/chatStickers';
-import { shouldDismissMediaViewer } from '../../chat/chatGestures';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
-import { ChatKeyboardAvoidingHost } from './ChatKeyboardAvoidingHost';
+import { ChatInlineSheet } from './ChatInlineSheet';
 import { ChatStickerImage } from './ChatStickerImage';
 
 export function ChatStickerPickerSheet({
@@ -42,35 +37,15 @@ export function ChatStickerPickerSheet({
   onRemove?: (pack: ChatStickerPack) => void;
 }) {
   const { chatTokens, styles } = useChatStyles(createStyles);
-  const reduceMotion = useReducedMotion();
   const [source, setSource] = useState('');
   const [preview, setPreview] = useState<ChatSticker | null>(null);
-  const dragY = useRef(new Animated.Value(0)).current;
   const recent = useMemo(() => collectRecentStickers(packs, recentIds), [packs, recentIds]);
   const rows = useMemo(() => buildStickerPickerRows(packs, recent), [packs, recent]);
 
   const close = () => {
     setPreview(null);
-    dragY.setValue(0);
     onClose();
   };
-
-  const panResponder = useMemo(() => PanResponder.create({
-    onMoveShouldSetPanResponder: (_, gesture) => gesture.dy > 10 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
-    onMoveShouldSetPanResponderCapture: (_, gesture) => gesture.dy > 10 && Math.abs(gesture.dy) > Math.abs(gesture.dx),
-    onPanResponderTerminationRequest: (_, gesture) => !(gesture.dy > 10 && gesture.dy >= Math.abs(gesture.dx)),
-    onPanResponderMove: (_, gesture) => {
-      if (!reduceMotion && gesture.dy > 0) dragY.setValue(gesture.dy);
-    },
-    onPanResponderRelease: (_, gesture) => {
-      if (shouldDismissMediaViewer(gesture.dx, gesture.dy)) {
-        close();
-        return;
-      }
-      Animated.spring(dragY, { toValue: 0, useNativeDriver: true, speed: 28, bounciness: 4 }).start();
-    },
-    onPanResponderTerminate: () => dragY.setValue(0),
-  }), [onClose, reduceMotion]);
 
   const renderRow = useCallback(({ item }: { item: StickerPickerRow }) => {
     if (item.kind === 'header') {
@@ -112,33 +87,23 @@ export function ChatStickerPickerSheet({
   }, [onRemove, onSend, styles]);
 
   return (
-    <Modal
+    <ChatInlineSheet
       visible={visible}
-      animationType={reduceMotion ? 'none' : 'slide'}
-      transparent
-      statusBarTranslucent
-      onRequestClose={close}
+      onClose={close}
+      dismissAccessibilityLabel="Скрыть панель стикеров"
+      sheetStyle={styles.sheet}
     >
-      <ChatKeyboardAvoidingHost style={styles.backdrop}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={close} accessibilityLabel="Скрыть панель стикеров" />
-        <Animated.View
-          style={[styles.sheet, { transform: [{ translateY: dragY }] }]}
-          accessibilityViewIsModal
+      <View style={styles.titleRow}>
+        <Text style={styles.title}>Стикеры</Text>
+        <Pressable
+          onPress={close}
+          style={styles.close}
+          accessibilityRole="button"
+          accessibilityLabel="Закрыть стикеры"
         >
-          <View style={styles.header} {...panResponder.panHandlers}>
-            <View style={styles.handle} />
-            <View style={styles.titleRow}>
-              <Text style={styles.title}>Стикеры</Text>
-              <Pressable
-                onPress={close}
-                style={styles.close}
-                accessibilityRole="button"
-                accessibilityLabel="Закрыть стикеры"
-              >
-                <Text style={styles.closeText}>Закрыть</Text>
-              </Pressable>
-            </View>
-          </View>
+          <Text style={styles.closeText}>Закрыть</Text>
+        </Pressable>
+      </View>
           {onImport ? (
             <View style={styles.importRow}>
               <TextInput
@@ -185,7 +150,6 @@ export function ChatStickerPickerSheet({
             contentContainerStyle={styles.scroll}
             ListEmptyComponent={!loading ? <Text style={styles.empty}>Добавленных наборов стикеров пока нет</Text> : null}
           />
-        </Animated.View>
       {preview ? (
         <View style={styles.preview} pointerEvents="none">
           <ChatStickerImage
@@ -197,23 +161,16 @@ export function ChatStickerPickerSheet({
           {preview.emoji ? <Text style={styles.previewEmoji}>{preview.emoji}</Text> : null}
         </View>
       ) : null}
-      </ChatKeyboardAvoidingHost>
-    </Modal>
+    </ChatInlineSheet>
   );
 }
 
 const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
-  backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: chatTokens.overlayBg },
   sheet: {
     height: '72%',
     paddingHorizontal: 14,
     paddingBottom: 10,
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    backgroundColor: chatTokens.panelBg,
   },
-  header: { paddingTop: 8, paddingBottom: 4 },
-  handle: { alignSelf: 'center', width: 38, height: 4, borderRadius: 2, backgroundColor: chatTokens.borderSoft },
   titleRow: { minHeight: 44, flexDirection: 'row', alignItems: 'center' },
   title: { flex: 1, color: chatTokens.textPrimary, fontSize: 19, fontWeight: '700' },
   close: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 },

@@ -14,8 +14,8 @@ class InventoryQueueStore:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._stats_cache_at = 0.0
-        self._stats_cache: Dict[str, Any] = {}
+        self._conn = self._connect()
+        self._stats_cache: tuple = (0.0, {})
         self._stats_cache_ttl_sec = 8.0
         self._initialize()
 
@@ -27,7 +27,7 @@ class InventoryQueueStore:
         return conn
 
     def _initialize(self) -> None:
-        with self._lock, self._connect() as conn:
+        with self._lock, self._conn as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS inventory_ingest_queue (
@@ -52,14 +52,13 @@ class InventoryQueueStore:
             conn.commit()
 
     def _invalidate_stats_cache(self) -> None:
-        self._stats_cache_at = 0.0
-        self._stats_cache = {}
+        self._stats_cache = (0.0, {})
 
     def enqueue(self, payload: Dict[str, Any], dedupe_key: str) -> Dict[str, Any]:
         now_ts = int(time.time())
         queue_id = str(uuid.uuid4())
         payload_json = json.dumps(payload, ensure_ascii=False)
-        with self._lock, self._connect() as conn:
+        with self._lock, self._conn as conn:
             try:
                 conn.execute(
                     """
@@ -94,7 +93,7 @@ class InventoryQueueStore:
 
     def claim_next_batch(self, *, limit: int) -> List[Dict[str, Any]]:
         now_ts = int(time.time())
-        with self._lock, self._connect() as conn:
+        with self._lock, self._conn as conn:
             rows = conn.execute(
                 """
                 SELECT id, created_at, dedupe_key, payload_json, status, attempt_count, next_attempt_at, last_error, processed_at
@@ -141,7 +140,7 @@ class InventoryQueueStore:
 
     def mark_done(self, queue_id: str, *, processed_at: Optional[int] = None) -> None:
         processed_ts = int(processed_at or time.time())
-        with self._lock, self._connect() as conn:
+        with self._lock, self._conn as conn:
             conn.execute(
                 "UPDATE inventory_ingest_queue SET status = 'done', processed_at = ?, last_error = '' WHERE id = ?",
                 (processed_ts, queue_id),
@@ -150,7 +149,7 @@ class InventoryQueueStore:
         self._invalidate_stats_cache()
 
     def mark_retry(self, queue_id: str, *, error_text: str, next_attempt_at: int, attempt_count: int) -> None:
-        with self._lock, self._connect() as conn:
+        with self._lock, self._conn as conn:
             conn.execute(
                 """
                 UPDATE inventory_ingest_queue
@@ -164,7 +163,7 @@ class InventoryQueueStore:
 
     def mark_dead(self, queue_id: str, *, error_text: str, processed_at: Optional[int], attempt_count: int) -> None:
         processed_ts = int(processed_at or time.time())
-        with self._lock, self._connect() as conn:
+        with self._lock, self._conn as conn:
             conn.execute(
                 """
                 UPDATE inventory_ingest_queue
@@ -180,7 +179,7 @@ class InventoryQueueStore:
         now_ts = int(time.time())
         done_cutoff = now_ts - max(1, int(done_retention_days)) * 24 * 60 * 60
         dead_cutoff = now_ts - max(1, int(dead_retention_days)) * 24 * 60 * 60
-        with self._lock, self._connect() as conn:
+        with self._lock, self._conn as conn:
             done_cursor = conn.execute(
                 "DELETE FROM inventory_ingest_queue WHERE status = 'done' AND COALESCE(processed_at, created_at) < ?",
                 (done_cutoff,),
@@ -200,24 +199,24 @@ class InventoryQueueStore:
             # In WAL mode recent pages can still live only in the sidecar. Measure
             # the materialized database on both sides of VACUUM, otherwise a small
             # queue can be reported as growing from 4 KiB to its real schema size.
-            with self._connect() as conn:
+            with self._conn as conn:
                 conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             before_bytes = int(self.db_path.stat().st_size) if self.db_path.exists() else 0
-            with self._connect() as conn:
+            with self._conn as conn:
                 conn.execute("VACUUM")
-            with self._connect() as conn:
+            with self._conn as conn:
                 conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         after_bytes = int(self.db_path.stat().st_size) if self.db_path.exists() else 0
         return {"before_bytes": before_bytes, "after_bytes": after_bytes, "saved_bytes": max(0, before_bytes - after_bytes)}
 
     def queue_stats(self, *, use_cache: bool = True) -> Dict[str, Any]:
         if use_cache:
-            now_mono = time.monotonic()
-            if self._stats_cache and (now_mono - self._stats_cache_at) < self._stats_cache_ttl_sec:
-                return dict(self._stats_cache)
+            cached_at, cached_stats = self._stats_cache
+            if cached_stats and (time.monotonic() - cached_at) < self._stats_cache_ttl_sec:
+                return dict(cached_stats)
 
         now_ts = int(time.time())
-        with self._lock, self._connect() as conn:
+        with self._connect() as conn:
             active_count = int(
                 conn.execute(
                     "SELECT COUNT(1) FROM inventory_ingest_queue WHERE status IN ('queued', 'processing')"
@@ -244,6 +243,5 @@ class InventoryQueueStore:
             "dead_letter_count": dead_count,
             "oldest_queued_age_sec": oldest_age,
         }
-        self._stats_cache_at = time.monotonic()
-        self._stats_cache = dict(stats)
+        self._stats_cache = (time.monotonic(), dict(stats))
         return stats

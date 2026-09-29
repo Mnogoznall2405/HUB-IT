@@ -104,6 +104,7 @@ export function normalizeChatConversation(value: unknown): ChatConversationSumma
     is_group: typeof item.is_group === 'boolean' ? item.is_group : kind === 'group',
     is_pinned: Boolean(item.is_pinned),
     is_muted: Boolean(item.is_muted),
+    muted_until: optionalText(item.muted_until),
     is_archived: Boolean(item.is_archived),
     pinned_message_id: Object.prototype.hasOwnProperty.call(item, 'pinned_message_id')
       ? optionalText(item.pinned_message_id)
@@ -187,6 +188,9 @@ export function normalizeChatMessage(value: unknown): ChatMessage | null {
     deleted_by_user_id: finiteNumber(item.deleted_by_user_id) || null,
     deleted_reason: optionalText(item.deleted_reason),
     attachments,
+    mentioned_user_ids: Array.isArray(item.mentioned_user_ids)
+      ? item.mentioned_user_ids.map((id: unknown) => finiteNumber(id)).filter((id: number) => id > 0)
+      : undefined,
     reactions: normalizeChatReactions(item.reactions),
     delivery_status: item.delivery_status === 'read' ? 'read' : item.delivery_status === 'sent' ? 'sent' : null,
     read_by_count: Math.max(0, finiteNumber(item.read_by_count)),

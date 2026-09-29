@@ -1,6 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
 import type { ChatMessage } from '../api/types';
 import type { NativePickedFile } from '../files/nativeFilePicker';
+import { recordChatQueueStorageOp } from '../diagnostics/chatSendTiming';
 import { persistNativeChatDraftFiles, deleteUnreferencedChatFiles } from './nativeChatDraftFiles';
 
 export type NativeChatQueuedUpload = {
@@ -10,9 +11,13 @@ export type NativeChatQueuedUpload = {
   body: string;
   replyToMessageId?: string;
   replyPreview?: ChatMessage['reply_preview'];
+  // Durable resumable-upload session handle; survives process restarts so a
+  // retry can reattach to the same server session instead of re-uploading.
+  sessionId?: string;
 };
 
-import { CHAT_OUTBOX_STORAGE_KEY as KEY, enqueueNativeChatStorage as enqueue } from './nativeChatStorageQueue';
+import { CHAT_OUTBOX_STORAGE_KEY as KEY, enqueueNativeChatStorage as enqueue,
+  getNativeChatOutboxRowsCache, setNativeChatOutboxRowsCache } from './nativeChatStorageQueue';
 const MAX_CHARACTERS = 262_144;
 export type NativeChatOutboxEntry = { userId: number; message: ChatMessage; upload?: NativeChatQueuedUpload; title?: string };
 type Entry = NativeChatOutboxEntry;
@@ -64,13 +69,19 @@ function validUpload(value: unknown): boolean {
     && validReply(upload.replyPreview)
     && (upload.durationSeconds == null || (typeof upload.durationSeconds === 'number' && Number.isFinite(upload.durationSeconds) && upload.durationSeconds >= 0))
     && (upload.mediaKind == null || ['image', 'video', 'file', 'audio'].includes(upload.mediaKind))
+    && (upload.sessionId == null || typeof upload.sessionId === 'string')
     && upload.files.every((file) => file && typeof file.uri === 'string' && Boolean(file.uri.trim())
       && typeof file.name === 'string' && typeof file.mimeType === 'string'
       && typeof file.size === 'number' && Number.isFinite(file.size) && file.size >= 0);
 }
 
 async function readAll(): Promise<Entry[]> {
-  const raw = await SecureStore.getItemAsync(KEY);
+  const cached = getNativeChatOutboxRowsCache();
+  if (cached) return cached as Entry[];
+  const startedAt = Date.now();
+  let raw: string | null = null;
+  try { raw = await SecureStore.getItemAsync(KEY); }
+  finally { recordChatQueueStorageOp('read', Date.now() - startedAt, raw?.length || 0); }
   let value: unknown;
   try { value = raw ? JSON.parse(raw) : []; }
   catch { throw new Error('Не удалось прочитать очередь сообщений'); }
@@ -79,14 +90,21 @@ async function readAll(): Promise<Entry[]> {
     || item.message.sender_user_id !== item.userId || !validUpload(item.upload))) {
     throw new Error('Не удалось прочитать очередь сообщений');
   }
+  setNativeChatOutboxRowsCache(value);
   return value;
 }
 
 async function writeAll(entries: Entry[]) {
   const raw = JSON.stringify(entries);
   if (raw.length > MAX_CHARACTERS) throw new Error('Очередь сообщений заполнена. Повторите отправку ожидающих сообщений.');
-  if (entries.length) await SecureStore.setItemAsync(KEY, raw);
-  else await SecureStore.deleteItemAsync(KEY);
+  const startedAt = Date.now();
+  try {
+    if (entries.length) await SecureStore.setItemAsync(KEY, raw);
+    else await SecureStore.deleteItemAsync(KEY);
+  } finally {
+    recordChatQueueStorageOp(entries.length ? 'write' : 'delete', Date.now() - startedAt, entries.length ? raw.length : 0);
+  }
+  setNativeChatOutboxRowsCache(entries);
   notify();
 }
 
@@ -102,7 +120,7 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
   };
   const matches = (entry: Entry, id: string) => entry.userId === userId
     && entry.message.conversation_id === conversationId && entry.message.client_message_id === id;
-  const put = (message: ChatMessage, upload?: NativeChatQueuedUpload) => enqueue(async () => {
+  const put = (message: ChatMessage, upload?: NativeChatQueuedUpload, decorate?: (entry: Entry) => Entry) => enqueue(async () => {
     assertCurrent();
     assertNotDiscarded(message.client_message_id || '');
     const entries = await readAll();
@@ -121,7 +139,8 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
     const durableMessage = upload ? { ...message, attachments: message.attachments?.map((attachment, index) => ({
       ...attachment, local_uri: upload.files[index]?.uri || attachment.local_uri,
     })) } : message;
-    await writeAll([...entries, { userId, message: durableMessage, title: getTitle?.(), ...(upload ? { upload } : {}) }]);
+    const fresh: Entry = { userId, message: durableMessage, title: getTitle?.(), ...(upload ? { upload } : {}) };
+    await writeAll([...entries, decorate ? decorate(fresh) : fresh]);
     return upload;
   });
   const remove = (id: string) => enqueue(async () => {
@@ -161,7 +180,7 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
       discarding.add(key);
       return remove(id).then(() => { discarded.add(key); }).finally(() => { discarding.delete(key); });
     },
-    prepareUpload: async (message: ChatMessage, upload: NativeChatQueuedUpload) => {
+    prepareUpload: async (message: ChatMessage, upload: NativeChatQueuedUpload, decorate?: (entry: Entry) => Entry) => {
       const key = operationKey(message.client_message_id || '');
       assertNotDiscarded(message.client_message_id || '');
       if (uploading.has(key)) throw new Error('Файлы уже отправляются');
@@ -173,7 +192,7 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
         durableUpload = { ...upload, files: await persistNativeChatDraftFiles(userId, upload.files) };
         assertCurrent();
         assertNotDiscarded(message.client_message_id || '');
-        const persisted = await put(message, durableUpload);
+        const persisted = await put(message, durableUpload, decorate);
         assertCurrent();
         if (!persisted) throw new Error('Не удалось восстановить файлы исходящего сообщения');
         if (persisted !== durableUpload) {
@@ -220,14 +239,15 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
       return entries.filter((entry) => entry.userId === userId && entry.message.conversation_id === conversationId)
         .map((entry): ChatMessage => ({ ...entry.message, local_status: 'failed' }));
     }),
-    send: (message: ChatMessage, sendText: typeof import('../api/chatApi').sendTextMessage, onPersisted?: () => void, options?: { deliver?: boolean }): Promise<ChatMessage> => {
+    send: (message: ChatMessage, sendText: typeof import('../api/chatApi').sendTextMessage, onPersisted?: () => void,
+      options?: { deliver?: boolean; decorate?: (entry: Entry) => Entry }): Promise<ChatMessage> => {
       const key = JSON.stringify([lease, userId, conversationId, message.client_message_id]);
       try { assertNotDiscarded(message.client_message_id || ''); }
       catch (error) { return Promise.reject(error); }
       const existing = sending.get(key);
       if (existing) return existing;
       const operation = (async () => {
-        await put(message);
+        await put(message, undefined, options?.decorate);
         assertCurrent();
         onPersisted?.();
         if (options?.deliver === false) {
@@ -251,5 +271,11 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
 export function clearNativeChatOutbox(): Promise<void> {
   generation += 1;
   discarded.clear();
-  return enqueue(async () => { await SecureStore.deleteItemAsync(KEY); notify(); });
+  return enqueue(async () => {
+    const startedAt = Date.now();
+    try { await SecureStore.deleteItemAsync(KEY); }
+    finally { recordChatQueueStorageOp('delete', Date.now() - startedAt, 0); }
+    setNativeChatOutboxRowsCache([]);
+    notify();
+  });
 }

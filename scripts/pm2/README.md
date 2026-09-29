@@ -20,6 +20,8 @@ PM2 используется только для Python-процессов:
 - `scripts/pm2/clear-pm2-orphans.ps1` — зачистка orphan python после `pm2 kill`/`stop` на Windows
 - `scripts/pm2/start-all.ps1` / `restart-all.ps1` / `stop-all.ps1` — вызывают orphan cleanup
 - `scripts/pm2/health-check.ps1`
+- `scripts/pm2/pm2-boot-resurrect.ps1` — восстановление сохранённого списка процессов после перезагрузки сервера
+- `scripts/pm2/register-pm2-autostart.ps1` — регистрация/снятие задачи планировщика `HUB-IT PM2 Autostart`
 
 Если основные ecosystem-контуры backend, inventory, scan и bot запускаются на одной машине, их можно стартовать одной командой:
 
@@ -52,7 +54,45 @@ powershell -File scripts\pm2\stop-all.ps1
 powershell -File scripts\pm2\health-check.ps1
 ```
 
-Chat production baseline (single node, no Redis required):
+Автозапуск при перезагрузке сервера:
+
+```powershell
+# Только проверка состояния задачи, ничего не меняет.
+powershell -File scripts\pm2\register-pm2-autostart.ps1
+
+# Регистрация (идемпотентно, можно повторять для обновления задачи).
+powershell -File scripts\pm2\register-pm2-autostart.ps1 -Mode Enable
+```
+
+Задача `HUB-IT PM2 Autostart` срабатывает `AtStartup` от учётной записи, под которой её
+зарегистрировали, с `LogonType S4U` — то есть без интерактивного входа и без хранения
+пароля. Действие — `pm2-boot-resurrect.ps1`: пауза 30 с после загрузки, затем `pm2 resurrect`
+по `dump.pm2`; если процессы уже online, resurrect пропускается. Результат каждого запуска —
+`scripts\pm2\_boot_resurrect.log`.
+
+- Автозапуск восстанавливает **сохранённый** набор: после изменения состава процессов обязателен `pm2 save` (или `start-all.ps1 -SaveState`).
+- Отключение без удаления: `register-pm2-autostart.ps1 -Mode Disable`; полный откат — `-Mode Remove`.
+- Post-check после реальной перезагрузки: `pm2 list`, `scripts\pm2\_boot_resurrect.log`, `health-check.ps1`.
+- Ограничение S4U: процессы не смогут обращаться к сетевым ресурсам под учётными данными пользователя (UNC-шары, интегрированная Windows-аутентификация). Текущие сервисы используют явные UID/PWD — подходит. Если понадобятся такие ресурсы — пересоздать задачу с хранением пароля (`schtasks /create /ru ... /rp ...`).
+
+Chat production baseline — **dual node** (`itinvent-chat-a` на `8002` +
+`itinvent-chat-b` на `8004`, PostgreSQL realtime, IIS ферма `itinvent-chat`).
+Это фактическое production-состояние с 2026-09-23:
+
+```powershell
+powershell -File scripts\pm2\health-check.ps1   # проверяет оба узла и ферму ARR
+powershell -File scripts\pm2\restart-chat-scale.ps1  # единственный штатный рестарт чата
+```
+
+Режим определяется автоматически: `CHAT_REALTIME_TRANSPORT=postgres` в `.env` +
+наличие `ecosystem.chat.scale.config.js` → dual (`chat-runtime-mode.ps1`).
+`ecosystem.all.config.js` сам подменяет `itinvent-chat` парой узлов, а
+`start-all.ps1` / `restart-all.ps1` / `stop-all.ps1` работают со списком процессов
+по режиму; `-ChatMode single|dual` — принудительно, `-WhatIf` — печать плана без
+выполнения. `restart-chat.ps1` в dual-режиме отказывает — использовать
+`restart-chat-scale.ps1`.
+
+Устаревший single-node вариант (rollback после `enable-chat-postgres.ps1 -Mode RollbackSingle`):
 
 ```powershell
 pm2 start scripts\pm2\ecosystem.backend.config.js
@@ -118,6 +158,7 @@ Notes:
 - events contain only compact realtime envelopes; durable messages remain in PostgreSQL tables/outbox;
 - each node has `12` pooled Chat DB connections plus three dedicated PostgreSQL connections (publisher, `LISTEN`, presence); the two-node realtime budget stays within `30`;
 - `restart-chat-scale.ps1` validates the configured PostgreSQL envelope before a rollout and stops the rolling restart if fewer than 20 live connections remain free;
+- restart чата — только `restart-chat-scale.ps1`; `restart-chat.ps1` и `pm2 restart itinvent-chat*` в dual-режиме не использовать (скрипт откажет);
 - exactly one `itinvent-preview-worker` (Chat, Hub tasks, mail, document flow and My Files) and one `itinvent-chat-push-worker` are shared by both API nodes;
 - `itinvent-preview-worker` is the only application process that generates file-preview artifacts: Office-to-PDF documents, My Files copies, Chat image thumbnails and video posters;
 - do not run the old single `itinvent-chat` or `ecosystem.backend.scale.config.js` on port `8002` at the same time;

@@ -57,6 +57,13 @@ jest.mock('../../api/chatApi', () => ({
   setPinnedMessage: jest.fn(),
   forwardMessage: jest.fn(),
   sendFileMessage: jest.fn(),
+  createChatUploadSession: jest.fn(async () => {
+    throw Object.assign(new Error('upload sessions unavailable'), { response: { status: 404 } });
+  }),
+  getChatUploadSession: jest.fn(),
+  uploadChatFileChunk: jest.fn(),
+  completeChatUploadSession: jest.fn(),
+  cancelChatUploadSession: jest.fn(),
   listChatFolders: jest.fn(),
   createChatFolder: jest.fn(),
   updateChatFolder: jest.fn(),
@@ -633,7 +640,8 @@ describe('native Chat screens', () => {
     await view.unmount();
     const restored = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
     await waitFor(() => expect(restored.getAllByText('Переживает перезапуск')).toHaveLength(1));
-    await fireEvent.press(restored.getByLabelText('Повторить отправку сообщения'));
+    await fireEvent.press(restored.getByLabelText('Не отправлено, нажмите, чтобы повторить'));
+    await fireEvent.press(await restored.findByLabelText('Повторить'));
     await waitFor(() => expect(mockedChatApi.sendTextMessage).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(mockedChatApi.sendTextMessage).toHaveBeenLastCalledWith('conversation-1', 'Переживает перезапуск', expect.objectContaining({ clientMessageId: id })));
     expect(mockedChatApi.sendTextMessage).toHaveBeenCalledTimes(2);
@@ -649,7 +657,8 @@ describe('native Chat screens', () => {
     const alert = jest.spyOn(Alert, 'alert');
     try {
       const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
-      await fireEvent.press(await view.findByLabelText('Убрать сообщение из очереди'));
+      await fireEvent.press(await view.findByLabelText('Не отправлено, нажмите, чтобы повторить'));
+      await fireEvent.press(await view.findByLabelText('Удалить'));
       expect(view.getByText('Убрать локальное сообщение')).toBeTruthy();
       const prompt = alert.mock.calls.find(([title]) => title === 'Убрать сообщение из очереди?');
       await act(async () => { prompt?.[2]?.[1].onPress?.(); });
@@ -953,13 +962,14 @@ describe('native Chat screens', () => {
     await fireEvent.changeText(view.getByLabelText('Текст сообщения'), 'UI pending to confirmed');
     await fireEvent.press(view.getByLabelText('Отправить сообщение'));
     expect(view.getAllByText('UI pending to confirmed')).toHaveLength(1);
-    expect(view.getByTestId('chat-message-sending-spinner')).toBeTruthy();
+    expect(view.getByTestId('chat-message-sending-clock')).toBeTruthy();
     await waitFor(() => expect(mockedChatApi.sendTextMessage).toHaveBeenCalledTimes(1));
     await act(async () => { finish({ id: 'ui-ack', conversation_id: 'conversation-1', sender_user_id: 1,
       body_text: 'UI pending to confirmed', client_message_id: mockedChatApi.sendTextMessage.mock.calls[0][2]?.clientMessageId }); });
-    await waitFor(() => expect(view.queryByTestId('chat-message-sending-spinner')).toBeNull());
+    await waitFor(() => expect(view.queryByTestId('chat-message-sending-clock')).toBeNull());
     expect(view.getAllByText('UI pending to confirmed')).toHaveLength(1);
     expect(view.queryByText('Не отправлено · повторить')).toBeNull();
+    expect(view.queryByLabelText('Не отправлено, нажмите, чтобы повторить')).toBeNull();
     await view.unmount();
   });
 
@@ -975,12 +985,14 @@ describe('native Chat screens', () => {
     await view.rerender(<NativeChatThreadScreen conversationId="conversation-1" />);
     await fireEvent.changeText(view.getByLabelText('Текст сообщения'), 'UI offline remount');
     await fireEvent.press(view.getByLabelText('Отправить сообщение'));
-    await waitFor(() => expect(view.getByText('Ожидает подключения')).toBeTruthy());
+    await waitFor(() => expect(view.getByTestId('chat-message-sending-clock')).toBeTruthy());
+    expect(view.queryByText('Ожидает подключения')).toBeNull();
     expect(view.getAllByText('UI offline remount')).toHaveLength(1);
     const clientId = (await queue.read())[0].client_message_id;
     await view.unmount();
     const restored = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
-    await waitFor(() => expect(restored.getByText('Ожидает подключения')).toBeTruthy());
+    await waitFor(() => expect(restored.getByTestId('chat-message-sending-clock')).toBeTruthy());
+    expect(restored.queryByText('Ожидает подключения')).toBeNull();
     expect(restored.getAllByText('UI offline remount')).toHaveLength(1);
     expect(mockedChatApi.sendTextMessage).not.toHaveBeenCalled();
     mockOfflineMode = false;
@@ -988,7 +1000,7 @@ describe('native Chat screens', () => {
     await waitFor(async () => expect(await queue.read()).toHaveLength(0));
     expect(restored.getAllByText('UI offline remount')).toHaveLength(1);
     expect(restored.queryByText('Ожидает подключения')).toBeNull();
-    expect(restored.queryByTestId('chat-message-sending-spinner')).toBeNull();
+    expect(restored.queryByTestId('chat-message-sending-clock')).toBeNull();
     expect(mockedChatApi.sendTextMessage).toHaveBeenCalledTimes(1);
     expect(mockedChatApi.sendTextMessage.mock.calls[0][2]?.clientMessageId).toBe(clientId);
     await restored.unmount();
@@ -1004,8 +1016,9 @@ describe('native Chat screens', () => {
     await waitFor(() => expect(mockedChatApi.sendTextMessage).toHaveBeenCalledTimes(1));
     const options = mockedChatApi.sendTextMessage.mock.calls[0][2];
     await act(async () => { await createNativeChatOutbox(1, 'conversation-1').cancelDelivery(options!.clientMessageId!); });
-    await waitFor(() => expect(view.getByText('Отправка отменена · повторить')).toBeTruthy());
-    expect(view.queryByTestId('chat-message-sending-spinner')).toBeNull();
+    await waitFor(() => expect(view.getByLabelText('Отправка отменена, нажмите, чтобы повторить')).toBeTruthy());
+    expect(view.queryByText('Отправка отменена · повторить')).toBeNull();
+    expect(view.queryByTestId('chat-message-sending-clock')).toBeNull();
     expect(view.getAllByText('UI cancelled while aborting')).toHaveLength(1);
     expect(options?.signal?.aborted).toBe(true);
     await act(async () => { rejectTransport({ code: 'ERR_CANCELED' }); });
@@ -1344,7 +1357,8 @@ describe('native Chat screens', () => {
       } } }); });
       await fireEvent.press(view.getByLabelText('Сохранить изменения'));
       expect(mockedChatApi.editMessage).not.toHaveBeenCalled();
-      expect(alert).toHaveBeenCalledWith('Сообщение удалено', expect.stringContaining('Текст правки остался'));
+      await waitFor(() => expect(view.getByTestId('native-toast')).toBeTruthy());
+      expect(String(view.getByTestId('native-toast').props.children)).toContain('Текст правки остался');
       expect(view.getByLabelText('Текст сообщения').props.value).toBe('Моя правка');
       await fireEvent.press(view.getByLabelText('Отменить редактирование'));
       expect(view.getByLabelText('Текст сообщения').props.value).toBe('Обычный черновик');
@@ -1734,7 +1748,7 @@ describe('native Chat screens', () => {
     mockOfflineMode = true;
     await view.rerender(<NativeChatThreadScreen conversationId="conversation-1" />);
     await fireEvent.press(view.getByLabelText('Добавить вложение'));
-    await fireEvent.press(view.getByLabelText('Фото из галереи'));
+    await fireEvent.press(view.getByLabelText('Галерея'));
     await waitFor(() => expect(view.getByLabelText('Подпись к фото')).toBeTruthy());
     await fireEvent.changeText(view.getByLabelText('Подпись к фото'), 'Фото оборудования');
     await fireEvent.press(view.getByLabelText('Отправить фото'));
@@ -1762,7 +1776,7 @@ describe('native Chat screens', () => {
     jest.spyOn(require('expo-image-manipulator'), 'manipulateAsync').mockResolvedValueOnce({ uri: 'file:///edited-one.jpg', width: 800, height: 1200 });
     const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
     await fireEvent.press(view.getByLabelText('Добавить вложение'));
-    await fireEvent.press(view.getByLabelText('Фото из галереи'));
+    await fireEvent.press(view.getByLabelText('Галерея'));
     await waitFor(() => expect(view.getByText('Выбрано файлов: 2')).toBeTruthy());
     await fireEvent.changeText(view.getByLabelText('Подпись к вложениям'), 'Комплект');
     await fireEvent.press(view.getByLabelText('Редактировать one.png'));
@@ -1789,7 +1803,7 @@ describe('native Chat screens', () => {
     ]);
     const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
     await fireEvent.press(view.getByLabelText('Добавить вложение'));
-    await fireEvent.press(view.getByLabelText('Фото из галереи'));
+    await fireEvent.press(view.getByLabelText('Галерея'));
     await waitFor(() => expect(view.getByLabelText('Подпись к фото')).toBeTruthy());
     await fireEvent.changeText(view.getByLabelText('Подпись к фото'), 'Не потерять подпись');
     await fireEvent.press(view.getByLabelText('Отправить фото'));
@@ -1887,7 +1901,8 @@ describe('native Chat screens', () => {
     await fireEvent.press(view.getByLabelText('Файл'));
 
     await waitFor(() => expect(view.getByText('report.pdf')).toBeTruthy());
-    await waitFor(() => expect(view.getByText('Отправка 0%')).toBeTruthy());
+    await waitFor(() => expect(view.getByText('Отправка…')).toBeTruthy());
+    expect(view.queryByText('Отправка 0%')).toBeNull();
     await fireEvent.press(view.getByLabelText('Отменить: report.pdf'));
 
     await waitFor(() => expect(view.getByText('Отправка отменена')).toBeTruthy());
@@ -2053,7 +2068,7 @@ describe('native Chat screens', () => {
     expect(view.getAllByText('report.pdf')).toHaveLength(2);
     expect(view.getByLabelText('Сохранить в «Мои файлы»')).toBeTruthy();
 
-    await fireEvent.press(view.getByTestId('chat-attachment-actions-backdrop'));
+    await fireEvent.press(view.getByTestId('chat-attachment-actions-backdrop', { includeHiddenElements: true }));
     await waitFor(() => expect(view.queryByLabelText('Сохранить в «Мои файлы»')).toBeNull());
   });
 
@@ -2484,7 +2499,7 @@ describe('native Chat screens', () => {
       await fireEvent.press(await view.findByLabelText('Отправить стикер 📎'));
     } else {
       await fireEvent.press(view.getByLabelText('Добавить вложение'));
-      await fireEvent.press(view.getByLabelText('Отправить задачу'));
+      await fireEvent.press(view.getByLabelText('Задача'));
       await fireEvent.press(await view.findByLabelText('Отправить задачу Test task'));
     }
     await view.rerender(<NativeChatThreadScreen conversationId="conversation-2" />);
@@ -2594,7 +2609,7 @@ describe('native Chat screens', () => {
     const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
     await waitFor(() => expect(view.getByLabelText('Добавить вложение')).toBeTruthy());
     await fireEvent.press(view.getByLabelText('Добавить вложение'));
-    await fireEvent.press(view.getByLabelText('Открыть стикеры'));
+    await fireEvent.press(view.getByLabelText('Стикер'));
     await waitFor(() => expect(view.getByLabelText('Ссылка на набор стикеров')).toBeTruthy());
     await fireEvent.changeText(view.getByLabelText('Ссылка на набор стикеров'), 'https://t.me/addstickers/cats');
     await fireEvent.press(view.getByLabelText('Добавить набор'));
@@ -2617,7 +2632,7 @@ describe('native Chat screens', () => {
     const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
     await waitFor(() => expect(view.getByLabelText('Добавить вложение')).toBeTruthy());
     await fireEvent.press(view.getByLabelText('Добавить вложение'));
-    await fireEvent.press(view.getByLabelText('Фото из галереи'));
+    await fireEvent.press(view.getByLabelText('Галерея'));
     await waitFor(() => expect(view.getByLabelText('Рисовать')).toBeTruthy());
     expect(view.getByLabelText('Добавить текст')).toBeTruthy();
     expect(view.getByLabelText('Размыть')).toBeTruthy();

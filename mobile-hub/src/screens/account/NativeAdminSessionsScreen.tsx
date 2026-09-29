@@ -9,6 +9,7 @@ import { formatApiError } from '../../api/formatError';
 import { useAuth } from '../../auth/AuthContext';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
+import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import {
   AccountLoading,
   AccountScreenScaffold,
@@ -34,6 +35,7 @@ function NativeAdminSessionsScreenContent() {
   const { user, hasPermission } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
+  const navInset = useNativeBottomNavInset();
   const allowed = canAccessAdminSection('sessions', { user, hasPermission });
   const [sessions, setSessions] = useState<sessionsApi.AuthSession[]>([]);
   const [loading, setLoading] = useState(true);
@@ -156,9 +158,11 @@ function NativeAdminSessionsScreenContent() {
       onRefresh={() => { void load(); }}
       refreshing={loading}
       scroll={false}
+      contentUnderNav
     >
       <FlatList data={sessions} keyExtractor={item => item.session_id} initialNumToRender={12} maxToRenderPerBatch={10} windowSize={7}
         refreshing={loading} onRefresh={() => { void load(); }}
+        contentContainerStyle={{ paddingBottom: navInset }}
         ListHeaderComponent={<View>
       <AccountStatusText tokens={tokens} error={status.error} message={status.message} />
       <AccountSectionCard tokens={tokens} title="Обслуживание">

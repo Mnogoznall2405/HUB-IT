@@ -26,6 +26,7 @@ export function NativeChatComposerDock({
   busy = false,
   onAttachmentPress,
   onEmojiPress,
+  onInputFocus,
   uploadLabel,
   uploadProgress,
   canRecord = true,
@@ -46,6 +47,7 @@ export function NativeChatComposerDock({
   busy?: boolean;
   onAttachmentPress?: () => void;
   onEmojiPress?: () => void;
+  onInputFocus?: () => void;
   uploadLabel?: string;
   uploadProgress?: number | null;
   canRecord?: boolean;
@@ -200,6 +202,7 @@ export function NativeChatComposerDock({
       busy={busy}
       onAttachmentPress={onAttachmentPress}
       onEmojiPress={onEmojiPress}
+      onInputFocus={onInputFocus}
       uploadLabel={uploadLabel}
       uploadProgress={uploadProgress}
       voiceRecording={voiceRecording}

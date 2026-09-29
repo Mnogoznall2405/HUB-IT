@@ -53,6 +53,14 @@ from backend.services.warehouse_1c_scope import (
 
 logger = logging.getLogger(__name__)
 
+
+def env_positive_int(name: str, default: int, minimum: int) -> int:
+    try:
+        return max(int(os.getenv(name, str(default)) or default), minimum)
+    except Exception:
+        return max(int(default), minimum)
+
+
 DEFAULT_1C_SERVER = "tmn-srv-1c-01.zsgp.corp,tmn-srv-1c-02.zsgp.corp"
 DEFAULT_1C_REF = "buh20"
 
@@ -111,7 +119,7 @@ WAREHOUSE_MOVEMENTS_MAX_LIMIT = 500
 WAREHOUSE_MOVEMENTS_ROW_CAP = 8000
 DEFAULT_MAX_ATTACHED_FILE_BYTES = 25 * 1024 * 1024
 
-QUERY_TIMEOUT_SEC = 45
+QUERY_TIMEOUT_SEC = env_positive_int("WAREHOUSE_1C_QUERY_TIMEOUT_SECONDS", 45, 5)
 MAX_CONCURRENT_1C_CALLS = 2
 # Employee↔1C list-badge summary: one batched 1C call costs ~5-10 s, so the
 # result is cached briefly — repeat page loads stay instant, data stays fresh
@@ -307,13 +315,6 @@ def decode_it_request_cursor(value: str | None) -> int:
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def env_positive_int(name: str, default: int, minimum: int) -> int:
-    try:
-        return max(int(os.getenv(name, str(default)) or default), minimum)
-    except Exception:
-        return max(int(default), minimum)
 
 
 def max_attached_file_bytes() -> int:
@@ -795,6 +796,12 @@ class _Warehouse1CConnectionPool:
             self._last_error = str(error or "Ошибка обращения к 1С")[:500]
             if self._consecutive_failures >= COM_CIRCUIT_BREAKER_FAILURES:
                 self._circuit_open_until = time.monotonic() + COM_CIRCUIT_BREAKER_COOLDOWN_SECONDS
+                logger.warning(
+                    "Warehouse 1C circuit breaker opened for %s s after %s consecutive failures: %s",
+                    COM_CIRCUIT_BREAKER_COOLDOWN_SECONDS,
+                    self._consecutive_failures,
+                    self._last_error,
+                )
 
     def record_timeout(self) -> None:
         """Expose wait timeouts without pretending a hung COM call returned."""
@@ -805,6 +812,12 @@ class _Warehouse1CConnectionPool:
             self._last_error = "1С не ответила вовремя"
             if self._consecutive_failures >= COM_CIRCUIT_BREAKER_FAILURES:
                 self._circuit_open_until = time.monotonic() + COM_CIRCUIT_BREAKER_COOLDOWN_SECONDS
+                logger.warning(
+                    "Warehouse 1C circuit breaker opened for %s s after %s consecutive failures: %s",
+                    COM_CIRCUIT_BREAKER_COOLDOWN_SECONDS,
+                    self._consecutive_failures,
+                    self._last_error,
+                )
 
     def get_status(self) -> dict[str, Any]:
         with self._metrics_lock:
@@ -1034,6 +1047,7 @@ class Warehouse1CService:
             return await asyncio.wait_for(asyncio.wrap_future(future, loop=loop), timeout=timeout)
         except asyncio.TimeoutError as exc:
             self._pool.record_timeout()
+            logger.warning("Warehouse 1C pooled request timed out after %.0f s", timeout)
             raise Warehouse1CQueryError(
                 "1С не ответила вовремя. Попробуйте сузить фильтр (номенклатура/склад) и повторить запрос."
             ) from exc
@@ -5189,7 +5203,7 @@ async def background_warehouse_1c_catalog_sync_loop() -> None:
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        logger.warning("Warehouse 1C COM bridge warmup failed: %s", exc)
+        logger.warning("Warehouse 1C COM bridge warmup failed: %s", str(exc) or type(exc).__name__)
     await asyncio.sleep(30)
     # A restart must not immediately rebuild a healthy shared snapshot. The
     # first full refresh is useful only when no promoted generation exists;

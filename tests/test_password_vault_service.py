@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -11,13 +12,22 @@ from backend.appdb.models import AppPasswordVaultEntry
 from backend.models.auth import User
 from backend.services import password_vault_service as service_module
 from backend.services.password_vault_service import (
+    PASSWORD_VAULT_REVEAL_RATE_NAMESPACE,
     PASSWORD_VAULT_UNLOCK_NAMESPACE,
+    PASSWORD_VAULT_UNLOCK_RATE_NAMESPACE,
+    PASSWORD_VAULT_UNLOCK_USER_RATE_NAMESPACE,
     PasswordVaultAccessError,
+    PasswordVaultRateLimitError,
     PasswordVaultRequestMeta,
     PasswordVaultService,
     PasswordVaultValidationError,
 )
-from backend.services.secret_crypto_service import _build_fernet
+from backend.services.secret_crypto_service import (
+    SecretCryptoError,
+    _build_fernet,
+    decrypt_password_vault_secret,
+    encrypt_password_vault_secret,
+)
 
 
 def _sqlite_url(temp_dir: str) -> str:
@@ -58,6 +68,7 @@ class FakeRuntimeStore:
 
     def delete(self, namespace: str, key: str) -> None:
         self.payloads.pop((namespace, key), None)
+        self.counters.pop((namespace, key), None)
 
     def increment_counter(self, namespace: str, key: str, *, window_seconds: int, amount: int = 1):
         counter_key = (namespace, key)
@@ -343,6 +354,256 @@ def test_password_vault_rejects_mobile_biometric_credential_for_another_user(tem
     assert runtime_store.counters[(service_module.PASSWORD_VAULT_UNLOCK_RATE_NAMESPACE, rate_key)] == 1
 
 
+def test_password_vault_list_paginates_and_filters_tags_exactly(temp_dir, monkeypatch):
+    _configure_crypto(monkeypatch)
+    _install_runtime_store(monkeypatch)
+    service = PasswordVaultService(database_url=_sqlite_url(temp_dir))
+    actor = _actor()
+    service.create_group({"name": "VPN", "sort_order": 0}, actor=actor)
+    for index, tag in enumerate(["prod", "prod-eu", "staging"]):
+        service.create_entry(
+            {
+                "group": "VPN",
+                "tags": [tag],
+                "login": f"svc-{index}",
+                "password": f"secret-{index}",
+                "description": "",
+            },
+            actor=actor,
+            meta=_meta(),
+        )
+
+    page = service.list_entries(limit=2, offset=0, user_id=actor.id, session_id="s")
+    assert page["total"] == 3
+    assert page["limit"] == 2
+    assert page["offset"] == 0
+    assert len(page["items"]) == 2
+
+    rest = service.list_entries(limit=2, offset=2, user_id=actor.id, session_id="s")
+    assert len(rest["items"]) == 1
+    assert rest["items"][0]["id"] not in {item["id"] for item in page["items"]}
+
+    clamped = service.list_entries(limit=999, offset=-5, user_id=actor.id, session_id="s")
+    assert clamped["limit"] == service_module.PASSWORD_VAULT_LIST_LIMIT_MAX
+    assert clamped["offset"] == 0
+    assert clamped["total"] == 3
+
+    exact = service.list_entries(tag="prod", user_id=actor.id, session_id="s")
+    assert [item["login"] for item in exact["items"]] == ["svc-0"]
+    assert exact["total"] == 1
+
+    case_insensitive = service.list_entries(tag="PROD", user_id=actor.id, session_id="s")
+    assert case_insensitive["total"] == 1
+
+    # Свободный q больше не ищет по tags_json — «prod-eu» встречается только в теге.
+    q_tag_only = service.list_entries(q="prod-eu", user_id=actor.id, session_id="s")
+    assert q_tag_only["items"] == []
+    assert q_tag_only["total"] == 0
+
+    combined = service.list_entries(tag="staging", q="svc-2", user_id=actor.id, session_id="s")
+    assert combined["total"] == 1
+
+
+def test_password_vault_tag_filter_tolerates_broken_tags_json(temp_dir, monkeypatch):
+    """Строка с битым tags_json не должна ронять list_entries — она просто не матчится.
+
+    NULL невозможен на уровне схемы (nullable=False); защита покрывает
+    повреждённый JSON, который мог попасть в колонку мимо ORM.
+    """
+    _configure_crypto(monkeypatch)
+    _install_runtime_store(monkeypatch)
+    service = PasswordVaultService(database_url=_sqlite_url(temp_dir))
+    actor = _actor()
+    service.create_group({"name": "VPN", "sort_order": 0}, actor=actor)
+    good = service.create_entry(
+        {"group": "VPN", "tags": ["prod"], "login": "svc-ok", "password": "s1", "description": ""},
+        actor=actor,
+        meta=_meta(),
+    )
+    broken = service.create_entry(
+        {"group": "VPN", "tags": ["prod"], "login": "svc-broken", "password": "s2", "description": ""},
+        actor=actor,
+        meta=_meta(),
+    )
+    with app_session(_sqlite_url(temp_dir)) as session:
+        row = session.get(AppPasswordVaultEntry, broken["id"])
+        assert row is not None
+        row.tags_json = "{not-json"
+
+    result = service.list_entries(tag="prod", user_id=actor.id, session_id="s")
+
+    assert [item["login"] for item in result["items"]] == ["svc-ok"]
+    assert result["total"] == 1
+    unfiltered = service.list_entries(user_id=actor.id, session_id="s")
+    assert {item["login"] for item in unfiltered["items"]} == {"svc-ok", "svc-broken"}
+
+
+def test_password_vault_lock_revokes_session_and_user_keys(temp_dir, monkeypatch):
+    _configure_crypto(monkeypatch)
+    runtime_store = _install_runtime_store(monkeypatch)
+    service = PasswordVaultService(database_url=_sqlite_url(temp_dir))
+    actor = _actor()
+
+    until = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    for key in (f"{actor.id}:session-x", f"{actor.id}:user"):
+        runtime_store.set_json(
+            PASSWORD_VAULT_UNLOCK_NAMESPACE,
+            key,
+            {"unlocked_until": until},
+            ttl_seconds=300,
+        )
+    assert service.get_unlocked_until(user_id=actor.id, session_id="session-x")
+
+    result = service.lock(actor=actor, session_id="session-x", meta=_meta())
+
+    assert result == {"locked": True}
+    assert service.get_unlocked_until(user_id=actor.id, session_id="session-x") is None
+    assert service.get_unlocked_until(user_id=actor.id, session_id=None) is None
+    assert "lock" in json.dumps(service.list_audit(limit=20), ensure_ascii=False)
+
+
+def test_password_vault_unlock_rate_limit_tracks_user_across_ips_and_resets_on_success(
+    temp_dir, monkeypatch,
+):
+    _configure_crypto(monkeypatch)
+    runtime_store = _install_runtime_store(monkeypatch)
+    service = PasswordVaultService(database_url=_sqlite_url(temp_dir))
+    actor = _actor()
+    monkeypatch.setattr(
+        service_module.user_service,
+        "get_by_id",
+        lambda _user_id: {"id": actor.id, "is_2fa_enabled": True, "totp_secret_enc": "enc"},
+    )
+    monkeypatch.setattr(service_module.twofa_service, "decrypt_secret", lambda value: "plain")
+    monkeypatch.setattr(
+        service_module.twofa_service,
+        "verify_totp",
+        lambda *, secret, code, valid_window=1: code == "123456",
+    )
+
+    for index in range(5):
+        meta = PasswordVaultRequestMeta(ip_address=f"10.0.0.{index}", user_agent="pytest")
+        with pytest.raises(PasswordVaultAccessError, match="Invalid 2FA code"):
+            service.unlock(actor=actor, session_id="s", totp_code="000000", meta=meta)
+
+    with pytest.raises(PasswordVaultRateLimitError) as blocked:
+        service.unlock(
+            actor=actor,
+            session_id="s",
+            totp_code="123456",
+            meta=PasswordVaultRequestMeta(ip_address="10.9.9.9", user_agent="pytest"),
+        )
+    assert blocked.value.retry_after_seconds == service_module.PASSWORD_VAULT_UNLOCK_RATE_WINDOW_SECONDS
+
+    # Окно «истекло» — имитируем сбросом fake-хранилища.
+    runtime_store.counters.clear()
+    runtime_store.payloads.clear()
+
+    meta = PasswordVaultRequestMeta(ip_address="10.1.1.1", user_agent="pytest")
+    for _ in range(2):
+        with pytest.raises(PasswordVaultAccessError):
+            service.unlock(actor=actor, session_id="s", totp_code="000000", meta=meta)
+    user_bucket = (PASSWORD_VAULT_UNLOCK_USER_RATE_NAMESPACE, service._user_rate_key(user_id=actor.id))
+    ip_bucket = (
+        PASSWORD_VAULT_UNLOCK_RATE_NAMESPACE,
+        service._unlock_rate_key(user_id=actor.id, ip_address="10.1.1.1"),
+    )
+    assert runtime_store.counters[user_bucket] == 2
+    assert runtime_store.counters[ip_bucket] == 2
+
+    result = service.unlock(actor=actor, session_id="s", totp_code="123456", meta=meta)
+    assert result["unlocked_until"]
+    assert user_bucket not in runtime_store.counters
+    assert ip_bucket not in runtime_store.counters
+
+
+def test_password_vault_reveal_is_throttled_per_user(temp_dir, monkeypatch):
+    _configure_crypto(monkeypatch)
+    runtime_store = _install_runtime_store(monkeypatch)
+    service = PasswordVaultService(database_url=_sqlite_url(temp_dir))
+    actor = _actor()
+    service.create_group({"name": "VPN", "sort_order": 0}, actor=actor)
+    created = service.create_entry(
+        {"group": "VPN", "tags": [], "login": "svc", "password": "secret-1", "description": ""},
+        actor=actor,
+        meta=_meta(),
+    )
+    runtime_store.set_json(
+        PASSWORD_VAULT_UNLOCK_NAMESPACE,
+        f"{actor.id}:session-1",
+        {"unlocked_until": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()},
+        ttl_seconds=300,
+    )
+
+    for _ in range(service_module.PASSWORD_VAULT_REVEAL_RATE_LIMIT):
+        revealed = service.reveal_entry(
+            created["id"], purpose="show", actor=actor, session_id="session-1", meta=_meta(),
+        )
+        assert revealed["password"] == "secret-1"
+
+    with pytest.raises(PasswordVaultRateLimitError) as blocked:
+        service.reveal_entry(created["id"], purpose="show", actor=actor, session_id="session-1", meta=_meta())
+    assert blocked.value.retry_after_seconds == service_module.PASSWORD_VAULT_REVEAL_RATE_WINDOW_SECONDS
+
+    reveal_key = (PASSWORD_VAULT_REVEAL_RATE_NAMESPACE, service._user_rate_key(user_id=actor.id))
+    assert runtime_store.counters[reveal_key] == service_module.PASSWORD_VAULT_REVEAL_RATE_LIMIT + 1
+
+
+def test_password_vault_unlock_and_reveal_race(temp_dir, monkeypatch):
+    _configure_crypto(monkeypatch)
+    runtime_store = _install_runtime_store(monkeypatch)
+    service = PasswordVaultService(database_url=_sqlite_url(temp_dir))
+    actor = _actor()
+    monkeypatch.setattr(
+        service_module.user_service,
+        "get_by_id",
+        lambda _user_id: {"id": actor.id, "is_2fa_enabled": True, "totp_secret_enc": "enc"},
+    )
+    monkeypatch.setattr(service_module.twofa_service, "decrypt_secret", lambda value: "plain")
+    monkeypatch.setattr(
+        service_module.twofa_service,
+        "verify_totp",
+        lambda *, secret, code, valid_window=1: code == "123456",
+    )
+    service.create_group({"name": "VPN", "sort_order": 0}, actor=actor)
+    created = service.create_entry(
+        {"group": "VPN", "tags": [], "login": "svc", "password": "secret-1", "description": ""},
+        actor=actor,
+        meta=_meta(),
+    )
+    runtime_store.set_json(
+        PASSWORD_VAULT_UNLOCK_NAMESPACE,
+        f"{actor.id}:user",
+        {"unlocked_until": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()},
+        ttl_seconds=300,
+    )
+
+    def _unlock(index: int) -> dict:
+        return service.unlock(
+            actor=actor,
+            session_id=f"race-{index}",
+            totp_code="123456",
+            meta=_meta(),
+        )
+
+    def _reveal(_index: int) -> dict:
+        return service.reveal_entry(
+            created["id"], purpose="copy", actor=actor, session_id="session-race", meta=_meta(),
+        )
+
+    errors: list[Exception] = []
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(_unlock, i) for i in range(4)]
+        futures += [pool.submit(_reveal, i) for i in range(4)]
+        for future in futures:
+            try:
+                assert future.result()["unlocked_until"]
+            except Exception as exc:  # noqa: BLE001 - race smoke test collects outcomes
+                errors.append(exc)
+
+    assert errors == []
+
+
 def test_password_vault_requires_existing_active_group(temp_dir, monkeypatch):
     _configure_crypto(monkeypatch)
     _install_runtime_store(monkeypatch)
@@ -402,3 +663,34 @@ def test_password_vault_group_crud(temp_dir, monkeypatch):
     archived = service.archive_group(created["id"], actor=actor)
     assert archived["is_active"] is False
     assert service.list_groups() == []
+
+
+def test_password_vault_key_rejects_passphrase_in_production(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("PASSWORD_VAULT_KEY", "weak-passphrase-not-fernet")
+    _build_fernet.cache_clear()
+    with pytest.raises(SecretCryptoError):
+        encrypt_password_vault_secret("value")
+
+    import base64
+
+    monkeypatch.setenv(
+        "PASSWORD_VAULT_KEY",
+        base64.urlsafe_b64encode(b"k" * 32).decode("ascii"),
+    )
+    _build_fernet.cache_clear()
+    token = encrypt_password_vault_secret("value")
+    assert decrypt_password_vault_secret(token) == "value"
+
+
+def test_password_vault_versioned_prefix_roundtrip(monkeypatch):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.setenv("PASSWORD_VAULT_KEY", "test-password-vault-key")
+    monkeypatch.setenv("PASSWORD_VAULT_KEY_VERSIONING", "1")
+    _build_fernet.cache_clear()
+
+    token = encrypt_password_vault_secret("value")
+    assert token.startswith("fernet:v1:")
+
+    monkeypatch.delenv("PASSWORD_VAULT_KEY_VERSIONING", raising=False)
+    assert decrypt_password_vault_secret(token) == "value"

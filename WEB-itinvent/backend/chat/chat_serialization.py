@@ -1,6 +1,7 @@
 """Conversation and message payload serialization."""
 from __future__ import annotations
 
+
 from typing import TYPE_CHECKING, Any, Optional
 
 from sqlalchemy import and_, func, or_, select
@@ -14,6 +15,7 @@ from backend.chat.models import (
     ChatMessageAttachment,
     ChatMessageRead,
     ChatMessageReaction,
+    conversation_state_is_muted,
 )
 from datetime import datetime
 
@@ -340,7 +342,8 @@ class ChatSerialization:
             "member_count": member_count,
             "online_member_count": online_member_count,
             "is_pinned": bool(getattr(state, "is_pinned", False)),
-            "is_muted": bool(getattr(state, "is_muted", False)),
+            "is_muted": conversation_state_is_muted(state),
+            "muted_until": _iso(getattr(state, "muted_until", None)) or None,
             "is_archived": bool(getattr(state, "is_archived", False)),
             "pinned_message_id": _normalize_text(getattr(conversation, "pinned_message_id", None)) or None,
             "viewer_member_role": viewer_member_role,
@@ -490,6 +493,11 @@ class ChatSerialization:
             "reply_preview": dict((reply_previews or {}).get(_normalize_text(getattr(message, "reply_to_message_id", None))) or {}) or None,
             "forward_preview": forward_preview,
             "task_preview": None if is_deleted else self._service._deserialize_task_preview(getattr(message, "task_preview_json", None)),
+            "poll": None if (is_deleted or message_kind != "poll") else self._service._build_poll_payload(
+                message_id=message.id,
+                body=message.body,
+                current_user_id=int(current_user_id),
+            ),
             "attachments": attachment_payload,
             "action_card": None if is_deleted else self._resolve_message_action_card(
                 message_id=message.id,
@@ -537,6 +545,11 @@ class ChatSerialization:
             task_preview = self._service._deserialize_task_preview(getattr(last_message, "task_preview_json", None))
             task_title = _normalize_text((task_preview or {}).get("title"))
             preview = f"Задача: {task_title}" if task_title else "Поделились задачей"
+        elif message_kind in {"location", "contact", "poll"}:
+            preview = self._service._structured_kind_preview_text(
+                message_kind=message_kind,
+                message=last_message,
+            )
         elif message_kind == "file" and not preview:
             resolved_attachments = list(attachments or self._service._list_attachments_by_message(
                 session=session,

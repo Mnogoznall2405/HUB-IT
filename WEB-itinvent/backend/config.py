@@ -299,6 +299,7 @@ class MyFilesSecurityConfig:
     antivirus_enabled: bool = False
     antivirus_fail_closed: bool = True
     antivirus_timeout_sec: int = 300
+    antivirus_max_size_bytes: int = 0
     antivirus_provider: str = "auto"
     kaspersky_path: str = ""
     defender_path: str = ""
@@ -324,6 +325,15 @@ class AuthSecurityConfig:
     trusted_device_ttl_days: int = 90
     new_login_email_enabled: bool = False
     rate_limit_storage_url: Optional[str] = None
+    windows_sso_enabled: bool = False
+    windows_sso_domain: str = "ZSGP"
+    adfs_base_url: Optional[str] = None
+    adfs_client_id: Optional[str] = None
+    adfs_client_secret: Optional[str] = None
+    adfs_redirect_uri: Optional[str] = None
+    adfs_scope: str = "openid"
+    adfs_ca_bundle: Optional[str] = None
+    adfs_http_timeout_sec: int = 10
 
     def __post_init__(self):
         if self.twofa_internal_cidrs is None:
@@ -497,6 +507,15 @@ class Config:
                 trusted_device_ttl_days=int(os.getenv("AUTH_TRUSTED_DEVICE_TTL_DAYS", "90")),
                 new_login_email_enabled=str(os.getenv("AUTH_NEW_LOGIN_EMAIL_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"},
                 rate_limit_storage_url=(str(os.getenv("RATE_LIMIT_STORAGE_URL", "") or "").strip() or None),
+                windows_sso_enabled=str(os.getenv("WINDOWS_SSO_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"},
+                windows_sso_domain=(str(os.getenv("WINDOWS_SSO_DOMAIN", "ZSGP") or "").strip() or "ZSGP"),
+                adfs_base_url=(str(os.getenv("ADFS_BASE_URL", "") or "").strip().rstrip("/") or None),
+                adfs_client_id=(str(os.getenv("ADFS_CLIENT_ID", "") or "").strip() or None),
+                adfs_client_secret=(str(os.getenv("ADFS_CLIENT_SECRET", "") or "").strip() or None),
+                adfs_redirect_uri=(str(os.getenv("ADFS_REDIRECT_URI", "") or "").strip() or None),
+                adfs_scope=(str(os.getenv("ADFS_SCOPE", "openid") or "").strip() or "openid"),
+                adfs_ca_bundle=(str(os.getenv("ADFS_CA_BUNDLE", "") or "").strip() or None),
+                adfs_http_timeout_sec=_positive_int_env("ADFS_HTTP_TIMEOUT_SEC", 10),
             ),
             my_files_public_rate_limit=MyFilesPublicRateLimitConfig(
                 meta_limit_per_token=_positive_int_env("MY_FILES_PUBLIC_META_LIMIT_PER_TOKEN", 60),
@@ -541,6 +560,7 @@ class Config:
                 antivirus_enabled=_bool_env("MY_FILES_ANTIVIRUS_ENABLED", environment == "production"),
                 antivirus_fail_closed=_bool_env("MY_FILES_ANTIVIRUS_FAIL_CLOSED", environment == "production"),
                 antivirus_timeout_sec=_positive_int_env("MY_FILES_ANTIVIRUS_TIMEOUT_SEC", 300),
+                antivirus_max_size_bytes=_positive_int_env("MY_FILES_ANTIVIRUS_MAX_SIZE_BYTES", 0, minimum=0),
                 antivirus_provider=str(os.getenv("MY_FILES_ANTIVIRUS_PROVIDER", "auto") or "auto").strip().lower(),
                 kaspersky_path=str(os.getenv("MY_FILES_KASPERSKY_PATH", "") or "").strip(),
                 defender_path=str(os.getenv("MY_FILES_DEFENDER_PATH", "") or "").strip(),

@@ -8,7 +8,7 @@ jest.mock('../../accessibility/useReducedMotion', () => ({ useReducedMotion: () 
 let handlers: PanResponderCallbacks;
 const event = {} as GestureResponderEvent;
 const gesture = (dx: number, dy = 0) => ({ dx, dy } as PanResponderGestureState);
-const base = { isRead: false, canDelete: true, disabled: false, tokens: getFluentTokens('dark') };
+const base = { isRead: false, canArchive: true, disabled: false, tokens: getFluentTokens('dark') };
 beforeEach(() => {
   mockReduceMotion = false;
   jest.spyOn(PanResponder, 'create').mockImplementation((config) => { handlers = config; return { panHandlers: {} }; });
@@ -42,19 +42,29 @@ it('serializes releases until the action settles and allows retry after rejectio
     handlers.onPanResponderRelease?.(event, gesture(-90));
   });
   expect(onAction).toHaveBeenCalledTimes(1);
+  expect(onAction).toHaveBeenLastCalledWith('archive');
   expect(handlers.onMoveShouldSetPanResponder?.(event, gesture(90))).toBe(false);
   await act(async () => reject(new Error('synthetic failure')));
   await act(async () => handlers.onPanResponderRelease?.(event, gesture(90)));
   expect(onAction).toHaveBeenCalledTimes(2);
+  expect(onAction).toHaveBeenLastCalledWith('toggle-read');
 });
 
 it('disables unavailable directions and ignores a release after actions become disabled', async () => {
   const onAction = jest.fn();
-  const view = await render(<NativeMailSwipeRow {...base} canDelete={false} onAction={onAction}><Text>Письмо</Text></NativeMailSwipeRow>);
+  const view = await render(<NativeMailSwipeRow {...base} canArchive={false} onAction={onAction}><Text>Письмо</Text></NativeMailSwipeRow>);
   expect(handlers.onMoveShouldSetPanResponder?.(event, gesture(-90))).toBe(false);
   await view.rerender(<NativeMailSwipeRow {...base} disabled onAction={onAction}><Text>Письмо</Text></NativeMailSwipeRow>);
   await act(async () => handlers.onPanResponderRelease?.(event, gesture(90)));
   expect(onAction).not.toHaveBeenCalled();
+});
+
+it('maps the left swipe in Trash to the explicit permanent-delete request instead of a silent delete', async () => {
+  const onAction = jest.fn();
+  await render(<NativeMailSwipeRow {...base} canArchive={false} canDeleteForever onAction={onAction}><Text>Письмо</Text></NativeMailSwipeRow>);
+  await act(async () => handlers.onPanResponderRelease?.(event, gesture(-90)));
+  expect(onAction).toHaveBeenCalledTimes(1);
+  expect(onAction).toHaveBeenLastCalledWith('delete-forever');
 });
 
 it('settles immediately with reduced motion while preserving the action', async () => {
@@ -67,4 +77,35 @@ it('settles immediately with reduced motion while preserving the action', async 
   expect(spring).not.toHaveBeenCalled();
   expect(reset).toHaveBeenCalledWith(0);
   expect(onAction).toHaveBeenCalledWith('toggle-read');
+});
+
+it('keeps the revealed swipe underlay hidden from the accessibility tree', async () => {
+  const onAction = jest.fn();
+  const view = await render(<NativeMailSwipeRow {...base} onAction={onAction}><Text>Письмо</Text></NativeMailSwipeRow>);
+  const hidden = view.root?.queryAll(
+    (node) => node.props?.accessibilityElementsHidden === true
+      && node.props?.importantForAccessibility === 'no-hide-descendants',
+  ) ?? [];
+  expect(hidden.length).toBe(1);
+});
+
+it('never captures or releases a gesture while the row is disabled', async () => {
+  const onAction = jest.fn();
+  await render(<NativeMailSwipeRow {...base} disabled onAction={onAction}><Text>Письмо</Text></NativeMailSwipeRow>);
+  expect(handlers.onMoveShouldSetPanResponder?.(event, gesture(90))).toBe(false);
+  expect(handlers.onMoveShouldSetPanResponder?.(event, gesture(-90))).toBe(false);
+  await act(async () => handlers.onPanResponderRelease?.(event, gesture(90)));
+  expect(onAction).not.toHaveBeenCalled();
+});
+
+it('honours configured swipe targets and ignores a direction set to «Выкл.»', async () => {
+  const onAction = jest.fn();
+  await render(<NativeMailSwipeRow {...base} swipeRight="archive" swipeLeft="none" onAction={onAction}><Text>Письмо</Text></NativeMailSwipeRow>);
+  expect(handlers.onMoveShouldSetPanResponder?.(event, gesture(-90))).toBe(false);
+  expect(handlers.onMoveShouldSetPanResponder?.(event, gesture(90))).toBe(true);
+  await act(async () => handlers.onPanResponderRelease?.(event, gesture(90)));
+  expect(onAction).toHaveBeenCalledTimes(1);
+  expect(onAction).toHaveBeenLastCalledWith('archive');
+  await act(async () => handlers.onPanResponderRelease?.(event, gesture(-90)));
+  expect(onAction).toHaveBeenCalledTimes(1);
 });

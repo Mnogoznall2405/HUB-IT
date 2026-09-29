@@ -1,6 +1,8 @@
 import * as DocumentPicker from 'expo-document-picker';
 import * as Crypto from 'expo-crypto';
 import { Directory, File, Paths } from 'expo-file-system';
+import { Image } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { Platform } from 'react-native';
 import {
@@ -12,6 +14,8 @@ import type { FeedAttachment } from './feedFormat';
 import { getSessionUserId } from '../auth/tokenStore';
 import { downloadAuthenticatedFile } from '../files/authenticatedFileDownload';
 import { sanitizeNativeFileName, selectCacheEvictions } from '../files/filePolicy';
+import { nativeImageCacheKey } from '../files/nativeImageCache';
+import { resolveAttachmentUrl } from '../utils/attachmentUrl';
 
 export const FEED_FILE_MAX_BYTES = 20 * 1024 * 1024;
 const CACHE_DIRECTORY_NAME = 'hubit-feed-files';
@@ -86,6 +90,54 @@ export async function pickNativeFeedFiles(): Promise<FeedUploadFile[]> {
       uploadId: createFeedUploadId(),
     };
   });
+}
+
+export async function pickNativeFeedImages(): Promise<FeedUploadFile[]> {
+  assertNativeRuntime();
+  const result = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: ['images'],
+    allowsMultipleSelection: true,
+    selectionLimit: 10,
+    orderedSelection: true,
+    quality: 0.9,
+  });
+  if (result.canceled || !result.assets?.length) return [];
+  return result.assets.map((asset) => {
+    const file = new File(asset.uri);
+    const name = sanitizeNativeFileName(asset.fileName || file.name || 'photo.jpg');
+    const size = Math.max(0, Number(asset.fileSize || file.size || 0));
+    if (!file.exists || size <= 0) throw new Error(`Файл «${name}» пустой или недоступен`);
+    if (size > FEED_FILE_MAX_BYTES) throw new Error(`Файл «${name}» превышает 20 МБ`);
+    return {
+      uri: asset.uri,
+      name,
+      mimeType: String(asset.mimeType || file.type || 'image/jpeg'),
+      size,
+      uploadId: createFeedUploadId(),
+    };
+  });
+}
+
+/** Resolve an image attachment to a local file URI: rendered-image disk cache first, then the shared download cache/network. */
+export async function resolveNativeFeedImageUri(
+  postId: string,
+  attachment: FeedAttachment,
+  commentId?: string,
+): Promise<string> {
+  assertNativeRuntime();
+  const attachmentId = String(attachment.id || '').trim();
+  if (!postId || !attachmentId) throw new Error('Не выбран файл публикации');
+  const sourceUrl = commentId
+    ? buildFeedCommentAttachmentUrl(postId, commentId, attachmentId)
+    : buildFeedAttachmentUrl(postId, attachmentId);
+  const userId = Number(await getSessionUserId());
+  const trusted = userId > 0 ? resolveAttachmentUrl(sourceUrl) : null;
+  if (trusted) {
+    const cached = await Image.getCachePathAsync(nativeImageCacheKey(userId, trusted)).catch(() => null);
+    if (cached) return cached.startsWith('file:') ? cached : `file://${cached}`;
+  }
+  const downloaded = await downloadNativeFeedAttachment(postId, attachment, commentId);
+  return downloaded.uri;
 }
 
 export async function downloadNativeFeedAttachment(

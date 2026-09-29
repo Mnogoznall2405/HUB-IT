@@ -33,6 +33,7 @@ async def create_chat_upload_session(
             conversation_id=conversation_id,
             body=payload.body,
             reply_to_message_id=payload.reply_to_message_id,
+            client_message_id=payload.client_message_id,
             files=[item.model_dump() for item in list(payload.files or [])],
         )
     except Exception as exc:

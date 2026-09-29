@@ -178,3 +178,63 @@ def test_create_exchange_account_records_protocol_cache_without_account_pool(
     assert after["misses"] == 1
     assert after["hit_rate"] == 0.5
     assert after["last_size"] >= 1
+
+
+def test_create_exchange_account_uses_impersonation_access_type(monkeypatch, isolated_protocol_cache):
+    import exchangelib
+
+    class DummyAccount:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(exchangelib, "Account", DummyAccount)
+
+    delegated = transport.create_exchange_account(
+        email="user@example.com",
+        login="DOMAIN\\mailuser",
+        password="secret",
+        ews_url=EWS_ENDPOINT,
+        exchange_host="mail.example",
+        protocol_context=nullcontext(),
+    )
+    impersonated = transport.create_exchange_account(
+        email="user@example.com",
+        login="DOMAIN\\svc",
+        password="svc-secret",
+        ews_url=EWS_ENDPOINT,
+        exchange_host="mail.example",
+        protocol_context=nullcontext(),
+        impersonate=True,
+    )
+
+    assert delegated.kwargs["access_type"] is exchangelib.DELEGATE
+    assert impersonated.kwargs["access_type"] is exchangelib.IMPERSONATION
+    assert impersonated.kwargs["primary_smtp_address"] == "user@example.com"
+
+
+def test_mail_service_create_account_swaps_credentials_when_impersonation_active(monkeypatch):
+    service = mail_module.MailService.__new__(mail_module.MailService)
+    monkeypatch.setenv("MAIL_IMPERSONATION_ENABLED", "1")
+    monkeypatch.setenv("MAIL_IMPERSONATION_USER", "DOMAIN\\svc")
+    monkeypatch.setenv("MAIL_IMPERSONATION_PASSWORD", "svc-secret")
+    monkeypatch.setattr(mail_module.MailService, "_configure_exchange_http_adapter_for_runtime", lambda self: None)
+    monkeypatch.setattr(mail_module.MailService, "_exchange_protocol_context", lambda self: nullcontext())
+
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(mail_module, "create_exchange_account", fake_create)
+
+    service._create_account(email="user@example.com", login="user-login", password="user-pass")
+    assert captured["login"] == "DOMAIN\\svc"
+    assert captured["password"] == "svc-secret"
+    assert captured["impersonate"] is True
+
+    captured.clear()
+    service._create_account(email="user@example.com", login="user-login", password="user-pass", impersonate=False)
+    assert captured["login"] == "user-login"
+    assert captured["password"] == "user-pass"
+    assert captured["impersonate"] is False

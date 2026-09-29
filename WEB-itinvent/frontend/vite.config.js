@@ -73,6 +73,7 @@ export default defineConfig(({ mode }) => {
   const backendPort = env.VITE_BACKEND_PORT || '8001';
   const backendTarget = `http://${backendHost}:${backendPort}`;
   const scanBackendTarget = env.VITE_SCAN_BACKEND_TARGET || 'http://localhost:8011';
+  const voiceBackendTarget = env.VITE_VOICE_BACKEND_TARGET || 'http://localhost:8013';
   const canonicalHost = env.VITE_CANONICAL_HOST || undefined;
   // In production default to absolute root paths to avoid /route/assets/* requests on refresh.
   // If app is deployed to a virtual directory, override with VITE_BASE_PATH (example: /itinvent/).
@@ -105,6 +106,10 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       proxy: {
+        '/api/v1/voice': {
+          target: voiceBackendTarget,
+          changeOrigin: true,
+        },
         '/api/v1/scan': {
           target: scanBackendTarget,
           changeOrigin: true,

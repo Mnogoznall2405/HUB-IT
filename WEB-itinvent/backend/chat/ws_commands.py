@@ -1,7 +1,6 @@
 """WebSocket command dispatch for chat."""
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import Any, Optional
 
@@ -15,6 +14,15 @@ def _api():
     from backend.api.v1.chat._shim import chat_api
 
     return chat_api()
+
+
+def _poll_option_index(payload: dict[str, Any]) -> int:
+    """WS parity with PollVoteRequest (int, 0..9, required): a missing or
+    malformed index must error out — never silently vote for option 0."""
+    raw = payload.get("option_index")
+    if isinstance(raw, bool) or not isinstance(raw, int) or not 0 <= raw <= 9:
+        raise ValueError("option_index must be an integer in 0..9")
+    return raw
 
 
 async def dispatch_chat_ws_command(
@@ -131,6 +139,7 @@ async def dispatch_chat_ws_command(
             conversation_id=conversation_id,
             body=body_text,
             body_format=chat_api._normalize_text(payload.get("body_format")) or "plain",
+            kind=chat_api._normalize_text(payload.get("kind")) or "text",
             client_message_id=payload.get("client_message_id"),
             reply_to_message_id=payload.get("reply_to_message_id"),
             defer_push_notifications=True,
@@ -345,6 +354,85 @@ async def dispatch_chat_ws_command(
         )
         return
 
+    if message_type == "chat.poll_vote":
+        # F-POLL: vote over WS; the message.updated fan-out reserializes
+        # per-member so my_option_index is personalized.
+        ensure_user_permission(current_user, PERM_CHAT_WRITE)
+        if not conversation_id:
+            raise ValueError("conversation_id is required")
+        message_id = str(payload.get("message_id") or "").strip()
+        if not message_id:
+            raise ValueError("message_id is required")
+        command_started_at = time.perf_counter()
+        vote_result = await chat_api._run_chat_call(
+            chat_api.chat_service.vote_poll,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            message_id=message_id,
+            option_index=_poll_option_index(payload),
+        )
+        await chat_api.chat_realtime.send_command_ok(
+            connection_id,
+            request_id=request_id,
+            conversation_id=conversation_id,
+            payload=vote_result,
+        )
+        chat_api._schedule_chat_background_task(
+            chat_api._publish_message_updated_after_edit(
+                conversation_id=conversation_id,
+                message_id=message_id,
+            ),
+            label="publish_poll_message_updated",
+        )
+        chat_api._log_ws_command_timing(
+            "poll_vote",
+            command_started_at,
+            connection_id=connection_id,
+            request_id=request_id or "-",
+            user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            message_id=message_id,
+        )
+        return
+
+    if message_type == "chat.poll_close":
+        ensure_user_permission(current_user, PERM_CHAT_WRITE)
+        if not conversation_id:
+            raise ValueError("conversation_id is required")
+        message_id = str(payload.get("message_id") or "").strip()
+        if not message_id:
+            raise ValueError("message_id is required")
+        command_started_at = time.perf_counter()
+        close_result = await chat_api._run_chat_call(
+            chat_api.chat_service.close_poll,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            message_id=message_id,
+        )
+        await chat_api.chat_realtime.send_command_ok(
+            connection_id,
+            request_id=request_id,
+            conversation_id=conversation_id,
+            payload=close_result,
+        )
+        chat_api._schedule_chat_background_task(
+            chat_api._publish_message_updated_after_edit(
+                conversation_id=conversation_id,
+                message_id=message_id,
+            ),
+            label="publish_poll_message_updated",
+        )
+        chat_api._log_ws_command_timing(
+            "poll_close",
+            command_started_at,
+            connection_id=connection_id,
+            request_id=request_id or "-",
+            user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            message_id=message_id,
+        )
+        return
+
     if message_type == "chat.mark_read":
         if not conversation_id:
             raise ValueError("conversation_id is required")
@@ -428,22 +516,25 @@ async def dispatch_chat_ws_command(
             "is_typing": is_typing,
             "expires_in_ms": 5000 if is_typing else 0,
         }
-        typing_tasks = [
-            chat_api.chat_realtime.publish_conversation_event(
-                user_id=int(member_user_id),
+        # F-TYPING-INBOX: typing must reach inbox sockets too — they are not
+        # subscribed to the conversation room, so fan out by user. Thread
+        # clients filter by conversation_id in the payload.
+        recipient_ids = [
+            int(member_user_id)
+            for member_user_id in member_user_ids
+            if int(member_user_id) != int(current_user.id)
+        ]
+        if recipient_ids:
+            await chat_api.chat_realtime.publish_user_events(
+                user_ids=recipient_ids,
                 conversation_id=conversation_id,
                 event_type="chat.typing.started" if is_typing else "chat.typing.stopped",
                 payload=typing_payload,
             )
-            for member_user_id in member_user_ids
-            if int(member_user_id) != int(current_user.id)
-        ]
-        if typing_tasks:
-            await asyncio.gather(*typing_tasks)
         return
 
     if message_type == "chat.ping":
-        await chat_api.chat_realtime.send_to_connection(
+        await chat_api.chat_realtime.send_pong(
             connection_id,
             event_type="chat.pong",
             request_id=request_id,

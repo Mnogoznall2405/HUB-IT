@@ -52,6 +52,7 @@ import { buildOfficeUiTokens, getOfficeEmptyStateSx, getOfficePanelSx, getOffice
 import BrandedRouteLoader from './BrandedRouteLoader';
 import DesktopShellSync from './DesktopShellSync';
 import HubCommandPalette from '../search/HubCommandPalette';
+import MailSessionPrompt from '../mail/MailSessionPrompt';
 import {
   TOAST_ACTION_EXECUTE_EVENT,
   createNavigateToastAction,
@@ -2254,6 +2255,7 @@ useEffect(() => {
         onClose={() => setCommandPaletteOpen(false)}
         onExecute={executeHubCommand}
       />
+      {user ? <MailSessionPrompt /> : null}
       <Box
         data-testid="main-layout-shell"
         data-app-bar-height={appBarHeight}

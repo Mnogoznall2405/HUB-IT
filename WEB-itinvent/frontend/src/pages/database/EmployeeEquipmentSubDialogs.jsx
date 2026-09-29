@@ -27,6 +27,7 @@ export default function EmployeeEquipmentSubDialogs({
   onCloseHistory,
   inventoryTaskOpen,
   discrepanciesText,
+  inventoryTaskDescriptionLoading = false,
   onCloseInventoryTask,
   onOpenTasks,
 }) {
@@ -86,6 +87,7 @@ export default function EmployeeEquipmentSubDialogs({
         open={inventoryTaskOpen}
         employeeName={employeeName}
         description={discrepanciesText}
+        descriptionLoading={inventoryTaskDescriptionLoading}
         onClose={onCloseInventoryTask}
         onOpenTasks={onOpenTasks}
       />

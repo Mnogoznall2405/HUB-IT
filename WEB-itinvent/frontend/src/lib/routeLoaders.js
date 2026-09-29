@@ -86,6 +86,8 @@ export const loadMyFilesRoute = defineRouteLoader(() => {
 });
 export const loadSharedFileRoute = defineRouteLoader(() => import('../pages/SharedFile'));
 export const loadSharedFolderRoute = defineRouteLoader(() => import('../pages/SharedFolder'));
+export const loadHelpRoute = defineRouteLoader(() => import('../pages/Help'));
+export const loadVoiceVideoRoute = defineRouteLoader(() => import('../pages/VoiceVideo'));
 
 const ROUTE_LOADERS = new Map([
   ['/login', loadLoginRoute],
@@ -124,6 +126,8 @@ const ROUTE_LOADERS = new Map([
   ['/my-files', loadMyFilesRoute],
   ['/shared-files', loadSharedFileRoute],
   ['/shared-folders', loadSharedFolderRoute],
+  ['/help', loadHelpRoute],
+  ['/voice', loadVoiceVideoRoute],
 ]);
 
 export const normalizeRouteLoaderPath = (path) => {

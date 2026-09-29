@@ -412,7 +412,7 @@ it('keeps the inventory toolbar and equipment card readable without icon-only pr
   expect(view.queryByText('Обновить')).toBeNull();
   await fireEvent.press(view.getByTestId('native-database-more'));
   expect(view.getByText('Обновить')).toBeTruthy();
-  expect(view.getByText('Инв. № INV-1')).toBeTruthy();
+  expect(view.getByText(/Инв\. № INV-1/)).toBeTruthy();
   expect(view.getByText('OptiPlex').props.numberOfLines).toBe(2);
   expect(view.getByTestId('native-database-scan-qr').props.accessibilityLabel).toBe('Сканировать инвентарный QR-код камерой');
   expect(view.getByTestId('native-database-refresh').props.accessibilityLabel).toBe('Обновить результаты');

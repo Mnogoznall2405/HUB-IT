@@ -22,6 +22,8 @@ export default function DatabaseScopeContent({
   isActsScope,
   isConsumablesMode,
   canDatabaseWrite,
+  canAdSync = false,
+  onOpenAdSync,
   branches,
   selectedBranch,
   onBranchChange,
@@ -33,6 +35,8 @@ export default function DatabaseScopeContent({
   onOpenUploadAct,
   onOpenAddEquipment,
   onOpenAddConsumable,
+  onOpenConsumableQrPrint = null,
+  onOpenCartridgeCompatibility = null,
   onOpenMore,
   recentActs,
   recentActsLoading,
@@ -72,6 +76,7 @@ export default function DatabaseScopeContent({
   onOpenLocationTransfer,
   onOpenTransfer,
   onOpenTransferAct,
+  onOpenDbTransfer,
   onOpenCartridge,
   onOpenBattery,
   onOpenComponent,
@@ -94,6 +99,8 @@ export default function DatabaseScopeContent({
           onOpenUploadAct={onOpenUploadAct}
           onOpenAddEquipment={onOpenAddEquipment}
           onOpenAddConsumable={onOpenAddConsumable}
+          onOpenConsumableQrPrint={onOpenConsumableQrPrint}
+          onOpenCartridgeCompatibility={onOpenCartridgeCompatibility}
           onOpenMore={onOpenMore}
         />
       )}
@@ -151,12 +158,16 @@ export default function DatabaseScopeContent({
                 ui={ui}
                 isConsumablesMode={isConsumablesMode}
                 canDatabaseWrite={canDatabaseWrite}
+                canAdSync={canAdSync}
+                onOpenAdSync={onOpenAdSync}
                 identifyPCLoading={identifyPCLoading}
                 onOpenQrScanner={onOpenQrScanner}
                 onIdentifyWorkspace={onIdentifyWorkspace}
                 onOpenUploadAct={onOpenUploadAct}
                 onOpenAddEquipment={onOpenAddEquipment}
                 onOpenAddConsumable={onOpenAddConsumable}
+                onOpenConsumableQrPrint={onOpenConsumableQrPrint}
+                onOpenCartridgeCompatibility={onOpenCartridgeCompatibility}
                 branches={branches}
                 selectedBranch={selectedBranch}
                 onBranchChange={onBranchChange}
@@ -194,6 +205,8 @@ export default function DatabaseScopeContent({
               open={fabSheetOpen}
               onClose={onFabSheetClose}
               isConsumablesMode={isConsumablesMode}
+              canAdSync={canAdSync}
+              onOpenAdSync={onOpenAdSync}
               identifyWorkspaceLoading={identifyPCLoading}
               hasExpandedVisible={hasExpandedVisible}
               onIdentifyWorkspace={onIdentifyWorkspace}
@@ -222,6 +235,7 @@ export default function DatabaseScopeContent({
               onOpenLocationTransfer={onOpenLocationTransfer}
               onOpenTransfer={onOpenTransfer}
               onOpenTransferAct={onOpenTransferAct}
+              onOpenDbTransfer={onOpenDbTransfer}
               onOpenCartridge={onOpenCartridge}
               onOpenBattery={onOpenBattery}
               onOpenComponent={onOpenComponent}

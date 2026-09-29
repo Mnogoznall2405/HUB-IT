@@ -156,15 +156,54 @@ export async function getThreadBootstrap(
 export async function sendTextMessage(
   conversationId: string,
   bodyText: string,
-  options: { clientMessageId?: string; replyToMessageId?: string; bodyFormat?: 'plain' | 'markdown'; signal?: AbortSignal } = {},
+  options: {
+    clientMessageId?: string;
+    replyToMessageId?: string;
+    bodyFormat?: 'plain' | 'markdown';
+    kind?: 'text' | 'location' | 'contact' | 'poll';
+    signal?: AbortSignal;
+  } = {},
 ): Promise<ChatMessage> {
   const { data } = await apiClient.post<unknown>(`/chat/conversations/${conversationId}/messages`, {
     body: bodyText,
     body_format: options.bodyFormat || detectChatBodyFormat(bodyText),
+    ...(options.kind && options.kind !== 'text' ? { kind: options.kind } : {}),
     client_message_id: options.clientMessageId || undefined,
     reply_to_message_id: options.replyToMessageId || undefined,
   }, { signal: options.signal });
   return requiredMessage(data);
+}
+
+/** F-POLL: set/retract the caller's vote; returns the aggregate poll state. */
+export async function voteMessagePoll(
+  conversationId: string,
+  messageId: string,
+  optionIndex: number,
+): Promise<{ action: string; poll: ChatMessage['poll'] }> {
+  const { data } = await apiClient.post<unknown>(
+    `/chat/conversations/${conversationId}/messages/${messageId}/poll-vote`,
+    { option_index: optionIndex },
+  );
+  const record = (data && typeof data === 'object' ? data : {}) as {
+    action?: string;
+    poll?: ChatMessage['poll'];
+  };
+  return { action: String(record.action || 'voted'), poll: record.poll || null };
+}
+
+/** R-POLL-2: the author stops the poll; returns the aggregate state. */
+export async function closeMessagePoll(
+  conversationId: string,
+  messageId: string,
+): Promise<{ action: string; poll: ChatMessage['poll'] }> {
+  const { data } = await apiClient.post<unknown>(
+    `/chat/conversations/${conversationId}/messages/${messageId}/poll-close`,
+  );
+  const record = (data && typeof data === 'object' ? data : {}) as {
+    action?: string;
+    poll?: ChatMessage['poll'];
+  };
+  return { action: String(record.action || 'closed'), poll: record.poll || null };
 }
 
 export async function createDirectConversation(peerUserId: number): Promise<ChatConversationSummary> {
@@ -194,7 +233,12 @@ export async function getConversation(conversationId: string): Promise<ChatConve
 
 export async function updateConversationSettings(
   conversationId: string,
-  settings: { is_pinned?: boolean; is_muted?: boolean; is_archived?: boolean },
+  settings: {
+    is_pinned?: boolean;
+    is_muted?: boolean;
+    muted_until?: string | null;
+    is_archived?: boolean;
+  },
 ): Promise<ChatConversationSummary> {
   const { data } = await apiClient.patch<unknown>(
     `/chat/conversations/${conversationId}/settings`,
@@ -442,6 +486,194 @@ export async function sendFileMessage(
     },
   );
   return requiredMessage(data);
+}
+
+export type ChatUploadSessionFile = {
+  file_id: string;
+  file_name: string;
+  mime_type: string | null;
+  media_kind: 'image' | 'video' | 'file' | 'audio' | null;
+  duration_seconds: number | null;
+  size: number;
+  original_size: number;
+  transfer_encoding: string;
+  chunk_count: number;
+  received_bytes: number;
+  received_chunks: number[];
+};
+export type ChatUploadSession = {
+  session_id: string;
+  chunk_size_bytes: number;
+  expires_at: string;
+  status: string;
+  message_id: string | null;
+  files: ChatUploadSessionFile[];
+};
+export type ChatUploadSessionChunkResult = {
+  session_id: string;
+  file_id: string;
+  chunk_index: number;
+  already_present: boolean;
+  received_bytes: number;
+  received_chunks: number[];
+  file_complete: boolean;
+};
+
+function normalizeUploadSessionFile(value: unknown): ChatUploadSessionFile | null {
+  const row = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
+  const fileId = String(row.file_id || '').trim();
+  if (!fileId) return null;
+  const mediaKind = String(row.media_kind || '').trim();
+  return {
+    file_id: fileId,
+    file_name: String(row.file_name || ''),
+    mime_type: row.mime_type == null ? null : String(row.mime_type),
+    media_kind: (['image', 'video', 'file', 'audio'].includes(mediaKind)
+      ? mediaKind : null) as ChatUploadSessionFile['media_kind'],
+    duration_seconds: row.duration_seconds == null ? null : Math.max(0, Number(row.duration_seconds) || 0),
+    size: Math.max(0, Number(row.size) || 0),
+    original_size: Math.max(0, Number(row.original_size) || 0),
+    transfer_encoding: String(row.transfer_encoding || 'identity'),
+    chunk_count: Math.max(0, Number(row.chunk_count) || 0),
+    received_bytes: Math.max(0, Number(row.received_bytes) || 0),
+    received_chunks: (Array.isArray(row.received_chunks) ? row.received_chunks : [])
+      .map((item) => Number(item))
+      .filter((item) => Number.isInteger(item) && item >= 0),
+  };
+}
+
+function normalizeUploadSession(value: unknown): ChatUploadSession {
+  const row = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
+  const files = (Array.isArray(row.files) ? row.files : [])
+    .map(normalizeUploadSessionFile)
+    .filter((item): item is ChatUploadSessionFile => Boolean(item));
+  return {
+    session_id: String(row.session_id || '').trim(),
+    chunk_size_bytes: Math.max(0, Number(row.chunk_size_bytes) || 0),
+    expires_at: String(row.expires_at || ''),
+    status: String(row.status || 'pending'),
+    message_id: row.message_id == null ? null : String(row.message_id),
+    files,
+  };
+}
+
+function requiredUploadSession(value: unknown): ChatUploadSession {
+  const session = normalizeUploadSession(value);
+  if (!session.session_id || session.chunk_size_bytes <= 0) {
+    throw new Error('Сервер вернул некорректную сессию загрузки');
+  }
+  return session;
+}
+
+export async function createChatUploadSession(
+  conversationId: string,
+  input: {
+    body?: string;
+    replyToMessageId?: string;
+    clientMessageId?: string;
+    files: Array<{
+      file_name: string;
+      mime_type?: string;
+      media_kind?: 'image' | 'video' | 'file' | 'audio';
+      duration_seconds?: number;
+      size: number;
+      original_size?: number;
+      transfer_encoding?: 'identity' | 'gzip';
+    }>;
+  },
+  options: { signal?: AbortSignal } = {},
+): Promise<ChatUploadSession> {
+  const { data } = await apiClient.post<unknown>(
+    `/chat/conversations/${encodeURIComponent(conversationId)}/upload-sessions`,
+    {
+      body: input.body || undefined,
+      reply_to_message_id: input.replyToMessageId || undefined,
+      client_message_id: input.clientMessageId || undefined,
+      files: input.files.map((file) => ({
+        file_name: file.file_name,
+        mime_type: file.mime_type || undefined,
+        media_kind: file.media_kind || undefined,
+        duration_seconds: file.duration_seconds ?? undefined,
+        size: Math.max(1, Math.trunc(Number(file.size) || 0)),
+        original_size: Math.max(1, Math.trunc(Number(file.original_size ?? file.size) || 0)),
+        transfer_encoding: file.transfer_encoding || 'identity',
+      })),
+    },
+    { signal: options.signal },
+  );
+  return requiredUploadSession(data);
+}
+
+export async function getChatUploadSession(
+  sessionId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<ChatUploadSession> {
+  const { data } = await apiClient.get<unknown>(
+    `/chat/upload-sessions/${encodeURIComponent(sessionId)}`,
+    { signal: options.signal },
+  );
+  return requiredUploadSession(data);
+}
+
+export async function uploadChatFileChunk(
+  sessionId: string,
+  fileId: string,
+  chunkIndex: number,
+  chunk: ArrayBuffer | ArrayBufferView,
+  options: {
+    offset: number;
+    signal?: AbortSignal;
+    onUploadProgress?: (event: { loaded: number }) => void;
+  },
+): Promise<ChatUploadSessionChunkResult> {
+  const { data } = await apiClient.put<unknown>(
+    `/chat/upload-sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(fileId)}/chunks/${Math.max(0, Math.trunc(chunkIndex))}`,
+    chunk,
+    {
+      params: { offset: Math.max(0, Math.trunc(Number(options.offset) || 0)) },
+      headers: { 'Content-Type': 'application/octet-stream' },
+      signal: options.signal,
+      timeout: 5 * 60 * 1000,
+      onUploadProgress: (event: AxiosProgressEvent) => {
+        options.onUploadProgress?.({ loaded: Math.max(0, Number(event?.loaded) || 0) });
+      },
+    },
+  );
+  const row = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>;
+  return {
+    session_id: String(row.session_id || sessionId),
+    file_id: String(row.file_id || fileId),
+    chunk_index: Math.max(0, Number(row.chunk_index) || 0),
+    already_present: Boolean(row.already_present),
+    received_bytes: Math.max(0, Number(row.received_bytes) || 0),
+    received_chunks: (Array.isArray(row.received_chunks) ? row.received_chunks : [])
+      .map((item) => Number(item))
+      .filter((item) => Number.isInteger(item) && item >= 0),
+    file_complete: Boolean(row.file_complete),
+  };
+}
+
+export async function completeChatUploadSession(
+  sessionId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<ChatMessage> {
+  const { data } = await apiClient.post<unknown>(
+    `/chat/upload-sessions/${encodeURIComponent(sessionId)}/complete`,
+    null,
+    { signal: options.signal },
+  );
+  return requiredMessage(data);
+}
+
+export async function cancelChatUploadSession(
+  sessionId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<void> {
+  const normalized = String(sessionId || '').trim();
+  if (!normalized) return;
+  await apiClient.delete(`/chat/upload-sessions/${encodeURIComponent(normalized)}`, {
+    signal: options.signal,
+  });
 }
 
 export async function getChatUsers(

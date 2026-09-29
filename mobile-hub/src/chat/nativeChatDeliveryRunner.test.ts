@@ -6,6 +6,7 @@ import {
   readNativeChatOutbox,
   subscribeNativeChatDelivery,
 } from './nativeChatOutbox';
+import { getChatSendTimingSummary, resetChatSendTiming } from '../diagnostics/chatSendTiming';
 import { createNativeChatDeliveryRunner } from './nativeChatDeliveryRunner';
 
 const userId = 7;
@@ -101,6 +102,154 @@ it('keeps the client-side reply preview when the ACK arrives lean', async () => 
   } finally {
     runner.dispose();
     offDelivery();
+  }
+});
+
+it('delivers a later message while an earlier one stays paused in the same dialog', async () => {
+  const first: ChatMessage = { ...pending, id: 'pending:m1', client_message_id: 'm1' };
+  const second: ChatMessage = { ...pending, id: 'pending:m2', client_message_id: 'm2' };
+  const transport = jest.fn(async (entry: { message: ChatMessage }) => {
+    if (entry.message.client_message_id === 'm1') throw new Error('permanent failure');
+    return { ...saved, id: 'server-2', client_message_id: 'm2' };
+  });
+  const runner = createNativeChatDeliveryRunner({
+    userId,
+    canDeliver: () => true,
+    transport: transport as never,
+    persistConfirmed: async () => true,
+  });
+  try {
+    const outbox = createNativeChatOutbox(userId, 'chat-x');
+    await outbox.queue(first);
+    const started = Date.now();
+    while (transport.mock.calls.length < 1 && Date.now() - started < 1000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(transport).toHaveBeenCalledTimes(1);
+
+    await outbox.queue(second);
+    while (transport.mock.calls.length < 2 && Date.now() - started < 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(transport.mock.calls.map((call) => call[0].message.client_message_id)).toEqual(['m1', 'm2']);
+    // m2 is confirmed and flushed; m1 remains parked for manual retry.
+    const rows = await readNativeChatOutbox(userId);
+    expect(rows.map((row) => [row.message.client_message_id, row.delivery?.state]))
+      .toEqual([['m1', 'paused']]);
+  } finally {
+    runner.dispose();
+  }
+});
+
+it('parks a validation (4xx) failure without scheduling an auto retry', async () => {
+  const transport = jest.fn(async () => {
+    throw Object.assign(new Error('validation'), { isAxiosError: true, response: { status: 422 } });
+  });
+  const runner = createNativeChatDeliveryRunner({
+    userId,
+    canDeliver: () => true,
+    transport,
+    persistConfirmed: async () => true,
+  });
+  try {
+    await createNativeChatOutbox(userId, 'chat-x').queue(pending);
+    const started = Date.now();
+    while (!transport.mock.calls.length && Date.now() - started < 1000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(transport).toHaveBeenCalledTimes(1);
+    // Non-transient failure → paused immediately; the pump must not fire again.
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(transport).toHaveBeenCalledTimes(1);
+    const rows = await readNativeChatOutbox(userId);
+    expect(rows[0]?.delivery?.state).toBe('paused');
+  } finally {
+    runner.dispose();
+  }
+});
+
+it('retries a transient failure once on the durable backoff deadline', async () => {
+  let calls = 0;
+  const transport = jest.fn(async () => {
+    calls += 1;
+    if (calls === 1) {
+      throw Object.assign(new Error('server busy'), { isAxiosError: true, response: { status: 503 } });
+    }
+    return saved;
+  });
+  const runner = createNativeChatDeliveryRunner({
+    userId,
+    canDeliver: () => true,
+    transport,
+    persistConfirmed: async () => true,
+  });
+  try {
+    await createNativeChatOutbox(userId, 'chat-x').queue(pending);
+    const started = Date.now();
+    while (!transport.mock.calls.length && Date.now() - started < 1000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const rows = await readNativeChatOutbox(userId);
+    expect(rows[0]?.delivery?.state).toBe('retry');
+    expect(rows[0]?.delivery?.notBefore).toBeGreaterThan(Date.now());
+    // Before the deadline no new attempt is made.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(transport).toHaveBeenCalledTimes(1);
+  } finally {
+    runner.dispose();
+  }
+});
+
+it('rejects a manual retry while the delivery job is already in flight', async () => {
+  let resolveTransport: ((message: ChatMessage) => void) | null = null;
+  const transport = jest.fn(() => new Promise<ChatMessage>((resolve) => { resolveTransport = resolve; }));
+  const runner = createNativeChatDeliveryRunner({
+    userId,
+    canDeliver: () => true,
+    transport,
+    persistConfirmed: async () => true,
+  });
+  try {
+    const outbox = createNativeChatOutbox(userId, 'chat-x');
+    await outbox.queue(pending);
+    const started = Date.now();
+    while (!transport.mock.calls.length && Date.now() - started < 1000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await expect(outbox.retryDelivery('m1')).rejects.toMatchObject({ code: 'HUBIT_NO_DELIVERY' });
+    (resolveTransport as ((message: ChatMessage) => void) | null)?.(saved);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(await readNativeChatOutbox(userId)).toEqual([]);
+  } finally {
+    runner.dispose();
+  }
+});
+
+it('keeps one message under the storage budget: at most 3 writes and 1 read', async () => {
+  resetChatSendTiming();
+  const transport = jest.fn(async () => saved);
+  const runner = createNativeChatDeliveryRunner({
+    userId,
+    canDeliver: () => true,
+    transport,
+    persistConfirmed: async () => true,
+  });
+  try {
+    await createNativeChatOutbox(userId, 'chat-x').queue(pending);
+    const started = Date.now();
+    while (!transport.mock.calls.length && Date.now() - started < 1000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(await readNativeChatOutbox(userId)).toEqual([]);
+
+    const ops = getChatSendTimingSummary().storageOps;
+    // queue stamp-write + claim write + confirmed-row removal (delete op).
+    expect(ops.write.count + ops.delete.count).toBeLessThanOrEqual(3);
+    expect(ops.read.count).toBeLessThanOrEqual(1);
+  } finally {
+    runner.dispose();
   }
 });
 

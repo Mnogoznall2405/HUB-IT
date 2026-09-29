@@ -166,6 +166,7 @@ class AppUser(AppBase):
     password_salt: Mapped[str] = mapped_column(Text, nullable=False, default="")
     avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     about_onboarding_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    my_files_quota_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 

@@ -9,8 +9,9 @@ logger = logging.getLogger("backend.services.my_files_recovery")
 
 
 def cleanup_tmp_blob_files(root: Path, *, max_age_sec: int = 3600) -> dict[str, int]:
-    """Delete stale ``*.tmp-*`` files under a storage root.
+    """Delete stale temporary artifacts under a storage or spool root.
 
+    Matches both ``*.tmp-*`` blob uploads and ``*.tmp`` upload-journal writes.
     Safe to run repeatedly. Does not delete final blobs.
     """
     removed = 0
@@ -19,7 +20,9 @@ def cleanup_tmp_blob_files(root: Path, *, max_age_sec: int = 3600) -> dict[str, 
     cutoff = time.time() - max(60, int(max_age_sec))
     if not root.exists():
         return {"scanned": 0, "removed": 0, "errors": 0}
-    for path in root.rglob("*.tmp-*"):
+    candidates: set[Path] = set(root.rglob("*.tmp-*"))
+    candidates.update(root.rglob("*.tmp"))
+    for path in candidates:
         scanned += 1
         try:
             if not path.is_file():

@@ -3,6 +3,10 @@ import * as chatApi from '../../api/chatApi';
 import { NativeChatThreadWithDelivery as NativeChatThreadScreen } from '../../test/NativeChatWithDelivery';
 
 const mockChatBubbleRender = jest.fn();
+const mockSocketHandlers = new Map<string, Set<(payload: unknown) => void>>();
+const emitSocket = (event: string, payload: unknown) => {
+  mockSocketHandlers.get(event)?.forEach((handler) => handler(payload));
+};
 const mockAuthValue = {
   user: { id: 1, username: 'mobile-user', full_name: 'Мобильный пользователь' },
   hasPermission: () => true,
@@ -22,7 +26,11 @@ jest.mock('../../chat/chatSocket', () => ({
   shouldUseChatHttpFallback: (status: string) => ['offline', 'error', 'reconnecting'].includes(status),
   chatSocket: {
     getStatus: () => 'connected',
-    on: jest.fn(() => jest.fn()),
+    on: jest.fn((event: string, handler: (payload: unknown) => void) => {
+      if (!mockSocketHandlers.has(event)) mockSocketHandlers.set(event, new Set());
+      mockSocketHandlers.get(event)!.add(handler);
+      return () => mockSocketHandlers.get(event)?.delete(handler);
+    }),
     connect: jest.fn(async () => undefined),
     subscribeConversation: jest.fn(),
     unsubscribeConversation: jest.fn(),
@@ -75,4 +83,67 @@ it('does not rerender visible message bubbles for each composer keystroke', asyn
   await fireEvent.changeText(view.getByLabelText('Текст сообщения'), 'О');
 
   expect(mockChatBubbleRender).not.toHaveBeenCalled();
+});
+
+it('rerenders at most two rows for a new incoming socket message', async () => {
+  mockSocketHandlers.clear();
+  mockedChatApi.getConversation.mockResolvedValue({
+    id: 'conversation-1',
+    kind: 'direct',
+    title: 'Мария Иванова',
+  });
+  mockedChatApi.getMessagesPage.mockResolvedValue({
+    items: [
+      {
+        id: 'message-1',
+        conversation_id: 'conversation-1',
+        sender_user_id: 2,
+        body_text: 'Первое сообщение',
+        created_at: '2026-08-23T08:00:00Z',
+      },
+      {
+        id: 'message-2',
+        conversation_id: 'conversation-1',
+        sender_user_id: 2,
+        body_text: 'Второе сообщение',
+        created_at: '2026-08-23T08:05:00Z',
+      },
+      {
+        id: 'message-3',
+        conversation_id: 'conversation-1',
+        sender_user_id: 2,
+        body_text: 'Третье сообщение',
+        created_at: '2026-08-23T08:10:00Z',
+      },
+    ],
+    has_more: false,
+    has_older: false,
+    has_newer: false,
+    cursor_invalid: false,
+    older_cursor_message_id: null,
+    newer_cursor_message_id: null,
+    viewer_last_read_message_id: null,
+    viewer_last_read_at: null,
+  });
+  mockedChatApi.markConversationRead.mockResolvedValue(undefined);
+  const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+
+  await waitFor(() => expect(view.getByText('Третье сообщение')).toBeTruthy());
+  mockChatBubbleRender.mockClear();
+
+  emitSocket('chat.message.created', {
+    payload: {
+      message: {
+        id: 'message-4',
+        conversation_id: 'conversation-1',
+        sender_user_id: 2,
+        body_text: 'Входящее по сокету',
+        created_at: '2026-08-23T08:15:00Z',
+      },
+    },
+  });
+
+  await waitFor(() => expect(view.getByText('Входящее по сокету')).toBeTruthy());
+  // Новая строка + не более одной соседней (обновление groupPosition).
+  expect(mockChatBubbleRender.mock.calls.length).toBeLessThanOrEqual(2);
 });

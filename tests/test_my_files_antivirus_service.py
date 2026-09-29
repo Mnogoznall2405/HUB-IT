@@ -243,6 +243,44 @@ def test_auto_provider_falls_back_to_defender(tmp_path, monkeypatch, enabled_ant
     assert result == antivirus.SecurityScanResult(status="clean", engine="microsoft-defender")
 
 
+def test_size_limit_skips_scan_without_resolving_scanner(tmp_path, monkeypatch, enabled_antivirus):
+    monkeypatch.setattr(enabled_antivirus, "antivirus_max_size_bytes", 100, raising=False)
+    payload = tmp_path / "huge.img"
+    payload.write_bytes(b"x" * 200)
+    monkeypatch.setattr(
+        antivirus,
+        "_resolve_defender_path",
+        lambda _p="": pytest.fail("scanner must not be resolved for oversized payload"),
+    )
+    monkeypatch.setattr(
+        antivirus,
+        "_resolve_kaspersky_path",
+        lambda _p="": pytest.fail("scanner must not be resolved for oversized payload"),
+    )
+
+    result = antivirus.scan_my_file(payload)
+
+    assert result == antivirus.SecurityScanResult(status="skipped", engine="size-limit")
+
+
+def test_size_limit_zero_keeps_normal_scan_path(tmp_path, monkeypatch, enabled_antivirus):
+    monkeypatch.setattr(enabled_antivirus, "antivirus_max_size_bytes", 0, raising=False)
+    payload = tmp_path / "safe.bin"
+    payload.write_bytes(b"safe")
+    defender_path = Path(r"C:\Defender\MpCmdRun.exe")
+    monkeypatch.setattr(antivirus, "_resolve_kaspersky_path", lambda _p="": None, raising=False)
+    monkeypatch.setattr(antivirus, "_resolve_defender_path", lambda _p="": defender_path)
+    monkeypatch.setattr(
+        antivirus.subprocess,
+        "run",
+        lambda args, **_kw: _completed(args, "Found no threats"),
+    )
+
+    result = antivirus.scan_my_file(payload)
+
+    assert result == antivirus.SecurityScanResult(status="clean", engine="microsoft-defender")
+
+
 def test_resolve_kaspersky_path_from_standard_installation(tmp_path, monkeypatch):
     program_files_x86 = tmp_path / "Program Files (x86)"
     executable = program_files_x86 / "Kaspersky Lab" / "KES.14.1.0" / "avp.com"

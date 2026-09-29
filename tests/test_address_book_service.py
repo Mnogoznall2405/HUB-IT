@@ -24,6 +24,7 @@ from backend.services.address_book_service import (
     normalize_email,
     normalize_phone,
     one_c_date_iso,
+    parse_age_token,
     personal_documents_query,
     personal_profile_query,
 )
@@ -322,14 +323,17 @@ def test_employee_query_selects_department_code():
     assert "КАК DepartmentCode" in query
     assert "Подразделение.Код" in query
     assert "Текущие.ДатаУвольнения = ДАТАВРЕМЯ(1, 1, 1)" in query
+    assert "Текущие.ФизическоеЛицо.Отчество КАК MiddleName" in query
     dismissed_query = dismissed_employee_query(2)
     assert "Текущие.ДатаУвольнения <> ДАТАВРЕМЯ(1, 1, 1)" in dismissed_query
     assert "Текущие.ДатаУвольнения <= &НаДату" in dismissed_query
+    assert "Текущие.ФизическоеЛицо.Отчество КАК MiddleName" in dismissed_query
 
 
 def test_personal_queries_target_zup_registers():
     assert "ДатаРождения" in personal_profile_query()
     assert "Адрес по прописке" in personal_profile_query()
+    assert "Текущие.ФизическоеЛицо.ИНН КАК Inn" in personal_profile_query()
     assert "ДокументыФизическихЛиц" in personal_documents_query()
     assert "ЯвляетсяДокументомУдостоверяющимЛичность" in personal_documents_query()
 
@@ -346,6 +350,7 @@ def test_merge_personal_records_prefers_passport_and_propiska():
         [
             {
                 "employee_code": "E1",
+                "inn": "770123456789",
                 "date_of_birth": "1990-01-01",
                 "birth_place": "Москва",
                 "address_kind": "Адрес проживания",
@@ -353,6 +358,7 @@ def test_merge_personal_records_prefers_passport_and_propiska():
             },
             {
                 "employee_code": "E1",
+                "inn": "",
                 "date_of_birth": "",
                 "birth_place": "",
                 "address_kind": "Адрес по прописке",
@@ -361,6 +367,7 @@ def test_merge_personal_records_prefers_passport_and_propiska():
         ]
     )
     assert profiles["E1"]["registration_address"] == "прописка"
+    assert profiles["E1"]["inn"] == "770123456789"
 
     docs = merge_personal_document_records(
         [
@@ -451,6 +458,120 @@ def test_calculate_age_uses_birthday_and_rejects_invalid_dates():
     assert calculate_age("2027-01-01", today=today) is None
 
 
+def test_parse_age_token_supports_exact_and_range():
+    assert parse_age_token("35") == (35, 35)
+    assert parse_age_token("30-40") == (30, 40)
+    assert parse_age_token("40–30") == (30, 40)
+    assert parse_age_token("30 - 40") == (30, 40)
+    assert parse_age_token("121") is None
+    assert parse_age_token("2026") is None
+    assert parse_age_token("ivanov") is None
+    assert parse_age_token("") is None
+
+
+def test_search_matches_by_age_exact_and_range():
+    def make_item(code: str, name: str) -> dict:
+        return {
+            "full_name": name,
+            "employee_code": code,
+            "work_phones": [],
+            "personal_phones": [],
+            "work_emails": [],
+            "personal_emails": [],
+        }
+
+    age_one = calculate_age("1990-08-05")
+    age_two = calculate_age("1980-08-05")
+    assert age_one is not None and age_two is not None and age_one < age_two
+
+    manager = MemoryDataManager(
+        {
+            "items": [make_item("E1", "Иванов Иван"), make_item("E2", "Петров Пётр")],
+            "personal_by_code": {
+                "E1": {"date_of_birth": "1990-08-05"},
+                "E2": {"date_of_birth": "1980-08-05"},
+            },
+        }
+    )
+    service = AddressBookService(data_manager=manager)
+
+    exact = service.search(str(age_one))["items"]
+    assert [item["employee_code"] for item in exact] == ["E1"]
+
+    ranged = service.search(f"{age_one}-{age_two}")["items"]
+    assert {item["employee_code"] for item in ranged} == {"E1", "E2"}
+
+    narrow = service.search(f"{age_one + 1}-{age_two - 1}")["items"]
+    assert narrow == []
+
+    text_hit = service.search("иванов")["items"]
+    assert [item["employee_code"] for item in text_hit] == ["E1"]
+
+
+def test_search_by_age_requires_age_visibility():
+    age = calculate_age("1990-08-05")
+    assert age is not None
+
+    manager = MemoryDataManager(
+        {
+            "items": [
+                {
+                    "full_name": "Иванов Иван",
+                    "employee_code": "E1",
+                    "work_phones": [],
+                    "personal_phones": [],
+                    "work_emails": [],
+                    "personal_emails": [],
+                }
+            ],
+            "personal_by_code": {"E1": {"date_of_birth": "1990-08-05"}},
+        }
+    )
+    service = AddressBookService(data_manager=manager)
+
+    assert service.search(str(age), include_age=True)["total"] == 1
+    assert service.search(str(age), include_age=False)["total"] == 0
+    assert service.search(f"{age}-{age}", include_age=False)["total"] == 0
+
+
+def test_search_orders_exact_age_above_incidental_text_hits():
+    age = calculate_age("1990-08-05")
+    assert age is not None
+    token = str(age)
+
+    manager = MemoryDataManager(
+        {
+            "items": [
+                {
+                    "full_name": "Иванов Иван",
+                    "employee_code": "E100",
+                    "work_phones": [],
+                    "personal_phones": [],
+                    "work_emails": [],
+                    "personal_emails": [],
+                },
+                {
+                    # Incidental hits only: employee-code prefix + phone digits.
+                    "full_name": "Петров Пётр",
+                    "employee_code": f"{token}01",
+                    "work_phones": [{"value": f"+7 (900) {token}0-12-34"}],
+                    "personal_phones": [],
+                    "work_emails": [],
+                    "personal_emails": [],
+                },
+            ],
+            "personal_by_code": {
+                "E100": {"date_of_birth": "1990-08-05"},
+                f"{token}01": {"date_of_birth": "1970-01-01"},
+            },
+        }
+    )
+    service = AddressBookService(data_manager=manager)
+
+    found = service.search(token)["items"]
+    assert [item["employee_code"] for item in found] == ["E100", f"{token}01"]
+
+
 def test_employee_query_and_loader_include_current_hire_date(monkeypatch):
     assert "Текущие.ДатаПриема КАК HireDate" in employee_query()
     rows = [
@@ -472,6 +593,74 @@ def test_employee_query_and_loader_include_current_hire_date(monkeypatch):
     service = AddressBookService(data_manager=MemoryDataManager())
 
     assert service._load_employees(Fake1CConnection())[0]["hire_date"] == "2021-05-17"
+
+
+def test_employee_loader_reads_middle_name(monkeypatch):
+    rows = [
+        SimpleNamespace(
+            FullName="Иванов Иван",
+            EmployeeCode="E1",
+            MiddleName="Иванович",
+            HireDate="20210517",
+            Department="ИТ",
+            DepartmentCode="D1",
+            DepartmentLocation="Тюмень",
+            Position="Инженер",
+        )
+    ]
+    monkeypatch.setattr(
+        "backend.services.address_book_service.execute_query",
+        lambda *_args, **_kwargs: FakeSelection(rows),
+    )
+
+    service = AddressBookService(data_manager=MemoryDataManager())
+
+    assert service._load_employees(Fake1CConnection())[0]["middle_name"] == "Иванович"
+
+
+def test_load_personal_data_keeps_inn(monkeypatch):
+    def fake_execute(_connection, text, **_kwargs):
+        if "ДатаРождения" in text:
+            return FakeSelection(
+                [
+                    SimpleNamespace(
+                        EmployeeCode="E1",
+                        Inn="770123456789",
+                        DateOfBirth="1990-01-01",
+                        BirthPlace="",
+                        AddressKind="",
+                        RegistrationAddress="",
+                    )
+                ]
+            )
+        return FakeSelection([])
+
+    monkeypatch.setattr(
+        "backend.services.address_book_service.execute_query",
+        fake_execute,
+    )
+    service = AddressBookService(data_manager=MemoryDataManager())
+
+    personal = service._load_personal_data(Fake1CConnection())
+
+    assert personal["E1"] == {"inn": "770123456789", "date_of_birth": "1990-01-01"}
+
+
+def test_inn_is_exposed_only_with_explicit_permission():
+    manager = MemoryDataManager(
+        {
+            "items": [{"full_name": "Иванов Иван", "employee_code": "E1"}],
+            "personal_by_code": {
+                "E1": {"inn": "770123456789", "date_of_birth": "1990-01-01"},
+            },
+        }
+    )
+    service = AddressBookService(data_manager=manager)
+
+    assert service.search("иванов")["items"][0].get("inn") is None
+    assert service.snapshot()["items"][0].get("inn") is None
+    assert service.search("иванов", include_inn=True)["items"][0]["inn"] == "770123456789"
+    assert service.snapshot(include_inn=True)["items"][0]["inn"] == "770123456789"
 
 
 def test_search_matches_name_department_position_city_and_phone():

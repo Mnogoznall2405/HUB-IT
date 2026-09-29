@@ -390,6 +390,9 @@ export function NativeProfileScreen() {
           {(Object.keys(MAILBOX_AUTH_LABELS) as Array<keyof typeof MAILBOX_AUTH_LABELS>).map((mode) => (
             <Pressable
               key={mode}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: mailboxDraft.auth_mode === mode }}
+              accessibilityLabel={MAILBOX_AUTH_LABELS[mode]}
               onPress={() => setMailboxDraft((prev) => ({
                 ...prev,
                 auth_mode: mode,

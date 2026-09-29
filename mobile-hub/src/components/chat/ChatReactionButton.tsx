@@ -4,9 +4,11 @@ import { useReducedMotion } from '../../accessibility/useReducedMotion';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
-export function ChatReactionButton({ children, onPress, label, style }: {
+export function ChatReactionButton({ children, onPress, onLongPress, label, style }: {
   children: ReactNode;
   onPress?: () => void;
+  /** "Who reacted" list (Telegram-style long press on the chip). */
+  onLongPress?: () => void;
   label: string;
   style: StyleProp<ViewStyle>;
 }) {
@@ -19,6 +21,7 @@ export function ChatReactionButton({ children, onPress, label, style }: {
     Animated.timing(scale, { toValue: value, duration: 100, useNativeDriver: true }).start();
   };
   return <AnimatedPressable onPress={onPress} disabled={!onPress} onPressIn={() => animate(0.96)} onPressOut={() => animate(1)}
+    onLongPress={onLongPress} delayLongPress={350}
     accessibilityRole={onPress ? 'button' : undefined} accessibilityLabel={label}
     style={[style, { transform: [{ scale }] }]}>{children}</AnimatedPressable>;
 }

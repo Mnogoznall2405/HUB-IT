@@ -1,9 +1,11 @@
-import { useContext, useEffect, useRef, useState } from 'react';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Animated, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import type { ChatMessage } from '../../api/types';
 import {
+  isUsableChatMenuAnchor,
   placeMessageActionMenu,
   type ChatMenuAnchor,
 } from '../../chat/chatMessageMenuLayout';
@@ -34,8 +36,11 @@ type Props = {
   onOpenTask?: (message: ChatMessage) => void;
   onReport?: (message: ChatMessage) => void;
   onSelect?: (message: ChatMessage) => void;
+  onRetry?: (message: ChatMessage) => void;
+  onDiscardPending?: (message: ChatMessage) => void;
   pinnedMessageId?: string | null;
   anchor?: ChatMenuAnchor | null;
+  renderBubble?: (message: ChatMessage) => ReactNode;
 };
 
 export function MessageActionsSheet({
@@ -54,10 +59,13 @@ export function MessageActionsSheet({
   onOpenTask,
   onReport,
   onSelect,
+  onRetry,
+  onDiscardPending,
   pinnedMessageId,
   anchor = null,
+  renderBubble,
 }: Props) {
-  const { styles } = useChatStyles(createStyles);
+  const { styles, chatTokens } = useChatStyles(createStyles);
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
   const reduceMotion = useReducedMotion();
@@ -126,6 +134,21 @@ export function MessageActionsSheet({
         accessibilityRole="button"
         accessibilityLabel="Закрыть действия с сообщением"
       />
+      {renderBubble && anchor && isUsableChatMenuAnchor(anchor) && message ? (
+        <Animated.View
+          testID="chat-message-actions-lifted-bubble"
+          pointerEvents="none"
+          style={[styles.liftedBubble, {
+            top: Math.max(0, anchor.y - viewport.y),
+            left: Math.max(0, anchor.x - viewport.x),
+            width: Math.max(1, anchor.width),
+            opacity,
+            transform: [{ scale: opacity.interpolate({ inputRange: [0, 1], outputRange: [0.97, 1.03] }) }],
+          }]}
+        >
+          {renderBubble(message)}
+        </Animated.View>
+      ) : null}
       <Animated.View
         testID="chat-message-actions-card"
         style={[styles.card, { top: position.top, left: position.left, width: menuWidth, maxHeight: availableHeight, opacity, transform: [{ scale: opacity.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) }] }]}
@@ -177,54 +200,69 @@ export function MessageActionsSheet({
               accessibilityLabel={reactionsExpanded ? 'Свернуть реакции' : 'Ещё реакции'}
               accessibilityState={{ expanded: reactionsExpanded }}
             >
-              <Text style={styles.reactionExpandIcon}>{reactionsExpanded ? '⌃' : '⌄'}</Text>
+              <MaterialCommunityIcons
+                name={reactionsExpanded ? 'chevron-up' : 'chevron-down'}
+                size={22}
+                color={chatTokens.textPrimary}
+              />
             </Pressable>
           </View>
         ) : null}
         <View style={styles.cardScroll}>
+          {message.local_status && onRetry ? (
+            <ActionButton label="Повторить" icon="refresh" onPress={() => run(onRetry)} />
+          ) : null}
+          {message.local_status && message.local_status !== 'sending' && onDiscardPending ? (
+            <ActionButton
+              label={onRetry ? 'Удалить' : 'Убрать из очереди'}
+              icon="delete-outline"
+              danger
+              onPress={() => run(onDiscardPending)}
+            />
+          ) : null}
           {canReply ? (
-            <ActionButton label="Ответить" icon="↩" onPress={() => run(onReply)} />
+            <ActionButton label="Ответить" icon="reply-outline" onPress={() => run(onReply)} />
           ) : null}
           {isAvailable && onSelect ? (
-            <ActionButton label="Выбрать" icon="☑" onPress={() => run(onSelect)} />
+            <ActionButton label="Выбрать" icon="check-circle-outline" onPress={() => run(onSelect)} />
           ) : null}
           {isAvailable && message?.body_text && onCopyText ? (
-            <ActionButton label="Копировать текст" icon="⧉" onPress={() => run(onCopyText)} />
+            <ActionButton label="Копировать текст" icon="content-copy" onPress={() => run(onCopyText)} />
           ) : null}
           {isAvailable && onCopyLink ? (
-            <ActionButton label="Копировать ссылку" icon="🔗" onPress={() => run(onCopyLink)} />
+            <ActionButton label="Копировать ссылку" icon="link-variant" onPress={() => run(onCopyLink)} />
           ) : null}
           {canEdit ? (
-            <ActionButton label="Редактировать" icon="✎" onPress={() => run(onEdit)} />
+            <ActionButton label="Редактировать" icon="pencil-outline" onPress={() => run(onEdit)} />
           ) : null}
           {isAvailable ? (
-            <ActionButton label="Переслать" icon="➦" onPress={() => run(onForward)} />
+            <ActionButton label="Переслать" icon="share-outline" onPress={() => run(onForward)} />
           ) : null}
           {isAvailable && onPin ? (
             <ActionButton
               label={pinnedMessageId === message?.id ? 'Открепить сообщение' : 'Закрепить сообщение'}
-              icon="📌"
+              icon="pin-outline"
               onPress={() => run(onPin)}
             />
           ) : null}
           {isAvailable && isOwn && onReads ? (
-            <ActionButton label="Кто прочитал" icon="✓✓" onPress={() => run(onReads)} />
+            <ActionButton label="Кто прочитал" icon="check-all" onPress={() => run(onReads)} />
           ) : null}
           {isAvailable && message?.kind === 'task_share' && message.task_preview?.id && onOpenTask ? (
-            <ActionButton label="Открыть задачу" icon="☑" onPress={() => run(onOpenTask)} />
+            <ActionButton label="Открыть задачу" icon="clipboard-check-outline" onPress={() => run(onOpenTask)} />
           ) : null}
           {isAvailable && !isOwn && onReport ? (
-            <ActionButton label="Подготовить жалобу" icon="⚑" onPress={() => run(onReport)} />
+            <ActionButton label="Подготовить жалобу" icon="flag-outline" onPress={() => run(onReport)} />
           ) : null}
           {canDelete ? (
             <ActionButton
               label="Удалить"
-              icon="⌫"
+              icon="delete-outline"
               danger
               onPress={() => run(onDelete)}
             />
           ) : null}
-          {!isAvailable ? (
+          {!isAvailable && !message.local_status ? (
             <Text style={styles.unavailable}>Для этого сообщения действия недоступны</Text>
           ) : null}
           <ActionButton label="Отмена" onPress={close} />
@@ -242,11 +280,11 @@ function ActionButton({
   onPress,
 }: {
   label: string;
-  icon?: string;
+  icon?: React.ComponentProps<typeof MaterialCommunityIcons>['name'];
   danger?: boolean;
   onPress: () => void;
 }) {
-  const { styles } = useChatStyles(createStyles);
+  const { styles, chatTokens } = useChatStyles(createStyles);
   return (
     <Pressable
       onPress={onPress}
@@ -254,7 +292,13 @@ function ActionButton({
       accessibilityRole="button"
       accessibilityLabel={label}
     >
-      {icon ? <Text style={[styles.actionIcon, danger && styles.danger]}>{icon}</Text> : null}
+      {icon ? (
+        <MaterialCommunityIcons
+          name={icon}
+          size={22}
+          color={danger ? chatTokens.dangerText : chatTokens.textSecondary}
+        />
+      ) : null}
       <Text style={[styles.actionText, danger && styles.danger]}>{label}</Text>
     </Pressable>
   );
@@ -271,8 +315,19 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
     elevation: 40,
     backgroundColor: 'rgba(0,0,0,0.42)',
   },
+  liftedBubble: {
+    position: 'absolute',
+    zIndex: 41,
+    elevation: 41,
+    shadowColor: '#000',
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+  },
   card: {
     position: 'absolute',
+    zIndex: 42,
+    elevation: 42,
     maxHeight: '78%',
     borderRadius: 20,
     paddingHorizontal: 12,
@@ -330,7 +385,6 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
     backgroundColor: chatTokens.sidebarSearchBg,
   },
   reactionExpandButtonExpanded: { height: 44 },
-  reactionExpandIcon: { color: chatTokens.textPrimary, fontSize: 24, lineHeight: 26 },
   actionButton: {
     minHeight: 48,
     flexDirection: 'row',
@@ -338,12 +392,6 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
     gap: 12,
     paddingHorizontal: 12,
     borderRadius: 12,
-  },
-  actionIcon: {
-    width: 24,
-    color: chatTokens.textSecondary,
-    fontSize: 22,
-    textAlign: 'center',
   },
   actionText: { color: chatTokens.textPrimary, fontSize: 16, fontWeight: '600' },
   danger: { color: chatTokens.dangerText },

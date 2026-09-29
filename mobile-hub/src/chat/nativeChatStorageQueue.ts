@@ -10,3 +10,12 @@ export function enqueueNativeChatStorage<T>(operation: () => Promise<T>): Promis
 }
 
 export function waitForNativeChatStorage() { return operations; }
+
+// In-process snapshot of the serialized outbox. Every write path goes through
+// the single storage queue above, so the cache is always coherent with the
+// durable blob: reads after the first load cost zero SecureStore round-trips.
+let outboxRowsCache: unknown[] | null = null;
+export function getNativeChatOutboxRowsCache() { return outboxRowsCache; }
+export function setNativeChatOutboxRowsCache(rows: unknown[] | null) { outboxRowsCache = rows; }
+/** Test/debug hook: drop the snapshot when storage was written behind the queue. */
+export function resetNativeChatOutboxRowsCache() { outboxRowsCache = null; }

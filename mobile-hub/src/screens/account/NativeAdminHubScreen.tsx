@@ -1,10 +1,24 @@
 import { router } from 'expo-router';
-import { canAccessAdminArea, getAvailableAdminSections } from '../../account/accountNavigation';
+import {
+  accountNavTone,
+  canAccessAdminArea,
+  getAvailableAdminSections,
+} from '../../account/accountNavigation';
 import { useAuth } from '../../auth/AuthContext';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
-import { AccountActionRow, AccountScreenScaffold, AccountSectionCard } from './AccountChrome';
+import {
+  AccountNavGroup,
+  AccountNavRow,
+  AccountScreenScaffold,
+  AccountSectionCard,
+} from './AccountChrome';
 import { goBackOrReplace } from './accountBack';
+
+const SECTION_GROUPS: Array<{ title: string; keys: string[] }> = [
+  { title: 'Пользователи и доступ', keys: ['users', 'departments', 'ad-users', 'sessions'] },
+  { title: 'Система', keys: ['ai-bots', 'system'] },
+];
 
 export function NativeAdminHubScreen() {
   const { user, hasPermission } = useAuth();
@@ -24,19 +38,30 @@ export function NativeAdminHubScreen() {
           {null}
         </AccountSectionCard>
       ) : (
-        <AccountSectionCard tokens={tokens} description="Управление учётными записями и настройками HUB-IT.">
-          {sections.map((section) => (
-            <AccountActionRow
-              key={section.key}
-              tokens={tokens}
-              icon={section.icon}
-              label={section.label}
-              subtitle={section.description}
-              testID={`native-admin-section-${section.key}`}
-              onPress={() => router.push(section.nativeHref as never)}
-            />
-          ))}
-        </AccountSectionCard>
+        SECTION_GROUPS.map((group) => {
+          const groupSections = sections.filter((section) => group.keys.includes(section.key));
+          if (!groupSections.length) return null;
+          return (
+            <AccountNavGroup key={group.title} title={group.title} tokens={tokens}>
+              {groupSections.map((section) => {
+                const tone = accountNavTone(section.key);
+                return (
+                  <AccountNavRow
+                    key={section.key}
+                    tokens={tokens}
+                    icon={section.icon}
+                    iconColor={tone.foreground}
+                    iconBackground={tone.background}
+                    label={section.label}
+                    subtitle={section.description}
+                    testID={`native-admin-section-${section.key}`}
+                    onPress={() => router.push(section.nativeHref as never)}
+                  />
+                );
+              })}
+            </AccountNavGroup>
+          );
+        })
       )}
     </AccountScreenScaffold>
   );

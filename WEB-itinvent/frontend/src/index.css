@@ -392,6 +392,14 @@ select {
   .chat-folder-tab-shimmer {
     animation: none;
   }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 .skeleton {
@@ -428,12 +436,43 @@ select {
   }
 }
 
+.vault-secret {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.vault-privacy-blur #root {
+  filter: blur(28px);
+}
+
+.vault-privacy-blur .vault-secret {
+  visibility: hidden;
+}
+
+.vault-blur-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.62);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  color: #f8fafc;
+  text-align: center;
+}
+
 @media print {
   body {
     background: white;
   }
 
-  .no-print {
+  .no-print,
+  .vault-secret {
     display: none !important;
   }
 }

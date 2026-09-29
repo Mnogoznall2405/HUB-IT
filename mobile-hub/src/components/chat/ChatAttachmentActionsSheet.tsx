@@ -1,8 +1,8 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { ChatAttachment } from '../../api/types';
-import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
+import { ChatBottomSheet } from './ChatBottomSheet';
 import { formatChatFileSize, getChatFileExtension } from './ChatDocumentAttachment';
 
 type AttachmentAction = {
@@ -27,7 +27,6 @@ export function ChatAttachmentActionsSheet({
   onSave: () => void;
 }) {
   const { styles } = useChatStyles(createStyles);
-  const reduceMotion = useReducedMotion();
   const fileName = String(attachment?.file_name || 'Вложение').trim() || 'Вложение';
   const extension = getChatFileExtension(fileName, attachment?.mime_type);
   const size = formatChatFileSize(attachment?.file_size);
@@ -44,24 +43,13 @@ export function ChatAttachmentActionsSheet({
   };
 
   return (
-    <Modal
+    <ChatBottomSheet
       visible={Boolean(attachment)}
-      transparent
-      statusBarTranslucent
-      navigationBarTranslucent
-      animationType={reduceMotion ? 'none' : 'fade'}
-      onRequestClose={onClose}
+      onClose={onClose}
+      dismissAccessibilityLabel="Закрыть действия с вложением"
+      sheetStyle={styles.sheet}
+      backdropTestID="chat-attachment-actions-backdrop"
     >
-      <View style={styles.overlay} accessibilityViewIsModal>
-        <Pressable
-          testID="chat-attachment-actions-backdrop"
-          style={StyleSheet.absoluteFill}
-          onPress={onClose}
-          accessibilityRole="button"
-          accessibilityLabel="Закрыть действия с вложением"
-        />
-        <View style={styles.sheet} role="menu">
-          <View style={styles.handle} />
           <View style={styles.header}>
             <View style={styles.fileBadge}>
               <Text style={styles.fileBadgeText}>{extension}</Text>
@@ -95,37 +83,23 @@ export function ChatAttachmentActionsSheet({
           >
             <Text style={styles.cancelLabel}>Отмена</Text>
           </Pressable>
-        </View>
-      </View>
-    </Modal>
+    </ChatBottomSheet>
   );
 }
 
 const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
-  overlay: {
-    flex: 1,
-    justifyContent: 'flex-end',
-    paddingHorizontal: 10,
-    paddingBottom: 10,
-    backgroundColor: chatTokens.overlayBg,
-  },
   sheet: {
-    overflow: 'hidden',
+    marginHorizontal: 10,
+    marginBottom: 10,
     borderWidth: 1,
     borderColor: chatTokens.borderSoft,
     borderRadius: 22,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    borderBottomLeftRadius: 22,
+    borderBottomRightRadius: 22,
     paddingHorizontal: 10,
-    paddingTop: 8,
     paddingBottom: 10,
-    backgroundColor: chatTokens.panelBg,
-  },
-  handle: {
-    alignSelf: 'center',
-    width: 38,
-    height: 4,
-    marginBottom: 8,
-    borderRadius: 2,
-    backgroundColor: chatTokens.borderSoft,
   },
   header: {
     minHeight: 64,

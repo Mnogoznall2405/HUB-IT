@@ -25,6 +25,7 @@ public sealed class RegistryDesktopPolicyProvider
         var deferralValue = ReadDword("UpdateDeferralHours");
         var diagnosticsValue = ReadDword("DiagnosticsExportEnabled");
         var fallbackValue = ReadDword("NotificationFallbackEnabled");
+        var screenCaptureProtectionValue = ReadDword("ScreenCaptureProtectionEnabled");
 
         return new DesktopPolicy(
             ParseAutostartMode(autostartValue),
@@ -33,7 +34,8 @@ public sealed class RegistryDesktopPolicyProvider
                 ? deferralValue
                 : null,
             ParseBoolean(diagnosticsValue),
-            ParseBoolean(fallbackValue));
+            ParseBoolean(fallbackValue),
+            ParseBoolean(screenCaptureProtectionValue));
     }
 
     private int? ReadDword(string valueName)

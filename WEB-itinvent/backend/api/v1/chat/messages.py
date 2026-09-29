@@ -24,6 +24,7 @@ from backend.chat.schemas import (
     EditMessageRequest,
     ForwardMessageRequest,
     MarkReadRequest,
+    PollVoteRequest,
     SendMessageRequest,
     TaskShareMessageRequest,
 )
@@ -90,6 +91,60 @@ async def edit_chat_message(
             label="publish_message_updated",
         )
         return message
+    except Exception as exc:
+        chat_api()._raise_chat_http_error(exc)
+
+
+@router.post("/conversations/{conversation_id}/messages/{message_id}/poll-vote")
+async def vote_chat_message_poll(
+    conversation_id: str,
+    message_id: str,
+    payload: PollVoteRequest,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    """F-POLL: set/retract the caller's vote; broadcast chat.message.updated."""
+    try:
+        result = await chat_api()._run_chat_call(
+            chat_api().chat_service.vote_poll,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            message_id=message_id,
+            option_index=int(payload.option_index),
+        )
+        chat_api()._schedule_chat_background_task(
+            chat_api()._publish_message_updated_after_edit(
+                conversation_id=conversation_id,
+                message_id=message_id,
+            ),
+            label="publish_poll_message_updated",
+        )
+        return result
+    except Exception as exc:
+        chat_api()._raise_chat_http_error(exc)
+
+
+@router.post("/conversations/{conversation_id}/messages/{message_id}/poll-close")
+async def close_chat_message_poll(
+    conversation_id: str,
+    message_id: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    """R-POLL-2: the poll author stops the vote; broadcast message.updated."""
+    try:
+        result = await chat_api()._run_chat_call(
+            chat_api().chat_service.close_poll,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            message_id=message_id,
+        )
+        chat_api()._schedule_chat_background_task(
+            chat_api()._publish_message_updated_after_edit(
+                conversation_id=conversation_id,
+                message_id=message_id,
+            ),
+            label="publish_poll_message_updated",
+        )
+        return result
     except Exception as exc:
         chat_api()._raise_chat_http_error(exc)
 
@@ -425,6 +480,7 @@ async def send_chat_message(
             conversation_id=conversation_id,
             body=payload.body,
             body_format=payload.body_format,
+            kind=payload.kind,
             client_message_id=payload.client_message_id,
             reply_to_message_id=payload.reply_to_message_id,
             defer_push_notifications=True,

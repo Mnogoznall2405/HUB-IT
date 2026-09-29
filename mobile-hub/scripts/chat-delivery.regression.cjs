@@ -16,11 +16,11 @@ function environment(disk = new Map()) {
   function load(name) {
     if(name==='expo-secure-store')return secure;
     if(name.endsWith('/nativeChatDraftFiles'))return files;
-    const target=['nativeChatOutbox','nativeChatOutboxLegacy','nativeChatDeliveryRunner','nativeChatDeliveryGate','nativeChatStorageQueue'].find(n=>name.endsWith('/'+n));
+    const target=[['nativeChatOutbox','src/chat'],['nativeChatOutboxLegacy','src/chat'],['nativeChatDeliveryRunner','src/chat'],['nativeChatDeliveryGate','src/chat'],['nativeChatStorageQueue','src/chat'],['chatSendTiming','src/diagnostics']].find(([n])=>name.endsWith('/'+n));
     if(!target)throw Error('Unexpected runtime import: '+name);
-    if(modules.has(target))return modules.get(target).exports;
-    const module={exports:{}};modules.set(target,module);
-    const file=path.join(root,'src/chat',target+'.ts');
+    if(modules.has(target[0]))return modules.get(target[0]).exports;
+    const module={exports:{}};modules.set(target[0],module);
+    const file=path.join(root,target[1],target[0]+'.ts');
     const code=ts.transpileModule(fs.readFileSync(file,'utf8'),{fileName:file,compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
     vm.runInNewContext(`(function(require,module,exports){${code}\n})`,globals,{filename:file})(load,module,module.exports);return module.exports;
   }

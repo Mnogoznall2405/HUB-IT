@@ -33,7 +33,6 @@ const {
   mockNotifySuccess,
   mockNotifyWarning,
   mockNotifyApiError,
-  mockPackFolderFilesToZip,
   mockCollectDataTransferFiles,
 } = vi.hoisted(() => ({
   mockListFiles: vi.fn(),
@@ -64,7 +63,6 @@ const {
   mockNotifySuccess: vi.fn(),
   mockNotifyWarning: vi.fn(),
   mockNotifyApiError: vi.fn(),
-  mockPackFolderFilesToZip: vi.fn(),
   mockCollectDataTransferFiles: vi.fn(),
 }));
 
@@ -72,15 +70,14 @@ vi.mock('../lib/myFilesFolderZip', async () => {
   const actual = await vi.importActual('../lib/myFilesFolderZip');
   return {
     ...actual,
-    packFolderFilesToZip: mockPackFolderFilesToZip,
     collectDataTransferFiles: mockCollectDataTransferFiles,
   };
 });
 
 vi.mock('../api/myFiles', () => ({
   myFilesRetentionOptions: [1, 3, 7, 10, 30],
-  MY_FILES_MAX_UPLOAD_BYTES: 10 * 1024 * 1024 * 1024,
-  formatMyFilesUploadLimitLabel: () => 'до 10 ГБ на файл, 50 ГБ всего',
+  MY_FILES_MAX_UPLOAD_BYTES: 400 * 1024 * 1024 * 1024,
+  formatMyFilesRetentionLabel: (days) => (Number(days) === 0 ? 'Навсегда' : `${days} дн.`),
   myFilesAPI: {
     listFiles: mockListFiles,
     listFolders: mockListFolders,
@@ -173,20 +170,20 @@ import MyFiles from './MyFiles';
 
 describe('MyFiles page', () => {
   it('does not start another polling request while the previous one is pending', async () => {
-    const intervalSpy = vi.spyOn(window, 'setInterval');
+    const timeoutSpy = vi.spyOn(window, 'setTimeout');
     try {
       mockListFiles.mockResolvedValue({ items: [{ ...readyFile, status: 'processing' }] });
       renderPage();
       await screen.findByText('report.txt');
-      await waitFor(() => expect(intervalSpy.mock.calls.some((call) => call[1] === 4000)).toBe(true));
-      const poll = intervalSpy.mock.calls.find((call) => call[1] === 4000)[0];
+      await waitFor(() => expect(timeoutSpy.mock.calls.some((call) => call[1] === 4000)).toBe(true));
+      const poll = timeoutSpy.mock.calls.find((call) => call[1] === 4000)[0];
       let finish;
       mockListFiles.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
       act(() => { poll(); poll(); });
       expect(mockListFiles).toHaveBeenCalledTimes(2);
       await act(async () => finish({ items: [readyFile] }));
     } finally {
-      intervalSpy.mockRestore();
+      timeoutSpy.mockRestore();
     }
   });
   it('does not reopen a closed preview after its download finishes', async () => {
@@ -219,7 +216,6 @@ describe('MyFiles page', () => {
     mockNotifySuccess.mockReset();
     mockNotifyWarning.mockReset();
     mockNotifyApiError.mockReset();
-    mockPackFolderFilesToZip.mockReset();
     mockCollectDataTransferFiles.mockReset();
     mockListFolders.mockReset();
     mockCreateFolder.mockReset();
@@ -237,10 +233,6 @@ describe('MyFiles page', () => {
     mockListFolders.mockResolvedValue({ items: [] });
     mockGetQuota.mockResolvedValue({ used_bytes: 0, limit_bytes: 5 * 1024 * 1024 * 1024, remaining_bytes: 5 * 1024 * 1024 * 1024 });
     mockUploadFile.mockResolvedValue({ id: 'queued-file', status: 'queued' });
-    mockPackFolderFilesToZip.mockImplementation(async (files, options = {}) => {
-      options.onProgress?.(1);
-      return new File(['zip-bytes'], options.archiveName || 'Docs.zip', { type: 'application/zip' });
-    });
     mockCollectDataTransferFiles.mockImplementation(async (dataTransfer) => ({
       files: Array.from(dataTransfer?.files || []),
       asFolder: false,
@@ -413,7 +405,6 @@ describe('MyFiles page', () => {
         onUploadProgress: expect.any(Function),
       }));
     });
-    expect(mockPackFolderFilesToZip).not.toHaveBeenCalled();
   });
 
   it('opens a private document preview for a ready supported file', async () => {
@@ -568,16 +559,12 @@ describe('MyFiles page', () => {
     const bar = await screen.findByTestId('my-files-selection-bar');
     expect(bar).toHaveTextContent('Выбрано: 2');
 
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    try {
-      fireEvent.click(screen.getByTestId('my-files-bulk-delete'));
-      await waitFor(() => {
-        expect(mockDeleteFolder).toHaveBeenCalledWith('folder-1');
-        expect(mockDeleteFile).toHaveBeenCalledWith('file-1');
-      });
-    } finally {
-      confirmSpy.mockRestore();
-    }
+    fireEvent.click(screen.getByTestId('my-files-bulk-delete'));
+    fireEvent.click(await screen.findByTestId('my-files-confirm-action'));
+    await waitFor(() => {
+      expect(mockDeleteFolder).toHaveBeenCalledWith('folder-1');
+      expect(mockDeleteFile).toHaveBeenCalledWith('file-1');
+    });
   });
 
   it('bulk-moves selected rows to a chosen folder', async () => {
@@ -657,13 +644,58 @@ describe('MyFiles page', () => {
     );
     await screen.findByText('report.txt');
 
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    try {
-      fireEvent.click(screen.getByTestId('my-files-purge-file-dead'));
-      await waitFor(() => expect(mockPurgeFile).toHaveBeenCalledWith('file-dead'));
-    } finally {
-      confirmSpy.mockRestore();
-    }
+    fireEvent.click(screen.getByTestId('my-files-purge-file-dead'));
+    fireEvent.click(await screen.findByTestId('my-files-confirm-action'));
+    await waitFor(() => expect(mockPurgeFile).toHaveBeenCalledWith('file-dead'));
+  });
+
+  it('moves a folder into another folder via drag and drop', async () => {
+    const folders = [
+      { id: 'folder-1', name: 'Документы', parent_id: null },
+      { id: 'folder-2', name: 'Архив', parent_id: null },
+    ];
+    mockListFiles.mockResolvedValue({ items: [readyFile], folders, breadcrumbs: [], folder: null });
+    mockListFolders.mockResolvedValue({ items: folders });
+    mockUpdateFolder.mockResolvedValue({ id: 'folder-2', parent_id: 'folder-1' });
+    renderPage();
+    await screen.findByText('report.txt');
+
+    fireEvent.drop(screen.getByTestId('my-files-folder-folder-1'), {
+      dataTransfer: {
+        types: ['application/x-hubit-folder'],
+        getData: (type) => (type === 'application/x-hubit-folder' ? 'folder-2' : ''),
+        files: [],
+        items: [],
+      },
+    });
+    await waitFor(() => expect(mockUpdateFolder).toHaveBeenCalledWith('folder-2', { parentId: 'folder-1' }));
+  });
+
+  it('rejects dropping a folder into its own subtree', async () => {
+    const folders = [
+      { id: 'folder-1', name: 'Документы', parent_id: null },
+      { id: 'folder-2', name: 'Вложенная', parent_id: 'folder-1' },
+    ];
+    mockListFiles.mockResolvedValue({ items: [], folders, breadcrumbs: [], folder: null });
+    mockListFolders.mockResolvedValue({ items: folders });
+    renderPage();
+    await screen.findByText('Документы');
+
+    fireEvent.drop(screen.getByTestId('my-files-folder-folder-2'), {
+      dataTransfer: {
+        types: ['application/x-hubit-folder'],
+        getData: (type) => (type === 'application/x-hubit-folder' ? 'folder-1' : ''),
+        files: [],
+        items: [],
+      },
+    });
+    await waitFor(() => {
+      expect(mockNotifyWarning).toHaveBeenCalledWith(
+        expect.stringContaining('внутрь самой себя'),
+        expect.objectContaining({ source: 'my-files-move' }),
+      );
+    });
+    expect(mockUpdateFolder).not.toHaveBeenCalled();
   });
 
 });

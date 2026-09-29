@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
@@ -329,6 +330,242 @@ async def get_balances_with_hub(
             include_meta=True,
         )
     )
+
+
+_CYR_TO_LAT = str.maketrans("авекмнорстухАВЕКМНОРСТУХ", "abekmhopctyxABEKMHOPCTYX")
+_LAT_TO_CYR = str.maketrans("abcehkmoptxyABCEHKMOPTXY", "авсенкмортхуАВСЕНКМОРТХУ")
+
+
+def _code_search_variants(code: str) -> list[str]:
+    """Текстовые варианты кода для поиска в 1С.
+
+    В базах встречаются коды, записанные латинскими буквами-двойниками
+    (CB-00159398 вместо ЦБ-00159398) — текстовый ПОДОБНО такие не ловит,
+    поэтому ищем оба написания.
+    """
+    base = str(code or "").strip()
+    if not base:
+        return []
+    variants = [base]
+    swapped = base.translate(_CYR_TO_LAT)
+    if swapped != base:
+        variants.append(swapped)
+    return variants
+
+
+def _loose_part_no_key(code: str) -> str:
+    """Ключ сравнения кодов с фолдингом латинских двойников в кириллицу."""
+    from backend.database import queries as db_queries
+
+    return db_queries._normalize_hub_part_no_text(code).translate(_LAT_TO_CYR)
+
+
+@router.get("/missing-warehouse-hints")
+async def get_missing_warehouse_hints(
+    codes: str = Query("", max_length=2000),
+    inv_nos: str = Query("", max_length=4000),
+    employee_name: str = Query("", max_length=300),
+    db_id: str | None = Depends(get_current_database_id),
+    current_user: User = Depends(require_permission(PERM_WAREHOUSE_1C_READ)),
+):
+    """Hints for a task when the employee has no matched 1C warehouse.
+
+    Per usable part_no: all warehouses holding a balance of that code (with the
+    resolved hub owner + whether that owner already has the same code in Hub)
+    and every Hub owner holding the code. Per inv_no: previous owners from
+    CI_HISTORY so the task can suggest where the equipment actually sits.
+    """
+    from backend.database import queries as db_queries
+    from backend.services.warehouse_1c_service import (
+        fio_person_match_score,
+        normalize_match_key,
+        person_name_tokens,
+    )
+
+    code_list: list[str] = []
+    seen_codes: set[str] = set()
+    for raw in str(codes or "").split(","):
+        code = str(raw or "").strip()
+        key = code.casefold()
+        if not code or not db_queries._is_usable_hub_part_no(code) or key in seen_codes:
+            continue
+        seen_codes.add(key)
+        code_list.append(code)
+        if len(code_list) >= 30:
+            break
+
+    inv_list: list[str] = []
+    seen_invs: set[str] = set()
+    for raw in str(inv_nos or "").split(","):
+        inv_no = str(raw or "").strip()
+        if not inv_no or inv_no in seen_invs:
+            continue
+        seen_invs.add(inv_no)
+        inv_list.append(inv_no)
+        if len(inv_list) >= 40:
+            break
+
+    current_employee_key = str(employee_name or "").strip().casefold()
+
+    async def _resolve_warehouse_owner(warehouse_name: str):
+        """Best hub owner for a person-named 1C warehouse, or None."""
+        tokens = person_name_tokens(warehouse_name) or []
+        best = None
+        best_score = 0
+        for token in tokens[:3]:
+            try:
+                candidates = await run_in_threadpool(
+                    db_queries.search_owners, token, 10, db_id
+                )
+            except Exception:
+                continue
+            for row in candidates or []:
+                name = str(
+                    row.get("OWNER_DISPLAY_NAME") or row.get("owner_display_name") or ""
+                ).strip()
+                score = fio_person_match_score(warehouse_name, name)
+                if score > best_score:
+                    best_score = score
+                    best = row
+            if best_score >= 100:
+                break
+        if best_score < 50 or not isinstance(best, dict):
+            return None
+        try:
+            owner_no = int(best.get("OWNER_NO") or best.get("owner_no") or 0)
+        except (TypeError, ValueError):
+            owner_no = 0
+        return {
+            "owner_no": owner_no,
+            "employee_name": str(
+                best.get("OWNER_DISPLAY_NAME") or best.get("owner_display_name") or ""
+            ).strip(),
+        }
+
+    code_hints: list[dict[str, Any]] = []
+    for code in code_list:
+        code_key = _loose_part_no_key(code)
+        hint: dict[str, Any] = {"code": code, "warehouses": [], "hub_holders": []}
+        balance_rows: list[dict[str, Any]] = []
+        balance_error = ""
+        # Сначала резолвим номенклатуру по коду → остатки по ref: текстовый
+        # поиск склеивает «ЦБ-00159398» в токен без дефиса и теряет такие коды.
+        try:
+            nom_results = await warehouse_1c_service.search_nomenclature(code, limit=10)
+        except Exception:
+            nom_results = []
+        for nom in nom_results or []:
+            if _loose_part_no_key(nom.get("code")) != code_key:
+                continue
+            ref = str(nom.get("ref") or "").strip()
+            if not ref:
+                continue
+            try:
+                rows = await warehouse_1c_service.get_balances(nomenclature_ref=ref, limit=200)
+                balance_rows.extend(rows or [])
+            except Exception as exc:
+                balance_error = str(exc)[:200]
+        if not balance_rows:
+            for variant in _code_search_variants(code):
+                try:
+                    rows = await warehouse_1c_service.get_balances(text=variant, limit=200)
+                    balance_rows.extend(rows or [])
+                except Exception as exc:
+                    balance_error = str(exc)[:200]
+        if balance_error and not balance_rows:
+            hint["balances_error"] = balance_error
+        by_warehouse: dict[str, dict[str, Any]] = {}
+        for row in balance_rows or []:
+            row_code = _loose_part_no_key(row.get("nomenclature_code"))
+            if row_code != code_key:
+                continue
+            qty = float(row.get("qty_balance") or 0)
+            if qty <= 0:
+                continue
+            warehouse_name = str(row.get("warehouse_name") or "").strip()
+            if not warehouse_name:
+                continue
+            bucket = by_warehouse.setdefault(
+                warehouse_name,
+                {
+                    "warehouse_name": warehouse_name,
+                    "warehouse_ref": str(row.get("warehouse_ref") or "").strip(),
+                    "qty": 0.0,
+                },
+            )
+            bucket["qty"] += qty
+        try:
+            hub_rows = await run_in_threadpool(
+                db_queries.count_all_owners_by_hub_query,
+                part_nos=_code_search_variants(code),
+                db_id=db_id,
+            )
+        except Exception:
+            hub_rows = []
+        holder_by_owner: dict[int, dict[str, Any]] = {}
+        holder_name_keys: set[str] = set()
+        for row in hub_rows or []:
+            try:
+                owner_no = int(row.get("owner_no") or 0)
+            except (TypeError, ValueError):
+                continue
+            if owner_no <= 0:
+                continue
+            holder = {
+                "owner_no": owner_no,
+                "employee_name": str(row.get("owner_display_name") or "").strip(),
+                "count": int(row.get("hub_count") or 0),
+            }
+            holder_by_owner[owner_no] = holder
+            name_key = normalize_match_key(holder["employee_name"])
+            if name_key:
+                holder_name_keys.add(name_key)
+            if holder["employee_name"].casefold() != current_employee_key:
+                hint["hub_holders"].append(holder)
+        warehouses = list(by_warehouse.values())
+        warehouses.sort(key=lambda item: -item["qty"])
+        for entry in warehouses[:8]:
+            owner = await _resolve_warehouse_owner(entry["warehouse_name"])
+            if owner:
+                entry["employee_name"] = owner["employee_name"]
+                entry["owner_no"] = owner["owner_no"]
+                # В OWNERS бывают дубли ФИО с разными owner_no — сверяем и по
+                # номеру, и по нормализованному имени.
+                entry["has_in_hub"] = (
+                    owner["owner_no"] in holder_by_owner
+                    or normalize_match_key(owner["employee_name"]) in holder_name_keys
+                )
+            else:
+                entry["employee_name"] = ""
+                entry["has_in_hub"] = False
+        hint["warehouses"] = warehouses[:8]
+        code_hints.append(hint)
+
+    previous_owners: dict[str, list[str]] = {}
+    for inv_no in inv_list:
+        try:
+            payload = await run_in_threadpool(
+                db_queries.get_equipment_history_by_inv, inv_no, db_id
+            )
+        except Exception:
+            continue
+        names: list[str] = []
+        for row in (payload or {}).get("history") or []:
+            for key in ("old_employee_name", "new_employee_name"):
+                name = str(row.get(key) or "").strip()
+                if (
+                    name
+                    and name.casefold() != current_employee_key
+                    and name not in names
+                ):
+                    names.append(name)
+        if names:
+            previous_owners[inv_no] = names[:3]
+
+    return {
+        "codes": code_hints,
+        "previous_owners": previous_owners,
+    }
 
 
 @router.get("/nomenclature/match-to-hub")

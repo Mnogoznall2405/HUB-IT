@@ -67,7 +67,12 @@ describe('native chat gesture thresholds', () => {
     expect(inboxRowSwipeAction(-72)).toBe('archive');
     expect(inboxRowSwipeAction(72)).toBe('mute');
     expect(inboxRowSwipeAction(20)).toBeNull();
+    // Deep swipe = second action zone (F-INBOX-SWIPE).
+    expect(inboxRowSwipeAction(150)).toBe('read');
+    expect(inboxRowSwipeAction(-150)).toBe('pin');
     expect(nextInboxRowSettings({ is_muted: false }, 'mute')).toEqual({ is_muted: true });
     expect(nextInboxRowSettings({ is_archived: true }, 'archive')).toEqual({ is_archived: false });
+    expect(nextInboxRowSettings({ is_pinned: false }, 'pin')).toEqual({ is_pinned: true });
+    expect(nextInboxRowSettings({}, 'read')).toBeNull();
   });
 });

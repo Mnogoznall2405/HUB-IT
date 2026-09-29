@@ -18,5 +18,18 @@ describe('taskRichText', () => {
   it('strips markdown for preview', () => {
     expect(stripMarkdownForPreview('**Bold** and *italic*')).toBe('Bold and italic');
     expect(stripMarkdownForPreview('- item')).toBe('item');
+    expect(stripMarkdownForPreview('see [карточка](https://x.test/db)')).toBe('see карточка');
+  });
+
+  it('round-trips markdown links through the editor html', () => {
+    const html = markdownToEditorHtml('Открыть [карточку](/database?inv_no=100665)');
+    expect(html).toContain('href="/database?inv_no=100665"');
+    expect(editorHtmlToMarkdown(html)).toBe('Открыть [карточку](/database?inv_no=100665)');
+  });
+
+  it('does not emit anchors for unsafe link targets', () => {
+    const html = markdownToEditorHtml('bad [click](javascript:alert(1))');
+    expect(html).not.toContain('<a ');
+    expect(html).toContain('javascript:alert(1)');
   });
 });

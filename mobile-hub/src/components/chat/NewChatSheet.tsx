@@ -1,10 +1,10 @@
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useEffect, useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Button } from 'react-native-paper';
-import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import type { ChatUserSummary } from '../../api/types';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
-import { ChatKeyboardAvoidingHost } from './ChatKeyboardAvoidingHost';
+import { ChatBottomSheet } from './ChatBottomSheet';
 
 type AiBot = { id: string; name: string };
 
@@ -32,7 +32,6 @@ export function NewChatSheet({
   onGeneralAi?: () => void | Promise<void>;
 }) {
   const { chatTokens, styles } = useChatStyles(createStyles);
-  const reduceMotion = useReducedMotion();
   const [mode, setMode] = useState<'direct' | 'group'>('direct');
   const [query, setQuery] = useState('');
   const [groupTitle, setGroupTitle] = useState('');
@@ -124,9 +123,14 @@ export function NewChatSheet({
   };
 
   return (
-    <Modal visible={visible} animationType={reduceMotion ? 'none' : 'slide'} transparent onRequestClose={reset}>
-      <ChatKeyboardAvoidingHost style={styles.backdrop}>
-        <View style={styles.card} accessibilityViewIsModal>
+    <ChatBottomSheet
+      visible={visible}
+      onClose={reset}
+      dismissAccessibilityLabel="Закрыть создание диалога"
+      avoidKeyboard
+      sheetStyle={styles.card}
+    >
+        <View accessibilityViewIsModal>
           <Text style={styles.title}>{variant === 'ai' ? 'Новый AI-чат' : 'Новый диалог'}</Text>
           {variant === 'ai' ? (
             <>
@@ -238,9 +242,11 @@ export function NewChatSheet({
                   }}
                 >
                   <Text style={styles.userName}>
-                    {mode === 'group' && picked ? '✓ ' : ''}
                     {label}
                   </Text>
+                  {mode === 'group' && picked ? (
+                    <MaterialCommunityIcons name="check" size={18} color={chatTokens.accentText} style={styles.pickedIcon} />
+                  ) : null}
                   <Text style={styles.userMeta}>@{user.username}</Text>
                 </Pressable>
               );
@@ -268,17 +274,12 @@ export function NewChatSheet({
             </>
           )}
         </View>
-      </ChatKeyboardAvoidingHost>
-    </Modal>
+    </ChatBottomSheet>
   );
 }
 
 const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
   card: {
-    backgroundColor: chatTokens.panelBg,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
     padding: 16,
     maxHeight: '88%',
   },
@@ -318,6 +319,7 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   busy: { color: chatTokens.textSecondary, paddingVertical: 8, textAlign: 'center' },
   searchError: { color: chatTokens.dangerText, paddingVertical: 8, textAlign: 'center' },
   userName: { fontSize: 16, fontWeight: '600', color: chatTokens.textPrimary },
+  pickedIcon: { position: 'absolute', right: 10, top: 4 },
   userMeta: { fontSize: 13, color: chatTokens.textSecondary, marginTop: 2 },
   empty: { color: chatTokens.textSecondary, paddingVertical: 12, textAlign: 'center' },
   footerBtn: { marginVertical: 8 },

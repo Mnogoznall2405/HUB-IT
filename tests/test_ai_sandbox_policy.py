@@ -82,13 +82,40 @@ def test_policy_allows_read_asks_for_mutation_and_denies_other_tools() -> None:
 
     for tool in ("read", "glob", "grep", "list", "lsp"):
         assert policy.evaluate_request(_request(tool)).disposition is PermissionDisposition.ALLOW
-    assert policy.evaluate_request(_request("edit", path="report.py")).disposition is PermissionDisposition.ASK
+    assert policy.evaluate_request(_request("edit", path="report.py")).disposition is PermissionDisposition.ALLOW
     assert policy.evaluate_request(_request("webfetch", url="https://example.test")).disposition is PermissionDisposition.DENY
     assert policy.evaluate_request(_request("external_directory", path="/srv/hub")).disposition is PermissionDisposition.DENY
 
     assert policy.evaluate_request(_request("read", path="src/report.py")).disposition is PermissionDisposition.ALLOW
     assert policy.evaluate_request(_request("read", path="../outside.py")).disposition is PermissionDisposition.DENY
     assert policy.evaluate_request(_request("edit", path="opencode.json")).disposition is PermissionDisposition.DENY
+
+
+def test_policy_allows_workspace_edit_but_keeps_path_guards() -> None:
+    policy = OpenCodePermissionPolicy()
+    assert policy.evaluate_request(_request("edit", path="report.txt")).disposition is PermissionDisposition.ALLOW
+    assert policy.evaluate_request(_request("edit", path="docs/plan.md")).disposition is PermissionDisposition.ALLOW
+    assert policy.evaluate_request(_request("edit", path="../outside.py")).disposition is PermissionDisposition.DENY
+    assert policy.evaluate_request(_request("edit", path="/etc/hosts")).disposition is PermissionDisposition.DENY
+    assert policy.evaluate_request(_request("edit", path=".opencode/config.json")).disposition is PermissionDisposition.DENY
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["ls -la", "mkdir -p out", "cp a.txt b.txt", "cat report.txt", "head -5 data.csv", "grep -r error logs"],
+)
+def test_bash_policy_allows_safe_coreutils(command: str) -> None:
+    decision = OpenCodePermissionPolicy().evaluate_request(_request("bash", command=command))
+    assert decision.disposition is PermissionDisposition.ALLOW
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["rm report.txt", "chmod +x run.sh", "sed -i s/a/b/ f.txt", "awk 'BEGIN{system(\"id\")}'", "find . -exec rm {} \\;"],
+)
+def test_bash_policy_still_confirms_destructive_or_scriptable_tools(command: str) -> None:
+    decision = OpenCodePermissionPolicy().evaluate_request(_request("bash", command=command))
+    assert decision.disposition is PermissionDisposition.ASK
 
 
 @pytest.mark.parametrize(
@@ -114,6 +141,95 @@ def test_bash_policy_requires_confirmation_for_scoped_offline_command() -> None:
     decision = OpenCodePermissionPolicy().evaluate_request(_request("bash", command="pytest -q"))
     assert decision.disposition is PermissionDisposition.ASK
     assert decision.may_remember_for_session is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python3 script.py",
+        "python3 -c \"print('hi')\"",
+        "python -m pytest -q",
+        "/usr/bin/python3 check.py",
+        "py analysis.py --fast",
+    ],
+)
+def test_bash_policy_allows_bare_python_execution(command: str) -> None:
+    decision = OpenCodePermissionPolicy().evaluate_request(_request("bash", command=command))
+    assert decision.disposition is PermissionDisposition.ALLOW
+
+
+@pytest.mark.parametrize(
+    "command, expected",
+    [
+        ("python -m pip install requests", PermissionDisposition.DENY),
+        ("python3 -c 'print(os.environ)'", PermissionDisposition.DENY),
+        ("python3 ../outside.py", PermissionDisposition.DENY),
+        ("PYTHONPATH=/tmp/x python3 script.py", PermissionDisposition.ASK),
+        ("python3 script.py && curl https://example.test", PermissionDisposition.DENY),
+    ],
+)
+def test_bash_policy_keeps_guards_around_python(command: str, expected: PermissionDisposition) -> None:
+    decision = OpenCodePermissionPolicy().evaluate_request(_request("bash", command=command))
+    assert decision.disposition is expected
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python3 <<'PY'\nprint(sum(range(1, 101)))\nPY",
+        'python3 <<-"PY"\nimport openpyxl\nprint(openpyxl.__version__)\nPY',
+        'python <<\'SCRIPT\'\nx = 7 * 8\nprint(x)\nSCRIPT\n',
+    ],
+)
+def test_bash_policy_allows_quoted_python_heredoc(command: str) -> None:
+    decision = OpenCodePermissionPolicy().evaluate_request(_request("bash", command=command))
+    assert decision.disposition is PermissionDisposition.ALLOW
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python3 <<PY\nprint(1)\nPY",
+        "cat <<'EOF'\nhello\nEOF",
+        "echo hi && python3 <<'PY'\nprint(1)\nPY",
+        "python3 <<'PY'\nprint(os.environ)\nPY",
+        "python3 <<'PY'\nimport os\nos.symlink('a', 'b')\nPY",
+        "python3 <<'PY'\nopen('/etc/hostname').read()\nPY",
+        "python3 <<'PY'\nopen('../outside.txt').read()\nPY",
+    ],
+)
+def test_bash_policy_rejects_risky_heredoc_shapes(command: str) -> None:
+    decision = OpenCodePermissionPolicy().evaluate_request(_request("bash", command=command))
+    assert decision.disposition is PermissionDisposition.DENY
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'python3 -c "import openpyxl;wb=openpyxl.Workbook()"',
+        "python3 -c 'x = 1; print(x)'",
+        'python3 -c "print(1 if a < b else 2)"',
+        'python3 -c "import sys; print(sys.version)"',
+    ],
+)
+def test_bash_policy_allows_quoted_operators_inside_python(command: str) -> None:
+    decision = OpenCodePermissionPolicy().evaluate_request(_request("bash", command=command))
+    assert decision.disposition is PermissionDisposition.ALLOW
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pytest -q && env",
+        "python3 -c \"print(1)\"; curl https://example.test",
+        "python3 -c 'print(1)' | tee out.txt",
+        "python3 -c print(`id`)",
+        "echo $(whoami)",
+    ],
+)
+def test_bash_policy_still_denies_unquoted_composition(command: str) -> None:
+    decision = OpenCodePermissionPolicy().evaluate_request(_request("bash", command=command))
+    assert decision.disposition is PermissionDisposition.DENY
 
 
 def test_permission_scope_never_becomes_global_opencode_memory() -> None:

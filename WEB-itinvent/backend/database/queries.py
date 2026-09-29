@@ -52,9 +52,9 @@ from backend.database.equipment_reference_reads import (
 from backend.database.equipment_search_reads import (
     QUERY_SEARCH_BY_SERIAL,
     QUERY_COUNT_UNIVERSAL,
-    QUERY_COUNT_UNIVERSAL_BY_INV_NO,
+    QUERY_COUNT_UNIVERSAL_BY_DIGIT,
     QUERY_SEARCH_UNIVERSAL,
-    QUERY_SEARCH_UNIVERSAL_BY_INV_NO,
+    QUERY_SEARCH_UNIVERSAL_BY_DIGIT,
     search_equipment_by_serial as _search_equipment_by_serial,
     search_equipment_universal as _search_equipment_universal,
 )
@@ -305,7 +305,14 @@ def search_equipment_by_serial(search_term: str, db_id: Optional[str] = None) ->
     return _search_equipment_by_serial(search_term, db_id, get_db_fn=get_db)
 
 
-def search_equipment_universal(search_term: str, page: int = 1, limit: int = 50, db_id: Optional[str] = None) -> dict:
+def search_equipment_universal(
+    search_term: str,
+    page: int = 1,
+    limit: int = 50,
+    db_id: Optional[str] = None,
+    type_no: Optional[int] = None,
+    field: Optional[str] = None,
+) -> dict:
     """
     Universal search across all equipment fields.
 
@@ -314,6 +321,8 @@ def search_equipment_universal(search_term: str, page: int = 1, limit: int = 50,
         page: Page number (1-indexed)
         limit: Results per page
         db_id: Database ID to use (None for default)
+        type_no: Optional CI_TYPES.TYPE_NO filter (CI_TYPE=1)
+        field: Optional single-field scope (serial/model/inv_no/...)
 
     Returns:
         Dict with equipment list and pagination info
@@ -323,6 +332,8 @@ def search_equipment_universal(search_term: str, page: int = 1, limit: int = 50,
         page=page,
         limit=limit,
         db_id=db_id,
+        type_no=type_no,
+        field=field,
         get_db_fn=get_db,
     )
 
@@ -869,6 +880,99 @@ def get_equipment_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] = No
             merged_rows.append(row)
 
     merged_rows.sort(key=_inv_no_sort_key)
+    return merged_rows
+
+
+def get_equipment_items_by_serials(
+    serials: List[str],
+    db_id: Optional[str] = None,
+    *,
+    include_suffix: bool = False,
+) -> List[dict]:
+    """
+    Resolve equipment records by ITEMS.SERIAL_NO / HW_SERIAL_NO.
+
+    Serials are normalized on both sides (alphanumeric only, upper) so agent
+    monitor serials (EDID/WMI) match legacy values with separators.
+    With include_suffix=True also returns rows whose serial ENDS WITH a
+    requested token (EDID is often the numeric tail of the sticker serial).
+    Callers must disambiguate suffix hits themselves.
+    """
+    normalized_tokens: List[str] = []
+    for raw in serials or []:
+        token = re.sub(r"[^0-9A-Za-z]", "", str(raw or "")).upper()
+        if token and token not in normalized_tokens:
+            normalized_tokens.append(token)
+
+    if not normalized_tokens:
+        return []
+
+    query = """
+        SELECT
+            i.ID AS item_id,
+            CAST(i.INV_NO AS VARCHAR(64)) AS inv_no,
+            i.SERIAL_NO AS serial_no,
+            i.HW_SERIAL_NO AS hw_serial_no,
+            t.TYPE_NAME AS type_name,
+            m.MODEL_NAME AS model_name,
+            i.EMPL_NO AS empl_no,
+            o.OWNER_DISPLAY_NAME AS employee_name
+        FROM ITEMS i
+        LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
+        LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+        LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
+        WHERE i.CI_TYPE = 1
+          AND ({WHERE_PARTS})
+        ORDER BY i.ID DESC
+    """
+
+    serial_expr = (
+        "UPPER(REPLACE(REPLACE(REPLACE(COALESCE({column}, ''), '-', ''), ' ', ''), ':', ''))"
+    )
+    db = get_db(db_id)
+    merged_rows: List[dict] = []
+    seen_item_ids: set = set()
+    for token_chunk in _in_clause_chunks(normalized_tokens):
+        placeholders = ", ".join(["?"] * len(token_chunk))
+        where_parts = (
+            f"{serial_expr.format(column='i.SERIAL_NO')} IN ({placeholders})"
+            f" OR {serial_expr.format(column='i.HW_SERIAL_NO')} IN ({placeholders})"
+        )
+        params = list(token_chunk) * 2
+        if include_suffix:
+            # Whole-token suffix + longest digit run (>=6 digits) so that
+            # 'UK02145013324' also fetches 'UK0A2145013324'-style rows.
+            suffix_terms: List[str] = []
+            for token in token_chunk:
+                if len(token) >= 4:
+                    suffix_terms.append(token)
+                digit_runs = re.findall(r"\d+", token)
+                longest_run = max(digit_runs, key=len, default="")
+                if len(longest_run) >= 6 and longest_run != token:
+                    suffix_terms.append(longest_run)
+                    if len(longest_run) >= 7:
+                        # A stray letter inside the stored serial splits the run;
+                        # its tail suffix still fetches the row.
+                        suffix_terms.append(longest_run[1:])
+            suffix_conditions = [
+                f"{serial_expr.format(column=column)} LIKE ('%' + ?)"
+                for term in suffix_terms
+                for column in ("i.SERIAL_NO", "i.HW_SERIAL_NO")
+            ]
+            if suffix_conditions:
+                where_parts += " OR " + " OR ".join(suffix_conditions)
+                params.extend(term for term in suffix_terms for _ in range(2))
+        rows = db.execute_query(
+            query.replace("{WHERE_PARTS}", where_parts),
+            tuple(params),
+        )
+        for row in rows or []:
+            key = row.get("item_id")
+            if key is not None and key in seen_item_ids:
+                continue
+            seen_item_ids.add(key)
+            merged_rows.append(row)
+
     return merged_rows
 
 
@@ -4239,6 +4343,53 @@ def get_consumables_lookup(
         ORDER BY m.MODEL_NAME, b.BRANCH_NAME, l.DESCR, i.ID
     """
     return db.execute_query(query, tuple(params))
+
+
+def get_consumable_by_id(item_id: int, db_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Get one consumable card (CI_TYPE=4) by ITEMS.ID with branch/location metadata."""
+    try:
+        resolved_item_id = int(item_id)
+    except (TypeError, ValueError):
+        return None
+    if resolved_item_id <= 0:
+        return None
+
+    db = get_db(db_id)
+    rows = db.execute_query(
+        """
+        SELECT TOP 1
+            i.ID as id,
+            i.INV_NO as inv_no,
+            i.TYPE_NO as type_no,
+            i.MODEL_NO as model_no,
+            ISNULL(i.QTY, 0) as qty,
+            i.PART_NO as part_no,
+            i.DESCR as description,
+            t.TYPE_NAME as type_name,
+            m.MODEL_NAME as model_name,
+            b.BRANCH_NO as branch_no,
+            b.BRANCH_NAME as branch_name,
+            l.LOC_NO as loc_no,
+            l.DESCR as location_name
+        FROM ITEMS i
+        LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
+        LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+        LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
+        LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+        WHERE i.CI_TYPE = 4 AND i.ID = ?
+        """,
+        (resolved_item_id,),
+    )
+    if not rows:
+        return None
+
+    row = dict(rows[0])
+    row["inv_no"] = _format_item_inv_no(row.get("inv_no"), fallback="") or None
+    try:
+        row["qty"] = int(row.get("qty") or 0)
+    except (TypeError, ValueError):
+        row["qty"] = 0
+    return row
 
 
 def consume_consumable_stock(

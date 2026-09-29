@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,7 @@ if str(WEB_ROOT) not in sys.path:
 
 realtime_module = importlib.import_module("backend.chat.realtime")
 side_effects_module = importlib.import_module("backend.chat.realtime_side_effects")
+ws_commands_module = importlib.import_module("backend.chat.ws_commands")
 
 
 def test_user_fanout_uses_one_targeted_transport_event(monkeypatch):
@@ -82,3 +84,71 @@ def test_fast_message_created_does_not_publish_room_and_inbox_duplicates(monkeyp
     assert len(user_calls) == 1
     assert user_calls[0]["user_ids"] == [3]
     assert result["inbox_published"] == 1
+
+
+def test_typing_command_fans_out_by_user_so_inbox_sockets_receive_it(monkeypatch):
+    """F-TYPING-INBOX / R-TYPING-1: inbox sockets are not subscribed to the
+    conversation room, so typing must use user distribution."""
+    sent: list[dict] = []
+
+    class FakeRealtime:
+        def allow_typing_started(self, **_kwargs):
+            return True
+
+        def clear_typing_state(self, **_kwargs):
+            pass
+
+        async def publish_user_events(self, **kwargs):
+            sent.append(kwargs)
+
+        async def publish_conversation_event(self, **_kwargs):
+            raise AssertionError("room-only fan-out must not be used for typing")
+
+    class FakeService:
+        def verify_conversation_access(self, **_kwargs):
+            return None
+
+        def get_conversation_member_ids(self, **_kwargs):
+            return [1, 2, 3]
+
+    class FakeApi:
+        chat_realtime = FakeRealtime()
+        chat_service = FakeService()
+
+        async def _run_chat_call(self, fn, **kwargs):
+            return fn(**kwargs)
+
+    monkeypatch.setattr(ws_commands_module, "_api", lambda: FakeApi())
+    sender = SimpleNamespace(id=1, full_name="Sender", username="sender")
+
+    asyncio.run(
+        ws_commands_module.dispatch_chat_ws_command(
+            current_user=sender,
+            connection_id="conn-1",
+            message_type="chat.typing",
+            request_id=None,
+            conversation_id="conv-1",
+            payload={"is_typing": True},
+        )
+    )
+
+    assert len(sent) == 1
+    assert sent[0]["event_type"] == "chat.typing.started"
+    assert sent[0]["conversation_id"] == "conv-1"
+    assert sorted(sent[0]["user_ids"]) == [2, 3]
+    assert sent[0]["payload"]["is_typing"] is True
+    assert sent[0]["payload"]["expires_in_ms"] == 5000
+
+    sent.clear()
+    asyncio.run(
+        ws_commands_module.dispatch_chat_ws_command(
+            current_user=sender,
+            connection_id="conn-1",
+            message_type="chat.typing",
+            request_id=None,
+            conversation_id="conv-1",
+            payload={"is_typing": False},
+        )
+    )
+    assert len(sent) == 1
+    assert sent[0]["event_type"] == "chat.typing.stopped"

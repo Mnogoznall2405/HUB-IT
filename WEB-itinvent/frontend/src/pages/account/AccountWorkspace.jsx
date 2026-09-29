@@ -21,6 +21,7 @@ import { PERSONAL_SETTINGS_SECTIONS } from '../../components/account/accountNavi
 import AdUsers from '../AdUsers';
 import { AiBotsAdminSection } from './admin/AiBotsAdminSection';
 import DepartmentsTab from './admin/DepartmentsTab';
+import MyFilesAdminTab from './admin/MyFilesAdminTab';
 import SessionsTab from './admin/SessionsTab';
 import SystemSettingsSection from './admin/SystemSettingsSection';
 import UsersTab from './admin/UsersTab';
@@ -28,6 +29,7 @@ import { useAccountSectionData } from './hooks/useAccountSectionData';
 import { ProfileTab } from './profile/ProfileTab';
 import AppearanceTab from './settings/AppearanceTab';
 import HubItPwaSettingsCard from './settings/HubItPwaSettingsCard';
+import MailDeviceSettingsCard from './settings/MailDeviceSettingsCard';
 import MobileNativeAppSettingsCard from './settings/MobileNativeAppSettingsCard';
 import SecurityTab from './settings/SecurityTab';
 import { BrowserNotificationsSettingsCard } from './settings/notifications/BrowserNotificationsSettingsCard';
@@ -139,6 +141,8 @@ function AccountWorkspace({ area = 'settings' }) {
           dbOptions={data.dbOptions}
         />
       );
+    } else if (data.activeSection === 'my-files' && data.canReadMyFilesAudit) {
+      adminContent = <MyFilesAdminTab canManageUsers={data.canManageUsers} />;
     } else if (data.activeSection === 'sessions' && data.canManageSessions) {
       adminContent = (
         <SessionsTab
@@ -230,6 +234,7 @@ function AccountWorkspace({ area = 'settings' }) {
         <Stack spacing={1.1}>
           {mobileApp ? <MobileNativeAppSettingsCard /> : <MobileInstallerDownload variant="settings" />}
           <DesktopInstallerDownload variant="settings" />
+          {nativeShell ? <MailDeviceSettingsCard /> : null}
           <HubItPwaSettingsCard />
         </Stack>
       );

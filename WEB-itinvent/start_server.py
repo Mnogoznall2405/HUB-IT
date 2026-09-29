@@ -32,10 +32,17 @@ if _env_path.exists():
 
 import uvicorn
 
+try:
+    from shared.port_reclaim import reclaim_port_from_stale_sibling
+except Exception:
+    reclaim_port_from_stale_sibling = None
+
 
 if __name__ == "__main__":
     backend_host = os.getenv("BACKEND_HOST", "127.0.0.1")
     backend_port = int(os.getenv("BACKEND_PORT", "8001"))
+    if reclaim_port_from_stale_sibling is not None:
+        reclaim_port_from_stale_sibling(backend_host, backend_port, "start_server.py")
     uvicorn.run(
         "backend.main:app",
         host=backend_host,

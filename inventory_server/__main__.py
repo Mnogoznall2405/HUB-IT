@@ -13,6 +13,11 @@ import uvicorn
 from .config import config
 from .database import InventoryQueueStore
 
+try:
+    from shared.port_reclaim import reclaim_port_from_stale_sibling
+except Exception:
+    reclaim_port_from_stale_sibling = None
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="IT-Invent inventory ingest server")
@@ -31,6 +36,9 @@ def main() -> None:
             result["vacuum"] = store.vacuum()
         print(json.dumps(result, ensure_ascii=False))
         return
+
+    if reclaim_port_from_stale_sibling is not None:
+        reclaim_port_from_stale_sibling(config.host, config.port, "-m inventory_server")
 
     uvicorn.run(
         "inventory_server.app:app",

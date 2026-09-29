@@ -120,7 +120,8 @@ export function NativeSegmentedControl({ options, selected, onSelect, tokens, te
             ]}
           >
             <Text
-              style={[styles.segmentText, { color: active ? '#fff' : tokens.textSecondary }]}
+              numberOfLines={columns > 1 ? 1 : undefined}
+              style={[styles.segmentText, { color: active ? tokens.onPrimary : tokens.textSecondary }]}
             >
               {option.label}
             </Text>
@@ -131,12 +132,13 @@ export function NativeSegmentedControl({ options, selected, onSelect, tokens, te
   );
 }
 
-export function NativeFilterButton({ count, tokens, onPress, testID = 'native-filter-button', label = 'Фильтры' }: {
+export function NativeFilterButton({ count, tokens, onPress, testID = 'native-filter-button', label = 'Фильтры', iconOnly = false }: {
   count: number;
   tokens: FluentTokens;
   onPress: () => void;
   testID?: string;
   label?: string;
+  iconOnly?: boolean;
 }) {
   return (
     <Pressable
@@ -146,7 +148,7 @@ export function NativeFilterButton({ count, tokens, onPress, testID = 'native-fi
       accessibilityState={{ selected: count > 0 }}
       onPress={onPress}
       style={({ pressed }) => [
-        styles.filterButton,
+        iconOnly ? styles.filterButtonIcon : styles.filterButton,
         {
           backgroundColor: count > 0 ? tokens.selected : tokens.panelSolid,
           borderColor: count > 0 ? tokens.selectedBorder : tokens.borderSoft,
@@ -155,10 +157,12 @@ export function NativeFilterButton({ count, tokens, onPress, testID = 'native-fi
       ]}
     >
       <MaterialCommunityIcons name="tune-variant" size={19} color={count > 0 ? tokens.primary : tokens.iconMuted} />
-      <Text style={[styles.filterButtonText, { color: count > 0 ? tokens.primary : tokens.textSecondary }]}>{label}</Text>
+      {!iconOnly ? (
+        <Text style={[styles.filterButtonText, { color: count > 0 ? tokens.primary : tokens.textSecondary }]}>{label}</Text>
+      ) : null}
       {count > 0 ? (
         <View style={[styles.filterBadge, { backgroundColor: tokens.primary }]}>
-          <Text style={styles.filterBadgeText}>{count > 9 ? '9+' : count}</Text>
+          <Text style={[styles.filterBadgeText, { color: tokens.onPrimary }]}>{count > 9 ? '9+' : count}</Text>
         </View>
       ) : null}
     </Pressable>
@@ -179,20 +183,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
   },
-  filterChipText: { flexShrink: 1, fontSize: 13, fontWeight: '700' },
-  filterChipCount: { fontSize: 12, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  filterChipText: { flexShrink: 1, fontSize: 13, fontWeight: '600' },
+  filterChipCount: { fontSize: 12, fontWeight: '600', fontVariant: ['tabular-nums'] },
   appliedChip: {
     maxWidth: 240,
-    minHeight: 40,
+    minHeight: 34,
     borderWidth: 1,
-    borderRadius: 18,
+    borderRadius: 17,
     paddingLeft: 11,
     paddingRight: 8,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
   },
-  appliedChipText: { flexShrink: 1, fontSize: 12, fontWeight: '800' },
+  appliedChipText: { flexShrink: 1, fontSize: 12, fontWeight: '600' },
   sheetHeader: {
     minHeight: 60,
     paddingLeft: 18,
@@ -202,7 +206,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   sheetHeaderText: { flex: 1, minWidth: 0 },
-  sheetTitle: { fontSize: 17, lineHeight: 22, fontWeight: '900' },
+  sheetTitle: { fontSize: 17, lineHeight: 22, fontWeight: '700' },
   sheetSubtitle: { marginTop: 2, fontSize: 12, lineHeight: 16 },
   sheetClose: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center' },
   segmented: {
@@ -226,7 +230,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 8,
   },
-  segmentText: { maxWidth: '100%', textAlign: 'center', fontSize: 13, fontWeight: '800' },
+  segmentText: { maxWidth: '100%', textAlign: 'center', fontSize: 13, fontWeight: '700' },
   filterButton: {
     maxWidth: '100%',
     minHeight: 44,
@@ -238,7 +242,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 7,
   },
-  filterButtonText: { flexShrink: 1, fontSize: 13, fontWeight: '800' },
+  filterButtonIcon: {
+    width: 44,
+    height: 44,
+    borderWidth: 1,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  filterButtonText: { flexShrink: 1, fontSize: 13, fontWeight: '700' },
   filterBadge: {
     minWidth: 19,
     minHeight: 19,
@@ -248,5 +260,5 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  filterBadgeText: { color: '#fff', fontSize: 11, fontWeight: '900', fontVariant: ['tabular-nums'] },
+  filterBadgeText: { fontSize: 11, fontWeight: '700', fontVariant: ['tabular-nums'] },
 });

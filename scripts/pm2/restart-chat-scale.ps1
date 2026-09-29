@@ -1,5 +1,9 @@
 param(
-    [int]$ReadyTimeoutSec = 75
+    [int]$ReadyTimeoutSec = 75,
+    # Wait after disabling a farm server before stopping the node: ARR polls
+    # farm state every ~5s, so 8s covers one interval plus margin.
+    [int]$DrainWaitSec = 8,
+    [switch]$WhatIf
 )
 
 $ErrorActionPreference = 'Stop'
@@ -87,6 +91,36 @@ function Invoke-PostgresConnectionBudgetCheck {
     }
 }
 
+function Get-ChatFarmServerAddress {
+    param([int]$Port)
+
+    try {
+        Import-Module WebAdministration -ErrorAction Stop
+        $servers = Get-WebConfiguration -PSPath 'MACHINE/WEBROOT/APPHOST' -Filter "webFarms/webFarm[@name='itinvent-chat']/server" -ErrorAction Stop
+        foreach ($server in @($servers)) {
+            $httpPort = 0
+            [void][int]::TryParse([string]$server.GetChildElement('applicationRequestRouting').GetAttributeValue('httpPort'), [ref]$httpPort)
+            if ($httpPort -eq $Port) {
+                return [string]$server.GetAttributeValue('address')
+            }
+        }
+    } catch {
+        throw "Cannot read ARR farm itinvent-chat (run elevated): $($_.Exception.Message)"
+    }
+    throw "No itinvent-chat farm server with httpPort=$Port"
+}
+
+function Set-ChatFarmServerEnabled {
+    param(
+        [string]$Address,
+        [bool]$Enabled
+    )
+
+    Set-WebConfigurationProperty -PSPath 'MACHINE/WEBROOT/APPHOST' `
+        -Filter "webFarms/webFarm[@name='itinvent-chat']/server[@address='$Address']" `
+        -Name 'enabled' -Value $(if ($Enabled) { 'true' } else { 'false' }) -ErrorAction Stop
+}
+
 function Get-PortListenerPids {
     param([int]$ListenPort)
 
@@ -149,15 +183,38 @@ $nodes = @(
     [pscustomobject]@{ Name = 'itinvent-chat-b'; Port = 8004; ReadyUrl = 'http://127.0.0.1:8004/health/ready' }
 )
 
+if ($WhatIf) {
+    Write-Host '[WhatIf] Rolling restart plan (no changes applied):' -ForegroundColor Cyan
+    Write-Host '[WhatIf] 1. Validate PostgreSQL connection budget (projected dual envelope).'
+    Write-Host '[WhatIf] 2. Verify itinvent-chat-a/-b are registered in PM2.'
+    foreach ($node in $nodes) {
+        Write-Host "[WhatIf] 3. Drain $($node.Name): disable farm server for port $($node.Port), wait ${DrainWaitSec}s, stop + delete PM2 process, start from scale config, wait /health/ready (<= ${ReadyTimeoutSec}s), re-enable farm server, re-check budget."
+    }
+    Write-Host '[WhatIf] 4. Reload shared workers itinvent-preview-worker and itinvent-chat-push-worker, final budget check.'
+    return
+}
+
 # Restart one node at a time so the other node can keep existing WebSockets.
 foreach ($node in $nodes) {
     Write-Host "Reloading $($node.Name)..." -ForegroundColor Cyan
-    Stop-ChatNodeForRestart -Pm2Command $pm2Cmd -Name $node.Name -Port $node.Port
-    & $pm2Cmd start $chatScaleConfig --only $node.Name --update-env | Out-Host
-    if ($LASTEXITCODE -ne 0) {
-        throw "PM2 failed to reload $($node.Name) (exit $LASTEXITCODE)."
+    $farmAddress = Get-ChatFarmServerAddress -Port $node.Port
+    Write-Host "Draining farm server $farmAddress (port $($node.Port))..." -ForegroundColor Cyan
+    Set-ChatFarmServerEnabled -Address $farmAddress -Enabled $false
+    $drained = $true
+    try {
+        Start-Sleep -Seconds $DrainWaitSec
+        Stop-ChatNodeForRestart -Pm2Command $pm2Cmd -Name $node.Name -Port $node.Port
+        & $pm2Cmd start $chatScaleConfig --only $node.Name --update-env | Out-Host
+        if ($LASTEXITCODE -ne 0) {
+            throw "PM2 failed to reload $($node.Name) (exit $LASTEXITCODE)."
+        }
+        Wait-PostgresChatReady -Url $node.ReadyUrl -TimeoutSec $ReadyTimeoutSec
+    } finally {
+        if ($drained) {
+            Write-Host "Re-enabling farm server $farmAddress..." -ForegroundColor Cyan
+            Set-ChatFarmServerEnabled -Address $farmAddress -Enabled $true
+        }
     }
-    Wait-PostgresChatReady -Url $node.ReadyUrl -TimeoutSec $ReadyTimeoutSec
     Invoke-PostgresConnectionBudgetCheck
 }
 

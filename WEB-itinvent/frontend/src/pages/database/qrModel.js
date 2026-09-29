@@ -8,6 +8,7 @@ const readFirst = (data, keys, fallback = '') => {
 
 const EQUIPMENT_PATH = '/database';
 const EQUIPMENT_QUERY_KEYS = ['inv_no', 'invNo', 'equipment'];
+const CONSUMABLE_QUERY_KEYS = ['consumable', 'consumable_id', 'consumableId'];
 
 const firstQueryValue = (searchParams, keys) => {
   for (const key of keys) {
@@ -74,6 +75,83 @@ export const buildEquipmentQrLink = (item, {
   }
 };
 
+export const buildConsumableQrLink = (item, {
+  databaseId = '',
+  origin = typeof window !== 'undefined' ? window.location.origin : '',
+} = {}) => {
+  const itemId = String(
+    readFirst(item, ['ID', 'id', 'ITEM_ID', 'item_id'], '') || ''
+  ).trim();
+  if (!itemId || !/^\d+$/.test(itemId)) return '';
+
+  const resolvedDatabaseId = String(
+    databaseId || readFirst(item, ['DB_ID', 'db_id', 'database_id'], '') || ''
+  ).trim();
+
+  try {
+    const url = new URL(EQUIPMENT_PATH, origin);
+    if (!['http:', 'https:'].includes(url.protocol)) return '';
+    url.searchParams.set('consumable', itemId);
+    if (resolvedDatabaseId) url.searchParams.set('db_id', resolvedDatabaseId);
+    return url.toString();
+  } catch {
+    return '';
+  }
+};
+
+// Kind-aware payload: equipment QR keeps the inv_no flow, consumable QR carries
+// ITEMS.ID because legacy consumable INV_NO values are not guaranteed unique.
+export const parseDatabaseQrPayload = (value) => {
+  const text = String(value || '').trim();
+  if (!text) return null;
+
+  let parsed;
+  try {
+    parsed = new URL(text, 'https://hubit.invalid');
+  } catch {
+    parsed = null;
+  }
+
+  if (parsed) {
+    const isWebLink = ['http:', 'https:'].includes(parsed.protocol)
+      && parsed.pathname.replace(/\/+$/, '') === EQUIPMENT_PATH;
+    const isAppLink = parsed.protocol === 'hubit:'
+      && parsed.hostname === 'database';
+
+    if (isWebLink || isAppLink) {
+      const databaseId = String(parsed.searchParams.get('db_id') || '').trim();
+      if (databaseId.length > 100) return null;
+
+      const consumableId = firstQueryValue(parsed.searchParams, CONSUMABLE_QUERY_KEYS);
+      if (consumableId) {
+        if (consumableId.length > 20 || !/^\d+$/.test(consumableId)) return null;
+        return { kind: 'consumable', itemId: consumableId, invNo: '', databaseId, tab: 'general' };
+      }
+
+      const invNo = firstQueryValue(parsed.searchParams, EQUIPMENT_QUERY_KEYS);
+      if (!invNo || invNo.length > 200) return null;
+
+      const requestedTab = String(parsed.searchParams.get('tab') || '').trim();
+      const tab = ['general', 'acts', 'history', 'warehouse1c'].includes(requestedTab)
+        ? requestedTab
+        : 'general';
+      return { kind: 'equipment', itemId: '', invNo, databaseId, tab };
+    }
+
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return null;
+  }
+
+  const invNoMatch = text.match(/^INV_NO:\s*(.+)$/m);
+  if (invNoMatch) {
+    const invNo = invNoMatch[1].trim();
+    if (!invNo || invNo === '-') return null;
+    return { kind: 'equipment', itemId: '', invNo, databaseId: '', tab: 'general' };
+  }
+
+  if (text.includes('\n')) return null;
+  return { kind: 'equipment', itemId: '', invNo: text, databaseId: '', tab: 'general' };
+};
+
 export const parseEquipmentQrLink = (value) => parseEquipmentLink(value);
 
 export const buildEquipmentQrText = (item) => {
@@ -135,7 +213,10 @@ export const getQrScannerErrorMessage = (err) => {
     || name === 'CameraPermissionPluginMissing'
     || /NotAllowedError|Permission denied|CameraPermissionDenied|CameraPermissionPluginMissing/i.test(rawMessage)
   ) {
-    return 'Доступ к камере запрещён. Разрешите доступ к камере в браузере.';
+    return 'Доступ к камере запрещён. Откройте настройки сайта (иконка настроек рядом с заголовком приложения) и разрешите камеру, затем нажмите «Разрешить доступ к камере».';
+  }
+  if (name === 'CameraPromptTimeout') {
+    return 'Камера не ответила на запрос разрешения. Проверьте, что доступ к камере не запрещён в настройках сайта, и нажмите «Разрешить доступ к камере».';
   }
   if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
     return 'Камера не найдена.';

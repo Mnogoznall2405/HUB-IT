@@ -139,6 +139,7 @@ function NativeMailMessageContent() {
   const [threadStats, setThreadStats] = useState<{ messages: number; unread: number } | null>(null);
   const { ready: quickReplyReady, retryRestore: retryQuickReplyRestore, text: quickReply, setText: setQuickReply, storageError: quickReplyStorageError, saved: quickReplySaved, pending: quickReplyPending, prepareSend: prepareQuickReply, completeSend: completeQuickReply, resolvePending: resolveQuickReply, canTransfer: canTransferQuickReply, takeLocal, acknowledgeTransfer } = useMailQuickReplyDraft({ userId: allowed ? user?.id || 0 : 0, mailboxId: String(message?.mailbox_id || mailboxIdParam), kind: 'message', entityId: messageId });
   const [quickReplyBusy, setQuickReplyBusy] = useState(false);
+  const [quickReplyOpen, setQuickReplyOpen] = useState(false);
   const quickReplyInFlightRef = useRef(false);
   const { requestLeave } = useUnsavedFormGuard(allowed && quickReply.length > 0 && !quickReplySaved, allowed && quickReplyBusy);
   const [quickReplyStatus, setQuickReplyStatus] = useState('');
@@ -227,19 +228,19 @@ function NativeMailMessageContent() {
         autoReadMessageIdRef.current = detail.id;
         stagePendingMailReadOverride(detail.id, detailMailboxId);
         setMessage((current) => current ? { ...current, is_read: true } : current);
-        if (isInbox) publishNativeMailUnreadDelta(-1);
+        if (isInbox) publishNativeMailUnreadDelta(-1, { mailboxId: detailMailboxId, folder: 'inbox' });
         void markMailMessageRead(detail.id, detailMailboxId).then(() => {
           clearPendingMailReadOverride(detail.id, detailMailboxId);
           void loadThreadStats();
         }).catch(() => {
           clearPendingMailReadOverride(detail.id, detailMailboxId);
           if (!isCurrent()) {
-            if (isInbox) publishNativeMailUnreadDelta(1);
+            if (isInbox) publishNativeMailUnreadDelta(1, { mailboxId: detailMailboxId, folder: 'inbox' });
             return;
           }
           autoReadMessageIdRef.current = '';
           setMessage((current) => current?.id === detail.id ? { ...current, is_read: false } : current);
-          if (isInbox) publishNativeMailUnreadDelta(1);
+          if (isInbox) publishNativeMailUnreadDelta(1, { mailboxId: detailMailboxId, folder: 'inbox' });
           setError('Письмо открылось, но не отметилось прочитанным.');
           void loadThreadStats();
         });
@@ -442,7 +443,7 @@ function NativeMailMessageContent() {
     Alert.alert(permanent ? 'Удалить письмо навсегда?' : 'Удалить письмо?', permanent ? 'Это действие нельзя отменить.' : 'Письмо будет перемещено в «Удалённые».', [
       { text: 'Отмена', style: 'cancel' },
       {
-        text: 'Удалить',
+        text: permanent ? 'Удалить навсегда' : 'Удалить',
         style: 'destructive',
         onPress: () => { void mutate(
           () => deleteMailMessage(message.id, String(message.mailbox_id || mailboxIdParam), permanent),
@@ -603,6 +604,17 @@ function NativeMailMessageContent() {
         >
           <MaterialCommunityIcons name="chevron-down" size={38} color={tokens.textPrimary} />
         </Pressable>
+        {message && message.folder !== 'drafts' && !message.draft_context ? (
+          <Pressable
+            testID="native-mail-message-file-actions"
+            onPress={() => setFileActionsOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Ещё действия с письмом"
+            style={styles.readerTopAction}
+          >
+            <MaterialCommunityIcons name="dots-horizontal" size={30} color={tokens.textPrimary} />
+          </Pressable>
+        ) : null}
       </View>
       <KeyboardAvoidingView
         testID="native-mail-message-keyboard-host"
@@ -631,7 +643,7 @@ function NativeMailMessageContent() {
               <Text style={[styles.threadMetaText, { color: tokens.textSecondary }]}>
                 {threadStats?.messages || 1} {plural(threadStats?.messages || 1, 'письмо', 'письма', 'писем')}
               </Text>
-              <View style={[styles.unreadDot, { backgroundColor: tokens.error }]} />
+              {(threadStats?.unread ?? (message.is_read === false ? 1 : 0)) > 0 ? <View style={[styles.unreadDot, { backgroundColor: tokens.primary }]} /> : null}
               <Text style={[styles.threadMetaText, { color: tokens.textSecondary }]}>
                 {threadStats?.unread ?? (message.is_read === false ? 1 : 0)} {plural(threadStats?.unread ?? (message.is_read === false ? 1 : 0), 'непрочитанное', 'непрочитанных', 'непрочитанных')}
               </Text>
@@ -655,7 +667,7 @@ function NativeMailMessageContent() {
                     { backgroundColor: pressed ? tokens.panelInset : tokens.panelMuted },
                   ]}
                 >
-                  {summaryLoading ? <ActivityIndicator size="small" color={tokens.error} /> : <MaterialCommunityIcons name="water-outline" size={22} color={tokens.error} />}
+                  {summaryLoading ? <ActivityIndicator size="small" color={tokens.primary} /> : <MaterialCommunityIcons name="text-box-outline" size={22} color={tokens.iconMuted} />}
                   <Text style={[styles.summaryButtonText, { color: tokens.textPrimary }]}>{summaryLoading ? 'Пересказываю…' : 'Пересказать'}</Text>
                 </Pressable>
                 {summary ? (
@@ -680,7 +692,7 @@ function NativeMailMessageContent() {
           <Modal visible={fileActionsOpen} transparent animationType="slide" onRequestClose={() => setFileActionsOpen(false)}>
             <View style={styles.modalRoot}>
               <Pressable style={styles.backdropDismissLayer} onPress={() => setFileActionsOpen(false)} accessibilityRole="button" accessibilityLabel="Закрыть дополнительные действия" />
-              <View testID="native-mail-file-actions-sheet" style={[styles.actionSheet, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
+              <View testID="native-mail-file-actions-sheet" style={[styles.actionSheet, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft, paddingBottom: 22 + safeAreaBottom }]}>
                 <View style={styles.moveHeader}>
                   <View style={styles.moveHeaderText}>
                     <Text style={[styles.moveTitle, { color: tokens.textPrimary }]}>Дополнительные действия</Text>
@@ -717,7 +729,10 @@ function NativeMailMessageContent() {
                             unread: Math.max(0, current.unread + (wasRead ? 1 : -1)),
                           } : current);
                           if (String(message.folder || folderParam || 'inbox') === 'inbox') {
-                            publishNativeMailUnreadDelta(wasRead ? 1 : -1);
+                            publishNativeMailUnreadDelta(wasRead ? 1 : -1, {
+                              mailboxId: String(message.mailbox_id || mailboxIdParam),
+                              folder: 'inbox',
+                            });
                           }
                         },
                       );
@@ -773,7 +788,7 @@ function NativeMailMessageContent() {
           <Modal visible={headersOpen} transparent animationType="slide" onRequestClose={() => setHeadersOpen(false)}>
             <View style={styles.modalRoot}>
               <Pressable style={styles.backdropDismissLayer} onPress={() => setHeadersOpen(false)} accessibilityRole="button" accessibilityLabel="Закрыть заголовки письма" />
-              <View testID="native-mail-headers-sheet" style={[styles.headersSheet, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
+              <View testID="native-mail-headers-sheet" style={[styles.headersSheet, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft, paddingBottom: 24 + safeAreaBottom }]}>
                 <View style={styles.moveHeader}>
                   <View style={styles.moveHeaderText}>
                     <Text style={[styles.moveTitle, { color: tokens.textPrimary }]}>Заголовки письма</Text>
@@ -799,7 +814,7 @@ function NativeMailMessageContent() {
           <Modal visible={moveOpen} transparent animationType="slide" onRequestClose={() => setMoveOpen(false)}>
             <View style={styles.modalRoot}>
               <Pressable style={styles.backdropDismissLayer} onPress={() => setMoveOpen(false)} accessibilityRole="button" accessibilityLabel="Закрыть выбор папки" />
-              <View testID="native-mail-move-sheet" style={[styles.moveSheet, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft }]}>
+              <View testID="native-mail-move-sheet" style={[styles.moveSheet, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderSoft, paddingBottom: 22 + safeAreaBottom }]}>
                 <View style={styles.moveHeader}>
                   <View style={styles.moveHeaderText}>
                     <Text style={[styles.moveTitle, { color: tokens.textPrimary }]}>Переместить письмо</Text>
@@ -846,10 +861,24 @@ function NativeMailMessageContent() {
       ) : !loading ? <AccountSectionCard tokens={tokens} title="Письмо недоступно" description="Обновите список и повторите попытку.">{null}</AccountSectionCard> : null}
       </ScrollView>
       {message && message.folder !== 'drafts' && !message.draft_context ? (
+        <View
+          testID="native-mail-reader-bottom-zone"
+          style={[
+            styles.bottomZone,
+            {
+              backgroundColor: tokens.headerBandBg,
+              borderTopColor: tokens.borderSoft,
+              paddingBottom: Math.max(safeAreaBottom, 8),
+            },
+          ]}
+        >
+        {quickReplyOpen || quickReplyPending || quickReply.trim().length > 0 || quickReplyStatus ? (
         <NativeMailQuickReplyBar
           testID="native-mail-message-quick-reply-bar"
           inputTestID="native-mail-message-quick-reply"
           sendTestID="native-mail-message-send-quick-reply"
+          embedded
+          onCollapse={() => { setQuickReplyOpen(false); setQuickReplyStatus(''); }}
           value={quickReply}
           busy={quickReplyBusy}
           pending={quickReplyPending}
@@ -876,6 +905,40 @@ function NativeMailMessageContent() {
           }}
           onSend={() => { void sendQuickReply(); }}
         />
+        ) : (
+          <View testID="native-mail-reader-bottom-actions" style={styles.bottomActions}>
+            <BottomAction testID="native-mail-reply" icon="reply-outline" label="Ответить" tokens={tokens} onPress={() => setQuickReplyOpen(true)} />
+            <BottomAction testID="native-mail-forward" icon="forward" label="Переслать" tokens={tokens} onPress={() => compose('forward')} />
+            <BottomAction
+              testID="native-mail-importance"
+              icon={message.importance === 'high' ? 'alert-circle' : 'alert-circle-outline'}
+              label="Важное"
+              active={message.importance === 'high'}
+              disabled={busy || offlineMode}
+              tokens={tokens}
+              onPress={toggleImportance}
+            />
+            {message.folder === 'trash' ? (
+              <BottomAction testID="native-mail-restore" icon="restore" label="Восстановить" disabled={busy || offlineMode} tokens={tokens} onPress={() => {
+                void mutate(
+                  () => restoreMailMessage(message.id, String(message.mailbox_id || mailboxIdParam), message.restore_hint_folder || 'inbox'),
+                  'Не удалось восстановить письмо.',
+                  () => goBackOrReplace('/(shell)/mail'),
+                );
+              }} />
+            ) : message.can_archive !== false && message.folder !== 'archive' ? (
+              <BottomAction testID="native-mail-archive" icon="archive-arrow-down-outline" label="Архив" disabled={busy || offlineMode} tokens={tokens} onPress={() => {
+                void mutate(
+                  () => moveMailMessage(message.id, String(message.mailbox_id || mailboxIdParam), 'archive'),
+                  'Не удалось архивировать письмо.',
+                  () => goBackOrReplace('/(shell)/mail'),
+                );
+              }} />
+            ) : null}
+            <BottomAction testID="native-mail-delete" icon="trash-can-outline" label="Удалить" danger disabled={busy || offlineMode} tokens={tokens} onPress={confirmDelete} />
+          </View>
+        )}
+        </View>
       ) : null}
       <NativeMailImageViewer
         items={imageViewerItems}
@@ -886,33 +949,6 @@ function NativeMailMessageContent() {
         onOpen={imageViewerItem ? () => { void useAttachment(imageViewerItem.attachment, 'open'); } : undefined}
         onShare={imageViewerItem ? () => { void useAttachment(imageViewerItem.attachment, 'share'); } : undefined}
       />
-      {message && message.folder !== 'drafts' && !message.draft_context ? (
-        <View
-          testID="native-mail-reader-bottom-actions"
-          style={[
-            styles.bottomActions,
-            {
-              backgroundColor: tokens.headerBandBg,
-              borderTopColor: tokens.borderSoft,
-              paddingBottom: Math.max(safeAreaBottom, 8),
-            },
-          ]}
-        >
-          <BottomAction testID="native-mail-reply" icon="reply-outline" label="Ответить" tokens={tokens} onPress={() => compose('reply')} />
-          <BottomAction testID="native-mail-forward" icon="forward" label="Переслать" tokens={tokens} onPress={() => compose('forward')} />
-          <BottomAction
-            testID="native-mail-importance"
-            icon={message.importance === 'high' ? 'bookmark' : 'bookmark-outline'}
-            label="Важное"
-            active={message.importance === 'high'}
-            disabled={busy || offlineMode}
-            tokens={tokens}
-            onPress={toggleImportance}
-          />
-          <BottomAction testID="native-mail-delete" icon="trash-can-outline" label="Удалить" danger disabled={busy || offlineMode} tokens={tokens} onPress={confirmDelete} />
-          <BottomAction testID="native-mail-message-file-actions" icon="dots-horizontal" label="Ещё" tokens={tokens} onPress={() => setFileActionsOpen(true)} />
-        </View>
-      ) : null}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -965,9 +1001,10 @@ const styles = StyleSheet.create({
   summaryText: { fontSize: 15, lineHeight: 23 },
   primaryAction: { minHeight: 50, borderRadius: 13, marginTop: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   primaryActionText: { color: '#fff', fontSize: 14, fontWeight: '900' },
-  bottomActions: { minHeight: 72, paddingTop: 7, paddingHorizontal: 4, borderTopWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'flex-start' },
+  bottomZone: { borderTopWidth: StyleSheet.hairlineWidth, flexShrink: 0 },
+  bottomActions: { minHeight: 72, paddingTop: 7, paddingHorizontal: 4, flexDirection: 'row', alignItems: 'flex-start' },
   bottomAction: { flex: 1, minWidth: 0, minHeight: 57, alignItems: 'center', justifyContent: 'center', gap: 4, paddingHorizontal: 1 },
-  bottomActionLabel: { width: '100%', textAlign: 'center', fontSize: 11, lineHeight: 15, fontWeight: '600' },
+  bottomActionLabel: { width: '100%', textAlign: 'center', fontSize: 12, lineHeight: 16, fontWeight: '600' },
   actionRow: { minHeight: 48, borderRadius: 10, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 10 },
   actionText: { flex: 1, fontSize: 13, fontWeight: '700' },
   modalRoot: { flex: 1, justifyContent: 'flex-end' },

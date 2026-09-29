@@ -1,99 +1,132 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { ReactNode, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useRef, type PropsWithChildren } from 'react';
 import { Animated, PanResponder, StyleSheet, Text, View } from 'react-native';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
-import type { NativeMailSwipeAction } from '../../mail/nativeMailModel';
-import { resolveNativeMailSwipeAction } from '../../mail/nativeMailModel';
-import type { FluentTokens } from '../../theme/fluentTokens';
+import {
+  resolveNativeMailSwipeAction,
+  resolveNativeMailSwipeAvailability,
+  type NativeMailSwipeAction,
+  type NativeMailSwipeSetting,
+} from '../../mail/nativeMailModel';
+import type { useFluentTokens } from '../../theme/fluentTokens';
 
 const MAX_TRANSLATE = 104;
 
-function clamp(value: number): number {
-  return Math.max(-MAX_TRANSLATE, Math.min(MAX_TRANSLATE, value));
+type SwipeVisual = { icon: React.ComponentProps<typeof MaterialCommunityIcons>['name']; label: string; destructive: boolean };
+
+function swipeVisual(action: NativeMailSwipeSetting | 'delete-forever', isRead: boolean): SwipeVisual | null {
+  if (action === 'toggle-read') {
+    return { icon: isRead ? 'email-outline' : 'email-open-outline', label: isRead ? 'Не прочитано' : 'Прочитано', destructive: false };
+  }
+  if (action === 'archive') return { icon: 'archive-arrow-down-outline', label: 'Архив', destructive: false };
+  if (action === 'delete') return { icon: 'trash-can-outline', label: 'Удалить', destructive: true };
+  if (action === 'delete-forever') return { icon: 'delete-forever-outline', label: 'Удалить навсегда', destructive: true };
+  return null;
 }
 
 export function NativeMailSwipeRow({
   children,
-  isRead,
-  canDelete,
   disabled,
+  isRead,
+  canArchive,
+  canDelete,
+  canDeleteForever,
+  swipeRight,
+  swipeLeft,
   tokens,
   onAction,
-}: {
-  children: ReactNode;
+}: PropsWithChildren<{
+  disabled?: boolean;
   isRead: boolean;
-  canDelete: boolean;
-  disabled: boolean;
-  tokens: FluentTokens;
-  onAction: (action: Exclude<NativeMailSwipeAction, null>) => void | Promise<void>;
-}) {
-  const reduceMotion = useReducedMotion();
+  canArchive?: boolean;
+  canDelete?: boolean;
+  canDeleteForever?: boolean;
+  swipeRight?: NativeMailSwipeSetting;
+  swipeLeft?: NativeMailSwipeSetting;
+  tokens: ReturnType<typeof useFluentTokens>;
+  onAction: (action: Exclude<NativeMailSwipeAction, null>) => Promise<void> | void;
+}>) {
   const translateX = useRef(new Animated.Value(0)).current;
   const actionInProgress = useRef(false);
-  const current = useRef({ disabled, canDelete, isRead, onAction });
-  current.current = { disabled, canDelete, isRead, onAction };
-  const resetPosition = useCallback(() => {
-    translateX.stopAnimation();
+  const reduceMotion = useReducedMotion();
+  const current = useRef({ disabled, isRead, canArchive, canDelete, canDeleteForever, swipeRight, swipeLeft, onAction });
+  current.current = { disabled, isRead, canArchive, canDelete, canDeleteForever, swipeRight, swipeLeft, onAction };
+
+  const capabilities = { canArchive, canDelete, canDeleteForever };
+  const leadingSetting: NativeMailSwipeSetting = swipeRight || 'toggle-read';
+  const trailingSetting: NativeMailSwipeSetting | 'delete-forever' = canDeleteForever ? 'delete-forever' : (swipeLeft || 'archive');
+  const leadingAvailable = !disabled && leadingSetting !== 'none'
+    && resolveNativeMailSwipeAvailability(leadingSetting, capabilities);
+  const trailingAvailable = !disabled && (trailingSetting === 'delete-forever'
+    ? true
+    : trailingSetting !== 'none' && resolveNativeMailSwipeAvailability(trailingSetting, capabilities));
+
+  const reset = () => {
     if (reduceMotion) {
       translateX.setValue(0);
       return;
     }
-    Animated.spring(translateX, { toValue: 0, speed: 28, bounciness: 0, useNativeDriver: true }).start();
-  }, [reduceMotion, translateX]);
-  useEffect(() => { resetPosition(); }, [disabled, isRead, resetPosition]);
-  useEffect(() => () => translateX.stopAnimation(), [translateX]);
-  const panResponder = useMemo(() => PanResponder.create({
-    onMoveShouldSetPanResponder: (_event, gesture) => (
-      !current.current.disabled && !actionInProgress.current
-      && Math.abs(gesture.dx) >= 12
-      && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.25
-      && (gesture.dx > 0 || current.current.canDelete)
-    ),
-    onPanResponderGrant: () => translateX.stopAnimation(),
-    onPanResponderMove: (_event, gesture) => {
-      if (!current.current.disabled && !actionInProgress.current) {
-        translateX.setValue(current.current.canDelete ? clamp(gesture.dx) : Math.max(0, clamp(gesture.dx)));
-      }
-    },
-    onPanResponderRelease: (_event, gesture) => {
-      resetPosition();
-      if (current.current.disabled || actionInProgress.current
-        || Math.abs(gesture.dx) <= Math.abs(gesture.dy) * 1.25) return;
-      const action = resolveNativeMailSwipeAction(gesture.dx, current.current);
-      if (!action) return;
-      actionInProgress.current = true;
-      // The owner reports API errors. Keep a synchronous lock until it finishes.
-      const complete = () => { actionInProgress.current = false; };
-      try {
-        void Promise.resolve(current.current.onAction(action)).then(complete, complete);
-      } catch {
-        complete();
-      }
-    },
-    onPanResponderTerminationRequest: () => true,
-    onPanResponderTerminate: resetPosition,
-  }), [resetPosition, translateX]);
+    Animated.spring(translateX, {
+      toValue: 0,
+      bounciness: 0,
+      speed: 28,
+      useNativeDriver: true,
+    }).start();
+  };
 
-  const readLabel = isRead ? 'Не прочитано' : 'Прочитано';
+  const panResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_event, gesture) => {
+        if (current.current.disabled || actionInProgress.current) return false;
+        const leadingAllowed = resolveNativeMailSwipeAvailability(current.current.swipeRight || 'toggle-read', current.current);
+        const trailingAllowed = current.current.canDeleteForever
+          ? true
+          : resolveNativeMailSwipeAvailability(current.current.swipeLeft || 'archive', current.current);
+        if (gesture.dx > 0 && !leadingAllowed) return false;
+        if (gesture.dx < 0 && !trailingAllowed) return false;
+        return Math.abs(gesture.dx) > 16
+          && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.6;
+      },
+      onPanResponderMove: (_event, gesture) => {
+        const clamped = Math.max(-MAX_TRANSLATE, Math.min(MAX_TRANSLATE, gesture.dx));
+        translateX.setValue(clamped);
+      },
+      onPanResponderRelease: (_event, gesture) => {
+        if (current.current.disabled || Math.abs(gesture.dy) >= Math.abs(gesture.dx)) { reset(); return; }
+        const resolved = resolveNativeMailSwipeAction(gesture.dx, current.current);
+        reset();
+        if (!resolved || actionInProgress.current) return;
+        actionInProgress.current = true;
+        Promise.resolve(current.current.onAction(resolved)).catch(() => undefined).finally(() => {
+          actionInProgress.current = false;
+        });
+      },
+      onPanResponderTerminate: () => reset(),
+    }),
+  ).current;
+
+  const leading = leadingAvailable ? swipeVisual(leadingSetting, isRead) : null;
+  const trailing = trailingAvailable ? swipeVisual(trailingSetting, isRead) : null;
+
   return (
-    <View style={[styles.host, { backgroundColor: tokens.panelInset }]}>
-      <View style={[StyleSheet.absoluteFill, styles.underlay]} pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-        <View style={[styles.action, { backgroundColor: tokens.primary }]}>
-          <MaterialCommunityIcons name={isRead ? 'email-outline' : 'email-open-outline'} size={21} color="#fff" />
-          <Text style={styles.actionText}>{readLabel}</Text>
+    <View style={styles.clip}>
+      <View style={StyleSheet.absoluteFill} pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+        <View style={styles.underlay}>
+          {leading ? (
+            <View style={[styles.action, styles.leading, { backgroundColor: leading.destructive ? tokens.error : tokens.primary }]}>
+              <MaterialCommunityIcons name={leading.icon} size={19} color="#fff" />
+              <Text style={[styles.actionText, { color: '#fff' }]} numberOfLines={2}>{leading.label}</Text>
+            </View>
+          ) : <View style={styles.action} />}
+          {trailing ? (
+            <View style={[styles.action, styles.trailing, { backgroundColor: trailing.destructive ? tokens.error : tokens.primary }]}>
+              <MaterialCommunityIcons name={trailing.icon} size={19} color="#fff" />
+              <Text style={[styles.actionText, { color: '#fff' }]} numberOfLines={2}>{trailing.label}</Text>
+            </View>
+          ) : null}
         </View>
-        {canDelete ? (
-          <View style={[styles.action, styles.trailingAction, { backgroundColor: tokens.error }]}>
-            <MaterialCommunityIcons name="trash-can-outline" size={21} color="#fff" />
-            <Text style={styles.actionText}>{'Удалить'}</Text>
-          </View>
-        ) : null}
       </View>
-      <Animated.View
-        testID="native-mail-swipe-surface"
-        {...panResponder.panHandlers}
-        style={{ transform: [{ translateX }] }}
-      >
+      <Animated.View {...panResponder.panHandlers} style={{ transform: [{ translateX }] }}>
         {children}
       </Animated.View>
     </View>
@@ -101,9 +134,10 @@ export function NativeMailSwipeRow({
 }
 
 const styles = StyleSheet.create({
-  host: { overflow: 'hidden' },
-  underlay: { flexDirection: 'row', justifyContent: 'space-between' },
-  action: { width: MAX_TRANSLATE, alignItems: 'center', justifyContent: 'center', gap: 3 },
-  trailingAction: { marginLeft: 'auto' },
-  actionText: { color: '#fff', fontSize: 10, fontWeight: '900' },
+  clip: { overflow: 'hidden' },
+  underlay: { flex: 1, flexDirection: 'row', justifyContent: 'space-between' },
+  action: { width: MAX_TRANSLATE, alignItems: 'center', justifyContent: 'center', gap: 2 },
+  leading: { alignSelf: 'flex-start' },
+  trailing: { alignSelf: 'flex-end' },
+  actionText: { fontSize: 12, fontWeight: '800', textAlign: 'center' },
 });

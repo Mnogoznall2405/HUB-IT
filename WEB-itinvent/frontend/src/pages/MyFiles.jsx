@@ -52,6 +52,7 @@ import SearchOutlinedIcon from '@mui/icons-material/SearchOutlined';
 import ShareOutlinedIcon from '@mui/icons-material/ShareOutlined';
 import ViewListOutlinedIcon from '@mui/icons-material/ViewListOutlined';
 import MainLayout from '../components/layout/MainLayout';
+import MyFileAuditDialog from '../components/myFiles/MyFileAuditDialog';
 import MyFilesShareDialog from '../components/myFiles/MyFilesShareDialog';
 import DocumentPreviewDialog from '../components/documentPreview/DocumentPreviewDialog';
 import FileActionsContextMenu, {
@@ -60,7 +61,7 @@ import FileActionsContextMenu, {
 } from '../components/fileActions/FileActionsContextMenu';
 import PageShell from '../components/layout/PageShell';
 import {
-  formatMyFilesUploadLimitLabel,
+  formatMyFilesRetentionLabel,
   myFilesAPI,
   myFilesRetentionOptions,
 } from '../api/myFiles';
@@ -72,10 +73,13 @@ import {
   isMyFilePreviewSupported,
 } from '../lib/myFilesPreview';
 import { useMyFilesDownload } from './myFiles/useMyFilesDownload';
+
+const MY_FILES_RENDER_CHUNK = 200;
 import { useMyFilesPreviewController } from './myFiles/useMyFilesPreviewController';
 import { useMyFilesShares } from './myFiles/useMyFilesShares';
 import { useMyFilesUpload } from './myFiles/useMyFilesUpload';
 import { collectDataTransferFiles } from '../lib/myFilesFolderZip';
+import { folderIsInsideSubtree } from '../lib/myFilesFolderTree';
 import {
   FileCard,
   FileRow,
@@ -136,6 +140,14 @@ export default function MyFiles() {
   const [sortField, setSortField] = useState('name');
   const [sortDir, setSortDir] = useState('asc');
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
+  useEffect(() => {
+    const timer = window.setTimeout(
+      () => setDebouncedSearchQuery(String(searchQuery || '').trim()),
+      300,
+    );
+    return () => window.clearTimeout(timer);
+  }, [searchQuery]);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [viewMode, setViewMode] = useState(() => (
     window.localStorage.getItem('my-files-view') === 'grid' ? 'grid' : 'list'
@@ -150,6 +162,9 @@ export default function MyFiles() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [fileActionsMenu, setFileActionsMenu] = useState({ item: null, anchorPosition: null });
+  const [auditDialogFile, setAuditDialogFile] = useState(null);
+  const [confirmState, setConfirmState] = useState(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
   const { notifySuccess, notifyWarning, notifyApiError } = useNotification();
   const { downloadingFileId, downloadFile: handleDownload } = useMyFilesDownload({ notifyApiError, notifySuccess, notifyWarning });
   const {
@@ -176,7 +191,7 @@ export default function MyFiles() {
       const [filesPayload, quotaPayload, foldersPayload] = await Promise.all([
         isTrashView && myFilesAPI.listTrash
           ? myFilesAPI.listTrash()
-          : myFilesAPI.listFiles({ folderId: currentFolderId, view: listView }),
+          : myFilesAPI.listFiles({ folderId: currentFolderId, view: listView, q: debouncedSearchQuery }),
         myFilesAPI.getQuota(),
         myFilesAPI.listFolders ? myFilesAPI.listFolders() : Promise.resolve({ items: [] }),
       ]);
@@ -203,12 +218,52 @@ export default function MyFiles() {
         setRefreshing(false);
       }
     }
-  }, [beginLoad, currentFolderId, isTrashView, listView, notifyApiError]);
+  }, [beginLoad, currentFolderId, debouncedSearchQuery, isTrashView, listView, notifyApiError]);
+
+  const refreshQuota = useCallback(async () => {
+    try {
+      const payload = await myFilesAPI.getQuota();
+      setQuota((prev) => {
+        if (!payload) return prev;
+        if (prev && Object.keys(payload).every((key) => prev[key] === payload[key])) return prev;
+        return payload;
+      });
+    } catch {
+      // Quota is informational — never surface its refresh as an error.
+    }
+  }, []);
+
+  const handleFileShareChanged = useCallback((fileId, isShared) => {
+    const id = String(fileId || '');
+    setItems((prev) => prev.map((entryItem) => (
+      String(entryItem.id) === id ? { ...entryItem, is_shared: Boolean(isShared) } : entryItem
+    )));
+  }, []);
+
+  const collectFolderSubtreeIds = useCallback((rootId) => {
+    const ids = new Set([String(rootId)]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      allFolders.forEach((folder) => {
+        const parentId = String(folder?.parent_id || '');
+        const id = String(folder?.id || '');
+        if (parentId && ids.has(parentId) && !ids.has(id)) {
+          ids.add(id);
+          grew = true;
+        }
+      });
+    }
+    return ids;
+  }, [allFolders]);
 
   const {
     uploading,
     readingDrop,
     uploadProgress,
+    uploadStats,
+    prepareStats,
+    cancelUpload,
     uploadDialogOpen,
     pendingUploadFiles,
     pendingFolderFiles,
@@ -234,6 +289,7 @@ export default function MyFiles() {
     notifySuccess,
     notifyWarning,
     notifyApiError,
+    quota,
   });
 
   const {
@@ -245,7 +301,7 @@ export default function MyFiles() {
     revokeShare: handleRevokeShare,
     shareFolder: handleFolderShare,
     revokeFolderShare: handleRevokeFolderShare,
-  } = useMyFilesShares({ loadData, notifySuccess, notifyWarning, notifyApiError });
+  } = useMyFilesShares({ onFileShareChanged: handleFileShareChanged, notifySuccess, notifyWarning, notifyApiError });
 
   const navigateToFolder = useCallback((folderId) => {
     const next = folderId ? { folder: folderId } : {};
@@ -273,10 +329,22 @@ export default function MyFiles() {
 
   useEffect(() => {
     if (!hasProcessingFiles) return undefined;
-    const timer = window.setInterval(() => {
+    // Adaptive poll: statuses change quickly at first, then large files sit in
+    // processing for a long time — back off instead of polling forever at 4s.
+    let delay = 4000;
+    let cancelled = false;
+    let timer = 0;
+    const tick = () => {
+      if (cancelled) return;
       if (activeLoadsRef.current === 0) void loadData({ silent: true });
-    }, 4000);
-    return () => window.clearInterval(timer);
+      delay = Math.min(delay * 1.5, 15000);
+      timer = window.setTimeout(tick, delay);
+    };
+    timer = window.setTimeout(tick, delay);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [hasProcessingFiles, loadData]);
 
   const openFileActionsMenu = useCallback((event, item) => {
@@ -329,16 +397,40 @@ export default function MyFiles() {
     }
   }, [notifyApiError, notifySuccess]);
 
-  const handleDelete = useCallback(async (item) => {
-    if (!window.confirm(`Удалить файл "${item.original_file_name}"?`)) return;
-    try {
-      await myFilesAPI.deleteFile(item.id);
-      notifySuccess('Файл удалён.', { source: 'my-files-delete', dedupeMode: 'none' });
-      await loadData({ silent: true });
-    } catch (error) {
-      notifyApiError(error, 'Не удалось удалить файл.', { dedupeMode: 'none' });
+  const runConfirm = useCallback(async () => {
+    const action = confirmState?.action;
+    if (typeof action !== 'function') {
+      setConfirmState(null);
+      return;
     }
-  }, [loadData, notifyApiError, notifySuccess]);
+    setConfirmBusy(true);
+    try {
+      await action();
+    } finally {
+      setConfirmBusy(false);
+      setConfirmState(null);
+    }
+  }, [confirmState]);
+
+  const handleDelete = useCallback((item) => {
+    setConfirmState({
+      title: 'Удалить файл',
+      body: `Файл «${getMyFileName(item)}» будет перемещён в корзину.`,
+      confirmLabel: 'Удалить',
+      danger: true,
+      action: async () => {
+        try {
+          await myFilesAPI.deleteFile(item.id);
+          const id = String(item.id);
+          setItems((prev) => prev.filter((entryItem) => String(entryItem.id) !== id));
+          notifySuccess('Файл удалён.', { source: 'my-files-delete', dedupeMode: 'none' });
+          void refreshQuota();
+        } catch (error) {
+          notifyApiError(error, 'Не удалось удалить файл.', { dedupeMode: 'none' });
+        }
+      },
+    });
+  }, [notifyApiError, notifySuccess, refreshQuota]);
 
   const folderPathLabels = useMemo(() => {
     const byId = new Map(allFolders.map((folder) => [String(folder.id), folder]));
@@ -371,15 +463,18 @@ export default function MyFiles() {
     const name = String(folderNameInput || '').trim();
     if (!name) return;
     try {
-      await myFilesAPI.createFolder({ name, parentId: currentFolderId });
+      const created = await myFilesAPI.createFolder({ name, parentId: currentFolderId });
+      if (created?.id) {
+        setFolders((prev) => [...prev, created]);
+        setAllFolders((prev) => [...prev, created]);
+      }
       setCreateFolderOpen(false);
       setFolderNameInput('');
       notifySuccess('Папка создана.', { source: 'my-files-folder', dedupeMode: 'none' });
-      await loadData({ silent: true });
     } catch (error) {
       notifyApiError(error, 'Не удалось создать папку.', { dedupeMode: 'none' });
     }
-  }, [currentFolderId, folderNameInput, loadData, notifyApiError, notifySuccess]);
+  }, [currentFolderId, folderNameInput, notifyApiError, notifySuccess]);
 
   const openRenameDialog = useCallback((kind, id, currentName) => {
     setRenameDialog({ open: true, kind, id, name: String(currentName || '') });
@@ -390,17 +485,27 @@ export default function MyFiles() {
     if (!name || !renameDialog.id) return;
     try {
       if (renameDialog.kind === 'folder') {
-        await myFilesAPI.updateFolder(renameDialog.id, { name });
+        const updated = await myFilesAPI.updateFolder(renameDialog.id, { name });
+        const id = String(renameDialog.id);
+        const patch = (prev) => prev.map((entryItem) => (
+          String(entryItem.id) === id ? { ...entryItem, ...(updated?.id ? updated : { name }) } : entryItem
+        ));
+        setFolders(patch);
+        setAllFolders(patch);
       } else {
-        await myFilesAPI.updateFile(renameDialog.id, { name });
+        const updated = await myFilesAPI.updateFile(renameDialog.id, { name });
+        const id = String(renameDialog.id);
+        const fallback = { download_file_name: name, original_file_name: name };
+        setItems((prev) => prev.map((entryItem) => (
+          String(entryItem.id) === id ? { ...entryItem, ...(updated?.id ? updated : fallback) } : entryItem
+        )));
       }
       setRenameDialog({ open: false, kind: '', id: '', name: '' });
       notifySuccess('Переименовано.', { source: 'my-files-rename', dedupeMode: 'none' });
-      await loadData({ silent: true });
     } catch (error) {
       notifyApiError(error, 'Не удалось переименовать.', { dedupeMode: 'none' });
     }
-  }, [loadData, notifyApiError, notifySuccess, renameDialog]);
+  }, [notifyApiError, notifySuccess, renameDialog]);
 
   const openMoveDialog = useCallback((kind, id) => {
     setMoveDialog({ open: true, kind, id, targetFolderId: '' });
@@ -412,106 +517,207 @@ export default function MyFiles() {
     try {
       if (moveDialog.kind === 'folder') {
         await myFilesAPI.updateFolder(moveDialog.id, { parentId: target });
+        const id = String(moveDialog.id);
+        setAllFolders((prev) => prev.map((entryItem) => (
+          String(entryItem.id) === id ? { ...entryItem, parent_id: target } : entryItem
+        )));
+        const staysVisible = String(target || '') === String(currentFolderId || '');
+        if (!staysVisible) {
+          setFolders((prev) => prev.filter((entryItem) => String(entryItem.id) !== id));
+        }
       } else {
         await myFilesAPI.updateFile(moveDialog.id, { folderId: target });
+        const id = String(moveDialog.id);
+        const staysVisible = isSpecialView || String(target || '') === String(currentFolderId || '');
+        setItems((prev) => staysVisible
+          ? prev.map((entryItem) => (String(entryItem.id) === id ? { ...entryItem, folder_id: target } : entryItem))
+          : prev.filter((entryItem) => String(entryItem.id) !== id));
       }
       setMoveDialog({ open: false, kind: '', id: '', targetFolderId: '' });
       notifySuccess('Объект перемещён.', { source: 'my-files-move', dedupeMode: 'none' });
-      await loadData({ silent: true });
     } catch (error) {
       notifyApiError(error, 'Не удалось переместить.', { dedupeMode: 'none' });
     }
-  }, [loadData, moveDialog, notifyApiError, notifySuccess]);
+  }, [currentFolderId, isSpecialView, moveDialog, notifyApiError, notifySuccess]);
 
-  const handleDeleteFolder = useCallback(async (folder) => {
-    const name = String(folder?.name || '');
-    if (!window.confirm(`Удалить папку "${name}" вместе со всем содержимым?`)) return;
-    try {
-      await myFilesAPI.deleteFolder(folder.id);
-      notifySuccess('Папка удалена.', { source: 'my-files-folder-delete', dedupeMode: 'none' });
-      await loadData({ silent: true });
-    } catch (error) {
-      notifyApiError(error, 'Не удалось удалить папку.', { dedupeMode: 'none' });
-    }
-  }, [loadData, notifyApiError, notifySuccess]);
+  const handleDeleteFolder = useCallback((folder) => {
+    const name = String(folder?.name || 'папка');
+    setConfirmState({
+      title: 'Удалить папку',
+      body: `Папка «${name}» будет перемещена в корзину вместе со всем содержимым.`,
+      confirmLabel: 'Удалить',
+      danger: true,
+      action: async () => {
+        try {
+          await myFilesAPI.deleteFolder(folder.id);
+          const removed = collectFolderSubtreeIds(folder.id);
+          setFolders((prev) => prev.filter((entryItem) => !removed.has(String(entryItem.id))));
+          setAllFolders((prev) => prev.filter((entryItem) => !removed.has(String(entryItem.id))));
+          notifySuccess('Папка удалена.', { source: 'my-files-folder-delete', dedupeMode: 'none' });
+          void refreshQuota();
+        } catch (error) {
+          notifyApiError(error, 'Не удалось удалить папку.', { dedupeMode: 'none' });
+        }
+      },
+    });
+  }, [collectFolderSubtreeIds, notifyApiError, notifySuccess, refreshQuota]);
 
   const handleRestoreEntry = useCallback(async (kind, id) => {
     try {
+      const targetId = String(id);
       if (kind === 'folder') {
         await myFilesAPI.restoreFolder(id);
+        setFolders((prev) => prev.filter((entryItem) => String(entryItem.id) !== targetId));
+        setItems((prev) => prev.filter((entryItem) => String(entryItem.folder_id || '') !== targetId));
       } else {
         await myFilesAPI.restoreFile(id);
+        setItems((prev) => prev.filter((entryItem) => String(entryItem.id) !== targetId));
       }
       notifySuccess('Восстановлено из корзины.', { source: 'my-files-restore', dedupeMode: 'none' });
-      await loadData({ silent: true });
+      void refreshQuota();
     } catch (error) {
       notifyApiError(error, 'Не удалось восстановить.', { dedupeMode: 'none' });
     }
-  }, [loadData, notifyApiError, notifySuccess]);
+  }, [notifyApiError, notifySuccess, refreshQuota]);
 
-  const handlePurgeEntry = useCallback(async (kind, id, name) => {
+  const handlePurgeEntry = useCallback((kind, id, name) => {
     const label = kind === 'folder' ? `папку «${name}»` : `файл «${name}»`;
-    if (!window.confirm(`Удалить ${label} навсегда? Восстановить будет нельзя.`)) return;
-    try {
-      if (kind === 'folder') {
-        await myFilesAPI.purgeFolder(id);
-      } else {
-        await myFilesAPI.purgeFile(id);
-      }
-      notifySuccess('Удалено навсегда.', { source: 'my-files-purge', dedupeMode: 'none' });
-      await loadData({ silent: true });
-    } catch (error) {
-      notifyApiError(error, 'Не удалось удалить навсегда.', { dedupeMode: 'none' });
-    }
-  }, [loadData, notifyApiError, notifySuccess]);
+    setConfirmState({
+      title: 'Удалить навсегда',
+      body: `Удалить ${label} навсегда? Восстановить будет нельзя.`,
+      confirmLabel: 'Удалить навсегда',
+      danger: true,
+      action: async () => {
+        try {
+          const targetId = String(id);
+          if (kind === 'folder') {
+            await myFilesAPI.purgeFolder(id);
+            setFolders((prev) => prev.filter((entryItem) => String(entryItem.id) !== targetId));
+            setItems((prev) => prev.filter((entryItem) => String(entryItem.folder_id || '') !== targetId));
+          } else {
+            await myFilesAPI.purgeFile(id);
+            setItems((prev) => prev.filter((entryItem) => String(entryItem.id) !== targetId));
+          }
+          notifySuccess('Удалено навсегда.', { source: 'my-files-purge', dedupeMode: 'none' });
+        } catch (error) {
+          notifyApiError(error, 'Не удалось удалить навсегда.', { dedupeMode: 'none' });
+        }
+      },
+    });
+  }, [notifyApiError, notifySuccess]);
 
-  const handleEmptyTrash = useCallback(async () => {
-    if (!window.confirm('Очистить корзину? Все объекты в ней будут удалены навсегда.')) return;
-    try {
-      await myFilesAPI.emptyTrash();
-      notifySuccess('Корзина очищена.', { source: 'my-files-empty-trash', dedupeMode: 'none' });
-      await loadData({ silent: true });
-    } catch (error) {
-      notifyApiError(error, 'Не удалось очистить корзину.', { dedupeMode: 'none' });
-    }
-  }, [loadData, notifyApiError, notifySuccess]);
+  const handleEmptyTrash = useCallback(() => {
+    setConfirmState({
+      title: 'Очистить корзину',
+      body: 'Все объекты в корзине будут удалены навсегда. Восстановить будет нельзя.',
+      confirmLabel: 'Очистить',
+      danger: true,
+      action: async () => {
+        try {
+          await myFilesAPI.emptyTrash();
+          setItems([]);
+          setFolders([]);
+          notifySuccess('Корзина очищена.', { source: 'my-files-empty-trash', dedupeMode: 'none' });
+        } catch (error) {
+          notifyApiError(error, 'Не удалось очистить корзину.', { dedupeMode: 'none' });
+        }
+      },
+    });
+  }, [notifyApiError, notifySuccess]);
 
   const handleMoveFileToFolder = useCallback(async (fileId, folderId) => {
     try {
       await myFilesAPI.updateFile(fileId, { folderId });
+      const id = String(fileId);
+      const staysVisible = isSpecialView || String(folderId || '') === String(currentFolderId || '');
+      setItems((prev) => staysVisible
+        ? prev.map((entryItem) => (String(entryItem.id) === id ? { ...entryItem, folder_id: folderId } : entryItem))
+        : prev.filter((entryItem) => String(entryItem.id) !== id));
       notifySuccess('Файл перемещён.', { source: 'my-files-move', dedupeMode: 'none' });
-      await loadData({ silent: true });
     } catch (error) {
       notifyApiError(error, 'Не удалось переместить файл.', { dedupeMode: 'none' });
     }
-  }, [loadData, notifyApiError, notifySuccess]);
+  }, [currentFolderId, isSpecialView, notifyApiError, notifySuccess]);
+
+  const handleMoveFolderToFolder = useCallback(async (folderId, targetFolderId) => {
+    try {
+      await myFilesAPI.updateFolder(folderId, { parentId: targetFolderId });
+      const id = String(folderId);
+      setAllFolders((prev) => prev.map((entryItem) => (
+        String(entryItem.id) === id ? { ...entryItem, parent_id: targetFolderId } : entryItem
+      )));
+      const staysVisible = String(targetFolderId || '') === String(currentFolderId || '');
+      if (!staysVisible) {
+        setFolders((prev) => prev.filter((entryItem) => String(entryItem.id) !== id));
+      }
+      notifySuccess('Папка перемещена.', { source: 'my-files-move', dedupeMode: 'none' });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось переместить папку.', { dedupeMode: 'none' });
+    }
+  }, [currentFolderId, notifyApiError, notifySuccess]);
+
+  const folderDragIdRef = useRef('');
+
+  const folderDragProps = useCallback((folder) => ({
+    draggable: canWrite,
+    onDragStart: (event) => {
+      folderDragIdRef.current = String(folder.id);
+      event.dataTransfer.setData('application/x-hubit-folder', String(folder.id));
+      event.dataTransfer.effectAllowed = 'move';
+    },
+    onDragEnd: () => {
+      folderDragIdRef.current = '';
+      setDropTargetFolderId('');
+    },
+  }), [canWrite]);
 
   const folderDropProps = useCallback((folder) => ({
     onDragOver: (event) => {
       if (isTrashView || !canWrite) return;
       const types = event.dataTransfer?.types;
       if (!types) return;
-      if (types.includes('application/x-hubit-file') || types.includes('Files')) {
+      const internalFolder = types.includes('application/x-hubit-folder');
+      if (
+        types.includes('application/x-hubit-file')
+        || internalFolder
+        || types.includes('Files')
+      ) {
+        // Сама перетаскиваемая папка и её поддерево — невалидная цель, без подсветки.
+        if (internalFolder && folderIsInsideSubtree(allFolders, folder.id, folderDragIdRef.current)) return;
         event.preventDefault();
         event.stopPropagation();
-        event.dataTransfer.dropEffect = types.includes('application/x-hubit-file') ? 'move' : 'copy';
+        event.dataTransfer.dropEffect = types.includes('Files') ? 'copy' : 'move';
         setDropTargetFolderId(String(folder.id));
       }
     },
     onDragLeave: (event) => {
       event.stopPropagation();
+      // dragleave срабатывает и при переходе курсора на дочерние элементы строки —
+      // в этом случае подсветку не сбрасываем, иначе она мигает.
+      if (event.relatedTarget && event.currentTarget.contains(event.relatedTarget)) return;
       setDropTargetFolderId('');
     },
     onDrop: (event) => {
       if (isTrashView || !canWrite) return;
       const internalId = event.dataTransfer.getData('application/x-hubit-file');
+      const internalFolderId = event.dataTransfer.getData('application/x-hubit-folder');
       const osFiles = event.dataTransfer.files;
       const hasOsItems = (event.dataTransfer.items?.length || 0) > 0 || (osFiles?.length || 0) > 0;
-      if (!internalId && !hasOsItems) return;
+      if (!internalId && !internalFolderId && !hasOsItems) return;
       event.preventDefault();
       event.stopPropagation();
       setDropTargetFolderId('');
       setDragActive(false);
+      if (internalFolderId) {
+        if (folderIsInsideSubtree(allFolders, folder.id, internalFolderId)) {
+          notifyWarning('Нельзя переместить папку внутрь самой себя.', { source: 'my-files-move', dedupeMode: 'none' });
+          return;
+        }
+        const dragged = allFolders.find((entry) => String(entry.id) === String(internalFolderId));
+        if (dragged && String(dragged.parent_id || '') === String(folder.id)) return;
+        void handleMoveFolderToFolder(internalFolderId, folder.id);
+        return;
+      }
       if (internalId) {
         void handleMoveFileToFolder(internalId, folder.id);
       } else {
@@ -524,7 +730,18 @@ export default function MyFiles() {
           });
       }
     },
-  }), [canWrite, handleMoveFileToFolder, isTrashView, notifyApiError, openUploadDialog]);
+  }), [allFolders, canWrite, handleMoveFileToFolder, handleMoveFolderToFolder, isTrashView, notifyApiError, notifyWarning, openUploadDialog]);
+
+  // Подстраховка: drop/dragend за пределами строки-папки снимает подсветку цели.
+  useEffect(() => {
+    const clearDropTarget = () => setDropTargetFolderId('');
+    window.addEventListener('dragend', clearDropTarget);
+    window.addEventListener('drop', clearDropTarget);
+    return () => {
+      window.removeEventListener('dragend', clearDropTarget);
+      window.removeEventListener('drop', clearDropTarget);
+    };
+  }, []);
 
   const fileDragProps = useCallback((item) => ({
     draggable: true,
@@ -607,9 +824,27 @@ export default function MyFiles() {
     [compareRows, folders, matchesSearch],
   );
   const visibleItems = useMemo(
-    () => items.filter((item) => matchesSearch(item.original_file_name)).sort(compareRows),
+    () => items.filter((item) => (
+      matchesSearch(item.original_file_name) || matchesSearch(item.download_file_name)
+    )).sort(compareRows),
     [compareRows, items, matchesSearch],
   );
+
+  // Progressive render: folders with hundreds of files mount in chunks instead
+  // of one 500-row DOM pass. Rows already carry content-visibility; the cap
+  // keeps React mount/reconcile cost bounded too.
+  const [renderLimit, setRenderLimit] = useState(MY_FILES_RENDER_CHUNK);
+  useEffect(() => {
+    setRenderLimit(MY_FILES_RENDER_CHUNK);
+  }, [currentFolderId, isSpecialView, searchQuery, sortField, sortDir]);
+  const renderedItems = useMemo(
+    () => visibleItems.slice(0, renderLimit),
+    [renderLimit, visibleItems],
+  );
+  const hiddenItemsCount = Math.max(0, visibleItems.length - renderedItems.length);
+  const showMoreItems = useCallback(() => {
+    setRenderLimit((current) => current + MY_FILES_RENDER_CHUNK);
+  }, []);
 
   const toggleSort = useCallback((field) => {
     if (sortField === field) {
@@ -714,27 +949,61 @@ export default function MyFiles() {
     });
   }, [isTrashView, viewMode, visibleItems]);
 
-  const handleBulkDelete = useCallback(async () => {
+  const handleBulkDelete = useCallback(() => {
     if (selectedKeys.size === 0 || bulkBusy) return;
-    const count = selectedFolders.length + selectedFiles.length;
-    if (!window.confirm(`Удалить выбранные объекты (${count} шт.)? Содержимое папок будет удалено вместе с ними.`)) return;
-    setBulkBusy(true);
-    try {
-      for (const folder of selectedFolders) {
-        await myFilesAPI.deleteFolder(folder.id);
-      }
-      for (const file of selectedFiles) {
-        await myFilesAPI.deleteFile(file.id);
-      }
-      notifySuccess(`Удалено объектов: ${count}.`, { source: 'my-files-bulk-delete', dedupeMode: 'none' });
-      clearSelection();
-      await loadData({ silent: true });
-    } catch (error) {
-      notifyApiError(error, 'Не удалось удалить выбранные объекты.', { dedupeMode: 'none' });
-    } finally {
-      setBulkBusy(false);
-    }
-  }, [bulkBusy, clearSelection, loadData, notifyApiError, notifySuccess, selectedFiles, selectedFolders, selectedKeys.size]);
+    const foldersToDelete = selectedFolders;
+    const filesToDelete = selectedFiles;
+    const count = foldersToDelete.length + filesToDelete.length;
+    setConfirmState({
+      title: 'Удалить выбранные объекты',
+      body: `Будут удалены выбранные объекты (${count} шт.). Содержимое папок будет удалено вместе с ними.`,
+      confirmLabel: 'Удалить',
+      danger: true,
+      action: async () => {
+        setBulkBusy(true);
+        let done = 0;
+        const failed = [];
+        const removedIds = new Set();
+        try {
+          for (const folder of foldersToDelete) {
+            try {
+              await myFilesAPI.deleteFolder(folder.id);
+              done += 1;
+              collectFolderSubtreeIds(folder.id).forEach((id) => removedIds.add(id));
+            } catch {
+              failed.push(`папка «${folder.name || folder.id}»`);
+            }
+          }
+          for (const file of filesToDelete) {
+            try {
+              await myFilesAPI.deleteFile(file.id);
+              done += 1;
+              removedIds.add(String(file.id));
+            } catch {
+              failed.push(`файл «${getMyFileName(file)}»`);
+            }
+          }
+          if (removedIds.size > 0) {
+            setFolders((prev) => prev.filter((entryItem) => !removedIds.has(String(entryItem.id))));
+            setAllFolders((prev) => prev.filter((entryItem) => !removedIds.has(String(entryItem.id))));
+            setItems((prev) => prev.filter((entryItem) => !removedIds.has(String(entryItem.id))));
+            void refreshQuota();
+          }
+          if (failed.length === 0) {
+            notifySuccess(`Удалено объектов: ${done}.`, { source: 'my-files-bulk-delete', dedupeMode: 'none' });
+          } else {
+            notifyWarning(
+              `Удалено ${done} из ${count}. Не удалось: ${failed.slice(0, 5).join('; ')}${failed.length > 5 ? ` и ещё ${failed.length - 5}` : ''}.`,
+              { source: 'my-files-bulk-delete', dedupeMode: 'none', durationMs: 9000 },
+            );
+          }
+          clearSelection();
+        } finally {
+          setBulkBusy(false);
+        }
+      },
+    });
+  }, [bulkBusy, clearSelection, collectFolderSubtreeIds, notifySuccess, notifyWarning, refreshQuota, selectedFiles, selectedFolders, selectedKeys.size]);
 
   const handleBulkDownload = useCallback(async () => {
     if (selectedFiles.length === 0) return;
@@ -749,28 +1018,77 @@ export default function MyFiles() {
 
   const handleBulkMove = useCallback(async (targetFolderId) => {
     if (selectedKeys.size === 0 || bulkBusy) return;
+    const foldersToMove = selectedFolders;
+    const filesToMove = selectedFiles;
+    const count = foldersToMove.length + filesToMove.length;
     setBulkBusy(true);
+    let done = 0;
+    const failed = [];
+    const movedFileIds = new Set();
+    const movedFolderIds = new Set();
     try {
-      for (const folder of selectedFolders) {
-        await myFilesAPI.updateFolder(folder.id, { parentId: targetFolderId });
+      for (const folder of foldersToMove) {
+        try {
+          await myFilesAPI.updateFolder(folder.id, { parentId: targetFolderId });
+          done += 1;
+          movedFolderIds.add(String(folder.id));
+        } catch {
+          failed.push(`папка «${folder.name || folder.id}»`);
+        }
       }
-      for (const file of selectedFiles) {
-        await myFilesAPI.updateFile(file.id, { folderId: targetFolderId });
+      for (const file of filesToMove) {
+        try {
+          await myFilesAPI.updateFile(file.id, { folderId: targetFolderId });
+          done += 1;
+          movedFileIds.add(String(file.id));
+        } catch {
+          failed.push(`файл «${getMyFileName(file)}»`);
+        }
       }
-      notifySuccess('Выбранные объекты перемещены.', { source: 'my-files-bulk-move', dedupeMode: 'none' });
-      clearSelection();
-      setMoveDialog({ open: false, kind: '', id: '', targetFolderId: '' });
-      await loadData({ silent: true });
-    } catch (error) {
-      notifyApiError(error, 'Не удалось переместить выбранные объекты.', { dedupeMode: 'none' });
+      if (movedFolderIds.size > 0) {
+        setAllFolders((prev) => prev.map((entryItem) => (
+          movedFolderIds.has(String(entryItem.id)) ? { ...entryItem, parent_id: targetFolderId } : entryItem
+        )));
+        const staysVisible = String(targetFolderId || '') === String(currentFolderId || '');
+        if (!staysVisible) {
+          setFolders((prev) => prev.filter((entryItem) => !movedFolderIds.has(String(entryItem.id))));
+        }
+      }
+      if (movedFileIds.size > 0) {
+        const staysVisible = isSpecialView || String(targetFolderId || '') === String(currentFolderId || '');
+        setItems((prev) => staysVisible
+          ? prev.map((entryItem) => (movedFileIds.has(String(entryItem.id)) ? { ...entryItem, folder_id: targetFolderId } : entryItem))
+          : prev.filter((entryItem) => !movedFileIds.has(String(entryItem.id))));
+      }
+      if (failed.length === 0) {
+        notifySuccess('Выбранные объекты перемещены.', { source: 'my-files-bulk-move', dedupeMode: 'none' });
+        clearSelection();
+        setMoveDialog({ open: false, kind: '', id: '', targetFolderId: '' });
+      } else {
+        // Диалог и выбор остаются — можно повторить для неперенесённых.
+        notifyWarning(
+          `Перемещено ${done} из ${count}. Не удалось: ${failed.slice(0, 5).join('; ')}${failed.length > 5 ? ` и ещё ${failed.length - 5}` : ''}.`,
+          { source: 'my-files-bulk-move', dedupeMode: 'none', durationMs: 9000 },
+        );
+      }
     } finally {
       setBulkBusy(false);
     }
-  }, [bulkBusy, clearSelection, loadData, notifyApiError, notifySuccess, selectedFiles, selectedFolders, selectedKeys.size]);
+  }, [bulkBusy, clearSelection, currentFolderId, isSpecialView, notifySuccess, notifyWarning, selectedFiles, selectedFolders, selectedKeys.size]);
 
   const quotaUsed = Number(quota?.used_bytes || 0);
   const quotaLimit = Number(quota?.limit_bytes || 0);
   const quotaPercent = quotaLimit > 0 ? Math.min(100, Math.round((quotaUsed / quotaLimit) * 100)) : 0;
+
+  const uploadActiveEntries = Object.entries(uploadProgress);
+  const uploadInFlightFraction = uploadActiveEntries
+    .reduce((sum, [, item]) => sum + (Number(item?.percent) || 0), 0) / 100;
+  const uploadOverallPercent = uploadStats.total > 0
+    ? Math.min(100, Math.round(((uploadStats.done + uploadInFlightFraction) / uploadStats.total) * 100))
+    : 0;
+  const preparePercent = prepareStats.total > 0
+    ? Math.min(100, Math.round((prepareStats.done / prepareStats.total) * 100))
+    : 0;
 
   return (
     <MainLayout showDatabaseSelector={false}>
@@ -927,15 +1245,21 @@ export default function MyFiles() {
               ))}
             </Stack>
 
-            <Box sx={{ minWidth: { xs: '100%', lg: '100%' }, mt: { lg: 1.5 } }}>
-              <Stack direction="row" justifyContent="space-between" sx={{ mb: 0.5 }}>
-                <Typography variant="caption" color="text.secondary">Хранилище</Typography>
-                <Typography variant="caption" sx={{ fontWeight: 600 }}>
-                  {formatFileSize(quotaUsed)} / {formatFileSize(quotaLimit)}
-                </Typography>
-              </Stack>
-              <LinearProgress variant="determinate" value={quotaPercent} sx={{ height: 6, borderRadius: 1 }} />
-            </Box>
+            {quota || loading ? (
+              <Box sx={{ minWidth: { xs: '100%', lg: '100%' }, mt: { lg: 1.5 } }}>
+                <Stack direction="row" justifyContent="space-between" sx={{ mb: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary">Хранилище</Typography>
+                  <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                    {quota ? `${formatFileSize(quotaUsed)} / ${formatFileSize(quotaLimit)}` : '—'}
+                  </Typography>
+                </Stack>
+                {quota ? (
+                  <LinearProgress variant="determinate" value={quotaPercent} sx={{ height: 6, borderRadius: 1 }} />
+                ) : (
+                  <Skeleton variant="rounded" height={6} />
+                )}
+              </Box>
+            ) : null}
           </Paper>
 
           <Box
@@ -1070,10 +1394,10 @@ export default function MyFiles() {
               <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
                 <TextField
                   size="small"
-                  placeholder="Поиск по имени"
+                  placeholder="Поиск по всему диску"
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
-                  inputProps={{ 'data-testid': 'my-files-search-input', 'aria-label': 'Поиск по имени файла или папки' }}
+                  inputProps={{ 'data-testid': 'my-files-search-input', 'aria-label': 'Поиск файла или папки по всему диску' }}
                   InputProps={{
                     startAdornment: (
                       <InputAdornment position="start">
@@ -1172,7 +1496,7 @@ export default function MyFiles() {
                   try { window.localStorage.setItem('my-files-retention-notice-dismissed', '1'); } catch { /* noop */ }
                 }}
               >
-                Файлы хранятся до 30 дней. Папки открываются как на диске — файлы внутри можно скачивать, делиться и перемещать.
+                Файлы хранятся до 30 дней или бессрочно при выборе «Навсегда». Папки открываются как на диске — файлы внутри можно скачивать, делиться и перемещать.
               </Alert>
             ) : null}
 
@@ -1182,14 +1506,55 @@ export default function MyFiles() {
                   {readingDrop ? (
                     <Typography variant="body2" color="text.secondary">Читаем перетащенную папку…</Typography>
                   ) : null}
-                  {Object.entries(uploadProgress).map(([key, progress]) => (
-                    <Box key={key}>
-                      <Stack direction="row" justifyContent="space-between">
-                        <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>{progress.name}</Typography>
-                        <Typography variant="body2" color="text.secondary">{progress.percent}%</Typography>
+                  {uploading ? (
+                    <Box>
+                      <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                        <Typography variant="body2" sx={{ fontWeight: 700, minWidth: 0 }}>
+                          {uploadStats.total > 0
+                            ? `Загрузка файлов: ${Math.min(uploadStats.done, uploadStats.total)} из ${uploadStats.total}`
+                            : prepareStats.total > 0
+                              ? `Создаём папки: ${Math.min(prepareStats.done, prepareStats.total)} из ${prepareStats.total}`
+                              : 'Подготовка к загрузке…'}
+                        </Typography>
+                        <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
+                          {uploadStats.total > 0 ? (
+                            <Typography variant="body2" color="text.secondary">{uploadOverallPercent}%</Typography>
+                          ) : null}
+                          <Button
+                            size="small"
+                            color="inherit"
+                            onClick={cancelUpload}
+                            data-testid="my-files-upload-cancel"
+                            sx={{ minWidth: 0, px: 1, py: 0.25, lineHeight: 1.4 }}
+                          >
+                            Отмена
+                          </Button>
+                        </Stack>
                       </Stack>
-                      <LinearProgress variant="determinate" value={progress.percent} />
+                      <LinearProgress
+                        variant={uploadStats.total > 0 || prepareStats.total > 0 ? 'determinate' : 'indeterminate'}
+                        value={uploadStats.total > 0 ? uploadOverallPercent : preparePercent}
+                        data-testid="my-files-upload-overall"
+                      />
                     </Box>
+                  ) : null}
+                  {uploadActiveEntries.map(([key, progress]) => (
+                    <Stack key={key} direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0, pl: 0.5 }}>
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      >
+                        {progress.name}
+                      </Typography>
+                      <Typography
+                        variant="caption"
+                        color={progress.stalled ? 'warning.main' : 'text.secondary'}
+                        sx={{ flex: '0 0 auto' }}
+                      >
+                        {progress.stalled ? 'зависло — восстанавливаем…' : `${progress.percent}%`}
+                      </Typography>
+                    </Stack>
                   ))}
                 </Stack>
               </Paper>
@@ -1310,6 +1675,7 @@ export default function MyFiles() {
                   isSelected={selectedKeys.has(`folder:${folder.id}`)}
                   isDropTarget={dropTargetFolderId === String(folder.id)}
                   folderDropProps={folderDropProps}
+                  folderDragProps={folderDragProps}
                   navigateToFolder={navigateToFolder}
                   openFolderActionsMenu={openFolderActionsMenu}
                   openRenameDialog={openRenameDialog}
@@ -1322,7 +1688,7 @@ export default function MyFiles() {
                 />
               ))}
 
-              {!loading && visibleItems.map((item) => (
+              {!loading && renderedItems.map((item) => (
                 <FileRow
                   key={item.id}
                   item={item}
@@ -1343,6 +1709,19 @@ export default function MyFiles() {
                   toggleSelected={toggleSelected}
                 />
               ))}
+
+              {hiddenItemsCount > 0 ? (
+                <Box sx={{ display: 'flex', justifyContent: 'center', py: 1.5 }}>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={showMoreItems}
+                    data-testid="my-files-show-more"
+                  >
+                    Показать ещё {Math.min(MY_FILES_RENDER_CHUNK, hiddenItemsCount)} из {hiddenItemsCount}
+                  </Button>
+                </Box>
+              ) : null}
             </Paper>
             ) : (
             <Box data-testid="my-files-grid">
@@ -1391,6 +1770,7 @@ export default function MyFiles() {
                         isSelected={selectedKeys.has(`folder:${folder.id}`)}
                         isDropTarget={dropTargetFolderId === String(folder.id)}
                         folderDropProps={folderDropProps}
+                        folderDragProps={folderDragProps}
                         navigateToFolder={navigateToFolder}
                         openFolderActionsMenu={openFolderActionsMenu}
                         handleRestoreEntry={handleRestoreEntry}
@@ -1421,7 +1801,7 @@ export default function MyFiles() {
                       gap: 1.5,
                     }}
                   >
-                    {visibleItems.map((item) => (
+                    {renderedItems.map((item) => (
                       <FileCard
                         key={item.id}
                         item={item}
@@ -1440,6 +1820,18 @@ export default function MyFiles() {
                       />
                     ))}
                   </Box>
+                  {hiddenItemsCount > 0 ? (
+                    <Box sx={{ display: 'flex', justifyContent: 'center', py: 1.5 }}>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={showMoreItems}
+                        data-testid="my-files-show-more"
+                      >
+                        Показать ещё {Math.min(MY_FILES_RENDER_CHUNK, hiddenItemsCount)} из {hiddenItemsCount}
+                      </Button>
+                    </Box>
+                  ) : null}
                 </>
               ) : null}
             </Box>
@@ -1489,6 +1881,9 @@ export default function MyFiles() {
               ? () => { void handleRevokeShare(fileActionsMenu.item); }
               : undefined}
             isShared={Boolean(fileActionsMenu.item?.is_shared)}
+            onAudit={fileActionsMenu.item
+              ? () => setAuditDialogFile(fileActionsMenu.item)
+              : undefined}
             onToggleFavorite={fileActionsMenu.item && canWrite
               ? () => { void handleToggleFavorite(fileActionsMenu.item, 'file'); }
               : undefined}
@@ -1496,6 +1891,12 @@ export default function MyFiles() {
             onDelete={fileActionsMenu.item && canWrite
               ? () => { void handleDelete(fileActionsMenu.item); }
               : undefined}
+          />
+
+          <MyFileAuditDialog
+            open={Boolean(auditDialogFile)}
+            file={auditDialogFile}
+            onClose={() => setAuditDialogFile(null)}
           />
 
           <Menu
@@ -1611,10 +2012,17 @@ export default function MyFiles() {
           <DialogTitle>{pendingFolderSummary ? 'Загрузка папки' : 'Загрузка файлов'}</DialogTitle>
           <DialogContent>
             <Stack spacing={2} sx={{ pt: 1 }}>
-              <Alert severity="warning">
-                Файлы будут удалены по окончании выбранного срока хранения. Публичные ссылки также перестанут работать.
-                Лимит: {formatMyFilesUploadLimitLabel()}.
-              </Alert>
+              {Number(retentionDays) === 0 ? (
+                <Alert severity="info">
+                  Файлы будут храниться бессрочно, пока вы их не удалите. Они занимают место в квоте.
+                  {quotaLimit > 0 ? ` Лимит хранилища: ${formatFileSize(quotaLimit)}.` : ''}
+                </Alert>
+              ) : (
+                <Alert severity="warning">
+                  Файлы будут удалены по окончании выбранного срока хранения. Публичные ссылки также перестанут работать.
+                  {quotaLimit > 0 ? ` Лимит хранилища: ${formatFileSize(quotaLimit)}.` : ''}
+                </Alert>
+              )}
               {pendingFolderSummary ? (
                 <Alert severity="info" data-testid="my-files-folder-structure-notice">
                   Папка «{pendingFolderSummary.folderName}» ({pendingFolderSummary.fileCount} файл., {formatFileSize(pendingFolderSummary.totalBytes)})
@@ -1637,7 +2045,7 @@ export default function MyFiles() {
                   inputProps={{ 'aria-label': 'Срок хранения' }}
                 >
                   {myFilesRetentionOptions.map((days) => (
-                    <MenuItem key={days} value={days}>{days} дн.</MenuItem>
+                    <MenuItem key={days} value={days}>{formatMyFilesRetentionLabel(days)}</MenuItem>
                   ))}
                 </Select>
               </Box>
@@ -1748,11 +2156,8 @@ export default function MyFiles() {
             fileName: '',
             linkCopied: false,
           })}
-          onRotateShare={shareDialog.fileId
-            ? () => {
-              const item = items.find((entry) => entry.id === shareDialog.fileId);
-              if (item) void handleShare(item, { rotate: true });
-            }
+          onRotateShare={shareDialog.item
+            ? () => void handleShare(shareDialog.item, { rotate: true })
             : undefined}
         />
 
@@ -1769,11 +2174,8 @@ export default function MyFiles() {
             folderName: '',
             linkCopied: false,
           })}
-          onRotateShare={folderShareDialog.folderId
-            ? () => {
-              const folder = allFolders.find((entry) => entry.id === folderShareDialog.folderId);
-              if (folder) void handleFolderShare(folder, { rotate: true });
-            }
+          onRotateShare={folderShareDialog.folder
+            ? () => void handleFolderShare(folderShareDialog.folder, { rotate: true })
             : undefined}
         />
 
@@ -1876,6 +2278,30 @@ export default function MyFiles() {
               }}
             >
               Переместить
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
+          open={Boolean(confirmState)}
+          onClose={() => (confirmBusy ? undefined : setConfirmState(null))}
+          maxWidth="xs"
+          fullWidth
+        >
+          <DialogTitle>{confirmState?.title || 'Подтвердите действие'}</DialogTitle>
+          <DialogContent>
+            <Typography variant="body2">{confirmState?.body || ''}</Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setConfirmState(null)} disabled={confirmBusy}>Отмена</Button>
+            <Button
+              variant="contained"
+              color={confirmState?.danger ? 'error' : 'primary'}
+              onClick={() => void runConfirm()}
+              disabled={confirmBusy}
+              data-testid="my-files-confirm-action"
+            >
+              {confirmState?.confirmLabel || 'Подтвердить'}
             </Button>
           </DialogActions>
         </Dialog>

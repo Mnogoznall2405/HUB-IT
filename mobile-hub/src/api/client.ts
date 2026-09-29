@@ -6,6 +6,7 @@ import {
   createNativeOfflineReadOnlyError,
   isNativeOfflineMutationBlocked,
 } from '../offline/nativeOfflinePolicy';
+import { noteApiRequestEnd, noteApiRequestStart } from '../diagnostics/apiInflight';
 
 type RetryConfig = InternalAxiosRequestConfig & {
   _retry?: boolean;
@@ -71,6 +72,25 @@ function assertRequestSession(config: RetryConfig): void {
     throw new Error('Mobile session changed during request');
   }
 }
+
+// In-flight accounting (plan S11). Axios runs request interceptors LIFO and
+// response interceptors FIFO, so registering this pair first means: the counter
+// increments only after the auth/offline request checks passed, and decrements
+// for every dispatch — including 401 retries re-dispatched below.
+apiClient.interceptors.request.use((config) => {
+  noteApiRequestStart();
+  return config;
+});
+apiClient.interceptors.response.use(
+  (result) => {
+    noteApiRequestEnd();
+    return result;
+  },
+  (error: unknown) => {
+    noteApiRequestEnd();
+    return Promise.reject(error);
+  },
+);
 
 apiClient.interceptors.request.use(async (config) => {
   const request = config as RetryConfig;

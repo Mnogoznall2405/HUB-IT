@@ -3,8 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   buildDefaultExchangeLoginPreview,
   createEmptyUserDraft,
+  createUserDraftFromItem,
   matchesUserSearch,
   mergeTaskDelegatesIntoUsers,
+  myFilesQuotaBytesToGb,
+  myFilesQuotaGbToBytes,
   normalizePermissions,
   normalizeTaskDelegateLinks,
   summarizePermissions,
@@ -65,6 +68,29 @@ describe('accountUserModel', () => {
     expect(matchesUserSearch(user, 'IT')).toBe(true);
     expect(matchesUserSearch(user, '12345')).toBe(true);
     expect(matchesUserSearch(user, 'missing')).toBe(false);
+  });
+
+  it('converts My Files quota between bytes and GB with a 400 GB cap', () => {
+    expect(myFilesQuotaBytesToGb(100 * (1024 ** 3))).toBe('100');
+    expect(myFilesQuotaBytesToGb(Math.round(1.5 * (1024 ** 3)))).toBe('1.5');
+    expect(myFilesQuotaBytesToGb(null)).toBe('');
+    expect(myFilesQuotaBytesToGb(0)).toBe('');
+
+    expect(myFilesQuotaGbToBytes('100')).toBe(100 * (1024 ** 3));
+    expect(myFilesQuotaGbToBytes('')).toBeNull();
+    expect(myFilesQuotaGbToBytes(0)).toBeUndefined();
+    expect(myFilesQuotaGbToBytes(401)).toBeUndefined();
+    expect(myFilesQuotaGbToBytes('abc')).toBeUndefined();
+  });
+
+  it('maps my_files_quota_bytes into the user draft', () => {
+    const draft = createUserDraftFromItem({
+      id: 5,
+      username: 'quota-user',
+      my_files_quota_bytes: 200 * (1024 ** 3),
+    });
+    expect(draft.my_files_quota_gb).toBe('200');
+    expect(createUserDraftFromItem({ id: 6, username: 'default-user' }).my_files_quota_gb).toBe('');
   });
 
   it('merges task delegate links from bulk payload into users', () => {

@@ -114,6 +114,7 @@ const isCacheablePath = (config) => {
   const path = requestPath(config);
   return ![
     '/auth/',
+    '/passwords',
     '/download',
     '/export',
     '/attachment',

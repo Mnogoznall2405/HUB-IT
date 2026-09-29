@@ -17,6 +17,7 @@ const EXACT_PATHS = new Set([
   '/docflow',
   '/feed',
   '/kb',
+  '/kb/manage',
   '/mail',
   '/mfu',
   '/my-files',

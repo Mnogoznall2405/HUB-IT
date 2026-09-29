@@ -55,6 +55,25 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
       ? tokens.success
       : tokens.warning;
   const fileName = myFileName(item);
+  const isForever = Number(item.retention_days) === 0;
+  const retentionPeriod = isForever ? 'Навсегда' : `${item.retention_days} дн.`;
+  const remainingShort = (() => {
+    if (isForever) return '';
+    const target = new Date(String(item.expires_at || '')).getTime();
+    if (!Number.isFinite(target)) return '';
+    const diffMs = target - Date.now();
+    if (diffMs <= 0) return 'срок истёк';
+    const days = Math.floor(diffMs / 86400000);
+    if (days > 0) return `ещё ${days} дн.`;
+    const hours = Math.floor(diffMs / 3600000);
+    if (hours > 0) return `ещё ${hours} ч.`;
+    return 'меньше часа';
+  })();
+  const storedUntil = isForever
+    ? 'Навсегда'
+    : remainingShort
+      ? `${formatMyFileDate(item.expires_at)} · ${remainingShort}`
+      : formatMyFileDate(item.expires_at);
   const handlePrimary = useCallback(() => onPrimary(item), [item, onPrimary]);
   const handleOpen = useCallback(() => onOpen(item), [item, onOpen]);
   const handleShareFile = useCallback(() => onShareFile(item), [item, onShareFile]);
@@ -118,13 +137,21 @@ export const NativeMyFileCard = memo(function NativeMyFileCard({
           <Text style={[styles.metaValue, { color: tokens.textPrimary }]}>{formatMyFileSize(item.original_size_bytes)}</Text>
         </View>
         <View style={styles.metaBlock}>
+          <Text style={[styles.metaLabel, { color: tokens.textTertiary }]}>Срок</Text>
+          <Text testID={`native-my-file-retention-${item.id}`} style={[styles.metaValue, { color: tokens.textPrimary }]}>{retentionPeriod}</Text>
+        </View>
+        <View style={styles.metaBlock}>
           <Text style={[styles.metaLabel, { color: tokens.textTertiary }]}>Хранится до</Text>
-          <Text style={[styles.metaValue, { color: tokens.textPrimary }]}>{formatMyFileDate(item.expires_at)}</Text>
+          <Text style={[styles.metaValue, { color: tokens.textPrimary }]}>{storedUntil}</Text>
         </View>
       </View>
 
       {item.is_shared && !trashed ? (
-        <Text style={[styles.shareExpiry, { color: tokens.textSecondary }]}>Публичная ссылка действует до {formatMyFileDate(item.share_expires_at || item.expires_at)}</Text>
+        <Text style={[styles.shareExpiry, { color: tokens.textSecondary }]}>
+          {isForever
+            ? 'Публичная ссылка бессрочная'
+            : `Публичная ссылка действует до ${formatMyFileDate(item.share_expires_at || item.expires_at)}`}
+        </Text>
       ) : null}
 
       <View style={styles.actions}>

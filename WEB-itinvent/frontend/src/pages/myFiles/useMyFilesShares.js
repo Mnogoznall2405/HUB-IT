@@ -2,10 +2,10 @@ import { useCallback, useState } from 'react';
 
 import { myFilesAPI } from '../../api/myFiles';
 
-const EMPTY_FOLDER_SHARE = { open: false, folderId: '', url: '', folderName: '', linkCopied: false };
-const EMPTY_FILE_SHARE = { open: false, fileId: '', url: '', expiresAt: null, fileName: '', linkCopied: false };
+const EMPTY_FOLDER_SHARE = { open: false, folderId: '', folder: null, url: '', folderName: '', linkCopied: false };
+const EMPTY_FILE_SHARE = { open: false, fileId: '', item: null, url: '', expiresAt: null, fileName: '', linkCopied: false };
 
-export function useMyFilesShares({ loadData, notifySuccess, notifyWarning, notifyApiError }) {
+export function useMyFilesShares({ onFileShareChanged, notifySuccess, notifyWarning, notifyApiError }) {
   const [folderShareDialog, setFolderShareDialog] = useState(EMPTY_FOLDER_SHARE);
   const [shareDialog, setShareDialog] = useState(EMPTY_FILE_SHARE);
 
@@ -23,6 +23,7 @@ export function useMyFilesShares({ loadData, notifySuccess, notifyWarning, notif
       setShareDialog({
         open: true,
         fileId: item.id,
+        item,
         url: publicUrl,
         expiresAt: payload.expires_at || item.expires_at,
         fileName: item.download_file_name || item.original_file_name || 'файл',
@@ -31,21 +32,21 @@ export function useMyFilesShares({ loadData, notifySuccess, notifyWarning, notif
       if (rotate) {
         notifySuccess('Создана новая публичная ссылка.', { source: 'my-files-share-rotate', dedupeMode: 'none' });
       }
-      await loadData({ silent: true });
+      onFileShareChanged?.(item.id, true);
     } catch (error) {
       notifyApiError(error, 'Не удалось создать публичную ссылку.', { dedupeMode: 'none' });
     }
-  }, [loadData, notifyApiError, notifySuccess, notifyWarning]);
+  }, [onFileShareChanged, notifyApiError, notifySuccess, notifyWarning]);
 
   const revokeShare = useCallback(async (item) => {
     try {
       await myFilesAPI.revokeShare(item.id);
+      onFileShareChanged?.(item.id, false);
       notifySuccess('Публичная ссылка отключена.', { source: 'my-files-share', dedupeMode: 'none' });
-      await loadData({ silent: true });
     } catch (error) {
       notifyApiError(error, 'Не удалось отключить ссылку.', { dedupeMode: 'none' });
     }
-  }, [loadData, notifyApiError, notifySuccess]);
+  }, [onFileShareChanged, notifyApiError, notifySuccess]);
 
   const shareFolder = useCallback(async (folder, { rotate = false } = {}) => {
     try {
@@ -61,6 +62,7 @@ export function useMyFilesShares({ loadData, notifySuccess, notifyWarning, notif
       setFolderShareDialog({
         open: true,
         folderId: folder.id,
+        folder,
         url: publicUrl,
         folderName: folder.name || 'папка',
         linkCopied,

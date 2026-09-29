@@ -133,6 +133,8 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
     private bool _taskbarPinManualOnly;
     private bool _taskbarPinBusy;
     private bool _benchFrontendProbeStarted;
+    private bool _screenCaptureProtectionApplied;
+    private bool _screenCaptureDeferredLogged;
 
     public MainWindow(
         DesktopOptions options,
@@ -169,7 +171,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _pendingInternalRoute = _startupSettings.StartupPage == DesktopStartupPage.LastSafePage
             ? _startupSettings.LastSafeRoute
             : null;
-        _navigationPolicy = new NavigationPolicy(options.BaseUri);
+        _navigationPolicy = new NavigationPolicy(options.BaseUri, options.Adfs.Authority);
         _externalUriLauncher = new ExternalUriLauncher(_navigationPolicy);
         _performance = new DesktopPerformanceMetrics(GetProcessStartedAt());
         _nextMemorySampleAtUtc = DateTimeOffset.UtcNow.AddSeconds(10);
@@ -1381,6 +1383,15 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
             return;
         }
 
+        if (decision == NavigationDisposition.SsoRedirect)
+        {
+            _lastNavigationStatus = "InProgress";
+            _lastNavigationAtUtc = DateTimeOffset.UtcNow;
+            ShowLoading();
+            StartNavigationTimeout();
+            return;
+        }
+
         e.Cancel = true;
 
         if (decision == NavigationDisposition.ExternalBrowser)
@@ -1409,6 +1420,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
                 RecordBenchProcessSnapshot("navigation_completed_processes");
                 HideError();
                 SaveLastSafeRoute(_webView?.CoreWebView2?.Source);
+                UpdateScreenCaptureProtection(_webView?.CoreWebView2?.Source);
                 MaybeStartBenchFrontendProbe();
                 return;
             }
@@ -1432,7 +1444,39 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
 
     private void Core_HistoryChanged(object? sender, object e)
     {
-        SaveLastSafeRoute((sender as CoreWebView2)?.Source);
+        var source = (sender as CoreWebView2)?.Source;
+        SaveLastSafeRoute(source);
+        UpdateScreenCaptureProtection(source);
+    }
+
+    private void UpdateScreenCaptureProtection(string? source)
+    {
+        if (!_policy.ResolveScreenCaptureProtectionEnabled(defaultEnabled: true))
+        {
+            return;
+        }
+
+        var protect = DesktopScreenCaptureProtection.IsVaultSource(_options.BaseUri, source);
+        if (protect == _screenCaptureProtectionApplied)
+        {
+            return;
+        }
+
+        var applied = DesktopScreenCaptureProtection.TryApply(this, protect);
+        if (applied == true)
+        {
+            _screenCaptureProtectionApplied = protect;
+            _screenCaptureDeferredLogged = false;
+        }
+        else if (applied == false)
+        {
+            DesktopLog.Warning("Screen capture protection affinity could not be updated");
+        }
+        else if (!_screenCaptureDeferredLogged)
+        {
+            _screenCaptureDeferredLogged = true;
+            DesktopLog.Info("Screen capture protection deferred until the window handle is ready");
+        }
     }
 
     private void Core_NewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs e)
@@ -1440,7 +1484,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         e.Handled = true;
         var decision = _navigationPolicy.Evaluate(e.Uri);
 
-        if (decision == NavigationDisposition.TrustedOrigin)
+        if (decision is NavigationDisposition.TrustedOrigin or NavigationDisposition.SsoRedirect)
         {
             _webView?.CoreWebView2.Navigate(e.Uri);
             return;

@@ -85,7 +85,10 @@ def main() -> None:
     ping_app_database()
     my_files_service._ensure_dirs()
     worker_lock = _acquire_worker_lock()
-    recovered = my_files_service.recover_stale_processing(force=True)
+    # force=False is deliberate: live processing jobs heartbeat updated_at while
+    # hashing large files, so only rows genuinely stale past processing_timeout
+    # are requeued — never a pipeline that is still running elsewhere.
+    recovered = my_files_service.recover_stale_processing(force=False)
     if recovered:
         logger.warning("Recovered %s interrupted my-files jobs", recovered)
 

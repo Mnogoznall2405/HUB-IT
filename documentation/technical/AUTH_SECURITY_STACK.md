@@ -60,6 +60,14 @@ Deployment of the recovery fix requires updating both backend and split Chat run
 - `SESSION_IDLE_TIMEOUT_TRUSTED_DAYS=7`
 - `SESSION_IDLE_TIMEOUT_INTERNAL_DAYS=7`
 - `SESSION_MAX_ACTIVE_PER_USER=3`
+- `WINDOWS_SSO_ENABLED=0` (enable only after the AD FS Application Group is registered — `ADFS_SSO_SETUP.md`)
+- `WINDOWS_SSO_DOMAIN=ZSGP` — accepted NetBIOS domain for `DOMAIN\user` claims
+- `ADFS_BASE_URL=https://sso.zsgp.ru`
+- `ADFS_CLIENT_ID` / `ADFS_CLIENT_SECRET` — confidential client from the AD FS Application Group
+- `ADFS_REDIRECT_URI=https://hubit.zsgp.ru/api/v1/auth/sso/callback`
+- `ADFS_SCOPE=openid`
+- `ADFS_CA_BUNDLE=` — optional PEM for internal PKI chains
+- `ADFS_HTTP_TIMEOUT_SEC=10`
 
 ## Runtime Storage
 Auth does not require Redis.
@@ -101,6 +109,13 @@ The in-memory fallback is for dev/test only. It is not safe for multi-process pr
    - The database stores only a SHA-256 hash of this identifier. It is scoped by `user_id` and is not an authentication credential.
    - A repeated login for the same user and client-device ID reuses the active `session_id`, updates IP and activity time, and does not treat an IP change as a new device.
    - `POST /api/v1/auth/sessions/normalize-limit` is admin-only and defaults to dry-run. Existing sessions are changed only with `{ "apply": true }`.
+8. Windows SSO via AD FS (OIDC authorization code + PKCE)
+   - `GET /api/v1/auth/login-mode` reports `windows_sso_enabled` to internal-zone clients only.
+   - `GET /api/v1/auth/sso/begin` (internal zone only) stores a one-time `state` + `nonce` + PKCE verifier in `auth_runtime` (5 min TTL) and 302-redirects to `ADFS_BASE_URL/adfs/oauth2/authorize`.
+   - AD FS does Windows Integrated Authentication on domain-joined clients (silent SSO) and redirects to `ADFS_REDIRECT_URI`.
+   - `GET /api/v1/auth/sso/callback` consumes the state once, exchanges the code at `/adfs/oauth2/token` (client credentials + PKCE), validates the `id_token` signature against AD FS JWKS (`iss`, `aud`, `exp`, `nonce`), maps `winaccountname`/`upn`/`unique_name` to `users.username` (lowercase; `DOMAIN\user` must match `WINDOWS_SSO_DOMAIN`), requires an active `auth_source == "ldap"` user, then completes the session through `complete_windows_sso_login` → `_complete_login` and sets the usual cookies on the 302 redirect to `/`. Failures redirect to `/login?sso_error=<code>`.
+   - Local accounts (`admin`) cannot log in via SSO. Desktop: `NavigationPolicy` allows in-window navigation only to `Adfs:Authority` under `/adfs/` (`SsoRedirect` disposition, no bridge trust); `Login.jsx` auto-redirects once per session inside the desktop app and offers the «Войти через Windows» button to all internal clients.
+   - Limitations: no Windows password reaches the app, so the first mailbox connect still needs the mail password; non-domain devices get the AD FS forms login instead of silent SSO.
 
 ## Mobile client (Expo / React Native)
 

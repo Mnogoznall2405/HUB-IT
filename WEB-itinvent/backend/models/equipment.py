@@ -392,6 +392,20 @@ class TransferLocationRequest(BaseModel):
     comment: Optional[str] = Field(None, description="Optional transfer comment")
 
 
+class TransferToDbRequest(BaseModel):
+    """Move equipment items to another ITINVENT database preserving history."""
+    inv_nos: List[str] = Field(..., min_length=1, max_length=200, description="Inventory numbers in source DB")
+    target_db: str = Field(..., min_length=1, max_length=100, description="Target database id")
+    target_owner_no: Optional[int] = Field(None, description="Existing OWNER_NO in target DB")
+    new_owner_name: Optional[str] = Field(None, description="Create owner with this name in target DB when no target_owner_no")
+    new_owner_dept: Optional[str] = Field(None, description="Department for the owner created in target DB")
+    target_branch_no: Optional[int] = Field(None, description="Target BRANCH_NO")
+    target_loc_no: Optional[int] = Field(None, description="Target LOC_NO")
+    task_assignee_user_ids: Optional[List[int]] = Field(None, description="Hub task assignees for acceptance")
+    task_due_at: Optional[str] = Field(None, description="Hub task due date")
+    comment: Optional[str] = Field(None, description="Optional transfer comment")
+
+
 class TransferExecuteResponse(BaseModel):
     """Transfer operation response."""
     success_count: int = Field(..., description="Successfully transferred items")

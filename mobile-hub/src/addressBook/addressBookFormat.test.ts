@@ -1,5 +1,6 @@
 import {
   absenceChipColor,
+  buildWorkplaceLabel,
   collectAddressBookChatLookup,
   formatAge,
   formatAbsenceLabel,
@@ -72,6 +73,18 @@ describe('addressBookFormat', () => {
     };
 
     expect(pickPrimaryPhone(item)?.value).toBe('89001112233');
+  });
+
+  it('buildWorkplaceLabel combines office address, room and workplace like the web card', () => {
+    expect(buildWorkplaceLabel({
+      office_address: 'ул. Ленина, 1',
+      office_room: '301',
+      workplace_number: '12',
+    })).toBe('ул. Ленина, 1 · каб. 301 · рм 12');
+    expect(buildWorkplaceLabel({ office_address: 'База', office_room: '0', workplace_number: '0' })).toBe('База');
+    expect(buildWorkplaceLabel({ office_room: '5' })).toBe('каб. 5');
+    expect(buildWorkplaceLabel(null)).toBe('');
+    expect(buildWorkplaceLabel({})).toBe('');
   });
 
   it('collectAddressBookChatLookup prefers work emails and deduplicates values', () => {

@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useRef } from 'react';
+import { memo, useCallback, useMemo, useRef, useState } from 'react';
 import { Animated, PanResponder, StyleSheet, Text, View } from 'react-native';
 import type { ChatConversationSummary } from '../../api/types';
 import {
@@ -6,6 +6,7 @@ import {
   inboxRowSwipeAction,
   shouldKeepHorizontalSwipe,
   shouldStartInboxRowSwipe,
+  type InboxRowSwipeAction,
 } from '../../chat/chatGestures';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
@@ -18,13 +19,21 @@ export const SwipeableConversationRow = memo(function SwipeableConversationRow({
   onLongPress,
   onMute,
   onArchive,
+  onRead,
+  onPin,
+  typingText,
+  draftText,
 }: {
   item: ChatConversationSummary;
   active?: boolean;
+  typingText?: string;
+  draftText?: string;
   onPress: (item: ChatConversationSummary) => void;
   onLongPress?: (item: ChatConversationSummary) => void;
   onMute?: (item: ChatConversationSummary) => void;
   onArchive?: (item: ChatConversationSummary) => void;
+  onRead?: (item: ChatConversationSummary) => void;
+  onPin?: (item: ChatConversationSummary) => void;
 }) {
   const { styles } = useChatStyles(createStyles);
   const reduceMotion = useReducedMotion();
@@ -47,6 +56,17 @@ export const SwipeableConversationRow = memo(function SwipeableConversationRow({
   const handleLongPress = useCallback(() => onLongPress?.(item), [item, onLongPress]);
   const handleMute = useCallback(() => onMute?.(item), [item, onMute]);
   const handleArchive = useCallback(() => onArchive?.(item), [item, onArchive]);
+  const handleRead = useCallback(() => onRead?.(item), [item, onRead]);
+  const handlePin = useCallback(() => onPin?.(item), [item, onPin]);
+  const hasUnread = Number(item.unread_count || 0) > 0;
+  // Mark-as-unread does not exist server-side: the deep-right zone degrades
+  // to the mute action instead of promising a no-op (R-SWIPE-1).
+  const resolveAction = useCallback((dx: number): InboxRowSwipeAction | null => {
+    const action = inboxRowSwipeAction(dx);
+    if (action === 'read' && !hasUnread) return 'mute';
+    return action;
+  }, [hasUnread]);
+  const [swipeAction, setSwipeAction] = useState<InboxRowSwipeAction | null>(null);
 
   const panResponder = useMemo(() => PanResponder.create({
     onMoveShouldSetPanResponder: (_, gesture) => (
@@ -57,18 +77,28 @@ export const SwipeableConversationRow = memo(function SwipeableConversationRow({
     ),
     onPanResponderMove: (_, gesture) => {
       if (!reduceMotion) {
-        offset.setValue(Math.max(-96, Math.min(96, gesture.dx)));
+        offset.setValue(Math.max(-176, Math.min(176, gesture.dx)));
       }
+      setSwipeAction((prev) => {
+        const next = resolveAction(gesture.dx);
+        return prev === next ? prev : next;
+      });
     },
     onPanResponderRelease: (_, gesture) => {
-      const action = inboxRowSwipeAction(gesture.dx);
+      const action = resolveAction(gesture.dx);
       if (action === 'mute') handleMute();
+      if (action === 'read') handleRead();
       if (action === 'archive') handleArchive();
+      if (action === 'pin') handlePin();
+      setSwipeAction(null);
       reset();
     },
-    onPanResponderTerminate: reset,
+    onPanResponderTerminate: () => {
+      setSwipeAction(null);
+      reset();
+    },
     onPanResponderTerminationRequest: (_, gesture) => !shouldKeepHorizontalSwipe(gesture.dx, gesture.dy),
-  }), [handleArchive, handleMute, offset, reduceMotion, reset]);
+  }), [handleArchive, handleMute, handlePin, handleRead, offset, reduceMotion, reset, resolveAction]);
 
   const muteOpacity = offset.interpolate({
     inputRange: [0, INBOX_ROW_SWIPE_TRIGGER_DP],
@@ -86,10 +116,18 @@ export const SwipeableConversationRow = memo(function SwipeableConversationRow({
       {!reduceMotion ? (
         <>
           <Animated.View style={[styles.action, styles.mute, { opacity: muteOpacity }]} pointerEvents="none">
-            <Text style={styles.actionText}>{item.is_muted ? 'Звук' : 'Без звука'}</Text>
+            <Text style={styles.actionText}>
+              {swipeAction === 'read'
+                ? 'Прочитано'
+                : (item.is_muted ? 'Звук' : 'Без звука')}
+            </Text>
           </Animated.View>
           <Animated.View style={[styles.action, styles.archive, { opacity: archiveOpacity }]} pointerEvents="none">
-            <Text style={styles.actionText}>{item.is_archived ? 'Вернуть' : 'В архив'}</Text>
+            <Text style={styles.actionText}>
+              {swipeAction === 'pin'
+                ? (item.is_pinned ? 'Открепить' : 'Закрепить')
+                : (item.is_archived ? 'Вернуть' : 'В архив')}
+            </Text>
           </Animated.View>
         </>
       ) : null}
@@ -99,6 +137,8 @@ export const SwipeableConversationRow = memo(function SwipeableConversationRow({
           active={active}
           onPress={handlePress}
           onLongPress={handleLongPress}
+          typingText={typingText}
+          draftText={draftText}
         />
       </Animated.View>
     </View>

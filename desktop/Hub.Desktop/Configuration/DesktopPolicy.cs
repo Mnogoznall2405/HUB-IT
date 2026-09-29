@@ -12,7 +12,8 @@ public sealed record DesktopPolicy(
     bool? UpdatesEnabled,
     int? UpdateDeferralHours,
     bool? DiagnosticsExportEnabled,
-    bool? NotificationFallbackEnabled)
+    bool? NotificationFallbackEnabled,
+    bool? ScreenCaptureProtectionEnabled)
 {
     public const int MaximumUpdateDeferralHours = 168;
 
@@ -21,7 +22,8 @@ public sealed record DesktopPolicy(
         UpdatesEnabled: null,
         UpdateDeferralHours: null,
         DiagnosticsExportEnabled: null,
-        NotificationFallbackEnabled: null);
+        NotificationFallbackEnabled: null,
+        ScreenCaptureProtectionEnabled: null);
 
     public bool ResolveUpdatesEnabled(bool configuredDefault) =>
         UpdatesEnabled ?? configuredDefault;
@@ -34,4 +36,7 @@ public sealed record DesktopPolicy(
 
     public bool ResolveNotificationFallbackEnabled(bool defaultEnabled) =>
         NotificationFallbackEnabled ?? defaultEnabled;
+
+    public bool ResolveScreenCaptureProtectionEnabled(bool defaultEnabled) =>
+        ScreenCaptureProtectionEnabled ?? defaultEnabled;
 }

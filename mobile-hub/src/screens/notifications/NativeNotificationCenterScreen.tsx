@@ -11,13 +11,13 @@ import {
   View,
 } from 'react-native';
 import { formatApiError } from '../../api/formatError';
-import { markMailMessageRead } from '../../api/mailApi';
 import { listMailboxes } from '../../api/mailMailboxesApi';
+import { markNativeMailRead } from '../../mail/nativeMailRead';
 import * as notificationApi from '../../api/notificationApi';
 import type { HubNotificationItem, MailNotificationItem } from '../../api/notificationApi';
 import { useAuth } from '../../auth/AuthContext';
 import { readNativeSnapshot, writeNativeSnapshot } from '../../cache/nativeSnapshotCache';
-import { publishNativeMailUnreadAbsolute, publishNativeMailUnreadDelta } from '../../mail/nativeMailUnreadEvents';
+import { publishNativeMailUnreadAbsolute } from '../../mail/nativeMailUnreadEvents';
 import { openPortalPath } from '../../navigation/moduleRegistry';
 import {
   buildNotificationCenterItems,
@@ -30,7 +30,7 @@ import {
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { hubRealtimeSocket } from '../../realtime/hubRealtimeSocket';
 import { useFluentTokens, type FluentTokens } from '../../theme/fluentTokens';
-import { NativeSegmentedControl } from '../../components/ui/NativeFilterControls';
+import { NativeTabPicker } from '../../components/ui/NativeTabPicker';
 import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
 import { goBackOrReplace } from '../account/accountBack';
 
@@ -357,9 +357,8 @@ function NotificationCenterContent() {
       && String(candidate.mailbox_id || '') === String(raw.mailbox_id || '')
     )));
     setMailUnread((current) => Math.max(0, current - 1));
-    void markMailMessageRead(item.id, String(raw.mailbox_id || '')).then(() => {
+    void markNativeMailRead(item.id, String(raw.mailbox_id || '')).then(() => {
       if (mountedRef.current) {
-        publishNativeMailUnreadDelta(-1);
         persistReadResult('mail', item.id, String(raw.mailbox_id || ''));
       }
     }).catch((cause) => {
@@ -509,12 +508,19 @@ function NotificationCenterContent() {
         </Pressable>
       </View>
       <View style={{ marginBottom: 10 }}>
-        <NativeSegmentedControl
-          options={[['all', 'Все'], ['task', 'Задачи'], ['chat', 'Чат'], ['mail', 'Почта'], ['announcement', 'Лента']].map(([value, label]) => ({ value, label }))}
+        <NativeTabPicker
+          options={[
+            { value: 'all', label: 'Все', icon: 'bell-outline' },
+            { value: 'task', label: 'Задачи', icon: 'clipboard-text-outline' },
+            { value: 'chat', label: 'Чат', icon: 'forum-outline' },
+            { value: 'mail', label: 'Почта', icon: 'email-outline' },
+            { value: 'announcement', label: 'Лента', icon: 'bullhorn-outline' },
+          ]}
           selected={sourceFilter}
           onSelect={(value) => setSourceFilter(value)}
           tokens={tokens}
           testIDPrefix="native-notifications-filter"
+          title="Показать уведомления"
         />
       </View>
       {error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}

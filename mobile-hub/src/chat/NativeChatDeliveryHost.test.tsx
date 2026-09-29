@@ -37,19 +37,22 @@ afterEach(() => {
 });
 const settle = () => act(async () => { await jest.advanceTimersByTimeAsync(0); });
 
-it('disposes on background and creates one runner on repeated foreground and socket events', async () => {
+it('keeps the runner alive across background and only wakes it on return', async () => {
   const view = await render(<NativeChatDeliveryHost />);
   await settle();
   const first = createRunner.mock.results[0].value;
   await act(async () => { appListeners.forEach((listener) => listener('background')); });
-  expect(first.dispose).toHaveBeenCalledTimes(1);
-  expect(createRunner.mock.calls[0][0].canDeliver()).toBe(false);
+  // S8-A: backgrounding must not tear the runner down — in-flight uploads
+  // finish while the OS lets the app run.
+  expect(first.dispose).not.toHaveBeenCalled();
+  expect(createRunner.mock.calls[0][0].canDeliver()).toBe(true);
   await act(async () => {
     appListeners.forEach((listener) => listener('active'));
     appListeners.forEach((listener) => listener('active'));
     mockSocketListeners.forEach((listener) => listener());
   });
-  expect(createRunner).toHaveBeenCalledTimes(2);
+  expect(createRunner).toHaveBeenCalledTimes(1);
+  expect(first.wake).toHaveBeenCalled();
   expect(appListeners.size).toBe(1);
   expect(mockSocketListeners.size).toBe(1);
   await view.unmount();

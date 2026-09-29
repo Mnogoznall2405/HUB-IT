@@ -9,7 +9,7 @@ import {
 import { getMailPersonEmail } from './mailPeople';
 import { splitQuotedHistoryHtml } from './mailQuotedHistory';
 import { consumeMobileIncomingShare } from '../../lib/mobileIncomingShare';
-import { plainTextToComposeHtml } from '../../lib/mailComposePrefill';
+import { plainTextToComposeHtml, readMailComposePrefill } from '../../lib/mailComposePrefill';
 
 const getDefaultStorage = () => {
   if (typeof window === 'undefined') return null;
@@ -65,6 +65,22 @@ export default function useMailComposeSessionController({
 
   useEffect(() => {
     const searchParams = new URLSearchParams(locationSearch || '');
+    if (searchParams.get('compose') === 'prefill') {
+      const prefill = readMailComposePrefill();
+      if (prefill) {
+        openComposeSession({
+          composeMode: 'new',
+          composeFromMailboxId: resolveComposeMailboxId(),
+          to: Array.isArray(prefill.to) ? prefill.to : [],
+          subject: prefill.subject || '',
+          composeBody: plainTextToComposeHtml(prefill.bodyPlain || ''),
+        });
+      }
+      searchParams.delete('compose');
+      const nextQuery = searchParams.toString();
+      navigate(nextQuery ? `/mail?${nextQuery}` : '/mail', { replace: true });
+      return;
+    }
     if (searchParams.get('compose') === 'android-share') {
       const share = consumeIncomingShare('mail');
       if (share) {

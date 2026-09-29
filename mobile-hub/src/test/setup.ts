@@ -187,6 +187,37 @@ jest.mock('expo-image-manipulator', () => ({
   },
 }));
 
+jest.mock('expo-media-library', () => {
+  class Query {
+    _args: Record<string, unknown> = {};
+    within(field: string, values: unknown[]) { this._args.within = [field, values]; return this; }
+    orderBy(spec: unknown) { this._args.orderBy = spec; return this; }
+    limit(value: number) { this._args.limit = value; return this; }
+    offset(value: number) { this._args.offset = value; return this; }
+    album(value: unknown) { this._args.album = value; return this; }
+    async exe() {
+      return { assets: [], endCursor: null, hasNextPage: false, totalCount: 0 };
+    }
+    async exeForMetadata() {
+      return [];
+    }
+  }
+  class Album {
+    id: string;
+    constructor(id: string) { this.id = id; }
+    static async getAll() { return []; }
+  }
+  return {
+    Query,
+    Album,
+    MediaType: { IMAGE: 'photo', VIDEO: 'video', AUDIO: 'audio' },
+    AssetField: { CREATION_TIME: 'creationTime', MEDIA_TYPE: 'mediaType' },
+    requestPermissionsAsync: jest.fn(async () => ({ granted: true, accessPrivileges: 'all' })),
+    getPermissionsAsync: jest.fn(async () => ({ granted: true, accessPrivileges: 'all' })),
+    presentPermissionsPicker: jest.fn(async () => undefined),
+  };
+});
+
 jest.mock('expo-audio', () => {
   const recorder = {
     id: 'recorder-1',
@@ -259,6 +290,31 @@ jest.mock('lottie-react-native', () => {
   return {
     __esModule: true,
     default: (props: Record<string, unknown>) => React.createElement(View, props),
+  };
+});
+
+jest.mock('react-native-reanimated', () => require('react-native-reanimated/mock'));
+
+jest.mock('react-native-keyboard-controller', () => {
+  const React = require('react');
+  const { View } = require('react-native');
+  const passthrough = ({ children }: { children?: React.ReactNode }) => children ?? null;
+  const passthroughView = ({ children, ...props }: Record<string, unknown>) =>
+    React.createElement(View, props, children);
+  const zeroEvent = { height: 0, progress: 0, duration: 0, target: -1 };
+  return {
+    KeyboardProvider: passthrough,
+    KeyboardAvoidingView: passthroughView,
+    KeyboardStickyView: passthroughView,
+    KeyboardGestureArea: passthroughView,
+    KeyboardAwareScrollView: passthroughView,
+    KeyboardToolbar: passthrough,
+    useKeyboardHandler: jest.fn(),
+    useKeyboardState: () => ({ isVisible: false, height: 0 }),
+    useReanimatedKeyboardAnimation: () => ({ height: { value: 0 }, progress: { value: 0 } }),
+    useKeyboardAnimation: () => zeroEvent,
+    KeyboardEvents: { addListener: jest.fn(() => ({ remove: jest.fn() })) },
+    KeyboardController: { dismiss: jest.fn(), setFocusTo: jest.fn(), setDefaultMode: jest.fn() },
   };
 });
 

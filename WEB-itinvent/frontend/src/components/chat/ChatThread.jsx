@@ -429,6 +429,8 @@ function ChatThread({
   getReadTargetRef,
   onComposerFocusChange,
   onToggleReaction,
+  onPollVote,
+  onPollClose,
   onScrollToMessage,
   currentUserId,
   mobileEmojiPickerOpen = false,
@@ -1464,6 +1466,8 @@ function ChatThread({
               highlightedMessageId={highlightedMessageId}
               getReadTargetRef={getReadTargetRef}
               onToggleReaction={onToggleReaction}
+              onPollVote={onPollVote}
+              onPollClose={onPollClose}
               onScrollToMessage={onScrollToMessage}
               currentUserId={currentUserId}
               aiTypingStatus={aiTypingStatus}

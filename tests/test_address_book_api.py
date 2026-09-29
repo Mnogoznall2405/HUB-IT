@@ -46,6 +46,7 @@ def test_search_is_available_to_user_without_custom_permissions(monkeypatch):
     assert captured == {
         "include_age": False,
         "include_hire_date": False,
+        "include_inn": False,
         "include_personal_emails": False,
         "include_personal_phones": False,
     }
@@ -99,6 +100,7 @@ def test_search_enables_each_personal_field_only_with_explicit_permissions(monke
     client = _client_for(lambda: _make_user(permissions=[
         "address_book.age.read",
         "address_book.hire_date.read",
+        "address_book.inn.read",
         "address_book.personal_email.read",
         "address_book.personal_phone.read",
     ]))
@@ -109,6 +111,7 @@ def test_search_enables_each_personal_field_only_with_explicit_permissions(monke
     assert captured == {
         "include_age": True,
         "include_hire_date": True,
+        "include_inn": True,
         "include_personal_emails": True,
         "include_personal_phones": True,
     }
@@ -136,6 +139,7 @@ def test_snapshot_uses_one_permission_filtered_service_call(monkeypatch):
     assert captured == {
         "include_age": False,
         "include_hire_date": True,
+        "include_inn": False,
         "include_personal_emails": True,
         "include_personal_phones": False,
     }

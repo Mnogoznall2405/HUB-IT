@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import sys
@@ -560,6 +560,7 @@ def test_login_mode_returns_internal_password_only(monkeypatch):
         "biometric_login_enabled": False,
         "client_country_code": "RU",
         "show_vpn_hint": False,
+        "windows_sso_enabled": False,
     }
 
 
@@ -591,6 +592,7 @@ def test_login_mode_returns_internal_passkey_when_internal_allowed(monkeypatch):
         "biometric_login_enabled": True,
         "client_country_code": "RU",
         "show_vpn_hint": False,
+        "windows_sso_enabled": False,
     }
 
 
@@ -624,6 +626,7 @@ def test_login_mode_returns_external_passkey_when_webauthn_is_configured(monkeyp
         "biometric_login_enabled": True,
         "client_country_code": "RU",
         "show_vpn_hint": False,
+        "windows_sso_enabled": False,
     }
 
 
@@ -657,6 +660,7 @@ def test_login_mode_sets_vpn_hint_when_client_is_outside_russia(monkeypatch):
         "biometric_login_enabled": True,
         "client_country_code": "DE",
         "show_vpn_hint": True,
+        "windows_sso_enabled": False,
     }
 
 
@@ -1801,7 +1805,7 @@ def test_trusted_device_register_options_supports_platform_only(monkeypatch):
 
         response = TestClient(app).post(
             "/auth/trusted-devices/register/options",
-            json={"label": "Рабочий ПК", "platform_only": True},
+            json={"label": "Р Р°Р±РѕС‡РёР№ РџРљ", "platform_only": True},
         )
     finally:
         auth.config.security.webauthn_rp_id = original_rp_id

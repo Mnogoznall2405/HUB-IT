@@ -2,8 +2,6 @@
 Start uvicorn for the Chat API on Windows using SelectorEventLoopPolicy.
 """
 import os
-import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -86,54 +84,15 @@ if _runtime_env.exists():
 
 import uvicorn
 
-
-def _listener_pids_on_port(port: int) -> set[int]:
-    try:
-        result = subprocess.run(
-            ["netstat", "-ano"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except Exception:
-        return set()
-
-    pids: set[int] = set()
-    pattern = re.compile(rf":{port}\s+\S+\s+LISTENING\s+(\d+)$", re.I)
-    for line in result.stdout.splitlines():
-        if "127.0.0.1" not in line and "0.0.0.0" not in line:
-            continue
-        match = pattern.search(line.strip())
-        if match:
-            pid = int(match.group(1))
-            if pid > 0:
-                pids.add(pid)
-    return pids
+try:
+    from shared.port_reclaim import reclaim_port_from_stale_sibling
+except Exception:
+    reclaim_port_from_stale_sibling = None
 
 
-def _free_stale_port_on_windows(host: str, port: int) -> None:
-    if sys.platform != "win32":
-        return
-    if host not in ("127.0.0.1", "0.0.0.0", "localhost", ""):
-        return
-
-    for attempt in range(3):
-        stale_pids = _listener_pids_on_port(port) - {os.getpid()}
-        if not stale_pids:
-            break
-        for pid in sorted(stale_pids):
-            print(f"Freeing stale listener on port {port} (PID {pid}, attempt {attempt + 1})")
-            subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],
-                capture_output=True,
-                timeout=10,
-                check=False,
-            )
-        if attempt < 2:
-            import time
-
-            time.sleep(1.5)
+def _free_stale_port_on_windows(host: str, port: int, marker: str = "start_chat_server.py") -> None:
+    if reclaim_port_from_stale_sibling is not None:
+        reclaim_port_from_stale_sibling(host, port, marker)
 
 
 if __name__ == "__main__":

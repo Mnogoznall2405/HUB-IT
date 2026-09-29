@@ -149,6 +149,68 @@ def test_inventory_endpoints_support_app_db_backend(temp_dir, monkeypatch):
     assert batch_contexts[("AABBCCDDEE01", "", "DB1")]["model_name"] == "Dell OptiPlex 7090"
 
 
+def test_inventory_delete_computer_removes_host_and_related_rows(temp_dir, monkeypatch):
+    database_url = _sqlite_url(temp_dir)
+
+    monkeypatch.setattr(inventory, "is_app_database_configured", lambda: True)
+    monkeypatch.setattr(inventory, "get_app_database_url", lambda: database_url)
+    monkeypatch.setattr(inventory, "get_local_store", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("local_store should not be used")))
+    monkeypatch.setattr(inventory.time, "time", lambda: 1_710_000_500)
+    monkeypatch.setattr(inventory, "ensure_user_permission", lambda *args, **kwargs: None)
+    monkeypatch.setattr(inventory, "_get_database_name_map", lambda: {"DB1": "Main"})
+    monkeypatch.setattr(inventory, "_get_accessible_db_ids", lambda current_user: ["DB1"])
+    monkeypatch.setattr(inventory, "_resolve_network_link", lambda conn, mac_address, ip_list: None)
+
+    first = inventory.InventoryPayload(
+        hostname="PC-01",
+        system_serial="SYS-1",
+        mac_address="AA-BB-CC-DD-EE-01",
+        user_login="CORP\\petrov",
+        report_type="full_snapshot",
+        timestamp=1_710_000_000,
+    )
+    second = inventory.InventoryPayload(
+        hostname="PC-01",
+        system_serial="SYS-1",
+        mac_address="AA-BB-CC-DD-EE-01",
+        user_login="CORP\\petrov",
+        ram_gb=32,
+        report_type="full_snapshot",
+        timestamp=1_710_000_120,
+    )
+    assert inventory.receive_inventory(first, x_api_key=TEST_AGENT_API_KEY)["success"] is True
+    assert inventory.receive_inventory(second, x_api_key=TEST_AGENT_API_KEY)["success"] is True
+
+    app_store = inventory.AppInventoryStore(database_url=database_url)
+    assert len(app_store.list_change_events()) == 1
+
+    result = inventory.delete_computer(mac_address="AA-BB-CC-DD-EE-01", current_user=_user())
+    assert result["ok"] is True
+    assert result["deleted"] is True
+
+    assert app_store.list_hosts() == []
+    assert app_store.list_change_events() == []
+    computers = inventory.get_computers(
+        current_user=_user(),
+        db_id_selected="DB1",
+        scope="selected",
+        branch=None,
+        status_filter=None,
+        outlook_status=None,
+        q=None,
+        sort_by="hostname",
+        sort_dir="asc",
+        changed_only=False,
+    )
+    assert computers == []
+
+    try:
+        inventory.delete_computer(mac_address="AA-BB-CC-DD-EE-01", current_user=_user())
+        assert False, "expected 404"
+    except inventory.HTTPException as exc:
+        assert exc.status_code == 404
+
+
 def test_inventory_heartbeat_deferred_updates_presence_without_full_rewrite(temp_dir, monkeypatch):
     database_url = _sqlite_url(temp_dir)
 

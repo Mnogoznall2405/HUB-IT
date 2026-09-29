@@ -1,11 +1,10 @@
-import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useContext, useEffect, useMemo, useState } from 'react';
 import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import { russianPlural } from '../../utils/russianPlural';
 import type { ChatConversationSummary, ChatMessage } from '../../api/types';
-import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
-import { ChatKeyboardAvoidingHost } from './ChatKeyboardAvoidingHost';
+import { ChatBottomSheet } from './ChatBottomSheet';
 
 export function ForwardMessageSheet({
   message,
@@ -27,7 +26,6 @@ export function ForwardMessageSheet({
   onForward: (conversation: ChatConversationSummary) => void;
 }) {
   const { chatTokens, styles } = useChatStyles(createStyles);
-  const reduceMotion = useReducedMotion();
   const [query, setQuery] = useState('');
   const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
   const visible = Boolean(message);
@@ -39,24 +37,18 @@ export function ForwardMessageSheet({
   }, [conversations, query]);
 
   return (
-    <Modal
+    <ChatBottomSheet
       visible={Boolean(message)}
-      animationType={reduceMotion ? 'none' : 'slide'}
-      transparent
-      onRequestClose={() => { if (!busy) onClose(); }}
+      onClose={() => { if (!busy) onClose(); }}
+      dismissAccessibilityLabel="Закрыть пересылку"
+      avoidKeyboard
+      sheetStyle={[styles.sheet, {
+        paddingBottom: Math.max(20, insets?.bottom || 0),
+        paddingLeft: 12 + (insets?.left || 0), paddingRight: 12 + (insets?.right || 0),
+      }]}
+      sheetTestID="chat-forward-sheet"
     >
-      <ChatKeyboardAvoidingHost style={styles.backdrop}>
-        <Pressable
-          style={StyleSheet.absoluteFill}
-          onPress={onClose}
-          accessibilityRole="button"
-          accessibilityLabel="Закрыть пересылку"
-          disabled={busy}
-        />
-        <View testID="chat-forward-sheet" style={[styles.sheet, {
-          paddingBottom: Math.max(20, insets?.bottom || 0),
-          paddingLeft: 12 + (insets?.left || 0), paddingRight: 12 + (insets?.right || 0),
-        }]} accessibilityViewIsModal>
+        <View accessibilityViewIsModal>
           <Text style={styles.title}>
             {count > 1 ? `Переслать ${count} ${russianPlural(count, ['сообщение', 'сообщения', 'сообщений'])}` : 'Переслать сообщение'}
           </Text>
@@ -73,7 +65,11 @@ export function ForwardMessageSheet({
           />
           {query ? <Pressable disabled={busy} accessibilityRole="button" accessibilityLabel="Очистить поиск диалога"
             onPress={() => setQuery('')} style={styles.cancel}><Text style={styles.cancelText}>Очистить поиск</Text></Pressable> : null}
-          <ScrollView style={styles.list} keyboardShouldPersistTaps="handled">
+          <ScrollView
+            style={styles.list}
+            contentContainerStyle={styles.listContent}
+            keyboardShouldPersistTaps="handled"
+          >
             {filtered.map((conversation) => (
               <Pressable
                 key={conversation.id}
@@ -101,21 +97,15 @@ export function ForwardMessageSheet({
             <Text style={styles.cancelText}>Отмена</Text>
           </Pressable>
         </View>
-      </ChatKeyboardAvoidingHost>
-    </Modal>
+    </ChatBottomSheet>
   );
 }
 
 const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
-  backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.42)' },
   sheet: {
     maxHeight: '78%',
     paddingHorizontal: 12,
-    paddingTop: 14,
     paddingBottom: 20,
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
-    backgroundColor: chatTokens.panelBg,
   },
   title: { marginHorizontal: 8, marginBottom: 10, color: chatTokens.textPrimary, fontSize: 17, fontWeight: '700' },
   search: {
@@ -127,7 +117,12 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
     backgroundColor: chatTokens.sidebarSearchBg,
     fontSize: 15,
   },
-  list: { maxHeight: 360 },
+  // flexGrow:0 — ScrollView's base style inflates the sheet to maxHeight,
+  // leaving a dead zone under a short list (DEV-SHEET-1).
+  list: { maxHeight: 360, flexGrow: 0, flexShrink: 1 },
+  // Last row must clear the sheet edge; backdrop taps there close the sheet
+  // instead of selecting the conversation (DEV-FWD-1).
+  listContent: { paddingBottom: 12, flexGrow: 0 },
   row: { minHeight: 58, justifyContent: 'center', paddingHorizontal: 10, borderRadius: 10 },
   pressed: { transform: [{ scale: 0.96 }], backgroundColor: chatTokens.sidebarRowSoftActive },
   rowTitle: { color: chatTokens.textPrimary, fontSize: 15, fontWeight: '700' },

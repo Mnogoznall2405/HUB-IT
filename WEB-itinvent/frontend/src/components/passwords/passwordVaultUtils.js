@@ -1,6 +1,73 @@
 export const PASSWORD_HIDE_MS = 30_000;
+export const CLIPBOARD_CLEAR_MS = 25_000;
 export const UNLOCK_SESSION_MS = 5 * 60 * 1000;
 export const VAULT_UNLOCK_STORAGE_PREFIX = 'itinvent_password_vault_unlock_until';
+
+let clipboardClearTimer = null;
+let pendingClipboardClearValue = null;
+
+const clearClipboardValue = async (clipboard, expectedValue) => {
+  try {
+    if (typeof clipboard.readText === 'function' && (await clipboard.readText()) !== expectedValue) {
+      return 'replaced';
+    }
+  } catch {
+    // Чтение буфера может быть запрещено без фокуса — затираем всё равно.
+  }
+  try {
+    await clipboard.writeText('');
+    return 'cleared';
+  } catch {
+    return 'failed';
+  }
+};
+
+export const copyPasswordWithAutoClear = async (
+  value,
+  { ttlMs = CLIPBOARD_CLEAR_MS, onCleared, onClearFailed } = {},
+) => {
+  const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : null;
+  if (!clipboard || typeof clipboard.writeText !== 'function') {
+    return false;
+  }
+  await clipboard.writeText(value);
+  pendingClipboardClearValue = null;
+  if (clipboardClearTimer) {
+    window.clearTimeout(clipboardClearTimer);
+  }
+  clipboardClearTimer = window.setTimeout(() => {
+    clipboardClearTimer = null;
+    void (async () => {
+      const result = await clearClipboardValue(clipboard, value);
+      if (result === 'cleared') {
+        onCleared?.();
+      } else if (result === 'failed') {
+        // Запись без фокуса окна запрещена — запоминаем для повтора при возврате.
+        pendingClipboardClearValue = value;
+        onClearFailed?.();
+      }
+    })();
+  }, ttlMs);
+  return true;
+};
+
+export const retryPendingClipboardClear = ({ onCleared, onClearFailed } = {}) => {
+  if (pendingClipboardClearValue === null) return;
+  const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : null;
+  if (!clipboard || typeof clipboard.writeText !== 'function') return;
+  const expectedValue = pendingClipboardClearValue;
+  void (async () => {
+    const result = await clearClipboardValue(clipboard, expectedValue);
+    if (result !== 'failed') {
+      pendingClipboardClearValue = null;
+    }
+    if (result === 'cleared') {
+      onCleared?.();
+    } else if (result === 'failed') {
+      onClearFailed?.();
+    }
+  })();
+};
 
 export const normalizeText = (value) => String(value ?? '').trim();
 
@@ -90,6 +157,49 @@ export const formatDateTime = (value) => {
     minute: '2-digit',
   });
 };
+
+export const formatWatermarkDateTime = (value) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+};
+
+let vaultSourceTag = null;
+
+export const buildVaultSourceTag = () => {
+  if (vaultSourceTag) return vaultSourceTag;
+  if (typeof navigator === 'undefined') return '';
+  const screenTag = typeof screen !== 'undefined'
+    ? `${screen.width}x${screen.height}x${screen.colorDepth}`
+    : '';
+  const timeZone = typeof Intl !== 'undefined'
+    ? Intl.DateTimeFormat().resolvedOptions().timeZone || ''
+    : '';
+  const input = [navigator.userAgent, navigator.language, navigator.platform, timeZone, screenTag]
+    .filter(Boolean)
+    .join('|');
+  if (!input) return '';
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  vaultSourceTag = `src:${(hash >>> 0).toString(16).padStart(8, '0').slice(0, 6)}`;
+  return vaultSourceTag;
+};
+
+export const buildSecretWatermark = (username, nowTs) => [
+  normalizeText(username) || 'user',
+  formatWatermarkDateTime(nowTs),
+  buildVaultSourceTag(),
+].filter(Boolean).join(' • ');
 
 export const buildGroupCounts = (entries = []) => {
   const counts = new Map();

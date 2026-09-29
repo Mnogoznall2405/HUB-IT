@@ -939,7 +939,164 @@ def test_socket_deduplicates_same_durable_event_from_room_and_inbox(monkeypatch)
 
     assert connection.outbound_queue.qsize() == 1
     assert connection.durable_duplicates_suppressed == 1
-    assert manager.get_metrics()["durable_duplicates_suppressed"] == 1
+    metrics = manager.get_metrics()
+    assert metrics["durable_duplicates_suppressed"] == 1
+    assert metrics["durable_duplicates_by_type"] == {"chat.message.created": 1}
+
+
+def test_chat_ping_replies_every_pong_without_request_id(monkeypatch):
+    """Pong is a control frame: identical pings must not be deduplicated."""
+    monkeypatch.setenv("CHAT_REALTIME_TRANSPORT", "local")
+    manager = realtime_module.ChatRealtimeManager()
+
+    class _Socket:
+        def __init__(self):
+            self.sent: list[dict] = []
+
+        async def send_json(self, envelope):
+            self.sent.append(envelope)
+
+    connection = realtime_module.ChatRealtimeConnection(
+        id="conn-1",
+        user_id=7,
+        websocket=_Socket(),
+    )
+    manager._connections["conn-1"] = connection
+
+    from backend.chat import ws_commands
+
+    api_stub = type("ApiStub", (), {"chat_realtime": manager})
+    monkeypatch.setattr(ws_commands, "_api", lambda: api_stub)
+    current_user = type("UserStub", (), {"id": 7})
+
+    async def _run():
+        for _ in range(4):
+            await ws_commands.dispatch_chat_ws_command(
+                current_user=current_user,
+                connection_id="conn-1",
+                message_type="chat.ping",
+                request_id=None,
+                conversation_id=None,
+                payload={},
+            )
+
+    asyncio.run(_run())
+
+    assert [item["type"] for item in connection.websocket.sent] == ["chat.pong"] * 4
+    assert connection.outbound_queue.qsize() == 0
+    assert connection.durable_duplicates_suppressed == 0
+
+
+def test_hub_ping_replies_every_pong_without_request_id(monkeypatch):
+    monkeypatch.setenv("CHAT_REALTIME_TRANSPORT", "local")
+    manager = realtime_module.ChatRealtimeManager()
+
+    class _Socket:
+        def __init__(self):
+            self.sent: list[dict] = []
+
+        async def send_json(self, envelope):
+            self.sent.append(envelope)
+
+    connection = realtime_module.ChatRealtimeConnection(
+        id="conn-1",
+        user_id=7,
+        websocket=_Socket(),
+    )
+    manager._connections["conn-1"] = connection
+
+    async def _run():
+        for _ in range(3):
+            await manager.send_pong(
+                "conn-1",
+                event_type="hub.realtime.pong",
+                payload={"protocol": 2},
+            )
+
+    asyncio.run(_run())
+
+    assert [item["type"] for item in connection.websocket.sent] == ["hub.realtime.pong"] * 3
+    assert connection.outbound_queue.qsize() == 0
+    assert connection.durable_duplicates_suppressed == 0
+
+
+def test_disconnect_logs_close_code_reason_and_session_duration(monkeypatch, caplog):
+    monkeypatch.setenv("CHAT_REALTIME_TRANSPORT", "local")
+    manager = realtime_module.ChatRealtimeManager()
+
+    class _Socket:
+        def __init__(self):
+            self.sent: list[dict] = []
+            self.closed_with: tuple = ()
+
+        async def accept(self):
+            return None
+
+        async def send_json(self, envelope):
+            self.sent.append(envelope)
+
+        async def close(self, code=1000, reason=""):
+            self.closed_with = (code, reason)
+
+    async def _run():
+        connection_id, _ = await manager.connect(_Socket(), user_id=7)
+        await manager.disconnect_connection(
+            connection_id,
+            close_code=1013,
+            close_reason="slow consumer",
+        )
+
+    with caplog.at_level(logging.INFO, logger="backend.chat.realtime"):
+        asyncio.run(_run())
+
+    record = next(
+        (item for item in caplog.records if "chat_ws_closed" in item.getMessage()),
+        None,
+    )
+    assert record is not None
+    message = record.getMessage()
+    assert "socket=chat" in message
+    assert "close_code=1013" in message
+    assert "slow consumer" in message
+    assert "session_sec=" in message
+    assert "user_id=7" in message
+
+
+def test_chat_ws_closed_log_marks_hub_socket_kind(monkeypatch, caplog):
+    monkeypatch.setenv("CHAT_REALTIME_TRANSPORT", "local")
+    manager = realtime_module.ChatRealtimeManager()
+
+    class _Socket:
+        def __init__(self):
+            self.sent = []
+            self.closed_with = None
+
+        async def accept(self):
+            return None
+
+        async def send_json(self, envelope):
+            self.sent.append(envelope)
+
+        async def close(self, code=1000, reason=""):
+            self.closed_with = (code, reason)
+
+    async def _run():
+        connection_id, _ = await manager.connect(_Socket(), user_id=8, socket_kind="hub")
+        await manager.disconnect_connection(
+            connection_id,
+            close_code=1000,
+            close_reason="peer closed",
+        )
+
+    with caplog.at_level(logging.INFO, logger="backend.chat.realtime"):
+        asyncio.run(_run())
+
+    record = next(
+        (item for item in caplog.records if "chat_ws_closed" in item.getMessage()),
+        None,
+    )
+    assert record is not None
+    assert "socket=hub" in record.getMessage()
 
 
 def test_durable_postgres_publish_retries_bounded(monkeypatch):

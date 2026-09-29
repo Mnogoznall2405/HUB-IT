@@ -109,6 +109,7 @@ function DatabaseBulkMobileMoreSheet({
   showPrintDialogAction,
   onPrintWithDialog,
   onOpenTransferAct,
+  onOpenDbTransfer,
   onOpenCartridge,
   onOpenBattery,
   onOpenComponent,
@@ -133,6 +134,13 @@ function DatabaseBulkMobileMoreSheet({
       icon: <AssignmentOutlinedIcon fontSize="small" />,
       disabled: false,
       onClick: onOpenTransferAct,
+    }] : []),
+    ...(canWrite ? [{
+      key: 'db-transfer',
+      label: 'В другую базу',
+      icon: <SwapHorizRoundedIcon fontSize="small" />,
+      disabled: false,
+      onClick: onOpenDbTransfer,
     }] : []),
     ...(canWrite ? [
     {
@@ -250,6 +258,7 @@ function DatabaseBulkMobileBar({
   onOpenLocationTransfer,
   onOpenTransfer,
   onOpenTransferAct,
+  onOpenDbTransfer,
   onOpenCartridge,
   onOpenBattery,
   onOpenComponent,
@@ -408,6 +417,7 @@ function DatabaseBulkMobileBar({
         showPrintDialogAction={desktopQuickPrintAvailable}
         onPrintWithDialog={onPrintWithDialog}
         onOpenTransferAct={onOpenTransferAct}
+        onOpenDbTransfer={onOpenDbTransfer}
         onOpenCartridge={onOpenCartridge}
         onOpenBattery={onOpenBattery}
         onOpenComponent={handleOpenComponent}
@@ -434,6 +444,7 @@ function DatabaseBulkActionBar({
   onOpenLocationTransfer = noop,
   onOpenTransfer = noop,
   onOpenTransferAct = noop,
+  onOpenDbTransfer = noop,
   onOpenCartridge = noop,
   onOpenBattery = noop,
   onOpenComponent = noop,
@@ -470,6 +481,7 @@ function DatabaseBulkActionBar({
         onOpenLocationTransfer={onOpenLocationTransfer}
         onOpenTransfer={onOpenTransfer}
         onOpenTransferAct={onOpenTransferAct}
+        onOpenDbTransfer={onOpenDbTransfer}
         onOpenCartridge={onOpenCartridge}
         onOpenBattery={onOpenBattery}
         onOpenComponent={onOpenComponent}
@@ -577,6 +589,21 @@ function DatabaseBulkActionBar({
           onClick={onOpenTransferAct}
         >
           Акт без перемещения
+        </Button>
+      </Tooltip>
+      <Tooltip
+        title="Переносит технику в другую базу ITINVENT с историей, новым инвентарным номером и актом оприходования."
+        arrow
+        describeChild
+      >
+        <Button
+          size="small"
+          variant="outlined"
+          color="primary"
+          sx={getOfficeQuietActionSx(ui, theme, 'primary')}
+          onClick={onOpenDbTransfer}
+        >
+          В другую базу
         </Button>
       </Tooltip>
       <Button

@@ -7,15 +7,47 @@ import type {
   MailPerson,
 } from '../api/mailApi';
 
-export type NativeMailSwipeAction = 'toggle-read' | 'delete' | null;
+export type NativeMailSwipeAction = 'toggle-read' | 'archive' | 'delete' | 'delete-forever' | null;
+
+/** User-configurable swipe target stored locally; 'delete-forever' stays Trash-only. */
+export type NativeMailSwipeSetting = 'toggle-read' | 'archive' | 'delete' | 'none';
+
+export const DEFAULT_NATIVE_MAIL_SWIPE_SETTINGS: { right: NativeMailSwipeSetting; left: NativeMailSwipeSetting } = {
+  right: 'toggle-read',
+  left: 'archive',
+};
 
 export function resolveNativeMailSwipeAction(
   distanceX: number,
-  options: { isRead: boolean; canDelete: boolean },
+  options: {
+    isRead: boolean;
+    canArchive?: boolean;
+    canDelete?: boolean;
+    canDeleteForever?: boolean;
+    swipeRight?: NativeMailSwipeSetting;
+    swipeLeft?: NativeMailSwipeSetting;
+  },
 ): NativeMailSwipeAction {
   if (!Number.isFinite(distanceX) || Math.abs(distanceX) < 72) return null;
-  if (distanceX > 0) return 'toggle-read';
-  return options.canDelete ? 'delete' : null;
+  if (distanceX < 0 && options.canDeleteForever) return 'delete-forever';
+  const configured = distanceX > 0
+    ? (options.swipeRight ?? DEFAULT_NATIVE_MAIL_SWIPE_SETTINGS.right)
+    : (options.swipeLeft ?? DEFAULT_NATIVE_MAIL_SWIPE_SETTINGS.left);
+  if (configured === 'toggle-read') return 'toggle-read';
+  if (configured === 'archive') return options.canArchive ? 'archive' : null;
+  if (configured === 'delete') return options.canDeleteForever ? 'delete-forever' : options.canDelete ? 'delete' : null;
+  return null;
+}
+
+/** Swipe target usable for a row, or null when the gesture must stay disabled. */
+export function resolveNativeMailSwipeAvailability(
+  setting: NativeMailSwipeSetting,
+  options: { canArchive?: boolean; canDelete?: boolean; canDeleteForever?: boolean },
+): boolean {
+  if (setting === 'toggle-read') return true;
+  if (setting === 'archive') return Boolean(options.canArchive);
+  if (setting === 'delete') return Boolean(options.canDeleteForever || options.canDelete);
+  return false;
 }
 
 export function extractNativeMailTrashRestoreId(result: MailActionResult): string {
@@ -125,8 +157,60 @@ export function mailCorrespondent(
   };
 }
 
+/**
+ * Шапка читателя по finding 16: «Кому: мне» когда единственный получатель — свой ящик,
+ * иначе «Кому: имя +N». Принимает уже дедуплицированные метки группы «Кому»
+ * (см. mergeRecipientLabels в карточке) и адреса ящиков пользователя.
+ */
+export function nativeMailRecipientSummary(
+  values: Array<MailPerson | string>,
+  ownEmails: string[] = [],
+): { text: string; count: number } {
+  if (!values.length) return { text: '', count: 0 };
+  const first = values[0];
+  const own = new Set(ownEmails.map((value) => String(value || '').trim().toLowerCase()).filter(Boolean));
+  const firstIsSelf = Boolean(own.size && own.has(mailPersonEmail(first)));
+  const name = firstIsSelf ? 'мне' : (mailPersonDisplay(first) || 'Нет получателя');
+  return { text: `${name}${values.length > 1 ? ` +${values.length - 1}` : ''}`, count: values.length };
+}
+
 export function mailSubject(item?: Pick<MailMessagePreview, 'subject'> | null): string {
   return String(item?.subject || '').trim() || '(без темы)';
+}
+
+export type ParsedNativeMailSearch = {
+  q: string;
+  from: string;
+  to: string;
+  subject: string;
+  hasAttachments: boolean;
+};
+
+/** Поисковые операторы в строке запроса: `от:`, `кому:`, `тема:` и фраза `с файлами` / `с вложениями`. */
+export function parseNativeMailSearchQuery(raw: unknown): ParsedNativeMailSearch {
+  const parsed: ParsedNativeMailSearch = { q: '', from: '', to: '', subject: '', hasAttachments: false };
+  const operatorField = (key: string): 'from' | 'to' | 'subject' | '' => {
+    if (key === 'от' || key === 'from') return 'from';
+    if (key === 'кому' || key === 'to') return 'to';
+    if (key === 'тема' || key === 'subject') return 'subject';
+    return '';
+  };
+  const rest = String(raw || '').replace(
+    /(от|кому|тема|from|to|subject)\s*:\s*"([^"]*)"|(от|кому|тема|from|to|subject)\s*:\s*'([^']*)'|(от|кому|тема|from|to|subject)\s*:\s*(\S+)/gi,
+    (_match, quotedKey, quotedValue, singleKey, singleValue, bareKey, bareValue) => {
+      const field = operatorField(String(quotedKey || singleKey || bareKey || '').toLowerCase());
+      const value = String(quotedValue ?? singleValue ?? bareValue ?? '').trim();
+      if (field && value) parsed[field] = [parsed[field], value].filter(Boolean).join(' ');
+      return ' ';
+    },
+  );
+  let query = rest.replace(/\s+/g, ' ');
+  if (/с\s+файлами|с\s+вложениями|has\s*:\s*attachments?/i.test(query)) {
+    parsed.hasAttachments = true;
+    query = query.replace(/с\s+файлами|с\s+вложениями|has\s*:\s*attachments?/gi, ' ');
+  }
+  parsed.q = query.replace(/\s+/g, ' ').trim();
+  return parsed;
 }
 
 export function mailDateLabel(value: unknown, now = new Date()): string {

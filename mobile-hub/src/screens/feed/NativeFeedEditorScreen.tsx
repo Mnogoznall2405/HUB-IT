@@ -41,7 +41,7 @@ import {
   validateFeedEditorDates,
   validateFeedPoll,
 } from '../../feed/feedEditorModel';
-import { pickNativeFeedFiles } from '../../feed/nativeFeedFiles';
+import { pickNativeFeedFiles, pickNativeFeedImages } from '../../feed/nativeFeedFiles';
 import { FeedMarkdownText } from '../../feed/FeedMarkdownText';
 import { createFeedClientRequestId } from '../../feed/feedRequestId';
 import { usePreferences } from '../../preferences/PreferencesContext';
@@ -597,10 +597,10 @@ export function NativeFeedEditorScreen() {
     setCoverKey(coverAttachmentId ? existingAttachmentKey(coverAttachmentId) : '');
   }, [draft, localState, postId, createdPostId]);
 
-  const pickAttachments = useCallback(async () => {
+  const pickAttachments = useCallback(async (source: 'photos' | 'files' = 'files') => {
     if (busy || offlineMode) return;
     try {
-      const picked = await pickNativeFeedFiles();
+      const picked = source === 'photos' ? await pickNativeFeedImages() : await pickNativeFeedFiles();
       setNewFiles((current) => {
         const known = new Set(current.map((file) => file.uri));
         return [...current, ...picked.filter((file) => !known.has(file.uri))];
@@ -810,10 +810,10 @@ export function NativeFeedEditorScreen() {
               <>
                 <Text style={[styles.label, { color: tokens.textSecondary }]}>Категория</Text>
                 <View accessibilityRole="radiogroup" style={styles.choiceWrap}>
-                  <Pressable testID="feed-editor-category-none" accessibilityRole="radio" accessibilityState={{ selected: !categoryId }} onPress={() => setCategoryId('')} style={[styles.choiceChip, { backgroundColor: !categoryId ? tokens.primary : tokens.actionBg, borderColor: !categoryId ? tokens.primary : tokens.border }]}><Text style={{ color: !categoryId ? '#fff' : tokens.textPrimary, fontWeight: '800' }}>Без категории</Text></Pressable>
+                  <Pressable testID="feed-editor-category-none" accessibilityRole="radio" accessibilityState={{ selected: !categoryId }} onPress={() => setCategoryId('')} style={[styles.choiceChip, { backgroundColor: !categoryId ? tokens.primary : tokens.actionBg, borderColor: !categoryId ? tokens.primary : tokens.border }]}><Text style={{ color: !categoryId ? tokens.onPrimary : tokens.textPrimary, fontWeight: '600' }}>Без категории</Text></Pressable>
                   {categories.map((category) => {
                     const selected = categoryId === category.id;
-                    return <Pressable key={category.id} testID={`feed-editor-category-${category.id}`} accessibilityRole="radio" accessibilityState={{ selected }} onPress={() => setCategoryId(category.id)} style={[styles.choiceChip, { backgroundColor: selected ? tokens.primary : tokens.actionBg, borderColor: selected ? tokens.primary : tokens.border }]}><Text style={{ color: selected ? '#fff' : tokens.textPrimary, fontWeight: '800' }}>{category.name}</Text></Pressable>;
+                    return <Pressable key={category.id} testID={`feed-editor-category-${category.id}`} accessibilityRole="radio" accessibilityState={{ selected }} onPress={() => setCategoryId(category.id)} style={[styles.choiceChip, { backgroundColor: selected ? tokens.primary : tokens.actionBg, borderColor: selected ? tokens.primary : tokens.border }]}><Text style={{ color: selected ? tokens.onPrimary : tokens.textPrimary, fontWeight: '600' }}>{category.name}</Text></Pressable>;
                   })}
                 </View>
               </>
@@ -845,7 +845,7 @@ export function NativeFeedEditorScreen() {
                       },
                     ]}
                   >
-                    <Text style={{ color: selected ? '#fff' : tokens.textPrimary, fontWeight: '800' }}>{option.label}</Text>
+                    <Text style={{ color: selected ? tokens.onPrimary : tokens.textPrimary, fontWeight: '600' }}>{option.label}</Text>
                   </Pressable>
                 );
               })}
@@ -992,7 +992,7 @@ export function NativeFeedEditorScreen() {
             <View accessibilityRole="radiogroup" style={styles.priorityRow}>
               {PRIORITIES.map((option) => {
                 const selected = priority === option.value;
-                return <Pressable key={option.value} testID={`feed-editor-priority-${option.value}`} onPress={() => setPriority(option.value)} accessibilityRole="radio" accessibilityState={{ selected }} style={[styles.priorityChip, { backgroundColor: selected ? tokens.primary : tokens.actionBg, borderColor: selected ? tokens.primary : tokens.border }]}><Text style={{ color: selected ? '#fff' : tokens.textPrimary, fontWeight: '800' }}>{option.label}</Text></Pressable>;
+                return <Pressable key={option.value} testID={`feed-editor-priority-${option.value}`} onPress={() => setPriority(option.value)} accessibilityRole="radio" accessibilityState={{ selected }} style={[styles.priorityChip, { backgroundColor: selected ? tokens.primary : tokens.actionBg, borderColor: selected ? tokens.primary : tokens.border }]}><Text style={{ color: selected ? tokens.onPrimary : tokens.textPrimary, fontWeight: '600' }}>{option.label}</Text></Pressable>;
               })}
             </View>
             {booleanOption({ label: 'Требовать подтверждение прочтения', value: requiresAck, onPress: () => setRequiresAck((value) => !value), disabled: busy || offlineMode, testID: 'feed-editor-requires-ack', tokens })}
@@ -1104,18 +1104,32 @@ export function NativeFeedEditorScreen() {
                 />
               );
             })}
-            <Pressable
-              testID="feed-editor-attachments-pick"
-              accessibilityRole="button"
-              accessibilityLabel="Выбрать вложения"
-              accessibilityState={{ disabled: busy || offlineMode }}
-              disabled={busy || offlineMode}
-              onPress={() => { void pickAttachments(); }}
-              style={[styles.outlineButton, { borderColor: tokens.borderSoft }]}
-            >
-              <MaterialCommunityIcons name="paperclip" size={19} color={tokens.primary} />
-              <Text style={{ color: tokens.primary, fontWeight: '800' }}>Выбрать файлы</Text>
-            </Pressable>
+            <View style={styles.attachButtons}>
+              <Pressable
+                testID="feed-editor-attachments-pick-photo"
+                accessibilityRole="button"
+                accessibilityLabel="Выбрать фото из галереи"
+                accessibilityState={{ disabled: busy || offlineMode }}
+                disabled={busy || offlineMode}
+                onPress={() => { void pickAttachments('photos'); }}
+                style={[styles.outlineButton, { borderColor: tokens.borderSoft }]}
+              >
+                <MaterialCommunityIcons name="image-multiple-outline" size={19} color={tokens.primary} />
+                <Text style={{ color: tokens.primary, fontWeight: '800' }}>Фото</Text>
+              </Pressable>
+              <Pressable
+                testID="feed-editor-attachments-pick"
+                accessibilityRole="button"
+                accessibilityLabel="Выбрать файлы"
+                accessibilityState={{ disabled: busy || offlineMode }}
+                disabled={busy || offlineMode}
+                onPress={() => { void pickAttachments('files'); }}
+                style={[styles.outlineButton, { borderColor: tokens.borderSoft }]}
+              >
+                <MaterialCommunityIcons name="paperclip" size={19} color={tokens.primary} />
+                <Text style={{ color: tokens.primary, fontWeight: '800' }}>Файл</Text>
+              </Pressable>
+            </View>
           </AccountSectionCard>
 
           <View style={styles.actions}>
@@ -1161,7 +1175,8 @@ const styles = StyleSheet.create({
   pollOptionRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   pollOptionInput: { flex: 1 },
   inlineIconButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  outlineButton: { minHeight: 44, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  attachButtons: { flexDirection: 'row', gap: 8 },
+  outlineButton: { minHeight: 44, flex: 1, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   attachmentRow: { minHeight: 52, borderWidth: 1, borderRadius: 12, paddingLeft: 10, flexDirection: 'row', alignItems: 'center', gap: 4 },
   attachmentName: { flex: 1, minWidth: 0, fontSize: 13, lineHeight: 18, fontWeight: '700' },
   attachmentAction: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },

@@ -255,7 +255,7 @@ export function NativeGroupsAccessScreen() {
   );
 
   return (
-    <AccountScreenScaffold title="Доступ к папкам" tokens={tokens} scroll={false}>
+    <AccountScreenScaffold title="Доступ к папкам" tokens={tokens} scroll={false} contentUnderNav>
       <FlatList
         initialNumToRender={12}
         maxToRenderPerBatch={10}
@@ -264,7 +264,7 @@ export function NativeGroupsAccessScreen() {
         data={groups}
         keyExtractor={(item) => item.dn}
         keyboardShouldPersistTaps="handled"
-        contentContainerStyle={groups.length ? styles.list : [styles.emptyList, { paddingBottom: emptyListInset }]}
+        contentContainerStyle={groups.length ? [styles.list, { paddingBottom: emptyListInset }] : [styles.emptyList, { paddingBottom: emptyListInset }]}
         ListHeaderComponent={header}
         ListEmptyComponent={!loading && !error && !offlineMode ? <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>По выбранным фильтрам ничего не найдено.</Text> : null}
         ListFooterComponent={loadingMore ? <ActivityIndicator style={styles.footer} color={tokens.primary} /> : null}

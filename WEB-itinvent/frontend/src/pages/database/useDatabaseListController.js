@@ -99,6 +99,8 @@ export function useDatabaseListController({
   const [tableSort, setTableSort] = useState(DEFAULT_TABLE_SORT);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchScope, setSearchScope] = useState(SEARCH_SCOPE_EQUIPMENT);
+  const [searchTypeNo, setSearchTypeNo] = useState(null);
+  const [searchField, setSearchField] = useState('');
   const [filteredData, setFilteredData] = useState(null);
 
   const [expandedBranches, setExpandedBranches] = useState(() => new Set());
@@ -167,6 +169,8 @@ export function useDatabaseListController({
     setFilteredData,
     equipmentSearchEnabled: isConsumablesMode || searchScope === SEARCH_SCOPE_EQUIPMENT,
     serverSearchEnabled: !isConsumablesMode && searchScope === SEARCH_SCOPE_EQUIPMENT,
+    searchTypeNo,
+    searchField,
   });
   const {
     handleSearchKeyDown,
@@ -537,6 +541,10 @@ export function useDatabaseListController({
     searchQuery,
     setSearchQuery,
     searchScope,
+    searchTypeNo,
+    setSearchTypeNo,
+    searchField,
+    setSearchField,
     filteredData,
     setFilteredData,
     expandedBranches,

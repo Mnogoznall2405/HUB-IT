@@ -32,11 +32,19 @@ import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInse
 import { useFluentTokens } from '../../theme/fluentTokens';
 import { NativeFilterButton } from '../../components/ui/NativeFilterControls';
 import { NativeFilterSheet } from '../../components/ui/NativeFilterSheet';
-import { NativeSegmentedControl } from '../../components/ui/NativeFilterControls';
+import { NativeTabPicker } from '../../components/ui/NativeTabPicker';
 import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
 
 const PAGE_SIZE = 50;
 const AUTO_REFRESH_MS = 60_000;
+
+const STATUS_ICONS: Record<string, string> = {
+  all: 'format-list-bulleted',
+  online: 'check-circle-outline',
+  stale: 'clock-alert-outline',
+  offline: 'cloud-off-outline',
+  unknown: 'help-circle-outline',
+};
 
 function firstParam(value: string | string[] | undefined): string {
   return String(Array.isArray(value) ? value[0] : value || '').trim().slice(0, 200);
@@ -248,12 +256,17 @@ export function NativeComputersScreen() {
           </Pressable>
         ) : null}
       </View>
-      <NativeSegmentedControl
-        options={COMPUTER_STATUS_OPTIONS.map((option) => ({ value: option.id || 'all', label: option.label }))}
+      <NativeTabPicker
+        options={COMPUTER_STATUS_OPTIONS.map((option) => ({
+          value: option.id || 'all',
+          label: option.label,
+          icon: STATUS_ICONS[option.id || 'all'],
+        }))}
         selected={status || 'all'}
         onSelect={(value) => setStatus(value === 'all' ? '' : value as ComputerStatus)}
         tokens={tokens}
         testIDPrefix="native-computers-status"
+        title="Статус компьютера"
       />
       <Text style={{ color: tokens.textSecondary, fontSize: 12 }}>{summaryCards.map((card) => `${card.label}: ${card.value}`).join(' · ')}</Text>
       <View>
@@ -291,6 +304,7 @@ export function NativeComputersScreen() {
       title="Компьютеры"
       tokens={tokens}
       scroll={false}
+      contentUnderNav
     >
       <FlatList
         initialNumToRender={12}
@@ -300,7 +314,7 @@ export function NativeComputersScreen() {
         data={items}
         keyExtractor={(item) => item.mac_address || item.hostname}
         keyboardShouldPersistTaps="handled"
-        contentContainerStyle={items.length ? styles.list : [styles.emptyList, { paddingBottom: emptyListInset }]}
+        contentContainerStyle={items.length ? [styles.list, { paddingBottom: emptyListInset }] : [styles.emptyList, { paddingBottom: emptyListInset }]}
         ListHeaderComponent={header}
         ListEmptyComponent={!loading && !error ? <Text style={[styles.emptyText, { color: tokens.textSecondary }]}>{query ? 'По запросу ничего не найдено.' : 'В выбранной базе пока нет данных от агентов.'}</Text> : null}
         renderItem={renderComputer}

@@ -30,6 +30,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
   openingCurrentActDocNo = '',
   onEditConsumableQty,
   onDeleteConsumable,
+  onShowConsumableQr,
   dataMode,
   canWrite,
   canDelete = false,
@@ -98,6 +99,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
         openingCurrentActDocNo={openingCurrentActDocNo}
         onEditConsumableQty={onEditConsumableQty}
         onDeleteConsumable={onDeleteConsumable}
+        onShowConsumableQr={onShowConsumableQr}
         allowSelection={!isConsumablesMode}
         canDelete={canDelete}
         dataMode={dataMode}
@@ -123,6 +125,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
     openingCurrentActDocNo,
     onEditConsumableQty,
     onDeleteConsumable,
+    onShowConsumableQr,
     onMobileCardSelect,
     onSelect,
     onSelectAll,
@@ -141,6 +144,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
         showBranchHeaders={Object.keys(displayData).length > 1}
         onEditConsumableQty={onEditConsumableQty}
         onDeleteConsumable={onDeleteConsumable}
+        onShowConsumableQr={onShowConsumableQr}
         canWrite={canWrite}
         canDelete={canDelete}
       />
