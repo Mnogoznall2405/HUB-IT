@@ -1,10 +1,13 @@
 import { NativeModal as Modal } from '../../components/ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as Clipboard from 'expo-clipboard';
+import * as Haptics from 'expo-haptics';
+import axios from 'axios';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   KeyboardAvoidingView,
   type ListRenderItemInfo,
@@ -27,6 +30,7 @@ import {
   listAvailableDatabases,
   listConsumables,
   listEquipment,
+  getEquipment,
   recordEquipmentWork,
   searchEquipment,
   searchEquipmentActs,
@@ -40,6 +44,7 @@ import {
   type EquipmentRecord,
   type RecentEquipmentCard,
   type RecentEquipmentAct,
+  type TransferResult,
 } from '../../api/databaseApi';
 import { formatApiError } from '../../api/formatError';
 import { useAuth } from '../../auth/AuthContext';
@@ -57,13 +62,16 @@ import { NativeDatabaseActUploadModal } from '../../components/database/NativeDa
 import { NativeDatabaseCreateModal } from '../../components/database/NativeDatabaseCreateModal';
 import { NativeDatabaseQrScannerModal } from '../../components/database/NativeDatabaseQrScannerModal';
 import { NativeDatabasePickerSheet } from '../../components/database/NativeDatabasePickerSheet';
+import { NativeScanBatchPanel } from '../../components/database/NativeScanBatchPanel';
 import { NativeConsumableRow } from '../../components/database/NativeConsumableRow';
-import { NativeEquipmentActions } from '../../components/database/NativeEquipmentActions';
+import { NativeEquipmentActions, type NativeEquipmentActionKind } from '../../components/database/NativeEquipmentActions';
 import { NativeEquipmentRow } from '../../components/database/NativeEquipmentRow';
 import { openNativeFile } from '../../files/nativeAttachmentDownloads';
 import { downloadEquipmentAct } from '../../database/nativeDatabaseFiles';
 import { nativeEquipmentDestination } from '../../database/nativeDatabaseFeature';
-import { filterConsumables, isCartridgeLikeConsumable, isPrinterLikeEquipment, parseInventoryQrPayload, type DatabaseViewMode, type InventoryQrPayload } from '../../database/nativeDatabaseModel';
+import { equipmentTitle, filterConsumables, isCartridgeLikeConsumable, isPrinterLikeEquipment, parseInventoryQrPayload, type DatabaseViewMode, type InventoryQrPayload } from '../../database/nativeDatabaseModel';
+import { useNativeScanBatch } from '../../database/useNativeScanBatch';
+import { NativeToastHost, showNativeToast } from '../../components/nativeToast';
 import {
   filterNativeActs,
   filterNativeEquipment,
@@ -146,6 +154,7 @@ export function NativeDatabaseScreen() {
     mode?: string | string[];
     consumable?: string | string[];
     databaseId?: string | string[];
+    scan?: string | string[];
   }>();
   const { user, hasPermission, offlineMode } = useAuth();
   const { preferences } = usePreferences();
@@ -196,6 +205,10 @@ export function NativeDatabaseScreen() {
   const scanCardMfuSearchSeq = useRef(0);
   const debouncedMfuQuery = useDebouncedValue(scanCardMfuQuery);
   const [scanCardDbId, setScanCardDbId] = useState('');
+  const [scanBatchExpanded, setScanBatchExpanded] = useState(true);
+  const [scanBatchOpen, setScanBatchOpen] = useState(false);
+  const [scanDupHighlight, setScanDupHighlight] = useState('');
+  const scanDupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [quantityDatabaseId, setQuantityDatabaseId] = useState('');
   const requestRef = useRef(0);
   const equipmentPageRef = useRef(1);
@@ -553,6 +566,19 @@ export function NativeDatabaseScreen() {
     }
   }, [currentDatabase?.id, offlineMode]);
 
+  const deepScan = first(params.scan);
+  const deepScanRef = useRef(false);
+  useEffect(() => {
+    if (deepScan !== '1') {
+      deepScanRef.current = false;
+      return;
+    }
+    if (deepScanRef.current || !allowed) return;
+    deepScanRef.current = true;
+    setQrScannerOpen(true);
+    router.setParams({ scan: undefined });
+  }, [deepScan, allowed]);
+
   const deepConsumable = first(params.consumable);
   const deepDatabaseId = first(params.databaseId);
   const deepConsumableRef = useRef('');
@@ -676,6 +702,31 @@ export function NativeDatabaseScreen() {
     }
   }, [canWrite, currentDatabase?.id, offlineMode, scanCard, scanCardBusy, scanCardDbId, scanCardMfu]);
 
+  const findCachedEquipment = useCallback(async (invNo: string, targetDatabaseId: string): Promise<EquipmentRecord | null> => {
+    const normalizedInvNo = invNo.trim().toLocaleUpperCase('ru-RU');
+    const userId = Number(user?.id || 0);
+    let cachedEquipment = targetDatabaseId === currentDatabase?.id
+      ? equipment.find((item) => item.inv_no.trim().toLocaleUpperCase('ru-RU') === normalizedInvNo)
+      : undefined;
+    if (!cachedEquipment && userId && targetDatabaseId) {
+      const snapshot = await readNativeCollectionSnapshot<NativeDatabaseListSnapshot>(
+        'database-inbox',
+        userId,
+        nativeDatabaseListSignature(targetDatabaseId, 'equipment', ''),
+      );
+      cachedEquipment = snapshot?.data.equipment.find(
+        (item) => item.inv_no.trim().toLocaleUpperCase('ru-RU') === normalizedInvNo,
+      );
+      if (!cachedEquipment) {
+        const catalog = await readNativeEquipmentCatalogSnapshot(userId, targetDatabaseId);
+        cachedEquipment = catalog?.data.equipment.find(
+          (item) => item.inv_no.trim().toLocaleUpperCase('ru-RU') === normalizedInvNo,
+        );
+      }
+    }
+    return cachedEquipment ?? null;
+  }, [currentDatabase?.id, equipment, user?.id]);
+
   const openEquipmentFromQr = useCallback(async (payload: InventoryQrPayload) => {
     setQrScannerOpen(false);
     setError('');
@@ -686,26 +737,7 @@ export function NativeDatabaseScreen() {
     const targetDatabaseId = payload.databaseId || currentDatabase?.id || '';
     const userId = Number(user?.id || 0);
     if (offlineMode && userId && targetDatabaseId) {
-      const normalizedInvNo = payload.inventoryNumber.trim().toLocaleUpperCase('ru-RU');
-      let cachedEquipment = targetDatabaseId === currentDatabase?.id
-        ? equipment.find((item) => item.inv_no.trim().toLocaleUpperCase('ru-RU') === normalizedInvNo)
-        : undefined;
-      if (!cachedEquipment) {
-        const snapshot = await readNativeCollectionSnapshot<NativeDatabaseListSnapshot>(
-          'database-inbox',
-          userId,
-          nativeDatabaseListSignature(targetDatabaseId, 'equipment', ''),
-        );
-        cachedEquipment = snapshot?.data.equipment.find(
-          (item) => item.inv_no.trim().toLocaleUpperCase('ru-RU') === normalizedInvNo,
-        );
-      }
-      if (!cachedEquipment) {
-        const catalog = await readNativeEquipmentCatalogSnapshot(userId, targetDatabaseId);
-        cachedEquipment = catalog?.data.equipment.find(
-          (item) => item.inv_no.trim().toLocaleUpperCase('ru-RU') === normalizedInvNo,
-        );
-      }
+      const cachedEquipment = await findCachedEquipment(payload.inventoryNumber, targetDatabaseId);
       if (cachedEquipment) {
         await writeNativeEntitySnapshot<NativeEquipmentDetailSnapshot>(
           'database-item-details',
@@ -728,7 +760,147 @@ export function NativeDatabaseScreen() {
       'general',
       targetDatabaseId,
     ) as never);
-  }, [currentDatabase?.id, equipment, offlineMode, openConsumableFromQr, user?.id]);
+  }, [currentDatabase?.id, findCachedEquipment, offlineMode, openConsumableFromQr, user?.id]);
+
+  const resolveEquipmentForScan = useCallback(async (invNo: string, targetDatabaseId: string): Promise<EquipmentRecord | null> => {
+    if (!offlineMode) {
+      try {
+        return await getEquipment(invNo, targetDatabaseId || currentDatabase?.id);
+      } catch (cause) {
+        // «Не найдено» — только HTTP 404; прочие сбои не должны выглядеть как
+        // «номера нет»: хук вернёт kind 'error', позиция не добавится.
+        if (axios.isAxiosError(cause) && cause.response?.status === 404) return null;
+        throw cause;
+      }
+    }
+    return findCachedEquipment(invNo, targetDatabaseId);
+  }, [currentDatabase?.id, findCachedEquipment, offlineMode]);
+
+  const {
+    items: scanBatchItems,
+    readyItems: scanBatchReadyItems,
+    add: scanBatchAdd,
+    remove: scanBatchRemove,
+    clear: scanBatchClear,
+    keepOnly: scanBatchKeepOnly,
+  } = useNativeScanBatch({
+    userId: Number(user?.id || 0),
+    databaseId: currentDatabase?.id || '',
+    offlineMode,
+    resolveEquipment: resolveEquipmentForScan,
+  });
+
+  // Ш5-8: каждое открытие сканера (кнопка QR, ярлык scan=1) начинается с пустого
+  // списка. Сброс — при переходе closed→open, до первого считанного кода.
+  const qrScannerWasOpenRef = useRef(false);
+  useEffect(() => {
+    if (qrScannerOpen && !qrScannerWasOpenRef.current) {
+      scanBatchClear();
+      setScanBatchExpanded(true);
+      setScanBatchOpen(false);
+    }
+    qrScannerWasOpenRef.current = qrScannerOpen;
+  }, [qrScannerOpen, scanBatchClear]);
+
+  const handleScannerScan = useCallback(async (payload: InventoryQrPayload) => {
+    if (!canWrite) {
+      await openEquipmentFromQr(payload);
+      return;
+    }
+    if (payload.kind === 'consumable') {
+      const openConsumable = () => {
+        scanBatchClear();
+        void openConsumableFromQr(payload);
+      };
+      if (scanBatchItems.length >= 2) {
+        Alert.alert(
+          `Список из ${scanBatchItems.length} позиций сбросится. Открыть расходник?`,
+          undefined,
+          [
+            { text: 'Отмена', style: 'cancel' },
+            { text: 'Открыть', onPress: openConsumable },
+          ],
+        );
+        return;
+      }
+      openConsumable();
+      return;
+    }
+    const result = await scanBatchAdd(payload);
+    if (result.kind === 'added') {
+      try { await Haptics.selectionAsync(); } catch { /* Haptics are optional feedback. */ }
+      setScanBatchExpanded(true);
+      return;
+    }
+    if (result.kind === 'duplicate') {
+      setScanDupHighlight(result.invNo);
+      if (scanDupTimerRef.current) clearTimeout(scanDupTimerRef.current);
+      scanDupTimerRef.current = setTimeout(() => setScanDupHighlight(''), 1_000);
+      setScanBatchExpanded(true);
+      showNativeToast('Уже в списке');
+      return;
+    }
+    if (result.kind === 'different-database') {
+      const name = databases.find((item) => item.id === result.databaseId)?.name || result.databaseId;
+      showNativeToast(`Другая база: ${name}. Список собирается по одной базе`);
+      return;
+    }
+    if (result.kind === 'limit') showNativeToast('Не больше 100 за раз');
+    if (result.kind === 'error') showNativeToast('Нет связи с сервером — отсканируйте ещё раз');
+  }, [canWrite, databases, openConsumableFromQr, openEquipmentFromQr, scanBatchAdd, scanBatchClear, scanBatchItems.length]);
+
+  const requestScannerClose = useCallback(() => {
+    const closeAndReset = () => {
+      setQrScannerOpen(false);
+      scanBatchClear();
+    };
+    if (canWrite && scanBatchItems.length >= 2) {
+      Alert.alert(
+        `Список из ${scanBatchItems.length} позиций сбросится. Закрыть?`,
+        undefined,
+        [
+          { text: 'Отмена', style: 'cancel' },
+          { text: 'Закрыть', onPress: closeAndReset },
+        ],
+      );
+      return;
+    }
+    closeAndReset();
+  }, [canWrite, scanBatchClear, scanBatchItems.length]);
+
+  const requestScanBatchDiscard = useCallback(() => {
+    const discard = () => {
+      scanBatchClear();
+      setScanBatchOpen(false);
+    };
+    if (scanBatchItems.length >= 2) {
+      Alert.alert(
+        `Список из ${scanBatchItems.length} позиций сбросится. Отменить?`,
+        undefined,
+        [
+          { text: 'Назад', style: 'cancel' },
+          { text: 'Отменить', onPress: discard },
+        ],
+      );
+      return;
+    }
+    discard();
+  }, [scanBatchClear, scanBatchItems.length]);
+
+  const handleScanBatchChanged = useCallback(async (_kind: NativeEquipmentActionKind, result?: TransferResult) => {
+    if (result) {
+      if (result.failed_count) scanBatchKeepOnly(result.retry_inv_nos);
+      else {
+        scanBatchClear();
+        setScanBatchOpen(false);
+      }
+    }
+    await loadContent(true);
+  }, [loadContent, scanBatchClear, scanBatchKeepOnly]);
+
+  useEffect(() => () => {
+    if (scanDupTimerRef.current) clearTimeout(scanDupTimerRef.current);
+  }, []);
 
   const toggleEquipmentSelection = useCallback((invNo: string) => {
     setSelectedInvNos((current) => {
@@ -875,6 +1047,7 @@ export function NativeDatabaseScreen() {
   }
 
   return (
+    <>
     <AccountScreenScaffold
       title="Инвентарь"
       tokens={tokens}
@@ -1101,7 +1274,7 @@ export function NativeDatabaseScreen() {
         />
       )}
       {mode === 'equipment' && selectedEquipment.length > 0 ? (
-        <View testID="native-database-selection" style={[styles.selectionPanel, { backgroundColor: tokens.panelInset, borderColor: tokens.border }]}>
+        <View testID="native-database-selection" style={[styles.selectionPanel, { backgroundColor: tokens.panelInset, borderColor: tokens.border, paddingBottom: emptyListInset }]}>
           <View style={styles.selectionHeader}>
             <Text accessibilityLiveRegion="polite" style={[styles.selectionTitle, { color: tokens.textPrimary }]}>Выбрано: {selectedEquipment.length}</Text>
             <Pressable testID="native-database-selection-clear" accessibilityRole="button" accessibilityLabel="Снять выбор со всех карточек" onPress={() => { setSelectedInvNos(new Set()); setSelectionRequested(false); }} style={styles.selectionClear}>
@@ -1375,13 +1548,100 @@ export function NativeDatabaseScreen() {
           }
         }}
       />
+      {scanBatchOpen && scanBatchItems.length ? (
+        <View testID="native-database-scan-batch" style={[styles.selectionPanel, { backgroundColor: tokens.panelInset, borderColor: tokens.border, paddingBottom: emptyListInset }]}>
+          <View style={styles.selectionHeader}>
+            <Text accessibilityLiveRegion="polite" style={[styles.selectionTitle, { color: tokens.textPrimary }]}>Выбрано: {scanBatchItems.length}</Text>
+            <Pressable
+              testID="native-database-scan-batch-cancel"
+              accessibilityRole="button"
+              accessibilityLabel="Отменить список сканированных"
+              onPress={requestScanBatchDiscard}
+              style={styles.selectionClear}
+            >
+              <MaterialCommunityIcons name="close" size={19} color={tokens.iconMuted} />
+              <Text style={[styles.selectionClearText, { color: tokens.textSecondary }]}>Отменить</Text>
+            </Pressable>
+          </View>
+          <ScrollView style={styles.selectionList} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+            {scanBatchItems.map((item) => (
+              <View key={item.invNo} testID={`native-database-scan-batch-row-${item.invNo}`} style={[styles.scanBatchRow, { borderColor: tokens.borderSoft }]}>
+                <View style={styles.scanBatchRowText}>
+                  <Text numberOfLines={1} style={[styles.scanBatchRowTitle, { color: tokens.textPrimary }]}>
+                    {item.equipment ? equipmentTitle(item.equipment) : `Инв. № ${item.invNo}`}
+                  </Text>
+                  <Text numberOfLines={1} style={[styles.scanBatchRowMeta, { color: item.equipment ? tokens.textSecondary : tokens.error }]}>
+                    {item.equipment
+                      ? `Инв. № ${item.invNo}${item.equipment.employee_name ? ` · ${item.equipment.employee_name}` : ''}`
+                      : (item.status === 'offline-missing' ? 'Нет данных офлайн' : 'Не найдено')}
+                  </Text>
+                </View>
+                <Pressable
+                  testID={`native-database-scan-batch-remove-${item.invNo}`}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Убрать ${item.invNo} из списка`}
+                  hitSlop={8}
+                  onPress={() => scanBatchRemove(item.invNo)}
+                  style={styles.scanBatchRowRemove}
+                >
+                  <MaterialCommunityIcons name="close" size={18} color={tokens.iconMuted} />
+                </Pressable>
+              </View>
+            ))}
+          </ScrollView>
+          {offlineMode ? (
+            <Text style={[styles.scanBatchOffline, { color: tokens.textSecondary }]}>Нужна сеть</Text>
+          ) : null}
+          {scanBatchReadyItems.length ? (
+            <ScrollView style={styles.selectionActions} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+              <NativeEquipmentActions
+                equipment={scanBatchReadyItems[0].equipment!}
+                targets={scanBatchReadyItems.map((item) => item.equipment!)}
+                databaseId={scanBatchItems[0]?.databaseId}
+                canWrite={canWrite}
+                canDeleteEquipment={false}
+                offline={offlineMode}
+                surface="general"
+                tokens={tokens}
+                testIDPrefix="native-database-scan-batch"
+                onChanged={handleScanBatchChanged}
+                onDeleted={() => undefined}
+              />
+            </ScrollView>
+          ) : null}
+        </View>
+      ) : null}
       <NativeDatabaseQrScannerModal
         visible={qrScannerOpen}
         tokens={tokens}
-        onClose={() => setQrScannerOpen(false)}
-        onScanned={openEquipmentFromQr}
+        continuous={canWrite}
+        overlay={canWrite ? (
+          <NativeScanBatchPanel
+            tokens={tokens}
+            items={scanBatchItems}
+            expanded={scanBatchExpanded}
+            highlightInvNo={scanDupHighlight}
+            offline={offlineMode}
+            onToggleExpanded={() => setScanBatchExpanded((value) => !value)}
+            onOpen={(item) => {
+              if (scanBatchItems.length === 1) scanBatchClear();
+              void openEquipmentFromQr({ inventoryNumber: item.invNo, databaseId: item.databaseId });
+            }}
+            onCollapse={() => setScanBatchExpanded(false)}
+            onRemove={scanBatchRemove}
+            onActions={() => {
+              if (offlineMode || !scanBatchReadyItems.length) return;
+              setQrScannerOpen(false);
+              setScanBatchOpen(true);
+            }}
+          />
+        ) : null}
+        onClose={requestScannerClose}
+        onScanned={handleScannerScan}
       />
     </AccountScreenScaffold>
+    <NativeToastHost muted={qrScannerOpen} />
+    </>
   );
 }
 
@@ -1419,6 +1679,14 @@ const styles = StyleSheet.create({
   resultAction: { minHeight: 44, maxWidth: '100%', borderRadius: 11, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
   resultActionText: { flexShrink: 1, textAlign: 'center', fontSize: 12, lineHeight: 16, fontWeight: '800' },
   selectionPanel: { borderWidth: 1, borderRadius: 14, padding: 11, marginTop: 9 },
+  selectionList: { maxHeight: 168 },
+
+  scanBatchRow: { minHeight: 44, borderTopWidth: StyleSheet.hairlineWidth, paddingVertical: 5, flexDirection: 'row', alignItems: 'center' },
+  scanBatchRowText: { flex: 1, minWidth: 0 },
+  scanBatchRowTitle: { fontSize: 13, lineHeight: 17, fontWeight: '800' },
+  scanBatchRowMeta: { marginTop: 1, fontSize: 11, lineHeight: 15, fontWeight: '600' },
+  scanBatchRowRemove: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  scanBatchOffline: { marginTop: 4, fontSize: 12, lineHeight: 16, fontWeight: '700', textAlign: 'right' },
   selectionHeader: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   selectionTitle: { fontSize: 14, fontWeight: '900' },
   selectionClear: { minHeight: 44, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', gap: 5 },

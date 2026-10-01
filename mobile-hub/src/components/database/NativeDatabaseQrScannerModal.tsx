@@ -1,7 +1,7 @@
 import { NativeModal as Modal } from '../ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Linking,
@@ -11,42 +11,70 @@ import {
   View,
 } from 'react-native';
 import { parseInventoryQrPayload, type InventoryQrPayload } from '../../database/nativeDatabaseModel';
+import { NativeToastHost } from '../nativeToast';
 import type { FluentTokens } from '../../theme/fluentTokens';
+
+const SAME_CODE_DELAY_MS = 1_500;
+const STREAM_ERROR_HIDE_MS = 2_500;
 
 export function NativeDatabaseQrScannerModal({
   visible,
   tokens,
   onClose,
   onScanned,
+  continuous = false,
+  overlay,
 }: {
   visible: boolean;
   tokens: FluentTokens;
   onClose: () => void;
   onScanned: (payload: InventoryQrPayload) => void;
+  continuous?: boolean;
+  overlay?: ReactNode;
 }) {
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
   const [error, setError] = useState('');
+  const scanTimesRef = useRef(new Map<string, number>());
+  const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!visible) {
       setScanned(false);
       setError('');
+      scanTimesRef.current.clear();
     }
   }, [visible]);
 
+  useEffect(() => () => {
+    if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+  }, []);
+
   const handleBarcode = useCallback((result: BarcodeScanningResult) => {
-    if (scanned) return;
+    const now = Date.now();
+    const lastAt = scanTimesRef.current.get(result.data);
+    scanTimesRef.current.set(result.data, now);
+    if (scanTimesRef.current.size > 64) {
+      for (const [data, at] of scanTimesRef.current) {
+        if (now - at > 30_000) scanTimesRef.current.delete(data);
+      }
+    }
+    if (lastAt !== undefined && now - lastAt < SAME_CODE_DELAY_MS) return;
+    if (!continuous && scanned) return;
     const payload = parseInventoryQrPayload(result.data);
     if (!payload) {
-      setScanned(true);
+      if (!continuous) setScanned(true);
       setError('QR-код не содержит поддерживаемый инвентарный номер.');
+      if (continuous) {
+        if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
+        errorTimerRef.current = setTimeout(() => setError(''), STREAM_ERROR_HIDE_MS);
+      }
       return;
     }
-    setScanned(true);
+    if (!continuous) setScanned(true);
     setError('');
     onScanned(payload);
-  }, [onScanned, scanned]);
+  }, [continuous, onScanned, scanned]);
 
   return (
     <Modal
@@ -56,7 +84,7 @@ export function NativeDatabaseQrScannerModal({
       onRequestClose={onClose}
       accessibilityViewIsModal
     >
-      <View style={[styles.root, { backgroundColor: '#05090d' }]}>
+      <View testID="native-qr-scanner-modal" style={[styles.root, { backgroundColor: '#05090d' }]}>
         <View style={styles.header}>
           <Pressable
             accessibilityRole="button"
@@ -82,7 +110,7 @@ export function NativeDatabaseQrScannerModal({
               style={StyleSheet.absoluteFill}
               facing="back"
               barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-              onBarcodeScanned={scanned ? undefined : handleBarcode}
+              onBarcodeScanned={!continuous && scanned ? undefined : handleBarcode}
               onMountError={() => setError('Не удалось запустить камеру. Закройте сканер и попробуйте снова.')}
             />
             <View pointerEvents="none" style={styles.overlay}>
@@ -90,19 +118,22 @@ export function NativeDatabaseQrScannerModal({
               <Text style={styles.help}>Наведите камеру на QR-код инвентарной карточки</Text>
             </View>
             {error ? (
-              <View style={[styles.errorCard, { backgroundColor: tokens.panelSolid }]}> 
+              <View style={[styles.errorCard, continuous ? styles.errorCardTop : null, { backgroundColor: tokens.panelSolid }]}>
                 <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text>
-                <Pressable
-                  testID="native-database-qr-rescan"
-                  accessibilityRole="button"
-                  accessibilityLabel="Сканировать другой QR-код"
-                  onPress={() => { setScanned(false); setError(''); }}
-                  style={[styles.button, { backgroundColor: tokens.primary }]}
-                >
-                  <Text style={styles.buttonText}>Сканировать снова</Text>
-                </Pressable>
+                {continuous ? null : (
+                  <Pressable
+                    testID="native-database-qr-rescan"
+                    accessibilityRole="button"
+                    accessibilityLabel="Сканировать другой QR-код"
+                    onPress={() => { setScanned(false); setError(''); }}
+                    style={[styles.button, { backgroundColor: tokens.primary }]}
+                  >
+                    <Text style={styles.buttonText}>Сканировать снова</Text>
+                  </Pressable>
+                )}
               </View>
             ) : null}
+            {overlay ? <View pointerEvents="box-none" style={styles.overlayDock}>{overlay}</View> : null}
           </View>
         ) : (
           <View style={styles.center}>
@@ -122,6 +153,9 @@ export function NativeDatabaseQrScannerModal({
             </Pressable>
           </View>
         )}
+        {/* Ш5-7: тосты рендерятся внутри нативной Modal — иначе на Android их
+            перекрывает окно сканера («Уже в списке», «Нет связи…» и т.д.). */}
+        <NativeToastHost />
       </View>
     </Modal>
   );
@@ -139,6 +173,8 @@ const styles = StyleSheet.create({
   help: { marginTop: 16, color: '#fff', textAlign: 'center', fontSize: 14, lineHeight: 21, fontWeight: '700' },
   permissionTitle: { color: '#fff', textAlign: 'center', fontSize: 21, fontWeight: '900' },
   errorCard: { position: 'absolute', left: 20, right: 20, bottom: 28, borderRadius: 18, padding: 16 },
+  errorCardTop: { top: 16, bottom: undefined },
+  overlayDock: { position: 'absolute', left: 0, right: 0, bottom: 0 },
   error: { textAlign: 'center', fontSize: 13, lineHeight: 19, fontWeight: '800' },
   button: { minHeight: 48, minWidth: 190, marginTop: 14, borderRadius: 13, paddingHorizontal: 18, alignItems: 'center', justifyContent: 'center' },
   buttonText: { color: '#fff', fontSize: 14, fontWeight: '900' },

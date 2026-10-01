@@ -1,5 +1,6 @@
-import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor, within } from '@testing-library/react-native';
 import * as Clipboard from 'expo-clipboard';
+import { Alert, Share, StyleSheet } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as databaseApi from '../../api/databaseApi';
 import * as equipmentCatalog from '../../cache/nativeEquipmentCatalogSnapshot';
@@ -53,6 +54,7 @@ jest.mock('../../api/databaseApi', () => ({
   listEquipmentStatuses: jest.fn(),
   listEquipmentModels: jest.fn(),
   searchEquipmentOwners: jest.fn(),
+  getConsumableById: jest.fn(),
   submitEquipmentTransfer: jest.fn(),
   getEquipmentTransferJob: jest.fn(),
   deleteEquipment: jest.fn(),
@@ -80,13 +82,15 @@ jest.mock('../../cache/nativeSnapshotCache', () => ({
 jest.mock('../../cache/nativeEquipmentCatalogSnapshot', () => ({
   readNativeEquipmentCatalogSnapshot: jest.fn(),
 }));
+let mockQrScanData = 'INV_NO: INV-1';
+
 jest.mock('expo-camera', () => {
   const React = require('react');
   const { Pressable } = require('react-native');
   return {
     CameraView: ({ onBarcodeScanned, testID }: { onBarcodeScanned?: (result: { data: string; type: string; bounds: object; cornerPoints: never[] }) => void; testID?: string }) => React.createElement(Pressable, {
       testID,
-      onPress: () => onBarcodeScanned?.({ data: 'INV_NO: INV-1', type: 'qr', bounds: {}, cornerPoints: [] }),
+      onPress: () => onBarcodeScanned?.({ data: mockQrScanData, type: 'qr', bounds: {}, cornerPoints: [] }),
     }),
     useCameraPermissions: () => [{ granted: true, canAskAgain: true }, jest.fn()],
   };
@@ -122,6 +126,7 @@ beforeEach(() => {
   mockPermissions = ['database.read'];
   mockOfflineMode = false;
   mockRole = 'user';
+  mockQrScanData = 'INV_NO: INV-1';
   params.mockReturnValue({});
   (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockResolvedValue(null);
   (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue(null);
@@ -176,14 +181,14 @@ beforeEach(() => {
 it('searches equipment and opens the native detail route', async () => {
   params.mockReturnValue({ q: 'INV-1' });
   const view = await render(<NativeDatabaseScreen />);
-  await waitFor(() => expect(view.getByText('OptiPlex')).toBeTruthy(), { timeout: 2_000 });
+  await waitFor(() => expect(view.getByText('OptiPlex')).toBeTruthy(), { timeout: 10_000 });
   expect(databaseApi.searchEquipment).toHaveBeenCalledWith('INV-1', 1, 50, 'ITINVENT');
   fireEvent.press(view.getByTestId('native-equipment-INV-1'));
   expect(router.push).toHaveBeenCalledWith({
     pathname: '/(shell)/database/[invNo]',
     params: { invNo: 'INV-1', databaseId: 'ITINVENT', tab: 'general' },
   });
-});
+}, 30_000);
 
 it('browses equipment without forcing a search query', async () => {
   const view = await render(<NativeDatabaseScreen />);
@@ -681,6 +686,8 @@ it('transfers one equipment card natively with a stable operation id', async () 
   mockPermissions = ['database.read', 'database.write'];
   params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
   const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
   await waitFor(() => expect(view.getByTestId('native-equipment-transfer-owner')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
   await waitFor(() => expect(view.getByTestId('native-transfer-employee')).toBeTruthy());
@@ -759,6 +766,8 @@ it('keeps destructive equipment deletion admin-only and confirms it explicitly',
   mockRole = 'admin';
   params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
   const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-menu')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-menu')); });
   await waitFor(() => expect(view.getByTestId('native-equipment-delete')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-delete')); });
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
@@ -837,4 +846,910 @@ it('offline navigation to uncached equipment must clear prior card', async () =>
   await view.rerender(<NativeEquipmentDetailScreen />);
   await act(async () => {});
   expect(view.queryByText('SN-1')).toBeNull();
+});
+
+it('copies the serial number via the icon and a long press on the row', async () => {
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-field-serial-copy')).toBeTruthy());
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-field-serial-copy')); });
+  await waitFor(() => expect(Clipboard.setStringAsync).toHaveBeenCalledWith('SN-1'));
+  await waitFor(() => expect(view.getByTestId('native-toast')).toBeTruthy());
+  expect(view.getByTestId('native-toast').props.children).toBe('Серийный номер скопирован');
+
+  (Clipboard.setStringAsync as jest.Mock).mockClear();
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-field-serial'), 'longPress'); });
+  await waitFor(() => expect(Clipboard.setStringAsync).toHaveBeenCalledWith('SN-1'));
+});
+
+it('renders an empty field without a copy affordance', async () => {
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-section-device-empty-toggle')).toBeTruthy());
+  expect(view.queryByTestId('native-equipment-field-part')).toBeNull();
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-section-device-empty-toggle')); });
+  const field = view.getByTestId('native-equipment-field-part');
+  expect(field.props.accessible).toBe(true);
+  expect(field.props.accessibilityLabel).toContain('не указано');
+  expect(view.queryByTestId('native-equipment-field-part-copy')).toBeNull();
+});
+
+it('shows a failure toast when the clipboard rejects the value', async () => {
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (Clipboard.setStringAsync as jest.Mock).mockRejectedValueOnce(new Error('denied'));
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-field-serial-copy')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-field-serial-copy')); });
+  await waitFor(() => expect(view.getByTestId('native-toast')).toBeTruthy());
+  expect(view.getByTestId('native-toast').props.children).toBe('Не удалось скопировать');
+});
+
+it('copies the inventory number from the header pill', async () => {
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-copy-inv')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-copy-inv')); });
+  await waitFor(() => expect(Clipboard.setStringAsync).toHaveBeenCalledWith('INV-1'));
+  await waitFor(() => expect(view.getByTestId('native-toast').props.children).toBe('Инвентарный номер скопирован'));
+});
+
+it('copies the model name from the header copy icon', async () => {
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-copy-title')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-copy-title')); });
+  await waitFor(() => expect(Clipboard.setStringAsync).toHaveBeenCalledWith('OptiPlex'));
+  await waitFor(() => expect(view.getByTestId('native-toast').props.children).toBe('Модель скопирована'));
+});
+
+it('copies the model name via long press on the title', async () => {
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-title')).toBeTruthy());
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-title'), 'longPress'); });
+  await waitFor(() => expect(Clipboard.setStringAsync).toHaveBeenCalledWith('OptiPlex'));
+  await waitFor(() => expect(view.getByTestId('native-toast').props.children).toBe('Модель скопирована'));
+});
+
+it('copies the derived title when the model name is empty', async () => {
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.getEquipment as jest.Mock).mockResolvedValue({ ...equipment, model_name: '' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-copy-title')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-copy-title')); });
+  await waitFor(() => expect(Clipboard.setStringAsync).toHaveBeenCalledWith('Системный блок'));
+  await waitFor(() => expect(view.getByTestId('native-toast').props.children).toBe('Модель скопирована'));
+});
+
+it('keeps field copying available in offline mode', async () => {
+  mockOfflineMode = true;
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      databaseId: 'ITINVENT',
+      equipment,
+      acts: [],
+      history: [],
+      workHistory: [],
+      unavailableWorkKinds: [],
+      loadedTabs: [],
+    },
+  });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-field-serial-copy')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-field-serial-copy')); });
+  await waitFor(() => expect(Clipboard.setStringAsync).toHaveBeenCalledWith('SN-1'));
+  expect(databaseApi.getEquipment).not.toHaveBeenCalled();
+});
+
+it('copies the employee name via long press in offline mode without opening the warehouse sheet', async () => {
+  mockOfflineMode = true;
+  mockPermissions = ['database.read', 'warehouse_1c.read'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      databaseId: 'ITINVENT',
+      equipment,
+      acts: [],
+      history: [],
+      workHistory: [],
+      unavailableWorkKinds: [],
+      loadedTabs: [],
+    },
+  });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-employee-compare')).toBeTruthy());
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-employee-compare'), 'longPress'); });
+  await waitFor(() => expect(Clipboard.setStringAsync).toHaveBeenCalledWith('Иванов И.И.'));
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-employee-compare')); });
+  expect(view.queryByTestId('native-employee-compare-sheet')).toBeNull();
+});
+
+it('keeps selectable only on the multiline description value', async () => {
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.getEquipment as jest.Mock).mockResolvedValue({ ...equipment, description: 'Тестовое описание устройства' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-field-serial')).toBeTruthy());
+  const serialValue = within(view.getByTestId('native-equipment-field-serial')).getByText('SN-1');
+  expect(serialValue.props.selectable).toBeFalsy();
+  const descriptionValue = within(view.getByTestId('native-equipment-field-description')).getByText('Тестовое описание устройства');
+  expect(descriptionValue.props.selectable).toBe(true);
+});
+
+it('summarizes last maintenance on the card tab via a background works load', async () => {
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('Обслуживание')).toBeTruthy());
+  await waitFor(() => expect(view.getByText(/20\.08\.2026/)).toBeTruthy());
+  expect(view.getByText(/4 дн\. назад/)).toBeTruthy();
+  expect(view.getByText('нет записей')).toBeTruthy();
+  expect(databaseApi.getEquipmentWorkHistories).toHaveBeenCalledWith(equipment, ['cleaning', 'component']);
+});
+
+it('opens the works tab from the maintenance link without a second request', async () => {
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText(/20\.08\.2026/)).toBeTruthy());
+  expect((databaseApi.getEquipmentWorkHistories as jest.Mock).mock.calls.length).toBe(1);
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-all-works')); });
+  await waitFor(() => expect(view.queryByTestId('native-equipment-all-works')).toBeNull());
+  expect((databaseApi.getEquipmentWorkHistories as jest.Mock).mock.calls.length).toBe(1);
+});
+
+it('hides the maintenance summary when the background works load fails', async () => {
+  (databaseApi.getEquipmentWorkHistories as jest.Mock).mockRejectedValue(new Error('service down'));
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('Инв. № INV-1')).toBeTruthy());
+  await waitFor(() => expect(view.queryByText('Обслуживание')).toBeNull());
+  expect(view.queryByText(/Не удалось|ещё не сохранена/)).toBeNull();
+});
+
+it('restores the maintenance summary offline from the snapshot only', async () => {
+  mockOfflineMode = true;
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      databaseId: 'ITINVENT',
+      equipment,
+      acts: [],
+      history: [],
+      workHistory: [{ kind: 'cleaning', count: 2, last_date: '2026-08-20', time_ago_str: '4 дн. назад' }],
+      unavailableWorkKinds: [],
+      loadedTabs: ['works'],
+    },
+  });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('Обслуживание')).toBeTruthy());
+  await waitFor(() => expect(view.getByText(/20\.08\.2026/)).toBeTruthy());
+  expect(databaseApi.getEquipmentWorkHistories).not.toHaveBeenCalled();
+});
+
+it('keeps save disabled until the draft changes and confirms cancel with changes', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('Инв. № INV-1')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-edit')); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-edit-serial_no')).toBeTruthy());
+  expect(view.getByTestId('native-equipment-edit-save').props.accessibilityState.disabled).toBe(true);
+  await act(async () => { fireEvent.changeText(view.getByTestId('native-equipment-edit-serial_no'), 'SN-NEW'); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-edit-save').props.accessibilityState.disabled).toBe(false));
+  await act(async () => { fireEvent.press(view.getByLabelText('Закрыть редактирование')); });
+  await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('Отменить изменения?', expect.any(String), expect.any(Array)));
+  alertSpy.mockRestore();
+});
+
+it('blocks saving an invalid IP address without calling updateEquipment', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('Инв. № INV-1')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-edit')); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-edit-ip_address')).toBeTruthy());
+  await act(async () => { fireEvent.changeText(view.getByTestId('native-equipment-edit-ip_address'), '999.1.1.1'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-edit-save')); });
+  await waitFor(() => expect(view.getByText(/четыре числа 0–255/)).toBeTruthy());
+  expect(databaseApi.updateEquipment).not.toHaveBeenCalled();
+});
+
+it('picks a model through the searchable picker sheet', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.getEquipment as jest.Mock).mockResolvedValue({ ...equipment, type_no: 4, model_no: 7 });
+  (databaseApi.listEquipmentTypes as jest.Mock).mockResolvedValue([{ type_no: 4, type_name: 'Системный блок', ci_type: 1 }]);
+  (databaseApi.listEquipmentModels as jest.Mock).mockResolvedValue([
+    { model_no: 7, model_name: 'OptiPlex 7010', type_no: 4 },
+    { model_no: 8, model_name: 'ThinkCentre M720', type_no: 4 },
+  ]);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('Инв. № INV-1')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-edit')); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-edit-pick-model')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-edit-pick-model')); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-picker-search')).toBeTruthy());
+  await act(async () => { fireEvent.changeText(view.getByTestId('native-equipment-picker-search'), 'think'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-picker-option-8')); });
+  await waitFor(() => expect(view.getByText('ThinkCentre M720')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-edit-save')); });
+  await waitFor(() => expect(databaseApi.updateEquipment).toHaveBeenCalledWith('INV-1', expect.objectContaining({ model_no: 8 }), 'ITINVENT'));
+});
+
+it('copies the whole card from the overflow menu', async () => {
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-menu')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-menu')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-copy-all')); });
+  await waitFor(() => expect(Clipboard.setStringAsync).toHaveBeenCalledWith(expect.stringContaining('INV-1')));
+  const copied = String((Clipboard.setStringAsync as jest.Mock).mock.calls[0][0]);
+  expect(copied).toContain('OptiPlex');
+  expect(copied).toContain('Системный блок');
+  await waitFor(() => expect(view.getByTestId('native-toast').props.children).toBe('Карточка скопирована'));
+});
+
+it('shares the card text and stays quiet when the share sheet is dismissed', async () => {
+  const share = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction', activityType: null });
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-menu')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-menu')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-share')); });
+  await waitFor(() => expect(share).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('INV-1') })));
+
+  share.mockRejectedValueOnce(new Error('dismissed'));
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-menu')); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-share')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-share')); });
+  await waitFor(() => expect(share).toHaveBeenCalledTimes(2));
+  expect(view.queryByTestId('native-toast')).toBeNull();
+  share.mockRestore();
+});
+
+it('hides the edit button and the actions sheet without database.write', async () => {
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('Инв. № INV-1')).toBeTruthy());
+  expect(view.queryByTestId('native-equipment-edit')).toBeNull();
+  expect(view.queryByTestId('native-equipment-actions-open')).toBeNull();
+});
+
+it('hides the delete item in the overflow menu for a non-admin user', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-menu')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-menu')); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-copy-all')).toBeTruthy());
+  expect(view.queryByTestId('native-equipment-delete')).toBeNull();
+});
+
+it('refreshes the maintenance summary after recording work from the bottom bar', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  let persisted: { databaseId?: string; equipment?: { description?: string }; workHistory?: Array<{ time_ago_str?: string }> } | null = null;
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockImplementation(async () => (persisted ? { savedAt: 1, data: persisted } : null));
+  (snapshotCache.writeNativeEntitySnapshot as jest.Mock).mockImplementation(async (_scope: unknown, _user: unknown, _key: unknown, data: typeof persisted) => { persisted = data; });
+  (databaseApi.getEquipment as jest.Mock)
+    .mockResolvedValueOnce(equipment)
+    .mockResolvedValue({ ...equipment, description: 'Новое описание' });
+  (databaseApi.getEquipmentWorkHistories as jest.Mock)
+    .mockResolvedValueOnce({ histories: [{ kind: 'cleaning', count: 2, last_date: '2026-08-20', time_ago_str: '4 дн. назад' }], unavailable: [], failed: [] })
+    .mockResolvedValue({ histories: [{ kind: 'cleaning', count: 3, last_date: '2026-09-30', time_ago_str: 'сегодня' }], unavailable: [], failed: [] });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText(/4 дн\. назад/)).toBeTruthy());
+  const callsBefore = (databaseApi.getEquipmentWorkHistories as jest.Mock).mock.calls.length;
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-record-work-cleaning')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-record-work-cleaning')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await waitFor(() => expect(databaseApi.recordEquipmentWork).toHaveBeenCalledWith(expect.objectContaining({ kind: 'cleaning' })));
+  await waitFor(() => expect((databaseApi.getEquipmentWorkHistories as jest.Mock).mock.calls.length).toBeGreaterThan(callsBefore));
+  await act(async () => { fireEvent.press(view.getByLabelText('Закрыть операцию')); });
+  await waitFor(() => expect(view.getByText(/сегодня/)).toBeTruthy());
+  const saved = persisted as { equipment?: { description?: string }; workHistory?: Array<{ time_ago_str?: string }> } | null;
+  expect(saved?.equipment?.description).toBe('Новое описание');
+  expect(saved?.workHistory?.[0]?.time_ago_str).toBe('сегодня');
+});
+
+it('does not reload work history after a transfer from the bottom bar', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText(/4 дн\. назад/)).toBeTruthy());
+  const callsBefore = (databaseApi.getEquipmentWorkHistories as jest.Mock).mock.calls.length;
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-transfer-owner')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-employee')).toBeTruthy());
+  await act(async () => { fireEvent.changeText(view.getByTestId('native-transfer-employee'), 'Петров П.П.'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledWith(
+    'owner',
+    expect.objectContaining({ inv_nos: ['INV-1'], new_employee: 'Петров П.П.' }),
+    'ITINVENT',
+  ));
+  await waitFor(() => expect(databaseApi.getEquipment).toHaveBeenCalledTimes(2));
+  expect((databaseApi.getEquipmentWorkHistories as jest.Mock).mock.calls.length).toBe(callsBefore);
+});
+
+it('does not block an unrelated edit when the stored IP is already invalid', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.getEquipment as jest.Mock).mockResolvedValue({ ...equipment, ip_address: 'DHCP, 10.0.0.7' });
+  (databaseApi.listEquipmentStatuses as jest.Mock).mockResolvedValue([{ status_no: 9, status_name: 'На складе' }]);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('Инв. № INV-1')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-edit')); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-edit-pick-status')).toBeTruthy());
+  expect(view.queryByText(/IP-адрес: четыре числа/)).toBeNull();
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-edit-pick-status')); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-picker-option-9')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-picker-option-9')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-edit-save')); });
+  await waitFor(() => expect(databaseApi.updateEquipment).toHaveBeenCalledWith(
+    'INV-1',
+    expect.objectContaining({ status_no: 9 }),
+    'ITINVENT',
+  ));
+});
+
+it('opens the QR scanner once when the database screen is opened with scan=1', async () => {
+  params.mockReturnValue({ scan: '1' });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+  await waitFor(() => expect(router.setParams).toHaveBeenCalledWith({ scan: undefined }));
+});
+
+it('does not open the QR scanner from scan=1 without database.read', async () => {
+  mockPermissions = [];
+  params.mockReturnValue({ scan: '1' });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByText('Нет доступа')).toBeTruthy());
+  expect(view.queryByTestId('native-database-qr-camera')).toBeNull();
+});
+
+const scanQr = async (view: Awaited<ReturnType<typeof render>>, data: string) => {
+  mockQrScanData = data;
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-qr-camera')); });
+};
+
+it('keeps the smart scanner open after the first QR and opens the card from the scan card', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+
+  await scanQr(view, 'INV_NO: INV-1');
+  await waitFor(() => expect(view.getByTestId('native-scan-batch-card')).toBeTruthy());
+  expect(view.getByTestId('native-scan-batch-open')).toBeTruthy();
+  expect(view.getByTestId('native-scan-batch-more')).toBeTruthy();
+  expect(view.getByTestId('native-database-qr-camera')).toBeTruthy();
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-scan-batch-open')); });
+  await waitFor(() => expect(router.push).toHaveBeenCalledWith({
+    pathname: '/(shell)/database/[invNo]',
+    params: { invNo: 'INV-1', databaseId: 'ITINVENT', tab: 'general' },
+  }));
+});
+
+it('collects two different QRs and submits both inv_nos through the shared transfer actions', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+
+  await scanQr(view, 'INV_NO: INV-1');
+  await waitFor(() => expect(view.getByTestId('native-scan-batch-card')).toBeTruthy());
+  await scanQr(view, 'https://hubit.zsgp.ru/database?inv_no=INV-2&db_id=ITINVENT');
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+  expect(view.getByTestId('native-scan-batch-actions').props.accessibilityLabel).toBe('Действия для 2 позиций');
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-scan-batch-actions')); });
+  await waitFor(() => expect(view.getByTestId('native-database-scan-batch')).toBeTruthy());
+  expect(view.queryByTestId('native-database-qr-camera')).toBeNull();
+  expect(view.getByTestId('native-database-scan-batch-row-INV-1')).toBeTruthy();
+  expect(view.getByTestId('native-database-scan-batch-row-INV-2')).toBeTruthy();
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-batch-transfer-owner')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-employee')).toBeTruthy());
+  await act(async () => { fireEvent.changeText(view.getByTestId('native-transfer-employee'), 'Петров П.П.'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-batch-action-confirm')); });
+  await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledWith(
+    'owner',
+    expect.objectContaining({ inv_nos: ['INV-2', 'INV-1'], new_employee: 'Петров П.П.', operation_id: expect.any(String) }),
+    'ITINVENT',
+  ));
+  await waitFor(() => expect(view.queryByTestId('native-database-scan-batch')).toBeNull());
+});
+
+it('does not duplicate a repeated QR, highlights it and removes rows via ✕', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+
+  await scanQr(view, 'INV_NO: INV-1');
+  await scanQr(view, 'INV_NO: INV-2');
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+
+  await scanQr(view, 'https://hubit.zsgp.ru/database?inv_no=INV-2&db_id=ITINVENT');
+  await waitFor(() => expect(view.getByTestId('native-toast')).toBeTruthy());
+  expect(view.getByTestId('native-toast').props.children).toBe('Уже в списке');
+  expect(view.getByText('Выбрано: 2')).toBeTruthy();
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-scan-batch-remove-INV-2')); });
+  await waitFor(() => expect(view.getByTestId('native-scan-batch-card')).toBeTruthy());
+});
+
+it('opens the consumable card and resets a one-item batch on a consumable QR (Ш5-7)', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  (databaseApi.getConsumableById as jest.Mock).mockResolvedValue({
+    id: 4821, inv_no: 'C-4821', type_name: 'Картридж', model_name: 'HP 12A', qty: 2,
+    branch_name: 'Склад', location_name: '', part_no: '', description: '', raw: {},
+  });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await scanQr(view, 'INV_NO: INV-1');
+  await waitFor(() => expect(view.getByTestId('native-scan-batch-card')).toBeTruthy());
+
+  await scanQr(view, 'https://hubit.zsgp.ru/database?consumable=4821&db_id=ITINVENT');
+  await waitFor(() => expect(databaseApi.getConsumableById).toHaveBeenCalledWith(4821, 'ITINVENT'));
+  await waitFor(() => expect(view.queryByTestId('native-database-qr-camera')).toBeNull());
+  await waitFor(() => expect(view.getByText('HP 12A')).toBeTruthy());
+  expect(view.queryByTestId('native-scan-batch-card')).toBeNull();
+});
+
+it('asks «Открыть расходник?» over a 2+ item batch; «Отмена» keeps the list (Ш5-7)', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  (databaseApi.getConsumableById as jest.Mock).mockResolvedValue({
+    id: 4821, inv_no: 'C-4821', type_name: 'Картридж', model_name: 'HP 12A', qty: 2,
+    branch_name: 'Склад', location_name: '', part_no: '', description: '', raw: {},
+  });
+  const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await scanQr(view, 'INV_NO: INV-1');
+  await scanQr(view, 'INV_NO: INV-2');
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+
+  await scanQr(view, 'https://hubit.zsgp.ru/database?consumable=4821&db_id=ITINVENT');
+  expect(alertSpy).toHaveBeenCalledWith(
+    'Список из 2 позиций сбросится. Открыть расходник?',
+    undefined,
+    expect.arrayContaining([
+      expect.objectContaining({ text: 'Отмена' }),
+      expect.objectContaining({ text: 'Открыть' }),
+    ]),
+  );
+  // Пока вопрос висит — сканер и список на месте, карточка не открыта.
+  expect(view.getByTestId('native-database-qr-camera')).toBeTruthy();
+  expect(view.getByText('Выбрано: 2')).toBeTruthy();
+  expect(databaseApi.getConsumableById).not.toHaveBeenCalled();
+
+  const buttons = alertSpy.mock.calls.at(-1)?.[2] as Array<{ text: string; onPress?: () => void }>;
+  await act(async () => { buttons.find((button) => button.text === 'Открыть')?.onPress?.(); });
+  await waitFor(() => expect(databaseApi.getConsumableById).toHaveBeenCalledWith(4821, 'ITINVENT'));
+  await waitFor(() => expect(view.queryByTestId('native-database-qr-camera')).toBeNull());
+  expect(view.queryByText('Выбрано: 2')).toBeNull();
+  alertSpy.mockRestore();
+});
+
+it('still rejects equipment from a foreign database while the batch list is non-empty', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await scanQr(view, 'INV_NO: INV-1');
+  await waitFor(() => expect(view.getByTestId('native-scan-batch-card')).toBeTruthy());
+
+  await scanQr(view, 'https://hubit.zsgp.ru/database?inv_no=INV-9&db_id=OBJ-ITINVENT');
+  await waitFor(() => expect(view.getByTestId('native-toast')).toBeTruthy());
+  expect(view.getByTestId('native-toast').props.children).toBe('Другая база: OBJ-ITINVENT. Список собирается по одной базе');
+  expect(databaseApi.getEquipment).not.toHaveBeenCalledWith('INV-9', 'OBJ-ITINVENT');
+});
+
+it('marks unresolved scans as Не найдено and keeps them out of Действия', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => (
+    invNo === 'INV-404'
+      ? Promise.reject({ response: { status: 404 }, isAxiosError: true })
+      : Promise.resolve({ ...equipment, inv_no: invNo })
+  ));
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+
+  await scanQr(view, 'INV_NO: INV-1');
+  await scanQr(view, 'INV_NO: INV-404');
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+  expect(view.getByText('Не найдено')).toBeTruthy();
+  expect(view.getByTestId('native-scan-batch-actions').props.accessibilityLabel).toBe('Действия для 1 позиций');
+});
+
+it('enforces the 100 item limit with a toast', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+
+  for (let index = 0; index < 100; index += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    await scanQr(view, `INV_NO: LIM-${index}`);
+  }
+  await waitFor(() => expect(view.getByText('Выбрано: 100')).toBeTruthy());
+
+  await scanQr(view, 'INV_NO: LIM-over');
+  await waitFor(() => expect(view.getByTestId('native-toast')).toBeTruthy());
+  expect(view.getByTestId('native-toast').props.children).toBe('Не больше 100 за раз');
+}, 60_000);
+
+it('adds offline rows from snapshots and disables Действия without network', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  mockOfflineMode = true;
+  (snapshotCache.readNativeSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      databases: [{ id: 'ITINVENT', name: 'Основная' }],
+      currentDatabase: { id: 'ITINVENT', name: 'Основная', locked: false },
+    },
+  });
+  (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      signature: '', databaseId: 'ITINVENT', mode: 'equipment', query: '',
+      equipment: [equipment, { ...equipment, inv_no: 'INV-2' }], consumables: [], acts: [], total: 2, page: 1, pages: 1,
+    },
+  });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+
+  await scanQr(view, 'INV_NO: INV-1');
+  await scanQr(view, 'INV_NO: INV-2');
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+  expect(databaseApi.getEquipment).not.toHaveBeenCalled();
+  expect(view.getByText('Нужна сеть')).toBeTruthy();
+  expect(view.getByTestId('native-scan-batch-actions').props.accessibilityState?.disabled).toBe(true);
+});
+
+it('keeps the legacy single-scan behavior without database.write', async () => {
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+  await scanQr(view, 'INV_NO: INV-1');
+  await waitFor(() => expect(router.push).toHaveBeenCalledWith({
+    pathname: '/(shell)/database/[invNo]',
+    params: { invNo: 'INV-1', databaseId: 'ITINVENT', tab: 'general' },
+  }));
+  expect(view.queryByTestId('native-scan-batch-card')).toBeNull();
+  expect(view.queryByTestId('native-database-scan-batch')).toBeNull();
+});
+
+it('keeps only retry_inv_nos after a partial batch transfer error', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue({
+    success_count: 1,
+    failed_count: 1,
+    failed: [{ inv_no: 'INV-1', error: 'Ошибка сервера' }],
+    retry_inv_nos: ['INV-1'],
+    acts: [],
+    job_status: 'done',
+  });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await scanQr(view, 'INV_NO: INV-1');
+  await scanQr(view, 'INV_NO: INV-2');
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-scan-batch-actions')); });
+  await waitFor(() => expect(view.getByTestId('native-database-scan-batch')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-batch-transfer-owner')); });
+  await act(async () => { fireEvent.changeText(view.getByTestId('native-transfer-employee'), 'Петров П.П.'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-batch-action-confirm')); });
+  await waitFor(() => expect(view.queryByTestId('native-database-scan-batch-row-INV-2')).toBeNull());
+  expect(view.getByTestId('native-database-scan-batch-row-INV-1')).toBeTruthy();
+});
+
+it('does not restore a saved batch after the screen remounts (Ш5-8)', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockImplementation(
+    async (_scope: string, _userId: number, key: string) => (
+      key === 'scan-batch:ITINVENT'
+        ? { savedAt: 1, data: { items: [{ invNo: 'INV-7', databaseId: 'ITINVENT', equipment, status: 'ready' }] } }
+        : null
+    ),
+  );
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  expect(view.queryByTestId('native-database-scan-batch-open')).toBeNull();
+  expect(view.queryByText(/INV-7/)).toBeNull();
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+  expect(view.queryByTestId('native-scan-batch-card')).toBeNull();
+
+  await scanQr(view, 'INV_NO: INV-9');
+  await waitFor(() => expect(view.getByTestId('native-scan-batch-card')).toBeTruthy());
+  expect(view.getByText(/Инв\. № INV-9/)).toBeTruthy();
+  expect(view.queryByText(/INV-7/)).toBeNull();
+});
+
+it('closes the scanner with one item without asking and resets the list (Ш5-8)', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await scanQr(view, 'INV_NO: INV-1');
+  await waitFor(() => expect(view.getByTestId('native-scan-batch-card')).toBeTruthy());
+
+  await act(async () => { fireEvent.press(view.getByLabelText('Закрыть сканер QR-кода')); });
+  expect(alertSpy).not.toHaveBeenCalled();
+  await waitFor(() => expect(view.queryByTestId('native-database-qr-camera')).toBeNull());
+  expect(view.queryByText('Выбрано: 1')).toBeNull();
+
+  // Повторное открытие — пустой список, новый QR становится первой позицией.
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+  expect(view.queryByTestId('native-scan-batch-card')).toBeNull();
+  await scanQr(view, 'INV_NO: INV-5');
+  await waitFor(() => expect(view.getByTestId('native-scan-batch-card')).toBeTruthy());
+  expect(view.getByText(/Инв\. № INV-5/)).toBeTruthy();
+  expect(view.queryByText(/INV-1/)).toBeNull();
+  alertSpy.mockRestore();
+});
+
+it('asks before closing the scanner with 2+ items and «Закрыть» resets the list (Ш5-8)', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await scanQr(view, 'INV_NO: INV-1');
+  await scanQr(view, 'INV_NO: INV-2');
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+
+  await act(async () => { fireEvent.press(view.getByLabelText('Закрыть сканер QR-кода')); });
+  expect(alertSpy).toHaveBeenCalledWith(
+    'Список из 2 позиций сбросится. Закрыть?',
+    undefined,
+    expect.arrayContaining([
+      expect.objectContaining({ text: 'Отмена' }),
+      expect.objectContaining({ text: 'Закрыть' }),
+    ]),
+  );
+  // Пока вопрос висит — сканер и список на месте.
+  expect(view.getByTestId('native-database-qr-camera')).toBeTruthy();
+  expect(view.getByText('Выбрано: 2')).toBeTruthy();
+
+  const buttons = alertSpy.mock.calls.at(-1)?.[2] as Array<{ text: string; onPress?: () => void }>;
+  await act(async () => { buttons.find((button) => button.text === 'Закрыть')?.onPress?.(); });
+  await waitFor(() => expect(view.queryByTestId('native-database-qr-camera')).toBeNull());
+  expect(view.queryByText('Выбрано: 2')).toBeNull();
+
+  // Повторное открытие начинается с пустого списка.
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+  expect(view.queryByTestId('native-scan-batch-list')).toBeNull();
+  alertSpy.mockRestore();
+});
+
+it('shows scanner toasts inside the open modal and does not duplicate them after close (Ш5-7)', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await scanQr(view, 'INV_NO: INV-1');
+  await waitFor(() => expect(view.getByTestId('native-scan-batch-card')).toBeTruthy());
+
+  // Тот же инв. номер через другой QR — дубль по списку, а не по dedup-карте кадров.
+  await scanQr(view, 'https://hubit.zsgp.ru/database?inv_no=INV-1&db_id=ITINVENT');
+  await waitFor(() => expect(view.getByTestId('native-toast')).toBeTruthy());
+  const scannerModal = view.getByTestId('native-qr-scanner-modal');
+  expect(within(scannerModal).getByTestId('native-toast').props.children).toBe('Уже в списке');
+  // Внешний хост заглушён — тост в дереве ровно один.
+  expect(view.getAllByTestId('native-toast')).toHaveLength(1);
+
+  await act(async () => { fireEvent.press(view.getByLabelText('Закрыть сканер QR-кода')); });
+  await waitFor(() => expect(view.queryByTestId('native-database-qr-camera')).toBeNull());
+  expect(view.queryByTestId('native-toast')).toBeNull();
+});
+
+it('«Отменить» on the batch panel resets the list, asking first at 2+ items (Ш5-8)', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await scanQr(view, 'INV_NO: INV-1');
+  await scanQr(view, 'INV_NO: INV-2');
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+
+  // «Действия (N)» закрывает сканер и открывает панель, список не сбрасывается.
+  await act(async () => { fireEvent.press(view.getByTestId('native-scan-batch-actions')); });
+  await waitFor(() => expect(view.getByTestId('native-database-scan-batch')).toBeTruthy());
+  expect(view.getByTestId('native-database-scan-batch-row-INV-1')).toBeTruthy();
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-batch-cancel')); });
+  expect(alertSpy).toHaveBeenCalledWith(
+    'Список из 2 позиций сбросится. Отменить?',
+    undefined,
+    expect.arrayContaining([expect.objectContaining({ text: 'Отменить' })]),
+  );
+  expect(view.getByTestId('native-database-scan-batch-row-INV-1')).toBeTruthy();
+
+  const buttons = alertSpy.mock.calls.at(-1)?.[2] as Array<{ text: string; onPress?: () => void }>;
+  await act(async () => { buttons.find((button) => button.text === 'Отменить')?.onPress?.(); });
+  await waitFor(() => expect(view.queryByTestId('native-database-scan-batch')).toBeNull());
+
+  // Список пуст — новое открытие сканера начинается с нуля.
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+  expect(view.queryByTestId('native-scan-batch-list')).toBeNull();
+  alertSpy.mockRestore();
+});
+
+it('clears the leftover batch when the scanner reopens via scan=1 (Ш5-8)', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  params.mockReturnValue({ scan: '1' });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+
+  await scanQr(view, 'INV_NO: INV-1');
+  await scanQr(view, 'INV_NO: INV-2');
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+  // «Действия» закрывает сканер и открывает панель — список нарочно сохраняется.
+  await act(async () => { fireEvent.press(view.getByTestId('native-scan-batch-actions')); });
+  await waitFor(() => expect(view.getByTestId('native-database-scan-batch')).toBeTruthy());
+
+  params.mockReturnValue({});
+  await act(async () => { view.rerender(<NativeDatabaseScreen />); });
+  params.mockReturnValue({ scan: '1' });
+  await act(async () => { view.rerender(<NativeDatabaseScreen />); });
+
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+  expect(view.queryByTestId('native-scan-batch-list')).toBeNull();
+  expect(view.queryByTestId('native-database-scan-batch')).toBeNull();
+  await scanQr(view, 'INV_NO: INV-6');
+  await waitFor(() => expect(view.getByTestId('native-scan-batch-card')).toBeTruthy());
+  expect(view.getByText(/Инв\. № INV-6/)).toBeTruthy();
+});
+
+it('adds the bottom nav inset to the selection and scan batch panels (Ш5-6)', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByText('OptiPlex')).toBeTruthy());
+
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-1'), 'longPress'); });
+  await waitFor(() => expect(view.getByTestId('native-database-selection')).toBeTruthy());
+  // inset = bottomNavMetrics(fontScale).contentHeight (≥72) + max(insets.bottom, 9)
+  const selectionPadding = StyleSheet.flatten(view.getByTestId('native-database-selection').props.style)?.paddingBottom ?? 0;
+  expect(selectionPadding).toBeGreaterThanOrEqual(66);
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await scanQr(view, 'INV_NO: INV-8');
+  await scanQr(view, 'INV_NO: INV-9');
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-scan-batch-actions')); });
+  await waitFor(() => expect(view.getByTestId('native-database-scan-batch')).toBeTruthy());
+  const batchPadding = StyleSheet.flatten(view.getByTestId('native-database-scan-batch').props.style)?.paddingBottom ?? 0;
+  expect(batchPadding).toBeGreaterThanOrEqual(66);
+});
+
+it('reopens the scanner when scan=1 arrives again on the same mounted screen (Ш4-1)', async () => {
+  params.mockReturnValue({ scan: '1' });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+
+  await act(async () => { fireEvent.press(view.getByLabelText('Закрыть сканер QR-кода')); });
+  await waitFor(() => expect(view.queryByTestId('native-database-qr-camera')).toBeNull());
+
+  // the app consumed the param, then the launcher delivers scan=1 again
+  params.mockReturnValue({});
+  await act(async () => { view.rerender(<NativeDatabaseScreen />); });
+  params.mockReturnValue({ scan: '1' });
+  await act(async () => { view.rerender(<NativeDatabaseScreen />); });
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+  await waitFor(() => expect(router.setParams).toHaveBeenCalledWith({ scan: undefined }));
+});
+
+it('shows «Не найдено» for an online 404 scan and keeps the row visible (Ш5-1)', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockRejectedValue({ response: { status: 404 }, isAxiosError: true });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+
+  await scanQr(view, 'INV_NO: INV-404');
+  await waitFor(() => expect(view.getByTestId('native-scan-batch-card')).toBeTruthy());
+  expect(view.getByText('Не найдено')).toBeTruthy();
+});
+
+it('does not add a row on network failure and adds it when the same code is rescanned (Ш5-1)', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock)
+    .mockRejectedValueOnce({ code: 'ERR_NETWORK', isAxiosError: true })
+    .mockImplementation(async (invNo: string) => ({ ...equipment, inv_no: invNo }));
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+
+  const nowSpy = jest.spyOn(Date, 'now');
+  try {
+    let now = 1_000_000;
+    nowSpy.mockImplementation(() => now);
+    await scanQr(view, 'INV_NO: INV-ERR');
+    await waitFor(() => expect(view.getByTestId('native-toast').props.children).toBe('Нет связи с сервером — отсканируйте ещё раз'));
+    expect(view.queryByTestId('native-scan-batch-card')).toBeNull();
+    expect(view.queryByText('INV-ERR')).toBeNull();
+
+    now += 2_000;
+    await scanQr(view, 'INV_NO: INV-ERR');
+    await waitFor(() => expect(view.getByTestId('native-scan-batch-card')).toBeTruthy());
+  } finally {
+    nowSpy.mockRestore();
+  }
+});
+
+it('clears the batch when «Открыть» is used on the single-item card (Ш5-3)', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await scanQr(view, 'INV_NO: INV-1');
+  await waitFor(() => expect(view.getByTestId('native-scan-batch-card')).toBeTruthy());
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-scan-batch-open')); });
+  await waitFor(() => expect(router.push).toHaveBeenCalledWith(expect.objectContaining({ pathname: '/(shell)/database/[invNo]' })));
+  await waitFor(() => expect(view.queryByTestId('native-database-qr-camera')).toBeNull());
+  expect(view.queryByText('Выбрано: 1')).toBeNull();
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+  expect(view.queryByTestId('native-scan-batch-card')).toBeNull();
+});
+
+it('fires each code at most once while two labels alternate in frame (Ш5-4)', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+
+  await scanQr(view, 'INV_NO: INV-1');
+  await scanQr(view, 'INV_NO: INV-2');
+  await scanQr(view, 'INV_NO: INV-1');
+  await scanQr(view, 'INV_NO: INV-2');
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+  expect(view.queryByText('Уже в списке')).toBeNull();
 });

@@ -19,15 +19,25 @@ export function showNativeToast(title: string, detail?: string) {
   });
 }
 
-export function NativeToastHost() {
+export function NativeToastHost({ muted = false }: { muted?: boolean }) {
   const { styles } = useChatStyles(createStyles);
   const reduceMotion = useReducedMotion();
   const [message, setMessage] = useState('');
   const opacity = useRef(new Animated.Value(0)).current;
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Сканер живёт в нативной Modal и показывает собственный хост поверх камеры.
+  // Внешний хост на это время заглушается, чтобы не продублировать тост после
+  // закрытия сканера (слушатель глобальный — без muted он отложил бы показ).
+  const mutedRef = useRef(muted);
+  useEffect(() => {
+    mutedRef.current = muted;
+    if (muted) setMessage('');
+  }, [muted]);
 
   useEffect(() => {
-    const listener: ToastListener = (text) => setMessage(text);
+    const listener: ToastListener = (text) => {
+      if (!mutedRef.current) setMessage(text);
+    };
     listeners.add(listener);
     return () => { listeners.delete(listener); };
   }, []);
