@@ -1,8 +1,8 @@
 {
   "name": "mobile-hub",
-  "version": "1.1.58",
+  "version": "1.1.62",
   "hubit": {
-    "androidVersionCode": 60
+    "androidVersionCode": 64
   },
   "main": "expo-router/entry",
   "scripts": {
@@ -13,6 +13,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:ci": "jest --ci --runInBand --coverage=false",
+    "test:related": "jest --findRelatedTests --runInBand --coverage=false",
     "assets:icons": "python scripts/generate-assets.py",
     "prebuild:android": "expo prebuild --platform android --clean",
     "build:apk:local": "powershell -ExecutionPolicy Bypass -File scripts/build-apk.ps1 -Local -Variant preview",
@@ -42,6 +43,7 @@
     "expo-constants": "~57.0.13",
     "expo-contacts": "~57.0.6",
     "expo-crypto": "~57.0.2",
+    "expo-dev-client": "~57.0.19",
     "expo-document-picker": "~57.0.1",
     "expo-file-system": "~57.0.5",
     "expo-font": "~57.0.1",

@@ -226,10 +226,12 @@ export const CHAT_NOTIFICATION_CHANNEL_LABELS: Array<[string, string]> = [
   ['chat_direct', 'Личные сообщения'],
   ['chat_group', 'Групповые беседы'],
   ['chat_task', 'Диалоги задач'],
+  ['chat_ai', 'ИИ-агенты'],
 ];
 
 export const ANDROID_PUSH_CHANNELS: Array<[string, string]> = [
   ['hubit_chat', 'Чат'],
+  ['hubit_chat_ai', 'ИИ-агенты'],
   ['hubit_tasks', 'Задачи'],
   ['hubit_mail', 'Почта'],
   ['hubit_system', 'Системные'],

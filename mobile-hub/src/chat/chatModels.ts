@@ -29,6 +29,11 @@ function finiteNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+/** Idempotency key for optimistic sends; durable while the outbox row lives. */
+export function createChatClientMessageId(): string {
+  return `mobile-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 function normalizeChatUser(value: unknown): ChatUserSummary | null {
   const item = record(value);
   const id = finiteNumber(item.id);
@@ -98,6 +103,7 @@ export function normalizeChatConversation(value: unknown): ChatConversationSumma
     last_message_preview: optionalText(item.last_message_preview),
     last_message_at: optionalText(item.last_message_at),
     last_message_seq: finiteNumber(item.last_message_seq),
+    last_message_id: optionalText(item.last_message_id),
     viewer_last_read_seq: finiteNumber(item.viewer_last_read_seq),
     unread_count: Math.max(0, finiteNumber(item.unread_count)),
     avatar_url: optionalText(item.avatar_url || directPeer?.avatar_url),
@@ -160,40 +166,60 @@ export function normalizeChatMessage(value: unknown): ChatMessage | null {
   const id = String(item.id || '').trim();
   const conversationId = String(item.conversation_id || '').trim();
   if (!id || !conversationId) return null;
-  const sender = normalizeChatUser(item.sender);
-  const body = optionalText(item.body_text ?? item.body) || '';
-  const attachments = Array.isArray(item.attachments)
-    ? item.attachments.map(normalizeAttachment).filter((entry): entry is ChatAttachment => Boolean(entry))
-    : [];
+  // Merge safety: emit a normalized field only when the payload actually
+  // carried it. Otherwise a lean update envelope merged over the loaded
+  // window would reset rich fields (reactions, attachments, sender…) to
+  // empty defaults. mergeMessages then preserves the stored values.
+  const has = (key: string) => Object.prototype.hasOwnProperty.call(item, key);
+  const sender = has('sender') ? normalizeChatUser(item.sender) : undefined;
+  const hasBody = has('body_text') || has('body');
+  const body = hasBody ? optionalText(item.body_text ?? item.body) || '' : undefined;
   return {
     ...item,
     id,
     conversation_id: conversationId,
-    sender_user_id: finiteNumber(item.sender_user_id || sender?.id),
-    conversation_seq: finiteNumber(item.conversation_seq),
-    client_message_id: optionalText(item.client_message_id),
-    body_text: body,
-    body,
-    body_format: item.body_format === 'markdown'
-      ? 'markdown'
-      : item.body_format === 'plain'
-        ? 'plain'
-        : undefined,
-    sender,
-    created_at: optionalText(item.created_at),
-    edited_at: optionalText(item.edited_at),
-    is_own: typeof item.is_own === 'boolean' ? item.is_own : undefined,
-    is_deleted: Boolean(item.is_deleted),
-    deleted_at: optionalText(item.deleted_at),
-    deleted_by_user_id: finiteNumber(item.deleted_by_user_id) || null,
-    deleted_reason: optionalText(item.deleted_reason),
-    attachments,
-    mentioned_user_ids: Array.isArray(item.mentioned_user_ids)
-      ? item.mentioned_user_ids.map((id: unknown) => finiteNumber(id)).filter((id: number) => id > 0)
-      : undefined,
-    reactions: normalizeChatReactions(item.reactions),
-    delivery_status: item.delivery_status === 'read' ? 'read' : item.delivery_status === 'sent' ? 'sent' : null,
-    read_by_count: Math.max(0, finiteNumber(item.read_by_count)),
+    ...(has('sender_user_id') || sender
+      ? { sender_user_id: finiteNumber(item.sender_user_id || sender?.id) }
+      : {}),
+    ...(has('conversation_seq') ? { conversation_seq: finiteNumber(item.conversation_seq) } : {}),
+    ...(has('client_message_id') ? { client_message_id: optionalText(item.client_message_id) } : {}),
+    ...(hasBody ? { body_text: body, body } : {}),
+    ...(has('body_format')
+      ? {
+        body_format: item.body_format === 'markdown'
+          ? 'markdown'
+          : item.body_format === 'plain'
+            ? 'plain'
+            : undefined,
+      }
+      : {}),
+    ...(has('sender') ? { sender } : {}),
+    ...(has('created_at') ? { created_at: optionalText(item.created_at) } : {}),
+    ...(has('edited_at') ? { edited_at: optionalText(item.edited_at) } : {}),
+    ...(has('is_own') ? { is_own: typeof item.is_own === 'boolean' ? item.is_own : undefined } : {}),
+    ...(has('is_deleted') ? { is_deleted: Boolean(item.is_deleted) } : {}),
+    ...(has('deleted_at') ? { deleted_at: optionalText(item.deleted_at) } : {}),
+    ...(has('deleted_by_user_id') ? { deleted_by_user_id: finiteNumber(item.deleted_by_user_id) || null } : {}),
+    ...(has('deleted_reason') ? { deleted_reason: optionalText(item.deleted_reason) } : {}),
+    ...(has('attachments')
+      ? {
+        attachments: Array.isArray(item.attachments)
+          ? item.attachments.map(normalizeAttachment).filter((entry): entry is ChatAttachment => Boolean(entry))
+          : [],
+      }
+      : {}),
+    ...(has('mentioned_user_ids')
+      ? {
+        mentioned_user_ids: Array.isArray(item.mentioned_user_ids)
+          ? item.mentioned_user_ids.map((entry: unknown) => finiteNumber(entry)).filter((entry: number) => entry > 0)
+          : undefined,
+      }
+      : {}),
+    ...(has('reactions') ? { reactions: normalizeChatReactions(item.reactions) } : {}),
+    ...(has('delivery_status')
+      ? { delivery_status: item.delivery_status === 'read' ? 'read' : item.delivery_status === 'sent' ? 'sent' : null }
+      : {}),
+    ...(has('read_by_count') ? { read_by_count: Math.max(0, finiteNumber(item.read_by_count)) } : {}),
   } as ChatMessage;
 }
 

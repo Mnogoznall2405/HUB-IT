@@ -14,11 +14,13 @@ def test_system_folder_unread_follows_native_tab_rules():
     add_system_folder_unread(counts, kind="direct", is_archived=True, unread_count=4)
     add_system_folder_unread(counts, kind="task", unread_count=7)
 
+    # U1: AI conversations count under the dedicated «ИИ» workspace, not «Личные».
     assert counts == {
-        "personal": 7,
+        "personal": 2,
         "groups": 4,
         "tasks": 8,
         "archived": 4,
+        "ai": 5,
     }
 
 

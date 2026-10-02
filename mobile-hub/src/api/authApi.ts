@@ -31,6 +31,20 @@ export async function verifyTwoFactorLogin(
   return data;
 }
 
+function isSessionUserShape(value: unknown): value is HubUser {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const candidate = value as Partial<HubUser>;
+  return (
+    Number.isInteger(candidate.id)
+    && Number(candidate.id) > 0
+    && typeof candidate.username === 'string'
+    && candidate.username.trim().length > 0
+    && typeof candidate.role === 'string'
+    && candidate.role.trim().length > 0
+    && Array.isArray(candidate.permissions)
+  );
+}
+
 export async function fetchMe(options: { timeoutMs?: number } = {}): Promise<HubUser> {
   const timeoutMs = Number(options.timeoutMs || 0);
   const { data } = await apiClient.get<HubUser>('/auth/me', {
@@ -39,6 +53,12 @@ export async function fetchMe(options: { timeoutMs?: number } = {}): Promise<Hub
       hubitTotalTimeoutMs: timeoutMs,
     } : {}),
   } as never);
+  if (!isSessionUserShape(data)) {
+    // Captive portals and HTTP middleboxes can answer 200 with HTML or a
+    // foreign JSON body. A malformed payload is a transport failure and is
+    // never evidence about the session itself.
+    throw new Error('Сервер вернул некорректный профиль пользователя');
+  }
   return data;
 }
 

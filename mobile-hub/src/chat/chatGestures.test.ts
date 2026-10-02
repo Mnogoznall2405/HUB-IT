@@ -62,7 +62,11 @@ describe('native chat gesture thresholds', () => {
   });
 
   it('archives left and mutes right on an inbox row swipe', () => {
+    // CHAT-INBOX-06: the row start threshold must stay below the folder pager's
+    // 14dp so a row claims the JS responder before the pager can activate.
     expect(shouldStartInboxRowSwipe(-24, 4)).toBe(true);
+    expect(shouldStartInboxRowSwipe(-10, 2)).toBe(true);
+    expect(shouldStartInboxRowSwipe(-9, 1)).toBe(false);
     expect(shouldStartInboxRowSwipe(-8, 2)).toBe(false);
     expect(inboxRowSwipeAction(-72)).toBe('archive');
     expect(inboxRowSwipeAction(72)).toBe('mute');

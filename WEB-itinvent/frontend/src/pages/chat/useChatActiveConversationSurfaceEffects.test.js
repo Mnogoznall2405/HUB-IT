@@ -147,10 +147,6 @@ describe('useChatActiveConversationSurfaceEffects helpers', () => {
 });
 
 describe('useChatActiveConversationSurfaceEffects', () => {
-  it('exports a default hook function', () => {
-    expect(typeof useChatActiveConversationSurfaceEffects).toBe('function');
-  });
-
   it('mounts without throwing when AI status is skipped', async () => {
     const { renderHook } = await import('@testing-library/react');
     const { unmount } = renderHook(() => useChatActiveConversationSurfaceEffects({

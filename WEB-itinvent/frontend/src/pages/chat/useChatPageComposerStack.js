@@ -4,6 +4,7 @@ import useChatComposerInteractionController from './useChatComposerInteractionCo
 import { loadChatDialogsModule } from './useChatDialogsController';
 import useChatUploadsController from './useChatUploadsController';
 import useChatStickerSending from './useChatStickerSending';
+import useChatStructuredSend from './useChatStructuredSend';
 import { readSelectedDatabaseId } from './chatSessionStorage';
 
 export default function useChatPageComposerStack({
@@ -11,13 +12,16 @@ export default function useChatPageComposerStack({
   activeConversationId,
   activeConversationIdRef,
   applyOutgoingThreadMessage,
+  ensureLatestThreadWindow,
   buildReplyPreview,
   cancelPendingInitialAnchor,
   composerRef,
   createOptimisticFileMessage,
+  createOptimisticStickerMessage,
   createOptimisticTextMessage,
   draftWriteTimeoutRef,
   editingMessage,
+  failedThreadMessagesRef,
   fileInputRef,
   flushDraftToStorage,
   focusComposer,
@@ -45,16 +49,24 @@ export default function useChatPageComposerStack({
   userId,
   emojiAnchorEl,
 }) {
-  const { handleComposerSend, sendMessage } = useChatComposerSending({
+  const {
+    handleComposerSend,
+    sendMessage,
+    retryFailedMessage,
+    discardFailedMessage,
+    registerFailedOutgoingMessage,
+  } = useChatComposerSending({
     activeConversation,
     activeConversationId,
     activeConversationIdRef,
     applyOutgoingThreadMessage,
+    ensureLatestThreadWindow,
     buildReplyPreview,
     cancelPendingInitialAnchor,
     createOptimisticTextMessage,
     draftWriteTimeoutRef,
     editingMessage,
+    failedThreadMessagesRef,
     flushDraftToStorage,
     focusComposer,
     latestMessageTextRef,
@@ -77,6 +89,7 @@ export default function useChatPageComposerStack({
     activeConversation,
     activeConversationId,
     applyOutgoingThreadMessage,
+    ensureLatestThreadWindow,
     buildReplyPreview,
     cancelPendingInitialAnchor,
     createOptimisticFileMessage,
@@ -87,6 +100,7 @@ export default function useChatPageComposerStack({
     notifyApiError,
     notifyWarning,
     patchThreadMessage,
+    registerFailedOutgoingMessage,
     removeThreadMessage,
     replyMessage,
     revokeObjectUrls,
@@ -115,10 +129,23 @@ export default function useChatPageComposerStack({
   const handleSendSticker = useChatStickerSending({
     activeConversationId,
     applyOutgoingThreadMessage,
+    ensureLatestThreadWindow,
+    buildReplyPreview,
     cancelPendingInitialAnchor,
+    createOptimisticStickerMessage,
     notifyApiError,
+    registerFailedOutgoingMessage,
     replyMessage,
     setReplyMessage,
+  });
+
+  const structuredSend = useChatStructuredSend({
+    activeConversationId,
+    applyOutgoingThreadMessage,
+    ensureLatestThreadWindow,
+    notifyApiError,
+    notifyWarning,
+    setComposerMenuAnchor,
   });
 
   const composerInteraction = useChatComposerInteractionController({
@@ -132,9 +159,12 @@ export default function useChatPageComposerStack({
   return {
     handleComposerSend,
     sendMessage,
+    retryFailedMessage,
+    discardFailedMessage,
     ...uploads,
     ...composerUi,
     handleSendSticker,
+    ...structuredSend,
     ...composerInteraction,
   };
 }

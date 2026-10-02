@@ -1,6 +1,6 @@
 import { useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import { Keyboard } from 'react-native';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import * as chatApi from '../../api/chatApi';
 import type { ChatMessage } from '../../api/types';
 import { findLatestIncomingMessage } from '../../chat/chatState';
@@ -104,6 +104,9 @@ export function useThreadBack({
   } = forward;
   const { selectedMessageIds, clearSelection } = selection;
   const { searchOpen, setSearchOpen, setSearchResults, setSearchCompleted } = search;
+  const { workspace } = useLocalSearchParams<{ workspace?: string | string[] }>();
+  const workspaceParam = Array.isArray(workspace) ? workspace[0] : workspace;
+  const backWorkspace = workspaceParam === 'ai' || workspaceParam === 'chats' ? workspaceParam : '';
 
   const leaveThread = useCallback(() => {
     if (leaveInFlightRef.current) return;
@@ -113,13 +116,18 @@ export function useThreadBack({
       const latest = findLatestIncomingMessage(messagesRef.current, userId);
       notifyNativeChatConversationRead(conversationId);
       Keyboard.dismiss();
-      if (router.canGoBack?.()) router.back();
+      if (backWorkspace) {
+        const inbox = `/(shell)/chat?workspace=${backWorkspace}`;
+        // navigate pops to the inbox already in the stack and refreshes its params.
+        if (router.canGoBack?.()) router.navigate(inbox as never);
+        else router.replace(inbox as never);
+      } else if (router.canGoBack?.()) router.back();
       else router.replace('/(shell)/chat');
       if (!offlineMode && latest?.id) {
         void chatApi.markConversationRead(conversationId, latest.id).catch(() => undefined);
       }
     });
-  }, [conversationId, offlineMode, requestLeave, userId]);
+  }, [backWorkspace, conversationId, offlineMode, requestLeave, userId]);
 
   const closeThreadLayer = useCallback((layer: ReturnType<typeof nextChatThreadBackAction>) => {
     if (layer === 'viewer') {

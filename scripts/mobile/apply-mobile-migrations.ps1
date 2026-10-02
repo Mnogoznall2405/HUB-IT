@@ -152,10 +152,12 @@ try {
 
     Push-Location $webRoot
     try {
+        $env:ALEMBIC_DATABASE_URL = [string]$env:APP_DATABASE_URL
         & python -m alembic -c backend/alembic.ini upgrade $targetRevision
         if ($LASTEXITCODE -ne 0) { throw 'Alembic mobile migration failed.' }
     } finally {
         Pop-Location
+        Remove-Item Env:ALEMBIC_DATABASE_URL -ErrorAction SilentlyContinue
     }
 
     $postflight = Invoke-MigrationPreflight

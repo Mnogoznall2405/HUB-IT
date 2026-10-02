@@ -2,7 +2,11 @@ import { getSessionGeneration } from '../auth/tokenStore';
 import type { ChatMessage } from '../api/types';
 import { recordDiagnosticEvent } from '../diagnostics/diagnostics';
 import { isNativeOfflineReadOnly } from '../offline/nativeOfflinePolicy';
-import { createNativeChatDeliveryRunner } from './nativeChatDeliveryRunner';
+import {
+  acquireNativeChatDeliveryDrain,
+  createNativeChatDeliveryRunner,
+  releaseNativeChatDeliveryDrain,
+} from './nativeChatDeliveryRunner';
 import {
   createNativeChatDeliveryTransport,
   createNativeChatPersistConfirmed,
@@ -44,6 +48,11 @@ export async function drainNativeChatOutboxInBackground(userId: number, options:
   persistConfirmed?: (entry: NativeChatOutboxEntry, saved: ChatMessage) => Promise<boolean>;
   ownsSession?: () => boolean;
 } = {}): Promise<void> {
+  // Only one pump may be active at a time: while this drain owns the module
+  // token the foreground runner idles, and a drain started over another drain
+  // returns immediately instead of doubling every transport.
+  const drainToken = acquireNativeChatDeliveryDrain();
+  if (!drainToken) return;
   const deadline = Date.now() + (options.budgetMs ?? NATIVE_CHAT_BACKGROUND_DRAIN_BUDGET_MS);
   const sessionGeneration = getSessionGeneration();
   const ownsSession = options.ownsSession ?? (() => getSessionGeneration() === sessionGeneration);
@@ -55,6 +64,7 @@ export async function drainNativeChatOutboxInBackground(userId: number, options:
       ownsSession, userId, historyGeneration: getNativeChatThreadHistoryGeneration(),
     }),
     onError: () => { void recordDiagnosticEvent('native_file_error'); },
+    drainToken,
   });
   try {
     while (canDeliver() && hasDeliverableWork(await readNativeChatOutbox(userId))) {
@@ -62,5 +72,6 @@ export async function drainNativeChatOutboxInBackground(userId: number, options:
     }
   } finally {
     runner.dispose();
+    releaseNativeChatDeliveryDrain(drainToken);
   }
 }

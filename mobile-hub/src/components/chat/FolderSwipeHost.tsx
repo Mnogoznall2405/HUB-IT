@@ -1,8 +1,9 @@
-import { type ReactNode, useCallback, useEffect, useRef } from 'react';
+import { createContext, type ReactNode, useCallback, useEffect, useMemo, useRef } from 'react';
 import { StyleSheet, useWindowDimensions } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   runOnJS,
+  type SharedValue,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
@@ -16,9 +17,19 @@ import {
   shouldTriggerFolderSwipe,
 } from '../../chat/chatGestures';
 
+export type FolderSwipeGestureSync = {
+  /** 1 while the current touch began inside a conversation row (CHAT-INBOX-06). */
+  rowTouchActive: SharedValue<number>;
+  /** 1 while an engaged folder swipe blocks row responders (`capture` mode). */
+  rowsSuppressed: SharedValue<number>;
+};
+
+/** Row ↔ folder-pager coordination channel; null outside a FolderSwipeHost. */
+export const FolderSwipeGestureContext = createContext<FolderSwipeGestureSync | null>(null);
+
 export function FolderSwipeHost({
   enabled = true,
-  capture: _capture = false,
+  capture = false,
   fill = true,
   onSwipeFolder,
   onSwipeEngage,
@@ -46,6 +57,15 @@ export function FolderSwipeHost({
   const { width: screenWidth } = useWindowDimensions();
   // JS-side origin for the refresh-lock heuristic (RN touch props run on JS).
   const jsOrigin = useRef<{ x: number; y: number } | null>(null);
+  // CHAT-INBOX-06: shared touch-zone flags. Rows raise `rowTouchActive` on
+  // touch-start so this pager never steals row swipes; `rowsSuppressed` is the
+  // reverse edge — with `capture`, an engaged pager blocks new row responders.
+  const rowTouchActive = useSharedValue(0);
+  const rowsSuppressed = useSharedValue(0);
+  const gestureSync = useMemo<FolderSwipeGestureSync>(
+    () => ({ rowTouchActive, rowsSuppressed }),
+    [rowTouchActive, rowsSuppressed],
+  );
 
   const setEngaged = useCallback((next: boolean) => {
     onSwipeEngageRef.current?.(next);
@@ -58,8 +78,9 @@ export function FolderSwipeHost({
     if (enabled) return;
     translateX.value = 0;
     engagedFlag.value = 0;
+    rowsSuppressed.value = 0;
     onSwipeEngageRef.current?.(false);
-  }, [enabled, engagedFlag, translateX]);
+  }, [enabled, engagedFlag, rowsSuppressed, translateX]);
 
   // B-T2-1: the folder swipe moved to Gesture Handler — the same UI-thread
   // stack as message/back swipes — so it no longer fights the responder lock.
@@ -74,11 +95,15 @@ export function FolderSwipeHost({
     .onTouchesMove((event, manager) => {
       'worklet';
       if (event.allTouches.length > 1 || originX.value < 0) { manager.fail(); return; }
+      // CHAT-INBOX-06: a touch that began inside a conversation row belongs to
+      // the row swipe (Telegram-style zones) — the pager must not steal it.
+      if (rowTouchActive.value === 1) { manager.fail(); return; }
       const touch = event.changedTouches[0];
       if (!touch) return;
       const dx = touch.x - originX.value;
       const dy = touch.y - originY.value;
       if (shouldStartFolderSwipe(dx, dy)) {
+        rowsSuppressed.value = capture ? 1 : 0;
         manager.activate();
       } else if (Math.abs(dy) > 18 && Math.abs(dy) > Math.abs(dx)) {
         manager.fail();
@@ -134,10 +159,12 @@ export function FolderSwipeHost({
       'worklet';
       originX.value = -1;
       originY.value = -1;
-      if (engagedFlag.value) {
-        engagedFlag.value = 0;
-        runOnJS(setEngaged)(false);
-      }
+      rowsSuppressed.value = 0;
+      engagedFlag.value = 0;
+      // The JS refresh-lock heuristic (onTouchMove → setEngaged) can fire even
+      // when the gesture never activated (e.g. denied by a row touch), so the
+      // release must be unconditional — otherwise RefreshControl stays hidden.
+      runOnJS(setEngaged)(false);
       if (committedFlag.value) return; // pager commit owns translateX now
       if (translateX.value !== 0) {
         translateX.value = reduceMotion ? 0 : withSpring(0, { damping: 20, stiffness: 260 });
@@ -149,28 +176,30 @@ export function FolderSwipeHost({
   }));
 
   return (
-    <GestureDetector gesture={gesture}>
-      <Animated.View
-        style={[fill ? styles.fill : undefined, hostStyle]}
-        onTouchStart={(event) => {
-          if (!enabled) return;
-          const touch = event.nativeEvent.touches[0];
-          jsOrigin.current = touch ? { x: touch.pageX, y: touch.pageY } : null;
-        }}
-        onTouchMove={(event) => {
-          if (!enabled || !jsOrigin.current) return;
-          const touch = event.nativeEvent.touches[0];
-          if (!touch || event.nativeEvent.touches.length > 1) return;
-          const dx = touch.pageX - jsOrigin.current.x;
-          const dy = touch.pageY - jsOrigin.current.y;
-          if (shouldLockInboxRefresh(dx, dy)) setEngaged(true);
-        }}
-        onTouchEnd={() => { jsOrigin.current = null; }}
-        onTouchCancel={() => { jsOrigin.current = null; }}
-      >
-        {children}
-      </Animated.View>
-    </GestureDetector>
+    <FolderSwipeGestureContext.Provider value={gestureSync}>
+      <GestureDetector gesture={gesture}>
+        <Animated.View
+          style={[fill ? styles.fill : undefined, hostStyle]}
+          onTouchStart={(event) => {
+            if (!enabled) return;
+            const touch = event.nativeEvent.touches[0];
+            jsOrigin.current = touch ? { x: touch.pageX, y: touch.pageY } : null;
+          }}
+          onTouchMove={(event) => {
+            if (!enabled || !jsOrigin.current) return;
+            const touch = event.nativeEvent.touches[0];
+            if (!touch || event.nativeEvent.touches.length > 1) return;
+            const dx = touch.pageX - jsOrigin.current.x;
+            const dy = touch.pageY - jsOrigin.current.y;
+            if (shouldLockInboxRefresh(dx, dy)) setEngaged(true);
+          }}
+          onTouchEnd={() => { jsOrigin.current = null; }}
+          onTouchCancel={() => { jsOrigin.current = null; }}
+        >
+          {children}
+        </Animated.View>
+      </GestureDetector>
+    </FolderSwipeGestureContext.Provider>
   );
 }
 

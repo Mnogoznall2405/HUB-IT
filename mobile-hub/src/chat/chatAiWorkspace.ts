@@ -1,6 +1,14 @@
 import type { ChatAiBot, ChatConversationSummary } from '../api/types';
+import { isConversationEffectivelyMuted } from './chatFolders';
 
 export type ChatWorkspaceKey = 'chats' | 'ai';
+
+export const DEFAULT_CHAT_WORKSPACE: ChatWorkspaceKey = 'chats';
+
+export function normalizeChatWorkspaceKey(value?: unknown): ChatWorkspaceKey {
+  return String(value || '').trim() === 'ai' ? 'ai' : DEFAULT_CHAT_WORKSPACE;
+}
+
 export type AiSidebarDateGroup = {
   key: 'today' | 'yesterday' | 'earlier';
   label: string;
@@ -40,7 +48,8 @@ export function filterAiConversations(
 
 export function countAiUnread(conversations: ChatConversationSummary[]): number {
   return (Array.isArray(conversations) ? conversations : [])
-    .filter((item) => isAiConversation(item) && !item?.is_archived)
+    // A3-2: muted AI conversations do not feed the workspace badge (server rule).
+    .filter((item) => isAiConversation(item) && !item?.is_archived && !isConversationEffectivelyMuted(item))
     .reduce((total, item) => total + Number(item?.unread_count || 0), 0);
 }
 

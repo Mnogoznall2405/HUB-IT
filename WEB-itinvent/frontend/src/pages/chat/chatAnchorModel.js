@@ -56,8 +56,11 @@ export function computePendingInitialAnchorScrollTop({
       anchorMessageId = getUnreadAnchorId(messages, viewerLastReadMessageId);
     }
     if (anchorMessageId) {
+      // R37: якоримся на разделитель «Непрочитанные», а не на первое
+      // непрочитанное сообщение — иначе разделитель остаётся выше вьюпорта.
+      const separator = container.querySelector?.('[data-testid="chat-unread-separator"]');
       const selector = `[data-chat-message-id="${anchorMessageId}"]`;
-      const target = container.querySelector?.(selector);
+      const target = separator || container.querySelector?.(selector);
       if (target) {
         return Math.max(0, target.offsetTop - FIRST_UNREAD_TOP_PADDING);
       }

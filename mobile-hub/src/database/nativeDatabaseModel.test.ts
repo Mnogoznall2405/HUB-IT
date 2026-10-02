@@ -1,6 +1,8 @@
 import {
+  equipmentIcon,
   equipmentLocation,
   equipmentOwner,
+  equipmentStatusTone,
   equipmentWorkKinds,
   filterConsumables,
   formatDatabaseDate,
@@ -9,6 +11,7 @@ import {
   isPrinterLikeEquipment,
   parseInventoryQrPayload,
   parseInventoryQrText,
+  validateEquipmentDraft,
 } from './nativeDatabaseModel';
 
 it('extracts an inventory number from the existing HUB QR payload', () => {
@@ -77,6 +80,33 @@ it('matches the established web equipment capability rules', () => {
   expect(equipmentWorkKinds({ type_name: 'Сканер', model_name: 'IPC-200', vendor_name: 'Acme' } as never)).toEqual([]);
 });
 
+it('picks a header icon from equipment type and model keywords', () => {
+  expect(equipmentIcon({ type_name: 'Монитор', model_name: 'P24', vendor_name: 'Dell' } as never)).toBe('monitor');
+  expect(equipmentIcon({ type_name: 'Ноутбук', model_name: 'Latitude 5420', vendor_name: 'Dell' } as never)).toBe('laptop');
+  expect(equipmentIcon({ type_name: 'Периферия', model_name: 'notebook 15', vendor_name: '' } as never)).toBe('laptop');
+  expect(equipmentIcon({ type_name: 'МФУ', model_name: 'M404', vendor_name: 'HP' } as never)).toBe('printer');
+  expect(equipmentIcon({ type_name: 'ИБП', model_name: 'Smart UPS', vendor_name: 'APC' } as never)).toBe('power-plug-battery-outline');
+  expect(equipmentIcon({ type_name: 'Телефон', model_name: 'IP Phone 7841', vendor_name: 'Cisco' } as never)).toBe('phone-classic');
+  expect(equipmentIcon({ type_name: 'Системный блок', model_name: 'OptiPlex', vendor_name: 'Dell' } as never)).toBe('desktop-tower-monitor');
+  expect(equipmentIcon({ type_name: 'Сканер', model_name: 'IPC-200', vendor_name: 'Acme' } as never)).toBe('devices');
+});
+
+it('maps equipment status names to header tones', () => {
+  expect(equipmentStatusTone('В работе')).toBe('success');
+  expect(equipmentStatusTone('Используется')).toBe('success');
+  expect(equipmentStatusTone('На складе')).toBe('info');
+  expect(equipmentStatusTone('Резерв')).toBe('info');
+  expect(equipmentStatusTone('В ремонте')).toBe('warning');
+  expect(equipmentStatusTone('Списан')).toBe('danger');
+  expect(equipmentStatusTone('Утерян')).toBe('danger');
+  expect(equipmentStatusTone('Утилизирован')).toBe('danger');
+  expect(equipmentStatusTone('Не используется')).toBe('neutral');
+  expect(equipmentStatusTone('Не в работе')).toBe('neutral');
+  expect(equipmentStatusTone('Неизвестно')).toBe('neutral');
+  expect(equipmentStatusTone('')).toBe('neutral');
+  expect(equipmentStatusTone(null)).toBe('neutral');
+});
+
 it('filters loaded consumables across identity and placement fields', () => {
   const items = [
     { id: 1, inv_no: 'C-1', type_name: 'Картридж', model_name: 'HP 12A', part_no: '', description: '', branch_name: 'Офис', location_name: 'Склад' },
@@ -84,4 +114,24 @@ it('filters loaded consumables across identity and placement fields', () => {
   ] as never;
   expect(filterConsumables(items, 'rbc-7')).toEqual([items[1]]);
   expect(filterConsumables(items, 'склад')).toEqual([items[0]]);
+});
+
+it('accepts empty and valid IPv4 or MAC values in the equipment draft', () => {
+  expect(validateEquipmentDraft({})).toEqual({});
+  expect(validateEquipmentDraft({ ip_address: '', mac_address: '' })).toEqual({});
+  expect(validateEquipmentDraft({ ip_address: '10.0.0.7', mac_address: 'AA:BB:CC:DD:EE:FF' })).toEqual({});
+  expect(validateEquipmentDraft({ ip_address: '0.0.0.0' })).toEqual({});
+  expect(validateEquipmentDraft({ mac_address: 'aa-bb-cc-dd-ee-ff' })).toEqual({});
+  expect(validateEquipmentDraft({ mac_address: 'AABBCCDDEEFF' })).toEqual({});
+});
+
+it('rejects malformed IP and MAC values in the equipment draft', () => {
+  expect(validateEquipmentDraft({ ip_address: '999.0.0.1' }).ip_address).toBeTruthy();
+  expect(validateEquipmentDraft({ ip_address: '10.0.0' }).ip_address).toBeTruthy();
+  expect(validateEquipmentDraft({ ip_address: '10.0.0.7.1' }).ip_address).toBeTruthy();
+  expect(validateEquipmentDraft({ ip_address: 'abc' }).ip_address).toBeTruthy();
+  expect(validateEquipmentDraft({ mac_address: 'GG:BB:CC:DD:EE:FF' }).mac_address).toBeTruthy();
+  expect(validateEquipmentDraft({ mac_address: 'AA:BB-CC:DD:EE:FF' }).mac_address).toBeTruthy();
+  expect(validateEquipmentDraft({ mac_address: 'AA:BB:CC' }).mac_address).toBeTruthy();
+  expect(validateEquipmentDraft({ mac_address: 'AABBCCDDEEFF00' }).mac_address).toBeTruthy();
 });

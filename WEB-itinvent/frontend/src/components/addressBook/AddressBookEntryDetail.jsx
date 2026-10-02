@@ -1,7 +1,11 @@
-import { Avatar, Box, Button, Chip, Stack, Tooltip, Typography } from '@mui/material';
+import { Avatar, Box, Button, Chip, IconButton, Stack, Tooltip, Typography } from '@mui/material';
+import ContactPageOutlinedIcon from '@mui/icons-material/ContactPageOutlined';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
-import MailOutlineIcon from '@mui/icons-material/MailOutline';
+import ForwardToInboxOutlinedIcon from '@mui/icons-material/ForwardToInboxOutlined';
 import PhoneIcon from '@mui/icons-material/Phone';
+import StarIcon from '@mui/icons-material/Star';
+import StarBorderIcon from '@mui/icons-material/StarBorder';
 import { alpha, useTheme } from '@mui/material/styles';
 import { TelegramBrandIcon } from '../icons/MessengerBrandIcon';
 import { isValidEmailRecipient } from '../mail/mailComposeState';
@@ -36,6 +40,9 @@ const metaLabelSx = {
   flexShrink: { md: 0 },
 };
 
+// Quick actions: 44px on touch, 36px on desktop per design system targets.
+const actionButtonSx = { height: { xs: 44, sm: 36 }, minHeight: { xs: 44, sm: 36 } };
+
 function MetaField({ label, testId, children }) {
   return (
     <Box sx={metaRowSx} data-testid={testId}>
@@ -49,16 +56,25 @@ function MetaField({ label, testId, children }) {
 
 export default function AddressBookEntryDetail({
   item,
+  titleId,
   query = '',
   enableTelLinks = false,
   compact = false,
+  dismissed = false,
   onCopy,
   onOpenTelegram,
   onOpenMax,
   onComposeEmail,
+  canComposeEmail = false,
   onOpenChat,
   showChatAction = false,
   chatBusy = false,
+  isFavorite = false,
+  onToggleFavorite,
+  onSaveContact,
+  // R5: bottom-sheet variant keeps primary actions (call/chat) exclusively in
+  // the sticky footer; the header block shows secondary actions only.
+  primaryActionsInFooter = false,
 }) {
   const theme = useTheme();
 
@@ -88,6 +104,10 @@ export default function AddressBookEntryDetail({
   const absenceLabel = formatAbsenceLabel(item?.absence);
   const ageLabel = formatAge(item?.age);
   const hireDateLabel = formatDate(item?.hire_date);
+  const dismissalDateLabel = formatDate(item?.dismissal_date);
+  const dismissedLabel = dismissed
+    ? `Уволен${dismissalDateLabel ? ` ${dismissalDateLabel}` : ''}`
+    : '';
   const canCall = enableTelLinks && Boolean(primaryPhone?.telHref);
   const canTelegram = primaryPhone?.digits && isPhoneDeepLinkReady(primaryPhone.digits);
   const canMail = primaryEmail?.value && isValidEmailRecipient(primaryEmail.value);
@@ -98,16 +118,16 @@ export default function AddressBookEntryDetail({
   ]
     .filter(Boolean)
     .join(' · ');
-  const hasOrgMeta = Boolean(
+  const hasWorkMeta = Boolean(
     item.department
       || item.department_code
       || item.department_location
-      || item.middle_name
       || item.employee_code
-      || item.inn
       || workplaceLabel
       || hireDateLabel
+      || dismissalDateLabel
   );
+  const hasPersonalMeta = Boolean(item.middle_name || ageLabel || item.inn);
   const hasContacts = listAny(item.work_phones)
     || listAny(item.personal_phones)
     || listAny(item.work_emails)
@@ -117,8 +137,8 @@ export default function AddressBookEntryDetail({
     <Box
       data-testid="address-book-entry-detail"
       sx={{
-        border: `1px solid ${theme.palette.divider}`,
-        bgcolor: alpha(theme.palette.background.paper, 0.82),
+        border: compact ? 'none' : `1px solid ${theme.palette.divider}`,
+        bgcolor: compact ? 'transparent' : alpha(theme.palette.background.paper, 0.82),
         p: compact ? 2 : 2.5,
         minHeight: compact ? 'auto' : 280,
       }}
@@ -141,6 +161,7 @@ export default function AddressBookEntryDetail({
             </Avatar>
             <Box sx={{ minWidth: 0, flex: 1 }}>
               <Typography
+                id={titleId}
                 variant={compact ? 'subtitle1' : 'h6'}
                 fontWeight={800}
                 sx={{ lineHeight: 1.25, overflowWrap: 'anywhere' }}
@@ -160,11 +181,44 @@ export default function AddressBookEntryDetail({
                   data-testid="address-book-absence-chip"
                 />
               ) : null}
+              {dismissedLabel ? (
+                <Chip
+                  size="small"
+                  label={dismissedLabel}
+                  sx={{ mt: 0.5, fontWeight: 700 }}
+                  data-testid="address-book-dismissed-chip"
+                />
+              ) : null}
             </Box>
+            {onToggleFavorite && item.employee_code ? (
+              <Tooltip title={isFavorite ? 'Убрать из избранного' : 'В избранное'}>
+                <IconButton
+                  aria-label={isFavorite ? `Убрать из избранного ${item.full_name}` : `В избранное ${item.full_name}`}
+                  aria-pressed={isFavorite}
+                  onClick={() => onToggleFavorite(item)}
+                  sx={{
+                    width: { xs: 44, sm: 36 },
+                    height: { xs: 44, sm: 36 },
+                    color: isFavorite ? 'warning.main' : (theme.customAdmin?.iconMuted || 'text.secondary'),
+                    flexShrink: 0,
+                    alignSelf: 'flex-start',
+                  }}
+                  data-testid="address-book-favorite-toggle"
+                >
+                  {isFavorite ? <StarIcon /> : <StarBorderIcon />}
+                </IconButton>
+              </Tooltip>
+            ) : null}
           </Stack>
 
-          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-            {canCall ? (
+          <Stack
+            direction="row"
+            spacing={1}
+            useFlexGap
+            flexWrap="wrap"
+            data-testid="address-book-detail-actions"
+          >
+            {canCall && !primaryActionsInFooter ? (
               <Tooltip title={primaryPhone.value}>
                 <Button
                   component="a"
@@ -173,10 +227,25 @@ export default function AddressBookEntryDetail({
                   size="small"
                   startIcon={<PhoneIcon />}
                   aria-label={`Позвонить ${primaryPhone.value}`}
+                  // tel: links only make sense on a handset; desktop gets copy.
+                  sx={{ ...actionButtonSx, display: { xs: 'inline-flex', sm: 'none' } }}
                 >
                   Позвонить
                 </Button>
               </Tooltip>
+            ) : null}
+            {primaryPhone?.value ? (
+              <Button
+                variant="contained"
+                size="small"
+                startIcon={<ContentCopyIcon />}
+                onClick={() => onCopy?.(primaryPhone.value)}
+                aria-label={`Скопировать номер ${primaryPhone.value}`}
+                sx={{ ...actionButtonSx, display: { xs: 'none', sm: 'inline-flex' } }}
+                data-testid="address-book-copy-number"
+              >
+                Скопировать номер
+              </Button>
             ) : null}
             {primaryPhone ? (
               <Tooltip title={canTelegram ? `Telegram: ${primaryPhone.value}` : 'Номер не подходит для Telegram'}>
@@ -188,29 +257,31 @@ export default function AddressBookEntryDetail({
                     disabled={!canTelegram}
                     onClick={() => onOpenTelegram(primaryPhone.digits)}
                     aria-label={`Открыть Telegram ${primaryPhone.value}`}
+                    sx={actionButtonSx}
                   >
                     Telegram
                   </Button>
                 </span>
               </Tooltip>
             ) : null}
-            {primaryEmail ? (
+            {primaryEmail && !dismissed && canComposeEmail ? (
               <Tooltip title={canMail ? primaryEmail.value : 'Некорректный e-mail'}>
                 <span>
                   <Button
                     variant="outlined"
                     size="small"
-                    startIcon={<MailOutlineIcon />}
+                    startIcon={<ForwardToInboxOutlinedIcon />}
                     disabled={!canMail}
                     onClick={() => onComposeEmail(primaryEmail.value)}
-                    aria-label={`Написать в HUB ${primaryEmail.value}`}
+                    aria-label={`Новое письмо в HUB ${primaryEmail.value}`}
+                    sx={actionButtonSx}
                   >
-                    Написать в HUB
+                    Новое письмо в HUB
                   </Button>
                 </span>
               </Tooltip>
             ) : null}
-            {showChatAction ? (
+            {showChatAction && !primaryActionsInFooter ? (
               <Button
                 variant="outlined"
                 size="small"
@@ -219,17 +290,81 @@ export default function AddressBookEntryDetail({
                 onClick={() => onOpenChat?.(item)}
                 aria-label={`Написать в чат ${item.full_name}`}
                 data-testid="address-book-chat-detail"
+                sx={actionButtonSx}
               >
                 Написать в чат
               </Button>
             ) : null}
+            {!dismissed && onSaveContact ? (
+              <Tooltip title="Скачать vCard (.vcf) для телефонной книги">
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={<ContactPageOutlinedIcon />}
+                  onClick={() => onSaveContact(item)}
+                  aria-label={`Скачать контакт ${item.full_name}`}
+                  data-testid="address-book-save-contact"
+                  sx={actionButtonSx}
+                >
+                  Добавить в контакты
+                </Button>
+              </Tooltip>
+            ) : null}
           </Stack>
         </Stack>
 
-        {hasOrgMeta ? (
+        {hasContacts ? (
+          <Stack spacing={1.5}>
+            <Typography variant="overline" color="text.secondary" fontWeight={800}>
+              Контакты
+            </Typography>
+            <Stack spacing={1.5}>
+              <PhoneActions
+                phones={item.work_phones}
+                fallbackLabel="Рабочий"
+                onCopy={onCopy}
+                enableTelLinks={enableTelLinks}
+                onOpenTelegram={onOpenTelegram}
+                onOpenMax={onOpenMax}
+                showMaxAction={!dismissed}
+                query={query}
+              />
+              <PhoneActions
+                phones={item.personal_phones}
+                fallbackLabel="Личный"
+                onCopy={onCopy}
+                enableTelLinks={enableTelLinks}
+                onOpenTelegram={onOpenTelegram}
+                onOpenMax={onOpenMax}
+                showMaxAction={!dismissed}
+                query={query}
+              />
+              <EmailActions
+                emails={item.work_emails}
+                fallbackLabel="Рабочий e-mail"
+                onCopy={onCopy}
+                onComposeEmail={onComposeEmail}
+                dismissed={dismissed}
+                canComposeEmail={canComposeEmail}
+                query={query}
+              />
+              <EmailActions
+                emails={item.personal_emails}
+                fallbackLabel="Личный e-mail"
+                onCopy={onCopy}
+                onComposeEmail={onComposeEmail}
+                dismissed={dismissed}
+                canComposeEmail={canComposeEmail}
+                query={query}
+              />
+            </Stack>
+          </Stack>
+        ) : null}
+
+        {hasWorkMeta ? (
           <Stack spacing={1}>
             <Typography variant="overline" color="text.secondary" fontWeight={800}>
-              О сотруднике
+              Работа
             </Typography>
             <Stack spacing={0.75}>
               {item.department ? (
@@ -249,10 +384,10 @@ export default function AddressBookEntryDetail({
                   <Chip label={<HighlightText value={item.department_location} query={query} />} size="small" variant="outlined" />
                 </MetaField>
               ) : null}
-              {item.middle_name ? (
-                <MetaField label="Отчество" testId="address-book-middle-name">
+              {workplaceLabel ? (
+                <MetaField label="Рабочее место" testId="address-book-workplace">
                   <Typography variant="body2" color="text.secondary">
-                    <HighlightText value={item.middle_name} query={query} />
+                    {workplaceLabel}
                   </Typography>
                 </MetaField>
               ) : null}
@@ -263,20 +398,6 @@ export default function AddressBookEntryDetail({
                   </Typography>
                 </MetaField>
               ) : null}
-              {item.inn ? (
-                <MetaField label="ИНН" testId="address-book-inn">
-                  <Typography variant="body2" color="text.secondary">
-                    <HighlightText value={item.inn} query={query} />
-                  </Typography>
-                </MetaField>
-              ) : null}
-              {workplaceLabel ? (
-                <MetaField label="Рабочее место" testId="address-book-workplace">
-                  <Typography variant="body2" color="text.secondary">
-                    {workplaceLabel}
-                  </Typography>
-                </MetaField>
-              ) : null}
               {hireDateLabel ? (
                 <MetaField label="Дата приёма" testId="address-book-hire-date">
                   <Typography variant="body2" color="text.secondary">
@@ -284,48 +405,44 @@ export default function AddressBookEntryDetail({
                   </Typography>
                 </MetaField>
               ) : null}
+              {dismissalDateLabel ? (
+                <MetaField label="Дата увольнения" testId="address-book-dismissal-date">
+                  <Typography variant="body2" color="text.secondary">
+                    {dismissalDateLabel}
+                  </Typography>
+                </MetaField>
+              ) : null}
             </Stack>
           </Stack>
         ) : null}
 
-        {hasContacts ? (
-          <Stack spacing={1.5}>
+        {hasPersonalMeta ? (
+          <Stack spacing={1}>
             <Typography variant="overline" color="text.secondary" fontWeight={800}>
-              Контакты
+              Личное
             </Typography>
-            <Stack spacing={1.5}>
-              <PhoneActions
-                phones={item.work_phones}
-                fallbackLabel="Рабочий"
-                onCopy={onCopy}
-                enableTelLinks={enableTelLinks}
-                onOpenTelegram={onOpenTelegram}
-                onOpenMax={onOpenMax}
-                query={query}
-              />
-              <PhoneActions
-                phones={item.personal_phones}
-                fallbackLabel="Личный"
-                onCopy={onCopy}
-                enableTelLinks={enableTelLinks}
-                onOpenTelegram={onOpenTelegram}
-                onOpenMax={onOpenMax}
-                query={query}
-              />
-              <EmailActions
-                emails={item.work_emails}
-                fallbackLabel="Рабочий e-mail"
-                onCopy={onCopy}
-                onComposeEmail={onComposeEmail}
-                query={query}
-              />
-              <EmailActions
-                emails={item.personal_emails}
-                fallbackLabel="Личный e-mail"
-                onCopy={onCopy}
-                onComposeEmail={onComposeEmail}
-                query={query}
-              />
+            <Stack spacing={0.75}>
+              {item.middle_name ? (
+                <MetaField label="Отчество" testId="address-book-middle-name">
+                  <Typography variant="body2" color="text.secondary">
+                    <HighlightText value={item.middle_name} query={query} />
+                  </Typography>
+                </MetaField>
+              ) : null}
+              {ageLabel ? (
+                <MetaField label="Возраст" testId="address-book-age">
+                  <Typography variant="body2" color="text.secondary">
+                    {ageLabel}
+                  </Typography>
+                </MetaField>
+              ) : null}
+              {item.inn ? (
+                <MetaField label="ИНН" testId="address-book-inn">
+                  <Typography variant="body2" color="text.secondary">
+                    <HighlightText value={item.inn} query={query} />
+                  </Typography>
+                </MetaField>
+              ) : null}
             </Stack>
           </Stack>
         ) : null}

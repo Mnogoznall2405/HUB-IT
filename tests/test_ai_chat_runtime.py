@@ -647,6 +647,48 @@ def test_personal_memory_ranks_relevant_fact_before_newer_noise(tmp_path, monkey
     assert len(rendered.splitlines()) == 20
 
 
+def test_personal_memory_reports_only_relevant_facts_and_marks_the_answer(tmp_path, monkeypatch):
+    """AG: the answer says when the personal memory was taken into account (relevant facts only)."""
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "general_ai_memory_mark.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    appdb_db.initialize_app_schema(database_url)
+    service = ai_chat_module.AiChatService()
+    now = datetime.now(timezone.utc)
+    with appdb_db.app_session(database_url) as session:
+        for memory_id, content in (
+            ("m-canon", "Мой рабочий контекст - обслуживание принтеров Canon"),
+            ("m-noise", "Предпочитаю тёмное оформление"),
+        ):
+            session.add(
+                app_models.AppAiUserMemory(
+                    id=memory_id, user_id=11, category="preference", content=content,
+                    normalized_hash=f"hash-{memory_id}", is_active=True, created_at=now, updated_at=now,
+                )
+            )
+
+    def build(query):
+        hits: list[str] = []
+        with appdb_db.app_session(database_url) as session:
+            text = service._build_personal_memory_context(session=session, user_id=11, query=query, relevant_out=hits)
+        return text, hits
+
+    text, hits = build("Что важно при обслуживании принтеров Canon?")
+    assert "тёмное оформление" in text and hits == ["m-canon"]
+    assert build("Как настроить VPN?")[1] == []
+
+    mark = ai_chat_module._append_memory_mark
+    assert mark("Ответ", hits=0) == "Ответ"
+    assert mark("Ответ", hits=1).endswith("_Учтена личная память: 1 факт_")
+    assert mark("Ответ", hits=2).endswith("2 факта_")
+    assert mark("Ответ", hits=5).endswith("5 фактов_")
+    assert mark("Ответ", hits=11).endswith("11 фактов_")
+    assert mark("Ответ", hits=21).endswith("21 факт_")
+    once = mark("Ответ", hits=1)
+    assert mark(once, hits=1) == once
+
+
 def test_ai_context_uses_recent_twenty_rolling_summary_and_reset_marker(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_context_summary_reset.db")
     ai_chat_module = importlib.import_module("backend.ai_chat.service")
@@ -936,6 +978,9 @@ def test_it_helper_bot_is_retired_without_deleting_legacy_row(tmp_path, monkeypa
         "placement": "pinned",
         "is_enabled": True,
     })
+    # AG-3: seeds run via initialize_runtime() — list/open methods no longer
+    # bootstrap implicitly.
+    temp_ai_service.initialize_runtime()
     retired = temp_ai_service.retire_it_helper_bot()
     catalog = {item["slug"]: item for item in temp_ai_service.list_admin_bots()}
     public_slugs = {item["slug"] for item in temp_ai_service.list_bots()["items"]}
@@ -1068,6 +1113,10 @@ def test_ai_bot_admin_patch_persists_tools_and_settings(tmp_path, monkeypatch):
     app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["settings.ai.manage"])
     client = TestClient(app)
 
+    # AI1: bootstrap runs at process start / on settings change only —
+    # list/create endpoints no longer seed implicitly.
+    ai_chat_module.ai_chat_service.initialize_runtime(force=True)
+
     listed = client.get("/ai-bots")
     assert listed.status_code == 200
     assert listed.json()
@@ -1148,12 +1197,21 @@ def test_default_bot_backfill_seeds_live_tools_only_once(tmp_path, monkeypatch):
             )
         )
 
+    # AI1: seeds run via initialize_runtime()/ensure_* at process start —
+    # list_admin_bots no longer bootstraps implicitly.
+    temp_ai_service.ensure_default_bot()
     backfilled = next(
         item for item in temp_ai_service.list_admin_bots() if item["slug"] == ai_chat_module.DEFAULT_BOT_SLUG
     )
 
     assert backfilled["slug"] == ai_chat_module.DEFAULT_BOT_SLUG
-    assert backfilled["enabled_tools"] == tools_context_module.DEFAULT_ITINVENT_TOOL_IDS
+    # AG-3: file/report tools merged into the single assistant.
+    assert backfilled["enabled_tools"] == [
+        *tools_context_module.DEFAULT_ITINVENT_TOOL_IDS,
+        "ai.files.create",
+        "ai.files.report",
+        "ai.files.convert_document",
+    ]
     assert backfilled["live_data_enabled"] is True
 
     temp_ai_service.update_bot(backfilled["id"], {
@@ -3263,7 +3321,7 @@ def test_ai_chat_tools_use_effective_database_context(tmp_path, monkeypatch):
         full_name="Operator Tools",
         is_active=True,
         use_custom_permissions=True,
-        custom_permissions=["chat.read", "chat.write", "chat.ai.use"],
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "database.read"],
     )
 
     bot = temp_ai_service.ensure_default_bot()
@@ -3488,7 +3546,7 @@ def test_ai_chat_tools_chain_employee_search_into_equipment_lookup(tmp_path, mon
         full_name="Operator Chain",
         is_active=True,
         use_custom_permissions=True,
-        custom_permissions=["chat.read", "chat.write", "chat.ai.use"],
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "database.read"],
     )
 
     bot = temp_ai_service.ensure_default_bot()
@@ -3735,7 +3793,7 @@ def test_ai_chat_tools_chain_employee_search_equipment_report_format_choice(tmp_
         full_name="Operator Chain Report",
         is_active=True,
         use_custom_permissions=True,
-        custom_permissions=["chat.read", "chat.write", "chat.ai.use"],
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "database.read"],
     )
 
     bot = temp_ai_service.ensure_default_bot()
@@ -3965,7 +4023,7 @@ def test_ai_chat_tools_route_broad_equipment_queries_through_universal_search(tm
         full_name="Operator Universal",
         is_active=True,
         use_custom_permissions=True,
-        custom_permissions=["chat.read", "chat.write", "chat.ai.use"],
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "database.read"],
     )
 
     bot = temp_ai_service.ensure_default_bot()
@@ -4225,7 +4283,7 @@ def test_ai_chat_tools_route_consumables_queries_through_consumables_search(tmp_
         full_name="Operator Consumables",
         is_active=True,
         use_custom_permissions=True,
-        custom_permissions=["chat.read", "chat.write", "chat.ai.use"],
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "database.read"],
     )
 
     bot = temp_ai_service.ensure_default_bot()
@@ -4413,7 +4471,7 @@ def test_ai_chat_tools_route_branch_queries_through_branch_inventory_tool(tmp_pa
         full_name="Operator Branch",
         is_active=True,
         use_custom_permissions=True,
-        custom_permissions=["chat.read", "chat.write", "chat.ai.use"],
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "database.read"],
     )
 
     bot = temp_ai_service.ensure_default_bot()
@@ -4484,3 +4542,99 @@ def test_ai_chat_tools_route_branch_queries_through_branch_inventory_tool(tmp_pa
     assert "## Найдено" in messages[-1].body
     assert "Dell Latitude 5430" in messages[-1].body
     assert messages[-1].body.endswith("Источник: ITinvent / ITINVENT")
+
+
+def test_ai8_conversation_of_missing_bot_stays_visible_and_is_not_rebound_by_getter(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_bot_fallback.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    app_models = importlib.import_module("backend.appdb.models")
+    appdb_db.initialize_app_schema(database_url)
+
+    service = ai_chat_module.AiChatService()
+    monkeypatch.setattr(service, "initialize_runtime", lambda: None)
+    with appdb_db.app_session(database_url) as session:
+        session.add_all(
+            [
+                app_models.AppUser(id=5, username="operator", role="viewer", is_active=True),
+                app_models.AppAiBot(id="general", slug="general-ai", title="General", surface="general"),
+                app_models.AppAiBotConversation(bot_id="removed-bot", user_id=5, conversation_id="conv-orphan"),
+            ]
+        )
+
+    runtime = service._get_runtime_by_conversation("conv-orphan")
+
+    # R31: the getter is a pure read - the conversation stays an AI conversation, nothing is written.
+    assert runtime is not None
+    assert runtime.bot.is_enabled is False
+    assert service.is_ai_conversation("conv-orphan") is True
+    # The replacement is only resolved (read-only) for a later send.
+    assert service._resolve_replacement_bot(runtime) == "general"
+    with appdb_db.app_session(database_url) as session:
+        mapping = session.execute(
+            select(app_models.AppAiBotConversation).where(
+                app_models.AppAiBotConversation.conversation_id == "conv-orphan"
+            )
+        ).scalar_one()
+        assert mapping.bot_id == "removed-bot"
+
+
+def test_ai8_conversation_of_disabled_bot_is_not_rebound_by_getter(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_bot_disabled_fallback.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    app_models = importlib.import_module("backend.appdb.models")
+    appdb_db.initialize_app_schema(database_url)
+
+    service = ai_chat_module.AiChatService()
+    monkeypatch.setattr(service, "initialize_runtime", lambda: None)
+    with appdb_db.app_session(database_url) as session:
+        session.add_all(
+            [
+                app_models.AppUser(id=5, username="operator", role="viewer", is_active=True),
+                app_models.AppAiBot(id="general", slug="general-ai", title="General", surface="general"),
+                app_models.AppAiBot(id="corp", slug="corp-assistant", title="Corp", is_enabled=False),
+                app_models.AppAiBotConversation(bot_id="corp", user_id=5, conversation_id="conv-disabled"),
+            ]
+        )
+
+    runtime = service._get_runtime_by_conversation("conv-disabled")
+
+    assert runtime is not None
+    assert runtime.bot.id == "corp"
+    assert service._resolve_replacement_bot(runtime) == "general"
+    with appdb_db.app_session(database_url) as session:
+        mapping = session.execute(
+            select(app_models.AppAiBotConversation).where(
+                app_models.AppAiBotConversation.conversation_id == "conv-disabled"
+            )
+        ).scalar_one()
+        assert mapping.bot_id == "corp"
+
+
+def test_ai8_conversation_without_main_assistant_has_no_replacement(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_bot_no_fallback.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    app_models = importlib.import_module("backend.appdb.models")
+    appdb_db.initialize_app_schema(database_url)
+
+    service = ai_chat_module.AiChatService()
+    monkeypatch.setattr(service, "initialize_runtime", lambda: None)
+    with appdb_db.app_session(database_url) as session:
+        session.add_all(
+            [
+                app_models.AppUser(id=5, username="operator", role="viewer", is_active=True),
+                app_models.AppAiBotConversation(bot_id="removed-bot", user_id=5, conversation_id="conv-orphan"),
+            ]
+        )
+
+    runtime = service._get_runtime_by_conversation("conv-orphan")
+    assert runtime is not None  # history stays visible
+    assert service._resolve_replacement_bot(runtime) is None
+    assert (
+        service.queue_run_for_message(
+            conversation_id="conv-orphan", trigger_message_id="m1", current_user_id=5
+        )
+        is None
+    )

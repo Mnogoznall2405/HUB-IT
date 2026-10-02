@@ -14,14 +14,29 @@ export function notificationData(response: NotificationResponse): Record<string,
   return data && typeof data === 'object' ? data as Record<string, unknown> : {};
 }
 
+function mergeChatWorkspaceParam(path: string, workspace: string): string {
+  try {
+    const parsed = new URL(path, 'https://hubit.invalid');
+    if (parsed.origin !== 'https://hubit.invalid' || parsed.pathname !== '/chat') return path;
+    parsed.searchParams.set('workspace', workspace);
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return path;
+  }
+}
+
 export function portalPathFromNotificationResponse(response: NotificationResponse): string {
   const data = notificationData(response);
+  const workspace = String(data.conversation_kind || '').trim().toLowerCase() === 'ai' ? 'ai' : '';
   const route = String(data.route || '').trim();
-  if (route) return normalizeNativeRoutePath(route);
+  if (route) {
+    const normalized = normalizeNativeRoutePath(route);
+    return workspace ? mergeChatWorkspaceParam(normalized, workspace) : normalized;
+  }
 
   const conversationId = String(data.conversation_id || data.conversationId || '').trim();
   if (conversationId) {
-    return `/chat?conversation=${encodeURIComponent(conversationId)}`;
+    return `/chat?conversation=${encodeURIComponent(conversationId)}${workspace ? `&workspace=${workspace}` : ''}`;
   }
 
   return '/dashboard';

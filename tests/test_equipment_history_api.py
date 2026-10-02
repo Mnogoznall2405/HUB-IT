@@ -33,7 +33,7 @@ def equipment_history_env():
         assigned_database=None,
     )
     app.dependency_overrides[deps.get_current_active_user] = lambda: current_user
-    app.dependency_overrides[deps.get_current_database_id] = lambda: "main"
+    app.dependency_overrides[deps.get_request_scoped_database_id] = lambda: "main"
 
     return TestClient(app)
 

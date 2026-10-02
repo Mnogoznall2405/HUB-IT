@@ -48,6 +48,46 @@ describe('useChatFoldersController', () => {
     expect(setFoldersLoading).toHaveBeenCalledWith(false);
   });
 
+  it('loadChatFolders stores server folder_unread_counts', async () => {
+    chatFoldersAPI.listFolders.mockResolvedValue({
+      items: [],
+      conversation_ids_by_folder: {},
+      folder_unread_counts: { personal: 7, groups: 2, tasks: 0, archived: 1, ai: 3 },
+    });
+    const setFolderUnreadCounts = vi.fn();
+
+    const { result } = renderHook(() => useChatFoldersController({
+      notifyApiError: vi.fn(),
+      setCustomFolders: vi.fn(),
+      setConversationIdsByFolder: vi.fn(),
+      setFolderUnreadCounts,
+      setFoldersLoading: vi.fn(),
+      setConversationFilter: vi.fn(),
+    }));
+
+    await result.current.loadChatFolders({ silent: true });
+    expect(setFolderUnreadCounts).toHaveBeenCalledWith({
+      personal: 7, groups: 2, tasks: 0, archived: 1, ai: 3,
+    });
+  });
+
+  it('loadChatFolders keeps previous counts when the payload has none', async () => {
+    chatFoldersAPI.listFolders.mockResolvedValue({ items: [], conversation_ids_by_folder: {} });
+    const setFolderUnreadCounts = vi.fn();
+
+    const { result } = renderHook(() => useChatFoldersController({
+      notifyApiError: vi.fn(),
+      setCustomFolders: vi.fn(),
+      setConversationIdsByFolder: vi.fn(),
+      setFolderUnreadCounts,
+      setFoldersLoading: vi.fn(),
+      setConversationFilter: vi.fn(),
+    }));
+
+    await result.current.loadChatFolders({ silent: true });
+    expect(setFolderUnreadCounts).not.toHaveBeenCalled();
+  });
+
   it('handleActiveFolderChange normalizes folder key', () => {
     const setConversationFilter = vi.fn();
     const { result } = renderHook(() => useChatFoldersController({

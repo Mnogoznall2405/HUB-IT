@@ -2,6 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 import type { ChatMessage } from '../api/types';
 import type { NativePickedFile } from '../files/nativeFilePicker';
 import { recordChatQueueStorageOp } from '../diagnostics/chatSendTiming';
+import { recordDiagnosticEvent } from '../diagnostics/diagnostics';
 import { persistNativeChatDraftFiles, deleteUnreferencedChatFiles } from './nativeChatDraftFiles';
 
 export type NativeChatQueuedUpload = {
@@ -19,7 +20,18 @@ export type NativeChatQueuedUpload = {
 import { CHAT_OUTBOX_STORAGE_KEY as KEY, enqueueNativeChatStorage as enqueue,
   getNativeChatOutboxRowsCache, setNativeChatOutboxRowsCache } from './nativeChatStorageQueue';
 const MAX_CHARACTERS = 262_144;
-export type NativeChatOutboxEntry = { userId: number; message: ChatMessage; upload?: NativeChatQueuedUpload; title?: string };
+/** Non-text send intent persisted with the row so the session runner can
+ * dispatch sticker/task-share deliveries without an open thread screen. */
+export type NativeChatOutboxCommand =
+  | { type: 'sticker'; sticker_id: string }
+  | { type: 'task_share'; task_id: string };
+export type NativeChatOutboxEntry = {
+  userId: number;
+  message: ChatMessage;
+  upload?: NativeChatQueuedUpload;
+  title?: string;
+  command?: NativeChatOutboxCommand;
+};
 type Entry = NativeChatOutboxEntry;
 const listeners = new Set<() => void>();
 function notify() {
@@ -29,7 +41,7 @@ function notify() {
 }
 export function subscribeNativeChatOutbox(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; }
 export function readNativeChatOutbox(userId: number) {
-  return enqueue(async () => (await readAll()).filter((entry) => entry.userId === userId).map((entry) => ({
+  return enqueue(async () => (await readAll(userId)).filter((entry) => entry.userId === userId).map((entry) => ({
     ...entry,
     busy: sending.has(JSON.stringify([generation, userId, entry.message.conversation_id, entry.message.client_message_id]))
       || uploading.has(JSON.stringify([generation, userId, entry.message.conversation_id, entry.message.client_message_id])),
@@ -75,23 +87,90 @@ function validUpload(value: unknown): boolean {
       && typeof file.size === 'number' && Number.isFinite(file.size) && file.size >= 0);
 }
 
-async function readAll(): Promise<Entry[]> {
-  const cached = getNativeChatOutboxRowsCache();
-  if (cached) return cached as Entry[];
-  const startedAt = Date.now();
-  let raw: string | null = null;
-  try { raw = await SecureStore.getItemAsync(KEY); }
-  finally { recordChatQueueStorageOp('read', Date.now() - startedAt, raw?.length || 0); }
-  let value: unknown;
-  try { value = raw ? JSON.parse(raw) : []; }
-  catch { throw new Error('Не удалось прочитать очередь сообщений'); }
-  if (!Array.isArray(value) || value.some((item) => !item || !Number.isInteger(item.userId)
-    || item.userId <= 0 || !validMessage(item.message)
-    || item.message.sender_user_id !== item.userId || !validUpload(item.upload))) {
-    throw new Error('Не удалось прочитать очередь сообщений');
+export function validNativeChatOutboxCommand(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value !== 'object' || Array.isArray(value)) return false;
+  const command = value as Record<string, unknown>;
+  if (command.type === 'sticker') {
+    return typeof command.sticker_id === 'string' && Boolean(command.sticker_id.trim());
   }
-  setNativeChatOutboxRowsCache(value);
-  return value;
+  if (command.type === 'task_share') {
+    return typeof command.task_id === 'string' && Boolean(command.task_id.trim());
+  }
+  return false;
+}
+
+/** Upload file references found on dropped entries — reclaimed after a repair. */
+export function nativeChatOutboxUploadUris(items: unknown[]): string[] {
+  return items.flatMap((item) => {
+    const files = (item as Entry | null)?.upload?.files;
+    if (!Array.isArray(files)) return [];
+    return files.map((file) => file?.uri).filter((uri): uri is string => typeof uri === 'string');
+  });
+}
+
+/** Splits a decoded blob into valid rows owned by `ownerId` and the dropped
+ * remainder (structurally damaged rows and rows left by another account). */
+export function partitionNativeChatOutboxEntries(value: unknown, ownerId?: number): { rows: Entry[]; dropped: unknown[] } {
+  const rows: Entry[] = [];
+  const dropped: unknown[] = [];
+  if (!Array.isArray(value)) return { rows, dropped };
+  for (const item of value as Entry[]) {
+    if (!item || !Number.isInteger(item.userId) || item.userId <= 0 || !validMessage(item.message)
+      || item.message.sender_user_id !== item.userId || !validUpload(item.upload)
+      || !validNativeChatOutboxCommand(item.command)) {
+      dropped.push(item);
+      continue;
+    }
+    // Rows of another account can never be delivered under this session —
+    // they only consume the shared storage budget, so they are dropped once.
+    if (ownerId != null && item.userId !== ownerId) {
+      dropped.push(item);
+      continue;
+    }
+    rows.push(item);
+  }
+  return { rows, dropped };
+}
+
+/** Moves an unreadable blob aside instead of failing every later operation:
+ * the payload stays recoverable for support, the queue restarts empty. */
+export async function quarantineNativeChatOutboxBlob(raw: string): Promise<void> {
+  try { await SecureStore.setItemAsync(`${KEY}_corrupt_${Date.now()}`, raw); }
+  catch { /* The quarantine copy is best-effort; the empty queue still unblocks sends. */ }
+  const startedAt = Date.now();
+  try { await SecureStore.deleteItemAsync(KEY); }
+  catch { /* The next successful write overwrites the blob anyway. */ }
+  finally { recordChatQueueStorageOp('delete', Date.now() - startedAt, 0); }
+}
+
+async function readAll(ownerId?: number): Promise<Entry[]> {
+  const cached = getNativeChatOutboxRowsCache();
+  let parsed: unknown = cached;
+  if (parsed === null || parsed === undefined) {
+    const startedAt = Date.now();
+    let raw: string | null = null;
+    try { raw = await SecureStore.getItemAsync(KEY); }
+    finally { recordChatQueueStorageOp('read', Date.now() - startedAt, raw?.length || 0); }
+    try { parsed = raw ? JSON.parse(raw) : []; }
+    catch { parsed = null; }
+    if (!Array.isArray(parsed)) {
+      if (raw) await quarantineNativeChatOutboxBlob(raw);
+      void recordDiagnosticEvent('native_file_error');
+      setNativeChatOutboxRowsCache([]);
+      notify();
+      return [];
+    }
+  }
+  const { rows, dropped } = partitionNativeChatOutboxEntries(parsed, ownerId);
+  if (dropped.length) {
+    await writeAll(rows);
+    void recordDiagnosticEvent('native_file_error');
+    await deleteUnreferencedChatFiles(nativeChatOutboxUploadUris(dropped)).catch(() => undefined);
+    return rows;
+  }
+  if (!cached) setNativeChatOutboxRowsCache(rows);
+  return rows;
 }
 
 async function writeAll(entries: Entry[]) {
@@ -120,16 +199,19 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
   };
   const matches = (entry: Entry, id: string) => entry.userId === userId
     && entry.message.conversation_id === conversationId && entry.message.client_message_id === id;
-  const put = (message: ChatMessage, upload?: NativeChatQueuedUpload, decorate?: (entry: Entry) => Entry) => enqueue(async () => {
+  const put = (message: ChatMessage, upload?: NativeChatQueuedUpload, decorate?: (entry: Entry) => Entry,
+    command?: NativeChatOutboxCommand) => enqueue(async () => {
     assertCurrent();
     assertNotDiscarded(message.client_message_id || '');
-    const entries = await readAll();
+    const entries = await readAll(userId);
     assertCurrent();
-    if (!validMessage(message) || message.conversation_id !== conversationId || message.sender_user_id !== userId || !validUpload(upload)) throw new Error('Некорректное исходящее сообщение');
+    if (!validMessage(message) || message.conversation_id !== conversationId || message.sender_user_id !== userId
+      || !validUpload(upload) || !validNativeChatOutboxCommand(command)) throw new Error('Некорректное исходящее сообщение');
     const previous = entries.find((entry) => matches(entry, message.client_message_id!));
     if (previous) {
       if (Boolean(previous.upload) !== Boolean(upload)) throw new Error('Тип повторной отправки изменился');
-      if (previous.message.body_text !== message.body_text || previous.message.reply_preview?.id !== message.reply_preview?.id) {
+      if (previous.message.body_text !== message.body_text || previous.message.reply_preview?.id !== message.reply_preview?.id
+        || JSON.stringify(previous.command || null) !== JSON.stringify(command || null)) {
         throw new Error('Содержимое повторной отправки изменилось');
       }
       return previous.upload;
@@ -139,13 +221,16 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
     const durableMessage = upload ? { ...message, attachments: message.attachments?.map((attachment, index) => ({
       ...attachment, local_uri: upload.files[index]?.uri || attachment.local_uri,
     })) } : message;
-    const fresh: Entry = { userId, message: durableMessage, title: getTitle?.(), ...(upload ? { upload } : {}) };
+    const fresh: Entry = {
+      userId, message: durableMessage, title: getTitle?.(),
+      ...(upload ? { upload } : {}), ...(command ? { command } : {}),
+    };
     await writeAll([...entries, decorate ? decorate(fresh) : fresh]);
     return upload;
   });
   const remove = (id: string) => enqueue(async () => {
     assertCurrent();
-    const entries = await readAll();
+    const entries = await readAll(userId);
     assertCurrent();
     await writeAll(entries.filter((entry) => !matches(entry, id)));
     await deleteUnreferencedChatFiles(entries.filter((entry) => matches(entry, id)).flatMap((entry) => entry.upload?.files.map((file) => file.uri) || [])).catch(() => undefined);
@@ -158,7 +243,7 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
       return enqueue(async () => {
         assertCurrent();
         if (!canProceed()) throw new Error('Доступ к диалогу изменился');
-        const entries = await readAll();
+        const entries = await readAll(userId);
         assertCurrent();
         if (!canProceed()) throw new Error('Доступ к диалогу изменился');
         const entry = entries.find((candidate) => matches(candidate, id));
@@ -212,7 +297,7 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
     completeUpload: (id: string) => remove(id).finally(() => { uploading.delete(operationKey(id)); notify(); }),
     readUploads: () => enqueue(async () => {
       assertCurrent();
-      const entries = await readAll();
+      const entries = await readAll(userId);
       assertCurrent();
       return entries.filter((entry) => entry.userId === userId && entry.message.conversation_id === conversationId && entry.upload)
         .map((entry) => ({ id: entry.message.client_message_id!, upload: entry.upload! }));
@@ -223,7 +308,7 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
         && message.sender_user_id === userId && message.conversation_id === conversationId)
         .map((message) => message.client_message_id).filter(Boolean));
       if (!confirmedIds.size) return;
-      const entries = await readAll();
+      const entries = await readAll(userId);
       assertCurrent();
       const next = entries.filter((entry) => !(entry.userId === userId
         && entry.message.conversation_id === conversationId && confirmedIds.has(entry.message.client_message_id)));
@@ -234,20 +319,20 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
     }),
     read: () => enqueue(async () => {
       assertCurrent();
-      const entries = await readAll();
+      const entries = await readAll(userId);
       assertCurrent();
       return entries.filter((entry) => entry.userId === userId && entry.message.conversation_id === conversationId)
         .map((entry): ChatMessage => ({ ...entry.message, local_status: 'failed' }));
     }),
     send: (message: ChatMessage, sendText: typeof import('../api/chatApi').sendTextMessage, onPersisted?: () => void,
-      options?: { deliver?: boolean; decorate?: (entry: Entry) => Entry }): Promise<ChatMessage> => {
+      options?: { deliver?: boolean; decorate?: (entry: Entry) => Entry; command?: NativeChatOutboxCommand }): Promise<ChatMessage> => {
       const key = JSON.stringify([lease, userId, conversationId, message.client_message_id]);
       try { assertNotDiscarded(message.client_message_id || ''); }
       catch (error) { return Promise.reject(error); }
       const existing = sending.get(key);
       if (existing) return existing;
       const operation = (async () => {
-        await put(message, undefined, options?.decorate);
+        await put(message, undefined, options?.decorate, options?.command);
         assertCurrent();
         onPersisted?.();
         if (options?.deliver === false) {

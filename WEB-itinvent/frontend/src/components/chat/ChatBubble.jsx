@@ -3,8 +3,11 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
   Box,
   Button,
+  Chip,
   CircularProgress,
   IconButton,
+  Menu,
+  MenuItem,
   Stack,
   Tooltip,
   Typography,
@@ -12,17 +15,24 @@ import {
 import { alpha } from '@mui/material/styles';
 import AddReactionRoundedIcon from '@mui/icons-material/AddReactionRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
+import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded';
 import DoneRoundedIcon from '@mui/icons-material/DoneRounded';
+import ErrorOutlineRoundedIcon from '@mui/icons-material/ErrorOutlineRounded';
+import LinkRoundedIcon from '@mui/icons-material/LinkRounded';
 import MoreHorizRoundedIcon from '@mui/icons-material/MoreHorizRounded';
 import RadioButtonUncheckedRoundedIcon from '@mui/icons-material/RadioButtonUncheckedRounded';
 import ReplyRoundedIcon from '@mui/icons-material/ReplyRounded';
+import ThumbDownOutlinedIcon from '@mui/icons-material/ThumbDownOutlined';
+import ThumbUpOutlinedIcon from '@mui/icons-material/ThumbUpOutlined';
 import { useReducedMotion } from 'framer-motion';
 
-import { AttachmentCard, TaskShareCard } from './ChatCommon';
+import { AiConversationAvatar, AttachmentCard, PresenceAvatar, TaskShareCard } from './ChatCommon';
 import ChatLinkPreview, { extractFirstUrl } from './ChatLinkPreview';
 import { ChatContactCard, ChatLocationCard, ChatPollCard } from './ChatStructuredCards';
 import { renderChatPlainTextBody } from './chatPlainText';
+import { ChatEmojiImage, renderChatEmojiText } from './ChatEmoji';
+import { TELEGRAM_MESSAGE_MENU_REACTIONS } from './chatReactions';
 import { resolveChatStructuredContent } from './chatStructuredContent';
 import {
   buildChatMessageBodySurfaceSx,
@@ -103,8 +113,9 @@ function resolveGroupSenderColor(sender, theme, ui) {
 }
 
 function getBubbleRadius(isOwn, groupedWithPrevious, groupedWithNext, compactMobile = false) {
-  const outerRadius = compactMobile ? 18 : 14;
-  const groupedRadius = compactMobile ? 6 : 5;
+  // Д3 эталон: внешний радиус 15px на десктопе, 6px у «прижатых» сообщений серии.
+  const outerRadius = compactMobile ? 18 : 15;
+  const groupedRadius = 6;
   const tailRadius = compactMobile ? 6 : 4;
   if (isOwn) {
     const topRight = groupedWithPrevious ? groupedRadius : outerRadius - 2;
@@ -115,6 +126,25 @@ function getBubbleRadius(isOwn, groupedWithPrevious, groupedWithNext, compactMob
   const bottomLeft = groupedWithNext ? groupedRadius : outerRadius;
   return `${outerRadius}px ${outerRadius}px ${bottomLeft}px ${topLeft}px`;
 }
+
+// Д2-10: хвостик одинаков для пузыря и для карточки «без пузыря» —
+// показывается только у последнего сообщения серии.
+const getBubbleTailSx = (isOwn, bubbleBg, ui) => ({
+  content: '""',
+  position: 'absolute',
+  bottom: 0,
+  width: 12,
+  height: 16,
+  backgroundColor: bubbleBg,
+  boxShadow: ui.bubbleTailShadow || 'none',
+  ...(isOwn ? {
+    right: -5,
+    clipPath: 'polygon(0 0, 100% 100%, 0 100%)',
+  } : {
+    left: -5,
+    clipPath: 'polygon(100% 0, 100% 100%, 0 100%)',
+  }),
+});
 
 function isShortInlineMessage(body = '', { compactMobile = false } = {}) {
   const normalized = String(body || '').trim();
@@ -194,7 +224,7 @@ function ReplyPreviewBlock({ replyPreview, theme, ui, isOwn, compactMobile = fal
           fontSize: density.bubblePreviewBodyFontSize || CHAT_DEFAULT_FONT_SIZES.previewBody,
         }}
       >
-        {getReplyPreviewText(replyPreview)}
+        {renderChatEmojiText(getReplyPreviewText(replyPreview))}
       </p>
     </div>
   );
@@ -234,8 +264,223 @@ function ForwardPreviewBlock({ forwardPreview, theme, ui, isOwn, compactMobile =
   );
 }
 
+const AI_SOURCES_VISIBLE_LIMIT = 6;
+
+function collectAiResponseSources(message) {
+  const raw = [
+    ...(Array.isArray(message?.sources) ? message.sources : []),
+    ...(Array.isArray(message?.metadata?.sources) ? message.metadata.sources : []),
+    ...(Array.isArray(message?.ai_sources) ? message.ai_sources : []),
+  ];
+  const seen = new Set();
+  return raw
+    .map((source) => {
+      if (typeof source === 'string') {
+        const label = source.trim();
+        return label ? { label, url: '', subtitle: '' } : null;
+      }
+      if (!source || typeof source !== 'object') return null;
+      const label = String(source?.title || source?.label || source?.name || '').trim();
+      const url = String(source?.url || source?.open_url || source?.href || source?.link || '').trim();
+      const subtitle = String(source?.subtitle || source?.database_id || source?.kind || '').trim();
+      if (!label && !url) return null;
+      return { label: label || url, url, subtitle };
+    })
+    .filter(Boolean)
+    .filter((item) => {
+      const key = `${item.label}|${item.url}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+// AI10: источники ответа — кликабельные чипы со сворачиванием «Ещё N».
+// Кликабельны только при наличии ссылки в payload: внутренняя → navigate,
+// внешняя → новая вкладка. Без ссылки чип остаётся информационным.
+function AiSourcesRow({ sources, navigate, ui, theme }) {
+  const [expanded, setExpanded] = useState(false);
+  const items = Array.isArray(sources) ? sources : [];
+  if (!items.length) return null;
+  const visible = expanded ? items : items.slice(0, AI_SOURCES_VISIBLE_LIMIT);
+  const hiddenCount = items.length - visible.length;
+  const openSource = (item) => {
+    const url = String(item?.url || '').trim();
+    if (!url) return;
+    if (url.startsWith('/')) {
+      navigate?.(url);
+      return;
+    }
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+  const chipSx = {
+    height: 26,
+    borderRadius: 999,
+    fontSize: 12,
+    fontFamily: CHAT_FONT_FAMILY,
+    borderColor: ui.borderSoft,
+    color: ui.textSecondary,
+    bgcolor: alpha(ui.surfaceStrong || theme.palette.background.paper, theme.palette.mode === 'dark' ? 0.3 : 0.72),
+    '& .MuiChip-label': { px: 0.9 },
+    '& .MuiChip-icon': { fontSize: 14, ml: 0.8, color: ui.textSecondary },
+  };
+  return (
+    <Stack
+      data-testid="chat-ai-sources"
+      direction="row"
+      useFlexGap
+      flexWrap="wrap"
+      spacing={0.6}
+      sx={{ mt: 0.75 }}
+    >
+      {visible.map((item, index) => (
+        <Chip
+          key={`${item.label}-${item.url}-${index}`}
+          component={item.url ? 'button' : 'span'}
+          onClick={item.url ? () => openSource(item) : undefined}
+          icon={<LinkRoundedIcon />}
+          label={item.subtitle && item.subtitle !== item.label ? `${item.label} · ${item.subtitle}` : item.label}
+          size="small"
+          variant="outlined"
+          sx={{
+            ...chipSx,
+            cursor: item.url ? 'pointer' : 'default',
+            ...(item.url ? {
+              '&:hover': {
+                color: ui.accentText,
+                borderColor: alpha(ui.accentText || theme.palette.primary.main, 0.45),
+                '& .MuiChip-icon': { color: ui.accentText },
+              },
+            } : {}),
+          }}
+        />
+      ))}
+      {hiddenCount > 0 ? (
+        <Chip
+          component="button"
+          data-testid="chat-ai-sources-more"
+          onClick={() => setExpanded(true)}
+          label={`Ещё ${hiddenCount}`}
+          size="small"
+          variant="outlined"
+          sx={{ ...chipSx, cursor: 'pointer', color: ui.accentText }}
+        />
+      ) : null}
+    </Stack>
+  );
+}
+
+// AI9/AI12: под ответом ассистента — «Копировать», «Повторить ответ» и оценка.
+// Оценка пока локальная (визуальная): payload сообщения не хранит feedback.
+function AiResponseControls({ body, onRetry, ui, theme, compactMobile }) {
+  const [copied, setCopied] = useState(false);
+  const [vote, setVote] = useState('');
+  const [retryBusy, setRetryBusy] = useState(false);
+  const copiedTimerRef = useRef(0);
+  useEffect(() => () => {
+    if (copiedTimerRef.current) window.clearTimeout(copiedTimerRef.current);
+  }, []);
+  const handleCopy = async () => {
+    const text = String(body || '').trim();
+    if (!text) return;
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+      setCopied(true);
+      if (copiedTimerRef.current) window.clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      /* clipboard недоступен — просто не показываем состояние */
+    }
+  };
+  const controlButtonSx = {
+    width: compactMobile ? 38 : 30,
+    height: compactMobile ? 38 : 30,
+    borderRadius: '50%',
+    color: ui.textSecondary,
+    '&:hover': { bgcolor: alpha(ui.textSecondary || '#64748b', 0.12) },
+    '&.is-active': { color: ui.accentText },
+  };
+  return (
+    <Stack
+      data-testid="chat-ai-response-actions"
+      direction="row"
+      spacing={0.4}
+      alignItems="center"
+      sx={{ mt: 0.55, color: ui.textSecondary }}
+    >
+      <Tooltip title={copied ? 'Скопировано' : 'Копировать'}>
+        <span>
+          <IconButton
+            size="small"
+            aria-label={copied ? 'Ответ скопирован' : 'Копировать ответ'}
+            onClick={handleCopy}
+            sx={controlButtonSx}
+          >
+            {copied
+              ? <CheckCircleRoundedIcon sx={{ fontSize: 16, color: ui.successText || theme.palette.success.main }} />
+              : <ContentCopyRoundedIcon sx={{ fontSize: 15 }} />}
+          </IconButton>
+        </span>
+      </Tooltip>
+      {typeof onRetry === 'function' ? (
+        <Button
+          size="small"
+          disabled={retryBusy}
+          onClick={() => {
+            if (retryBusy) return;
+            setRetryBusy(true);
+            Promise.resolve(onRetry()).finally(() => setRetryBusy(false));
+          }}
+          data-testid="chat-ai-retry-answer"
+          sx={{
+            minHeight: compactMobile ? 38 : 30,
+            px: 1,
+            textTransform: 'none',
+            fontSize: 12,
+            fontWeight: 700,
+            color: ui.textSecondary,
+            borderRadius: 999,
+            '&:hover': { bgcolor: alpha(ui.textSecondary || '#64748b', 0.12) },
+          }}
+        >
+          Повторить ответ
+        </Button>
+      ) : null}
+      <Tooltip title="Ответ полезен">
+        <span>
+          <IconButton
+            size="small"
+            aria-label="Ответ полезен"
+            aria-pressed={vote === 'up'}
+            className={vote === 'up' ? 'is-active' : undefined}
+            onClick={() => setVote((current) => (current === 'up' ? '' : 'up'))}
+            sx={controlButtonSx}
+          >
+            <ThumbUpOutlinedIcon sx={{ fontSize: 15 }} />
+          </IconButton>
+        </span>
+      </Tooltip>
+      <Tooltip title="Ответ неполезен">
+        <span>
+          <IconButton
+            size="small"
+            aria-label="Ответ неполезен"
+            aria-pressed={vote === 'down'}
+            className={vote === 'down' ? 'is-active' : undefined}
+            onClick={() => setVote((current) => (current === 'down' ? '' : 'down'))}
+            sx={controlButtonSx}
+          >
+            <ThumbDownOutlinedIcon sx={{ fontSize: 15 }} />
+          </IconButton>
+        </span>
+      </Tooltip>
+    </Stack>
+  );
+}
+
 function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirmAction, onCancelAction, onEditAction }) {
   const [busy, setBusy] = useState('');
+  const [menuAnchorEl, setMenuAnchorEl] = useState(null);
   const card = actionCard && typeof actionCard === 'object' ? actionCard : null;
   if (!card) return null;
   const preview = card.preview && typeof card.preview === 'object' ? card.preview : {};
@@ -247,6 +492,7 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
   const databaseId = String(card.database_id || preview.database_id || '').trim();
   const items = Array.isArray(preview.items) ? preview.items : [];
   const item = preview.item && typeof preview.item === 'object' ? preview.item : null;
+  const equipment = preview.equipment && typeof preview.equipment === 'object' ? preview.equipment : null;
   const target = preview.target && typeof preview.target === 'object' ? preview.target : null;
   const mail = preview.mail && typeof preview.mail === 'object' ? preview.mail : null;
   const warnings = Array.isArray(preview.warnings) ? preview.warnings.filter(Boolean) : [];
@@ -384,11 +630,18 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
             {docConvert.summary || `Страниц: ${Number(docConvert.page_count || 0)} · Таблиц: ${Number(docConvert.table_count || 0)}`}
           </Typography>
         ) : null}
+        {equipment ? (
+          <Typography sx={{ fontSize: 12.5, lineHeight: 1.25, color: 'inherit' }}>
+            {['Оборудование', equipment.inv_no, equipment.model || equipment.name, equipment.branch, equipment.location, equipment.employee]
+              .filter(Boolean)
+              .join(' · ')}
+          </Typography>
+        ) : null}
         {items.length > 0 ? (
           <Stack spacing={0.35}>
             {items.slice(0, 4).map((row, index) => (
               <Typography key={`${row?.inv_no || index}`} sx={{ fontSize: 12.5, lineHeight: 1.25, color: 'inherit' }}>
-                {`${row?.inv_no || 'без инв. №'}${row?.name ? ` · ${row.name}` : ''}${row?.owner ? ` · ${row.owner}` : ''}`}
+                {`${row?.inv_no || 'без инв. №'}${row?.name ? ` · ${row.name}` : ''}${row?.model && row.model !== row.name ? ` · ${row.model}` : ''}${row?.owner ? ` · ${row.owner}` : ''}`}
               </Typography>
             ))}
             {items.length > 4 ? (
@@ -514,25 +767,58 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
                 </Button>
                 <Button
                   size="small"
-                  variant="outlined"
-                  onClick={() => onEditAction?.(card, message)}
-                  disabled={Boolean(busy)}
-                  sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800 }}
-                >
-                  Изменить
-                </Button>
-                <Button
-                  size="small"
                   variant="text"
-                  onClick={openResult}
+                  onClick={() => runAction('cancel')}
                   disabled={Boolean(busy)}
-                  sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800 }}
+                  sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800, color: ui.textSecondary }}
                 >
-                  Открыть
+                  {busy === 'cancel' ? 'Отмена...' : 'Отменить'}
                 </Button>
+                {/* AI12: вторичные действия («Изменить», «Открыть») уходят в «…». */}
+                <IconButton
+                  size="small"
+                  aria-label="Действия карточки"
+                  data-testid="chat-ai-action-menu-button"
+                  onClick={(event) => setMenuAnchorEl(event.currentTarget)}
+                  disabled={Boolean(busy)}
+                  sx={{
+                    width: 30,
+                    height: 30,
+                    alignSelf: 'center',
+                    borderRadius: '50%',
+                    color: ui.textSecondary,
+                    '&:hover': { bgcolor: alpha(ui.textSecondary || '#64748b', 0.12) },
+                  }}
+                >
+                  <MoreHorizRoundedIcon sx={{ fontSize: 17 }} />
+                </IconButton>
+                <Menu
+                  anchorEl={menuAnchorEl}
+                  open={Boolean(menuAnchorEl)}
+                  onClose={() => setMenuAnchorEl(null)}
+                  anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                  transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+                >
+                  <MenuItem
+                    onClick={() => {
+                      setMenuAnchorEl(null);
+                      onEditAction?.(card, message);
+                    }}
+                  >
+                    Изменить
+                  </MenuItem>
+                  <MenuItem
+                    onClick={() => {
+                      setMenuAnchorEl(null);
+                      openResult();
+                    }}
+                  >
+                    Открыть
+                  </MenuItem>
+                </Menu>
               </>
             )}
-            {!isSandboxPermission ? (
+            {!isSandboxPermission && (isReportFormatChoice || isDocConvertFormatChoice) ? (
             <Button
               size="small"
               variant="text"
@@ -600,7 +886,7 @@ function ChatBubbleMeta({
   layout = 'bottom',
   message,
   ui,
-  receiptColor,
+  receiptColor: receiptColorProp,
   deliveryStatus,
   isSending,
   isOwnDirect,
@@ -609,6 +895,8 @@ function ChatBubbleMeta({
   compactMobile,
   onOpenReads,
   onReplyMessage,
+  onRetryFailedMessage,
+  onDiscardFailedMessage,
   showUploadProgress = false,
   bottomOffset,
   inFlow = false,
@@ -616,8 +904,19 @@ function ChatBubbleMeta({
 }) {
   const isInlineLayout = layout === 'inline';
   const isMediaLayout = layout === 'media';
+  // R51: у одиночного крупного эмодзи нет пузыря — время стоит под ним в маленькой полупрозрачной
+  // плашке (как у медиа), а не поверх картинки. Цвета плашки не зависят от стороны и темы.
+  const isEmojiLayout = layout === 'emoji';
+  const receiptColor = isEmojiLayout
+    ? (deliveryStatus === 'read' && !isSending ? '#8fd3ff' : 'rgba(255, 255, 255, 0.92)')
+    : receiptColorProp;
   const density = ui.density || {};
   const uploadProgress = Number(message?.uploadProgress || 0);
+  const isSendFailed = String(message?.optimisticStatus || '') === 'failed';
+  const [failedMenuAnchor, setFailedMenuAnchor] = useState(null);
+  const failedMenuOpen = Boolean(failedMenuAnchor);
+  const closeFailedMenu = () => setFailedMenuAnchor(null);
+  const isGroupRead = readByCount > 0;
   const shouldShowUploadProgress = showUploadProgress
     && isSending
     && Number.isFinite(uploadProgress)
@@ -626,7 +925,7 @@ function ChatBubbleMeta({
 
   return (
     <Stack
-      data-testid={isInlineLayout ? 'chat-bubble-meta-inline' : isMediaLayout ? 'chat-bubble-meta-media' : 'chat-bubble-meta-bottom'}
+      data-testid={isInlineLayout ? 'chat-bubble-meta-inline' : isMediaLayout ? 'chat-bubble-meta-media' : isEmojiLayout ? 'chat-bubble-meta-emoji' : 'chat-bubble-meta-bottom'}
       data-chat-meta-layout={layout}
       direction="row"
       spacing={0.3}
@@ -641,13 +940,14 @@ function ChatBubbleMeta({
             : (bottomOffset ?? (isMediaLayout ? 10 : 5))
         ),
         mt: inFlow ? (dense ? 0 : '2px') : 0,
-        mb: inFlow ? (dense ? 0 : '4px') : 0,
-        pr: inFlow ? (dense ? 0 : '10px') : 0,
-        px: isMediaLayout ? 0.8 : 0,
-        py: isMediaLayout ? 0.45 : 0,
-        borderRadius: isMediaLayout ? 999 : 0,
-        bgcolor: isMediaLayout ? 'rgba(2, 6, 23, 0.62)' : 'transparent',
-        backdropFilter: isMediaLayout ? 'blur(12px)' : 'none',
+        mb: inFlow ? (dense && !isEmojiLayout ? 0 : isEmojiLayout ? '2px' : '4px') : 0,
+        pr: inFlow ? (dense || isEmojiLayout ? 0 : '10px') : 0,
+        px: isMediaLayout || isEmojiLayout ? 0.8 : 0,
+        py: isMediaLayout ? 0.45 : isEmojiLayout ? 0.35 : 0,
+        ...(isEmojiLayout ? { width: 'fit-content', ml: 'auto' } : null),
+        borderRadius: isMediaLayout || isEmojiLayout ? 999 : 0,
+        bgcolor: isMediaLayout ? 'rgba(2, 6, 23, 0.62)' : isEmojiLayout ? 'rgba(2, 6, 23, 0.5)' : 'transparent',
+        backdropFilter: isMediaLayout || isEmojiLayout ? 'blur(12px)' : 'none',
         boxShadow: isMediaLayout ? '0 6px 18px rgba(2, 6, 23, 0.24)' : 'none',
         pointerEvents: isInlineLayout ? 'none' : 'auto',
       }}
@@ -668,18 +968,94 @@ function ChatBubbleMeta({
         </Typography>
       ) : null}
 
-      {isOwnDirect ? (
+      {isSendFailed ? (
+        <>
+          <IconButton
+            size="small"
+            data-testid="chat-message-failed-action"
+            aria-label="Сообщение не отправлено"
+            aria-haspopup="menu"
+            aria-expanded={failedMenuOpen ? 'true' : undefined}
+            onClick={(event) => {
+              event.stopPropagation();
+              setFailedMenuAnchor(event.currentTarget);
+            }}
+            sx={{
+              width: 18,
+              height: 18,
+              p: 0,
+              minWidth: 0,
+              color: '#f87171',
+              pointerEvents: 'auto',
+            }}
+          >
+            <ErrorOutlineRoundedIcon sx={{ fontSize: 15 }} />
+          </IconButton>
+          <Menu
+            anchorEl={failedMenuAnchor}
+            open={failedMenuOpen}
+            onClose={closeFailedMenu}
+            anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+            transformOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+          >
+            <MenuItem
+              data-testid="chat-message-failed-retry"
+              onClick={() => {
+                closeFailedMenu();
+                onRetryFailedMessage?.(String(message?.id || '').trim());
+              }}
+            >
+              Повторить отправку
+            </MenuItem>
+            <MenuItem
+              data-testid="chat-message-failed-discard"
+              onClick={() => {
+                closeFailedMenu();
+                onDiscardFailedMessage?.(String(message?.id || '').trim());
+              }}
+            >
+              Удалить
+            </MenuItem>
+          </Menu>
+        </>
+      ) : isOwnDirect ? (
         isSending
           ? <CircularProgress size={13} thickness={5} sx={{ color: receiptColor }} />
           : deliveryStatus === 'read'
             ? <DoneAllRoundedIcon sx={{ fontSize: 15, color: receiptColor }} />
+            : <DoneRoundedIcon sx={{ fontSize: 15, color: receiptColor }} />
+      ) : isOwnGroup ? (
+        isSending
+          ? <CircularProgress size={13} thickness={5} sx={{ color: receiptColor }} />
+          : isGroupRead
+            ? (
+              <IconButton
+                size="small"
+                data-testid="chat-message-group-read"
+                aria-label="Прочитано"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onOpenReads?.(message);
+                }}
+                sx={{
+                  width: 18,
+                  height: 18,
+                  p: 0,
+                  minWidth: 0,
+                  color: receiptColor,
+                  pointerEvents: 'auto',
+                }}
+              >
+                <DoneAllRoundedIcon sx={{ fontSize: 15 }} />
+              </IconButton>
+            )
             : <DoneRoundedIcon sx={{ fontSize: 15, color: receiptColor }} />
       ) : null}
     </Stack>
   );
 }
 
-const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥'];
+const QUICK_REACTIONS = TELEGRAM_MESSAGE_MENU_REACTIONS;
 
 function ReactionPill({ r, reacted, onToggleReaction, ui, theme, compact, isOwn }) {
   const accentColor = ui.accentText || theme.palette.primary.main;
@@ -689,8 +1065,9 @@ function ReactionPill({ r, reacted, onToggleReaction, ui, theme, compact, isOwn 
   const idleBg = isOwn
     ? alpha('#0f2538', isDark ? 0.7 : 0.28)
     : alpha('#020617', isDark ? 0.46 : 0.1);
-  const compactEmojiSize = 13;
-  const regularEmojiSize = reacted ? 18 : 17;
+  // R48: reaction images are 18-20 px on desktop; the compact phone strip stays smaller.
+  const compactEmojiSize = 16;
+  const regularEmojiSize = 19;
   return (
     <Box
       component="button"
@@ -734,12 +1111,14 @@ function ReactionPill({ r, reacted, onToggleReaction, ui, theme, compact, isOwn 
           display: 'inline-block',
           lineHeight: 1,
           fontSize: compact ? `${compactEmojiSize}px` : `${regularEmojiSize}px`,
-          fontFamily: '"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif',
-          filter: 'drop-shadow(0 1px 1px rgba(2, 6, 23, 0.24))',
           transform: reacted ? 'translateY(-0.5px)' : 'none',
         }}
       >
-        {r.emoji}
+        <ChatEmojiImage
+          emoji={r.emoji}
+          size={compact ? compactEmojiSize : regularEmojiSize}
+          style={{ margin: 0, verticalAlign: 'top' }}
+        />
       </span>
       {showCount ? (
         <Typography component="span" sx={{ fontSize: compact ? '11px' : '12px', fontWeight: 700, color: reacted ? accentColor : (isDark ? alpha('#fff', 0.78) : alpha('#000', 0.55)), lineHeight: 1, minWidth: '7px', textAlign: 'center' }}>
@@ -812,8 +1191,10 @@ export function ChatBubble({
   onToggleReaction,
   onToggleReactionRaw,
   onPollVote,
-  onPollClose,
   onScrollToMessage,
+  onRetryFailedMessage,
+  onDiscardFailedMessage,
+  onRetryAiAnswer,
   currentUserId,
   highlighted = false,
   selectionMode = false,
@@ -840,19 +1221,29 @@ export function ChatBubble({
   const body = String(message?.body || '').trim();
   const bodyFormat = String(message?.body_format || '').trim();
   const hasExplicitBodyFormat = bodyFormat === 'plain' || bodyFormat === 'markdown';
+  // AI9: ответы ассистента — плоский контент без пузыря во всю ширину колонки.
+  const isAiConversation = conversationKind === 'ai';
+  const isAiResponse = isAiConversation && !message?.is_own && !message?.is_deleted;
+  const isAiUserRequest = isAiConversation && Boolean(message?.is_own) && !message?.is_deleted;
   const isMarkdownBody = bodyFormat === 'markdown'
-    || (!hasExplicitBodyFormat && message?.kind === 'text' && attachments.length === 0 && detectChatBodyFormat(body) === 'markdown');
+    || (!hasExplicitBodyFormat && message?.kind === 'text' && attachments.length === 0 && detectChatBodyFormat(body) === 'markdown')
+    || (isAiResponse && body && detectChatBodyFormat(body) === 'markdown');
   const hasMarkdownTable = isMarkdownBody && hasChatMarkdownTable(body);
   const emojiOnlyCount = !task && !isStructuredKind && attachments.length === 0 ? getEmojiOnlyCount(message?.body) : 0;
-  const showSender = !message?.is_own && conversationKind !== 'direct' && !groupedWithPrevious;
+  // В AI-беседе подпись «ИИ-помощник» над каждым ответом не нужна — ответ идёт
+  // плоским блоком, а аватар ассистента показывается у первого сообщения серии.
+  const showSender = !message?.is_own && conversationKind !== 'direct' && conversationKind !== 'ai' && !groupedWithPrevious;
   const isOwnDirect = Boolean(message?.is_own) && conversationKind === 'direct';
   const isOwnGroup = Boolean(message?.is_own) && conversationKind !== 'direct';
   const readByCount = Number(message?.read_by_count || 0);
   const deliveryStatus = String(message?.delivery_status || '').trim();
   const isSending = deliveryStatus === 'sending' || message?.optimisticStatus === 'sending';
+  const isSendFailed = String(message?.optimisticStatus || '') === 'failed';
   const hasReplyPreview = Boolean(message?.reply_preview);
   const hasForwardPreview = Boolean(message?.forward_preview);
-  const ownMetaColor = ui.bubbleOwnMetaText || '#ffffff';
+  const ownMetaColor = (isAiUserRequest && ui.bubbleAiUserMetaText)
+    ? ui.bubbleAiUserMetaText
+    : (ui.bubbleOwnMetaText || '#ffffff');
   const density = ui.density || {};
   const senderAccentColor = showSender ? resolveGroupSenderColor(message?.sender, theme, ui) : ui.accentText;
   const messageBodyFontSize = getChatBubbleBodyFontSize(ui, compactMobile);
@@ -872,8 +1263,20 @@ export function ChatBubble({
       ? (ui.statusReadText || alpha(ownMetaColor, 0.96))
       : alpha(ownMetaColor, isSending ? 0.72 : 0.86))
     : alpha(ui.textSecondary, 0.9);
-  const bubbleBg = message?.is_own ? ui.bubbleOwnBg : ui.bubbleOtherBg;
-  const bubbleText = message?.is_own ? ui.bubbleOwnText : ui.bubbleOtherText;
+  const bubbleBg = isAiResponse
+    ? 'transparent'
+    : isAiUserRequest
+      ? (ui.bubbleAiUserBg || ui.bubbleOwnBg)
+      : message?.is_own
+        ? ui.bubbleOwnBg
+        : ui.bubbleOtherBg;
+  const bubbleText = isAiResponse
+    ? (ui.bubbleOtherText || theme.palette.text.primary)
+    : isAiUserRequest
+      ? (ui.bubbleAiUserText || ui.bubbleOwnText)
+      : message?.is_own
+        ? ui.bubbleOwnText
+        : ui.bubbleOtherText;
   const linkColors = resolveChatBubbleLinkColors(ui, Boolean(message?.is_own));
   const linkColor = linkColors.text || ui.accentText || theme.palette.primary.main;
   const prefersReducedMotion = useReducedMotion();
@@ -885,6 +1288,15 @@ export function ChatBubble({
     && !hasAudioAttachments
     && attachments.every((attachment) => isImageAttachment(attachment) || isVideoAttachment(attachment) || isStickerAttachment(attachment));
   const pureMediaBubble = mediaOnlyAttachments && !attachmentCaption;
+  const hasStructuredPayload = locationPayload !== null || contactPayload !== null || pollPayload !== null;
+  // Д2-10: единый признак «без пузыря» — пузырь нужен только сообщениям с текстом.
+  // Опрос/геопозиция/контакт/задача и вложения без подписи рендерятся одной
+  // карточкой цвета стороны; медиа без подписи — самим медиа с мета-оверлеем.
+  const bubblelessMessage = !isAiResponse
+    && !message?.is_deleted
+    && !attachmentCaption
+    && (hasStructuredPayload || Boolean(task) || attachments.length > 0);
+  const cardBubbleless = bubblelessMessage && !pureMediaBubble;
   const {
     swipeDx,
     longPressGestureRef,
@@ -923,16 +1335,10 @@ export function ChatBubble({
   const handlePollVote = typeof onPollVote === 'function' && resolvedMessageId
     ? (optionIndex) => onPollVote(resolvedMessageId, optionIndex)
     : undefined;
-  const handlePollClose = typeof onPollClose === 'function' && resolvedMessageId
-    ? () => onPollClose(resolvedMessageId)
-    : undefined;
   const showQuickActions = !selectionMode && !compactMobile && emojiOnlyCount === 0 && (typeof onOpenMessageMenu === 'function' || typeof effectiveToggleReaction === 'function');
   const shouldAnimateBubble = shouldAnimateChatBubble({
     prefersReducedMotion,
-    compactMobile,
-    isOwn: Boolean(message?.is_own),
-    isOptimistic: Boolean(message?.isOptimistic),
-    isSending,
+    animateAppear: Boolean(message?.animateAppear),
   });
   const [reactionPickerOpen, setReactionPickerOpen] = useState(false);
   const reactionPickerRef = useRef(null);
@@ -975,12 +1381,24 @@ export function ChatBubble({
   const isLongAiReply = conversationKind === 'ai'
     && !message?.is_own
     && (hasMarkdownTable || Boolean(message?.action_card) || String(body || '').length > 220);
-  const bubbleMaxWidth = hasMarkdownTable || isLongAiReply
-    ? { xs: 'calc(100vw - 22px)', md: 'min(92%, 760px)' }
-    : { xs: emojiOnlyCount ? '100%' : '85vw', md: emojiOnlyCount ? '100%' : '65%' };
-  const bubbleWidth = hasMarkdownTable ? { xs: 'calc(100vw - 22px)', md: 'auto' } : 'auto';
+  // AI9: плоский ответ ассистента занимает всю ширину колонки ленты.
+  // Д2-2: ширина пузыря — от ширины ленты, а не вьюпорта.
+  const bubbleMaxWidth = isAiResponse
+    ? '100%'
+    : hasMarkdownTable || isLongAiReply
+      ? { xs: 'calc(100vw - 22px)', md: 'min(92%, 760px)' }
+      : { xs: emojiOnlyCount ? '100%' : '85%', md: emojiOnlyCount ? '100%' : '65%' };
+  const bubbleWidth = isAiResponse
+    ? 'auto'
+    : hasMarkdownTable ? { xs: 'calc(100vw - 22px)', md: 'auto' } : 'auto';
+  // Д3: у последнего сообщения серии в группах — аватар отправителя слева,
+  // у промежуточных — визуальный отступ той же ширины. AI9: у ответа
+  // ассистента — аватар HUB у первой строки блока.
+  const showSideAvatarSlot = (conversationKind === 'group' && !message?.is_own) || isAiResponse;
+  const sideAvatarSize = isAiResponse ? (compactMobile ? 28 : 30) : (compactMobile ? 28 : 34);
+  const sideAvatarIndentPx = sideAvatarSize + (compactMobile ? 7 : 9);
 
-  const renderMessageMeta = (layout = 'bottom') => (
+  const renderMessageMeta = (layout = 'bottom', metaProps = {}) => (
     <ChatBubbleMeta
       layout={layout}
       message={message}
@@ -994,9 +1412,289 @@ export function ChatBubble({
       compactMobile={compactMobile}
       onOpenReads={onOpenReads}
       onReplyMessage={onReplyMessage}
+      onRetryFailedMessage={onRetryFailedMessage}
+      onDiscardFailedMessage={onDiscardFailedMessage}
       showUploadProgress
+      {...metaProps}
     />
   );
+
+  const forwardPreviewNode = (
+    <ForwardPreviewBlock
+      forwardPreview={message?.forward_preview}
+      theme={theme}
+      ui={ui}
+      isOwn={Boolean(message?.is_own)}
+      compactMobile={compactMobile}
+    />
+  );
+  const replyPreviewNode = (
+    <ReplyPreviewBlock replyPreview={message?.reply_preview} theme={theme} ui={ui} isOwn={Boolean(message?.is_own)} compactMobile={compactMobile} onScrollToMessage={onScrollToMessage} />
+  );
+  const reactionsNode = (
+    <ReactionsBar
+      reactions={message?.reactions}
+      currentUserId={currentUserId}
+      onToggleReaction={effectiveToggleReaction}
+      ui={ui}
+      theme={theme}
+      compactMobile={compactMobile}
+      isOwn={message?.is_own}
+    />
+  );
+  // Д2-10: карточка «без пузыря» повторяет фон стороны, скругление и хвостик
+  // последнего пузыря серии; время/галочки — внутри карточки справа снизу,
+  // реакции — под карточкой. Голосовому нужен свой внутренний отступ.
+  const cardBubblelessSx = {
+    position: 'relative',
+    width: 'fit-content',
+    maxWidth: '100%',
+    // У голосового поверхность имеет фиксированную ширину — карточку прижимаем к краю стороны.
+    ml: message?.is_own ? 'auto' : 0,
+    px: hasAudioAttachments ? 1.15 : 0.55,
+    py: hasAudioAttachments ? 0.95 : 0.55,
+    borderRadius: getBubbleRadius(Boolean(message?.is_own), groupedWithPrevious, groupedWithNext, compactMobile),
+    bgcolor: bubbleBg,
+    color: bubbleText,
+    boxShadow: compactMobile
+      ? (theme.palette.mode === 'dark' ? '0 1px 0 rgba(255,255,255,0.02), 0 8px 18px rgba(3, 8, 15, 0.12)' : '0 8px 20px rgba(70, 92, 114, 0.12)')
+      : ui.shadowSoft,
+    outline: highlighted ? `2px solid ${alpha(theme.palette.primary.main, 0.42)}` : 'none',
+    outlineOffset: highlighted ? 2 : 0,
+    '&::after': !groupedWithNext ? getBubbleTailSx(Boolean(message?.is_own), bubbleBg, ui) : undefined,
+  };
+  const messageContentNode = task ? (
+          <TaskShareCard task={task} navigate={navigate} ui={ui} theme={theme} isOwn={Boolean(message?.is_own)} />
+        ) : isStructuredKind ? (
+          <Stack spacing={0.9}>
+            {String(message?.kind || '').trim() === 'location' ? (
+              <ChatLocationCard location={locationPayload} ui={ui} theme={theme} isOwn={Boolean(message?.is_own)} />
+            ) : null}
+            {String(message?.kind || '').trim() === 'contact' ? (
+              <ChatContactCard contact={contactPayload} ui={ui} theme={theme} isOwn={Boolean(message?.is_own)} />
+            ) : null}
+            {String(message?.kind || '').trim() === 'poll' ? (
+              <ChatPollCard
+                poll={pollPayload}
+                ui={ui}
+                theme={theme}
+                isOwn={Boolean(message?.is_own)}
+                onVote={handlePollVote}
+              />
+            ) : null}
+          </Stack>
+        ) : attachments.length > 0 ? (
+          <Stack spacing={0.9}>
+            {isAiResponse && attachmentCaption ? (
+              // AI9: у ответа с файлами сначала идёт текст ответа, затем вложения.
+              isMarkdownBody ? (
+                <ChatMarkdownBody
+                  value={message?.body}
+                  bubbleText={bubbleText}
+                  linkColor={linkColor}
+                  hasMarkdownTable={hasMarkdownTable}
+                  compactMobile={compactMobile}
+                  ui={ui}
+                />
+              ) : (
+                <Box
+                  component="p"
+                  className="chat-selectable"
+                  data-chat-message-body="true"
+                  style={{ fontSize: messageBodyFontSize }}
+                  sx={{
+                    m: 0,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    ...buildChatMessageBodySurfaceSx(messageBodyFontSize, messageBodyLineHeight),
+                    color: bubbleText,
+                    userSelect: 'text',
+                    fontFamily: CHAT_FONT_FAMILY,
+                    letterSpacing: '-0.01em',
+                  }}
+                >
+                  {renderChatPlainTextBody(message?.body, {
+                    mentionColor: ui.accentText || theme.palette.primary.main,
+                    linkColor,
+                  })}
+                </Box>
+              )
+            ) : null}
+            <Box
+              sx={{
+                position: 'relative',
+                ...mediaFrameSx,
+              }}
+            >
+              {imageOnlyGallery ? (
+                <Box
+                  data-testid="chat-attachment-gallery"
+                  sx={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                    gap: '2px',
+                  }}
+                >
+                  {displayedGalleryAttachments.map((attachment, index) => (
+                    <Box
+                      key={attachment.id}
+                      sx={{
+                        position: 'relative',
+                        minWidth: 0,
+                        ...getGalleryTileSx(displayedGalleryAttachments.length, index),
+                      }}
+                    >
+                      <AttachmentCard
+                        messageId={message.id}
+                        attachment={{
+                          ...attachment,
+                          mediaMaxWidth: '100%',
+                          forcedAspectRatio: getGalleryAspectRatio(displayedGalleryAttachments.length, index),
+                        }}
+                        theme={theme}
+                        ui={ui}
+                        onOpenPreview={onOpenAttachmentPreview}
+                        isOwn={Boolean(message?.is_own)}
+                        isSending={isSending}
+                        canSaveToMyFiles={conversationKind === 'ai' && !message?.is_own}
+                      />
+                      {galleryHiddenCount > 0 && index === (displayedGalleryAttachments.length - 1) ? (
+                        <Box
+                          aria-hidden="true"
+                          sx={{
+                            position: 'absolute',
+                            inset: 0,
+                            borderRadius: 3,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            bgcolor: 'rgba(2, 6, 23, 0.54)',
+                            backdropFilter: 'blur(3px)',
+                            boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.06)',
+                            color: '#fff',
+                            fontSize: compactMobile ? '1.15rem' : '1.25rem',
+                            fontWeight: 800,
+                            letterSpacing: '-0.02em',
+                          }}
+                        >
+                          {`+${galleryHiddenCount}`}
+                        </Box>
+                      ) : null}
+                    </Box>
+                  ))}
+                </Box>
+              ) : (
+                <Stack spacing={0.75}>
+                  {attachments.map((attachment) => (
+                    <AttachmentCard
+                      key={attachment.id}
+                      messageId={message.id}
+                      attachment={
+                        isImageAttachment(attachment) || isVideoAttachment(attachment) || isStickerAttachment(attachment)
+                          ? {
+                            ...attachment,
+                            mediaMaxWidth: mediaPreviewMaxWidth,
+                            mediaMaxHeight: mediaPreviewMaxHeight,
+                            mediaMinWidth: mediaPreviewMinWidth,
+                          }
+                          : attachment
+                      }
+                      theme={theme}
+                      ui={ui}
+                      onOpenPreview={onOpenAttachmentPreview}
+                      isOwn={Boolean(message?.is_own)}
+                      isSending={isSending}
+                      canSaveToMyFiles={conversationKind === 'ai' && !message?.is_own}
+                    />
+                  ))}
+                </Stack>
+              )}
+              {showMediaMetaOverlay ? (
+                <Box
+                  data-testid="chat-media-meta"
+                  sx={{
+                    // R40: time and receipts on a photo are always visible (as in Telegram),
+                    // on desktop too - not only while the bubble is hovered.
+                    position: 'absolute',
+                    right: 2,
+                    bottom: 2,
+                    pointerEvents: 'none',
+                  }}
+                >
+                  {renderMessageMeta('media')}
+                </Box>
+              ) : null}
+            </Box>
+            {attachmentCaption && !isAiResponse ? (
+              <Box
+                component="p"
+                className="chat-selectable"
+                data-chat-message-body="true"
+                style={{ fontSize: messageBodyFontSize }}
+                sx={{
+                  m: 0,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  ...buildChatMessageBodySurfaceSx(messageBodyFontSize, messageBodyLineHeight),
+                  color: bubbleText,
+                  userSelect: 'text',
+                  fontFamily: CHAT_FONT_FAMILY,
+                  letterSpacing: '-0.01em',
+                }}
+              >
+                {attachmentCaption}
+              </Box>
+            ) : null}
+          </Stack>
+        ) : isMarkdownBody ? (
+          <ChatMarkdownBody
+            value={message?.body}
+            bubbleText={bubbleText}
+            linkColor={linkColor}
+            hasMarkdownTable={hasMarkdownTable}
+            compactMobile={compactMobile}
+            ui={ui}
+          />
+        ) : (
+          <Box
+            component="p"
+            className="chat-selectable"
+            data-chat-message-body="true"
+            data-chat-emoji-only={emojiOnlyCount ? 'true' : undefined}
+            style={{ fontSize: emojiOnlyCount ? undefined : messageBodyFontSize }}
+            sx={{
+              m: 0,
+              display: 'block',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              pr: inlineMeta ? 0 : 0.25,
+              pb: inlineMeta || emojiOnlyCount ? 0 : textMetaInFlow ? 0.25 : (reactionFooter ? bubbleReactionBodyBottomPadding : bubbleBodyBottomPadding),
+              ...(emojiOnlyCount
+                ? { lineHeight: 1.08, fontSize: emojiOnlyCount === 1 ? '3.2rem' : '2.6rem' }
+                : buildChatMessageBodySurfaceSx(messageBodyFontSize, messageBodyLineHeight)),
+              color: bubbleText,
+              userSelect: 'text',
+              fontFamily: CHAT_FONT_FAMILY,
+              letterSpacing: emojiOnlyCount ? undefined : '-0.01em',
+              '&::after': inlineMeta ? {
+                content: '""',
+                display: 'inline-block',
+                width: getChatInlineMetaReserveWidth({
+                  message,
+                  compactMobile,
+                  isOwnDirect: isOwnDirect || isOwnGroup || isSendFailed,
+                  isSending,
+                }),
+                height: '0.9em',
+              } : undefined,
+            }}
+          >
+            {renderChatPlainTextBody(message?.body, {
+              mentionColor: ui.accentText || theme.palette.primary.main,
+              linkColor,
+            })}
+          </Box>
+        );
 
   return (
     <Box
@@ -1010,13 +1708,21 @@ export function ChatBubble({
           event.stopPropagation();
           return;
         }
+        // Д3: ответ по двойному клику — только по выделяемому тексту/подписи,
+        // не по пузырю целиком и не по медиа-карточкам.
+        if (!body && !attachmentCaption) return;
+        const target = event.target;
+        const onSelectableText = target instanceof Element
+          && Boolean(target.closest?.('[data-chat-message-body], .chat-selectable'));
+        if (!onSelectableText) return;
         onReplyMessage?.(message);
       }}
-      className={joinClasses('relative flex flex-col', message?.is_own && !ui.wideMessageLayout ? 'items-end' : 'items-start')}
+      className={joinClasses('relative flex flex-col', message?.is_own ? 'items-end' : 'items-start')}
       sx={{
         width: '100%',
         pt: showSender ? (density.bubbleSenderRowPt ?? 0.35) : groupedWithPrevious ? '2px' : (density.bubbleRowPt ?? 1.1),
-        pb: groupedWithNext ? '2px' : 0.42,
+        // Д2-2: зазор внутри серии — 2px суммарно (pt следующего сообщения).
+        pb: groupedWithNext ? 0 : 0.42,
         pl: 0,
         pr: 0,
         mx: 0,
@@ -1110,13 +1816,40 @@ export function ChatBubble({
             color: senderAccentColor,
             fontFamily: CHAT_FONT_FAMILY,
             fontSize: density.bubbleSenderFontSize || CHAT_DEFAULT_FONT_SIZES.sender,
-            ml: selectionMode && !message?.is_own ? { xs: 5, md: 4.2 } : 0,
+            ml: selectionMode && !message?.is_own
+              ? { xs: 5, md: 4.2 }
+              : (showSideAvatarSlot ? `${sideAvatarIndentPx}px` : 0),
           }}
         >
           {message?.sender?.full_name || message?.sender?.username || 'Пользователь'}
         </Typography>
       ) : null}
 
+      <Box
+        sx={{
+          display: 'flex',
+          width: '100%',
+          minWidth: 0,
+          alignItems: isAiResponse ? 'flex-start' : 'flex-end',
+          justifyContent: message?.is_own ? 'flex-end' : 'flex-start',
+        }}
+      >
+        {showSideAvatarSlot ? (
+          <Box
+            data-testid={isAiResponse ? 'chat-ai-avatar-slot' : 'chat-group-avatar-slot'}
+            sx={{
+              width: sideAvatarSize,
+              height: sideAvatarSize,
+              flexShrink: 0,
+              mr: compactMobile ? '7px' : '9px',
+              mt: isAiResponse ? '2px' : 0,
+            }}
+          >
+            {isAiResponse
+              ? (!groupedWithPrevious ? <AiConversationAvatar size={sideAvatarSize} /> : null)
+              : (!groupedWithNext ? <PresenceAvatar item={message?.sender} size={sideAvatarSize} /> : null)}
+          </Box>
+        ) : null}
       <Box
           data-chat-bubble-surface="true"
         data-chat-table-layout={hasMarkdownTable ? 'wide' : undefined}
@@ -1132,16 +1865,18 @@ export function ChatBubble({
         onTouchMove={(e) => { handleLongPressMove(e); handleSwipeMove(e); }}
         className={joinClasses('relative transition duration-100', compactMobile ? 'active:opacity-90' : '', reactionPickerOpen ? 'reaction-picker-open' : '')}
         sx={{
-          width: hasAudioAttachments ? { xs: '72vw', md: '340px' } : bubbleWidth,
+          width: hasAudioAttachments && !isAiResponse ? { xs: '72vw', md: '340px' } : bubbleWidth,
           maxWidth: bubbleMaxWidth,
+          flexGrow: isAiResponse ? 1 : undefined,
+          minWidth: isAiResponse ? 0 : undefined,
           ml: selectionMode && !message?.is_own ? { xs: 5, md: 4.2 } : 0,
           transform: swipeDx > 0 ? `translateX(-${swipeDx}px)` : undefined,
-          px: task ? 0.62 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.18 : (density.bubblePx || 1.18),
-          py: task ? 0.62 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.08 : (density.bubblePy || 0.82),
-          borderRadius: emojiOnlyCount ? 0 : getBubbleRadius(Boolean(message?.is_own) && !ui.wideMessageLayout, groupedWithPrevious, groupedWithNext, compactMobile),
-          bgcolor: emojiOnlyCount || pureMediaBubble ? 'transparent' : bubbleBg,
+          px: isAiResponse ? 0 : cardBubbleless ? 0 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.18 : (density.bubblePx || 1.18),
+          py: isAiResponse ? 0.4 : cardBubbleless ? 0 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.08 : (density.bubblePy || 0.82),
+          borderRadius: emojiOnlyCount || isAiResponse || cardBubbleless ? 0 : getBubbleRadius(Boolean(message?.is_own), groupedWithPrevious, groupedWithNext, compactMobile),
+          bgcolor: emojiOnlyCount || bubblelessMessage || isAiResponse ? 'transparent' : bubbleBg,
           color: bubbleText,
-          boxShadow: emojiOnlyCount || pureMediaBubble
+          boxShadow: emojiOnlyCount || pureMediaBubble || cardBubbleless || isAiResponse
             ? 'none'
             : (
               compactMobile
@@ -1161,22 +1896,9 @@ export function ChatBubble({
             transform: 'translateY(0)',
             pointerEvents: 'auto',
           },
-          '&::after': (!emojiOnlyCount && !pureMediaBubble && !groupedWithNext) ? {
-            content: '""',
-            position: 'absolute',
-            bottom: 0,
-            width: 12,
-            height: 16,
-            backgroundColor: bubbleBg,
-            boxShadow: ui.bubbleTailShadow || 'none',
-            ...(message?.is_own && !ui.wideMessageLayout ? {
-              right: -5,
-              clipPath: 'polygon(0 0, 100% 100%, 0 100%)',
-            } : {
-              left: -5,
-              clipPath: 'polygon(100% 0, 100% 100%, 0 100%)',
-            }),
-          } : undefined,
+          '&::after': (!emojiOnlyCount && !bubblelessMessage && !isAiResponse && !groupedWithNext)
+            ? getBubbleTailSx(Boolean(message?.is_own), bubbleBg, ui)
+            : undefined,
         }}
       >
         {showQuickActions ? (
@@ -1236,9 +1958,10 @@ export function ChatBubble({
                         component="button"
                         type="button"
                         onClick={(e) => { e.stopPropagation(); effectiveToggleReaction(emoji); setReactionPickerOpen(false); }}
-                        sx={{ fontSize: '20px', lineHeight: 1, cursor: 'pointer', border: 'none', bgcolor: 'transparent', px: '2px', borderRadius: 1, '&:hover': { transform: 'scale(1.25)' }, transition: 'transform 100ms ease' }}
+                        aria-label={`Реакция ${emoji}`}
+                        sx={{ display: 'inline-flex', fontSize: '20px', lineHeight: 1, cursor: 'pointer', border: 'none', bgcolor: 'transparent', px: '2px', borderRadius: 1, '&:hover': { transform: 'scale(1.25)' }, transition: 'transform 100ms ease' }}
                       >
-                        {emoji}
+                        <ChatEmojiImage emoji={emoji} size={22} style={{ margin: 0, verticalAlign: 'top' }} />
                       </Box>
                     ))}
                   </Box>
@@ -1287,215 +2010,30 @@ export function ChatBubble({
             </Tooltip>
           </Stack>
         ) : null}
-        <ForwardPreviewBlock
-          forwardPreview={message?.forward_preview}
-          theme={theme}
-          ui={ui}
-          isOwn={Boolean(message?.is_own)}
-          compactMobile={compactMobile}
-        />
-        <ReplyPreviewBlock replyPreview={message?.reply_preview} theme={theme} ui={ui} isOwn={Boolean(message?.is_own)} compactMobile={compactMobile} onScrollToMessage={onScrollToMessage} />
-
-        {task ? (
-          <TaskShareCard task={task} navigate={navigate} ui={ui} theme={theme} />
-        ) : isStructuredKind ? (
-          <Stack spacing={0.9}>
-            {String(message?.kind || '').trim() === 'location' ? (
-              <ChatLocationCard location={locationPayload} ui={ui} theme={theme} isOwn={Boolean(message?.is_own)} />
-            ) : null}
-            {String(message?.kind || '').trim() === 'contact' ? (
-              <ChatContactCard contact={contactPayload} ui={ui} theme={theme} isOwn={Boolean(message?.is_own)} />
-            ) : null}
-            {String(message?.kind || '').trim() === 'poll' ? (
-              <ChatPollCard
-                poll={pollPayload}
-                ui={ui}
-                theme={theme}
-                isOwn={Boolean(message?.is_own)}
-                isOwnMessage={Boolean(message?.is_own)}
-                onVote={handlePollVote}
-                onClose={handlePollClose}
-              />
-            ) : null}
-          </Stack>
-        ) : attachments.length > 0 ? (
-          <Stack spacing={0.9}>
+        {cardBubbleless ? (
+          // Д2-10: структурные/файловые карточки без подписи — одна карточка
+          // цвета стороны: атрибуция и цитата сверху внутри, мета внутри
+          // справа снизу, реакции — под карточкой.
+          <>
             <Box
-              sx={{
-                position: 'relative',
-                ...mediaFrameSx,
-              }}
+              data-chat-card-surface="true"
+              sx={cardBubblelessSx}
             >
-              {imageOnlyGallery ? (
-                <Box
-                  data-testid="chat-attachment-gallery"
-                  sx={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                    gap: '6px',
-                  }}
-                >
-                  {displayedGalleryAttachments.map((attachment, index) => (
-                    <Box
-                      key={attachment.id}
-                      sx={{
-                        position: 'relative',
-                        minWidth: 0,
-                        ...getGalleryTileSx(displayedGalleryAttachments.length, index),
-                      }}
-                    >
-                      <AttachmentCard
-                        messageId={message.id}
-                        attachment={{
-                          ...attachment,
-                          mediaMaxWidth: '100%',
-                          forcedAspectRatio: getGalleryAspectRatio(displayedGalleryAttachments.length, index),
-                        }}
-                        theme={theme}
-                        ui={ui}
-                        onOpenPreview={onOpenAttachmentPreview}
-                        isOwn={Boolean(message?.is_own)}
-                        isSending={isSending}
-                        canSaveToMyFiles={conversationKind === 'ai' && !message?.is_own}
-                      />
-                      {galleryHiddenCount > 0 && index === (displayedGalleryAttachments.length - 1) ? (
-                        <Box
-                          aria-hidden="true"
-                          sx={{
-                            position: 'absolute',
-                            inset: 0,
-                            borderRadius: 3,
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            bgcolor: 'rgba(2, 6, 23, 0.54)',
-                            backdropFilter: 'blur(3px)',
-                            boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.06)',
-                            color: '#fff',
-                            fontSize: compactMobile ? '1.15rem' : '1.25rem',
-                            fontWeight: 800,
-                            letterSpacing: '-0.02em',
-                          }}
-                        >
-                          {`+${galleryHiddenCount}`}
-                        </Box>
-                      ) : null}
-                    </Box>
-                  ))}
-                </Box>
-              ) : (
-                <Stack spacing={0.75}>
-                  {attachments.map((attachment) => (
-                    <AttachmentCard
-                      key={attachment.id}
-                      messageId={message.id}
-                      attachment={
-                        isImageAttachment(attachment) || isVideoAttachment(attachment) || isStickerAttachment(attachment)
-                          ? {
-                            ...attachment,
-                            mediaMaxWidth: mediaPreviewMaxWidth,
-                            mediaMaxHeight: mediaPreviewMaxHeight,
-                            mediaMinWidth: mediaPreviewMinWidth,
-                          }
-                          : attachment
-                      }
-                      theme={theme}
-                      ui={ui}
-                      onOpenPreview={onOpenAttachmentPreview}
-                      isOwn={Boolean(message?.is_own)}
-                      isSending={isSending}
-                      canSaveToMyFiles={conversationKind === 'ai' && !message?.is_own}
-                    />
-                  ))}
-                </Stack>
-              )}
-              {showMediaMetaOverlay ? (
-                <Box
-                  data-testid="chat-media-meta-hover"
-                  sx={{
-                    position: 'absolute',
-                    right: 2,
-                    bottom: 2,
-                    opacity: { xs: 1, md: 0 },
-                    transition: 'opacity 180ms ease',
-                    '[data-chat-bubble-surface]:hover &': { opacity: 1 },
-                    pointerEvents: 'none',
-                  }}
-                >
-                  {renderMessageMeta('media')}
-                </Box>
-              ) : null}
+              {forwardPreviewNode}
+              {replyPreviewNode}
+              {messageContentNode}
+              {renderMessageMeta('bottom', { inFlow: true, dense: true })}
             </Box>
-            {attachmentCaption ? (
-              <Box
-                component="p"
-                className="chat-selectable"
-                data-chat-message-body="true"
-                style={{ fontSize: messageBodyFontSize }}
-                sx={{
-                  m: 0,
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                  ...buildChatMessageBodySurfaceSx(messageBodyFontSize, messageBodyLineHeight),
-                  color: bubbleText,
-                  userSelect: 'text',
-                  fontFamily: CHAT_FONT_FAMILY,
-                  letterSpacing: '-0.01em',
-                }}
-              >
-                {attachmentCaption}
-              </Box>
-            ) : null}
-          </Stack>
-        ) : isMarkdownBody ? (
-          <ChatMarkdownBody
-            value={message?.body}
-            bubbleText={bubbleText}
-            linkColor={linkColor}
-            hasMarkdownTable={hasMarkdownTable}
-            compactMobile={compactMobile}
-            ui={ui}
-          />
+            <Box sx={{ display: 'flex', justifyContent: message?.is_own ? 'flex-end' : 'flex-start' }}>
+              {reactionsNode}
+            </Box>
+          </>
         ) : (
-          <Box
-            component="p"
-            className="chat-selectable"
-            data-chat-message-body="true"
-            data-chat-emoji-only={emojiOnlyCount ? 'true' : undefined}
-            style={{ fontSize: emojiOnlyCount ? undefined : messageBodyFontSize }}
-            sx={{
-              m: 0,
-              display: 'block',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              pr: inlineMeta ? 0 : 0.25,
-              pb: inlineMeta ? 0 : textMetaInFlow ? 0.25 : (reactionFooter ? bubbleReactionBodyBottomPadding : bubbleBodyBottomPadding),
-              ...(emojiOnlyCount
-                ? { lineHeight: 1.08, fontSize: emojiOnlyCount === 1 ? '3.2rem' : '2.6rem' }
-                : buildChatMessageBodySurfaceSx(messageBodyFontSize, messageBodyLineHeight)),
-              color: bubbleText,
-              userSelect: 'text',
-              fontFamily: CHAT_FONT_FAMILY,
-              letterSpacing: emojiOnlyCount ? undefined : '-0.01em',
-              '&::after': inlineMeta ? {
-                content: '""',
-                display: 'inline-block',
-                width: getChatInlineMetaReserveWidth({
-                  message,
-                  compactMobile,
-                  isOwnDirect,
-                  isSending,
-                }),
-                height: '0.9em',
-              } : undefined,
-            }}
-          >
-            {renderChatPlainTextBody(message?.body, {
-              mentionColor: ui.accentText || theme.palette.primary.main,
-              linkColor,
-            })}
-          </Box>
-        )}
+          <>
+        {forwardPreviewNode}
+        {replyPreviewNode}
+
+        {messageContentNode}
 
         {!task && !isStructuredKind && attachments.length === 0 && emojiOnlyCount === 0 && body && extractFirstUrl(body) ? (
           <ChatLinkPreview
@@ -1517,22 +2055,24 @@ export function ChatBubble({
           onEditAction={onEditAction}
         />
 
-        {conversationKind === 'ai' && !message?.is_own ? (() => {
-          const sourceItems = [
-            ...(Array.isArray(message?.sources) ? message.sources : []),
-            ...(Array.isArray(message?.metadata?.sources) ? message.metadata.sources : []),
-            ...(Array.isArray(message?.ai_sources) ? message.ai_sources : []),
-          ].map((source) => (typeof source === 'string' ? source : (source?.title || source?.label || source?.name || '')))
-            .map((value) => String(value || '').trim())
-            .filter(Boolean);
-          const uniqueSources = [...new Set(sourceItems)].slice(0, 6);
-          if (!uniqueSources.length) return null;
-          return (
-            <Typography sx={{ mt: 0.55, fontSize: compactMobile ? 12 : 12.5, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
-              Источники: {uniqueSources.join(' · ')}
-            </Typography>
-          );
-        })() : null}
+        {isAiResponse ? (
+          <AiSourcesRow
+            sources={collectAiResponseSources(message)}
+            navigate={navigate}
+            ui={ui}
+            theme={theme}
+          />
+        ) : null}
+
+        {isAiResponse && body ? (
+          <AiResponseControls
+            body={body}
+            onRetry={onRetryAiAnswer}
+            ui={ui}
+            theme={theme}
+            compactMobile={compactMobile}
+          />
+        ) : null}
 
         {(() => {
           const reactionBar = (
@@ -1549,7 +2089,7 @@ export function ChatBubble({
 
           const bubbleMeta = !showMediaMetaOverlay ? (
             <ChatBubbleMeta
-              layout={reactionFooter ? 'bottom' : inlineMeta ? 'inline' : 'bottom'}
+              layout={emojiOnlyCount ? 'emoji' : reactionFooter ? 'bottom' : inlineMeta ? 'inline' : 'bottom'}
               message={message}
               ui={ui}
               receiptColor={receiptColor}
@@ -1561,8 +2101,10 @@ export function ChatBubble({
               compactMobile={compactMobile}
               onOpenReads={onOpenReads}
               onReplyMessage={onReplyMessage}
+              onRetryFailedMessage={onRetryFailedMessage}
+              onDiscardFailedMessage={onDiscardFailedMessage}
               bottomOffset={inlineMeta ? undefined : 7}
-              inFlow={reactionFooter || textMetaInFlow || (attachments.length > 0 && !showMediaMetaOverlay)}
+              inFlow={Boolean(emojiOnlyCount) || reactionFooter || textMetaInFlow || (attachments.length > 0 && !showMediaMetaOverlay)}
               dense={reactionFooter || textMetaInFlow}
             />
           ) : null;
@@ -1592,9 +2134,52 @@ export function ChatBubble({
             </>
           );
         })()}
+          </>
+        )}
+      </Box>
       </Box>
     </Box>
   );
 }
 
-export const MemoChatBubble = memo(ChatBubble);
+const isPlainTokenObject = (value) => (
+  value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype
+);
+
+// Токены интерфейса и тема пересоздаются (новый объект с теми же значениями), когда
+// страница обновляет настройки пользователя или тему провайдера. Сравниваем их по
+// значениям, иначе каждый пузырь ленты перерисовывается впустую (Д2-3).
+const areChatBubbleTokensEqual = (left, right) => {
+  if (Object.is(left, right)) return true;
+  if (!isPlainTokenObject(left) || !isPlainTokenObject(right)) return false;
+  const leftKeys = Object.keys(left);
+  if (leftKeys.length !== Object.keys(right).length) return false;
+  return leftKeys.every((key) => {
+    if (Object.is(left[key], right[key])) return true;
+    if (!isPlainTokenObject(left[key]) || !isPlainTokenObject(right[key])) return false;
+    const nestedKeys = Object.keys(left[key]);
+    return nestedKeys.length === Object.keys(right[key]).length
+      && nestedKeys.every((nestedKey) => Object.is(left[key][nestedKey], right[key][nestedKey]));
+  });
+};
+
+const areChatBubbleThemesEqual = (left, right) => (
+  Object.is(left, right)
+  || Boolean(left && right
+    && Object.is(left.palette, right.palette)
+    && Object.is(left.typography, right.typography)
+    && Object.is(left.breakpoints, right.breakpoints))
+);
+
+export const areChatBubblePropsEqual = (previous, next) => {
+  const keys = new Set([...Object.keys(previous), ...Object.keys(next)]);
+  for (const key of keys) {
+    if (Object.is(previous[key], next[key])) continue;
+    if (key === 'theme' && areChatBubbleThemesEqual(previous.theme, next.theme)) continue;
+    if (key === 'ui' && areChatBubbleTokensEqual(previous.ui, next.ui)) continue;
+    return false;
+  }
+  return true;
+};
+
+export const MemoChatBubble = memo(ChatBubble, areChatBubblePropsEqual);

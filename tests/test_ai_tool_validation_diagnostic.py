@@ -27,7 +27,9 @@ def _make_context():
         conversation_id="conv-test",
         run_id="run-test",
         user_id=42,
-        user_payload={"id": 42, "role": "user"},
+        # Admin bypasses the AG-2 tool permission gate, so the test reaches
+        # the argument-validation path it exercises.
+        user_payload={"id": 42, "role": "admin"},
         effective_database_id="ITINVENT",
         enabled_tools=["itinvent.equipment.search"],
         tool_settings={"multi_db_mode": "single", "allowed_databases": []},

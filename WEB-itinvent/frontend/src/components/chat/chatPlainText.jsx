@@ -1,4 +1,5 @@
 import { Box } from '@mui/material';
+import { renderChatEmojiText } from './ChatEmoji';
 
 export const CHAT_URL_REGEX = /https?:\/\/(?:www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_+.~#?&/=]*)/gi;
 
@@ -10,10 +11,16 @@ export function extractFirstChatUrl(text) {
   return match ? match[0] : null;
 }
 
+// A text fragment as a list of children: strings and Apple emoji images (R48).
+function emojiParts(fragment, keyPrefix) {
+  const rendered = renderChatEmojiText(fragment, undefined, keyPrefix);
+  return typeof rendered === 'string' ? [rendered] : rendered;
+}
+
 export function renderChatPlainTextBody(value, { mentionColor, linkColor } = {}) {
   const text = String(value || '');
   if (!text) return text;
-  if (!text.includes('@') && !/https?:\/\//i.test(text)) return text;
+  if (!text.includes('@') && !/https?:\/\//i.test(text)) return renderChatEmojiText(text);
 
   const parts = [];
   let lastIndex = 0;
@@ -22,7 +29,7 @@ export function renderChatPlainTextBody(value, { mentionColor, linkColor } = {})
 
   text.replace(pattern, (token, _capture, offset) => {
     if (offset > lastIndex) {
-      parts.push(text.slice(lastIndex, offset));
+      parts.push(...emojiParts(text.slice(lastIndex, offset), `t${lastIndex}`));
     }
     if (token.startsWith('@')) {
       parts.push(
@@ -59,7 +66,7 @@ export function renderChatPlainTextBody(value, { mentionColor, linkColor } = {})
   });
 
   if (lastIndex < text.length) {
-    parts.push(text.slice(lastIndex));
+    parts.push(...emojiParts(text.slice(lastIndex), `t${lastIndex}`));
   }
 
   return parts.length > 0 ? parts : text;

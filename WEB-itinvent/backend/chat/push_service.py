@@ -43,6 +43,14 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _fcm_channel(conversation_kind: object) -> str:
+    """Android notification channel id for a chat push by conversation kind."""
+    normalized_kind = _normalize_text(conversation_kind).lower()
+    if normalized_kind == "ai":
+        return "hubit_chat_ai"
+    return "hubit_chat"
+
+
 
 def _encode_base64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
@@ -459,6 +467,7 @@ class ChatPushService:
         data: Optional[dict[str, Any]] = None,
         ttl: int = DEFAULT_PUSH_TTL_SEC,
         app_badge_count: Optional[int] = None,
+        native_channel: Optional[str] = None,
     ) -> ChatPushSendResult:
         normalized_channel = _normalize_text(channel) or "system"
         if notification_preferences_service.is_quiet_hours_active(
@@ -539,6 +548,7 @@ class ChatPushService:
                 data=payload_data,
                 ttl=ttl,
                 app_badge_count=payload.get("app_badge_count"),
+                native_channel=native_channel,
             )
             native_tokens = int(getattr(native_result, "tokens", 0) or 0)
             result.sent += int(getattr(native_result, "sent", 0) or 0)
@@ -648,6 +658,7 @@ class ChatPushService:
             tag=f"chat:msg:{normalized_message_id}",
             data=notification_data,
             ttl=CHAT_PUSH_TTL_SEC,
+            native_channel=_fcm_channel(resolved_conversation_kind),
         )
         if int(result.sent or 0) > 0:
             self._record_chat_push_delivery(

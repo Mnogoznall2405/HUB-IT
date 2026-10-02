@@ -1,23 +1,20 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Box, Typography } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import AccountCircleRoundedIcon from '@mui/icons-material/AccountCircleRounded';
-import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
+import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import PlaceRoundedIcon from '@mui/icons-material/PlaceRounded';
-import RadioButtonUncheckedRoundedIcon from '@mui/icons-material/RadioButtonUncheckedRounded';
 
 import { buildChatLocationOpenUrl } from './chatStructuredContent';
 import { CHAT_FONT_FAMILY } from './chatUiTokens';
 
+// Д2-10: структурная карточка — контент единой карточки цвета стороны,
+// которую рисует ChatBubble; собственной рамки и второй подложки нет.
 const cardSurfaceSx = (ui, theme, isOwn) => ({
   width: '100%',
-  borderRadius: '14px',
-  border: `1px solid ${ui.borderSoft || alpha(theme.palette.primary.main, 0.12)}`,
-  backgroundColor: ui.surfaceStrong || ui.composerInputBg || alpha(theme.palette.primary.main, 0.08),
   color: isOwn ? (ui.bubbleOwnText || theme.palette.text.primary) : (ui.bubbleOtherText || theme.palette.text.primary),
   textAlign: 'left',
-  overflow: 'hidden',
 });
 
 const cardIconWrapSx = (ui, theme, isOwn) => ({
@@ -137,16 +134,52 @@ export function ChatContactCard({ contact, ui, theme, isOwn }) {
   );
 }
 
-export function ChatPollCard({ poll, ui, theme, isOwn, isOwnMessage, onVote, onClose }) {
+// R50: опрос как в Telegram. До голоса — строки с кружками и нажатием «сразу голосует»;
+// после голоса (или у закрытого) — результаты: процент, полоса, галочка у своего варианта.
+// «Остановить опрос» и «Отменить голос» живут в меню сообщения, не в карточке.
+export const formatPollVotes = (count) => {
+  const value = Math.max(0, Math.round(Number(count) || 0));
+  if (value === 0) return 'Нет голосов';
+  const mod100 = value % 100;
+  const mod10 = value % 10;
+  const word = mod100 >= 11 && mod100 <= 14
+    ? 'голосов'
+    : mod10 === 1 ? 'голос' : (mod10 >= 2 && mod10 <= 4 ? 'голоса' : 'голосов');
+  return `${value} ${word}`;
+};
+
+const POLL_BAR_MS = 420;
+
+export function ChatPollCard({ poll, ui, theme, isOwn, onVote }) {
   const [busy, setBusy] = useState(false);
   const question = String(poll?.question || 'Опрос').trim() || 'Опрос';
   const options = Array.isArray(poll?.options) ? poll.options : [];
   const totalVoters = Math.max(0, Number(poll?.total_voters || 0));
-  const myOptionIndex = Number.isInteger(Number(poll?.my_option_index)) ? Number(poll.my_option_index) : null;
+  const rawMine = poll?.my_option_index;
+  const myOptionIndex = rawMine !== null && rawMine !== undefined && Number.isInteger(Number(rawMine)) ? Number(rawMine) : null;
   const closed = Boolean(poll?.closed);
-  const votable = typeof onVote === 'function' && !closed;
-  const accent = isOwn ? (ui.bubbleOwnText || theme.palette.primary.main) : (ui.accentText || theme.palette.primary.main);
+  const hasVoted = myOptionIndex !== null && myOptionIndex >= 0 && myOptionIndex < options.length;
+  const showResults = closed || hasVoted;
+  const votable = typeof onVote === 'function' && !showResults;
+  const ink = isOwn ? (ui.bubbleOwnText || '#ffffff') : (ui.bubbleOtherText || theme.palette.text.primary);
+  const cardBg = isOwn ? (ui.bubbleOwnBg || '#2b5278') : (ui.bubbleOtherBg || theme.palette.background.paper);
+  // На синем пузыре своей стороны полоса и проценты светлые, на чужом — акцент темы.
+  const accent = isOwn ? ink : (ui.accentText || theme.palette.primary.main);
   const muted = secondaryColor(ui, theme, isOwn);
+  const divider = alpha(ink, 0.12);
+
+  // Полосы анимируются от 0 только при переходе в режим результатов, а не при каждом монтировании.
+  const [barsReady, setBarsReady] = useState(showResults);
+  useEffect(() => {
+    if (!showResults) {
+      setBarsReady(false);
+      return undefined;
+    }
+    if (barsReady) return undefined;
+    const frame = requestAnimationFrame(() => setBarsReady(true));
+    return () => cancelAnimationFrame(frame);
+  }, [showResults, barsReady]);
+
   const runVote = async (optionIndex) => {
     if (!votable || busy) return;
     setBusy(true);
@@ -156,133 +189,182 @@ export function ChatPollCard({ poll, ui, theme, isOwn, isOwnMessage, onVote, onC
       setBusy(false);
     }
   };
-  const runClose = async (event) => {
-    event.stopPropagation();
-    if (typeof onClose !== 'function' || busy) return;
-    setBusy(true);
-    try {
-      await onClose();
-    } finally {
-      setBusy(false);
-    }
-  };
+
+  const typeLine = closed ? 'Итоги' : (poll?.anonymous ? 'Анонимный опрос' : 'Публичный опрос');
+
   return (
     <Box
       data-testid="chat-poll-card"
+      data-poll-mode={showResults ? 'results' : 'vote'}
       sx={{
         ...cardSurfaceSx(ui, theme, isOwn),
         p: '12px',
+        // Карточка не уже обычного пузыря: ~280 px, на телефоне — не шире ленты.
+        minWidth: 'min(280px, 66vw)',
       }}
     >
-      <Typography sx={{ fontSize: 15, fontWeight: 700, lineHeight: 1.3, color: 'inherit', fontFamily: CHAT_FONT_FAMILY }}>
+      <Typography sx={{ fontSize: 15, fontWeight: 600, lineHeight: 1.3, color: 'inherit', fontFamily: CHAT_FONT_FAMILY, wordBreak: 'break-word' }}>
         {question}
       </Typography>
-      <Box sx={{ mt: '8px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+      <Typography
+        data-testid="chat-poll-type"
+        sx={{ mt: '2px', fontSize: 13, lineHeight: 1.3, color: muted, fontFamily: CHAT_FONT_FAMILY }}
+      >
+        {typeLine}
+      </Typography>
+      <Box sx={{ mt: '8px', display: 'flex', flexDirection: 'column' }}>
         {options.map((option, optionIndex) => {
+          const text = String(option?.text || '');
           const isMine = myOptionIndex === optionIndex;
-          const votes = Math.max(0, Number(option?.votes || 0));
-          const share = totalVoters > 0 ? Math.round((votes / totalVoters) * 100) : 0;
-          return (
-            <Box
-              key={`${optionIndex}-${String(option?.text || '')}`}
-              component={votable ? 'button' : 'div'}
-              type={votable ? 'button' : undefined}
-              role={votable ? 'button' : undefined}
-              aria-pressed={votable ? isMine : undefined}
-              aria-label={`Вариант ${String(option?.text || '')}, голосов ${votes}`}
-              onClick={votable ? (event) => { event.stopPropagation(); void runVote(optionIndex); } : undefined}
-              disabled={votable ? busy : undefined}
-              sx={{
-                position: 'relative',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                width: '100%',
-                minHeight: 34,
-                px: '10px',
-                py: '6px',
-                border: 'none',
-                borderRadius: '10px',
-                bgcolor: 'transparent',
-                color: 'inherit',
-                fontFamily: CHAT_FONT_FAMILY,
-                textAlign: 'left',
-                cursor: votable && !busy ? 'pointer' : 'default',
-                overflow: 'hidden',
-                transition: 'background-color 120ms ease',
-                '&:hover': votable ? { bgcolor: alpha(accent, 0.07) } : undefined,
-              }}
-            >
+          const isLast = optionIndex === options.length - 1;
+          const key = `${optionIndex}-${text}`;
+          if (!showResults) {
+            return (
               <Box
-                aria-hidden="true"
+                key={key}
+                component="button"
+                type="button"
+                data-testid="chat-poll-option"
+                aria-label={`Вариант ${text}`}
+                onClick={votable ? (event) => { event.stopPropagation(); void runVote(optionIndex); } : undefined}
+                disabled={!votable || busy}
                 sx={{
-                  position: 'absolute',
-                  inset: 0,
-                  width: `${Math.min(100, share)}%`,
-                  bgcolor: alpha(accent, isMine ? 0.22 : 0.12),
-                  transition: 'width 180ms ease',
-                }}
-              />
-              {isMine ? (
-                <CheckCircleRoundedIcon sx={{ position: 'relative', fontSize: 18, color: accent, flexShrink: 0 }} />
-              ) : (
-                <RadioButtonUncheckedRoundedIcon sx={{ position: 'relative', fontSize: 18, color: muted, flexShrink: 0 }} />
-              )}
-              <Typography
-                component="span"
-                sx={{
-                  position: 'relative',
-                  flex: 1,
-                  minWidth: 0,
-                  fontSize: 14,
-                  lineHeight: 1.3,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  width: '100%',
+                  minHeight: 40,
+                  px: '4px',
+                  py: 0,
+                  border: 'none',
+                  borderRadius: '8px',
+                  bgcolor: 'transparent',
                   color: 'inherit',
                   fontFamily: CHAT_FONT_FAMILY,
-                  wordBreak: 'break-word',
+                  textAlign: 'left',
+                  cursor: votable && !busy ? 'pointer' : 'default',
+                  transition: 'background-color 120ms ease',
+                  '&:hover': votable ? { bgcolor: alpha(ink, 0.07) } : undefined,
+                  '&:focus-visible': { outline: `2px solid ${alpha(accent, 0.6)}`, outlineOffset: 1 },
                 }}
               >
-                {String(option?.text || '')}
+                <Box
+                  aria-hidden="true"
+                  sx={{
+                    width: 20,
+                    height: 20,
+                    boxSizing: 'border-box',
+                    flexShrink: 0,
+                    borderRadius: '50%',
+                    border: `2px solid ${alpha(ink, 0.55)}`,
+                  }}
+                />
+                <Box
+                  sx={{
+                    flex: 1,
+                    minWidth: 0,
+                    minHeight: 40,
+                    display: 'flex',
+                    alignItems: 'center',
+                    borderBottom: isLast ? 'none' : `1px solid ${divider}`,
+                  }}
+                >
+                  <Typography
+                    component="span"
+                    sx={{ fontSize: 15, lineHeight: 1.3, color: 'inherit', fontFamily: CHAT_FONT_FAMILY, wordBreak: 'break-word', py: '6px' }}
+                  >
+                    {text}
+                  </Typography>
+                </Box>
+              </Box>
+            );
+          }
+          const votes = Math.max(0, Number(option?.votes || 0));
+          const share = totalVoters > 0 ? Math.min(100, Math.round((votes / totalVoters) * 100)) : 0;
+          const barWidth = !barsReady ? '0px' : (share > 0 ? `${share}%` : '4px');
+          return (
+            <Box
+              key={key}
+              data-testid="chat-poll-result"
+              data-selected={isMine ? 'true' : undefined}
+              aria-label={`${text}: ${share}%, ${formatPollVotes(votes)}${isMine ? ', ваш выбор' : ''}`}
+              sx={{ display: 'flex', alignItems: 'flex-start', gap: '10px', py: '6px' }}
+            >
+              <Typography
+                component="span"
+                data-testid="chat-poll-percent"
+                sx={{
+                  width: 40,
+                  flexShrink: 0,
+                  textAlign: 'right',
+                  fontSize: 14,
+                  fontWeight: 600,
+                  lineHeight: '20px',
+                  color: accent,
+                  fontFamily: CHAT_FONT_FAMILY,
+                  fontVariantNumeric: 'tabular-nums',
+                }}
+              >
+                {`${share}%`}
               </Typography>
-              {votes > 0 ? (
+              <Box sx={{ flex: 1, minWidth: 0 }}>
                 <Typography
                   component="span"
-                  sx={{ position: 'relative', fontSize: 12, fontWeight: 700, color: muted, fontFamily: CHAT_FONT_FAMILY, flexShrink: 0 }}
+                  sx={{ display: 'block', fontSize: 15, lineHeight: '20px', color: 'inherit', fontFamily: CHAT_FONT_FAMILY, wordBreak: 'break-word' }}
                 >
-                  {`${share}% · ${votes}`}
+                  {text}
                 </Typography>
-              ) : null}
+                <Box sx={{ position: 'relative', mt: '2px', height: 16, display: 'flex', alignItems: 'center' }}>
+                  <Box
+                    aria-hidden="true"
+                    sx={{ position: 'absolute', left: 0, right: 0, height: 4, borderRadius: '2px', bgcolor: alpha(accent, 0.16) }}
+                  />
+                  <Box
+                    aria-hidden="true"
+                    data-testid="chat-poll-bar"
+                    sx={{
+                      position: 'absolute',
+                      left: 0,
+                      height: 4,
+                      borderRadius: '2px',
+                      bgcolor: accent,
+                      width: barWidth,
+                      transition: `width ${POLL_BAR_MS}ms ease`,
+                      '@media (prefers-reduced-motion: reduce)': { transition: 'none' },
+                    }}
+                  />
+                  {isMine ? (
+                    <Box
+                      aria-hidden="true"
+                      data-testid="chat-poll-mine"
+                      sx={{
+                        position: 'absolute',
+                        left: 0,
+                        width: 16,
+                        height: 16,
+                        borderRadius: '50%',
+                        bgcolor: accent,
+                        color: cardBg,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      <CheckRoundedIcon sx={{ fontSize: 12 }} />
+                    </Box>
+                  ) : null}
+                </Box>
+              </Box>
             </Box>
           );
         })}
       </Box>
-      <Typography sx={{ mt: '6px', fontSize: 12, color: muted, fontFamily: CHAT_FONT_FAMILY }}>
-        {closed
-          ? `Опрос завершён · голосов: ${totalVoters}`
-          : totalVoters > 0 ? `Голосов: ${totalVoters}` : 'Пока нет голосов'}
+      <Typography
+        data-testid="chat-poll-total"
+        sx={{ mt: '6px', textAlign: 'center', fontSize: 13, lineHeight: 1.3, color: muted, fontFamily: CHAT_FONT_FAMILY }}
+      >
+        {formatPollVotes(totalVoters)}
       </Typography>
-      {isOwnMessage && !closed && typeof onClose === 'function' ? (
-        <Box
-          component="button"
-          type="button"
-          disabled={busy}
-          onClick={runClose}
-          sx={{
-            mt: '6px',
-            py: '6px',
-            width: '100%',
-            border: 'none',
-            borderRadius: '10px',
-            bgcolor: alpha(accent, 0.1),
-            color: accent,
-            fontSize: 13,
-            fontWeight: 600,
-            fontFamily: CHAT_FONT_FAMILY,
-            cursor: busy ? 'default' : 'pointer',
-          }}
-        >
-          Завершить опрос
-        </Box>
-      ) : null}
     </Box>
   );
 }

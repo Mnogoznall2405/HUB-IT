@@ -57,7 +57,8 @@ describe('useMyFilesShares', () => {
   });
 
   it('creates a share, copies the link and opens the dialog', async () => {
-    const { result } = renderShares();
+    const onFileShareChanged = vi.fn();
+    const { result } = renderShares({ onFileShareChanged });
     await act(async () => { await result.current.shareFile(file); });
 
     expect(mockCreateShare).toHaveBeenCalledWith('f1', { rotate: false });
@@ -69,7 +70,9 @@ describe('useMyFilesShares', () => {
       linkCopied: true,
       fileName: 'report.pdf',
     });
-    expect(mockLoadData).toHaveBeenCalledWith({ silent: true });
+    // the list is updated point-wise (one item), not refetched
+    expect(onFileShareChanged).toHaveBeenCalledWith('f1', true);
+    expect(mockLoadData).not.toHaveBeenCalled();
   });
 
   it('warns when the clipboard is unavailable but still opens the dialog', async () => {
@@ -95,11 +98,13 @@ describe('useMyFilesShares', () => {
     );
   });
 
-  it('revokes a share and refreshes the list', async () => {
-    const { result } = renderShares();
+  it('revokes a share and updates the item in the list', async () => {
+    const onFileShareChanged = vi.fn();
+    const { result } = renderShares({ onFileShareChanged });
     await act(async () => { await result.current.revokeShare(file); });
     expect(mockRevokeShare).toHaveBeenCalledWith('f1');
-    expect(mockLoadData).toHaveBeenCalledWith({ silent: true });
+    expect(onFileShareChanged).toHaveBeenCalledWith('f1', false);
+    expect(mockLoadData).not.toHaveBeenCalled();
     expect(mockNotifySuccess).toHaveBeenCalledWith(
       expect.stringContaining('отключена'),
       expect.objectContaining({ source: 'my-files-share' }),

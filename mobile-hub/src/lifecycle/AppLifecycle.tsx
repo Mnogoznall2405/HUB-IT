@@ -190,7 +190,6 @@ export function AppLifecycle() {
       void unregisterMobileBackgroundSync();
       return;
     }
-
     const pending = pendingNotificationResponseRef.current;
     if (pending) {
       pendingNotificationResponseRef.current = null;
@@ -205,7 +204,9 @@ export function AppLifecycle() {
       void syncPendingNotificationReplies(user.id);
       refreshReadCaches();
     });
-  }, [user]);
+    // По id, не по объекту: refreshUser() отдаёт новый объект и не должен
+    // сносить сокеты/подписки (WS-1).
+  }, [user?.id]);
 
   useEffect(() => {
     if (Platform.OS === 'web') return undefined;
@@ -236,7 +237,7 @@ export function AppLifecycle() {
     void drainOfflineCommandQueue(user.id);
     void syncPendingNotificationReplies(user.id);
     refreshReadCaches();
-  }, [offlineMode, user]);
+  }, [offlineMode, user?.id]);
 
   useEffect(() => {
     if (!user || !nativeChatActive) {
@@ -245,7 +246,7 @@ export function AppLifecycle() {
     }
     void chatSocket.connect();
     return () => chatSocket.disconnect({ reconnect: false, clearSubscriptions: true });
-  }, [nativeChatActive, user]);
+  }, [nativeChatActive, user?.id]);
 
   useEffect(() => {
     // W12: sockets survive brief backgrounding (file pickers, camera,

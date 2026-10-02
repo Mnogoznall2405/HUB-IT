@@ -28,7 +28,7 @@ def equipment_delete_env():
     current = {"user": SimpleNamespace(username="admin", role="admin", is_active=True)}
 
     app.dependency_overrides[deps.get_current_active_user] = lambda: current["user"]
-    app.dependency_overrides[deps.get_current_database_id] = lambda: "main"
+    app.dependency_overrides[deps.get_request_scoped_database_id] = lambda: "main"
 
     return {
         "client": TestClient(app),

@@ -2,6 +2,7 @@ import { useCallback } from 'react';
 
 import {
   buildOptimisticFileMessage,
+  buildOptimisticStickerMessage,
   buildOptimisticTextMessage,
   buildReplyPreview,
   isLikelyOptimisticReplacement,
@@ -34,6 +35,7 @@ export default function useChatOptimisticThreadMessages({
     conversationId,
     files,
     mediaKinds,
+    mediaDimensions,
     body,
     replyPreview,
   }) => {
@@ -42,7 +44,23 @@ export default function useChatOptimisticThreadMessages({
       conversationId,
       files,
       mediaKinds,
+      mediaDimensions,
       body,
+      replyPreview,
+      user,
+      seq: optimisticMessageSeqRef.current,
+    });
+  }, [optimisticMessageSeqRef, user?.full_name, user?.id, user?.username]);
+
+  const createOptimisticStickerMessage = useCallback(({
+    conversationId,
+    sticker,
+    replyPreview,
+  }) => {
+    optimisticMessageSeqRef.current += 1;
+    return buildOptimisticStickerMessage({
+      conversationId,
+      sticker,
       replyPreview,
       user,
       seq: optimisticMessageSeqRef.current,
@@ -56,6 +74,7 @@ export default function useChatOptimisticThreadMessages({
   return {
     buildReplyPreview,
     createOptimisticFileMessage,
+    createOptimisticStickerMessage,
     createOptimisticTextMessage,
     isLikelyOptimisticReplacement,
     revokeObjectUrls,

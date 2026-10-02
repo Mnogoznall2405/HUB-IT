@@ -1,3 +1,4 @@
+import AiBalanceCard from './AiBalanceCard';
 import BotSettingsWorkspace from './BotSettingsWorkspace';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -753,10 +754,13 @@ export function AiBotsAdminSection({
     );
   };
 
-  return <BotSettingsWorkspace
-    bots={bots} loading={loading} savingBotId={savingBotId} runsByBotId={runsByBotId}
-    onRefresh={onRefresh} onCreate={onCreate} onSave={onSave} openrouterConfigured={openrouterConfigured}
-    draftsById={draftsById} newDraft={newDraft} setNewDraft={setNewDraft}
-    updateDraft={updateDraft} renderFields={renderBotFields} ui={ui}
-  />;
+  return <>
+    <AiBalanceCard />
+    <BotSettingsWorkspace
+      bots={bots} loading={loading} savingBotId={savingBotId} runsByBotId={runsByBotId}
+      onRefresh={onRefresh} onCreate={onCreate} onSave={onSave} openrouterConfigured={openrouterConfigured}
+      draftsById={draftsById} newDraft={newDraft} setNewDraft={setNewDraft}
+      updateDraft={updateDraft} renderFields={renderBotFields} ui={ui}
+    />
+  </>;
 }

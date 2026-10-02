@@ -11,20 +11,27 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Optional
 from uuid import uuid4
 
 from fastapi import UploadFile
 from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
 
+from backend.ai_chat.balance import INSUFFICIENT_FUNDS_USER_TEXT, ai_balance_service
 from backend.ai_chat.artifact_generator import GeneratedFileError, build_generated_uploads, normalize_generated_file_specs
 from backend.ai_chat.document_extractors import extract_text_from_path
 from backend.ai_chat.openrouter_client import OpenRouterClientError, openrouter_client
 from backend.ai_chat.retrieval_interface import ai_kb_retrieval
+from backend.ai_chat.tool_permissions import filter_tools_for_user
 from shared.llm import jev_client, jev_noul
 from backend.ai_chat.tools import ai_tool_registry
+# Registers ai.request_tool_group in the shared registry; the orchestrator
+# intercepts its calls itself (it is a meta tool, not a data tool).
+from backend.ai_chat.tools.tool_group_request import AI_TOOL_REQUEST_GROUP
 from backend.ai_chat.tools.context import (
     AI_TOOL_MULTI_DB_MODE_SINGLE,
     AI_TOOL_FILES_CONVERT_DOCUMENT,
@@ -39,6 +46,7 @@ from backend.ai_chat.tools.context import (
     AI_TOOL_GROUP_KB,
     AI_TOOL_GROUP_CHAT,
     AI_TOOL_GROUP_OTHER,
+    AI_TOOL_GROUPS_ALL,
     AiToolExecutionContext,
     DEFAULT_ITINVENT_TOOL_IDS,
     get_available_database_options,
@@ -139,6 +147,14 @@ AI_RUN_STAGE_STATUS_TEXTS = {
 
 class AiRunCancelled(RuntimeError):
     """Raised cooperatively when a user stops an active AI run."""
+
+
+class AiRunConflictError(RuntimeError):
+    """R30: «Повторить» while the conversation's latest run is still active (HTTP 409)."""
+
+
+class AiRunUserInactive(RuntimeError):
+    """R34: the employee owning a queued run was deactivated before it executed."""
 DOC_CONVERT_BOT_SLUG = "document-converter"
 DOC_CONVERT_BOT_SEED_SETTING_KEY = "ai_chat.document_converter_bot_seed_v1"
 LEGACY_DOC_CONVERT_BOT_TITLE = "Конвертер документов"
@@ -170,6 +186,7 @@ AI_CONTEXT_ATTACHMENT_NAME_LIMIT = int(os.environ.get("AI_CONTEXT_ATTACHMENT_NAM
 AI_FILE_CONTEXT_TEXT_LIMIT = int(os.environ.get("AI_FILE_CONTEXT_TEXT_LIMIT", "9000"))
 AI_INPUT_BUDGET_TOKENS = max(4096, min(32000, int(os.environ.get("AI_INPUT_BUDGET_TOKENS", "32000"))))
 AI_ROLLING_SUMMARY_TOKENS = max(128, min(1500, int(os.environ.get("AI_ROLLING_SUMMARY_TOKENS", "1500"))))
+AI_MEMORY_MARK_PREFIX = "Учтена личная память"
 AI_MEMORY_MAX_FACTS = max(1, min(20, int(os.environ.get("AI_MEMORY_MAX_FACTS", "20"))))
 AI_MEMORY_MAX_TOKENS = max(128, min(4000, int(os.environ.get("AI_MEMORY_MAX_TOKENS", "4000"))))
 AI_PERSONAL_MEMORY_ENABLED = str(os.environ.get("AI_PERSONAL_MEMORY_ENABLED", "0") or "0").strip().lower() in {
@@ -177,12 +194,17 @@ AI_PERSONAL_MEMORY_ENABLED = str(os.environ.get("AI_PERSONAL_MEMORY_ENABLED", "0
 }
 AI_TOOL_CALL_LIMIT = int(os.environ.get("AI_TOOL_CALL_LIMIT", "3"))
 AI_TOOL_ROUND_LIMIT = int(os.environ.get("AI_TOOL_ROUND_LIMIT", "6"))
+# AG-4/J2: at most this many extra tool groups the model may request per run.
+AI_TOOL_GROUP_EXPANSION_LIMIT = max(0, min(5, int(os.environ.get("AI_TOOL_GROUP_EXPANSION_LIMIT", "2") or 2)))
+# AG-4/J10: warn when a model call still carries more than ~20 tool specs.
+AI_TOOL_SPECS_WARN_LIMIT = max(5, int(os.environ.get("AI_TOOL_SPECS_WARN_LIMIT", "20") or 20))
 AI_MODEL_CONTEXT_WINDOW = max(4096, min(32000, int(os.environ.get("AI_MODEL_CONTEXT_WINDOW", "32000"))))
 AI_TOKEN_BUDGET_SAFETY_MARGIN = int(os.environ.get("AI_TOKEN_BUDGET_SAFETY_MARGIN", "2000"))
 # When the LLM invokes a tool with invalid args, allow up to N self-correction passes
 # (the model is shown the validation error and asked to retry the same logical step).
 AI_TOOL_VALIDATION_RETRY_LIMIT = int(os.environ.get("AI_TOOL_VALIDATION_RETRY_LIMIT", "1"))
-DEFAULT_BOT_LIVE_DATA_SEED_SETTING_KEY = "ai_chat.default_bot_live_data_seed_v4"
+# AG-3: v5 merges file tools (ai.files.*) into the existing corp-assistant bot.
+DEFAULT_BOT_LIVE_DATA_SEED_SETTING_KEY = "ai_chat.default_bot_live_data_seed_v5"
 AI_ITINVENT_TOOL_ROUTING_GUIDE = (
     "Tool routing for live ITinvent requests:\n"
     "- ITinvent tools use the current selected database by default. If the user is admin and the bot is in admin_multi_db mode, "
@@ -418,6 +440,15 @@ def _iso(value: Optional[datetime]) -> Optional[str]:
     return value.astimezone(timezone.utc).isoformat()
 
 
+def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """Aware UTC datetime; naive values (sqlite) are treated as UTC."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _normalize_text(value: object) -> str:
     return str(value or "").strip()
 
@@ -435,7 +466,26 @@ def _json_dumps(value: Any) -> str:
 
 
 def _default_bot_enabled_tools() -> list[str]:
-    return list(DEFAULT_ITINVENT_TOOL_IDS)
+    return [
+        *DEFAULT_ITINVENT_TOOL_IDS,
+        # AG-3: file capabilities merged into the single assistant
+        # (previously lived only on general-ai / document-converter bots).
+        AI_TOOL_FILES_CREATE,
+        AI_TOOL_FILES_REPORT,
+        AI_TOOL_FILES_CONVERT_DOCUMENT,
+    ]
+
+
+def _apply_bot_seed_fields(bot: AppAiBot, fields: dict[str, Any]) -> bool:
+    # AI1: bootstrap assigns seed fields only when they actually differ — an
+    # unconditional setattr marks the row dirty and rewrites updated_at on
+    # every worker tick even when nothing changed.
+    changed = False
+    for field, value in fields.items():
+        if getattr(bot, field, None) != value:
+            setattr(bot, field, value)
+            changed = True
+    return changed
 
 
 def _is_itinvent_tool_id(tool_id: object) -> bool:
@@ -638,21 +688,6 @@ def _detect_requested_report_format(text: object) -> str | None:
     return None
 
 
-AI_ROUTING_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "groups": {
-            "type": "array",
-            "items": {"type": "string"},
-        }
-    },
-    "required": ["groups"],
-    "additionalProperties": False,
-}
-
-_ROUTING_MAX_TOKENS = int(os.environ.get("AI_ROUTING_MAX_TOKENS", "80"))
-
-
 def _keyword_routed_groups(trigger_text: str, *, available_groups: set[str]) -> set[str] | None:
     """Deterministic keyword routing; None when no keyword guarantees hit."""
     force_files = AI_TOOL_GROUP_FILES in available_groups and _has_report_file_intent(trigger_text)
@@ -809,78 +844,131 @@ def _keyword_routed_groups(trigger_text: str, *, available_groups: set[str]) -> 
                 if force_files:
                     routed.add(AI_TOOL_GROUP_FILES)
                 return routed
+    if force_files:
+        # File/report intent always gets the files group even without a domain
+        # keyword hit — JEV may still union in domain groups on top.
+        return {AI_TOOL_GROUP_FILES}
     return None
 
 
-def _route_tool_groups(
-    *,
-    trigger_text: str,
-    available_groups: set[str],
-    model: str,
-) -> set[str]:
-    if len(available_groups) <= 1:
-        return set(available_groups)
-    keyword_routed = _keyword_routed_groups(trigger_text, available_groups=available_groups)
-    if keyword_routed is not None:
-        return keyword_routed
-
-    force_files = AI_TOOL_GROUP_FILES in available_groups and _has_report_file_intent(trigger_text)
-    groups_list = sorted(available_groups)
-    system_prompt = (
-        "You are a tool-group router. Given a user message and available tool groups, "
-        "decide which groups are needed to answer. Reply with the minimal set. "
-        "Respond with JSON only: {\"groups\": [\"group1\", ...]}"
-    )
-    user_prompt = (
-        f"Available groups: {groups_list}\n"
-        f"User message: {trigger_text[:500]}"
-    )
-    try:
-        payload, _ = openrouter_client.complete_json(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model=model,
-            purpose="chat",
-            temperature=0.0,
-            max_tokens=_ROUTING_MAX_TOKENS,
-            response_schema=AI_ROUTING_SCHEMA,
-            schema_name="ai_tool_routing",
-            response_healing=False,
-        )
-        routed = [
-            g for g in list(payload.get("groups") or [])
-            if isinstance(g, str) and g.strip() in available_groups
-        ]
-        if routed:
-            result = set(routed)
-            if force_files:
-                result.add(AI_TOOL_GROUP_FILES)
-            return result
-        logger.warning("ai_tool_routing returned no valid groups; using narrow fallback")
-    except Exception as exc:
-        logger.warning("ai_tool_routing failed; using narrow fallback: %s", exc)
-    # Narrow fallback: prefer itinvent when available; only widen if itinvent is disabled.
-    # This is much cheaper than enabling every tool group.
-    fallback: set[str] = set()
-    if AI_TOOL_GROUP_ITINVENT in available_groups:
-        fallback.add(AI_TOOL_GROUP_ITINVENT)
-    elif available_groups:
-        # Pick the first deterministic group to avoid full fan-out.
-        fallback.add(sorted(available_groups)[0])
-    if force_files and AI_TOOL_GROUP_FILES in available_groups:
-        fallback.add(AI_TOOL_GROUP_FILES)
-    return fallback or set(available_groups)
-
-
-_JEV_GROUP_QUESTIONS: dict[str, str] = {
-    AI_TOOL_GROUP_ITINVENT: "Нужны ли данные ITinvent: оборудование/техника, сотрудники, компьютеры и их локальные данные (профили, pst-архивы, папки почты), инвентарные или серийные номера, филиалы, локации, история перемещений?",
-    AI_TOOL_GROUP_OFFICE: "Нужна ли работа с почтой, задачами, календарём, контактами или проектами?",
-    AI_TOOL_GROUP_FILES: "Нужно ли создать или конвертировать файл/отчёт/выгрузку (xlsx, csv, pdf, docx)?",
-    AI_TOOL_GROUP_MFU: "Запрос про принтеры и МФУ: картриджи, тонер, счётчики страниц, SNMP, печать?",
-    AI_TOOL_GROUP_NETWORK: "Запрос про сеть: ping, IP/MAC, порты, коммутаторы, VLAN, DNS, сертификаты, состояние серверов?",
-    AI_TOOL_GROUP_AD: "Запрос про Active Directory: пароли, блокировки, разблокировка, группы, история входов?",
-    AI_TOOL_GROUP_KB: "Нужны ли статьи базы знаний: инструкции, FAQ, решения типовых проблем, справочные материалы?",
-    AI_TOOL_GROUP_CHAT: "Нужна ли отправка сообщения в Hub-чат коллеге или в групповой диалог?",
+# J3: every group question carries explicit true/false criteria with Russian
+# examples so borderline requests ("проверь компьютер Иванова") route
+# consistently instead of depending on an uncalibrated guess.
+_JEV_GROUP_QUESTIONS: dict[str, dict[str, str]] = {
+    AI_TOOL_GROUP_ITINVENT: {
+        "question": (
+            "Нужны ли данные ITinvent: оборудование/техника и её карточки, сотрудники и их "
+            "компьютеры (профили, pst-архивы, папки почты), инвентарные или серийные номера, "
+            "филиалы, локации, история перемещений, расходники, акты, аналитика по парку?"
+        ),
+        "true_label": (
+            "да — «найди ноутбук 100234»; «что числится за Ивановым»; «перемести принтер "
+            "на Петрова»; «история перемещений монитора»; «сколько техники в филиале»"
+        ),
+        "false_label": (
+            "нет — «сбрось пароль в AD»; «пингани сервер»; «напиши письмо коллеге»; "
+            "«какая сегодня погода»; вопросы о компьютере Иванова только как «он в сети?» "
+            "без данных карточки — это сеть, не ITinvent"
+        ),
+    },
+    AI_TOOL_GROUP_OFFICE: {
+        "question": (
+            "Нужна ли работа с корпоративной почтой, задачами, проектами, комментариями, "
+            "рабочим днём или анонсами (Office/почта/задачи)?"
+        ),
+        "true_label": (
+            "да — «напиши письмо начальнику»; «покажи мои задачи»; «создай задачу на завтра»; "
+            "«прочитай последние письма»; «что у меня сегодня по работе»"
+        ),
+        "false_label": (
+            "нет — «найди принтер в ITinvent»; «пингани хост»; «сделай xlsx-файл» без отправки "
+            "по почте; «расскажи анекдот»"
+        ),
+    },
+    AI_TOOL_GROUP_FILES: {
+        "question": (
+            "Нужно ли создать, выгрузить, скачать или конвертировать файл/отчёт/документ "
+            "(xlsx, csv, pdf, docx, txt, md), или распознать прикреплённый документ?"
+        ),
+        "true_label": (
+            "да — «сделай отчёт в excel»; «выгрузи список в csv»; «конвертируй этот PDF в word»; "
+            "«распознай прикреплённый документ»; «сохрани результат файлом»"
+        ),
+        "false_label": (
+            "нет — «покажи данные на экране»; «отправь письмо» без вложения-файла; "
+            "«привет»; вопросы, где файл не создаётся и не преобразуется"
+        ),
+    },
+    AI_TOOL_GROUP_MFU: {
+        "question": (
+            "Запрос про принтеры и МФУ как устройства печати: картриджи, тонер, счётчики "
+            "страниц, статус устройства, SNMP, ежемесячная печать?"
+        ),
+        "true_label": (
+            "да — «сколько страниц напечатал МФУ за месяц»; «какой картридж в HP M404»; "
+            "«статус принтера в бухгалтерии»; «уровень тонера»"
+        ),
+        "false_label": (
+            "нет — «перемести принтер на Иванова» (это ITinvent-действие); «пингани принтер» "
+            "(это сеть); «история перемещений МФУ» (это ITinvent)"
+        ),
+    },
+    AI_TOOL_GROUP_NETWORK: {
+        "question": (
+            "Запрос про сеть и доступность: ping, DNS, SSL-сертификаты, TCP-порты, розетки, "
+            "коммутаторы, VLAN, состояние/аптайм сервера, Wake-on-LAN?"
+        ),
+        "true_label": (
+            "да — «пингани 10.0.0.5»; «проверь сертификат portal.local»; «какая розетка у "
+            "компьютера Иванова»; «включи компьютер по WoL»; «аптайм сервера»"
+        ),
+        "false_label": (
+            "нет — «что числится за Ивановым» (ITinvent); «сбрось пароль» (AD); "
+            "«покажи картриджи принтера» (MFU)"
+        ),
+    },
+    AI_TOOL_GROUP_AD: {
+        "question": (
+            "Запрос про Active Directory: срок действия/статус пароля, блокировка или "
+            "разблокировка учётной записи, группы пользователя, история входов?"
+        ),
+        "true_label": (
+            "да — «когда истекает пароль у kozlovskii.me»; «разблокируй учётку Иванова»; "
+            "«в каких группах состоит Петров»; «история входов пользователя»"
+        ),
+        "false_label": (
+            "нет — «найди компьютер Иванова» (ITinvent); «пингани контроллер домена» (сеть); "
+            "«напиши письмо» (почта)"
+        ),
+    },
+    AI_TOOL_GROUP_KB: {
+        "question": (
+            "Нужны ли статьи базы знаний: инструкции, FAQ, решения типовых проблем, "
+            "регламенты, шаблоны и справочные материалы?"
+        ),
+        "true_label": (
+            "да — «как настроить VPN по инструкции»; «есть ли статья про замену картриджа»; "
+            "«найди регламент по закупкам»; «что делать если не работает почта»"
+        ),
+        "false_label": (
+            "нет — «найди конкретное устройство» (ITinvent); «отправь письмо»; "
+            "«создай задачу»; приветствия и болтовня"
+        ),
+    },
+    AI_TOOL_GROUP_CHAT: {
+        "question": (
+            "Нужен ли поиск сотрудников/диалогов во внутреннем Hub-чате или отправка "
+            "сообщения коллеге/в групповой диалог через чат (не по e-mail)?"
+        ),
+        "true_label": (
+            "да — «напиши Иванову в чате»; «найди диалог с Петровым»; «отправь сообщение "
+            "в группу поддержки»; «найди сотрудника в чате»"
+        ),
+        "false_label": (
+            "нет — «напиши письмо по почте» (office/mail); «найди оборудование»; "
+            "«привет» без запроса на сообщение"
+        ),
+    },
 }
 
 
@@ -902,37 +990,213 @@ def _jev_routing_threshold() -> float:
 
 
 def _jev_routing_timeout_sec() -> float:
+    # J6: routing must stay cheap — short timeout, single attempt (no retries).
     try:
-        value = float(os.environ.get("AI_JEV_ROUTING_TIMEOUT_SEC", "8") or 8)
+        value = float(os.environ.get("AI_JEV_ROUTING_TIMEOUT_SEC", "3") or 3)
     except (TypeError, ValueError):
-        value = 8.0
+        value = 3.0
     return min(60.0, max(1.0, value))
 
 
-def _route_tool_groups_jev(*, trigger_text: str, available_groups: set[str]) -> set[str] | None:
-    """Jev System One routing. None means keep default behavior."""
+def _jev_routing_mode() -> str:
+    """Jev routing granularity: 'group' (default) or 'tool' (per-tool selection)."""
+    return str(os.environ.get("AI_JEV_ROUTING_MODE", "group") or "group").strip().lower()
+
+
+# J9: greetings/thanks/empty smalltalk — skip JEV entirely and send no tools.
+_JEV_SMALLTALK_MAX_LEN = 40
+_JEV_SMALLTALK_RE = re.compile(
+    r"^(?:"
+    r"привет(?:ики|ствую|чик)?|здравствуй(?:те)?|добр(?:ый|ого|ое)\s*(?:день|утро|вечер|ночи)?|"
+    r"спасибо|спс|благодар(?:ю|им)?|благодарствую|"
+    r"ок(?:ей|ейки)?|ok(?:ay)?|hi|hello|hey|helloo|"
+    r"пока|до\s*свидания|досвидания|всего\s*доброго|хорошего\s*(?:дня|вечера)|"
+    r"да|нет|ага|угу|понял[аи]?|ясно|хорошо|ладно|понятно|"
+    r"[👍🙏😊🙂✅❤️]+"
+    r")[\s!.,?…]*$",
+    re.IGNORECASE,
+)
+
+
+def _is_short_smalltalk(text: object) -> bool:
+    """True for greetings/thanks/acks — no tool routing needed (J9)."""
+    normalized = _normalize_text(text)
+    if not normalized:
+        return True
+    if len(normalized) > _JEV_SMALLTALK_MAX_LEN:
+        return False
+    return bool(_JEV_SMALLTALK_RE.match(normalized))
+
+
+# J6: short-lived decision cache. The key embeds the permission-filtered
+# available_groups so entries can never leak a group across users.
+_JEV_ROUTING_CACHE_TTL_SEC = float(os.environ.get("AI_JEV_ROUTING_CACHE_TTL_SEC", "300") or 300)
+_JEV_ROUTING_CACHE_MAX = max(50, min(5000, int(os.environ.get("AI_JEV_ROUTING_CACHE_MAX", "500") or 500)))
+_jev_routing_cache: dict[str, tuple[float, frozenset[str]]] = {}
+_jev_routing_cache_lock = threading.Lock()
+
+
+def _jev_routing_cache_key(
+    *,
+    mode: str,
+    message: str,
+    sticky_groups: set[str],
+    available_groups: set[str],
+) -> str:
+    material = "\x1f".join(
+        [
+            mode,
+            message,
+            ",".join(sorted(sticky_groups)),
+            ",".join(sorted(available_groups)),
+        ]
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _jev_routing_cache_get(key: str) -> frozenset[str] | None:
+    now = time.monotonic()
+    with _jev_routing_cache_lock:
+        entry = _jev_routing_cache.get(key)
+        if entry is None:
+            return None
+        expires, routed = entry
+        if expires <= now:
+            _jev_routing_cache.pop(key, None)
+            return None
+        return routed
+
+
+def _jev_routing_cache_set(key: str, routed: set[str]) -> None:
+    with _jev_routing_cache_lock:
+        _jev_routing_cache[key] = (time.monotonic() + _JEV_ROUTING_CACHE_TTL_SEC, frozenset(routed))
+        while len(_jev_routing_cache) > _JEV_ROUTING_CACHE_MAX:
+            oldest = min(_jev_routing_cache, key=lambda item: _jev_routing_cache[item][0])
+            _jev_routing_cache.pop(oldest, None)
+
+
+def _jev_fallback_groups(
+    *,
+    trigger_text: str,
+    available_groups: set[str],
+    sticky_groups: set[str] | None = None,
+) -> set[str]:
+    """J5: deterministic fallback when JEV fails or times out.
+
+    Keyword-routed groups + sticky groups from the previous run; when that
+    yields nothing — the small base set (files/kb) so ``request_tool_group``
+    stays the only widening path. Never returns "all groups".
+    """
+    routed: set[str] = set()
+    keyword_routed = _keyword_routed_groups(trigger_text, available_groups=available_groups)
+    if keyword_routed:
+        routed |= set(keyword_routed)
+    routed |= set(sticky_groups or set()) & set(available_groups)
+    if not routed:
+        routed = {AI_TOOL_GROUP_FILES, AI_TOOL_GROUP_KB} & set(available_groups)
+    if AI_TOOL_GROUP_OTHER in available_groups:
+        routed.add(AI_TOOL_GROUP_OTHER)
+    return routed
+
+
+def _build_jev_state(
+    *,
+    trigger_text: str,
+    available_groups: set[str],
+    sticky_groups: set[str] | None = None,
+    recent_messages: list[str] | None = None,
+    has_attachment: bool = False,
+) -> dict[str, Any]:
+    """J1: routing state — current message plus dialog context."""
+    return {
+        "user_message": _normalize_text(trigger_text)[:1500],
+        "recent_messages": [_normalize_text(item)[:300] for item in list(recent_messages or [])][:4],
+        "sticky_groups": sorted(set(sticky_groups or set()) & set(available_groups)),
+        "has_attachment": bool(has_attachment),
+        "available_groups": sorted(available_groups),
+    }
+
+
+def _route_tool_groups_jev(
+    *,
+    trigger_text: str,
+    available_groups: set[str],
+    sticky_groups: set[str] | None = None,
+    recent_messages: list[str] | None = None,
+    has_attachment: bool = False,
+) -> set[str] | None:
+    """Jev System One group routing.
+
+    Returns ``None`` when routing is off — callers then keep every available
+    group (production default while the flag is disabled). An empty set means
+    "no tools needed" (J9 smalltalk or JEV confidently refused everything).
+    On any JEV failure a deterministic permission-safe fallback is returned —
+    never the full set (J5).
+    """
     if not _jev_routing_enabled() or len(available_groups) <= 1:
         return None
     normalized = _normalize_text(trigger_text)
-    if not normalized or not jev_client.is_configured():
-        return None
+    if _is_short_smalltalk(normalized):
+        return set()
+    if not normalized:
+        return set()
+    sticky = set(sticky_groups or set()) & set(available_groups)
+    if not jev_client.is_configured():
+        logger.warning("ai_jev_routing enabled but JEV is not configured; using fallback groups")
+        return _jev_fallback_groups(
+            trigger_text=normalized,
+            available_groups=available_groups,
+            sticky_groups=sticky,
+        )
+    cache_key = _jev_routing_cache_key(
+        mode="group",
+        message=normalized,
+        sticky_groups=sticky,
+        available_groups=set(available_groups),
+    )
+    cached = _jev_routing_cache_get(cache_key)
+    if cached is not None:
+        logger.info("ai_jev_routing_cache hit mode=groups routed=%s", sorted(cached))
+        return set(cached)
+    logger.info("ai_jev_routing_cache miss mode=groups")
     questions = {
-        f"g_{group}": jev_noul(instructions)
-        for group, instructions in _JEV_GROUP_QUESTIONS.items()
+        f"g_{group}": jev_noul(
+            spec.get("question", ""),
+            true_label=spec.get("true_label", ""),
+            false_label=spec.get("false_label", ""),
+        )
+        for group, spec in _JEV_GROUP_QUESTIONS.items()
         if group in available_groups
     }
     if not questions:
-        return None
+        return _jev_fallback_groups(
+            trigger_text=normalized,
+            available_groups=available_groups,
+            sticky_groups=sticky,
+        )
     try:
         started_at = time.perf_counter()
         decision = jev_client.decide(
-            state={"user_message": normalized[:1500]},
+            state=_build_jev_state(
+                trigger_text=normalized,
+                available_groups=set(available_groups),
+                sticky_groups=sticky,
+                recent_messages=recent_messages,
+                has_attachment=has_attachment,
+            ),
             questions=questions,
             timeout=_jev_routing_timeout_sec(),
+            max_retries=0,
         )
     except Exception as exc:
-        logger.warning("ai_jev_routing failed; keeping all tool groups: %s", exc)
-        return None
+        logger.warning("ai_jev_routing failed; using deterministic fallback: %s", exc)
+        fallback = _jev_fallback_groups(
+            trigger_text=normalized,
+            available_groups=available_groups,
+            sticky_groups=sticky,
+        )
+        _jev_routing_cache_set(cache_key, fallback)
+        return fallback
     threshold = _jev_routing_threshold()
     probs: dict[str, float] = {}
     routed: set[str] = set()
@@ -945,18 +1209,15 @@ def _route_tool_groups_jev(*, trigger_text: str, available_groups: set[str]) -> 
     if AI_TOOL_GROUP_OTHER in available_groups:
         routed.add(AI_TOOL_GROUP_OTHER)
     logger.info(
-        "ai_jev_routing probs=%s routed=%s latency_ms=%.0f model=%s",
+        "ai_jev_routing probs=%s routed=%s sticky=%s latency_ms=%.0f model=%s",
         probs,
         sorted(routed),
+        sorted(sticky),
         (time.perf_counter() - started_at) * 1000,
         decision.model,
     )
-    return routed or None
-
-
-def _jev_routing_mode() -> str:
-    """Jev routing granularity: 'group' (default) or 'tool' (per-tool selection)."""
-    return str(os.environ.get("AI_JEV_ROUTING_MODE", "group") or "group").strip().lower()
+    _jev_routing_cache_set(cache_key, routed)
+    return routed
 
 
 # Resolver/utility tools that must stay available when Jev picks concrete tools:
@@ -969,13 +1230,26 @@ _JEV_ALWAYS_KEEP_TOOLS = frozenset(
 )
 
 
-def _route_tools_jev(*, trigger_text: str, tool_specs: list[dict[str, Any]]) -> set[str] | None:
-    """Return Jev-selected tool ids for AI_JEV_ROUTING_MODE=tool; None keeps default routing."""
+def _route_tools_jev(
+    *,
+    trigger_text: str,
+    tool_specs: list[dict[str, Any]],
+    available_groups: set[str] | None = None,
+    sticky_groups: set[str] | None = None,
+    recent_messages: list[str] | None = None,
+    has_attachment: bool = False,
+) -> set[str] | None:
+    """Return Jev-selected tool ids for AI_JEV_ROUTING_MODE=tool.
+
+    ``None`` keeps default behavior (all enabled specs). An empty set means
+    "no tools" (J9). JEV failure maps the deterministic group fallback onto
+    tool ids — never "all tools" (J5).
+    """
     if not _jev_routing_enabled() or _jev_routing_mode() != "tool":
         return None
     normalized = _normalize_text(trigger_text)
-    if not normalized or not jev_client.is_configured():
-        return None
+    if _is_short_smalltalk(normalized):
+        return set()
     specs = [
         spec
         for spec in list(tool_specs or [])
@@ -983,6 +1257,38 @@ def _route_tools_jev(*, trigger_text: str, tool_specs: list[dict[str, Any]]) -> 
     ]
     if not specs or len(specs) > 200:
         return None
+    groups = set(available_groups or set()) or {
+        get_tool_group((spec or {}).get("tool_id")) for spec in specs
+    }
+    groups.discard("")
+    sticky = set(sticky_groups or set()) & groups
+
+    def _fallback_tool_ids() -> set[str]:
+        fallback_groups = _jev_fallback_groups(
+            trigger_text=normalized,
+            available_groups=groups,
+            sticky_groups=sticky,
+        )
+        return {
+            _normalize_text(spec.get("tool_id"))
+            for spec in specs
+            if get_tool_group(spec.get("tool_id")) in fallback_groups
+        } | (_JEV_ALWAYS_KEEP_TOOLS & {_normalize_text(s.get("tool_id")) for s in specs})
+
+    if not jev_client.is_configured():
+        logger.warning("ai_jev_routing(mode=tool) enabled but JEV is not configured; using fallback tools")
+        return _fallback_tool_ids()
+    cache_key = _jev_routing_cache_key(
+        mode="tool",
+        message=normalized,
+        sticky_groups=sticky,
+        available_groups=groups,
+    )
+    cached = _jev_routing_cache_get(cache_key)
+    if cached is not None:
+        logger.info("ai_jev_routing_cache hit mode=tool selected=%s", len(cached))
+        return set(cached)
+    logger.info("ai_jev_routing_cache miss mode=tool")
     questions: dict[str, dict[str, Any]] = {}
     key_to_tool: dict[str, str] = {}
     for index, spec in enumerate(specs):
@@ -994,13 +1300,22 @@ def _route_tools_jev(*, trigger_text: str, tool_specs: list[dict[str, Any]]) -> 
     try:
         started_at = time.perf_counter()
         decision = jev_client.decide(
-            state={"user_message": normalized[:1500]},
+            state=_build_jev_state(
+                trigger_text=normalized,
+                available_groups=groups,
+                sticky_groups=sticky,
+                recent_messages=recent_messages,
+                has_attachment=has_attachment,
+            ),
             questions=questions,
             timeout=_jev_routing_timeout_sec(),
+            max_retries=0,
         )
     except Exception as exc:
-        logger.warning("ai_jev_routing(mode=tool) failed; keeping all tools: %s", exc)
-        return None
+        logger.warning("ai_jev_routing(mode=tool) failed; using deterministic fallback: %s", exc)
+        fallback = _fallback_tool_ids()
+        _jev_routing_cache_set(cache_key, fallback)
+        return fallback
     threshold = _jev_routing_threshold()
     enabled_ids = set(key_to_tool.values())
     selected = {
@@ -1009,8 +1324,6 @@ def _route_tools_jev(*, trigger_text: str, tool_specs: list[dict[str, Any]]) -> 
         if float(getattr(decision.answers.get(key), "probability", 0.0) or 0.0) >= threshold
     }
     selected |= _JEV_ALWAYS_KEEP_TOOLS & enabled_ids
-    if not selected:
-        return None
     logger.info(
         "ai_jev_routing(mode=tool) selected=%s/%s latency_ms=%.0f model=%s",
         len(selected),
@@ -1018,12 +1331,149 @@ def _route_tools_jev(*, trigger_text: str, tool_specs: list[dict[str, Any]]) -> 
         (time.perf_counter() - started_at) * 1000,
         decision.model,
     )
+    _jev_routing_cache_set(cache_key, selected)
     return selected
+
+
+def _request_tool_group_spec() -> dict[str, Any] | None:
+    """Prompt spec of the ai.request_tool_group meta tool (J2)."""
+    tool = ai_tool_registry.get(AI_TOOL_REQUEST_GROUP)
+    if tool is None:
+        return None
+    return tool.to_prompt_spec()
+
+
+def _handle_tool_group_expansion(
+    *,
+    call: dict[str, Any],
+    tool_context: AiToolExecutionContext,
+    all_tool_specs: list[dict[str, Any]],
+    tool_specs: list[dict[str, Any]],
+    routed_groups: set[str],
+    available_groups: set[str],
+    expanded_groups: set[str],
+    run_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Serve an ``ai.request_tool_group`` call inside the orchestration loop (J2).
+
+    The requested group is honoured only when it is part of the already
+    permission-filtered ``available_groups``; at most
+    ``AI_TOOL_GROUP_EXPANSION_LIMIT`` expansions are accepted per run and every
+    decision is logged as ``ai_tool_group_expansion``.
+    Returns a (tool_result payload, trace) pair in the same shape as
+    ``_execute_tool_calls`` produces.
+    """
+    raw_args = call.get("args") if isinstance(call.get("args"), dict) else {}
+    requested_group = _normalize_text(raw_args.get("group")).lower()
+    reason = _normalize_text(raw_args.get("reason"))[:300] or None
+    accepted = False
+    code = "rejected"
+    new_specs: list[dict[str, Any]] = []
+    if requested_group not in set(AI_TOOL_GROUPS_ALL):
+        code = "unknown_group"
+        message = f"Неизвестная группа инструментов '{requested_group or '-'}'."
+    elif requested_group not in set(available_groups):
+        # Never expose a group the employee is not allowed to use.
+        code = "forbidden_group"
+        message = (
+            f"Группа '{requested_group}' недоступна этому сотруднику. "
+            "Ответь на основе уже доступных инструментов."
+        )
+    elif requested_group in set(routed_groups):
+        code = "already_enabled"
+        accepted = True
+        message = f"Группа '{requested_group}' уже подключена — используй её инструменты."
+    elif len(expanded_groups) >= AI_TOOL_GROUP_EXPANSION_LIMIT:
+        code = "limit_reached"
+        message = "Лимит дополнительных групп на этот запуск исчерпан — ответь доступными инструментами."
+    else:
+        routed_groups.add(requested_group)
+        expanded_groups.add(requested_group)
+        existing_ids = {_normalize_text(spec.get("tool_id")) for spec in tool_specs}
+        new_specs = [
+            spec
+            for spec in all_tool_specs
+            if get_tool_group((spec or {}).get("tool_id")) == requested_group
+            and _normalize_text((spec or {}).get("tool_id")) not in existing_ids
+        ]
+        tool_specs.extend(new_specs)
+        accepted = True
+        code = "accepted"
+        message = f"Группа '{requested_group}' подключена к следующему шагу — вызови нужный инструмент."
+    logger.info(
+        "ai_tool_group_expansion run_id=%s group=%s accepted=%s code=%s reason=%s tools_added=%s",
+        run_id,
+        requested_group or "-",
+        accepted,
+        code,
+        reason or "-",
+        len(new_specs),
+    )
+    payload = {
+        "tool_id": AI_TOOL_REQUEST_GROUP,
+        "ok": True,
+        "database_id": _normalize_text(tool_context.effective_database_id) or None,
+        "data": {
+            "requested_group": requested_group or None,
+            "accepted": bool(accepted),
+            "code": code,
+            "reason": reason,
+            "enabled_tools": new_specs if accepted else [],
+            "available_groups": sorted(available_groups),
+            "message": message,
+        },
+        "error": None,
+        "sources": [],
+    }
+    trace = {
+        "tool_id": AI_TOOL_REQUEST_GROUP,
+        "database_id": _normalize_text(tool_context.effective_database_id) or None,
+        "status": "ok",
+        "latency_ms": 0,
+        "conversation_id": tool_context.conversation_id,
+        "bot_id": tool_context.bot_id,
+        "user_id": int(tool_context.user_id or 0),
+        "args": dict(raw_args),
+        "accepted": bool(accepted),
+        "code": code,
+        "error": None,
+        "diagnostic": None,
+    }
+    return payload, trace
 
 
 def _truncate(value: object, limit: int = 12000) -> str:
     text = _normalize_text(value)
     return text[:limit]
+
+
+def _is_insufficient_funds_error(raw: object) -> bool:
+    text = _normalize_text(raw)
+    low = text.lower()
+    return bool(
+        re.search(r"(?<!\d)402(?!\d)", text)
+        or "payment required" in low
+        or "insufficient" in low
+        or "недостаточно" in low
+    )
+
+
+def _friendly_run_error_text(exc: object) -> str:
+    """AI4: map provider/runtime errors to user-facing Russian text.
+
+    The raw exception stays in logs; users get an actionable message.
+    """
+    raw = _normalize_text(exc)
+    low = raw.lower()
+    if _is_insufficient_funds_error(raw):
+        return INSUFFICIENT_FUNDS_USER_TEXT
+    if "timeout" in low or "timed out" in low or "deadline" in low or "таймаут" in low:
+        return "Провайдер ИИ не ответил вовремя. Нажмите «Повторить», чтобы попробовать ещё раз."
+    if "429" in raw or "rate limit" in low or "rate_limit" in low or "too many" in low:
+        return "Провайдер ИИ перегружен. Подождите немного и нажмите «Повторить»."
+    if re.search(r"\b5\d{2}\b", raw) or "unavailable" in low or "bad gateway" in low or "connection" in low:
+        return "Сервис ИИ временно недоступен. Нажмите «Повторить», чтобы попробовать ещё раз."
+    return _truncate(raw, limit=500) or "Не удалось получить ответ ИИ. Нажмите «Повторить»."
 
 
 def _merge_usage(*items: dict[str, Any]) -> dict[str, Any]:
@@ -1900,6 +2350,21 @@ def _fit_prompt_pair(system_prompt: str, user_prompt: str, *, token_limit: int =
     return bounded_system, bounded_user
 
 
+def _append_memory_mark(answer_markdown: str, *, hits: int) -> str:
+    """Hint (as in ChatGPT) that the answer took the user's personal memory into account."""
+    text = str(answer_markdown or "")
+    count = max(0, int(hits or 0))
+    if not text.strip() or count <= 0 or AI_MEMORY_MARK_PREFIX in text:
+        return text
+    if count % 10 == 1 and count % 100 != 11:
+        word = "факт"
+    elif 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        word = "факта"
+    else:
+        word = "фактов"
+    return f"{text.rstrip()}\n\n_{AI_MEMORY_MARK_PREFIX}: {count} {word}_"
+
+
 def _normalize_memory_content(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip(" \t\r\n-–—:;,.")[:1000]
 
@@ -1972,37 +2437,48 @@ class AiChatService:
         self._bots_list_cache: dict[int, tuple[float, dict[str, Any]]] = {}
         self._bots_list_cache_ttl_sec = 20.0
         self._bots_list_cache_lock = threading.Lock()
+        # AI1: bot bootstrap is a startup/settings-change concern — running it
+        # on every list/open/run tick rewrote ai_bots.updated_at and filled the
+        # worker error log with hundreds of MB of seed noise.
+        self._runtime_initialized = False
+        self._runtime_init_lock = threading.Lock()
 
-    def initialize_runtime(self) -> None:
-        ensure_app_schema_initialized()
-        try:
-            self.ensure_general_ai_bot()
-        except Exception as exc:
-            logger.warning("Skipping general AI bootstrap: %s", exc)
-        try:
-            self.ensure_default_bot()
-        except Exception as exc:
-            logger.warning("Skipping AI chat bootstrap: %s", exc)
-        try:
-            self.ensure_doc_convert_bot()
-        except Exception as exc:
-            logger.warning("Skipping document converter bot bootstrap: %s", exc)
-        try:
-            self.retire_it_helper_bot()
-        except Exception as exc:
-            logger.warning("Skipping IT helper bot retirement: %s", exc)
-        try:
-            # Imported lazily so the regular chat runtime does not require the
-            # Linux-only sandbox worker dependencies when the feature is off.
-            from backend.ai_sandbox.app_service import ai_sandbox_app_service
+    def initialize_runtime(self, *, force: bool = False) -> None:
+        if self._runtime_initialized and not force:
+            return
+        with self._runtime_init_lock:
+            if self._runtime_initialized and not force:
+                return
+            ensure_app_schema_initialized()
+            try:
+                self.ensure_general_ai_bot()
+            except Exception as exc:
+                logger.warning("Skipping general AI bootstrap: %s", exc)
+            try:
+                self.ensure_default_bot()
+            except Exception as exc:
+                logger.warning("Skipping AI chat bootstrap: %s", exc)
+            try:
+                self.ensure_doc_convert_bot()
+            except Exception as exc:
+                logger.warning("Skipping document converter bot bootstrap: %s", exc)
+            try:
+                self.retire_it_helper_bot()
+            except Exception as exc:
+                logger.warning("Skipping IT helper bot retirement: %s", exc)
+            try:
+                # Imported lazily so the regular chat runtime does not require the
+                # Linux-only sandbox worker dependencies when the feature is off.
+                from backend.ai_sandbox.app_service import ai_sandbox_app_service
 
-            ai_sandbox_app_service.ensure_opencode_bot(ai_service=self)
-        except Exception as exc:
-            logger.warning(
-                "Skipping OpenCode sandbox bootstrap: %s: %s",
-                type(exc).__name__,
-                exc,
-            )
+                ai_sandbox_app_service.ensure_opencode_bot(ai_service=self)
+            except Exception as exc:
+                logger.warning(
+                    "Skipping OpenCode sandbox bootstrap: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
+            self._runtime_initialized = True
 
     def ensure_default_bot(self) -> dict[str, Any]:
         ensure_app_schema_initialized()
@@ -2045,11 +2521,15 @@ class AiChatService:
                     session.flush()
                     self._write_bool_setting(session, DEFAULT_BOT_LIVE_DATA_SEED_SETTING_KEY, True)
                 else:
-                    bot.surface = "corporate"
-                    bot.placement = "pinned"
-                    bot.sort_order = 10
-                    bot.required_permission = PERM_CHAT_AI_USE
-                    bot.use_personal_memory = True
+                    default_fields_changed = _apply_bot_seed_fields(bot, {
+                        "surface": "corporate",
+                        "placement": "pinned",
+                        "sort_order": 10,
+                        "required_permission": PERM_CHAT_AI_USE,
+                        "use_personal_memory": True,
+                    })
+                    if default_fields_changed:
+                        bot.updated_at = _utc_now()
                     if _normalize_text(bot.title) == LEGACY_DEFAULT_BOT_TITLE:
                         bot.title = DEFAULT_BOT_TITLE
                         bot.updated_at = _utc_now()
@@ -2061,7 +2541,7 @@ class AiChatService:
                     )
                     if current_enabled_tools:
                         if not seeded_once:
-                            # v4 seed: replace old user-context tools with unified full_context tool
+                            # v5 seed: replace old user-context tools with unified full_context tool
                             # and merge any new default tools into existing enabled_tools.
                             _OLD_REPLACED_TOOL_IDS = {
                                 "itinvent.user.computer",
@@ -2077,7 +2557,7 @@ class AiChatService:
                                 bot.enabled_tools_json = _json_dumps(merged)
                                 bot.updated_at = _utc_now()
                                 logger.info(
-                                    "AI default bot seed v2: added %d new tools to existing bot",
+                                    "AI default bot seed v5: added %d new tools to existing bot",
                                     len(merged) - len(current_enabled_tools),
                                 )
                             self._write_bool_setting(session, DEFAULT_BOT_LIVE_DATA_SEED_SETTING_KEY, True)
@@ -2132,21 +2612,28 @@ class AiChatService:
                     session.flush()
                     self._write_bool_setting(session, DOC_CONVERT_BOT_SEED_SETTING_KEY, True)
                 else:
-                    bot.surface = "corporate"
-                    bot.placement = "pinned"
-                    bot.sort_order = 20
-                    bot.required_permission = PERM_CHAT_AI_USE
-                    bot.use_personal_memory = True
-                    bot.enabled_tools_json = _json_dumps(document_tools)
-                    bot.allow_file_input = True
-                    bot.allow_generated_artifacts = True
                     if _normalize_text(bot.title) == LEGACY_DOC_CONVERT_BOT_TITLE:
                         bot.title = DOC_CONVERT_BOT_TITLE
                         bot.description = DOC_CONVERT_BOT_DESCRIPTION
                         bot.updated_at = _utc_now()
                     if not seeded_once:
-                        bot.is_enabled = True
-                        bot.updated_at = _utc_now()
+                        # AG-3: seed defaults only once and only while the bot is
+                        # still enabled — a bot deliberately disabled/hidden by an
+                        # admin or by the corp-assistant merge migration must not
+                        # be resurrected or re-pinned on the next bootstrap.
+                        if bool(bot.is_enabled):
+                            doc_fields_changed = _apply_bot_seed_fields(bot, {
+                                "surface": "corporate",
+                                "placement": "pinned",
+                                "sort_order": 20,
+                                "required_permission": PERM_CHAT_AI_USE,
+                                "use_personal_memory": True,
+                                "enabled_tools_json": _json_dumps(document_tools),
+                                "allow_file_input": True,
+                                "allow_generated_artifacts": True,
+                            })
+                            if doc_fields_changed:
+                                bot.updated_at = _utc_now()
                         self._write_bool_setting(session, DOC_CONVERT_BOT_SEED_SETTING_KEY, True)
                 self._ensure_bot_user(session=session, bot=bot)
                 return self._serialize_bot(bot)
@@ -2212,16 +2699,25 @@ class AiChatService:
                     session.flush()
                     self._write_bool_setting(session, GENERAL_AI_BOT_SEED_SETTING_KEY, True)
                 else:
-                    bot.surface = "general"
-                    bot.placement = "hidden"
-                    bot.sort_order = 0
-                    bot.required_permission = PERM_CHAT_AI_USE
-                    bot.use_personal_memory = True
-                    bot.enabled_tools_json = _json_dumps(enabled_tools)
-                    bot.allow_file_input = True
-                    bot.allow_generated_artifacts = True
-                    bot.allow_kb_document_delivery = True
-                    bot.updated_at = now
+                    # AG-3: legacy general-ai is admin/migration managed after the
+                    # first seed — never re-enable it and stop rewriting fields
+                    # on every bootstrap.
+                    seeded_once = self._read_bool_setting(session, GENERAL_AI_BOT_SEED_SETTING_KEY)
+                    if not seeded_once:
+                        if bool(bot.is_enabled):
+                            if _apply_bot_seed_fields(bot, {
+                                "surface": "general",
+                                "placement": "hidden",
+                                "sort_order": 0,
+                                "required_permission": PERM_CHAT_AI_USE,
+                                "use_personal_memory": True,
+                                "enabled_tools_json": _json_dumps(enabled_tools),
+                                "allow_file_input": True,
+                                "allow_generated_artifacts": True,
+                                "allow_kb_document_delivery": True,
+                            }):
+                                bot.updated_at = now
+                        self._write_bool_setting(session, GENERAL_AI_BOT_SEED_SETTING_KEY, True)
                 self._ensure_bot_user(session=session, bot=bot)
                 return self._serialize_bot(bot)
 
@@ -2238,7 +2734,6 @@ class AiChatService:
                 self._bots_list_cache.pop(int(user_id), None)
 
     def list_bots(self, *, current_user_id: int | None = None) -> dict[str, Any]:
-        self.initialize_runtime()
         cache_key = int(current_user_id or 0)
         now = time.monotonic()
         with self._bots_list_cache_lock:
@@ -2309,7 +2804,6 @@ class AiChatService:
         return result
 
     def list_admin_bots(self) -> list[dict[str, Any]]:
-        self.initialize_runtime()
         status = self.get_openrouter_status()
         def _load_admin_bots() -> list[dict[str, Any]]:
             with app_session() as session:
@@ -2335,7 +2829,6 @@ class AiChatService:
         return run_with_transient_lock_retry(_load_admin_bots)
 
     def create_bot(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self.initialize_runtime()
         slug = _normalize_text(payload.get("slug")).lower()
         if not slug:
             raise ValueError("slug is required")
@@ -2372,7 +2865,7 @@ class AiChatService:
             return self._serialize_bot(bot, configured=self.get_openrouter_status()["configured"], admin=True)
 
     def update_bot(self, bot_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        self.initialize_runtime()
+        self.initialize_runtime(force=True)
         with app_session() as session:
             bot = session.get(AppAiBot, _normalize_text(bot_id))
             if bot is None:
@@ -2418,7 +2911,6 @@ class AiChatService:
             return self._serialize_bot(bot, configured=self.get_openrouter_status()["configured"], admin=True)
 
     def list_recent_runs(self, *, bot_id: str, limit: int = 25) -> list[dict[str, Any]]:
-        self.initialize_runtime()
         with app_session() as session:
             rows = list(
                 session.execute(
@@ -2431,7 +2923,6 @@ class AiChatService:
         return [self._serialize_run(item) for item in rows]
 
     def open_bot_conversation(self, *, bot_id: str, current_user_id: int) -> dict[str, Any]:
-        self.initialize_runtime()
         with app_session() as session:
             bot = session.get(AppAiBot, _normalize_text(bot_id))
             if bot is None or not bool(bot.is_enabled):
@@ -2460,7 +2951,6 @@ class AiChatService:
         )
 
     def create_bot_conversation(self, *, bot_id: str, current_user_id: int) -> dict[str, Any]:
-        self.initialize_runtime()
         return self._create_bot_conversation(
             bot_id=bot_id,
             current_user_id=int(current_user_id),
@@ -2468,7 +2958,8 @@ class AiChatService:
         )
 
     def create_general_conversation(self, *, current_user_id: int) -> dict[str, Any]:
-        bot = self.ensure_general_ai_bot()
+        # AG-3: general AI chats are served by the single corp assistant.
+        bot = self.ensure_default_bot()
         return self._create_bot_conversation(
             bot_id=_normalize_text(bot.get("id")),
             current_user_id=int(current_user_id),
@@ -2757,13 +3248,21 @@ class AiChatService:
         runtime = self._get_runtime_by_conversation(conversation_id)
         if runtime is None or int(runtime.mapping.user_id) != int(current_user_id):
             raise LookupError("AI conversation not found")
-        if _normalize_text(getattr(runtime.bot, "surface", None)) == "sandbox":
+        # R31: a disabled agent that nobody may take over (OpenCode) is read-only.
+        agent_read_only = (
+            not bool(getattr(runtime.bot, "is_enabled", True))
+            and self._resolve_replacement_bot(runtime) is None
+        )
+        if self._is_live_sandbox_runtime(runtime):
             from backend.ai_sandbox.app_service import ai_sandbox_app_service
 
-            return ai_sandbox_app_service.get_status(
+            sandbox_status = ai_sandbox_app_service.get_status(
                 conversation_id=_normalize_text(conversation_id),
                 current_user_id=int(current_user_id),
             )
+            if agent_read_only and isinstance(sandbox_status, dict):
+                sandbox_status = {**sandbox_status, "agent_read_only": True}
+            return sandbox_status
         with app_session() as session:
             latest = session.execute(
                 select(AppAiBotRun)
@@ -2782,6 +3281,8 @@ class AiChatService:
                 "run_id": None,
                 "error_text": None,
                 "updated_at": None,
+                "server_now": _iso(_utc_now()),
+                "agent_read_only": agent_read_only,
             }
         return {
             "conversation_id": _normalize_text(conversation_id),
@@ -2793,6 +3294,8 @@ class AiChatService:
             "run_id": latest.id,
             "error_text": _normalize_text(latest.error_text) or None,
             "updated_at": _iso(latest.updated_at),
+            "server_now": _iso(_utc_now()),
+            "agent_read_only": agent_read_only,
         }
 
     def cancel_active_run(self, *, conversation_id: str, current_user_id: int) -> dict[str, Any]:
@@ -2800,7 +3303,7 @@ class AiChatService:
         runtime = self._get_runtime_by_conversation(normalized_conversation_id)
         if runtime is None or int(runtime.mapping.user_id) != int(current_user_id):
             raise LookupError("AI conversation not found")
-        if _normalize_text(getattr(runtime.bot, "surface", None)) == "sandbox":
+        if self._is_live_sandbox_runtime(runtime):
             from backend.ai_sandbox.app_service import ai_sandbox_app_service
 
             return ai_sandbox_app_service.cancel_conversation(
@@ -2877,57 +3380,163 @@ class AiChatService:
         trigger_message_id: str,
         current_user_id: int,
         effective_database_id: str | None = None,
+        force_new_run: bool = False,
     ) -> Optional[dict[str, Any]]:
-        runtime = self._get_runtime_by_conversation(conversation_id)
-        if runtime is None or int(runtime.mapping.user_id) != int(current_user_id) or not bool(runtime.bot.is_enabled):
+        return self._enqueue_run(
+            conversation_id=conversation_id,
+            trigger_message_id=trigger_message_id,
+            current_user_id=current_user_id,
+            effective_database_id=effective_database_id,
+            force_new_run=force_new_run,
+            retry=False,
+        )
+
+    def _stale_run_after_sec(self) -> int:
+        return max(60, int(os.environ.get("AI_RUN_WATCHDOG_STALE_SEC", "900") or 900))
+
+    def _enqueue_run(
+        self,
+        *,
+        conversation_id: str,
+        trigger_message_id: str | None,
+        current_user_id: int,
+        effective_database_id: str | None = None,
+        force_new_run: bool = False,
+        retry: bool = False,
+    ) -> Optional[dict[str, Any]]:
+        """Create the run row for a user message (or for the retry button, ``retry=True``).
+
+        R31: this is the only place where a conversation of a disabled/removed
+        bot is re-bound to the corp assistant. The assistant's bot user is made
+        a chat member first (idempotent), then ``mapping.bot_id`` and the run row
+        are written in one app transaction under the mapping row lock.
+        R30: retry targets the LAST run of the conversation, under the same lock.
+        """
+        normalized_conversation_id = _normalize_text(conversation_id)
+        runtime = self._get_runtime_by_conversation(normalized_conversation_id)
+        if runtime is None or int(runtime.mapping.user_id) != int(current_user_id):
             return None
+        effective_bot = runtime.bot
+        replacement_bot_id: Optional[str] = None
+        if not bool(runtime.bot.is_enabled):
+            replacement_bot_id = self._resolve_replacement_bot(runtime)
+            if replacement_bot_id is None:
+                # Nothing may take the conversation over (sandbox agent disabled,
+                # or no enabled assistant): history stays read-only.
+                return None
+            with app_session() as session:
+                effective_bot = session.get(AppAiBot, replacement_bot_id)
+            if effective_bot is None or not bool(effective_bot.is_enabled):
+                return None
         is_general = (
-            _normalize_text(getattr(runtime.bot, "slug", None)) == GENERAL_AI_BOT_SLUG
-            and _normalize_text(getattr(runtime.bot, "surface", None)) == "general"
+            _normalize_text(getattr(effective_bot, "slug", None)) == GENERAL_AI_BOT_SLUG
+            and _normalize_text(getattr(effective_bot, "surface", None)) == "general"
         )
         self._require_bot_access(
-            bot=runtime.bot,
+            bot=effective_bot,
             current_user_id=int(current_user_id),
             allow_hidden=is_general,
         )
-        self._record_conversation_activity(
-            runtime=runtime,
-            conversation_id=_normalize_text(conversation_id),
-            message_id=_normalize_text(trigger_message_id),
-            current_user_id=int(current_user_id),
-        )
-        if _normalize_text(getattr(runtime.bot, "surface", None)) == "sandbox":
+        effective_runtime = AiConversationRuntime(bot=effective_bot, mapping=runtime.mapping)
+        if not retry:
+            self._record_conversation_activity(
+                runtime=effective_runtime,
+                conversation_id=normalized_conversation_id,
+                message_id=_normalize_text(trigger_message_id),
+                current_user_id=int(current_user_id),
+            )
+        if _normalize_text(getattr(effective_bot, "surface", None)) == "sandbox":
             # Sandbox jobs have a dedicated PostgreSQL queue and Linux worker;
             # never create AppAiBotRun or let the regular LLM worker claim them.
+            if retry:
+                return None
             from backend.ai_sandbox.app_service import ai_sandbox_app_service
 
             return ai_sandbox_app_service.enqueue_message(
-                conversation_id=_normalize_text(conversation_id),
+                conversation_id=normalized_conversation_id,
                 trigger_message_id=_normalize_text(trigger_message_id),
                 current_user_id=int(current_user_id),
+            )
+        if replacement_bot_id is not None:
+            # Membership first: never re-bind a conversation to a bot that cannot
+            # post into it. Both steps are idempotent, a failure in between only
+            # leaves an extra (harmless) member row.
+            with app_session() as session:
+                replacement_row = session.get(AppAiBot, replacement_bot_id)
+                bot_user_id = self._ensure_bot_user(session=session, bot=replacement_row)
+            self._ensure_bot_member(
+                conversation_id=normalized_conversation_id,
+                user_id=int(current_user_id),
+                bot_user_id=int(bot_user_id),
             )
         user_payload = user_service.get_by_id(int(current_user_id)) or {}
         resolved_database_id = resolve_effective_database_id(
             user_payload=user_payload,
             explicit_database_id=effective_database_id,
         )
+        cancelled_stale_run_id: Optional[str] = None
         with app_session() as session:
             from backend.ai_chat.access import require_bot_access
-            locked_bot = session.execute(select(AppAiBot).where(AppAiBot.id == runtime.bot.id).with_for_update()).scalar_one()
-            require_bot_access(session, locked_bot, current_user_id)
-            existing = session.execute(
-                select(AppAiBotRun).where(
-                    AppAiBotRun.conversation_id == _normalize_text(conversation_id),
-                    AppAiBotRun.trigger_message_id == _normalize_text(trigger_message_id),
+            mapping = session.execute(
+                select(AppAiBotConversation)
+                .where(
+                    AppAiBotConversation.conversation_id == normalized_conversation_id,
+                    AppAiBotConversation.user_id == int(current_user_id),
                 )
+                .with_for_update()
             ).scalar_one_or_none()
+            if mapping is None:
+                return None
+            target_bot_id = replacement_bot_id or runtime.bot.id
+            locked_bot = session.execute(
+                select(AppAiBot).where(AppAiBot.id == target_bot_id).with_for_update()
+            ).scalar_one_or_none()
+            if locked_bot is None or not bool(locked_bot.is_enabled):
+                return None
+            require_bot_access(session, locked_bot, current_user_id)
+            now = _utc_now()
+            existing = None
+            if retry:
+                latest = session.execute(
+                    select(AppAiBotRun)
+                    .where(AppAiBotRun.conversation_id == normalized_conversation_id)
+                    .order_by(AppAiBotRun.created_at.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+                if latest is None:
+                    raise LookupError("Нет запуска для повтора")
+                trigger_message_id = _normalize_text(latest.trigger_message_id)
+                if _normalize_text(latest.status) in {"queued", "running"}:
+                    last_touch = _as_utc(latest.updated_at or latest.created_at)
+                    if last_touch is not None and (now - last_touch).total_seconds() <= self._stale_run_after_sec():
+                        raise AiRunConflictError("Ответ ещё готовится")
+                    # Hung run (worker died): cancel it, the retry replaces it.
+                    latest.status = "cancelled"
+                    latest.stage = AI_RUN_STAGE_CANCELLED
+                    latest.status_text = _resolve_run_status_text(status="cancelled", stage=AI_RUN_STAGE_CANCELLED)
+                    latest.error_text = None
+                    latest.completed_at = now
+                    latest.updated_at = now
+                    cancelled_stale_run_id = latest.id
+            elif not force_new_run:
+                existing = session.execute(
+                    select(AppAiBotRun)
+                    .where(
+                        AppAiBotRun.conversation_id == normalized_conversation_id,
+                        AppAiBotRun.trigger_message_id == _normalize_text(trigger_message_id),
+                    )
+                    .order_by(AppAiBotRun.created_at.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
             if existing is not None:
                 return self._serialize_run(existing)
-            now = _utc_now()
+            if mapping.bot_id != locked_bot.id:
+                mapping.bot_id = locked_bot.id
+                mapping.updated_at = now
             run = AppAiBotRun(
                 id=str(uuid4()),
-                bot_id=runtime.bot.id,
-                conversation_id=_normalize_text(conversation_id),
+                bot_id=locked_bot.id,
+                conversation_id=normalized_conversation_id,
                 user_id=int(current_user_id),
                 trigger_message_id=_normalize_text(trigger_message_id),
                 status="queued",
@@ -2947,16 +3556,59 @@ class AiChatService:
             session.add(run)
             session.flush()
             payload = self._serialize_run(run)
+            published_bot = SimpleNamespace(id=locked_bot.id, title=locked_bot.title)
+        if replacement_bot_id is not None:
+            self._invalidate_bots_list_cache(int(current_user_id))
+        if cancelled_stale_run_id is not None:
+            self._publish_status_event(
+                conversation_id=normalized_conversation_id,
+                user_id=int(current_user_id),
+                bot=published_bot,
+                status="cancelled",
+                stage=AI_RUN_STAGE_CANCELLED,
+                status_text=_resolve_run_status_text(status="cancelled", stage=AI_RUN_STAGE_CANCELLED),
+                run_id=cancelled_stale_run_id,
+            )
         self._publish_status_event(
-            conversation_id=conversation_id,
+            conversation_id=normalized_conversation_id,
             user_id=int(current_user_id),
-            bot=runtime.bot,
+            bot=published_bot,
             status="queued",
             stage=AI_RUN_STAGE_QUEUED,
             status_text=payload.get("status_text"),
             run_id=payload["id"],
         )
         return payload
+
+    def retry_conversation_run(
+        self,
+        *,
+        conversation_id: str,
+        current_user_id: int,
+    ) -> dict[str, Any]:
+        """AI4/AI5/R30 retry: re-run the trigger message of the LAST run of the
+        conversation as a fresh run.
+
+        failed/cancelled/completed -> new run of the same trigger message;
+        active and fresh -> AiRunConflictError (HTTP 409, "Ответ ещё готовится");
+        active but hung (older than AI_RUN_WATCHDOG_STALE_SEC) -> cancelled + new run.
+        """
+        normalized_conversation_id = _normalize_text(conversation_id)
+        runtime = self._get_runtime_by_conversation(normalized_conversation_id)
+        if runtime is None or int(runtime.mapping.user_id) != int(current_user_id):
+            raise LookupError("AI conversation not found")
+        payload = self._enqueue_run(
+            conversation_id=normalized_conversation_id,
+            trigger_message_id=None,
+            current_user_id=int(current_user_id),
+            retry=True,
+        )
+        if payload is None:
+            raise LookupError("AI conversation not found")
+        return self.get_conversation_status(
+            conversation_id=normalized_conversation_id,
+            current_user_id=int(current_user_id),
+        )
 
     def _record_conversation_activity(
         self,
@@ -3317,9 +3969,105 @@ class AiChatService:
     def process_next_run(self) -> bool:
         return bool(self.process_next_runs(limit=1))
 
+    def reap_stale_runs(
+        self,
+        *,
+        dry_run: bool = False,
+        stale_after_sec: int | None = None,
+        batch_size: int | None = None,
+    ) -> dict[str, Any]:
+        """AI3 watchdog: queued/running rows whose updated_at is older than the
+        stale threshold belong to a worker that died mid-run — mark them failed
+        ("прерван") and publish chat.ai.run.updated so the thread stops
+        spinning. Feature-flagged off by default (AI_RUN_WATCHDOG_ENABLED=0)."""
+        stale_after = int(
+            stale_after_sec
+            if stale_after_sec is not None
+            else os.environ.get("AI_RUN_WATCHDOG_STALE_SEC", "900") or 900
+        )
+        stale_after = max(60, stale_after)
+        limit = int(
+            batch_size
+            if batch_size is not None
+            else os.environ.get("AI_RUN_WATCHDOG_BATCH_SIZE", "50") or 50
+        )
+        limit = max(1, min(500, limit))
+        cutoff = _utc_now() - timedelta(seconds=stale_after)
+        # Detach snapshot fields inside the session: rows expire on commit and
+        # publishing after the session must not touch ORM attributes.
+        reaped: list[dict[str, Any]] = []
+        with app_session() as session:
+            rows = list(
+                session.execute(
+                    select(AppAiBotRun)
+                    .where(AppAiBotRun.status.in_(["queued", "running"]))
+                    .where(AppAiBotRun.updated_at < cutoff)
+                    .order_by(AppAiBotRun.updated_at.asc())
+                    .limit(limit)
+                ).scalars()
+            )
+            for run in rows:
+                bot = session.get(AppAiBot, run.bot_id)
+                error_text = _normalize_text(run.error_text)
+                if not dry_run:
+                    now = _utc_now()
+                    run.status = "failed"
+                    run.stage = AI_RUN_STAGE_FAILED
+                    run.status_text = _resolve_run_status_text(status="failed", stage=AI_RUN_STAGE_FAILED)
+                    run.error_text = (
+                        error_text
+                        or "Выполнение прервано: ответ ИИ не получен вовремя."
+                    )
+                    run.completed_at = now
+                    run.updated_at = now
+                    error_text = run.error_text
+                reaped.append({
+                    "run_id": run.id,
+                    "conversation_id": run.conversation_id,
+                    "user_id": int(run.user_id),
+                    "bot_id": run.bot_id,
+                    "bot_title": _normalize_text(getattr(bot, "title", "")) or "AI",
+                    "error_text": error_text,
+                })
+        reaped_ids = [item["run_id"] for item in reaped]
+        if dry_run:
+            if reaped_ids:
+                logger.info("ai_run_watchdog dry-run: %d stale run(s): %s", len(reaped_ids), reaped_ids)
+            return {
+                "dry_run": True,
+                "stale_after_sec": stale_after,
+                "batch_size": limit,
+                "reaped_count": len(reaped_ids),
+                "reaped_run_ids": reaped_ids,
+            }
+        for item in reaped:
+            try:
+                self._publish_status_event(
+                    conversation_id=item["conversation_id"],
+                    user_id=item["user_id"],
+                    bot=SimpleNamespace(id=item["bot_id"], title=item["bot_title"]),
+                    status="failed",
+                    stage=AI_RUN_STAGE_FAILED,
+                    run_id=item["run_id"],
+                    error_text=item["error_text"],
+                )
+            except Exception:
+                logger.exception(
+                    "ai_run_watchdog failed to publish status event for run_id=%s",
+                    item["run_id"],
+                )
+        if reaped_ids:
+            logger.info("ai_run_watchdog reaped %d stale run(s): %s", len(reaped_ids), reaped_ids)
+        return {
+            "dry_run": False,
+            "stale_after_sec": stale_after,
+            "batch_size": limit,
+            "reaped_count": len(reaped_ids),
+            "reaped_run_ids": reaped_ids,
+        }
+
     def _process_single_run(self) -> bool:
         global _AI_LAST_RUN_COMPLETED_AT, _AI_LAST_RUN_DURATION_MS
-        self.initialize_runtime()
         run_started_perf = time.perf_counter()
         started_at = _utc_now()
         with app_session() as session:
@@ -3386,6 +4134,11 @@ class AiChatService:
                     stage=stage,
                 )
 
+            # R34: the employee may have been deactivated while the run waited in the
+            # queue; checked before the access check, which would only report «cancelled».
+            run_user = user_service.get_by_id(int(run.user_id))
+            if run_user and run_user.get("is_active") is False:
+                raise AiRunUserInactive("Сотрудник отключён")
             self._raise_if_run_cancelled(run.id)
             execute_started_at = time.perf_counter()
             answer_markdown, artifacts, kb_attachment_send, usage, extracted_context, tool_traces, generated_file_specs, routed_groups = self._execute_run(
@@ -3408,6 +4161,10 @@ class AiChatService:
                     or f"Подходит шаблон: {_normalize_text(selected_template_candidate.get('title'))}."
                 )
             if answer_markdown:
+                answer_markdown = _append_memory_mark(
+                    answer_markdown,
+                    hits=int((extracted_context or {}).get("personal_memory_hits") or 0),
+                )
                 self._raise_if_run_cancelled(run.id)
                 self._publish_response_preview(
                     conversation_id=run.conversation_id,
@@ -3531,6 +4288,24 @@ class AiChatService:
                                 "kb_attachment_delivered": delivered_kb_attachment,
                                 "tool_traces": tool_traces,
                                 "routed_groups": list(routed_groups or []),
+                                # J10: actual tool usage + J2 expansions for the
+                                # "selected vs really used" metric.
+                                "used_tools": sorted(
+                                    {
+                                        _normalize_text(trace.get("tool_id"))
+                                        for trace in list(tool_traces or [])
+                                        if _normalize_text(trace.get("tool_id"))
+                                    }
+                                ),
+                                "expanded_groups": sorted(
+                                    {
+                                        _normalize_text((trace.get("args") or {}).get("group"))
+                                        for trace in list(tool_traces or [])
+                                        if _normalize_text(trace.get("tool_id")) == AI_TOOL_REQUEST_GROUP
+                                        and trace.get("code") == "accepted"
+                                        and _normalize_text((trace.get("args") or {}).get("group"))
+                                    }
+                                ),
                             },
                             ensure_ascii=False,
                         )
@@ -3556,8 +4331,14 @@ class AiChatService:
                          completed_at=_utc_now(), updated_at=_utc_now()))
             logger.info("AI run cancelled: run_id=%s", run.id)
         except Exception as exc:
-            error_text = _truncate(exc, limit=500)
+            error_text = _friendly_run_error_text(exc)
             logger.exception("AI run failed: run_id=%s", run.id)
+            if _is_insufficient_funds_error(exc):
+                # AG: 402 -> the AI managers are told (throttled); the employee sees a clear text.
+                try:
+                    ai_balance_service.report_insufficient_funds()
+                except Exception:
+                    logger.exception("AI insufficient-funds notification failed: run_id=%s", run.id)
             completed_at = _utc_now()
             run_cancelled = False
             with app_session() as session:
@@ -3613,7 +4394,12 @@ class AiChatService:
                 user_payload=user_payload,
                 explicit_database_id=_normalize_text(request_payload.get("effective_database_id")) or None,
             ),
-            enabled_tools=normalize_enabled_tools(_json_loads(getattr(bot, "enabled_tools_json", "[]"), [])),
+            # AG-2: a run only sees tools allowed by the employee's portal
+            # permissions; AiToolRegistry.execute re-checks per call.
+            enabled_tools=filter_tools_for_user(
+                normalize_enabled_tools(_json_loads(getattr(bot, "enabled_tools_json", "[]"), [])),
+                user_payload,
+            ),
             tool_settings=normalize_tool_settings(_json_loads(getattr(bot, "tool_settings_json", "{}"), {})),
             allow_generated_artifacts=bool(getattr(bot, "allow_generated_artifacts", False)),
             trigger_message_id=_normalize_text(run_payload.get("trigger_message_id")),
@@ -3960,6 +4746,33 @@ class AiChatService:
             [AI_TOOL_GROUP_FILES],
         )
 
+    def _sticky_tool_groups(self, *, conversation_id: str, exclude_run_id: str = "") -> set[str]:
+        """J1: groups routed on the previous completed run of this dialog —
+        'sticky' so a follow-up message keeps its domain until JEV refuses it.
+        """
+        try:
+            with app_session() as session:
+                raw = session.execute(
+                    select(AppAiBotRun.result_json)
+                    .where(
+                        AppAiBotRun.conversation_id == _normalize_text(conversation_id),
+                        AppAiBotRun.status == "completed",
+                        AppAiBotRun.id != _normalize_text(exclude_run_id),
+                    )
+                    .order_by(AppAiBotRun.created_at.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+        except Exception as exc:
+            logger.warning("ai_jev_routing sticky-groups lookup failed: %s", exc)
+            return set()
+        payload = _json_loads(raw, {})
+        groups = payload.get("routed_groups") if isinstance(payload, dict) else None
+        return {
+            group
+            for group in list(groups or [])
+            if _normalize_text(group) in set(AI_TOOL_GROUPS_ALL)
+        }
+
     def _execute_run(
         self,
         *,
@@ -4026,45 +4839,84 @@ class AiChatService:
         report_file_intent = _has_report_file_intent(trigger_text_for_routing)
         requested_report_format = _detect_requested_report_format(trigger_text_for_routing)
         routing_started_at = time.perf_counter()
-        # Variant A: pass ALL enabled tools to the LLM (no routing).
-        # With ~50 tools modern models (GPT-4o, Claude 3.5+) handle this well.
-        # The LLM decides which tools to call based on the user's message.
-        routed_groups = set(available_tool_groups)
-        jev_selected_tools = _route_tools_jev(
-            trigger_text=trigger_text_for_routing,
-            tool_specs=all_tool_specs,
-        )
-        jev_routed = (
-            None
-            if jev_selected_tools is not None
-            else _route_tool_groups_jev(
-                trigger_text=trigger_text_for_routing,
-                available_groups=available_tool_groups,
+        # Variant A (default, routing flag off): pass ALL enabled tools to the
+        # LLM. With ~50 tools modern models handle this well.
+        # When AI_JEV_ROUTING=1 JEV narrows the set AFTER the AG-2 permission
+        # filter — only groups/tools the employee is allowed to use are
+        # candidates, and a JEV failure falls back to a narrow deterministic set.
+        jev_routing_active = _jev_routing_enabled()
+        # J1: sticky groups from the previous completed run + trimmed recent
+        # messages + attachment flag give JEV enough context for follow-ups
+        # ("а теперь перемести его", "то же самое в Excel").
+        sticky_groups = (
+            self._sticky_tool_groups(
+                conversation_id=run_payload["conversation_id"],
+                exclude_run_id=run_id,
             )
+            if jev_routing_active
+            else set()
         )
+        recent_messages = list(extracted_context.get("recent_messages") or [])
+        has_attachment = bool(extracted_context.get("has_attachment"))
+        # J9: greetings/thanks/empty replicas never reach JEV and get no tools.
+        smalltalk_bypass = jev_routing_active and _is_short_smalltalk(trigger_text_for_routing)
+        routed_groups = set(available_tool_groups)
+        if smalltalk_bypass:
+            jev_selected_tools = set()
+            jev_routed = set()
+        else:
+            jev_selected_tools = _route_tools_jev(
+                trigger_text=trigger_text_for_routing,
+                tool_specs=all_tool_specs,
+                available_groups=available_tool_groups,
+                sticky_groups=sticky_groups,
+                recent_messages=recent_messages,
+                has_attachment=has_attachment,
+            )
+            jev_routed = (
+                None
+                if jev_selected_tools is not None
+                else _route_tool_groups_jev(
+                    trigger_text=trigger_text_for_routing,
+                    available_groups=available_tool_groups,
+                    sticky_groups=sticky_groups,
+                    recent_messages=recent_messages,
+                    has_attachment=has_attachment,
+                )
+            )
         keyword_groups = (
             _keyword_routed_groups(
                 trigger_text_for_routing,
                 available_groups=available_tool_groups,
             )
             or set()
-            if (jev_selected_tools is not None or jev_routed is not None)
+            if (not smalltalk_bypass and (jev_selected_tools is not None or jev_routed is not None))
             else set()
         )
         if jev_routed is not None:
             routed_groups = jev_routed | keyword_groups
         _log_ai_run_timing("tool_routing", routing_started_at, run_id=run_id)
         logger.info(
-            "ai_tool_routing run_id=%s available=%s routed=%s",
+            "ai_tool_routing run_id=%s available=%s routed=%s sticky=%s",
             run_id,
             sorted(available_tool_groups),
             sorted(routed_groups),
+            sorted(sticky_groups),
         )
         if jev_selected_tools is not None:
             keep_tool_ids = set(jev_selected_tools) | {
                 _normalize_text(item.get("tool_id"))
                 for item in all_tool_specs
                 if get_tool_group((item or {}).get("tool_id")) in keyword_groups
+            }
+            # tool-mode: routed_groups mirrors the actually kept spec groups so
+            # metrics (routed_groups/expanded_groups) stay truthful and the
+            # request_tool_group spec is offered only when a permitted group
+            # is still unrouted.
+            routed_groups = {
+                get_tool_group(tool_id)
+                for tool_id in keep_tool_ids
+                if _normalize_text(tool_id)
             }
             tool_specs = [
                 item
@@ -4076,6 +4928,23 @@ class AiChatService:
                 item for item in all_tool_specs
                 if get_tool_group((item or {}).get("tool_id")) in routed_groups
             ]
+        # J2: the model may request one more allowed group mid-run; the spec is
+        # attached whenever there is still a permitted but unrouted group.
+        group_request_spec = _request_tool_group_spec()
+        if (
+            tool_specs
+            and group_request_spec is not None
+            and (set(available_tool_groups) - set(routed_groups))
+        ):
+            tool_specs.append(group_request_spec)
+        expanded_groups: set[str] = set()
+        if len(tool_specs) > AI_TOOL_SPECS_WARN_LIMIT:
+            logger.warning(
+                "ai_tool_specs_excess run_id=%s count=%s routed=%s",
+                run_id,
+                len(tool_specs),
+                sorted(routed_groups),
+            )
         itinvent_tool_specs = [
             item for item in tool_specs if _is_itinvent_tool_id((item or {}).get("tool_id"))
         ]
@@ -4390,18 +5259,47 @@ class AiChatService:
                     run_id, tool_rounds_used, token_budget.remaining,
                 )
                 break
+            # J2: ai.request_tool_group calls are served by the orchestrator,
+            # not by the registry — they widen `tool_specs`/`routed_groups`
+            # for the next LLM step only with groups the employee may use.
+            expansion_calls = [
+                call for call in tool_calls
+                if _normalize_text(call.get("tool_id")) == AI_TOOL_REQUEST_GROUP
+            ]
+            tool_calls = [
+                call for call in tool_calls
+                if _normalize_text(call.get("tool_id")) != AI_TOOL_REQUEST_GROUP
+            ]
+            tool_results: list[dict[str, Any]] = []
+            round_traces: list[dict[str, Any]] = []
+            for expansion_call in expansion_calls:
+                expansion_payload, expansion_trace = _handle_tool_group_expansion(
+                    call=expansion_call,
+                    tool_context=tool_context,
+                    all_tool_specs=all_tool_specs,
+                    tool_specs=tool_specs,
+                    routed_groups=routed_groups,
+                    available_groups=available_tool_groups,
+                    expanded_groups=expanded_groups,
+                    run_id=run_id,
+                )
+                tool_results.append(expansion_payload)
+                round_traces.append(expansion_trace)
             tool_started_at = time.perf_counter()
-            tool_results, round_traces = self._execute_tool_calls(
-                tool_calls=tool_calls,
-                tool_context=tool_context,
-                report_stage=report_stage,
-            )
+            if tool_calls:
+                real_results, real_traces = self._execute_tool_calls(
+                    tool_calls=tool_calls,
+                    tool_context=tool_context,
+                    report_stage=report_stage,
+                )
+                tool_results.extend(real_results)
+                round_traces.extend(real_traces)
             _log_ai_run_timing(
                 "tools",
                 tool_started_at,
                 run_id=run_id,
                 round=tool_rounds_used + 1,
-                tool_count=len(tool_calls),
+                tool_count=len(tool_calls) + len(expansion_calls),
             )
             accumulated_tool_results.extend(tool_results)
             tool_traces.extend(round_traces)
@@ -4756,6 +5654,23 @@ class AiChatService:
                 answer_markdown = _build_report_choice_answer(report_choice_payload)
                 generated_file_specs = []
                 artifacts = []
+        # J10: per-run tool-routing audit — which groups were routed/expanded
+        # and which tools were actually used by the model.
+        used_tool_ids = sorted(
+            {
+                _normalize_text(trace.get("tool_id"))
+                for trace in tool_traces
+                if _normalize_text(trace.get("tool_id"))
+            }
+        )
+        logger.info(
+            "ai_jev_routing run_id=%s routed_groups=%s expanded_groups=%s used_tools=%s tool_specs=%s",
+            run_id,
+            sorted(routed_groups),
+            sorted(expanded_groups),
+            used_tool_ids,
+            len(tool_specs),
+        )
         return answer_markdown, artifacts, kb_attachment_send, final_usage, extracted_context, tool_traces, generated_file_specs, sorted(routed_groups)
 
     def _build_conversation_context(
@@ -4799,10 +5714,12 @@ class AiChatService:
                 memory_enabled = False
             if bot_row is not None and not bool(getattr(bot_row, "use_personal_memory", True)):
                 memory_enabled = False
+            relevant_memory_ids: list[str] = []
             personal_memory = self._build_personal_memory_context(
                 session=app_db,
                 user_id=int(user_payload.get("id") or 0),
                 query=memory_query,
+                relevant_out=relevant_memory_ids,
             ) if memory_enabled else ""
 
         summary_append_lines: list[str] = []
@@ -4956,14 +5873,34 @@ class AiChatService:
             ),
             "rolling_summary": _truncate_tokens(rolling_summary, AI_ROLLING_SUMMARY_TOKENS),
             "personal_memory": _truncate_tokens(personal_memory, AI_MEMORY_MAX_TOKENS),
+            "personal_memory_hits": len(relevant_memory_ids),
             "trigger_text": _truncate_tokens(trigger_text, 6000),
             "file_context": _truncate_tokens("\n\n".join(file_context_parts), 6000),
             "kb_context": _truncate_tokens(kb_context, 3000),
             "template_candidates": template_candidates,
             "template_delivery_allowed": _can_auto_send_template(template_candidates),
+            # J1: JEV routing context — last replicas (text only, already
+            # attachment-free) and whether the trigger message carries a file.
+            "recent_messages": conversation_lines[-4:],
+            "has_attachment": bool(
+                trigger_attachments
+                or (
+                    reply_message is not None
+                    and attachments_by_message.get(_normalize_text(reply_message.id))
+                )
+            ),
         }
 
-    def _build_personal_memory_context(self, *, session, user_id: int, query: str = "") -> str:
+    def _build_personal_memory_context(
+        self,
+        *,
+        session,
+        user_id: int,
+        query: str = "",
+        relevant_out: Optional[list[str]] = None,
+    ) -> str:
+        """Facts for the prompt. ``relevant_out`` collects the ids of the included facts that
+        share words with the request - only those count as "memory was used" in the answer mark."""
         rows = list(
             session.execute(
                 select(AppAiUserMemory)
@@ -4996,6 +5933,8 @@ class AiChatService:
                 break
             lines.append(line)
             used_tokens += line_tokens
+            if relevant_out is not None and query_tokens & _memory_query_tokens(row.content):
+                relevant_out.append(str(row.id))
         return "\n".join(lines)
 
     def _ensure_bot_user(self, *, session, bot: AppAiBot) -> int:
@@ -5205,10 +6144,16 @@ class AiChatService:
         }
 
     def _get_runtime_by_conversation(self, conversation_id: str) -> Optional[AiConversationRuntime]:
+        """Pure read of the conversation's runtime (R31: this is a getter).
+
+        A disabled bot is returned as-is; a bot row that no longer exists is
+        represented by a disabled placeholder so the conversation stays an AI
+        conversation (history visible). Re-binding to the corp assistant happens
+        only on send, see ``_resolve_replacement_bot`` / ``_enqueue_run``.
+        """
         normalized_conversation_id = _normalize_text(conversation_id)
         if not normalized_conversation_id:
             return None
-        self.initialize_runtime()
         with app_session() as session:
             mapping = session.execute(
                 select(AppAiBotConversation).where(AppAiBotConversation.conversation_id == normalized_conversation_id)
@@ -5217,8 +6162,130 @@ class AiChatService:
                 return None
             bot = session.get(AppAiBot, mapping.bot_id)
             if bot is None:
-                return None
+                # R43: the placeholder must not look like a corporate bot when the
+                # conversation is an OpenCode one; otherwise it would be moved to
+                # the corp assistant on the next send. A sandbox session row is the
+                # only trace of the surface once the bot row is gone.
+                from backend.ai_sandbox.models import AppAiSandboxSession
+
+                is_sandbox = session.execute(
+                    select(AppAiSandboxSession.id)
+                    .where(AppAiSandboxSession.conversation_id == normalized_conversation_id)
+                    .limit(1)
+                ).first() is not None
+                bot = SimpleNamespace(
+                    id=mapping.bot_id,
+                    slug="",
+                    title=DEFAULT_BOT_TITLE,
+                    description="",
+                    surface="sandbox" if is_sandbox else "corporate",
+                    deleted=True,
+                    placement="pinned",
+                    is_enabled=False,
+                    use_personal_memory=True,
+                    bot_user_id=None,
+                )
             return AiConversationRuntime(bot=bot, mapping=mapping)
+
+    @staticmethod
+    def _is_live_sandbox_runtime(runtime: AiConversationRuntime) -> bool:
+        """OpenCode conversation whose bot row still exists (the sandbox service needs it)."""
+        return _normalize_text(getattr(runtime.bot, "surface", None)) == "sandbox" and not getattr(
+            runtime.bot, "deleted", False
+        )
+
+    def _resolve_replacement_bot(self, runtime: AiConversationRuntime) -> Optional[str]:
+        """Id of the enabled assistant that takes over a conversation whose bot was
+        removed/disabled (corp-assistant first, legacy general-ai as a last resort).
+
+        OpenCode (surface=sandbox) conversations are never moved: their history
+        is read-only once the agent is disabled. Pure read, no writes.
+        """
+        if _normalize_text(getattr(runtime.bot, "surface", None)) == "sandbox":
+            return None
+        with app_session() as session:
+            fallback = session.execute(
+                select(AppAiBot).where(
+                    AppAiBot.slug == DEFAULT_BOT_SLUG,
+                    AppAiBot.is_enabled.is_(True),
+                )
+            ).scalar_one_or_none()
+            if fallback is None:
+                fallback = session.execute(
+                    select(AppAiBot).where(
+                        AppAiBot.slug == GENERAL_AI_BOT_SLUG,
+                        AppAiBot.surface == "general",
+                        AppAiBot.is_enabled.is_(True),
+                    )
+                ).scalar_one_or_none()
+            if fallback is None or fallback.id == runtime.mapping.bot_id:
+                return None
+            return fallback.id
+
+    def _ensure_bot_member(self, *, conversation_id: str, user_id: int, bot_user_id: int) -> bool:
+        """Idempotently add (or re-activate) the bot's chat user in the conversation.
+
+        Returns True when a membership row was added or its ``left_at`` reset.
+        """
+        now = _utc_now()
+        changed = False
+        with chat_session() as chat_db:
+            member = chat_db.execute(
+                select(ChatMember).where(
+                    ChatMember.conversation_id == conversation_id,
+                    ChatMember.user_id == int(bot_user_id),
+                )
+            ).scalar_one_or_none()
+            if member is None:
+                # R42: two near-simultaneous first messages both reach this INSERT;
+                # the loser hits the unique key and must treat it as "already added"
+                # instead of failing the whole send (no run -> no reply). The SAVEPOINT
+                # keeps the outer transaction usable after the conflict.
+                try:
+                    with chat_db.begin_nested():
+                        chat_db.add(
+                            ChatMember(
+                                conversation_id=conversation_id,
+                                user_id=int(bot_user_id),
+                                member_role="bot",
+                                joined_at=now,
+                            )
+                        )
+                        chat_db.flush()
+                    changed = True
+                except IntegrityError:
+                    member = chat_db.execute(
+                        select(ChatMember).where(
+                            ChatMember.conversation_id == conversation_id,
+                            ChatMember.user_id == int(bot_user_id),
+                        )
+                    ).scalar_one_or_none()
+                    if member is not None and getattr(member, "left_at", None) is not None:
+                        member.left_at = None
+                        changed = True
+            elif getattr(member, "left_at", None) is not None:
+                member.left_at = None
+                changed = True
+            state = chat_db.execute(
+                select(ChatConversationUserState).where(
+                    ChatConversationUserState.conversation_id == conversation_id,
+                    ChatConversationUserState.user_id == int(bot_user_id),
+                )
+            ).scalar_one_or_none()
+            if state is None:
+                try:
+                    with chat_db.begin_nested():
+                        chat_db.add(
+                            ChatConversationUserState(
+                                conversation_id=conversation_id,
+                                user_id=int(bot_user_id),
+                                updated_at=now,
+                            )
+                        )
+                        chat_db.flush()
+                except IntegrityError:
+                    pass
+        return changed
 
     def is_ai_conversation(self, conversation_id: str) -> bool:
         return self._get_runtime_by_conversation(conversation_id) is not None

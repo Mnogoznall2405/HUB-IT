@@ -33,3 +33,11 @@ it('restores a native task detail after Android authentication', () => {
     params: { taskId: 'task-42' },
   });
 });
+
+it('restores an AI conversation with its workspace after Android cold start', () => {
+  rememberSystemIntentDestination('/chat/ai-42?workspace=ai');
+  expect(postAuthDestination('android', '/dashboard')).toEqual({
+    pathname: '/(shell)/chat/[conversationId]',
+    params: { conversationId: 'ai-42', workspace: 'ai' },
+  });
+});

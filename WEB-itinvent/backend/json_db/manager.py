@@ -68,6 +68,24 @@ class JSONDataManager:
             return self._app_store.load_json(normalized_name, default_content=default_content)
         return self.store.load_json(normalized_name, default_content=default_content)
 
+    def get_document_version(self, filename: str) -> str | None:
+        """Cheap per-document version marker without loading the payload.
+
+        Raises NotImplementedError when the underlying store has no probe.
+        """
+        normalized_name = Path(filename).name
+        store = (
+            self._app_store
+            if self._use_app_database and self._app_store is not None
+            else self.store
+        )
+        getter = getattr(store, "get_document_version", None)
+        if not callable(getter):
+            raise NotImplementedError(
+                f"JSON store {type(store).__name__} does not support document version probing"
+            )
+        return getter(normalized_name)
+
     def save_json(self, filename: str, data: Any) -> bool:
         normalized_name = Path(filename).name
         if self._use_app_database and self._app_store is not None:

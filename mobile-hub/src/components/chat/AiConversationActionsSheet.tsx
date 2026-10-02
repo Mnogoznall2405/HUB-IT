@@ -1,4 +1,6 @@
+import { useContext } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import type { ChatConversationSummary } from '../../api/types';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
@@ -18,6 +20,9 @@ export function AiConversationActionsSheet({
 }) {
   const { styles } = useChatStyles(createStyles);
   const reduceMotion = useReducedMotion();
+  // AUD-8: edge-to-edge — center inside the safe box so the card never slides
+  // under the status/nav bars in landscape or with a tall system bar.
+  const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
   if (!conversation) return null;
   return (
     <Modal
@@ -26,7 +31,15 @@ export function AiConversationActionsSheet({
       transparent
       onRequestClose={onClose}
     >
-      <View style={styles.backdrop}>
+      <View
+        testID="ai-actions-backdrop"
+        style={[styles.backdrop, {
+          paddingTop: Math.max(24, insets?.top || 0),
+          paddingBottom: Math.max(24, insets?.bottom || 0),
+          paddingLeft: Math.max(24, insets?.left || 0),
+          paddingRight: Math.max(24, insets?.right || 0),
+        }]}
+      >
         <Pressable
           style={StyleSheet.absoluteFill}
           onPress={onClose}

@@ -11,11 +11,14 @@ it.each([
   ['https://hubit.zsgp.ru/tasks?view=mine', '/tasks'],
   ['https://hubit.zsgp.ru/tasks?task=task-42', '/tasks/task-42'],
   ['hubit://portal?path=%2Fchat%3Fconversation%3D42', '/chat/42'],
+  ['hubit://portal?path=%2Fchat%3Fconversation%3D42%26workspace%3Dai', '/chat/42?workspace=ai'],
   ['hubit://tasks?create=1', '/tasks/create'],
   ['hubit://tasks?view=mine', '/tasks'],
   ['/mail/inbox', '/mail?folder=inbox'],
   ['hubit://portal?path=%2Fmail%3Fmessage%3Dmessage-7%26mailbox_id%3Dbox-1', '/mail/message-7?mailboxId=box-1'],
   ['https://hubit.zsgp.ru/database?inv_no=INV%2F7&db_id=OBJ-ITINVENT&tab=acts', '/database/INV%2F7?databaseId=OBJ-ITINVENT&tab=acts'],
+  ['hubit://database?scan=1', '/database?scan=1'],
+  ['https://hubit.zsgp.ru/database?scan=1', '/database?scan=1'],
   ['https://hubit.zsgp.ru/my-files', '/my-files'],
   ['https://hubit.zsgp.ru/company-structure?node=dep%2F1&block=block-1&view=focus', '/company-structure?nodeId=dep%2F1&blockId=block-1'],
   ['https://hubit.zsgp.ru/docflow', '/docflow'],
@@ -118,5 +121,23 @@ it('remembers the native Warehouse 1C root without query or catalog data', () =>
 it('remembers the native MFU root without device identifiers', () => {
   rememberSystemIntentDestination('/mfu');
   expect(consumePendingPortalPath()).toBe('/mfu');
+  expect(consumePendingPortalPath()).toBe('');
+});
+
+it('remembers an AI conversation through login with its workspace', () => {
+  rememberSystemIntentDestination('/chat/ai-42?workspace=ai');
+  expect(consumePendingPortalPath()).toBe('/chat?conversation=ai-42&workspace=ai');
+  expect(consumePendingPortalPath()).toBe('');
+});
+
+it('remembers an AI conversation message through login with its workspace', () => {
+  rememberSystemIntentDestination('/chat/ai-42?message=msg-7&workspace=ai');
+  expect(consumePendingPortalPath()).toBe('/chat?conversation=ai-42&message=msg-7&workspace=ai');
+  expect(consumePendingPortalPath()).toBe('');
+});
+
+it('remembers a workspace-scoped Chat inbox through login', () => {
+  rememberSystemIntentDestination('/chat?workspace=ai');
+  expect(consumePendingPortalPath()).toBe('/chat?workspace=ai');
   expect(consumePendingPortalPath()).toBe('');
 });

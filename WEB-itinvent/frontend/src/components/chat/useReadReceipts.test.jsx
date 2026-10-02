@@ -71,7 +71,7 @@ function ReadReceiptsHarness({
   socketStatus = 'disconnected',
 }) {
   const scrollRootRef = useRef(null);
-  const { effectiveLastReadMessageId, getReadTargetRef } = useReadReceipts({
+  const { effectiveLastReadMessageId, getReadTargetRef, pendingNewCount } = useReadReceipts({
     conversationId,
     messages,
     enabled: true,
@@ -101,6 +101,7 @@ function ReadReceiptsHarness({
         })}
       </div>
       <output data-testid="effective-read-id">{effectiveLastReadMessageId}</output>
+      <output data-testid="pending-new-count">{String(pendingNewCount)}</output>
     </div>
   );
 }
@@ -285,6 +286,75 @@ describe('useReadReceipts', () => {
       expect(markRead).toHaveBeenCalledWith('conv-1', 'msg-a');
     } finally {
       intersectionObserver.restore();
+    }
+  });
+
+  it('counts incoming messages after the read marker as pending and shrinks as they are seen', async () => {
+    const observer = installIntersectionObserverMock();
+    const markRead = vi.fn().mockResolvedValue({ ok: true });
+    const messages = [
+      { id: 'msg-own', body: 'Mine', is_own: true },
+      { id: 'msg-b', body: 'Unread B', is_own: false },
+      { id: 'msg-c', body: 'Own unread-counted?', is_own: true },
+      { id: 'msg-a', body: 'Unread A', is_own: false },
+    ];
+    try {
+      render(
+        <ReadReceiptsHarness
+          conversationId="conv-1"
+          messages={messages}
+          viewerLastReadMessageId="msg-own"
+          markRead={markRead}
+        />,
+      );
+
+      expect(screen.getByTestId('pending-new-count').textContent).toBe('2');
+
+      act(() => {
+        observer.instances[0].trigger([
+          { target: document.querySelector('[data-chat-message-id="msg-b"]'), isIntersecting: true, intersectionRatio: 0.9 },
+          { target: document.querySelector('[data-chat-message-id="msg-a"]'), isIntersecting: true, intersectionRatio: 0.9 },
+        ]);
+      });
+
+      expect(screen.getByTestId('pending-new-count').textContent).toBe('0');
+    } finally {
+      observer.restore();
+    }
+  });
+
+  it('returns null pending count when the read marker is outside the loaded window', () => {
+    const observer = installIntersectionObserverMock();
+    try {
+      render(
+        <ReadReceiptsHarness
+          conversationId="conv-1"
+          messages={MESSAGES}
+          viewerLastReadMessageId="msg-not-loaded"
+        />,
+      );
+
+      // null = "no data" — ChatThread falls back to conversation.unread_count.
+      expect(screen.getByTestId('pending-new-count').textContent).toBe('null');
+    } finally {
+      observer.restore();
+    }
+  });
+
+  it('returns null pending count when the read marker is empty', () => {
+    const observer = installIntersectionObserverMock();
+    try {
+      render(
+        <ReadReceiptsHarness
+          conversationId="conv-1"
+          messages={MESSAGES}
+          viewerLastReadMessageId=""
+        />,
+      );
+
+      expect(screen.getByTestId('pending-new-count').textContent).toBe('null');
+    } finally {
+      observer.restore();
     }
   });
 

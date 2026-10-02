@@ -102,6 +102,16 @@ export function isGroupConversation(item?: ChatConversationSummary | null): bool
   return String(item?.kind || '').trim() === 'group';
 }
 
+/** Mirrors the backend mute rule (A3-2): `muted_until` that already expired lifts the mute. */
+export function isConversationEffectivelyMuted(
+  item?: Pick<ChatConversationSummary, 'is_muted' | 'muted_until'> | null,
+  now: number = Date.now(),
+): boolean {
+  if (!item?.is_muted) return false;
+  const mutedUntil = Date.parse(String(item?.muted_until || ''));
+  return Number.isFinite(mutedUntil) ? mutedUntil > now : true;
+}
+
 export function buildConversationIdsByFolder(
   customFolders: ChatCustomFolder[] = [],
   serverMap: Record<string, string[]> = {},
@@ -133,7 +143,10 @@ export function filterConversationsByFolder(
 
   const activeItems = items.filter((item) => !item?.is_archived);
   if (folderKey === UNREAD_CHAT_FOLDER_KEY) {
-    return activeItems.filter((item) => Number(item?.unread_count || 0) > 0);
+    // A3-2: muted conversations stay out of the unread surface like on the server.
+    return activeItems.filter((item) => (
+      Number(item?.unread_count || 0) > 0 && !isConversationEffectivelyMuted(item)
+    ));
   }
   if (folderKey === 'personal') return activeItems.filter(isPersonalSidebarConversation);
   if (folderKey === 'groups') return activeItems.filter(isGroupConversation);
@@ -162,7 +175,11 @@ export function buildFolderUnreadCounts(
   conversationIdsByFolder: Record<string, string[]> = {},
   serverSystemCounts: Record<string, number> | null = null,
 ): Record<string, number> {
-  const items = (Array.isArray(conversations) ? conversations : []).filter(isRegularSidebarConversation);
+  const items = (Array.isArray(conversations) ? conversations : [])
+    .filter(isRegularSidebarConversation)
+    // A3-2: muted conversations stay out of folder badges like on the server;
+    // the server never sends an 'unread' key, so its fallback must match too.
+    .filter((item) => !isConversationEffectivelyMuted(item));
   const activeItems = items.filter((item) => !item?.is_archived);
   const sumUnread = (list: ChatConversationSummary[]) => (
     list.reduce((total, item) => total + Number(item?.unread_count || 0), 0)

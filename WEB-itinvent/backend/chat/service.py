@@ -30,6 +30,7 @@ from backend.chat.chat_formatting import CHAT_UNKNOWN_SENDER_NAME, usable_chat_u
 from backend.chat.chat_conversation_read_store import ChatConversationReadStore
 from backend.chat.chat_delivery_state import (
     advance_conversation_read_state as _advance_conversation_read_state_impl,
+    apply_message_mentions as _apply_message_mentions_impl,
     find_existing_client_message as _find_existing_client_message_impl,
     get_or_create_conversation_state as _get_or_create_conversation_state_impl,
     increment_unread_counters_for_recipients as _increment_unread_counters_for_recipients_impl,
@@ -40,6 +41,10 @@ from backend.chat.chat_folder_service import ChatFolderService
 from backend.chat.chat_forward_materializer import ChatForwardMaterializer
 from backend.chat.chat_group_service import ChatGroupService
 from backend.chat.chat_membership import ChatMembership
+from backend.chat.chat_mentions import (
+    extract_mention_handles as _extract_mention_handles_impl,
+    resolve_mentioned_member_user_ids as _resolve_mentioned_member_user_ids_impl,
+)
 from backend.chat.chat_notification_orchestrator import ChatNotificationOrchestrator
 from backend.chat.chat_presence_service import ChatPresenceService
 from backend.chat.chat_serialization import ChatSerialization
@@ -63,6 +68,7 @@ from backend.chat.models import (
     ChatMember,
     ChatMessage,
     ChatMessageAttachment,
+    ChatMessageMention,
     ChatMessageRead,
     ChatMessageReaction,
     ChatPollVote,
@@ -101,9 +107,6 @@ _CHAT_ATTACHMENT_VARIANT_MAX_DIMENSIONS = {
     "thumb": 320,
     "preview": 1280,
 }
-_CHAT_MENTION_PATTERN = re.compile(r"(?<![\w@])@([0-9A-Za-zА-Яа-яЁё_.-]{1,64})", re.UNICODE)
-
-
 CHAT_DELETED_MESSAGE_BODY = "Сообщение удалено"
 CHAT_GROUP_ROLES = {"owner", "moderator", "member"}
 CHAT_GROUP_MANAGER_ROLES = {"owner", "moderator"}
@@ -202,14 +205,6 @@ def _display_user_name(user: Optional[dict]) -> str:
         or usable_chat_username(payload.get("username"))
         or CHAT_UNKNOWN_SENDER_NAME
     )
-
-
-def _normalize_mention_handle(value: object) -> str:
-    return _normalize_text(value).lstrip("@").lower()
-
-
-def _mention_handle_from_person_name(value: object) -> str:
-    return re.sub(r"[^0-9A-Za-zА-Яа-яЁё_.-]+", "", _normalize_text(value).replace(" ", "_")).lower()
 
 
 _MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$")
@@ -695,6 +690,12 @@ class ChatService:
             await chat_push_outbox_service.start()
         except Exception:
             logger.warning("Chat push outbox worker failed to start", exc_info=True)
+        try:
+            from backend.chat.scheduled_messages import chat_scheduled_message_service
+
+            await chat_scheduled_message_service.start()  # no-op unless CHAT_SCHEDULED_MESSAGES_ENABLED=1
+        except Exception:
+            logger.warning("Chat scheduled messages dispatcher failed to start", exc_info=True)
         if self._upload_cleanup_task and not self._upload_cleanup_task.done():
             return
         self._upload_cleanup_stop_event = asyncio.Event()
@@ -716,6 +717,12 @@ class ChatService:
             await chat_push_outbox_service.stop()
         except Exception:
             logger.warning("Chat push outbox worker failed to stop", exc_info=True)
+        try:
+            from backend.chat.scheduled_messages import chat_scheduled_message_service
+
+            await chat_scheduled_message_service.stop()
+        except Exception:
+            logger.warning("Chat scheduled messages dispatcher failed to stop", exc_info=True)
         if self._upload_cleanup_stop_event is not None:
             self._upload_cleanup_stop_event.set()
         if self._upload_cleanup_task:
@@ -1565,14 +1572,7 @@ class ChatService:
         return deleted
 
     def _extract_mention_handles(self, body: object) -> set[str]:
-        text = _normalize_text(body)
-        if "@" not in text:
-            return set()
-        return {
-            _normalize_mention_handle(match.group(1))
-            for match in _CHAT_MENTION_PATTERN.finditer(text)
-            if _normalize_mention_handle(match.group(1))
-        }
+        return _extract_mention_handles_impl(body)
 
     def _resolve_mentioned_member_user_ids(
         self,
@@ -1581,30 +1581,11 @@ class ChatService:
         sender_user_id: int,
         body: object,
     ) -> set[int]:
-        handles = self._extract_mention_handles(body)
-        if not handles:
-            return set()
-        candidate_user_ids = sorted({
-            int(item)
-            for item in list(member_user_ids or [])
-            if int(item) > 0 and int(item) != int(sender_user_id)
-        })
-        if not candidate_user_ids:
-            return set()
-        try:
-            users_by_id = user_service.get_users_map_by_ids(candidate_user_ids)
-        except Exception:
-            users_by_id = {}
-        result: set[int] = set()
-        for user_id in candidate_user_ids:
-            user = users_by_id.get(int(user_id)) or {}
-            candidate_handles = {
-                _normalize_mention_handle(user.get("username")),
-                _mention_handle_from_person_name(user.get("full_name")),
-            }
-            if handles.intersection({item for item in candidate_handles if item}):
-                result.add(int(user_id))
-        return result
+        return _resolve_mentioned_member_user_ids_impl(
+            member_user_ids=member_user_ids,
+            sender_user_id=sender_user_id,
+            body=body,
+        )
 
     def get_conversation(
         self,
@@ -2128,6 +2109,7 @@ class ChatService:
         current_user_id: int,
         conversation_id: str,
         task_id: str,
+        client_message_id: Optional[str] = None,
         reply_to_message_id: Optional[str] = None,
         defer_push_notifications: bool = False,
     ) -> dict:
@@ -2140,10 +2122,15 @@ class ChatService:
             current_user_id=int(current_user_id),
             conversation_id=conversation_id,
             task_id=normalized_task_id,
+            client_message_id=client_message_id,
             reply_to_message_id=reply_to_message_id,
         )
         payload = persisted_task.payload
         task_preview = persisted_task.task_preview
+        if persisted_task.dedup_hit:
+            # A retried send (mobile outbox ACK loss) must not re-run the
+            # notification/realtime fanout for the already-published message.
+            return payload
         notification_stats = self._create_chat_notifications(
             sender_user_id=int(current_user_id),
             conversation_id=_normalize_text(payload.get("conversation_id")),
@@ -2196,6 +2183,24 @@ class ChatService:
             sender_user_id=int(current_user_id),
             body=body,
         )
+        if mentioned_user_ids:
+            # File path applies delivery state inline (no outbox job), so the
+            # mention counters get their own short post-commit transaction.
+            try:
+                with chat_session() as mention_session:
+                    _apply_message_mentions_impl(
+                        session=mention_session,
+                        conversation_id=_normalize_text(payload.get("conversation_id")),
+                        message_id=_normalize_text(payload.get("id")),
+                        mentioned_user_ids=mentioned_user_ids,
+                    )
+            except Exception:
+                logger.warning(
+                    "chat.file mention counters apply failed conversation_id=%s message_id=%s",
+                    _normalize_text(payload.get("conversation_id")),
+                    _normalize_text(payload.get("id")),
+                    exc_info=True,
+                )
         notification_stats = self._create_chat_notifications(
             sender_user_id=int(current_user_id),
             conversation_id=_normalize_text(payload.get("conversation_id")),
@@ -2596,6 +2601,11 @@ class ChatService:
             "needs_enrichment": bool(needs_enrichment),
         }
         if isinstance(deferred_delivery_outbox, dict) and deferred_delivery_outbox:
+            deferred_outbox_payload = deferred_delivery_outbox.get("payload")
+            if isinstance(deferred_outbox_payload, dict):
+                deferred_outbox_payload["mentioned_user_ids"] = sorted(
+                    int(item) for item in mentioned_user_ids or []
+                )
             payload["_deferred_delivery_outbox"] = deferred_delivery_outbox
 
         if not dedup_hit:
@@ -2920,6 +2930,27 @@ class ChatService:
                     conversation.pinned_at = None
                     conversation.pinned_by_user_id = None
 
+                # Mention counters are absolute — recount affected viewers so a
+                # deleted message stops contributing to their mention badge.
+                session.flush()
+                mentioned_member_ids = [
+                    int(item)
+                    for item in session.execute(
+                        select(ChatMessageMention.user_id).where(
+                            ChatMessageMention.message_id == normalized_message_id,
+                        )
+                    ).scalars()
+                    if int(item or 0) > 0
+                ]
+                if mentioned_member_ids:
+                    _apply_message_mentions_impl(
+                        session=session,
+                        conversation_id=conversation.id,
+                        message_id=normalized_message_id,
+                        mentioned_user_ids=mentioned_member_ids,
+                        seen_at=now,
+                    )
+
                 if is_group:
                     actor = self._require_active_user(int(current_user_id))
                     member_user_ids = self._conversation_member_ids(session, conversation.id)
@@ -3203,11 +3234,13 @@ class ChatService:
         state: Optional[ChatConversationUserState],
         last_message: Optional[ChatMessage],
         unread_count: Optional[int] = None,
+        unread_mention_count: Optional[int] = None,
         last_message_attachments: Optional[list[ChatMessageAttachment]] = None,
         task_exists_map: Optional[dict[str, bool]] = None,
         task_payloads_by_id: Optional[dict[str, dict]] = None,
         reads_by_message_id: Optional[dict[str, list]] = None,
         states_by_user_id: Optional[dict[int, ChatConversationUserState]] = None,
+        ai_bot_id: Optional[str] = None,
     ) -> dict:
         return self._serialization._serialize_conversation(
             session=session,
@@ -3218,11 +3251,13 @@ class ChatService:
             state=state,
             last_message=last_message,
             unread_count=unread_count,
+            unread_mention_count=unread_mention_count,
             last_message_attachments=last_message_attachments,
             task_exists_map=task_exists_map,
             task_payloads_by_id=task_payloads_by_id,
             reads_by_message_id=reads_by_message_id,
             states_by_user_id=states_by_user_id,
+            ai_bot_id=ai_bot_id,
         )
     def _collect_message_payload_user_ids(
         self,
@@ -3546,6 +3581,13 @@ class ChatService:
     ) -> ChatMessage | None:
         normalized_last_read_message_id = _normalize_text(viewer_last_read_message_id)
         anchor = session.get(ChatMessage, normalized_last_read_message_id) if normalized_last_read_message_id else None
+        normalized_last_read_seq = int(viewer_last_read_seq or 0)
+        if normalized_last_read_seq <= 0:
+            # R24: without a stored seq the read boundary must resolve to a real
+            # message of this conversation; otherwise there is nothing to anchor
+            # against and the viewer must land at the bottom.
+            if anchor is None or anchor.conversation_id != conversation_id:
+                return None
         query = (
             select(ChatMessage)
             .where(
@@ -3555,11 +3597,10 @@ class ChatService:
             .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
             .limit(1)
         )
-        normalized_last_read_seq = int(viewer_last_read_seq or 0)
         if normalized_last_read_seq > 0:
             query = query.where(ChatMessage.conversation_seq > normalized_last_read_seq)
             query = query.order_by(ChatMessage.conversation_seq.asc(), ChatMessage.id.asc())
-        elif anchor is not None and anchor.conversation_id == conversation_id:
+        elif anchor is not None:
             query = query.where(self._message_after_anchor_condition(anchor=anchor))
         return session.execute(query).scalar_one_or_none()
 

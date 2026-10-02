@@ -225,8 +225,14 @@ class JevClient:
         questions: Mapping[str, Mapping[str, Any]],
         model: str = "",
         timeout: Optional[float] = None,
+        max_retries: Optional[int] = None,
     ) -> JevDecision:
-        """Evaluate all questions against the state in one round trip."""
+        """Evaluate all questions against the state in one round trip.
+
+        ``max_retries`` counts *additional* attempts after the first one:
+        ``max_retries=0`` performs exactly one request (used by latency-bound
+        callers such as tool routing); ``None`` falls back to JEV_MAX_RETRIES.
+        """
         if not isinstance(questions, Mapping) or not questions:
             raise JevClientError("Jev decision requires at least one question.")
         if len(questions) > JEV_MAX_QUESTIONS:
@@ -247,7 +253,11 @@ class JevClient:
             "Content-Type": "application/json",
         }
         client = self._build_client(resolved_timeout)
-        attempts = self._resolve_max_retries()
+        attempts = (
+            max(1, int(_to_float(max_retries, 0.0)) + 1)
+            if max_retries is not None
+            else self._resolve_max_retries()
+        )
         last_exc: Optional[Exception] = None
         for attempt in range(1, attempts + 1):
             try:

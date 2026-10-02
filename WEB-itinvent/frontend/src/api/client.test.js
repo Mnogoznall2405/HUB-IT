@@ -3030,6 +3030,7 @@ describe('chatDirectoryAPI contract', () => {
     'renameAiConversation',
     'deleteAiConversation',
     'stopAiConversationRun',
+    'retryAiConversationRun',
   ];
 
   beforeEach(() => {
@@ -3082,11 +3083,13 @@ describe('chatDirectoryAPI contract', () => {
       title: 'Renamed',
     });
     await expect(chatDirectoryAPI.stopAiConversationRun('conv/1')).resolves.toEqual({ id: 'ai-conv-1' });
+    await expect(chatDirectoryAPI.retryAiConversationRun('conv/1')).resolves.toEqual({ id: 'ai-conv-1' });
     await expect(chatDirectoryAPI.deleteAiConversation('conv/1')).resolves.toEqual({ deleted: true });
 
     expect(apiClientMock.post).toHaveBeenNthCalledWith(1, '/chat/ai/bots/bot%2F1%20A/conversations');
     expect(apiClientMock.patch).toHaveBeenCalledWith('/chat/ai/conversations/conv%2F1', { title: 'Renamed' });
     expect(apiClientMock.post).toHaveBeenNthCalledWith(2, '/chat/ai/conversations/conv%2F1/stop');
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(3, '/chat/ai/conversations/conv%2F1/retry');
     expect(apiClientMock.delete).toHaveBeenCalledWith('/chat/ai/conversations/conv%2F1');
   });
 
@@ -3101,6 +3104,17 @@ describe('chatDirectoryAPI contract', () => {
     directoryMethods.forEach((methodName) => {
       expect(chatAPI[methodName]).toBe(chatDirectoryAPI[methodName]);
     });
+  });
+
+  it('sends AI run retry/stop through the real chatAPI facade without mocking it', async () => {
+    const { chatAPI } = await import('./client');
+
+    expect(typeof chatAPI.retryAiConversationRun).toBe('function');
+    await expect(chatAPI.retryAiConversationRun('conv/1')).resolves.toEqual({ id: 'ai-conv-1' });
+    await expect(chatAPI.stopAiConversationRun('conv/1')).resolves.toEqual({ id: 'ai-conv-1' });
+
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(1, '/chat/ai/conversations/conv%2F1/retry');
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(2, '/chat/ai/conversations/conv%2F1/stop');
   });
 
   it('resolves chatAPI directory methods through dedicated module getters', async () => {
@@ -3745,6 +3759,7 @@ describe('chatMessageSendingAPI contract', () => {
         body: '  Hello  ',
         body_format: undefined,
         client_message_id: undefined,
+        kind: undefined,
         reply_to_message_id: undefined,
       },
     ]);
@@ -3752,6 +3767,7 @@ describe('chatMessageSendingAPI contract', () => {
     await chatMessageSendingAPI.sendMessage('conv/2 B', 'Hello', {
       body_format: 'markdown',
       client_message_id: 'client/1',
+      kind: 'poll',
       reply_to_message_id: 'msg/2',
     });
 
@@ -3761,6 +3777,7 @@ describe('chatMessageSendingAPI contract', () => {
         body: 'Hello',
         body_format: 'markdown',
         client_message_id: 'client/1',
+        kind: 'poll',
         reply_to_message_id: 'msg/2',
       },
     ]);
@@ -4155,6 +4172,26 @@ describe('chatFileUploadsAPI contract', () => {
       expect(complete.mock.calls.map(call => call[0])).toEqual(['session-once', 'session-once']);
       await chatFileUploadsAPI.sendFiles('A', [file], { uploadAttempt: {} });
       expect(create).toHaveBeenCalledTimes(2);
+    } finally { create.mockRestore(); complete.mockRestore(); }
+  });
+
+  it('passes client_message_id into the upload-session manifest', async () => {
+    const { chatFileUploadsAPI } = await importChatFileUploadsAPI();
+    const { chatUploadSessionsAPI } = await importChatUploadSessionsAPI();
+    const file = new File(['x'], 'report.txt');
+    const create = vi.spyOn(chatUploadSessionsAPI, 'createUploadSession').mockResolvedValue({
+      session_id: 'sess-keyed',
+      files: [{ file_id: 'f', size: 1, chunk_count: 1, received_chunks: [0] }],
+    });
+    const complete = vi.spyOn(chatUploadSessionsAPI, 'completeUploadSession')
+      .mockResolvedValue({ id: 'committed' });
+    try {
+      await chatFileUploadsAPI.sendFiles('A', [file], { client_message_id: 'album-1' });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(create.mock.calls[0][1]).toEqual(expect.objectContaining({ client_message_id: 'album-1' }));
+      // The id stays on the session path — no forced multipart send.
+      expect(apiClientMock.post).not.toHaveBeenCalled();
+      expect(complete).toHaveBeenCalledWith('sess-keyed', expect.anything());
     } finally { create.mockRestore(); complete.mockRestore(); }
   });
 

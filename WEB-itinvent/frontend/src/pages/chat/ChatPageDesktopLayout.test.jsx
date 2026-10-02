@@ -65,7 +65,13 @@ describe('ChatPageDesktopLayout', () => {
   it('renders sidebar and thread slots on desktop', () => {
     renderLayout();
 
-    expect(screen.getByTestId('chat-desktop-shell')).toHaveStyle({ borderBottom: 'none' });
+    const shell = screen.getByTestId('chat-desktop-shell');
+    // Д1: полноэкранный чат — без карточной рамки Paper, радиуса и тени.
+    expect(shell).toHaveStyle({
+      borderBottom: 'none',
+      boxShadow: 'none',
+    });
+    expect(shell).not.toHaveClass('MuiPaper-root');
     expect(screen.getByTestId('chat-sidebar-slot')).toBeInTheDocument();
     expect(screen.getByTestId('chat-thread-slot')).toBeInTheDocument();
     expect(screen.queryByTestId('chat-mobile-inbox-screen')).not.toBeInTheDocument();

@@ -53,6 +53,18 @@ afterEach(() => {
 });
 
 describe('ChatFileUploadPanel media preview', () => {
+  it('keeps «Добавить» on the left and «Отправить» as the primary action on the right (R17)', () => {
+    const image = new File(['image'], 'photo.jpg', { type: 'image/jpeg' });
+    renderPanel({ files: [image] });
+
+    const dock = screen.getByTestId('file-dialog-mobile-dock');
+    const buttons = Array.from(dock.querySelectorAll('button'));
+    expect(buttons.map((button) => button.textContent)).toEqual(['Добавить', 'Отмена', 'Отправить']);
+    const send = screen.getByTestId('file-dialog-send');
+    expect(send.parentElement).toHaveStyle({ marginLeft: 'auto' });
+    expect(send).toHaveStyle({ fontWeight: 700 });
+  });
+
   it('sends the caption on plain Enter and keeps Shift+Enter or IME composition as text input', () => {
     const image = new File(['image'], 'photo.jpg', { type: 'image/jpeg' });
     const onSend = vi.fn();
@@ -104,6 +116,20 @@ describe('ChatFileUploadPanel media preview', () => {
     await waitFor(() => expect(screen.getByRole('img', { name: 'Предпросмотр photo.jpg' })).toHaveAttribute('src', 'blob:photo.jpg'));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Отправить как файл' }));
     expect(onSendMediaAsFilesChange).toHaveBeenCalledWith(true);
+  });
+
+  it('hugs a single media tile to the image aspect ratio without gray side bars (Д2-8)', async () => {
+    const image = new File(['image'], 'photo.jpg', { type: 'image/jpeg' });
+    renderPanel({ files: [image] });
+
+    const tile = screen.getByTestId('chat-media-upload-tile-0');
+    expect(tile).toHaveStyle({ width: 'fit-content' });
+    const grid = screen.getByTestId('chat-media-upload-grid-1');
+    expect(grid).toHaveStyle({ backgroundColor: 'rgba(0, 0, 0, 0)' });
+    await waitFor(() => {
+      const img = screen.getByRole('img', { name: 'Предпросмотр photo.jpg' });
+      expect(img).toHaveStyle({ width: 'auto', height: '100%', objectFit: 'cover' });
+    });
   });
 
   it.each([2, 3, 4, 5])('renders a Telegram-like grid for %s images', async (count) => {

@@ -421,6 +421,21 @@ class SQLiteLocalStore:
             logger.warning("Could not hydrate SQLite from JSON fallback (%s): %s", normalized_name, exc)
         return fallback_data
 
+    def get_document_version(self, file_name: str) -> Optional[str]:
+        """Cheap per-document version marker (latest row timestamp) without decoding payloads."""
+        normalized_name = _normalize_filename(file_name)
+        try:
+            with self._lock, self._connect() as conn:
+                row = conn.execute(
+                    "SELECT MAX(updated_at) AS version FROM local_records WHERE file_name = ?",
+                    (normalized_name,),
+                ).fetchone()
+        except Exception as exc:
+            logger.warning("Could not probe document version (%s): %s", normalized_name, exc)
+            return None
+        value = row["version"] if row else None
+        return str(value) if value else None
+
     def save_json(self, file_name: str, data: Any) -> bool:
         normalized_name = _normalize_filename(file_name)
         kind = self._infer_kind(normalized_name, data)

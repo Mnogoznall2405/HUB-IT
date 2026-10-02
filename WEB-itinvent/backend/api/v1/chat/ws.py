@@ -195,6 +195,15 @@ async def chat_websocket(websocket: WebSocket):
             allowed, retry_after_ms, rate_limiter = chat_api().chat_realtime.allow_ws_command(int(current_user.id))
             if not allowed:
                 chat_api().chat_realtime.record_rate_limited(connection_id)
+                rate_limited_request_id = None
+                try:
+                    rate_limited_envelope = json.loads(raw_message)
+                    if isinstance(rate_limited_envelope, dict):
+                        rate_limited_request_id = (
+                            str(rate_limited_envelope.get("request_id") or "").strip() or None
+                        )
+                except Exception:
+                    rate_limited_request_id = None
                 await chat_api().chat_realtime.send_to_connection(
                     connection_id,
                     event_type="error",
@@ -202,6 +211,7 @@ async def chat_websocket(websocket: WebSocket):
                         "code": "rate_limited",
                         "retry_after_ms": int(retry_after_ms),
                     },
+                    request_id=rate_limited_request_id,
                 )
                 # Rate-limit identical warnings (QueueHandler when installed).
                 try:
@@ -217,9 +227,10 @@ async def chat_websocket(websocket: WebSocket):
                 except Exception:
                     pass
                 if int(rate_limiter.violations) >= chat_api().CHAT_WS_RATE_LIMIT_MAX_VIOLATIONS:
-                    close_code = 1008
-                    close_reason = "chat websocket rate limit exceeded"
-                    await websocket.close(code=1008, reason="chat websocket rate limit exceeded")
+                    # 4429 is reconnectable with backoff; 1008 stays for policy/auth.
+                    close_code = 4429
+                    close_reason = f"chat websocket rate limit exceeded retry_after_ms={int(retry_after_ms)}"
+                    await websocket.close(code=4429, reason=close_reason)
                     break
                 continue
 
@@ -319,6 +330,23 @@ async def chat_websocket(websocket: WebSocket):
                     detail = str(exc) or "Command failed"
                 else:
                     detail = "Command failed"
+                # Explicit client-facing rejections get stable codes so the
+                # web client can skip its HTTP fallback (R3); transient faults
+                # (timeouts, write-slot contention) stay "command_failed".
+                if isinstance(exc, PermissionError):
+                    error_code = "forbidden"
+                elif isinstance(exc, ValueError):
+                    error_code = "validation_error"
+                elif isinstance(exc, HTTPException):
+                    status_code = int(exc.status_code or 500)
+                    if status_code in (401, 403):
+                        error_code = "forbidden"
+                    elif status_code < 500:
+                        error_code = "validation_error"
+                    else:
+                        error_code = "command_failed"
+                else:
+                    error_code = "command_failed"
                 # #region agent log
                 try:
                     from backend.chat.send_audit import audit_send_trace
@@ -351,7 +379,7 @@ async def chat_websocket(websocket: WebSocket):
                 await chat_api().chat_realtime.send_error(
                     connection_id,
                     detail=detail,
-                    code="command_failed",
+                    code=error_code,
                     request_id=request_id,
                     conversation_id=conversation_id,
                 )

@@ -14,7 +14,14 @@ export default function useChatThreadSection(ctx) {
     threadWallpaperSx,
     messages,
     messagesLoading,
+    threadLoadError,
+    retryThreadLoad,
+    activeThreadPendingNewCount,
+    retryFailedMessage,
+    discardFailedMessage,
+    socketStatus,
     effectiveLastReadMessageId,
+    messagesHasNewer,
     showOlderHistoryControl,
     loadingOlder,
     prependScrollRestoreRef,
@@ -74,6 +81,7 @@ export default function useChatThreadSection(ctx) {
     activeAiStatus,
     activeAiBot,
     stopActiveAiRun,
+    retryActiveAiRun,
     pinnedMessage,
     handleOpenPinnedMessage,
     handleUnpinPinnedMessage,
@@ -82,6 +90,7 @@ export default function useChatThreadSection(ctx) {
     aiAwareTypingLine,
     renderDesktopRightPanel,
     selectedFiles,
+    fileDialogOpen,
     fileCaption,
     openFilePicker,
     clearSelectedFiles,
@@ -92,12 +101,10 @@ export default function useChatThreadSection(ctx) {
     getReadTargetRef,
     handleToggleReaction,
     handlePollVote,
-    handlePollClose,
     scrollToMessage,
     emojiPickerOpen,
     insertEmojiAtSelection,
     handleSendSticker,
-    handleSendGif,
     voiceRecording,
     voiceRecordingDuration,
     voiceRecordingLevelRef,
@@ -123,7 +130,6 @@ export default function useChatThreadSection(ctx) {
     handleLeaveGroup,
     handleUpdateGroupProfile,
     settingsUpdating,
-    socketStatus,
     user,
     updateConversationSettings,
     activeAiBot: rightPanelActiveAiBot,
@@ -154,7 +160,14 @@ export default function useChatThreadSection(ctx) {
         threadWallpaperSx={threadWallpaperSx}
         messages={messages}
         messagesLoading={messagesLoading}
+        threadLoadError={threadLoadError}
+        onRetryThreadLoad={retryThreadLoad}
+        pendingNewCount={activeThreadPendingNewCount}
+        onRetryFailedMessage={retryFailedMessage}
+        onDiscardFailedMessage={discardFailedMessage}
+        socketStatus={socketStatus}
         effectiveLastReadMessageId={effectiveLastReadMessageId}
+        messagesHasNewer={messagesHasNewer}
         messagesHasMore={showOlderHistoryControl}
         loadingOlder={loadingOlder}
         prependScrollRestoreRef={prependScrollRestoreRef}
@@ -211,6 +224,7 @@ export default function useChatThreadSection(ctx) {
         aiTypingStatus={aiTypingStatus}
         aiStatus={activeConversation?.kind === 'ai' ? activeAiStatus : null}
         onStopAiRun={stopActiveAiRun}
+        onRetryAiRun={retryActiveAiRun}
         pinnedMessage={pinnedMessage}
         onOpenPinnedMessage={handleOpenPinnedMessage}
         onUnpinPinnedMessage={handleUnpinPinnedMessage}
@@ -219,6 +233,7 @@ export default function useChatThreadSection(ctx) {
         typingLine={aiAwareTypingLine}
         contextPanelOpen={renderDesktopRightPanel}
         selectedFiles={selectedFiles}
+        fileDialogOpen={fileDialogOpen}
         fileCaption={fileCaption}
         onOpenFileDialog={openFilePicker}
         onClearSelectedFiles={clearSelectedFiles}
@@ -229,14 +244,12 @@ export default function useChatThreadSection(ctx) {
         getReadTargetRef={getReadTargetRef}
         onToggleReaction={handleToggleReaction}
         onPollVote={handlePollVote}
-        onPollClose={handlePollClose}
         onScrollToMessage={scrollToMessage}
         currentUserId={user?.id}
         mobileEmojiPickerOpen={isMobile && emojiPickerOpen}
         desktopEmojiPickerOpen={!isMobile && emojiPickerOpen}
         onInsertEmoji={insertEmojiAtSelection}
         onSendSticker={handleSendSticker}
-        onSendGif={handleSendGif}
         voiceRecording={voiceRecording}
         voiceRecordingDuration={voiceRecordingDuration}
         voiceRecordingLevelRef={voiceRecordingLevelRef}
@@ -249,6 +262,7 @@ export default function useChatThreadSection(ctx) {
     [
       activeAiStatus,
       stopActiveAiRun,
+      retryActiveAiRun,
       activeConversation,
       activeAiBot,
       activeConversationId,
@@ -272,6 +286,7 @@ export default function useChatThreadSection(ctx) {
       effectiveLastReadMessageId,
       emojiPickerOpen,
       fileCaption,
+      fileDialogOpen,
       fileDragActive,
       fileUploadProgress,
       getReadTargetRef,
@@ -288,12 +303,10 @@ export default function useChatThreadSection(ctx) {
       handleOpenMenu,
       handleOpenPinnedMessage,
       handleReplyMessage,
-      handleSendGif,
       handleSendSticker,
       handleThreadScroll,
       handleToggleReaction,
       handlePollVote,
-      handlePollClose,
       handleUnpinPinnedMessage,
       highlightedMessageId,
       insertEmojiAtSelection,
@@ -304,7 +317,14 @@ export default function useChatThreadSection(ctx) {
       loadingOlder,
       mentionCandidates,
       messages,
+      messagesHasNewer,
       messagesLoading,
+      threadLoadError,
+      retryThreadLoad,
+      activeThreadPendingNewCount,
+      retryFailedMessage,
+      discardFailedMessage,
+      socketStatus,
       navigate,
       openMediaViewer,
       openMessageMenu,

@@ -5,28 +5,27 @@ import {
   Box,
   Button,
   Chip,
-  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   IconButton,
+  ListItemIcon,
+  Menu,
+  MenuItem,
   Paper,
+  Skeleton,
   Stack,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
   TextField,
-  Tooltip,
   Typography,
 } from '@mui/material';
 import CloseOutlinedIcon from '@mui/icons-material/CloseOutlined';
 import PlayArrowOutlinedIcon from '@mui/icons-material/PlayArrowOutlined';
 import CommentOutlinedIcon from '@mui/icons-material/CommentOutlined';
 import TaskAltOutlinedIcon from '@mui/icons-material/TaskAltOutlined';
+import AddTaskOutlinedIcon from '@mui/icons-material/AddTaskOutlined';
+import MoreVertOutlinedIcon from '@mui/icons-material/MoreVertOutlined';
+import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
 import { voiceJobsAPI } from '../../api/voiceJobs';
 import { hubTaskSupportAPI } from '../../api/hubTaskSupport';
 import { hubTasksAPI } from '../../api/hubTasks';
@@ -36,9 +35,27 @@ export const parseDeadline = (raw) => {
   return m ? `${m[3]}-${m[2]}-${m[1]}` : '';
 };
 
-function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange }) {
+// Локальная копия (не импортируем из drawer — избегаем цикла модулей).
+const timecodeToSec = (raw) => {
+  const m = /(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(String(raw || ''));
+  if (!m) return null;
+  return m[3] != null
+    ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3])
+    : Number(m[1]) * 60 + Number(m[2]);
+};
+// «0:MM:SS» → «M:SS» — без нулевого часа (P5-время): «0:01:00» → «1:00».
+const fmtClock = (raw) => String(raw || '').replace(/^0+:(\d{1,2}):(\d{2})$/, (m, mm, ss) => `${Number(mm)}:${ss}`);
+
+const errorDetailOr = (err, fallback) => {
+  const detail = err?.response?.data?.detail;
+  return typeof detail === 'string' && detail.trim() ? detail : fallback;
+};
+
+function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, items: itemsProp, onSeekTime, currentSec = null }) {
   const [items, setItems] = useState(null);
   const [error, setError] = useState('');
+  const [statusError, setStatusError] = useState('');
+  const [commentError, setCommentError] = useState('');
   const [taskDialog, setTaskDialog] = useState(null);
   const [assignee, setAssignee] = useState(null);
   const [assigneeOptions, setAssigneeOptions] = useState([]);
@@ -46,12 +63,13 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange }) {
   const [dueAt, setDueAt] = useState('');
   const [title, setTitle] = useState('');
   const [creating, setCreating] = useState(false);
-  const [notice, setNotice] = useState('');
+  const [notice, setNotice] = useState(null);
   const [clipPlayer, setClipPlayer] = useState(null);
   const [filter, setFilter] = useState('all');
   const [createdNums, setCreatedNums] = useState(() => new Set());
   const [statuses, setStatuses] = useState({});
   const [commentDialog, setCommentDialog] = useState(null); // { num, comment }
+  const [rowMenu, setRowMenu] = useState(null); // { anchor, item }
   const clipMediaRef = useRef(null);
   const searchSeq = useRef(0);
 
@@ -64,19 +82,31 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange }) {
     setClipPlayer(null);
   }, []);
 
+  // items из родителя (drawer грузит поручения сразу при открытии карточки) —
+  // тогда собственный запрос не нужен.
   useEffect(() => {
-    let cancelled = false;
+    if (itemsProp === undefined) return;
+    setItems(itemsProp);
+    onCountChange?.(itemsProp?.length ?? null);
+  }, [itemsProp, onCountChange]);
+
+  // T42: собственная загрузка выделена в функцию — «Повторить» на ошибке
+  // вызывает её же, не ломая остальные блоки карточки.
+  const loadItems = useCallback(() => {
+    setError('');
+    setItems(null);
     voiceJobsAPI.getAssignments(base)
       .then((data) => {
-        if (!cancelled) {
-          const list = data.items || [];
-          setItems(list);
-          onCountChange?.(list.length);
-        }
+        const list = data.items || [];
+        setItems(list);
+        onCountChange?.(list.length);
       })
-      .catch(() => { if (!cancelled) { setItems([]); onCountChange?.(0); setError('Не удалось загрузить поручения'); } });
-    return () => { cancelled = true; };
+      .catch(() => { setItems([]); onCountChange?.(0); setError('Не удалось загрузить поручения'); });
   }, [base, onCountChange]);
+
+  useEffect(() => {
+    if (itemsProp === undefined) loadItems();
+  }, [loadItems, itemsProp]);
 
   useEffect(() => {
     let cancelled = false;
@@ -94,26 +124,35 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange }) {
 
   const toggleDone = async (num) => {
     const newStatus = isDone(num) ? 'pending' : 'done';
+    setStatusError('');
     try {
       await voiceJobsAPI.updateAssignmentStatus(base, num, newStatus, statuses[num]?.comment || '');
       setStatuses((prev) => ({ ...prev, [num]: { ...prev[num], num, status: newStatus } }));
-    } catch { /* silent */ }
+    } catch (err) {
+      setStatusError(errorDetailOr(err, 'Не удалось изменить статус поручения'));
+    }
   };
 
   const setInProgress = async (num) => {
+    setStatusError('');
     try {
       await voiceJobsAPI.updateAssignmentStatus(base, num, 'in_progress', statuses[num]?.comment || '');
       setStatuses((prev) => ({ ...prev, [num]: { ...prev[num], num, status: 'in_progress' } }));
-    } catch { /* silent */ }
+    } catch (err) {
+      setStatusError(errorDetailOr(err, 'Не удалось изменить статус поручения'));
+    }
   };
 
   const saveComment = async () => {
     if (!commentDialog) return;
+    setCommentError('');
     try {
       await voiceJobsAPI.updateAssignmentStatus(base, commentDialog.num, statuses[commentDialog.num]?.status || 'pending', commentDialog.comment);
       setStatuses((prev) => ({ ...prev, [commentDialog.num]: { ...prev[commentDialog.num], num: commentDialog.num, comment: commentDialog.comment } }));
       setCommentDialog(null);
-    } catch { /* silent */ }
+    } catch (err) {
+      setCommentError(errorDetailOr(err, 'Не удалось сохранить комментарий'));
+    }
   };
 
   useEffect(() => {
@@ -135,7 +174,7 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange }) {
     setDueAt(parseDeadline(item.deadline));
     setAssignee(null);
     setAssigneeInput(item.assignee || '');
-    setNotice('');
+    setNotice(null);
   }, []);
 
   const submitTask = async () => {
@@ -152,21 +191,37 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange }) {
         due_at: dueAt || undefined,
         protocol_date: dueAt || undefined,
       });
-      setNotice(`Задача «${title.trim()}» создана для ${assignee.full_name || assignee.username}`);
+      setNotice({
+        text: `Задача «${title.trim()}» создана для ${assignee.full_name || assignee.username}`,
+        severity: 'success',
+      });
       setCreatedNums((prev) => new Set(prev).add(taskDialog.num));
       setTaskDialog(null);
     } catch (err) {
-      const detail = err?.response?.data?.detail;
-      setNotice(typeof detail === 'string' ? `Не удалось создать задачу: ${detail}` : 'Не удалось создать задачу');
+      setNotice({
+        text: errorDetailOr(err, 'Не удалось создать задачу'),
+        severity: 'error',
+      });
     } finally {
       setCreating(false);
     }
   };
 
   if (items === null) {
-    return <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}><CircularProgress size={28} /></Box>;
+    // T42: скелетоны строк вместо одиночного спиннера.
+    return (
+      <Stack spacing={1} aria-label="Загрузка поручений">
+        {[0, 1, 2].map((i) => <Skeleton key={i} data-skeleton variant="rounded" height={56} />)}
+      </Stack>
+    );
   }
-  if (error) return <Alert severity="error">{error}</Alert>;
+  if (error) {
+    return (
+      <Alert severity="error" action={<Button size="small" onClick={loadItems}>Повторить</Button>}>
+        {error}
+      </Alert>
+    );
+  }
   if (!items.length) {
     return <Alert severity="info">В отчёте нет реестра поручений.</Alert>;
   }
@@ -174,7 +229,14 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange }) {
   const today = new Date().toISOString().slice(0, 10);
   const isOverdue = (item) => {
     const d = parseDeadline(item.deadline);
-    return Boolean(d && d < today);
+    return Boolean(d && d < today) && !isDone(item.num);
+  };
+  // T41: статус поручения — чип с текстом, а не только цвет/мета-строка.
+  const statusOf = (item) => {
+    if (isDone(item.num)) return { label: 'Выполнено', color: 'success' };
+    if (isOverdue(item)) return { label: 'Просрочено', color: 'error' };
+    if (isInProgress(item.num)) return { label: 'В работе', color: 'primary' };
+    return { label: 'Новое', color: 'default' };
   };
   const visible = items.filter((item) => {
     if (filter === 'noassignee') return !String(item.assignee || '').trim();
@@ -184,99 +246,237 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange }) {
     if (filter === 'pending') return !isDone(item.num);
     return true;
   });
+  // T41: разделы (section) — заголовки групп, порядок первого появления.
+  const grouped = (() => {
+    const map = new Map();
+    visible.forEach((item) => {
+      const key = String(item.section || '').trim();
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(item);
+    });
+    return [...map.entries()];
+  })();
+  // T41: поручение, ближайшее к позиции плеера, подсвечивается.
+  const nearestNum = currentSec == null ? null : (() => {
+    let best = null; let bestDist = Infinity;
+    items.forEach((item) => {
+      const sec = timecodeToSec(item.time);
+      if (sec == null) return;
+      const d = Math.abs(sec - currentSec);
+      if (d < bestDist) { bestDist = d; best = item.num; }
+    });
+    return best;
+  })();
 
   return (
     <Box>
-      {notice && (
-        <Alert severity={notice.startsWith('Не удалось') ? 'error' : 'success'} sx={{ mb: 1.5 }} onClose={() => setNotice('')}>
-          {notice}
+      {statusError && (
+        <Alert severity="error" sx={{ mb: 1.5 }} onClose={() => setStatusError('')}>
+          {statusError}
         </Alert>
       )}
-      <Stack direction="row" spacing={1} sx={{ mb: 1.5, flexWrap: 'wrap' }}>
-        <Chip size="small" label={`Все (${items.length})`} variant={filter === 'all' ? 'filled' : 'outlined'} color={filter === 'all' ? 'primary' : 'default'} onClick={() => setFilter('all')} />
-        <Chip size="small" label={`Без ответственного (${items.filter((i) => !String(i.assignee || '').trim()).length})`} variant={filter === 'noassignee' ? 'filled' : 'outlined'} color={filter === 'noassignee' ? 'warning' : 'default'} onClick={() => setFilter('noassignee')} />
-        <Chip size="small" label={`Просроченные (${items.filter(isOverdue).length})`} variant={filter === 'overdue' ? 'filled' : 'outlined'} color={filter === 'overdue' ? 'error' : 'default'} onClick={() => setFilter('overdue')} />
+      {notice?.severity === 'success' && (
+        <Alert severity={notice.severity} sx={{ mb: 1.5 }} onClose={() => setNotice(null)}>
+          {notice.text}
+        </Alert>
+      )}
+      {/* T41: сводка — это сами чипы-фильтры со счётчиками (отдельной строки
+          «Все/…» нет); порядок: всего → просрочено → без ответственного. */}
+      <Stack direction="row" spacing={1} sx={{ mb: 1.5, flexWrap: 'wrap', rowGap: 0.5 }}>
+        <Chip
+          aria-pressed={filter === 'all'}
+          size="small"
+          label={`Все (${items.length})`}
+          variant={filter === 'all' ? 'filled' : 'outlined'}
+          color={filter === 'all' ? 'primary' : 'default'}
+          onClick={() => setFilter('all')}
+        />
+        <Chip
+          aria-pressed={filter === 'overdue'}
+          size="small"
+          label={`Просроченные (${items.filter(isOverdue).length})`}
+          variant={filter === 'overdue' ? 'filled' : 'outlined'}
+          color={filter === 'overdue' ? 'error' : 'default'}
+          onClick={() => setFilter('overdue')}
+        />
+        <Chip
+          aria-pressed={filter === 'noassignee'}
+          size="small"
+          label={`Без ответственного (${items.filter((i) => !String(i.assignee || '').trim()).length})`}
+          variant={filter === 'noassignee' ? 'filled' : 'outlined'}
+          color={filter === 'noassignee' ? 'warning' : 'default'}
+          onClick={() => setFilter('noassignee')}
+        />
       </Stack>
       {!visible.length && <Alert severity="info">По фильтру поручений нет.</Alert>}
-      <TableContainer component={Paper} variant="outlined" sx={{ display: visible.length ? 'block' : 'none' }}>
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell sx={{ width: 40 }}>№</TableCell>
-              <TableCell sx={{ width: 70 }}>Время</TableCell>
-              <TableCell>Поручение</TableCell>
-              <TableCell>Ответственный</TableCell>
-              <TableCell>Срок</TableCell>
-              <TableCell align="right" />
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {visible.map((item) => (
-              <TableRow key={item.num} hover>
-                <TableCell>{item.num}</TableCell>
-                <TableCell>
-                  {item.clip ? (
-                    <Chip
-                      size="small"
-                      clickable
-                      label={item.time}
-                      onClick={() => setClipPlayer({ clip: item.clip, time: item.time, num: item.num })}
-                      sx={{ fontFamily: 'monospace', fontVariantNumeric: 'tabular-nums' }}
-                    />
-                  ) : (
-                    <Typography variant="caption" sx={{ fontFamily: 'monospace' }}>{item.time || '—'}</Typography>
+      {/* P4-1: компактный список вместо таблицы — всё помещается в узкую панель
+          без горизонтальной прокрутки; действия собраны в меню «⋮» строки.
+          T41: элементы группируются заголовками разделов (section). */}
+      {grouped.map(([section, groupItems]) => (
+        <Box key={section || '_'} sx={{ minWidth: 0 }}>
+          {section && (
+            <Typography
+              variant="subtitle2"
+              component="h3"
+              color="text.secondary"
+              sx={{ mt: 0.5, mb: 0.5, fontSize: '0.78rem', textTransform: 'uppercase', letterSpacing: 0.3 }}
+            >
+              {section}
+            </Typography>
+          )}
+          <Stack spacing={1} sx={{ minWidth: 0, mb: 1 }}>
+        {groupItems.map((item) => (
+          <Paper
+            key={item.num}
+            variant="outlined"
+            data-assign-nearest={item.num === nearestNum ? '1' : undefined}
+            sx={{
+              p: 1, minWidth: 0,
+              borderColor: item.num === nearestNum ? 'primary.main' : undefined,
+              bgcolor: item.num === nearestNum ? 'action.selected' : undefined,
+            }}
+          >
+            <Stack direction="row" spacing={1} alignItems="flex-start" sx={{ minWidth: 0 }}>
+              {item.clip || onSeekTime ? (
+                // T30: таймкод перематывает основной плеер (onSeekTime);
+                // без него — прежнее поведение: отдельный clip-диалог.
+                <Chip
+                  size="small"
+                  clickable
+                  label={fmtClock(item.time)}
+                  aria-label={onSeekTime
+                    ? `Перейти к ${fmtClock(item.time)} (поручение №${item.num})`
+                    : `Фрагмент поручения №${item.num}, ${fmtClock(item.time)}`}
+                  onClick={() => (onSeekTime
+                    ? onSeekTime(item.time)
+                    : setClipPlayer({ clip: item.clip, time: item.time, num: item.num }))}
+                  sx={{ fontFamily: 'monospace', fontVariantNumeric: 'tabular-nums', flexShrink: 0, mt: '1px' }}
+                />
+              ) : (
+                <Typography variant="caption" sx={{ fontFamily: 'monospace', flexShrink: 0, pt: '4px' }}>
+                  {fmtClock(item.time) || '—'}
+                </Typography>
+              )}
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography
+                  variant="body2"
+                  component="div"
+                  title={item.task}
+                  sx={{
+                    display: '-webkit-box',
+                    WebkitBoxOrient: 'vertical',
+                    WebkitLineClamp: 2,
+                    overflow: 'hidden',
+                  }}
+                >
+                  {isPriority(item.task) && (
+                    <Chip size="small" color="error" label="Критично" sx={{ mr: 0.5, verticalAlign: '1px' }} />
                   )}
-                </TableCell>
-                <TableCell>
-                      <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap">
-                        {isPriority(item.task) && <Chip size="small" color="error" label="Критично" />}
-                        {isDone(item.num) && <Chip size="small" color="success" label="Выполнено" />}
-                        {isInProgress(item.num) && <Chip size="small" color="info" label="В работе" />}
-                        <Typography variant="body2">{item.task}</Typography>
-                      </Stack>
-                    </TableCell>
-                <TableCell><Typography variant="body2" noWrap sx={{ maxWidth: 200 }}>{item.assignee || '—'}</Typography></TableCell>
-                <TableCell>
-                  <Typography variant="caption" noWrap color={isOverdue(item) ? 'error' : 'text.primary'}>
-                    {item.deadline || '—'}{isOverdue(item) ? ' (просрочено)' : ''}
-                  </Typography>
-                </TableCell>
-                <TableCell align="right">
-                    <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                      <Tooltip title={isDone(item.num) ? "Вернуть в работу" : "Отметить выполненным"}>
-                        <IconButton size="small" color={isDone(item.num) ? "success" : "default"} onClick={() => toggleDone(item.num)}>
-                          <TaskAltOutlinedIcon fontSize="small" />
-                        </IconButton>
-                      </Tooltip>
-                      {!isDone(item.num) && !isInProgress(item.num) && (
-                        <Tooltip title="Взять в работу">
-                          <IconButton size="small" onClick={() => setInProgress(item.num)}>
-                            <PlayArrowOutlinedIcon fontSize="small" />
-                          </IconButton>
-                        </Tooltip>
-                      )}
-                      <Tooltip title="Комментарий">
-                        <IconButton size="small" onClick={() => setCommentDialog({ num: item.num, comment: statuses[item.num]?.comment || "" })}>
-                          <CommentOutlinedIcon fontSize="small" />
-                        </IconButton>
-                      </Tooltip>
-                      {canCreateTasks && !createdNums.has(item.num) && (
-                        <Tooltip title="Создать задачу">
-                          <IconButton size="small" onClick={() => openTaskDialog(item)}>
-                            <TaskAltOutlinedIcon fontSize="small" />
-                          </IconButton>
-                        </Tooltip>
-                      )}
-                      {createdNums.has(item.num) && (
-                        <Chip size="small" color="success" variant="outlined" label="Создана" />
-                      )}
-                    </Stack>
-                  </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </TableContainer>
+                  {item.task}
+                </Typography>
+                <Typography variant="caption" component="div" color="text.secondary" noWrap>
+                  {/* P5-4: пустые поля (нет срока) не выводятся — без «—». */}
+                  №{item.num} · {String(item.assignee || '').trim() || 'Без ответственного'}
+                  {item.deadline ? ` · ${item.deadline}` : ''}
+                  {' · '}
+                  <Chip
+                    size="small"
+                    component="span"
+                    color={statusOf(item).color}
+                    variant={statusOf(item).color === 'default' ? 'outlined' : 'filled'}
+                    label={statusOf(item).label}
+                    sx={{ height: 18, fontSize: '0.68rem', verticalAlign: '1px', '& .MuiChip-label': { px: 0.5 } }}
+                  />
+                  {createdNums.has(item.num) ? ' · Задача создана' : ''}
+                </Typography>
+              </Box>
+              <IconButton
+                size="small"
+                aria-label={`Действия с поручением №${item.num}`}
+                onClick={(e) => setRowMenu({ anchor: e.currentTarget, item })}
+                sx={{ flexShrink: 0, mt: -0.5 }}
+              >
+                <MoreVertOutlinedIcon fontSize="small" />
+              </IconButton>
+            </Stack>
+          </Paper>
+        ))}
+          </Stack>
+        </Box>
+      ))}
+
+      <Menu
+        anchorEl={rowMenu?.anchor}
+        open={Boolean(rowMenu)}
+        onClose={() => setRowMenu(null)}
+      >
+        {rowMenu && [
+          <MenuItem
+            key="done"
+            onClick={() => { const it = rowMenu.item; setRowMenu(null); toggleDone(it.num); }}
+          >
+            <ListItemIcon><TaskAltOutlinedIcon fontSize="small" color={isDone(rowMenu.item.num) ? 'success' : 'inherit'} /></ListItemIcon>
+            {isDone(rowMenu.item.num)
+              ? `Вернуть в работу (поручение №${rowMenu.item.num})`
+              : `Отметить выполненным (поручение №${rowMenu.item.num})`}
+          </MenuItem>,
+          !isDone(rowMenu.item.num) && !isInProgress(rowMenu.item.num) && (
+            <MenuItem
+              key="progress"
+              onClick={() => { const it = rowMenu.item; setRowMenu(null); setInProgress(it.num); }}
+            >
+              <ListItemIcon><PlayArrowOutlinedIcon fontSize="small" /></ListItemIcon>
+              {`Взять в работу (поручение №${rowMenu.item.num})`}
+            </MenuItem>
+          ),
+          <MenuItem
+            key="comment"
+            onClick={() => {
+              const it = rowMenu.item;
+              setCommentError('');
+              setCommentDialog({ num: it.num, comment: statuses[it.num]?.comment || '' });
+              setRowMenu(null);
+            }}
+          >
+            <ListItemIcon><CommentOutlinedIcon fontSize="small" /></ListItemIcon>
+            {`Комментарий (поручение №${rowMenu.item.num})`}
+          </MenuItem>,
+          canCreateTasks && !createdNums.has(rowMenu.item.num) && (
+            <MenuItem
+              key="task"
+              onClick={() => { const it = rowMenu.item; setRowMenu(null); openTaskDialog(it); }}
+            >
+              <ListItemIcon><AddTaskOutlinedIcon fontSize="small" /></ListItemIcon>
+              {`Создать задачу (поручение №${rowMenu.item.num})`}
+            </MenuItem>
+          ),
+          rowMenu.item.clip && (
+            <MenuItem
+              key="clip"
+              onClick={() => {
+                const it = rowMenu.item;
+                setRowMenu(null);
+                setClipPlayer({ clip: it.clip, time: it.time, num: it.num });
+              }}
+            >
+              <ListItemIcon><PlayArrowOutlinedIcon fontSize="small" /></ListItemIcon>
+              {`Открыть фрагмент (поручение №${rowMenu.item.num})`}
+            </MenuItem>
+          ),
+          rowMenu.item.clip && (
+            <MenuItem
+              key="download"
+              component="a"
+              href={voiceJobsAPI.clipUrl(base, rowMenu.item.clip)}
+              download
+              onClick={() => setRowMenu(null)}
+            >
+              <ListItemIcon><DownloadOutlinedIcon fontSize="small" /></ListItemIcon>
+              {`Скачать фрагмент (поручение №${rowMenu.item.num})`}
+            </MenuItem>
+          ),
+        ]}
+      </Menu>
 
       <Dialog open={Boolean(clipPlayer)} onClose={closeClipPlayer} maxWidth="sm" fullWidth>
         <DialogTitle sx={{ pr: 6 }}>
@@ -318,6 +518,7 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange }) {
       <Dialog open={Boolean(commentDialog)} onClose={() => setCommentDialog(null)} maxWidth="sm" fullWidth>
         <DialogTitle>Комментарий к поручению {commentDialog?.num}</DialogTitle>
         <DialogContent>
+          {commentError && <Alert severity="error" sx={{ mb: 2 }}>{commentError}</Alert>}
           <TextField
             fullWidth
             multiline
@@ -336,6 +537,7 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange }) {
       <Dialog open={Boolean(taskDialog)} onClose={creating ? undefined : () => setTaskDialog(null)} maxWidth="sm" fullWidth>
         <DialogTitle>Задача из поручения №{taskDialog?.num}</DialogTitle>
         <DialogContent dividers>
+          {notice?.severity === 'error' && <Alert severity={notice.severity} sx={{ mb: 2 }}>{notice.text}</Alert>}
           <Stack spacing={2} sx={{ pt: 0.5 }}>
             <TextField
               label="Название задачи"

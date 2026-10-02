@@ -153,6 +153,26 @@ it('encodes equipment identifiers for detail, acts and history routes', async ()
   expect(history.history).toEqual([{ CH_USER: 'admin' }]);
 });
 
+it('reads the equipment status from the detail-status alias', async () => {
+  client.get.mockResolvedValueOnce({ data: { inv_no: '1', status: 'В работе' } });
+  await expect(getEquipment('1')).resolves.toMatchObject({ status_name: 'В работе' });
+});
+
+it('prefers status_name over the detail-status alias when both are present', async () => {
+  client.get.mockResolvedValueOnce({ data: { inv_no: '1', status: 'Списан', status_name: 'В работе' } });
+  await expect(getEquipment('1')).resolves.toMatchObject({ status_name: 'В работе' });
+});
+
+it('reads changed_by from the server ch_user alias and keeps it optional', async () => {
+  client.get.mockResolvedValueOnce({ data: { inv_no: '1', CH_USER: 'admin', DATE_LAST_MODIFY: '2026-08-18T17:26:00' } });
+  await expect(getEquipment('1')).resolves.toMatchObject({
+    changed_by: 'admin',
+    date_last_modify: '2026-08-18T17:26:00',
+  });
+  client.get.mockResolvedValueOnce({ data: { inv_no: '1' } });
+  await expect(getEquipment('1')).resolves.toMatchObject({ changed_by: '' });
+});
+
 it('normalizes the global act feed and keeps file capability', async () => {
   client.get.mockResolvedValueOnce({
     data: {

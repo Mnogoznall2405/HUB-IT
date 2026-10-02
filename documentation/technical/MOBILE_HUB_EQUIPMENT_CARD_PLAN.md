@@ -2,7 +2,7 @@
 
 | Поле | Значение |
 |---|---|
-| Статус | Шаги 1, 2, 3, 4-A и Н-1…Н-3 приняты. Шаг 5-A и Ш5-5 приняты; шаг C авторизации принят, его backend выложен (C-4). preview 1.1.60 опубликован. Ш5-6…Ш5-8 выполнены, на проверке (без сборки — версия 1.1.61 будет отдельной задачей). 4-B и выпуск обычной версии — ждут условий и разрешения |
+| Статус | Шаги 1, 2, 3, 4-A и Н-1…Н-3 приняты. Шаг 5-A и Ш5-5 приняты; шаг C авторизации принят, его backend выложен (C-4). Руководитель принял Ш5-6…Ш5-10 (2026-10-01). Backend Ш5-10 выложен. Ш5-11 выполнен. **preview 1.1.61 (63) опубликован, ждёт проверки на Android.** Ш5-12 выполнен, на проверке; требуется сборка preview 1.1.62. 4-B и выпуск обычной версии — ждут условий и разрешения |
 | Дата | 2026-09-30 |
 | Область | `mobile-hub`, экран карточки оборудования; точечно `WEB-itinvent/backend` (даты) |
 | Стек | Expo / React Native, Fluent-токены (`useFluentTokens`), существующий `databaseApi` |
@@ -1353,3 +1353,145 @@ MAC: …
 Не проверено: физическая приёмка на Android (перекрытие навигацией при реальном fontScale, видимость тоста поверх нативной Modal, аппаратная кнопка «назад») — нет устройства; ждёт проверки руководителя на 1.1.61.
 
 Вопросы руководителю: нет.
+
+### Ш5-9. Справочники в действиях «Передать сотруднику» / «Сменить размещение» — Devin (Cognition) — 2026-10-01
+
+Статус: **выполнено, на проверке**. Только `mobile-hub`; backend не трогался — использованы уже существующие endpoint'ы.
+
+Запрос пользователя: в действии «Передать сотруднику» сотрудник должен выбираться с подстановкой (справочник сотрудников базы ITINVENT, не адресная книга), филиал — из выпадающего списка, размещение — ввод с выбором; то же для «Сменить размещение».
+
+Сделано (`src/components/database/NativeEquipmentActions.tsx`):
+
+- **Сотрудник.** Поля «Новый сотрудник» (передача) и «Передал оборудование» (акт без перемещения) остались текстовыми, но при вводе от 2 символов (debounce 350 ms, как в редакторе карточки) идёт `searchEquipmentOwners(q, 20, databaseId)` → `GET /equipment/owners/search` → `OWNERS` базы ITINVENT. Под полем появляются варианты (ФИО + отдел). Выбор подставляет ФИО и запоминает `owner_no`: в payload уходят `new_employee_no`/`new_employee_dept` (сервер резолвит владельца по номеру, не по совпадению строки) или `issuer_owner_no`. Ручная правка текста после выбора сбрасывает `owner_no` — уходит только имя (сервер создаёт/находит владельца по ФИО, как раньше). Ручной ввод по-прежнему работает («Без владельца», внешние ФИО).
+- **Филиал / Размещение.** Горизонтальная лента чипов (`ChoiceStrip`) заменена полями-«выпадайками» (`PickerField`, `native-transfer-pick-branch`/`native-transfer-pick-location`), открывающими `NativeEquipmentOptionPicker` — нижний sheet с поиском (`native-transfer-branch-*`/`native-transfer-location-*`). Размещение недоступно, пока не выбран филиал (подсказка «Сначала выберите филиал» — как в редакторе карточки); смена филиала сбрасывает размещение, список перезагружается по выбранному филиалу. Текущие значения карточки показаны до выбора (fallback `equipment.branch_name`/`location_name`).
+- Общий компонент один — улучшение сразу на всех поверхностях: карточка (detail), панель «Выбрано: N», панель скан-списка. `close()` сбрасывает выборы и списки вариантов.
+
+Новые тесты (`NativeDatabaseScreens.test.tsx`, +4):
+
+- `substitutes a new employee from the ITINVENT owner directory search` — поиск → выбор → payload с `new_employee_no`/`new_employee_dept`;
+- `drops the picked owner id when the employee name is edited manually` — ручная правка после выбора шлёт только имя;
+- `picks branch and location from searchable sheets for a location transfer` — выбор филиала из sheet, поиск «Склад» фильтрует размещения, payload `branch_no`/`loc_no`;
+- `resolves the act issuer against the ITINVENT owner directory` — `issuer_owner_no` в act-only.
+
+Проверки (фактический вывод, из `mobile-hub`):
+
+- `npx jest src/database src/components/database src/screens/database src/components --runInBand` → **55/55 наборов, 331/331 тест**;
+- `npx tsc --noEmit` → **exit 0**.
+
+Заметки:
+
+- Справочник — `OWNERS` текущей базы ITINVENT (`/equipment/owners/search`), не адресная книга Hub; поиск идёт и по ФИО, и по отделу (поведение endpoint'а).
+- Список размещений грузится выбранным филиалом (`listEquipmentLocations(branchNo)`), как раньше; без филиала поле неактивно.
+
+Не проверено: физическая приёмка на Android (sheet поверх нативной модалки действия, живой справочник OWNERS) — ждёт проверки на 1.1.61.
+
+### Ш5-10. Сквозная база действий и доступ к базам — Devin (Cognition) — 2026-10-01
+
+Статус: **выполнено, на проверке**. Уточнение пользователя: сотрудники, филиалы и размещения должны браться из той же базы оборудования, над которой выполняется действие, и у пользователя должен быть доступ к этой базе.
+
+Диагноз: на mobile `databaseId` уже доходил до всех вызовов (`currentDatabase?.id` для выбранных/детали, `scanBatchItems[0].databaseId` для скан-списка) и `databaseApi` ставит `X-Database-ID`. Но на backend цепочка расходилась: чтение справочников (`/equipment/branches`, `/equipment/locations`, `/equipment/owners/search`, поиск/карточка/история) уже использовало `get_request_scoped_database_id` (валидный `X-Database-ID` побеждает сохранённый выбор), а вся запись — `POST /equipment/transfer*`, `GET /transfer/act-jobs`, `POST /transfer/email`, `PATCH/DELETE /equipment/{inv_no}`, `/equipment/create`, consumables-мутации, списки/справочники без `prefer_request_hint`, `/json/works/*` — читала `get_current_database_id`: сохранённая в PG/настройках база побеждала заголовок. Итог: опции грузились из выбранной базы, а мутация могла уйти в другую; `GET act-jobs` при смене выбора после старта задачи вообще возвращал 404 (`_can_read_transfer_job` сверяет `job.db_id` с разрешённой базой запроса).
+
+Сделано (только `WEB-itinvent/backend`, mobile не менялся):
+
+- `api/v1/equipment.py`: все 41 точка `Depends(get_current_database_id)` → `Depends(get_request_scoped_database_id)` — единое правило: валидный `X-Database-ID` выбирает базу для запроса, не меняя сохранённый выбор пользователя.
+- `api/v1/json_operations.py`: то же для 7 точек `/json/works/*` (истории/статистика обслуживания по серийнику оборудования).
+- Доступ не ослаблен: фиксированная привязка базы у не-admin побеждает заголовок (`resolve_current_database_id`, source `assigned`); заголовок принимает только настроенные ID (`normalize_database_id`); запись по-прежнему требует `database.write`; `act-jobs` сверяет `job.db_id` с разрешённой базой запроса. Отдельного ACL на базы помимо привязки в продукте нет — `/database/list` показывает все настроенные базы непривязанному пользователю.
+
+Тесты (`tests/test_equipment_request_database_scope.py`, +4):
+
+- `…transfer_uses_request_database_header_over_persisted_selection` — `X-Database-ID: OBJ-ITINVENT` при сохранённой ITINVENT → `create_job(db_id='OBJ-ITINVENT')`;
+- `…transfer_keeps_fixed_assignment_over_request_header` — привязанному `operator` заголовок OBJ-ITINVENT не помогает: `db_id='ITINVENT'`;
+- `…act_job_read_matches_request_database` — задача чужой базы: без заголовка 404, с заголовком базы задачи 200;
+- `…transfer_email_owner_lookup_uses_request_database` — e-mail владельца ищется в базе заголовка.
+
+Обновлены устаревшие переопределения зависимости в `test_consumable_by_id_api.py`, `test_consumable_delete_api.py`, `test_equipment_delete_api.py`, `test_equipment_history_api.py`, `test_equipment_recent_cards_api.py` (`get_current_database_id` → `get_request_scoped_database_id`) — после flip старый override был мёртвым и реальный resolver падал на `SimpleNamespace` без `id`.
+
+Проверки (фактический вывод):
+
+- `pytest tests/test_equipment_request_database_scope.py` → **8/8**;
+- `pytest` по database-selection/transfer/equipment/consumable/json-наборам (25 файлов) → **все зелёные, кроме 1 ранее падающего** `test_equipment_act_search::test_search_equipment_acts_returns_empty_for_short_query` (файл не изменён, падение на HEAD: функция отдаёт `query:''` при коротком запросе — к задаче не относится).
+
+Не проверено: физический прогон против живого backend с двумя базами и реальным переносом.
+
+### Ш5-11. Один Alert «Открыть расходник?» на удержанную в кадре карточку — Devin (Cognition) — 2026-10-01
+
+Статус: **выполнено, на проверке**.
+
+Запрос руководителя: пока открыт Alert «Список из N позиций сбросится. Открыть расходник?», новые сканы игнорируются — иначе удержанная в кадре карточка расходника повторяет Alert каждые ~1,5 с (после истечения dedup-окна модалки `SAME_CODE_DELAY_MS`).
+
+Сделано (`NativeDatabaseScreen.tsx`):
+
+- `consumablePromptOpenRef` — ref-флаг «вопрос про расходник открыт». `handleScannerScan` при установленном флаге возвращается сразу (любой payload: и расходник, и оборудование — иначе «Открыть» молча сотрёт позицию, добавленную за время висящего вопроса).
+- Флаг ставится перед `Alert.alert`, сбрасывается в обеих кнопках («Отмена»/«Открыть») и в `options.onDismiss` — закрытие Alert аппаратной «назад» тоже снимает блокировку.
+- Страховка: флаг сбрасывается при повторном открытии сканера (в том же эффекте closed→open).
+
+Тест (`NativeDatabaseScreens.test.tsx`, +1): `ignores repeated consumable scans while «Открыть расходник?» is open (Ш5-11)` — 2 позиции → скан расходника → второй скан расходника → `Alert` ровно 1 раз, карточка не открыта; «Отмена» снимает блокировку → третий скан снова даёт Alert. Обновлён assert существующего теста Ш5-7 — у Alert появился 4-й аргумент `options.onDismiss`.
+
+Проверки (фактический вывод):
+
+- `npx jest src/database src/components src/screens/database --runInBand` → **56/56 наборов, 335/335 тестов**;
+- `npx tsc --noEmit` → **exit 0**;
+- `npm run test:ci` → 347/350 наборов: единственное ожидаемое `mobile-version` падение до prebuild; 2 набора чужой chat-WIP (`NativeChatTypingPerformance`, `NativeChatSelectionPerformance` — `getThreadBootstrap is not a function` и т.п., к правке отношения нет).
+
+### Выкладка backend Ш5-10 — Devin (Cognition) — 2026-10-01
+
+Статус: **выложено**. Разрешение пользователя получено; порядок как в C-4 (`MOBILE_HUB_OFFLINE_AUTH_PLAN.md`), чат не перезапускался (Ш5-10 его не касается).
+
+- **Preflight:** 51 изменённый путь backend (43 modified + 8 untracked — дерево шага C и смежной работы; Ш5-10 — `api/v1/equipment.py` + `api/v1/json_operations.py`). `py_compile` всех 50 `.py` → OK. `pm2 list` — все процессы online. `/health` backend :8001 → 200; chat :8002/:8004 → 200.
+- **Backup:** `C:\Project\backups\sh5-10-backend-2026-10-01\` — все 51 файлов со структурой + `_filelist.txt` (untracked в списке помечены `??` — при откате их удалить).
+- **Рестарт:** `scripts/pm2/restart-backend.ps1 -SkipScanRestart` → `Backend ready: PM2 PID 28496 listening on port 8001`, uptime с нуля, `online`.
+- **Post-check:** `/health` → 200; pm2 — все online; error-лог после рестарта — без traceback (только штатные `http.slow`).
+- **Функциональная проверка скоупинга:** read-only `GET /api/v1/equipment/branches` с `X-Database-ID` для каждой настроенной базы (токен выпущен локально для активного operator с `database.read`; admin с 127.0.0.1 заблокирован IP-политикой — ожидаемо): ITINVENT → 200 (12 филиалов), MSK-ITINVENT → 200 (25), OBJ-ITINVENT → 200 (26), SPB-ITINVENT → 200 (6). Разные наборы — заголовок действительно выбирает базу.
+- **Откат (если понадобится):** скопировать файлы из `C:\Project\backups\sh5-10-backend-2026-10-01\` обратно, удалить untracked из `_filelist.txt`, повторить `restart-backend.ps1 -SkipScanRestart`.
+
+### Сборка и публикация preview 1.1.61 (63) — Devin (Cognition) — 2026-10-01
+
+Статус: **опубликовано, внешняя проверка пройдена**. Разрешение пользователя получено; порядок как у 1.1.60.
+
+- **Версия:** `package.json` → `1.1.61` / `androidVersionCode 63`; создан `release-notes/1.1.61.json` (changelog — Ш5-6…Ш5-11).
+- **Предсборка:** `npx jest src/database src/components src/screens/database --runInBand` → 56/56 наборов, 335/335 тестов; `npx tsc --noEmit` → 0; `npm run test:ci` → 347/350 наборов (ожидаемое `mobile-version` падение до prebuild — после сборки `mobile-version.test.js` → 3/3; 2 набора чужой chat-WIP `NativeChatTypingPerformance`/`NativeChatSelectionPerformance` — `getThreadBootstrap is not a function`, к задаче не относятся).
+- **Сборка:** `build-apk.ps1 -Local -Variant preview -Architectures dual -AllowDebugSigning` → **BUILD SUCCESSFUL in 1h 24m 28s** (947 задач).
+- **Audit:** `1.1.61`/`63`, `signing: debug-preview`, signer `fac61745dc0903786fb9ede62a962b399f7348f0bb6f899b8332667591033b9c` — **совпадает с 1.1.60**; 70 754 141 байт, sha256 `d07db6c6cd3adb1524f4dcddb6c37a8afad3fe95bb81bc9d01ab69470fecc2d9`, ABI arm64-v8a+armeabi-v7a, minified + resource shrinking.
+- **Публикация:** `publish-apk.ps1 -IisUpdateRoot C:\inetpub\wwwroot\hub-desktop-updates -ExpectedSignerSHA256 fac61745… -AllowDebugPreviewSigner` → `mobile/preview/1.1.61/HUB-IT-Mobile-Preview-1.1.61.apk` + атомарный `latest.json`.
+- **Verify:** `node scripts/mobile/verify-published-apk.mjs` → manifest 200 (json, no-cache), APK 200, size/sha256/signer совпали → **verified: true**. URL: `https://hubit.zsgp.ru/desktop-updates/mobile/preview/1.1.61/HUB-IT-Mobile-Preview-1.1.61.apk`.
+- **Откат:** вернуть `latest.json` на 1.1.60 по `MOBILE_HUB_APK_DISTRIBUTION.md` (файл 1.1.60 остался в `mobile/preview/1.1.60/`).
+
+Не проверено: дым-тест и OTA-обновление на устройстве — эмулятор недоступен; физическая приёмка Ш5-6…Ш5-11 — за пользователем/руководителем.
+
+### Ш5-12. Результат передачи, sheet-выбор сотрудника и safe-area модалок — Devin (Cognition) — 2026-10-01
+
+Статус: **выполнено, на проверке**.
+
+Повод: передача 3 карточек из скан-панели (jobs ea20d4f4/27ba4f9f, ITINVENT) — backend выполнил, акты созданы, но в UI не было блока «Сформированные документы / Отправить акты», автоподстановка сотрудника «не видна», хедер модалки уходил под статус-бар. `POST /equipment/transfer/email` за день не вызывался ни разу (IIS-лог).
+
+Причины:
+
+1. `handleScanBatchChanged` вызывал `scanBatchClear()` из `onChanged` сразу после `setResult` → `scanBatchReadyItems` пуст → `NativeEquipmentActions` с его Modal размонтировался до показа результата; та же уязвимость у панели «Выбрано: N» через `loadContent(true)` (позиции выпадают из отфильтрованного списка → `selectedEquipment` пуст).
+2. `owners/search` уходил и возвращал совпадения, но inline-список под полем мелкий и перекрывался клавиатурой в Modal (Modal игнорирует adjustResize), а на короткий запрос сервер отдаёт нерелевантные строки (поиск и по отделу) — пользователь вводил вручную, `new_employee_no` не уходил.
+3. `edgeToEdgeEnabled=true` — pageSheet-Modal без верхнего inset рисуется под статус-баром.
+
+Сделано (только `mobile-hub`):
+
+- Новый `NativeEquipmentOwnerPicker` — нижний sheet по образцу `NativeEquipmentOptionPicker`: серверный поиск `searchEquipmentOwners(q, 20, databaseId)`, debounce 350 мс, от 2 символов, загрузка/пустое состояние/ошибка сети текстом, строка «Указать вручную: «q»» при `allowManual`. Высота фиксированная `78%` (поле поиска над клавиатурой при пустом списке) + `KeyboardAvoidingView` только для iOS.
+- `NativeEquipmentActions`: поля «Новый сотрудник» и «Передал оборудование» → `PickerField` + sheet (`new_employee_no`/`new_employee_dept`/`issuer_owner_no` при выборе, чистое имя при ручном вводе); inline `EmployeeOptions` удалён.
+- Экран результата по образцу web `TransferActionContent`: сводка «Перемещено/Подготовлено позиций: N, ошибок: M», до 5 строк ошибок + «Повторить только неуспешные (K)» (`runTransfer(invNosOverride)`), карточки актов «old → new (N)» + file_name + «Открыть», блок «Отправка акта по email»: чипы Старому/Новому (для act-only — Выдавшему/Получателю), Выбрать сотрудника (sheet без ручного ввода, `owner_no` в payload), Ввести email вручную; дефолт `old` как в web; блок скрыт для «Сменить размещение»; «Отправить акт» + «Готово». «Отмена» в хедере при result → «Закрыть».
+- Новый проп `onClosed(result)` — очистка скан-списка/выбора перенесена из `onChanged` в закрытие модалки: скан-панель при ошибках делает `scanBatchKeepOnly(retry_inv_nos)`, при успехе — `clear` + закрытие; панель «Выбрано: N» снимает выбор только при полном успехе. Компонент остаётся смонтированным, пока виден результат. При закрытии сбрасываются также введённые ФИО (`employee` → пусто, `issuer` → текущий владелец карточки), чтобы следующая операция не показывала прошлое имя как выбранное без `owner_no`.
+- `paddingTop: insets.top` (`SafeAreaInsetsContext ?? initialWindowMetrics`) на корневых View pageSheet-модалок: `NativeEquipmentActions`, `NativeDatabaseCreateModal`, `NativeDatabaseActUploadModal`.
+
+Файлы:
+
+- `mobile-hub/src/components/database/NativeEquipmentOwnerPicker.tsx` (новый);
+- `mobile-hub/src/components/database/NativeEquipmentActions.tsx`;
+- `mobile-hub/src/components/database/NativeDatabaseCreateModal.tsx`, `NativeDatabaseActUploadModal.tsx`;
+- `mobile-hub/src/screens/database/NativeDatabaseScreen.tsx`;
+- `mobile-hub/src/screens/database/NativeDatabaseScreens.test.tsx`.
+
+Тесты: существующие transfer-тесты переписаны под sheet (поле → поиск → опция/`manual`); новые — выбор из справочника (`owner_no`/`dept` в payload), ручной ввод, issuer для act-only, результат не исчезает в скан-панели до «Готово» (`native-transfer-act-*`, `native-transfer-email-send` видимы), email-режимы `new`/`employee` и отсутствие блока для `location`, retry по `retry_inv_nos`, `paddingTop` модалки от insets. В файле добавлен мок `react-native-safe-area-context` с фиксированными insets.
+
+Проверки (фактический вывод):
+
+- `npx jest src/components/database src/screens/database --runInBand` → **2/2 набора, 96/96 тестов** (плюс в более широком прогоне `src/database src/components/database src/screens/database src/components` — 56/56 наборов, 340/340 тестов);
+- `npx tsc --noEmit` → **exit 0**;
+- `npm run test:ci` → **350/350 наборов, 2465/2465 тестов**.
+
+Не проверено: физическая приёмка на Android (sheet поверх модалки, клавиатура, статус-бар на edge-to-edge) — ждёт сборки preview 1.1.62.

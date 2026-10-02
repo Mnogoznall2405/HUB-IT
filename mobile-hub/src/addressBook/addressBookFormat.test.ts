@@ -122,6 +122,19 @@ describe('addressBookFormat', () => {
       { text: 'nov', match: false },
     ]);
   });
+
+  it('keeps highlight offsets aligned when toLowerCase changes char length', () => {
+    // 'İ' lowercases to 'i̇' (two UTF-16 units) — offsets must still slice
+    // the original string exactly at its own characters.
+    expect(splitHighlightParts('İstanbul Ofis', 'İst')).toEqual([
+      { text: 'İst', match: true },
+      { text: 'anbul Ofis', match: false },
+    ]);
+    expect(splitHighlightParts('İstanbul', 'anbul')).toEqual([
+      { text: 'İst', match: false },
+      { text: 'anbul', match: true },
+    ]);
+  });
 });
 
 describe('messengerLinks', () => {

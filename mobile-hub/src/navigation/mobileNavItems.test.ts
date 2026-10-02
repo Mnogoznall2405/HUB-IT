@@ -69,6 +69,12 @@ describe('navigation badges', () => {
     expect(getNavigationBadgeCount('/dashboard', { tasks_open: 4 })).toBe(0);
   });
 
+  it('passes the server chat unread total (chats + AI) to the badge unchanged', () => {
+    // AUDIT-AI-NOTIF: chat_messages_unread_total уже включает ИИ-диалоги
+    // (chat_conversation_read_store не фильтрует kind) — на клиенте не досчитываем.
+    expect(getNavigationBadgeCount('/chat', { chat_messages_unread_total: 7 })).toBe(7);
+  });
+
   it('shows a warning badge when mail state is unknown', () => {
     const meta = getMailNavigationBadgeMeta('unknown', 0);
     expect(meta.showBadge).toBe(true);

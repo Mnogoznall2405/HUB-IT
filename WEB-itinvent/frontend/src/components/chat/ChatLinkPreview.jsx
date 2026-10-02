@@ -53,6 +53,12 @@ async function _fetchPreview(url) {
   return promise;
 }
 
+// Reserved card height while a preview loads — matches the compact card that
+// renders for failed/empty previews, so settling the fetch does not shift the
+// thread layout. Loaded previews may still grow taller; the thread-level
+// growth compensation covers the remainder.
+const PREVIEW_RESERVE_HEIGHT = 64;
+
 const ChatLinkPreview = memo(function ChatLinkPreview({ url, theme, ui, isOwn }) {
   const cached = url ? _getCached(url) : undefined;
   // undefined = not fetched yet, null = failed/empty, object = success
@@ -73,8 +79,7 @@ const ChatLinkPreview = memo(function ChatLinkPreview({ url, theme, ui, isOwn })
   }, [url]);
 
   // null = failed, undefined = loading (not yet known), object = ok
-  if (!url || preview === null) return null;
-  if (preview === undefined) return null; // no skeleton — no layout shift
+  if (!url) return null;
 
   const linkColors = resolveChatBubbleLinkColors(ui, isOwn);
   const borderColor = linkColors.border || ui?.accentText || theme.palette.primary.main;
@@ -86,6 +91,66 @@ const ChatLinkPreview = memo(function ChatLinkPreview({ url, theme, ui, isOwn })
     try { return new URL(url).hostname.replace(/^www\./, ''); }
     catch { return url; }
   })();
+
+  if (preview === undefined || preview === null) {
+    const loading = preview === undefined;
+    return (
+      <Box
+        component="a"
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        data-testid="chat-link-preview-compact"
+        sx={{
+          mt: 1,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1,
+          minHeight: PREVIEW_RESERVE_HEIGHT,
+          borderLeft: `3px solid ${borderColor}`,
+          borderRadius: '0 8px 8px 0',
+          pl: 1.2,
+          pr: 1,
+          py: 0.8,
+          bgcolor: cardBg,
+          textDecoration: 'none',
+          overflow: 'hidden',
+        }}
+      >
+        <Box sx={{ width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <LinkRoundedIcon sx={{ fontSize: 22, color: borderColor }} />
+        </Box>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography
+            sx={{
+              fontSize: 11,
+              color: borderColor,
+              fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+              lineHeight: 1.4,
+              textTransform: 'uppercase',
+              letterSpacing: '0.04em',
+            }}
+            noWrap
+          >
+            {hostname}
+          </Typography>
+          {loading ? (
+            <Typography
+              sx={{
+                fontSize: 12,
+                color: mutedColor,
+                fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                lineHeight: 1.3,
+              }}
+              noWrap
+            >
+              Загрузка превью…
+            </Typography>
+          ) : null}
+        </Box>
+      </Box>
+    );
+  }
 
   return (
     <Box

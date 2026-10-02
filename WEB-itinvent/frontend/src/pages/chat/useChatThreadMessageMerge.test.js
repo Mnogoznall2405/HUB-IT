@@ -3,10 +3,6 @@ import { describe, expect, it, vi } from 'vitest';
 import useChatThreadMessageMerge from './useChatThreadMessageMerge';
 
 describe('useChatThreadMessageMerge', () => {
-  it('exports a default hook function', () => {
-    expect(typeof useChatThreadMessageMerge).toBe('function');
-  });
-
   it('mergeMessageIntoThread replaces optimistic match', async () => {
     const { renderHook, act } = await import('@testing-library/react');
     const optimistic = {

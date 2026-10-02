@@ -62,14 +62,15 @@ const SPACIOUS_CHAT_DENSITY = {
   composerDockPxMd: 1.6,
   composerDockPt: 0.7,
   composerDockPb: 0.7,
-  composerCapsuleMinHeight: 42,
+  composerCapsuleMinHeight: 48,
   composerCapsulePx: 10,
   composerCapsulePy: 1,
   composerInnerPaddingY: 0,
   composerInputSlotMinHeight: 30,
   composerIconButton: 30,
-  composerActionSize: 42,
-  composerActionIcon: 20,
+  // Д3 эталон: большая круглая кнопка отправки на десктопе.
+  composerActionSize: 54,
+  composerActionIcon: 24,
   composerFontSize: CHAT_DEFAULT_FONT_SIZES.desktopPrimary,
   composerLineHeight: CHAT_DEFAULT_LINE_HEIGHTS.desktopBody,
   composerAuxFontSize: CHAT_DEFAULT_FONT_SIZES.composerAux,
@@ -155,7 +156,7 @@ const COMPACT_DESKTOP_CHAT_DENSITY = {
   composerDockPxMd: 1.0,
   composerDockPt: 0.35,
   composerDockPb: 0.35,
-  composerCapsuleMinHeight: 34,
+  composerCapsuleMinHeight: 44,
   composerCapsulePx: 8,
   composerCapsulePy: 0,
   composerInnerPaddingY: 0,
@@ -312,19 +313,21 @@ export function buildChatUiTokens(theme, options = {}) {
   const dark = theme.palette.mode === 'dark';
   const density = buildChatDensityTokens(options);
   const accent = '#3390ec';
-  const accentDark = '#64b5f6';
-  const activeBlue = dark ? '#2b5278' : accent;
-  const ownBubble = dark ? '#2b5278' : '#d9fdd3';
+  const accentDark = '#64b5ef';
+  // Д2-1 (раздел 29): ночная палитра Telegram Desktop — акцент #5288c1/#64b5ef,
+  // свои пузыри #2b5278, входящие #182533, колонки #17212b/#0e1621.
+  const activeBlue = dark ? '#5288c1' : accent;
+  const ownBubble = dark ? '#2b5278' : '#effdde';
   const otherBubble = dark ? '#182533' : '#ffffff';
   const darkPanel = '#17212b';
   const darkSurface = '#1f2c39';
 
   return {
-    pageBg: dark ? '#0f1419' : '#d7e7f2',
+    pageBg: dark ? '#0e1621' : '#d7e7f2',
     panelBg: dark ? darkPanel : '#ffffff',
     sidebarBg: dark ? darkPanel : '#ffffff',
     sidebarHeaderBg: dark ? alpha(darkPanel, 0.96) : alpha('#ffffff', 0.96),
-    sidebarSearchBg: dark ? '#1f2c39' : '#f1f3f4',
+    sidebarSearchBg: dark ? '#0e1621' : '#f1f3f4',
     sidebarSearchFocusBg: dark ? '#2b3a4a' : '#ffffff',
     sidebarRowHover: dark ? alpha('#ffffff', 0.055) : alpha(accent, 0.08),
     sidebarRowPressed: dark ? alpha('#ffffff', 0.09) : alpha(accent, 0.12),
@@ -332,18 +335,18 @@ export function buildChatUiTokens(theme, options = {}) {
     sidebarRowSoftActive: dark ? alpha(activeBlue, 0.54) : alpha(accent, 0.1),
     sidebarRowUnread: dark ? '#1e2e3c' : '#f1f8fe',
     sidebarRowUnreadBorder: dark ? 'rgba(125,211,252,0.24)' : 'rgba(23,105,170,0.18)',
-    sidebarUnreadIndicator: dark ? '#64b5f6' : '#1976d2',
-    sidebarUnreadText: dark ? '#7dd3fc' : '#1769aa',
+    sidebarUnreadIndicator: dark ? '#64b5ef' : '#1976d2',
+    sidebarUnreadText: dark ? '#64b5ef' : '#1769aa',
     sidebarDivider: dark ? 'rgba(255,255,255,0.07)' : 'rgba(218,225,232,0.95)',
 
-    unreadBadgeBg: dark ? '#1976d2' : '#1769aa',
+    unreadBadgeBg: dark ? '#5288c1' : '#1769aa',
     unreadBadgeText: '#ffffff',
     unreadActiveBadgeBg: '#ffffff',
-    unreadActiveBadgeText: dark ? '#2b5278' : '#1769aa',
-    folderTabActiveBg: dark ? '#2b5278' : '#1976d2',
+    unreadActiveBadgeText: dark ? '#5288c1' : '#1769aa',
+    folderTabActiveBg: dark ? '#5288c1' : '#1976d2',
     folderTabActiveText: '#ffffff',
     folderTabActiveBadgeBg: '#ffffff',
-    folderTabActiveBadgeText: dark ? '#2b5278' : '#1769aa',
+    folderTabActiveBadgeText: dark ? '#5288c1' : '#1769aa',
 
     threadBg: dark ? '#0e1621' : '#b8d4a8',
     threadTopbarBg: dark ? alpha('#17212b', 0.94) : alpha('#ffffff', 0.94),
@@ -361,17 +364,21 @@ export function buildChatUiTokens(theme, options = {}) {
     bubbleOwnLinkBorder: dark ? alpha('#ffffff', 0.5) : '#75a95f',
     bubbleOwnLinkBg: dark ? alpha('#ffffff', 0.08) : alpha('#ffffff', 0.42),
     bubbleOtherBg: otherBubble,
-    bubbleOtherText: dark ? '#f5f7fb' : '#111b21',
+    bubbleOtherText: dark ? '#ffffff' : '#111b21',
     bubbleOtherLinkText: dark ? accentDark : accent,
     bubbleOtherLinkMuted: dark ? 'rgba(255,255,255,0.56)' : '#707579',
     bubbleOtherLinkBorder: dark ? accentDark : accent,
     bubbleOtherLinkBg: dark ? alpha(accentDark, 0.12) : alpha(accent, 0.06),
-    bubbleOtherMetaText: dark ? 'rgba(255,255,255,0.52)' : '#6b7c8a',
+    bubbleOtherMetaText: dark ? '#aaaaaa' : '#6b7c8a',
+    // AI9: запрос пользователя к ИИ — мягкий нейтральный пузырь вместо зелёного.
+    bubbleAiUserBg: dark ? alpha('#ffffff', 0.09) : '#f4f4f5',
+    bubbleAiUserText: dark ? '#ffffff' : '#111b21',
+    bubbleAiUserMetaText: dark ? 'rgba(255,255,255,0.56)' : '#6b7c8a',
     bubbleTailShadow: dark ? '0 1px 1px rgba(0,0,0,0.18)' : '0 1px 1px rgba(65,88,110,0.08)',
 
     composerBg: dark ? alpha('#17212b', 0.96) : alpha('#ffffff', 0.92),
-    composerDockBg: dark ? '#1e2c3a' : '#ffffff',
-    composerInputBg: dark ? '#1f2c39' : '#ffffff',
+    composerDockBg: dark ? '#17212b' : '#ffffff',
+    composerInputBg: dark ? '#17212b' : '#ffffff',
     composerActionBg: dark ? accentDark : accent,
     composerActionText: '#ffffff',
     composerActionMutedBg: dark ? '#1d2733' : '#e9eef3',
@@ -394,7 +401,7 @@ export function buildChatUiTokens(theme, options = {}) {
     searchPlaceholder: dark ? 'rgba(255,255,255,0.38)' : 'rgba(112,117,121,0.85)',
     sidebarSectionLabel: dark ? 'rgba(255,255,255,0.38)' : '#707579',
     sidebarActiveSubtleText: 'rgba(255,255,255,0.82)',
-    sidebarDraftText: dark ? '#7dd3fc' : accent,
+    sidebarDraftText: dark ? '#64b5ef' : accent,
 
     servicePillBg: dark ? 'rgba(36,47,61,0.92)' : 'rgba(255,255,255,0.76)',
     servicePillText: dark ? 'rgba(255,255,255,0.72)' : '#5f6b76',
@@ -421,7 +428,8 @@ export function buildChatUiTokens(theme, options = {}) {
     dangerSoft: dark ? alpha('#ff8a8a', 0.14) : alpha('#d93025', 0.1),
     successText: dark ? '#7ddc8a' : '#3a8f35',
     statusSentText: dark ? 'rgba(255,255,255,0.68)' : '#6b7c8a',
-    statusReadText: dark ? '#7dd3fc' : accent,
+    // Д3 эталон: прочтённые галочки зелёные (#4fae4e) на светлой теме.
+    statusReadText: dark ? 'rgba(255,255,255,0.86)' : '#4fae4e',
     shadowStrong: dark ? '0 18px 42px rgba(0,0,0,0.34)' : '0 16px 36px rgba(80,104,128,0.16)',
     shadowSoft: dark ? '0 2px 8px rgba(0,0,0,0.14)' : '0 1px 2px rgba(65,88,110,0.12)',
     surfaceStrong: dark ? '#242f3d' : '#ffffff',

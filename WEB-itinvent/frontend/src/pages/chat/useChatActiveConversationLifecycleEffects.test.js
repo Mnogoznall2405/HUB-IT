@@ -85,10 +85,6 @@ describe('useChatActiveConversationLifecycleEffects helpers', () => {
 });
 
 describe('useChatActiveConversationLifecycleEffects', () => {
-  it('exports a default hook function', () => {
-    expect(typeof useChatActiveConversationLifecycleEffects).toBe('function');
-  });
-
   it('mounts without throwing when conversation is empty', async () => {
     const { renderHook } = await import('@testing-library/react');
     const { unmount } = renderHook(() => useChatActiveConversationLifecycleEffects({

@@ -5,11 +5,15 @@ import { AppState, type AppStateStatus } from 'react-native';
 const mockLogin = jest.fn();
 const mockUnlock = jest.fn();
 let mockBiometricEnabled = false;
+let mockConnectivityOffline = false;
+let mockNetworkRestricted = false;
 let mockRestoreState = 'idle';
 let mockUser: { id: number; username: string; role: string; permissions: string[] } | null = null;
 const mockRetryRestore = jest.fn();
 beforeEach(() => {
   mockBiometricEnabled = false;
+  mockConnectivityOffline = false;
+  mockNetworkRestricted = false;
   mockRestoreState = 'idle'; mockUser = null;
   jest.spyOn(AppState, 'addEventListener').mockImplementation(() => ({ remove: jest.fn() }));
 });
@@ -17,6 +21,8 @@ beforeEach(() => {
 jest.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
     biometricEnabled: mockBiometricEnabled,
+    connectivityOffline: mockConnectivityOffline,
+    sessionNetworkRestricted: mockNetworkRestricted,
     login: mockLogin,
     hasPermission: () => false,
     unlockWithBiometrics: mockUnlock,
@@ -112,20 +118,32 @@ it('hides the password when sending credentials and keeps help separate from log
 it('explains a temporary restore failure, retries and opens the app after recovery', async () => {
   mockRestoreState = 'unavailable';
   const view = await render(<LoginScreen />);
-  expect(view.getByRole('alert')).toHaveTextContent('Не удалось проверить сохранённый вход. Проверьте подключение и повторите.');
+  expect(view.getByRole('alert')).toHaveTextContent('Не удалось проверить сохранённый вход. Сервер недоступен — повторите.');
+  mockConnectivityOffline = true;
+  await view.rerender(<LoginScreen />);
+  expect(view.getByRole('alert')).toHaveTextContent('Нет связи. Проверьте подключение и повторите.');
   await fireEvent.press(view.getByText('Повторить проверку входа'));
   expect(mockRetryRestore).toHaveBeenCalledTimes(1);
   expect(mockLogin).not.toHaveBeenCalled();
   mockRestoreState = 'idle';
+  mockConnectivityOffline = false;
   mockUser = { id: 7, username: 'synthetic', role: 'viewer', permissions: ['dashboard.read'] };
   await view.rerender(<LoginScreen />);
   expect(require('expo-router').router.replace).toHaveBeenCalled();
 });
 
+it('explains a network restriction without dropping the stored session', async () => {
+  mockRestoreState = 'unavailable';
+  mockNetworkRestricted = true;
+  const view = await render(<LoginScreen />);
+  expect(view.getByRole('alert')).toHaveTextContent('Доступ из этой сети запрещён.');
+  expect(view.getByText('Повторить проверку входа')).toBeTruthy();
+});
+
 it('explains an expired session without suggesting retry of the expired credentials', async () => {
   mockRestoreState = 'expired';
   const view = await render(<LoginScreen />);
-  expect(view.getByRole('alert')).toHaveTextContent('Сессия завершена. Войдите снова.');
+  expect(view.getByRole('alert')).toHaveTextContent('Сессия истекла. Войдите снова.');
   expect(view.queryByText('Повторить проверку входа')).toBeNull();
   expect(view.getByText('Войти')).toBeTruthy();
 });

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { buildDiscrepanciesText } from './employeeCompareFormat';
 import { readFirst } from './databaseRecordModel';
+import { copyTextToClipboard } from '../../lib/clipboard';
 
 const makeInventoryItemLink = (item, invNo) => {
   const normalized = String(invNo || '').trim();
@@ -53,16 +54,7 @@ export default function useDiscrepanciesCopy({
 
   const handleCopyDiscrepancies = useCallback(async () => {
     const text = discrepanciesText;
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      const textarea = document.createElement('textarea');
-      textarea.value = text;
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      textarea.remove();
-    }
+    await copyTextToClipboard(text);
     setCopiedDiscrepancies(true);
     if (copiedTimerRef.current != null) window.clearTimeout(copiedTimerRef.current);
     copiedTimerRef.current = window.setTimeout(() => {

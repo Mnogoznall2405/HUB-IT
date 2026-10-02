@@ -1,9 +1,16 @@
+import type { ChatWorkspaceKey } from './chatAiWorkspace';
+
 export type NativeChatDestination =
-  | { pathname: '/(shell)/chat' }
+  | { pathname: '/(shell)/chat'; params?: { workspace?: ChatWorkspaceKey } }
   | {
       pathname: '/(shell)/chat/[conversationId]';
-      params: { conversationId: string; messageId?: string };
+      params: { conversationId: string; messageId?: string; workspace?: ChatWorkspaceKey };
     };
+
+function chatWorkspaceParam(value: string | null): ChatWorkspaceKey | undefined {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'ai' || normalized === 'chats' ? normalized : undefined;
+}
 
 export function parseNativeChatEnabled(value: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
@@ -31,7 +38,10 @@ export function nativeChatDestinationFromPortalPath(path: string): NativeChatDes
       || parsed.searchParams.get('conversation_id')
       || '',
   ).trim();
-  if (!conversationId) return { pathname: '/(shell)/chat' };
+  const workspace = chatWorkspaceParam(parsed.searchParams.get('workspace'));
+  if (!conversationId) {
+    return workspace ? { pathname: '/(shell)/chat', params: { workspace } } : { pathname: '/(shell)/chat' };
+  }
 
   const messageId = String(
     parsed.searchParams.get('message')
@@ -43,6 +53,7 @@ export function nativeChatDestinationFromPortalPath(path: string): NativeChatDes
     params: {
       conversationId,
       ...(messageId ? { messageId } : {}),
+      ...(workspace ? { workspace } : {}),
     },
   };
 }

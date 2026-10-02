@@ -32,6 +32,7 @@ const enabledChannels = {
   chat_direct: true,
   chat_group: true,
   chat_task: true,
+  chat_ai: true,
 };
 
 describe('NotificationChannelsSettingsCard', () => {
@@ -50,6 +51,7 @@ describe('NotificationChannelsSettingsCard', () => {
     expect(screen.getByRole('checkbox', { name: 'Личные сообщения' })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Групповые беседы' })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Диалоги задач' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Уведомления ИИ-агентов' })).toBeChecked();
     expect(screen.getByText(/браузере и HUB Desktop/i)).toBeInTheDocument();
   });
 
@@ -65,6 +67,20 @@ describe('NotificationChannelsSettingsCard', () => {
     expect(groupSwitch).not.toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Личные сообщения' })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Диалоги задач' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Уведомления ИИ-агентов' })).toBeChecked();
+  });
+
+  it('saves the AI-agents chat category separately', async () => {
+    render(<NotificationChannelsSettingsCard />);
+
+    const aiSwitch = await screen.findByRole('checkbox', { name: 'Уведомления ИИ-агентов' });
+    fireEvent.click(aiSwitch);
+
+    await waitFor(() => {
+      expect(mocks.updatePreferences).toHaveBeenCalledWith({ chat_ai: false });
+    });
+    expect(aiSwitch).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Личные сообщения' })).toBeChecked();
   });
 
   it('turns all chat categories off from the single master switch', async () => {
@@ -75,6 +91,7 @@ describe('NotificationChannelsSettingsCard', () => {
         chat_direct: false,
         chat_group: false,
         chat_task: false,
+        chat_ai: false,
       },
     });
     render(<NotificationChannelsSettingsCard />);
@@ -87,5 +104,6 @@ describe('NotificationChannelsSettingsCard', () => {
     expect(screen.getByRole('checkbox', { name: 'Личные сообщения' })).not.toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Групповые беседы' })).not.toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Диалоги задач' })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Уведомления ИИ-агентов' })).not.toBeChecked();
   });
 });

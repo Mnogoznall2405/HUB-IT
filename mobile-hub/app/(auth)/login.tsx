@@ -16,6 +16,8 @@ export default function LoginScreen() {
   const tokens = useAppFluentTokens();
   const styles = useMemo(() => createStyles(tokens), [tokens]);
   const {
+    connectivityOffline,
+    sessionNetworkRestricted,
     sessionRestoreState,
     retrySessionRestore,
     biometricEnabled,
@@ -141,11 +143,11 @@ export default function LoginScreen() {
         <Text style={styles.title} accessibilityRole="header">HUB-IT</Text>
         <Text style={styles.subtitle}>Внутренний портал · hubit.zsgp.ru</Text>
       </View>
-      {sessionRestoreState === 'unavailable' || sessionRestoreState === 'checking' || sessionRestoreState === 'expired' ? <HubCard>
+      {sessionRestoreState === 'unavailable' || sessionRestoreState === 'checking' || sessionRestoreState === 'expired' || sessionRestoreState === 'deactivated' ? <HubCard>
         <Text accessibilityRole="alert" style={{ color: tokens.textPrimary }}>
-          {sessionRestoreState === 'expired' ? 'Сессия завершена. Войдите снова.' : sessionRestoreState === 'checking' ? 'Проверяем сохранённый вход…' : 'Не удалось проверить сохранённый вход. Проверьте подключение и повторите.'}
+          {sessionRestoreState === 'deactivated' ? 'Учётная запись отключена. Обратитесь к администратору.' : sessionRestoreState === 'expired' ? 'Сессия истекла. Войдите снова.' : sessionRestoreState === 'checking' ? 'Проверяем сохранённый вход…' : sessionNetworkRestricted ? 'Доступ из этой сети запрещён.' : connectivityOffline ? 'Нет связи. Проверьте подключение и повторите.' : 'Не удалось проверить сохранённый вход. Сервер недоступен — повторите.'}
         </Text>
-        {sessionRestoreState !== 'expired' ? <HubButton
+        {sessionRestoreState !== 'expired' && sessionRestoreState !== 'deactivated' ? <HubButton
           onPress={retrySessionRestore}
           disabled={sessionRestoreState === 'checking' || submitting || biometricSubmitting}
         >Повторить проверку входа</HubButton> : null}

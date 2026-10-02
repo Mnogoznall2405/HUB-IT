@@ -75,7 +75,7 @@ export function NativeNotificationsSettingsScreen() {
     if (offlineMode || saving) return;
     const previous = channels;
     const optimistic = key === 'chat'
-      ? { chat: enabled, chat_direct: enabled, chat_group: enabled, chat_task: enabled }
+      ? { chat: enabled, chat_direct: enabled, chat_group: enabled, chat_task: enabled, chat_ai: enabled }
       : { [key]: enabled };
     setChannels((prev) => ({ ...prev, ...optimistic }));
     setSaving(true);

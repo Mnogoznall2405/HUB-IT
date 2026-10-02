@@ -349,6 +349,7 @@ class ChatConversationUserState(Base):
     last_read_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     unread_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unread_mention_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_muted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # F-MUTE-TIMER: NULL = muted indefinitely; expired timestamps lift the mute lazily.
@@ -445,6 +446,72 @@ class ChatMessageReaction(Base):
     user_id: Mapped[int] = mapped_column(Integer, nullable=False)
     emoji: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatMessageMention(Base):
+    """One resolved @mention of a member inside a message (drives unread mention badges)."""
+
+    __tablename__ = "chat_message_mentions"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "message_id",
+            "user_id",
+            name="uq_chat_message_mentions_message_user",
+        ),
+        Index("ix_chat_message_mentions_conversation_user", "conversation_id", "user_id"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    message_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_messages"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatScheduledMessage(Base):
+    """A text message the sender asked to deliver later ("Send later"). The dispatcher of
+    chat.scheduled_messages sends it at ``scheduled_for`` as an ordinary message of the sender."""
+
+    __tablename__ = "chat_scheduled_messages"
+    __table_args__ = _table_args(
+        Index("ix_chat_scheduled_messages_status_scheduled_for", "status", "scheduled_for"),
+        Index(
+            "ix_chat_scheduled_messages_conversation_sender_status",
+            "conversation_id",
+            "sender_user_id",
+            "status",
+        ),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+    )
+    sender_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    body_format: Mapped[str] = mapped_column(String(16), nullable=False, default="plain")
+    reply_to_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # scheduled -> sending -> sent | failed ; scheduled -> cancelled
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="scheduled")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sent_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    error_text: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 class ChatEventOutbox(Base):

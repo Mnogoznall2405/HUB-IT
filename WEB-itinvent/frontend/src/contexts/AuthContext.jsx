@@ -108,6 +108,7 @@ const rolePermissionFallback = {
     'tickets.write',
     'tickets.personal_data.read',
     'address_book.read',
+    'address_book.dismissed.read',
     'address_book.age.read',
     'address_book.hire_date.read',
     'address_book.personal_phone.read',

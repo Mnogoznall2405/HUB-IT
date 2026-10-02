@@ -34,7 +34,6 @@ WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
 if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
-from backend.appdb.models import AppBase
 from backend.appdb.tickets_models import TicketEmployee, TicketEmployeeDocument
 from backend.services.secret_crypto_service import decrypt_secret, encrypt_secret
 from backend.services.tickets_service import (
@@ -50,11 +49,11 @@ from backend.services.tickets_service import (
 
 
 @pytest.fixture
-def service(temp_dir, monkeypatch):
+def service(prebuilt_app_db, monkeypatch, request):
     """Create a TicketsService with a fresh SQLite database."""
     import backend.appdb.db as appdb
 
-    url = f"sqlite:///{(Path(temp_dir) / 'tickets_prop_enc.db').as_posix()}"
+    url = f"sqlite:///{prebuilt_app_db.as_posix()}"
 
     appdb._engines.clear()
     appdb._session_factories.clear()
@@ -72,14 +71,13 @@ def service(temp_dir, monkeypatch):
         url,
         execution_options={"schema_translate_map": {"app": None, "system": None}},
     )
+    request.addfinalizer(engine.dispose)
 
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragma(dbapi_conn, connection_record):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=OFF")
         cursor.close()
-
-    AppBase.metadata.create_all(engine, checkfirst=True)
 
     SessionLocal = sessionmaker(bind=engine)
 
@@ -106,7 +104,7 @@ def service(temp_dir, monkeypatch):
 # Strategies
 # ---------------------------------------------------------------------------
 
-# Non-empty text for personal data values (stripped — no leading/trailing whitespace)
+# Non-empty text for personal data values (stripped â€” no leading/trailing whitespace)
 # The service strips inputs before encryption, so we generate pre-stripped strings.
 personal_data_text = st.text(
     min_size=1,

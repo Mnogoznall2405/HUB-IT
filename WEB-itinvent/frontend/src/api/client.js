@@ -639,6 +639,10 @@ export const chatAPI = {
     return chatDirectoryAPI.getUsers;
   },
 
+  get getConfig() {
+    return chatDirectoryAPI.getConfig;
+  },
+
   get listAiBots() {
     return chatDirectoryAPI.listAiBots;
   },
@@ -665,6 +669,10 @@ export const chatAPI = {
 
   get stopAiConversationRun() {
     return chatDirectoryAPI.stopAiConversationRun;
+  },
+
+  get retryAiConversationRun() {
+    return chatDirectoryAPI.retryAiConversationRun;
   },
 
   get resetAiConversationContext() {

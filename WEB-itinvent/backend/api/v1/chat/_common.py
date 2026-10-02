@@ -290,6 +290,10 @@ def _raise_chat_http_error(exc: Exception) -> None:
             current = original
             continue
         current = current.__cause__ if isinstance(current.__cause__, BaseException) else None
+    from backend.ai_chat.service import AiRunConflictError
+
+    if isinstance(exc, AiRunConflictError):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(exc, PermissionError):
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if isinstance(exc, LookupError):

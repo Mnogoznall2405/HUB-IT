@@ -42,6 +42,7 @@ const {
   mockHubRealtimeIsStable,
   mockPreferences,
   mockPrefetchRouteByPath,
+  mockPlayChatMessageSound,
 } = vi.hoisted(() => ({
   mockHasPermission: vi.fn(() => true),
   mockNavigate: vi.fn(),
@@ -75,6 +76,7 @@ const {
   mockHubRealtimeRetain: vi.fn(),
   mockHubRealtimeIsStable: vi.fn(() => false),
   mockPrefetchRouteByPath: vi.fn(async () => {}),
+  mockPlayChatMessageSound: vi.fn(),
   mockPreferences: {
     mobile_bottom_nav_items: ['/dashboard', '/tasks', '/chat', '/mail'],
   },
@@ -236,6 +238,10 @@ vi.mock('../chat/chatHelpers', () => ({
   getMessagePreview: (message) => String(message?.body || '').trim() || 'Preview',
 }));
 
+vi.mock('../../lib/chatMessageSound', () => ({
+  playChatMessageSound: mockPlayChatMessageSound,
+}));
+
 vi.mock('../../lib/swrCache', () => ({
   getOrFetchSWR: vi.fn(async (_key, fetcher) => ({ data: await fetcher() })),
   buildCacheKey: (...parts) => parts.join(':'),
@@ -250,6 +256,7 @@ vi.mock('./ToastHistoryList', () => ({
 }));
 
 import MainLayout from './MainLayout';
+import { MainLayoutShellContext } from './MainLayoutShellContext';
 
 const HUB_POLL_UNREAD_COUNTS = {
   notifications_unread_total: 1,
@@ -425,6 +432,7 @@ describe('MainLayout hub Windows notifications', () => {
     mockNotificationSurfaceVisible.mockImplementation(() => visibilityState === 'visible');
     mockIsChatConversationMuted.mockReset();
     mockIsChatConversationMuted.mockReturnValue(false);
+    mockPlayChatMessageSound.mockReset();
     mockSyncChatPushSubscription.mockReset();
     mockChatSocketRetain.mockClear();
     mockChatSocketSubscribeInbox.mockClear();
@@ -820,6 +828,55 @@ describe('MainLayout hub Windows notifications', () => {
     notificationInstances[0].onclick?.();
     expect(window.focus).toHaveBeenCalled();
     expect(mockNavigate).toHaveBeenCalledWith('/tasks?task=task-1&task_tab=comments');
+  }, 10000);
+
+  it('plays the chat message sound for new hub system notifications when chat_sound is on (R16)', async () => {
+    installHubPollSequenceMock();
+
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await advanceHubPollInterval();
+
+    expect(notificationInstances).toHaveLength(1);
+    expect(mockPlayChatMessageSound).toHaveBeenCalledTimes(1);
+  }, 10000);
+
+  it('stays silent for new hub system notifications when chat_sound is off (R16)', async () => {
+    mockGetNotificationPreferences.mockResolvedValue({
+      channels: {
+        mail: true,
+        tasks: true,
+        announcements: true,
+        chat: true,
+        chat_sound: false,
+      },
+    });
+    installHubPollSequenceMock();
+
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await advanceHubPollInterval();
+
+    expect(notificationInstances).toHaveLength(1);
+    expect(mockPlayChatMessageSound).not.toHaveBeenCalled();
   }, 10000);
 
   it('does not poll hub notifications for mail-only users without dashboard access', async () => {
@@ -2642,13 +2699,28 @@ describe('MainLayout desktop account navigation', () => {
     vi.useRealTimers();
   });
 
-  it.each([
-    { tablet: true, search: '' },
-    { tablet: false, search: '?task_layout=split' },
-  ])('keeps shell actions when the sidebar is not persistently visible: %j', async ({ tablet, search }) => {
-    const restore = installMatchMedia({ tablet });
+  // Д2-5 (п. 5): на /chat меню портала — узкая полоса иконок на любой ширине
+  // desktop, включая 600–900 px; шапка портала заменяется шапкой чата.
+  it('collapses the portal navigation into the icon rail on the narrow desktop chat viewport', async () => {
+    const restore = installMatchMedia({ tablet: true });
     mockLocation.pathname = '/chat';
-    mockLocation.search = search;
+    mockLocation.search = '';
+    try {
+      render(<MainLayout><div>Chat content</div></MainLayout>);
+      await act(async () => { await Promise.resolve(); });
+      expect(screen.queryByTestId('main-layout-app-bar')).toBeNull();
+      expect(screen.getByTestId('main-layout-sidebar-chat')).toBeInTheDocument();
+      expect(screen.queryByText('Главная')).toBeNull();
+      expect(screen.queryByText('Задачи')).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
+  it('keeps shell actions when the sidebar is not persistently visible: task split', async () => {
+    const restore = installMatchMedia({ tablet: false });
+    mockLocation.pathname = '/chat';
+    mockLocation.search = '?task_layout=split';
     try {
       render(<MainLayout><div>Chat content</div></MainLayout>);
       await act(async () => { await Promise.resolve(); });
@@ -2750,6 +2822,44 @@ describe('MainLayout desktop account navigation', () => {
       expect(screen.queryByTestId('main-layout-account-button-mobile')).toBeNull();
       expect(screen.getByRole('button', { name: 'Развернуть боковое меню' })).toBeInTheDocument();
       expect(screen.getByTestId('main-layout-account-button-desktop')).toHaveAttribute('aria-label', 'Открыть меню профиля');
+    } finally {
+      restoreDesktopMatchMedia();
+    }
+  });
+
+  it('collapses the portal navigation into an icon rail on the desktop chat route and opens the full drawer via the shell', async () => {
+    mockLocation.pathname = '/chat';
+    mockLocation.search = '';
+    const restoreDesktopMatchMedia = installMatchMedia({ mobile: false });
+    let shellApi = null;
+    function ShellProbe() {
+      shellApi = React.useContext(MainLayoutShellContext);
+      return <div>Chat content</div>;
+    }
+    try {
+      render(
+        <MainLayout>
+          <ShellProbe />
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // Д1: на /chat постоянное меню — узкая полоса иконок без текстовых подписей.
+      expect(screen.queryByText('Задачи')).toBeNull();
+      expect(screen.queryByText('Главная')).toBeNull();
+      expect(screen.getByTestId('main-layout-sidebar-chat')).toBeInTheDocument();
+
+      // Полная навигация открывается поверх по кнопке ☰ (shell.openDrawer).
+      await act(async () => {
+        shellApi.openDrawer();
+        await Promise.resolve();
+      });
+      expect(screen.getByText('Главная')).toBeInTheDocument();
+      expect(screen.getByText('Задачи')).toBeInTheDocument();
     } finally {
       restoreDesktopMatchMedia();
     }

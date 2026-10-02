@@ -34,13 +34,18 @@ export function AppLockGate() {
   const tokens = useAppFluentTokens();
   const styles = useMemo(() => createStyles(tokens), [tokens]);
   const reduceMotion = useReducedMotion();
-  const { biometricEnabled, logout, user } = useAuth();
+  const { appLockPendingUnlock, biometricEnabled, logout, markAppLockUnlocked, user } = useAuth();
   const [settings, setSettings] = useState<AppLockSettings>(DEFAULT_SETTINGS);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [locked, setLocked] = useState(false);
+  // A cold-start lock armed by AuthContext must gate the very first content
+  // frame: the flag lands in the same commit as the cached user, so the modal
+  // mounts together with the shell instead of after it.
+  const gated = locked || Boolean(appLockPendingUnlock && user);
   useLayoutEffect(() => {
-    setNativeChatDeliveryBlocked(!user || locked);
+    setNativeChatDeliveryBlocked(!user || gated);
     return () => setNativeChatDeliveryBlocked(true);
-  }, [user?.id, locked]);
+  }, [user?.id, gated]);
   const [unlocking, setUnlocking] = useState(false);
   const [error, setError] = useState('');
   const [credentialLost, setCredentialLost] = useState(false);
@@ -51,16 +56,26 @@ export function AppLockGate() {
   useEffect(() => {
     let active = true;
     void getAppLockSettings().then((value) => {
-      if (active) setSettings(value);
+      if (!active) return;
+      setSettings(value);
+      setSettingsLoaded(true);
     });
     const unsubscribe = subscribeAppLockSettings((value) => {
-      if (active) setSettings(value);
+      if (!active) return;
+      setSettings(value);
+      setSettingsLoaded(true);
     });
     return () => {
       active = false;
       unsubscribe();
     };
   }, [biometricEnabled, user]);
+
+  // The pending flag was armed from the stored settings at startup; once the
+  // gate reads them itself, a lock that was meanwhile switched off releases.
+  useEffect(() => {
+    if (settingsLoaded && !settings.enabled && appLockPendingUnlock) markAppLockUnlocked();
+  }, [appLockPendingUnlock, markAppLockUnlocked, settings.enabled, settingsLoaded]);
 
   useEffect(() => {
     if (!user || !biometricEnabled || !settings.enabled) {
@@ -108,6 +123,7 @@ export function AppLockGate() {
       backgroundAtRef.current = 0;
       setCredentialLost(false);
       setLocked(false);
+      markAppLockUnlocked();
       await ScreenCapture.allowScreenCaptureAsync(SCREEN_CAPTURE_KEY).catch(() => undefined);
       void hapticSuccess();
     } catch (cause: unknown) {
@@ -117,17 +133,17 @@ export function AppLockGate() {
     } finally {
       setUnlocking(false);
     }
-  }, [unlocking]);
+  }, [markAppLockUnlocked, unlocking]);
 
   useEffect(() => {
-    if (!locked || automaticAttemptRef.current) return;
+    if (!gated || automaticAttemptRef.current) return;
     automaticAttemptRef.current = true;
     void unlock();
-  }, [locked, unlock]);
+  }, [gated, unlock]);
 
   return (
     <Modal
-      visible={locked}
+      visible={gated}
       animationType={reduceMotion ? 'none' : 'fade'}
       presentationStyle="fullScreen"
       onRequestClose={() => undefined}

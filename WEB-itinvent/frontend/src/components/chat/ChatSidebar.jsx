@@ -17,12 +17,14 @@ import {
 import { alpha } from '@mui/material/styles';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
+import ChatBubbleOutlineRoundedIcon from '@mui/icons-material/ChatBubbleOutlineRounded';
 import CreateRoundedIcon from '@mui/icons-material/CreateRounded';
 import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import ExitToAppRoundedIcon from '@mui/icons-material/ExitToAppRounded';
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
+import GroupAddRoundedIcon from '@mui/icons-material/GroupAddRounded';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
 import MoreHorizRoundedIcon from '@mui/icons-material/MoreHorizRounded';
@@ -34,6 +36,8 @@ import { motion, useReducedMotion, AnimatePresence } from 'framer-motion';
 
 import { ConversationAvatar, PresenceAvatar } from './ChatCommon';
 import ChatFolderTabs from './ChatFolderTabs';
+import ChatGroupCreateFlow from './ChatGroupCreateFlow';
+import ChatNewMessagePicker from './ChatNewMessagePicker';
 import ChatSidebarDesktopHeader from './ChatSidebarDesktopHeader';
 import { useChatSidebarSizing } from './ChatSidebarSizingContext';
 import { getConversationFolderIds } from './chatFolderUtils';
@@ -89,39 +93,29 @@ export const getChatFolderPanelMotionProps = (reducedMotion = false, direction =
 const joinClasses = (...values) => values.filter(Boolean).join(' ');
 const FALLBACK_DENSITY = {
   touchTarget: 44,
-  sidebarAvatar: 52,
+  // Д2 (Telegram Web A): строка 72px, аватар 54px, поиск 42px, бейдж 22px.
+  sidebarAvatar: 54,
   sidebarAvatarMobile: 54,
   sidebarActionButton: 36,
   sidebarActionButtonMobile: 44,
   sidebarHeaderIcon: 42,
-  sidebarSearchHeight: 48,
+  sidebarSearchHeight: 42,
   sidebarSearchFontSize: '16px',
-  sidebarRowMinHeight: 66,
-  sidebarRowPx: 12,
-  sidebarRowPy: 10,
-  sidebarRowMx: 6,
-  sidebarRowMy: 2,
-  sidebarRowRadius: 12,
-  sidebarResultRowPx: 14,
-  sidebarResultRowPy: 12,
-  sidebarTitleFontSize: '15px',
+  sidebarRowMinHeight: 72,
+  sidebarRowPx: 9,
+  sidebarRowPy: 9,
+  sidebarRowMx: 8,
+  sidebarRowMy: 1,
+  sidebarRowRadius: 10,
+  sidebarResultRowPx: 9,
+  sidebarResultRowPy: 9,
+  sidebarTitleFontSize: '16px',
   sidebarResultTitleFontSize: '16px',
-  sidebarPreviewFontSize: '12.5px',
+  sidebarPreviewFontSize: '15px',
   sidebarSectionFontSize: '11px',
+  sidebarUnreadBadge: 22,
 };
 const getDensity = (ui) => ui?.density || FALLBACK_DENSITY;
-const getSidebarAvatarSize = (density, compactMobile = false) => (
-  compactMobile ? (density.sidebarAvatarMobile || 54) : (density.sidebarAvatar || 52)
-);
-const getSidebarRowStyle = (density, compactMobile = false) => {
-  if (compactMobile) return {};
-  return {
-    minHeight: density.sidebarRowMinHeight,
-    padding: `${density.sidebarRowPy}px ${density.sidebarRowPx}px`,
-    margin: `${density.sidebarRowMy}px ${density.sidebarRowMx}px`,
-    borderRadius: density.sidebarRowRadius,
-  };
-};
 
 const RETIRED_AI_AGENT_SLUGS = new Set(['it-helper']);
 
@@ -186,6 +180,9 @@ function ChatSidebar({
   openingAiBotId = '',
   workspace: controlledWorkspace,
   onWorkspaceChange,
+  composeFab = null,
+  // Д2-9: поток «карандаш» — { mode: '' | 'direct' | 'group', ... } из useChatGroupDialog.
+  compose = null,
 }) {
   const density = getDensity(ui);
   const { collapsed, setCollapsed } = useChatSidebarSizing();
@@ -214,7 +211,47 @@ function ChatSidebar({
   const [aiCreatePickerOpen, setAiCreatePickerOpen] = useState(false);
   const [renameConversation, setRenameConversation] = useState(null);
   const [renameTitle, setRenameTitle] = useState('');
+  const [composeMenuAnchor, setComposeMenuAnchor] = useState(null);
   const searchInputRef = useRef(null);
+  // Д2-9: активный поток «карандаш» заменяет список чатов в левой колонке
+  // (на телефоне — весь экран). Состояние живёт в useChatGroupDialog.
+  const composeMode = String(compose?.mode || '');
+  const composeActive = Boolean(composeMode);
+  const composeRef = useRef(compose);
+  useEffect(() => {
+    composeRef.current = compose;
+  });
+  const handleComposeBack = useCallback(() => {
+    const current = composeRef.current;
+    if (!current?.mode) return;
+    if (current.mode === 'group' && current.step === 'details') {
+      current.onStepChange?.('members');
+      return;
+    }
+    current.onClose?.();
+  }, []);
+  // Поток открывается из свёрнутой узкой полосы — разворачиваем колонку.
+  useEffect(() => {
+    if (composeActive && collapsed) setCollapsed?.(false);
+  }, [composeActive, collapsed, setCollapsed]);
+  // Esc = «назад» в потоке; capture-фаза обрабатывает его до глобального
+  // закрытия открытого треда на странице.
+  useEffect(() => {
+    if (!composeActive) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (document.querySelector('.MuiModal-root:not([aria-hidden="true"])')) return;
+      event.preventDefault();
+      handleComposeBack();
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [composeActive, handleComposeBack]);
+  // Уход с экрана списка (открытие треда на телефоне) закрывает поток.
+  useEffect(() => () => {
+    const current = composeRef.current;
+    if (current?.mode) current.onClose?.();
+  }, []);
   const showEmbeddedMenuButton = false;
   const chatUnavailable = health?.available === false;
   const showAiSection = Boolean(showAiSectionEnabled);
@@ -224,6 +261,12 @@ function ChatSidebar({
   const isAiFolderMenuConversation = folderMenuConversationKind === 'ai';
   const creatingGeneralAiConversation = String(openingAiBotId || '').trim() === GENERAL_AI_OPENING_ID;
   const aiCreatePending = Boolean(String(openingAiBotId || '').trim());
+  // R18: workspace tab badges — all chats folders except AI/archive; muted conversations
+  // are already excluded server-side and by the effective-mute filter in buildFolderUnreadCounts.
+  const chatsUnreadCount = Math.max(0,
+    Object.entries(folderUnreadCounts || {}).reduce((total, [key, value]) => (
+      key === 'ai' || key === 'archived' ? total : total + (Number(value) || 0)
+    ), 0));
   const availableAiAgents = useMemo(
     () => aiAgents.filter(isAiAgentAvailableForNewChat),
     [aiAgents],
@@ -374,6 +417,30 @@ function ChatSidebar({
   const openAiCreatePicker = () => {
     if (!chatUnavailable) setAiCreatePickerOpen(true);
   };
+  // Д2-9: в «Чаты» карандаш/FAB открывает меню «Новое сообщение / Создать группу»,
+  // в «ИИ» — прежний выбор помощника.
+  const handleCreateAction = useCallback((event) => {
+    if (workspace === 'ai') {
+      openAiCreatePicker();
+      return;
+    }
+    if (compose) {
+      setComposeMenuAnchor(event?.currentTarget || null);
+      return;
+    }
+    onOpenGroup?.();
+  }, [compose, onOpenGroup, workspace]);
+  const handleComposeSelectPeer = useCallback((person) => {
+    // Держим поток открытым, пока диалог открывается/создаётся — строка
+    // показывает спиннер через openingPeerId; затем закрываем.
+    Promise.resolve(onOpenPeer?.(person)).finally(() => {
+      composeRef.current?.onClose?.();
+    });
+  }, [onOpenPeer]);
+  const handleComposeMenuItem = useCallback((open) => {
+    setComposeMenuAnchor(null);
+    open?.();
+  }, []);
   const createPersonalAiConversation = async () => {
     const created = await onCreateAiConversation?.();
     if (created !== null) setAiCreatePickerOpen(false);
@@ -468,6 +535,9 @@ function ChatSidebar({
         '--chat-focus-ring': ui.focusRing || alpha(theme.palette.primary.main, 0.26),
         '--chat-unread-bg': ui.unreadBadgeBg || theme.palette.primary.dark,
         '--chat-unread-text': ui.unreadBadgeText || theme.palette.primary.contrastText,
+        // A3-2: muted conversations keep a grey per-row badge.
+        '--chat-unread-muted-bg': ui.unreadMutedBadgeBg || theme.palette.grey[theme.palette.mode === 'dark' ? 600 : 500],
+        '--chat-unread-muted-text': ui.unreadMutedBadgeText || theme.palette.common.white,
         '--chat-unread-active-bg': ui.unreadActiveBadgeBg || '#ffffff',
         '--chat-unread-active-text': ui.unreadActiveBadgeText || ui.sidebarRowActive || theme.palette.primary.dark,
         '--chat-info-card-bg': ui.infoCardBg || ui.surfaceMuted,
@@ -480,15 +550,26 @@ function ChatSidebar({
         '--chat-folder-tab-active-text': ui.folderTabActiveText || ui.textOnAccent || '#ffffff',
         '--chat-folder-tab-active-badge-bg': ui.folderTabActiveBadgeBg || '#ffffff',
         '--chat-folder-tab-active-badge-text': ui.folderTabActiveBadgeText || ui.sidebarRowActive || theme.palette.primary.dark,
+        // Сегмент «Чаты / ИИ» в десктопной шапке — залитая таблетка.
+        '--chat-workspace-tab-active-bg': ui.workspaceTabActiveBg || ui.sidebarRowActive || theme.palette.primary.main,
+        '--chat-workspace-tab-active-text': ui.workspaceTabActiveText || '#ffffff',
+        '--chat-workspace-tab-active-badge-bg': ui.workspaceTabActiveBadgeBg || '#ffffff',
+        '--chat-workspace-tab-active-badge-text': ui.workspaceTabActiveBadgeText || ui.sidebarRowActive || theme.palette.primary.dark,
+        '--chat-compose-fab-bg': ui.composeFabBg || ui.sidebarRowActive || theme.palette.primary.main,
+        '--chat-compose-fab-text': ui.composeFabText || '#ffffff',
+        '--chat-compose-fab-shadow': ui.composeFabShadow || 'none',
         '--chat-skeleton-base': ui.skeletonBase || alpha(theme.palette.text.primary, 0.12),
         '--chat-skeleton-wave': ui.skeletonWave || alpha(theme.palette.common.white, 0.42),
         '--chat-header-action-bg': ui.headerActionBg || alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.05 : 0.06),
         borderRight: isMobile ? 'none' : `1px solid ${ui.borderSoft}`,
+        position: 'relative',
       }}
     >
       {!compactMobile && collapsed ? (
-        <ChatSidebarDesktopHeader ui={ui} workspace={workspace} showAiSection={showAiSection} onWorkspaceChange={setWorkspace}
-          onCreate={workspace === 'ai' ? openAiCreatePicker : onOpenGroup} unavailable={chatUnavailable} onSearch={handleExpandSearch} />
+        <ChatSidebarDesktopHeader ui={ui} workspace={workspace} showAiSection={showAiSection}
+          onWorkspaceChange={(key) => { setWorkspace(key); if (key === 'ai') setAiArchiveOpen(false); }}
+          onCreate={handleCreateAction} unavailable={chatUnavailable} onSearch={handleExpandSearch}
+          aiUnreadCount={Number(folderUnreadCounts?.ai || 0)} chatsUnreadCount={chatsUnreadCount} />
       ) : null}
       <div
         hidden={collapsed}
@@ -500,8 +581,18 @@ function ChatSidebar({
         {!compactMobile ? (
           <ChatSidebarDesktopHeader ui={ui} workspace={workspace} showAiSection={showAiSection}
             onWorkspaceChange={(key) => { setWorkspace(key); if (key === 'ai') setAiArchiveOpen(false); }}
-            onCreate={workspace === 'ai' ? openAiCreatePicker : onOpenGroup} unavailable={chatUnavailable}
-            onSearch={handleExpandSearch} onCollapse={() => { onSidebarQueryChange(''); setCollapsed?.(true); }} />
+            onCreate={handleCreateAction} unavailable={chatUnavailable}
+            onSearch={handleExpandSearch} onCollapse={() => { onSidebarQueryChange(''); setCollapsed?.(true); }}
+            aiUnreadCount={Number(folderUnreadCounts?.ai || 0)} chatsUnreadCount={chatsUnreadCount}
+            search={{
+              inputRef: searchInputRef,
+              value: sidebarQuery,
+              onChange: onSidebarQueryChange,
+              onFocus: () => setSearchFocused(true),
+              onBlur: () => setSearchFocused(false),
+              focused: searchFocused,
+              onOpenActions: (anchor) => setActionsAnchorEl(anchor),
+            }} />
         ) : (
         <div className={joinClasses('flex items-center justify-between', compactMobile ? 'mb-3' : 'mb-3.5')}>
           <div className="min-w-0 flex items-center gap-3">
@@ -562,15 +653,17 @@ function ChatSidebar({
               ) : null}
             </AnimatePresence>
 
-            <SidebarActionButton
-              title={workspace === 'ai' ? 'Новый AI-чат' : 'Новый чат'}
-              onClick={workspace === 'ai' ? openAiCreatePicker : onOpenGroup}
-              disabled={chatUnavailable}
-              compactMobile={compactMobile}
-              ui={ui}
-            >
-              <CreateRoundedIcon fontSize="small" />
-            </SidebarActionButton>
+            {!composeFab ? (
+              <SidebarActionButton
+                title={workspace === 'ai' ? 'Новый AI-чат' : 'Новый чат'}
+                onClick={handleCreateAction}
+                disabled={chatUnavailable}
+                compactMobile={compactMobile}
+                ui={ui}
+              >
+                <CreateRoundedIcon fontSize="small" />
+              </SidebarActionButton>
+            ) : null}
           </div>
         </div>
 
@@ -586,6 +679,7 @@ function ChatSidebar({
               { key: 'ai', label: 'ИИ' },
             ].map((tab) => {
               const selected = workspace === tab.key;
+              const tabUnread = Math.max(0, Number(tab.key === 'ai' ? folderUnreadCounts?.ai || 0 : chatsUnreadCount) || 0);
               return (
                 <button
                   key={tab.key}
@@ -598,11 +692,28 @@ function ChatSidebar({
                   }}
                   className="min-h-11 rounded-[11px] px-3 text-[14px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--chat-focus-ring)]"
                   style={{
-                    backgroundColor: selected ? 'var(--chat-folder-tab-active-bg)' : 'transparent',
-                    color: selected ? 'var(--chat-folder-tab-active-text)' : 'var(--chat-text-secondary)',
+                    // Д2-5 (п. 8): те же workspace-токены, что у десктопного
+                    // сегмента — выбранная вкладка с явным фоном в обеих темах.
+                    backgroundColor: selected ? 'var(--chat-workspace-tab-active-bg)' : 'transparent',
+                    color: selected ? 'var(--chat-workspace-tab-active-text)' : 'var(--chat-text-secondary)',
                   }}
                 >
                   {tab.label}
+                  {tabUnread > 0 ? (
+                    <span
+                      data-chat-folder-unread-badge="true"
+                      aria-label={`Непрочитанных сообщений: ${tabUnread}`}
+                      className="ml-1 inline-flex min-w-[20px] items-center justify-center rounded-full px-1 align-middle text-[11px] font-bold leading-none"
+                      style={{
+                        minWidth: 20,
+                        height: 20,
+                        backgroundColor: selected ? 'var(--chat-workspace-tab-active-badge-bg)' : 'var(--chat-unread-bg)',
+                        color: selected ? 'var(--chat-workspace-tab-active-badge-text)' : 'var(--chat-unread-text)',
+                      }}
+                    >
+                      {tabUnread > 99 ? '99+' : tabUnread}
+                    </span>
+                  ) : null}
                 </button>
               );
             })}
@@ -658,51 +769,8 @@ function ChatSidebar({
               </SidebarActionButton>
             </div>
           </motion.div>
-        ) : (
-        <motion.div
-          initial={false}
-          animate={reducedMotion ? undefined : { y: searchFocused ? -1 : 0, scale: searchFocused ? 1.005 : 1 }}
-          transition={reducedMotion ? { duration: 0 } : { duration: 0.16, ease: 'easeOut' }}
-        >
-          <div
-            className={joinClasses(
-              'flex h-12 items-center rounded-[16px] border px-3 transition duration-150',
-              searchFocused
-                ? 'bg-[var(--chat-sidebar-search-focus-bg)] shadow-[0_0_0_3px_var(--chat-focus-ring)]'
-                : 'bg-[var(--chat-sidebar-search-bg)]',
-            )}
-            style={{
-              borderColor: searchFocused ? 'transparent' : 'var(--chat-border-soft)',
-              height: density.sidebarSearchHeight,
-            }}
-          >
-            <SearchRoundedIcon
-              fontSize="small"
-              sx={{ color: searchFocused ? theme.palette.primary.light : ui.textSecondary }}
-            />
-            <input
-              ref={searchInputRef}
-              aria-label={workspace === 'ai' ? 'Поиск по AI-диалогам' : 'Поиск чатов'}
-              placeholder={workspace === 'ai' ? 'Поиск по AI-диалогам' : 'Поиск'}
-              value={sidebarQuery}
-              onChange={(event) => onSidebarQueryChange(event.target.value)}
-              onFocus={() => setSearchFocused(true)}
-              onBlur={() => setSearchFocused(false)}
-              className="ml-2 h-full min-w-0 w-full bg-transparent text-[16px] text-[color:var(--chat-search-text)] placeholder:text-[color:var(--chat-search-placeholder)] outline-none"
-              style={{ fontSize: density.sidebarSearchFontSize }}
-            />
-            <SidebarActionButton
-              title="Действия"
-              onClick={(event) => setActionsAnchorEl(event.currentTarget)}
-              compactMobile={compactMobile}
-              ui={ui}
-              className="h-9 w-9 bg-transparent"
-            >
-              <MoreHorizRoundedIcon fontSize="small" />
-            </SidebarActionButton>
-          </div>
-        </motion.div>
-        )}
+        ) : null}
+        {/* Д2: на десктопе поиск-пилюля живёт в шапке рядом с ☰ (ChatSidebarDesktopHeader). */}
 
         {workspace === 'chats' && !showPeopleSearch ? (
           <div className={compactMobile ? 'mb-2' : 'mt-2'}>
@@ -731,16 +799,50 @@ function ChatSidebar({
             },
           }}
         >
-          <MenuItem
-            onClick={() => {
-              if (workspace === 'ai') openAiCreatePicker();
-              else onOpenGroup?.();
-              setActionsAnchorEl(null);
-            }}
-            disabled={chatUnavailable}
-          >
-            {workspace === 'ai' ? 'Новый AI-чат' : 'Новый чат'}
-          </MenuItem>
+          {workspace === 'ai' ? (
+            <MenuItem
+              onClick={() => {
+                openAiCreatePicker();
+                setActionsAnchorEl(null);
+              }}
+              disabled={chatUnavailable}
+            >
+              Новый AI-чат
+            </MenuItem>
+          ) : compose ? (
+            <>
+              <MenuItem
+                onClick={() => {
+                  compose.onOpenDirect?.();
+                  setActionsAnchorEl(null);
+                }}
+                disabled={chatUnavailable}
+              >
+                <ChatBubbleOutlineRoundedIcon fontSize="small" sx={{ mr: 1.5, color: 'inherit' }} />
+                Новое сообщение
+              </MenuItem>
+              <MenuItem
+                onClick={() => {
+                  compose.onOpenGroup?.();
+                  setActionsAnchorEl(null);
+                }}
+                disabled={chatUnavailable}
+              >
+                <GroupAddRoundedIcon fontSize="small" sx={{ mr: 1.5, color: 'inherit' }} />
+                Создать группу
+              </MenuItem>
+            </>
+          ) : (
+            <MenuItem
+              onClick={() => {
+                onOpenGroup?.();
+                setActionsAnchorEl(null);
+              }}
+              disabled={chatUnavailable}
+            >
+              Новый чат
+            </MenuItem>
+          )}
           <MenuItem
             selected={workspace === 'ai' ? aiArchiveOpen : String(activeFolderKey) === 'archived'}
             onClick={() => {
@@ -933,6 +1035,7 @@ function ChatSidebar({
                       onOpenPeer={onOpenPeer}
                       onPrefetchPeerConversation={handlePrefetchPeerConversation}
                       compactMobile={compactMobile}
+                      highlightQuery={sidebarQuery}
                       ui={ui}
                     />
                   ))}
@@ -1115,7 +1218,9 @@ function ChatSidebar({
             ) : null}
 
             {availableAiAgents.map((agent) => {
-              const isOpening = String(openingAiBotId || '').trim() === String(agent.id || '').trim();
+              const agentOpeningKey = String(openingAiBotId || '').trim();
+              const isOpening = Boolean(agentOpeningKey)
+                && agentOpeningKey === String(agent.id || '').trim();
               return (
                 <Button
                   key={`ai-create-agent-${agent.id}`}
@@ -1191,6 +1296,100 @@ function ChatSidebar({
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Д2-9: поток «карандаш» заменяет список в левой колонке (десктоп)
+          и занимает весь экран (телефон) — правая колонка диалога не трогается. */}
+      {composeActive && compose ? (
+        <div
+          className="absolute inset-0 z-20 flex min-h-0 flex-col bg-[var(--chat-sidebar-bg)]"
+          data-testid="chat-compose-overlay"
+        >
+          {composeMode === 'group' ? (
+            <ChatGroupCreateFlow
+              ui={ui}
+              compactMobile={compactMobile}
+              step={compose.step}
+              onStepChange={compose.onStepChange}
+              query={compose.query}
+              onQueryChange={compose.onQueryChange}
+              users={compose.users}
+              usersLoading={compose.usersLoading}
+              selectedUsers={compose.selectedUsers}
+              onAddMember={compose.onAddMember}
+              onRemoveMember={compose.onRemoveMember}
+              maxMembers={compose.maxMembers}
+              title={compose.title}
+              onTitleChange={compose.onTitleChange}
+              creating={compose.creating}
+              createDisabled={compose.createDisabled}
+              onCreate={compose.onCreate}
+              onBack={compose.onClose}
+            />
+          ) : (
+            <ChatNewMessagePicker
+              ui={ui}
+              compactMobile={compactMobile}
+              query={compose.query}
+              onQueryChange={compose.onQueryChange}
+              users={compose.users}
+              usersLoading={compose.usersLoading}
+              conversations={compose.conversations}
+              openingPeerId={openingPeerId}
+              onSelectPerson={handleComposeSelectPeer}
+              onBack={compose.onClose}
+            />
+          )}
+        </div>
+      ) : null}
+
+      <Menu
+        anchorEl={composeMenuAnchor}
+        open={Boolean(composeMenuAnchor)}
+        onClose={() => setComposeMenuAnchor(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        PaperProps={{
+          elevation: 12,
+          sx: {
+            borderRadius: 1.75,
+            minWidth: 220,
+          },
+        }}
+      >
+        <MenuItem onClick={() => handleComposeMenuItem(compose?.onOpenDirect)} disabled={chatUnavailable}>
+          <ChatBubbleOutlineRoundedIcon fontSize="small" sx={{ mr: 1.5, color: 'inherit' }} />
+          Новое сообщение
+        </MenuItem>
+        <MenuItem onClick={() => handleComposeMenuItem(compose?.onOpenGroup)} disabled={chatUnavailable}>
+          <GroupAddRoundedIcon fontSize="small" sx={{ mr: 1.5, color: 'inherit' }} />
+          Создать группу
+        </MenuItem>
+      </Menu>
+
+      {composeFab && !collapsed && !composeActive ? (
+        <button
+          type="button"
+          data-testid="chat-compose-fab"
+          aria-label={composeFab.label || (workspace === 'ai' ? 'Новый AI-чат' : 'Новый чат')}
+          title={composeFab.label || (workspace === 'ai' ? 'Новый AI-чат' : 'Новый чат')}
+          onClick={composeFab.onClick || handleCreateAction}
+          disabled={composeFab.disabled ?? chatUnavailable}
+          className={joinClasses(
+            'absolute z-10 inline-flex items-center justify-center rounded-full transition duration-150 hover:scale-[1.04] active:scale-[0.96] disabled:opacity-50',
+            'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--chat-focus-ring)]',
+            compactMobile ? 'bottom-4 right-4' : 'bottom-5 right-5',
+          )}
+          style={{
+            width: 56,
+            height: 56,
+            backgroundColor: 'var(--chat-compose-fab-bg)',
+            color: 'var(--chat-compose-fab-text)',
+            boxShadow: 'var(--chat-compose-fab-shadow)',
+          }}
+        >
+          {composeFab.icon || <CreateRoundedIcon />}
+        </button>
+      ) : null}
     </div>
   );
 }

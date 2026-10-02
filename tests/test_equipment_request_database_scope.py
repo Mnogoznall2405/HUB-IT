@@ -150,3 +150,138 @@ async def test_threadpool_reads_do_not_block_the_event_loop(monkeypatch):
     assert grouped["total"] == 0
     assert branches == []
     assert elapsed < 0.20
+
+
+def _stub_database_resolution(monkeypatch, *, persisted: str = "ITINVENT", assigned: str | None = None):
+    monkeypatch.setattr(
+        database_api,
+        "get_all_db_configs",
+        lambda: [
+            {"id": "ITINVENT", "name": "Main", "access": "read-only"},
+            {"id": "OBJ-ITINVENT", "name": "Objects", "access": "read-only"},
+        ],
+    )
+    monkeypatch.setattr(database_api, "get_user_database", lambda *_args, **_kwargs: persisted)
+    monkeypatch.setattr(
+        database_api.settings_service,
+        "get_user_settings",
+        lambda _user_id: {"pinned_database": persisted},
+    )
+    monkeypatch.setattr(database_api.user_db_selection_service, "get_assigned_database", lambda _telegram_id: assigned)
+
+
+def _transfer_writer() -> User:
+    return User(
+        id=93,
+        username="transfer-operator",
+        role="operator",
+        is_active=True,
+        permissions=["database.write"],
+        use_custom_permissions=True,
+        custom_permissions=["database.write"],
+    )
+
+
+def test_equipment_transfer_uses_request_database_header_over_persisted_selection(monkeypatch):
+    created: dict = {}
+    _stub_database_resolution(monkeypatch)
+
+    def fake_create_job(**kwargs):
+        created.update(kwargs)
+        return {"id": "job-1", "status": "done", "operation": "transfer"}
+
+    monkeypatch.setattr(equipment_api.transfer_act_job_service, "create_job", fake_create_job)
+    app = FastAPI()
+    app.include_router(equipment_api.router, prefix="/equipment")
+    app.dependency_overrides[deps.get_current_active_user] = _admin
+
+    response = TestClient(app).post(
+        "/equipment/transfer",
+        json={"inv_nos": ["INV-1"], "new_employee": "Иванов Иван"},
+        headers={"X-Database-ID": "OBJ-ITINVENT"},
+    )
+
+    assert response.status_code == 200
+    assert created["db_id"] == "OBJ-ITINVENT"
+
+
+def test_equipment_transfer_keeps_fixed_assignment_over_request_header(monkeypatch):
+    created: dict = {}
+    _stub_database_resolution(monkeypatch, assigned="ITINVENT")
+
+    def fake_create_job(**kwargs):
+        created.update(kwargs)
+        return {"id": "job-2", "status": "done", "operation": "transfer"}
+
+    monkeypatch.setattr(equipment_api.transfer_act_job_service, "create_job", fake_create_job)
+    app = FastAPI()
+    app.include_router(equipment_api.router, prefix="/equipment")
+    app.dependency_overrides[deps.get_current_active_user] = _transfer_writer
+
+    response = TestClient(app).post(
+        "/equipment/transfer",
+        json={"inv_nos": ["INV-1"], "new_employee": "Иванов Иван"},
+        headers={"X-Database-ID": "OBJ-ITINVENT"},
+    )
+
+    assert response.status_code == 200
+    assert created["db_id"] == "ITINVENT"
+
+
+def test_transfer_act_job_read_matches_request_database(monkeypatch):
+    _stub_database_resolution(monkeypatch)
+    job = {"id": "job-9", "db_id": "OBJ-ITINVENT", "user_id": 93, "status": "done"}
+    monkeypatch.setattr(equipment_api.transfer_act_job_service, "get_job", lambda _job_id: job)
+    monkeypatch.setattr(
+        equipment_api.transfer_act_job_service,
+        "response_payload",
+        lambda _job_id: {
+            "success_count": 1,
+            "failed_count": 0,
+            "transferred": [],
+            "failed": [],
+            "retry_inv_nos": [],
+            "acts": [],
+        },
+    )
+    app = FastAPI()
+    app.include_router(equipment_api.router, prefix="/equipment")
+    app.dependency_overrides[deps.get_current_active_user] = _transfer_writer
+    client = TestClient(app)
+
+    persisted_only = client.get("/equipment/transfer/act-jobs/job-9")
+    assert persisted_only.status_code == 404
+
+    scoped = client.get(
+        "/equipment/transfer/act-jobs/job-9",
+        headers={"X-Database-ID": "OBJ-ITINVENT"},
+    )
+    assert scoped.status_code == 200
+    assert scoped.json()["success_count"] == 1
+
+
+def test_transfer_email_owner_lookup_uses_request_database(monkeypatch):
+    captured: dict = {}
+    _stub_database_resolution(monkeypatch)
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "get_owner_email_by_no",
+        lambda owner_no, db_id=None: captured.update(owner_no=owner_no, db_id=db_id) or "user@example.com",
+    )
+
+    async def fake_send_transfer_acts_email(**_kwargs):
+        return {"success_count": 1, "failed_count": 0, "errors": []}
+
+    monkeypatch.setattr(equipment_api, "send_transfer_acts_email", fake_send_transfer_acts_email)
+    app = FastAPI()
+    app.include_router(equipment_api.router, prefix="/equipment")
+    app.dependency_overrides[deps.get_current_active_user] = _admin
+
+    response = TestClient(app).post(
+        "/equipment/transfer/email",
+        json={"act_ids": ["act-1"], "mode": "employee", "owner_no": 5},
+        headers={"X-Database-ID": "OBJ-ITINVENT"},
+    )
+
+    assert response.status_code == 200
+    assert captured == {"owner_no": 5, "db_id": "OBJ-ITINVENT"}

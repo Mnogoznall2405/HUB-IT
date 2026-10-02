@@ -87,7 +87,8 @@ let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => { input += chunk; });
 process.stdin.on('end', () => {
-  const rows = JSON.parse(input);
+  // A PM2+ banner or HOME warning may precede the JSON array.
+  const rows = JSON.parse(input.slice(input.indexOf('['), input.lastIndexOf(']') + 1));
   const slim = rows.map((item) => ({
     name: item && item.name,
     pid: item && item.pid,

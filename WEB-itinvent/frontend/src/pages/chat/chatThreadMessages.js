@@ -18,13 +18,29 @@ export const resolveActiveThreadRenderState = ({
 
 export const normalizeThreadMessageId = (message) => String(message?.id || '').trim();
 
-const normalizeThreadMessageClientId = (message) => String(message?.client_message_id || '').trim();
+export const normalizeThreadMessageClientId = (message) => String(message?.client_message_id || '').trim();
+
+// Key-order-insensitive stringify for server payload objects whose exact
+// render-relevant shape is not fixed (forward_preview, action_card, variants).
+const stableSignatureStringify = (value) => {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableSignatureStringify).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort()
+      .map((key) => `${JSON.stringify(key)}:${stableSignatureStringify(value[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value ?? null);
+};
 
 const buildThreadMessageSignature = (message) => {
   if (!message || typeof message !== 'object') return '';
   const sender = message?.sender || {};
   const replyPreview = message?.reply_preview || {};
   const taskPreview = message?.task_preview || {};
+  const poll = message?.poll && typeof message.poll === 'object' ? message.poll : null;
+  const reactions = Array.isArray(message?.reactions) ? message.reactions : [];
   const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
   return JSON.stringify({
     id: normalizeThreadMessageId(message),
@@ -42,6 +58,9 @@ const buildThreadMessageSignature = (message) => {
     optimisticStatus: String(message?.optimisticStatus || '').trim(),
     uploadProgress: Number(message?.uploadProgress || 0),
     renderKey: String(message?.renderKey || message?.render_key || '').trim(),
+    is_deleted: Boolean(message?.is_deleted),
+    deleted_at: String(message?.deleted_at || '').trim(),
+    conversation_seq: Number(message?.conversation_seq || 0),
     sender: {
       id: String(sender?.id || '').trim(),
       username: String(sender?.username || '').trim(),
@@ -59,11 +78,45 @@ const buildThreadMessageSignature = (message) => {
       title: String(taskPreview?.title || '').trim(),
       status: String(taskPreview?.status || '').trim(),
     },
+    poll: poll ? {
+      question: String(poll.question || '').trim(),
+      options: (Array.isArray(poll.options) ? poll.options : []).map((option) => ({
+        text: String(option?.text || '').trim(),
+        votes: Number(option?.votes) || 0,
+      })),
+      anonymous: Boolean(poll.anonymous),
+      closed: Boolean(poll.closed),
+      total_voters: Number(poll.total_voters) || 0,
+      my_option_index: Number.isInteger(Number(poll.my_option_index))
+        ? Number(poll.my_option_index)
+        : null,
+    } : null,
+    reactions: reactions.map((reaction) => ({
+      emoji: String(reaction?.emoji || '').trim(),
+      count: Number(reaction?.count || 0),
+      user_ids: (Array.isArray(reaction?.user_ids) ? reaction.user_ids : [])
+        .map((userId) => String(userId ?? '').trim())
+        .filter(Boolean)
+        .sort(),
+    })),
+    action_card: message?.action_card && typeof message.action_card === 'object'
+      ? stableSignatureStringify(message.action_card)
+      : '',
+    forward_preview: message?.forward_preview && typeof message.forward_preview === 'object'
+      ? stableSignatureStringify(message.forward_preview)
+      : '',
     attachments: attachments.map((attachment) => ({
       id: String(attachment?.id || '').trim(),
       file_name: String(attachment?.file_name || '').trim(),
       file_size: Number(attachment?.file_size || 0),
       mime_type: String(attachment?.mime_type || '').trim(),
+      kind: String(attachment?.kind || attachment?.media_kind || '').trim(),
+      width: Number(attachment?.width || 0),
+      height: Number(attachment?.height || 0),
+      duration_seconds: Number(attachment?.duration_seconds || attachment?.durationSeconds || 0),
+      variant_urls: attachment?.variant_urls && typeof attachment.variant_urls === 'object'
+        ? stableSignatureStringify(attachment.variant_urls)
+        : '',
       original_url: String(attachment?.original_url || attachment?.originalUrl || '').trim(),
       preview_url: String(attachment?.preview_url || attachment?.previewUrl || '').trim(),
       poster_url: String(attachment?.poster_url || attachment?.posterUrl || '').trim(),
@@ -119,19 +172,46 @@ export const isSendingOptimisticThreadMessage = (message, conversationId = '') =
   return String(message?.conversation_id || '').trim() === normalizedConversationId;
 };
 
-export const sortThreadMessages = (messages) => (
-  [...messages].sort((left, right) => {
-    const createdDiff = String(left?.created_at || '').localeCompare(String(right?.created_at || ''));
-    if (createdDiff !== 0) return createdDiff;
-    return String(left?.id || '').localeCompare(String(right?.id || ''));
-  })
+export const isFailedOptimisticThreadMessage = (message, conversationId = '') => {
+  const normalizedConversationId = String(conversationId || '').trim();
+  if (!message?.isOptimistic) return false;
+  if (String(message?.optimisticStatus || '').trim() !== 'failed') return false;
+  if (!normalizedConversationId) return true;
+  return String(message?.conversation_id || '').trim() === normalizedConversationId;
+};
+
+const threadMessageConversationSeq = (message) => {
+  const seq = Number(message?.conversation_seq);
+  return Number.isFinite(seq) && seq > 0 ? seq : 0;
+};
+
+const isOptimisticThreadMessage = (message) => (
+  Boolean(message?.isOptimistic) || isOptimisticThreadMessageId(message?.id)
 );
 
 export const compareThreadMessagePosition = (left, right) => {
-  const createdDiff = String(left?.created_at || '').localeCompare(String(right?.created_at || ''));
-  if (createdDiff !== 0) return createdDiff;
+  const leftSeq = threadMessageConversationSeq(left);
+  const rightSeq = threadMessageConversationSeq(right);
+  if (leftSeq > 0 && rightSeq > 0 && leftSeq !== rightSeq) return leftSeq - rightSeq;
+  // Optimistic bubbles carry no conversation_seq yet: keep them after
+  // persisted messages so a refresh can't interleave them into history.
+  const leftOptimistic = isOptimisticThreadMessage(left);
+  const rightOptimistic = isOptimisticThreadMessage(right);
+  if (leftOptimistic !== rightOptimistic) return leftOptimistic ? 1 : -1;
+  const leftDate = Date.parse(String(left?.created_at || ''));
+  const rightDate = Date.parse(String(right?.created_at || ''));
+  if (Number.isFinite(leftDate) && Number.isFinite(rightDate) && leftDate !== rightDate) {
+    return leftDate - rightDate;
+  }
+  if (Number.isFinite(leftDate) !== Number.isFinite(rightDate)) {
+    return Number.isFinite(leftDate) ? -1 : 1;
+  }
   return String(left?.id || '').localeCompare(String(right?.id || ''));
 };
+
+export const sortThreadMessages = (messages) => (
+  [...messages].sort(compareThreadMessagePosition)
+);
 
 const shouldPreserveFreshLocalThreadMessage = ({
   message,
@@ -175,7 +255,10 @@ export const reconcileThreadMessages = (currentMessages, incomingMessages, {
   const currentOptimisticByClientId = new Map();
   current.forEach((item) => {
     const clientMessageId = normalizeThreadMessageClientId(item);
-    if (clientMessageId && isSendingOptimisticThreadMessage(item, conversationId)) {
+    if (clientMessageId && (
+      isSendingOptimisticThreadMessage(item, conversationId)
+      || isFailedOptimisticThreadMessage(item, conversationId)
+    )) {
       currentOptimisticByClientId.set(clientMessageId, item);
     }
   });
@@ -226,6 +309,17 @@ export const reconcileThreadMessages = (currentMessages, incomingMessages, {
       next.push(message);
     });
   }
+
+  // Failed bubbles survive every refresh; the server echo (same
+  // client_message_id) replaces them through the map above.
+  current.forEach((message) => {
+    if (!isFailedOptimisticThreadMessage(message, conversationId)) return;
+    const clientMessageId = normalizeThreadMessageClientId(message);
+    if (clientMessageId && serverClientIds.has(clientMessageId)) return;
+    const messageId = normalizeThreadMessageId(message);
+    if (messageId && next.some((item) => normalizeThreadMessageId(item) === messageId)) return;
+    next.push(message);
+  });
 
   const ordered = sortThreadMessages(next);
   if (ordered.length !== current.length) return ordered;

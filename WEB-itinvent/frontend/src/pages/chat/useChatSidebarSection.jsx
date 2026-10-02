@@ -27,6 +27,7 @@ export default function useChatSidebarSection(ctx) {
     conversationsLoading,
     filteredConversations,
     openGroupDialog,
+    compose,
     sidebarScrollRef,
     handleSidebarScroll,
     conversationFilter,
@@ -83,6 +84,7 @@ export default function useChatSidebarSection(ctx) {
         conversationsLoading={conversationsLoading}
         conversations={filteredConversations}
         onOpenGroup={openGroupDialog}
+        compose={compose}
         sidebarScrollRef={sidebarScrollRef}
         onSidebarScroll={handleSidebarScroll}
         activeFolderKey={conversationFilter}
@@ -109,6 +111,9 @@ export default function useChatSidebarSection(ctx) {
         onRenameAiConversation={renameAiConversation}
         openingAiBotId={openingAiBotId}
         skipRowEnterAnimation={skipRowEnterAnimation}
+        // Д2: плавающая кнопка «новый чат» внизу колонки — существующие потоки
+        // (групповой диалог в «Чаты», выбор помощника в «ИИ»).
+        composeFab={{}}
       />
     ),
     [
@@ -143,6 +148,7 @@ export default function useChatSidebarSection(ctx) {
       openConversation,
       skipRowEnterAnimation,
       openGroupDialog,
+      compose,
       prefetchThreadBootstrap,
       requestDeleteConversation,
       requestLeaveConversation,

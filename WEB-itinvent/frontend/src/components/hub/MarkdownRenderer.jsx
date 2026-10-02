@@ -5,9 +5,13 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
 import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
+import { ChatEmojiImage } from '../chat/ChatEmoji';
+import rehypeChatEmoji from '../../lib/chat/rehypeChatEmoji';
 
 const REMARK_PLUGINS = [remarkGfm];
 const REHYPE_PLUGINS = [rehypeSanitize];
+// R48: chat text shows Apple emoji images (after the sanitizer: the element is ours).
+const CHAT_REHYPE_PLUGINS = [rehypeSanitize, rehypeChatEmoji];
 
 function MarkdownRenderer({ value, compact = false, variant = 'default', linkColor }) {
   const theme = useTheme();
@@ -35,6 +39,7 @@ function MarkdownRenderer({ value, compact = false, variant = 'default', linkCol
   const markdownComponents = {
     a: linkRenderer,
     ...(isChat ? {
+    'chat-emoji': ({ emoji }) => <ChatEmojiImage emoji={String(emoji || '')} />,
     table({ node: _node, ...props }) {
       void _node;
       return (
@@ -174,7 +179,7 @@ function MarkdownRenderer({ value, compact = false, variant = 'default', linkCol
         } : {}),
       }}
     >
-      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={markdownComponents}>
+      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={isChat ? CHAT_REHYPE_PLUGINS : REHYPE_PLUGINS} components={markdownComponents}>
         {text}
       </ReactMarkdown>
     </Box>

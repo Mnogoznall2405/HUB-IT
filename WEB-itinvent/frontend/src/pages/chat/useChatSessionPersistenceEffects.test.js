@@ -59,6 +59,20 @@ describe('useChatSessionPersistenceEffects helpers', () => {
     });
   });
 
+  it('buildActiveThreadCachePayload strips the live-appear flag from cached items', () => {
+    const payload = buildActiveThreadCachePayload({
+      messages: [
+        { id: 'm1', animateAppear: true, body: 'hi' },
+        { id: 'm2', body: 'old' },
+      ],
+    });
+
+    expect(payload.items).toEqual([
+      { id: 'm1', body: 'hi' },
+      { id: 'm2', body: 'old' },
+    ]);
+  });
+
   it('resolveLastConversationSessionStorageAction chooses set or remove', () => {
     expect(resolveLastConversationSessionStorageAction(' c-42 ')).toEqual({
       action: 'set',
@@ -104,10 +118,6 @@ describe('useChatSessionPersistenceEffects helpers', () => {
 });
 
 describe('useChatSessionPersistenceEffects', () => {
-  it('exports a default hook function', () => {
-    expect(typeof useChatSessionPersistenceEffects).toBe('function');
-  });
-
   it('mounts without throwing when caches are not hydrated', async () => {
     const { renderHook } = await import('@testing-library/react');
     const { unmount } = renderHook(() => useChatSessionPersistenceEffects({

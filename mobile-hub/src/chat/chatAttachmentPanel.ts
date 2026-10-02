@@ -20,6 +20,26 @@ export type PanelAlbum = {
 export const MEDIA_PAGE_SIZE = 90;
 export const MEDIA_GRID_COLUMNS = 3;
 export const MEDIA_MAX_SELECTION = 10;
+export const MEDIA_PANEL_TIMEOUT_MS = 8000;
+
+/** Bounds a media-store/permission await: a hung native call rejects after `ms`
+ * so the panel can offer «Повторить» instead of an endless spinner. */
+export async function withMediaPanelTimeout<T>(
+  promise: Promise<T>,
+  ms = MEDIA_PANEL_TIMEOUT_MS,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('media panel timeout')), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 /** Toggle an asset keeping pick order; returns selection positions 1..N. */
 export function toggleMediaSelection(

@@ -1,9 +1,9 @@
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import ChatMessageList from './ChatMessageList';
+import ChatMessageList, { shouldGroupMessages } from './ChatMessageList';
 
 vi.mock('./ChatBubble', () => ({
   MemoChatBubble: ({ message, onOpenAttachmentPreview }) => (
@@ -210,5 +210,234 @@ describe('ChatMessageList', () => {
     expect(container.querySelector('[data-date-marker]')).toBeInTheDocument();
 
     vi.useRealTimers();
+  });
+
+  it('renders the thread load error block and calls the retry callback', () => {
+    const onRetryThreadLoad = vi.fn();
+
+    renderWithTheme(
+      <ChatMessageList
+        {...buildProps({
+          threadLoadError: { conversationId: 'conv-1' },
+          onRetryThreadLoad,
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId('chat-thread-load-error')).toBeInTheDocument();
+    expect(screen.getByText('Не удалось загрузить сообщения')).toBeInTheDocument();
+    expect(screen.queryByTestId('chat-thread-content')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('chat-thread-load-retry'));
+    expect(onRetryThreadLoad).toHaveBeenCalledTimes(1);
+  });
+
+  it('prefers the error block over the loading skeleton', () => {
+    const { container } = renderWithTheme(
+      <ChatMessageList
+        {...buildProps({
+          messagesLoading: true,
+          threadLoadError: { conversationId: 'conv-1' },
+          onRetryThreadLoad: vi.fn(),
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId('chat-thread-load-error')).toBeInTheDocument();
+    expect(container.querySelectorAll('.MuiSkeleton-root')).toHaveLength(0);
+  });
+});
+
+describe('AiRunFeedStatus in the message feed (AI4/AI5/AI9)', () => {
+  const aiProps = (overrides = {}) => buildProps({
+    activeConversation: { id: 'conv-ai', kind: 'ai', title: 'HUB Ассистент' },
+    messages: buildMessages(3),
+    ...overrides,
+  });
+
+  it('shows error text and «Повторить» on a failed run (AI4)', () => {
+    const onRetryAiRun = vi.fn();
+    renderWithTheme(
+      <ChatMessageList
+        {...aiProps({
+          aiStatus: {
+            status: 'failed',
+            error_text: 'Провайдер ИИ не ответил вовремя.',
+            updated_at: '2026-08-07T04:00:00.000Z',
+          },
+          onRetryAiRun,
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId('chat-ai-run-failed')).toBeInTheDocument();
+    expect(screen.getByText('AI не смог обработать запрос')).toBeInTheDocument();
+    expect(screen.getByText('Провайдер ИИ не ответил вовремя.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Повторить' }));
+    expect(onRetryAiRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks a stale running run as «ИИ не отвечает» with retry and stop (AI5/R33)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-07T04:00:00.000Z'));
+    try {
+      const onRetryAiRun = vi.fn().mockResolvedValue(undefined);
+      const onStopAiRun = vi.fn().mockResolvedValue(undefined);
+      renderWithTheme(
+        <ChatMessageList
+          {...aiProps({
+            aiStatus: {
+              status: 'running',
+              status_text: 'AI анализирует запрос и файлы',
+              completed_stages: ['retrieving_kb'],
+              updated_at: '2026-08-07T03:50:00.000Z', // 10 минут назад по серверу
+              server_now: '2026-08-07T04:00:00.000Z',
+            },
+            onRetryAiRun,
+            onStopAiRun,
+          })}
+        />,
+      );
+
+      expect(screen.getByText('ИИ не отвечает')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Повторить' }));
+      expect(onRetryAiRun).toHaveBeenCalledTimes(1);
+      // busy снимается в finally — ждём тик, пока действие завершится.
+      await vi.advanceTimersByTimeAsync(0);
+      // R33: «Остановить» доступна прямо в блоке «ИИ не отвечает».
+      fireEvent.click(screen.getByRole('button', { name: 'Остановить' }));
+      expect(onStopAiRun).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sends one retry for a double click: the button stays disabled until the request settles (R30)', async () => {
+    let resolveRetry;
+    const onRetryAiRun = vi.fn(() => new Promise((resolve) => { resolveRetry = resolve; }));
+    renderWithTheme(
+      <ChatMessageList
+        {...aiProps({
+          aiStatus: { status: 'failed', error_text: 'Провайдер ИИ не ответил вовремя.' },
+          onRetryAiRun,
+        })}
+      />,
+    );
+
+    const retryButton = screen.getByRole('button', { name: 'Повторить' });
+    fireEvent.click(retryButton);
+    fireEvent.click(retryButton);
+    expect(onRetryAiRun).toHaveBeenCalledTimes(1);
+    expect(retryButton).toBeDisabled();
+
+    resolveRetry();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Повторить' })).not.toBeDisabled());
+  });
+
+  it('keeps the normal stage status for a fresh running run', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-07T04:00:00.000Z'));
+    try {
+      renderWithTheme(
+        <ChatMessageList
+          {...aiProps({
+            aiStatus: {
+              status: 'running',
+              status_text: 'AI анализирует запрос и файлы',
+              updated_at: '2026-08-07T03:59:50.000Z',
+              server_now: '2026-08-07T04:00:00.000Z',
+            },
+          })}
+        />,
+      );
+
+      expect(screen.getByTestId('chat-ai-run-status')).toBeInTheDocument();
+      expect(screen.getByText('AI анализирует запрос и файлы')).toBeInTheDocument();
+      expect(screen.queryByText('ИИ не отвечает')).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not flag a fresh run as stale when the client clock is ahead of the server (R36)', () => {
+    vi.useFakeTimers();
+    // Часы клиента спешат на 10 минут — раньше это давало ложное «ИИ не отвечает».
+    vi.setSystemTime(new Date('2026-08-07T04:10:00.000Z'));
+    try {
+      renderWithTheme(
+        <ChatMessageList
+          {...aiProps({
+            aiStatus: {
+              status: 'running',
+              status_text: 'AI анализирует запрос и файлы',
+              updated_at: '2026-08-07T03:59:50.000Z',
+              server_now: '2026-08-07T04:00:00.000Z',
+            },
+          })}
+        />,
+      );
+
+      expect(screen.getByTestId('chat-ai-run-status')).toBeInTheDocument();
+      expect(screen.queryByText('ИИ не отвечает')).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('renders the collapsed «Выполнено N шагов» row for a completed run and expands the steps (AI9)', () => {
+    renderWithTheme(
+      <ChatMessageList
+        {...aiProps({
+          aiStatus: {
+            status: 'completed',
+            completed_stages: ['analyzing_request', 'retrieving_kb', 'generating_answer'],
+          },
+        })}
+      />,
+    );
+
+    const toggle = screen.getByRole('button', { name: 'Выполнено 3 шага' });
+    expect(toggle).toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(screen.getByText('Ищу в базе знаний')).toBeInTheDocument();
+  });
+
+  it('does not render the AI run status for non-AI conversations', () => {
+    renderWithTheme(
+      <ChatMessageList
+        {...buildProps({
+          messages: buildMessages(3),
+          aiStatus: { status: 'failed', error_text: 'boom' },
+        })}
+      />,
+    );
+
+    expect(screen.queryByTestId('chat-ai-run-failed')).not.toBeInTheDocument();
+  });
+});
+
+describe('shouldGroupMessages (Д2-2)', () => {
+  const at = (iso) => ({ created_at: iso, sender: { id: 1 }, kind: 'text', is_own: false });
+
+  it('groups consecutive same-author messages regardless of content kind', () => {
+    const text = at('2026-09-30T10:00:00Z');
+    const photo = { ...at('2026-09-30T10:02:00Z'), kind: 'file', attachments: [{ id: 'a1' }] };
+    const poll = { ...at('2026-09-30T10:04:00Z'), kind: 'poll' };
+    expect(shouldGroupMessages(text, photo)).toBe(true);
+    expect(shouldGroupMessages(photo, poll)).toBe(true);
+  });
+
+  it('does not group messages from different sides or over 10 minutes apart', () => {
+    const first = at('2026-09-30T10:00:00Z');
+    expect(shouldGroupMessages(first, { ...at('2026-09-30T10:01:00Z'), is_own: true })).toBe(false);
+    expect(shouldGroupMessages(first, at('2026-09-30T10:12:00Z'))).toBe(false);
+    expect(shouldGroupMessages(first, { ...at('2026-09-30T10:01:00Z'), sender: { id: 2 } })).toBe(false);
+  });
+
+  it('breaks the series on system messages', () => {
+    const text = at('2026-09-30T10:00:00Z');
+    const system = { ...at('2026-09-30T10:01:00Z'), kind: 'system' };
+    expect(shouldGroupMessages(text, system)).toBe(false);
+    expect(shouldGroupMessages(system, text)).toBe(false);
   });
 });

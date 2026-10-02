@@ -12,6 +12,8 @@ import {
   normalizeTaskDelegateLinks,
 } from './Settings';
 
+vi.mock('../api/aiBalance', () => ({ aiBalanceAPI: { get: vi.fn().mockResolvedValue({ balance: null, threshold: 0, low: false, status: 'unknown' }), check: vi.fn(), setThreshold: vi.fn() } }));
+
 const theme = createTheme();
 
 function renderWithTheme(ui) {
@@ -153,6 +155,8 @@ describe('AiBotsAdminSection warning display', () => {
       enabled_tools: [],
     };
     renderWithTheme(<AiBotsAdminSection {...defaultProps} bots={[bot]} />);
+    // Предупреждение живёт на вкладке «Настройки ответа» (лимиты раундов).
+    fireEvent.click(screen.getByRole('tab', { name: /Настройки ответа/i }));
     expect(
       screen.getByText(/больше 8 раундов может значительно увеличить время ответа/i)
     ).toBeInTheDocument();
@@ -167,6 +171,7 @@ describe('AiBotsAdminSection warning display', () => {
       enabled_tools: [],
     };
     renderWithTheme(<AiBotsAdminSection {...defaultProps} bots={[bot]} />);
+    fireEvent.click(screen.getByRole('tab', { name: /Настройки ответа/i }));
     expect(
       screen.queryByText(/больше 8 раундов может значительно увеличить время ответа/i)
     ).not.toBeInTheDocument();

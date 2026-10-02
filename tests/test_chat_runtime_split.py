@@ -207,33 +207,40 @@ def test_postgres_scale_restart_is_rolling_and_cannot_activate_cluster():
     assert source.count("'itinvent-chat-push-worker'") == 1
 
 
-def test_start_chat_server_cleanup_only_targets_requested_port(monkeypatch):
+def _reclaim_fixture(monkeypatch, *, holder_command_line: str):
+    from shared import port_reclaim
+
+    commands = []
+    binds = iter([False, True])  # busy before the cleanup, free after it
+
+    monkeypatch.setattr(port_reclaim.sys, "platform", "win32")
+    monkeypatch.setattr(port_reclaim, "_try_bind", lambda host, port: next(binds, True))
+    monkeypatch.setattr(port_reclaim, "_listeners_on_port", lambda port: {8202} if port == 8002 else set())
+    monkeypatch.setattr(port_reclaim, "_process_command_line", lambda pid: holder_command_line)
+    monkeypatch.setattr(
+        port_reclaim.subprocess, "run", lambda command, **_kwargs: commands.append(list(command)) or None
+    )
+    monkeypatch.setattr(port_reclaim.time, "sleep", lambda _seconds: None)
+    return commands
+
+
+def test_start_chat_server_cleanup_only_targets_requested_port_and_own_launcher(monkeypatch):
+    """The stale-port cleanup now lives in shared.port_reclaim: it kills only a holder of the
+    requested port whose command line is this very launcher, never an unrelated service."""
     import start_chat_server
 
-    listener_queries = []
-    commands = []
-    query_count = 0
-
-    def _listeners(port: int) -> set[int]:
-        nonlocal query_count
-        listener_queries.append(port)
-        query_count += 1
-        return {8202} if query_count == 1 else set()
-
-    def _run(command, **_kwargs):
-        commands.append(list(command))
-        return type("_Result", (), {"stdout": ""})()
-
-    monkeypatch.setattr(start_chat_server.sys, "platform", "win32")
-    monkeypatch.setattr(start_chat_server, "_listener_pids_on_port", _listeners)
-    monkeypatch.setattr(start_chat_server.os, "getpid", lambda: 9999)
-    monkeypatch.setattr(start_chat_server.subprocess, "run", _run)
-    monkeypatch.setattr("time.sleep", lambda _seconds: None)
-
+    commands = _reclaim_fixture(monkeypatch, holder_command_line="python start_chat_server.py")
     start_chat_server._free_stale_port_on_windows("127.0.0.1", 8002)
-
-    assert listener_queries == [8002, 8002]
     assert commands == [["taskkill", "/PID", "8202", "/T", "/F"]]
+
+    unrelated = _reclaim_fixture(monkeypatch, holder_command_line="other-service.exe")
+    start_chat_server._free_stale_port_on_windows("127.0.0.1", 8002)
+    assert unrelated == []  # an unrelated holder keeps the port
+
+    other_port = _reclaim_fixture(monkeypatch, holder_command_line="python start_chat_server.py")
+    start_chat_server._free_stale_port_on_windows("127.0.0.1", 8003)  # nothing listens on 8003
+    assert other_port == []
+
     source = (Path(start_chat_server.__file__)).read_text(encoding="utf-8")
     assert "wmic" not in source.lower()
     assert "_kill_start_chat_server_processes" not in source

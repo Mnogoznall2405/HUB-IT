@@ -1,12 +1,13 @@
 import * as SecureStore from 'expo-secure-store';
 import type { ChatMessage } from '../api/types';
 import { markChatSend, recordChatQueueStorageOp, resetChatSendTiming, settleChatSend } from '../diagnostics/chatSendTiming';
+import { recordDiagnosticEvent } from '../diagnostics/diagnostics';
 import { noteChatSendHttpStartInflight, resetApiInflight } from '../diagnostics/apiInflight';
 import * as legacy from './nativeChatOutboxLegacy';
 import { CHAT_OUTBOX_STORAGE_KEY, enqueueNativeChatStorage,
   getNativeChatOutboxRowsCache, setNativeChatOutboxRowsCache } from './nativeChatStorageQueue';
 import { deleteUnreferencedChatFiles } from './nativeChatDraftFiles';
-export type { NativeChatQueuedUpload } from './nativeChatOutboxLegacy';
+export type { NativeChatQueuedUpload, NativeChatOutboxCommand } from './nativeChatOutboxLegacy';
 export type NativeChatDeliveryState = 'queued' | 'retry' | 'sending' | 'paused' | 'cancelled' | 'confirmed';
 export type NativeChatDelivery = {
   version: 1; state: NativeChatDeliveryState; attempts: number; notBefore: number;
@@ -76,30 +77,52 @@ export async function readNativeChatOutbox(userId: number) {
   const rows = await legacy.readNativeChatOutbox(userId);
   return rows.map((raw) => {
     const entry = raw as Entry & { busy: boolean };
-    if (!validDelivery(entry)) throw new Error('Не удалось прочитать состояние доставки');
-    const key = keyFor(userId, entry.message.conversation_id, entry.message.client_message_id || '');
-    const ack = entry.delivery?.confirmed || acknowledgements.get(key);
-    return { ...entry,
-      ...(ack && entry.delivery ? { delivery: { ...entry.delivery, state: 'confirmed' as const, confirmed: ack } } : {}),
-      busy: entry.busy || jobs.has(key) || preparations.has(key),
+    // Delivery metadata that fails validation is dropped from the projection
+    // instead of failing the whole queue; the row stays manually retryable.
+    const sane: Entry & { busy: boolean } = validDelivery(entry) ? entry : { ...entry, delivery: undefined };
+    const key = keyFor(userId, sane.message.conversation_id, sane.message.client_message_id || '');
+    const ack = sane.delivery?.confirmed || acknowledgements.get(key);
+    return { ...sane,
+      ...(ack && sane.delivery ? { delivery: { ...sane.delivery, state: 'confirmed' as const, confirmed: ack } } : {}),
+      busy: sane.busy || jobs.has(key) || preparations.has(key),
     };
   });
 }
-// Run only inside the existing shared metadata queue. The legacy public reader
-// validates the original schema before callers enter this function.
-async function readStored(): Promise<Entry[]> {
+// Run only inside the existing shared metadata queue. The blob is repaired
+// in place when rows are damaged, carry another account, or hold unreadable
+// delivery metadata — a single bad row must never dead-lock the queue.
+async function readStored(ownerId: number): Promise<Entry[]> {
   const cached = getNativeChatOutboxRowsCache();
-  if (cached) return cached as Entry[];
-  const startedAt = Date.now();
-  let raw: string | null = null;
-  try { raw = await SecureStore.getItemAsync(CHAT_OUTBOX_STORAGE_KEY); }
-  finally { recordChatQueueStorageOp('read', Date.now() - startedAt, raw?.length || 0); }
-  const rows: unknown = raw ? JSON.parse(raw) : [];
-  if (!Array.isArray(rows) || rows.some((row) => !row || !row.message || !validDelivery(row))) {
-    throw new Error('Не удалось прочитать очередь сообщений');
+  let parsed: unknown = cached;
+  if (parsed === null || parsed === undefined) {
+    const startedAt = Date.now();
+    let raw: string | null = null;
+    try { raw = await SecureStore.getItemAsync(CHAT_OUTBOX_STORAGE_KEY); }
+    finally { recordChatQueueStorageOp('read', Date.now() - startedAt, raw?.length || 0); }
+    try { parsed = raw ? JSON.parse(raw) : []; }
+    catch { parsed = null; }
+    if (!Array.isArray(parsed)) {
+      if (raw) await legacy.quarantineNativeChatOutboxBlob(raw);
+      void recordDiagnosticEvent('native_file_error');
+      setNativeChatOutboxRowsCache([]);
+      return [];
+    }
   }
-  setNativeChatOutboxRowsCache(rows);
-  return rows;
+  const { rows, dropped } = legacy.partitionNativeChatOutboxEntries(parsed, ownerId);
+  let stripped = false;
+  const sanitized = rows.map((row) => {
+    if (validDelivery(row)) return row as Entry;
+    stripped = true;
+    return { ...row, delivery: undefined } as Entry;
+  });
+  if (dropped.length || stripped) {
+    await writeStored(sanitized);
+    void recordDiagnosticEvent('native_file_error');
+    await deleteUnreferencedChatFiles(legacy.nativeChatOutboxUploadUris(dropped)).catch(() => undefined);
+    return sanitized;
+  }
+  if (!cached) setNativeChatOutboxRowsCache(sanitized);
+  return sanitized;
 }
 async function writeStored(rows: Entry[]) {
   const value = JSON.stringify(rows);
@@ -127,7 +150,7 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
   const current = () => { if (generation !== lease || !Number.isInteger(userId) || userId <= 0 || !conversationId) throw new Error('Сеанс очереди сообщений завершён'); };
   const match = (row: Entry, id: string) => row.userId === userId && row.message.conversation_id === conversationId && row.message.client_message_id === id;
   const update = (id: string, fn: (row: Entry) => Entry) => enqueueNativeChatStorage(async () => {
-    current(); const rows = await readStored(); current();
+    current(); const rows = await readStored(userId); current();
     const row = rows.find((item) => match(item, id));
     if (!row) throw noWork();
     const next = fn(row);
@@ -136,7 +159,7 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
     return next;
   });
   const removeConfirmed = (id: string) => enqueueNativeChatStorage(async () => {
-    current(); const rows = await readStored(); current();
+    current(); const rows = await readStored(userId); current();
     const removed = rows.filter((item) => match(item, id));
     await writeStored(rows.filter((item) => !match(item, id)));
     await deleteUnreferencedChatFiles(removed.flatMap((item) => item.upload?.files.map((file) => file.uri) || [])).catch(() => undefined);
@@ -148,7 +171,8 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
       current(); const rows = await readNativeChatOutbox(userId); current();
       return rows.filter((row) => row.message.conversation_id === conversationId).map((row) => project(row, row.busy));
     },
-    queue: (message: ChatMessage, upload?: legacy.NativeChatQueuedUpload): Promise<{ message: ChatMessage; upload?: legacy.NativeChatQueuedUpload }> => {
+    queue: (message: ChatMessage, upload?: legacy.NativeChatQueuedUpload,
+      command?: legacy.NativeChatOutboxCommand): Promise<{ message: ChatMessage; upload?: legacy.NativeChatQueuedUpload }> => {
       const id = message.client_message_id || '', operationKey = key(id);
       try { current(); if (jobs.has(operationKey)) throw noWork(); } catch (error) { return Promise.reject(error); }
       const existing = preparations.get(operationKey);
@@ -168,7 +192,8 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
           { ...entry, delivery: { version: 1, state, attempts: 0, notBefore: 0 } } as legacy.NativeChatOutboxEntry
         );
         if (upload) { await old.prepareUpload(message, upload, stamp); old.finishUpload(id); }
-        else await old.send(message, async () => { throw noWork(); }, undefined, { deliver: false, decorate: stamp });
+        else await old.send(message, async () => { throw noWork(); }, undefined,
+          { deliver: false, decorate: stamp, command });
         current();
         const entry = await update(id, (row) => {
           if (row.delivery?.confirmed || acknowledgements.has(operationKey)) return row;
@@ -204,17 +229,23 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
       if (preparation) {
         await preparation;
         current();
+        // The preparation stamped the durable 'cancelled' state; the in-memory
+        // flag only covered the transition window and must not linger.
+        cancelled.delete(key(id));
         return;
       }
       await update(id, (row) => row.delivery?.confirmed ? row : { ...row, delivery: {
         version: 1, state: 'cancelled', attempts: row.delivery?.attempts || 0, notBefore: 0,
       } });
+      cancelled.delete(key(id));
     },
     discard: async (id: string) => {
       current(); if (jobs.has(key(id)) || preparations.has(key(id))) throw noWork();
       const rows = await readNativeChatOutbox(userId); current();
       if (jobs.has(key(id)) || preparations.has(key(id)) || rows.find((row) => match(row, id))?.delivery?.confirmed) throw noWork();
-      cancelled.add(key(id)); await old.discard(id);
+      cancelled.add(key(id));
+      try { await old.discard(id); }
+      finally { cancelled.delete(key(id)); }
     },
     send: (message: ChatMessage, sendText: typeof import('../api/chatApi').sendTextMessage, onPersisted?: () => void, options?: { deliver?: boolean }) => {
       const id = message.client_message_id || '';
@@ -232,14 +263,18 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
       cancelled.add(key(replacement));
       try {
         const changed = await old.detachReply(id, replacement, canProceed);
-        await update(replacement, (row) => ({ ...row, delivery: undefined }));
+        // The replacement must stay deliverable: stamp a fresh queue position
+        // instead of wiping the metadata — a delivery-less row is skipped by
+        // the runner forever.
+        await update(replacement, (row) => (row.delivery?.confirmed ? row
+          : { ...row, delivery: { version: 1, state: 'queued', attempts: 0, notBefore: 0 } }));
         return changed;
       } finally { cancelled.delete(key(replacement)); }
     },
     acknowledge: async (messages: ChatMessage[]) => {
       current(); await legacy.readNativeChatOutbox(userId); current();
       await enqueueNativeChatStorage(async () => {
-        const rows = await readStored(); current();
+        const rows = await readStored(userId); current();
         const next: Entry[] = [], removed: Entry[] = [];
         for (const row of rows) {
           const ack = messages.find((message) => !message.local_status && message.sender_user_id === userId
@@ -268,7 +303,7 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
         const legacyRows = await legacy.readNativeChatOutbox(userId); current();
         if (legacyRows.find((row) => match(row, id))?.busy) throw noWork();
         claimed = await enqueueNativeChatStorage(async () => {
-          current(); const rows = await readStored(); current();
+          current(); const rows = await readStored(userId); current();
           const index = rows.findIndex((row) => match(row, id)), row = rows[index];
           const d = row?.delivery;
           if (!row || !d) throw noWork();
@@ -331,7 +366,17 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
         if (stored) await removeConfirmed(id).catch(() => undefined);
         // Merge delivery onto the current row: transport may have persisted a
         // resumable session id on row.upload after the claim snapshot was taken.
-        else await update(id, (row) => ({ ...row, delivery: confirmed.delivery })).catch(() => undefined);
+        // A row already confirmed with the same acknowledgement needs no
+        // rewrite — each failed confirm-commit would otherwise write the blob
+        // and re-notify listeners on every retry.
+        else {
+          const merged = await update(id, (row) => (row.delivery?.state === 'confirmed'
+            && row.delivery.confirmed?.id === saved.id ? row
+            : { ...row, delivery: confirmed.delivery })).catch(() => null);
+          // The acknowledgement now lives on the durable row; the in-memory
+          // copy is only needed while the confirmed write has not landed.
+          if (merged) acknowledgements.delete(operationKey);
+        }
         return saved;
       })().catch(async (error: unknown) => {
         settleChatSend(id);
@@ -357,6 +402,15 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
       });
       jobs.set(operationKey, operation); return operation;
     },
+  };
+}
+/** Diagnostics/tests only: in-flight bookkeeping maps that must stay bounded. */
+export function getNativeChatOutboxRuntimeState() {
+  return {
+    jobs: jobs.size,
+    preparations: preparations.size,
+    cancelled: cancelled.size,
+    acknowledgements: acknowledgements.size,
   };
 }
 export function clearNativeChatOutbox() {

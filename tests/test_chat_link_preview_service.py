@@ -1,6 +1,7 @@
 """Link preview URL validation must fail fast — never wait on OS DNS timeouts."""
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -26,16 +27,21 @@ def test_rejects_missing_host_fast() -> None:
 def test_unresolvable_host_fails_within_dns_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     # An OS-level getaddrinfo that hangs forever used to stall the endpoint for
     # 5-19s before returning 422 (plan P1). The bounded executor caps it.
+    release = threading.Event()
+
     def _hanging_getaddrinfo(*_args, **_kwargs):
-        time.sleep(30)
+        release.wait(10)
         raise AssertionError("must be abandoned by the timeout")
 
     monkeypatch.setattr("backend.chat.link_preview_service.socket.getaddrinfo", _hanging_getaddrinfo)
     started = time.monotonic()
-    with pytest.raises(HTTPException) as excinfo:
-        assert_public_http_url("https://unresolvable.invalid.example/")
-    assert excinfo.value.status_code == 422
-    assert time.monotonic() - started < 5.0
+    try:
+        with pytest.raises(HTTPException) as excinfo:
+            assert_public_http_url("https://unresolvable.invalid.example/")
+        assert excinfo.value.status_code == 422
+        assert time.monotonic() - started < 5.0
+    finally:
+        release.set()
 
 
 def test_private_ip_rejected(monkeypatch: pytest.MonkeyPatch) -> None:

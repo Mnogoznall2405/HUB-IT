@@ -11,7 +11,10 @@ function buildAndroidHttpsAppLinksConfig(value) {
         action: 'VIEW',
         autoVerify: true,
         category: ['BROWSABLE', 'DEFAULT'],
-        data: [{ scheme: 'https', host: 'hubit.zsgp.ru', pathPrefix: '/' }],
+        data: [
+          { scheme: 'https', host: 'hubit.zsgp.ru', path: '/database' },
+          { scheme: 'https', host: 'hubit.zsgp.ru', pathPrefix: '/database/' },
+        ],
       },
     ],
   };

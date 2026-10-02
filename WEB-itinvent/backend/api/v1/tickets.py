@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.api.deps import require_permission
+from backend.api.v1.address_book import public_field_flags
 from backend.models.auth import User
 from backend.services.authorization_service import (
     PERM_TICKETS_READ,
@@ -705,12 +706,16 @@ async def search_zup_employees(
     """Search ZUP (1C Address Book) employees to prefill ticket employee form.
 
     Passport/birth fields are included only when the user has
-    tickets.personal_data.read.
+    tickets.personal_data.read. Personal phones/e-mails require the matching
+    address_book.personal_phone/email.read rights.
     """
+    field_flags = public_field_flags(current_user)
     return tickets_service.search_zup_employees(
         query=q,
         limit=int(limit),
         user_permissions=list(current_user.permissions or []),
+        include_personal_phones=field_flags["include_personal_phones"],
+        include_personal_emails=field_flags["include_personal_emails"],
     )
 
 
@@ -720,10 +725,13 @@ async def ensure_employee_from_zup(
     current_user: User = Depends(require_permission(PERM_TICKETS_WRITE)),
 ):
     """Create or refresh a ticket employee from ZUP by employee_code."""
+    field_flags = public_field_flags(current_user)
     try:
         return tickets_service.ensure_employee_from_zup(
             body.employee_code,
             user_permissions=list(current_user.permissions or []),
+            include_personal_phones=field_flags["include_personal_phones"],
+            include_personal_emails=field_flags["include_personal_emails"],
         )
     except TicketsNotFoundError as exc:
         raise _not_found(exc) from exc

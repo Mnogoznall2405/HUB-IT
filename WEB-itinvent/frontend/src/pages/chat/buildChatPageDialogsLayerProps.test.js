@@ -8,6 +8,12 @@ describe('buildChatPageDialogsLayerProps', () => {
     const onForwardMessageToConversation = vi.fn();
     const onApplyImageEdit = vi.fn();
     const onResetImageEdit = vi.fn();
+    const onOpenPollDialog = vi.fn();
+    const onOpenContactDialog = vi.fn();
+    const onSendLocation = vi.fn();
+    const onCloseStructuredDialog = vi.fn();
+    const onSendPoll = vi.fn();
+    const onSendContact = vi.fn();
 
     const props = buildChatPageDialogsLayerProps({
       theme: {},
@@ -65,21 +71,7 @@ describe('buildChatPageDialogsLayerProps', () => {
       onSendFiles: vi.fn(),
       onRemoveSelectedFile: vi.fn(),
       onClearSelectedFiles: vi.fn(),
-      groupOpen: false,
-      onCloseGroup: vi.fn(),
-      groupTitle: '',
-      onGroupTitleChange: vi.fn(),
-      groupSearch: '',
-      onGroupSearchChange: vi.fn(),
-      groupUsers: [],
-      groupUsersLoading: false,
-      groupSelectedUsers: [],
-      groupMemberIds: [],
-      onAddGroupMember: vi.fn(),
-      onRemoveGroupMember: vi.fn(),
-      creatingConversation: false,
-      groupCreateDisabled: true,
-      onCreateGroup: vi.fn(),
+
       shareOpen: false,
       onCloseShare: vi.fn(),
       taskSearch: '',
@@ -131,8 +123,24 @@ describe('buildChatPageDialogsLayerProps', () => {
       messageSearchHasMore: false,
       onLoadMoreSearchResults: vi.fn(),
       onOpenSearchResult: vi.fn(),
+      structuredDialog: 'poll',
+      onOpenPollDialog,
+      onOpenContactDialog,
+      onSendLocation,
+      locationSending: true,
+      onCloseStructuredDialog,
+      onSendPoll,
+      onSendContact,
     });
 
+    expect(props.structuredDialog).toBe('poll');
+    expect(props.onOpenPollDialog).toBe(onOpenPollDialog);
+    expect(props.onOpenContactDialog).toBe(onOpenContactDialog);
+    expect(props.onSendLocation).toBe(onSendLocation);
+    expect(props.locationSending).toBe(true);
+    expect(props.onCloseStructuredDialog).toBe(onCloseStructuredDialog);
+    expect(props.onSendPoll).toBe(onSendPoll);
+    expect(props.onSendContact).toBe(onSendContact);
     expect(props.activeConversationId).toBe('c1');
     expect(props.onCloseThreadMenu).toBe(onCloseThreadMenu);
     expect(props.onForwardMessageToConversation).toBe(onForwardMessageToConversation);

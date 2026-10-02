@@ -64,7 +64,7 @@ import { NativeDatabaseQrScannerModal } from '../../components/database/NativeDa
 import { NativeDatabasePickerSheet } from '../../components/database/NativeDatabasePickerSheet';
 import { NativeScanBatchPanel } from '../../components/database/NativeScanBatchPanel';
 import { NativeConsumableRow } from '../../components/database/NativeConsumableRow';
-import { NativeEquipmentActions, type NativeEquipmentActionKind } from '../../components/database/NativeEquipmentActions';
+import { NativeEquipmentActions } from '../../components/database/NativeEquipmentActions';
 import { NativeEquipmentRow } from '../../components/database/NativeEquipmentRow';
 import { openNativeFile } from '../../files/nativeAttachmentDownloads';
 import { downloadEquipmentAct } from '../../database/nativeDatabaseFiles';
@@ -793,16 +793,19 @@ export function NativeDatabaseScreen() {
   // Ш5-8: каждое открытие сканера (кнопка QR, ярлык scan=1) начинается с пустого
   // списка. Сброс — при переходе closed→open, до первого считанного кода.
   const qrScannerWasOpenRef = useRef(false);
+  const consumablePromptOpenRef = useRef(false);
   useEffect(() => {
     if (qrScannerOpen && !qrScannerWasOpenRef.current) {
       scanBatchClear();
       setScanBatchExpanded(true);
       setScanBatchOpen(false);
+      consumablePromptOpenRef.current = false;
     }
     qrScannerWasOpenRef.current = qrScannerOpen;
   }, [qrScannerOpen, scanBatchClear]);
 
   const handleScannerScan = useCallback(async (payload: InventoryQrPayload) => {
+    if (consumablePromptOpenRef.current) return;
     if (!canWrite) {
       await openEquipmentFromQr(payload);
       return;
@@ -813,13 +816,16 @@ export function NativeDatabaseScreen() {
         void openConsumableFromQr(payload);
       };
       if (scanBatchItems.length >= 2) {
+        const dismissPrompt = () => { consumablePromptOpenRef.current = false; };
+        consumablePromptOpenRef.current = true;
         Alert.alert(
           `Список из ${scanBatchItems.length} позиций сбросится. Открыть расходник?`,
           undefined,
           [
-            { text: 'Отмена', style: 'cancel' },
-            { text: 'Открыть', onPress: openConsumable },
+            { text: 'Отмена', style: 'cancel', onPress: dismissPrompt },
+            { text: 'Открыть', onPress: () => { dismissPrompt(); openConsumable(); } },
           ],
+          { onDismiss: dismissPrompt },
         );
         return;
       }
@@ -887,16 +893,14 @@ export function NativeDatabaseScreen() {
     discard();
   }, [scanBatchClear, scanBatchItems.length]);
 
-  const handleScanBatchChanged = useCallback(async (_kind: NativeEquipmentActionKind, result?: TransferResult) => {
-    if (result) {
-      if (result.failed_count) scanBatchKeepOnly(result.retry_inv_nos);
-      else {
-        scanBatchClear();
-        setScanBatchOpen(false);
-      }
+  const handleScanBatchClosed = useCallback((result: TransferResult | null) => {
+    if (!result) return;
+    if (result.failed_count) scanBatchKeepOnly(result.retry_inv_nos);
+    else {
+      scanBatchClear();
+      setScanBatchOpen(false);
     }
-    await loadContent(true);
-  }, [loadContent, scanBatchClear, scanBatchKeepOnly]);
+  }, [scanBatchClear, scanBatchKeepOnly]);
 
   useEffect(() => () => {
     if (scanDupTimerRef.current) clearTimeout(scanDupTimerRef.current);
@@ -1293,7 +1297,14 @@ export function NativeDatabaseScreen() {
               surface="general"
               tokens={tokens}
               testIDPrefix="native-database-bulk"
-              onChanged={() => loadContent(true)}
+              onChanged={() => undefined}
+              onClosed={(result) => {
+                if (result && !result.failed_count) {
+                  setSelectedInvNos(new Set());
+                  setSelectionRequested(false);
+                }
+                void loadContent(true);
+              }}
               onDeleted={() => undefined}
             />
           </ScrollView>
@@ -1604,7 +1615,8 @@ export function NativeDatabaseScreen() {
                 surface="general"
                 tokens={tokens}
                 testIDPrefix="native-database-scan-batch"
-                onChanged={handleScanBatchChanged}
+                onChanged={() => { void loadContent(true); }}
+                onClosed={handleScanBatchClosed}
                 onDeleted={() => undefined}
               />
             </ScrollView>

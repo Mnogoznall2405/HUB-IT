@@ -1,6 +1,7 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { useEffect, useMemo, useState } from 'react';
+import { useContext, useEffect, useMemo, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import type { ChatUserSummary } from '../../api/types';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
@@ -26,6 +27,9 @@ export function ChatRenameSheet({
 }) {
   const { styles } = useChatStyles(createStyles);
   const reduceMotion = useReducedMotion();
+  // AUD-8: edge-to-edge — the centered prompt must clear the system bars
+  // (landscape nav bar, tall status bar).
+  const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
   const [title, setTitle] = useState(initialTitle);
   useEffect(() => {
     if (visible) setTitle(initialTitle);
@@ -36,7 +40,13 @@ export function ChatRenameSheet({
   };
   return (
     <Modal visible={visible} animationType={reduceMotion ? 'none' : 'fade'} transparent onRequestClose={close}>
-      <ChatKeyboardAvoidingHost style={styles.centerBackdrop}>
+      <ChatKeyboardAvoidingHost style={[styles.centerBackdrop, {
+        paddingTop: Math.max(24, insets?.top || 0),
+        paddingBottom: Math.max(24, insets?.bottom || 0),
+        paddingLeft: Math.max(24, insets?.left || 0),
+        paddingRight: Math.max(24, insets?.right || 0),
+      }]}
+      >
         <View style={styles.prompt} accessibilityViewIsModal>
           <Text style={styles.title}>{heading}</Text>
           <TextInput

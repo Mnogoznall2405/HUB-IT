@@ -196,11 +196,13 @@ class ChatSerialization:
         state: Optional[ChatConversationUserState],
         last_message: Optional[ChatMessage],
         unread_count: Optional[int] = None,
+        unread_mention_count: Optional[int] = None,
         last_message_attachments: Optional[list[ChatMessageAttachment]] = None,
         task_exists_map: Optional[dict[str, bool]] = None,
         task_payloads_by_id: Optional[dict[str, dict]] = None,
         reads_by_message_id: Optional[dict[str, list[ChatMessageRead]]] = None,
         states_by_user_id: Optional[dict[int, ChatConversationUserState]] = None,
+        ai_bot_id: Optional[str] = None,
     ) -> dict:
         direct_peer = None
         member_count = 0
@@ -318,6 +320,11 @@ class ChatSerialization:
                 last_read_at=getattr(state, "last_read_at", None),
             )
         )
+        resolved_unread_mention_count = (
+            max(0, int(unread_mention_count))
+            if unread_mention_count is not None
+            else max(0, int(getattr(state, "unread_mention_count", 0) or 0))
+        )
         return {
             "id": conversation.id,
             "kind": conversation.kind if conversation.kind in {"direct", "group", "ai", "notes", "task"} else "group",
@@ -334,11 +341,14 @@ class ChatSerialization:
             "updated_at": _iso(conversation.updated_at) or "",
             "last_message_at": _iso(conversation.last_message_at),
             "last_message_seq": max(0, int(getattr(conversation, "last_message_seq", 0) or 0)),
+            # CHAT-INBOX-01: mark-read требует message_id, а не seq — отдаём id последнего сообщения.
+            "last_message_id": _normalize_text(getattr(conversation, "last_message_id", None)) or None,
             "viewer_last_read_seq": max(0, int(getattr(state, "last_read_seq", 0) or 0)),
             "last_message_preview": last_message_preview,
             "last_message_is_own": last_message_is_own,
             "last_message_delivery_status": last_message_delivery_status,
             "unread_count": resolved_unread_count,
+            "unread_mention_count": resolved_unread_mention_count,
             "member_count": member_count,
             "online_member_count": online_member_count,
             "is_pinned": bool(getattr(state, "is_pinned", False)),
@@ -349,6 +359,7 @@ class ChatSerialization:
             "viewer_member_role": viewer_member_role,
             "member_preview": member_preview,
             "direct_peer": direct_peer,
+            "ai_bot_id": _normalize_text(ai_bot_id) or None,
         }
 
     def _serialize_pinned_message_preview(

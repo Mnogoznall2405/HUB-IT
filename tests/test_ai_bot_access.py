@@ -8,16 +8,16 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from backend.appdb.models import AppBase, AppUser, AppAiBot, AppAiBotAccess, AppAiBotConversation, AppAiBotRun
+from backend.appdb.models import AppUser, AppAiBot, AppAiBotAccess, AppAiBotConversation, AppAiBotRun
 from backend.ai_chat import access
 from backend.ai_sandbox.models import AppAiSandboxSession, AppAiSandboxJob, AppAiSandboxPermission
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
-def database(tmp_path, monkeypatch):
-    engine = create_engine(f"sqlite:///{tmp_path / 'access.db'}", execution_options={'schema_translate_map': {'app': None, 'system': None}})
-    AppBase.metadata.create_all(engine, tables=[table for table in AppBase.metadata.sorted_tables
-        if table.name.startswith(('ai_',)) or table.name == 'users'])
+def database(prebuilt_app_db, monkeypatch):
+    engine = create_engine(f"sqlite:///{prebuilt_app_db.as_posix()}", execution_options={'schema_translate_map': {'app': None, 'system': None}})
     @contextmanager
     def session():
         with Session(engine) as db:
@@ -35,8 +35,11 @@ def database(tmp_path, monkeypatch):
                     custom_permissions_json=json.dumps(['chat.ai.sandbox'])),
             AppAiBot(id='general', slug='general-ai', title='General', surface='general'),
             AppAiBot(id='agent', slug='corp-assistant', title='Assistant', bot_user_id=90),
-            AppAiBot(id='code', slug='opencode', title='OpenCode', surface='sandbox'),
+            AppAiBot(id='code', slug='opencode', title='OpenCode', surface='sandbox',
+                     required_permission='chat.ai.sandbox'),
+            AppAiBot(id='restricted', slug='it-helper', title='IT Helper'),
             AppAiBotConversation(bot_id='agent', user_id=2, conversation_id='conversation'),
+            AppAiBotConversation(bot_id='restricted', user_id=2, conversation_id='restricted-conversation'),
         ])
     yield session
     engine.dispose()
@@ -46,56 +49,90 @@ def test_default_policy_and_explicit_grants(database):
     with database() as db:
         for uid in (1, 2, 3, 5):
             assert access.can_use_bot(db, db.get(AppAiBot, 'general'), uid)
-        assert access.can_use_bot(db, db.get(AppAiBot, 'agent'), 1)
+        # Unified assistant: every active user with chat.ai.use, no grant needed.
+        for uid in (1, 2, 3, 5):
+            assert access.can_use_bot(db, db.get(AppAiBot, 'agent'), uid)
         for uid in (2, 3, 4, 5):
             assert not access.can_use_bot(db, db.get(AppAiBot, 'code'), uid)
-    access.set_access(bot_id='code', user_id=3, allowed=True, actor_id=3)
+    # OpenCode needs both the sandbox permission and a personal grant.
+    access.set_access(bot_id='code', user_id=2, allowed=True, actor_id=1)
+    access.set_access(bot_id='code', user_id=3, allowed=True, actor_id=1)
+    access.set_access(bot_id='code', user_id=5, allowed=True, actor_id=1)
     with database() as db:
         assert access.can_use_bot(db, db.get(AppAiBot, 'code'), 3)
-        assert not access.can_use_bot(db, db.get(AppAiBot, 'agent'), 3)
-        assert not access.can_use_bot(db, db.get(AppAiBot, 'code'), 2)
+        assert access.can_use_bot(db, db.get(AppAiBot, 'code'), 5)
+        assert not access.can_use_bot(db, db.get(AppAiBot, 'code'), 2)  # grant without chat.ai.sandbox
+        assert not access.can_use_bot(db, db.get(AppAiBot, 'restricted'), 2)
 
 
 def test_only_managers_can_grant_and_admin_access_is_automatic(database):
     with pytest.raises(PermissionError):
-        access.set_access(bot_id='agent', user_id=2, allowed=True, actor_id=2)
+        access.set_access(bot_id='code', user_id=2, allowed=True, actor_id=2)
     with pytest.raises(ValueError):
-        access.set_access(bot_id='agent', user_id=1, allowed=False, actor_id=3)
+        access.set_access(bot_id='code', user_id=1, allowed=False, actor_id=3)
     with pytest.raises(ValueError):
         access.set_access(bot_id='general', user_id=2, allowed=False, actor_id=3)
+    # The unified assistant cannot be granted or revoked manually.
+    with pytest.raises(ValueError):
+        access.set_access(bot_id='agent', user_id=2, allowed=True, actor_id=3)
+    with pytest.raises(ValueError):
+        access.set_access(bot_id='agent', user_id=2, allowed=False, actor_id=3)
     with pytest.raises(PermissionError):
-        access.set_access(bot_id='agent', user_id=2, allowed=True, actor_id=4)
+        access.set_access(bot_id='code', user_id=2, allowed=True, actor_id=4)
 
 
 def test_shared_views_and_history_scope(database):
-    assert access.conversation_access('conversation', 2) == {'can_use': False}
+    # corp-assistant is available to the owner via chat.ai.use without a grant.
+    assert access.conversation_access('conversation', 2) == {'can_use': True}
+    access.require_conversation_access('conversation', 2)
+    # A grant-managed bot still denies the owner without a grant.
+    assert access.conversation_access('restricted-conversation', 2) == {'can_use': False}
     with pytest.raises(PermissionError):
-        access.require_conversation_access('conversation', 2)
+        access.require_conversation_access('restricted-conversation', 2)
     with pytest.raises(LookupError):
         access.conversation_access('conversation', 3)
     access.require_conversation_access('conversation', 90)  # Existing bot output delivery
-    access.set_access(bot_id='agent', user_id=2, allowed=True, actor_id=1)
-    assert access.conversation_access('conversation', 2)['can_use']
-    assert next(row for row in access.list_user_access(2) if row['bot_id'] == 'agent')['allowed']
-    assert access.list_bot_access('agent', query='viewer')['items'][0]['allowed']
-    assert not access.list_bot_access('agent', query='%')['items']
-    assert access.list_bot_access('agent', limit=1)['has_more']
+    agent_row = next(row for row in access.list_user_access(2) if row['bot_id'] == 'agent')
+    assert agent_row == {'bot_id': 'agent', 'title': 'Assistant', 'allowed': True, 'automatic': True}
+    bot_items = {item['user_id']: item for item in access.list_bot_access('agent')['items']}
+    assert bot_items[2] == {'user_id': 2, 'title': 'viewer', 'username': 'viewer', 'allowed': True, 'automatic': True}
+    access.set_access(bot_id='restricted', user_id=2, allowed=True, actor_id=1)
+    assert access.conversation_access('restricted-conversation', 2)['can_use']
+    assert next(row for row in access.list_user_access(2) if row['bot_id'] == 'restricted')['allowed']
+    assert access.list_bot_access('restricted', query='viewer')['items'][0]['allowed']
+    assert not access.list_bot_access('restricted', query='%')['items']
+    assert access.list_bot_access('restricted', limit=1)['has_more']
+
+
+def test_ai8_owner_keeps_access_when_bot_disabled_or_removed(database):
+    with database() as db:
+        db.get(AppAiBot, 'agent').is_enabled = False
+    access.require_conversation_access('conversation', 2)
+    with pytest.raises(PermissionError):
+        access.require_conversation_access('conversation', 3)
+    with database() as db:
+        mapping = db.scalar(select(AppAiBotConversation).where(
+            AppAiBotConversation.conversation_id == 'conversation'))
+        mapping.bot_id = 'removed-bot'
+    access.require_conversation_access('conversation', 2)
+    with pytest.raises(PermissionError):
+        access.require_conversation_access('conversation', 3)
 
 
 def test_revoke_cancels_work_preserves_history_and_does_not_resume(database):
     now = datetime.now(timezone.utc)
     with database() as db:
-        db.add(AppAiBotRun(id='run', bot_id='agent', user_id=2, conversation_id='conversation',
+        db.add(AppAiBotRun(id='run', bot_id='restricted', user_id=2, conversation_id='restricted-conversation',
                           trigger_message_id='message', status='running'))
-        db.add(AppAiBotRun(id='done', bot_id='agent', user_id=2, conversation_id='conversation',
+        db.add(AppAiBotRun(id='done', bot_id='restricted', user_id=2, conversation_id='restricted-conversation',
                           trigger_message_id='old-message', status='completed'))
-    access.set_access(bot_id='agent', user_id=2, allowed=False, actor_id=3)
-    access.set_access(bot_id='agent', user_id=2, allowed=True, actor_id=3)
+    access.set_access(bot_id='restricted', user_id=2, allowed=False, actor_id=3)
+    access.set_access(bot_id='restricted', user_id=2, allowed=True, actor_id=3)
     with database() as db:
         assert db.get(AppAiBotRun, 'run').status == 'cancelled'
         assert db.get(AppAiBotRun, 'done').status == 'completed'
-        assert db.scalar(select(AppAiBotConversation).where(AppAiBotConversation.conversation_id == 'conversation'))
-        assert db.get(AppAiBotAccess, ('agent', 2)).updated_by == 3
+        assert db.scalar(select(AppAiBotConversation).where(AppAiBotConversation.conversation_id == 'restricted-conversation'))
+        assert db.get(AppAiBotAccess, ('restricted', 2)).updated_by == 3
 
 
 def test_access_migration_upgrade_downgrade(tmp_path):
@@ -174,6 +211,31 @@ def test_api_manager_scope_and_bounded_directory(database):
         assert client.put('/bots/code/access/3', json={'allowed': 'false'}).status_code == 422
 
 
+def test_api_balance_routes_are_for_ai_managers_only(database, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from backend.ai_chat.balance import ai_balance_service
+    from backend.api.v1.ai_bots import router
+    from backend.api.deps import get_current_active_user
+    from backend.models.auth import User
+    monkeypatch.setattr(ai_balance_service, '_credits_provider', lambda: {'data': {'total_credits': 5, 'total_usage': 4}})
+    monkeypatch.setattr(ai_balance_service, '_notify_managers', lambda **kwargs: True)
+    app = FastAPI()
+    app.include_router(router, prefix='/bots')
+    app.dependency_overrides[get_current_active_user] = lambda: User(id=2, username='viewer')
+    with TestClient(app) as client:
+        assert client.get('/bots/balance').status_code == 403
+        assert client.put('/bots/balance/settings', json={'threshold': 5}).status_code == 403
+        assert client.post('/bots/balance/check').status_code == 403
+        app.dependency_overrides[get_current_active_user] = lambda: User(id=3, username='manager',
+            use_custom_permissions=True, custom_permissions=['settings.ai.manage'], permissions=['settings.ai.manage'])
+        assert client.put('/bots/balance/settings', json={'threshold': 5}).json()['threshold'] == 5
+        assert client.put('/bots/balance/settings', json={'threshold': -1}).status_code == 422
+        checked = client.post('/bots/balance/check').json()
+        assert checked['balance'] == 1.0 and checked['low'] is True
+        assert client.get('/bots/balance').json()['status'] == 'low'
+
+
 @pytest.mark.parametrize('message_type', ['text', 'file'])
 def test_revoked_messages_are_rejected_before_persistence(database, message_type):
     from contextlib import nullcontext
@@ -181,18 +243,18 @@ def test_revoked_messages_are_rejected_before_persistence(database, message_type
     from unittest.mock import Mock
     from backend.chat.message_persistence import ChatTextMessagePersistence, ChatFileMessagePersistence
     db = Mock()
-    conversation = SimpleNamespace(id='conversation', kind='ai')
+    conversation = SimpleNamespace(id='restricted-conversation', kind='ai')
     dependencies = dict(session_factory=lambda: nullcontext(db), require_membership=lambda **kwargs: conversation,
                         lock_conversation_for_write=Mock(), conversation_member_ids=Mock(),
                         resolve_reply_message=Mock(), build_message_payload_for_members=Mock(),
                         now=lambda: datetime.now(timezone.utc))
     if message_type == 'text':
         persistence = ChatTextMessagePersistence(**dependencies, find_existing_client_message=Mock())
-        send = lambda: persistence.persist_text_message(current_user_id=2, conversation_id='conversation',
+        send = lambda: persistence.persist_text_message(current_user_id=2, conversation_id='restricted-conversation',
                     body='hello', body_format='plain', client_message_id=None, reply_to_message_id=None)
     else:
         persistence = ChatFileMessagePersistence(**dependencies)
-        send = lambda: persistence.persist_file_message(current_user_id=2, conversation_id='conversation',
+        send = lambda: persistence.persist_file_message(current_user_id=2, conversation_id='restricted-conversation',
                     body='hello', prepared=[])
     with pytest.raises(PermissionError):
         send()
@@ -208,11 +270,11 @@ def test_revoke_blocks_pending_business_action_before_execution(database, monkey
     monkeypatch.setattr(action_cards, 'app_session', database)
     execute = Mock()
     monkeypatch.setattr(action_cards, '_execute_transfer', execute)
-    access.set_access(bot_id='agent', user_id=2, allowed=True, actor_id=1)
+    access.set_access(bot_id='restricted', user_id=2, allowed=True, actor_id=1)
     card = action_cards.create_pending_action(action_type=action_cards.ACTION_TRANSFER,
-        conversation_id='conversation', run_id='run', requester_user_id=2,
+        conversation_id='restricted-conversation', run_id='run', requester_user_id=2,
         database_id='test', payload={}, preview={})
-    access.set_access(bot_id='agent', user_id=2, allowed=False, actor_id=1)
+    access.set_access(bot_id='restricted', user_id=2, allowed=False, actor_id=1)
     with pytest.raises(PermissionError):
         action_cards.confirm_action(action_id=card['id'], current_user=SimpleNamespace(id=2))
     execute.assert_not_called()

@@ -24,8 +24,22 @@ export function buildActiveThreadCachePayload({
   viewerLastReadMessageId,
   viewerLastReadAt,
 } = {}) {
+  const list = Array.isArray(messages) ? messages : [];
+  // R12: optimistic bubbles (sending/failed) never enter the thread cache —
+  // the failed registry restores them, and a cached copy would otherwise be
+  // mistaken for a persisted message on the next thread reload.
+  const persistedList = list.filter((message) => !message?.isOptimistic && !message?.optimisticStatus);
+  // U3: the live-appear flag must not survive a cache round-trip — restored
+  // messages are history and must mount without the appear animation.
+  const items = persistedList.some((message) => message?.animateAppear)
+    ? persistedList.map((message) => {
+      if (!message?.animateAppear) return message;
+      const { animateAppear: _animateAppear, ...rest } = message;
+      return rest;
+    })
+    : persistedList;
   return {
-    items: messages,
+    items,
     has_more: messagesHasMore,
     has_older: messagesHasMore,
     has_newer: messagesHasNewer,

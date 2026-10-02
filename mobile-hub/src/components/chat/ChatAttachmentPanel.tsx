@@ -3,9 +3,11 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as MediaLibrary from 'expo-media-library';
 import {
   ActivityIndicator,
+  AppState,
   FlatList,
   Image,
   Keyboard,
+  Linking,
   Modal,
   Pressable,
   StyleSheet,
@@ -30,11 +32,13 @@ import { useContext } from 'react';
 import {
   MEDIA_GRID_COLUMNS,
   MEDIA_PAGE_SIZE,
+  MEDIA_PANEL_TIMEOUT_MS,
   formatMediaDuration,
   mediaAssetToPickedFile,
   mediaSelectionBadge,
   reorderPanelAssets,
   toggleMediaSelection,
+  withMediaPanelTimeout,
   type PanelAlbum,
   type PanelMediaAsset,
 } from '../../chat/chatAttachmentPanel';
@@ -92,13 +96,28 @@ export function ChatAttachmentPanel({
   const [albumPickerOpen, setAlbumPickerOpen] = useState(false);
   const [selected, setSelected] = useState<PanelMediaAsset[]>([]);
   const [caption, setCaption] = useState('');
-  const [permissionState, setPermissionState] = useState<'pending' | 'granted' | 'denied'>('pending');
+  const [permissionState, setPermissionState] = useState<'pending' | 'granted' | 'denied' | 'error'>('pending');
+  const [canAskAgain, setCanAskAgain] = useState(true);
   // Android 14+ limited photo access: a usable subset is still listable.
   const [limitedAccess, setLimitedAccess] = useState(false);
   const [expanded, setExpanded] = useState(false);
   // R-T8-2: full-screen preview of a selected asset before sending.
   const [previewAsset, setPreviewAsset] = useState<PanelMediaAsset | null>(null);
-  const loadingRef = useRef(false);
+  const [gridLoading, setGridLoading] = useState(false);
+  // Media-store calls serialize on these refs so a reopen during an in-flight
+  // page load waits for it instead of dropping the reload onto an empty grid.
+  const loadingRef = useRef<Promise<void> | null>(null);
+  const pendingLoadsRef = useRef(0);
+  const accessRunRef = useRef<Promise<void> | null>(null);
+  const accessSessionRef = useRef(0);
+  const visibleRef = useRef(false);
+  const albumRef = useRef<PanelAlbum | null>(null);
+  // AUD-2: offset of the most recent page request — a repeated onEndReached
+  // before the in-flight page commits must not queue the same offset again.
+  const lastRequestedOffsetRef = useRef(-1);
+  // AUD-3: a second «Отправить» tap inside the same commit window must not
+  // deliver the selection twice.
+  const sendingRef = useRef(false);
 
   const collapsedHeight = COLLAPSED_HEIGHT;
   const expandedHeight = Math.max(collapsedHeight, windowHeight - EXPAND_MARGIN_TOP);
@@ -110,36 +129,131 @@ export function ChatAttachmentPanel({
       : withSpring(expanded ? expandedHeight : collapsedHeight, { damping: 24, stiffness: 280 });
   }, [collapsedHeight, expanded, expandedHeight, panelHeight, reduceMotion]);
 
-  const loadAssets = useCallback(async (album: PanelAlbum | null, offset = 0) => {
-    if (loadingRef.current) return;
-    loadingRef.current = true;
+  const loadAssets = useCallback((album: PanelAlbum | null, offset = 0) => {
+    lastRequestedOffsetRef.current = offset;
+    const previous = loadingRef.current ?? Promise.resolve();
+    pendingLoadsRef.current += 1;
+    setGridLoading(true);
+    const task = previous.catch(() => undefined).then(async () => {
+      try {
+        let query = new MediaLibrary.Query()
+          .within(MediaLibrary.AssetField.MEDIA_TYPE, [
+            MediaLibrary.MediaType.IMAGE,
+            MediaLibrary.MediaType.VIDEO,
+          ])
+          .orderBy({ key: MediaLibrary.AssetField.CREATION_TIME, ascending: false })
+          .limit(MEDIA_PAGE_SIZE)
+          .offset(offset);
+        if (album) query = query.album(new MediaLibrary.Album(album.id));
+        const page = await withMediaPanelTimeout(query.exeForMetadata());
+        // On Android the metadata id IS the content:// URI the rest of the
+        // upload pipeline already handles.
+        const mapped: PanelMediaAsset[] = page.map((asset) => ({
+          id: asset.id,
+          uri: asset.id,
+          filename: asset.filename || `media-${asset.id.split('/').pop() || 'asset'}`,
+          mediaType: asset.mediaType === MediaLibrary.MediaType.VIDEO ? 'video' : 'photo',
+          duration: Math.max(0, Math.round(Number(asset.duration || 0) / 1000)),
+          width: asset.width || undefined,
+          height: asset.height || undefined,
+        }));
+        setAssets((current) => (offset > 0 ? [...current, ...mapped] : mapped));
+        setHasNextPage(mapped.length >= MEDIA_PAGE_SIZE);
+        if (offset === 0) setPermissionState('granted');
+      } catch {
+        // A first-page failure is a retryable error state; a failed next page
+        // keeps the loaded grid and lets a later scroll retry. A 'denied'
+        // result from a concurrent permission re-check is not overwritten.
+        if (offset === 0) {
+          setAssets([]);
+          setHasNextPage(false);
+          setPermissionState((state) => (state === 'denied' ? state : 'error'));
+        }
+      } finally {
+        pendingLoadsRef.current -= 1;
+        setGridLoading(pendingLoadsRef.current > 0);
+      }
+    });
+    loadingRef.current = task;
+    void task.then(() => {
+      if (loadingRef.current === task) loadingRef.current = null;
+    });
+    return task;
+  }, []);
+
+  const loadAlbums = useCallback(async (isStale: () => boolean) => {
     try {
-      let query = new MediaLibrary.Query()
-        .within(MediaLibrary.AssetField.MEDIA_TYPE, [
-          MediaLibrary.MediaType.IMAGE,
-          MediaLibrary.MediaType.VIDEO,
-        ])
-        .orderBy({ key: MediaLibrary.AssetField.CREATION_TIME, ascending: false })
-        .limit(MEDIA_PAGE_SIZE)
-        .offset(offset);
-      if (album) query = query.album(new MediaLibrary.Album(album.id));
-      const page = await query.exeForMetadata();
-      // On Android the metadata id IS the content:// URI the rest of the
-      // upload pipeline already handles.
-      const mapped: PanelMediaAsset[] = page.map((asset) => ({
-        id: asset.id,
-        uri: asset.id,
-        filename: asset.filename || `media-${asset.id.split('/').pop() || 'asset'}`,
-        mediaType: asset.mediaType === MediaLibrary.MediaType.VIDEO ? 'video' : 'photo',
-        duration: Math.max(0, Math.round(Number(asset.duration || 0) / 1000)),
-        width: asset.width || undefined,
-        height: asset.height || undefined,
-      }));
-      setAssets((current) => (offset > 0 ? [...current, ...mapped] : mapped));
-      setHasNextPage(mapped.length >= MEDIA_PAGE_SIZE);
-    } finally {
-      loadingRef.current = false;
+      const albumList = await withMediaPanelTimeout(MediaLibrary.Album.getAll());
+      if (isStale()) return;
+      const mapped = await Promise.all(albumList.slice(0, 40).map(async (album) => ({
+        id: album.id,
+        title: await album.getTitle().catch(() => 'Альбом'),
+      })));
+      if (isStale()) return;
+      setAlbums(mapped.filter((album) => album.title));
+    } catch {
+      /* albums stay empty — the default roll still works */
     }
+  }, []);
+
+  const applyPermission = useCallback((permission: MediaLibrary.PermissionResponse): boolean => {
+    // R-T8-1: Android 14+ may grant 'limited' — the chosen subset is usable.
+    const hasAccess = permission.granted || permission.accessPrivileges === 'limited';
+    setLimitedAccess(permission.accessPrivileges === 'limited' && !permission.granted);
+    setCanAskAgain(permission.canAskAgain !== false);
+    setPermissionState(hasAccess ? 'granted' : 'denied');
+    return hasAccess;
+  }, []);
+
+  // BUG-GALLERY: opening the panel runs a silent getPermissionsAsync — never a
+  // system dialog — and every await is timeout-bound so a hung native call
+  // lands on an error state with «Повторить» instead of an endless spinner.
+  const refreshMediaAccess = useCallback(async (options?: { request?: boolean }) => {
+    const session = ++accessSessionRef.current;
+    const stale = () => accessSessionRef.current !== session || !visibleRef.current;
+    const run = (async () => {
+      const previous = accessRunRef.current;
+      if (previous) await previous.catch(() => undefined);
+      if (stale()) return;
+      try {
+        setPermissionState((state) => (state === 'granted' ? state : 'pending'));
+        const permission = await withMediaPanelTimeout(
+          options?.request
+            ? MediaLibrary.requestPermissionsAsync(false, ['photo', 'video'])
+            : MediaLibrary.getPermissionsAsync(false, ['photo', 'video']),
+        );
+        if (stale()) return;
+        const hasAccess = applyPermission(permission);
+        if (!hasAccess) {
+          setAssets([]);
+          setHasNextPage(false);
+          return;
+        }
+        await loadAssets(albumRef.current);
+        if (stale()) return;
+        await loadAlbums(stale);
+      } catch {
+        if (!stale()) setPermissionState('error');
+      }
+    })();
+    accessRunRef.current = run;
+    try {
+      await run;
+    } finally {
+      if (accessRunRef.current === run) accessRunRef.current = null;
+    }
+  }, [applyPermission, loadAlbums, loadAssets]);
+
+  const requestMediaAccess = useCallback(() => {
+    void refreshMediaAccess({ request: true });
+  }, [refreshMediaAccess]);
+
+  const retryMediaAccess = useCallback(() => {
+    void refreshMediaAccess();
+  }, [refreshMediaAccess]);
+
+  const openSystemSettings = useCallback(() => {
+    void Linking.openSettings().catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -148,40 +262,32 @@ export function ChatAttachmentPanel({
       setCaption('');
       setExpanded(false);
       setAlbumPickerOpen(false);
+      // AUD-4: drop the full-screen preview so a reopen never shows a stale asset.
+      setPreviewAsset(null);
+      sendingRef.current = false;
+      lastRequestedOffsetRef.current = -1;
       return;
     }
     // The panel and the keyboard are mutually exclusive (T8).
     Keyboard.dismiss();
-    let cancelled = false;
-    void (async () => {
-      const permission = await MediaLibrary.requestPermissionsAsync(false, ['photo', 'video']);
-      if (cancelled) return;
-      // R-T8-1: Android 14+ may grant 'limited' — the chosen subset is usable.
-      const hasAccess = permission.granted || permission.accessPrivileges === 'limited';
-      setLimitedAccess(permission.accessPrivileges === 'limited' && !permission.granted);
-      if (!hasAccess) {
-        setPermissionState('denied');
-        setAssets([]);
-        return;
-      }
-      setPermissionState('granted');
-      setAlbumId(null);
-      await loadAssets(null);
-      try {
-        const albumList = await MediaLibrary.Album.getAll();
-        if (cancelled) return;
-        const mapped = await Promise.all(albumList.slice(0, 40).map(async (album) => ({
-          id: album.id,
-          title: await album.getTitle().catch(() => 'Альбом'),
-        })));
-        if (cancelled) return;
-        setAlbums(mapped.filter((album) => album.title));
-      } catch {
-        /* albums stay empty — the default roll still works */
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [loadAssets, visible]);
+    visibleRef.current = true;
+    albumRef.current = null;
+    setAlbumId(null);
+    void refreshMediaAccess();
+    // Returning from Settings/background can carry a fresh grant or a revoke —
+    // re-check and reload the first page while the panel stays open.
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') void refreshMediaAccess();
+    });
+    return () => {
+      visibleRef.current = false;
+      subscription.remove();
+    };
+  }, [refreshMediaAccess, visible]);
+
+  useEffect(() => {
+    albumRef.current = albumId ? albums.find((album) => album.id === albumId) ?? null : null;
+  }, [albumId, albums]);
 
   const switchAlbum = useCallback((nextAlbumId: string | null) => {
     setAlbumPickerOpen(false);
@@ -190,6 +296,7 @@ export function ChatAttachmentPanel({
     setAssets([]);
     setHasNextPage(false);
     const nextAlbum = albums.find((album) => album.id === nextAlbumId) || null;
+    albumRef.current = nextAlbum;
     void loadAssets(nextAlbum);
   }, [albumId, albums, loadAssets]);
 
@@ -204,7 +311,10 @@ export function ChatAttachmentPanel({
   }, [closePanel, expanded]);
 
   const sendSelection = useCallback(() => {
-    if (!selected.length) return;
+    // AUD-3: double-tap before the selection state commits must not call
+    // onSendFiles twice — the ref clears when the panel closes (visible=false).
+    if (sendingRef.current || !selected.length) return;
+    sendingRef.current = true;
     const files = selected.map(mediaAssetToPickedFile);
     const captionText = caption.trim();
     setSelected([]);
@@ -357,11 +467,42 @@ export function ChatAttachmentPanel({
       <View style={styles.gridArea}>
         {permissionState === 'denied' ? (
           <View style={styles.permissionBox}>
-            <MaterialCommunityIcons name="image-off-outline" size={28} color={chatTokens.textSecondary} />
-            <Text style={styles.permissionText}>Нет доступа к медиа — разрешите в настройках</Text>
+            <MaterialCommunityIcons
+              name={canAskAgain ? 'image-multiple-outline' : 'image-off-outline'}
+              size={28}
+              color={chatTokens.textSecondary}
+            />
+            <Text style={styles.permissionText}>
+              {canAskAgain
+                ? 'Для выбора фото и видео нужен доступ к галерее'
+                : 'Нет доступа к медиа — разрешите в настройках'}
+            </Text>
+            <Pressable
+              onPress={canAskAgain ? requestMediaAccess : openSystemSettings}
+              style={({ pressed }) => [styles.permissionButton, pressed && styles.pressed]}
+              accessibilityRole="button"
+              accessibilityLabel={canAskAgain ? 'Разрешить доступ к фото' : 'Открыть настройки'}
+            >
+              <Text style={styles.permissionButtonText}>
+                {canAskAgain ? 'Разрешить доступ к фото' : 'Открыть настройки'}
+              </Text>
+            </Pressable>
           </View>
-        ) : permissionState === 'pending' && !assets.length ? (
-          <ActivityIndicator style={styles.loader} color={chatTokens.accentText} />
+        ) : permissionState === 'error' ? (
+          <View style={styles.permissionBox}>
+            <MaterialCommunityIcons name="image-off-outline" size={28} color={chatTokens.textSecondary} />
+            <Text style={styles.permissionText}>Не удалось загрузить медиа</Text>
+            <Pressable
+              onPress={retryMediaAccess}
+              style={({ pressed }) => [styles.permissionButton, pressed && styles.pressed]}
+              accessibilityRole="button"
+              accessibilityLabel="Повторить"
+            >
+              <Text style={styles.permissionButtonText}>Повторить</Text>
+            </Pressable>
+          </View>
+        ) : (permissionState === 'pending' || gridLoading) && !assets.length ? (
+          <ActivityIndicator style={styles.loader} color={chatTokens.accentText} accessibilityLabel="Загрузка медиа" />
         ) : (
           <FlatList
             data={gridData}
@@ -374,10 +515,13 @@ export function ChatAttachmentPanel({
             windowSize={5}
             removeClippedSubviews={false}
             onEndReached={() => {
-              if (hasNextPage) {
-                const album = albums.find((item) => item.id === albumId) || null;
-                void loadAssets(album, assets.length);
-              }
+              if (!hasNextPage) return;
+              // AUD-2: while a page request is still serialized on loadingRef,
+              // a repeated onEndReached would queue the same offset again and
+              // duplicate rows (keyExtractor collisions). Skip until it lands.
+              if (loadingRef.current && lastRequestedOffsetRef.current === assets.length) return;
+              const album = albums.find((item) => item.id === albumId) || null;
+              void loadAssets(album, assets.length);
             }}
             onEndReachedThreshold={0.6}
             ListEmptyComponent={
@@ -493,7 +637,12 @@ export function ChatAttachmentPanel({
             />
           ) : null}
           <Pressable
-            style={styles.previewClose}
+            // AUD-8: edge-to-edge — the fixed 40/20 offsets can sit under the
+            // status bar/nav bar; lift them to the safe-area inset.
+            style={[styles.previewClose, {
+              top: Math.max(40, insets?.top || 0),
+              right: Math.max(20, insets?.right || 0),
+            }]}
             onPress={() => setPreviewAsset(null)}
             accessibilityRole="button"
             accessibilityLabel="Закрыть предпросмотр"
@@ -503,7 +652,7 @@ export function ChatAttachmentPanel({
           </Pressable>
           {previewAsset ? (
             <Pressable
-              style={styles.previewRemove}
+              style={[styles.previewRemove, { bottom: Math.max(40, insets?.bottom || 0) }]}
               onPress={() => {
                 setSelected((items) => items.filter((x) => x.id !== previewAsset.id));
                 setPreviewAsset(null);
@@ -717,6 +866,15 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
     padding: 24,
   },
   permissionText: { color: chatTokens.textSecondary, fontSize: 14, textAlign: 'center' },
+  permissionButton: {
+    minHeight: 40,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: chatTokens.composerActionBg,
+  },
+  permissionButtonText: { color: '#fff', fontSize: 14, fontWeight: '700' },
   limitedBar: {
     paddingHorizontal: 10,
     paddingVertical: 8,

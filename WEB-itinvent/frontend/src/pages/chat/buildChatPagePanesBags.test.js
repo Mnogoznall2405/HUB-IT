@@ -31,6 +31,7 @@ describe('buildChatPagePanesBags', () => {
       conversationsLoading: false,
       filteredConversations: [],
       openGroupDialog: () => {},
+      compose: { mode: 'direct', query: '' },
       sidebarScrollRef: { current: null },
       conversationFilter: 'all',
       handleActiveFolderChange: () => {},
@@ -134,7 +135,6 @@ describe('buildChatPagePanesBags', () => {
       emojiPickerOpen: false,
       insertEmojiAtSelection: () => {},
       handleSendSticker,
-      handleSendGif: () => {},
       voiceRecording: false,
       voiceRecordingDuration: 0,
       voiceRecordingLevelRef: { current: 0 },
@@ -166,6 +166,7 @@ describe('buildChatPagePanesBags', () => {
     expect(bags.sidebar.activeConversationId).toBe('c1');
     expect(bags.sidebar.workspace).toBe('ai');
     expect(bags.sidebar.onWorkspaceChange).toBe(input.setSidebarWorkspace);
+    expect(bags.sidebar.compose).toBe(input.compose);
     expect(bags.thread.activeConversationId).toBe('c1');
     expect(bags.thread.messages).toEqual([]);
     expect(bags.thread.handleSendSticker).toBe(handleSendSticker);

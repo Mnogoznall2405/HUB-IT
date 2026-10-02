@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, StrictBool
+from pydantic import BaseModel, Field, StrictBool
 
 from backend.ai_chat.schemas import (
     AiBotAdminResponse,
@@ -28,6 +28,10 @@ class AgentAccessRequest(BaseModel):
     allowed: StrictBool
 
 
+class BalanceSettingsRequest(BaseModel):
+    threshold: float = Field(ge=0, le=1_000_000_000)
+
+
 async def _access_call(function, **kwargs):
     try:
         return await run_in_threadpool(function, **kwargs)
@@ -37,6 +41,25 @@ async def _access_call(function, **kwargs):
         raise HTTPException(403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(422, detail=str(exc)) from exc
+
+
+@router.get('/balance')
+async def get_ai_balance(current_user: User = Depends(require_agent_manager)):
+    from backend.ai_chat.balance import ai_balance_service
+    return await run_in_threadpool(ai_balance_service.get_state)
+
+
+@router.put('/balance/settings')
+async def update_ai_balance_settings(payload: BalanceSettingsRequest,
+                                     current_user: User = Depends(require_agent_manager)):
+    from backend.ai_chat.balance import ai_balance_service
+    return await _access_call(ai_balance_service.set_threshold, threshold=payload.threshold)
+
+
+@router.post('/balance/check')
+async def check_ai_balance(current_user: User = Depends(require_agent_manager)):
+    from backend.ai_chat.balance import ai_balance_service
+    return await run_in_threadpool(ai_balance_service.check)
 
 
 @router.get('/access/users/{user_id}')

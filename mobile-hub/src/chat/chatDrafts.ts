@@ -1,7 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
 import type { ChatMessage } from '../api/types';
 import type { NativePickedFile } from '../files/nativeFilePicker';
-import { persistNativeChatDraftFiles, clearNativeChatDraftFiles, deleteUnreferencedChatFiles } from './nativeChatDraftFiles';
+import { persistNativeChatDraftFiles, clearNativeChatDraftFiles, deleteUnreferencedChatFiles, pinNativeChatDraftFiles } from './nativeChatDraftFiles';
 
 export type NativeChatDraftContext = {
   mode?: { type: 'reply' | 'edit'; message: ChatMessage };
@@ -165,31 +165,61 @@ export async function setNativeChatDraft(
   if (normalizedText.length > MAX_TEXT_LENGTH) {
     throw new NativeChatDraftLimitError('Черновик не сохранён: текст длиннее 10 000 символов. Сократите текст перед сохранением.');
   }
-  return mutateDrafts(async () => {
-    const stored = await loadDrafts();
-    const candidates = stored.filter((item) => item.userId === normalizedUserId && item.conversationId === normalizedConversationId)
-      .flatMap((item) => item.context?.files?.map((file) => file.uri) || []);
-    // Keep the previous draft on disk until the replacement copy + metadata write both succeed.
-    const nextDrafts = stored.filter((item) => (
-      item.userId !== normalizedUserId || item.conversationId !== normalizedConversationId
-    ));
-    if (normalizedText.trim() || context?.mode || context?.files?.length) {
-      const storedContext = context?.files?.length
-        ? { ...context, files: await persistNativeChatDraftFiles(normalizedUserId, context.files) }
-        : context;
-      nextDrafts.push({
-        userId: normalizedUserId,
-        conversationId: normalizedConversationId,
-        text: normalizedText,
-        updatedAt: Date.now(),
-        ...(storedContext ? { context: storedContext } : {}),
-      });
+  // Real File.copy() runs (hundreds of MB at times) outside the serialized
+  // storage queue — a draft autosave must not block outbox put/claim. The pin
+  // covers the whole operation: while the metadata commit waits in the queue,
+  // an overtaking file-reference check must not reclaim the fresh copies.
+  const unpinSource = context?.files?.length ? pinNativeChatDraftFiles(context.files) : null;
+  let storedFiles: NativePickedFile[] | null = null;
+  let unpinCopies: (() => void) | null = null;
+  try {
+    storedFiles = context?.files?.length
+      ? await persistNativeChatDraftFiles(normalizedUserId, context.files)
+      : null;
+    if (storedFiles) unpinCopies = pinNativeChatDraftFiles(storedFiles);
+    const storedContext = storedFiles ? { ...context, files: storedFiles } : context;
+    const committed = await mutateDrafts(async () => {
+      const stored = await loadDrafts();
+      const candidates = stored.filter((item) => item.userId === normalizedUserId && item.conversationId === normalizedConversationId)
+        .flatMap((item) => item.context?.files?.map((file) => file.uri) || []);
+      // Keep the previous draft on disk until the replacement copy + metadata write both succeed.
+      const nextDrafts = stored.filter((item) => (
+        item.userId !== normalizedUserId || item.conversationId !== normalizedConversationId
+      ));
+      if (normalizedText.trim() || storedContext?.mode || storedContext?.files?.length) {
+        nextDrafts.push({
+          userId: normalizedUserId,
+          conversationId: normalizedConversationId,
+          text: normalizedText,
+          updatedAt: Date.now(),
+          ...(storedContext ? { context: storedContext } : {}),
+        });
+      }
+      await saveDrafts(nextDrafts);
+      const retained = new Set(nextDrafts.flatMap((item) => item.context?.files?.map((file) => file.uri) || []));
+      const removed = candidates.filter((uri) => !retained.has(uri));
+      await deleteUnreferencedChatFiles(removed).catch(() => undefined);
+      return true;
+    }, { lane: 'draft', coalesceKey: `${normalizedUserId}:${normalizedConversationId}` });
+    if (committed !== true && storedFiles?.length) {
+      // The commit was coalesced by a newer queued draft before it ran — the
+      // copies it just made are unreferenced; reclaim them now, not at logout.
+      // Shared copies (the newer write reused them via the copies cache) are
+      // still referenced by its pin, so deleteUnreferencedChatFiles skips them.
+      const uris = storedFiles.map((file) => file.uri);
+      await mutateDrafts(() => deleteUnreferencedChatFiles(uris)).catch(() => undefined);
     }
-    await saveDrafts(nextDrafts);
-    const retained = new Set(nextDrafts.flatMap((item) => item.context?.files?.map((file) => file.uri) || []));
-    const removed = candidates.filter((uri) => !retained.has(uri));
-    await deleteUnreferencedChatFiles(removed).catch(() => undefined);
-  });
+  } catch (error) {
+    // A rejected/failed commit leaves the copies it just made orphaned.
+    if (storedFiles?.length) {
+      const uris = storedFiles.map((file) => file.uri);
+      await mutateDrafts(() => deleteUnreferencedChatFiles(uris)).catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    unpinCopies?.();
+    unpinSource?.();
+  }
 }
 
 export async function clearNativeChatDraft(userId: number, conversationId: string): Promise<void> {
@@ -201,5 +231,5 @@ export async function clearAllNativeChatDrafts(): Promise<void> {
   return mutateDrafts(async () => {
     await SecureStore.deleteItemAsync(STORAGE_KEY);
     clearNativeChatDraftFiles();
-  });
+  }, { lane: 'draft' });
 }

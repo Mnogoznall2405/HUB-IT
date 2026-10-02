@@ -569,6 +569,7 @@ def get_equipment_by_inv(inv_no: str, db_id: Optional[str] = None) -> Optional[d
     optional_mac_select = "i.MAC_ADDRESS as mac_address"
     optional_network_select = "i.NETBIOS_NAME as network_name"
     optional_domain_select = "i.DOMAIN_NAME as domain_name"
+    optional_extra_select = ""
 
     try:
         item_columns = _get_table_columns("ITEMS", db_id)
@@ -598,6 +599,9 @@ def get_equipment_by_inv(inv_no: str, db_id: Optional[str] = None) -> Optional[d
             ]
         )
         domain_col = _pick_first(["DOMAIN_NAME", "NET_DOMAIN", "DOMAIN"])
+        date_create_col = _pick_first(["CREATE_DATE", "DATE_CREATE"])
+        date_modify_col = _pick_first(["CH_DATE", "DATE_LAST_MODIFY"])
+        ch_user_col = _pick_first(["CH_USER"])
 
         if ip_col:
             optional_ip_select = f"i.{ip_col} as ip_address"
@@ -607,6 +611,16 @@ def get_equipment_by_inv(inv_no: str, db_id: Optional[str] = None) -> Optional[d
             optional_network_select = f"i.{network_col} as network_name"
         if domain_col:
             optional_domain_select = f"i.{domain_col} as domain_name"
+
+        extra_selects = []
+        if date_create_col:
+            extra_selects.append(f"i.{date_create_col} as date_create")
+        if date_modify_col:
+            extra_selects.append(f"i.{date_modify_col} as date_last_modify")
+        if ch_user_col:
+            extra_selects.append(f"i.{ch_user_col} as ch_user")
+        if extra_selects:
+            optional_extra_select = ",\n            " + ",\n            ".join(extra_selects)
     except Exception:
         pass
 
@@ -637,7 +651,7 @@ def get_equipment_by_inv(inv_no: str, db_id: Optional[str] = None) -> Optional[d
             {optional_ip_select},
             {optional_mac_select},
             {optional_network_select},
-            {optional_domain_select}
+            {optional_domain_select}{optional_extra_select}
         FROM ITEMS i
         LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
         LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE

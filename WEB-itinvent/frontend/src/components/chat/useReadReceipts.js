@@ -85,6 +85,23 @@ export default function useReadReceipts({
   );
   effectiveLastReadMessageIdRef.current = effectiveLastReadMessageId;
 
+  // Incoming messages sitting below the read marker are "pending" — they arrived
+  // while the reader was not at the bottom (or scrolled away) and still need the
+  // jump-to-latest badge. The count shrinks as the observer reports them read.
+  const pendingNewCount = useMemo(() => {
+    const markerIndex = Number(messageOrderState.indexById.get(effectiveLastReadMessageId));
+    // R5: null = "no data" (marker not in the loaded window) — the caller's
+    // `?? unread_count` fallback must decide, not a fake zero.
+    if (!Number.isFinite(markerIndex)) return null;
+    let count = 0;
+    for (let index = markerIndex + 1; index < messageOrderState.list.length; index += 1) {
+      const message = messageOrderState.list[index];
+      if (!message || message.is_own || message.isOptimistic || message.is_deleted) continue;
+      count += 1;
+    }
+    return count;
+  }, [effectiveLastReadMessageId, messageOrderState]);
+
   const clearPendingTimer = useCallback(() => {
     if (debounceTimerRef.current) {
       window.clearTimeout(debounceTimerRef.current);
@@ -353,5 +370,6 @@ export default function useReadReceipts({
   return {
     effectiveLastReadMessageId,
     getReadTargetRef,
+    pendingNewCount,
   };
 }

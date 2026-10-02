@@ -1008,11 +1008,9 @@ class NetworkWolDraftTool(AiTool):
         "Create a pending action card to send a Wake-on-LAN magic packet to a device. "
         "Provide either a MAC address directly, or an identifier (hostname, inventory number) "
         "to resolve the MAC from ITinvent equipment data. "
-        "Does not send the packet until the user confirms the action card. "
-        "Requires admin access."
+        "Does not send the packet until the user confirms the action card."
     )
     input_model = NetworkWolDraftArgs
-    admin_only = True
     stage = "checking_network"
 
     def execute(self, *, context: AiToolExecutionContext, args: NetworkWolDraftArgs) -> AiToolResult:
@@ -1245,11 +1243,10 @@ class NetworkHostInfoTool(AiTool):
     tool_id = NETWORK_TOOL_HOST_INFO
     description = (
         "Get remote Windows host information via WMI: OS version, uptime, CPU usage, "
-        "RAM usage, and disk space. Requires admin access. "
+        "RAM usage, and disk space. "
         "Provide the hostname or IP address of the target Windows machine."
     )
     input_model = NetworkHostInfoArgs
-    admin_only = True
     stage = "checking_network"
 
     def execute(self, *, context: AiToolExecutionContext, args: NetworkHostInfoArgs) -> AiToolResult:

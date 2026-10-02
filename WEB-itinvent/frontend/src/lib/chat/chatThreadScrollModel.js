@@ -4,6 +4,49 @@ export const isVirtualizedChatThreadScroll = (container) => (
   Boolean(container?.querySelector?.(CHAT_THREAD_VIRTUAL_CONTENT_SELECTOR))
 );
 
+// Д2-3: поиск первой видимой строки сообщения. Раньше это был линейный обход
+// всех [data-chat-message-id] с getBoundingClientRect() на каждый узел выше
+// вьюпорта — а вызывается он на каждом scroll-событии, пока лента не у дна, и
+// на каждом prepend-restore, что давало O(сотни) layout-чтений на кадр.
+// Быстрый путь — elementFromPoint у верхней кромки контейнера (один hit-test
+// по уже построенному layout); если точка попала в чип даты/сентинел/оверлей,
+// пробуем чуть ниже, затем — прежний линейный скан как fallback.
+const CHAT_ANCHOR_PROBE_X_INSET_PX = 24;
+const CHAT_ANCHOR_PROBE_Y_OFFSETS_PX = [1, 40];
+const CHAT_MESSAGE_NODE_SELECTOR = '[data-message-id], [data-chat-message-id]';
+
+const findTopVisibleMessageNode = (container, containerRect) => {
+  try {
+    const doc = container?.ownerDocument;
+    const containerWidth = Number(containerRect?.width || 0);
+    const probeX = Number(containerRect?.left || 0)
+      + Math.min(CHAT_ANCHOR_PROBE_X_INSET_PX, Math.max(2, containerWidth / 4));
+    if (typeof doc?.elementFromPoint === 'function' && Number.isFinite(probeX)) {
+      for (const offsetPx of CHAT_ANCHOR_PROBE_Y_OFFSETS_PX) {
+        const probeY = Number(containerRect?.top || 0) + offsetPx;
+        if (!Number.isFinite(probeY)) continue;
+        const hit = doc.elementFromPoint(probeX, probeY);
+        const node = hit?.closest?.(CHAT_MESSAGE_NODE_SELECTOR) || null;
+        if (node && container.contains(node)) return node;
+      }
+    }
+  } catch {
+    // Нестандартные DOM (jsdom, выкл. hit-test) — ниже линейный скан.
+  }
+
+  const messageNodes = Array.from(container.querySelectorAll('[data-chat-message-id]'));
+  return messageNodes.find((node) => {
+    const rect = node.getBoundingClientRect();
+    return rect.bottom >= containerRect.top + 1;
+  }) || messageNodes[0] || null;
+};
+
+const readMessageNodeId = (node) => String(
+  node?.getAttribute?.('data-chat-message-id')
+    || node?.getAttribute?.('data-message-id')
+    || '',
+).trim();
+
 export const capturePrependScrollRestoreState = (container) => {
   if (!container) return null;
 
@@ -21,11 +64,7 @@ export const capturePrependScrollRestoreState = (container) => {
   }
 
   const containerRect = container.getBoundingClientRect();
-  const messageNodes = Array.from(container.querySelectorAll('[data-chat-message-id]'));
-  const anchorNode = messageNodes.find((node) => {
-    const rect = node.getBoundingClientRect();
-    return rect.bottom >= containerRect.top + 1;
-  }) || messageNodes[0] || null;
+  const anchorNode = findTopVisibleMessageNode(container, containerRect);
 
   if (!anchorNode) {
     return {
@@ -41,7 +80,7 @@ export const capturePrependScrollRestoreState = (container) => {
     virtual: false,
     scrollHeight,
     scrollTop,
-    anchorMessageId: String(anchorNode.getAttribute('data-chat-message-id') || '').trim(),
+    anchorMessageId: readMessageNodeId(anchorNode),
     anchorViewportOffset: anchorNode.getBoundingClientRect().top - containerRect.top,
   };
 };

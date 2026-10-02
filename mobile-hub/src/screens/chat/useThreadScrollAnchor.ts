@@ -205,7 +205,9 @@ export function useThreadScrollAnchor({
         showNativeToast('Не удалось перейти к сообщению', formatApiError(cause, 'Повторите попытку'));
       }
     } finally {
-      if (isCurrentHistory()) setSearching(false);
+      // T14: a racing loadInitial/jump invalidates isCurrentHistory() — the
+      // spinner still must be released, only unmount may skip it.
+      if (mountedRef.current) setSearching(false);
     }
   }, [conversationId, messages, offlineMode, userId]);
 
@@ -336,6 +338,13 @@ export function useThreadScrollAnchor({
     if (nearBottom && hasNewer) void loadNewer();
   }, [hasNewer, loadNewer, markRead, messages]);
 
+  // T9: pending retry of a failed scrollToIndex — the approximate offset
+  // scroll lands first, then one precise retry runs after the rows lay out.
+  const scrollFailureRetryRef = useRef<ReturnType<typeof requestAnimationFrame> | null>(null);
+  useEffect(() => () => {
+    if (scrollFailureRetryRef.current !== null) cancelAnimationFrame(scrollFailureRetryRef.current);
+  }, []);
+
   const handleMessageScrollFailure = useCallback((info: {
     averageItemLength: number;
     index: number;
@@ -343,6 +352,11 @@ export function useThreadScrollAnchor({
     listRef.current?.scrollToOffset({
       offset: Math.max(0, info.averageItemLength * info.index),
       animated: false,
+    });
+    if (scrollFailureRetryRef.current !== null) cancelAnimationFrame(scrollFailureRetryRef.current);
+    scrollFailureRetryRef.current = requestAnimationFrame(() => {
+      scrollFailureRetryRef.current = null;
+      listRef.current?.scrollToIndex({ index: info.index, animated: false, viewPosition: 0.5 });
     });
   }, []);
 

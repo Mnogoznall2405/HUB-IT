@@ -78,9 +78,13 @@ export function useAccountSectionData(area = 'settings') {
     [hasPermission, user],
   );
   const requestedSection = String(section || '').trim();
+  const personalSections = useMemo(
+    () => PERSONAL_SETTINGS_SECTIONS.filter((item) => !item.permission || hasPermission(item.permission)),
+    [hasPermission],
+  );
   const personalSectionKeys = useMemo(
-    () => new Set(PERSONAL_SETTINGS_SECTIONS.map((item) => item.key)),
-    [],
+    () => new Set(personalSections.map((item) => item.key)),
+    [personalSections],
   );
   const adminSectionKeys = useMemo(
     () => new Set(adminSections.map((item) => item.key)),
@@ -101,7 +105,7 @@ export function useAccountSectionData(area = 'settings') {
       );
   const tab = activeSection === 'system' ? 'env' : activeSection;
   const [blockingError, setBlockingError] = useState('');
-  const [themeMode, setThemeMode] = useState(preferences.theme_mode || 'light');
+  const [themeMode, setThemeMode] = useState(preferences.theme_mode || 'system');
   const [fontFamily, setFontFamily] = useState(preferences.font_family || 'Aptos');
   const [fontScale, setFontScale] = useState(Number(preferences.font_scale || 1));
   const [mobileBottomNavItems, setMobileBottomNavItems] = useState(
@@ -148,7 +152,7 @@ export function useAccountSectionData(area = 'settings') {
   const linkTrustedDeviceModeRef = useRef({ platformOnly: false });
 
   useEffect(() => {
-    setThemeMode(preferences.theme_mode || 'light');
+    setThemeMode(preferences.theme_mode || 'system');
     setFontFamily(preferences.font_family || 'Aptos');
     setFontScale(Number(preferences.font_scale || 1));
     setMobileBottomNavItems(normalizeMobileBottomNavItems(preferences.mobile_bottom_nav_items));
@@ -934,6 +938,7 @@ export function useAccountSectionData(area = 'settings') {
     canAccessMail,
     adminSections,
     activeSection,
+    personalSections,
     blockingError,
     setBlockingError,
     themeMode,

@@ -37,9 +37,12 @@ export default function DesktopProtocolHandoff() {
   const autoLaunchedRef = useRef(false);
   const [visible, setVisible] = useState(false);
   const [protocolHref, setProtocolHref] = useState('');
+  // AI15/Д1: на странице чата баннер «Открыть в HUB Desktop» не показываем
+  // и протокол не запускаем — чат должен оставаться в браузере.
+  const isChatRoute = location.pathname.startsWith('/chat');
 
   useEffect(() => {
-    if (!canOfferDesktopHandoff()) {
+    if (isChatRoute || !canOfferDesktopHandoff()) {
       setVisible(false);
       setProtocolHref('');
       return;
@@ -59,9 +62,9 @@ export default function DesktopProtocolHandoff() {
       autoLaunchedRef.current = true;
       launchHubitProtocol(href);
     }
-  }, [location.pathname, location.search]);
+  }, [isChatRoute, location.pathname, location.search]);
 
-  if (!visible || !protocolHref) return null;
+  if (!visible || !protocolHref || isChatRoute) return null;
 
   const stayInBrowser = (persistNever) => {
     skipDesktopHandoffThisSession();

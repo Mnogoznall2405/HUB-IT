@@ -41,6 +41,9 @@ export function AddressBookEntryDetail({
   onOpenChat,
   showChatAction = false,
   chatBusy = false,
+  isFavorite = false,
+  onToggleFavorite,
+  dismissed = false,
 }: {
   item: AddressBookEntry;
   query: string;
@@ -54,6 +57,9 @@ export function AddressBookEntryDetail({
   onOpenChat?: () => void;
   showChatAction?: boolean;
   chatBusy?: boolean;
+  isFavorite?: boolean;
+  onToggleFavorite?: () => void;
+  dismissed?: boolean;
 }) {
   const primaryPhone = pickPrimaryPhone(item);
   const primaryEmail = pickPrimaryEmail(item);
@@ -65,28 +71,52 @@ export function AddressBookEntryDetail({
   const canMail = Boolean(primaryEmail?.value && isValidEmailRecipient(primaryEmail.value));
   const meta = [item.position || 'Должность не указана', ageLabel].filter(Boolean).join(' · ');
   const workplaceLabel = buildWorkplaceLabel(item);
+  // N5: dismissed employees keep call/copy/Telegram/external mail only —
+  // HUB compose, MAX, chat and favorites stay hidden.
+  const dismissalLabel = dismissed
+    ? `Уволен${formatDate(item.dismissal_date) ? ` ${formatDate(item.dismissal_date)}` : ''}`
+    : '';
 
   return (
     <View testID="address-book-entry-detail" style={styles.root}>
-      <View style={styles.identity}>
-        <AddressBookHighlight
-          value={item.full_name}
-          query={query}
-          style={[styles.title, { color: tokens.textPrimary }]}
-        />
-        <AddressBookHighlight
-          value={meta}
-          query={query}
-          style={[styles.meta, { color: tokens.textSecondary }]}
-          testID="address-book-person-meta"
-        />
-        {hireDateLabel ? (
-          <Text
-            testID="address-book-hire-date"
+      <View style={styles.identityRow}>
+        <View style={styles.identity}>
+          <AddressBookHighlight
+            value={item.full_name}
+            query={query}
+            style={[styles.title, { color: tokens.textPrimary }]}
+          />
+          <AddressBookHighlight
+            value={meta}
+            query={query}
             style={[styles.meta, { color: tokens.textSecondary }]}
+            testID="address-book-person-meta"
+          />
+          {hireDateLabel ? (
+            <Text
+              testID="address-book-hire-date"
+              style={[styles.meta, { color: tokens.textSecondary }]}
+            >
+              Дата приёма: {hireDateLabel}
+            </Text>
+          ) : null}
+        </View>
+        {onToggleFavorite && !dismissed ? (
+          <Pressable
+            testID="address-book-favorite-toggle"
+            onPress={onToggleFavorite}
+            accessibilityRole="button"
+            accessibilityLabel={isFavorite ? 'Убрать из избранного' : 'Добавить в избранное'}
+            accessibilityState={{ selected: isFavorite }}
+            hitSlop={4}
+            style={styles.favoriteButton}
           >
-            Дата приёма: {hireDateLabel}
-          </Text>
+            <MaterialCommunityIcons
+              name={isFavorite ? 'star' : 'star-outline'}
+              size={22}
+              color={isFavorite ? tokens.warning : tokens.iconMuted}
+            />
+          </Pressable>
         ) : null}
       </View>
       {absenceLabel ? (
@@ -96,6 +126,16 @@ export function AddressBookEntryDetail({
         >
           <Text style={[styles.chipText, { color: absenceTint(item.absence?.kind, tokens).color }]}>
             {absenceLabel}
+          </Text>
+        </View>
+      ) : null}
+      {dismissalLabel ? (
+        <View
+          testID="address-book-dismissed-chip"
+          style={[styles.chip, { backgroundColor: tokens.panelMuted }]}
+        >
+          <Text style={[styles.chipText, { color: tokens.textSecondary }]}>
+            {dismissalLabel}
           </Text>
         </View>
       ) : null}
@@ -121,7 +161,7 @@ export function AddressBookEntryDetail({
             leading={<TelegramBrandIcon size={16} disabled={!canTelegram} />}
           />
         ) : null}
-        {primaryEmail ? (
+        {primaryEmail && !dismissed ? (
           <PrimaryButton
             tokens={tokens}
             icon="email-outline"
@@ -131,7 +171,7 @@ export function AddressBookEntryDetail({
             onPress={() => onComposeEmail(primaryEmail.value)}
           />
         ) : null}
-        {showChatAction ? (
+        {showChatAction && !dismissed ? (
           <PrimaryButton
             tokens={tokens}
             icon="forum-outline"
@@ -180,6 +220,7 @@ export function AddressBookEntryDetail({
         onCall={onCall}
         onOpenTelegram={onOpenTelegram}
         onOpenMax={onOpenMax}
+        dismissed={dismissed}
       />
       <PhoneActions
         tokens={tokens}
@@ -190,6 +231,7 @@ export function AddressBookEntryDetail({
         onCall={onCall}
         onOpenTelegram={onOpenTelegram}
         onOpenMax={onOpenMax}
+        dismissed={dismissed}
       />
       <EmailActions
         tokens={tokens}
@@ -199,6 +241,7 @@ export function AddressBookEntryDetail({
         onCopy={onCopy}
         onComposeEmail={onComposeEmail}
         onOpenExternalMail={onOpenExternalMail}
+        dismissed={dismissed}
       />
       <EmailActions
         tokens={tokens}
@@ -208,6 +251,7 @@ export function AddressBookEntryDetail({
         onCopy={onCopy}
         onComposeEmail={onComposeEmail}
         onOpenExternalMail={onOpenExternalMail}
+        dismissed={dismissed}
       />
     </View>
   );
@@ -222,6 +266,7 @@ function PhoneActions({
   onCall,
   onOpenTelegram,
   onOpenMax,
+  dismissed = false,
 }: {
   tokens: FluentTokens;
   phones?: AddressBookPhone[] | null;
@@ -231,6 +276,7 @@ function PhoneActions({
   onCall: (telHref: string) => void;
   onOpenTelegram: (digits: string) => void;
   onOpenMax: (digits: string) => void;
+  dismissed?: boolean;
 }) {
   const items = Array.isArray(phones) ? phones : [];
   if (items.length === 0) return null;
@@ -268,14 +314,16 @@ function PhoneActions({
             >
               <TelegramBrandIcon size={20} disabled={!canOpenMessenger} />
             </IconAction>
-            <IconAction
-              tokens={tokens}
-              label={`Открыть MAX ${value}`}
-              disabled={!canOpenMessenger}
-              onPress={() => onOpenMax(digits)}
-            >
-              <MaxBrandIcon size={20} disabled={!canOpenMessenger} />
-            </IconAction>
+            {!dismissed ? (
+              <IconAction
+                tokens={tokens}
+                label={`Открыть MAX ${value}`}
+                disabled={!canOpenMessenger}
+                onPress={() => onOpenMax(digits)}
+              >
+                <MaxBrandIcon size={20} disabled={!canOpenMessenger} />
+              </IconAction>
+            ) : null}
             <IconAction
               tokens={tokens}
               icon="content-copy"
@@ -297,6 +345,7 @@ function EmailActions({
   onCopy,
   onComposeEmail,
   onOpenExternalMail,
+  dismissed = false,
 }: {
   tokens: FluentTokens;
   emails?: AddressBookEmail[] | null;
@@ -305,6 +354,7 @@ function EmailActions({
   onCopy: (value: string) => void;
   onComposeEmail: (email: string) => void;
   onOpenExternalMail: (email: string) => void;
+  dismissed?: boolean;
 }) {
   const items = Array.isArray(emails) ? emails : [];
   if (items.length === 0) return null;
@@ -324,13 +374,15 @@ function EmailActions({
               ) : null}
               <AddressBookHighlight value={value} query={query} style={[styles.value, { color: tokens.textPrimary }]} />
             </View>
-            <IconAction
-              tokens={tokens}
-              icon="email-outline"
-              label={`Написать в HUB ${value}`}
-              disabled={!canMail}
-              onPress={() => onComposeEmail(value)}
-            />
+            {!dismissed ? (
+              <IconAction
+                tokens={tokens}
+                icon="email-outline"
+                label={`Написать в HUB ${value}`}
+                disabled={!canMail}
+                onPress={() => onComposeEmail(value)}
+              />
+            ) : null}
             <IconAction
               tokens={tokens}
               icon="email-plus-outline"
@@ -432,7 +484,20 @@ function IconAction({
 
 const styles = StyleSheet.create({
   root: { gap: 12 },
-  identity: { gap: 2 },
+  identityRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  identity: { gap: 2, flex: 1, minWidth: 0 },
+  favoriteButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: -10,
+    marginTop: -6,
+  },
   title: { fontSize: 22, fontWeight: '800', lineHeight: 26 },
   meta: { fontSize: 13, lineHeight: 18 },
   chip: {

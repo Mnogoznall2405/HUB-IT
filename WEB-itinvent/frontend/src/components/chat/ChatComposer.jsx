@@ -9,6 +9,7 @@ import {
 } from '@mui/material';
 import TextareaAutosize from '@mui/material/TextareaAutosize';
 import useAiAgentAccess from './useAiAgentAccess';
+import { ChatComposerScheduling, ScheduledMessagesBar } from './ChatScheduledMessages';
 import { alpha } from '@mui/material/styles';
 import AttachFileRoundedIcon from '@mui/icons-material/AttachFileRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
@@ -33,6 +34,7 @@ import {
   getPersonStatusLine,
   getSearchResultPreview,
 } from './chatHelpers';
+import { formatRuCount } from '../../lib/ruPlural';
 
 const LazyChatEmojiPanel = lazy(() => import('./ChatEmojiPanel'));
 
@@ -280,6 +282,7 @@ const ChatComposer = memo(function ChatComposer({
   compactMobile,
   activeConversationId,
   selectedFiles,
+  fileDialogOpen = false,
   fileCaption,
   onOpenFileDialog,
   onClearSelectedFiles,
@@ -313,7 +316,6 @@ const ChatComposer = memo(function ChatComposer({
   emojiPickerOpen = false,
   onInsertEmoji,
   onSendSticker,
-  onSendGif,
   currentUserId = null,
   voiceRecording = false,
   voiceRecordingDuration = 0,
@@ -324,23 +326,50 @@ const ChatComposer = memo(function ChatComposer({
   isAiConversation = false,
   isAiGenerating = false,
   onStopAiRun,
+  scheduled = null,
 }) {
   const agentAccess = useAiAgentAccess(activeConversationId, isAiConversation, currentUserId);
+  // "Send later": right click (desktop) or long press (touch) on the send button.
+  const [scheduleMenuAnchor, setScheduleMenuAnchor] = useState(null);
+  const [scheduledListOpen, setScheduledListOpen] = useState(false);
+  const scheduleLongPressRef = useRef({ timer: null, fired: false });
+  const clearScheduleLongPress = useCallback(() => {
+    if (scheduleLongPressRef.current.timer) clearTimeout(scheduleLongPressRef.current.timer);
+    scheduleLongPressRef.current.timer = null;
+  }, []);
   const density = ui.density || {};
-  const contentMaxWidth = Number(density.contentMaxWidth || ui.contentMaxWidth || 980);
   const composerFontSize = getChatComposerBodyFontSize(ui, compactMobile);
   const composerLineHeight = getChatComposerLineHeight(ui, compactMobile);
   const composerAuxFontSize = density.composerAuxFontSize || CHAT_DEFAULT_FONT_SIZES.composerAux;
   const safeKeyboardInset = compactMobile ? Math.max(0, Math.round(Number(keyboardInset || 0))) : 0;
   const composerBg = ui.composerBg || (theme.palette.mode === 'dark' ? '#1c1c1e' : '#ffffff');
-  const composerActionBg = ui.composerActionBg || theme.palette.primary.main;
-  const composerActionText = ui.composerActionText || theme.palette.primary.contrastText;
+  // Д2-4 (раздел 29, п.3): полоса ввода плоская, во всю ширину ленты — фон полосы
+  // и дока единый (composerDockBg/composerInputBg), без капсулы и хвостика.
+  const composerDockBg = ui.composerDockBg || ui.composerBg || composerBg;
+  const composerStripBg = ui.composerInputBg || ui.composerDockBg || composerBg;
+  const composerAccentColor = ui.accentText || theme.palette.primary.main;
   const composerAuxColor = ui.textSecondary || theme.palette.text.secondary;
   const composerPrimaryText = ui.textPrimary || theme.palette.text.primary;
   const composerIconColor = theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.55)' : composerAuxColor;
   const composerDismissColor = theme.palette.mode === 'dark' ? alpha('#ffffff', 0.6) : composerAuxColor;
+  // Д2-4: действия внутри полосы — иконка-кнопка ~40px без фона (как Telegram Desktop),
+  // акцентного цвета для отправки/остановки, приглушённого для микрофона.
+  const composerStripButtonSize = compactMobile ? 44 : 40;
+  // R47: one-line text sits on the vertical centre of the strip, on one line with the icons.
+  // The slot is padded so that padding*2 + line = strip height; when the text grows the strip
+  // grows upwards with the same top/bottom padding, and icons stay at the bottom row's centre.
+  const composerStripHeight = compactMobile ? 46 : (density.composerCapsuleMinHeight || 46);
+  const composerLineCss = typeof composerLineHeight === 'number'
+    ? `${typeof composerFontSize === 'number' ? `${composerFontSize}px` : composerFontSize} * ${composerLineHeight}`
+    : String(composerLineHeight);
+  const composerSlotPaddingY = `calc((${composerStripHeight}px - ${composerLineCss}) / 2)`;
   const canSendComposerMessage = Boolean(String(messageText || '').trim());
+  const scheduleMenuAvailable = Boolean(
+    scheduled?.enabled && !isAiConversation && !editingMessage && !voiceRecording
+    && canSendComposerMessage && activeConversationId,
+  );
   const messageLengthRemaining = CHAT_MESSAGE_BODY_MAX_LENGTH - String(messageText || '').length;
+  const messageLengthOverLimit = messageLengthRemaining < 0;
   const showMessageCounter = messageLengthRemaining <= CHAT_MESSAGE_COUNTER_THRESHOLD;
   const filesBusy = preparingFiles || sendingFiles;
   const selectedFileList = useMemo(
@@ -423,6 +452,13 @@ const ChatComposer = memo(function ChatComposer({
     [localMentionPeople, mentionTrigger?.query, remoteMentionPeople],
   );
   const mentionOpen = Boolean(mentionTrigger) && (mentionOptions.length > 0 || mentionLoading);
+  // Д2-4 (раздел 29, п.3): служебной подсказки «Enter — отправить…» нет — строка
+  // статуса появляется только с контекстной подсказкой или счётчиком лимита.
+  const composerHintText = messageLengthOverLimit
+    ? 'Слишком длинное сообщение'
+    : mentionOpen
+    ? '↑↓ — выбор · Enter — упомянуть · Esc — закрыть'
+    : editingMessage ? 'Enter — сохранить · Esc — отменить' : replyMessage ? 'Enter — отправить · Esc — отменить ответ' : '';
 
   const closeMentions = useCallback(() => {
     mentionTriggerRef.current = null;
@@ -560,13 +596,12 @@ const ChatComposer = memo(function ChatComposer({
       data-testid="chat-composer-dock"
       className="chat-safe-bottom chat-native-shell chat-no-select"
       sx={{
-        px: { xs: compactMobile ? 0.8 : (density.composerDockPx || 1.1), md: density.composerDockPxMd || 1.6 },
-        pt: compactMobile ? 0.55 : (density.composerDockPt || 0.95),
+        px: 0,
+        pt: 0,
         pb: compactMobile
-          ? 'max(calc(env(safe-area-inset-bottom, 0px) + 6px), 10px)'
-          : (density.composerDockPb || 0.95),
-        bgcolor: composerBg,
-        backdropFilter: 'blur(22px) saturate(1.08)',
+          ? 'max(env(safe-area-inset-bottom, 0px), 0px)'
+          : 0,
+        bgcolor: composerDockBg,
         position: 'relative',
         bottom: 0,
         transform: safeKeyboardInset > 0 ? `translate3d(0, -${safeKeyboardInset}px, 0)` : 'none',
@@ -584,11 +619,12 @@ const ChatComposer = memo(function ChatComposer({
         fontFamily: CHAT_FONT_FAMILY,
       }}
     >
-      <Box sx={{ maxWidth: { xs: '100%', md: `${contentMaxWidth}px` }, mx: 'auto', width: '100%' }}>
-        {selectedFileList.length > 0 ? (
+      <Box sx={{ width: '100%', px: { xs: compactMobile ? 0.6 : 0.75, md: 1 } }}>
+        {selectedFileList.length > 0 && !fileDialogOpen ? (
           <Box
             data-testid="chat-selected-files-bar"
             sx={{
+              mt: compactMobile ? 0.8 : 1,
               mb: compactMobile ? 0.8 : `${density.composerAttachmentMarginBottom || 10}px`,
               p: compactMobile ? '8px 10px' : (density.composerAttachmentPadding || '10px 12px'),
               borderRadius: compactMobile ? '18px' : '14px',
@@ -619,7 +655,7 @@ const ChatComposer = memo(function ChatComposer({
                       color: composerPrimaryText,
                     }}
                   >
-                    {selectedFileList.length} файл(ов){selectedFilesTotalLabel ? ` · ${selectedFilesTotalLabel}` : ''}
+                    {formatRuCount(selectedFileList.length, 'файл', 'файла', 'файлов')}{selectedFilesTotalLabel ? ` · ${selectedFilesTotalLabel}` : ''}
                   </Typography>
                   {sendingFiles && fileUploadProgress > 0 ? (
                     <Typography
@@ -748,6 +784,7 @@ const ChatComposer = memo(function ChatComposer({
               compactMobile ? 'rounded-[20px]' : 'rounded-[14px]',
             )}
             style={{
+              marginTop: compactMobile ? undefined : 8,
               marginBottom: compactMobile ? undefined : 6,
               padding: compactMobile ? undefined : '8px 12px',
               backgroundColor: alpha(ui.composerDockBg, 0.94),
@@ -780,6 +817,10 @@ const ChatComposer = memo(function ChatComposer({
           </div>
         ) : null}
 
+        {scheduled?.enabled && !isAiConversation ? (
+          <ScheduledMessagesBar items={scheduled.items} onOpen={() => setScheduledListOpen(true)} />
+        ) : null}
+
         {replyMessage && !editingMessage ? (
           <div
             className={joinClasses(
@@ -787,6 +828,7 @@ const ChatComposer = memo(function ChatComposer({
               compactMobile ? 'rounded-[20px]' : 'rounded-[14px]',
             )}
             style={{
+              marginTop: compactMobile ? undefined : 8,
               marginBottom: compactMobile ? undefined : 6,
               padding: compactMobile ? undefined : '8px 12px',
               backgroundColor: alpha(ui.composerDockBg, 0.94),
@@ -826,6 +868,7 @@ const ChatComposer = memo(function ChatComposer({
             role="listbox"
             aria-label="Участники для упоминания"
             sx={{
+              mt: compactMobile ? 0.8 : 1,
               mb: 0.75,
               overflowY: 'auto',
               maxHeight: 'min(240px, 30dvh)',
@@ -909,33 +952,40 @@ const ChatComposer = memo(function ChatComposer({
             ) : null}
           </Box>
         ) : null}
+      </Box>
 
-        <div className="flex min-w-0 items-end gap-2">
-          <Box
-            data-testid="chat-composer-capsule"
-            onDrop={onComposerDrop}
-            onDragOver={onComposerDragOver}
-            onDragLeave={onComposerDragLeave}
-            className={joinClasses(
-              'flex min-w-0 flex-1 items-end gap-1 border px-2.5 py-0.5',
-              compactMobile ? 'rounded-[23px]' : 'rounded-lg',
-            )}
-            sx={{
-              minHeight: compactMobile ? 46 : (density.composerCapsuleMinHeight || 48),
-              px: compactMobile ? undefined : `${density.composerCapsulePx || 10}px`,
-              py: compactMobile ? undefined : `${density.composerCapsulePy ?? 2}px`,
-              alignItems: 'flex-end',
-              borderRadius: compactMobile ? '23px' : '8px',
-              bgcolor: alpha(ui.composerInputBg, 0.94),
-              borderColor: theme.palette.mode === 'dark' ? alpha('#ffffff', 0.08) : ui.borderSoft,
-              boxShadow: 'none',
-              transition: 'border-color 140ms ease, box-shadow 140ms ease, background-color 140ms ease',
-              '&:focus-within': {
-                borderColor: ui.accentText || alpha(theme.palette.primary.main, 0.36),
-                boxShadow: `0 0 0 3px ${ui.focusRing || alpha(ui.accentText || '#3390ec', theme.palette.mode === 'dark' ? 0.18 : 0.14)}`,
-              },
-            }}
-          >
+        <Box
+          data-testid="chat-composer-capsule"
+          onDrop={onComposerDrop}
+          onDragOver={onComposerDragOver}
+          onDragLeave={onComposerDragLeave}
+          className="flex min-w-0 items-end"
+          sx={{
+            // Д2-4 (раздел 29, п.3): плоская полоса во всю ширину ленты — скрепка
+            // слева, эмодзи и микрофон/отправить справа внутри полосы; без капсулы,
+            // без рамки, без хвостика ::after.
+            width: '100%',
+            minHeight: composerStripHeight,
+            px: compactMobile ? 0.5 : 0.75,
+            gap: compactMobile ? 0.15 : 0.25,
+            alignItems: 'flex-end',
+            // Icon buttons are centred in a cell as tall as the strip and stay in the bottom row when
+            // the text grows. The cell (not the button) carries the height: global touch-target CSS
+            // may enlarge buttons beyond composerStripButtonSize on narrow screens.
+            '& > span:not(.visually-hidden)': {
+              display: 'flex',
+              alignItems: 'center',
+              alignSelf: 'flex-end',
+              height: `${composerStripHeight}px`,
+            },
+            '& > button': { alignSelf: 'center' },
+            border: 'none',
+            borderRadius: 0,
+            position: 'relative',
+            bgcolor: composerStripBg,
+            boxShadow: 'none',
+          }}
+        >
             {voiceRecording ? (
               <>
                 <span className="visually-hidden" role="status">Идёт запись голосового сообщения</span>
@@ -944,22 +994,22 @@ const ChatComposer = memo(function ChatComposer({
                   aria-label="Отменить запись"
                   onClick={onCancelVoiceRecording}
                   data-testid="chat-composer-cancel-voice-button"
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60"
+                  className="inline-flex shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60"
                   style={{
-                    width: compactMobile ? undefined : density.composerIconButton,
-                    height: compactMobile ? undefined : density.composerIconButton,
+                    width: composerStripButtonSize,
+                    height: composerStripButtonSize,
                     backgroundColor: 'transparent',
                     color: theme.palette.error.main,
                   }}
                 >
-                  <DeleteOutlineRoundedIcon sx={{ fontSize: 21 }} />
+                  <DeleteOutlineRoundedIcon sx={{ fontSize: 22 }} />
                 </button>
                 <Box
-                  className="flex min-w-0 flex-1 items-center py-[11px]"
+                  className="flex min-w-0 flex-1 items-center"
                   sx={{
-                    minHeight: compactMobile ? 38 : (density.composerInputSlotMinHeight ?? density.composerIconButton ?? 32),
+                    minHeight: composerStripHeight,
                     gap: 1,
-                    py: compactMobile ? undefined : `${density.composerInnerPaddingY ?? 11}px`,
+                    py: composerSlotPaddingY,
                   }}
                 >
                   <VoiceRecordingActivity
@@ -984,62 +1034,58 @@ const ChatComposer = memo(function ChatComposer({
               </>
             ) : (
               <>
-                {!voiceRecording ? (
-                  <Tooltip title="Меню вложений">
-                    <span>
-                      <button
-                        type="button"
-                        aria-label="Меню вложений"
-                        data-testid="chat-composer-menu-button"
-                        onClick={onOpenComposerMenu}
-                        onMouseDown={preserveComposerKeyboard}
-                        onPointerDown={preserveComposerKeyboard}
-                        disabled={!activeConversationId}
-                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
-                        style={{
-                          width: compactMobile ? undefined : density.composerIconButton,
-                          height: compactMobile ? undefined : density.composerIconButton,
-                          minWidth: compactMobile ? 44 : undefined,
-                          minHeight: compactMobile ? 44 : undefined,
-                          backgroundColor: 'transparent',
-                          color: composerIconColor,
-                        }}
-                        onMouseEnter={(event) => {
-                          if (!compactMobile) event.currentTarget.style.backgroundColor = alpha(ui.accentText, 0.08);
-                        }}
-                        onMouseLeave={(event) => {
-                          event.currentTarget.style.backgroundColor = 'transparent';
-                        }}
-                      >
-                        <AttachFileRoundedIcon sx={{ fontSize: 21 }} />
-                      </button>
-                    </span>
-                  </Tooltip>
-                ) : null}
+                {/* Д2-4: скрепка слева от поля, эмодзи справа рядом с действием. */}
+                <Tooltip title="Меню вложений">
+                  <span>
+                    <button
+                      type="button"
+                      aria-label="Меню вложений"
+                      data-testid="chat-composer-menu-button"
+                      onClick={onOpenComposerMenu}
+                      onMouseDown={preserveComposerKeyboard}
+                      onPointerDown={preserveComposerKeyboard}
+                      disabled={!activeConversationId}
+                      className="inline-flex shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
+                      style={{
+                        width: composerStripButtonSize,
+                        height: composerStripButtonSize,
+                        backgroundColor: 'transparent',
+                        color: composerIconColor,
+                      }}
+                      onMouseEnter={(event) => {
+                        if (!compactMobile) event.currentTarget.style.backgroundColor = alpha(composerAccentColor, 0.08);
+                      }}
+                      onMouseLeave={(event) => {
+                        event.currentTarget.style.backgroundColor = 'transparent';
+                      }}
+                    >
+                      <AttachFileRoundedIcon sx={{ fontSize: 22 }} />
+                    </button>
+                  </span>
+                </Tooltip>
 
                 <Box
                   data-testid="chat-composer-textarea-slot"
-                  className="flex min-w-0 flex-1 items-center py-[11px]"
+                  className="flex min-w-0 flex-1 items-center"
                   sx={{
                     alignItems: 'center',
-                    minHeight: compactMobile ? 38 : (density.composerInputSlotMinHeight ?? density.composerIconButton ?? 32),
-                    py: compactMobile ? undefined : `${density.composerInnerPaddingY ?? 11}px`,
+                    minHeight: composerStripHeight,
+                    py: composerSlotPaddingY,
                   }}
                 >
                   <TextareaAutosize
                     ref={composerRef}
                     data-testid="chat-composer-textarea"
                     minRows={1}
-                    maxRows={compactMobile ? 6 : 8}
+                    maxRows={compactMobile ? 6 : 12}
                     aria-label="Сообщение"
                     aria-autocomplete="list"
                     aria-expanded={mentionOpen}
                     aria-controls={mentionOpen ? mentionListId : undefined}
                     aria-activedescendant={mentionOpen && mentionOptions.length ? `${mentionListId}-${Math.min(activeMentionIndex, mentionOptions.length - 1)}` : undefined}
                     aria-describedby={compactMobile ? undefined : composerHintId}
-                    maxLength={CHAT_MESSAGE_BODY_MAX_LENGTH}
                     enterKeyHint={compactMobile ? 'enter' : 'send'}
-                    placeholder={editingMessage ? 'Измените сообщение…' : replyMessage ? 'Ваш ответ…' : isAiConversation ? 'Спросите ассистента…' : 'Сообщение…'}
+                    placeholder={editingMessage ? 'Измените сообщение…' : replyMessage ? 'Ваш ответ…' : isAiConversation ? 'Спросите ассистента…' : 'Напишите сообщение…'}
                     value={messageText}
                     onChange={handleComposerChange}
                     onKeyDown={handleComposerKeyDown}
@@ -1064,8 +1110,9 @@ const ChatComposer = memo(function ChatComposer({
                       overflowY: 'auto',
                       overflowWrap: 'anywhere',
                       wordBreak: 'break-word',
-                      maxHeight: compactMobile ? `${density.composerTextareaMaxHeight || 120}px` : 'min(160px, 30dvh)',
-                      minHeight: `${compactMobile ? 18 : (density.composerTextareaMinHeight ?? 19)}px`,
+                      // Д2-4: поле растёт при длинном тексте до ~40% высоты области.
+                      maxHeight: compactMobile ? `${density.composerTextareaMaxHeight || 120}px` : 'min(320px, 40dvh)',
+                      minHeight: `calc(${composerLineCss})`,
                     }}
                   />
                 </Box>
@@ -1081,17 +1128,15 @@ const ChatComposer = memo(function ChatComposer({
                       onMouseDown={compactMobile ? undefined : preserveComposerKeyboard}
                       onClick={mobileEmojiPickerOpen || emojiPickerOpen ? onCloseEmojiPicker : onOpenEmojiPicker}
                       disabled={!activeConversationId}
-                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
+                      className="inline-flex shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
                       style={{
-                        width: compactMobile ? undefined : density.composerIconButton,
-                        height: compactMobile ? undefined : density.composerIconButton,
-                        minWidth: compactMobile ? 44 : undefined,
-                        minHeight: compactMobile ? 44 : undefined,
+                        width: composerStripButtonSize,
+                        height: composerStripButtonSize,
                         backgroundColor: 'transparent',
                         color: composerIconColor,
                       }}
                       onMouseEnter={(event) => {
-                        if (!compactMobile) event.currentTarget.style.backgroundColor = alpha(ui.accentText, 0.08);
+                        if (!compactMobile) event.currentTarget.style.backgroundColor = alpha(composerAccentColor, 0.08);
                       }}
                       onMouseLeave={(event) => {
                         event.currentTarget.style.backgroundColor = 'transparent';
@@ -1103,105 +1148,154 @@ const ChatComposer = memo(function ChatComposer({
                     </button>
                   </span>
                 </Tooltip>
-
               </>
             )}
-          </Box>
 
-          {isAiGenerating ? (
-            <Tooltip title="Остановить">
-              <span>
-                <button
-                  type="button"
-                  aria-label="Остановить ответ агента"
-                  onClick={() => void onStopAiRun?.()}
-                  onMouseDown={preserveComposerKeyboard}
-                  onPointerDown={preserveComposerKeyboard}
-                  data-testid="chat-composer-stop-ai-button"
-                  className="inline-flex h-[46px] w-[46px] items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60"
-                  style={{
-                    width: density.composerActionSize || 46,
-                    height: density.composerActionSize || 46,
-                    backgroundColor: composerActionBg,
-                    color: composerActionText,
-                    boxShadow: `0 6px 16px ${alpha(composerActionBg, 0.24)}`,
-                    transform: compactMobile ? undefined : 'translateY(-2px)',
-                  }}
-                >
-                  <StopRoundedIcon sx={{ fontSize: density.composerActionIcon || 20 }} />
-                </button>
-              </span>
-            </Tooltip>
-          ) : canSendComposerMessage || editingMessage || voiceRecording ? (
-            <Tooltip title={voiceRecording ? 'Отправить' : (editingMessage ? 'Сохранить' : 'Отправить')}>
-              <span>
-                <button
-                  type="button"
-                  aria-label={editingMessage ? 'Сохранить' : 'Отправить'}
-                  disabled={!activeConversationId || (!voiceRecording && !canSendComposerMessage)}
-                  onClick={voiceRecording ? onStopVoiceRecording : () => void onSendMessage()}
-                  onMouseDown={preserveComposerKeyboard}
-                  onPointerDown={preserveComposerKeyboard}
-                  data-testid="chat-composer-send-button"
-                  className="inline-flex h-[46px] w-[46px] items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60"
-                  style={{
-                    width: density.composerActionSize || 46,
-                    height: density.composerActionSize || 46,
-                    backgroundColor: composerActionBg,
-                    color: composerActionText,
-                    boxShadow: `0 6px 16px ${alpha(composerActionBg, 0.24)}`,
-                    transform: compactMobile ? undefined : 'translateY(-2px)',
-                  }}
-                >
-                  {editingMessage ? <CheckRoundedIcon sx={{ fontSize: density.composerActionIcon || 20 }} /> : <SendRoundedIcon sx={{ fontSize: density.composerActionIcon || 20 }} />}
-                </button>
-              </span>
-            </Tooltip>
-          ) : (
-            <Tooltip title="Голосовое сообщение">
-              <span>
-                <button
-                  type="button"
-                  aria-label="Голосовое сообщение"
-                  onClick={onStartVoiceRecording}
-                  disabled={!activeConversationId}
-                  data-testid="chat-composer-voice-button"
-                  className="inline-flex h-[46px] w-[46px] items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
-                  style={{
-                    width: density.composerActionSize || 46,
-                    height: density.composerActionSize || 46,
-                    backgroundColor: alpha(composerActionBg, 0.12),
-                    color: composerActionBg,
-                    transform: compactMobile ? undefined : 'translateY(-2px)',
-                  }}
-                >
-                  <MicRoundedIcon sx={{ fontSize: density.composerActionIcon || 22 }} />
-                </button>
-              </span>
-            </Tooltip>
-          )}
-        </div>
+            {/* Д2-4: микрофон/отправить — иконка-кнопка без круга внутри полосы,
+                акцентный цвет для активного действия (как Telegram Desktop). */}
+            {isAiGenerating ? (
+              <Tooltip title="Остановить">
+                <span>
+                  <button
+                    type="button"
+                    aria-label="Остановить ответ агента"
+                    onClick={() => void onStopAiRun?.()}
+                    onMouseDown={preserveComposerKeyboard}
+                    onPointerDown={preserveComposerKeyboard}
+                    data-testid="chat-composer-stop-ai-button"
+                    className="inline-flex shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60"
+                    style={{
+                      width: composerStripButtonSize,
+                      height: composerStripButtonSize,
+                      backgroundColor: 'transparent',
+                      color: composerAccentColor,
+                    }}
+                    onMouseEnter={(event) => {
+                      if (!compactMobile) event.currentTarget.style.backgroundColor = alpha(composerAccentColor, 0.12);
+                    }}
+                    onMouseLeave={(event) => {
+                      event.currentTarget.style.backgroundColor = 'transparent';
+                    }}
+                  >
+                    <StopRoundedIcon sx={{ fontSize: 24 }} />
+                  </button>
+                </span>
+              </Tooltip>
+            ) : canSendComposerMessage || editingMessage || voiceRecording ? (
+              <Tooltip title={voiceRecording ? 'Отправить' : (editingMessage ? 'Сохранить' : 'Отправить')}>
+                <span>
+                  <button
+                    type="button"
+                    aria-label={editingMessage ? 'Сохранить' : 'Отправить'}
+                    disabled={!activeConversationId || (!voiceRecording && (!canSendComposerMessage || messageLengthOverLimit))}
+                    onClick={voiceRecording ? onStopVoiceRecording : () => {
+                      if (scheduleLongPressRef.current.fired) {
+                        scheduleLongPressRef.current.fired = false;
+                        return;
+                      }
+                      void onSendMessage();
+                    }}
+                    onContextMenu={scheduleMenuAvailable ? (event) => {
+                      event.preventDefault();
+                      setScheduleMenuAnchor(event.currentTarget);
+                    } : undefined}
+                    onTouchStart={scheduleMenuAvailable ? (event) => {
+                      const target = event.currentTarget;
+                      clearScheduleLongPress();
+                      scheduleLongPressRef.current.fired = false;
+                      scheduleLongPressRef.current.timer = setTimeout(() => {
+                        scheduleLongPressRef.current.fired = true;
+                        setScheduleMenuAnchor(target);
+                      }, 500);
+                    } : undefined}
+                    onTouchEnd={scheduleMenuAvailable ? clearScheduleLongPress : undefined}
+                    onTouchMove={scheduleMenuAvailable ? clearScheduleLongPress : undefined}
+                    onMouseDown={preserveComposerKeyboard}
+                    onPointerDown={preserveComposerKeyboard}
+                    data-testid="chat-composer-send-button"
+                    className="inline-flex shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
+                    style={{
+                      width: composerStripButtonSize,
+                      height: composerStripButtonSize,
+                      backgroundColor: 'transparent',
+                      color: composerAccentColor,
+                    }}
+                    onMouseEnter={(event) => {
+                      if (!compactMobile) event.currentTarget.style.backgroundColor = alpha(composerAccentColor, 0.12);
+                    }}
+                    onMouseLeave={(event) => {
+                      event.currentTarget.style.backgroundColor = 'transparent';
+                    }}
+                  >
+                    {editingMessage ? <CheckRoundedIcon sx={{ fontSize: 24 }} /> : <SendRoundedIcon sx={{ fontSize: 24 }} />}
+                  </button>
+                </span>
+              </Tooltip>
+            ) : (
+              <Tooltip title="Голосовое сообщение">
+                <span>
+                  <button
+                    type="button"
+                    aria-label="Голосовое сообщение"
+                    onClick={onStartVoiceRecording}
+                    disabled={!activeConversationId}
+                    data-testid="chat-composer-voice-button"
+                    className="inline-flex shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
+                    style={{
+                      width: composerStripButtonSize,
+                      height: composerStripButtonSize,
+                      backgroundColor: 'transparent',
+                      color: composerIconColor,
+                    }}
+                    onMouseEnter={(event) => {
+                      if (!compactMobile) event.currentTarget.style.backgroundColor = alpha(composerAccentColor, 0.08);
+                    }}
+                    onMouseLeave={(event) => {
+                      event.currentTarget.style.backgroundColor = 'transparent';
+                    }}
+                  >
+                    <MicRoundedIcon sx={{ fontSize: 22 }} />
+                  </button>
+                </span>
+              </Tooltip>
+            )}
+        </Box>
 
-        {!compactMobile && !voiceRecording ? (
-          <Box sx={{ mt: 0.6, px: 1, display: 'flex', justifyContent: 'space-between', gap: 1 }}>
-            <Typography id={composerHintId} sx={{ fontSize: '0.7rem', color: ui.textSecondary }}>
-              {mentionOpen
-                ? '↑↓ — выбор · Enter — упомянуть · Esc — закрыть'
-                : editingMessage ? 'Enter — сохранить · Esc — отменить' : replyMessage ? 'Enter — отправить · Esc — отменить ответ' : 'Enter — отправить · Shift+Enter — новая строка'}
+      <Box sx={{ width: '100%', px: { xs: compactMobile ? 0.6 : 0.75, md: 1 } }}>
+        {!compactMobile && !voiceRecording && (composerHintText || showMessageCounter) ? (
+          <Box sx={{ pt: 0.35, pb: 0.5, px: 1.5, display: 'flex', justifyContent: 'space-between', gap: 1 }}>
+            <Typography id={composerHintId} sx={{ fontSize: '0.7rem', color: messageLengthOverLimit ? theme.palette.error.main : ui.textSecondary }}>
+              {/* Д5/Д2-4: служебной подсказки про Enter/Shift+Enter под полем нет;
+                  остаются только контекстные подсказки (упоминания, редактирование, лимит). */}
+              {composerHintText}
             </Typography>
             {showMessageCounter ? (
-              <Typography sx={{ fontSize: '0.7rem', color: ui.textSecondary, fontVariantNumeric: 'tabular-nums' }}>
+              <Typography sx={{ fontSize: '0.7rem', color: messageLengthOverLimit ? theme.palette.error.main : ui.textSecondary, fontVariantNumeric: 'tabular-nums' }}>
                 {messageLengthRemaining}
               </Typography>
             ) : null}
           </Box>
         ) : null}
         {compactMobile && !voiceRecording && showMessageCounter ? (
-          <Typography sx={{ mt: 0.4, px: 1, fontSize: '0.7rem', textAlign: 'right', color: ui.textSecondary, fontVariantNumeric: 'tabular-nums' }}>
+          <Typography sx={{ mt: 0.4, px: 1, fontSize: '0.7rem', textAlign: 'right', color: messageLengthOverLimit ? theme.palette.error.main : ui.textSecondary, fontVariantNumeric: 'tabular-nums' }}>
             {messageLengthRemaining}
           </Typography>
         ) : null}
       </Box>
+
+      {scheduled?.enabled && !isAiConversation ? (
+        <ChatComposerScheduling
+          scheduled={scheduled}
+          menuAnchor={scheduleMenuAnchor}
+          onCloseMenu={() => setScheduleMenuAnchor(null)}
+          listOpen={scheduledListOpen}
+          onCloseList={() => setScheduledListOpen(false)}
+          messageText={messageText}
+          replyMessage={replyMessage}
+          onMessageTextChange={onMessageTextChange}
+          onClearReply={onClearReply}
+        />
+      ) : null}
 
       {mobileEmojiPickerOpen ? (
         <Suspense fallback={null}>
@@ -1211,7 +1305,6 @@ const ChatComposer = memo(function ChatComposer({
             ui={ui}
             onInsertEmoji={onInsertEmoji}
             onSendSticker={onSendSticker}
-            onSendGif={onSendGif}
             currentUserId={currentUserId}
             onClose={onCloseEmojiPicker}
           />

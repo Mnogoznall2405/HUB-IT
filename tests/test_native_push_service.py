@@ -117,6 +117,93 @@ def test_native_chat_push_uses_private_chat_channel_and_reply_category(monkeypat
     assert message["android"]["restricted_package_name"] == "ru.zsgp.hubit.mobile"
 
 
+def test_native_ai_chat_push_uses_dedicated_android_channel(monkeypatch):
+    service = native_push.NativePushService()
+    captured = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def _urlopen(request, timeout):
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return _Response()
+
+    monkeypatch.setattr(service, "_get_access_token", lambda _: "access-token")
+    monkeypatch.setattr(native_push.urllib.request, "urlopen", _urlopen)
+
+    service._send_fcm_message(
+        service_account={},
+        project_id="hubit-test",
+        token="fcm-token",
+        title="ИИ-агент",
+        body="Ответ агента",
+        data={
+            "channel": "chat",
+            "route": "/chat?conversation=conv-ai-1&message=msg-ai-1&workspace=ai",
+            "conversation_id": "conv-ai-1",
+            "conversation_kind": "ai",
+            "message_id": "msg-ai-1",
+        },
+        tag="chat:msg:msg-ai-1",
+        native_channel="hubit_chat_ai",
+    )
+
+    message = captured["payload"]["message"]
+    # AI pushes keep the data-only chat delivery shape and chat actions…
+    assert "notification" not in message
+    assert "notification" not in message["android"]
+    assert message["data"]["categoryId"] == "hubit_chat_message"
+    # …but land on the dedicated Android channel.
+    assert message["data"]["channelId"] == "hubit_chat_ai"
+    assert message["data"]["conversation_kind"] == "ai"
+    # TTL/collapse semantics stay identical to regular chat.
+    assert message["data"]["ttlSeconds"] == "86400"
+    assert message["android"]["collapse_key"] == "hubit-chat"
+
+
+def test_native_chat_push_without_native_channel_keeps_default_channel(monkeypatch):
+    service = native_push.NativePushService()
+    captured = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    monkeypatch.setattr(service, "_get_access_token", lambda _: "access-token")
+    monkeypatch.setattr(
+        native_push.urllib.request,
+        "urlopen",
+        lambda request, timeout: captured.update(
+            payload=json.loads(request.data.decode("utf-8"))
+        ) or _Response(),
+    )
+
+    service._send_fcm_message(
+        service_account={},
+        project_id="hubit-test",
+        token="fcm-token",
+        title="Chat",
+        body="Message",
+        data={"channel": "chat", "conversation_id": "conv-1", "message_id": "msg-1"},
+        tag="chat:msg:msg-1",
+    )
+
+    assert captured["payload"]["message"]["data"]["channelId"] == "hubit_chat"
+
+
 def test_native_task_push_uses_tasks_channel_without_chat_actions(monkeypatch):
     service = native_push.NativePushService()
     captured = {}

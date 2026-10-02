@@ -18,6 +18,7 @@ export type AddressBookSearchResponse = {
 export type AddressBookStatus = {
   count?: number;
   updated_at?: string | null;
+  dismissed_updated_at?: string | null;
   last_error?: string | null;
   sync_in_progress?: boolean;
 };
@@ -40,13 +41,16 @@ function isSnapshotEndpointUnavailable(cause: unknown): boolean {
 }
 
 export async function searchAddressBook(
-  options: { q?: string; limit?: number; offset?: number; signal?: AbortSignal } = {},
+  options: { q?: string; limit?: number; offset?: number; dismissed?: boolean; signal?: AbortSignal } = {},
 ): Promise<AddressBookSearchResponse> {
   const { data } = await apiClient.get<AddressBookSearchResponse>('/address-book/search', {
     params: {
       q: options.q ?? '',
       limit: options.limit ?? ADDRESS_BOOK_SEARCH_LIMIT,
       ...(options.offset == null ? {} : { offset: Math.max(0, Number(options.offset || 0)) }),
+      // Dismissed directory is a separate permission-gated server search —
+      // the flag goes onto the wire only when actually requested (N5).
+      ...(options.dismissed === true ? { dismissed: true } : {}),
     },
     signal: options.signal,
   });

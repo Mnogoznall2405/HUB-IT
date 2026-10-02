@@ -19,6 +19,14 @@ from backend.chat import db as chat_db_module
 from backend.chat.db import CHAT_SCHEMA, get_chat_database_url, initialize_chat_schema
 
 
+REVISION_CHECKS: list[tuple[str, str]] = []
+
+
+def _fake_revision_check(engine, database_url, *, scope):
+    REVISION_CHECKS.append((database_url, scope))
+    return {"status": "current", "current": "x", "expected": "x"}
+
+
 class _FakePostgresDialect:
     name = "postgresql"
 
@@ -75,6 +83,7 @@ def _configure_production_chat_schema_guard(
     legacy_public: bool = False,
 ) -> list[tuple[str, str, str | None]]:
     calls: list[tuple[str, str, str | None]] = []
+    REVISION_CHECKS.clear()
 
     def fake_upgrade(database_url, revision="head", *, scope=None):
         calls.append((database_url, revision, scope))
@@ -88,6 +97,7 @@ def _configure_production_chat_schema_guard(
     monkeypatch.setattr(chat_db_module, "get_chat_engine", lambda database_url=None: engine)
     monkeypatch.setattr(chat_db_module, "_uses_legacy_public_chat_schema", lambda current_engine: legacy_public)
     monkeypatch.setattr(chat_db_module, "upgrade_internal_database", fake_upgrade)
+    monkeypatch.setattr(chat_db_module, "check_internal_database_revision", _fake_revision_check)
     monkeypatch.setattr(chat_db_module, "inspect", lambda current_engine: inspector)
     monkeypatch.setattr(chat_db_module.Base.metadata, "create_all", fail_create_all)
     monkeypatch.setattr(chat_db_module, "_ensure_chat_message_columns", fail_runtime_patch)
@@ -131,7 +141,7 @@ def test_initialize_app_schema_creates_sqlite_tables(temp_dir):
     assert "json_records" in tables
 
 
-def test_initialize_app_schema_production_postgres_uses_migration_only(monkeypatch):
+def test_initialize_app_schema_production_postgres_never_applies_migrations(monkeypatch):
     class _FakeDialect:
         name = "postgresql"
 
@@ -140,6 +150,7 @@ def test_initialize_app_schema_production_postgres_uses_migration_only(monkeypat
 
     engine = _FakeEngine()
     calls = {"upgrade": []}
+    REVISION_CHECKS.clear()
 
     def fake_upgrade(database_url, revision="head", *, scope=None):
         calls["upgrade"].append((database_url, revision, scope))
@@ -152,14 +163,17 @@ def test_initialize_app_schema_production_postgres_uses_migration_only(monkeypat
 
     monkeypatch.setattr(app_db_module, "get_app_engine", lambda database_url=None: engine)
     monkeypatch.setattr(app_db_module, "_postgres_has_alembic_version", lambda current_engine: True)
-    monkeypatch.setattr(app_db_module, "upgrade_internal_database", fake_upgrade)
+    monkeypatch.setattr("backend.db_migrations.upgrade_internal_database", fake_upgrade)
+    monkeypatch.setattr("backend.db_migrations.check_internal_database_revision", _fake_revision_check)
     monkeypatch.setattr(app_db_module.AppBase.metadata, "create_all", fail_create_all)
     monkeypatch.setattr(app_db_module, "_run_postgres_app_schema_maintenance", fail_maintenance)
     monkeypatch.setattr(app_db_module.config.app, "environment", "production", raising=False)
 
     initialize_app_schema("postgresql://app-prod", force=True)
 
-    assert calls["upgrade"] == [("postgresql://app-prod", "head", "app")]
+    # D4-4: production only compares the revision with the code's head; migrations run by command.
+    assert calls["upgrade"] == []
+    assert REVISION_CHECKS == [("postgresql://app-prod", "app")]
 
 
 def test_initialize_app_schema_production_postgres_requires_alembic_version(monkeypatch):
@@ -174,8 +188,7 @@ def test_initialize_app_schema_production_postgres_requires_alembic_version(monk
     monkeypatch.setattr(app_db_module, "get_app_engine", lambda database_url=None: engine)
     monkeypatch.setattr(app_db_module, "_postgres_has_alembic_version", lambda current_engine: False)
     monkeypatch.setattr(
-        app_db_module,
-        "upgrade_internal_database",
+        "backend.db_migrations.upgrade_internal_database",
         lambda *args, **kwargs: pytest.fail("must not run migrations before Alembic state exists"),
     )
     monkeypatch.setattr(
@@ -228,6 +241,13 @@ def test_initialize_chat_schema_uses_legacy_public_postgres_tables(monkeypatch):
     monkeypatch.setattr("backend.chat.db._ensure_chat_conversation_columns", lambda current_engine: calls.__setitem__("conversation", calls["conversation"] + 1))
     monkeypatch.setattr("backend.chat.db._ensure_chat_user_state_columns", lambda current_engine: calls.__setitem__("state", calls["state"] + 1))
     monkeypatch.setattr("backend.chat.db._ensure_chat_attachment_columns", lambda current_engine: calls.__setitem__("attachment", calls["attachment"] + 1))
+    for name in (
+        "_ensure_chat_attachment_preview_table",
+        "_ensure_chat_reactions_table",
+        "_ensure_chat_mentions_table",
+        "_ensure_chat_push_outbox_columns",
+    ):
+        monkeypatch.setattr(chat_db_module, name, lambda current_engine: None)
     monkeypatch.setattr(chat_db_module.config.app, "environment", "development", raising=False)
 
     initialize_chat_schema("postgresql://legacy-chat")
@@ -280,7 +300,7 @@ def test_legacy_user_state_backfill_zeros_unread_for_inactive_members(monkeypatc
     assert "ELSE 0 END" in normalized_sql
 
 
-def test_initialize_chat_schema_production_postgres_uses_migration_only(monkeypatch):
+def test_initialize_chat_schema_production_postgres_never_applies_migrations(monkeypatch):
     engine = _FakePostgresEngine()
     inspector = _FakeChatInspector(
         columns_by_table=_complete_chat_columns(),
@@ -290,7 +310,8 @@ def test_initialize_chat_schema_production_postgres_uses_migration_only(monkeypa
 
     initialize_chat_schema("postgresql://chat")
 
-    assert calls == [("postgresql://chat", "head", "chat")]
+    assert calls == []
+    assert REVISION_CHECKS == [("postgresql://chat", "chat")]
 
 
 def test_initialize_chat_schema_production_legacy_public_postgres_verifies_schema(monkeypatch):
@@ -305,10 +326,13 @@ def test_initialize_chat_schema_production_legacy_public_postgres_verifies_schem
         inspector=inspector,
         legacy_public=True,
     )
+    for name in ("_ensure_chat_attachment_preview_table", "_ensure_chat_reactions_table", "_ensure_chat_mentions_table"):
+        monkeypatch.setattr(chat_db_module, name, lambda current_engine: None)
 
     initialize_chat_schema("postgresql://legacy-chat")
 
     assert calls == []
+    assert REVISION_CHECKS == [("postgresql://legacy-chat", "chat")]
 
 
 def test_initialize_chat_schema_production_postgres_rejects_missing_column(monkeypatch):
@@ -323,6 +347,103 @@ def test_initialize_chat_schema_production_postgres_rejects_missing_column(monke
 
     with pytest.raises(chat_db_module.ChatSchemaConfigurationError, match="chat_messages.body_format"):
         initialize_chat_schema("postgresql://chat")
+
+
+@pytest.mark.unit
+def test_chat_schema_template_restores_disabled_chat(tmp_path, monkeypatch):
+    import conftest as tests_conftest
+    from types import SimpleNamespace
+
+    source_path = tmp_path / "source.db"
+    conn = sqlite3.connect(str(source_path))
+    conn.close()
+
+    calls: list[str] = []
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(tests_conftest, "app_schema_template_db", lambda: source_path)
+    monkeypatch.setattr(chat_db_module.config.chat, "enabled", False, raising=False)
+
+    def fake_initialize_chat_schema(database_url=None):
+        enabled = bool(chat_db_module.config.chat.enabled)
+        assert enabled
+        captured["url"] = database_url
+
+    def fake_get_chat_engine(database_url=None):
+        enabled = bool(chat_db_module.config.chat.enabled)
+        assert enabled
+        captured["engine_url"] = database_url
+        return SimpleNamespace(dispose=lambda: calls.append("disposed"))
+
+    monkeypatch.setattr(chat_db_module, "initialize_chat_schema", fake_initialize_chat_schema)
+    monkeypatch.setattr(chat_db_module, "get_chat_engine", fake_get_chat_engine)
+
+    result = tests_conftest.chat_schema_template_db.__wrapped__(
+        SimpleNamespace(mktemp=lambda name: tmp_path)
+    )
+
+    enabled = bool(chat_db_module.config.chat.enabled)
+    expected_url = f"sqlite:///{(tmp_path / 'runtime.db').as_posix()}"
+    assert result == tmp_path / "runtime.db"
+    assert result.exists()
+    assert not enabled
+    assert captured["url"] == expected_url
+    assert captured["engine_url"] == expected_url
+    assert calls == ["disposed"]
+
+
+@pytest.mark.integration
+def test_prebuilt_chat_db_contains_app_and_chat_schema(prebuilt_chat_db):
+    conn = sqlite3.connect(str(prebuilt_chat_db))
+    try:
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert {
+            "users",
+            "chat_conversations",
+            "chat_messages",
+            "chat_scheduled_messages",
+            "chat_message_mentions",
+        } <= tables
+        assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM chat_messages").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("copy_index", [0, 1])
+def test_prebuilt_chat_db_does_not_mutate_template(prebuilt_chat_db, chat_schema_template_db, copy_index):
+    assert prebuilt_chat_db != chat_schema_template_db
+    conn = sqlite3.connect(str(prebuilt_chat_db))
+    try:
+        conn.execute("CREATE TABLE fixture_only_marker (id INTEGER PRIMARY KEY)")
+        conn.execute("INSERT INTO fixture_only_marker (id) VALUES (1)")
+        conn.commit()
+        assert conn.execute("SELECT id FROM fixture_only_marker").fetchall() == [(1,)]
+    finally:
+        conn.close()
+
+    template_conn = sqlite3.connect(str(chat_schema_template_db))
+    try:
+        template_tables = {
+            row[0]
+            for row in template_conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    finally:
+        template_conn.close()
+    assert "fixture_only_marker" not in template_tables
+
+
+@pytest.mark.integration
+def test_prebuilt_chat_db_skips_reinitializing_copied_app_schema(prebuilt_chat_db, monkeypatch):
+    monkeypatch.setattr(
+        app_db_module,
+        "_initialize_app_schema_uncached",
+        lambda *args, **kwargs: pytest.fail("prebuilt copy must not run schema initialization"),
+    )
+    initialize_app_schema(f"sqlite:///{prebuilt_chat_db.as_posix()}")
 
 
 def test_initialize_chat_schema_production_postgres_rejects_missing_index(monkeypatch):

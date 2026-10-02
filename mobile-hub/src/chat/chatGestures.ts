@@ -4,7 +4,8 @@ export const BACK_SWIPE_TRIGGER_DP = 84;
 export const FOLDER_SWIPE_START_DP = 14;
 export const FOLDER_SWIPE_TRIGGER_DP = 80;
 export const MEDIA_DISMISS_TRIGGER_DP = 80;
-export const INBOX_ROW_SWIPE_START_DP = 20;
+/** Must stay below FOLDER_SWIPE_START_DP so a row claim beats the folder pager (CHAT-INBOX-06). */
+export const INBOX_ROW_SWIPE_START_DP = 10;
 export const INBOX_ROW_SWIPE_TRIGGER_DP = 72;
 /** Deep swipe = the second action (Telegram-style two zones per side). */
 export const INBOX_ROW_SWIPE_SECOND_DP = 150;

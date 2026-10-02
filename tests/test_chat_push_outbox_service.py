@@ -191,6 +191,68 @@ def test_chat_push_outbox_worker_delivers_deferred_mention_when_thread_muted_and
     assert push_calls and push_calls[0]["message_id"] == created["id"]
 
 
+def test_chat_push_outbox_worker_suppresses_ai_chat_when_chat_ai_disabled(chat_outbox_env, monkeypatch, tmp_path):
+    from backend.services.notification_preferences_service import NotificationPreferencesService
+
+    conversation = chat_outbox_env["conversation"]
+    worker = chat_outbox_env["worker"]
+
+    monkeypatch.setattr(type(chat_push_service_module.chat_push_service), "enabled", property(lambda self: True))
+    send_calls = []
+    monkeypatch.setattr(
+        chat_push_service_module.chat_push_service,
+        "send_chat_message_notification",
+        lambda **kwargs: send_calls.append(kwargs) or chat_push_service_module.ChatPushSendResult(sent=1),
+    )
+
+    now = datetime.now(timezone.utc)
+    with chat_db_module.chat_session() as session:
+        session.get(chat_models_module.ChatConversation, conversation["id"]).kind = "ai"
+        session.add(
+            chat_models_module.ChatMessage(
+                id="msg-ai-1",
+                conversation_id=conversation["id"],
+                sender_user_id=1,
+                kind="text",
+                body_format="plain",
+                body="AI reply",
+                conversation_seq=1,
+                created_at=now,
+            )
+        )
+        session.add(
+            chat_models_module.ChatPushOutbox(
+                message_id="msg-ai-1",
+                conversation_id=conversation["id"],
+                recipient_user_id=2,
+                channel="chat",
+                title="ИИ-агент",
+                body="AI reply",
+                status="queued",
+                attempt_count=0,
+                next_attempt_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    prefs_disabled = NotificationPreferencesService(Path(tmp_path) / "prefs_disabled.json")
+    prefs_disabled.update_preferences(user_id=2, patch={"chat_ai": False})
+    monkeypatch.setattr(
+        chat_push_outbox_service_module,
+        "notification_preferences_service",
+        prefs_disabled,
+    )
+
+    result = asyncio.run(worker.poll_once())
+    job = _get_outbox_job("msg-ai-1")
+
+    assert result["claimed"] == 1
+    assert job.status == "suppressed"
+    assert "chat_ai_notifications_disabled" in str(job.last_error or "")
+    assert send_calls == []
+
+
 def test_chat_push_outbox_worker_marks_job_no_subscriptions_without_retry(chat_outbox_env, monkeypatch):
     service = chat_outbox_env["service"]
     conversation = chat_outbox_env["conversation"]

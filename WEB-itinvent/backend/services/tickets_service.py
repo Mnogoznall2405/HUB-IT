@@ -1383,13 +1383,26 @@ class TicketsService:
         query: str = "",
         limit: int = 20,
         user_permissions: list[str] | None = None,
+        *,
+        include_personal_phones: bool = False,
+        include_personal_emails: bool = False,
     ) -> dict[str, Any]:
-        """Search employees in ZUP (Address Book cache) for ticket form prefill."""
+        """Search employees in ZUP (Address Book cache) for ticket form prefill.
+
+        Personal phones/e-mails from the address book are included only when the
+        caller passes explicit flags derived from address_book.personal_* rights.
+        """
         from backend.services.address_book_service import address_book_service
 
         include_personal = self._can_read_personal_data(user_permissions)
         limited = max(1, min(int(limit or 20), 50))
-        result = address_book_service.search(str(query or ""), limited)
+        result = address_book_service.search(
+            str(query or ""),
+            limited,
+            include_age=False,
+            include_personal_phones=include_personal_phones,
+            include_personal_emails=include_personal_emails,
+        )
         raw_items = result.get("items") if isinstance(result, dict) else None
         personal_map: dict[str, dict[str, str]] = {}
         if include_personal:
@@ -1429,6 +1442,9 @@ class TicketsService:
         self,
         employee_code: str,
         user_permissions: list[str] | None = None,
+        *,
+        include_personal_phones: bool = False,
+        include_personal_emails: bool = False,
     ) -> dict[str, Any]:
         """Create or update a ticket employee from a ZUP/address-book person."""
         from backend.services.address_book_service import address_book_service
@@ -1441,12 +1457,18 @@ class TicketsService:
         if person is None:
             raise TicketsNotFoundError(f"Сотрудник ЗУП с кодом {code} не найден в адресной книге")
 
+        source = dict(person) if isinstance(person, dict) else {}
+        if not include_personal_phones:
+            source["personal_phones"] = []
+        if not include_personal_emails:
+            source["personal_emails"] = []
+
         include_personal = self._can_read_personal_data(user_permissions)
         personal = None
         if include_personal:
             personal = address_book_service.get_personal_by_codes([code]).get(code)
         mapped = map_zup_person_to_ticket_employee(
-            person,
+            source,
             personal=personal,
             include_personal=include_personal,
         )

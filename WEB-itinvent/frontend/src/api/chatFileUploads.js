@@ -182,8 +182,9 @@ export const chatFileUploadsAPI = {
       return uploadChatFilesMultipart(conversationId, normalizedFiles, options);
     }
 
-    // The multipart endpoint supports replay keys; upload sessions own separate IDs.
-    if (attempt.multipartKey || options?.client_message_id || !canUseChatUploadSessions(normalizedFiles)) {
+    // Multipart retries keep their replay key; upload sessions carry
+    // client_message_id in the manifest, which is applied on completion.
+    if (attempt.multipartKey || !canUseChatUploadSessions(normalizedFiles)) {
       return multipart();
     }
 
@@ -200,6 +201,7 @@ export const chatFileUploadsAPI = {
         {
           body: String(options?.body || '').trim() || undefined,
           reply_to_message_id: options?.reply_to_message_id || undefined,
+          client_message_id: options?.client_message_id || undefined,
           files: normalizedFiles.map((file) => buildChatUploadFileMeta(file, {
             file_name: String(file?.fileName || '').trim() || 'file.bin',
             mime_type: String(file?.mimeType || '').trim() || undefined,

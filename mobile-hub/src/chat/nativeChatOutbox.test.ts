@@ -4,7 +4,8 @@ let mockFileSequence = 0;
 jest.mock('expo-crypto', () => ({ ...jest.requireActual('expo-crypto'), randomUUID: () => `synthetic-outbox-file-${++mockFileSequence}` }));
 import * as api from '../api/chatApi';
 import type { ChatMessage } from '../api/types';
-import { clearNativeChatOutbox, createNativeChatOutbox, getNativeChatQueueState, subscribeNativeChatOutbox } from './nativeChatOutbox';
+import { clearNativeChatOutbox, createNativeChatOutbox, getNativeChatOutboxRuntimeState,
+  getNativeChatQueueState, readNativeChatOutbox, subscribeNativeChatOutbox } from './nativeChatOutbox';
 import { resetNativeChatOutboxRowsCache } from './nativeChatStorageQueue';
 import { getChatSendTimingSummary, markChatSend, resetChatSendTiming } from '../diagnostics/chatSendTiming';
 
@@ -17,16 +18,66 @@ it.each([
   { body_text: { synthetic: 'private text' } },
   { reply_preview: { id: 123, sender_name: 'Коллега' } },
   { reply_preview: 'broken reply' },
-])('blocks damaged message fields before sending or overwriting the queue: %j', async (damage) => {
+])('drops a row with damaged message fields and repairs the queue: %j', async (damage) => {
   const key = 'hubit_native_chat_outbox_v1';
-  const raw = JSON.stringify([{ userId: 7, message: { ...message, ...damage } }]);
-  await SecureStore.setItemAsync(key, raw);
+  await SecureStore.setItemAsync(key, JSON.stringify([{ userId: 7, message: { ...message, ...damage } }]));
   resetNativeChatOutboxRowsCache();
   const queue = createNativeChatOutbox(7, 'chat-a');
-  await expect(queue.read()).rejects.toThrow('Не удалось прочитать очередь');
-  await expect(queue.send(message, send)).rejects.toThrow();
-  expect(send).not.toHaveBeenCalled();
-  expect(await SecureStore.getItemAsync(key)).toBe(raw);
+  // One unreadable row must not dead-lock the queue: it is dropped, the blob
+  // is rewritten without it, and subsequent sends work again.
+  await expect(queue.read()).resolves.toEqual([]);
+  expect(await SecureStore.getItemAsync(key)).toBeNull();
+  send.mockResolvedValueOnce({ ...message, id: 'server-one' });
+  await expect(queue.send(message, send)).resolves.toMatchObject({ id: 'server-one' });
+});
+
+it('quarantines an unreadable blob and unblocks subsequent sends', async () => {
+  const key = 'hubit_native_chat_outbox_v1';
+  await SecureStore.setItemAsync(key, '{"synthetic-private-message": broken');
+  resetNativeChatOutboxRowsCache();
+  const queue = createNativeChatOutbox(7, 'chat-a');
+  await expect(queue.read()).resolves.toEqual([]);
+  // The payload is moved aside for support instead of being destroyed.
+  const quarantine = jest.mocked(SecureStore.setItemAsync).mock.calls
+    .find(([storedKey]) => storedKey.startsWith(`${key}_corrupt_`));
+  expect(quarantine?.[1]).toBe('{"synthetic-private-message": broken');
+  expect(await SecureStore.getItemAsync(key)).toBeNull();
+  send.mockResolvedValueOnce({ ...message, id: 'server-one' });
+  await expect(queue.send(message, send)).resolves.toMatchObject({ id: 'server-one' });
+  expect(await queue.read()).toEqual([]);
+});
+
+it('keeps valid rows when a sibling row in the blob is damaged', async () => {
+  const key = 'hubit_native_chat_outbox_v1';
+  const second = { ...message, id: 'pending:two', client_message_id: 'two', conversation_id: 'chat-b' };
+  await SecureStore.setItemAsync(key, JSON.stringify([
+    { userId: 7, message },
+    { userId: 7, message: { id: 'pending:broken' } },
+    { userId: 7, message: second },
+  ]));
+  resetNativeChatOutboxRowsCache();
+  const queue = createNativeChatOutbox(7, 'chat-a');
+  await expect(queue.read()).resolves.toEqual([expect.objectContaining({ client_message_id: 'one' })]);
+  const stored = JSON.parse(await SecureStore.getItemAsync(key) || '[]') as Array<{ message: ChatMessage }>;
+  expect(stored.map((row) => row.message.client_message_id)).toEqual(['one', 'two']);
+});
+
+it('drops rows left by another account on the first read under the new user', async () => {
+  const key = 'hubit_native_chat_outbox_v1';
+  await SecureStore.setItemAsync(key, JSON.stringify([
+    { userId: 7, message },
+    { userId: 8, message: { ...message, id: 'pending:b1', client_message_id: 'b1', conversation_id: 'chat-b', sender_user_id: 8 } },
+  ]));
+  resetNativeChatOutboxRowsCache();
+  await expect(createNativeChatOutbox(8, 'chat-b').read()).resolves.toHaveLength(1);
+  const stored = JSON.parse(await SecureStore.getItemAsync(key) || '[]') as Array<{ userId: number }>;
+  expect(stored).toEqual([expect.objectContaining({ userId: 8 })]);
+  // The new user's own queue keeps working afterwards.
+  send.mockResolvedValueOnce({ ...message, id: 'server-b1', sender_user_id: 8, client_message_id: 'b2' });
+  await expect(createNativeChatOutbox(8, 'chat-b').send(
+    { ...message, id: 'pending:b2', client_message_id: 'b2', conversation_id: 'chat-b', sender_user_id: 8 },
+    send,
+  )).resolves.toMatchObject({ id: 'server-b1' });
 });
 
 it('atomically replaces a rejected text reply with an unquoted message and prevents stale retry', async () => {
@@ -70,29 +121,27 @@ it('does not replace a reply when access changes while storage is being read', a
   expect(await SecureStore.getItemAsync('hubit_native_chat_outbox_v1')).toBe(raw);
 });
 
-it.each([{ files: 'invalid', body: '' }, { files: [null], body: '' }, { files: [], body: {} }])('rejects damaged uploads without sending or changing storage: %j', async (upload) => {
+it.each([{ files: 'invalid', body: '' }, { files: [null], body: '' }, { files: [], body: {} }])('drops rows with damaged uploads and repairs the queue: %j', async (upload) => {
   const key = 'hubit_native_chat_outbox_v1';
-  const raw = JSON.stringify([{ userId: 7, message, upload }]);
-  await SecureStore.setItemAsync(key, raw);
+  await SecureStore.setItemAsync(key, JSON.stringify([{ userId: 7, message, upload }]));
   resetNativeChatOutboxRowsCache();
   const queue = createNativeChatOutbox(7, 'chat-a');
-  await expect(queue.readUploads()).rejects.toThrow('Не удалось прочитать очередь');
-  await expect(queue.send(message, send)).rejects.toThrow();
-  expect(send).not.toHaveBeenCalled();
-  expect(await SecureStore.getItemAsync(key)).toBe(raw);
+  await expect(queue.readUploads()).resolves.toEqual([]);
+  expect(await SecureStore.getItemAsync(key)).toBeNull();
+  send.mockResolvedValueOnce({ ...message, id: 'server-one' });
+  await expect(queue.send(message, send)).resolves.toMatchObject({ id: 'server-one' });
 });
 
-it.each([{ replyToMessageId: { id: 'm' } }, { replyPreview: { id: 123 } }, { durationSeconds: '5' }, { mediaKind: 'unknown' }])('preserves queued files with invalid upload metadata: %j', async (damage) => {
+it.each([{ replyToMessageId: { id: 'm' } }, { replyPreview: { id: 123 } }, { durationSeconds: '5' }, { mediaKind: 'unknown' }])('drops rows with invalid upload metadata and keeps the queue usable: %j', async (damage) => {
   const key = 'hubit_native_chat_outbox_v1';
-  const raw = JSON.stringify([{ userId: 7, message, upload: { body: 'Подпись', files: [
+  await SecureStore.setItemAsync(key, JSON.stringify([{ userId: 7, message, upload: { body: 'Подпись', files: [
     { uri: 'file:///synthetic.pdf', name: 'Файл.pdf', mimeType: 'application/pdf', size: 10 },
-  ], ...damage } }]);
-  await SecureStore.setItemAsync(key, raw);
+  ], ...damage } }]));
   resetNativeChatOutboxRowsCache();
   const queue = createNativeChatOutbox(7, 'chat-a');
-  await expect(queue.readUploads()).rejects.toThrow('Не удалось прочитать очередь');
-  await expect(queue.discard('one')).rejects.toThrow();
-  expect(await SecureStore.getItemAsync(key)).toBe(raw);
+  await expect(queue.readUploads()).resolves.toEqual([]);
+  expect(await SecureStore.getItemAsync(key)).toBeNull();
+  await expect(queue.read()).resolves.toEqual([]);
 });
 
 it('rejects a message owned by another user before transport', async () => {
@@ -456,4 +505,40 @@ it('persists the resumable upload session id on the durable row mid-transport', 
   expect(stored?.upload.sessionId).toBe('sess-9');
   const raw = JSON.parse((await SecureStore.getItemAsync('hubit_native_chat_outbox_v1')) || '[]');
   expect(raw[0]?.upload?.sessionId).toBe('sess-9');
+});
+
+it('stamps fresh queued delivery on the detached replacement so the runner keeps it deliverable', async () => {
+  send.mockRejectedValueOnce(new Error('Quoted message not found'));
+  const queue = createNativeChatOutbox(7, 'chat-a');
+  await expect(queue.send(message, send)).rejects.toThrow();
+  await queue.detachReply('one', 'unquoted');
+  const [entry] = await readNativeChatOutbox(7);
+  expect(entry.message.client_message_id).toBe('unquoted');
+  expect(entry.delivery).toEqual({ version: 1, state: 'queued', attempts: 0, notBefore: 0 });
+});
+
+it('keeps the replacement queued metadata when the delivery stamp write fails', async () => {
+  send.mockRejectedValueOnce(new Error('Quoted message not found'));
+  const queue = createNativeChatOutbox(7, 'chat-a');
+  await expect(queue.send(message, send)).rejects.toThrow();
+  await queue.detachReply('one', 'unquoted');
+  // A retryDelivery failure later must still leave the row deliverable: the
+  // delivery field is never wiped by detachReply.
+  jest.mocked(SecureStore.setItemAsync).mockRejectedValueOnce(new Error('Storage'));
+  await expect(queue.retryDelivery('unquoted')).rejects.toThrow();
+  const [entry] = await readNativeChatOutbox(7);
+  expect(entry.delivery?.state).toBe('queued');
+});
+
+it('clears cancelled bookkeeping after discards, including a failed one', async () => {
+  send.mockRejectedValue(new Error('Network'));
+  const session = createNativeChatOutbox(7, 'chat-a');
+  await expect(session.send(message, send)).rejects.toThrow();
+  jest.mocked(SecureStore.deleteItemAsync).mockRejectedValueOnce(new Error('Storage'));
+  await expect(session.discard('one')).rejects.toThrow();
+  await session.discard('one');
+  const second = { ...message, id: 'pending:two', client_message_id: 'two' };
+  await expect(session.send(second, send)).rejects.toThrow();
+  await session.discard('two');
+  expect(getNativeChatOutboxRuntimeState().cancelled).toBe(0);
 });

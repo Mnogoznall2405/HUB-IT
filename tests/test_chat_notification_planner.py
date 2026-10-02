@@ -74,3 +74,53 @@ def test_notification_planner_direct_custom_title_moves_to_body_prefix():
     assert len(plans) == 1
     assert plans[0].title == "Author"
     assert plans[0].body == "[Task] Shared"
+
+
+def test_ai_reply_notification_says_who_answered_and_shows_plain_beginning():
+    """AG: a finished AI answer is a normal incoming message: "ИИ ответил: <beginning>"."""
+    from backend.chat.notification_planner import ai_reply_preview
+
+    answer = (
+        "**Принтер Canon** настроен: см. [инструкцию](https://example.com/x) и `код`.\n\n"
+        "_Учтена личная память: 2 факта_"
+    )
+    plans = build_chat_notification_recipient_plans(
+        sender_user_id=900,
+        conversation_kind="ai",
+        conversation_title="HUB Ассистент",
+        member_ids=[900, 5],
+        states_by_user_id={},
+        sender_name="HUB Ассистент",
+        event_type="chat.message_received",
+        title="Новое сообщение в чате",
+        body=answer,
+        default_title="Новое сообщение в чате",
+        default_group_title="Групповой чат",
+        mention_prefix="Вас упомянули",
+    )
+
+    assert [item.recipient_user_id for item in plans] == [5]
+    assert plans[0].title == "ИИ ответил"
+    assert plans[0].body == "Принтер Canon настроен: см. инструкцию и код."
+    assert "Учтена" not in plans[0].body and "*" not in plans[0].body
+    assert len(ai_reply_preview("слово " * 100)) <= 140
+    assert ai_reply_preview("слово " * 100).endswith("…")
+    assert ai_reply_preview("") == ""
+
+
+def test_ai_reply_notification_respects_muted_and_archived_chat():
+    plans = build_chat_notification_recipient_plans(
+        sender_user_id=900,
+        conversation_kind="ai",
+        conversation_title="HUB Ассистент",
+        member_ids=[900, 5, 6],
+        states_by_user_id={5: SimpleNamespace(is_muted=True), 6: SimpleNamespace(is_archived=True)},
+        sender_name="HUB Ассистент",
+        event_type="chat.message_received",
+        title="Новое сообщение в чате",
+        body="Готово",
+        default_title="Новое сообщение в чате",
+        default_group_title="Групповой чат",
+        mention_prefix="Вас упомянули",
+    )
+    assert plans == []

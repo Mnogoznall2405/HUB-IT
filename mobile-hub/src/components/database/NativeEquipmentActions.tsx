@@ -1,7 +1,7 @@
 import { NativeModal as Modal } from '../ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import * as Crypto from 'expo-crypto';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useCallback, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -11,6 +11,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { SafeAreaInsetsContext, initialWindowMetrics } from 'react-native-safe-area-context';
 import {
   deleteEquipment,
   getEquipmentTransferJob,
@@ -22,6 +23,7 @@ import {
   submitEquipmentTransfer,
   type ConsumableRecord,
   type EquipmentDirectoryOption,
+  type EquipmentOwnerOption,
   type EquipmentRecord,
   type EquipmentWorkKind,
   type TransferAct,
@@ -34,8 +36,18 @@ import { downloadGeneratedTransferAct } from '../../database/nativeDatabaseFiles
 import { equipmentWorkKindLabel, equipmentWorkKinds } from '../../database/nativeDatabaseModel';
 import { openNativeFile } from '../../files/nativeAttachmentDownloads';
 import type { FluentTokens } from '../../theme/fluentTokens';
+import { NativeEquipmentOptionPicker } from './NativeEquipmentOptionPicker';
+import { NativeEquipmentOwnerPicker } from './NativeEquipmentOwnerPicker';
+
+type OwnerPickerKind = 'employee' | 'issuer' | 'recipient';
 
 type ActionKind = TransferMode | EquipmentWorkKind | 'delete' | null;
+
+export type NativeEquipmentActionKind = Exclude<ActionKind, null>;
+
+export type NativeEquipmentActionsHandle = {
+  open: (kind: NativeEquipmentActionKind) => void;
+};
 
 function operationId(): string {
   return Crypto.randomUUID?.()
@@ -46,46 +58,64 @@ function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function ChoiceStrip({
+function directoryLabel(items: EquipmentDirectoryOption[], selected: number | string | null, fallback = ''): string {
+  const found = items.find((item) => String(item.id) === String(selected ?? ''));
+  return found?.name || (selected === null || selected === undefined ? '' : fallback);
+}
+
+function PickerField({
   label,
-  items,
-  selected,
-  onSelect,
+  value,
+  hint,
+  disabled,
+  onPress,
   tokens,
+  testID,
 }: {
   label: string;
-  items: EquipmentDirectoryOption[];
-  selected: number | string | null;
-  onSelect: (value: number | string) => void;
+  value: string;
+  hint?: string;
+  disabled?: boolean;
+  onPress: () => void;
   tokens: FluentTokens;
+  testID?: string;
 }) {
   return (
     <View style={styles.fieldGroup}>
       <Text style={[styles.label, { color: tokens.textSecondary }]}>{label}</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.choiceStrip}>
-        {items.map((item) => {
-          const active = String(item.id) === String(selected ?? '');
-          return (
-            <Pressable
-              key={`${label}:${item.id}`}
-              accessibilityRole="radio"
-              accessibilityState={{ checked: active }}
-              onPress={() => onSelect(item.id)}
-              style={[styles.choice, {
-                backgroundColor: active ? tokens.primary : tokens.panelSolid,
-                borderColor: active ? tokens.primary : tokens.border,
-              }]}
-            >
-              <Text style={[styles.choiceText, { color: active ? '#fff' : tokens.textPrimary }]}>{item.name}</Text>
-            </Pressable>
-          );
-        })}
-      </ScrollView>
+      <Pressable
+        testID={testID}
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        accessibilityState={{ disabled: Boolean(disabled) }}
+        disabled={disabled}
+        onPress={onPress}
+        style={[styles.pickerField, { backgroundColor: tokens.panelSolid, borderColor: tokens.border, opacity: disabled ? 0.5 : 1 }]}
+      >
+        <Text numberOfLines={1} style={[styles.pickerFieldText, { color: value ? tokens.textPrimary : tokens.textTertiary }]}>
+          {value || hint || 'Выбрать из списка'}
+        </Text>
+        <MaterialCommunityIcons name="chevron-down" size={20} color={tokens.iconMuted} />
+      </Pressable>
     </View>
   );
 }
 
-export function NativeEquipmentActions({
+export const NativeEquipmentActions = forwardRef<NativeEquipmentActionsHandle, {
+  equipment: EquipmentRecord;
+  targets?: EquipmentRecord[];
+  databaseId?: string;
+  canWrite: boolean;
+  canDeleteEquipment: boolean;
+  offline: boolean;
+  surface: 'general' | 'works';
+  tokens: FluentTokens;
+  onChanged: (kind: NativeEquipmentActionKind, result?: TransferResult) => Promise<void> | void;
+  onClosed?: (result: TransferResult | null) => void;
+  onDeleted: () => void;
+  testIDPrefix?: string;
+  triggers?: 'grid' | 'none';
+}>(function NativeEquipmentActions({
   equipment,
   targets,
   databaseId,
@@ -95,21 +125,12 @@ export function NativeEquipmentActions({
   surface,
   tokens,
   onChanged,
+  onClosed,
   onDeleted,
   testIDPrefix = 'native-equipment',
-}: {
-  equipment: EquipmentRecord;
-  targets?: EquipmentRecord[];
-  databaseId?: string;
-  canWrite: boolean;
-  canDeleteEquipment: boolean;
-  offline: boolean;
-  surface: 'general' | 'works';
-  tokens: FluentTokens;
-  onChanged: () => Promise<void> | void;
-  onDeleted: () => void;
-  testIDPrefix?: string;
-}) {
+  triggers = 'grid',
+}, ref) {
+  const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
   const [action, setAction] = useState<ActionKind>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -119,7 +140,10 @@ export function NativeEquipmentActions({
   const [branchNo, setBranchNo] = useState<number | string | null>(equipment.branch_no ?? null);
   const [locationNo, setLocationNo] = useState<number | string | null>(equipment.loc_no ?? null);
   const [employee, setEmployee] = useState('');
+  const [employeePick, setEmployeePick] = useState<EquipmentOwnerOption | null>(null);
   const [issuer, setIssuer] = useState(equipment.employee_name || '');
+  const [issuerPick, setIssuerPick] = useState<EquipmentOwnerOption | null>(null);
+  const [pickerKind, setPickerKind] = useState<'branch' | 'location' | OwnerPickerKind | null>(null);
   const [comment, setComment] = useState('');
   const [consumables, setConsumables] = useState<ConsumableRecord[]>([]);
   const [selectedConsumable, setSelectedConsumable] = useState<ConsumableRecord | null>(null);
@@ -127,9 +151,11 @@ export function NativeEquipmentActions({
   const [result, setResult] = useState<TransferResult | null>(null);
   const [fileBusy, setFileBusy] = useState('');
   const [emailBusy, setEmailBusy] = useState(false);
-  const [emailMode, setEmailMode] = useState<'old' | 'new' | 'manual'>('new');
+  const [emailMode, setEmailMode] = useState<'old' | 'new' | 'manual' | 'employee'>('old');
   const [manualEmail, setManualEmail] = useState('');
+  const [recipientPick, setRecipientPick] = useState<EquipmentOwnerOption | null>(null);
   const attemptRef = useRef<{ signature: string; key: string } | null>(null);
+  const lastResultRef = useRef<TransferResult | null>(null);
   const targetInvNos = useMemo(() => {
     const values = targets?.length ? targets : [equipment];
     return [...new Set(values.map((item) => item.inv_no.trim()).filter(Boolean))];
@@ -176,20 +202,36 @@ export function NativeEquipmentActions({
 
   const close = useCallback(() => {
     if (busy) return;
+    const lastResult = lastResultRef.current;
     setAction(null);
     setError('');
     setNotice('');
     setResult(null);
+    lastResultRef.current = null;
     setSelectedConsumable(null);
-  }, [busy]);
+    setEmployee('');
+    setEmployeePick(null);
+    setIssuer(equipment.employee_name || '');
+    setIssuerPick(null);
+    setRecipientPick(null);
+    setPickerKind(null);
+    setEmailMode('old');
+    setManualEmail('');
+    onClosed?.(lastResult);
+  }, [busy, equipment.employee_name, onClosed]);
 
-  const runTransfer = useCallback(async () => {
+  const runTransfer = useCallback(async (invNosOverride?: string[]) => {
     if (!transferAction || busy || offline) return;
+    const invNos = invNosOverride?.length ? invNosOverride : targetInvNos;
     const base: Omit<TransferRequest, 'operation_id'> = {
-      inv_nos: targetInvNos,
+      inv_nos: invNos,
       comment: comment.trim() || undefined,
       ...(action === 'owner' ? {
         new_employee: employee.trim(),
+        ...(employeePick ? {
+          new_employee_no: employeePick.owner_no,
+          new_employee_dept: employeePick.department || undefined,
+        } : {}),
         branch_no: branchNo ?? undefined,
         loc_no: locationNo ?? undefined,
       } : {}),
@@ -197,7 +239,10 @@ export function NativeEquipmentActions({
         branch_no: branchNo ?? undefined,
         loc_no: locationNo ?? undefined,
       } : {}),
-      ...(action === 'act-only' ? { issuer_employee: issuer.trim() } : {}),
+      ...(action === 'act-only' ? {
+        issuer_employee: issuer.trim(),
+        ...(issuerPick ? { issuer_owner_no: issuerPick.owner_no } : {}),
+      } : {}),
     };
     if (action === 'owner' && employee.trim().length < 2) {
       setError('Укажите нового сотрудника.');
@@ -227,17 +272,16 @@ export function NativeEquipmentActions({
       }
       if (next.job_status === 'failed') throw new Error(next.job_error || 'Операция завершилась ошибкой');
       setResult(next);
-      setNotice(next.failed_count
-        ? `Выполнено: ${next.success_count}, ошибок: ${next.failed_count}.`
-        : 'Операция успешно выполнена.');
+      lastResultRef.current = next;
+      setNotice('');
       attemptRef.current = null;
-      await onChanged();
+      await onChanged(action, next);
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось выполнить операцию.'));
     } finally {
       setBusy(false);
     }
-  }, [action, branchNo, busy, comment, databaseId, employee, issuer, locationNo, offline, onChanged, targetInvNos, transferAction]);
+  }, [action, branchNo, busy, comment, databaseId, employee, employeePick, issuer, issuerPick, locationNo, offline, onChanged, targetInvNos, transferAction]);
 
   const runWork = useCallback(async () => {
     if (!workAction || busy || offline) return;
@@ -254,7 +298,7 @@ export function NativeEquipmentActions({
         componentModel: selectedConsumable?.model_name,
       });
       setNotice(`${equipmentWorkKindLabel(action)} записана.`);
-      await onChanged();
+      await onChanged(action);
     } catch (cause) {
       setError(formatApiError(cause, 'Не удалось записать обслуживание.'));
     } finally {
@@ -303,6 +347,7 @@ export function NativeEquipmentActions({
       setError('Укажите корректный e-mail получателя.');
       return;
     }
+    if (emailMode === 'employee' && !recipientPick) return;
     setEmailBusy(true);
     setError('');
     try {
@@ -310,6 +355,7 @@ export function NativeEquipmentActions({
         act_ids: result.acts.map((act) => act.act_id),
         mode: emailMode,
         manual_email: emailMode === 'manual' ? manualEmail.trim() : undefined,
+        owner_no: emailMode === 'employee' ? recipientPick?.owner_no : undefined,
       }, databaseId);
       setNotice(sent.failed_count
         ? `Отправлено: ${sent.success_count}, ошибок: ${sent.failed_count}.`
@@ -320,13 +366,17 @@ export function NativeEquipmentActions({
     } finally {
       setEmailBusy(false);
     }
-  }, [databaseId, emailBusy, emailMode, manualEmail, result?.acts]);
+  }, [databaseId, emailBusy, emailMode, manualEmail, recipientPick, result?.acts]);
+
+  useImperativeHandle(ref, () => ({
+    open: (kind) => { setAction(kind); },
+  }), []);
 
   if (!canWrite && !canDeleteEquipment) return null;
 
   return (
     <>
-      {surface === 'general' ? (
+      {triggers === 'none' ? null : surface === 'general' ? (
         <View style={styles.actionGrid}>
           {canWrite ? (
             <>
@@ -356,10 +406,10 @@ export function NativeEquipmentActions({
       )}
 
       <Modal visible={Boolean(action)} animationType="slide" presentationStyle="pageSheet" onRequestClose={close} accessibilityViewIsModal>
-        <View style={[styles.modal, { backgroundColor: tokens.pageBg }]}> 
+        <View style={[styles.modal, { backgroundColor: tokens.pageBg, paddingTop: insets?.top || 0 }]}>
           <View style={[styles.modalHeader, { borderBottomColor: tokens.borderSoft }]}> 
             <Pressable disabled={busy} accessibilityRole="button" accessibilityLabel="Закрыть операцию" onPress={close} style={styles.headerAction}>
-              <Text style={[styles.headerText, { color: tokens.textSecondary }]}>Отмена</Text>
+              <Text style={[styles.headerText, { color: tokens.textSecondary }]}>{result ? 'Закрыть' : 'Отмена'}</Text>
             </Pressable>
             <Text accessibilityRole="header" style={[styles.modalTitle, { color: tokens.textPrimary }]}>{actionTitle(action)}</Text>
             <View style={styles.headerAction} />
@@ -371,15 +421,50 @@ export function NativeEquipmentActions({
             {error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
             {notice ? <Text accessibilityLiveRegion="polite" style={[styles.notice, { color: tokens.textSecondary }]}>{notice}</Text> : null}
 
-            {action === 'owner' ? <Field label="Новый сотрудник" value={employee} onChange={setEmployee} tokens={tokens} testID="native-transfer-employee" /> : null}
-            {action === 'act-only' ? <Field label="Передал оборудование" value={issuer} onChange={setIssuer} tokens={tokens} testID="native-transfer-issuer" /> : null}
-            {(action === 'owner' || action === 'location') ? (
+            {action === 'owner' && !result ? (
+              <PickerField
+                testID="native-transfer-employee"
+                label="Новый сотрудник"
+                value={employeePick?.name || employee}
+                hint="Начните вводить ФИО"
+                disabled={busy}
+                onPress={() => setPickerKind('employee')}
+                tokens={tokens}
+              />
+            ) : null}
+            {action === 'act-only' && !result ? (
+              <PickerField
+                testID="native-transfer-issuer"
+                label="Передал оборудование"
+                value={issuerPick?.name || issuer}
+                hint="Начните вводить ФИО"
+                disabled={busy}
+                onPress={() => setPickerKind('issuer')}
+                tokens={tokens}
+              />
+            ) : null}
+            {!result && (action === 'owner' || action === 'location') ? (
               <>
-                <ChoiceStrip label="Филиал" items={branches} selected={branchNo} onSelect={(value) => { setBranchNo(value); setLocationNo(null); }} tokens={tokens} />
-                <ChoiceStrip label="Размещение" items={locations} selected={locationNo} onSelect={setLocationNo} tokens={tokens} />
+                <PickerField
+                  testID="native-transfer-pick-branch"
+                  label="Филиал"
+                  value={directoryLabel(branches, branchNo, equipment.branch_name)}
+                  disabled={busy}
+                  onPress={() => setPickerKind('branch')}
+                  tokens={tokens}
+                />
+                <PickerField
+                  testID="native-transfer-pick-location"
+                  label="Размещение"
+                  value={directoryLabel(locations, locationNo, equipment.location_name)}
+                  hint={branchNo === null || branchNo === undefined ? 'Сначала выберите филиал' : undefined}
+                  disabled={busy || branchNo === null || branchNo === undefined}
+                  onPress={() => setPickerKind('location')}
+                  tokens={tokens}
+                />
               </>
             ) : null}
-            {transferAction ? <Field label="Комментарий (необязательно)" value={comment} onChange={setComment} tokens={tokens} multiline /> : null}
+            {transferAction && !result ? <Field label="Комментарий (необязательно)" value={comment} onChange={setComment} tokens={tokens} multiline /> : null}
 
             {(action === 'cartridge' || action === 'component') ? (
               <View style={styles.fieldGroup}>
@@ -404,38 +489,108 @@ export function NativeEquipmentActions({
             ) : null}
             {action === 'component' ? <Field label="Тип компонента" value={componentType} onChange={setComponentType} tokens={tokens} testID="native-work-component-type" /> : null}
 
-            {result?.acts.length ? (
+            {result ? (
               <View style={styles.resultActs}>
-                <Text style={[styles.label, { color: tokens.textSecondary }]}>Сформированные документы</Text>
-                {result.acts.map((act) => (
-                  <Pressable
-                    key={act.act_id}
-                    testID={`native-transfer-act-${act.act_id}`}
-                    disabled={Boolean(fileBusy)}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Открыть ${act.file_name}`}
-                    onPress={() => { void openAct(act); }}
-                    style={[styles.fileButton, { borderColor: tokens.border }]}
-                  >
-                    {fileBusy === act.act_id ? <ActivityIndicator color={tokens.primary} /> : <MaterialCommunityIcons name="file-download-outline" size={20} color={tokens.primary} />}
-                    <Text style={[styles.fileName, { color: tokens.textPrimary }]}>{act.file_name}</Text>
-                  </Pressable>
-                ))}
-                <Text style={[styles.label, { color: tokens.textSecondary }]}>Отправить акты</Text>
-                <View style={styles.emailModes}>
-                  {(['old', 'new', 'manual'] as const).map((value) => {
-                    const selected = emailMode === value;
-                    return (
-                      <Pressable key={value} accessibilityRole="radio" accessibilityState={{ checked: selected }} onPress={() => setEmailMode(value)} style={[styles.emailMode, { backgroundColor: selected ? tokens.primary : tokens.panelSolid, borderColor: selected ? tokens.primary : tokens.border }]}> 
-                        <Text style={[styles.emailModeText, { color: selected ? '#fff' : tokens.textPrimary }]}>{value === 'old' ? 'Предыдущему' : value === 'new' ? 'Новому' : 'Другой адрес'}</Text>
+                <Text accessibilityLiveRegion="polite" style={[styles.resultSummary, { color: result.failed_count ? tokens.warning : tokens.success }]}>
+                  {action === 'act-only'
+                    ? `Подготовлено позиций: ${result.success_count}, ошибок: ${result.failed_count}`
+                    : `Перемещено: ${result.success_count}, ошибок: ${result.failed_count}`}
+                </Text>
+                {result.failed.length ? (
+                  <View style={styles.resultFailed}>
+                    {result.failed.slice(0, 5).map((item, index) => (
+                      <Text key={`${item.inv_no}-${index}`} style={[styles.error, { color: tokens.error }]}>{item.inv_no}: {item.error}</Text>
+                    ))}
+                    {result.retry_inv_nos.length ? (
+                      <Pressable
+                        testID="native-transfer-retry-failed"
+                        accessibilityRole="button"
+                        accessibilityState={{ disabled: busy }}
+                        disabled={busy}
+                        onPress={() => { void runTransfer(result.retry_inv_nos); }}
+                        style={[styles.secondary, { borderColor: tokens.primary }]}
+                      >
+                        {busy ? <ActivityIndicator color={tokens.primary} /> : <Text style={[styles.secondaryText, { color: tokens.primary }]}>Повторить только неуспешные ({result.retry_inv_nos.length})</Text>}
                       </Pressable>
-                    );
-                  })}
-                </View>
-                {emailMode === 'manual' ? <Field label="E-mail получателя" value={manualEmail} onChange={setManualEmail} tokens={tokens} testID="native-transfer-email" /> : null}
-                <Pressable testID="native-transfer-email-send" accessibilityRole="button" accessibilityState={{ disabled: emailBusy }} disabled={emailBusy} onPress={() => { void sendActs(); }} style={[styles.secondary, { borderColor: tokens.primary }]}> 
-                  {emailBusy ? <ActivityIndicator color={tokens.primary} /> : <Text style={[styles.secondaryText, { color: tokens.primary }]}>Отправить акты</Text>}
-                </Pressable>
+                    ) : null}
+                  </View>
+                ) : null}
+                {result.acts.length ? (
+                  <View>
+                    <Text style={[styles.label, { color: tokens.textSecondary }]}>Сформированные акты</Text>
+                    {result.acts.map((act) => (
+                      <View key={act.act_id} style={[styles.actCard, { backgroundColor: tokens.panelSolid, borderColor: tokens.border }]}>
+                        <View style={styles.actCardBody}>
+                          <Text style={[styles.actCardTitle, { color: tokens.textPrimary }]}>
+                            {action === 'act-only' && act.new_employee
+                              ? `${act.old_employee} → ${act.new_employee} (${act.equipment_count})`
+                              : `${act.old_employee} (${act.equipment_count})`}
+                          </Text>
+                          <Text numberOfLines={1} style={[styles.actCardMeta, { color: tokens.textSecondary }]}>{act.file_name}</Text>
+                        </View>
+                        <Pressable
+                          testID={`native-transfer-act-${act.act_id}`}
+                          disabled={Boolean(fileBusy)}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Открыть ${act.file_name}`}
+                          onPress={() => { void openAct(act); }}
+                          style={[styles.actOpen, { borderColor: tokens.primary }]}
+                        >
+                          {fileBusy === act.act_id ? <ActivityIndicator color={tokens.primary} /> : <Text style={[styles.actOpenText, { color: tokens.primary }]}>Открыть</Text>}
+                        </Pressable>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+                {action !== 'location' ? (
+                  <View style={styles.emailBlock}>
+                    <Text style={[styles.label, { color: tokens.textSecondary }]}>Отправка акта по email</Text>
+                    <View style={styles.emailModes}>
+                      {(['old', 'new', 'employee', 'manual'] as const).map((value) => {
+                        const selected = emailMode === value;
+                        const label = value === 'old'
+                          ? (action === 'act-only' ? 'Выдавшему' : 'Старому сотруднику')
+                          : value === 'new'
+                            ? (action === 'act-only' ? 'Получателю' : 'Новому сотруднику')
+                            : value === 'employee' ? 'Выбрать сотрудника' : 'Ввести email вручную';
+                        return (
+                          <Pressable
+                            key={value}
+                            testID={`native-transfer-email-mode-${value}`}
+                            accessibilityRole="radio"
+                            accessibilityState={{ checked: selected }}
+                            onPress={() => setEmailMode(value)}
+                            style={[styles.emailMode, { backgroundColor: selected ? tokens.primary : tokens.panelSolid, borderColor: selected ? tokens.primary : tokens.border }]}
+                          >
+                            <Text style={[styles.emailModeText, { color: selected ? '#fff' : tokens.textPrimary }]}>{label}</Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                    {emailMode === 'employee' ? (
+                      <PickerField
+                        testID="native-transfer-email-recipient"
+                        label="Сотрудник-получатель"
+                        value={recipientPick ? `${recipientPick.name}${recipientPick.email ? ` · ${recipientPick.email}` : ''}` : ''}
+                        hint="Начните вводить ФИО"
+                        disabled={emailBusy}
+                        onPress={() => setPickerKind('recipient')}
+                        tokens={tokens}
+                      />
+                    ) : null}
+                    {emailMode === 'manual' ? <Field label="E-mail получателя" value={manualEmail} onChange={setManualEmail} tokens={tokens} testID="native-transfer-email" /> : null}
+                    <Pressable
+                      testID="native-transfer-email-send"
+                      accessibilityRole="button"
+                      accessibilityState={{ disabled: emailBusy || !result.acts.length || (emailMode === 'employee' && !recipientPick) }}
+                      disabled={emailBusy || !result.acts.length || (emailMode === 'employee' && !recipientPick)}
+                      onPress={() => { void sendActs(); }}
+                      style={[styles.secondary, { borderColor: tokens.primary }]}
+                    >
+                      {emailBusy ? <ActivityIndicator color={tokens.primary} /> : <Text style={[styles.secondaryText, { color: tokens.primary }]}>Отправить акт</Text>}
+                    </Pressable>
+                  </View>
+                ) : null}
               </View>
             ) : null}
 
@@ -463,11 +618,46 @@ export function NativeEquipmentActions({
               </Pressable>
             )}
           </ScrollView>
+          <NativeEquipmentOptionPicker
+            visible={pickerKind === 'branch' || pickerKind === 'location'}
+            title={pickerKind === 'branch' ? 'Филиал' : 'Размещение'}
+            options={pickerKind === 'branch' ? branches : locations}
+            selectedId={pickerKind === 'branch' ? branchNo : locationNo}
+            tokens={tokens}
+            testIDPrefix={pickerKind === 'branch' ? 'native-transfer-branch' : 'native-transfer-location'}
+            onSelect={(id) => {
+              if (pickerKind === 'branch') { setBranchNo(id); setLocationNo(null); }
+              else setLocationNo(id);
+              setPickerKind(null);
+            }}
+            onClose={() => setPickerKind(null)}
+          />
+          <NativeEquipmentOwnerPicker
+            visible={pickerKind === 'employee' || pickerKind === 'issuer' || pickerKind === 'recipient'}
+            title={pickerKind === 'issuer' ? 'Передал оборудование' : pickerKind === 'recipient' ? 'Сотрудник-получатель' : 'Новый сотрудник'}
+            databaseId={databaseId}
+            selectedOwnerNo={pickerKind === 'issuer' ? issuerPick?.owner_no ?? null : pickerKind === 'recipient' ? recipientPick?.owner_no ?? null : employeePick?.owner_no ?? null}
+            allowManual={pickerKind !== 'recipient'}
+            initialQuery={pickerKind === 'issuer' ? issuer : pickerKind === 'employee' ? employee : ''}
+            tokens={tokens}
+            onSelect={(owner) => {
+              if (pickerKind === 'issuer') { setIssuerPick(owner); setIssuer(owner.name); }
+              else if (pickerKind === 'recipient') setRecipientPick(owner);
+              else { setEmployeePick(owner); setEmployee(owner.name); }
+              setPickerKind(null);
+            }}
+            onManual={(name) => {
+              if (pickerKind === 'issuer') { setIssuer(name); setIssuerPick(null); }
+              else { setEmployee(name); setEmployeePick(null); }
+              setPickerKind(null);
+            }}
+            onClose={() => setPickerKind(null)}
+          />
         </View>
       </Modal>
     </>
   );
-}
+});
 
 function ActionButton({ testID, icon, label, onPress, disabled, tokens, destructive = false }: {
   testID: string;
@@ -545,9 +735,8 @@ const styles = StyleSheet.create({
   label: { marginBottom: 6, fontSize: 12, lineHeight: 16, fontWeight: '800' },
   input: { minHeight: 48, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14 },
   textarea: { minHeight: 92, textAlignVertical: 'top' },
-  choiceStrip: { gap: 8, paddingBottom: 2 },
-  choice: { minHeight: 44, maxWidth: 260, borderWidth: 1, borderRadius: 22, paddingHorizontal: 13, alignItems: 'center', justifyContent: 'center' },
-  choiceText: { fontSize: 12, fontWeight: '800' },
+  pickerField: { minHeight: 48, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  pickerFieldText: { flex: 1, minWidth: 0, fontSize: 14, fontWeight: '700' },
   error: { marginBottom: 10, fontSize: 12, lineHeight: 17, fontWeight: '700' },
   notice: { marginBottom: 10, fontSize: 12, lineHeight: 17, fontWeight: '700' },
   consumable: { minHeight: 62, borderWidth: 1, borderRadius: 12, padding: 11, marginBottom: 7 },
@@ -555,6 +744,15 @@ const styles = StyleSheet.create({
   consumableMeta: { marginTop: 3, fontSize: 11 },
   empty: { fontSize: 12, lineHeight: 17 },
   resultActs: { marginTop: 4, marginBottom: 14 },
+  resultSummary: { marginBottom: 10, fontSize: 13, lineHeight: 18, fontWeight: '800' },
+  resultFailed: { marginBottom: 12 },
+  actCard: { borderWidth: 1, borderRadius: 12, padding: 11, marginBottom: 7, flexDirection: 'row', alignItems: 'center', gap: 9 },
+  actCardBody: { flex: 1, minWidth: 0 },
+  actCardTitle: { fontSize: 13, fontWeight: '800' },
+  actCardMeta: { marginTop: 3, fontSize: 11 },
+  actOpen: { minHeight: 38, minWidth: 84, borderWidth: 1, borderRadius: 10, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 10 },
+  actOpenText: { fontSize: 12, fontWeight: '800' },
+  emailBlock: { marginTop: 8 },
   emailModes: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginBottom: 10 },
   emailMode: { minHeight: 42, borderWidth: 1, borderRadius: 21, paddingHorizontal: 11, justifyContent: 'center' },
   emailModeText: { fontSize: 11, fontWeight: '800' },

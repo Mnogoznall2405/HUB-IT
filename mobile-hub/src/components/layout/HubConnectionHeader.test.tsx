@@ -64,6 +64,7 @@ describe('HubConnectionHeader', () => {
   it('keeps the explicit offline and degraded states above a stalled send', () => {
     expect(resolveHubConnectionPresentation({
       offlineMode: true,
+      connectivityOffline: true,
       apiOnline: true,
       hubStatus: 'connected',
       sendStalled: true,
@@ -79,10 +80,30 @@ describe('HubConnectionHeader', () => {
   it('prioritizes the device offline state', () => {
     expect(resolveHubConnectionPresentation({
       offlineMode: true,
+      connectivityOffline: true,
       hubStatus: 'connected',
       chatStatus: 'connected',
       chatEnabled: true,
     })).toEqual(expect.objectContaining({ kind: 'offline', label: 'Нет сети · офлайн-данные доступны' }));
+  });
+
+  it('shows «Подключение…» while the cached session is checked against a reachable network', () => {
+    expect(resolveHubConnectionPresentation({
+      offlineMode: true,
+      connectivityOffline: false,
+      apiOnline: false,
+      hubStatus: 'disconnected',
+    })).toEqual(expect.objectContaining({ kind: 'connecting', label: 'Подключение…' }));
+  });
+
+  it('shows «Доступ из этой сети запрещён» when HUB-IT rejected the network itself', () => {
+    expect(resolveHubConnectionPresentation({
+      offlineMode: true,
+      connectivityOffline: false,
+      networkRestricted: true,
+      apiOnline: false,
+      hubStatus: 'disconnected',
+    })).toEqual(expect.objectContaining({ kind: 'degraded', label: 'Доступ из этой сети запрещён' }));
   });
 
   it('renders the status inline without adding a second page header', async () => {

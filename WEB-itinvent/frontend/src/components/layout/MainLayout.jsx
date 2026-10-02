@@ -157,6 +157,7 @@ import {
 import { applyPwaUpdate, getPwaInstallState, subscribePwaInstallState } from '../../lib/pwaInstall';
 import { prefetchRouteByPath } from '../../lib/routeLoaders';
 import { resolveChatMessageNotificationPlan } from '../../lib/chatSocketNotificationPlan';
+import { playChatMessageSound } from '../../lib/chatMessageSound';
 import { MainLayoutShellContext } from './MainLayoutShellContext';
 import { APP_BRAND_NAME, buildDocumentTitle } from '../../lib/appBranding';
 import {
@@ -207,7 +208,6 @@ function MainLayout({
 }) {
   const theme = useTheme();
   const isPhone = useMediaQuery(theme.breakpoints.down('sm'), { defaultMatches: true });
-  const isCompactChatViewport = useMediaQuery(theme.breakpoints.down('md'), { defaultMatches: true });
   const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)', { defaultMatches: false });
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -320,6 +320,8 @@ function MainLayout({
     [location.search],
   );
   const [activeChatConversationIdFromChat, setActiveChatConversationIdFromChat] = useState('');
+  // N3: hidden-tab title shows the sender of the latest chat message.
+  const [lastNotificationLabel, setLastNotificationLabel] = useState('');
   useEffect(() => {
     const handleActiveConversationChanged = (event) => {
       setActiveChatConversationIdFromChat(String(event?.detail?.conversationId || '').trim());
@@ -357,8 +359,14 @@ function MainLayout({
   const isFixedHeightRoute = isChatRoute || isMailRoute || isDocflowRoute || isDlpRoute;
   const isMobileChatRoute = isPhone && isChatRoute;
   const isDesktopChatRoute = !isPhone && isChatRoute;
-  const integratedChatHeader = isDesktopChatRoute && !isCompactChatViewport
+  // Д2-5 (раздел 29, п. 5): на странице чата меню портала — узкая полоса иконок
+  // на любой ширине desktop, а шапка чата заменяет шапку портала (раньше
+  // на 600–900 px показывались полное меню 215 px и AppBar).
+  const integratedChatHeader = isDesktopChatRoute
     && taskDiscussionRouteParams.get('task_layout') !== 'split';
+  // Полная навигация открывается поверх по кнопке ☰ в шапке списка чатов.
+  const chatPortalRail = integratedChatHeader;
+  const effectiveSidebarCollapsed = sidebarCollapsed || chatPortalRail;
   const isEdgeToEdgeMobileContent = isPhone && contentMode === 'edge-to-edge-mobile';
   const isEdgeToEdgeContent = contentMode === 'edge-to-edge' || isEdgeToEdgeMobileContent;
   const notificationsOnlyHeader = headerMode === 'notifications-only';
@@ -754,6 +762,7 @@ function MainLayout({
       activeChatConversationId,
       isChatRoute,
       isMobileChatRoute,
+      isDesktopChatRoute,
       isTaskDiscussionRoute,
       isVisible: isNotificationSurfaceVisible(),
       skipChatPush: shouldSkipChatPushForegroundNotification(),
@@ -764,7 +773,7 @@ function MainLayout({
     }
     if (decision.kind === 'claim-chat' && !claimChatMessageNotification(decision.messageId)) return;
     notifyInfoRef.current?.(decision.body, decision.options);
-  }, [activeChatConversationId, isChatRoute, isMobileChatRoute, isTaskDiscussionRoute]);
+  }, [activeChatConversationId, isChatRoute, isMobileChatRoute, isDesktopChatRoute, isTaskDiscussionRoute]);
 
   useEffect(() => {
     const handleForegroundPushNotification = (event) => {
@@ -927,6 +936,8 @@ function MainLayout({
           channel: 'chat',
           conversation_kind: message?.conversation_kind,
         }, notificationPreferencesRef.current),
+        chatMessageSoundEnabled: normalizeNotificationPreferences(notificationPreferencesRef.current).chat_sound,
+        isDesktopChatRoute,
         chatNotificationState: getChatNotificationState(),
       });
       if (plan.kind === 'ignore') return;
@@ -935,6 +946,11 @@ function MainLayout({
         return;
       }
       if (!claimChatMessageNotification(plan.messageId)) return;
+      // N3: запоминаем отправителя для заголовка вкладки на скрытой странице.
+      setLastNotificationLabel(String(plan.senderName || '').trim() || 'Новое уведомление');
+      if (plan.shouldPlaySound) {
+        playChatMessageSound();
+      }
       if (plan.suppress) {
         setChatForegroundDiagnostic(plan.suppress);
         return;
@@ -981,6 +997,7 @@ function MainLayout({
     activeChatConversationId,
     hasChatPermission,
     isChatRoute,
+    isDesktopChatRoute,
     isTaskDiscussionRoute,
     navigate,
     user?.id,
@@ -1435,6 +1452,9 @@ useEffect(() => {
                 const rawBody = String(item?.body || '').trim();
                 const toastMessage = rawBody || rawTitle || 'Новое уведомление';
                 const toastTitle = rawBody ? (rawTitle || 'Новое уведомление') : 'Уведомление';
+                // N3: a hub notification is the freshest one — the hidden-tab
+                // title falls back to the generic label again.
+                setLastNotificationLabel('Новое уведомление');
                 const navigateTo = getHubNotificationNavigateTo(item);
                 const actionLabel = getHubNotificationActionLabel(item);
                 if (shouldShowToasts) {
@@ -1452,11 +1472,10 @@ useEffect(() => {
                   createHubSystemNotification(item, {
                     onNavigate: (target) => navigate(target),
                   });
-                  try {
-                    const audio = new window.Audio('/sounds/notification.mp3');
-                    audio.play().catch(() => { /* ignore autoplay blocks */ });
-                  } catch (e) {
-                    // Ignore audio creation errors
+                  // R16: /sounds/notification.mp3 never existed in public/ —
+                  // reuse the chat message sound under the same toggle.
+                  if (normalizeNotificationPreferences(notificationPreferencesRef.current).chat_sound) {
+                    playChatMessageSound();
                   }
                 }
               });
@@ -1916,7 +1935,10 @@ useEffect(() => {
         return;
       }
       if (notificationsBadgeValue > 0) {
-        document.title = `(${notificationsBadgeValue}) Новое уведомление - ${documentTitle}`;
+        // N3: for a chat message the tab shows the sender name instead of a
+        // generic "Новое уведомление" so it is clear a chat arrived.
+        const label = String(lastNotificationLabel || '').trim() || 'Новое уведомление';
+        document.title = `(${notificationsBadgeValue}) ${label} - ${documentTitle}`;
         return;
       }
       document.title = documentTitle;
@@ -1930,7 +1952,7 @@ useEffect(() => {
       window.removeEventListener(DESKTOP_WINDOW_STATE_CHANGED_EVENT, updateTitle);
       document.title = APP_BRAND_NAME;
     };
-  }, [documentTitle, notificationsBadgeValue]);
+  }, [documentTitle, lastNotificationLabel, notificationsBadgeValue]);
 
   const currentDbName = useMemo(() => {
     const name = String(currentDb?.name || '').trim();
@@ -2444,8 +2466,8 @@ useEffect(() => {
               borderColor: ui.borderSoft,
               backdropFilter: 'blur(18px)',
               pt: isWindowControlsOverlay ? 'env(titlebar-area-height, 0px)' : 0,
-              width: { sm: sidebarCollapsed ? `calc(100% - ${DRAWER_RAIL_WIDTH}px)` : `calc(100% - ${DRAWER_WIDTH_CSS_VAR})` },
-              ml: { sm: sidebarCollapsed ? `${DRAWER_RAIL_WIDTH}px` : DRAWER_WIDTH_CSS_VAR },
+              width: { sm: effectiveSidebarCollapsed ? `calc(100% - ${DRAWER_RAIL_WIDTH}px)` : `calc(100% - ${DRAWER_WIDTH_CSS_VAR})` },
+              ml: { sm: effectiveSidebarCollapsed ? `${DRAWER_RAIL_WIDTH}px` : DRAWER_WIDTH_CSS_VAR },
               transition: (theme) => theme.transitions.create(['width', 'margin'], {
                 duration: theme.transitions.duration.standard,
               }),
@@ -2717,7 +2739,7 @@ useEffect(() => {
       <Box
         component="nav"
         sx={{
-          width: { sm: sidebarCollapsed ? `${DRAWER_RAIL_WIDTH}px` : DRAWER_WIDTH_CSS_VAR },
+          width: { sm: effectiveSidebarCollapsed ? `${DRAWER_RAIL_WIDTH}px` : DRAWER_WIDTH_CSS_VAR },
           flexShrink: { sm: 0 },
           overflow: 'hidden',
           transition: (theme) => theme.transitions.create('width', {
@@ -2745,7 +2767,7 @@ useEffect(() => {
               display: { xs: 'none', sm: 'block' },
               '& .MuiDrawer-paper': {
                 boxSizing: 'border-box',
-                width: sidebarCollapsed ? DRAWER_RAIL_WIDTH : DRAWER_WIDTH_CSS_VAR,
+                width: effectiveSidebarCollapsed ? DRAWER_RAIL_WIDTH : DRAWER_WIDTH_CSS_VAR,
                 overflowX: 'hidden',
                 bgcolor: ui.navBg,
                 borderRightColor: ui.borderSoft,
@@ -2756,9 +2778,27 @@ useEffect(() => {
             }}
             open
           >
-            {renderDrawerContent({ compact: sidebarCollapsed, instanceKey: 'desktop' })}
+            {renderDrawerContent({ compact: effectiveSidebarCollapsed, instanceKey: 'desktop' })}
           </Drawer>
         )}
+        {chatPortalRail ? (
+          // Полная навигация портала поверх узкой полосы иконок — как в Telegram Web A.
+          <Drawer
+            variant="temporary"
+            open={drawerOpen}
+            onClose={() => setDrawerOpen(false)}
+            sx={{
+              '& .MuiDrawer-paper': {
+                boxSizing: 'border-box',
+                width: DRAWER_WIDTH_CSS_VAR,
+                bgcolor: ui.navBg,
+                borderRightColor: ui.borderSoft,
+              },
+            }}
+          >
+            {renderDrawerContent({ compact: false, instanceKey: 'chat-overlay' })}
+          </Drawer>
+        ) : null}
       </Box>
 
       <AccountMenu
@@ -2785,23 +2825,24 @@ useEffect(() => {
           flexDirection: isFixedHeightRoute ? 'column' : undefined,
           overflow: isFixedHeightRoute ? 'hidden' : 'visible',
           px: {
-            xs: (isMobileChatRoute || isEdgeToEdgeContent) ? 0 : 2,
-            sm: (isMobileChatRoute || isEdgeToEdgeContent) ? 0 : 'var(--app-density-page-padding)',
+            // Д1: страница чата идёт вровень с краями области контента на всех ширинах.
+            xs: (isChatRoute || isEdgeToEdgeContent) ? 0 : 2,
+            sm: (isChatRoute || isEdgeToEdgeContent) ? 0 : 'var(--app-density-page-padding)',
           },
           pb: {
             xs: hasMobileBottomNavigation
               ? (mobileBottomNavHidden ? 0 : 'var(--app-shell-mobile-bottom-nav-height)')
-              : ((isMobileChatRoute || isEdgeToEdgeContent) ? 0 : 2),
-            sm: (isMobileChatRoute || isEdgeToEdgeContent) ? 0 : 'var(--app-density-page-padding)',
+              : ((isChatRoute || isEdgeToEdgeContent) ? 0 : 2),
+            sm: (isChatRoute || isEdgeToEdgeContent) ? 0 : 'var(--app-density-page-padding)',
           },
           pt: {
-            xs: (isMobileChatRoute || isEdgeToEdgeContent) ? 0 : 2,
-            sm: (isMobileChatRoute || isEdgeToEdgeContent) ? 0 : 'var(--app-density-page-padding)',
+            xs: (isChatRoute || isEdgeToEdgeContent) ? 0 : 2,
+            sm: (isChatRoute || isEdgeToEdgeContent) ? 0 : 'var(--app-density-page-padding)',
           },
-          bgcolor: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 'transparent' : ui.pageBg,
+          bgcolor: (isChatRoute || isEdgeToEdgeMobileContent) ? 'transparent' : ui.pageBg,
           width: {
             xs: '100%',
-            sm: sidebarCollapsed ? `calc(100% - ${DRAWER_RAIL_WIDTH}px)` : `calc(100% - ${DRAWER_WIDTH_CSS_VAR})`
+            sm: effectiveSidebarCollapsed ? `calc(100% - ${DRAWER_RAIL_WIDTH}px)` : `calc(100% - ${DRAWER_WIDTH_CSS_VAR})`
           },
           transition: (theme) => theme.transitions.create(['width', 'margin', 'padding-bottom'], {
             duration: hasMobileBottomNavigation ? mobileBottomNavTransitionMs : theme.transitions.duration.standard,

@@ -48,6 +48,15 @@ describe('native-only route registry', () => {
     });
   });
 
+  it('keeps the Chat workspace in the replayable route path', () => {
+    expect(routePathForPortalPath('/chat?conversation=ai-42&workspace=ai'))
+      .toBe('/chat/ai-42?workspace=ai');
+    expect(routePathForPortalPath('/chat?conversation=ai-42&message=m-1&workspace=ai'))
+      .toBe('/chat/ai-42?message=m-1&workspace=ai');
+    expect(routePathForPortalPath('/chat?workspace=ai')).toBe('/chat?workspace=ai');
+    expect(routePathForPortalPath('/chat')).toBe('/chat');
+  });
+
   it('reduces unsupported workflows to a safe native root', () => {
     expect(hrefForPortalPath('/admin/system')).toEqual({ pathname: '/(shell)/menu/admin/system' });
     expect(hrefForPortalPath('/tasks?view=board')).toEqual({ pathname: '/(shell)/tasks' });

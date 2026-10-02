@@ -20,6 +20,7 @@ from backend.api.v1.chat import (
     link_preview,
     messages,
     push,
+    scheduled,
     stickers,
     task_canvas_ws,
     uploads,
@@ -164,6 +165,7 @@ router.include_router(conversations.router)
 router.include_router(push.router)
 router.include_router(stickers.router)
 router.include_router(messages.router)
+router.include_router(scheduled.router)
 router.include_router(ai.router)
 router.include_router(ai_sandbox.router)
 router.include_router(uploads.router)

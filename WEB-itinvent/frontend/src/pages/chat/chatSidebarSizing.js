@@ -1,8 +1,10 @@
-export const CHAT_SIDEBAR_MIN = 280;
-export const CHAT_SIDEBAR_MAX = 440;
-export const CHAT_SIDEBAR_DEFAULT = 320;
-export const CHAT_SIDEBAR_RAIL = 72;
-export const CHAT_THREAD_MIN = 360;
+import { CHAT_TELEGRAM_SIDEBAR_LAYOUT } from '../../theme/chatTelegramTheme';
+
+export const CHAT_SIDEBAR_MIN = CHAT_TELEGRAM_SIDEBAR_LAYOUT.minWidth;
+export const CHAT_SIDEBAR_MAX = CHAT_TELEGRAM_SIDEBAR_LAYOUT.maxWidth;
+export const CHAT_SIDEBAR_DEFAULT = CHAT_TELEGRAM_SIDEBAR_LAYOUT.defaultWidth;
+export const CHAT_SIDEBAR_RAIL = CHAT_TELEGRAM_SIDEBAR_LAYOUT.railWidth;
+export const CHAT_THREAD_MIN = CHAT_TELEGRAM_SIDEBAR_LAYOUT.threadMinWidth;
 const STORAGE_KEY = 'hub.chat.sidebarLayout';
 
 export function clampSidebarWidth(value) {

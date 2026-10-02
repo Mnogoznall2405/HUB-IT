@@ -1,5 +1,6 @@
 import {
   areThreadMessagesEquivalent,
+  normalizeThreadMessageClientId,
   sortThreadMessages,
 } from './chatThreadMessages';
 
@@ -17,6 +18,7 @@ export function upsertThreadMessagesInList(
     activeConversationId = '',
     replaceByMessageId = null,
     withStableMessageRenderKey = (message) => message,
+    liveAppear = false,
   } = {},
 ) {
   const sourceMessages = (Array.isArray(incomingMessages) ? incomingMessages : [incomingMessages])
@@ -38,7 +40,18 @@ export function upsertThreadMessagesInList(
 
     const existingIndex = next.findIndex((item) => {
       const itemId = String(item?.id || '').trim();
-      return itemId === messageId || (normalizedReplaceId && itemId === normalizedReplaceId);
+      if (itemId === messageId || (normalizedReplaceId && itemId === normalizedReplaceId)) {
+        return true;
+      }
+      // A server echo of an optimistic bubble (sending or failed) replaces it
+      // by client_message_id — isLikelyOptimisticReplacement only covers
+      // 'sending', so 'failed' bubbles would duplicate without this.
+      if (item?.isOptimistic) {
+        const itemClientId = normalizeThreadMessageClientId(item);
+        const incomingClientId = normalizeThreadMessageClientId(message);
+        if (itemClientId && incomingClientId && itemClientId === incomingClientId) return true;
+      }
+      return false;
     });
 
     if (existingIndex >= 0) {
@@ -61,7 +74,11 @@ export function upsertThreadMessagesInList(
       return;
     }
 
-    next.push(withStableMessageRenderKey(message));
+    // U3: only genuinely new live inserts get the appear animation; merges into
+    // an existing row (server ACK, edits, reads) keep the mounted node anyway.
+    next.push(withStableMessageRenderKey(
+      liveAppear ? { ...message, animateAppear: true } : message,
+    ));
     changed = true;
   });
 

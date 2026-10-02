@@ -9,6 +9,7 @@ import {
 } from '../../lib/chat/chatReadPolicy';
 
 export const CHAT_CONVERSATIONS_RECONCILE_COOLDOWN_MS = 10_000;
+export const CHAT_THREAD_POLL_BACKOFF_MAX_MS = 30_000;
 
 export default function useChatActiveThreadPolling({
   activeConversationId,
@@ -33,6 +34,18 @@ export default function useChatActiveThreadPolling({
   incrementalPollMs,
 }) {
   const sawWsDisconnectRef = useRef(false);
+  // Poll-loop state lives in a ref: switching between unhealthy transport
+  // states (disconnected ↔ reconnecting, degraded ↔ offline) must not reset
+  // backoff or trigger an immediate poll.
+  const pollStateRef = useRef({ inFlight: false, backoffAttempt: 0, backoffUntil: 0 });
+  const transportStateRef = useRef(activeThreadTransportState);
+  transportStateRef.current = activeThreadTransportState;
+
+  const normalizedConversationId = String(activeConversationId || '').trim();
+  const shouldPoll = shouldPollActiveThreadIncrementally({
+    activeConversationId: normalizedConversationId,
+    transportState: activeThreadTransportState,
+  });
 
   useEffect(() => {
     const state = String(socketStatus || '').toLowerCase();
@@ -129,11 +142,6 @@ export default function useChatActiveThreadPolling({
   }, [activeConversationId, loadMessages, threadPollMs]);
 
   useEffect(() => {
-    const normalizedConversationId = String(activeConversationId || '').trim();
-    const shouldPoll = shouldPollActiveThreadIncrementally({
-      activeConversationId: normalizedConversationId,
-      transportState: activeThreadTransportState,
-    });
     // #region agent log
     emitAgentDebugLog({
       location: 'useChatActiveThreadPolling.js:transport',
@@ -150,19 +158,18 @@ export default function useChatActiveThreadPolling({
     if (!shouldPoll) {
       return undefined;
     }
+    const pollState = pollStateRef.current;
     let cancelled = false;
-    let inFlight = false;
-    let backoffAttempt = 0;
-    let backoffUntil = 0;
     let timeoutId = 0;
     const scheduleNext = (delayMs) => {
       if (cancelled) return;
       window.clearTimeout(timeoutId);
       timeoutId = window.setTimeout(pollOnce, Math.max(250, Number(delayMs) || incrementalPollMs));
     };
+    const isOfflineNow = () => typeof navigator !== 'undefined' && navigator.onLine === false;
     const pollOnce = () => {
       if (cancelled) return;
-      if (inFlight || messagesLoadingRef.current) {
+      if (pollState.inFlight || messagesLoadingRef.current) {
         scheduleNext(incrementalPollMs);
         return;
       }
@@ -170,9 +177,13 @@ export default function useChatActiveThreadPolling({
         scheduleNext(incrementalPollMs);
         return;
       }
+      if (isOfflineNow()) {
+        scheduleNext(incrementalPollMs);
+        return;
+      }
       const now = Date.now();
-      if (now < backoffUntil) {
-        scheduleNext(backoffUntil - now);
+      if (now < pollState.backoffUntil) {
+        scheduleNext(pollState.backoffUntil - now);
         return;
       }
       const currentConversationId = String(activeConversationIdRef.current || normalizedConversationId).trim();
@@ -180,11 +191,11 @@ export default function useChatActiveThreadPolling({
         scheduleNext(incrementalPollMs);
         return;
       }
-      inFlight = true;
+      pollState.inFlight = true;
       degradedThreadRevalidateCountRef.current += 1;
       logChatDebugRef.current?.('threadPoll:degradedRevalidate', {
         conversationId: currentConversationId,
-        transportState: activeThreadTransportState,
+        transportState: transportStateRef.current,
         count: Number(degradedThreadRevalidateCountRef.current || 0),
       });
       const request = loadMessagesRef.current?.(
@@ -193,45 +204,65 @@ export default function useChatActiveThreadPolling({
       );
       Promise.resolve(request)
         .then(() => {
-          backoffAttempt = 0;
-          backoffUntil = 0;
+          pollState.backoffAttempt = 0;
+          pollState.backoffUntil = 0;
         })
         .catch((error) => {
+          pollState.backoffAttempt += 1;
+          let waitMs = Math.min(
+            CHAT_THREAD_POLL_BACKOFF_MAX_MS,
+            incrementalPollMs * (2 ** (pollState.backoffAttempt - 1)),
+          );
           if (isChatReadConcurrencyFullError(error)) {
-            const waitMs = resolveChatReadRetryAfterMs(error, { attempt: backoffAttempt });
-            backoffAttempt += 1;
-            backoffUntil = Date.now() + waitMs;
-            logChatDebugRef.current?.('threadPoll:readConcurrencyBackoff', {
-              conversationId: currentConversationId,
+            waitMs = Math.max(
               waitMs,
-              attempt: backoffAttempt,
-            });
+              resolveChatReadRetryAfterMs(error, { attempt: pollState.backoffAttempt }),
+            );
           }
+          waitMs = Math.max(250, Math.round(waitMs * (0.8 + Math.random() * 0.4)));
+          pollState.backoffUntil = Date.now() + waitMs;
+          logChatDebugRef.current?.('threadPoll:backoff', {
+            conversationId: currentConversationId,
+            waitMs,
+            attempt: pollState.backoffAttempt,
+            readConcurrencyFull: isChatReadConcurrencyFullError(error),
+          });
         })
         .finally(() => {
-          inFlight = false;
-          const delay = backoffUntil > Date.now()
-            ? (backoffUntil - Date.now())
+          pollState.inFlight = false;
+          const delay = pollState.backoffUntil > Date.now()
+            ? (pollState.backoffUntil - Date.now())
             : incrementalPollMs;
           scheduleNext(delay);
         });
     };
+    const handleOnline = () => {
+      if (cancelled || pollState.inFlight) return;
+      // Foreground reconcile already reloads the thread on 'online' — don't double-fetch.
+      if (Date.now() - Number(lastForegroundRefreshAtRef.current || 0) < 250) return;
+      pollState.backoffUntil = 0;
+      window.clearTimeout(timeoutId);
+      pollOnce();
+    };
+    window.addEventListener('online', handleOnline);
     pollOnce();
     return () => {
       cancelled = true;
+      window.removeEventListener('online', handleOnline);
       window.clearTimeout(timeoutId);
     };
   }, [
     activeConversationId,
     activeConversationIdRef,
-    activeThreadTransportState,
     buildActiveThreadPollLoadOptions,
     degradedThreadRevalidateCountRef,
     incrementalPollMs,
+    lastForegroundRefreshAtRef,
     loadMessagesRef,
     logChatDebugRef,
     messagesLoadingRef,
     messagesRef,
+    shouldPoll,
     shouldPollActiveThreadIncrementally,
   ]);
 }

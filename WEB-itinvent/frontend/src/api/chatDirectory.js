@@ -6,6 +6,11 @@ export const chatDirectoryAPI = {
     return response.data;
   },
 
+  getConfig: async () => {
+    const response = await apiClient.get('/chat/config');
+    return response.data;
+  },
+
   getUsers: async (params = {}) => {
     const response = await apiClient.get('/chat/users', { params });
     return response.data;
@@ -51,6 +56,11 @@ export const chatDirectoryAPI = {
 
   stopAiConversationRun: async (conversationId) => {
     const response = await apiClient.post(`/chat/ai/conversations/${encodeURIComponent(conversationId)}/stop`);
+    return response.data;
+  },
+
+  retryAiConversationRun: async (conversationId) => {
+    const response = await apiClient.post(`/chat/ai/conversations/${encodeURIComponent(conversationId)}/retry`);
     return response.data;
   },
 

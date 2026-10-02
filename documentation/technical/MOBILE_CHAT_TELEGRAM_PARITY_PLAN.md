@@ -1085,3 +1085,70 @@ auth-политики (AUTH_SECURITY_STACK.md) — без побочных из�
 - `tsc --noEmit` чист (включая ранее ломавшийся чужой mail WIP — почищен).
 
 **Действие:** собрать/опубликовать 1.1.54 → smoke: фото gallery+camera, multi-chunk файл, обрыв→resume, kill→WorkManager drain, шиты/композер над навигацией.
+
+## 21. Аудит падений + волна исправлений 2026-10-01 (запрошено «проверь падения и исправь, доделай до Telegram-паритета без устройства»)
+
+### 21.1 Аудит
+
+Прогон `npx jest chat --runInBand` на старте: 100/100 сьютов, 754/754 — падений нет; аудит делался по коду (4 зоны: тред-рендер, история/realtime, инбокс/папки/жесты, шторки/медиа + outbox/delivery/WS). Подтверждено ~39 дефектов, все исправлены в этой волне. DEV-MENTION-1 закрыт ранее в коде (обход `findUnreadMentionMessageId`), осталась device-приёмка.
+
+### 21.2 P0
+
+- **OUT-1** — битая запись/JSON в SecureStore-blob outbox клинил **все** отправки до logout: sanitize per-row (валидные строки сохраняются), нечитаемый blob уходит в карантин под timestamped-ключом, старт с пустой очереди, диагностика в `NativeChatOutboxScreen`. `nativeChatOutbox.ts`/`nativeChatOutboxLegacy.ts`.
+- **T1** — тап по вложению в режиме выделения открывал вьюер вместо выбора: `onAttachmentOpen`/`onAttachmentPress`/`onAlbumAttachmentPress` читают `rowStore.isSelecting()` на момент события (устаревший closure обойдён). `useThreadRender.tsx`.
+- **T2** — имена/аватары отправителей в группах не появлялись, когда `conversation` догружался после сообщений: `showSenderAvatars` — отдельный prop строки + dep `renderMessage`. `useThreadRender.tsx`.
+
+### 21.3 Тред (пакеты A/B/C + точечные)
+
+- **T3** presence-watch churn: эффект зависит от стабильного ключа отсортированных member-id, а не от identity `conversation.members` (каждый presence-фрейм раньше делал `watchPresence([])`+re-subscribe). `NativeChatThreadScreen.tsx`.
+- **T4** входящее сообщение при оторванном окне (`hasNewer`) не мерджится в `messages` — только счётчик/jump-кнопка, `markRead` не вызывается. `useThreadRealtime.ts` (param `hasNewer`, `hasNewerRef`).
+- **T5** `selectedMessageIds` фильтруются по актуальным `messages` + `canSelectChatMessage` (смена окна/remote delete/смена диалога). `useThreadSelection.ts`.
+- **T6** ошибки `loadOlder`/`loadNewer` при непустом списке — тост + `setError` (раньше невидимы). `useThreadHistory.ts`.
+- **T7** `pendingWindowRef`/`holdVisiblePosition` сбрасываются в reset/`loadInitial`; rAF-пара гасит флаг безусловно — `maintainVisibleContentPosition` не застревает. `useThreadHistory.ts`.
+- **T9** `handleMessageScrollFailure`: после приблизительного `scrollToOffset` — один повторный `scrollToIndex` на следующем кадре (отменяемый). `useThreadScrollAnchor.ts`.
+- **T10** при смене `[conversationId,userId]` сбрасываются unreadBoundary/курсоры/выделение/анкоры/viewer/`aiBots`; `typingParticipants`/`aiRunStatus` чистятся в cleanup `useThreadRealtime` (обе ветки, включая ранний offline-выход).
+- **T11** disconnected-ветка `syncLatestMessages` регистрирует id в `knownMessageIdsRef` — повторная WS-доставка не считается новой.
+- **T12** кэш album-объектов по render-ключу — identity альбома не ломается от изменения соседнего сообщения.
+- **T13** merge истории ленивый: `accumulatedMessagesRef` копится в `pendingWindowRef`, реальный `mergeNativeChatThreadHistory` + snapshot — один раз на flush.
+- **T14** `setSearching(false)` в `finally` — спиннер поиска не застревает при гонке с `jumpToBottom`.
+- **T15** `messageEnterMotionsRef` чистится по выпавшим из `messages` ключам.
+- **T16** TTL typing = `expires_in_ms` из конверта (фолбэк парсера), не хардкод 4000.
+- **T8** `Linking.openURL` в `ChatMarkdownBody` — без unhandled rejection.
+
+### 21.4 Инбокс/папки/жесты (пакеты G/H/I)
+
+- **CHAT-INBOX-01** — dead code свайпа «Прочитано»: backend `_serialize_conversation` теперь отдаёт `last_message_id` (поле модели существовало); `ChatConversationSummary`/`normalizeChatConversation` нормализуют; `markConversationRead` → `Promise<boolean>` (нет id → `false`, без POST и без оптимистичного сброса бейджа). **Требует выкладки backend** — до неё свайп корректно бездействует.
+- **CHAT-INBOX-02** — потеря inbox-подписки при уходе со вкладки (экран не размонтируется, `disconnect(clearSubscriptions)`): resubscribe на каждом переходе статуса в `connected`. `useInboxData.ts`.
+- **CHAT-INBOX-03** — бейджи: `isConversationEffectivelyMuted` (зеркало серверного/веб) — muted исключены из «Непрочитанные», фолбэк-счётчиков папок и `countAiUnread`. `chatFolders.ts`, `chatAiWorkspace.ts`.
+- **CHAT-INBOX-04** — восстановленный несуществующий ключ папки сбрасывается в `personal` после серверной синхронизации папок (снапшот/offline не триггерят). `useInboxFolders.ts`.
+- **CHAT-INBOX-05** — `foldersDirtyRef`: мутация папки во время in-flight `listChatFolders` даёт повторный fetch; optimistic `toggleFolderMembership` откатывается в catch. Плюс тот же dirty-паттерн добавлен в `useInboxData.load` (dedup'd reload больше не теряется).
+- **CHAT-INBOX-06** — конфликт жестов: zone-lock — строка помечает зону `onTouchStart` (shared value), папочный Pan фейлится, если касание внутри строки; `INBOX_ROW_SWIPE_START_DP` 20→10 (< папочного 14); `capture` реализован (при активном папочном свайпе строки не захватывают). `FolderSwipeHost`, `SwipeableConversationRow`, `chatGestures`.
+- **CHAT-INBOX-07** — silent-merge удаляет строки, отсутствующие в полной серверной странице (`!has_more`), их id в `removedConversationIdsRef`.
+
+### 21.5 Шторки/медиа (пакет E)
+
+- **AUD-2** дедуп `onEndReached`: повторный offset при занятом `loadingRef` не ставит второй запрос. `ChatAttachmentPanel`.
+- **AUD-3** `sendingRef` — двойной тап «Отправить» не дублирует `onSendFiles`.
+- **AUD-4** закрытие панели сбрасывает `previewAsset` и рефы.
+- **AUD-5** GIF: `gifGenerationRef` отбрасывает stale-ответы; `fetchChatGifs` под `withMediaPanelTimeout`; error-стейт «Не удалось загрузить GIF». `ChatEmojiPickerSheet`, `chatGiphy`.
+- **AUD-6** видео: timeout на `getChatMediaRequestHeaders` + `headerError` («Не удалось подготовить видео» + «Повторить»); watchdog на blob-fallback в WebView; `URL.revokeObjectURL` при replace/pagehide. `ChatVideoPlayer`.
+- **AUD-7** LRU-прунинг (keep=30 по mtime) каталогов GIF-кэша и edit-cache; уникальные имена экспортов редактора (`chat-edit-<ts>-<n>`).
+- **AUD-8** inset-aware отступы у центрированных шитов и кнопок превью (`AiConversationActionsSheet`, `ChatParticipantProfileSheet`, `ChatRenameSheet`, превью AttachmentPanel).
+
+### 21.6 Outbox/delivery/send (пакет J) + прочее
+
+- **OUT-2/MEM-1** confirmed-строки коммитятся с ограниченными ретраями (cap confirm-commit), `acknowledgements`/`cancelled` чистятся — бесконечного ретрая `persistConfirmed` каждые 5с нет.
+- **OUT-3** свежая доставка при detach; **OUT-4** строки чужого userId удаляются из durable storage при read (чужая очередь не доставляется под новой сессией).
+- **RUN-1** bounded backoff на read-ошибки; **RUN-2** арбитраж drain: `acquireNativeChatDeliveryDrain` — фоновый WorkManager-drain и foreground-runner не работают конкурентно.
+- **DRAFT-1** файловый I/O черновика вынесен из сериализованной очереди (копирование до enqueue, pin/unpin, чистка orphan-копий). `chatDrafts.ts`.
+- **UP-1** per-file `media_kind`/`duration_seconds` в upload-сессиях. `nativeChatUploadSession.ts`, `nativeFilePicker.ts`.
+- **AUD-1** retry attachment-send восстанавливает тот же `client_message_id` (нет второго pending); **AUD-9** busy-guards на гео/контакт/опрос/GIF + timeout геопозиции. `useThreadSend.ts`.
+- **WS-1** `AppLifecycle` зависит от `user?.id`, не от объекта `user` — `refreshUser` не рвёт сокеты и не чистит подписки.
+- **FWD-1** `forwardMessage` шлёт `client_message_id` (`mobile-…`, стабильный на элемент очереди и на ретрай — серверный `dedup_hit` отбрасывает повтор). `chatApi.ts`, `useThreadForward.ts`.
+
+### 21.7 Проверки и остатки
+
+- `npx jest chat --runInBand` → **116/116 сьютов, 836/836 тестов**; `npx tsc --noEmit` → 0. Новые сьюты: `useThreadRealtime.test.tsx` (4), `useThreadHistory.auditB.test.tsx` (6), `useThreadScrollAnchor.auditB.test.tsx` (3), `NativeChatThreadAudit.test.tsx` + `useThreadRender.test.tsx` (11), `useInboxData.test.tsx`/`useInboxFolders.test.tsx` (8), `useInboxActions.test.tsx` (4), `SwipeableConversationRow.test.tsx` (5) + координация в `FolderSwipeHost.test.tsx`, 6 audit-сьютов пакета E (15+), `useThreadSend.test.tsx` и обновлённые outbox-сьюты пакета J (412/412 в его зоне). Backend: pytest `test_chat_serialization.py` 11/11, folder/mark-read сьюты 14/14.
+- Регрессии перехвачены и починены: `NativeChatScreens` «plays a video» — тестовое окружение без токена → AUD-6 показал новый error-стейт; добавлен мок `getChatMediaRequestHeaders`. И `NativeChatScreens` «old unquote confirmation» — ожидание под OUT-4 (чужие строки стираются при смене user) — целевое поведение.
+- **Не проверено без устройства:** zone-lock жестов под нагрузкой, тайминги watchdog/timeout на реальной сети, карантин SecureStore, взаимодействие drain-токена с WorkManager, тап-выделение во viewer. Сценарии покрыты юнитами/моками; device-приёмка за APK.
+- **Для прод-эффекта требуется:** выкладка backend (`last_message_id` в сериализации) + рестарт chat-узлов; новая сборка APK для клиентских правок.

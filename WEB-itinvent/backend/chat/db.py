@@ -18,7 +18,7 @@ from backend.chat.models import (
     ChatUserStickerPack,
 )
 from backend.config import config
-from backend.db_migrations import upgrade_internal_database
+from backend.db_migrations import check_internal_database_revision, upgrade_internal_database
 from backend.services.sql_observability import attach_slow_sql_logging
 
 
@@ -45,6 +45,7 @@ _read_session_factories: dict[str, object] = {}
 # when they are introduced via _ensure_* instead of a pure Alembic migration.
 _CHAT_SCHEMA_CHECK_EXCLUDED_TABLES: frozenset[str] = frozenset({
     "chat_attachment_previews",
+    "chat_message_mentions",
     "chat_message_reactions",
 })
 
@@ -416,7 +417,9 @@ def initialize_chat_schema(database_url: str | None = None) -> None:
         if _uses_legacy_public_chat_schema(engine):
             _ensure_chat_attachment_preview_table(engine)
             _ensure_chat_reactions_table(engine)
+            _ensure_chat_mentions_table(engine)
             if config.app.is_production:
+                check_internal_database_revision(engine, ensure_chat_configured(database_url), scope="chat")
                 _verify_production_schema(engine)
                 return
             Base.metadata.create_all(
@@ -435,10 +438,12 @@ def initialize_chat_schema(database_url: str | None = None) -> None:
             _ensure_chat_attachment_columns(engine)
             _ensure_chat_push_outbox_columns(engine)
             return
-        upgrade_internal_database(ensure_chat_configured(database_url), scope="chat")
         if config.app.is_production:
+            # Production never applies migrations on startup (see check_internal_database_revision).
+            check_internal_database_revision(engine, ensure_chat_configured(database_url), scope="chat")
             _verify_production_schema(engine)
             return
+        upgrade_internal_database(ensure_chat_configured(database_url), scope="chat")
         Base.metadata.create_all(bind=engine, tables=[ChatEventOutbox.__table__])
         _ensure_chat_push_outbox_columns(engine)
         return
@@ -449,6 +454,7 @@ def initialize_chat_schema(database_url: str | None = None) -> None:
     _ensure_chat_attachment_columns(engine)
     _ensure_chat_push_outbox_columns(engine)
     _ensure_chat_reactions_table(engine)
+    _ensure_chat_mentions_table(engine)
 
 
 def _ensure_chat_attachment_preview_table(engine) -> None:
@@ -630,6 +636,8 @@ def _ensure_chat_user_state_columns(engine) -> None:
         statements.append(f"ALTER TABLE {table_name} ADD COLUMN last_read_seq BIGINT NOT NULL DEFAULT 0")
     if "unread_count" not in columns:
         statements.append(f"ALTER TABLE {table_name} ADD COLUMN unread_count INTEGER NOT NULL DEFAULT 0")
+    if "unread_mention_count" not in columns:
+        statements.append(f"ALTER TABLE {table_name} ADD COLUMN unread_mention_count INTEGER NOT NULL DEFAULT 0")
     if "muted_until" not in columns:
         statements.append(f"ALTER TABLE {table_name} ADD COLUMN muted_until TIMESTAMP NULL")
     with engine.begin() as connection:
@@ -751,6 +759,47 @@ def _ensure_chat_reactions_table(engine) -> None:
         connection.execute(text(f"CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_message_id ON {table_name}(message_id)"))
         connection.execute(text(f"CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_user_id ON {table_name}(user_id)"))
         connection.execute(text(f"CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_conversation_id ON {table_name}(conversation_id)"))
+
+
+def _ensure_chat_mentions_table(engine) -> None:
+    inspector = inspect(engine)
+    table_schema = _runtime_schema(engine)
+    table_name = _qualified_table("chat_message_mentions", engine=engine)
+    if not inspector.has_table("chat_message_mentions", schema=table_schema):
+        if engine.dialect.name == "sqlite":
+            pk_column = "id INTEGER PRIMARY KEY AUTOINCREMENT"
+            created_column = "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP"
+        else:
+            pk_column = "id SERIAL PRIMARY KEY"
+            created_column = "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+        with engine.begin() as connection:
+            connection.execute(text(
+                f"CREATE TABLE IF NOT EXISTS {table_name} ("
+                f"{pk_column}, "
+                "message_id VARCHAR(36) NOT NULL, "
+                "conversation_id VARCHAR(36) NOT NULL, "
+                "user_id INTEGER NOT NULL, "
+                f"{created_column}, "
+                "CONSTRAINT uq_chat_message_mentions_message_user UNIQUE (message_id, user_id))"
+            ))
+            connection.execute(text(f"CREATE INDEX IF NOT EXISTS ix_chat_message_mentions_message_id ON {table_name}(message_id)"))
+            connection.execute(text(f"CREATE INDEX IF NOT EXISTS ix_chat_message_mentions_conversation_user ON {table_name}(conversation_id, user_id)"))
+        return
+    columns = {str(item.get("name")) for item in inspector.get_columns("chat_message_mentions", schema=table_schema)}
+    statements: list[str] = []
+    if "conversation_id" not in columns:
+        statements.append(f"ALTER TABLE {table_name} ADD COLUMN conversation_id VARCHAR(36) NOT NULL DEFAULT ''")
+    if "user_id" not in columns:
+        statements.append(f"ALTER TABLE {table_name} ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0")
+    if "message_id" not in columns:
+        statements.append(f"ALTER TABLE {table_name} ADD COLUMN message_id VARCHAR(36) NOT NULL DEFAULT ''")
+    if "created_at" not in columns:
+        statements.append(f"ALTER TABLE {table_name} ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+        connection.execute(text(f"CREATE INDEX IF NOT EXISTS ix_chat_message_mentions_message_id ON {table_name}(message_id)"))
+        connection.execute(text(f"CREATE INDEX IF NOT EXISTS ix_chat_message_mentions_conversation_user ON {table_name}(conversation_id, user_id)"))
 
 
 def _runtime_schema(engine) -> str | None:

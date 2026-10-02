@@ -7,6 +7,28 @@ from sqlalchemy import select, update, or_, func
 
 from backend.appdb.db import app_session
 from backend.appdb.models import AppAiBot, AppAiBotAccess, AppAiBotConversation, AppAiBotRun, AppAiPendingAction, AppUser
+from backend.services.authorization_service import PERM_CHAT_AI_USE, has_permission
+
+# Unified assistant: available to every active user holding its
+# required_permission; per-user grants do not apply to it.
+MAIN_ASSISTANT_BOT_SLUG = 'corp-assistant'
+
+
+def _user_has_bot_permission(user, bot) -> bool:
+    required = str(getattr(bot, 'required_permission', '') or '').strip() or PERM_CHAT_AI_USE
+    try:
+        custom = json.loads(getattr(user, 'custom_permissions_json', '') or '[]')
+    except (TypeError, ValueError):
+        custom = []
+    if not isinstance(custom, list):
+        custom = []
+    return has_permission(user.role, required,
+                          use_custom_permissions=bool(getattr(user, 'use_custom_permissions', False)),
+                          custom_permissions=custom)
+
+
+def _is_main_assistant(bot) -> bool:
+    return str(getattr(bot, 'slug', '') or '').strip() == MAIN_ASSISTANT_BOT_SLUG
 
 
 def can_use_bot(db, bot, user_id: int) -> bool:
@@ -14,6 +36,10 @@ def can_use_bot(db, bot, user_id: int) -> bool:
     if user is None or not user.is_active:
         return False
     if user.role == 'admin' or (bot.slug == 'general-ai' and bot.surface == 'general'):
+        return True
+    if not _user_has_bot_permission(user, bot):
+        return False
+    if _is_main_assistant(bot):
         return True
     grant = db.get(AppAiBotAccess, (bot.id, int(user_id)))
     return bool(grant and grant.allowed)
@@ -37,8 +63,16 @@ def require_conversation_access(conversation_id: str, user_id: int, *, db=None, 
         # Bot output is sent through the same message persistence API.
         if bot is not None and bot.bot_user_id == int(user_id):
             return
-        if bot is None or mapping.user_id != int(user_id):
+        if mapping.user_id != int(user_id):
             raise PermissionError('AI conversation is unavailable')
+        if bot is None or not bot.is_enabled:
+            # R31: OpenCode (surface=sandbox) is never taken over by another agent -
+            # once it is disabled the conversation is read-only.
+            if bot is not None and str(getattr(bot, 'surface', '') or '').strip().lower() == 'sandbox':
+                raise PermissionError('Агент отключён администратором. История доступна только для чтения.')
+            # AI8: the owner keeps full access; queue_run_for_message re-binds the
+            # conversation to the main assistant when the owner sends a new message.
+            return
         require_bot_access(session, bot, user_id)
 
 
@@ -69,9 +103,10 @@ def list_user_access(user_id: int):
         user = db.get(AppUser, user_id)
         if user is None:
             raise LookupError('User not found')
-        grants = {g.bot_id: g.allowed for g in db.execute(select(AppAiBotAccess).where(AppAiBotAccess.user_id == user_id)).scalars()}
-        return [{'bot_id': b.id, 'title': b.title, 'allowed': user.role == 'admin' or bool(grants.get(b.id)),
-                 'automatic': user.role == 'admin'} for b in db.execute(select(AppAiBot).where(AppAiBot.surface != 'general').order_by(AppAiBot.title)).scalars()]
+        return [{'bot_id': b.id, 'title': b.title,
+                 'allowed': can_use_bot(db, b, user_id),
+                 'automatic': user.role == 'admin' or _is_main_assistant(b)}
+                for b in db.execute(select(AppAiBot).where(AppAiBot.surface != 'general').order_by(AppAiBot.title)).scalars()]
 
 
 def list_bot_access(bot_id: str, query: str = '', *, offset: int = 0, limit: int = 50):
@@ -85,11 +120,10 @@ def list_bot_access(bot_id: str, query: str = '', *, offset: int = 0, limit: int
             statement = statement.where(or_(func.lower(AppUser.username).contains(q, autoescape=True),
                                             func.lower(AppUser.full_name).contains(q, autoescape=True)))
         users = list(db.execute(statement.order_by(AppUser.full_name, AppUser.id).offset(offset).limit(limit + 1)).scalars())
-        ids = [u.id for u in users[:limit]]
-        grants = {g.user_id: g.allowed for g in db.execute(select(AppAiBotAccess).where(
-            AppAiBotAccess.bot_id == bot_id, AppAiBotAccess.user_id.in_(ids))).scalars()}
+        automatic = _is_main_assistant(bot)
         return {'items': [{'user_id': u.id, 'title': u.full_name or u.username, 'username': u.username,
-                           'allowed': u.role == 'admin' or bool(grants.get(u.id)), 'automatic': u.role == 'admin'} for u in users[:limit]],
+                           'allowed': can_use_bot(db, bot, u.id),
+                           'automatic': automatic or u.role == 'admin'} for u in users[:limit]],
                 'has_more': len(users) > limit}
 
 
@@ -104,7 +138,7 @@ def set_access(*, bot_id: str, user_id: int, allowed: bool, actor_id: int):
         user = db.get(AppUser, user_id)
         if bot is None or user is None:
             raise LookupError('Agent or user not found')
-        if bot.surface == 'general' or user.role == 'admin':
+        if bot.surface == 'general' or _is_main_assistant(bot) or user.role == 'admin':
             raise ValueError('Этот доступ предоставляется автоматически')
         if not user.is_active or user.auth_source == 'bot':
             raise ValueError('Выберите активного сотрудника')

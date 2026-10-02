@@ -86,6 +86,13 @@ def notif_env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(hub, "run_in_threadpool", _run_in_threadpool_inline)
 
+    async def _no_task_discussion(**_kwargs):
+        # These tests are about notifications; deleting a task must not reach the chat database
+        # (it is not initialised here, and by default it points at the configured chat DB).
+        return None
+
+    monkeypatch.setattr(hub, "delete_task_discussion", _no_task_discussion)
+
     raw_users = {
         1: _raw_user(1, "author", "Task Author", "operator", [DASHBOARD_READ, TASKS_READ, TASKS_WRITE]),
         2: _raw_user(2, "assignee", "Task Assignee", "viewer", [DASHBOARD_READ, TASKS_READ]),

@@ -1,11 +1,12 @@
-import { Suspense, lazy, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Box, CircularProgress, InputBase, Tab, Tabs, Typography } from '@mui/material';
+import { Suspense, lazy, memo, useState } from 'react';
+import { Box, CircularProgress, Tab, Tabs } from '@mui/material';
 import { alpha } from '@mui/material/styles';
-import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import InsertEmoticonRoundedIcon from '@mui/icons-material/InsertEmoticonRounded';
-import GifBoxRoundedIcon from '@mui/icons-material/GifBoxRounded';
 import StickyNote2RoundedIcon from '@mui/icons-material/StickyNote2Rounded';
 import TelegramStickersTab from './TelegramStickersTab';
+import { emojiImageUrl } from '../../lib/chat/emojiImages';
+
+const getChatEmojiPickerUrl = (unified) => emojiImageUrl(unified);
 
 const LazyEmojiPicker = lazy(() => import('emoji-picker-react'));
 
@@ -22,72 +23,6 @@ const TELEGRAM_CHAT_FONT_FAMILY = [
 
 const PANEL_HEIGHT = 320;
 const TAB_BAR_HEIGHT = 42;
-
-/* ─── Built-in sticker packs ─── */
-const STICKER_PACKS = [
-  {
-    id: 'smileys',
-    name: 'Смайлы',
-    icon: '😀',
-    stickers: [
-      '😀', '😃', '😄', '😁', '😆', '🥹', '😅', '🤣', '😂', '🙂', '😉', '😊',
-      '😇', '🥰', '😍', '🤩', '😘', '😗', '😚', '😙', '🥲', '😋', '😛', '😜',
-      '🤪', '😝', '🤑', '🤗', '🤭', '🤫', '🤔', '🫡', '🤐', '🤨', '😐', '😑',
-      '😶', '🫥', '😏', '😒', '🙄', '😬', '🤥', '😌', '😔', '😪', '🤤', '😴',
-      '😷', '🤒', '🤕', '🤢', '🤮', '🥵', '🥶', '🥴', '😵', '🤯', '🤠', '🥳',
-      '🥸', '😎', '🤓', '🧐', '😕', '🫤', '😟', '🙁', '😮', '😯', '😲', '😳',
-      '🥺', '🥹', '😦', '😧', '😨', '😰', '😥', '😢', '😭', '😱', '😖', '😣',
-      '😞', '😓', '😩', '😫', '🥱', '😤', '😡', '😠', '🤬', '😈', '👿', '💀',
-      '💩', '🤡', '👹', '👺', '👻', '👽', '👾', '🤖',
-    ],
-  },
-  {
-    id: 'gestures',
-    name: 'Жесты',
-    icon: '👍',
-    stickers: [
-      '👋', '🤚', '🖐️', '✋', '🖖', '🫱', '🫲', '🫳', '🫴', '🫷', '🫸', '👌',
-      '🤌', '🤏', '✌️', '🤞', '🫰', '🤟', '🤘', '🤙', '👈', '👉', '👆', '🖕',
-      '👇', '☝️', '🫵', '👍', '👎', '✊', '👊', '🤛', '🤜', '👏', '🙌', '🫶',
-      '👐', '🤲', '🤝', '🙏', '✍️', '💅', '🤳', '💪', '🦾', '🦿', '🦵', '🦶',
-    ],
-  },
-  {
-    id: 'hearts',
-    name: 'Сердца',
-    icon: '❤️',
-    stickers: [
-      '❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '🤎', '💔', '❤️‍🔥', '❤️‍🩹',
-      '❣️', '💕', '💞', '💓', '💗', '💖', '💘', '💝', '💟', '♥️', '🫀', '💋',
-      '💌', '🥰', '😍', '😘', '😻', '💑', '👩‍❤️‍👨', '👨‍❤️‍👨', '👩‍❤️‍👩', '💏',
-    ],
-  },
-  {
-    id: 'animals',
-    name: 'Животные',
-    icon: '🐱',
-    stickers: [
-      '🐶', '🐱', '🐭', '🐹', '🐰', '🦊', '🐻', '🐼', '🐻‍❄️', '🐨', '🐯', '🦁',
-      '🐮', '🐷', '🐸', '🐵', '🙈', '🙉', '🙊', '🐒', '🐔', '🐧', '🐦', '🐤',
-      '🦆', '🦅', '🦉', '🦇', '🐺', '🐗', '🐴', '🦄', '🐝', '🪱', '🐛', '🦋',
-      '🐌', '🐞', '🐜', '🪰', '🪲', '🪳', '🦟', '🦗', '🕷️', '🦂', '🐢', '🐍',
-    ],
-  },
-  {
-    id: 'food',
-    name: 'Еда',
-    icon: '🍕',
-    stickers: [
-      '🍏', '🍎', '🍐', '🍊', '🍋', '🍌', '🍉', '🍇', '🍓', '🫐', '🍈', '🍒',
-      '🍑', '🥭', '🍍', '🥥', '🥝', '🍅', '🍆', '🥑', '🥦', '🫑', '🌶️', '🌽',
-      '🥕', '🫒', '🧄', '🧅', '🥔', '🍠', '🥐', '🍞', '🥖', '🧀', '🍕', '🍔',
-      '🍟', '🌭', '🍿', '🧂', '🥚', '🍳', '🥞', '🧇', '🥓', '🥩', '🍗', '🍖',
-    ],
-  },
-];
-
-/* ─── GIF search via GIPHY ─── */
-const GIPHY_API_KEY = 'jmrWbIIOpKlLIAVDHVyVvjhEJSJ3nNZC'; // GIPHY API key
 
 /* ─── Tab panel wrapper ─── */
 function TabPanel({ value, index, children, fillAvailableHeight = false }) {
@@ -117,161 +52,6 @@ function StickersTab({ theme, ui, onSendSticker, dense = false, currentUserId = 
   );
 }
 
-/* ─── GIF tab ─── */
-function GifTab({ theme, ui, onSendGif }) {
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [featured, setFeatured] = useState([]);
-  const debounceRef = useRef(null);
-
-  // Load trending GIFs on mount
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    fetch(`https://api.giphy.com/v1/gifs/trending?api_key=${GIPHY_API_KEY}&limit=30&rating=g`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (!cancelled) setFeatured((data.data || []).map(mapGiphyResult));
-      })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, []);
-
-  const searchGifs = useCallback((q) => {
-    if (!q.trim()) {
-      setResults([]);
-      return;
-    }
-    setLoading(true);
-    fetch(`https://api.giphy.com/v1/gifs/search?api_key=${GIPHY_API_KEY}&q=${encodeURIComponent(q)}&limit=30&rating=g`)
-      .then((res) => res.json())
-      .then((data) => {
-        setResults((data.data || []).map(mapGiphyResult));
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
-
-  const handleQueryChange = useCallback((event) => {
-    const value = event.target.value;
-    setQuery(value);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => searchGifs(value), 400);
-  }, [searchGifs]);
-
-  const displayGifs = query.trim() ? results : featured;
-
-  return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* Search */}
-      <Box sx={{ px: 1, py: 0.75 }}>
-        <InputBase
-          fullWidth
-          placeholder="Поиск GIF..."
-          value={query}
-          onChange={handleQueryChange}
-          startAdornment={<SearchRoundedIcon sx={{ fontSize: 18, mr: 0.5, color: ui.textSecondary || theme.palette.text.secondary }} />}
-          sx={{
-            bgcolor: alpha(theme.palette.mode === 'dark' ? '#fff' : '#000', 0.06),
-            borderRadius: 2.5,
-            px: 1.2,
-            py: 0.4,
-            fontSize: 14,
-            fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-            color: theme.palette.text.primary,
-          }}
-        />
-      </Box>
-
-      {/* GIF masonry grid */}
-      <Box
-        sx={{
-          flex: 1,
-          overflowY: 'auto',
-          overflowX: 'hidden',
-          px: 0.5,
-          pb: 0.5,
-          WebkitOverflowScrolling: 'touch',
-          '&::-webkit-scrollbar': { width: 0 },
-        }}
-      >
-        {loading && displayGifs.length === 0 ? (
-          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', py: 4 }}>
-            <CircularProgress size={24} />
-          </Box>
-        ) : displayGifs.length === 0 ? (
-          <Box sx={{ textAlign: 'center', py: 4 }}>
-            <Typography sx={{ color: ui.textSecondary, fontSize: 13 }}>
-              {query.trim() ? 'Ничего не найдено' : 'Загрузка GIF...'}
-            </Typography>
-          </Box>
-        ) : (
-          <Box
-            sx={{
-              columnCount: 2,
-              columnGap: '4px',
-            }}
-          >
-            {displayGifs.map((gif) => (
-              <Box
-                key={gif.id}
-                component="button"
-                type="button"
-                onClick={() => onSendGif?.(gif)}
-                sx={{
-                  display: 'block',
-                  width: '100%',
-                  border: 'none',
-                  bgcolor: 'transparent',
-                  p: 0,
-                  mb: '4px',
-                  cursor: 'pointer',
-                  borderRadius: 2,
-                  overflow: 'hidden',
-                  breakInside: 'avoid',
-                  '&:active': { opacity: 0.7 },
-                }}
-              >
-                <img
-                  src={gif.previewUrl}
-                  alt={gif.title || 'GIF'}
-                  loading="lazy"
-                  style={{
-                    width: '100%',
-                    height: 'auto',
-                    display: 'block',
-                    borderRadius: 8,
-                  }}
-                />
-              </Box>
-            ))}
-          </Box>
-        )}
-      </Box>
-      <Box sx={{ textAlign: 'center', py: 0.25 }}>
-        <Typography sx={{ fontSize: 9, color: alpha(ui.textSecondary || theme.palette.text.secondary, 0.5) }}>
-          Powered by GIPHY
-        </Typography>
-      </Box>
-    </Box>
-  );
-}
-
-function mapGiphyResult(item) {
-  const fixed = item?.images?.fixed_width;
-  const original = item?.images?.original;
-  return {
-    id: item.id,
-    title: item.title || '',
-    previewUrl: fixed?.url || original?.url || '',
-    fullUrl: original?.url || fixed?.url || '',
-    width: Number(original?.width || fixed?.width || 200),
-    height: Number(original?.height || fixed?.height || 200),
-  };
-}
-
 /* ─── Main panel component ─── */
 const ChatEmojiPanel = memo(function ChatEmojiPanel({
   open,
@@ -279,7 +59,6 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
   ui,
   onInsertEmoji,
   onSendSticker,
-  onSendGif,
   onClose,
   desktopDocked = false,
   currentUserId = null,
@@ -368,7 +147,6 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
       >
         <Tab icon={desktopDocked ? undefined : <InsertEmoticonRoundedIcon sx={{ fontSize: 20 }} />} iconPosition="start" label="Эмодзи" />
         <Tab icon={desktopDocked ? undefined : <StickyNote2RoundedIcon sx={{ fontSize: 20 }} />} iconPosition="start" label="Стикеры" />
-        <Tab icon={desktopDocked ? undefined : <GifBoxRoundedIcon sx={{ fontSize: 20 }} />} iconPosition="start" label="GIF" />
       </Tabs>
 
       {/* Emoji tab */}
@@ -386,7 +164,9 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
             searchPlaceholder="Поиск"
             skinTonesDisabled
             previewConfig={{ showPreview: false }}
-            emojiStyle="native"
+            // R48: Apple images served by us; the picker would otherwise load them from a CDN.
+            emojiStyle="apple"
+            getEmojiUrl={getChatEmojiPickerUrl}
             suggestedEmojisMode="recent"
             lazyLoadEmojis
             width="100%"
@@ -416,11 +196,6 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
           dense={desktopDocked}
           currentUserId={currentUserId}
         />
-      </TabPanel>
-
-      {/* GIF tab */}
-      <TabPanel value={activeTab} index={2} fillAvailableHeight={desktopDocked}>
-        <GifTab theme={theme} ui={ui} onSendGif={onSendGif} />
       </TabPanel>
     </Box>
   );

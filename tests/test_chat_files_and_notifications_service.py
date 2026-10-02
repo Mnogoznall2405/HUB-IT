@@ -20,6 +20,7 @@ chat_db_module = importlib.import_module("backend.chat.db")
 chat_models_module = importlib.import_module("backend.chat.models")
 chat_push_outbox_service_module = importlib.import_module("backend.chat.push_outbox_service")
 chat_service_module = importlib.import_module("backend.chat.service")
+chat_sticker_service_module = importlib.import_module("backend.chat.telegram_sticker_service")
 hub_service_module = importlib.import_module("backend.services.hub_service")
 chat_push_service_module = importlib.import_module("backend.chat.push_service")
 
@@ -1817,3 +1818,41 @@ def test_reaction_rejects_deleted_message(chat_env):
     with pytest.raises(LookupError):
         service.toggle_reaction(current_user_id=2, conversation_id=cid, message_id=message["id"], emoji="x")
     assert service.get_message_reactions(message_id=message["id"])["reactions"] == []
+
+
+def test_sticker_send_retry_reuses_message_and_drops_duplicate_file(chat_env, temp_dir):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    storage_root = Path(temp_dir) / "sticker-store"
+    pack_dir = storage_root / "pack-1"
+    pack_dir.mkdir(parents=True)
+    (pack_dir / "sticker.webp").write_bytes(b"sticker-bytes")
+    sticker_service = chat_sticker_service_module.TelegramStickerService(
+        storage_root=storage_root, token_getter=lambda: "")
+    with chat_db_module.chat_write_session() as session:
+        session.add(chat_models_module.ChatStickerPack(
+            id="pack-1", short_name="pack", title="Pack", sticker_type="regular"))
+        session.add(chat_models_module.ChatSticker(
+            id="sticker-1", pack_id="pack-1", telegram_file_id="file",
+            telegram_file_unique_id="unique", emoji="", format="static",
+            mime_type="image/webp", storage_name="sticker.webp",
+            file_size=len(b"sticker-bytes"), width=64, height=64, sort_order=0))
+        session.add(chat_models_module.ChatUserStickerPack(user_id=1, pack_id="pack-1"))
+
+    def send():
+        return sticker_service.send_sticker(
+            chat_service=service, current_user_id=1,
+            conversation_id=conversation["id"], sticker_id="sticker-1",
+            client_message_id="sticker-retry", defer_push_notifications=True)
+
+    first = send()
+    second = send()
+    assert second["id"] == first["id"]
+    assert second["attachments"][0]["id"] == first["attachments"][0]["id"]
+    assert second["attachments"][0]["media_kind"] == "sticker"
+    conversation_dir = chat_env["attachments_root"] / conversation["id"]
+    assert len(list(conversation_dir.iterdir())) == 1
+    with chat_db_module.chat_session() as session:
+        rows = session.execute(select(func.count()).select_from(chat_models_module.ChatMessage).where(
+            chat_models_module.ChatMessage.conversation_id == conversation["id"])).scalar_one()
+        assert rows == 1

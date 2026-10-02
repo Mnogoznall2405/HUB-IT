@@ -90,7 +90,6 @@ const threadBag = {
   scrollToMessage: noop,
   emojiPickerOpen: false,
   insertEmojiAtSelection: noop,
-  handleSendGif: noop,
   voiceRecording: false,
   voiceRecordingDuration: 0,
   voiceRecordingLevelRef: ref,

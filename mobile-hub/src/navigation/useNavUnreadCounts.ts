@@ -69,6 +69,8 @@ export function useNavUnreadCounts(): NavUnreadCounts {
     const timer = setInterval(() => { void load(true); }, HUB_POLL_INTERVAL_MS);
     const offUpdated = chatSocket.on('chat.conversation.updated', scheduleRefresh);
     const offMessage = chatSocket.on('chat.message.created', scheduleRefresh);
+    // M2: the nav badge tracks chat unread totals in realtime too.
+    const offUnreadSummary = chatSocket.on('chat.unread.summary', scheduleRefresh);
     const offHubConnected = hubRealtimeSocket.on('hub.realtime.connected', () => { void load(); });
     const offHubNotification = hubRealtimeSocket.on('hub.notification.created', scheduleRefresh);
     const offHubTasks = hubRealtimeSocket.onTaskChanged(scheduleRefresh);
@@ -91,6 +93,7 @@ export function useNavUnreadCounts(): NavUnreadCounts {
       if (refreshTimer) clearTimeout(refreshTimer);
       offUpdated();
       offMessage();
+      offUnreadSummary();
       offHubConnected();
       offHubNotification();
       offHubTasks();

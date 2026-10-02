@@ -65,6 +65,55 @@ describe('resolveChatMessageNotificationPlan', () => {
     }).suppress).toBe('notifications_disabled');
   });
 
+  it('N2: suppresses the toast for another conversation on the desktop chat page', () => {
+    const plan = resolveChatMessageNotificationPlan(envelope, {
+      ...visibleCtx, isChatRoute: true, isDesktopChatRoute: true,
+      activeChatConversationId: 'other-conv',
+    });
+    expect(plan.kind).toBe('plan');
+    expect(plan.suppress).toBe('desktop_chat_route');
+    expect(plan.toast).toBeNull();
+  });
+
+  it('N2: still suppresses on desktop chat page but keeps the sound allowed', () => {
+    const plan = resolveChatMessageNotificationPlan(envelope, {
+      ...visibleCtx, isChatRoute: true, isDesktopChatRoute: true,
+      chatMessageSoundEnabled: true,
+    });
+    expect(plan.suppress).toBe('desktop_chat_route');
+    expect(plan.shouldPlaySound).toBe(true);
+  });
+
+  it('N1: plays sound for a fresh message unless muted/off/active-visible', () => {
+    const sounding = resolveChatMessageNotificationPlan(envelope, {
+      ...visibleCtx, isChatRoute: true, isDesktopChatRoute: true,
+      chatMessageSoundEnabled: true,
+    });
+    expect(sounding.shouldPlaySound).toBe(true);
+
+    const soundOff = resolveChatMessageNotificationPlan(envelope, {
+      ...visibleCtx, chatMessageSoundEnabled: false,
+    });
+    expect(soundOff.shouldPlaySound).toBe(false);
+
+    const activeVisible = resolveChatMessageNotificationPlan(envelope, {
+      ...visibleCtx, isChatRoute: true, activeChatConversationId: 'c1',
+      chatMessageSoundEnabled: true,
+    });
+    expect(activeVisible.shouldPlaySound).toBe(false);
+
+    const channelOff = resolveChatMessageNotificationPlan(envelope, {
+      ...visibleCtx, chatChannelEnabled: false,
+      chatMessageSoundEnabled: true,
+    });
+    expect(channelOff.shouldPlaySound).toBe(false);
+  });
+
+  it('exposes the resolved sender name for the hidden-tab title (N3)', () => {
+    const plan = resolveChatMessageNotificationPlan(envelope, visibleCtx);
+    expect(plan.senderName).toBe('Иван Петров');
+  });
+
   it('shows a toast for a visible surface', () => {
     const plan = resolveChatMessageNotificationPlan(envelope, visibleCtx);
     expect(plan.toast).toMatchObject({ body: 'привет' });
@@ -101,5 +150,28 @@ describe('resolveChatMessageNotificationPlan', () => {
     });
     expect(plan.toast).not.toBeNull();
     expect(plan.reason).toBe('permission_not_granted');
+  });
+
+  it('AG: an AI answer is announced as "ИИ ответил: <beginning>" with sound, toast and OS notification', () => {
+    const aiEnvelope = {
+      conversation_id: 'ai1',
+      payload: {
+        id: 'm9',
+        conversation_kind: 'ai',
+        text: '**Готово**: принтер [настроен](https://x.y/z). _Учтена личная память: 1 факт_',
+      },
+    };
+    const plan = resolveChatMessageNotificationPlan(aiEnvelope, {
+      ...visibleCtx,
+      isVisible: false,
+      chatMessageSoundEnabled: true,
+    });
+    expect(plan.senderName).toBe('ИИ ответил');
+    expect(plan.shouldPlaySound).toBe(true);
+    expect(plan.system).toMatchObject({ title: 'ИИ ответил', body: 'Готово: принтер настроен.' });
+
+    const visible = resolveChatMessageNotificationPlan(aiEnvelope, visibleCtx);
+    expect(visible.toast.options.title).toBe('ИИ ответил');
+    expect(visible.toast.body).toBe('Готово: принтер настроен.');
   });
 });

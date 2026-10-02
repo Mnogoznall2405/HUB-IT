@@ -5,7 +5,7 @@ import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 
 const TELEGRAM_CHAT_FONT_FAMILY = '"Segoe UI", system-ui, -apple-system, sans-serif';
 
-function TypingDots({ color }) {
+export function TypingDots({ color }) {
   return (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: '4px', height: 20 }}>
       {[0, 1, 2].map((i) => (

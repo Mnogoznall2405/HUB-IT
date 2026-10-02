@@ -1,7 +1,11 @@
 import {
+  invalidateAddressBookDirectoryCache,
   readNativeAddressBookSnapshot,
   writeNativeAddressBookSnapshot,
 } from './nativeAddressBookSnapshot';
+import { readNativeSnapshot } from './nativeSnapshotCache';
+
+const mockReadNativeSnapshot = readNativeSnapshot as jest.Mock;
 
 const mockSnapshots = new Map<string, unknown>();
 let mockBeforeSnapshotWrite: (() => void) | null = null;
@@ -53,6 +57,7 @@ function directory(noteLength: number, count: number) {
 
 beforeEach(() => {
   mockSnapshots.clear();
+  invalidateAddressBookDirectoryCache();
   mockBeforeSnapshotWrite = null;
   mockAfterSnapshotWrite = null;
   mockBeforeSnapshotRead = null;
@@ -111,6 +116,7 @@ it('splits a production-sized directory into Android-friendly encrypted chunks',
 it('reads encrypted shards sequentially to avoid Android bridge memory bursts', async () => {
   const value = directory(512, 2_692);
   await expect(writeNativeAddressBookSnapshot(17, value)).resolves.toBe(true);
+  invalidateAddressBookDirectoryCache();
   let activeShardReads = 0;
   let maximumConcurrentShardReads = 0;
   mockBeforeSnapshotRead = async (scope) => {
@@ -197,6 +203,72 @@ it('treats a malformed shard as a cache miss instead of crashing offline state',
     ...(mockSnapshots.get(firstShardKey) as object),
     items: null,
   });
+  invalidateAddressBookDirectoryCache();
 
   await expect(readNativeAddressBookSnapshot<typeof value>(17)).resolves.toBeNull();
+});
+
+it('serves repeat screen opens from memory without touching storage', async () => {
+  const value = directory(64, 5);
+  await expect(writeNativeAddressBookSnapshot(17, value)).resolves.toBe(true);
+  mockReadNativeSnapshot.mockClear();
+
+  await expect(readNativeAddressBookSnapshot<typeof value>(17)).resolves.toEqual(
+    expect.objectContaining({ data: value }),
+  );
+  await expect(readNativeAddressBookSnapshot<typeof value>(17)).resolves.toEqual(
+    expect.objectContaining({ data: value }),
+  );
+  expect(mockReadNativeSnapshot).not.toHaveBeenCalled();
+});
+
+it('keeps the in-memory directory isolated per user', async () => {
+  const value = directory(64, 2);
+  await expect(writeNativeAddressBookSnapshot(17, value)).resolves.toBe(true);
+  mockReadNativeSnapshot.mockClear();
+
+  await expect(readNativeAddressBookSnapshot(18)).resolves.toBeNull();
+  expect(mockReadNativeSnapshot).toHaveBeenCalledWith('address-book', 18);
+});
+
+it('drops the in-memory directory on explicit invalidation', async () => {
+  const value = directory(64, 3);
+  await expect(writeNativeAddressBookSnapshot(17, value)).resolves.toBe(true);
+  invalidateAddressBookDirectoryCache();
+  mockReadNativeSnapshot.mockClear();
+
+  await expect(readNativeAddressBookSnapshot<typeof value>(17)).resolves.toEqual(
+    expect.objectContaining({ data: value }),
+  );
+  expect(mockReadNativeSnapshot).toHaveBeenCalled();
+});
+
+it('re-reads storage on bypassMemory even when the slot is warm', async () => {
+  const value = directory(64, 4);
+  await expect(writeNativeAddressBookSnapshot(17, value)).resolves.toBe(true);
+  mockReadNativeSnapshot.mockClear();
+
+  // Warm slot serves the normal read without touching storage…
+  await expect(readNativeAddressBookSnapshot<typeof value>(17)).resolves.toEqual(
+    expect.objectContaining({ data: value }),
+  );
+  expect(mockReadNativeSnapshot).not.toHaveBeenCalled();
+
+  // …but the post-write verification path must hit the shards again.
+  await expect(readNativeAddressBookSnapshot<typeof value>(17, { bypassMemory: true })).resolves.toEqual(
+    expect.objectContaining({ data: value }),
+  );
+  expect(mockReadNativeSnapshot).toHaveBeenCalled();
+});
+
+it('does not cache a directory whose write failed verification', async () => {
+  await expect(writeNativeAddressBookSnapshot(17, {
+    ...directory(64, 1),
+    total: 2,
+    has_more: true,
+  })).resolves.toBe(false);
+  mockReadNativeSnapshot.mockClear();
+
+  await expect(readNativeAddressBookSnapshot(17)).resolves.toBeNull();
+  expect(mockReadNativeSnapshot).toHaveBeenCalled();
 });

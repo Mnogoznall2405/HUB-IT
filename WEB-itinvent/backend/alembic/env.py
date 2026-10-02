@@ -17,7 +17,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from backend.appdb.models import AppBase
 from backend.chat.models import Base as ChatBase
-from backend.config import config as app_config
 from backend.db_schema import uses_named_schemas
 
 
@@ -44,10 +43,21 @@ def _target_metadata():
 
 
 def _database_url() -> str:
+    # Never fall back to the URL from the root .env: a bare `alembic upgrade` would
+    # migrate whatever database that file points at (production). The target must be
+    # named explicitly: sqlalchemy.url, `-x url=...` or ALEMBIC_DATABASE_URL.
     explicit = str(config.get_main_option("sqlalchemy.url") or "").strip()
-    if explicit:
-        return explicit
-    return str(app_config.app_db.database_url or app_config.chat.database_url or "").strip()
+    if not explicit:
+        explicit = str(context.get_x_argument(as_dictionary=True).get("url") or "").strip()
+    if not explicit:
+        explicit = str(os.getenv("ALEMBIC_DATABASE_URL") or "").strip()
+    if not explicit:
+        raise RuntimeError(
+            "Alembic database URL is not set. Pass it explicitly: "
+            "`alembic -x url=<url> ...` or set ALEMBIC_DATABASE_URL "
+            "(the root .env is deliberately not used)."
+        )
+    return explicit
 
 
 def _configure_kwargs() -> dict:

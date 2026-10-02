@@ -89,7 +89,11 @@ export default function useChatConversationSyncCallbacks({
         last_message_preview: getMessagePreview(lastMessage),
         last_message_is_own: Boolean(lastMessage?.is_own),
         last_message_delivery_status: lastMessage?.is_own
-          ? (String(lastMessage?.delivery_status || '').trim() || 'sent')
+          ? (
+            String(lastMessage?.optimisticStatus || '').trim() === 'failed'
+              ? null
+              : (String(lastMessage?.delivery_status || '').trim() || 'sent')
+          )
           : null,
         ...overrides,
         unread_count: nextUnread,

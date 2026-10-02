@@ -1,17 +1,23 @@
-import { memo, useEffect, useRef, useMemo } from 'react';
+import { memo, useEffect, useRef, useMemo, useState } from 'react';
 import {
   Avatar,
   Box,
   Button,
+  Collapse,
   Skeleton,
   Stack,
   Typography,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
+import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
+import ErrorOutlineRoundedIcon from '@mui/icons-material/ErrorOutlineRounded';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
+import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 
 import { MemoChatBubble } from './ChatBubble';
-import ChatTypingIndicator from './ChatTypingIndicator';
+import ChatTypingIndicator, { TypingDots } from './ChatTypingIndicator';
+import { AI_RUN_STALE_AFTER_MS, AI_STAGE_LABELS } from './ChatThreadHeader';
+import { CHAT_FONT_FAMILY } from './chatUiTokens';
 import {
   buildTimelineItems,
 } from './chatHelpers';
@@ -20,8 +26,10 @@ const GROUP_WINDOW_MS = 10 * 60 * 1000;
 
 export function shouldGroupMessages(previousMessage, nextMessage) {
   if (!previousMessage || !nextMessage) return false;
+  // Д2-2: серия определяется автором и временем, а не типом контента;
+  // служебные system-сообщения серию не продолжают.
+  if (String(previousMessage?.kind || '') === 'system' || String(nextMessage?.kind || '') === 'system') return false;
   if (Boolean(previousMessage?.is_own) !== Boolean(nextMessage?.is_own)) return false;
-  if (String(previousMessage?.kind || '') !== String(nextMessage?.kind || '')) return false;
   const previousSenderId = String(previousMessage?.sender?.id || previousMessage?.sender_id || '').trim();
   const nextSenderId = String(nextMessage?.sender?.id || nextMessage?.sender_id || '').trim();
   if ((previousSenderId || nextSenderId) && previousSenderId !== nextSenderId) return false;
@@ -112,8 +120,10 @@ function TimelineMarker({ label, tone, dataTestId, isDateMarker = false }) {
       data-date-label={isDateMarker ? label : undefined}
       className="flex justify-center py-1.5"
     >
+      {/* Д2-3: backdrop-blur на чипе даты заставляет пересчитывать размытие
+          фона на каждом кадре скролла — убран, полупрозрачный фон остаётся. */}
       <div
-        className="rounded-full border px-2 py-0.5 text-[11px] font-semibold backdrop-blur-xl"
+        className="rounded-full border px-2 py-0.5 text-[11px] font-semibold"
         style={{
           backgroundColor: tone.bg,
           color: tone.text,
@@ -126,6 +136,258 @@ function TimelineMarker({ label, tone, dataTestId, isDateMarker = false }) {
         {label}
       </div>
     </div>
+  );
+}
+
+// Д3: маркер непрочитанных — полоса на всю ширину ленты (не «пилюля»).
+function UnreadSeparator({ label, theme }) {
+  return (
+    <Box
+      data-testid="chat-unread-separator"
+      role="separator"
+      sx={{
+        my: 0.7,
+        mx: { xs: -0.7, md: -3.5 },
+        py: 0.55,
+        px: 1.5,
+        textAlign: 'center',
+        bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.13 : 0.08),
+        borderTop: `1px solid ${alpha(theme.palette.primary.main, 0.16)}`,
+        borderBottom: `1px solid ${alpha(theme.palette.primary.main, 0.16)}`,
+      }}
+    >
+      <Typography
+        component="span"
+        sx={{
+          fontSize: 12.5,
+          fontWeight: 700,
+          letterSpacing: '0.01em',
+          color: theme.palette.mode === 'dark' ? theme.palette.primary.light : theme.palette.primary.dark,
+          fontFamily: CHAT_FONT_FAMILY,
+        }}
+      >
+        {label}
+      </Typography>
+    </Box>
+  );
+}
+
+const AI_RUN_FEED_STALE_TICK_MS = 15 * 1000;
+
+const formatAiRunStageCount = (count) => {
+  const safeCount = Math.max(1, Number(count || 0));
+  if (safeCount % 10 === 1 && safeCount % 100 !== 11) return `${safeCount} шаг`;
+  if ([2, 3, 4].includes(safeCount % 10) && ![12, 13, 14].includes(safeCount % 100)) return `${safeCount} шага`;
+  return `${safeCount} шагов`;
+};
+
+// AI9: статус выполнения живёт внутри ленты под сообщениями — текущий этап с
+// «печатающими» точками, набираемый partial_text, а после завершения —
+// свёрнутая строка «Выполнено N шагов». Заменяет верхнюю плашку у шапки.
+function AiRunFeedStatus({ aiStatus, theme, ui, compactMobile, onRetry, onStop }) {
+  const status = String(aiStatus?.status || '').trim();
+  const [stepsOpen, setStepsOpen] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [actionBusy, setActionBusy] = useState(false);
+  const runActive = status === 'queued' || status === 'running';
+  // R36: «завис» считаем от серверного возраста (server_now − updated_at) +
+  // прошедшее на клиенте время с момента получения — перекос часов клиента не
+  // влияет. Без server_now — от последнего наблюдаемого изменения статуса.
+  const progressAge = useMemo(() => {
+    const updatedMs = Date.parse(String(aiStatus?.updated_at || ''));
+    if (!Number.isFinite(updatedMs)) return null;
+    const serverNowMs = Date.parse(String(aiStatus?.server_now || ''));
+    return {
+      receivedAt: Date.now(),
+      ageMs: Number.isFinite(serverNowMs) ? Math.max(0, serverNowMs - updatedMs) : 0,
+    };
+  }, [aiStatus]);
+  useEffect(() => {
+    if (!runActive) return undefined;
+    const timerId = window.setInterval(() => setNowMs(Date.now()), AI_RUN_FEED_STALE_TICK_MS);
+    return () => window.clearInterval(timerId);
+  }, [runActive]);
+  if (!status) return null;
+
+  const runAction = async (handler) => {
+    if (typeof handler !== 'function' || actionBusy) return;
+    setActionBusy(true);
+    try {
+      await handler();
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const completedStages = Array.isArray(aiStatus?.completed_stages) ? aiStatus.completed_stages : [];
+  const runStale = runActive
+    && progressAge !== null
+    && (progressAge.ageMs + (nowMs - progressAge.receivedAt)) > AI_RUN_STALE_AFTER_MS;
+  const partialText = String(aiStatus?.partial_text || '').trim();
+  const stageText = String(aiStatus?.status_text || '').trim()
+    || AI_STAGE_LABELS[String(aiStatus?.stage || '').trim()]
+    || (status === 'queued' ? 'Ставлю задачу в очередь' : 'Думаю…');
+  const accent = ui.accentText || theme.palette.primary.main;
+
+  if (status === 'completed') {
+    if (!completedStages.length) return null;
+    return (
+      <Box data-testid="chat-ai-run-completed" sx={{ px: compactMobile ? 0.5 : 0, py: 0.5 }}>
+        <Button
+          size="small"
+          onClick={() => setStepsOpen((value) => !value)}
+          aria-expanded={stepsOpen}
+          sx={{
+            minHeight: 28,
+            px: 1,
+            textTransform: 'none',
+            fontSize: 12,
+            fontWeight: 600,
+            color: ui.textSecondary,
+            borderRadius: 999,
+            fontFamily: CHAT_FONT_FAMILY,
+          }}
+        >
+          {`Выполнено ${formatAiRunStageCount(completedStages.length)}`}
+        </Button>
+        <Collapse in={stepsOpen} unmountOnExit>
+          <Stack spacing={0.2} sx={{ pl: 1.2, pb: 0.4 }}>
+            {completedStages.map((stage) => (
+              <Stack key={stage} direction="row" spacing={0.6} alignItems="center">
+                <CheckRoundedIcon sx={{ fontSize: 13, color: ui.successText || theme.palette.success.main }} />
+                <Typography sx={{ fontSize: 12, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
+                  {AI_STAGE_LABELS[stage] || 'Выполнен разрешённый шаг'}
+                </Typography>
+              </Stack>
+            ))}
+          </Stack>
+        </Collapse>
+      </Box>
+    );
+  }
+
+  if (status === 'cancelled') {
+    return (
+      <Typography
+        data-testid="chat-ai-run-cancelled"
+        sx={{ px: compactMobile ? 0.5 : 0, py: 0.6, fontSize: 12.5, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}
+      >
+        Выполнение остановлено
+      </Typography>
+    );
+  }
+
+  if (status === 'failed' || runStale) {
+    return (
+      <Box
+        role="status"
+        aria-live="polite"
+        data-testid="chat-ai-run-failed"
+        sx={{
+          px: compactMobile ? 1.2 : 1.4,
+          py: 1,
+          my: 0.5,
+          borderRadius: 2,
+          bgcolor: alpha(theme.palette.error.main, theme.palette.mode === 'dark' ? 0.14 : 0.08),
+          border: `1px solid ${alpha(theme.palette.error.main, 0.2)}`,
+        }}
+      >
+        <Typography sx={{ fontSize: 13.5, fontWeight: 700, color: theme.palette.error.main, fontFamily: CHAT_FONT_FAMILY }}>
+          {runStale ? 'ИИ не отвечает' : 'AI не смог обработать запрос'}
+        </Typography>
+        <Typography sx={{ mt: 0.3, fontSize: 12.5, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
+          {runStale
+            ? 'Ответ занимает больше времени, чем обычно — можно повторить запрос или остановить его.'
+            : String(aiStatus?.error_text || aiStatus?.status_text || 'Попробуйте повторить запрос.').trim()}
+        </Typography>
+        <Stack direction="row" spacing={1} sx={{ mt: 0.6 }}>
+          {typeof onRetry === 'function' ? (
+            <Button
+              size="small"
+              disabled={actionBusy}
+              onClick={() => { void runAction(onRetry); }}
+              sx={{ minHeight: 32, textTransform: 'none', fontWeight: 700 }}
+            >
+              Повторить
+            </Button>
+          ) : null}
+          {runStale && typeof onStop === 'function' ? (
+            <Button
+              size="small"
+              disabled={actionBusy}
+              onClick={() => { void runAction(onStop); }}
+              sx={{ minHeight: 32, textTransform: 'none', fontWeight: 700, color: ui.textSecondary }}
+            >
+              Остановить
+            </Button>
+          ) : null}
+        </Stack>
+      </Box>
+    );
+  }
+
+  // queued / running
+  return (
+    <Box
+      role="status"
+      aria-live="polite"
+      data-testid="chat-ai-run-status"
+      sx={{ px: compactMobile ? 0.5 : 0, py: 0.8 }}
+    >
+      <Stack direction="row" spacing={1} alignItems="flex-start">
+        <Box
+          sx={{
+            width: compactMobile ? 28 : 30,
+            height: compactMobile ? 28 : 30,
+            borderRadius: '50%',
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            bgcolor: alpha(accent, 0.12),
+            color: accent,
+          }}
+        >
+          <SmartToyOutlinedIcon sx={{ fontSize: compactMobile ? 16 : 17 }} />
+        </Box>
+        <Box sx={{ minWidth: 0, flex: 1 }}>
+          <Stack direction="row" spacing={0.9} alignItems="center">
+            <TypingDots color={accent} />
+            <Typography sx={{ fontSize: compactMobile ? 12.5 : 13, fontWeight: 600, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
+              {stageText}
+            </Typography>
+          </Stack>
+          {completedStages.length > 0 ? (
+            <Stack spacing={0.15} sx={{ mt: 0.4 }}>
+              {completedStages.slice(-3).map((stage) => (
+                <Stack key={stage} direction="row" spacing={0.6} alignItems="center">
+                  <CheckRoundedIcon sx={{ fontSize: 12, color: ui.successText || theme.palette.success.main }} />
+                  <Typography sx={{ fontSize: 11.5, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
+                    {AI_STAGE_LABELS[stage] || 'Выполнен разрешённый шаг'}
+                  </Typography>
+                </Stack>
+              ))}
+            </Stack>
+          ) : null}
+          {partialText ? (
+            <Typography
+              data-testid="ai-partial-response"
+              sx={{
+                mt: 0.6,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                color: 'text.primary',
+                fontSize: compactMobile ? 13.5 : 14,
+                lineHeight: 1.5,
+                fontFamily: CHAT_FONT_FAMILY,
+              }}
+            >
+              {partialText}
+            </Typography>
+          ) : null}
+        </Box>
+      </Stack>
+    </Box>
   );
 }
 
@@ -163,7 +425,7 @@ function LoadOlderSentinel({
     <Stack ref={sentinelRef} alignItems="center" sx={{ pb: 0.8, pt: 0.5 }}>
       {loadingOlder ? (
         <Box
-          className="rounded-full border px-3 py-0.5 text-[11px] font-semibold backdrop-blur-xl"
+          className="rounded-full border px-3 py-0.5 text-[11px] font-semibold"
           style={{
             backgroundColor: servicePillBg,
             color: ui.textSecondary,
@@ -198,6 +460,51 @@ function LoadOlderSentinel({
   );
 }
 
+function ThreadLoadErrorBlock({ theme, ui, compactMobile, onRetry }) {
+  return (
+    <Stack
+      alignItems="center"
+      justifyContent="center"
+      spacing={1.5}
+      data-testid="chat-thread-load-error"
+      sx={{ minHeight: '100%', textAlign: 'center', px: 2 }}
+    >
+      <Avatar
+        sx={{
+          width: 64,
+          height: 64,
+          bgcolor: alpha(theme.palette.error.main, theme.palette.mode === 'dark' ? 0.24 : 0.12),
+          color: theme.palette.error.main,
+        }}
+      >
+        <ErrorOutlineRoundedIcon />
+      </Avatar>
+      <Typography variant="h6" sx={{ fontWeight: 800 }}>
+        Не удалось загрузить сообщения
+      </Typography>
+      <Typography variant="body2" sx={{ maxWidth: 420, color: ui.textSecondary }}>
+        Проверьте соединение и повторите попытку.
+      </Typography>
+      <Button
+        variant="outlined"
+        size="small"
+        data-testid="chat-thread-load-retry"
+        onClick={() => void onRetry?.()}
+        sx={{
+          mt: 0.5,
+          minHeight: compactMobile ? 44 : 36,
+          textTransform: 'none',
+          borderRadius: 999,
+          px: 2.5,
+          fontWeight: 700,
+        }}
+      >
+        Повторить
+      </Button>
+    </Stack>
+  );
+}
+
 const ChatMessageList = memo(function ChatMessageList({
   theme,
   ui,
@@ -208,7 +515,10 @@ const ChatMessageList = memo(function ChatMessageList({
   navigate,
   messages,
   messagesLoading,
+  threadLoadError,
+  onRetryThreadLoad,
   effectiveLastReadMessageId,
+  unreadAnchorId,
   messagesHasMore,
   loadingOlder,
   onLoadOlder,
@@ -230,15 +540,21 @@ const ChatMessageList = memo(function ChatMessageList({
   getReadTargetRef,
   onToggleReaction,
   onPollVote,
-  onPollClose,
   onScrollToMessage,
+  onRetryFailedMessage,
+  onDiscardFailedMessage,
   currentUserId,
   aiTypingStatus,
+  aiStatus,
+  onRetryAiRun,
+  onStopAiRun,
 }) {
   const normalizedMessages = Array.isArray(messages) ? messages : [];
   const timelineItems = useMemo(
-    () => buildTimelineItems(normalizedMessages, effectiveLastReadMessageId),
-    [effectiveLastReadMessageId, normalizedMessages],
+    // R21: `unreadAnchorId` is the divider position frozen when the thread
+    // opened — it must not move when messages get marked as read.
+    () => buildTimelineItems(normalizedMessages, effectiveLastReadMessageId, unreadAnchorId),
+    [effectiveLastReadMessageId, normalizedMessages, unreadAnchorId],
   );
   const servicePillBg = ui.servicePillBg || alpha(ui.composerDockBg || ui.panelBg || theme.palette.background.paper, 0.78);
   const servicePillText = ui.servicePillText || ui.textSecondary;
@@ -247,6 +563,18 @@ const ChatMessageList = memo(function ChatMessageList({
     [selectedMessageIds],
   );
   const selectionMode = selectedMessageIdSet.size > 0;
+
+  // AI9: «Повторить ответ» показываем только под последним ответом ассистента.
+  const latestAiReplyId = useMemo(() => {
+    if (String(activeConversation?.kind || '').trim() !== 'ai') return '';
+    for (let index = normalizedMessages.length - 1; index >= 0; index -= 1) {
+      const candidate = normalizedMessages[index];
+      if (!candidate?.is_own && !candidate?.is_deleted && String(candidate?.body || '').trim()) {
+        return String(candidate?.id || '').trim();
+      }
+    }
+    return '';
+  }, [activeConversation?.kind, normalizedMessages]);
 
   const groupedMetaById = useMemo(() => {
     const entries = new Map();
@@ -261,9 +589,48 @@ const ChatMessageList = memo(function ChatMessageList({
 
   return (
     <>
-      {messagesLoading ? (
+      {threadLoadError ? (
+        <ThreadLoadErrorBlock
+          theme={theme}
+          ui={ui}
+          compactMobile={compactMobile}
+          onRetry={onRetryThreadLoad}
+        />
+      ) : messagesLoading ? (
         <ThreadLoadingSkeleton compactMobile={compactMobile} />
       ) : normalizedMessages.length === 0 ? (
+        String(activeConversation?.kind || '').trim() === 'ai' ? (
+          // AI9: пустой AI-диалог — приветствие ассистента; подсказки-кнопки
+          // отдельно закреплены над полем ввода в ChatThread.
+          <Stack
+            alignItems="center"
+            justifyContent="center"
+            data-testid="chat-ai-empty-state"
+            sx={{ minHeight: '100%', textAlign: 'center', px: 2 }}
+          >
+            <Avatar sx={{ width: 64, height: 64, mb: 2, bgcolor: ui.accentSoft, color: ui.accentText }}>
+              <SmartToyOutlinedIcon sx={{ fontSize: 32 }} />
+            </Avatar>
+            <Typography variant="h6" sx={{ fontWeight: 800 }}>
+              {String(activeConversation?.title || 'HUB Ассистент').trim() || 'HUB Ассистент'}
+            </Typography>
+            <Typography variant="body2" sx={{ mt: 1, maxWidth: 460, color: ui.textSecondary }}>
+              Чем могу помочь? Спросите про оборудование, документы или задачи — отвечу в рамках ваших доступов.
+            </Typography>
+            {aiStatus ? (
+              <Box sx={{ mt: 2, width: '100%', maxWidth: 460 }}>
+                <AiRunFeedStatus
+                  aiStatus={aiStatus}
+                  theme={theme}
+                  ui={ui}
+                  compactMobile={compactMobile}
+                  onRetry={onRetryAiRun}
+                  onStop={onStopAiRun}
+                />
+              </Box>
+            ) : null}
+          </Stack>
+        ) : (
         <Stack alignItems="center" justifyContent="center" sx={{ minHeight: '100%', textAlign: 'center', px: 2 }}>
           <Avatar sx={{ width: 64, height: 64, mb: 2, bgcolor: ui.accentSoft, color: ui.accentText }}>
             <ForumOutlinedIcon />
@@ -275,6 +642,7 @@ const ChatMessageList = memo(function ChatMessageList({
             Отправьте первое сообщение, задачу или вложение. Диалог уже готов к работе.
           </Typography>
         </Stack>
+        )
       ) : (
         <Stack ref={threadContentRef} data-testid="chat-thread-content" spacing={0} sx={{ overflowAnchor: 'none' }}>
           {messagesHasMore ? (
@@ -307,17 +675,10 @@ const ChatMessageList = memo(function ChatMessageList({
 
             if (item.type === 'unread') {
               return (
-                <TimelineMarker
+                <UnreadSeparator
                   key={item.key}
                   label={item.label}
-                  dataTestId="chat-unread-separator"
-                  stickyOffset={48}
-                  tone={{
-                    bg: alpha(theme.palette.primary.main, 0.14),
-                    text: theme.palette.primary.light,
-                    border: alpha(theme.palette.primary.main, 0.2),
-                    shadow: 'none',
-                  }}
+                  theme={theme}
                 />
               );
             }
@@ -352,13 +713,25 @@ const ChatMessageList = memo(function ChatMessageList({
                   readTargetRef={getReadTargetRef?.(item.message?.id)}
                   onToggleReactionRaw={onToggleReaction}
                   onPollVote={onPollVote}
-                  onPollClose={onPollClose}
                   onScrollToMessage={onScrollToMessage}
+                  onRetryFailedMessage={onRetryFailedMessage}
+                  onDiscardFailedMessage={onDiscardFailedMessage}
+                  onRetryAiAnswer={latestAiReplyId && latestAiReplyId === messageId ? onRetryAiRun : undefined}
                   currentUserId={currentUserId}
                 />
               </div>
             );
           })}
+          {String(activeConversation?.kind || '').trim() === 'ai' ? (
+            <AiRunFeedStatus
+              aiStatus={aiStatus}
+              theme={theme}
+              ui={ui}
+              compactMobile={compactMobile}
+              onRetry={onRetryAiRun}
+              onStop={onStopAiRun}
+            />
+          ) : null}
           {aiTypingStatus?.visible && (
             <ChatTypingIndicator
               botName={aiTypingStatus.botName}

@@ -1,4 +1,5 @@
 import type { HubNotificationItem, MailNotificationItem } from '../api/notificationApi';
+import { readNativeChatInboxSnapshot } from '../chat/nativeChatInboxSnapshot';
 
 export type NotificationCenterItem = {
   key: string;
@@ -26,7 +27,23 @@ function timestamp(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-export function hubNotificationPortalPath(item: HubNotificationItem): string {
+async function inboxConversationKind(conversationId: string, userId?: number): Promise<string> {
+  if (!userId) return '';
+  try {
+    const snapshot = await readNativeChatInboxSnapshot(userId);
+    const match = (snapshot?.data?.items || []).find(
+      (entry) => normalizedText(entry?.id) === conversationId,
+    );
+    return normalizedText(match?.kind).toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+export async function hubNotificationPortalPath(
+  item: HubNotificationItem,
+  options: { userId?: number } = {},
+): Promise<string> {
   const entityType = normalizedText(item.entity_type).toLowerCase();
   const entityId = normalizedText(item.entity_id);
   if (entityType === 'task' && entityId) {
@@ -42,9 +59,11 @@ export function hubNotificationPortalPath(item: HubNotificationItem): string {
     const messageId = normalizedText(
       item.message_id || item.entity_message_id || payload.message_id,
     );
+    const kind = normalizedText(payload.conversation_kind || payload.kind).toLowerCase()
+      || await inboxConversationKind(entityId, options.userId);
     return `/chat?conversation=${encodeURIComponent(entityId)}${
       messageId ? `&message=${encodeURIComponent(messageId)}` : ''
-    }`;
+    }${kind === 'ai' ? '&workspace=ai' : ''}`;
   }
   if (entityType === 'docflow' && entityId) {
     return `/docflow?task=${encodeURIComponent(entityId)}`;

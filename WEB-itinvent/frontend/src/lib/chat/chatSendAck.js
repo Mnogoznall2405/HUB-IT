@@ -29,9 +29,14 @@ function preferDeliveryStatus(existingStatus, incomingStatus) {
  */
 export function mergeIncomingThreadMessage(existingMessage, incomingMessage) {
   if (!incomingMessage?.id) return incomingMessage;
+  // A local optimistic status update (sending → failed → sending on retry)
+  // is not a server ACK — it must keep its optimistic flags through the merge.
+  const incomingIsLocalOptimistic = Boolean(
+    incomingMessage?.isOptimistic || incomingMessage?.optimisticStatus,
+  );
   if (!existingMessage) {
     const next = { ...incomingMessage };
-    if (next.isOptimistic) {
+    if (next.isOptimistic && !incomingIsLocalOptimistic) {
       next.isOptimistic = false;
       delete next.optimisticStatus;
     }
@@ -81,8 +86,10 @@ export function mergeIncomingThreadMessage(existingMessage, incomingMessage) {
     existingMessage.delivery_status,
     incomingMessage.delivery_status,
   );
-  merged.isOptimistic = false;
-  delete merged.optimisticStatus;
+  if (!incomingIsLocalOptimistic) {
+    merged.isOptimistic = false;
+    delete merged.optimisticStatus;
+  }
   delete merged._lean;
   return merged;
 }

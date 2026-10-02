@@ -7,7 +7,12 @@ import {
   subscribeNativeChatDelivery,
 } from './nativeChatOutbox';
 import { getChatSendTimingSummary, resetChatSendTiming } from '../diagnostics/chatSendTiming';
-import { createNativeChatDeliveryRunner } from './nativeChatDeliveryRunner';
+import { resetNativeChatOutboxRowsCache } from './nativeChatStorageQueue';
+import {
+  acquireNativeChatDeliveryDrain,
+  createNativeChatDeliveryRunner,
+  releaseNativeChatDeliveryDrain,
+} from './nativeChatDeliveryRunner';
 
 const userId = 7;
 const pending: ChatMessage = {
@@ -268,5 +273,102 @@ it('keeps the queued entry when delivery is not currently allowed', async () => 
     expect(await readNativeChatOutbox(userId)).toHaveLength(1);
   } finally {
     runner.dispose();
+  }
+});
+
+it('bounds confirm-commit retries and parks the confirmed row until wake', async () => {
+  jest.useFakeTimers();
+  const persistConfirmed = jest.fn(async () => false);
+  const transport = jest.fn(async () => saved);
+  const runner = createNativeChatDeliveryRunner({
+    userId,
+    canDeliver: () => true,
+    transport,
+    persistConfirmed,
+  });
+  try {
+    await createNativeChatOutbox(userId, 'chat-x').queue(pending);
+    // Plenty of time for the whole growing backoff ladder
+    // (5s,10s,20s,…,5min) plus margin — the commit is retried, never resent.
+    await jest.advanceTimersByTimeAsync(30 * 60 * 1000);
+    const callsAfterCap = persistConfirmed.mock.calls.length;
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(callsAfterCap).toBeGreaterThan(1);
+    expect(callsAfterCap).toBeLessThanOrEqual(11); // initial send + 10 capped commits
+    const rows = await readNativeChatOutbox(userId);
+    expect(rows[0]?.delivery?.state).toBe('confirmed');
+    // Parked until an external wake: more idle time adds no further commits.
+    await jest.advanceTimersByTimeAsync(10 * 60 * 1000);
+    expect(persistConfirmed.mock.calls.length).toBe(callsAfterCap);
+    runner.wake();
+    await jest.advanceTimersByTimeAsync(10 * 1000);
+    expect(persistConfirmed.mock.calls.length).toBeGreaterThan(callsAfterCap);
+  } finally {
+    runner.dispose();
+    jest.useRealTimers();
+  }
+});
+
+it('stops a persistently failing read loop on a growing backoff until wake', async () => {
+  jest.useFakeTimers();
+  const read = jest.mocked(SecureStore.getItemAsync);
+  const original = read.getMockImplementation()!;
+  resetNativeChatOutboxRowsCache();
+  read.mockClear().mockRejectedValue(new Error('Store broken'));
+  const onError = jest.fn();
+  const transport = jest.fn(async () => saved);
+  const runner = createNativeChatDeliveryRunner({
+    userId,
+    canDeliver: () => true,
+    transport,
+    persistConfirmed: async () => true,
+    onError,
+  });
+  try {
+    await jest.advanceTimersByTimeAsync(20 * 60 * 1000);
+    const callsAfterStop = read.mock.calls.length;
+    // Bounded retries (5s,10s,20s,40s,80s), then the pump stops scheduling.
+    expect(callsAfterStop).toBeGreaterThan(0);
+    expect(callsAfterStop).toBeLessThanOrEqual(6);
+    expect(transport).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(10 * 60 * 1000);
+    expect(read.mock.calls.length).toBe(callsAfterStop);
+    // An external wake re-arms the loop.
+    runner.wake();
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(read.mock.calls.length).toBeGreaterThan(callsAfterStop);
+  } finally {
+    runner.dispose();
+    read.mockImplementation(original);
+    jest.useRealTimers();
+  }
+});
+
+it('idles while a background drain owns the delivery token and resumes on release', async () => {
+  const token = acquireNativeChatDeliveryDrain();
+  expect(token).toBeTruthy();
+  const transport = jest.fn(async () => saved);
+  const runner = createNativeChatDeliveryRunner({
+    userId,
+    canDeliver: () => true,
+    transport,
+    persistConfirmed: async () => true,
+  });
+  try {
+    await createNativeChatOutbox(userId, 'chat-x').queue(pending);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    // The foreground runner must not pump over an active background drain.
+    expect(transport).not.toHaveBeenCalled();
+    releaseNativeChatDeliveryDrain(token!);
+    const started = Date.now();
+    while (!transport.mock.calls.length && Date.now() - started < 1000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(transport).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(await readNativeChatOutbox(userId)).toEqual([]);
+  } finally {
+    runner.dispose();
+    releaseNativeChatDeliveryDrain(token!);
   }
 });

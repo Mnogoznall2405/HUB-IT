@@ -55,6 +55,39 @@ export function equipmentWorkKindLabel(kind: EquipmentWorkKind): string {
   return 'Чистка компьютера';
 }
 
+export type EquipmentIconName =
+  | 'monitor'
+  | 'laptop'
+  | 'printer'
+  | 'power-plug-battery-outline'
+  | 'phone-classic'
+  | 'desktop-tower-monitor'
+  | 'devices';
+
+export function equipmentIcon(item: EquipmentRecord): EquipmentIconName {
+  const text = [item.type_name, item.model_name].join(' ').toLowerCase();
+  if (hasAnyKeyword(text, ['монитор', 'monitor'])) return 'monitor';
+  if (hasAnyKeyword(text, ['ноутбук', 'laptop', 'notebook'])) return 'laptop';
+  if (isPrinterLikeEquipment(item)) return 'printer';
+  if (hasAnyKeyword(text, UPS_KEYWORDS)) return 'power-plug-battery-outline';
+  if (hasAnyKeyword(text, ['телефон', 'phone'])) return 'phone-classic';
+  if (hasAnyKeyword(text, PC_KEYWORDS)) return 'desktop-tower-monitor';
+  return 'devices';
+}
+
+export type EquipmentStatusTone = 'success' | 'info' | 'warning' | 'danger' | 'neutral';
+
+export function equipmentStatusTone(statusName: string | null | undefined): EquipmentStatusTone {
+  const text = String(statusName || '').toLowerCase();
+  if (!text) return 'neutral';
+  if (text.includes('списан') || text.includes('утерян') || text.includes('утилиз')) return 'danger';
+  if (text.includes('ремонт')) return 'warning';
+  if (text.includes('не использ') || text.includes('не в работе')) return 'neutral';
+  if (text.includes('в работе') || text.includes('использ')) return 'success';
+  if (text.includes('склад') || text.includes('резерв')) return 'info';
+  return 'neutral';
+}
+
 const CONSUMABLE_CARTRIDGE_TOKENS = ['картридж', 'катридж', 'тонер', 'cartridge', 'toner'];
 
 export function isCartridgeLikeConsumable(item: ConsumableRecord | null | undefined): boolean {
@@ -147,6 +180,44 @@ export function equipmentOwner(item: EquipmentRecord): string {
   return [item.employee_name, item.employee_dept].filter(Boolean).join(' · ') || 'Сотрудник не назначен';
 }
 
+export function equipmentShareText(item: EquipmentRecord): string {
+  const line = (label: string, value: unknown): string => {
+    const text = String(value ?? '').trim();
+    return text ? `${label}: ${text}` : '';
+  };
+  const identification = [
+    equipmentTitle(item),
+    line('Инв. №', item.inv_no),
+    line('Тип', item.type_name),
+    line('Производитель', item.vendor_name),
+    line('Статус', item.status_name),
+    line('S/N', item.serial_no),
+    line('HW S/N', item.hw_serial_no),
+    line('P/N', item.part_no),
+  ].filter(Boolean).join('\n');
+  const placement = [item.branch_name, item.location_name]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .join(' · ');
+  const owner = String(item.employee_name || '').trim();
+  const dept = String(item.employee_dept || '').trim();
+  const employeeBlock = [
+    owner ? `Сотрудник: ${owner}${dept ? ` (${dept})` : ''}` : '',
+    line('E-mail', item.employee_email),
+    placement ? `Размещение: ${placement}` : '',
+  ].filter(Boolean).join('\n');
+  const networkBlock = [
+    line('Сетевое имя', item.network_name),
+    line('IP', item.ip_address),
+    line('MAC', item.mac_address),
+    line('Домен', item.domain_name),
+  ].filter(Boolean).join('\n');
+  const description = String(item.description || '').trim();
+  return [identification, employeeBlock, networkBlock, description ? `Описание:\n${description}` : '']
+    .filter(Boolean)
+    .join('\n\n');
+}
+
 export function formatDatabaseDate(value: unknown): string {
   const text = String(value ?? '').trim();
   if (!text) return '—';
@@ -191,4 +262,21 @@ export function historyDescription(row: Record<string, unknown>): string {
 
 export function historyDate(row: Record<string, unknown>): string {
   return formatDatabaseDate(historyField(row, ['ch_date', 'CH_DATE', 'date', 'DATE', 'created_at', 'CREATED_AT', 'history_date', 'HISTORY_DATE']));
+}
+
+export type EquipmentDraftErrors = Partial<Record<'ip_address' | 'mac_address', string>>;
+
+export function validateEquipmentDraft(draft: { ip_address?: string | null; mac_address?: string | null }): EquipmentDraftErrors {
+  const errors: EquipmentDraftErrors = {};
+  const ip = String(draft.ip_address ?? '').trim();
+  if (ip) {
+    const parts = ip.split('.');
+    const valid = parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
+    if (!valid) errors.ip_address = 'IP-адрес: четыре числа 0–255 через точку.';
+  }
+  const mac = String(draft.mac_address ?? '').trim();
+  if (mac && !/^[0-9a-fA-F]{12}$/.test(mac) && !/^[0-9a-fA-F]{2}([:-])(?:[0-9a-fA-F]{2}\1){4}[0-9a-fA-F]{2}$/.test(mac)) {
+    errors.mac_address = 'MAC-адрес: 12 hex-символов, разделитель «:» или «-» либо без разделителей.';
+  }
+  return errors;
 }

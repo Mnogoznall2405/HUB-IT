@@ -115,6 +115,54 @@ describe('ChatSidebar', () => {
     expect(screen.getByRole('tab', { name: /Чаты/i })).toHaveAttribute('aria-selected', 'false');
   });
 
+  it('shows an unread badge on the Chats tab while the AI workspace is open (R18, desktop)', () => {
+    renderWithTheme(buildProps({
+      workspace: 'ai',
+      onWorkspaceChange: vi.fn(),
+      showAiSection: true,
+      folderUnreadCounts: { personal: 3, groups: 1, tasks: 0, archived: 5, ai: 2 },
+    }));
+
+    const chatsTab = screen.getByRole('tab', { name: /Чаты/i });
+    const aiTab = screen.getByRole('tab', { name: /ИИ/i });
+    expect(chatsTab.querySelector('[data-chat-folder-unread-badge]')).toHaveTextContent('4');
+    expect(aiTab.querySelector('[data-chat-folder-unread-badge]')).toHaveTextContent('2');
+  });
+
+  it('shows an unread badge on the Chats tab while the AI workspace is open (R18, mobile)', () => {
+    renderWithTheme(buildProps({
+      compactMobile: true,
+      isMobile: true,
+      workspace: 'ai',
+      onWorkspaceChange: vi.fn(),
+      showAiSection: true,
+      folderUnreadCounts: { personal: 2, groups: 0, tasks: 1, ai: 3 },
+    }));
+
+    const chatsTab = screen.getByRole('tab', { name: /Чаты/i });
+    expect(chatsTab.querySelector('[data-chat-folder-unread-badge]')).toHaveTextContent('3');
+  });
+
+  it.each([
+    { compactMobile: false, isMobile: false, name: 'desktop' },
+    { compactMobile: true, isMobile: true, name: 'mobile' },
+  ])('renders the Чаты/ИИ switcher as a segmented control on $name (Д2-5, п. 8)', ({ compactMobile, isMobile }) => {
+    renderWithTheme(buildProps({
+      compactMobile,
+      isMobile,
+      workspace: 'ai',
+      onWorkspaceChange: vi.fn(),
+      showAiSection: true,
+    }));
+
+    const aiTab = screen.getByRole('tab', { name: /ИИ/i });
+    const chatsTab = screen.getByRole('tab', { name: /Чаты/i });
+    // Выбранная вкладка имеет явный фон из workspace-токенов, невыбранная — прозрачная.
+    expect(aiTab).toHaveStyle({ backgroundColor: 'var(--chat-workspace-tab-active-bg)' });
+    expect(aiTab).toHaveStyle({ color: 'var(--chat-workspace-tab-active-text)' });
+    expect(chatsTab.style.backgroundColor).toBe('transparent');
+  });
+
   it('keeps conversation row reorders off framer-motion layout animation', () => {
     expect(CHAT_SIDEBAR_ROW_USES_LAYOUT_ANIMATION).toBe(false);
   });
@@ -144,7 +192,8 @@ describe('ChatSidebar', () => {
     const row = document.querySelector('[data-chat-unread="true"]');
     expect(row).toHaveStyle({
       backgroundColor: 'var(--chat-sidebar-row-unread)',
-      boxShadow: 'inset 4px 0 0 var(--chat-sidebar-unread-indicator), inset 0 0 0 1px var(--chat-sidebar-row-unread-border)',
+      // Д2: строки плоские — акцент на непрочитанном переносится в бейдж.
+      boxShadow: 'none',
     });
     expect(screen.getByText(baseConversation.title)).toHaveClass(
       'font-bold',
@@ -154,9 +203,10 @@ describe('ChatSidebar', () => {
       'font-semibold',
       'text-[color:var(--chat-sidebar-unread-text)]',
     );
+    // Д2: бейдж непрочитанных — круг 22px как в Telegram Web A.
     expect(screen.getByTestId('chat-unread-badge-conv-1')).toHaveStyle({
-      height: '24px',
-      minWidth: '24px',
+      height: '22px',
+      minWidth: '22px',
     });
   });
 
@@ -382,6 +432,30 @@ describe('ChatSidebar', () => {
     expect(onOpenAiBot).not.toHaveBeenCalled();
   });
 
+  it('AI8: opens a conversation whose bot is missing; blank opening key never disables the row', () => {
+    const onOpenConversation = vi.fn();
+
+    renderWithTheme(buildProps({
+      activeFolderKey: 'personal',
+      showAiSection: true,
+      onOpenConversation,
+      openingAiBotId: '',
+      aiBots: [{
+        bot_id: '',
+        conversation_id: 'orphan-conv',
+        title: 'Старая беседа',
+        assistant_title: 'HUB Ассистент',
+      }],
+    }));
+
+    fireEvent.click(screen.getByRole('tab', { name: 'ИИ' }));
+    const row = screen.getByRole('button', { name: /Старая беседа/i });
+    expect(row).not.toBeDisabled();
+    expect(within(row).queryByRole('progressbar')).not.toBeInTheDocument();
+    fireEvent.click(row);
+    expect(onOpenConversation).toHaveBeenCalledWith('orphan-conv');
+  });
+
   it('keeps the sidebar clean and creates personal or bot chats from one picker', async () => {
     const onCreateAiBotConversation = vi.fn();
     const onCreateAiConversation = vi.fn();
@@ -576,21 +650,22 @@ describe('ChatSidebar', () => {
     expect(screen.queryByRole('button', { name: 'Все' })).not.toBeInTheDocument();
   });
 
-  it('keeps the active folder unread badge distinct from its selected pill', () => {
+  it('keeps the active folder unread badge distinct from its selected underline', () => {
     renderWithTheme(buildProps({
       activeFolderKey: 'personal',
       folderUnreadCounts: { personal: 1 },
     }));
 
     const folderButton = screen.getByRole('button', { name: /Личные/i });
-    expect(folderButton.querySelector('.chat-folder-tab-shimmer')).toHaveStyle({
+    // Д2: активная вкладка помечается нижней полосой 3px, а не залитой «пилюлей».
+    expect(folderButton.querySelector('[data-testid="chat-folder-tab-underline"]')).toHaveStyle({
       backgroundColor: 'var(--chat-folder-tab-active-bg)',
     });
     expect(folderButton.querySelector('[data-chat-folder-unread-badge]')).toHaveStyle({
       backgroundColor: 'var(--chat-folder-tab-active-badge-bg)',
       color: 'var(--chat-folder-tab-active-badge-text)',
-      height: '20px',
-      minWidth: '20px',
+      height: '18px',
+      minWidth: '18px',
     });
   });
 
@@ -626,5 +701,126 @@ describe('ChatSidebar', () => {
     expect(list.scrollTop).toBe(0);
     expect(screen.queryByRole('button', { name: 'Поиск' })).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText('Поиск')).toBeInTheDocument();
+  });
+
+  it('opens a two-choice compose menu from the chats pencil', () => {
+    const compose = { mode: '', onOpenDirect: vi.fn(), onOpenGroup: vi.fn(), onClose: vi.fn() };
+    renderWithTheme(buildProps({ compose, composeFab: {} }));
+
+    fireEvent.click(screen.getByTestId('chat-compose-fab'));
+
+    const items = screen.getAllByRole('menuitem');
+    expect(items.map((item) => item.textContent)).toEqual(['Новое сообщение', 'Создать группу']);
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Новое сообщение' }));
+    expect(compose.onOpenDirect).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts the group flow from the compose menu', () => {
+    const compose = { mode: '', onOpenDirect: vi.fn(), onOpenGroup: vi.fn(), onClose: vi.fn() };
+    renderWithTheme(buildProps({ compose, composeFab: {} }));
+
+    fireEvent.click(screen.getByTestId('chat-compose-fab'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Создать группу' }));
+    expect(compose.onOpenGroup).toHaveBeenCalledTimes(1);
+    expect(compose.onOpenDirect).not.toHaveBeenCalled();
+  });
+
+  it('falls back to onOpenGroup when no compose bag is provided', () => {
+    const onOpenGroup = vi.fn();
+    renderWithTheme(buildProps({ onOpenGroup, composeFab: {} }));
+
+    fireEvent.click(screen.getByTestId('chat-compose-fab'));
+    expect(onOpenGroup).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+  });
+
+  it('keeps the AI pencil opening the assistant picker, not the compose menu', () => {
+    const compose = { mode: '', onOpenDirect: vi.fn(), onOpenGroup: vi.fn(), onClose: vi.fn() };
+    renderWithTheme(buildProps({
+      compose,
+      composeFab: {},
+      workspace: 'ai',
+      onWorkspaceChange: vi.fn(),
+      showAiSection: true,
+      aiBots: [{ id: 'bot-1', name: 'AI assistant', conversation_id: 'ai-conv-1' }],
+    }));
+
+    fireEvent.click(screen.getByTestId('chat-compose-fab'));
+    expect(screen.queryByRole('menuitem', { name: 'Новое сообщение' })).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Новый AI-чат' })).toBeInTheDocument();
+    expect(compose.onOpenDirect).not.toHaveBeenCalled();
+    expect(compose.onOpenGroup).not.toHaveBeenCalled();
+  });
+
+  it('replaces the chat list with the direct picker and opens a peer in one click', async () => {
+    const onOpenPeer = vi.fn().mockResolvedValue();
+    const onClose = vi.fn();
+    const { container } = renderWithTheme(buildProps({
+      onOpenPeer,
+      compose: {
+        mode: 'direct',
+        query: '',
+        onQueryChange: vi.fn(),
+        users: [
+          { id: 7, full_name: 'Иван Петров', username: 'ipetrov', presence: { is_online: true }, job_title: 'DevOps' },
+        ],
+        usersLoading: false,
+        conversations: [],
+        onClose,
+      },
+    }));
+
+    expect(screen.getByTestId('chat-compose-overlay')).toBeInTheDocument();
+    expect(screen.getByTestId('chat-new-message-picker')).toBeInTheDocument();
+    expect(screen.getByText('Новое сообщение')).toBeInTheDocument();
+    // Список остаётся смонтированным под оверлеем — возврат к чатам мгновенный.
+    expect(screen.getByTestId('chat-sidebar-list-scroll')).toBeInTheDocument();
+
+    fireEvent.click(container.querySelector('[data-user-id="7"]'));
+    await waitFor(() => expect(onOpenPeer).toHaveBeenCalledWith(expect.objectContaining({ id: 7 })));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
+  it('renders the member-selection step of the group flow inside the sidebar', () => {
+    const onAddMember = vi.fn();
+    renderWithTheme(buildProps({
+      compose: {
+        mode: 'group',
+        step: 'members',
+        query: '',
+        onQueryChange: vi.fn(),
+        users: [{ id: 7, full_name: 'Иван Петров', username: 'ipetrov', job_title: 'DevOps' }],
+        usersLoading: false,
+        selectedUsers: [],
+        onAddMember,
+        onRemoveMember: vi.fn(),
+        maxMembers: 128,
+        title: '',
+        onTitleChange: vi.fn(),
+        creating: false,
+        createDisabled: true,
+        onCreate: vi.fn(),
+        onStepChange: vi.fn(),
+        onClose: vi.fn(),
+      },
+    }));
+
+    expect(screen.getByTestId('chat-group-create-flow')).toBeInTheDocument();
+    expect(screen.getByText('Добавить участников')).toBeInTheDocument();
+    expect(screen.getByText('Выбрано: 0 из 128')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Иван Петров/ }));
+    expect(onAddMember).toHaveBeenCalledWith(expect.objectContaining({ id: 7 }));
+  });
+
+  it('closes the active compose flow on Escape', () => {
+    const onClose = vi.fn();
+    renderWithTheme(buildProps({
+      compose: { mode: 'direct', query: '', users: [], onClose },
+    }));
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

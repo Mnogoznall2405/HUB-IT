@@ -34,6 +34,7 @@ export type EquipmentRecord = {
   domain_name: string;
   date_create?: string | null;
   date_last_modify?: string | null;
+  changed_by?: string;
   description: string;
   hub_db_id: string;
   hub_db_name: string;
@@ -317,7 +318,7 @@ export function normalizeEquipmentRecord(value: unknown): EquipmentRecord | null
     model_name: asText(readFirst(row, ['model_name', 'MODEL_NAME'])),
     vendor_name: asText(readFirst(row, ['vendor_name', 'VENDOR_NAME'])),
     status_no: asNumber(readFirst(row, ['status_no', 'STATUS_NO'], null)),
-    status_name: asText(readFirst(row, ['status_name', 'STATUS_NAME'])),
+    status_name: asText(readFirst(row, ['status_name', 'STATUS_NAME', 'status', 'STATUS'])),
     empl_no: asNumber(readFirst(row, ['empl_no', 'EMPL_NO', 'owner_no', 'OWNER_NO'], null)),
     employee_name: asText(readFirst(row, ['employee_name', 'EMPLOYEE_NAME', 'owner_name', 'OWNER_NAME'])),
     employee_dept: asText(readFirst(row, ['employee_dept', 'EMPLOYEE_DEPT', 'owner_dept', 'OWNER_DEPT'])),
@@ -332,6 +333,7 @@ export function normalizeEquipmentRecord(value: unknown): EquipmentRecord | null
     domain_name: asText(readFirst(row, ['domain_name', 'DOMAIN_NAME'])),
     date_create: asText(readFirst(row, ['date_create', 'DATE_CREATE'])) || null,
     date_last_modify: asText(readFirst(row, ['date_last_modify', 'DATE_LAST_MODIFY'])) || null,
+    changed_by: asText(readFirst(row, ['ch_user', 'CH_USER', 'changed_by'])),
     description: asText(readFirst(row, ['description', 'DESCRIPTION'])),
     hub_db_id: asText(readFirst(row, ['hub_db_id', 'HUB_DB_ID'])),
     hub_db_name: asText(readFirst(row, ['hub_db_name', 'HUB_DB_NAME'])),

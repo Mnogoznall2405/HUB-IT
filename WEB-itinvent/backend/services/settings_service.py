@@ -50,7 +50,7 @@ class SettingsService:
     DEFAULT_MOBILE_BOTTOM_NAV_ITEMS = ["/dashboard", "/tasks", "/chat", "/mail"]
     DEFAULTS = {
         "pinned_database": None,
-        "theme_mode": "light",
+        "theme_mode": "system",
         "font_family": "Aptos",
         "font_scale": 1.0,
         "dashboard_sections": DEFAULT_DASHBOARD_SECTIONS,
@@ -209,7 +209,7 @@ class SettingsService:
                 return {
                     str(int(row.user_id)): {
                         "pinned_database": row.pinned_database,
-                        "theme_mode": str(row.theme_mode or "light"),
+                        "theme_mode": str(row.theme_mode or "system"),
                         "font_family": str(row.font_family or "Aptos"),
                         "font_scale": float(row.font_scale or 1.0),
                         "dashboard_sections": self._normalize_dashboard_sections(
@@ -246,7 +246,7 @@ class SettingsService:
                         row = AppUserSetting(user_id=user_id)
                         session.add(row)
                     row.pinned_database = (str(payload.get("pinned_database") or "").strip() or None)
-                    row.theme_mode = str(payload.get("theme_mode") or "light")
+                    row.theme_mode = str(payload.get("theme_mode") or "system")
                     row.font_family = str(payload.get("font_family") or "Aptos")
                     row.font_scale = float(payload.get("font_scale") or 1.0)
                     dashboard_sections = self._normalize_dashboard_sections(
@@ -278,7 +278,7 @@ class SettingsService:
                     return {}
                 return {
                     "pinned_database": row.pinned_database,
-                    "theme_mode": str(row.theme_mode or "light"),
+                    "theme_mode": str(row.theme_mode or "system"),
                     "font_family": str(row.font_family or "Aptos"),
                     "font_scale": float(row.font_scale or 1.0),
                     "dashboard_sections": self._normalize_dashboard_sections(
@@ -309,7 +309,7 @@ class SettingsService:
             self._settings_cache[key] = (now + self._SETTINGS_CACHE_TTL_SEC, raw)
         settings = {**self.DEFAULTS, **raw}
         if settings["theme_mode"] not in {"light", "dark", "system"}:
-            settings["theme_mode"] = "light"
+            settings["theme_mode"] = "system"
         if settings["font_family"] not in self.ALLOWED_FONT_FAMILIES:
             settings["font_family"] = "Aptos"
         try:

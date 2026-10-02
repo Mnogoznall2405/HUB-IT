@@ -25,7 +25,7 @@ describe('chatPageConstants', () => {
   it('exposes stable chat page timing constants', () => {
     expect(CHAT_LIST_POLL_MS).toBe(15_000);
     expect(CHAT_THREAD_POLL_MS).toBeGreaterThan(0);
-    expect(CHAT_ACTIVE_THREAD_INCREMENTAL_POLL_MS).toBe(1_000);
+    expect(CHAT_ACTIVE_THREAD_INCREMENTAL_POLL_MS).toBe(3_000);
     expect(CHAT_AI_ACTIVE_POLL_MS).toBe(1_000);
     expect(CHAT_AI_ACTIVE_POLL_WS_CONNECTED_MS).toBe(10_000);
     expect(CHAT_SEARCH_DEBOUNCE_MS).toBe(250);

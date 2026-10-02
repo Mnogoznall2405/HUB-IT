@@ -171,7 +171,10 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
 
   const stickersById = useMemo(
     () => new Map(
-      packs.flatMap((pack) => (pack.stickers || []).map((sticker) => [String(sticker.id), sticker])),
+      packs.flatMap((pack) => (pack.stickers || []).map((sticker) => [
+        String(sticker.id),
+        sticker.pack_short_name ? sticker : { ...sticker, pack_short_name: pack.short_name },
+      ])),
     ),
     [packs],
   );
@@ -182,7 +185,13 @@ const TelegramStickersTab = memo(function TelegramStickersTab({
   const stickerSections = useMemo(
     () => [
       { id: 'recent', title: 'Недавние', stickers: recentStickers, recent: true },
-      ...packs.map((pack) => ({ ...pack, stickers: pack.stickers || [], recent: false })),
+      ...packs.map((pack) => ({
+        ...pack,
+        stickers: (pack.stickers || []).map((sticker) => (
+          sticker.pack_short_name ? sticker : { ...sticker, pack_short_name: pack.short_name }
+        )),
+        recent: false,
+      })),
     ],
     [packs, recentStickers],
   );

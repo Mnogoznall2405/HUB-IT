@@ -182,6 +182,59 @@ def test_task_share_persistence_advances_sequence_and_read_counters(chat_env):
     assert int(recipient_state.unread_count) == 2
 
 
+def test_task_share_dedupes_retried_client_message_id(chat_env):
+    service = chat_env["service"]
+    task = chat_env["task"]
+    conversation = chat_env["direct"]
+
+    first = service.send_task_share(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        task_id=task["id"],
+        client_message_id="mobile-outbox-1",
+        defer_push_notifications=True,
+    )
+    # The outbox retry must return the persisted message, not create a copy.
+    retry = service.send_task_share(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        task_id=task["id"],
+        client_message_id="mobile-outbox-1",
+        defer_push_notifications=True,
+    )
+    other = service.send_task_share(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        task_id=task["id"],
+        client_message_id="mobile-outbox-2",
+        defer_push_notifications=True,
+    )
+
+    assert retry["id"] == first["id"]
+    assert retry["client_message_id"] == "mobile-outbox-1"
+    assert other["id"] != first["id"]
+
+    with chat_db_module.chat_session() as session:
+        messages = list(
+            session.execute(
+                select(chat_models_module.ChatMessage)
+                .where(chat_models_module.ChatMessage.conversation_id == conversation["id"])
+                .order_by(chat_models_module.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+        recipient_state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 2,
+            )
+        ).scalar_one()
+
+    assert [item.id for item in messages] == [first["id"], other["id"]]
+    assert [item.client_message_id for item in messages] == ["mobile-outbox-1", "mobile-outbox-2"]
+    # The deduped retry did not bump the recipient's unread counter.
+    assert int(recipient_state.unread_count) == 2
+
+
 def test_task_share_is_blocked_when_other_chat_member_has_no_task_access(chat_env):
     service = chat_env["service"]
     task = chat_env["task"]

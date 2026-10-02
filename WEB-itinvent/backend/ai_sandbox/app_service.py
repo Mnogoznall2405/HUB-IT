@@ -235,6 +235,8 @@ class AiSandboxAppService:
         now = _utc_now()
         with app_session() as db:
             bot = db.execute(select(AppAiBot).where(AppAiBot.slug == "opencode")).scalar_one_or_none()
+            bot_was_created = bot is None
+            changed = False
             if bot is None:
                 bot = AppAiBot(
                     id=str(uuid4()),
@@ -266,21 +268,29 @@ class AiSandboxAppService:
                 db.add(bot)
                 db.flush()
             else:
-                bot.surface = "sandbox"
-                bot.placement = "pinned"
-                bot.sort_order = 40
-                bot.required_permission = PERM_CHAT_AI_SANDBOX
-                bot.use_personal_memory = False
-                bot.allow_file_input = True
-                bot.allow_generated_artifacts = True
-                bot.is_enabled = bool(settings.enabled)
-                bot.updated_at = now
+                # AI1: only rewrite the row when a seed field actually differs.
+                for field, value in {
+                    "surface": "sandbox",
+                    "placement": "pinned",
+                    "sort_order": 40,
+                    "required_permission": PERM_CHAT_AI_SANDBOX,
+                    "use_personal_memory": False,
+                    "allow_file_input": True,
+                    "allow_generated_artifacts": True,
+                    "is_enabled": bool(settings.enabled),
+                }.items():
+                    if getattr(bot, field, None) != value:
+                        setattr(bot, field, value)
+                        changed = True
+                if changed:
+                    bot.updated_at = now
             ai_service._ensure_bot_user(session=db, bot=bot)
-            logger.info(
-                "ai_sandbox.ensure_opencode_bot bot_id=%s is_enabled=%s",
-                bot.id,
-                bool(bot.is_enabled),
-            )
+            if bot_was_created or changed:
+                logger.info(
+                    "ai_sandbox.ensure_opencode_bot bot_id=%s is_enabled=%s",
+                    bot.id,
+                    bool(bot.is_enabled),
+                )
             return ai_service._serialize_bot(bot, admin=True)
 
     def ensure_enabled(self) -> SandboxSettings:
@@ -438,6 +448,7 @@ class AiSandboxAppService:
                 "run_id": None,
                 "error_text": None,
                 "updated_at": None,
+                "server_now": _iso(_utc_now()),
             }
         return self._status_payload(bot=bot, job=job)
 
@@ -500,7 +511,9 @@ class AiSandboxAppService:
             if mapping is None:
                 raise LookupError("OpenCode conversation was not found")
             bot = db.get(AppAiBot, mapping.bot_id)
-            if bot is None or str(getattr(bot, "surface", "") or "").strip().lower() != "sandbox":
+            # A deleted bot row must not strand the workspace: the sandbox session
+            # row (looked up below) is what proves this was an OpenCode chat.
+            if bot is not None and str(getattr(bot, "surface", "") or "").strip().lower() != "sandbox":
                 raise LookupError("Conversation is not an OpenCode sandbox")
             session_row = db.execute(
                 select(AppAiSandboxSession).where(
@@ -2217,6 +2230,7 @@ class AiSandboxAppService:
             "run_id": job.id,
             "error_text": job.error_code or None,
             "updated_at": _iso(job.updated_at),
+            "server_now": _iso(_utc_now()),
         }
 
     @staticmethod

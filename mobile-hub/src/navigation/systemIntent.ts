@@ -56,7 +56,8 @@ function portalPathFromNativeRoute(destination: string): string | null {
       return '/menu';
     }
     if (parsed.pathname === '/chat' || parsed.pathname === '/(shell)/chat') {
-      return '/chat';
+      const workspace = parsed.searchParams.get('workspace');
+      return workspace ? `/chat?workspace=${encodeURIComponent(workspace)}` : '/chat';
     }
     if (parsed.pathname === '/tasks' || parsed.pathname === '/(shell)/tasks') {
       const query = new URLSearchParams();
@@ -99,7 +100,7 @@ function portalPathFromNativeRoute(destination: string): string | null {
     }
     if (parsed.pathname === '/database' || parsed.pathname === '/(shell)/database') {
       const query = new URLSearchParams();
-      for (const key of ['q', 'mode']) {
+      for (const key of ['q', 'mode', 'scan']) {
         const value = parsed.searchParams.get(key);
         if (value) query.set(key, value);
       }
@@ -200,10 +201,13 @@ function portalPathFromNativeRoute(destination: string): string | null {
     }
     const chatMatch = parsed.pathname.match(/^\/chat\/([^/]+)$/);
     if (chatMatch) {
+      const query = new URLSearchParams();
+      query.set('conversation', chatMatch[1]);
       const message = parsed.searchParams.get('message');
-      return message
-        ? `/chat?conversation=${encodeURIComponent(chatMatch[1])}&message=${encodeURIComponent(message)}`
-        : `/chat?conversation=${encodeURIComponent(chatMatch[1])}`;
+      if (message) query.set('message', message);
+      const workspace = parsed.searchParams.get('workspace');
+      if (workspace) query.set('workspace', workspace);
+      return `/chat?${query.toString()}`;
     }
     if (parsed.pathname.startsWith('/') && !parsed.pathname.startsWith('//')) {
       return normalizeNativeRoutePath(`${parsed.pathname}${parsed.search}${parsed.hash}`);

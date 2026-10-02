@@ -24,15 +24,9 @@ export const shouldSuppressNativeMessageGesture = ({
   compactMobile = false,
 } = {}) => isMobileMessageLongPress({ mobileInteractionsEnabled, compactMobile });
 
+// U3: appear animation only for live messages — flagged at merge time
+// (socket message.created or an outgoing send), never for history/bootstrap.
 export const shouldAnimateChatBubble = ({
   prefersReducedMotion = false,
-  compactMobile = false,
-  isOwn = false,
-  isOptimistic = false,
-  isSending = false,
-} = {}) => {
-  if (prefersReducedMotion) return false;
-  if (isOwn) return false;
-  if (compactMobile && !isOptimistic) return false;
-  return true;
-};
+  animateAppear = false,
+} = {}) => Boolean(animateAppear) && !prefersReducedMotion;

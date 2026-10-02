@@ -39,6 +39,7 @@ export const chatStickersAPI = {
       `/chat/conversations/${encodeURIComponent(conversationId)}/messages/sticker`,
       {
         sticker_id: stickerId,
+        client_message_id: options?.client_message_id || undefined,
         reply_to_message_id: options?.reply_to_message_id || undefined,
       },
     );

@@ -26,7 +26,8 @@ describe('request ordering in page loaders', () => {
     const pending = [];
     const api = vi.fn(() => new Promise((resolve) => pending.push(resolve)));
     let selected;
-    const set = (value) => { selected = value; };
+    // setters may receive an updater function (MyFiles reconciles by id)
+    const set = (value) => { selected = typeof value === 'function' ? value([]) : value; };
     const noop = () => {};
     const context = {
       beginBalances: result.current, beginMovements: result.current, beginUsers: result.current,
@@ -41,8 +42,11 @@ describe('request ordering in page loaders', () => {
       authAPI: { getUsers: api, getSessions: api, getTaskDelegatesBulk: async () => ({ items: [] }) },
       setUsersLoading: noop, setUsers: set, setBlockingError: noop, setSessionsLoading: noop, setSessions: set,
       normalizePermissions: (value) => value, mergeTaskDelegatesIntoUsers: (value) => value,
-      myFilesAPI: { listFiles: async () => ({ items: await api() }), getQuota: async () => ({}) },
+      myFilesAPI: { listFiles: async () => ({ items: await api() }), getQuota: async () => ({}), listFolders: async () => ({ items: [] }) },
       setLoading: noop, setRefreshing: noop, setItems: set, setQuota: noop, notifyApiError: noop,
+      setFolders: noop, setBreadcrumbs: noop, setAllFolders: noop,
+      reconcileById: (_previous, next) => next,
+      isTrashView: false, listView: 'all', currentFolderId: null, debouncedSearchQuery: '',
       activeLoadsRef: { current: 0 },
     };
     const file = ['users', 'sessions'].includes(kind) ? './pages/account/hooks/useAccountSectionData.js'

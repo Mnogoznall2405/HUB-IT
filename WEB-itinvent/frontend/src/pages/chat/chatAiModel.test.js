@@ -37,6 +37,53 @@ describe('buildAiSidebarRows assistant identity', () => {
     ]);
   });
 
+  it('AI8: resolves the bot from the conversation ai_bot_id field', () => {
+    const rows = buildAiSidebarRows({
+      aiBots: [{
+        id: 'documents-bot',
+        title: 'Документы',
+        conversation_ids: [],
+      }],
+      conversations: [{
+        id: 'bot-conversation',
+        kind: 'ai',
+        title: 'Беседа с документами',
+        ai_bot_id: 'documents-bot',
+      }],
+      draftsByConversation: {},
+      activeConversationId: '',
+    });
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        conversation_id: 'bot-conversation',
+        bot_id: 'documents-bot',
+        assistant_title: 'Документы',
+      }),
+    ]);
+  });
+
+  it('AI8: keeps a conversation row openable when its bot is missing from the bots list', () => {
+    const rows = buildAiSidebarRows({
+      aiBots: [],
+      conversations: [{
+        id: 'orphan-conversation',
+        kind: 'ai',
+        title: 'Старая беседа',
+        ai_bot_id: 'removed-bot',
+      }],
+      draftsByConversation: {},
+      activeConversationId: '',
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual(expect.objectContaining({
+      conversation_id: 'orphan-conversation',
+      bot_id: '',
+      title: 'Старая беседа',
+    }));
+  });
+
   it('hides retired IT helper conversations while preserving other AI history', () => {
     const rows = buildAiSidebarRows({
       aiBots: [{

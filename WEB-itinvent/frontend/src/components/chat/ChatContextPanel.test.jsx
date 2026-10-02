@@ -4,6 +4,7 @@ import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ChatContextPanel from './ChatContextPanel';
+import { findAddressBookEntryForChatUser } from '../../lib/addressBookChat';
 
 const chatApiMock = vi.hoisted(() => ({
   getConversationAssetsSummary: vi.fn(),
@@ -17,6 +18,11 @@ vi.mock('../../api/client', async (importOriginal) => {
     chatAPI: chatApiMock,
   };
 });
+
+vi.mock('../../lib/addressBookChat', () => ({
+  findAddressBookEntryForChatUser: vi.fn(async () => null),
+  pickAddressBookWorkplace: vi.fn((entry) => entry || null),
+}));
 
 const theme = createTheme();
 const ui = {
@@ -143,6 +149,8 @@ describe('ChatContextPanel', () => {
   beforeEach(() => {
     chatApiMock.getConversationAssetsSummary.mockReset();
     chatApiMock.getConversationAttachments.mockReset();
+    findAddressBookEntryForChatUser.mockClear();
+    findAddressBookEntryForChatUser.mockResolvedValue(null);
     chatApiMock.getConversationAssetsSummary.mockResolvedValue({
       photos_count: 1,
       videos_count: 0,
@@ -205,10 +213,11 @@ describe('ChatContextPanel', () => {
 
     fireEvent.click(screen.getByAltText('photo.png'));
     expect(onOpenAttachmentPreview).toHaveBeenCalledWith('msg-1', expect.objectContaining({ id: 'att-1' }));
-    expect(screen.getAllByText(/Фото/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Медиа/).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: 'Показать ещё вложения' })).not.toBeInTheDocument();
   });
 
-  it('requests video attachments when the user opens the video section', async () => {
+  it('loads photos and videos together in the media grid with a duration badge', async () => {
     chatApiMock.getConversationAssetsSummary.mockResolvedValueOnce({
       photos_count: 1,
       videos_count: 1,
@@ -220,8 +229,29 @@ describe('ChatContextPanel', () => {
       recent_files: [],
       recent_audio: [],
     });
-    chatApiMock.getConversationAttachments
-      .mockResolvedValueOnce({
+    chatApiMock.getConversationAttachments.mockImplementation((id, params) => {
+      if (params?.kind === 'video') {
+        return Promise.resolve({
+          items: [
+            {
+              id: 'att-video-1',
+              message_id: 'msg-video-1',
+              kind: 'video',
+              file_name: 'clip.mp4',
+              mime_type: 'video/mp4',
+              file_size: 4096,
+              duration_seconds: 83,
+              created_at: '2026-03-25T11:00:00Z',
+              variant_urls: {
+                poster: '/api/v1/chat/messages/msg-video-1/attachments/att-video-1/file?inline=1&variant=poster',
+              },
+            },
+          ],
+          has_more: false,
+          next_before_attachment_id: null,
+        });
+      }
+      return Promise.resolve({
         items: [
           {
             id: 'att-image-1',
@@ -235,38 +265,25 @@ describe('ChatContextPanel', () => {
         ],
         has_more: false,
         next_before_attachment_id: null,
-      })
-      .mockResolvedValueOnce({
-        items: [
-          {
-            id: 'att-video-1',
-            message_id: 'msg-video-1',
-            kind: 'video',
-            file_name: 'clip.mp4',
-            mime_type: 'video/mp4',
-            file_size: 4096,
-            created_at: '2026-03-25T11:00:00Z',
-            variant_urls: {
-              poster: '/api/v1/chat/messages/msg-video-1/attachments/att-video-1/file?inline=1&variant=poster',
-            },
-          },
-        ],
-        has_more: false,
-        next_before_attachment_id: null,
       });
+    });
 
     renderWithTheme(buildProps());
 
-    await waitFor(() => expect(chatApiMock.getConversationAssetsSummary).toHaveBeenCalledWith('conv-1'));
-
-    fireEvent.click(screen.getByRole('button', { name: /Видео/i }));
-
-    await waitFor(() => expect(chatApiMock.getConversationAttachments).toHaveBeenLastCalledWith('conv-1', {
+    await waitFor(() => expect(chatApiMock.getConversationAttachments).toHaveBeenCalledWith('conv-1', {
       kind: 'video',
       limit: 12,
       before_attachment_id: undefined,
     }));
-    expect(screen.getByRole('img', { name: /clip\.mp4/i })).toBeInTheDocument();
+
+    expect(await screen.findByRole('img', { name: /clip\.mp4/i })).toBeInTheDocument();
+    expect(screen.getByAltText('photo.png')).toBeInTheDocument();
+    // Бейдж длительности видео вместо подписи «Видео»
+    expect(screen.getByText('1:23')).toBeInTheDocument();
+    // Подвкладок «Фото»/«Видео» больше нет
+    expect(screen.queryByRole('button', { name: /^Фото/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Видео/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Показать ещё вложения' })).not.toBeInTheDocument();
   });
 
   it('renders direct chat info, opens shared task rows and does not show group participant toggle', async () => {
@@ -329,6 +346,87 @@ describe('ChatContextPanel', () => {
     expect(onOpenTask).toHaveBeenCalledWith('task-7');
   });
 
+  it('shows office address and room from the address book for a direct peer', async () => {
+    findAddressBookEntryForChatUser.mockResolvedValue({
+      full_name: 'Андрей Петров',
+      office_address: 'ул. Ленина, 10',
+      office_room: '204',
+    });
+
+    renderWithTheme(buildProps({
+      activeConversation: directConversation,
+      conversationHeaderSubtitle: 'Был(а) недавно',
+    }));
+
+    expect(await screen.findByText('Адрес офиса')).toBeInTheDocument();
+    expect(screen.getByText('ул. Ленина, 10')).toBeInTheDocument();
+    expect(screen.getByText('Кабинет')).toBeInTheDocument();
+    expect(screen.getByText('204')).toBeInTheDocument();
+    await waitFor(() => expect(findAddressBookEntryForChatUser).toHaveBeenCalledWith(expect.objectContaining({ id: 42 })));
+  });
+
+  it('copies the corporate phone and email to the clipboard on click', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const originalClipboard = window.navigator.clipboard;
+    Object.defineProperty(window.navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+
+    try {
+      renderWithTheme(buildProps({
+        activeConversation: directConversation,
+        conversationHeaderSubtitle: 'Был(а) недавно',
+      }));
+
+      await screen.findByText('+7 (495) 123-45-67');
+      fireEvent.click(screen.getByText('+7 (495) 123-45-67'));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith('+7 (495) 123-45-67'));
+      expect(await screen.findByText('Скопировано')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByText('andrey.petrov@zsgp.ru'));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith('andrey.petrov@zsgp.ru'));
+    } finally {
+      Object.defineProperty(window.navigator, 'clipboard', {
+        value: originalClipboard,
+        configurable: true,
+      });
+    }
+  });
+
+  it('loads the next media page automatically when the panel is scrolled to the bottom', async () => {
+    const photoItem = (id) => ({
+      id,
+      message_id: `msg-${id}`,
+      kind: 'image',
+      file_name: `${id}.jpg`,
+      mime_type: 'image/jpeg',
+      file_size: 1024,
+      created_at: '2026-03-25T10:00:00Z',
+    });
+    chatApiMock.getConversationAttachments.mockImplementation((id, params) => {
+      if (params?.kind === 'video') {
+        return Promise.resolve({ items: [], has_more: false, next_before_attachment_id: null });
+      }
+      if (params?.before_attachment_id === 'one') {
+        return Promise.resolve({ items: [photoItem('two')], has_more: false, next_before_attachment_id: null });
+      }
+      return Promise.resolve({ items: [photoItem('one')], has_more: true, next_before_attachment_id: 'one' });
+    });
+
+    renderWithTheme(buildProps());
+
+    expect(await screen.findByRole('button', { name: 'Открыть one.jpg' })).toBeInTheDocument();
+    fireEvent.scroll(screen.getByTestId('chat-info-scroll'));
+    expect(await screen.findByRole('button', { name: 'Открыть two.jpg' })).toBeInTheDocument();
+    expect(chatApiMock.getConversationAttachments).toHaveBeenLastCalledWith('conv-1', {
+      kind: 'image',
+      limit: 12,
+      before_attachment_id: 'one',
+    });
+    expect(screen.queryByRole('button', { name: 'Показать ещё вложения' })).not.toBeInTheDocument();
+  });
+
   it('shows collapsed rail and restores open action', async () => {
     renderWithTheme(buildProps({ open: false }));
 
@@ -355,7 +453,7 @@ describe('ChatContextPanel', () => {
 
     await waitFor(() => expect(chatApiMock.getConversationAssetsSummary).toHaveBeenCalledWith('conv-1'));
     expect(screen.getByText('Информация')).toBeInTheDocument();
-    expect(screen.getAllByText(/Фото/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Медиа/).length).toBeGreaterThan(0);
   });
 
   it('renders the mobile full-screen profile layout for chat info', async () => {
@@ -371,9 +469,10 @@ describe('ChatContextPanel', () => {
     expect(screen.getByText('Информация')).toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: 'Уведомления для этого чата' })).not.toBeChecked();
     expect(screen.getByText('Выключены, кроме личных упоминаний')).toBeInTheDocument();
-    expect(screen.getByText(/Фото/)).toBeInTheDocument();
+    expect(screen.getByText(/Медиа/)).toBeInTheDocument();
     expect(screen.getByText('Файлы')).toBeInTheDocument();
     expect(screen.getByText('Ссылки')).toBeInTheDocument();
+    expect(screen.getByText('Голосовые')).toBeInTheDocument();
     expect(screen.getByText('Задачи')).toBeInTheDocument();
   });
 
@@ -477,37 +576,43 @@ describe('ChatContextPanel', () => {
   });
 
   it('switches mobile profile sections with horizontal swipes', async () => {
-    chatApiMock.getConversationAttachments
-      .mockResolvedValueOnce({
-        items: [
-          {
-            id: 'att-1',
-            message_id: 'msg-1',
-            kind: 'image',
-            file_name: 'photo.png',
-            mime_type: 'image/png',
-            file_size: 1024,
-            created_at: '2026-03-25T10:00:00Z',
-          },
-        ],
-        has_more: false,
-        next_before_attachment_id: null,
-      })
-      .mockResolvedValueOnce({
-        items: [
-          {
-            id: 'att-2',
-            message_id: 'msg-2',
-            kind: 'file',
-            file_name: 'report.pdf',
-            mime_type: 'application/pdf',
-            file_size: 4096,
-            created_at: '2026-03-25T11:00:00Z',
-          },
-        ],
-        has_more: false,
-        next_before_attachment_id: null,
-      });
+    chatApiMock.getConversationAttachments.mockImplementation((id, params) => {
+      if (params?.kind === 'image') {
+        return Promise.resolve({
+          items: [
+            {
+              id: 'att-1',
+              message_id: 'msg-1',
+              kind: 'image',
+              file_name: 'photo.png',
+              mime_type: 'image/png',
+              file_size: 1024,
+              created_at: '2026-03-25T10:00:00Z',
+            },
+          ],
+          has_more: false,
+          next_before_attachment_id: null,
+        });
+      }
+      if (params?.kind === 'file') {
+        return Promise.resolve({
+          items: [
+            {
+              id: 'att-2',
+              message_id: 'msg-2',
+              kind: 'file',
+              file_name: 'report.pdf',
+              mime_type: 'application/pdf',
+              file_size: 4096,
+              created_at: '2026-03-25T11:00:00Z',
+            },
+          ],
+          has_more: false,
+          next_before_attachment_id: null,
+        });
+      }
+      return Promise.resolve({ items: [], has_more: false, next_before_attachment_id: null });
+    });
 
     renderWithTheme(buildProps({
       activeConversation: directConversation,

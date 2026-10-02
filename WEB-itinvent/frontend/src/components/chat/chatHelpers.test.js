@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  formatFullDate,
   applyReadReceiptDeltaToMessages,
   buildTimelineItems,
   detectChatBodyFormat,
@@ -320,6 +321,24 @@ describe('chatHelpers timeline keys', () => {
       }),
     ]));
   });
+
+  it('R21: an explicit unread anchor keeps the divider at the frozen position', () => {
+    const messages = [
+      { id: 'm1', is_own: true, created_at: '2026-04-14T10:00:00.000Z' },
+      { id: 'm2', is_own: false, created_at: '2026-04-14T10:01:00.000Z' },
+      { id: 'm3', is_own: false, created_at: '2026-04-14T10:02:00.000Z' },
+    ];
+
+    // Marker advanced past everything — a recomputed anchor would be empty.
+    const timeline = buildTimelineItems(messages, 'm3', 'm2');
+    const unreadIndex = timeline.findIndex((item) => item.type === 'unread');
+    const messageIndex = timeline.findIndex((item) => item.type === 'message' && item.message?.id === 'm2');
+    expect(unreadIndex).toBeGreaterThanOrEqual(0);
+    expect(unreadIndex).toBeLessThan(messageIndex);
+
+    const cleared = buildTimelineItems(messages, 'm3', '');
+    expect(cleared.some((item) => item.type === 'unread')).toBe(false);
+  });
 });
 
 describe('applyReadReceiptDeltaToMessages', () => {
@@ -385,5 +404,40 @@ describe('resolveChatPreviewSenderName', () => {
     expect(resolveChatPreviewSenderName({ sender_name: 'user-64' })).toBe('Участник');
     expect(resolveChatPreviewSenderName({ sender_name: 'USER-64' })).toBe('Участник');
     expect(resolveChatPreviewSenderName({})).toBe('Участник');
+  });
+});
+
+describe('Д2-3 cached date formatters', () => {
+  it('formatMessageTime matches toLocaleTimeString and is stable across calls', () => {
+    const iso = '2026-06-18T14:30:00.000Z';
+    const expected = new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    expect(formatMessageTime(iso)).toBe(expected);
+    expect(formatMessageTime(iso)).toBe(expected);
+    expect(formatMessageTime(`  ${iso}  `)).toBe(expected);
+  });
+
+  it('formatFullDate matches toLocaleString for the full date label', () => {
+    const iso = '2026-06-18T14:30:00.000Z';
+    const expected = new Date(iso).toLocaleString('ru-RU', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    expect(formatFullDate(iso)).toBe(expected);
+    expect(formatFullDate('not-a-date')).toBe('');
+    expect(formatFullDate('')).toBe('');
+  });
+
+  it('does not construct a new Intl formatter per call', () => {
+    const spy = vi.spyOn(Date.prototype, 'toLocaleTimeString');
+    try {
+      formatMessageTime('2026-06-18T15:45:00.000Z');
+      formatMessageTime('2026-06-18T15:45:00.000Z');
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

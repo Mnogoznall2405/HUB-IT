@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = 'C:\Project\Image_scan'
 $taskName = 'HUB-IT PM2 Autostart'
+$legacyTaskName = 'HUB-IT PM2 resurrect'
 $resurrectScript = Join-Path $projectRoot 'scripts\pm2\pm2-boot-resurrect.ps1'
 
 function Show-TaskStatus {
@@ -50,6 +51,14 @@ switch ($Mode) {
         Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -Description 'Resurrect the saved PM2 process list (dump.pm2) after server reboot without requiring interactive logon.' | Out-Null
 
         Write-Host "Scheduled task '$taskName' registered for $userId (AtStartup, S4U)." -ForegroundColor Green
+
+        # Legacy SYSTEM boot task (resurrect-if-empty.ps1) races this one on the
+        # shared \\.\pipe\rpc.sock and would start apps as SYSTEM: keep it off.
+        $legacyTask = Get-ScheduledTask -TaskName $legacyTaskName -ErrorAction SilentlyContinue
+        if ($legacyTask -and $legacyTask.State -ne 'Disabled') {
+            Disable-ScheduledTask -TaskName $legacyTaskName | Out-Null
+            Write-Host "Legacy task '$legacyTaskName' disabled." -ForegroundColor Yellow
+        }
         Show-TaskStatus
         break
     }

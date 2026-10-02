@@ -98,15 +98,56 @@ it('puts several selected files into one backend multipart message', () => {
     }], { body: 'Альбом', clientMessageId: 'mobile-files-1' });
 
     expect(append.mock.calls.filter(([field]) => field === 'files')).toHaveLength(2);
+    // UP-1: every file carries its own media_kind, inferred per file.
     expect(append).toHaveBeenCalledWith('files_meta_json', JSON.stringify([{
       transfer_encoding: 'identity',
+      media_kind: 'image',
       original_size: 100,
     }, {
       transfer_encoding: 'identity',
+      media_kind: 'video',
       original_size: 200,
     }]));
     expect(append).toHaveBeenCalledWith('body', 'Альбом');
     expect(append).toHaveBeenCalledWith('client_message_id', 'mobile-files-1');
+  } finally {
+    global.FormData = originalFormData;
+  }
+});
+
+it('keeps the explicit kind/duration on the first file and infers the rest', () => {
+  const originalFormData = global.FormData;
+  const append = jest.fn();
+  global.FormData = jest.fn(() => ({ append })) as unknown as typeof FormData;
+  try {
+    buildAttachmentsFormData([{
+      uri: 'file:///cache/clip.mp4',
+      name: 'clip.mp4',
+      mimeType: 'video/mp4',
+      size: 300,
+      source: 'camera',
+    }, {
+      uri: 'file:///cache/photo.jpg',
+      name: 'photo.jpg',
+      mimeType: 'image/jpeg',
+      size: 100,
+      source: 'camera',
+    }], {
+      mediaKind: 'video',
+      durationSeconds: 12,
+    });
+    // The single-intent metadata (video note + duration) belongs to the first
+    // file only; the second file still gets its own inferred kind.
+    expect(append).toHaveBeenCalledWith('files_meta_json', JSON.stringify([{
+      transfer_encoding: 'identity',
+      media_kind: 'video',
+      duration_seconds: 12,
+      original_size: 300,
+    }, {
+      transfer_encoding: 'identity',
+      media_kind: 'image',
+      original_size: 100,
+    }]));
   } finally {
     global.FormData = originalFormData;
   }

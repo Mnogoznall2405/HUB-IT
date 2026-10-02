@@ -160,6 +160,7 @@ export function useThreadAttachments({
     void runAttachmentAction(failedAction.messageId, failedAction.attachment, failedAction.action);
   }, [failedAttachmentActionsRef, retryPendingAttachmentUpload, runAttachmentAction]);
 
+  const mediaManifestNextRetryAtRef = useRef(0);
   const loadMoreMediaManifest = useCallback(async (restart = false) => {
     if (offlineMode) {
       mediaManifestHasMoreRef.current = false;
@@ -167,6 +168,7 @@ export function useThreadAttachments({
     }
     if (mediaManifestLoadingRef.current) return;
     if (!restart && !mediaManifestHasMoreRef.current) return;
+    if (!restart && Date.now() < mediaManifestNextRetryAtRef.current) return;
     const generation = mediaManifestGenerationRef.current;
     mediaManifestLoadingRef.current = true;
     try {
@@ -181,7 +183,11 @@ export function useThreadAttachments({
       mediaManifestHasMoreRef.current = page.has_more;
       mediaManifestCursorRef.current = page.next_before_attachment_id;
     } catch {
-      if (generation === mediaManifestGenerationRef.current) mediaManifestHasMoreRef.current = false;
+      // A failed page is not "no more pages" — keep hasMore but back off so a
+      // dead endpoint is not hammered by onEndReached refires.
+      if (generation === mediaManifestGenerationRef.current) {
+        mediaManifestNextRetryAtRef.current = Date.now() + 5_000;
+      }
     } finally {
       if (generation === mediaManifestGenerationRef.current) mediaManifestLoadingRef.current = false;
     }
@@ -229,17 +235,8 @@ export function useThreadAttachments({
     setAttachmentActionTarget({ message, attachment });
   }, [openMediaViewer, selectedMessageIdsLength, setSelectedMessageIds]);
 
-  const openAttachment = useCallback((message: ChatMessage, attachment: ChatAttachment) => {
-    if (selectedMessageIdsLength) {
-      setSelectedMessageIds((current) => toggleSelectedMessageId(current, message.id));
-      return;
-    }
-    if (isMediaChatAttachment(attachment)) {
-      openMediaViewer({ message, attachment });
-      return;
-    }
-    setAttachmentActionTarget({ message, attachment });
-  }, [openMediaViewer, selectedMessageIdsLength, setSelectedMessageIds]);
+  // Identical contract — keep one implementation so they cannot drift.
+  const openAttachment = openAttachmentActions;
 
   return {
     mediaViewer,

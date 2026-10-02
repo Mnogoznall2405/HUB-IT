@@ -33,6 +33,11 @@ if not _PYTEST_USE_LIVE_APP_DB:
     _pytest_runtime.mkdir(parents=True, exist_ok=True)
     _pytest_app_db = _pytest_runtime / f"pytest_app_{os.getpid()}.sqlite3"
     os.environ["APP_DATABASE_URL"] = f"sqlite:///{_pytest_app_db.as_posix()}"
+    # Chat has its own URL (CHAT_DATABASE_URL, from the root .env otherwise): any test
+    # that calls initialize_chat_schema() would DDL/DML the live chat database.
+    _pytest_chat_db = _pytest_runtime / f"pytest_chat_{os.getpid()}.sqlite3"
+    os.environ["CHAT_DATABASE_URL"] = f"sqlite:///{_pytest_chat_db.as_posix()}"
+    os.environ.setdefault("CHAT_REALTIME_TRANSPORT", "local")
     # inventory_server.app creates its queue store while tests are collected.
     # Never let that import open the live runtime database used by PM2.
     _pytest_inventory_runtime = _pytest_runtime / f"inventory_server_{os.getpid()}"
@@ -83,6 +88,34 @@ def prebuilt_app_db(tmp_path):
         get_app_engine(f"sqlite:///{db_path.as_posix()}").dispose()
     except Exception:
         pass
+
+
+@pytest.fixture(scope="session")
+def chat_schema_template_db(tmp_path_factory):
+    db_path = tmp_path_factory.mktemp("chat-schema-template") / "runtime.db"
+    shutil.copyfile(app_schema_template_db(), db_path)
+    url = f"sqlite:///{db_path.as_posix()}"
+    from backend.chat import db as chat_db_module
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(chat_db_module.config.chat, "enabled", True, raising=False)
+        chat_db_module.initialize_chat_schema(url)
+        chat_db_module.get_chat_engine(url).dispose()
+    return db_path
+
+
+@pytest.fixture
+def prebuilt_chat_db(tmp_path, chat_schema_template_db):
+    db_path = tmp_path / "runtime.db"
+    shutil.copyfile(chat_schema_template_db, db_path)
+    url = f"sqlite:///{db_path.as_posix()}"
+    from backend.appdb import db as app_db_module
+
+    app_db_module._initialized_schema_urls.add(url)
+    try:
+        yield db_path
+    finally:
+        app_db_module._initialized_schema_urls.discard(url)
 
 
 @pytest.fixture(autouse=True)

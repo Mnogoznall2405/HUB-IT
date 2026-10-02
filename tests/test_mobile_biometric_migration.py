@@ -22,7 +22,7 @@ def test_mobile_biometric_migration_up_and_down(temp_dir):
     config.attributes["configure_logger"] = False
 
     command.stamp(config, "20260822_0101")
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260823_0102")
 
     engine = sa.create_engine(database_url)
     inspector = sa.inspect(engine)

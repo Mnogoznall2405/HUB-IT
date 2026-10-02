@@ -28,6 +28,7 @@ FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
 FCM_TOKEN_URI = "https://oauth2.googleapis.com/token"
 FCM_ANDROID_CHANNEL_IDS = {
     "chat": "hubit_chat",
+    "chat_ai": "hubit_chat_ai",
     "tasks": "hubit_tasks",
     "docflow": "hubit_tasks",
     "hub": "hubit_tasks",
@@ -351,14 +352,20 @@ class NativePushService:
         data: dict[str, Any],
         tag: str,
         notification_count: int | None = None,
+        native_channel: Optional[str] = None,
     ) -> None:
         access_token = self._get_access_token(service_account)
         endpoint = f"https://fcm.googleapis.com/v1/projects/{urllib.parse.quote(project_id)}/messages:send"
         string_data = _string_data(data)
         logical_channel = _normalize_text(string_data.get("channel")).lower() or "system"
-        channel_id = FCM_ANDROID_CHANNEL_IDS.get(logical_channel, FCM_ANDROID_FALLBACK_CHANNEL_ID)
+        native_channel_key = _normalize_text(native_channel).lower()
+        if native_channel_key:
+            channel_id = FCM_ANDROID_CHANNEL_IDS.get(native_channel_key, native_channel_key)
+        else:
+            channel_id = FCM_ANDROID_CHANNEL_IDS.get(logical_channel, FCM_ANDROID_FALLBACK_CHANNEL_ID)
         canonical_channel = {
             "hubit_chat": "chat",
+            "hubit_chat_ai": "chat",
             "hubit_tasks": "tasks",
             "hubit_mail": "mail",
         }.get(channel_id, "system")
@@ -458,6 +465,7 @@ class NativePushService:
         tag: str = "",
         data: Optional[dict[str, Any]] = None,
         app_badge_count: Optional[int] = None,
+        native_channel: Optional[str] = None,
         **_: Any,
     ) -> NativePushSendResult:
         tokens = self._active_tokens(user_id=int(recipient_user_id))
@@ -490,6 +498,7 @@ class NativePushService:
                     data=payload_data,
                     tag=tag,
                     notification_count=app_badge_count,
+                    native_channel=native_channel,
                 )
                 self._mark_sent(int(token_row.id))
                 result.sent += 1

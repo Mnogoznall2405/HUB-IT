@@ -37,10 +37,6 @@ describe('useChatContextPanelDetailPrefetch helpers', () => {
 });
 
 describe('useChatContextPanelDetailPrefetch', () => {
-  it('exports a default hook function', () => {
-    expect(typeof useChatContextPanelDetailPrefetch).toBe('function');
-  });
-
   it('loads conversation detail when context panel is open', async () => {
     const { renderHook } = await import('@testing-library/react');
     const loadConversationDetail = vi.fn().mockResolvedValue(undefined);

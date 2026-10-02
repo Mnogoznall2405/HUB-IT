@@ -45,8 +45,10 @@ jest.mock('../../api/databaseApi', () => ({
 
 jest.mock('../../cache/nativeSnapshotCache', () => ({
   readNativeCollectionSnapshot: jest.fn(async () => null),
+  readNativeEntitySnapshot: jest.fn(async () => null),
   readNativeSnapshot: jest.fn(async () => null),
   writeNativeCollectionSnapshot: jest.fn(async () => undefined),
+  writeNativeEntitySnapshot: jest.fn(async () => undefined),
   writeNativeSnapshot: jest.fn(async () => undefined),
 }));
 

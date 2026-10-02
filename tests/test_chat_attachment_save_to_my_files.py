@@ -116,7 +116,9 @@ def test_chat_attachment_is_queued_through_my_files_pipeline(monkeypatch, tmp_pa
     assert fake_my_files.aborted is False
 
 
-def test_save_chat_attachment_requires_my_files_write_permission(monkeypatch, tmp_path):
+def test_save_chat_attachment_uses_the_viewer_baseline_for_my_files_write(monkeypatch, tmp_path):
+    """my_files.write is part of the baseline every account has, custom permissions only add to it
+    (authorization_service.get_effective_permissions), so chat.read alone no longer yields 403."""
     source_path = tmp_path / "source.xlsx"
     source_path.write_bytes(b"xlsx payload")
     fake_chat = _FakeChatService(source_path)
@@ -127,8 +129,8 @@ def test_save_chat_attachment_requires_my_files_write_permission(monkeypatch, tm
         "/chat/messages/message-1/attachments/attachment-1/save-to-my-files"
     )
 
-    assert response.status_code == 403
-    assert fake_chat.requested is None
+    assert response.status_code == 201
+    assert fake_chat.requested == (42, "message-1", "attachment-1")
 
 
 def test_save_chat_attachment_accepts_explicit_permissions(monkeypatch, tmp_path):

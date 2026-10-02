@@ -17,7 +17,6 @@ import MobileInstallerDownload from '../../components/mobile/MobileInstallerDown
 import { isMobileAppWebViewRuntime } from '../../lib/mobileAppBridge';
 import { isNativeShellRuntime } from '../../lib/platform';
 import About from '../About';
-import { PERSONAL_SETTINGS_SECTIONS } from '../../components/account/accountNavigationConfig';
 import AdUsers from '../AdUsers';
 import { AiBotsAdminSection } from './admin/AiBotsAdminSection';
 import DepartmentsTab from './admin/DepartmentsTab';
@@ -27,6 +26,7 @@ import SystemSettingsSection from './admin/SystemSettingsSection';
 import UsersTab from './admin/UsersTab';
 import { useAccountSectionData } from './hooks/useAccountSectionData';
 import { ProfileTab } from './profile/ProfileTab';
+import AiAssistantSettingsTab from './settings/AiAssistantSettingsTab';
 import AppearanceTab from './settings/AppearanceTab';
 import HubItPwaSettingsCard from './settings/HubItPwaSettingsCard';
 import MailDeviceSettingsCard from './settings/MailDeviceSettingsCard';
@@ -212,6 +212,8 @@ function AccountWorkspace({ area = 'settings' }) {
           saving={data.savingPreferences}
         />
       );
+    } else if (data.activeSection === 'ai') {
+      settingsContent = <AiAssistantSettingsTab />;
     } else if (data.activeSection === 'notifications') {
       settingsContent = (
         <SectionCard
@@ -246,7 +248,7 @@ function AccountWorkspace({ area = 'settings' }) {
       <AccountCategoryLayout
         title="Настройки"
         description="Персональные параметры интерфейса, уведомлений и входа."
-        categories={PERSONAL_SETTINGS_SECTIONS}
+        categories={data.personalSections}
         activeKey={data.activeSection}
         basePath="/settings"
         blockingError={blockingErrorNode}

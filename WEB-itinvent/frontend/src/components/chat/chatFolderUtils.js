@@ -79,16 +79,18 @@ export const isTaskConversation = (item) => (
   String(item?.kind || '').trim() === 'task' || Boolean(item?.task_id)
 );
 
+// U1: AI conversations live in the dedicated «ИИ» workspace — they are not personal.
 export const isPersonalConversation = (item) => {
-  const kind = String(item?.kind || '').trim();
-  return kind === 'direct' || kind === 'notes' || kind === 'ai';
-};
-
-/** Personal folder list rows (AI bots render in the dedicated AI section). */
-export const isPersonalSidebarConversation = (item) => {
   const kind = String(item?.kind || '').trim();
   return kind === 'direct' || kind === 'notes';
 };
+
+export const isAiConversation = (item) => (
+  String(item?.kind || '').trim() === 'ai'
+);
+
+/** Personal folder list rows (AI bots render in the dedicated AI section). */
+export const isPersonalSidebarConversation = (item) => isPersonalConversation(item);
 
 export const isGroupConversation = (item) => (
   String(item?.kind || '').trim() === 'group'
@@ -166,21 +168,36 @@ export const filterSidebarConversationsByFolder = (
   return activeItems.filter((item) => allowedIds.has(String(item?.id || '').trim()));
 };
 
+/** Mirrors the backend mute rule: muted_until that already expired unmutes. */
+export const isConversationEffectivelyMuted = (item, now = Date.now()) => {
+  if (!item) return false;
+  if (item?.is_muted) {
+    const mutedUntil = Date.parse(String(item?.muted_until || ''));
+    return Number.isFinite(mutedUntil) ? mutedUntil > now : true;
+  }
+  return false;
+};
+
 export const buildFolderUnreadCounts = (conversations, customFolders = [], conversationIdsByFolder = {}) => {
-  const items = (Array.isArray(conversations) ? conversations : []).filter(isRegularSidebarConversation);
+  const items = (Array.isArray(conversations) ? conversations : [])
+    .filter(isRegularSidebarConversation)
+    // A3-2: muted conversations stay out of folder badges like on the server.
+    .filter((item) => !isConversationEffectivelyMuted(item));
   const activeItems = items.filter((item) => !item?.is_archived);
   const sumUnread = (list) => list.reduce((total, item) => total + Number(item?.unread_count || 0), 0);
 
   const counts = {
     all: sumUnread(activeItems),
-    personal: sumUnread(
-      (Array.isArray(conversations) ? conversations : [])
-        .filter((item) => !item?.is_archived)
-        .filter(isPersonalConversation),
-    ),
+    personal: sumUnread(activeItems.filter(isPersonalConversation)),
     groups: sumUnread(activeItems.filter(isGroupConversation)),
     tasks: sumUnread(activeItems.filter(isTaskConversation)),
     archived: sumUnread(items.filter((item) => Boolean(item?.is_archived))),
+    ai: sumUnread(
+      (Array.isArray(conversations) ? conversations : [])
+        .filter((item) => !item?.is_archived)
+        .filter((item) => !isConversationEffectivelyMuted(item))
+        .filter(isAiConversation),
+    ),
   };
 
   (Array.isArray(customFolders) ? customFolders : []).forEach((folder) => {
@@ -195,6 +212,59 @@ export const buildFolderUnreadCounts = (conversations, customFolders = [], conve
   });
 
   return counts;
+};
+
+/** Folder keys a conversation contributes unread to (mirrors backend folder_unread rules). */
+export const resolveConversationFolderKeys = (item, conversationIdsByFolder = {}) => {
+  if (!item) return [];
+  if (item?.is_archived) return ['archived'];
+  const keys = [];
+  if (isAiConversation(item)) keys.push('ai');
+  if (isPersonalConversation(item)) keys.push('personal');
+  if (isGroupConversation(item)) keys.push('groups');
+  if (isTaskConversation(item)) keys.push('tasks');
+  const conversationId = String(item?.id || '').trim();
+  if (conversationId) {
+    Object.entries(conversationIdsByFolder || {}).forEach(([folderId, ids]) => {
+      if (Array.isArray(ids) && ids.includes(conversationId)) keys.push(folderId);
+    });
+  }
+  return keys;
+};
+
+/**
+ * U2: server `folder_unread_counts` are the badge source of truth. Loaded rows
+ * only apply an optimistic delta versus the unread snapshot taken when those
+ * server counts arrived (read a conversation locally → subtract it) — the
+ * server total itself is never replaced by the loaded-rows sum.
+ */
+export const mergeServerFolderUnreadCounts = ({
+  serverCounts,
+  localCounts = {},
+  conversations = [],
+  baselineUnreadById,
+  conversationIdsByFolder = {},
+} = {}) => {
+  const merged = { ...localCounts };
+  const server = serverCounts && typeof serverCounts === 'object' ? serverCounts : null;
+  if (!server) return merged;
+  const deltas = {};
+  if (baselineUnreadById instanceof Map) {
+    (Array.isArray(conversations) ? conversations : []).forEach((item) => {
+      const conversationId = String(item?.id || '').trim();
+      if (!conversationId || !baselineUnreadById.has(conversationId)) return;
+      const delta = Number(item?.unread_count || 0)
+        - Math.max(0, Number(baselineUnreadById.get(conversationId) || 0));
+      if (!delta) return;
+      resolveConversationFolderKeys(item, conversationIdsByFolder).forEach((key) => {
+        deltas[key] = (deltas[key] || 0) + delta;
+      });
+    });
+  }
+  Object.entries(server).forEach(([key, value]) => {
+    merged[key] = Math.max(0, (Number(value) || 0) + (deltas[key] || 0));
+  });
+  return merged;
 };
 
 export const getConversationFolderIds = (conversationId, conversationIdsByFolder = {}) => (

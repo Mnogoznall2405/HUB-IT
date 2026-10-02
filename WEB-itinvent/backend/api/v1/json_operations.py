@@ -62,7 +62,7 @@ from backend.services.authorization_service import PERM_DATABASE_WRITE, PERM_MFU
 from backend.services.equipment_recent_cards_service import equipment_recent_cards_service
 from backend.models.auth import User
 
-from backend.api.deps import get_current_active_user, get_current_database_id, require_permission
+from backend.api.deps import get_current_active_user, get_request_scoped_database_id, require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -570,7 +570,7 @@ async def get_pc_cleaning_statistics(
     period_days: int = Query(90, ge=1, le=3650),
     db_name: Optional[str] = None,
     manager: WorksManager = Depends(get_works_manager),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(get_current_active_user),
 ):
     """Get PC cleaning coverage statistics by branch."""
@@ -592,7 +592,7 @@ async def get_pc_cleaning_remaining(
     branch: str = Query(..., min_length=1),
     db_name: Optional[str] = None,
     manager: WorksManager = Depends(get_works_manager),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(get_current_active_user),
 ):
     """Get uncleaned PCs for one branch in the selected period."""
@@ -614,7 +614,7 @@ async def get_mfu_statistics(
     period_days: int = Query(90, ge=1, le=3650),
     db_name: Optional[str] = None,
     manager: WorksManager = Depends(get_works_manager),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(require_permission(PERM_MFU_READ)),
 ):
     """Get MFU/printer/plotter maintenance statistics by branch."""
@@ -635,7 +635,7 @@ async def get_battery_statistics(
     period_days: int = Query(90, ge=1, le=3650),
     db_name: Optional[str] = None,
     manager: WorksManager = Depends(get_works_manager),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(get_current_active_user),
 ):
     """Get UPS battery replacement statistics from JSON records."""
@@ -656,7 +656,7 @@ async def get_pc_components_statistics(
     period_days: int = Query(90, ge=1, le=3650),
     db_name: Optional[str] = None,
     manager: WorksManager = Depends(get_works_manager),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(get_current_active_user),
 ):
     """Get PC component replacement statistics from JSON records."""
@@ -678,7 +678,7 @@ async def export_statistics_excel(
     period_days: int = Query(90, ge=1, le=3650),
     db_name: Optional[str] = None,
     manager: WorksManager = Depends(get_works_manager),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(get_current_active_user),
 ):
     """Export selected statistics tab as a single Excel list."""
@@ -714,7 +714,7 @@ async def get_pc_cleaning_history(
     inv_no: Optional[str] = None,
     equipment_id: Optional[int] = None,
     manager: WorksManager = Depends(get_works_manager),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(get_current_active_user),
 ):
     """Get PC cleaning history for a specific equipment item."""

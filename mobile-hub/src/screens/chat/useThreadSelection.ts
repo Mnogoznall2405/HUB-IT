@@ -1,9 +1,8 @@
-import { useCallback, useMemo, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import { useCallback, useEffect, useMemo, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import { Alert } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import * as chatApi from '../../api/chatApi';
 import type { ChatMessage } from '../../api/types';
-import { formatApiError } from '../../api/formatError';
 import { showNativeToast } from '../../components/nativeToast';
 import { mergeMessages } from '../../chat/chatState';
 import {
@@ -35,6 +34,20 @@ export function useThreadSelection({
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
 }) {
   const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
+
+  // Window replacements (search/mention jumps, jump-to-bottom, conversation
+  // switch) and remote deletes can leave selected ids pointing at rows that
+  // no longer exist or are not selectable anymore; prune them so the header
+  // count only covers what the reader can still see and act on.
+  useEffect(() => {
+    setSelectedMessageIds((current) => {
+      if (!current.length) return current;
+      const next = current.filter((id) => messages.some(
+        (message) => message.id === id && canSelectChatMessage(message),
+      ));
+      return next.length === current.length ? current : next;
+    });
+  }, [messages]);
 
   const selectedMessages = useMemo(
     () => selectedMessagesFromIds(messages, selectedMessageIds),
@@ -68,6 +81,8 @@ export function useThreadSelection({
         showNativeToast('Скопировано', 'Текст выбранных сообщений скопирован.');
         clearSelection();
       }
+    }).catch(() => {
+      if (mountedRef.current) showNativeToast('Не удалось скопировать', 'Повторите попытку.');
     });
   }, [clearSelection, mountedRef, selectedMessages]);
 
@@ -92,15 +107,22 @@ export function useThreadSelection({
           text: 'Удалить',
           style: 'destructive',
           onPress: () => {
-            void Promise.all(deletable.map((message) => chatApi.deleteMessage(conversationId, message.id)))
-              .then((deleted) => {
+            // allSettled: a single failed delete must not hide the ones the
+            // server already removed — merge successes, report only failures.
+            void Promise.allSettled(deletable.map((message) => chatApi.deleteMessage(conversationId, message.id)))
+              .then((results) => {
                 if (!mountedRef.current) return;
-                setMessages((current) => mergeMessages(current, deleted, userId));
-                clearSelection();
-              })
-              .catch((cause) => {
-                if (mountedRef.current) {
-                  showNativeToast('Не удалось удалить сообщение', formatApiError(cause, 'Повторите попытку'));
+                const deleted = results
+                  .filter((result): result is PromiseFulfilledResult<ChatMessage> => result.status === 'fulfilled')
+                  .map((result) => result.value);
+                if (deleted.length) {
+                  setMessages((current) => mergeMessages(current, deleted, userId));
+                }
+                const failed = results.length - deleted.length;
+                if (failed) {
+                  showNativeToast('Не все сообщения удалены', `Не удалось удалить: ${failed}. Повторите попытку.`);
+                } else {
+                  clearSelection();
                 }
               });
           },

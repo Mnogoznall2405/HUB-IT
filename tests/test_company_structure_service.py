@@ -852,6 +852,10 @@ def test_people_payload_keeps_work_contacts_and_excludes_personal_contacts(
             "department_location": "г. Тюмень",
             "work_phones": ["+7 111 111-11-11"],
             "work_emails": ["work@example.test"],
+            # Workplace fields are part of the work-contact payload (empty when the book has none).
+            "office_room": "",
+            "workplace_number": "",
+            "office_address": "",
         }
     ]
 

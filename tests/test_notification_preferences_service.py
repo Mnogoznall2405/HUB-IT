@@ -13,10 +13,49 @@ def _service(temp_dir: str) -> NotificationPreferencesService:
 
 def test_chat_notification_channel_maps_supported_conversation_kinds():
     assert chat_notification_channel("direct") == "chat_direct"
-    assert chat_notification_channel("ai") == "chat_direct"
+    assert chat_notification_channel("ai") == "chat_ai"
     assert chat_notification_channel("group") == "chat_group"
     assert chat_notification_channel("task") == "chat_task"
     assert chat_notification_channel("unknown") == "chat"
+
+
+def test_chat_ai_channel_defaults_enabled_and_accepts_patch(temp_dir):
+    service = _service(temp_dir)
+
+    # Missing key counts as enabled: old profiles keep AI pushes by default.
+    assert service.get_preferences(user_id=42)["channels"]["chat_ai"] is True
+    assert service.is_enabled(user_id=42, channel="chat_ai") is True
+    assert service.enabled_user_ids(user_ids=[42, 43], channel="chat_ai") == {42, 43}
+
+    updated = service.update_preferences(user_id=42, patch={"chat_ai": False})
+
+    assert updated["channels"]["chat_ai"] is False
+    assert updated["channels"]["chat_direct"] is True
+    assert service.is_enabled(user_id=42, channel="chat_ai") is False
+    assert service.enabled_user_ids(user_ids=[42, 43], channel="chat_ai") == {43}
+
+    reloaded = service.get_preferences(user_id=42)
+    assert reloaded["channels"]["chat_ai"] is False
+
+
+def test_master_chat_switch_and_legacy_payload_cover_chat_ai(temp_dir):
+    service = _service(temp_dir)
+
+    updated = service.update_preferences(user_id=7, patch={"chat": False})
+    assert updated["channels"]["chat_ai"] is False
+
+    # Payloads written before `chat_ai` existed still inherit the shared switch.
+    service._save_all({"8": {"chat": False}})
+    legacy = service.get_preferences(user_id=8)
+    assert legacy["channels"]["chat_ai"] is False
+    assert legacy["channels"]["chat_direct"] is False
+
+
+def test_notification_preferences_patch_request_accepts_chat_ai():
+    from backend.api.v1.settings import NotificationPreferencesPatchRequest
+
+    payload = NotificationPreferencesPatchRequest.model_validate({"chat_ai": False})
+    assert payload.model_dump(exclude_unset=True) == {"chat_ai": False}
 
 
 def test_legacy_chat_preference_is_inherited_by_new_chat_categories(temp_dir):
@@ -57,7 +96,12 @@ def test_chat_categories_can_be_changed_independently(temp_dir):
     assert service.enabled_user_ids(user_ids=[9, 10], channel="chat_direct") == {10}
     assert service.enabled_user_ids(user_ids=[9, 10], channel="chat_group") == {9, 10}
 
-    all_disabled = service.update_preferences(user_id=9, patch={"chat_group": False})
+    # The shared `chat` switch stays on while the still-enabled chat_ai
+    # category keeps at least one chat channel active.
+    partial = service.update_preferences(user_id=9, patch={"chat_group": False})
+    assert partial["channels"]["chat"] is True
+
+    all_disabled = service.update_preferences(user_id=9, patch={"chat_ai": False})
     assert all_disabled["channels"]["chat"] is False
 
 

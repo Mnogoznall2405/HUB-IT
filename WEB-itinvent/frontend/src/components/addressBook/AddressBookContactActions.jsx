@@ -1,6 +1,7 @@
 import { Box, IconButton, Stack, Tooltip, Typography } from '@mui/material';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
-import MailOutlineIcon from '@mui/icons-material/MailOutline';
+import ForwardToInboxOutlinedIcon from '@mui/icons-material/ForwardToInboxOutlined';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import PhoneIcon from '@mui/icons-material/Phone';
 import { MaxBrandIcon, TelegramBrandIcon } from '../icons/MessengerBrandIcon';
 import { isValidEmailRecipient } from '../mail/mailComposeState';
@@ -39,6 +40,9 @@ const contactValueSx = {
   flex: 1,
 };
 
+// Contact action icons: 44px on touch, 36px on desktop per design system targets.
+const contactActionButtonSx = { width: { xs: 44, sm: 36 }, height: { xs: 44, sm: 36 } };
+
 export function PhoneActions({
   phones = [],
   fallbackLabel,
@@ -46,6 +50,7 @@ export function PhoneActions({
   enableTelLinks = false,
   onOpenTelegram,
   onOpenMax,
+  showMaxAction = true,
   query = '',
 }) {
   const items = Array.isArray(phones) ? phones : [];
@@ -78,8 +83,8 @@ export function PhoneActions({
                   <IconButton
                     component="a"
                     href={`tel:${telValue}`}
-                    size="small"
                     aria-label={`Позвонить ${value}`}
+                    sx={contactActionButtonSx}
                   >
                     <PhoneIcon fontSize="small" />
                   </IconButton>
@@ -88,32 +93,34 @@ export function PhoneActions({
               <Tooltip title={canOpenMessenger ? 'Открыть в Telegram' : 'Номер не подходит для Telegram'}>
                 <span>
                   <IconButton
-                    size="small"
                     aria-label={`Открыть Telegram ${value}`}
                     onClick={() => onOpenTelegram(phoneDigits)}
                     disabled={!canOpenMessenger}
+                    sx={contactActionButtonSx}
                   >
                     <TelegramBrandIcon size={20} />
                   </IconButton>
                 </span>
               </Tooltip>
-              <Tooltip title={canOpenMessenger ? 'Скопировать для MAX' : 'Номер не подходит для MAX'}>
-                <span>
-                  <IconButton
-                    size="small"
-                    aria-label={`Открыть MAX ${value}`}
-                    onClick={(event) => onOpenMax(phoneDigits, event.currentTarget)}
-                    disabled={!canOpenMessenger}
-                  >
-                    <MaxBrandIcon size={20} />
-                  </IconButton>
-                </span>
-              </Tooltip>
+              {showMaxAction ? (
+                <Tooltip title={canOpenMessenger ? 'Скопировать для MAX' : 'Номер не подходит для MAX'}>
+                  <span>
+                    <IconButton
+                      aria-label={`Открыть MAX ${value}`}
+                      onClick={(event) => onOpenMax(phoneDigits, event.currentTarget)}
+                      disabled={!canOpenMessenger}
+                      sx={contactActionButtonSx}
+                    >
+                      <MaxBrandIcon size={20} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              ) : null}
               <Tooltip title="Скопировать">
                 <IconButton
-                  size="small"
                   aria-label={`Скопировать ${value}`}
                   onClick={() => onCopy(value)}
+                  sx={contactActionButtonSx}
                 >
                   <ContentCopyIcon fontSize="small" />
                 </IconButton>
@@ -126,7 +133,15 @@ export function PhoneActions({
   );
 }
 
-export function EmailActions({ emails = [], fallbackLabel, onCopy, onComposeEmail, query = '' }) {
+export function EmailActions({
+  emails = [],
+  fallbackLabel,
+  onCopy,
+  onComposeEmail,
+  dismissed = false,
+  canComposeEmail = false,
+  query = '',
+}) {
   const items = Array.isArray(emails) ? emails : [];
   if (items.length === 0) return null;
 
@@ -148,36 +163,38 @@ export function EmailActions({ emails = [], fallbackLabel, onCopy, onComposeEmai
               <Typography variant="body2" sx={contactValueSx}>
                 <HighlightText value={value} query={query} />
               </Typography>
-              <Tooltip title={canMail ? 'Написать в HUB' : 'Некорректный e-mail'}>
-                <span>
-                  <IconButton
-                    size="small"
-                    aria-label={`Написать в HUB ${value}`}
-                    onClick={() => onComposeEmail(value)}
-                    disabled={!canMail}
-                  >
-                    <MailOutlineIcon fontSize="small" />
-                  </IconButton>
-                </span>
-              </Tooltip>
+              {!dismissed && canComposeEmail ? (
+                <Tooltip title={canMail ? 'Написать в HUB' : 'Некорректный e-mail'}>
+                  <span>
+                    <IconButton
+                      aria-label={`Новое письмо в HUB ${value}`}
+                      onClick={() => onComposeEmail(value)}
+                      disabled={!canMail}
+                      sx={contactActionButtonSx}
+                    >
+                      <ForwardToInboxOutlinedIcon fontSize="small" />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              ) : null}
               <Tooltip title={canMail ? 'Открыть внешнюю почту' : 'Некорректный e-mail'}>
                 <span>
                   <IconButton
                     component={canMail ? 'a' : 'button'}
                     href={canMail ? `mailto:${value}` : undefined}
-                    size="small"
-                    aria-label={`Открыть внешнюю почту ${value}`}
+                    aria-label={`Внешняя почта ${value}`}
                     disabled={!canMail}
+                    sx={contactActionButtonSx}
                   >
-                    <MailOutlineIcon fontSize="small" color={canMail ? 'action' : 'disabled'} />
+                    <OpenInNewIcon fontSize="small" />
                   </IconButton>
                 </span>
               </Tooltip>
               <Tooltip title="Скопировать">
                 <IconButton
-                  size="small"
                   aria-label={`Скопировать ${value}`}
                   onClick={() => onCopy(value)}
+                  sx={contactActionButtonSx}
                 >
                   <ContentCopyIcon fontSize="small" />
                 </IconButton>

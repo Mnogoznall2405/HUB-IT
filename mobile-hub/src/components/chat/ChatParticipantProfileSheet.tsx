@@ -1,5 +1,7 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { useContext } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import type { ChatMember, ChatUserSummary } from '../../api/types';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import { formatChatPresenceText, isChatPresenceOnline } from '../../chat/chatTyping';
@@ -46,6 +48,9 @@ export function ChatParticipantProfileSheet({
 }) {
   const { chatTokens, styles } = useChatStyles(createStyles);
   const reduceMotion = useReducedMotion();
+  // AUD-8: keep the centered card inside the safe area on edge-to-edge
+  // screens (landscape, tall nav bar).
+  const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
   const user = member?.user;
   const title = user?.full_name || user?.username || 'Пользователь';
 
@@ -57,7 +62,15 @@ export function ChatParticipantProfileSheet({
       statusBarTranslucent
       onRequestClose={onClose}
     >
-      <View style={styles.backdrop}>
+      <View
+        testID="participant-profile-backdrop"
+        style={[styles.backdrop, {
+          paddingTop: Math.max(18, insets?.top || 0),
+          paddingBottom: Math.max(18, insets?.bottom || 0),
+          paddingLeft: Math.max(18, insets?.left || 0),
+          paddingRight: Math.max(18, insets?.right || 0),
+        }]}
+      >
         <Pressable
           style={StyleSheet.absoluteFill}
           onPress={onClose}

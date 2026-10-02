@@ -10,6 +10,28 @@ const CLIENT_DEVICE_KEY = 'hubit_client_device_id';
 const NATIVE_PUSH_TOKEN_KEY = 'hubit_native_push_token';
 const SESSION_USER_ID_KEY = 'hubit_session_user_id';
 const SESSION_USER_CACHE_KEY = 'hubit_session_user_cache_v1';
+// Set when the server reports the account as deactivated (user_inactive).
+// Persisted so a rejection caught by headless background sync still wipes the
+// offline data on the next cold start; the in-memory mirror lets the
+// session-expired subscriber tell deactivation apart from an ordinary expiry.
+const ACCOUNT_DEACTIVATED_KEY = 'hubit_account_deactivated';
+let deactivationMarked = false;
+
+export function isSessionDeactivationMarked(): boolean {
+  return deactivationMarked;
+}
+
+export async function readSessionDeactivationMark(): Promise<boolean> {
+  deactivationMarked = (await getItem(ACCOUNT_DEACTIVATED_KEY).catch(() => null)) === '1';
+  return deactivationMarked;
+}
+
+export function markSessionDeactivated(): Promise<void> {
+  deactivationMarked = true;
+  return sessionOperation(async () => {
+    await setItem(ACCOUNT_DEACTIVATED_KEY, '1');
+  });
+}
 
 // Session reads and writes share one order so a delayed deletion cannot erase a
 // newer login, and readers cannot observe a half-written token pair.
@@ -236,7 +258,12 @@ export function getRefreshToken(...args: Parameters<typeof getRefreshTokenIntern
 
 export function setTokens(...args: Parameters<typeof setTokensInternal>): ReturnType<typeof setTokensInternal> {
   sessionGeneration += 1;
-  return sessionOperation(() => setTokensInternal(...args));
+  // A fresh successful login supersedes any earlier deactivation mark.
+  deactivationMarked = false;
+  return sessionOperation(async () => {
+    await setTokensInternal(...args);
+    await deleteItem(ACCOUNT_DEACTIVATED_KEY).catch(() => undefined);
+  });
 }
 
 export function clearTokens(...args: Parameters<typeof clearTokensInternal>): ReturnType<typeof clearTokensInternal> {
@@ -275,6 +302,24 @@ export function clearExpiredTokens(expectedRefresh: string | null, onCleared: ()
     sessionGeneration += 1;
     await clearTokensInternal();
     onCleared();
+    return true;
+  });
+}
+
+/**
+ * Same compare-and-commit discipline as clearExpiredTokens, but a deactivated
+ * account is wiped completely: the mark is stored first so an interrupted wipe
+ * is still honoured after a cold start, then tokens and the user's encrypted
+ * offline data go through the same storage path as logout.
+ */
+export function clearDeactivatedTokens(expectedRefresh: string | null, onDeactivated: () => void): Promise<boolean> {
+  return sessionOperation(async () => {
+    if (await getRefreshTokenInternal() !== expectedRefresh) return false;
+    sessionGeneration += 1;
+    deactivationMarked = true;
+    await setItem(ACCOUNT_DEACTIVATED_KEY, '1');
+    await clearTokensInternal({ clearOfflineData: true });
+    onDeactivated();
     return true;
   });
 }

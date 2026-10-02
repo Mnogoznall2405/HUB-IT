@@ -395,6 +395,24 @@ class OpenRouterClient:
             "default_model": self._resolve_default_model(),
         }
 
+    def get_credits(self, *, timeout: float = 10.0) -> dict[str, Any]:
+        """Provider account balance (GET <base>/credits, OpenRouter-compatible). Returns the parsed
+        JSON as is; callers decide how to read it. Never logs the key or the response."""
+        api_key = self._resolve_api_key()
+        if not api_key:
+            raise OpenRouterClientError("ROUTERAI_API_KEY is not configured.")
+        base_url = self._resolve_base_url()
+        http_client = _build_routerai_http_client(base_url=base_url, timeout=timeout) or httpx.Client(timeout=timeout)
+        try:
+            response = http_client.get(f"{base_url}/credits", headers={"Authorization": f"Bearer {api_key}"})
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            raise _wrap_openrouter_error(exc) from exc
+        finally:
+            http_client.close()
+        return payload if isinstance(payload, dict) else {"data": payload}
+
     def _resolve_api_key(self) -> str:
         return str(
             read_env("ROUTERAI_API_KEY")

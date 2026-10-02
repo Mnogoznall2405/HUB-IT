@@ -64,6 +64,9 @@ export class ChatSocketClient {
   private status: ChatSocketStatus = 'disconnected';
   private wantInbox = false;
   private conversationIds = new Set<string>();
+  // M5: watched presence ids survive a socket reconnect — they replay on
+  // open exactly like inbox/conversation subscriptions.
+  private presenceIds = new Set<number>();
 
   on(eventType: string, handler: SocketHandler) {
     if (!this.handlers.has(eventType)) this.handlers.set(eventType, new Set());
@@ -222,6 +225,7 @@ export class ChatSocketClient {
     const normalized = Array.from(new Set(
       userIds.map((value) => Number(value || 0)).filter((value) => Number.isInteger(value) && value > 0),
     )).slice(0, 50);
+    this.presenceIds = new Set(normalized);
     this.send({
       type: 'chat.watch_presence',
       payload: { user_ids: normalized },
@@ -289,6 +293,7 @@ export class ChatSocketClient {
       this.startHeartbeat();
       if (this.wantInbox) this.subscribeInbox();
       this.conversationIds.forEach((id) => this.subscribeConversation(id));
+      if (this.presenceIds.size) this.watchPresence([...this.presenceIds]);
       this.emitStatus('connected');
     };
 
@@ -379,6 +384,7 @@ export class ChatSocketClient {
     if (options.clearSubscriptions) {
       this.wantInbox = false;
       this.conversationIds.clear();
+      this.presenceIds.clear();
     }
     this.emitStatus(this.reconnectEnabled ? 'offline' : 'disconnected');
     if (this.reconnectEnabled) this.scheduleReconnect();

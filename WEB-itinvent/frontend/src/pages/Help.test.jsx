@@ -73,7 +73,7 @@ describe('Help page', () => {
   it('filters answers across all topics when searching', () => {
     renderHelp();
 
-    fireEvent.change(screen.getByLabelText('Поиск по справке'), { target: { value: 'уведомлен' } });
+    fireEvent.change(screen.getByLabelText('Поиск по справке и базе знаний'), { target: { value: 'уведомлен' } });
 
     expect(screen.getByText(/Не приходят уведомления/i)).toBeInTheDocument();
     expect(screen.queryByText('Первый вход')).not.toBeInTheDocument();

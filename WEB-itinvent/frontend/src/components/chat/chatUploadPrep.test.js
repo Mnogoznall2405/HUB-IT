@@ -152,6 +152,53 @@ describe('prepareChatUploadFile', () => {
     expect(gzip).not.toHaveBeenCalled();
   });
 
+  it('records real image dimensions for the optimistic bubble', async () => {
+    const sourceFile = new File([new Uint8Array(64)], 'camera.jpg', { type: 'image/jpeg', lastModified: 7 });
+    const createImageBitmapMock = vi.fn(async () => ({ width: 1600, height: 900, close: vi.fn() }));
+    vi.stubGlobal('createImageBitmap', createImageBitmapMock);
+
+    const prepared = await prepareChatUploadFile(sourceFile);
+
+    expect(createImageBitmapMock).toHaveBeenCalledWith(sourceFile);
+    expect(prepared.imageWidth).toBe(1600);
+    expect(prepared.imageHeight).toBe(900);
+    expect(prepared.originalImageWidth).toBe(0);
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps separate original dimensions when the image was recompressed', async () => {
+    const sourceFile = new File(['raw-image'], 'photo.jpg', { type: 'image/jpeg', lastModified: 6 });
+    const compressedFile = new File(['compressed'], 'photo.jpg', { type: 'image/jpeg', lastModified: 6 });
+    Object.defineProperty(sourceFile, 'size', { configurable: true, value: 2 * 1024 * 1024 });
+    Object.defineProperty(compressedFile, 'size', { configurable: true, value: 400 * 1024 });
+    imageCompression.mockResolvedValue(compressedFile);
+    const createImageBitmapMock = vi.fn(async (file) => (
+      file === sourceFile
+        ? { width: 4000, height: 3000, close: vi.fn() }
+        : { width: 1920, height: 1440, close: vi.fn() }
+    ));
+    vi.stubGlobal('createImageBitmap', createImageBitmapMock);
+
+    const prepared = await prepareChatUploadFile(sourceFile);
+
+    expect(prepared.imageWidth).toBe(1920);
+    expect(prepared.imageHeight).toBe(1440);
+    expect(prepared.originalImageWidth).toBe(4000);
+    expect(prepared.originalImageHeight).toBe(3000);
+    vi.unstubAllGlobals();
+  });
+
+  it('leaves image dimensions empty when the environment cannot decode the file', async () => {
+    const sourceFile = new File([new Uint8Array(64)], 'photo.png', { type: 'image/png', lastModified: 8 });
+    vi.stubGlobal('createImageBitmap', undefined);
+
+    const prepared = await prepareChatUploadFile(sourceFile);
+
+    expect(prepared.imageWidth).toBe(0);
+    expect(prepared.imageHeight).toBe(0);
+    vi.unstubAllGlobals();
+  });
+
   it('falls back to the original file when image compression throws', async () => {
     const sourceFile = new File([new Uint8Array(1024)], 'broken.png', { type: 'image/png', lastModified: 5 });
     imageCompression.mockRejectedValue(new Error('compression failed'));

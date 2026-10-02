@@ -1,5 +1,6 @@
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../../lib/chatFeature';
 export { groupAiSidebarRowsByDate } from '../../components/chat/chatAiSidebarModel';
+export { resolveActiveAiBotRecord } from '../../components/chat/chatHelpers';
 
 export const canUseAiChatPermission = (hasPermission) => (
   typeof hasPermission === 'function' ? Boolean(hasPermission('chat.ai.use')) : false
@@ -43,22 +44,7 @@ export const mergeAiStatusPayload = (current, payload, fallbackConversationId = 
   };
 };
 
-export const resolveActiveAiBotRecord = ({
-  aiBots,
-  activeConversationId,
-  aiStatus,
-}) => {
-  const items = Array.isArray(aiBots) ? aiBots : [];
-  const normalizedConversationId = String(activeConversationId || '').trim();
-  const normalizedBotId = String(aiStatus?.bot_id || '').trim();
-  return items.find((item) => (
-    Array.isArray(item?.conversation_ids)
-    && item.conversation_ids.some((id) => String(id || '').trim() === normalizedConversationId)
-  ))
-    || items.find((item) => String(item?.conversation_id || '').trim() === normalizedConversationId)
-    || items.find((item) => normalizedBotId && String(item?.id || '').trim() === normalizedBotId)
-    || null;
-};
+
 
 export const buildAiLiveDataNotice = ({
   activeConversationKind,
@@ -149,7 +135,10 @@ export const buildAiSidebarRows = ({
   activeConversationId,
 }) => {
   const agentByConversationId = new Map();
+  const agentByBotId = new Map();
   (Array.isArray(aiBots) ? aiBots : []).forEach((bot) => {
+    const botId = String(bot?.id || '').trim();
+    if (botId) agentByBotId.set(botId, bot);
     const conversationIds = [
       ...(Array.isArray(bot?.conversation_ids) ? bot.conversation_ids : []),
       bot?.conversation_id,
@@ -167,7 +156,12 @@ export const buildAiSidebarRows = ({
     .filter((item) => String(item?.kind || '').trim() === 'ai' && String(item?.id || '').trim())
     .map((conversation) => {
       const conversationId = String(conversation.id).trim();
-      const bot = agentByConversationId.get(conversationId) || null;
+      // AI8: prefer the server-side conversation→bot field so a row keeps its
+      // assistant even when the bot is disabled or absent from list_bots.
+      const serverBotId = String(conversation?.ai_bot_id || conversation?.bot_id || '').trim();
+      const bot = (serverBotId ? agentByBotId.get(serverBotId) : null)
+        || agentByConversationId.get(conversationId)
+        || null;
       if (isRetiredAiConversation(conversation, bot)) return null;
       return {
         ...(bot || {}),

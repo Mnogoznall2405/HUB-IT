@@ -1,7 +1,5 @@
 import { useCallback } from 'react';
 
-import { buildActiveThreadPollLoadOptions } from './chatThreadTransport';
-
 export default function useChatThreadInteractionController({
   activeConversationIdRef,
   cancelPendingInitialAnchor,
@@ -10,7 +8,6 @@ export default function useChatThreadInteractionController({
   loadMessages,
   logChatDebug,
   messagesHasNewerRef,
-  messagesRef,
   pendingInitialAnchorRef,
   queueAutoScroll,
   scheduleThreadViewportStateSync,
@@ -54,6 +51,50 @@ export default function useChatThreadInteractionController({
     suppressThreadScrollCancelRef,
   ]);
 
+  // R26/R28: replacing the partial window with a single bootstrap (no anchor)
+  // is the Telegram strategy — one request instead of walking pages, and the
+  // response itself carries the fresh cursor/has_newer, so no identical
+  // re-requests are possible.
+  const loadLatestThreadWindow = useCallback(async (reason = 'latestWindow') => {
+    if (!messagesHasNewerRef.current) return false;
+    const conversationId = String(activeConversationIdRef.current || '').trim();
+    if (!conversationId) return false;
+    await loadMessages(conversationId, {
+      silent: true,
+      force: true,
+      reason: `${reason}:bootstrap`,
+    });
+    return true;
+  }, [activeConversationIdRef, loadMessages, messagesHasNewerRef]);
+
+  // R20/R26: an own send while a partial window is loaded (has_newer) must
+  // first load the latest window — then the viewport is scrolled to the very
+  // bottom like jumpToLatest, so the outgoing bubble is visible.
+  const ensureLatestThreadWindow = useCallback(async () => {
+    if (!messagesHasNewerRef.current) return;
+    const conversationId = String(activeConversationIdRef.current || '').trim();
+    if (!conversationId) return;
+    logChatDebug('ensureLatestThreadWindow', { conversationId });
+    cancelPendingInitialAnchor();
+    threadNearBottomRef.current = true;
+    showJumpToLatestRef.current = false;
+    setShowJumpToLatest(false);
+    queueAutoScroll('bottom', 'ensureLatestThreadWindow');
+    await loadLatestThreadWindow('outgoingSend');
+    scrollThreadBottomIntoView({ source: 'ensureLatestThreadWindow:bottom', behavior: 'instant' });
+  }, [
+    activeConversationIdRef,
+    cancelPendingInitialAnchor,
+    loadLatestThreadWindow,
+    logChatDebug,
+    messagesHasNewerRef,
+    queueAutoScroll,
+    scrollThreadBottomIntoView,
+    setShowJumpToLatest,
+    showJumpToLatestRef,
+    threadNearBottomRef,
+  ]);
+
   const jumpToLatest = useCallback(async () => {
     cancelPendingInitialAnchor();
     threadNearBottomRef.current = true;
@@ -63,25 +104,13 @@ export default function useChatThreadInteractionController({
     logChatDebug('jumpToLatest', {
       conversationId: activeConversationIdRef.current,
     });
-    let iterations = 0;
-    while (messagesHasNewerRef.current && iterations < 12) {
-      if (!activeConversationIdRef.current) break;
-      const requestOptions = buildActiveThreadPollLoadOptions(messagesRef.current);
-      const newerItems = await loadMessages(activeConversationIdRef.current, {
-        ...requestOptions,
-        reason: requestOptions.afterMessageId ? 'jumpToLatest:loadNewer' : 'jumpToLatest:bootstrap',
-      });
-      if (!Array.isArray(newerItems) || newerItems.length === 0) break;
-      iterations += 1;
-    }
+    await loadLatestThreadWindow('jumpToLatest');
     scrollThreadBottomIntoView({ source: 'jumpToLatest:bottomRef', behavior: 'smooth' });
   }, [
     activeConversationIdRef,
     cancelPendingInitialAnchor,
-    loadMessages,
+    loadLatestThreadWindow,
     logChatDebug,
-    messagesHasNewerRef,
-    messagesRef,
     queueAutoScroll,
     scrollThreadBottomIntoView,
     setShowJumpToLatest,
@@ -90,6 +119,7 @@ export default function useChatThreadInteractionController({
   ]);
 
   return {
+    ensureLatestThreadWindow,
     handleThreadScroll,
     jumpToLatest,
   };

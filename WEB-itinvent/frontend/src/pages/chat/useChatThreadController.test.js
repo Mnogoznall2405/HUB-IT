@@ -1,6 +1,6 @@
 import React, { useRef } from 'react';
 import { act, render, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { chatAPI } from '../../api/client';
 import { getOrFetchSWR, peekSWRCache } from '../../lib/swrCache';
@@ -32,7 +32,13 @@ function Harness({
   initialThreadCache = null,
   initialConversationId = 'conv-1',
   activeConversationId = 'conv-1',
+  loadMessagesRef: loadMessagesRefProp,
+  failedThreadMessagesRef: failedThreadMessagesRefProp,
 }) {
+  const internalLoadMessagesRef = useRef(null);
+  const internalFailedThreadMessagesRef = useRef(new Map());
+  const loadMessagesRef = loadMessagesRefProp || internalLoadMessagesRef;
+  const failedThreadMessagesRef = failedThreadMessagesRefProp || internalFailedThreadMessagesRef;
   const activeConversationIdRef = useRef(activeConversationId);
   activeConversationIdRef.current = activeConversationId;
   const autoScrollRef = useRef(false);
@@ -63,11 +69,13 @@ function Harness({
     cancelPendingInitialAnchorRef,
     capturePrependScrollRestoreRef,
     conversationsRef,
+    failedThreadMessagesRef,
     hasPendingInitialAnchorForConversationRef,
     hydratedThreadConversationIdRef,
     initialConversationId,
     initialThreadCache,
     isInitialViewportGuardActiveRef,
+    loadMessagesRef,
     loadOlderInFlightCursorRef,
     logChatDebugRef,
     notifyApiError: vi.fn(),
@@ -341,6 +349,481 @@ describe('useChatThreadController', () => {
     expect(autoScrollMetaRef.current).toMatchObject({
       source: 'test:user',
       userInitiated: true,
+    });
+  });
+
+  describe('thread load retry (P0-1)', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    it('retries a transient 503 bootstrap failure and applies the payload', async () => {
+      getOrFetchSWR
+        .mockRejectedValueOnce({ response: { status: 503 } })
+        .mockResolvedValue({
+          data: {
+            items: [
+              { id: 'msg-1', conversation_id: 'conv-1', body: 'hello', created_at: '2026-04-28T08:00:00.000Z' },
+            ],
+            has_older: false,
+            has_newer: false,
+          },
+        });
+      let api = null;
+      render(React.createElement(Harness, {
+        onReady: (value) => { api = value; },
+      }));
+      await act(async () => { await Promise.resolve(); });
+
+      await act(async () => {
+        await api.loadThreadBootstrap('conv-1', { reason: 'test:bootstrap' });
+      });
+
+      expect(api.threadLoadError).toBeNull();
+      expect(api.messages).toHaveLength(0);
+      expect(getOrFetchSWR).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1100);
+      });
+
+      expect(getOrFetchSWR).toHaveBeenCalledTimes(2);
+      expect(api.messages.map((message) => message.id)).toEqual(['msg-1']);
+      expect(api.threadLoadError).toBeNull();
+    });
+
+    it('sets threadLoadError on a non-transient failure and does not retry', async () => {
+      getOrFetchSWR.mockRejectedValue({ response: { status: 403 } });
+      let api = null;
+      render(React.createElement(Harness, {
+        onReady: (value) => { api = value; },
+      }));
+      await act(async () => { await Promise.resolve(); });
+
+      await act(async () => {
+        await api.loadThreadBootstrap('conv-1', { reason: 'test:bootstrap' });
+      });
+
+      expect(api.threadLoadError).toMatchObject({ conversationId: 'conv-1' });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60000);
+      });
+      expect(getOrFetchSWR).toHaveBeenCalledTimes(1);
+    });
+
+    it('retryThreadLoad clears the error and reloads the thread', async () => {
+      getOrFetchSWR.mockRejectedValueOnce({ response: { status: 403 } });
+      let api = null;
+      render(React.createElement(Harness, {
+        onReady: (value) => { api = value; },
+      }));
+      await act(async () => { await Promise.resolve(); });
+
+      await act(async () => {
+        await api.loadThreadBootstrap('conv-1', { reason: 'test:bootstrap' });
+      });
+      expect(api.threadLoadError).toMatchObject({ conversationId: 'conv-1' });
+
+      await act(async () => {
+        await api.retryThreadLoad();
+      });
+
+      expect(getOrFetchSWR).toHaveBeenCalledTimes(2);
+      expect(api.messages.map((message) => message.id)).toEqual(['msg-1']);
+      expect(api.threadLoadError).toBeNull();
+    });
+  });
+
+  it('R2: loadMessagesRef points at the real loadMessages callback', async () => {
+    let api = null;
+    const loadMessagesRef = { current: null };
+    render(React.createElement(Harness, {
+      loadMessagesRef,
+      onReady: (value) => { api = value; },
+    }));
+
+    await waitFor(() => expect(loadMessagesRef.current).toBeTypeOf('function'));
+    expect(loadMessagesRef.current).toBe(api.loadMessages);
+
+    getOrFetchSWR.mockClear();
+    await act(async () => {
+      await loadMessagesRef.current('conv-1', { reason: 'test:ref' });
+    });
+    expect(getOrFetchSWR).toHaveBeenCalled();
+    expect(api.messages.map((message) => message.id)).toEqual(['msg-1']);
+  });
+
+  it('R4: failed outgoing bubble survives switching A → B → A', async () => {
+    const failedThreadMessagesRef = { current: new Map() };
+    const failedMessage = {
+      id: 'optimistic:1',
+      conversation_id: 'conv-1',
+      client_message_id: 'cm-1',
+      body: 'failed hello',
+      created_at: '2026-04-28T08:01:00.000Z',
+      isOptimistic: true,
+      optimisticStatus: 'failed',
+      is_own: true,
+    };
+    failedThreadMessagesRef.current.set('conv-1', new Map([
+      [failedMessage.id, {
+        conversationId: 'conv-1',
+        clientMessageId: 'cm-1',
+        body: failedMessage.body,
+        bodyFormat: 'plain',
+        replyToMessageId: '',
+        message: failedMessage,
+      }],
+    ]));
+
+    let api = null;
+    const { rerender } = render(React.createElement(Harness, {
+      failedThreadMessagesRef,
+      activeConversationId: 'conv-1',
+      onReady: (value) => { api = value; },
+    }));
+
+    // Conv A: fresh payload — the failed bubble is merged back in.
+    await act(async () => {
+      await api.applyLatestThreadPayload('conv-1', {
+        items: [
+          { id: 'msg-1', conversation_id: 'conv-1', body: 'hello', created_at: '2026-04-28T08:00:00.000Z' },
+        ],
+        has_older: false,
+      });
+    });
+    await waitFor(() => expect(api.messages.some((m) => m.id === 'optimistic:1')).toBe(true));
+
+    // Switch to conv B — its payload carries only B messages.
+    rerender(React.createElement(Harness, {
+      failedThreadMessagesRef,
+      activeConversationId: 'conv-2',
+      onReady: (value) => { api = value; },
+    }));
+    await act(async () => {
+      await api.applyLatestThreadPayload('conv-2', {
+        items: [
+          { id: 'msg-b1', conversation_id: 'conv-2', body: 'b-hello', created_at: '2026-04-28T08:02:00.000Z' },
+        ],
+        has_older: false,
+      });
+    });
+    await waitFor(() => expect(api.messages.map((m) => m.id)).toEqual(['msg-b1']));
+
+    // Back to conv A — the failed bubble must be restored from the shared ref
+    // even though `current` no longer contains it.
+    rerender(React.createElement(Harness, {
+      failedThreadMessagesRef,
+      activeConversationId: 'conv-1',
+      onReady: (value) => { api = value; },
+    }));
+    await act(async () => {
+      await api.applyLatestThreadPayload('conv-1', {
+        items: [
+          { id: 'msg-1', conversation_id: 'conv-1', body: 'hello', created_at: '2026-04-28T08:00:00.000Z' },
+        ],
+        has_older: false,
+      });
+    });
+    await waitFor(() => {
+      const failed = api.messages.filter((m) => m.id === 'optimistic:1');
+      expect(failed).toHaveLength(1);
+      expect(failed[0].optimisticStatus).toBe('failed');
+    });
+  });
+
+  it('R4: failed entry is dropped when the payload echoes its client_message_id', async () => {
+    const failedThreadMessagesRef = { current: new Map() };
+    const failedMessage = {
+      id: 'optimistic:1',
+      conversation_id: 'conv-1',
+      client_message_id: 'cm-1',
+      body: 'failed hello',
+      created_at: '2026-04-28T08:01:00.000Z',
+      isOptimistic: true,
+      optimisticStatus: 'failed',
+      is_own: true,
+    };
+    const byConversation = new Map([
+      [failedMessage.id, {
+        conversationId: 'conv-1',
+        clientMessageId: 'cm-1',
+        message: failedMessage,
+      }],
+    ]);
+    failedThreadMessagesRef.current.set('conv-1', byConversation);
+
+    let api = null;
+    render(React.createElement(Harness, {
+      failedThreadMessagesRef,
+      activeConversationId: 'conv-1',
+      onReady: (value) => { api = value; },
+    }));
+
+    await act(async () => {
+      await api.applyLatestThreadPayload('conv-1', {
+        items: [
+          {
+            id: 'msg-9',
+            conversation_id: 'conv-1',
+            client_message_id: 'cm-1',
+            body: 'failed hello',
+            created_at: '2026-04-28T08:01:00.000Z',
+          },
+        ],
+        has_older: false,
+      });
+    });
+
+    await waitFor(() => expect(api.messages.map((m) => m.id)).toEqual(['msg-9']));
+    expect(byConversation.size).toBe(0);
+  });
+
+  it('R4: a failure recorded while another conversation was active appears on return to A', async () => {
+    const failedThreadMessagesRef = { current: new Map() };
+    let api = null;
+    const { rerender } = render(React.createElement(Harness, {
+      failedThreadMessagesRef,
+      activeConversationId: 'conv-2',
+      initialConversationId: 'conv-2',
+      onReady: (value) => { api = value; },
+    }));
+
+    await act(async () => {
+      await api.applyLatestThreadPayload('conv-2', {
+        items: [
+          { id: 'msg-b1', conversation_id: 'conv-2', body: 'b-hello', created_at: '2026-04-28T08:02:00.000Z' },
+        ],
+        has_older: false,
+      });
+    });
+    await waitFor(() => expect(api.messages.map((m) => m.id)).toEqual(['msg-b1']));
+
+    // The send error for conv-1 resolves while the viewer is in conv-2 —
+    // only the page-level ref sees it, the visible list must not (R4).
+    const failedMessage = {
+      id: 'optimistic:9',
+      conversation_id: 'conv-1',
+      client_message_id: 'cm-9',
+      body: 'late failure',
+      created_at: '2026-04-28T08:03:00.000Z',
+      isOptimistic: true,
+      optimisticStatus: 'failed',
+      is_own: true,
+    };
+    failedThreadMessagesRef.current.set('conv-1', new Map([
+      [failedMessage.id, {
+        conversationId: 'conv-1',
+        clientMessageId: 'cm-9',
+        body: failedMessage.body,
+        bodyFormat: 'plain',
+        replyToMessageId: '',
+        message: failedMessage,
+      }],
+    ]));
+    expect(api.messages.some((m) => m.id === 'optimistic:9')).toBe(false);
+
+    rerender(React.createElement(Harness, {
+      failedThreadMessagesRef,
+      activeConversationId: 'conv-1',
+      onReady: (value) => { api = value; },
+    }));
+    await act(async () => {
+      await api.applyLatestThreadPayload('conv-1', {
+        items: [
+          { id: 'msg-1', conversation_id: 'conv-1', body: 'hello', created_at: '2026-04-28T08:00:00.000Z' },
+        ],
+        has_older: false,
+      });
+    });
+
+    await waitFor(() => {
+      const failed = api.messages.filter((m) => m.id === 'optimistic:9');
+      expect(failed).toHaveLength(1);
+      expect(failed[0].optimisticStatus).toBe('failed');
+    });
+  });
+
+  it('R12: an optimistic item in the cached payload does not evict the failed registry entry', async () => {
+    const failedThreadMessagesRef = { current: new Map() };
+    const failedMessage = {
+      id: 'optimistic:1',
+      conversation_id: 'conv-1',
+      client_message_id: 'cm-1',
+      body: 'failed hello',
+      created_at: '2026-04-28T08:01:00.000Z',
+      isOptimistic: true,
+      optimisticStatus: 'failed',
+      is_own: true,
+    };
+    const byConversation = new Map([
+      [failedMessage.id, {
+        conversationId: 'conv-1',
+        clientMessageId: 'cm-1',
+        message: failedMessage,
+      }],
+    ]);
+    failedThreadMessagesRef.current.set('conv-1', byConversation);
+
+    let api = null;
+    render(React.createElement(Harness, {
+      failedThreadMessagesRef,
+      activeConversationId: 'conv-1',
+      onReady: (value) => { api = value; },
+    }));
+
+    // Stale cache payloads may still carry the optimistic bubble itself —
+    // only persisted items may evict a failed registry entry.
+    await act(async () => {
+      await api.applyLatestThreadPayload('conv-1', {
+        items: [
+          { id: 'msg-1', conversation_id: 'conv-1', body: 'hello', created_at: '2026-04-28T08:00:00.000Z' },
+          { ...failedMessage },
+        ],
+        has_older: false,
+      });
+    });
+
+    expect(byConversation.size).toBe(1);
+    await waitFor(() => {
+      const failed = api.messages.filter((m) => m.id === 'optimistic:1');
+      expect(failed).toHaveLength(1);
+      expect(failed[0].optimisticStatus).toBe('failed');
+    });
+  });
+
+  describe('R19: loadNewerMessages', () => {
+    const buildPartialWindowCache = () => ({
+      data: {
+        items: Array.from({ length: 34 }, (_, index) => ({
+          id: `msg-${index + 31}`,
+          conversation_id: 'conv-1',
+          body: `message-${index + 31}`,
+          created_at: `2026-04-28T09:${String(index).padStart(2, '0')}:00.000Z`,
+        })),
+        has_older: true,
+        has_newer: true,
+        viewer_last_read_message_id: 'msg-40',
+        viewer_last_read_at: '2026-04-28T08:40:00.000Z',
+      },
+    });
+
+    it('appends the next page after the last loaded message', async () => {
+      chatAPI.getMessages.mockResolvedValueOnce({
+        items: [
+          { id: 'msg-65', conversation_id: 'conv-1', body: 'newer-1', created_at: '2026-04-28T10:00:00.000Z' },
+          { id: 'msg-66', conversation_id: 'conv-1', body: 'newer-2', created_at: '2026-04-28T10:01:00.000Z' },
+        ],
+        has_older: true,
+        has_newer: false,
+      });
+      let api = null;
+      render(React.createElement(Harness, {
+        initialThreadCache: buildPartialWindowCache(),
+        onReady: (value) => { api = value; },
+      }));
+
+      await waitFor(() => expect(api?.messagesHasNewer).toBe(true));
+      expect(api.messages).toHaveLength(34);
+
+      await act(async () => {
+        await api.loadNewerMessages();
+      });
+
+      expect(chatAPI.getMessages).toHaveBeenCalledWith(
+        'conv-1',
+        expect.objectContaining({
+          after_message_id: 'msg-64',
+          limit: 50,
+        }),
+      );
+      expect(api.messages.map((message) => message.id).slice(-2)).toEqual(['msg-65', 'msg-66']);
+      expect(api.messagesHasNewer).toBe(false);
+    });
+
+    it('keeps one request in flight and skips it when has_newer is false', async () => {
+      let resolveRequest;
+      chatAPI.getMessages.mockImplementationOnce(() => new Promise((resolve) => {
+        resolveRequest = resolve;
+      }));
+      let api = null;
+      render(React.createElement(Harness, {
+        initialThreadCache: buildPartialWindowCache(),
+        onReady: (value) => { api = value; },
+      }));
+
+      await waitFor(() => expect(api?.messagesHasNewer).toBe(true));
+
+      let firstCall;
+      let secondCall;
+      await act(async () => {
+        firstCall = api.loadNewerMessages();
+        secondCall = api.loadNewerMessages();
+      });
+      expect(chatAPI.getMessages).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        resolveRequest({
+          items: [{ id: 'msg-65', conversation_id: 'conv-1', body: 'newer', created_at: '2026-04-28T10:00:00.000Z' }],
+          has_older: true,
+          has_newer: false,
+        });
+        await firstCall;
+        await secondCall;
+      });
+
+      await waitFor(() => expect(api.messagesHasNewer).toBe(false));
+
+      chatAPI.getMessages.mockClear();
+      await act(async () => {
+        await api.loadNewerMessages();
+      });
+      expect(chatAPI.getMessages).not.toHaveBeenCalled();
+    });
+
+    it('uses the last persisted message as cursor, skipping optimistic tail', async () => {
+      let api = null;
+      render(React.createElement(Harness, {
+        initialThreadCache: buildPartialWindowCache(),
+        onReady: (value) => { api = value; },
+      }));
+      await waitFor(() => expect(api?.messagesHasNewer).toBe(true));
+
+      await act(async () => {
+        api.setMessages((current) => [
+          ...current,
+          {
+            id: 'optimistic:tail',
+            conversation_id: 'conv-1',
+            body: 'pending bubble',
+            created_at: '2026-04-28T11:00:00.000Z',
+            isOptimistic: true,
+            optimisticStatus: 'sending',
+            is_own: true,
+          },
+        ]);
+      });
+
+      chatAPI.getMessages.mockResolvedValueOnce({
+        items: [{ id: 'msg-65', conversation_id: 'conv-1', body: 'newer', created_at: '2026-04-28T10:00:00.000Z' }],
+        has_older: true,
+        has_newer: false,
+      });
+
+      await act(async () => {
+        await api.loadNewerMessages();
+      });
+
+      expect(chatAPI.getMessages).toHaveBeenCalledWith(
+        'conv-1',
+        expect.objectContaining({ after_message_id: 'msg-64' }),
+      );
     });
   });
 });

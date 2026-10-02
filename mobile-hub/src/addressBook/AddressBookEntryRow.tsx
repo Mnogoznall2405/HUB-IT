@@ -6,6 +6,7 @@ import { AddressBookHighlight } from './AddressBookHighlight';
 import {
   buildEmployeeSubtitle,
   formatAbsenceLabel,
+  formatDate,
   getInitials,
   pickQuickActionPhone,
   type AddressBookEntry,
@@ -26,6 +27,8 @@ export function AddressBookEntryRow({
   tokens,
   onSelect,
   onCall,
+  isFavorite,
+  dismissed,
 }: {
   item: AddressBookEntry;
   entryKey: string;
@@ -38,10 +41,15 @@ export function AddressBookEntryRow({
   onOpenChat?: () => void;
   showChatAction?: boolean;
   chatBusy?: boolean;
+  isFavorite?: boolean;
+  dismissed?: boolean;
 }) {
   const primaryPhone = pickQuickActionPhone(item);
   const subtitle = buildEmployeeSubtitle(item);
   const absenceLabel = formatAbsenceLabel(item.absence);
+  const dismissalLabel = dismissed
+    ? `Уволен${formatDate(item.dismissal_date) ? ` ${formatDate(item.dismissal_date)}` : ''}`
+    : '';
   const canCall = Boolean(primaryPhone?.telHref);
 
   return (
@@ -56,12 +64,22 @@ export function AddressBookEntryRow({
         <Text style={[styles.avatarText, { color: tokens.primary }]}>{getInitials(item.full_name)}</Text>
       </View>
       <View style={styles.body}>
-        <AddressBookHighlight
-          value={item.full_name}
-          query={query}
-          numberOfLines={2}
-          style={[styles.name, { color: tokens.textPrimary }]}
-        />
+        <View style={styles.nameRow}>
+          <AddressBookHighlight
+            value={item.full_name}
+            query={query}
+            numberOfLines={2}
+            style={[styles.name, { color: tokens.textPrimary, flexShrink: 1 }]}
+          />
+          {isFavorite ? (
+            <MaterialCommunityIcons
+              testID={`address-book-favorite-mark-${entryKey}`}
+              name="star"
+              size={14}
+              color={tokens.warning}
+            />
+          ) : null}
+        </View>
         {subtitle ? (
           <AddressBookHighlight
             value={subtitle}
@@ -74,6 +92,16 @@ export function AddressBookEntryRow({
           <View style={[styles.chip, { backgroundColor: absenceTint(item.absence?.kind, tokens).bg }]}>
             <Text numberOfLines={1} style={[styles.chipText, { color: absenceTint(item.absence?.kind, tokens).color }]}>
               {absenceLabel}
+            </Text>
+          </View>
+        ) : null}
+        {dismissalLabel ? (
+          <View style={[styles.chip, { backgroundColor: tokens.panelMuted }]}>
+            <Text
+              numberOfLines={1}
+              style={[styles.chipText, { color: tokens.textSecondary }]}
+            >
+              {dismissalLabel}
             </Text>
           </View>
         ) : null}
@@ -164,6 +192,7 @@ const styles = StyleSheet.create({
   },
   avatarText: { fontWeight: '800', fontSize: 13 },
   body: { flex: 1, minWidth: 0 },
+  nameRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   name: { fontWeight: '800', fontSize: 15 },
   subtitle: { marginTop: 2, fontSize: 12 },
   phone: { marginTop: 2, fontSize: 12 },

@@ -1,6 +1,7 @@
 import { NativeModal as Modal } from '../ui/NativeModal';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useContext, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { SafeAreaInsetsContext, initialWindowMetrics } from 'react-native-safe-area-context';
 import {
   createConsumable,
   createEquipment,
@@ -32,6 +33,7 @@ export function NativeDatabaseCreateModal({
   onClose: () => void;
   onCreated: (message: string, invNo?: string) => Promise<void> | void;
 }) {
+  const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
   const [kind, setKind] = useState<CreateKind>(initialKind);
   const [busy, setBusy] = useState(false);
   const [loadingOptions, setLoadingOptions] = useState(false);
@@ -161,7 +163,7 @@ export function NativeDatabaseCreateModal({
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={close} accessibilityViewIsModal>
-      <View style={[styles.screen, { backgroundColor: tokens.pageBg }]}> 
+      <View style={[styles.screen, { backgroundColor: tokens.pageBg, paddingTop: insets?.top || 0 }]}>
         <View style={[styles.header, { borderBottomColor: tokens.borderSoft }]}> 
           <Pressable disabled={busy} accessibilityRole="button" accessibilityLabel="Закрыть создание" onPress={close} style={styles.headerAction}>
             <Text style={[styles.headerText, { color: tokens.textSecondary }]}>Отмена</Text>

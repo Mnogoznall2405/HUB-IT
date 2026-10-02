@@ -66,11 +66,18 @@ powershell -File scripts\pm2\register-pm2-autostart.ps1 -Mode Enable
 
 Задача `HUB-IT PM2 Autostart` срабатывает `AtStartup` от учётной записи, под которой её
 зарегистрировали, с `LogonType S4U` — то есть без интерактивного входа и без хранения
-пароля. Действие — `pm2-boot-resurrect.ps1`: пауза 30 с после загрузки, затем `pm2 resurrect`
-по `dump.pm2`; если процессы уже online, resurrect пропускается. Результат каждого запуска —
-`scripts\pm2\_boot_resurrect.log`.
+пароля. Действие — `pm2-boot-resurrect.ps1` (идемпотентен, можно запускать вручную в любой момент):
 
-- Автозапуск восстанавливает **сохранённый** набор: после изменения состава процессов обязателен `pm2 save` (или `start-all.ps1 -SaveState`).
+1. явно задаёт `PM2_HOME=<профиль>\.pm2` — у S4U нет `HOMEPATH`, и без этого PM2 уходит в пустой `C:\etc\.pm2`;
+2. пауза 30 с, затем `pm2 resurrect` по `dump.pm2`, если ни один процесс не online;
+3. **дозапускает из `ecosystem.all.config.js` всё, чего нет в PM2** (устаревший или отсутствующий dump не приводит к «пустому» хабу);
+4. staged-старт тяжёлых воркеров после готовности chat-нод;
+5. если все ожидаемые процессы online — `pm2 save`, иначе exit 1, и планировщик повторяет задачу (RestartCount 2 / 2 мин).
+
+Результат — `scripts\pm2\_boot_resurrect.log` (предыдущий запуск — `_boot_resurrect.prev.log`).
+
+- **Источник истины автозапуска — `ecosystem.all.config.js`.** Новый постоянный процесс добавлять в один из подключённых в него ecosystem-файлов (backend/inventory/scan/voice/bot/chat.scale). Процессы, запускаемые отдельным конфигом (например `itinvent-ai-sandbox-control`), попадают в автозапуск только через `dump.pm2`: после их старта обязателен `pm2 save`.
+- `register-pm2-autostart.ps1 -Mode Enable` также отключает устаревшую SYSTEM-задачу `HUB-IT PM2 resurrect` (`resurrect-if-empty.ps1`): она конкурирует за `\\.\pipe\rpc.sock` и стартовала бы процессы от SYSTEM.
 - Отключение без удаления: `register-pm2-autostart.ps1 -Mode Disable`; полный откат — `-Mode Remove`.
 - Post-check после реальной перезагрузки: `pm2 list`, `scripts\pm2\_boot_resurrect.log`, `health-check.ps1`.
 - Ограничение S4U: процессы не смогут обращаться к сетевым ресурсам под учётными данными пользователя (UNC-шары, интегрированная Windows-аутентификация). Текущие сервисы используют явные UID/PWD — подходит. Если понадобятся такие ресурсы — пересоздать задачу с хранением пароля (`schtasks /create /ru ... /rp ...`).
@@ -246,6 +253,30 @@ npm run build
 - если менялись только backend/runtime-переменные, frontend пересобирать не нужно;
 - если менялись только `VITE_*`, Python-процессы перезапускать не нужно.
 
+## Миграции БД при релизе
+
+Процессы production **не применяют** Alembic-миграции при старте (`appdb/db.py::_initialize_app_schema_uncached`, `chat/db.py::initialize_chat_schema` только сверяют версию). Если `system.alembic_version` отстаёт от head кода или неизвестна коду, процесс стартует и пишет в лог предупреждение:
+
+```
+schema_migration_check stage=schema_migration_check scope=<app|chat> status=<behind|unknown_revision|unreadable> current=<версия БД> expected=<head кода> action=apply_migrations_manually_at_release
+```
+
+Применение — отдельный шаг релиза, до перезапуска процессов с кодом, которому нужна схема:
+
+1. Сверить версию БД и head кода (только чтение): `SELECT version_num FROM system.alembic_version;` и `python -m alembic -c backend/alembic.ini heads` (с `ALEMBIC_DATABASE_URL`).
+2. Проверить фактическую схему chat (`chat.*` или legacy `public.chat_*`), объём, индексы, блокировки (см. AGENTS.md, «PostgreSQL»).
+3. Выполнить явной командой, URL целевой БД задаётся явно:
+   ```powershell
+   cd WEB-itinvent
+   $env:SKIP_PG_SCHEMA_DOCS='1'
+   $env:ALEMBIC_DATABASE_URL = '<url целевой БД>'
+   python -m alembic -c backend/alembic.ini upgrade head
+   ```
+4. Проверить `SELECT version_num FROM system.alembic_version;` и наличие объектов новых миграций.
+5. Перезапустить процессы штатными скриптами (`restart-backend.ps1`, `restart-chat.ps1`); в логах не должно быть `schema_migration_check`.
+
+Откат: `python -m alembic -c backend/alembic.ini downgrade <предыдущая версия>` — только после проверки, что `downgrade` миграции безопасен для данных. Миграция `20261002_0125` создаёт `chat_scheduled_messages`, если её нет (версия `0124` могла быть записана без таблицы); её `downgrade` ничего не удаляет.
+
 ## Hub notifications index (`20260804_0078`)
 
 `idx_hub_notifications_entity` создаётся через `CREATE INDEX CONCURRENTLY` и обязателен для PostgreSQL Hub (`HubService` fail-fast). Порядок деплоя:
@@ -255,6 +286,8 @@ npm run build
    ```powershell
    cd WEB-itinvent
    $env:SKIP_PG_SCHEMA_DOCS='1'
+   # URL целевой БД задаётся явно: корневой .env alembic не читает
+   $env:ALEMBIC_DATABASE_URL = $env:APP_DATABASE_URL
    python -m alembic -c backend/alembic.ini upgrade head
    ```
 3. Проверить валидность индекса:

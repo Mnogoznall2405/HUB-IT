@@ -218,6 +218,8 @@ export default function VoiceLogViewer({ open, onClose, jobId, logText, loading 
           <IconButton
             size="small"
             color={autoScroll ? 'primary' : 'default'}
+            aria-label={autoScroll ? 'Автопрокрутка включена' : 'Автопрокрутка выключена'}
+            aria-pressed={autoScroll}
             onClick={() => setAutoScroll(!autoScroll)}
           >
             <VerticalAlignBottomOutlinedIcon fontSize="small" />

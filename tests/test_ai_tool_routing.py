@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -13,9 +12,35 @@ if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
 
-def _get_route_fn():
-    from backend.ai_chat.service import _route_tool_groups
-    return _route_tool_groups
+def _get_routing_fns():
+    from backend.ai_chat.service import (
+        _build_jev_state,
+        _jev_fallback_groups,
+        _keyword_routed_groups,
+        _route_tool_groups_jev,
+    )
+    return _keyword_routed_groups, _jev_fallback_groups, _route_tool_groups_jev, _build_jev_state
+
+
+def _enable_jev(monkeypatch):
+    import importlib
+
+    service_module = importlib.import_module("backend.ai_chat.service")
+    monkeypatch.setenv("AI_JEV_ROUTING", "1")
+    monkeypatch.setenv("AI_JEV_ROUTING_MODE", "group")
+    monkeypatch.setenv("AI_JEV_ROUTING_THRESHOLD", "0.5")
+    service_module._jev_routing_cache.clear()
+    monkeypatch.setattr(service_module.jev_client, "is_configured", lambda: True)
+    return service_module
+
+
+def _jev_decision(probs):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        model="jev-test",
+        answers={key: SimpleNamespace(probability=p) for key, p in probs.items()},
+    )
 
 
 def _get_group_fns():
@@ -87,91 +112,132 @@ class TestGetEnabledToolGroups:
 
 
 class TestRouteToolGroups:
-    def test_single_group_skips_llm_call(self):
-        _route_tool_groups = _get_route_fn()
-        with patch("backend.ai_chat.service.openrouter_client") as mock_client:
-            result = _route_tool_groups(
-                trigger_text="покажи оборудование",
-                available_groups={"itinvent"},
-                model="openai/gpt-4o-mini",
-            )
-        assert result == {"itinvent"}
-        mock_client.complete_json.assert_not_called()
+    """Deterministic routing on top of the JEV contour (AG-4).
 
-    def test_successful_routing_returns_subset(self):
-        """LLM router is called when the trigger matches no hardcoded keyword."""
-        _route_tool_groups = _get_route_fn()
-        mock_payload = {"groups": ["itinvent"]}
-        with patch("backend.ai_chat.service.openrouter_client") as mock_client:
-            mock_client.complete_json.return_value = (mock_payload, {})
-            result = _route_tool_groups(
-                trigger_text=NEUTRAL_TRIGGER,
-                available_groups={"itinvent", "office"},
-                model="openai/gpt-4o-mini",
-            )
-        assert result == {"itinvent"}
-        mock_client.complete_json.assert_called_once()
+    The old ``_route_tool_groups`` (openrouter ``complete_json`` router) was
+    replaced by ``_route_tool_groups_jev`` + ``_keyword_routed_groups`` +
+    ``_jev_fallback_groups``. JEV-mocked scenarios live in
+    ``test_ai_jev_routing.py``; here we keep the deterministic contract:
+    keyword shortcuts, forced file/ad groups and the permission-safe fallback
+    (never "all groups").
+    """
 
-    def test_fallback_on_llm_exception_uses_narrow_fallback(self):
-        """When LLM routing fails, the fallback is narrow (itinvent), not the full universe."""
-        _route_tool_groups = _get_route_fn()
-        with patch("backend.ai_chat.service.openrouter_client") as mock_client:
-            mock_client.complete_json.side_effect = RuntimeError("LLM timeout")
-            result = _route_tool_groups(
-                trigger_text=NEUTRAL_TRIGGER,
-                available_groups={"itinvent", "office"},
-                model="openai/gpt-4o-mini",
-            )
-        # Narrow fallback prefers itinvent when available.
+    def test_single_group_skips_jev_call(self, monkeypatch):
+        _, _, _route_tool_groups_jev, _ = _get_routing_fns()
+        service_module = _enable_jev(monkeypatch)
+        calls = []
+        monkeypatch.setattr(service_module.jev_client, "decide", lambda **kw: calls.append(kw))
+        result = _route_tool_groups_jev(
+            trigger_text="покажи оборудование",
+            available_groups={"itinvent"},
+        )
+        # None means "keep every available group" — with a single group no
+        # routing decision is needed.
+        assert result is None
+        assert calls == []
+
+    def test_successful_routing_returns_subset(self, monkeypatch):
+        """JEV is called when the trigger matches no hardcoded keyword."""
+        _, _, _route_tool_groups_jev, _ = _get_routing_fns()
+        service_module = _enable_jev(monkeypatch)
+        calls = []
+        monkeypatch.setattr(
+            service_module.jev_client,
+            "decide",
+            lambda **kw: calls.append(kw) or _jev_decision({"g_itinvent": 0.9, "g_office": 0.01}),
+        )
+        result = _route_tool_groups_jev(
+            trigger_text=NEUTRAL_TRIGGER,
+            available_groups={"itinvent", "office"},
+        )
+        assert result == {"itinvent"}
+        assert len(calls) == 1
+
+    def test_fallback_on_jev_exception_never_returns_all(self, monkeypatch):
+        """When JEV routing fails, the fallback is narrow — never the full set."""
+        _, _, _route_tool_groups_jev, _ = _get_routing_fns()
+        service_module = _enable_jev(monkeypatch)
+
+        def _boom(**kw):
+            raise RuntimeError("JEV timeout")
+
+        monkeypatch.setattr(service_module.jev_client, "decide", _boom)
+        result = _route_tool_groups_jev(
+            trigger_text=NEUTRAL_TRIGGER,
+            available_groups={"itinvent", "office"},
+        )
+        # No keyword hit and no baseline groups (files/kb) available -> empty set
+        # ("no tools needed"); crucially not the full universe.
+        assert result == set()
+
+    def test_fallback_on_all_below_threshold_is_empty(self, monkeypatch):
+        """JEV refusing every group yields no tools (plus 'other' if available)."""
+        _, _, _route_tool_groups_jev, _ = _get_routing_fns()
+        service_module = _enable_jev(monkeypatch)
+        monkeypatch.setattr(
+            service_module.jev_client,
+            "decide",
+            lambda **kw: _jev_decision({"g_itinvent": 0.01, "g_office": 0.02}),
+        )
+        result = _route_tool_groups_jev(
+            trigger_text=NEUTRAL_TRIGGER,
+            available_groups={"itinvent", "office"},
+        )
+        assert result == set()
+
+    def test_answers_for_unknown_groups_are_ignored(self, monkeypatch):
+        _, _, _route_tool_groups_jev, _ = _get_routing_fns()
+        service_module = _enable_jev(monkeypatch)
+        monkeypatch.setattr(
+            service_module.jev_client,
+            "decide",
+            lambda **kw: _jev_decision({"g_nonexistent_group": 0.99, "g_itinvent": 0.9}),
+        )
+        result = _route_tool_groups_jev(
+            trigger_text=NEUTRAL_TRIGGER,
+            available_groups={"itinvent", "office"},
+        )
         assert result == {"itinvent"}
 
-    def test_fallback_on_empty_groups_response_uses_narrow_fallback(self):
-        _route_tool_groups = _get_route_fn()
-        mock_payload = {"groups": []}
-        with patch("backend.ai_chat.service.openrouter_client") as mock_client:
-            mock_client.complete_json.return_value = (mock_payload, {})
-            result = _route_tool_groups(
-                trigger_text=NEUTRAL_TRIGGER,
-                available_groups={"itinvent", "office"},
-                model="openai/gpt-4o-mini",
-            )
-        assert result == {"itinvent"}
+    def test_fallback_without_baseline_groups_picks_nothing(self):
+        """If files/kb are not in available_groups, a neutral fallback is empty."""
+        _, _jev_fallback_groups, _, _ = _get_routing_fns()
+        result = _jev_fallback_groups(
+            trigger_text=NEUTRAL_TRIGGER,
+            available_groups={"office", "itinvent"},
+        )
+        assert result == set()
 
-    def test_fallback_on_invalid_group_names_uses_narrow_fallback(self):
-        _route_tool_groups = _get_route_fn()
-        mock_payload = {"groups": ["nonexistent_group"]}
-        with patch("backend.ai_chat.service.openrouter_client") as mock_client:
-            mock_client.complete_json.return_value = (mock_payload, {})
-            result = _route_tool_groups(
-                trigger_text=NEUTRAL_TRIGGER,
-                available_groups={"itinvent", "office"},
-                model="openai/gpt-4o-mini",
-            )
-        assert result == {"itinvent"}
-
-    def test_narrow_fallback_without_itinvent_picks_first_group(self):
-        """If itinvent is not in available_groups, fallback picks a single deterministic group."""
-        _route_tool_groups = _get_route_fn()
-        with patch("backend.ai_chat.service.openrouter_client") as mock_client:
-            mock_client.complete_json.side_effect = RuntimeError("LLM down")
-            result = _route_tool_groups(
-                trigger_text=NEUTRAL_TRIGGER,
-                available_groups={"office", "files"},
-                model="openai/gpt-4o-mini",
-            )
-        # Deterministic choice: sorted()[0] -> "files".
+    def test_fallback_picks_baseline_files_group(self):
+        """Baseline deterministic pick: files/kb when nothing else matched."""
+        _, _jev_fallback_groups, _, _ = _get_routing_fns()
+        result = _jev_fallback_groups(
+            trigger_text=NEUTRAL_TRIGGER,
+            available_groups={"office", "files"},
+        )
         assert result == {"files"}
 
-    def test_multiple_groups_returned(self):
-        _route_tool_groups = _get_route_fn()
-        mock_payload = {"groups": ["itinvent", "files"]}
-        with patch("backend.ai_chat.service.openrouter_client") as mock_client:
-            mock_client.complete_json.return_value = (mock_payload, {})
-            result = _route_tool_groups(
-                trigger_text=NEUTRAL_TRIGGER,
-                available_groups={"itinvent", "office", "files"},
-                model="openai/gpt-4o-mini",
-            )
+    def test_fallback_includes_sticky_and_other(self):
+        _, _jev_fallback_groups, _, _ = _get_routing_fns()
+        result = _jev_fallback_groups(
+            trigger_text=NEUTRAL_TRIGGER,
+            available_groups={"office", "itinvent", "other"},
+            sticky_groups={"itinvent"},
+        )
+        assert result == {"itinvent", "other"}
+
+    def test_multiple_groups_returned(self, monkeypatch):
+        _, _, _route_tool_groups_jev, _ = _get_routing_fns()
+        service_module = _enable_jev(monkeypatch)
+        monkeypatch.setattr(
+            service_module.jev_client,
+            "decide",
+            lambda **kw: _jev_decision({"g_itinvent": 0.9, "g_files": 0.8, "g_office": 0.1}),
+        )
+        result = _route_tool_groups_jev(
+            trigger_text=NEUTRAL_TRIGGER,
+            available_groups={"itinvent", "office", "files"},
+        )
         assert result == {"itinvent", "files"}
 
     @pytest.mark.parametrize(
@@ -183,32 +249,23 @@ class TestRouteToolGroups:
         ],
     )
     def test_file_intent_forces_files_group(self, trigger_text):
-        """File intent always adds files even if hardcoded itinvent keyword shortcut fires."""
-        _route_tool_groups = _get_route_fn()
-        mock_payload = {"groups": ["itinvent"]}
-        with patch("backend.ai_chat.service.openrouter_client") as mock_client:
-            mock_client.complete_json.return_value = (mock_payload, {})
-            result = _route_tool_groups(
-                trigger_text=trigger_text,
-                available_groups={"itinvent", "files", "office"},
-                model="openai/gpt-4o-mini",
-            )
-        assert result == {"itinvent", "files"}
+        """File intent always adds files even without a domain keyword hit."""
+        _keyword_routed_groups, _, _, _ = _get_routing_fns()
+        result = _keyword_routed_groups(
+            trigger_text,
+            available_groups={"itinvent", "files", "office"},
+        )
+        assert result == {"files"}
 
-    def test_trigger_text_truncated_to_500_chars(self):
-        _route_tool_groups = _get_route_fn()
-        long_text = NEUTRAL_TRIGGER + " " + ("x" * 1000)
-        mock_payload = {"groups": ["office"]}
-        with patch("backend.ai_chat.service.openrouter_client") as mock_client:
-            mock_client.complete_json.return_value = (mock_payload, {})
-            _route_tool_groups(
-                trigger_text=long_text,
-                available_groups={"itinvent", "office"},
-                model="openai/gpt-4o-mini",
-            )
-        call_kwargs = mock_client.complete_json.call_args
-        user_prompt = call_kwargs.kwargs.get("user_prompt") or call_kwargs[1].get("user_prompt") or call_kwargs[0][1]
-        assert "x" * 501 not in user_prompt
+    def test_trigger_text_truncated_in_jev_state(self):
+        _, _, _, _build_jev_state = _get_routing_fns()
+        long_text = NEUTRAL_TRIGGER + " " + ("x" * 3000)
+        state = _build_jev_state(
+            trigger_text=long_text,
+            available_groups={"itinvent", "office"},
+        )
+        assert len(state["user_message"]) == 1500
+        assert "x" * 1501 not in state["user_message"]
 
     @pytest.mark.parametrize(
         "trigger_text",
@@ -219,15 +276,12 @@ class TestRouteToolGroups:
         ],
     )
     def test_ad_password_intent_forces_ad_group(self, trigger_text):
-        _route_tool_groups = _get_route_fn()
-        with patch("backend.ai_chat.service.openrouter_client") as mock_client:
-            result = _route_tool_groups(
-                trigger_text=trigger_text,
-                available_groups={"itinvent", "ad", "office"},
-                model="openai/gpt-4o-mini",
-            )
+        _keyword_routed_groups, _, _, _ = _get_routing_fns()
+        result = _keyword_routed_groups(
+            trigger_text,
+            available_groups={"itinvent", "ad", "office"},
+        )
         assert result == {"ad"}
-        mock_client.complete_json.assert_not_called()
 
     @pytest.mark.parametrize(
         "trigger_text",
@@ -239,17 +293,14 @@ class TestRouteToolGroups:
             "карточка устройства INV-5",
         ],
     )
-    def test_itinvent_keyword_shortcut_skips_llm(self, trigger_text):
-        """Hardcoded itinvent keywords route directly to itinvent without invoking the LLM router."""
-        _route_tool_groups = _get_route_fn()
-        with patch("backend.ai_chat.service.openrouter_client") as mock_client:
-            result = _route_tool_groups(
-                trigger_text=trigger_text,
-                available_groups={"itinvent", "office", "ad"},
-                model="openai/gpt-4o-mini",
-            )
+    def test_itinvent_keyword_shortcut_skips_jev(self, trigger_text):
+        """Hardcoded itinvent keywords route directly to itinvent."""
+        _keyword_routed_groups, _, _, _ = _get_routing_fns()
+        result = _keyword_routed_groups(
+            trigger_text,
+            available_groups={"itinvent", "office", "ad"},
+        )
         assert result == {"itinvent"}
-        mock_client.complete_json.assert_not_called()
 
     @pytest.mark.parametrize(
         "trigger_text",
@@ -260,26 +311,20 @@ class TestRouteToolGroups:
             "ответь на письмо",
         ],
     )
-    def test_office_keyword_shortcut_skips_llm(self, trigger_text):
-        """Hardcoded office keywords route directly to office without invoking the LLM router."""
-        _route_tool_groups = _get_route_fn()
-        with patch("backend.ai_chat.service.openrouter_client") as mock_client:
-            result = _route_tool_groups(
-                trigger_text=trigger_text,
-                available_groups={"itinvent", "office"},
-                model="openai/gpt-4o-mini",
-            )
+    def test_office_keyword_shortcut_skips_jev(self, trigger_text):
+        """Hardcoded office keywords route directly to office."""
+        _keyword_routed_groups, _, _, _ = _get_routing_fns()
+        result = _keyword_routed_groups(
+            trigger_text,
+            available_groups={"itinvent", "office"},
+        )
         assert result == {"office"}
-        mock_client.complete_json.assert_not_called()
 
     def test_office_keyword_with_file_intent_adds_files(self):
         """Hardcoded office keyword + file intent adds files to the routed set."""
-        _route_tool_groups = _get_route_fn()
-        with patch("backend.ai_chat.service.openrouter_client") as mock_client:
-            result = _route_tool_groups(
-                trigger_text="напиши письмо и приложи отчет xlsx",
-                available_groups={"itinvent", "office", "files"},
-                model="openai/gpt-4o-mini",
-            )
+        _keyword_routed_groups, _, _, _ = _get_routing_fns()
+        result = _keyword_routed_groups(
+            "напиши письмо и приложи отчет xlsx",
+            available_groups={"itinvent", "office", "files"},
+        )
         assert result == {"office", "files"}
-        mock_client.complete_json.assert_not_called()

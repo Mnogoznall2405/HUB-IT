@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 class UserSettingsResponse(BaseModel):
     pinned_database: Optional[str] = None
-    theme_mode: str = "light"
+    theme_mode: str = "system"
     font_family: str = "Aptos"
     font_scale: float = 1.0
     dashboard_sections: list[str] = Field(
@@ -175,6 +175,8 @@ class NotificationPreferencesPatchRequest(BaseModel):
     chat_direct: Optional[bool] = None
     chat_group: Optional[bool] = None
     chat_task: Optional[bool] = None
+    chat_ai: Optional[bool] = None
+    chat_sound: Optional[bool] = None
     quiet_hours_enabled: Optional[bool] = None
     quiet_hours_start: Optional[str] = Field(default=None, pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
     quiet_hours_end: Optional[str] = Field(default=None, pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")

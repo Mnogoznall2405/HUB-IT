@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { filterEmojiGroups } from '../../chat/chatEmoji';
 import { fetchChatGifs, type ChatGifItem } from '../../chat/chatGiphy';
@@ -25,6 +25,10 @@ export function ChatEmojiPickerSheet({
   const [gifQuery, setGifQuery] = useState('');
   const [gifs, setGifs] = useState<ChatGifItem[]>([]);
   const [gifBusy, setGifBusy] = useState(false);
+  const [gifError, setGifError] = useState(false);
+  // AUD-5: request generation — a slow first response must not overwrite the
+  // results of a newer query; cleanup invalidates any in-flight fetch.
+  const gifGenerationRef = useRef(0);
   const groups = useMemo(() => filterEmojiGroups(emojiQuery), [emojiQuery]);
   const emojiRows = useMemo(() => buildEmojiPickerRows(groups), [groups]);
 
@@ -52,18 +56,33 @@ export function ChatEmojiPickerSheet({
       setTab('emoji');
       setEmojiQuery('');
       setGifQuery('');
+      setGifError(false);
       return;
     }
     if (tab !== 'gif' || !onSelectGif) return undefined;
     const request = gifQuery.trim();
+    const generation = ++gifGenerationRef.current;
     setGifBusy(true);
+    setGifError(false);
     const timer = setTimeout(() => {
       void fetchChatGifs(request ? 'search' : 'trending', request)
-        .then((items) => setGifs(items))
-        .catch(() => setGifs([]))
-        .finally(() => setGifBusy(false));
+        .then((items) => {
+          if (generation !== gifGenerationRef.current) return;
+          setGifs(items);
+        })
+        .catch(() => {
+          if (generation !== gifGenerationRef.current) return;
+          setGifs([]);
+          setGifError(true);
+        })
+        .finally(() => {
+          if (generation === gifGenerationRef.current) setGifBusy(false);
+        });
     }, request ? 280 : 0);
-    return () => clearTimeout(timer);
+    return () => {
+      gifGenerationRef.current += 1;
+      clearTimeout(timer);
+    };
   }, [gifQuery, onSelectGif, tab, visible]);
 
   return (
@@ -141,7 +160,11 @@ export function ChatEmojiPickerSheet({
                       <Image source={{ uri: gif.previewUrl }} style={styles.gif} />
                     </Pressable>
                   )}
-                  ListEmptyComponent={<Text style={styles.empty}>GIF не найдены</Text>}
+                  ListEmptyComponent={(
+                    <Text style={styles.empty}>
+                      {gifError ? 'Не удалось загрузить GIF' : 'GIF не найдены'}
+                    </Text>
+                  )}
                 />
               )}
             </>

@@ -15,41 +15,43 @@ function FolderTab({
     <button
       type="button"
       onClick={onClick}
-      className={`relative inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full py-1.5 transition-colors duration-150 active:opacity-80 ${compact ? 'px-2' : 'px-3.5'}`}
+      className={`relative inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap pb-1.5 pt-1 transition-colors duration-150 active:opacity-80 hover:text-[color:var(--chat-text-primary)] ${compact ? 'px-2' : 'px-3'}`}
       style={{
+        // Д2: вкладки папок как в Telegram Web A — текст 15px/500 без заливки,
+        // активная — акцентная с полосой 3px снизу.
         color: active ? 'var(--chat-folder-tab-active-text)' : 'var(--chat-text-secondary)',
         backgroundColor: 'transparent',
-        fontSize: compact ? 13 : 15,
-        fontWeight: active ? 600 : 500,
+        fontSize: compact ? 14 : 15,
+        fontWeight: 500,
         lineHeight: '20px',
       }}
     >
-      {active ? (
-        <motion.span
-          layoutId="chat-folder-active-pill"
-          className="chat-folder-tab-shimmer absolute inset-0 rounded-full"
-          style={{ backgroundColor: 'var(--chat-folder-tab-active-bg)' }}
-          transition={reducedMotion
-            ? { duration: 0 }
-            : { type: 'spring', stiffness: 520, damping: 36, mass: 0.75 }}
-        />
-      ) : null}
       <span className="relative z-[1]">{label}</span>
       {unreadCount > 0 ? (
         <span
           data-chat-folder-unread-badge="true"
           aria-label={`Непрочитанных сообщений: ${unreadCount}`}
-          className="relative z-[1] inline-flex min-w-[20px] items-center justify-center rounded-full px-1 text-[11px] font-bold leading-none"
+          className="relative z-[1] inline-flex min-w-[18px] items-center justify-center rounded-full px-1 text-[11px] font-bold leading-none"
           style={{
-            minWidth: 20,
-            height: 20,
+            minWidth: 18,
+            height: 18,
             backgroundColor: active ? 'var(--chat-folder-tab-active-badge-bg)' : 'var(--chat-unread-bg)',
             color: active ? 'var(--chat-folder-tab-active-badge-text)' : 'var(--chat-unread-text)',
-            boxShadow: active ? '0 1px 4px rgba(8,19,32,0.24)' : '0 1px 5px rgba(25,118,210,0.34)',
           }}
         >
           {unreadCount > 99 ? '99+' : unreadCount}
         </span>
+      ) : null}
+      {active ? (
+        <motion.span
+          layoutId="chat-folder-active-underline"
+          data-testid="chat-folder-tab-underline"
+          className="chat-folder-tab-underline absolute inset-x-1 bottom-0 rounded-full"
+          style={{ height: 3, backgroundColor: 'var(--chat-folder-tab-active-bg)' }}
+          transition={reducedMotion
+            ? { duration: 0 }
+            : { type: 'spring', stiffness: 520, damping: 36, mass: 0.75 }}
+        />
       ) : null}
     </button>
   );
@@ -79,9 +81,9 @@ function ChatFolderTabs({
   }, [normalizedActiveKey, reducedMotion, tabs.length]);
 
   return (
-    <div className="chat-scroll-hidden -mx-1 overflow-x-auto px-1 pb-1 pt-0.5">
+    <div className="chat-scroll-hidden -mx-1 overflow-x-auto px-1 pb-0.5 pt-0.5">
       <LayoutGroup id="chat-folder-tabs">
-        <div ref={scrollRef} className={`flex min-w-max items-center pr-2 ${compact ? 'gap-1' : 'gap-4'}`}>
+        <div ref={scrollRef} className={`flex min-w-max items-center pr-2 ${compact ? 'gap-1' : 'gap-3'}`}>
           {tabs.map((tab) => {
             const active = normalizedActiveKey === tab.key;
             return (

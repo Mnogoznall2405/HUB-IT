@@ -8,6 +8,7 @@ import { recordDiagnosticEvent } from '../../diagnostics/diagnostics';
 import { markChatSend } from '../../diagnostics/chatSendTiming';
 import { mergeMessages, toggleReactionOptimistic } from '../../chat/chatState';
 import type { ChatListAnchorReason } from '../../chat/chatListAnchor';
+import { createChatClientMessageId } from '../../chat/chatModels';
 import { detectChatBodyFormat } from '../../chat/chatMarkdown';
 import { clearNativeChatDraft } from '../../chat/chatDrafts';
 import { getNativeChatQueueState, type createNativeChatOutbox } from '../../chat/nativeChatOutbox';
@@ -33,7 +34,7 @@ type ThreadOutbox = ReturnType<typeof createNativeChatOutbox>;
 type Composer = ReturnType<typeof useThreadComposerState>;
 
 function createClientMessageId(): string {
-  return `mobile-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  return createChatClientMessageId();
 }
 
 /** Send pipeline: text/upload queueing, retry/cancel, pickers that feed sends. */
@@ -291,7 +292,7 @@ export function useThreadSend({
       }
       Alert.alert('Не удалось сохранить сообщение',
         formatApiError(cause, 'Новый ввод сохранён; отправленный текст остался в пузыре ошибки.'), [
-          { text: 'Скопировать текст', onPress: () => { void Clipboard.setStringAsync(body); } },
+          { text: 'Скопировать текст', onPress: () => { void Clipboard.setStringAsync(body).catch(() => undefined); } },
           {
             text: 'Повторить',
             onPress: () => { void sendBody(body, undefined, replyPreview, false); },
@@ -433,6 +434,9 @@ export function useThreadSend({
           setText(captionSnapshot || '');
           if (replyModeSnapshot) setComposerMode(replyModeSnapshot);
           setAttachmentDraftFiles(draftFilesSnapshot);
+          // The failed draft send keeps its idempotency key: retrying must
+          // reuse this client_message_id, not mint a duplicate bubble/message.
+          attachmentDraftClientMessageIdRef.current = clientMessageId;
           showNativeToast('Не удалось сохранить вложение', formatApiError(cause,
             'Подпись и файлы возвращены в композер. Сообщение не поставлено в очередь.'));
         } else {
@@ -548,6 +552,9 @@ export function useThreadSend({
   }, [attachmentDraftFiles, mountedRef, sendPickedFiles, setComposerBusy]);
 
   const sendLocation = useCallback(async () => {
+    // Double taps must not stack GPS lookups and duplicate the bubble.
+    if (composerBusyRef.current) return;
+    setComposerBusy(true);
     try {
       const Location = await import('expo-location');
       const permission = await Location.requestForegroundPermissionsAsync();
@@ -562,9 +569,20 @@ export function useThreadSend({
         );
         return;
       }
-      const position = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
+      // expo-location has no timeout option on this SDK version — bound the
+      // wait ourselves so a hung provider cannot keep the composer busy.
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+      const position = await Promise.race([
+        Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        }),
+        new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(
+            () => reject(new Error('Истекло время ожидания геопозиции')),
+            15_000,
+          );
+        }),
+      ]).finally(() => { if (timeoutId !== null) clearTimeout(timeoutId); });
       if (!isCurrentSendScope()) return;
       await sendBody(
         JSON.stringify({
@@ -582,10 +600,14 @@ export function useThreadSend({
       if (mountedRef.current) {
         showNativeToast('Не удалось отправить геопозицию', formatApiError(cause, 'Повторите попытку'));
       }
+    } finally {
+      if (mountedRef.current) setComposerBusy(false);
     }
-  }, [isCurrentSendScope, mountedRef, sendBody]);
+  }, [composerBusyRef, isCurrentSendScope, mountedRef, sendBody, setComposerBusy]);
 
   const sendContact = useCallback(async () => {
+    if (composerBusyRef.current) return;
+    setComposerBusy(true);
     try {
       const Contacts = await import('expo-contacts');
       const permission = await Contacts.requestPermissionsAsync();
@@ -600,7 +622,19 @@ export function useThreadSend({
         );
         return;
       }
-      const contact = await Contacts.Contact.presentPicker();
+      // On some OEM builds the picker promise never settles after dismiss —
+      // without a bound the composer stays busy forever. Generous timeout
+      // because the pick is user-paced.
+      let contactTimeoutId: ReturnType<typeof setTimeout> | null = null;
+      const contact = await Promise.race([
+        Contacts.Contact.presentPicker(),
+        new Promise<never>((_, reject) => {
+          contactTimeoutId = setTimeout(
+            () => reject(new Error('Истекло время ожидания выбора контакта')),
+            60_000,
+          );
+        }),
+      ]).finally(() => { if (contactTimeoutId !== null) clearTimeout(contactTimeoutId); });
       if (!contact || !isCurrentSendScope()) return;
       const [fullName, phones] = await Promise.all([
         contact.getFullName().catch(() => ''),
@@ -622,23 +656,30 @@ export function useThreadSend({
       if (mountedRef.current) {
         showNativeToast('Не удалось отправить контакт', formatApiError(cause, 'Повторите попытку'));
       }
+    } finally {
+      if (mountedRef.current) setComposerBusy(false);
     }
-  }, [isCurrentSendScope, mountedRef, sendBody]);
+  }, [composerBusyRef, isCurrentSendScope, mountedRef, sendBody, setComposerBusy]);
 
   const sendPoll = useCallback(async (question: string, options: string[], anonymous = true) => {
     const trimmedQuestion = question.trim();
     const normalizedOptions = options.map((item) => item.trim()).filter(Boolean);
-    if (!trimmedQuestion || normalizedOptions.length < 2) return;
-    await sendBody(
-      JSON.stringify({ question: trimmedQuestion, options: normalizedOptions, anonymous }),
-      createClientMessageId(),
-      undefined,
-      true,
-      undefined,
-      undefined,
-      'poll',
-    );
-  }, [sendBody]);
+    if (!trimmedQuestion || normalizedOptions.length < 2 || composerBusyRef.current) return;
+    setComposerBusy(true);
+    try {
+      await sendBody(
+        JSON.stringify({ question: trimmedQuestion, options: normalizedOptions, anonymous }),
+        createClientMessageId(),
+        undefined,
+        true,
+        undefined,
+        undefined,
+        'poll',
+      );
+    } finally {
+      if (mountedRef.current) setComposerBusy(false);
+    }
+  }, [composerBusyRef, mountedRef, sendBody, setComposerBusy]);
 
   const votePoll = useCallback(async (message: ChatMessage, optionIndex: number) => {
     if (!isCurrentSendScope() || message.kind !== 'poll') return;
@@ -701,7 +742,11 @@ export function useThreadSend({
   }, [isCurrentSendScope, mountedRef, setMessages, user?.id]);
 
   const sendGif = useCallback(async (gif: ChatGifItem) => {
+    // The download can take seconds; without the busy guard a second tap
+    // downloads and sends the same GIF again.
+    if (composerBusyRef.current) return;
     setEmojiPickerVisible(false);
+    setComposerBusy(true);
     try {
       const file = await downloadGifToCache(gif);
       await sendPickedFile(file);
@@ -709,8 +754,10 @@ export function useThreadSend({
       if (mountedRef.current) {
         showNativeToast('Не удалось отправить GIF', formatApiError(cause, 'Повторите попытку'));
       }
+    } finally {
+      if (mountedRef.current) setComposerBusy(false);
     }
-  }, [mountedRef, sendPickedFile, setEmojiPickerVisible]);
+  }, [composerBusyRef, mountedRef, sendPickedFile, setComposerBusy, setEmojiPickerVisible]);
 
   return {
     sendBody,

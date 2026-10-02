@@ -31,4 +31,25 @@ describe('native Chat feature routing', () => {
   ('does not intercept a non-Chat or unsafe path: %s', (path) => {
     expect(nativeChatDestinationFromPortalPath(path)).toBeNull();
   });
+
+  it('carries a valid workspace into the Chat inbox and thread routes', () => {
+    expect(nativeChatDestinationFromPortalPath('/chat?workspace=ai'))
+      .toEqual({ pathname: '/(shell)/chat', params: { workspace: 'ai' } });
+    expect(nativeChatDestinationFromPortalPath('/chat?conversation=c-1&message=m-1&workspace=chats'))
+      .toEqual({
+        pathname: '/(shell)/chat/[conversationId]',
+        params: { conversationId: 'c-1', messageId: 'm-1', workspace: 'chats' },
+      });
+  });
+
+  it.each([
+    ['/chat?workspace=bogus', { pathname: '/(shell)/chat' }],
+    ['/chat?workspace=', { pathname: '/(shell)/chat' }],
+    [
+      '/chat?conversation=c-1&workspace=admin',
+      { pathname: '/(shell)/chat/[conversationId]', params: { conversationId: 'c-1' } },
+    ],
+  ])('ignores an invalid workspace: %s', (path, expected) => {
+    expect(nativeChatDestinationFromPortalPath(path)).toEqual(expected);
+  });
 });

@@ -9,6 +9,7 @@ import {
   listNativeChatDraftPreviews,
   setNativeChatDraft,
 } from './chatDrafts';
+import { createNativeChatOutbox } from './nativeChatOutbox';
 
 it.each([
   { text: { synthetic: 'private text' } }, { userId: '7' }, { conversationId: ['chat-a'] },
@@ -194,6 +195,42 @@ it('keeps the previous draft when durable attachment copy fails asynchronously',
     })).rejects.toThrow('Не удалось сохранить вложение на устройстве');
     expect(await getNativeChatDraft(7, 'chat-a')).toBe('Сохранённый текст');
     expect(source.exists).toBe(true);
+  } finally {
+    copySpy.mockRestore();
+  }
+});
+
+it('does not block outbox writes behind a long draft attachment copy', async () => {
+  const source = new File(Paths.cache, 'draft-slow-copy');
+  source.write('Тяжёлое вложение');
+  const file = {
+    uri: source.uri,
+    name: 'file.bin',
+    mimeType: 'application/octet-stream',
+    size: source.size,
+    source: 'document' as const,
+  };
+  let releaseCopy!: () => void;
+  const gate = new Promise<void>((resolve) => { releaseCopy = resolve; });
+  const originalCopy = File.prototype.copy;
+  const copySpy = jest.spyOn(File.prototype, 'copy').mockImplementation(function (this: File, destination) {
+    return gate.then(() => originalCopy.call(this, destination));
+  });
+  try {
+    // The copy is still running when the draft write is issued…
+    const draftWrite = setNativeChatDraft(7, 'chat-z', 'Черновик', { files: [file] });
+    const message = {
+      id: 'pending:m9', client_message_id: 'm9', conversation_id: 'chat-z',
+      sender_user_id: 7, body_text: 'Срочно',
+    };
+    // …but an outbox write must not queue behind the file IO.
+    await expect(createNativeChatOutbox(7, 'chat-z').queue(message)).resolves.toMatchObject({
+      message: expect.objectContaining({ client_message_id: 'm9' }),
+    });
+    releaseCopy();
+    await draftWrite;
+    expect(await getNativeChatDraft(7, 'chat-z')).toBe('Черновик');
+    await clearNativeChatDraft(7, 'chat-z');
   } finally {
     copySpy.mockRestore();
   }

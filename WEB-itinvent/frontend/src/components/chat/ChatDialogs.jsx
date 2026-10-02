@@ -1,17 +1,15 @@
-import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Box,
   Button,
   Chip,
-  Checkbox,
   CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   Divider,
-  Fab,
   InputBase,
   IconButton,
   List,
@@ -28,10 +26,7 @@ import {
 import { alpha } from '@mui/material/styles';
 import Slide from '@mui/material/Slide';
 import useMediaQuery from '@mui/material/useMediaQuery';
-import ChevronLeftRoundedIcon from '@mui/icons-material/ChevronLeftRounded';
-import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import CheckCircleOutlineRoundedIcon from '@mui/icons-material/CheckCircleOutlineRounded';
-import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
@@ -46,8 +41,10 @@ import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import PhotoLibraryRoundedIcon from '@mui/icons-material/PhotoLibraryRounded';
 import PhotoCameraRoundedIcon from '@mui/icons-material/PhotoCameraRounded';
-import AddAPhotoRoundedIcon from '@mui/icons-material/AddAPhotoRounded';
 import InsertDriveFileRoundedIcon from '@mui/icons-material/InsertDriveFileRounded';
+import LocationOnOutlinedIcon from '@mui/icons-material/LocationOnOutlined';
+import PermContactCalendarOutlinedIcon from '@mui/icons-material/PermContactCalendarOutlined';
+import PollOutlinedIcon from '@mui/icons-material/PollOutlined';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
 import ReplyRoundedIcon from '@mui/icons-material/ReplyRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
@@ -60,12 +57,13 @@ import AiConversationContextPanel from './AiConversationContextPanel';
 import { GENERAL_AI_OPENING_ID } from './chatAiSidebarModel';
 import {
   DialogListSkeleton,
-  GroupUserCheckboxRow,
   SearchResultCard,
-  SelectedUserPill,
 } from './ChatDialogsPrimitives';
 import ChatFileUploadDialog from './ChatFileUploadDialog';
+import ChatContactPickDialog from './ChatContactPickDialog';
+import ChatLocationConfirmDialog from './ChatLocationConfirmDialog';
 import ChatMediaPreviewDialog from './ChatMediaPreviewDialog';
+import ChatPollCreateDialog from './ChatPollCreateDialog';
 import MailAttachmentPreviewDialog from '../mail/MailAttachmentPreviewDialog';
 import { ConversationAvatar, PresenceAvatar } from './ChatCommon';
 import ChatMessageContextMenu from './ChatMessageContextMenu';
@@ -142,6 +140,8 @@ export default function ChatDialogs({
   onEditMessageFromMenu,
   onSelectMessageFromMenu,
   onOpenReadsFromMessageMenu,
+  onStopPollFromMessageMenu,
+  onCancelPollVoteFromMessageMenu,
   onOpenAttachmentFromMessageMenu,
   onOpenTaskFromMessageMenu,
   messages,
@@ -170,20 +170,6 @@ export default function ChatDialogs({
   onSendFiles,
   onRemoveSelectedFile,
   onClearSelectedFiles,
-  groupOpen,
-  onCloseGroup,
-  groupTitle,
-  onGroupTitleChange,
-  groupSearch,
-  onGroupSearchChange,
-  groupUsers,
-  groupUsersLoading,
-  groupSelectedUsers,
-  onAddGroupMember,
-  onRemoveGroupMember,
-  creatingConversation,
-  groupCreateDisabled,
-  onCreateGroup,
   shareOpen,
   onCloseShare,
   taskSearch,
@@ -192,6 +178,16 @@ export default function ChatDialogs({
   shareableLoading,
   sharingTaskId,
   onShareTask,
+  structuredDialog,
+  onOpenPollDialog,
+  onOpenContactDialog,
+  onSendLocation,
+  onConfirmLocation,
+  locationDraft,
+  locationSending = false,
+  onCloseStructuredDialog,
+  onSendPoll,
+  onSendContact,
   forwardOpen = false,
   onCloseForward,
   forwardSelectionCount = 0,
@@ -241,13 +237,6 @@ export default function ChatDialogs({
   const prefersReducedMotion = typeof window !== 'undefined'
     && typeof window.matchMedia === 'function'
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const groupSearchInputRef = useRef(null);
-  const [groupStep, setGroupStep] = useState('members');
-  const [groupAvatarFile, setGroupAvatarFile] = useState(null);
-  const [groupAvatarPreview, setGroupAvatarPreview] = useState(null);
-  const groupAvatarInputRef = useRef(null);
-  const selectedGroupUsers = Array.isArray(groupSelectedUsers) ? groupSelectedUsers : [];
-  const availableGroupUsers = Array.isArray(groupUsers) ? groupUsers : [];
   const activeConversationKind = String(activeConversation?.kind || '').trim();
   const messageMenuAnchorElement = messageMenuAnchor?.nodeType === 1
     ? messageMenuAnchor
@@ -277,20 +266,10 @@ export default function ChatDialogs({
   const forwardSearchPlaceholder = forwardSelectedCount > 1
     ? `Переслать ${forwardSelectedCount} сообщений...`
     : 'Переслать...';
-  const selectedGroupMemberIds = useMemo(
-    () => new Set(selectedGroupUsers.map((item) => String(item?.id || '').trim()).filter(Boolean)),
-    [selectedGroupUsers],
-  );
   const composerMenuOpen = Boolean(composerMenuAnchor);
-  const canProceedToGroupDetails = selectedGroupUsers.length >= 2 && !creatingConversation;
-  const isGroupDetailsStep = groupStep === 'details';
   const accentColor = ui.accentText || theme.palette.primary.main;
   const accentSoft = ui.accentSoft || alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.16 : 0.1);
   const dialogTextColor = ui.textStrong || theme.palette.text.primary;
-  const fullScreenDialogBg = alpha(ui.panelBg || theme.palette.background.paper, theme.palette.mode === 'dark' ? 0.98 : 0.99);
-  const groupInputBg = theme.palette.mode === 'dark'
-    ? alpha(ui.sidebarSearchBg || ui.panelBg || '#111827', 0.9)
-    : alpha(ui.sidebarSearchBg || '#f8fafc', 0.94);
   const isDarkTheme = theme.palette.mode === 'dark';
   const popupSurface = ui.drawerBg || ui.panelBg || (isDarkTheme ? '#17212b' : '#ffffff');
   const popupSurfaceSoft = ui.surfaceMuted || ui.drawerBgSoft || (isDarkTheme ? alpha('#ffffff', 0.06) : '#f3f5f7');
@@ -396,54 +375,6 @@ export default function ChatDialogs({
     onCloseForward?.();
   }, [forwardingConversationId, onCloseForward]);
 
-  useEffect(() => {
-    if (!groupOpen) {
-      setGroupStep('members');
-      setGroupAvatarFile(null);
-      setGroupAvatarPreview(null);
-    }
-  }, [groupOpen]);
-
-  const handleGroupAvatarChange = (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setGroupAvatarFile(file);
-    const reader = new FileReader();
-    reader.onload = (e) => setGroupAvatarPreview(e.target.result);
-    reader.readAsDataURL(file);
-    event.target.value = '';
-  };
-
-  const handleAddGroupMember = (item) => {
-    if (!item?.id || selectedGroupMemberIds.has(String(item.id))) return;
-    onAddGroupMember?.(item);
-    onGroupSearchChange?.('');
-    if (!previewFullScreen) {
-      window.requestAnimationFrame(() => {
-        groupSearchInputRef.current?.focus?.();
-      });
-    }
-  };
-
-  const handleRemoveGroupMember = (item) => {
-    if (!item?.id) return;
-    onRemoveGroupMember?.(item.id);
-    if (!previewFullScreen) {
-      window.requestAnimationFrame(() => {
-        groupSearchInputRef.current?.focus?.();
-      });
-    }
-  };
-
-  const handleToggleGroupMember = (item) => {
-    if (!item?.id) return;
-    if (selectedGroupMemberIds.has(String(item.id))) {
-      handleRemoveGroupMember(item);
-      return;
-    }
-    handleAddGroupMember(item);
-  };
-
   const closeThreadMenu = () => {
     onCloseThreadMenu?.();
   };
@@ -492,6 +423,8 @@ export default function ChatDialogs({
         onEditMessageFromMenu={onEditMessageFromMenu}
         onDeleteMessageFromMenu={onDeleteMessageFromMenu}
         onOpenReadsFromMessageMenu={onOpenReadsFromMessageMenu}
+        onStopPollFromMessageMenu={onStopPollFromMessageMenu}
+        onCancelPollVoteFromMessageMenu={onCancelPollVoteFromMessageMenu}
         onOpenAttachmentFromMessageMenu={onOpenAttachmentFromMessageMenu}
         onOpenTaskFromMessageMenu={onOpenTaskFromMessageMenu}
       />
@@ -702,6 +635,105 @@ export default function ChatDialogs({
                 Задача
               </Typography>
             </Box>
+
+            <Box
+              component="button"
+              type="button"
+              data-testid="mobile-composer-attachment-poll"
+              onClick={runComposerMenuAction(onOpenPollDialog)}
+              disabled={!activeConversationId}
+              sx={{
+                width: '100%',
+                px: 2,
+                py: 1.45,
+                border: 'none',
+                bgcolor: 'transparent',
+                color: popupTextColor,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1.75,
+                textAlign: 'left',
+                transition: 'background-color 120ms ease, opacity 100ms ease',
+                '&:active': {
+                  opacity: 0.78,
+                  bgcolor: popupHoverBg,
+                },
+                '&:disabled': {
+                  opacity: 0.42,
+                },
+              }}
+            >
+              <PollOutlinedIcon sx={{ fontSize: 28, color: popupIconColor, flexShrink: 0 }} />
+              <Typography variant="body1" sx={{ fontWeight: 500 }}>
+                Опрос
+              </Typography>
+            </Box>
+
+            <Box
+              component="button"
+              type="button"
+              data-testid="mobile-composer-attachment-contact"
+              onClick={runComposerMenuAction(onOpenContactDialog)}
+              disabled={!activeConversationId}
+              sx={{
+                width: '100%',
+                px: 2,
+                py: 1.45,
+                border: 'none',
+                bgcolor: 'transparent',
+                color: popupTextColor,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1.75,
+                textAlign: 'left',
+                transition: 'background-color 120ms ease, opacity 100ms ease',
+                '&:active': {
+                  opacity: 0.78,
+                  bgcolor: popupHoverBg,
+                },
+                '&:disabled': {
+                  opacity: 0.42,
+                },
+              }}
+            >
+              <PermContactCalendarOutlinedIcon sx={{ fontSize: 28, color: popupIconColor, flexShrink: 0 }} />
+              <Typography variant="body1" sx={{ fontWeight: 500 }}>
+                Контакт
+              </Typography>
+            </Box>
+
+            <Box
+              component="button"
+              type="button"
+              data-testid="mobile-composer-attachment-location"
+              onClick={runComposerMenuAction(onSendLocation)}
+              disabled={!activeConversationId || locationSending}
+              sx={{
+                width: '100%',
+                px: 2,
+                py: 1.45,
+                border: 'none',
+                bgcolor: 'transparent',
+                color: popupTextColor,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1.75,
+                textAlign: 'left',
+                transition: 'background-color 120ms ease, opacity 100ms ease',
+                '&:active': {
+                  opacity: 0.78,
+                  bgcolor: popupHoverBg,
+                },
+                '&:disabled': {
+                  opacity: 0.42,
+                },
+              }}
+            >
+              <LocationOnOutlinedIcon sx={{ fontSize: 28, color: popupIconColor, flexShrink: 0 }} />
+              <Typography variant="body1" sx={{ fontWeight: 500 }}>
+                {locationSending ? 'Определяем местоположение…' : 'Геопозиция'}
+              </Typography>
+            </Box>
           </Stack>
         </Popover>
       ) : null}
@@ -725,7 +757,63 @@ export default function ChatDialogs({
           <TaskAltRoundedIcon sx={{ mr: 1.2, fontSize: 20 }} />
           Задача
         </MenuItem>
+        <MenuItem
+          data-testid="composer-attachment-poll"
+          onClick={runComposerMenuAction(onOpenPollDialog)}
+          disabled={!activeConversationId}
+        >
+          <PollOutlinedIcon sx={{ mr: 1.2, fontSize: 20 }} />
+          Опрос
+        </MenuItem>
+        <MenuItem
+          data-testid="composer-attachment-contact"
+          onClick={runComposerMenuAction(onOpenContactDialog)}
+          disabled={!activeConversationId}
+        >
+          <PermContactCalendarOutlinedIcon sx={{ mr: 1.2, fontSize: 20 }} />
+          Контакт
+        </MenuItem>
+        <MenuItem
+          data-testid="composer-attachment-location"
+          onClick={runComposerMenuAction(onSendLocation)}
+          disabled={!activeConversationId || locationSending}
+        >
+          <LocationOnOutlinedIcon sx={{ mr: 1.2, fontSize: 20 }} />
+          {locationSending ? 'Определяем местоположение…' : 'Геопозиция'}
+        </MenuItem>
       </Menu>
+
+      <ChatPollCreateDialog
+        open={structuredDialog === 'poll'}
+        onClose={onCloseStructuredDialog}
+        onSend={onSendPoll}
+        dialogPaperSx={dialogPaperSx}
+        dialogTitleSx={dialogTitleSx}
+        dialogContentSx={dialogContentSx}
+        dialogActionsSx={dialogActionsSx}
+      />
+
+      <ChatContactPickDialog
+        open={structuredDialog === 'contact'}
+        onClose={onCloseStructuredDialog}
+        onSend={onSendContact}
+        ui={ui}
+        dialogPaperSx={dialogPaperSx}
+        dialogTitleSx={dialogTitleSx}
+        dialogContentSx={dialogContentSx}
+        dialogActionsSx={dialogActionsSx}
+      />
+
+      <ChatLocationConfirmDialog
+        open={structuredDialog === 'location'}
+        locationDraft={locationDraft}
+        onClose={onCloseStructuredDialog}
+        onSend={onConfirmLocation}
+        dialogPaperSx={dialogPaperSx}
+        dialogTitleSx={dialogTitleSx}
+        dialogContentSx={dialogContentSx}
+        dialogActionsSx={dialogActionsSx}
+      />
 
       <ChatFileUploadDialog
         caption={fileCaption}
@@ -749,333 +837,6 @@ export default function ChatDialogs({
         ui={ui}
         uploadProgress={fileUploadProgress}
       />
-
-      <Dialog
-        open={groupOpen}
-        onClose={onCloseGroup}
-        fullScreen={previewFullScreen}
-        fullWidth
-        maxWidth="xs"
-        PaperProps={{
-          sx: previewFullScreen
-            ? {
-              m: 0,
-              width: '100%',
-              maxWidth: '100%',
-              height: '100dvh',
-              borderRadius: 0,
-              bgcolor: fullScreenDialogBg,
-              color: dialogTextColor,
-              backgroundImage: 'none',
-            }
-            : dialogPaperSx,
-        }}
-      >
-        <DialogTitle
-          sx={{
-            ...dialogTitleSx,
-            px: previewFullScreen ? 1.6 : 3,
-            pt: previewFullScreen ? 'max(env(safe-area-inset-top), 10px)' : 2.5,
-            pb: 1.5,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 1,
-            ...(previewFullScreen ? {
-              bgcolor: alpha(fullScreenDialogBg, 0.94),
-              backdropFilter: 'blur(18px)',
-              position: 'sticky',
-              top: 0,
-              zIndex: 2,
-            } : {}),
-          }}
-        >
-          {previewFullScreen ? (
-            <IconButton
-              aria-label={isGroupDetailsStep ? 'Назад к выбору участников' : 'Закрыть создание группы'}
-              onClick={isGroupDetailsStep ? () => setGroupStep('members') : onCloseGroup}
-              sx={{ color: dialogTextColor, ml: -0.5 }}
-            >
-              <ChevronLeftRoundedIcon />
-            </IconButton>
-          ) : null}
-          <Box sx={{ flex: 1 }}>
-            <Typography component="div" variant="subtitle1" sx={{ fontWeight: 800, fontSize: '1rem', lineHeight: 1.2 }}>
-              {isGroupDetailsStep ? 'Новая группа' : 'Добавить участников'}
-            </Typography>
-            {!isGroupDetailsStep ? (
-              <Typography component="div" variant="caption" sx={{ color: ui.textSecondary, fontWeight: 500 }}>
-                {selectedGroupUsers.length} / 200000
-              </Typography>
-            ) : null}
-          </Box>
-        </DialogTitle>
-        <DialogContent
-          sx={{
-            px: 0,
-            py: 0,
-            bgcolor: 'transparent',
-            display: 'flex',
-            flexDirection: 'column',
-            minHeight: 0,
-            overflow: 'hidden',
-          }}
-        >
-          {!isGroupDetailsStep ? (
-            <Box data-testid="group-dialog-members-step" sx={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-
-              {/* Selected users strip */}
-              {selectedGroupUsers.length > 0 ? (
-                <Box
-                  data-testid="group-selected-users"
-                  sx={{
-                    display: 'flex',
-                    flexDirection: 'row',
-                    alignItems: 'flex-start',
-                    gap: 0.5,
-                    overflowX: 'auto',
-                    px: 1,
-                    pt: 1.25,
-                    pb: 1,
-                    minHeight: 88,
-                    borderBottom: `1px solid ${ui.borderSoft || alpha(accentColor, 0.1)}`,
-                    scrollbarWidth: 'none',
-                    '&::-webkit-scrollbar': { display: 'none' },
-                  }}
-                >
-                  <Typography
-                    sx={{
-                      flexShrink: 0,
-                      alignSelf: 'center',
-                      px: 0.5,
-                      fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-                      fontSize: density.composerAuxFontSize || '0.78rem',
-                      fontWeight: 800,
-                      color: ui.textSecondary,
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    Выбранные участники
-                  </Typography>
-                  {selectedGroupUsers.map((item) => (
-                    <SelectedUserPill
-                      key={item.id}
-                      item={item}
-                      ui={ui}
-                      onRemove={handleRemoveGroupMember}
-                    />
-                  ))}
-                </Box>
-              ) : null}
-
-              {/* Search */}
-              <Box
-                sx={{
-                  px: 1,
-                  py: 1,
-                  borderBottom: `1px solid ${ui.borderSoft || alpha(accentColor, 0.1)}`,
-                }}
-              >
-                <Box
-                  sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 1,
-                    bgcolor: groupInputBg,
-                    borderRadius: 3,
-                    px: 1.2,
-                    py: 0.6,
-                  }}
-                >
-                  <SearchRoundedIcon sx={{ fontSize: 20, color: ui.textSecondary, flexShrink: 0 }} />
-                  <InputBase
-                    inputRef={groupSearchInputRef}
-                    fullWidth
-                    autoFocus={!previewFullScreen}
-                    value={groupSearch}
-                    onChange={(event) => onGroupSearchChange(event.target.value)}
-                    placeholder="Поиск"
-                    inputProps={{ 'aria-label': 'Поиск участников', enterKeyHint: 'search' }}
-                    sx={{
-                      fontSize: '0.97rem',
-                      color: dialogTextColor,
-                      '& input::placeholder': { color: ui.textSecondary, opacity: 1 },
-                    }}
-                  />
-                  {groupSearch ? (
-                    <IconButton size="small" onClick={() => onGroupSearchChange('')} sx={{ p: 0.2 }}>
-                      <CloseRoundedIcon sx={{ fontSize: 16, color: ui.textSecondary }} />
-                    </IconButton>
-                  ) : null}
-                </Box>
-              </Box>
-
-              {/* User list */}
-              <Box
-                sx={{ flex: 1, minHeight: 0, overflow: 'hidden' }}
-                data-testid={!previewFullScreen ? 'group-dialog-desktop-layout' : undefined}
-              >
-                <Box
-                  data-testid="group-user-search-results"
-                  sx={{ height: '100%', overflowY: 'auto', minHeight: 0 }}
-                >
-                  {groupUsersLoading ? (
-                    <DialogListSkeleton ui={ui} rows={7} compact />
-                  ) : availableGroupUsers.length === 0 ? (
-                    <Stack alignItems="center" justifyContent="center" sx={{ py: 5 }}>
-                      <Typography variant="body2" sx={{ color: ui.textSecondary }}>
-                        Никого не найдено
-                      </Typography>
-                    </Stack>
-                  ) : (
-                    availableGroupUsers.map((item, index) => (
-                      <Box key={item.id}>
-                        {index > 0 ? <Box sx={{ borderTop: `1px solid ${alpha(ui.borderSoft || '#334155', 0.5)}` }} /> : null}
-                        <GroupUserCheckboxRow
-                          item={item}
-                          ui={ui}
-                          checked={selectedGroupMemberIds.has(String(item.id))}
-                          onToggle={handleToggleGroupMember}
-                          compact={previewFullScreen}
-                        />
-                      </Box>
-                    ))
-                  )}
-                </Box>
-              </Box>
-            </Box>
-          ) : (
-            <Box
-              data-testid="group-dialog-details-step"
-              sx={{
-                display: 'flex',
-                flexDirection: 'column',
-                flex: 1,
-                minHeight: 0,
-                overflowY: 'auto',
-              }}
-            >
-              {/* Hidden file input */}
-              <input
-                ref={groupAvatarInputRef}
-                type="file"
-                accept="image/*"
-                style={{ display: 'none' }}
-                onChange={handleGroupAvatarChange}
-              />
-
-              {/* Avatar + title row */}
-              <Box
-                sx={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 2.5,
-                  px: 2.5,
-                  pt: 2.5,
-                  pb: 1.5,
-                }}
-              >
-                {/* Avatar button */}
-                <Box
-                  component="button"
-                  type="button"
-                  onClick={() => groupAvatarInputRef.current?.click()}
-                  sx={{
-                    flexShrink: 0,
-                    width: 72,
-                    height: 72,
-                    borderRadius: '50%',
-                    border: 'none',
-                    cursor: 'pointer',
-                    bgcolor: accentColor,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    overflow: 'hidden',
-                    transition: 'opacity 120ms ease',
-                    '&:hover': { opacity: 0.88 },
-                    '&:active': { opacity: 0.72 },
-                    p: 0,
-                  }}
-                >
-                  {groupAvatarPreview ? (
-                    <Box
-                      component="img"
-                      src={groupAvatarPreview}
-                      alt=""
-                      sx={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                    />
-                  ) : (
-                    <AddAPhotoRoundedIcon sx={{ fontSize: 30, color: '#fff' }} />
-                  )}
-                </Box>
-
-                {/* Title input */}
-                <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <InputBase
-                    inputProps={{ 'data-testid': 'group-dialog-title-input' }}
-                    fullWidth
-                    autoFocus
-                    value={groupTitle}
-                    onChange={(event) => onGroupTitleChange(event.target.value)}
-                    placeholder="Название группы"
-                    sx={{
-                      fontSize: '1rem',
-                      fontWeight: 500,
-                      color: dialogTextColor,
-                      '& input': {
-                        borderBottom: `1.5px solid ${accentColor}`,
-                        pb: 0.5,
-                      },
-                      '& input::placeholder': { color: ui.textSecondary, opacity: 1 },
-                    }}
-                  />
-                </Box>
-              </Box>
-            </Box>
-          )}
-        </DialogContent>
-        <DialogActions sx={dialogActionsSx}>
-          {!isGroupDetailsStep ? (
-            <>
-              <Button
-                onClick={onCloseGroup}
-                sx={{ textTransform: 'none', fontWeight: 700, color: accentColor }}
-              >
-                Отмена
-              </Button>
-              <Button
-                variant="text"
-                data-testid="group-dialog-primary-action"
-                aria-label="Next group step"
-                onClick={() => setGroupStep('details')}
-                disabled={!canProceedToGroupDetails}
-                sx={{ textTransform: 'none', fontWeight: 700, color: accentColor }}
-              >
-                Далее
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button
-                onClick={() => setGroupStep('members')}
-                sx={{ textTransform: 'none', fontWeight: 700, color: accentColor }}
-              >
-                Назад
-              </Button>
-              <Button
-                variant="text"
-                data-testid="group-dialog-primary-action"
-                onClick={() => void onCreateGroup(groupAvatarFile)}
-                disabled={groupCreateDisabled}
-                sx={{ textTransform: 'none', fontWeight: 700, color: accentColor }}
-              >
-                Создать
-              </Button>
-            </>
-          )}
-        </DialogActions>
-      </Dialog>
 
       <Dialog open={shareOpen} onClose={onCloseShare} fullWidth maxWidth="md" PaperProps={{ sx: dialogPaperSx }}>
         <DialogTitle sx={dialogTitleSx}>Поделиться задачей</DialogTitle>

@@ -548,7 +548,7 @@ async function prepareAddressBook(userId: number, assertCurrent: () => void): Pr
       'Не удалось записать защищённый кэш',
     );
   }
-  const verified = await readNativeAddressBookSnapshot<typeof directory>(userId).catch(() => null);
+  const verified = await readNativeAddressBookSnapshot<typeof directory>(userId, { bypassMemory: true }).catch(() => null);
   if (
     !verified
     || !Array.isArray(verified.data.items)

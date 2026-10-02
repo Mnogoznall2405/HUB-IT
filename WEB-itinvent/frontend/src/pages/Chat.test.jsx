@@ -418,7 +418,7 @@ describe('Chat page AI helpers', () => {
     })).toBe(false);
   });
 
-  it('keeps AI in a separate section but includes notes in personal folder counters', () => {
+  it('keeps AI in a separate counter while notes stay in personal folder counters', () => {
     const conversations = [
       { id: 'direct-1', kind: 'direct', is_archived: false, unread_count: 2, is_pinned: false },
       { id: 'group-1', kind: 'group', is_archived: false, unread_count: 0, is_pinned: true },
@@ -435,10 +435,11 @@ describe('Chat page AI helpers', () => {
     expect(isRegularSidebarConversation(conversations[4])).toBe(false);
     expect(buildConversationFilterCounts(conversations)).toEqual({
       all: 3,
-      personal: 11,
+      personal: 2,
       groups: 0,
       tasks: 1,
       archived: 0,
+      ai: 9,
     });
     expect(filterSidebarConversations(conversations, 'groups').map((item) => item.id)).toEqual(['group-1']);
     expect(filterSidebarConversations(conversations, 'personal').map((item) => item.id)).toEqual(['direct-1', 'notes-1']);

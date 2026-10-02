@@ -13,6 +13,7 @@ export default function useChatFoldersController({
   notifyApiError,
   setCustomFolders,
   setConversationIdsByFolder,
+  setFolderUnreadCounts,
   setFoldersLoading,
   setConversationFilter,
 }) {
@@ -21,8 +22,15 @@ export default function useChatFoldersController({
     const idsByFolder = buildConversationIdsByFolder(items, payload?.conversation_ids_by_folder || {});
     setCustomFolders(items);
     setConversationIdsByFolder(idsByFolder);
+    const serverCounts = payload?.folder_unread_counts;
+    if (serverCounts && typeof serverCounts === 'object') {
+      setFolderUnreadCounts(Object.fromEntries(
+        Object.entries(serverCounts)
+          .map(([key, value]) => [key, Math.max(0, Math.trunc(Number(value) || 0))]),
+      ));
+    }
     return items;
-  }, [setConversationIdsByFolder, setCustomFolders]);
+  }, [setConversationIdsByFolder, setCustomFolders, setFolderUnreadCounts]);
 
   const loadChatFolders = useCallback(async ({ silent = false } = {}) => {
     if (!CHAT_FEATURE_ENABLED) return [];

@@ -117,6 +117,17 @@ export function getUnreadBoundaryMessageId(
   return messages[lastReadIndex - 1]?.id || null;
 }
 
+/** Fields explicitly set to `undefined` (or simply absent on a sparse
+ * normalized patch) must not erase the stored value on merge. */
+function mergeMessagePatch(previous: ChatMessage, patch: ChatMessage): ChatMessage {
+  const next = { ...(previous as Record<string, unknown>) };
+  (Object.keys(patch) as Array<keyof ChatMessage>).forEach((key) => {
+    const value = patch[key];
+    if (value !== undefined) next[key] = value;
+  });
+  return next as ChatMessage;
+}
+
 export function mergeMessages(
   current: ChatMessage[],
   incoming: ChatMessage | ChatMessage[],
@@ -127,7 +138,7 @@ export function mergeMessages(
     const id = String(message?.id || '').trim();
     if (!id) return;
     const previous = byId.get(id);
-    const merged = previous && previous !== message ? { ...previous, ...message } : message;
+    const merged = previous && previous !== message ? mergeMessagePatch(previous, message) : message;
     const isOwn = resolveChatMessageIsOwn(merged, currentUserId);
     const next = merged.is_own === isOwn ? merged : { ...merged, is_own: isOwn };
     // Preserve object identity so unchanged bubbles and downstream caches can skip work.
@@ -176,6 +187,60 @@ export function messageFromEnvelope(envelope: unknown): ChatMessage | null {
     return normalizeChatMessage(withConversation);
   }
   return null;
+}
+
+/**
+ * `chat.message.read` realtime delta, mirroring the web
+ * `applyReadReceiptDeltaToMessages`: a non-read delta patches only the target
+ * message; a read receipt marks every own message at-or-older than the target
+ * (in a newest-first list those sit at index >= target index).
+ */
+export function applyReadReceiptDelta(
+  current: ChatMessage[],
+  payload: unknown,
+  currentUserId?: number,
+): ChatMessage[] {
+  const list = Array.isArray(current) ? current : [];
+  const source = payload && typeof payload === 'object'
+    ? (payload as { payload?: Record<string, unknown> }).payload || (payload as Record<string, unknown>)
+    : {};
+  const messageId = String(source.message_id || '').trim();
+  if (!messageId) return list;
+  const readIndex = list.findIndex((item) => String(item?.id || '').trim() === messageId);
+  if (readIndex < 0) return list;
+  const rawReadByCount = source.read_by_count;
+  const hasReadByCount = rawReadByCount !== undefined && rawReadByCount !== null
+    && Number.isFinite(Number(rawReadByCount));
+  const nextReadByCount = hasReadByCount ? Math.max(0, Number(rawReadByCount)) : undefined;
+  const nextDeliveryStatus = String(source.delivery_status || '').trim();
+  const markAsRead = nextDeliveryStatus === 'read' || (nextReadByCount ?? 0) > 0;
+
+  if (!markAsRead) {
+    let changed = false;
+    const items = list.map((item, index) => {
+      if (index !== readIndex) return item;
+      const readByCount = nextReadByCount ?? item.read_by_count;
+      const deliveryStatus = (nextDeliveryStatus === 'read' || nextDeliveryStatus === 'sent'
+        ? nextDeliveryStatus
+        : item.delivery_status) as ChatMessage['delivery_status'];
+      if (readByCount === item.read_by_count && deliveryStatus === item.delivery_status) return item;
+      changed = true;
+      return { ...item, read_by_count: readByCount, delivery_status: deliveryStatus };
+    });
+    return changed ? items : list;
+  }
+
+  let changed = false;
+  const items = list.map((item, index) => {
+    if (index < readIndex || resolveChatMessageIsOwn(item, currentUserId) !== true) return item;
+    const readByCount = nextReadByCount === undefined
+      ? item.read_by_count
+      : Math.max(Number(item.read_by_count || 0), nextReadByCount);
+    if (item.delivery_status === 'read' && readByCount === item.read_by_count) return item;
+    changed = true;
+    return { ...item, read_by_count: readByCount, delivery_status: 'read' as const };
+  });
+  return changed ? items : list;
 }
 
 export function applyReactionEnvelope(

@@ -1,27 +1,84 @@
-import { memo } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import {
   Box,
   Button,
+  CircularProgress,
+  Divider,
   IconButton,
+  ListItemIcon,
+  ListItemText,
+  Menu,
+  MenuItem,
   Stack,
   Tooltip,
   Typography,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
+import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
+import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
 import ForwardRoundedIcon from '@mui/icons-material/ForwardRounded';
+import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 
+import { chatAPI } from '../../api/client';
 import { ConversationAvatar } from './ChatCommon';
-import { getConversationDisplayTitle } from './chatHelpers';
+import { getConversationDisplayTitle, resolveActiveAiBotRecord } from './chatHelpers';
 import { CHAT_DEFAULT_FONT_SIZES, CHAT_FONT_FAMILY } from './chatUiTokens';
 
-const AI_STAGE_LABELS = {
+export const CHAT_CONNECTION_INDICATOR_DELAY_MS = 2_000;
+
+const resolveChatConnectionLabel = (socketStatus, offline) => {
+  const status = String(socketStatus || '').trim();
+  if (status === 'unauthorized' || status === 'forbidden') return 'Сессия истекла';
+  if (offline) return 'Нет сети';
+  if (!status || status === 'connected') return '';
+  return 'Соединение…';
+};
+
+function useChatConnectionLabel(socketStatus) {
+  const [offline, setOffline] = useState(
+    () => typeof navigator !== 'undefined' && navigator.onLine === false,
+  );
+  const [label, setLabel] = useState('');
+  // First moment the socket left 'connected' — switching between unhealthy
+  // statuses must not restart the 2s countdown; 'connected' resets it at once.
+  const unhealthySinceRef = useRef(0);
+
+  useEffect(() => {
+    const onOnline = () => setOffline(false);
+    const onOffline = () => setOffline(true);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    const next = resolveChatConnectionLabel(socketStatus, offline);
+    if (!next) {
+      unhealthySinceRef.current = 0;
+      setLabel('');
+      return undefined;
+    }
+    if (!unhealthySinceRef.current) unhealthySinceRef.current = Date.now();
+    const elapsed = Date.now() - unhealthySinceRef.current;
+    const delay = Math.max(0, CHAT_CONNECTION_INDICATOR_DELAY_MS - elapsed);
+    const timerId = window.setTimeout(() => setLabel(next), delay);
+    return () => window.clearTimeout(timerId);
+  }, [socketStatus, offline]);
+
+  return label;
+}
+
+export const AI_STAGE_LABELS = {
   analyzing_request: 'Определяю задачу',
   reading_files: 'Проверяю вложенные файлы',
   retrieving_kb: 'Ищу в базе знаний',
@@ -77,155 +134,182 @@ function HeaderAction({ title, children, onClick, active = false, compactMobile 
   );
 }
 
-export function AiRunStatusBanner({ aiStatus, theme, ui, compactMobile = false, onStop }) {
-  const status = String(aiStatus?.status || '').trim();
-  if (!status) return null;
-  const completedStepCount = Array.isArray(aiStatus?.completed_stages) ? aiStatus.completed_stages.length : 0;
-  const safeStepCount = completedStepCount || 1;
-  const stepWord = safeStepCount % 10 === 1 && safeStepCount % 100 !== 11
-    ? 'шаг'
-    : ([2, 3, 4].includes(safeStepCount % 10) && ![12, 13, 14].includes(safeStepCount % 100) ? 'шага' : 'шагов');
-  const label = status === 'queued'
-    ? 'AI поставлен в очередь'
-    : status === 'running'
-      ? 'AI анализирует запрос и файлы'
-      : status === 'completed'
-        ? `Выполнено ${safeStepCount} ${stepWord}`
-      : status === 'cancelled'
-        ? 'Выполнение остановлено'
-        : 'AI не смог обработать запрос';
-  const tone = status === 'failed'
-    ? {
-      bg: alpha(theme.palette.error.main, theme.palette.mode === 'dark' ? 0.16 : 0.1),
-      border: alpha(theme.palette.error.main, 0.22),
-      text: theme.palette.error.main,
-    }
-    : {
-      bg: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.18 : 0.1),
-      border: alpha(theme.palette.primary.main, 0.22),
-      text: ui.accentText,
-    };
-  return (
-    <Box
-      role="status"
-      aria-live="polite"
-      aria-atomic="true"
-      sx={{
-        px: compactMobile ? 1.5 : 2,
-        py: 1.1,
-        borderBottom: `1px solid ${ui.borderSoft}`,
-        backgroundColor: tone.bg,
-      }}
-    >
-      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-        <Box sx={{ minWidth: 0 }}>
-          <Typography sx={{ fontSize: compactMobile ? 13 : 13.5, fontWeight: 700, color: tone.text, fontFamily: CHAT_FONT_FAMILY }}>
-            {String(aiStatus?.status_text || '').trim() || label}
-          </Typography>
-          {(status === 'queued' || status === 'running') ? (
-            <>
-              {Array.isArray(aiStatus?.completed_stages) && aiStatus.completed_stages.length > 0 ? (
-                <Stack spacing={0.2} sx={{ mt: 0.55 }}>
-                  {aiStatus.completed_stages.slice(-3).map((stage, index, stages) => (
-                    <Typography key={stage} sx={{ fontSize: 12, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
-                      {index === stages.length - 1 ? '○' : '✓'} {AI_STAGE_LABELS[stage] || 'Выполняю разрешённый шаг'}
-                    </Typography>
-                  ))}
-                </Stack>
-              ) : null}
-              <Typography sx={{ mt: 0.35, fontSize: 11.5, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
-                Внутренние рассуждения модели не показываются
-              </Typography>
-              {String(aiStatus?.partial_text || '').trim() ? (
-                <Typography
-                  data-testid="ai-partial-response"
-                  sx={{
-                    mt: 0.75,
-                    maxWidth: 760,
-                    whiteSpace: 'pre-wrap',
-                    color: 'text.primary',
-                    fontSize: compactMobile ? 13 : 13.5,
-                    lineHeight: 1.45,
-                    fontFamily: CHAT_FONT_FAMILY,
-                  }}
-                >
-                  {aiStatus.partial_text}
-                </Typography>
-              ) : null}
-            </>
-          ) : null}
-        </Box>
-        {(status === 'queued' || status === 'running') && onStop ? (
-          <Button
-            size="small"
-            onClick={onStop}
-            sx={{ minHeight: 36, flexShrink: 0, textTransform: 'none' }}
-          >
-            Остановить
-          </Button>
-        ) : null}
-      </Stack>
-      {status === 'failed' && aiStatus?.error_text ? (
-        <Typography sx={{ mt: 0.4, fontSize: 12.5, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
-          {aiStatus.error_text}
-        </Typography>
-      ) : null}
-    </Box>
-  );
-}
+// AI5: queued/running без обновления updated_at дольше этого порога —
+// зависший запуск. Формат статуса теперь рендерит AiRunFeedStatus
+// внутри ленты сообщений (ChatMessageList).
+export const AI_RUN_STALE_AFTER_MS = 5 * 60 * 1000;
 
-function AiInteractiveStatusBanner({ aiStatusDisplay, theme, ui, compactMobile = false }) {
-  if (!aiStatusDisplay?.visible) return null;
-  const tone = aiStatusDisplay.tone === 'error'
-    ? {
-      bg: alpha(theme.palette.error.main, theme.palette.mode === 'dark' ? 0.16 : 0.1),
-      border: alpha(theme.palette.error.main, 0.22),
-      text: theme.palette.error.main,
+// AI9/Д7: выпадающий выбор ассистента в шапке AI-беседы («ИИ-помощник ▾»).
+// Список ботов подгружается лениво при первом открытии; выбор открывает
+// последнюю беседу бота, «Новый чат» создаёт свежую. Навигация — через
+// существующий ?conversation= bootstrap, без изменения контроллеров.
+function AiAssistantSelect({ activeConversation, activeAiBot, aiStatus, navigate, theme, ui, compactMobile }) {
+  const [anchorEl, setAnchorEl] = useState(null);
+  const [bots, setBots] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [openingKey, setOpeningKey] = useState('');
+  const menuOpen = Boolean(anchorEl);
+
+  const loadBots = async () => {
+    if (bots !== null || loading) return;
+    setLoading(true);
+    setLoadError('');
+    try {
+      const data = await chatAPI.listAiBots();
+      setBots(Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []));
+    } catch {
+      setLoadError('Не удалось загрузить список ассистентов.');
+    } finally {
+      setLoading(false);
     }
-    : {
-      bg: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.18 : 0.1),
-      border: alpha(theme.palette.primary.main, 0.22),
-      text: ui.accentText,
-    };
+  };
+
+  const botItems = Array.isArray(bots) ? bots : [];
+  const currentBot = resolveActiveAiBotRecord({
+    aiBots: botItems,
+    activeConversationId: activeConversation?.id,
+    aiStatus,
+  }) || activeAiBot || null;
+  const currentBotId = String(currentBot?.id || currentBot?.bot_id || '').trim();
+  const buttonTitle = String(currentBot?.title || activeAiBot?.title || 'HUB Ассистент').trim() || 'HUB Ассистент';
+
+  const openConversationForResponse = (conversation) => {
+    const conversationId = String(conversation?.id || conversation?.conversation_id || '').trim();
+    if (!conversationId || typeof navigate !== 'function') return false;
+    setAnchorEl(null);
+    navigate(`/chat?conversation=${encodeURIComponent(conversationId)}`);
+    return true;
+  };
+
+  const handleSelectBot = async (bot) => {
+    const botId = String(bot?.id || bot?.bot_id || '').trim();
+    if (!botId || openingKey) return;
+    setOpeningKey(botId);
+    setLoadError('');
+    try {
+      const conversation = await chatAPI.openAiBotConversation(botId);
+      openConversationForResponse(conversation);
+    } catch {
+      setLoadError('Не удалось открыть чат с ассистентом.');
+    } finally {
+      setOpeningKey('');
+    }
+  };
+
+  const handleCreateChat = async () => {
+    if (openingKey) return;
+    setOpeningKey('new');
+    setLoadError('');
+    try {
+      const conversation = currentBotId
+        ? await chatAPI.createAiBotConversation(currentBotId)
+        : await chatAPI.createAiConversation();
+      openConversationForResponse(conversation);
+    } catch {
+      setLoadError('Не удалось создать новый чат.');
+    } finally {
+      setOpeningKey('');
+    }
+  };
+
   return (
-    <motion.div
-      key={`${aiStatusDisplay.status}:${aiStatusDisplay.stage}:${aiStatusDisplay.primaryText}`}
-      initial={{ opacity: 0, y: -6 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -6 }}
-      transition={{ duration: 0.18, ease: 'easeOut' }}
-    >
-      <Box
-        sx={{
-          px: compactMobile ? 1.5 : 2,
-          py: 1.1,
-          borderBottom: `1px solid ${ui.borderSoft}`,
-          backgroundColor: tone.bg,
-        }}
-      >
-        <Stack direction="row" spacing={1.1} alignItems="flex-start">
-          {aiStatusDisplay.showSpinner ? (
-            <CircularProgress
-              size={compactMobile ? 15 : 16}
-              thickness={5}
-              sx={{ mt: 0.15, color: tone.text, flexShrink: 0 }}
-            />
-          ) : (
-            <SmartToyOutlinedIcon sx={{ mt: 0.05, fontSize: 17, color: tone.text, flexShrink: 0 }} />
-          )}
-          <Box sx={{ minWidth: 0 }}>
-            <Typography sx={{ fontSize: compactMobile ? 13 : 13.5, fontWeight: 700, color: tone.text, fontFamily: CHAT_FONT_FAMILY }}>
-              {aiStatusDisplay.primaryText}
-            </Typography>
-            {aiStatusDisplay.secondaryText ? (
-              <Typography sx={{ mt: 0.4, fontSize: 12.5, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
-                {aiStatusDisplay.secondaryText}
-              </Typography>
-            ) : null}
+    <>
+      <Tooltip title="Выбрать ассистента">
+        <Button
+          size="small"
+          data-testid="chat-ai-assistant-select"
+          aria-label={`Ассистент: ${buttonTitle}`}
+          aria-haspopup="true"
+          aria-expanded={menuOpen}
+          onClick={(event) => {
+            setAnchorEl(event.currentTarget);
+            void loadBots();
+          }}
+          startIcon={<SmartToyOutlinedIcon sx={{ fontSize: 16 }} />}
+          endIcon={<KeyboardArrowDownRoundedIcon sx={{ fontSize: 16 }} />}
+          sx={{
+            minHeight: compactMobile ? 36 : 30,
+            maxWidth: compactMobile ? 168 : 220,
+            px: compactMobile ? 1 : 1.2,
+            borderRadius: 999,
+            textTransform: 'none',
+            fontSize: 12.5,
+            fontWeight: 700,
+            fontFamily: CHAT_FONT_FAMILY,
+            color: ui.accentText,
+            bgcolor: alpha(ui.accentText || theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.16 : 0.1),
+            '& .MuiButton-startIcon': { mr: 0.4 },
+            '& .MuiButton-endIcon': { ml: 0.2 },
+            '&:hover': { bgcolor: alpha(ui.accentText || theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.22 : 0.16) },
+          }}
+        >
+          <Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {buttonTitle}
           </Box>
-        </Stack>
-      </Box>
-    </motion.div>
+        </Button>
+      </Tooltip>
+      <Menu
+        anchorEl={anchorEl}
+        open={menuOpen}
+        onClose={() => setAnchorEl(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        data-testid="chat-ai-assistant-menu"
+      >
+        {loading ? (
+          <MenuItem disabled>
+            <CircularProgress size={16} sx={{ mr: 1.2 }} />
+            <ListItemText primary="Загружаю ассистентов…" />
+          </MenuItem>
+        ) : null}
+        {botItems.map((bot) => {
+          const botId = String(bot?.id || bot?.bot_id || '').trim();
+          const title = String(bot?.title || 'Ассистент').trim() || 'Ассистент';
+          const isCurrent = Boolean(botId) && botId === currentBotId;
+          return (
+            <MenuItem
+              key={botId || title}
+              disabled={!botId || Boolean(openingKey)}
+              onClick={() => void handleSelectBot(bot)}
+              selected={isCurrent}
+            >
+              <ListItemIcon sx={{ minWidth: 26 }}>
+                {openingKey === botId
+                  ? <CircularProgress size={15} />
+                  : isCurrent
+                    ? <CheckRoundedIcon sx={{ fontSize: 17 }} />
+                    : null}
+              </ListItemIcon>
+              <ListItemText
+                primary={title}
+                secondary={String(bot?.description || '').trim() || undefined}
+                secondaryTypographyProps={{ noWrap: true, sx: { maxWidth: 260 } }}
+              />
+            </MenuItem>
+          );
+        })}
+        {botItems.length > 0 ? <Divider sx={{ my: 0.5 }} /> : null}
+        <MenuItem
+          data-testid="chat-ai-new-chat"
+          disabled={Boolean(openingKey)}
+          onClick={() => void handleCreateChat()}
+        >
+          <ListItemIcon sx={{ minWidth: 26 }}>
+            {openingKey === 'new' ? <CircularProgress size={15} /> : <AddRoundedIcon sx={{ fontSize: 18 }} />}
+          </ListItemIcon>
+          <ListItemText primary="Новый чат с ассистентом" />
+        </MenuItem>
+        {loadError ? (
+          <MenuItem disabled dense>
+            <ListItemText
+              primary={loadError}
+              primaryTypographyProps={{ fontSize: 12, color: 'error.main' }}
+            />
+          </MenuItem>
+        ) : null}
+      </Menu>
+    </>
   );
 }
 
@@ -234,9 +318,14 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
   ui,
   isMobile,
   compactMobile,
+  fullWidth = false,
   activeConversation,
+  activeAiBot,
+  aiStatus,
+  navigate,
   headerSubtitle,
   typingLine,
+  socketStatus,
   contextPanelOpen,
   onBack,
   backLabel = 'Назад к чатам',
@@ -257,6 +346,8 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
   const density = ui.density || {};
   const taskId = String(activeConversation?.task_id || '').trim();
   const headerTitle = getConversationDisplayTitle(activeConversation);
+  const connectionLabel = useChatConnectionLabel(socketStatus);
+  const resolvedSubtitle = connectionLabel || typingLine || headerSubtitle;
   const openHeaderPrimary = () => {
     if (taskId && typeof onOpenTask === 'function') {
       onOpenTask(taskId);
@@ -276,7 +367,7 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
     borderBottom: theme.palette.mode === 'dark' ? `0.5px solid ${ui.borderSoft}` : 'none',
   };
   const headerContentSx = {
-    maxWidth: compactMobile ? '100%' : `${Number(density.contentMaxWidth || ui.contentMaxWidth || 980) + 56}px`,
+    maxWidth: compactMobile || fullWidth ? '100%' : `${Number(density.contentMaxWidth || ui.contentMaxWidth || 980) + 56}px`,
     mx: 'auto',
     width: '100%',
   };
@@ -452,7 +543,7 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
                   {headerTitle}
                 </Typography>
                 <Typography variant="caption" sx={{ color: ui.textSecondary, fontSize: compactMobile ? CHAT_DEFAULT_FONT_SIZES.headerSubtitleMobile : (density.threadHeaderSubtitleFontSize || '0.82rem'), lineHeight: 1.12, fontFamily: CHAT_FONT_FAMILY }} noWrap>
-                  {typingLine || headerSubtitle}
+                  {resolvedSubtitle}
                 </Typography>
               </Box>
             </Box>
@@ -539,13 +630,24 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
                 {headerTitle}
               </Typography>
               <Typography variant="caption" sx={{ color: ui.textSecondary, fontSize: compactMobile ? CHAT_DEFAULT_FONT_SIZES.headerSubtitleMobile : (density.threadHeaderSubtitleFontSize || '0.82rem'), lineHeight: 1.12, fontFamily: CHAT_FONT_FAMILY }} noWrap>
-                {typingLine || headerSubtitle}
+                {resolvedSubtitle}
               </Typography>
             </Box>
           </Box>
         </Stack>
 
         <Stack direction="row" spacing={0.1} alignItems="center">
+          {String(activeConversation?.kind || '').trim() === 'ai' ? (
+            <AiAssistantSelect
+              activeConversation={activeConversation}
+              activeAiBot={activeAiBot}
+              aiStatus={aiStatus}
+              navigate={navigate}
+              theme={theme}
+              ui={ui}
+              compactMobile={compactMobile}
+            />
+          ) : null}
           <HeaderAction title="Поиск по сообщениям" onClick={onOpenSearch} compactMobile={compactMobile} hidden={compactMobile} density={density}>
             <SearchRoundedIcon fontSize="small" />
           </HeaderAction>

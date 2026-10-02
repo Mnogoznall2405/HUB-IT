@@ -408,7 +408,8 @@ def test_route_tools_jev_selects_and_keeps_resolvers(monkeypatch):
     assert "office.mail.search" not in selected
 
 
-def test_route_tools_jev_failure_returns_none(monkeypatch):
+def test_route_tools_jev_failure_falls_back_to_narrow_set(monkeypatch):
+    """J5: сбой JEV никогда не отдаёт все инструменты — только узкий fallback."""
     monkeypatch.setenv("AI_JEV_ROUTING", "1")
     monkeypatch.setenv("AI_JEV_ROUTING_MODE", "tool")
     monkeypatch.setattr(service_module.jev_client, "is_configured", lambda: True)
@@ -421,4 +422,5 @@ def test_route_tools_jev_failure_returns_none(monkeypatch):
         trigger_text="x",
         tool_specs=[{"tool_id": "mfu.devices.list"}],
     )
-    assert result is None
+    # «x» не даёт keyword-hit и mfu не входит в базовый {files, kb} — пустой сет.
+    assert result == set()

@@ -102,6 +102,49 @@ const detectAnimatedGif = async (file) => {
   }
 };
 
+// Dimensions must reflect the file as the server will display it:
+// createImageBitmap honours EXIF orientation (imageOrientation defaults to
+// 'from-image'), matching the server's ImageOps.exif_transpose.
+const readChatImageDimensions = async (file) => {
+  if (!file) return null;
+  try {
+    if (typeof createImageBitmap === 'function') {
+      const bitmap = await createImageBitmap(file);
+      try {
+        const width = Number(bitmap?.width || 0);
+        const height = Number(bitmap?.height || 0);
+        if (width > 0 && height > 0) return { width, height };
+      } finally {
+        try { bitmap?.close?.(); } catch { /* ignore */ }
+      }
+    }
+  } catch {
+    // Fall back to <img> decoding below.
+  }
+  try {
+    if (typeof Image === 'undefined' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+      return null;
+    }
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      return await new Promise((resolve) => {
+        const image = new Image();
+        image.onload = () => {
+          const width = Number(image.naturalWidth || 0);
+          const height = Number(image.naturalHeight || 0);
+          resolve(width > 0 && height > 0 ? { width, height } : null);
+        };
+        image.onerror = () => resolve(null);
+        image.src = objectUrl;
+      });
+    } finally {
+      try { URL.revokeObjectURL(objectUrl); } catch { /* ignore */ }
+    }
+  } catch {
+    return null;
+  }
+};
+
 const gzipBytesAsync = async (payload, options = {}) => {
   const gzip = await loadGzip();
   return new Promise((resolve, reject) => {
@@ -231,9 +274,24 @@ export const prepareChatUploadFile = async (file, options = {}) => {
     console.warn('Transport compression failed, using original payload:', error);
   }
 
+  let imageDimensions = null;
+  let originalImageDimensions = null;
+  if (isChatImageFile(preparedFile)) {
+    imageDimensions = await readChatImageDimensions(preparedFile);
+    if (preparedFile !== file) {
+      // The "send as file" mode ships the original bytes; keep its own
+      // dimensions so the optimistic bubble matches what the server stores.
+      originalImageDimensions = await readChatImageDimensions(file);
+    }
+  }
+
   return normalizePreparedItem(file, {
     file: preparedFile,
     preparedSize: Number(preparedFile?.size || 0),
+    imageWidth: imageDimensions?.width || 0,
+    imageHeight: imageDimensions?.height || 0,
+    originalImageWidth: originalImageDimensions?.width || 0,
+    originalImageHeight: originalImageDimensions?.height || 0,
     transferFile,
     transferSize: Number(transferFile?.size || preparedFile?.size || 0),
     finalSize: Number(transferFile?.size || preparedFile?.size || 0),

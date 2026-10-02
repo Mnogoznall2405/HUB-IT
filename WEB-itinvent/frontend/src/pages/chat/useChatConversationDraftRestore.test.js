@@ -93,10 +93,6 @@ describe('useChatConversationDraftRestore helpers', () => {
 });
 
 describe('useChatConversationDraftRestore', () => {
-  it('exports a default hook function', () => {
-    expect(typeof useChatConversationDraftRestore).toBe('function');
-  });
-
   it('restores draft and resumes sync on conversation change', async () => {
     const { renderHook } = await import('@testing-library/react');
     const suppressDraftSyncRef = { current: false };

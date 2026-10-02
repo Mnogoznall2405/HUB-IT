@@ -4,6 +4,7 @@ import type { ChatConversationSummary, ChatMessage } from '../../api/types';
 import { formatApiError } from '../../api/formatError';
 import { showNativeToast } from '../../components/nativeToast';
 import { mergeMessages } from '../../chat/chatState';
+import { createChatClientMessageId } from '../../chat/chatModels';
 import type { ChatListAnchorReason } from '../../chat/chatListAnchor';
 
 /** Forward-to-conversation queue: picker state, sequential sends, progress. */
@@ -31,11 +32,16 @@ export function useThreadForward({
   const forwardInFlightRef = useRef(false);
   const [forwardProgress, setForwardProgress] = useState<{ target: ChatConversationSummary; completed: number; total: number } | null>(null);
   const [forwardError, setForwardError] = useState('');
+  // Stable idempotency keys per (target, source message) so a retry after a
+  // dropped acknowledgement replays against the server dedup instead of
+  // posting a duplicate forward.
+  const forwardClientIdsRef = useRef(new Map<string, string>());
   useEffect(() => {
     setForwardSource(null);
     setForwardQueue([]);
     setForwardProgress(null);
     setForwardError('');
+    forwardClientIdsRef.current = new Map();
   }, [sendScope]);
 
   const openForward = useCallback(async (message: ChatMessage | ChatMessage[]) => {
@@ -49,6 +55,7 @@ export function useThreadForward({
       const queue = Array.isArray(message) ? message : [message];
       setForwardSource(queue[0] || null);
       setForwardQueue(queue);
+      forwardClientIdsRef.current = new Map();
     } catch (cause) {
       if (isCurrentSendScope()) {
         showNativeToast('Не удалось загрузить диалоги', formatApiError(cause, 'Повторите попытку'));
@@ -68,7 +75,13 @@ export function useThreadForward({
     let completed = 0;
     try {
       for (const item of queue) {
-        const forwarded = await chatApi.forwardMessage(target.id, item.id);
+        const idKey = `${target.id}:${item.id}`;
+        let clientMessageId = forwardClientIdsRef.current.get(idKey);
+        if (!clientMessageId) {
+          clientMessageId = createChatClientMessageId();
+          forwardClientIdsRef.current.set(idKey, clientMessageId);
+        }
+        const forwarded = await chatApi.forwardMessage(target.id, item.id, undefined, clientMessageId);
         if (!isCurrentSendScope()) return;
         completed += 1;
         // Commit each ACK before starting the next request; never replay these items.

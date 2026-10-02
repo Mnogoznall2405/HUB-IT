@@ -142,6 +142,32 @@ describe('chatOptimisticMessages helpers', () => {
     expect(mergeIncomingThreadMessage(existing, incoming).delivery_status).toBe('read');
   });
 
+  it('mergeIncomingThreadMessage keeps flags for local optimistic status updates', () => {
+    const optimistic = buildOptimisticTextMessage({
+      conversationId: 'c1',
+      body: 'fail me',
+      user: { id: 7, username: 'alice', full_name: 'Alice' },
+      seq: 1,
+      now: 1_700_000_000_000,
+    });
+
+    // sending → failed: local transition must not be treated as a server ACK.
+    const failed = mergeIncomingThreadMessage(optimistic, {
+      ...optimistic,
+      optimisticStatus: 'failed',
+    });
+    expect(failed.isOptimistic).toBe(true);
+    expect(failed.optimisticStatus).toBe('failed');
+
+    // failed → sending on retry keeps the optimistic state too.
+    const retrying = mergeIncomingThreadMessage(failed, {
+      ...failed,
+      optimisticStatus: 'sending',
+    });
+    expect(retrying.isOptimistic).toBe(true);
+    expect(retrying.optimisticStatus).toBe('sending');
+  });
+
   it('resolveServerMessageFromSendAck binds lean top-level ACK fields', () => {
     const optimistic = buildOptimisticTextMessage({
       conversationId: 'c1',

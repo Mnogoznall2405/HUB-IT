@@ -7,10 +7,6 @@ import useChatUrlConversationBootstrap from './useChatUrlConversationBootstrap';
 // here we smoke-test the hook mounts without throwing.
 
 describe('useChatUrlConversationBootstrap', () => {
-  it('exports a default hook function', () => {
-    expect(typeof useChatUrlConversationBootstrap).toBe('function');
-  });
-
   it('module loads applyRequestedConversation path without error when bootstrap incomplete', async () => {
     const { renderHook } = await import('@testing-library/react');
     const setActiveConversationId = vi.fn();

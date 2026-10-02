@@ -27,6 +27,13 @@ def _replace_document_placeholders(document: Any, replacements: Dict[str, str]) 
     paragraphs = list(document.paragraphs)
     for table in document.tables:
         paragraphs.extend(_iter_table_paragraphs(table))
+    for section in document.sections:
+        for story in (section.header, section.footer):
+            if story.is_linked_to_previous:
+                continue
+            paragraphs.extend(story.paragraphs)
+            for table in story.tables:
+                paragraphs.extend(_iter_table_paragraphs(table))
 
     for paragraph in paragraphs:
         updated_text = paragraph.text
@@ -201,6 +208,9 @@ async def generate_transfer_act_pdf(
                 
                 # Добавляем строку
                 row = table.add_row()
+                trPr = row._tr.get_or_add_trPr()
+                if trPr.find(qn('w:cantSplit')) is None:
+                    trPr.append(OxmlElement('w:cantSplit'))
                 
                 # Заполняем ячейки
                 # Используем отдел НОВОГО сотрудника (получателя), а не старого

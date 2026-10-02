@@ -1,14 +1,15 @@
 """System-folder unread totals for Chat inbox tabs."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from backend.chat.models import ChatConversation, ChatConversationUserState, ChatMember
 
-SYSTEM_FOLDER_UNREAD_KEYS = ("personal", "groups", "tasks", "archived")
+SYSTEM_FOLDER_UNREAD_KEYS = ("personal", "groups", "tasks", "archived", "ai")
 
 
 def empty_system_folder_unread_counts() -> dict[str, int]:
@@ -31,7 +32,10 @@ def add_system_folder_unread(
         return counts
     normalized_kind = str(kind or "").strip()
     normalized_task_id = str(task_id or "").strip()
-    if normalized_kind in {"direct", "notes", "ai"}:
+    # U1: AI conversations form the dedicated «ИИ» workspace, not «Личные».
+    if normalized_kind == "ai":
+        counts["ai"] = int(counts.get("ai") or 0) + unread
+    if normalized_kind in {"direct", "notes"}:
         counts["personal"] = int(counts.get("personal") or 0) + unread
     if normalized_kind == "group":
         counts["groups"] = int(counts.get("groups") or 0) + unread
@@ -61,6 +65,14 @@ def compute_system_folder_unread_counts(session: Session, *, user_id: int) -> di
         .where(
             ChatMember.user_id == int(user_id),
             ChatMember.left_at.is_(None),
+            # A3-2: effectively-muted conversations do not feed folder badges.
+            or_(
+                ChatConversationUserState.is_muted.is_(False),
+                and_(
+                    ChatConversationUserState.muted_until.is_not(None),
+                    ChatConversationUserState.muted_until <= datetime.now(timezone.utc),
+                ),
+            ),
         )
     ).all()
     for kind, task_id, is_archived, unread_count in rows:

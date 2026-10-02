@@ -27,6 +27,7 @@ const STATUS_COLORS = {
 
 const ANDROID_CHANNELS = [
   ['hubit_chat', 'Чат'],
+  ['hubit_chat_ai', 'ИИ-агенты'],
   ['hubit_tasks', 'Задачи'],
   ['hubit_mail', 'Почта'],
   ['hubit_system', 'Системные'],

@@ -18,7 +18,7 @@ from uuid import uuid4
 
 import httpx
 from PIL import Image
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError
 
 from backend.chat.db import chat_read_session, chat_write_session
@@ -50,6 +50,15 @@ _PREVIEW_CACHE_MARKER = ".previews-v2"
 _TELEGRAM_API_HOST = "api.telegram.org"
 _DEFAULT_TELEGRAM_API_FALLBACK_IP = "149.154.167.220"
 _TELEGRAM_API_FALLBACK_TTL_SECONDS = 10 * 60
+# Packs preloaded for every HUB-IT user (approved list, verified via getStickerSet).
+# Override with a comma-separated CHAT_DEFAULT_STICKER_PACKS env var.
+_DEFAULT_STICKER_PACK_SHORT_NAMES: tuple[str, ...] = (
+    "peach_goma",
+    "HotCherry",
+    "DonutTheDog",
+    "fullduck",
+    "X264WebmPack",
+)
 
 
 class TelegramStickerConfigurationError(RuntimeError):
@@ -72,6 +81,16 @@ def parse_telegram_sticker_pack_name(value: object) -> str:
             "Укажите ссылку вида https://t.me/addstickers/PackName"
         )
     return match.group(1)
+
+
+def default_sticker_pack_short_names() -> tuple[str, ...]:
+    raw = str(os.getenv("CHAT_DEFAULT_STICKER_PACKS", "") or "").strip()
+    if not raw:
+        return _DEFAULT_STICKER_PACK_SHORT_NAMES
+    names = tuple(
+        name for name in (item.strip() for item in raw.split(",")) if name
+    )
+    return names or _DEFAULT_STICKER_PACK_SHORT_NAMES
 
 
 def _sticker_format(payload: dict[str, Any]) -> tuple[str, str, str]:
@@ -268,7 +287,58 @@ class TelegramStickerService:
                 ]
             }
 
+    def _ensure_default_packs(self, *, current_user_id: int) -> None:
+        short_names = [name.lower() for name in default_sticker_pack_short_names()]
+        if not short_names:
+            return
+        with chat_read_session() as session:
+            rows = session.execute(
+                select(ChatStickerPack.id, ChatUserStickerPack.id)
+                .outerjoin(
+                    ChatUserStickerPack,
+                    and_(
+                        ChatUserStickerPack.pack_id == ChatStickerPack.id,
+                        ChatUserStickerPack.user_id == int(current_user_id),
+                    ),
+                )
+                .where(func.lower(ChatStickerPack.short_name).in_(short_names))
+            ).all()
+        missing_pack_ids = [pack_id for pack_id, membership_id in rows if membership_id is None]
+        if not missing_pack_ids:
+            return
+        with chat_write_session() as session:
+            for pack_id in missing_pack_ids:
+                pack = session.execute(
+                    select(ChatStickerPack).where(ChatStickerPack.id == pack_id)
+                ).scalar_one_or_none()
+                if pack is None:
+                    continue
+                storage_names = list(
+                    session.execute(
+                        select(ChatSticker.storage_name).where(ChatSticker.pack_id == pack.id)
+                    ).scalars()
+                )
+                if not self._pack_files_available(pack_id=pack.id, storage_names=storage_names):
+                    continue
+                if not self._pack_preview_cache_available(pack_id=pack.id):
+                    continue
+                installed = session.execute(
+                    select(ChatUserStickerPack).where(
+                        ChatUserStickerPack.user_id == int(current_user_id),
+                        ChatUserStickerPack.pack_id == pack.id,
+                    )
+                ).scalar_one_or_none()
+                if installed is None:
+                    session.add(
+                        ChatUserStickerPack(
+                            user_id=int(current_user_id),
+                            pack_id=pack.id,
+                            added_at=utcnow(),
+                        )
+                    )
+
     def list_packs(self, *, current_user_id: int) -> dict[str, Any]:
+        self._ensure_default_packs(current_user_id=int(current_user_id))
         return self._serialize_packs(current_user_id=int(current_user_id))
 
     def preview_pack(self, *, current_user_id: int, short_name: str) -> dict[str, Any]:
@@ -670,6 +740,14 @@ class TelegramStickerService:
             ).scalar_one_or_none()
             if installed is None:
                 raise LookupError("Набор стикеров не найден")
+            # R23: default packs are shared baseline; without a dismissal flag the
+            # next list_packs would silently reinstall them, so removal is refused.
+            pack_short_name = session.execute(
+                select(ChatStickerPack.short_name).where(ChatStickerPack.id == normalized_pack_id)
+            ).scalar_one_or_none()
+            default_short_names = {name.lower() for name in default_sticker_pack_short_names()}
+            if pack_short_name is not None and str(pack_short_name).lower() in default_short_names:
+                raise ValueError("Стандартный набор стикеров нельзя удалить")
             session.delete(installed)
         return {"ok": True}
 
@@ -829,6 +907,7 @@ class TelegramStickerService:
         current_user_id: int,
         conversation_id: str,
         sticker_id: str,
+        client_message_id: str | None = None,
         reply_to_message_id: str | None = None,
         defer_push_notifications: bool = False,
     ) -> dict[str, Any]:
@@ -911,12 +990,18 @@ class TelegramStickerService:
                 conversation_id=normalized_conversation_id,
                 body="",
                 prepared=prepared,
+                client_message_id=client_message_id,
                 reply_to_message_id=reply_to_message_id,
             )
             chat_service._set_request_meta(conversation_kind=persisted.conversation_kind)
         except Exception:
             target_path.unlink(missing_ok=True)
             raise
+        if persisted.dedup_hit:
+            # The deterministic message already owns its sticker copy; drop
+            # this retry's duplicate file.
+            target_path.unlink(missing_ok=True)
+            return persisted.payload
         chat_service._postprocess_file_message(
             current_user_id=int(current_user_id),
             payload=persisted.payload,

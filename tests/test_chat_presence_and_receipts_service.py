@@ -325,14 +325,17 @@ def test_unread_summaries_and_batched_conversation_summaries_use_new_counters(ch
     assert unread_by_user[1] == {
         "messages_unread_total": 0,
         "conversations_unread": 0,
+        "mentions_unread_total": 0,
     }
     assert unread_by_user[2] == {
         "messages_unread_total": 1,
         "conversations_unread": 1,
+        "mentions_unread_total": 0,
     }
     assert unread_by_user[3] == {
         "messages_unread_total": 1,
         "conversations_unread": 1,
+        "mentions_unread_total": 0,
     }
 
     summaries = service.get_conversation_summaries_for_users(
@@ -412,6 +415,7 @@ def test_departed_group_member_does_not_keep_phantom_unread(chat_env, departure)
     assert service.get_unread_summaries(user_ids=[2])[2] == {
         "messages_unread_total": 0,
         "conversations_unread": 0,
+        "mentions_unread_total": 0,
     }
 
     service.add_group_members(
@@ -430,6 +434,50 @@ def test_departed_group_member_does_not_keep_phantom_unread(chat_env, departure)
     assert service.get_unread_summaries(user_ids=[2])[2] == {
         "messages_unread_total": 1,
         "conversations_unread": 1,
+        "mentions_unread_total": 0,
+    }
+
+
+def test_muted_conversation_is_excluded_from_unread_summary(chat_env):
+    """A3-2: an effective mute drops the conversation from the global badge;
+    an already-expired muted_until does not mute at all."""
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    created = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Unread before mute",
+    )
+    _enqueue_and_apply_delivery_state(service, created)
+    assert service.get_unread_summaries(user_ids=[2])[2] == {
+        "messages_unread_total": 1,
+        "conversations_unread": 1,
+        "mentions_unread_total": 0,
+    }
+
+    service.update_conversation_settings(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+        is_muted=True,
+    )
+    assert service.get_unread_summaries(user_ids=[2])[2] == {
+        "messages_unread_total": 0,
+        "conversations_unread": 0,
+        "mentions_unread_total": 0,
+    }
+
+    # A deadline in the past lifts the mute — unread returns to the badge.
+    past = datetime.now(timezone.utc) - timedelta(seconds=5)
+    service.update_conversation_settings(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+        muted_until=past,
+    )
+    assert service.get_unread_summaries(user_ids=[2])[2] == {
+        "messages_unread_total": 1,
+        "conversations_unread": 1,
+        "mentions_unread_total": 0,
     }
 
 

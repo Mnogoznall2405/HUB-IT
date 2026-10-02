@@ -309,14 +309,14 @@ function NotificationCenterContent() {
     }
   }, [load]);
 
-  const openItem = useCallback((item: NotificationCenterItem) => {
+  const openItem = useCallback(async (item: NotificationCenterItem) => {
     if (!mountedRef.current || readActionPending.current) return;
     beginReadAction();
     setBusyKey(item.key);
     setError('');
     if (item.source === 'hub') {
       const raw = item.raw as HubNotificationItem;
-      const destination = hubNotificationPortalPath(raw);
+      const destination = await hubNotificationPortalPath(raw, { userId: Number(user?.id || 0) });
       if (destination === '/dashboard') {
         Alert.alert(item.title, [item.body, 'Связанную карточку открыть нельзя: ссылка отсутствует или этот тип уведомления пока не поддерживается.'].filter(Boolean).join('\n\n'), [{ text: 'Понятно' }]);
       }
@@ -374,12 +374,12 @@ function NotificationCenterContent() {
         if (mountedRef.current) setBusyKey('');
     });
     openPortalPath(destination);
-  }, [beginReadAction, finishReadAction, persistReadResult, offlineMode]);
+  }, [beginReadAction, finishReadAction, persistReadResult, offlineMode, user?.id]);
 
   const openItemRef = useRef(openItem);
   openItemRef.current = openItem;
   const handleItemPress = useCallback((item: NotificationCenterItem) => {
-    openItemRef.current(item);
+    void openItemRef.current(item);
   }, []);
 
   const renderNotificationItem = useCallback(({ item }: { item: NotificationCenterItem }) => (

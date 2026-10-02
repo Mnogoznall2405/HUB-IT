@@ -26,6 +26,10 @@ describe('nativeDatabaseDestinationFromPortalPath', () => {
       pathname: '/(shell)/database',
       params: { consumable: '4821', databaseId: 'OBJ-ITINVENT' },
     });
+    expect(nativeDatabaseDestinationFromPortalPath('/database?scan=1')).toEqual({
+      pathname: '/(shell)/database',
+      params: { scan: '1' },
+    });
     expect(nativeDatabaseDestinationFromPortalPath('/database?consumable_id=12')).toEqual({
       pathname: '/(shell)/database',
       params: { consumable: '12' },
@@ -36,7 +40,8 @@ describe('nativeDatabaseDestinationFromPortalPath', () => {
 
   it('rejects unsupported upload, reminder and unknown workflows', () => {
     expect(nativeDatabaseDestinationFromPortalPath('/database?upload_act=1&reminder_id=r1&source_task_id=t1')).toBeNull();
-    expect(nativeDatabaseDestinationFromPortalPath('/database?scan=1')).toBeNull();
+    expect(nativeDatabaseDestinationFromPortalPath('/database?scan=2')).toBeNull();
+    expect(nativeDatabaseDestinationFromPortalPath('/database?scan=yes')).toBeNull();
     expect(nativeDatabaseDestinationFromPortalPath('/database?mode=write')).toBeNull();
     expect(nativeDatabaseDestinationFromPortalPath('/database?tab=warehouse1c')).toBeNull();
     expect(nativeDatabaseDestinationFromPortalPath('/database/consumables')).toBeNull();

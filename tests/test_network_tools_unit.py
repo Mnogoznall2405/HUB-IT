@@ -69,7 +69,7 @@ class TestToolRegistration:
 
 
 class TestAdminOnlyAttribute:
-    """Verify admin_only is True for wol_draft and host_info, False for others."""
+    """Verify admin_only is not used; portal permissions gate the tools (AG-2)."""
 
     def test_ping_not_admin_only(self):
         tool = NetworkHostPingTool()
@@ -83,13 +83,19 @@ class TestAdminOnlyAttribute:
         tool = NetworkSslCheckTool()
         assert tool.admin_only is False
 
-    def test_wol_admin_only(self):
-        tool = NetworkWolDraftTool()
-        assert tool.admin_only is True
+    def test_wol_requires_networks_write(self):
+        from backend.ai_chat.tool_permissions import tool_required_permissions
 
-    def test_host_info_admin_only(self):
+        tool = NetworkWolDraftTool()
+        assert tool.admin_only is False
+        assert tool_required_permissions(tool.tool_id) == ["networks.write"]
+
+    def test_host_info_requires_networks_read(self):
+        from backend.ai_chat.tool_permissions import tool_required_permissions
+
         tool = NetworkHostInfoTool()
-        assert tool.admin_only is True
+        assert tool.admin_only is False
+        assert tool_required_permissions(tool.tool_id) == ["networks.read"]
 
 
 # ---------------------------------------------------------------------------

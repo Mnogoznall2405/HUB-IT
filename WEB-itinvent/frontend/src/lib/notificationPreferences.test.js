@@ -25,6 +25,8 @@ describe('notificationPreferences', () => {
       chat_direct: true,
       chat_group: true,
       chat_task: true,
+      chat_ai: true,
+      chat_sound: true,
     });
   });
 
@@ -36,6 +38,8 @@ describe('notificationPreferences', () => {
     [{ channel: 'mention' }, 'chat'],
     [{ channel: 'chat', conversation_kind: 'direct' }, 'chat_direct'],
     [{ channel: 'chat', conversation_kind: 'group' }, 'chat_group'],
+    [{ channel: 'chat', conversation_kind: 'ai' }, 'chat_ai'],
+    [{ channel: 'chat_ai' }, 'chat_ai'],
     [{ channel: 'mention', conversation_kind: 'task' }, 'chat_task'],
     [{ entity_type: 'task' }, 'tasks'],
     [{ entity_type: 'announcement' }, 'announcements'],
@@ -71,6 +75,8 @@ describe('notificationPreferences', () => {
       chat_direct: true,
       chat_group: true,
       chat_task: true,
+      chat_ai: true,
+      chat_sound: true,
     });
     window.removeEventListener(NOTIFICATION_PREFERENCES_CHANGED_EVENT, listener);
   });
@@ -81,6 +87,7 @@ describe('notificationPreferences', () => {
       chat_direct: false,
       chat_group: false,
       chat_task: false,
+      chat_ai: false,
     }));
   });
 });

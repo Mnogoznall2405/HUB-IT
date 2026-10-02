@@ -13,5 +13,8 @@ export default function ShellChatConversationRoute() {
   const focusMessageId = Array.isArray(messageId) ? messageId[0] : messageId;
   if (!NATIVE_CHAT_ENABLED) return <Redirect href="/(shell)/menu" />;
   if (!id) return <Redirect href="/(shell)/chat" />;
+  // Invariant: the screen remounts per user+conversation. Thread hooks rely on
+  // mountedRef alone to drop stale async work — removing this key would turn
+  // every mountedRef-only guard into a cross-conversation race.
   return <NativeChatThreadScreen key={`${Number(user?.id || 0)}:${id}`} conversationId={id} messageId={focusMessageId} />;
 }

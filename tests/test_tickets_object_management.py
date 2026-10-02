@@ -22,13 +22,12 @@ if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
 
-from backend.appdb.models import AppBase
 from backend.appdb.tickets_models import TicketObject
 from backend.services.tickets_service import TicketsService
 
 
-def _sqlite_url(temp_dir: str) -> str:
-    return f"sqlite:///{(Path(temp_dir) / 'tickets_objects.db').as_posix()}"
+def _sqlite_url(database_path: Path) -> str:
+    return f"sqlite:///{database_path.as_posix()}"
 
 
 def _admin_user() -> dict:
@@ -44,11 +43,11 @@ def _operator_user() -> dict:
 
 
 @pytest.fixture
-def service(temp_dir, monkeypatch):
+def service(prebuilt_app_db, monkeypatch, request):
     """Create a TicketsService with a fresh SQLite database."""
     import backend.appdb.db as appdb
 
-    url = _sqlite_url(temp_dir)
+    url = _sqlite_url(prebuilt_app_db)
 
     # Clear cached engines/session factories so we get a fresh one
     appdb._engines.clear()
@@ -64,6 +63,7 @@ def service(temp_dir, monkeypatch):
         url,
         execution_options={"schema_translate_map": {"app": None, "system": None}},
     )
+    request.addfinalizer(engine.dispose)
 
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragma(dbapi_conn, connection_record):
@@ -72,7 +72,6 @@ def service(temp_dir, monkeypatch):
         cursor.close()
 
     # Create only the TicketObject table (and users for FK)
-    AppBase.metadata.create_all(engine, checkfirst=True)
 
     SessionLocal = sessionmaker(bind=engine)
 
@@ -374,13 +373,36 @@ class TestUpdateObject:
         with pytest.raises(ValueError, match="name is required"):
             service.update_object(created["id"], {"name": ""}, _admin_user())
 
-    def test_update_object_invalid_region(self, service):
+    def test_update_object_clears_optional_region(self, service):
         created = service.create_object(
             {"code": "KAM", "name": "Камчатка", "region": "Дальний Восток"},
             _admin_user(),
         )
-        with pytest.raises(ValueError, match="region is required"):
-            service.update_object(created["id"], {"region": ""}, _admin_user())
+        updated = service.update_object(created["id"], {"region": ""}, _admin_user())
+        assert updated["region"] == ""
+        assert updated["id"] == created["id"]
+        assert updated["name"] == created["name"]
+        assert updated["code"] == created["code"]
+        persisted = next(
+            item
+            for item in service.list_objects(include_inactive=True)
+            if item["id"] == created["id"]
+        )
+        assert persisted["region"] == ""
+
+    def test_update_object_region_too_long(self, service):
+        created = service.create_object(
+            {"code": "KAM", "name": "Камчатка", "region": "Дальний Восток"},
+            _admin_user(),
+        )
+        with pytest.raises(ValueError, match="at most 100 characters"):
+            service.update_object(created["id"], {"region": "R" * 101}, _admin_user())
+        persisted = next(
+            item
+            for item in service.list_objects(include_inactive=True)
+            if item["id"] == created["id"]
+        )
+        assert persisted["region"] == "Дальний Восток"
 
     def test_update_multiple_fields(self, service):
         created = service.create_object(

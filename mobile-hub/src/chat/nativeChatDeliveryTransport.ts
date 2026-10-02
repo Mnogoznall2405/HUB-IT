@@ -30,6 +30,23 @@ export function createNativeChatDeliveryTransport(canDeliver: () => boolean): Na
         onProgress: (loaded, total) => publishNativeChatUploadProgress(entry, loaded, total),
       });
     }
+    // M3: special send kinds ride the same durable row; retry replays the same
+    // command with the same client_message_id so the server dedupes by design.
+    const command = entry.command;
+    if (command?.type === 'sticker') {
+      return chatApi.sendSticker(entry.message.conversation_id, command.sticker_id, {
+        clientMessageId: id,
+        replyToMessageId: entry.message.reply_preview?.id,
+        signal,
+      });
+    }
+    if (command?.type === 'task_share') {
+      return chatApi.shareTask(entry.message.conversation_id, command.task_id, {
+        clientMessageId: id,
+        replyToMessageId: entry.message.reply_preview?.id,
+        signal,
+      });
+    }
     // Abort releases the request on suspension; a lost ACK is retried with
     // the same ID because cancellation cannot undo server acceptance.
     return chatApi.sendTextMessage(entry.message.conversation_id, entry.message.body_text || '', {

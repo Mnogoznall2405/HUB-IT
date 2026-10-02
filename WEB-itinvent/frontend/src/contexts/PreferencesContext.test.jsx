@@ -1,6 +1,7 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { useTheme } from '@mui/material/styles';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getMySettingsMock = vi.fn();
 const updateMySettingsMock = vi.fn();
@@ -211,6 +212,64 @@ describe('PreferencesContext theme mode', () => {
     expect(resolveThemeMode('system', true)).toBe('dark');
     expect(resolveThemeMode('system', false)).toBe('light');
     expect(resolveThemeMode('dark', false)).toBe('dark');
-    expect(normalizeThemeMode('automatic-magic')).toBe('light');
+    expect(normalizeThemeMode('automatic-magic')).toBe('system');
+  });
+
+  describe('default is "as in the system" (R39)', () => {
+    const originalMatchMedia = window.matchMedia;
+
+    function ThemeProbe() {
+      const { preferences } = usePreferences();
+      const theme = useTheme();
+      return (
+        <>
+          <div data-testid="mode">{preferences.theme_mode}</div>
+          <div data-testid="palette">{theme.palette.mode}</div>
+        </>
+      );
+    }
+
+    const mockSystemDark = (dark) => {
+      window.matchMedia = (query) => ({
+        matches: dark && /prefers-color-scheme:\s*dark/.test(query),
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+      });
+    };
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+      localStorage.clear();
+    });
+
+    afterEach(() => {
+      window.matchMedia = originalMatchMedia;
+    });
+
+    it('follows a dark OS when the user never chose a theme', () => {
+      mockSystemDark(true);
+      render(
+        <PreferencesProvider>
+          <ThemeProbe />
+        </PreferencesProvider>,
+      );
+      expect(screen.getByTestId('mode')).toHaveTextContent('system');
+      expect(screen.getByTestId('palette')).toHaveTextContent('dark');
+    });
+
+    it('keeps an explicitly saved choice even on a dark OS', () => {
+      mockSystemDark(true);
+      localStorage.setItem('web_preferences_cache', JSON.stringify({ theme_mode: 'light' }));
+      render(
+        <PreferencesProvider>
+          <ThemeProbe />
+        </PreferencesProvider>,
+      );
+      expect(screen.getByTestId('mode')).toHaveTextContent('light');
+      expect(screen.getByTestId('palette')).toHaveTextContent('light');
+    });
   });
 });

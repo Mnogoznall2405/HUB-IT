@@ -132,4 +132,23 @@ describe('endMobileSession', () => {
     expect(tokenStore.clearTokens).toHaveBeenCalledWith({ clearOfflineData: true });
     expect(disableBiometricLogin).toHaveBeenCalledTimes(1);
   });
+
+  it('runs the same local wipe without any server request for a deactivated account', async () => {
+    await endMobileSession({ contactServer: false });
+
+    expect(revokeNativePushToken).not.toHaveBeenCalled();
+    expect(authApi.revokeMobileBiometricSession).not.toHaveBeenCalled();
+    expect(authApi.logout).not.toHaveBeenCalled();
+    // The local wipe is identical to logout.
+    expect(chatSocket.disconnect).toHaveBeenCalledWith({
+      reconnect: false,
+      clearSubscriptions: true,
+    });
+    expect(unregisterMobileBackgroundSync).toHaveBeenCalledTimes(1);
+    expect(tokenStore.clearTokens).toHaveBeenCalledWith({ clearOfflineData: true });
+    expect(disableBiometricLogin).toHaveBeenCalledTimes(1);
+    expect(clearOfflineCommandQueue).toHaveBeenCalledTimes(1);
+    expect(clearPendingChatReplies).toHaveBeenCalledTimes(1);
+    expect(clearAllNativeChatDrafts).toHaveBeenCalledTimes(1);
+  });
 });

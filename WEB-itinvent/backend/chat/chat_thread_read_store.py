@@ -471,9 +471,46 @@ class ChatThreadReadStore:
                 if normalized_focus_message_id
                 else None
             )
-            if focus_anchor is not None and focus_anchor.conversation_id == conversation.id:
-                initial_anchor_mode = "message"
-                initial_anchor_message_id = focus_anchor.id
+            anchor_message = (
+                focus_anchor
+                if focus_anchor is not None and focus_anchor.conversation_id == conversation.id
+                else None
+            )
+            anchor_is_first_unread = False
+            if anchor_message is None and not normalized_focus_message_id:
+                # R14: without an explicit focus, open on the viewer's first unread
+                # message; falls back to bottom when nothing is unread.
+                viewer_state_row = session.execute(
+                    select(ChatConversationUserState).where(
+                        ChatConversationUserState.conversation_id == conversation.id,
+                        ChatConversationUserState.user_id == int(current_user_id),
+                    )
+                ).scalar_one_or_none()
+                viewer_unread_count = int(getattr(viewer_state_row, "unread_count", 0) or 0)
+                viewer_last_read_seq = int(getattr(viewer_state_row, "last_read_seq", 0) or 0)
+                # R24: the first_unread anchor requires a real unread backlog and
+                # a known read boundary; a member added to an old conversation
+                # has neither and must land at the bottom.
+                viewer_read_boundary_known = viewer_last_read_seq > 0 or bool(
+                    _normalize_text(getattr(viewer_state_row, "last_read_message_id", None))
+                )
+                first_unread = (
+                    self._service._find_first_unread_message(
+                        session=session,
+                        conversation_id=conversation.id,
+                        current_user_id=int(current_user_id),
+                        viewer_last_read_message_id=getattr(viewer_state_row, "last_read_message_id", None),
+                        viewer_last_read_seq=viewer_last_read_seq,
+                    )
+                    if viewer_unread_count > 0 and viewer_read_boundary_known
+                    else None
+                )
+                if first_unread is not None:
+                    anchor_message = first_unread
+                    anchor_is_first_unread = True
+            if anchor_message is not None:
+                initial_anchor_mode = "first_unread" if anchor_is_first_unread else "message"
+                initial_anchor_message_id = anchor_message.id
                 older_limit = min(max(0, page_size - 1), max(0, (page_size - 1) // 2))
                 newer_limit = max(1, page_size - older_limit)
                 older_raw = list(
@@ -481,7 +518,7 @@ class ChatThreadReadStore:
                         select(ChatMessage)
                         .where(
                             ChatMessage.conversation_id == conversation.id,
-                            self._service._message_before_anchor_condition(anchor=focus_anchor),
+                            self._service._message_before_anchor_condition(anchor=anchor_message),
                         )
                         .order_by(*self._service._message_order_desc())
                         .limit(older_limit + 1)
@@ -493,8 +530,8 @@ class ChatThreadReadStore:
                         .where(
                             ChatMessage.conversation_id == conversation.id,
                             or_(
-                                ChatMessage.id == focus_anchor.id,
-                                self._service._message_after_anchor_condition(anchor=focus_anchor),
+                                ChatMessage.id == anchor_message.id,
+                                self._service._message_after_anchor_condition(anchor=anchor_message),
                             ),
                         )
                         .order_by(*self._service._message_order_asc())

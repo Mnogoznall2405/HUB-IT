@@ -30,6 +30,8 @@ export function useThreadMessageActions({
   const copyMessageText = useCallback((message: ChatMessage) => {
     void Clipboard.setStringAsync(message.body_text || '').then(() => {
       if (mountedRef.current) showNativeToast('Скопировано', 'Текст сообщения скопирован.');
+    }).catch(() => {
+      if (mountedRef.current) showNativeToast('Не удалось скопировать', 'Повторите попытку.');
     });
   }, [mountedRef]);
 
@@ -37,6 +39,8 @@ export function useThreadMessageActions({
     const link = `${HUB_WEB_ORIGIN}/chat?conversation=${encodeURIComponent(conversationId)}&message=${encodeURIComponent(message.id)}`;
     void Clipboard.setStringAsync(link).then(() => {
       if (mountedRef.current) showNativeToast('Ссылка скопирована', 'Можно отправить её другому участнику HUB-IT.');
+    }).catch(() => {
+      if (mountedRef.current) showNativeToast('Не удалось скопировать', 'Повторите попытку.');
     });
   }, [conversationId, mountedRef]);
 
@@ -49,6 +53,8 @@ export function useThreadMessageActions({
     ].join('\n');
     void Clipboard.setStringAsync(payload).then(() => {
       if (mountedRef.current) showNativeToast('Данные жалобы скопированы', 'Передайте их администратору HUB-IT.');
+    }).catch(() => {
+      if (mountedRef.current) showNativeToast('Не удалось скопировать', 'Повторите попытку.');
     });
   }, [conversationId, mountedRef]);
 
@@ -70,15 +76,22 @@ export function useThreadMessageActions({
   const togglePinnedMessage = useCallback((message: ChatMessage) => {
     const owner = Number(userId || 0);
     if (!owner) return;
-    const next = pinnedMessageId === message.id ? null : message.id;
+    const previous = pinnedMessageId;
+    const next = previous === message.id ? null : message.id;
     setPinnedMessageId(next);
-    void setPinnedChatMessageId(owner, conversationId, next);
+    void setPinnedChatMessageId(owner, conversationId, next).catch(() => undefined);
     void chatApi.setPinnedMessage(conversationId, next).then((updated) => {
       if (!mountedRef.current || updated.pinned_message_id === undefined) return;
       serverPinKnownRef.current = true;
       setPinnedMessageId(updated.pinned_message_id);
-      void setPinnedChatMessageId(owner, conversationId, updated.pinned_message_id);
-    }).catch(() => undefined);
+      void setPinnedChatMessageId(owner, conversationId, updated.pinned_message_id).catch(() => undefined);
+    }).catch(() => {
+      // The optimistic pin must not survive a rejected write — the banner would
+      // show a pin the server never accepted until the next reload.
+      if (!mountedRef.current) return;
+      setPinnedMessageId(previous);
+      void setPinnedChatMessageId(owner, conversationId, previous).catch(() => undefined);
+    });
   }, [conversationId, mountedRef, pinnedMessageId, serverPinKnownRef, setPinnedMessageId, userId]);
 
   const unpinMessage = useCallback(() => {
@@ -86,17 +99,17 @@ export function useThreadMessageActions({
     const previous = pinnedMessageId;
     if (!owner || !previous) return;
     setPinnedMessageId(null);
-    void setPinnedChatMessageId(owner, conversationId, null);
+    void setPinnedChatMessageId(owner, conversationId, null).catch(() => undefined);
     void chatApi.setPinnedMessage(conversationId, null).then((updated) => {
       if (!mountedRef.current) return;
       serverPinKnownRef.current = true;
       const next = updated.pinned_message_id || null;
       setPinnedMessageId(next);
-      void setPinnedChatMessageId(owner, conversationId, next);
+      void setPinnedChatMessageId(owner, conversationId, next).catch(() => undefined);
     }).catch(() => {
       if (!mountedRef.current) return;
       setPinnedMessageId(previous);
-      void setPinnedChatMessageId(owner, conversationId, previous);
+      void setPinnedChatMessageId(owner, conversationId, previous).catch(() => undefined);
     });
   }, [conversationId, mountedRef, pinnedMessageId, serverPinKnownRef, setPinnedMessageId, userId]);
 

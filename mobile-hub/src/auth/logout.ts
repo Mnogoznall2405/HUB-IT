@@ -24,8 +24,12 @@ import { disableBiometricLogin } from './biometricAuth';
 /**
  * Ends every authenticated mobile channel in a deterministic order.
  * Server cleanup is best-effort, but local credentials are always removed.
+ * `contactServer: false` performs the same local wipe without any server
+ * request — used when HUB-IT reports the account as deactivated and the
+ * server-side session is already closed.
  */
-export async function endMobileSession(): Promise<void> {
+export async function endMobileSession(options: { contactServer?: boolean } = {}): Promise<void> {
+  const contactServer = options.contactServer !== false;
   clearMailComposeTransfers();
   chatSocket.disconnect({ reconnect: false, clearSubscriptions: true });
 
@@ -43,21 +47,25 @@ export async function endMobileSession(): Promise<void> {
   }
 
   try {
-    await revokeNativePushToken();
-  } catch {
-    // Push cleanup is best-effort; the stored token can be reconciled after login.
-  }
+    if (contactServer) {
+      try {
+        await revokeNativePushToken();
+      } catch {
+        // Push cleanup is best-effort; the stored token can be reconciled after login.
+      }
 
-  try {
-    await authApi.revokeMobileBiometricSession();
-  } catch {
-    // The authenticated logout endpoint also revokes this device when reachable.
-  }
+      try {
+        await authApi.revokeMobileBiometricSession();
+      } catch {
+        // The authenticated logout endpoint also revokes this device when reachable.
+      }
 
-  try {
-    await authApi.logout(refreshToken);
-  } catch {
-    // Local logout must not depend on network availability.
+      try {
+        await authApi.logout(refreshToken);
+      } catch {
+        // Local logout must not depend on network availability.
+      }
+    }
   } finally {
     try {
       clearAttachmentCache();

@@ -7,14 +7,17 @@ describe('Android HTTPS App Links build policy', () => {
     expect(buildAndroidHttpsAppLinksConfig(value)).toEqual({});
   });
 
-  it('enables verified HUB links only after an explicit release opt-in', () => {
+  it('enables verified HUB links only for database paths after an explicit release opt-in', () => {
     expect(buildAndroidHttpsAppLinksConfig('1')).toEqual({
       intentFilters: [
         {
           action: 'VIEW',
           autoVerify: true,
           category: ['BROWSABLE', 'DEFAULT'],
-          data: [{ scheme: 'https', host: 'hubit.zsgp.ru', pathPrefix: '/' }],
+          data: [
+            { scheme: 'https', host: 'hubit.zsgp.ru', path: '/database' },
+            { scheme: 'https', host: 'hubit.zsgp.ru', pathPrefix: '/database/' },
+          ],
         },
       ],
     });

@@ -15,6 +15,7 @@ const mockAuthValue = {
 jest.mock('../../api/chatApi', () => ({
   getConversation: jest.fn(),
   getMessagesPage: jest.fn(),
+  getThreadBootstrap: jest.fn(),
   markConversationRead: jest.fn(),
 }));
 
@@ -52,6 +53,12 @@ jest.mock('../../components/chat/SwipeableChatBubble', () => {
 
 const mockedChatApi = chatApi as jest.Mocked<typeof chatApi>;
 
+beforeEach(() => {
+  // M7: history starts from getThreadBootstrap; reject it so tests exercise
+  // the getMessagesPage fallback path.
+  mockedChatApi.getThreadBootstrap.mockRejectedValue(new Error('404'));
+});
+
 it('does not rerender visible message bubbles for each composer keystroke', async () => {
   mockedChatApi.getConversation.mockResolvedValue({
     id: 'conversation-1',
@@ -75,7 +82,7 @@ it('does not rerender visible message bubbles for each composer keystroke', asyn
     viewer_last_read_message_id: null,
     viewer_last_read_at: null,
   });
-  mockedChatApi.markConversationRead.mockResolvedValue(undefined);
+  mockedChatApi.markConversationRead.mockResolvedValue(true);
   const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
 
   await waitFor(() => expect(view.getByText('Стабильное сообщение')).toBeTruthy());
@@ -125,7 +132,7 @@ it('rerenders at most two rows for a new incoming socket message', async () => {
     viewer_last_read_message_id: null,
     viewer_last_read_at: null,
   });
-  mockedChatApi.markConversationRead.mockResolvedValue(undefined);
+  mockedChatApi.markConversationRead.mockResolvedValue(true);
   const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
 
   await waitFor(() => expect(view.getByText('Третье сообщение')).toBeTruthy());

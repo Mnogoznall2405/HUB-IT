@@ -2,7 +2,6 @@ import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import { useChatSidebarSizing } from './ChatSidebarSizingContext';
 import { memo, useRef } from 'react';
 import { Checkbox, CircularProgress, Menu, MenuItem, Skeleton, Tooltip } from '@mui/material';
-import { alpha } from '@mui/material/styles';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded';
 import DoneRoundedIcon from '@mui/icons-material/DoneRounded';
@@ -17,6 +16,8 @@ import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import { motion } from 'framer-motion';
 
 import { AiConversationAvatar, ConversationAvatar, PresenceAvatar } from './ChatCommon';
+import { renderChatEmojiText } from './ChatEmoji';
+import { HighlightMatch, PersonStatusJobLine } from './ChatDialogsPrimitives';
 import { getConversationFolderIds } from './chatFolderUtils';
 import {
   formatShortTime,
@@ -24,7 +25,6 @@ import {
   getConversationDisplayTitle,
   getConversationStatusLine,
   normalizeChatText,
-  getPersonContextLine,
   getStatusMeta,
   getTaskConversationMetaLine,
   isCompletedTaskConversation,
@@ -34,30 +34,33 @@ import {
 const joinClasses = (...values) => values.filter(Boolean).join(' ');
 const FALLBACK_DENSITY = {
   touchTarget: 44,
-  sidebarAvatar: 52,
+  // Д2 (Telegram Web A): строка 72px, аватар 54px, поиск 42px, бейдж 22px.
+  sidebarAvatar: 54,
   sidebarAvatarMobile: 54,
   sidebarActionButton: 36,
   sidebarActionButtonMobile: 44,
   sidebarHeaderIcon: 42,
-  sidebarSearchHeight: 48,
+  sidebarSearchHeight: 42,
   sidebarSearchFontSize: '16px',
-  sidebarRowMinHeight: 66,
-  sidebarRowPx: 12,
-  sidebarRowPy: 10,
-  sidebarRowMx: 6,
-  sidebarRowMy: 2,
-  sidebarRowRadius: 12,
-  sidebarResultRowPx: 14,
-  sidebarResultRowPy: 12,
-  sidebarTitleFontSize: '15px',
+  sidebarRowMinHeight: 72,
+  sidebarRowPx: 9,
+  sidebarRowPy: 9,
+  sidebarRowMx: 8,
+  sidebarRowMy: 1,
+  sidebarRowRadius: 10,
+  sidebarResultRowPx: 9,
+  sidebarResultRowPy: 9,
+  sidebarTitleFontSize: '16px',
   sidebarResultTitleFontSize: '16px',
-  sidebarPreviewFontSize: '12.5px',
+  sidebarPreviewFontSize: '15px',
   sidebarSectionFontSize: '11px',
+  sidebarUnreadBadge: 22,
 };
 const getDensity = (ui) => ui?.density || FALLBACK_DENSITY;
 const getSidebarAvatarSize = (density, compactMobile = false) => (
-  compactMobile ? (density.sidebarAvatarMobile || 54) : (density.sidebarAvatar || 52)
+  compactMobile ? (density.sidebarAvatarMobile || 54) : (density.sidebarAvatar || 54)
 );
+const getSidebarUnreadBadgeSize = (density) => Number(density.sidebarUnreadBadge) || 22;
 const getSidebarRowStyle = (density, compactMobile = false) => {
   if (compactMobile) return {};
   return {
@@ -317,6 +320,9 @@ const ConversationRow = memo(function ConversationRow({
   const unreadCount = Number(item?.unread_count || 0);
   const unread = unreadCount > 0;
   const highlightUnread = unread && !active;
+  // Д2: «@» — бейдж непрочитанных упоминаний (поле появится в preview-данных).
+  const mentionCount = Number(item?.unread_mention_count || item?.unread_mentions || 0);
+  const badgeSize = getSidebarUnreadBadgeSize(density);
   const taskConversation = isTaskConversation(item);
   const taskTitle = getConversationDisplayTitle(item);
   const taskMetaLine = getTaskConversationMetaLine(item);
@@ -330,19 +336,36 @@ const ConversationRow = memo(function ConversationRow({
 
   const rowIndicators = (
     <>
+      {mentionCount > 0 ? (
+        <span
+          data-testid={`chat-mention-badge-${item.id}`}
+          aria-label={`Непрочитанных упоминаний: ${mentionCount}`}
+          className="inline-flex items-center justify-center rounded-full text-[12px] font-bold"
+          style={{
+            minWidth: badgeSize,
+            width: badgeSize,
+            height: badgeSize,
+            backgroundColor: active ? 'var(--chat-unread-active-bg)' : 'var(--chat-unread-bg)',
+            color: active ? 'var(--chat-unread-active-text)' : 'var(--chat-unread-text)',
+          }}
+        >
+          @
+        </span>
+      ) : null}
       {unreadCount > 0 ? (
         <span
           data-testid={`chat-unread-badge-${item.id}`}
           aria-label={`Непрочитанных сообщений: ${unreadCount}`}
-          className="inline-flex min-w-[24px] items-center justify-center rounded-full px-1.5 text-[12px] font-bold"
+          className="inline-flex items-center justify-center rounded-full px-1.5 text-[12px] font-bold"
           style={{
-            backgroundColor: active ? 'var(--chat-unread-active-bg)' : 'var(--chat-unread-bg)',
-            color: active ? 'var(--chat-unread-active-text)' : 'var(--chat-unread-text)',
-            minWidth: 24,
-            height: 24,
-            boxShadow: active
-              ? '0 1px 5px rgba(8,19,32,0.26)'
-              : '0 2px 9px rgba(25,118,210,0.38)',
+            backgroundColor: active
+              ? 'var(--chat-unread-active-bg)'
+              : (item?.is_muted ? 'var(--chat-unread-muted-bg)' : 'var(--chat-unread-bg)'),
+            color: active
+              ? 'var(--chat-unread-active-text)'
+              : (item?.is_muted ? 'var(--chat-unread-muted-text)' : 'var(--chat-unread-text)'),
+            minWidth: badgeSize,
+            height: badgeSize,
           }}
         >
           {unreadCount}
@@ -414,20 +437,9 @@ const ConversationRow = memo(function ConversationRow({
             ? 'var(--chat-sidebar-row-active)'
             : (highlightUnread ? 'var(--chat-sidebar-row-unread)' : 'transparent'),
           color: active ? 'var(--chat-text-on-accent)' : 'var(--chat-text-primary)',
-          borderColor: compactMobile
-            ? 'var(--chat-sidebar-divider)'
-            : (active
-              ? alpha(theme.palette.primary.main, 0.18)
-              : (highlightUnread ? 'var(--chat-sidebar-row-unread-border)' : 'transparent')),
-          boxShadow: active
-            ? (
-              theme.palette.mode === 'dark'
-                ? 'inset 3px 0 0 rgba(125,211,252,0.9), 0 10px 24px rgba(8,19,32,0.22)'
-                : '0 12px 30px rgba(51,144,236,0.24), inset 0 0 0 1px rgba(255,255,255,0.12)'
-            )
-            : (highlightUnread
-              ? 'inset 4px 0 0 var(--chat-sidebar-unread-indicator), inset 0 0 0 1px var(--chat-sidebar-row-unread-border)'
-              : 'none'),
+          // Д2: плоские строки как в Telegram Web A — без рамок и теней.
+          borderColor: compactMobile ? 'var(--chat-sidebar-divider)' : 'transparent',
+          boxShadow: 'none',
           outline: 'none',
         }}
       >
@@ -508,7 +520,7 @@ const ConversationRow = memo(function ConversationRow({
                             : 'text-[color:var(--chat-text-secondary)]')),
                     )}
                   >
-                    {taskPreviewText}
+                    {renderChatEmojiText(taskPreviewText)}
                   </p>
                 ) : null}
               </>
@@ -527,14 +539,14 @@ const ConversationRow = memo(function ConversationRow({
                 )}
                 style={compactMobile ? undefined : { fontSize: density.sidebarPreviewFontSize }}
                 >
-                  {draftPreview ? `Черновик: ${draftPreview}` : previewText}
+                  {renderChatEmojiText(draftPreview ? `Черновик: ${draftPreview}` : previewText)}
                 </p>
                 {rowIndicators}
               </div>
             )}
           </div>
         </div>
-        {collapsed && unreadCount > 0 ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 min-w-5 rounded-full px-1 text-center text-[11px] font-bold" style={{ backgroundColor: 'var(--chat-unread-bg)', color: 'var(--chat-unread-text)' }}>{unreadCount > 99 ? '99+' : unreadCount}</span> : null}
+        {collapsed && unreadCount > 0 ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 min-w-5 rounded-full px-1 text-center text-[11px] font-bold" style={{ backgroundColor: item?.is_muted ? 'var(--chat-unread-muted-bg)' : 'var(--chat-unread-bg)', color: item?.is_muted ? 'var(--chat-unread-muted-text)' : 'var(--chat-unread-text)' }}>{unreadCount > 99 ? '99+' : unreadCount}</span> : null}
         {collapsed && draftPreview ? <span aria-hidden="true" className="absolute bottom-0.5 left-1 text-[10px]" style={{ color: 'var(--chat-draft-text)' }}><EditOutlinedIcon sx={{ fontSize: 12 }} /></span> : null}
       </button>
     </motion.div>
@@ -547,6 +559,7 @@ function PersonSearchRow({
   onOpenPeer,
   onPrefetchPeerConversation,
   compactMobile = false,
+  highlightQuery = '',
   ui,
 }) {
   const opening = openingPeerId === String(person.id);
@@ -574,20 +587,24 @@ function PersonSearchRow({
         padding: `${density.sidebarResultRowPy}px ${density.sidebarResultRowPx}px`,
       }}
     >
-      <PresenceAvatar item={person} online={Boolean(person?.presence?.is_online)} size={compactMobile ? 54 : density.sidebarAvatar} />
+      <PresenceAvatar item={person} online={Boolean(person?.presence?.is_online)} size={compactMobile ? 54 : density.sidebarAvatar} colorSeed={person?.id} />
       <div className="min-w-0 flex-1">
         <p
           className={joinClasses('truncate font-semibold tracking-[-0.01em] text-[color:var(--chat-text-primary)]', compactMobile ? 'text-[17px]' : 'text-[16px]')}
           style={compactMobile ? undefined : { fontSize: density.sidebarResultTitleFontSize }}
         >
-          {person.full_name || person.username}
+          <HighlightMatch
+            text={person.full_name || person.username}
+            query={highlightQuery}
+            accent={ui?.accentText || 'var(--chat-accent-text)'}
+          />
         </p>
-        <p
-          className={joinClasses('truncate text-[color:var(--chat-text-secondary)]', compactMobile ? 'text-[14px]' : 'text-[13px]')}
-          style={compactMobile ? undefined : { fontSize: density.sidebarPreviewFontSize }}
-        >
-          {getPersonContextLine(person)}
-        </p>
+        <PersonStatusJobLine
+          item={person}
+          ui={ui}
+          query={highlightQuery}
+          component="p"
+        />
       </div>
       {opening ? <CircularProgress size={18} /> : null}
     </button>
@@ -602,7 +619,9 @@ function AiBotRow({
   compactMobile = false,
   ui,
 }) {
-  const opening = String(openingAiBotId || '').trim() === String(bot?.id || '').trim();
+  // AI8: never treat a blank key as "opening" — '' === '' disabled rows forever.
+  const openingBotId = String(openingAiBotId || '').trim();
+  const opening = Boolean(openingBotId) && openingBotId === String(bot?.id || '').trim();
   const density = getDensity(ui);
   const title = String(bot?.title || 'AI').trim() || 'AI';
   return (
@@ -670,11 +689,16 @@ const AiConversationRow = memo(function AiConversationRow({
 }) {
   const density = getDensity(ui);
   const { collapsed } = useChatSidebarSizing();
-  const opening = String(openingAiBotId || '').trim() === String(bot?.id || '').trim();
   const conversationId = String(bot?.conversation_id || '').trim();
+  // AI8: conversation rows track "opening" by conversation id; the bot id is
+  // only a fallback for rows without a conversation. Blank keys never match.
+  const openingKey = String(openingAiBotId || '').trim();
+  const opening = Boolean(openingKey)
+    && (openingKey === conversationId || openingKey === String(bot?.id || '').trim());
   const unreadCount = Number(bot?.unread_count || 0);
   const unread = unreadCount > 0;
   const highlightUnread = unread && !active;
+  const badgeSize = getSidebarUnreadBadgeSize(density);
   const draftPreview = String(bot?.draft_preview || '').trim();
   const assistantTitle = String(bot?.assistant_title || '').trim() || 'HUB Ассистент';
   const previewText = draftPreview
@@ -743,20 +767,9 @@ const AiConversationRow = memo(function AiConversationRow({
             ? 'var(--chat-sidebar-row-active)'
             : (highlightUnread ? 'var(--chat-sidebar-row-unread)' : 'transparent'),
           color: active ? 'var(--chat-text-on-accent)' : 'var(--chat-text-primary)',
-          borderColor: compactMobile
-            ? 'var(--chat-sidebar-divider)'
-            : (active
-              ? alpha(theme.palette.primary.main, 0.18)
-              : (highlightUnread ? 'var(--chat-sidebar-row-unread-border)' : 'transparent')),
-          boxShadow: active
-            ? (
-              theme.palette.mode === 'dark'
-                ? 'inset 3px 0 0 rgba(125,211,252,0.9), 0 10px 24px rgba(8,19,32,0.24)'
-                : '0 12px 30px rgba(51,144,236,0.24), inset 0 0 0 1px rgba(255,255,255,0.12)'
-            )
-            : (highlightUnread
-              ? 'inset 4px 0 0 var(--chat-sidebar-unread-indicator), inset 0 0 0 1px var(--chat-sidebar-row-unread-border)'
-              : 'none'),
+          // Д2: плоские строки как в Telegram Web A — без рамок и теней.
+          borderColor: compactMobile ? 'var(--chat-sidebar-divider)' : 'transparent',
+          boxShadow: 'none',
         }}
       >
         <div className={collapsed ? "flex items-center justify-center" : "flex items-center gap-2.5"}>
@@ -815,7 +828,7 @@ const AiConversationRow = memo(function AiConversationRow({
               )}
               style={compactMobile ? undefined : { fontSize: density.sidebarPreviewFontSize }}
               >
-                {previewText}
+                {renderChatEmojiText(previewText)}
               </p>
 
               {opening ? <CircularProgress size={16} /> : null}
@@ -826,15 +839,16 @@ const AiConversationRow = memo(function AiConversationRow({
                 <span
                   data-testid={`chat-unread-badge-ai-${bot?.id}`}
                   aria-label={`Непрочитанных сообщений: ${unreadCount}`}
-                  className="inline-flex min-w-[24px] items-center justify-center rounded-full px-1.5 text-[12px] font-bold"
+                  className="inline-flex items-center justify-center rounded-full px-1.5 text-[12px] font-bold"
                   style={{
-                    backgroundColor: active ? 'var(--chat-unread-active-bg)' : 'var(--chat-unread-bg)',
-                    color: active ? 'var(--chat-unread-active-text)' : 'var(--chat-unread-text)',
-                    minWidth: 24,
-                    height: 24,
-                    boxShadow: active
-                      ? '0 1px 5px rgba(8,19,32,0.26)'
-                      : '0 2px 9px rgba(25,118,210,0.38)',
+                    backgroundColor: active
+                      ? 'var(--chat-unread-active-bg)'
+                      : (bot?.is_muted ? 'var(--chat-unread-muted-bg)' : 'var(--chat-unread-bg)'),
+                    color: active
+                      ? 'var(--chat-unread-active-text)'
+                      : (bot?.is_muted ? 'var(--chat-unread-muted-text)' : 'var(--chat-unread-text)'),
+                    minWidth: badgeSize,
+                    height: badgeSize,
                   }}
                 >
                   {unreadCount}
@@ -843,7 +857,7 @@ const AiConversationRow = memo(function AiConversationRow({
             </div>
           </div>
         </div>
-        {collapsed && unreadCount > 0 ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 min-w-5 rounded-full px-1 text-center text-[11px] font-bold" style={{ backgroundColor: 'var(--chat-unread-bg)', color: 'var(--chat-unread-text)' }}>{unreadCount > 99 ? '99+' : unreadCount}</span> : null}
+        {collapsed && unreadCount > 0 ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 min-w-5 rounded-full px-1 text-center text-[11px] font-bold" style={{ backgroundColor: bot?.is_muted ? 'var(--chat-unread-muted-bg)' : 'var(--chat-unread-bg)', color: bot?.is_muted ? 'var(--chat-unread-muted-text)' : 'var(--chat-unread-text)' }}>{unreadCount > 99 ? '99+' : unreadCount}</span> : null}
         {collapsed && draftPreview ? <span aria-hidden="true" className="absolute bottom-0.5 left-1 text-[10px]" style={{ color: 'var(--chat-draft-text)' }}><EditOutlinedIcon sx={{ fontSize: 12 }} /></span> : null}
       </button>
     </motion.div>

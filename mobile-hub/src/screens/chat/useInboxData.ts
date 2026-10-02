@@ -72,7 +72,9 @@ export function useInboxData({
   const loadStartingRef = useRef(false);
   const loadScopeRef = useRef<{ owner: number } | null>(null);
   const loadInFlightRef = useRef<Promise<void> | null>(null);
+  const loadDirtyRef = useRef(false);
   const connectedOnceRef = useRef(chatSocket.getStatus() === 'connected');
+  const socketStatusRef = useRef<ChatSocketStatus>(chatSocket.getStatus());
   const [items, setItems] = useState<ChatConversationSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -91,8 +93,12 @@ export function useInboxData({
       loadScopeRef.current = { owner: userId };
       loadStartingRef.current = false;
       loadInFlightRef.current = null;
+      loadDirtyRef.current = false;
       loadingMoreRef.current = false;
       setLoadingMore(false);
+      // A pull-refresh interrupted by the owner switch never reaches its
+      // isCurrent-gated reset — clear the spinner here or it spins forever.
+      setRefreshing(false);
       setItems([]);
       setHydratedOwner(null);
       setHasMore(false);
@@ -103,6 +109,9 @@ export function useInboxData({
     const isCurrent = () => mountedRef.current && ownerRef.current === userId && loadScopeRef.current === scope;
     if (loadStartingRef.current && !loadInFlightRef.current) return;
     if (loadInFlightRef.current) {
+      // A deduplicated call means state changed while the page was in flight —
+      // mark dirty so the runner re-fetches instead of dropping the reload.
+      loadDirtyRef.current = true;
       if (mode === 'refresh') setRefreshing(true);
       await loadInFlightRef.current;
       if (mode === 'refresh' && isCurrent()) setRefreshing(false);
@@ -135,41 +144,57 @@ export function useInboxData({
       loadStartingRef.current = false;
       return;
     }
-    const request = chatApi.getConversationPage({ limit: 50 });
-    loadInFlightRef.current = request.then(() => undefined, () => undefined);
-    try {
-      const page = await request;
-      if (!isCurrent()) return;
-      page.items.forEach((item) => removedConversationIdsRef.current.delete(item.id));
-      if (mode === 'silent') {
-        setItems((current) => {
-          const byId = new Map(current.map((item) => [item.id, item]));
-          page.items.forEach((item) => byId.set(item.id, { ...byId.get(item.id), ...item }));
-          return [...byId.values()];
-        });
-      } else {
-        setItems(page.items);
+    do {
+      loadDirtyRef.current = false;
+      const request = chatApi.getConversationPage({ limit: 50 });
+      loadInFlightRef.current = request.then(() => undefined, () => undefined);
+      try {
+        const page = await request;
+        if (!isCurrent()) return;
+        page.items.forEach((item) => removedConversationIdsRef.current.delete(item.id));
+        if (mode === 'silent') {
+          const pageIds = new Set(page.items.map((item) => item.id));
+          if (!page.has_more) {
+            // CHAT-INBOX-07: an unpaginated first page is the complete server
+            // list — rows absent from it were deleted elsewhere while the
+            // conversation.removed event was missed and must not linger.
+            const stale = new Set(
+              itemsRef.current.map((item) => item.id).filter((id) => !pageIds.has(id)),
+            );
+            if (stale.size) {
+              stale.forEach((id) => removedConversationIdsRef.current.add(id));
+              remoteSearchItemsRef.current = remoteSearchItemsRef.current.filter((item) => !stale.has(item.id));
+            }
+          }
+          setItems((current) => {
+            const byId = new Map(current.map((item) => [item.id, item]));
+            page.items.forEach((item) => byId.set(item.id, { ...byId.get(item.id), ...item }));
+            const merged = [...byId.values()];
+            return page.has_more ? merged : merged.filter((item) => pageIds.has(item.id));
+          });
+        } else {
+          setItems(page.items);
+        }
+        setHasMore(page.has_more);
+        setNextCursor(page.next_cursor);
+        setHydratedOwner(userId);
+        setError('');
+        if (userId) void writeNativeChatInboxSnapshot(userId, page);
+      } catch (cause) {
+        if (isCurrent() && mode !== 'silent') {
+          setError(cached
+            ? 'Нет подключения. Показаны сохранённые диалоги.'
+            : formatApiError(cause, 'Не удалось загрузить диалоги'));
+        }
       }
-      setHasMore(page.has_more);
-      setNextCursor(page.next_cursor);
-      setHydratedOwner(userId);
-      setError('');
-      if (userId) void writeNativeChatInboxSnapshot(userId, page);
-    } catch (cause) {
-      if (isCurrent() && mode !== 'silent') {
-        setError(cached
-          ? 'Нет подключения. Показаны сохранённые диалоги.'
-          : formatApiError(cause, 'Не удалось загрузить диалоги'));
-      }
-    } finally {
-      if (isCurrent()) {
-        loadStartingRef.current = false;
-        loadInFlightRef.current = null;
-        if (mode === 'initial') setLoading(false);
-        if (mode === 'refresh') setRefreshing(false);
-      }
+    } while (isCurrent() && loadDirtyRef.current);
+    if (isCurrent()) {
+      loadStartingRef.current = false;
+      loadInFlightRef.current = null;
+      if (mode === 'initial') setLoading(false);
+      if (mode === 'refresh') setRefreshing(false);
     }
-  }, [mountedRef, offlineMode, ownerRef, userId]);
+  }, [itemsRef, mountedRef, offlineMode, ownerRef, userId]);
 
   const loadMore = useCallback(async () => {
     if (offlineMode || !hasMore || !nextCursor || loadingMoreRef.current) return;
@@ -212,15 +237,24 @@ export function useInboxData({
     if (userId) {
       void getActiveChatFolderKey(userId).then((folderKey) => {
         if (active && mountedRef.current && ownerRef.current === userId) setActiveFolderKey(folderKey);
-      });
+      }).catch(() => undefined);
     }
     chatSocket.subscribeInbox();
     void chatSocket.connect();
 
     const offStatus = chatSocket.on('status', (next) => {
       const nextStatus = next as ChatSocketStatus;
+      const enteredConnected = nextStatus === 'connected' && socketStatusRef.current !== 'connected';
+      socketStatusRef.current = nextStatus;
       setStatus(nextStatus);
       if (nextStatus !== 'connected') return;
+      // CHAT-INBOX-02: AppLifecycle drops the socket with clearSubscriptions
+      // (wantInbox=false) when /chat loses focus while this screen stays
+      // mounted under Tabs freezeOnBlur, so a later reconnect never re-arms
+      // the inbox subscription. subscribeInbox() is idempotent — it only sets
+      // wantInbox and sends the subscribe frame when the socket is open — so
+      // repeat it on every transition into 'connected'.
+      if (enteredConnected) chatSocket.subscribeInbox();
       if (connectedOnceRef.current) {
         void load('silent');
         void loadFolders();
@@ -261,6 +295,18 @@ export function useInboxData({
         setItems((current) => current.filter((item) => item.id !== conversationId));
         setSnapshotRevision((revision) => revision + 1);
       }
+    });
+    // M2: global unread totals arrive on chat.unread.summary. The payload only
+    // carries totals — per-folder badges live in /chat/folders — so debounce a
+    // folder reload like the web client (~800 ms) instead of clearing counts.
+    let unreadSummaryTimer: ReturnType<typeof setTimeout> | null = null;
+    const offUnreadSummary = chatSocket.on('chat.unread.summary', () => {
+      if (ownerRef.current !== userId) return;
+      if (unreadSummaryTimer) return;
+      unreadSummaryTimer = setTimeout(() => {
+        unreadSummaryTimer = null;
+        if (ownerRef.current === userId) void loadFolders();
+      }, 800);
     });
     const offConversationRead = subscribeNativeChatConversationRead((conversationId) => {
       if (ownerRef.current !== userId) return;
@@ -315,6 +361,8 @@ export function useInboxData({
       offEdited();
       offDeleted();
       offRemoved();
+      offUnreadSummary();
+      if (unreadSummaryTimer) clearTimeout(unreadSummaryTimer);
       offConversationRead();
       offTypingStarted();
       offTypingStopped();

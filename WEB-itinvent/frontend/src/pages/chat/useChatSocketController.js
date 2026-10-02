@@ -12,17 +12,29 @@ export default function useChatSocketController({
   activeConversationId,
   deferredMessageText,
   logChatDebugRef,
+  skippedInitialSocketRefreshRef,
   watchedPresenceUserIds,
   watchedPresenceUserIdsKey,
 }) {
-  const socketStatusRef = useRef(CHAT_WS_ENABLED ? 'connecting' : 'disabled');
-  const lastSocketActivityAtRef = useRef(0);
+  // R1: страница монтируется после ChatSocketBootstrap — читаем реальное
+  // состояние сокета, а не предполагаем 'connecting' (иначе подпись
+  // «Соединение…» висит вечно и транспорт беседы залипает в degraded).
+  const initialSocketStatus = CHAT_WS_ENABLED
+    ? (typeof chatSocket.getConnectionState === 'function'
+      ? chatSocket.getConnectionState()
+      : 'connecting')
+    : 'disabled';
+  const socketStatusRef = useRef(initialSocketStatus);
+  // Уже подключённый сокет — свежий признак активности: без него транспорт
+  // стартует в 'degraded' (нет lastSocketActivityAt) и деградационный опрос
+  // сразу стреляет в ленту, хотя сокет жив.
+  const lastSocketActivityAtRef = useRef(initialSocketStatus === 'connected' ? Date.now() : 0);
   const typingStartedRef = useRef(false);
   const typingStopTimeoutRef = useRef(null);
   const typingParticipantsTimeoutsRef = useRef(new Map());
 
-  const [socketStatus, setSocketStatus] = useState(CHAT_WS_ENABLED ? 'connecting' : 'disabled');
-  const [lastSocketActivityAt, setLastSocketActivityAt] = useState(0);
+  const [socketStatus, setSocketStatus] = useState(initialSocketStatus);
+  const [lastSocketActivityAt, setLastSocketActivityAt] = useState(() => lastSocketActivityAtRef.current);
   const [typingUsers, setTypingUsers] = useState([]);
 
   socketStatusRef.current = socketStatus;
@@ -61,6 +73,20 @@ export default function useChatSocketController({
     watchedPresenceUserIds,
     watchedPresenceUserIdsKey,
   });
+
+  useEffect(() => {
+    if (!CHAT_FEATURE_ENABLED || !CHAT_WS_ENABLED) return;
+    // Переход в 'connected' до монтирования страницы считается тем самым
+    // первым событием, которое bootstrap-загрузка уже покрыла, — иначе
+    // skippedInitialSocketRefreshRef поглотит первый настоящий reconnect.
+    if (
+      socketStatusRef.current === 'connected'
+      && skippedInitialSocketRefreshRef
+      && !skippedInitialSocketRefreshRef.current
+    ) {
+      skippedInitialSocketRefreshRef.current = true;
+    }
+  }, [skippedInitialSocketRefreshRef]);
 
   useEffect(() => {
     if (!CHAT_FEATURE_ENABLED || !CHAT_WS_ENABLED) return undefined;
@@ -156,6 +182,7 @@ export function useChatSocketControllerEvents({
   hasPersistedThreadMessageEquivalent,
   lastConversationsLoadAtRef,
   latestActiveThreadSocketMessageRef,
+  loadChatFolders,
   loadConversations,
   loadMessages,
   loadMessagesRef,
@@ -165,6 +192,7 @@ export function useChatSocketControllerEvents({
   markSocketActivity,
   mergeAiStatusPayload,
   mergeMessageIntoThread,
+  messagesHasNewerRef,
   messagesLoadingRef,
   messagesRef,
   onConversationRemoved,
@@ -198,6 +226,7 @@ export function useChatSocketControllerEvents({
     hasPersistedThreadMessageEquivalent,
     lastConversationsLoadAtRef,
     latestActiveThreadSocketMessageRef,
+    loadChatFolders,
     loadConversations,
     loadMessages,
     loadMessagesRef,
@@ -207,6 +236,7 @@ export function useChatSocketControllerEvents({
     markSocketActivity,
     mergeAiStatusPayload,
     mergeMessageIntoThread,
+    messagesHasNewerRef,
     messagesLoadingRef,
     messagesRef,
     onConversationRemoved,

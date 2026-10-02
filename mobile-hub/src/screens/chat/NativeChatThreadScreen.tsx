@@ -3,6 +3,7 @@ import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   FlatList,
   Image,
   Keyboard,
@@ -18,7 +19,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { KeyboardStickyView, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
 import Animated, { useAnimatedStyle } from 'react-native-reanimated';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import * as chatApi from '../../api/chatApi';
 import { HUB_WEB_ORIGIN } from '../../api/config';
@@ -216,7 +217,12 @@ function ChatEmptyState({ message }: { message: string }) {
   return (
     <Text
       testID="native-chat-empty-state"
-      style={[styles.empty, styles.invertedListEmpty]}
+      style={[
+        styles.empty,
+        // VirtualizedList inverts vertically with scale:-1 on Android and
+        // scaleY:-1 elsewhere, so the counter-transform must match the platform.
+        Platform.OS === 'android' ? { transform: [{ scale: -1 }] } : styles.invertedListEmpty,
+      ]}
       accessibilityRole="text"
     >
       {message}
@@ -440,23 +446,34 @@ export function NativeChatThreadScreen({
     serverPinKnownRef.current = false;
     void getPinnedChatMessageId(userId, conversationId).then((value) => {
       if (active && !serverPinKnownRef.current) setPinnedMessageId(value);
-    });
+    }).catch(() => undefined);
     return () => { active = false; };
   }, [conversationId, user?.id]);
 
-  useEffect(() => {
-    if (offlineMode) return;
+  // Group members need explicit watches: the backend fans presence out only
+  // to connections that registered the user via chat.watch_presence. Presence
+  // frames rebuild `members` on every update, so the effect below keys on a
+  // stable sorted id list instead of the array identity — otherwise each
+  // frame would send an empty unwatch + resubscribe pair.
+  const presenceWatchIdsKey = useMemo(() => {
     const ids = new Set<number>();
     const peerId = Number(conversation?.direct_peer?.id || conversation?.peer_user_id || 0);
     if (peerId > 0) ids.add(peerId);
-    // Group members need explicit watches: the backend fans presence out only
-    // to connections that registered the user via chat.watch_presence.
     (conversation?.members || []).forEach((member) => {
       const memberId = Number(member?.user?.id || 0);
       if (memberId > 0) ids.add(memberId);
     });
-    if (ids.size) chatSocket.watchPresence([...ids]);
-  }, [conversation?.direct_peer?.id, conversation?.peer_user_id, conversation?.members, offlineMode]);
+    return [...ids].sort((left, right) => left - right).join(',');
+  }, [conversation?.direct_peer?.id, conversation?.peer_user_id, conversation?.members]);
+
+  useEffect(() => {
+    if (offlineMode) return;
+    const ids = presenceWatchIdsKey ? presenceWatchIdsKey.split(',').map(Number) : [];
+    if (ids.length) chatSocket.watchPresence(ids);
+    // Leaving the thread clears the watch set so a later reconnect does not
+    // replay a stale subscription for a conversation the user left.
+    return () => { chatSocket.watchPresence([]); };
+  }, [presenceWatchIdsKey, offlineMode]);
 
 
 
@@ -464,6 +481,10 @@ export function NativeChatThreadScreen({
     if (offlineMode || !latest?.id || resolveChatMessageIsOwn(latest, user?.id) === true || markedReadRef.current === latest.id) {
       return;
     }
+    // M4: never mark read while the app is backgrounded — the message was not
+    // actually seen. markedReadRef stays clear so the 'active' transition or
+    // the next scroll re-issues the call.
+    if (AppState.currentState !== 'active') return;
     markedReadRef.current = latest.id;
     void chatApi.markConversationRead(conversationId, latest.id).then(() => {
       notifyNativeChatConversationRead(conversationId);
@@ -474,14 +495,27 @@ export function NativeChatThreadScreen({
   markReadRef.current = markRead;
   messagesRef.current = messages;
 
+  // M4: a queued realtime message can arrive while the app is backgrounded.
+  // When it returns to the foreground at the bottom of the thread, retry the
+  // read receipt that markRead skipped.
   useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active' || !nearBottomRef.current) return;
+      markReadRef.current(findLatestIncomingMessage(messagesRef.current, user?.id));
+    });
+    return () => subscription.remove();
+  }, [user?.id]);
+
+  // Focus-scoped, not mount-scoped: pushed-over thread screens stay mounted
+  // and must not claim the "active" slot (the HTTP fallback polls only for it).
+  useFocusEffect(useCallback(() => {
     setActiveNativeChatConversationId(conversationId);
     return () => {
       if (getActiveNativeChatConversationId() === conversationId) {
         setActiveNativeChatConversationId(null);
       }
     };
-  }, [conversationId]);
+  }, [conversationId]));
 
   const {
     loading,
@@ -551,10 +585,11 @@ export function NativeChatThreadScreen({
   });
 
 
-  const { status, typingParticipants } = useThreadRealtime({
+  const { status, typingParticipants, aiRunStatus } = useThreadRealtime({
     conversationId,
     userId: user?.id,
     offlineMode,
+    hasNewer,
     mountedRef,
     markedReadRef,
     knownMessageIdsRef,
@@ -582,6 +617,7 @@ export function NativeChatThreadScreen({
   const sheets = useThreadSheets({
     conversationId,
     userId: user?.id,
+    user,
     offlineMode,
     mountedRef,
     loadGenerationRef,
@@ -589,6 +625,7 @@ export function NativeChatThreadScreen({
     conversation,
     mentionQuery,
     requestBottomAnchor,
+    outbox,
     setMessages,
     setConversation,
     setTitle,
@@ -823,6 +860,40 @@ export function NativeChatThreadScreen({
     attachments,
   });
 
+  // The shell can reuse this screen instance for another conversation
+  // (in-place conversationId switch). useThreadHistory owns messages/title;
+  // the rest of the per-thread UI state lives here and must be cleared so
+  // stale counters, selection and overlays never leak into the next thread.
+  // Composer draft/context fields rehydrate from the per-conversation draft
+  // in useThreadComposerState — bumping them here would cancel that restore.
+  const threadResetScopeRef = useRef<string | null>(null);
+  useEffect(() => {
+    const scope = JSON.stringify([conversationId, Number(user?.id || 0)]);
+    if (threadResetScopeRef.current === null) {
+      threadResetScopeRef.current = scope;
+      return;
+    }
+    if (threadResetScopeRef.current === scope) return;
+    threadResetScopeRef.current = scope;
+    setUnreadBoundaryId(null);
+    setHasNewer(false);
+    setNewerCursor(null);
+    setHasOlder(false);
+    setOlderCursor(null);
+    setShowJumpToBottom(false);
+    setNewMessageCount(0);
+    setSelectedMessageIds([]);
+    setAiBots([]);
+    setActionMessage(null);
+    setActionAnchor(null);
+    setHighlightedMessageId(null);
+    setFocusAnchorId(null);
+    setPinnedMessageId(null);
+    setMediaViewer(null);
+    setAttachmentActionTarget(null);
+  }, [conversationId, user?.id, setAttachmentActionTarget, setHasNewer, setNewerCursor,
+    setHasOlder, setOlderCursor, setMediaViewer, setSelectedMessageIds]);
+
   // F-REACTORS: long-press a reaction chip → "who reacted" (names from the
   // member/user directory already loaded for mentions and the header).
   const reactorNameById = useMemo(() => {
@@ -907,7 +978,11 @@ export function NativeChatThreadScreen({
   const threadMedia = useMemo(() => collectThreadMedia(messages), [messages]);
   const viewerMediaItems = mediaViewerItems ?? threadMedia;
   const typingLine = formatTypingLine(typingParticipants);
+  const aiStatusLine = aiRunStatus
+    ? (aiRunStatus.statusText || (aiRunStatus.botTitle ? `${aiRunStatus.botTitle}…` : ''))
+    : '';
   const headerSubtitle = typingLine
+    || aiStatusLine
     || (conversation?.kind === 'group'
       ? `${conversation.member_count || conversation.members?.length || 0} участников · ${conversation.online_member_count || 0} онлайн`
       : formatPresenceSubtitle(conversation?.direct_peer?.presence))
@@ -923,9 +998,11 @@ export function NativeChatThreadScreen({
         testID="native-chat-thread-keyboard"
         style={styles.container}
       >
-        {selectedMessageIds.length ? (
+        {selectedMessages.length ? (
           <ChatSelectionHeader
-            count={selectedMessageIds.length}
+            // Count by ids that still resolve to the visible window — a
+            // window jump or remote delete prunes the rest (T5).
+            count={selectedMessages.length}
             canReply={canReplyToSelectedMessages(selectedMessages)}
             canDelete={canDeleteSelectedMessages(selectedMessages, {
               conversationKind: conversation?.kind,
@@ -1035,7 +1112,7 @@ export function NativeChatThreadScreen({
             inverted
             contentContainerStyle={styles.list}
             renderItem={renderMessage}
-            extraData={`${selectedMessageIds.join('\0')}|${unreadBoundaryId}|${canWrite}|${offlineMode}|${highlightedMessageId || ''}`}
+            extraData={`${unreadBoundaryId}|${canWrite}|${offlineMode}`}
             onEndReached={handleMessageListEndReached}
             onEndReachedThreshold={0.35}
             onScroll={handleMessageListScroll}

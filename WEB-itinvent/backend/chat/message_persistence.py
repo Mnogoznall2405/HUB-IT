@@ -173,6 +173,7 @@ class TaskSharePersistenceResult:
     message_id: str
     member_user_ids: list[int]
     task_preview: dict[str, Any]
+    dedup_hit: bool = False
 
 
 class ChatTextMessagePersistence:
@@ -998,8 +999,10 @@ class ChatTaskShareMessagePersistence:
         current_user_id: int,
         conversation_id: str,
         task_id: str,
+        client_message_id: str | None = None,
         reply_to_message_id: str | None = None,
     ) -> TaskSharePersistenceResult:
+        normalized_client_message_id = _normalize_text(client_message_id) or None
         member_user_ids: list[int] = []
         message_id = ""
         task_preview: dict[str, Any] = {}
@@ -1020,6 +1023,36 @@ class ChatTaskShareMessagePersistence:
                 for item in self._conversation_member_ids(session, conversation.id)
                 if int(item) > 0
             ]
+            # Idempotent retry (mobile outbox): the same client_message_id
+            # returns the already-persisted message instead of duplicating it.
+            if normalized_client_message_id:
+                existing_message = session.execute(
+                    select(ChatMessage).where(
+                        ChatMessage.conversation_id == conversation.id,
+                        ChatMessage.sender_user_id == int(current_user_id),
+                        ChatMessage.client_message_id == normalized_client_message_id,
+                    )
+                ).scalar_one_or_none()
+                if existing_message is not None:
+                    payload = self._build_message_payload_for_members(
+                        session=session,
+                        conversation=conversation,
+                        message=existing_message,
+                        current_user_id=int(current_user_id),
+                        member_user_ids=member_user_ids,
+                    )
+                    existing_task_preview = getattr(existing_message, "task_preview_json", None) or ""
+                    try:
+                        task_preview = dict(json.loads(existing_task_preview)) if existing_task_preview else {}
+                    except (TypeError, ValueError):
+                        task_preview = {}
+                    return TaskSharePersistenceResult(
+                        payload=payload,
+                        message_id=existing_message.id,
+                        member_user_ids=member_user_ids,
+                        task_preview=task_preview,
+                        dedup_hit=True,
+                    )
             task_snapshot = self._authorize_task_share(
                 task_id=task_id,
                 current_user_id=int(current_user_id),
@@ -1041,6 +1074,7 @@ class ChatTaskShareMessagePersistence:
                 kind="task_share",
                 body=_normalize_text(task_preview.get("title")),
                 conversation_seq=next_conversation_seq,
+                client_message_id=normalized_client_message_id,
                 reply_to_message_id=getattr(reply_to_message, "id", None),
                 task_id=_normalize_text(task_snapshot.task_id),
                 task_preview_json=json.dumps(task_preview, ensure_ascii=False),

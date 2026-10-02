@@ -6,6 +6,7 @@ import { useReducedMotion } from 'framer-motion';
 
 import { readStoredActiveFolderKey } from '../../components/chat/chatFolderUtils';
 import { buildChatUiTokens } from '../../components/chat/chatUiTokens';
+import { applyChatTelegramSidebarTokens } from '../../theme/chatTelegramTheme';
 import { useMainLayoutShell } from '../../components/layout/MainLayoutShellContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
@@ -23,6 +24,7 @@ import {
   buildChatThreadCacheKeyParts,
 } from './chatCacheKeys';
 import { CHAT_SWR_STALE_TIME_MS } from './chatPageConstants';
+import { CHAT_MOBILE_MEDIA } from './chatMobileModel';
 import { shouldDisableChatMobileMotion } from './chatMobilePresentation';
 import {
   readSessionStorageValue,
@@ -72,7 +74,8 @@ export default function useChatPageInitialState({
   messageIdOverride = '',
 } = {}) {
   const theme = useTheme();
-  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  // Д2-5 (п. 5): граница «телефон ↔ две колонки» — 700 px вместо стандартных md≈900.
+  const isMobile = useMediaQuery(CHAT_MOBILE_MEDIA);
   const isPhone = useMediaQuery(theme.breakpoints.down('sm'));
   const matchesWideDesktopEnter = useMediaQuery(CHAT_WIDE_DESKTOP_MEDIA);
   const matchesWideDesktopExit = useMediaQuery(CHAT_WIDE_DESKTOP_EXIT_MEDIA);
@@ -86,10 +89,11 @@ export default function useChatPageInitialState({
   }, [matchesWideDesktopEnter, matchesWideDesktopExit]);
   const compactDesktopMedia = useMediaQuery('(min-width:600px) and (max-width:1920px), (min-width:600px) and (max-height:960px)');
   const ui = useMemo(
-    () => buildChatUiTokens(theme, {
+    // Д1/Д2: поверх общих токенов накладываем Telegram-стиль колонки списка.
+    () => applyChatTelegramSidebarTokens(buildChatUiTokens(theme, {
       compactDesktop: compactDesktopMedia && !isMobile,
       compactMobile: isPhone,
-    }),
+    }), theme),
     [compactDesktopMedia, isMobile, isPhone, theme],
   );
   const prefersReducedMotion = useReducedMotion();
@@ -159,6 +163,7 @@ export default function useChatPageInitialState({
   const [conversationFilter, setConversationFilter] = useState(() => readStoredActiveFolderKey());
   const [customFolders, setCustomFolders] = useState([]);
   const [conversationIdsByFolder, setConversationIdsByFolder] = useState({});
+  const [folderUnreadCounts, setFolderUnreadCounts] = useState(null);
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [folderManagerOpen, setFolderManagerOpen] = useState(false);
   const [folderManagerCreateMode, setFolderManagerCreateMode] = useState(false);
@@ -237,6 +242,8 @@ export default function useChatPageInitialState({
     setCustomFolders,
     conversationIdsByFolder,
     setConversationIdsByFolder,
+    folderUnreadCounts,
+    setFolderUnreadCounts,
     foldersLoading,
     setFoldersLoading,
     folderManagerOpen,

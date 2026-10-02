@@ -101,6 +101,7 @@ export function buildOptimisticFileMessage({
   conversationId,
   files,
   mediaKinds = [],
+  mediaDimensions = [],
   body,
   replyPreview,
   user,
@@ -116,6 +117,10 @@ export function buildOptimisticFileMessage({
   const attachments = sourceFiles.map((file, index) => {
     const objectUrl = canCreateObjectUrl ? URL.createObjectURL(file) : '';
     const mediaKind = String(mediaKinds?.[index] || '').trim().toLowerCase();
+    const dims = mediaDimensions?.[index];
+    const imageDims = Number(dims?.width || 0) > 0 && Number(dims?.height || 0) > 0
+      ? { width: Math.round(Number(dims.width)), height: Math.round(Number(dims.height)) }
+      : { width: 216, height: 176 };
     if (objectUrl) objectUrls.push(objectUrl);
     return {
       id: `optimistic-attachment:${now}:${normalizedSeq}:${index + 1}`,
@@ -128,14 +133,16 @@ export function buildOptimisticFileMessage({
       poster_url: '',
       ...(mediaKind ? { kind: mediaKind, media_kind: mediaKind } : {}),
       ...(String(file?.type || '').startsWith('image/')
-        ? { width: 216, height: 176 }
+        ? imageDims
         : {}),
     };
   });
   const optimisticId = `optimistic:${normalizedConversationId}:file:${now}:${normalizedSeq}`;
+  const clientMessageId = `chat-client:${normalizedConversationId}:file:${now}:${normalizedSeq}`;
   return {
     id: optimisticId,
     conversation_id: normalizedConversationId,
+    client_message_id: clientMessageId,
     kind: 'file',
     sender: {
       id: Number(user?.id || 0) || user?.id || 0,
@@ -154,6 +161,70 @@ export function buildOptimisticFileMessage({
     optimisticStatus: 'sending',
     uploadProgress: 0,
     optimisticObjectUrls: objectUrls,
+    renderKey: optimisticId,
+  };
+}
+
+const OPTIMISTIC_STICKER_EXTENSIONS = {
+  'image/webp': 'webp',
+  'application/x-tgsticker': 'tgs',
+  'video/webm': 'webm',
+};
+
+export function buildOptimisticStickerMessage({
+  conversationId,
+  sticker,
+  replyPreview,
+  user,
+  seq,
+  now = Date.now(),
+}) {
+  const normalizedConversationId = String(conversationId || '').trim();
+  const stickerId = String(sticker?.id || '').trim();
+  const fileUrl = String(sticker?.file_url || '').trim();
+  if (!normalizedConversationId || !stickerId || !fileUrl) return null;
+  const normalizedSeq = Number(seq) || 0;
+  const mimeType = String(sticker?.mime_type || '').trim() || 'image/webp';
+  const extension = OPTIMISTIC_STICKER_EXTENSIONS[mimeType] || 'webp';
+  const packShortName = String(sticker?.pack_short_name || sticker?.sticker_pack_short_name || '').trim();
+  const previewUrl = String(sticker?.preview_url || '').trim();
+  const optimisticId = `optimistic:${normalizedConversationId}:sticker:${now}:${normalizedSeq}`;
+  const clientMessageId = `chat-client:${normalizedConversationId}:sticker:${now}:${normalizedSeq}`;
+  return {
+    id: optimisticId,
+    conversation_id: normalizedConversationId,
+    client_message_id: clientMessageId,
+    kind: 'file',
+    sender: {
+      id: Number(user?.id || 0) || user?.id || 0,
+      username: String(user?.username || '').trim(),
+      full_name: String(user?.full_name || user?.username || '').trim() || null,
+    },
+    body: '',
+    created_at: new Date(now).toISOString(),
+    is_own: true,
+    delivery_status: 'sending',
+    read_by_count: 0,
+    reply_preview: replyPreview || null,
+    task_preview: null,
+    attachments: [{
+      id: `optimistic-attachment:${now}:${normalizedSeq}`,
+      file_name: `sticker-${packShortName || 'telegram'}.${extension}`,
+      sticker_pack_short_name: packShortName || undefined,
+      sticker_emoji: String(sticker?.emoji || '').trim() || undefined,
+      file_size: Number(sticker?.file_size || 0),
+      mime_type: mimeType,
+      kind: 'sticker',
+      media_kind: 'sticker',
+      original_url: fileUrl,
+      open_url: fileUrl,
+      preview_url: previewUrl || undefined,
+      poster_url: previewUrl || undefined,
+      width: Number(sticker?.width) > 0 ? Math.round(Number(sticker.width)) : undefined,
+      height: Number(sticker?.height) > 0 ? Math.round(Number(sticker.height)) : undefined,
+    }],
+    isOptimistic: true,
+    optimisticStatus: 'sending',
     renderKey: optimisticId,
   };
 }

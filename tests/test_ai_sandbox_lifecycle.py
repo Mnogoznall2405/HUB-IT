@@ -38,7 +38,7 @@ from backend.ai_sandbox.models import AppAiSandboxJob, AppAiSandboxSession  # no
 from backend.ai_sandbox.sqlalchemy_repository import SqlAlchemySandboxQueueRepository  # noqa: E402
 from backend.ai_sandbox.transfer import SandboxJobManifest  # noqa: E402
 from backend.ai_sandbox.worker import AiSandboxWorker  # noqa: E402
-from backend.appdb.models import AppAiBot, AppAiBotConversation  # noqa: E402
+from backend.appdb.models import AppAiBot, AppAiBotAccess, AppAiBotConversation, AppUser  # noqa: E402
 
 
 PINNED_TEST_IMAGE = "registry.internal/hub/opencode@sha256:" + ("8" * 64)
@@ -83,6 +83,22 @@ def _repository(*, database_url: str, appdb_db) -> SqlAlchemySandboxQueueReposit
 
 def _seed_bot_mapping(*, database_url: str, appdb_db, now: datetime) -> None:
     with appdb_db.app_session(database_url) as db:
+        # reserve_job re-checks the agent grant: the owner must be an active user holding
+        # chat.ai.sandbox and an explicit per-agent grant (R44).
+        db.add(
+            AppUser(
+                id=171,
+                username="sandbox-owner",
+                full_name="Sandbox Owner",
+                is_active=True,
+                role="viewer",
+                use_custom_permissions=True,
+                custom_permissions_json=json.dumps(["chat.read", "chat.write", "chat.ai.sandbox"]),
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.add(AppAiBotAccess(bot_id="bot-lifecycle", user_id=171, allowed=True, updated_by=171, updated_at=now))
         db.add(
             AppAiBot(
                 id="bot-lifecycle",

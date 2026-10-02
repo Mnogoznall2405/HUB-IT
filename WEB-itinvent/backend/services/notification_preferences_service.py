@@ -10,7 +10,7 @@ from local_store import get_local_store
 
 CHAT_NOTIFICATION_CHANNELS = {
     "direct": "chat_direct",
-    "ai": "chat_direct",
+    "ai": "chat_ai",
     "group": "chat_group",
     "task": "chat_task",
 }
@@ -33,9 +33,12 @@ class NotificationPreferencesService:
         "chat_direct": True,
         "chat_group": True,
         "chat_task": True,
+        "chat_ai": True,
+        # N1: in-app sound for incoming chat messages (client-side toggle).
+        "chat_sound": True,
     }
     CHAT_CATEGORY_CHANNELS = frozenset(CHAT_NOTIFICATION_CHANNELS.values())
-    QUIET_HOURS_CHANNELS = frozenset({"chat", "mail", "tasks", "docflow", "hub", "announcements"})
+    QUIET_HOURS_CHANNELS = frozenset({"chat", "chat_ai", "mail", "tasks", "docflow", "hub", "announcements"})
     QUIET_HOURS_DEFAULTS = {
         "enabled": False,
         "start": "22:00",

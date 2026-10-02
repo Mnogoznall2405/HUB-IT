@@ -23,7 +23,7 @@ export const DEFAULT_DASHBOARD_MOBILE_SECTIONS = ['urgent', 'announcements', 'ta
 
 const DEFAULT_PREFERENCES = {
   pinned_database: null,
-  theme_mode: 'light',
+  theme_mode: 'system',
   font_family: 'Aptos',
   font_scale: 1.0,
   dashboard_sections: DEFAULT_DASHBOARD_SECTIONS,
@@ -42,7 +42,7 @@ const FONT_MAP = {
 const DESKTOP_TOUCH_MEDIA = '@media (min-width:600px)';
 
 export function normalizeThemeMode(value) {
-  return ['light', 'dark', 'system'].includes(value) ? value : 'light';
+  return ['light', 'dark', 'system'].includes(value) ? value : 'system';
 }
 
 export function resolveThemeMode(value, systemPrefersDark = false) {

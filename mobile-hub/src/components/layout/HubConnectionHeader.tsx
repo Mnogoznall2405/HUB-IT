@@ -35,6 +35,8 @@ const HubConnectionContext = createContext<HubConnectionPresentation>(DEFAULT_PR
 
 export function resolveHubConnectionPresentation(input: {
   offlineMode: boolean;
+  connectivityOffline?: boolean;
+  networkRestricted?: boolean;
   apiOnline?: boolean;
   hubStatus: HubRealtimeStatus;
   chatStatus?: ChatSocketStatus;
@@ -43,7 +45,15 @@ export function resolveHubConnectionPresentation(input: {
 }): HubConnectionPresentation {
   const { offlineMode, apiOnline = false, hubStatus } = input;
   if (offlineMode) {
-    return { kind: 'offline', label: 'Нет сети · офлайн-данные доступны' };
+    // The session works from cached data in three distinct states: HUB-IT
+    // answered that this network is not allowed for the account ("Доступ из
+    // этой сети запрещён"), Android reports a dead network ("Нет сети"), or the
+    // background /auth/me check is still reaching for the server
+    // ("Подключение…").
+    if (input.networkRestricted) return { kind: 'degraded', label: 'Доступ из этой сети запрещён' };
+    return input.connectivityOffline
+      ? { kind: 'offline', label: 'Нет сети · офлайн-данные доступны' }
+      : { kind: 'connecting', label: 'Подключение…' };
   }
   if (hubStatus === 'connected') {
     return input.sendStalled ? { kind: 'connecting', label: 'Соединение…' } : DEFAULT_PRESENTATION;
@@ -59,7 +69,7 @@ export function resolveHubConnectionPresentation(input: {
 }
 
 export function HubConnectionProvider({ children }: { children: ReactNode }) {
-  const { offlineMode, user } = useAuth();
+  const { connectivityOffline, offlineMode, sessionNetworkRestricted, user } = useAuth();
   const [hubStatus, setHubStatus] = useState<HubRealtimeStatus>(hubRealtimeSocket.getStatus());
   const [sendStalled, setSendStalled] = useState(false);
 
@@ -78,10 +88,12 @@ export function HubConnectionProvider({ children }: { children: ReactNode }) {
 
   const presentation = useMemo(() => resolveHubConnectionPresentation({
     offlineMode,
+    connectivityOffline,
+    networkRestricted: sessionNetworkRestricted,
     apiOnline: Boolean(user && !offlineMode),
     hubStatus,
     sendStalled,
-  }), [hubStatus, offlineMode, user, sendStalled]);
+  }), [connectivityOffline, hubStatus, offlineMode, sessionNetworkRestricted, user, sendStalled]);
 
   return (
     <HubConnectionContext.Provider value={presentation}>

@@ -9,6 +9,9 @@ export const DEFAULT_NOTIFICATION_PREFERENCES = Object.freeze({
   chat_direct: true,
   chat_group: true,
   chat_task: true,
+  chat_ai: true,
+  // N1: in-app chat message sound — enabled by default, independent of channels.
+  chat_sound: true,
 });
 
 export function normalizeNotificationPreferences(value) {
@@ -23,12 +26,15 @@ export function normalizeNotificationPreferences(value) {
     chat_direct: Boolean(source.chat_direct ?? legacyChatEnabled),
     chat_group: Boolean(source.chat_group ?? legacyChatEnabled),
     chat_task: Boolean(source.chat_task ?? legacyChatEnabled),
+    chat_ai: Boolean(source.chat_ai ?? legacyChatEnabled),
+    chat_sound: Boolean(source.chat_sound ?? DEFAULT_NOTIFICATION_PREFERENCES.chat_sound),
   };
 }
 
 export function resolveChatNotificationPreferenceKey(conversationKind) {
   const kind = String(conversationKind || '').trim().toLowerCase();
-  if (kind === 'direct' || kind === 'ai') return 'chat_direct';
+  if (kind === 'direct') return 'chat_direct';
+  if (kind === 'ai') return 'chat_ai';
   if (kind === 'group') return 'chat_group';
   if (kind === 'task') return 'chat_task';
   return 'chat';
@@ -39,7 +45,7 @@ function resolvePreferenceKey(notification) {
   if (channel === 'mail') return 'mail';
   if (channel === 'task') return 'tasks';
   if (channel === 'feed') return 'announcements';
-  if (channel === 'chat_direct' || channel === 'chat_group' || channel === 'chat_task') return channel;
+  if (channel === 'chat_direct' || channel === 'chat_group' || channel === 'chat_task' || channel === 'chat_ai') return channel;
   if (channel === 'chat' || channel === 'mention') {
     return resolveChatNotificationPreferenceKey(
       notification?.conversation_kind || notification?.conversation?.kind,

@@ -25,6 +25,7 @@ function Harness({
   notifyWarning = vi.fn(),
   patchThreadMessage,
   queuedFiles = [],
+  registerFailedOutgoingMessage = vi.fn(),
 }) {
   const fileInputRef = useRef(null);
   const mediaFileInputRef = useRef(null);
@@ -67,6 +68,7 @@ function Harness({
     notifyWarning,
     patchThreadMessage,
     preparingFiles: false,
+    registerFailedOutgoingMessage,
     removeThreadMessage: vi.fn(),
     replyMessage: null,
     revokeObjectUrls: vi.fn(),
@@ -349,6 +351,156 @@ describe('useChatFileSending', () => {
     fireEvent.click(screen.getByRole('button', { name: 'reset edit' }));
     await waitFor(() => expect(screen.getByLabelText('edit state')).toHaveTextContent('original'));
     expect(screen.getByLabelText('selected file name')).toHaveTextContent('photo.jpg');
+  });
+
+  it('splits a media-only selection above the limit into sequential albums', async () => {
+    const applyOutgoingThreadMessage = vi.fn();
+    const mediaItems = Array.from({ length: 7 }, (_, index) => {
+      const file = new File([`img-${index}`], `photo-${index}.jpg`, { type: 'image/jpeg' });
+      return {
+        file,
+        transferFile: file,
+        transferSize: file.size,
+        media_kind: 'image',
+        imageWidth: 800 + index,
+        imageHeight: 600,
+      };
+    });
+    let optimisticSeq = 0;
+    const createOptimisticFileMessage = vi.fn(() => {
+      const seq = optimisticSeq;
+      optimisticSeq += 1;
+      return {
+        id: `optimistic-album-${seq}`,
+        client_message_id: `client-album-${seq}`,
+        isOptimistic: true,
+        optimisticObjectUrls: [],
+      };
+    });
+    chatAPI.sendFiles
+      .mockResolvedValueOnce({ id: 'server-album-0' })
+      .mockResolvedValueOnce({ id: 'server-album-1' });
+
+    render(
+      <Harness
+        applyOutgoingThreadMessage={applyOutgoingThreadMessage}
+        createOptimisticFileMessage={createOptimisticFileMessage}
+        initialUploadItems={mediaItems}
+        patchThreadMessage={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(document.querySelector('button'));
+
+    await waitFor(() => expect(chatAPI.sendFiles).toHaveBeenCalledTimes(2));
+
+    const [firstCall, secondCall] = chatAPI.sendFiles.mock.calls;
+    expect(firstCall[1]).toHaveLength(5);
+    expect(secondCall[1]).toHaveLength(2);
+    expect(firstCall[2]).toEqual(expect.objectContaining({
+      client_message_id: 'client-album-0',
+      body: 'caption',
+    }));
+    expect(secondCall[2]).toEqual(expect.objectContaining({
+      client_message_id: 'client-album-1',
+      body: '',
+    }));
+
+    expect(createOptimisticFileMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      body: 'caption',
+      mediaDimensions: mediaItems.slice(0, 5).map((item) => ({ width: item.imageWidth, height: item.imageHeight })),
+    }));
+    expect(createOptimisticFileMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      body: '',
+      mediaDimensions: mediaItems.slice(5).map((item) => ({ width: item.imageWidth, height: item.imageHeight })),
+    }));
+
+    // Both optimistic bubbles land in order, then each is replaced by its ACK.
+    const optimisticInserts = applyOutgoingThreadMessage.mock.calls
+      .filter(([, message]) => String(message?.id || '').startsWith('optimistic-album'));
+    expect(optimisticInserts.map(([, message]) => message.id)).toEqual(['optimistic-album-0', 'optimistic-album-1']);
+    expect(applyOutgoingThreadMessage).toHaveBeenCalledWith(
+      'conversation-1',
+      expect.objectContaining({ id: 'server-album-0' }),
+      expect.objectContaining({ replaceId: 'optimistic-album-0' }),
+    );
+    expect(applyOutgoingThreadMessage).toHaveBeenCalledWith(
+      'conversation-1',
+      expect.objectContaining({ id: 'server-album-1' }),
+      expect.objectContaining({ replaceId: 'optimistic-album-1' }),
+    );
+  });
+
+  it('keeps a failed album as a failed optimistic bubble while sent albums stay', async () => {
+    const applyOutgoingThreadMessage = vi.fn();
+    const registerFailedOutgoingMessage = vi.fn();
+    const mediaItems = Array.from({ length: 6 }, (_, index) => {
+      const file = new File([`img-${index}`], `photo-${index}.jpg`, { type: 'image/jpeg' });
+      return { file, transferFile: file, transferSize: file.size, media_kind: 'image' };
+    });
+    let optimisticSeq = 0;
+    const createOptimisticFileMessage = vi.fn(() => {
+      const seq = optimisticSeq;
+      optimisticSeq += 1;
+      return {
+        id: `optimistic-album-${seq}`,
+        client_message_id: `client-album-${seq}`,
+        isOptimistic: true,
+        optimisticObjectUrls: [`blob:album-${seq}`],
+      };
+    });
+    chatAPI.sendFiles
+      .mockResolvedValueOnce({ id: 'server-album-0' })
+      .mockRejectedValueOnce(new Error('503'));
+
+    render(
+      <Harness
+        applyOutgoingThreadMessage={applyOutgoingThreadMessage}
+        createOptimisticFileMessage={createOptimisticFileMessage}
+        initialUploadItems={mediaItems}
+        patchThreadMessage={vi.fn()}
+        registerFailedOutgoingMessage={registerFailedOutgoingMessage}
+      />,
+    );
+
+    fireEvent.click(document.querySelector('button'));
+
+    await waitFor(() => expect(registerFailedOutgoingMessage).toHaveBeenCalledTimes(1));
+    const [failedConversationId, failedMessage, failedExtras] = registerFailedOutgoingMessage.mock.calls[0];
+    expect(failedConversationId).toBe('conversation-1');
+    expect(failedMessage).toEqual(expect.objectContaining({
+      id: 'optimistic-album-1',
+      client_message_id: 'client-album-1',
+    }));
+    expect(failedExtras?.fileResend?.uploadItems).toHaveLength(1);
+    // The sent album was still replaced by its server ACK.
+    expect(applyOutgoingThreadMessage).toHaveBeenCalledWith(
+      'conversation-1',
+      expect.objectContaining({ id: 'server-album-0' }),
+      expect.objectContaining({ replaceId: 'optimistic-album-0' }),
+    );
+  });
+
+  it('warns instead of sending when a non-media selection exceeds one album', async () => {
+    const notifyWarning = vi.fn();
+    const mixedItems = Array.from({ length: 6 }, (_, index) => {
+      const file = new File([`doc-${index}`], `doc-${index}.pdf`, { type: 'application/pdf' });
+      return { file, transferFile: file, transferSize: file.size };
+    });
+
+    render(
+      <Harness
+        applyOutgoingThreadMessage={vi.fn()}
+        initialUploadItems={mixedItems}
+        notifyWarning={notifyWarning}
+        patchThreadMessage={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(document.querySelector('button'));
+
+    expect(chatAPI.sendFiles).not.toHaveBeenCalled();
+    expect(notifyWarning).toHaveBeenCalledWith('Можно отправить не более 5 файлов за один раз.');
   });
 
   it('rechecks the 25 MB original-media limit immediately before sending', () => {

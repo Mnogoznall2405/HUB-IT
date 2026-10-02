@@ -61,6 +61,17 @@ def ensure_admin_ip_allowed(
     raise HTTPException(status_code=status_code, detail=detail, headers=headers)
 
 
+def _inactive_user_exception() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="User is not active",
+        headers={
+            "WWW-Authenticate": "Bearer",
+            "X-Hubit-Auth-Reason": "user_inactive",
+        },
+    )
+
+
 def _resolve_access_token(
     credentials: Optional[HTTPAuthorizationCredentials],
     access_token_cookie: Optional[str],
@@ -89,6 +100,18 @@ def _load_user_from_token(token: Optional[str]) -> User:
     if token_data.jti and auth_runtime_store_service.is_jti_revoked(token_data.jti):
         raise credentials_exception
 
+    user_raw = None
+    if token_data.user_id not in (None, 0):
+        user_raw = user_service.get_by_id(token_data.user_id)
+    if user_raw is None and token_data.username:
+        user_raw = user_service.get_by_username(token_data.username)
+    if not user_raw:
+        raise credentials_exception
+    # Deactivation closes sessions (see update_user / AD sync), so the
+    # user check must run before the session check to report the reason.
+    if not bool(user_raw.get("is_active", True)):
+        raise _inactive_user_exception()
+
     if token_data.session_id and not session_service.is_session_active(token_data.session_id):
         try:
             from backend.services.auth_session_metrics import note
@@ -96,14 +119,6 @@ def _load_user_from_token(token: Optional[str]) -> User:
         except Exception:
             pass
         session_auth_context_service.delete_session_context(token_data.session_id)
-        raise credentials_exception
-
-    user_raw = None
-    if token_data.user_id not in (None, 0):
-        user_raw = user_service.get_by_id(token_data.user_id)
-    if user_raw is None and token_data.username:
-        user_raw = user_service.get_by_username(token_data.username)
-    if not user_raw:
         raise credentials_exception
 
     if not trusted_device_service.is_token_device_valid(
@@ -168,6 +183,8 @@ def _load_optional_user_from_token(token: Optional[str]) -> Optional[User]:
     if user_raw is None and token_data.username:
         user_raw = user_service.get_by_username(token_data.username)
     if not user_raw:
+        return None
+    if not bool(user_raw.get("is_active", True)):
         return None
 
     if not trusted_device_service.is_token_device_valid(
@@ -293,16 +310,13 @@ async def get_current_active_user(
     Dependency to get the current active user.
 
     Raises:
-        HTTPException 400 if user is inactive
+        HTTPException 401 if user is inactive
 
     Returns:
         Active User object
     """
     if not current_user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Inactive user"
-        )
+        raise _inactive_user_exception()
     return current_user
 
 

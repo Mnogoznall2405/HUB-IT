@@ -133,6 +133,7 @@ class ChatConversationSummary(BaseModel):
     last_message_is_own: bool = False
     last_message_delivery_status: Optional[Literal["sent", "read"]] = None
     unread_count: int = 0
+    unread_mention_count: int = 0
     member_count: int = 0
     online_member_count: int = 0
     is_pinned: bool = False
@@ -395,6 +396,7 @@ class ChatUsersResponse(BaseModel):
 
 class TaskShareMessageRequest(BaseModel):
     task_id: str = Field(..., min_length=1, max_length=64)
+    client_message_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     reply_to_message_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
 
     @field_validator("task_id", mode="before")
@@ -402,7 +404,7 @@ class TaskShareMessageRequest(BaseModel):
     def _normalize_task_id(cls, value):
         return str(value or "").strip()
 
-    @field_validator("reply_to_message_id", mode="before")
+    @field_validator("client_message_id", "reply_to_message_id", mode="before")
     @classmethod
     def _normalize_reply_to_message_id(cls, value):
         text = str(value or "").strip()
@@ -591,9 +593,10 @@ class ChatStickerPackImportRequest(BaseModel):
 
 class ChatStickerSendRequest(BaseModel):
     sticker_id: str = Field(..., min_length=1, max_length=64)
+    client_message_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     reply_to_message_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
 
-    @field_validator("sticker_id", "reply_to_message_id", mode="before")
+    @field_validator("sticker_id", "client_message_id", "reply_to_message_id", mode="before")
     @classmethod
     def _normalize_sticker_ids(cls, value):
         text = str(value or "").strip()
@@ -603,6 +606,52 @@ class ChatStickerSendRequest(BaseModel):
 class ChatUnreadSummaryResponse(BaseModel):
     messages_unread_total: int = 0
     conversations_unread: int = 0
+    mentions_unread_total: int = 0
+
+
+class ChatConfigResponse(BaseModel):
+    group_max_members: int = 128
+    scheduled_messages_enabled: bool = False
+
+
+class ChatScheduledMessageCreateRequest(BaseModel):
+    body: str = Field(..., min_length=1, max_length=12000)
+    body_format: Literal["plain", "markdown"] = "plain"
+    scheduled_for: datetime
+    reply_to_message_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def _normalize_scheduled_body(cls, value):
+        return str(value or "").strip()
+
+
+class ChatScheduledMessageUpdateRequest(BaseModel):
+    body: Optional[str] = Field(default=None, min_length=1, max_length=12000)
+    scheduled_for: Optional[datetime] = None
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def _normalize_scheduled_body(cls, value):
+        return None if value is None else str(value).strip()
+
+
+class ChatScheduledMessageResponse(BaseModel):
+    id: str
+    conversation_id: str
+    body: str
+    body_format: str = "plain"
+    reply_to_message_id: Optional[str] = None
+    scheduled_for: str
+    status: str
+    attempt_count: int = 0
+    sent_message_id: Optional[str] = None
+    error_text: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class ChatScheduledMessageListResponse(BaseModel):
+    items: list[ChatScheduledMessageResponse] = Field(default_factory=list)
 
 
 class ChatPushConfigResponse(BaseModel):

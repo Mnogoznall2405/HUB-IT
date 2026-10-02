@@ -110,7 +110,7 @@ def test_reply_preview_is_returned_and_message_search_finds_matches(chat_env):
     reply_payload = next(item for item in messages["items"] if item["id"] == reply["id"])
     assert reply_payload["reply_preview"]["id"] == original["id"]
     assert reply_payload["reply_preview"]["body"] == "Нужно обсудить договор по поставке"
-    assert reply_payload["reply_preview"]["sender_name"] == "Task"
+    assert reply_payload["reply_preview"]["sender_name"] == "Task Author"  # full name, as everywhere in chat
 
     search = service.search_messages(
         current_user_id=1,
@@ -245,7 +245,7 @@ def test_message_reference_preview_payloads_share_body_rules(chat_env):
 
     expected_file_preview = {
         "id": "msg-file",
-        "sender_name": "Task",
+        "sender_name": "Task Author",
         "kind": "file",
         "body": "diagram.png",
         "task_title": None,
@@ -453,6 +453,60 @@ def test_only_group_owner_can_delete_group_conversation(chat_env):
         conversation_id=group["id"],
     )
     assert deleted["member_user_ids"] == [1, 2, 3]
+
+
+def test_ai_conversation_summary_exposes_ai_bot_id(chat_env, tmp_path, monkeypatch):
+    """AI8: GET /chat/conversations must carry the mapped bot id even when the
+    bot row is disabled or absent from the bot catalog."""
+    service = chat_env["service"]
+    ai_conversation = chat_models_module.ChatConversation(
+        id="ai-orphan",
+        kind="ai",
+        title="AI",
+        created_by_user_id=1,
+    )
+    with chat_db_module.chat_session() as session:
+        session.add(ai_conversation)
+        session.add(chat_models_module.ChatMember(
+            conversation_id=ai_conversation.id,
+            user_id=1,
+            member_role="owner",
+        ))
+
+    from contextlib import contextmanager
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from backend.appdb.models import AppBase, AppAiBotConversation
+    from backend.appdb import db as appdb_db_module
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'app.sqlite3'}",
+        execution_options={"schema_translate_map": {"app": None, "system": None}},
+    )
+    AppBase.metadata.create_all(
+        engine,
+        tables=[t for t in AppBase.metadata.sorted_tables if t.name == "ai_bot_conversations"],
+    )
+
+    @contextmanager
+    def app_session():
+        with Session(engine) as db:
+            with db.begin():
+                yield db
+
+    monkeypatch.setattr(appdb_db_module, "app_session", app_session)
+    with app_session() as db:
+        db.add(AppAiBotConversation(
+            bot_id="removed-or-disabled-bot",
+            user_id=1,
+            conversation_id="ai-orphan",
+        ))
+
+    items = service.list_conversations(current_user_id=1, limit=20)["items"]
+    ai_item = next(item for item in items if item["id"] == "ai-orphan")
+    assert ai_item["ai_bot_id"] == "removed-or-disabled-bot"
+    engine.dispose()
 
 
 def test_task_and_ai_conversations_cannot_be_deleted_directly(chat_env):

@@ -25,6 +25,7 @@ import {
   normalizeChatAttachmentUrl,
 } from './chatHelpers';
 import { isChatDocumentPreviewableAttachment } from './chatAttachmentPreview';
+import { resolveChatTelegramAvatarColor } from '../../theme/chatTelegramTheme';
 import { chatDirectoryAPI } from '../../api/chatDirectory';
 import ChatStickerMedia from './ChatStickerMedia';
 import { buildTaskDetailPath } from '../../lib/taskNavigation';
@@ -132,11 +133,13 @@ const compactUrlList = (...items) => {
   return urls;
 };
 
-export function PresenceAvatar({ item, online = false, size = 48, sx = {} }) {
+export function PresenceAvatar({ item, online = false, size = 48, sx = {}, colorSeed = null }) {
   const label = avatarLabel(item);
   const theme = useTheme();
   const avatarUrl = item?.avatar_url || null;
   const [imgFailed, setImgFailed] = useState(false);
+  // Д2: цвет аватара — из палитры Telegram Web A по стабильному id беседы/пользователя.
+  const telegramColor = colorSeed != null ? resolveChatTelegramAvatarColor(colorSeed) : null;
 
   const handleImgError = useCallback(() => setImgFailed(true), []);
 
@@ -168,8 +171,11 @@ export function PresenceAvatar({ item, online = false, size = 48, sx = {} }) {
           fontSize: '0.875rem',
           fontWeight: 700,
           letterSpacing: '-0.02em',
-          bgcolor: muiTheme.palette.mode === 'dark' ? '#445161' : alpha(muiTheme.palette.primary.main, 0.14),
-          color: muiTheme.palette.mode === 'dark' ? '#ffffff' : muiTheme.palette.primary.main,
+          bgcolor: telegramColor
+            || (muiTheme.palette.mode === 'dark' ? '#445161' : alpha(muiTheme.palette.primary.main, 0.14)),
+          color: telegramColor
+            ? '#ffffff'
+            : (muiTheme.palette.mode === 'dark' ? '#ffffff' : muiTheme.palette.primary.main),
           boxShadow: muiTheme.palette.mode === 'dark'
             ? 'inset 0 1px 0 rgba(255,255,255,0.08)'
             : 'inset 0 1px 0 rgba(255,255,255,0.72)',
@@ -349,6 +355,7 @@ export function ConversationAvatar({
   online = false,
   size = 48,
   sx = {},
+  colorSeed = null,
 }) {
   const kind = String(conversation?.kind || '').trim();
   if (kind === 'notes') {
@@ -371,11 +378,12 @@ export function ConversationAvatar({
       online={Boolean(conversation?.kind === 'direct' && online)}
       size={size}
       sx={sx}
+      colorSeed={colorSeed ?? conversation?.id ?? item?.id}
     />
   );
 }
 
-export function TaskShareCard({ task, navigate, ui, theme }) {
+export function TaskShareCard({ task, navigate, ui, theme, isOwn = false }) {
   const statusMeta = getStatusMeta(task?.status);
   const priorityMeta = getPriorityMeta(task?.priority);
   const handleOpenTask = () => {
@@ -397,12 +405,11 @@ export function TaskShareCard({ task, navigate, ui, theme }) {
       onKeyDown={handleTaskKeyDown}
       style={{
         width: '100%',
-        borderRadius: 14,
-        border: `1px solid ${ui.borderSoft || alpha(theme.palette.primary.main, 0.12)}`,
+        // Д2-10: карточка задачи — контент карточки цвета стороны, без своей рамки и подложки.
         padding: 12,
         textAlign: 'left',
-        backgroundColor: ui.surfaceStrong || ui.composerInputBg || alpha(theme.palette.primary.main, 0.08),
-        color: ui.bubbleOtherText,
+        backgroundColor: 'transparent',
+        color: isOwn ? (ui.bubbleOwnText || theme.palette.text.primary) : ui.bubbleOtherText,
         cursor: 'pointer',
         transition: 'transform 100ms ease, opacity 100ms ease',
       }}
@@ -708,6 +715,10 @@ export function FileAttachment({
   const resolvedOpenUrl = String(openUrl || fileUrl || '').trim();
   const resolvedDownloadUrl = String(downloadUrl || resolvedOpenUrl).trim();
   const [resolvedDuration, setResolvedDuration] = useState(() => formatVideoDuration(durationSeconds));
+  // Д2-8: реальные пропорции медиа, если у вложения нет width/height.
+  const [naturalSize, setNaturalSize] = useState(null);
+  // Д2-8: серый плейсхолдер живёт только до загрузки — после onLoad подложка прозрачна.
+  const [mediaLoaded, setMediaLoaded] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [fileActionsAnchorPosition, setFileActionsAnchorPosition] = useState(null);
   const attachmentKind = useMemo(
@@ -720,11 +731,17 @@ export function FileAttachment({
   const surfaceStyle = buildClickableSurfaceStyle(isOwn, ui, theme);
   const titleText = clampFileName(fileName);
   const subtitleLabel = `${extensionLabel} • ${formatFileSize(fileSize)}`;
-  const numericAspectRatio = Number(previewWidth || 0) > 0 && Number(previewHeight || 0) > 0
+  const declaredAspectRatio = Number(previewWidth || 0) > 0 && Number(previewHeight || 0) > 0
     ? Number(previewWidth) / Number(previewHeight)
-    : (attachmentKind === 'video' ? (16 / 9) : (4 / 3));
-  const aspectRatio = String(forcedAspectRatio || '').trim() || (Number(previewWidth || 0) > 0 && Number(previewHeight || 0) > 0
+    : null;
+  const naturalAspectRatio = naturalSize && naturalSize.width > 0 && naturalSize.height > 0
+    ? naturalSize.width / naturalSize.height
+    : null;
+  const numericAspectRatio = declaredAspectRatio || naturalAspectRatio
+    || (attachmentKind === 'video' ? (16 / 9) : (4 / 3));
+  const aspectRatio = String(forcedAspectRatio || '').trim() || (declaredAspectRatio
     ? `${Number(previewWidth)} / ${Number(previewHeight)}`
+    : naturalSize ? `${naturalSize.width} / ${naturalSize.height}`
     : (attachmentKind === 'video' ? '16 / 9' : '4 / 3'));
   const hasNumericMediaMaxWidth = typeof mediaMaxWidth === 'number' && Number.isFinite(mediaMaxWidth);
   const hasNumericMediaMaxHeight = typeof mediaMaxHeight === 'number' && Number.isFinite(mediaMaxHeight);
@@ -737,6 +754,15 @@ export function FileAttachment({
   const constrainedMediaWidth = rawConstrainedMediaWidth !== null
     ? Math.min(maxWidthValue, Math.max(minWidthValue, rawConstrainedMediaWidth))
     : null;
+  // Д2-8: рамка следует пропорциям фото. Если минимальная ширина не умещается
+  // в пропорцию при максимальной высоте — контейнер берёт minWidth × maxHeight,
+  // а края обрезает objectFit: cover (полная картинка — в просмотрщике).
+  const mediaCoverCrop = hasNumericMediaMinWidth
+    && hasNumericMediaMaxHeight
+    && (mediaMaxHeight * numericAspectRatio) < minWidthValue;
+  const mediaBoxStyle = mediaCoverCrop
+    ? { height: `${mediaMaxHeight}px` }
+    : { aspectRatio, maxHeight: hasNumericMediaMaxHeight ? `${mediaMaxHeight}px` : mediaMaxHeight };
   const mediaSurfaceStyle = {
     ...surfaceStyle,
     width: constrainedMediaWidth ? `${Math.round(constrainedMediaWidth)}px` : (hasNumericMediaMaxWidth ? `${mediaMaxWidth}px` : '100%'),
@@ -745,7 +771,14 @@ export function FileAttachment({
     padding: 0,
     border: 'none',
     backgroundColor: 'transparent',
-    boxShadow: '0 10px 22px rgba(2, 6, 23, 0.18)',
+    // Д2-8: у медиа нет рамки и тени — только скругление и плейсхолдер до загрузки.
+    boxShadow: 'none',
+  };
+  const handleNaturalSize = (target) => {
+    if (declaredAspectRatio) return;
+    const width = Number(target?.naturalWidth || target?.videoWidth || 0);
+    const height = Number(target?.naturalHeight || target?.videoHeight || 0);
+    if (width > 0 && height > 0) setNaturalSize({ width, height });
   };
   const imageSourceCandidates = useMemo(
     () => compactUrlList(fileUrl, fallbackFileUrls, resolvedOpenUrl),
@@ -775,6 +808,8 @@ export function FileAttachment({
   useEffect(() => {
     setActiveImageUrl(imageSourceCandidates[0] || String(fileUrl || '').trim());
     setFailedUrls(new Set());
+    setNaturalSize(null);
+    setMediaLoaded(false);
   }, [fileUrl, imageSourceCandidates]);
 
   if (attachmentKind === 'sticker') {
@@ -853,14 +888,19 @@ export function FileAttachment({
         alt={String(fileName || 'image')}
         loading="lazy"
         decoding="async"
-        onLoad={(event) => notifyThreadMediaLoaded(event.currentTarget)}
+        onLoad={(event) => {
+          notifyThreadMediaLoaded(event.currentTarget);
+          handleNaturalSize(event.currentTarget);
+          setMediaLoaded(true);
+        }}
         onError={handleImageError}
         style={{
           display: 'block',
           width: '100%',
           height: '100%',
-          objectFit: forcedAspectRatio ? 'cover' : 'contain',
-          backgroundColor: ui.mediaPlaceholderBg || 'rgba(255,255,255,0.04)',
+          // Д2-8: рамка совпадает с пропорциями фото — cover не даёт серых полос.
+          objectFit: 'cover',
+          backgroundColor: mediaLoaded ? 'transparent' : (ui.mediaPlaceholderBg || 'rgba(255,255,255,0.04)'),
         }}
       />
     );
@@ -879,12 +919,10 @@ export function FileAttachment({
           style={{
             position: 'relative',
             width: '100%',
-            aspectRatio,
-            maxHeight: hasNumericMediaMaxHeight ? `${mediaMaxHeight}px` : mediaMaxHeight,
+            ...mediaBoxStyle,
             overflow: 'hidden',
             borderRadius: 13,
-            border: `1px solid ${ui.mediaBorder || alpha(theme.palette.common.white, 0.08)}`,
-            backgroundColor: ui.mediaPlaceholderBg || 'rgba(255,255,255,0.04)',
+            backgroundColor: mediaLoaded ? 'transparent' : (ui.mediaPlaceholderBg || 'rgba(255,255,255,0.04)'),
           }}
         >
           {content}
@@ -916,12 +954,10 @@ export function FileAttachment({
         <div
           style={{
             width: '100%',
-            aspectRatio,
-            maxHeight: hasNumericMediaMaxHeight ? `${mediaMaxHeight}px` : mediaMaxHeight,
+            ...mediaBoxStyle,
             overflow: 'hidden',
             borderRadius: 13,
-            border: `1px solid ${ui.mediaBorder || alpha(theme.palette.common.white, 0.08)}`,
-            backgroundColor: ui.mediaPlaceholderBg || 'rgba(255,255,255,0.04)',
+            backgroundColor: mediaLoaded ? 'transparent' : (ui.mediaPlaceholderBg || 'rgba(255,255,255,0.04)'),
           }}
         >
           {content}
@@ -950,11 +986,9 @@ export function FileAttachment({
           style={{
             position: 'relative',
             width: '100%',
-            aspectRatio,
-            maxHeight: hasNumericMediaMaxHeight ? `${mediaMaxHeight}px` : mediaMaxHeight,
+            ...mediaBoxStyle,
             overflow: 'hidden',
             borderRadius: 13,
-            border: `1px solid ${ui.mediaBorder || alpha(theme.palette.common.white, 0.08)}`,
             backgroundColor: 'rgba(3,8,20,0.72)',
           }}
         >
@@ -964,6 +998,7 @@ export function FileAttachment({
               alt={String(fileName || 'video')}
               loading="lazy"
               decoding="async"
+              onLoad={(event) => handleNaturalSize(event.currentTarget)}
               style={{
                 display: 'block',
                 width: '100%',
@@ -982,6 +1017,7 @@ export function FileAttachment({
                 if (!resolvedDuration) {
                   setResolvedDuration(formatVideoDuration(event.currentTarget.duration));
                 }
+                handleNaturalSize(event.currentTarget);
               }}
               style={{
                 display: 'block',
@@ -1059,11 +1095,9 @@ export function FileAttachment({
           style={{
             position: 'relative',
             width: '100%',
-            aspectRatio,
-            maxHeight: hasNumericMediaMaxHeight ? `${mediaMaxHeight}px` : mediaMaxHeight,
+            ...mediaBoxStyle,
             overflow: 'hidden',
             borderRadius: 13,
-            border: `1px solid ${ui.mediaBorder || alpha(theme.palette.common.white, 0.08)}`,
             backgroundColor: 'rgba(3,8,20,0.72)',
           }}
         >
@@ -1073,6 +1107,7 @@ export function FileAttachment({
               alt={String(fileName || 'video')}
               loading="lazy"
               decoding="async"
+              onLoad={(event) => handleNaturalSize(event.currentTarget)}
               style={{
                 display: 'block',
                 width: '100%',
@@ -1091,6 +1126,7 @@ export function FileAttachment({
                 if (!resolvedDuration) {
                   setResolvedDuration(formatVideoDuration(event.currentTarget.duration));
                 }
+                handleNaturalSize(event.currentTarget);
               }}
               style={{
                 display: 'block',
@@ -1192,12 +1228,16 @@ export function FileAttachment({
       onKeyDown={openFileActionsMenu}
       style={{
         ...surfaceStyle,
+        // Д2-10: файл — контент одной карточки/пузыря, без внутренней рамки
+        // и второй подложки; подсветка — только при наведении.
+        border: 'none',
+        borderRadius: 10,
         padding: 10,
         position: 'relative',
-        boxShadow: isHovered ? '0 12px 28px rgba(2, 6, 23, 0.22)' : 'none',
+        boxShadow: 'none',
         backgroundColor: isHovered
           ? (ui.fileHoverBg || alpha(theme.palette.common.white, 0.07))
-          : surfaceStyle.backgroundColor,
+          : 'transparent',
       }}
     >
       <div

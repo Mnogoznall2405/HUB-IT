@@ -1,3 +1,9 @@
+// Д2-5 (раздел 29, п. 5): от 700 px — две колонки как в Telegram Desktop
+// (список сужается до ~260 px, справа переписка); уже 700 px — телефонный
+// режим «список ИЛИ чат» со стрелкой «назад».
+export const CHAT_MOBILE_BREAKPOINT_PX = 700;
+export const CHAT_MOBILE_MEDIA = `(max-width:${CHAT_MOBILE_BREAKPOINT_PX - 0.05}px)`;
+
 export const CHAT_MOBILE_HISTORY_FLAG = '__hubChatMobileShell';
 export const CHAT_MOBILE_HISTORY_VIEW_KEY = '__hubChatMobileShellView';
 export const CHAT_MOBILE_HISTORY_DRAWER_KEY = '__hubChatMobileShellDrawer';

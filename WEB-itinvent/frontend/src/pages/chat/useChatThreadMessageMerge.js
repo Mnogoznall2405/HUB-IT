@@ -19,7 +19,7 @@ export default function useChatThreadMessageMerge({
   syncConversationPreview,
   withStableMessageRenderKey,
 }) {
-  const upsertThreadMessages = useCallback((incomingMessages, { replaceByMessageId = null } = {}) => {
+  const upsertThreadMessages = useCallback((incomingMessages, { replaceByMessageId = null, liveAppear = false } = {}) => {
     const activeConversationId = String(activeConversationIdRef.current || '').trim();
     if (!activeConversationId) return;
     const incoming = Array.isArray(incomingMessages) ? incomingMessages : [incomingMessages];
@@ -45,26 +45,27 @@ export default function useChatThreadMessageMerge({
       activeConversationId,
       replaceByMessageId,
       withStableMessageRenderKey,
+      liveAppear,
     }));
   }, [activeConversationIdRef, setMessages, withStableMessageRenderKey]);
 
-  const upsertThreadMessage = useCallback((message, { replaceId = '' } = {}) => {
+  const upsertThreadMessage = useCallback((message, { replaceId = '', liveAppear = false } = {}) => {
     if (!message?.id) return;
     const messageId = String(message.id || '').trim();
     const normalizedReplaceId = String(replaceId || '').trim();
     const replaceByMessageId = normalizedReplaceId && messageId
       ? new Map([[messageId, normalizedReplaceId]])
       : null;
-    upsertThreadMessages([message], { replaceByMessageId });
+    upsertThreadMessages([message], { replaceByMessageId, liveAppear });
   }, [upsertThreadMessages]);
 
-  const mergeMessageIntoThread = useCallback((message) => {
+  const mergeMessageIntoThread = useCallback((message, { liveAppear = false } = {}) => {
     const resolved = resolveThreadMessageMerge(message, messagesRef.current, {
       isLikelyOptimisticReplacement,
       withStableMessageRenderKey,
     });
     if (!resolved) return;
-    upsertThreadMessage(resolved.message, { replaceId: resolved.replaceId });
+    upsertThreadMessage(resolved.message, { replaceId: resolved.replaceId, liveAppear });
   }, [
     isLikelyOptimisticReplacement,
     messagesRef,
@@ -82,7 +83,7 @@ export default function useChatThreadMessageMerge({
     const normalizedConversationId = String(conversationId || '').trim();
     if (!normalizedConversationId || !message?.id) return false;
 
-    upsertThreadMessage(message, { replaceId });
+    upsertThreadMessage(message, { replaceId, liveAppear: true });
     const isActiveConversation = normalizedConversationId === String(activeConversationIdRef.current || '').trim();
     if (isActiveConversation && message?.is_own && !message?.isOptimistic) {
       setViewerLastReadMessageId(String(message.id || '').trim());

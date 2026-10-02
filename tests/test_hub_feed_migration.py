@@ -55,7 +55,8 @@ def test_feed_vk_migration_upgrades_existing_publications(tmp_path):
     config.set_main_option("sqlalchemy.url", database_url)
     config.attributes["configure_logger"] = False
     config.attributes["itinvent_scope"] = "app"
-    command.upgrade(config, "head")
+    # Only the revisions under test: the chain after them needs tables this minimal fixture does not have.
+    command.upgrade(config, "20260807_0090")
 
     inspector = sa.inspect(engine)
     announcement_columns = {item["name"] for item in inspector.get_columns("hub_announcements")}

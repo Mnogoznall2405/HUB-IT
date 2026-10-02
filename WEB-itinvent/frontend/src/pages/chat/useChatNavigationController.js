@@ -140,9 +140,12 @@ export default function useChatNavigationController({
   }, [focusComposer, openConversation, setAiBots, setAiStatusByConversation, upsertConversation]);
 
   const handleOpenAiBot = useCallback(async (bot) => {
-    const botId = String(bot?.id || '').trim();
+    // Sidebar rows carry `bot_id` (spread bot object keeps `id` empty when the
+    // bot is gone); opening state keys on the conversation id when present.
+    const botId = String(bot?.bot_id || bot?.id || '').trim();
     if (!botId) return null;
-    setOpeningAiBotId(botId);
+    const openingKey = String(bot?.conversation_id || '').trim() || botId;
+    setOpeningAiBotId(openingKey);
     try {
       const conversation = await chatAPI.openAiBotConversation(botId);
       return registerAiConversation(conversation, bot);

@@ -199,7 +199,7 @@ function DocumentUploadRow({ busy, file, fileIndex, isDropMode, onRemove, tokens
   );
 }
 
-function LocalVideoPreview({ file, onPlaybackStart, src, tokens }) {
+function LocalVideoPreview({ file, onPlaybackStart, src, tokens, fitContent = false }) {
   const videoRef = useRef(null);
   const [duration, setDuration] = useState('');
   const [playing, setPlaying] = useState(false);
@@ -240,7 +240,10 @@ function LocalVideoPreview({ file, onPlaybackStart, src, tokens }) {
         }}
         onPause={() => setPlaying(false)}
         onEnded={() => setPlaying(false)}
-        sx={{ width: '100%', height: '100%', display: 'block', objectFit: 'cover', bgcolor: tokens.mediaBg }}
+        sx={fitContent
+          // Д2-8: одиночное видео обтекает пропорции ролика, без серых полос.
+          ? { width: 'auto', height: '100%', maxWidth: '100%', display: 'block', objectFit: 'cover', bgcolor: tokens.mediaBg }
+          : { width: '100%', height: '100%', display: 'block', objectFit: 'cover', bgcolor: tokens.mediaBg }}
       />
       {!playing ? (
         <IconButton
@@ -328,8 +331,9 @@ function MediaUploadGrid({ busy, files, imageEdits, isDropMode, onEdit, onRemove
         height: getMediaGridHeight(itemCount),
         overflow: 'hidden',
         borderRadius: '8px',
-        bgcolor: tokens.mediaBg,
-        outline: `1px solid ${tokens.mediaOutline}`,
+        // Д2-8: у одиночного медиа рамка обтекает пропорции — фон и контур у тайла.
+        bgcolor: itemCount === 1 ? 'transparent' : tokens.mediaBg,
+        outline: itemCount === 1 ? 'none' : `1px solid ${tokens.mediaOutline}`,
         outlineOffset: '-1px',
       }}
     >
@@ -345,10 +349,18 @@ function MediaUploadGrid({ busy, files, imageEdits, isDropMode, onEdit, onRemove
             sx={{
               ...getMediaTilePlacement(itemCount, mediaIndex),
               position: 'relative',
-              minWidth: 0,
+              minWidth: singleItem ? 120 : 0,
               minHeight: 0,
               overflow: 'hidden',
               bgcolor: tokens.mediaBg,
+              ...(singleItem ? {
+                justifySelf: 'center',
+                width: 'fit-content',
+                maxWidth: '100%',
+                borderRadius: '8px',
+                outline: `1px solid ${tokens.mediaOutline}`,
+                outlineOffset: '-1px',
+              } : {}),
             }}
           >
             {isChatImageFile(file) ? (
@@ -356,19 +368,24 @@ function MediaUploadGrid({ busy, files, imageEdits, isDropMode, onEdit, onRemove
                 component="img"
                 src={previewUrl || undefined}
                 alt={`Предпросмотр ${getFileLabel(file)}`}
-                sx={{
-                  display: 'block',
-                  width: '100%',
-                  height: '100%',
-                  objectFit: singleItem ? 'contain' : 'cover',
-                  bgcolor: tokens.mediaBg,
-                }}
+                sx={singleItem
+                  // Д2-8: одиночное фото — высота тайла, ширина по пропорциям,
+                  // cover отсекает края без серых полос при конфликте.
+                  ? { display: 'block', width: 'auto', height: '100%', maxWidth: '100%', objectFit: 'cover', bgcolor: tokens.mediaBg }
+                  : {
+                    display: 'block',
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'cover',
+                    bgcolor: tokens.mediaBg,
+                  }}
               />
             ) : (
               <LocalVideoPreview
                 file={file}
                 src={previewUrl}
                 tokens={tokens}
+                fitContent={singleItem}
                 onPlaybackStart={handlePlaybackStart}
               />
             )}
@@ -705,19 +722,31 @@ export default function ChatFileUploadPanel({
               <Box component="button" type="button" onClick={onAdd} disabled={busy} sx={textActionButtonSx(tokens)}>
                 Добавить
               </Box>
-              <Box component="button" type="button" onClick={onCancel} disabled={busy} sx={textActionButtonSx(tokens)}>
-                Отмена
-              </Box>
-              <Box
-                component="button"
-                type="button"
-                data-testid="file-dialog-send"
-                onClick={() => onSend?.()}
-                disabled={busy || items.length === 0}
-                sx={{ ...textActionButtonSx(tokens), ml: 'auto', opacity: busy || items.length === 0 ? 0.45 : 1 }}
-              >
-                Отправить
-              </Box>
+              <Stack direction="row" spacing={{ xs: 2.5, sm: 2.9 }} alignItems="center" sx={{ ml: 'auto' }}>
+                <Box component="button" type="button" onClick={onCancel} disabled={busy} sx={textActionButtonSx(tokens)}>
+                  Отмена
+                </Box>
+                <Box
+                  component="button"
+                  type="button"
+                  data-testid="file-dialog-send"
+                  onClick={() => onSend?.()}
+                  disabled={busy || items.length === 0}
+                  sx={{
+                    ...textActionButtonSx(tokens),
+                    px: 2.2,
+                    minHeight: 36,
+                    borderRadius: '18px',
+                    bgcolor: tokens.accent,
+                    color: '#ffffff',
+                    fontWeight: 700,
+                    opacity: busy || items.length === 0 ? 0.45 : 1,
+                    '&:hover': { bgcolor: tokens.accent },
+                  }}
+                >
+                  Отправить
+                </Box>
+              </Stack>
             </Stack>
           ) : null}
         </Stack>

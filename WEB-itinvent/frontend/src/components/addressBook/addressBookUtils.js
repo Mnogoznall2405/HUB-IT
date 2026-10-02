@@ -1,6 +1,62 @@
-export { hideScrollbarSx } from '../../lib/hideScrollbarSx';
+import { hideScrollbarSx } from '../../lib/hideScrollbarSx';
+
+export { hideScrollbarSx };
+
+// A20: thin but visible scrollbars inside address-book surfaces (desktop).
+// The shared lib/hideScrollbarSx stays untouched; function form keeps the
+// scrollbar color on theme tokens in both light and dark themes (A16).
+export const thinScrollbarSx = (theme) => ({
+  scrollbarWidth: 'thin',
+  scrollbarColor: `${theme.palette.action.disabled} transparent`,
+  '&::-webkit-scrollbar': {
+    width: 6,
+    height: 6,
+  },
+  '&::-webkit-scrollbar-thumb': {
+    backgroundColor: theme.palette.action.disabled,
+    borderRadius: 3,
+  },
+  '&::-webkit-scrollbar-track': {
+    backgroundColor: 'transparent',
+  },
+});
+
+// A20: hidden scrollbars on touch, thin visible scrollbars on sm+ desktop.
+export const addressBookScrollbarSx = (theme) => ({
+  ...hideScrollbarSx,
+  '@media (min-width:600px)': {
+    scrollbarWidth: 'thin',
+    scrollbarColor: `${theme.palette.action.disabled} transparent`,
+    '&::-webkit-scrollbar': {
+      display: 'block',
+      width: 6,
+      height: 6,
+    },
+    '&::-webkit-scrollbar-thumb': {
+      backgroundColor: theme.palette.action.disabled,
+      borderRadius: 3,
+    },
+    '&::-webkit-scrollbar-track': {
+      backgroundColor: 'transparent',
+    },
+  },
+});
 
 export const normalizeText = (value) => String(value || '').trim();
+
+/** Dedupe {name,count} filter options by case-insensitive name (first wins). */
+export const dedupeNamedOptions = (options) => {
+  const seen = new Set();
+  const result = [];
+  (Array.isArray(options) ? options : []).forEach((option) => {
+    const name = normalizeText(option?.name);
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) return;
+    seen.add(key);
+    result.push({ ...option, name });
+  });
+  return result;
+};
 
 export const normalizePhoneDigits = (value) => {
   const digits = normalizeText(value).replace(/\D+/g, '');
@@ -73,12 +129,8 @@ export const pickPrimaryPhone = (item) => {
   return pickFromPhones(item?.personal_phones);
 };
 
-/** Quick actions in list row: personal mobile → any personal → work fallback */
-export const pickQuickActionPhone = (item) => {
-  const personal = pickFromPhones(item?.personal_phones);
-  if (personal) return personal;
-  return pickFromPhones(item?.work_phones);
-};
+/** All primary quick actions use the same work-first phone as the details panel. */
+export const pickQuickActionPhone = (item) => pickPrimaryPhone(item);
 
 export const pickPrimaryEmail = (item) => {
   const emails = Array.isArray(item?.work_emails) ? item.work_emails : [];
@@ -111,6 +163,13 @@ export const collectAddressBookChatLookup = (item) => ({
 export const getEntryKey = (item, index = 0) => (
   `${normalizeText(item?.full_name)}|${normalizeText(item?.department)}|${normalizeText(item?.position)}|${index}`
 );
+
+/** Stable identity of a person across list refreshes (independent of list index). */
+export const getEntryIdentity = (item) => {
+  const employeeCode = normalizeText(item?.employee_code);
+  if (employeeCode) return employeeCode;
+  return `${normalizeText(item?.full_name)}|${normalizeText(item?.department)}|${normalizeText(item?.position)}`;
+};
 
 export const getInitials = (fullName) => {
   const parts = normalizeText(fullName).split(/\s+/).filter(Boolean);

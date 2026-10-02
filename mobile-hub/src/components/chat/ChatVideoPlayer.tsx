@@ -3,6 +3,7 @@ import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'rea
 import { WebView } from 'react-native-webview';
 import type { ChatAttachment } from '../../api/types';
 import { subscribeAccessTokenChanges } from '../../auth/tokenStore';
+import { MEDIA_PANEL_TIMEOUT_MS, withMediaPanelTimeout } from '../../chat/chatAttachmentPanel';
 import { pickChatAttachmentPlaybackUrl, pickChatAttachmentPreviewUrl } from '../../chat/chatMedia';
 import { getChatMediaRequestHeaders } from '../../files/chatMediaRequest';
 import { resolveAttachmentUrl } from '../../utils/attachmentUrl';
@@ -25,12 +26,21 @@ function post(payload) {
   if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify(payload));
 }
 var video = document.getElementById('v');
+// AUD-6: revoke the previous object URL on replace/pagehide so repeated plays
+// in the same WebView do not accumulate blob memory.
+var objectUrl = null;
+function releaseObjectUrl() {
+  if (objectUrl) { try { URL.revokeObjectURL(objectUrl); } catch (e) {} objectUrl = null; }
+}
+window.addEventListener('pagehide', releaseObjectUrl);
 window.__hubitPlay = async function (payload) {
   try {
     var response = await fetch(payload.url, { headers: payload.headers || {} });
     if (!response.ok) throw new Error('http');
     var blob = await response.blob();
-    video.src = URL.createObjectURL(blob);
+    releaseObjectUrl();
+    objectUrl = URL.createObjectURL(blob);
+    video.src = objectUrl;
     await video.play();
     post({ type: 'playing' });
   } catch (error) {
@@ -68,20 +78,34 @@ export function ChatVideoPlayer({
   const [error, setError] = useState('');
   const [directFailed, setDirectFailed] = useState(false);
   const [headers, setHeaders] = useState<Record<string, string> | null>(null);
+  // AUD-6: a hung/failed header load must surface an error with «Повторить»
+  // instead of a forever-disabled «Подготавливаем…» button.
+  const [headerError, setHeaderError] = useState(false);
   const [playerVersion, setPlayerVersion] = useState(0);
   const webRef = useRef<{ injectJavaScript?: (script: string) => void } | null>(null);
   const mountedRef = useRef(false);
   const startedRef = useRef(false);
   const requestIdRef = useRef(0);
   const currentHeadersRef = useRef<Record<string, string> | null>(null);
+  // AUD-6: watchdog for the WebView blob fallback — a fetch/blob() that never
+  // resolves inside the page would otherwise leave «Загружаем видео…» forever.
+  const blobWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearBlobWatchdog = useCallback(() => {
+    if (blobWatchdogRef.current) {
+      clearTimeout(blobWatchdogRef.current);
+      blobWatchdogRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       requestIdRef.current += 1;
+      clearBlobWatchdog();
     };
-  }, []);
+  }, [clearBlobWatchdog]);
 
   useEffect(() => {
     startedRef.current = started;
@@ -90,13 +114,16 @@ export function ChatVideoPlayer({
   const loadHeaders = useCallback(async ({ reloadStarted = false } = {}) => {
     const requestId = ++requestIdRef.current;
     try {
-      const nextHeaders = await getChatMediaRequestHeaders({
+      // AUD-6: bound the await — a hung session refresh must not leave the
+      // play button stuck on «Подготавливаем…».
+      const nextHeaders = await withMediaPanelTimeout(getChatMediaRequestHeaders({
         preserveSessionOnRefreshFailure: true,
-      });
+      }));
       if (!mountedRef.current || requestId !== requestIdRef.current) return;
       const changed = !headersEqual(currentHeadersRef.current, nextHeaders);
       currentHeadersRef.current = nextHeaders;
       setHeaders(nextHeaders);
+      setHeaderError(false);
       if (reloadStarted && changed && startedRef.current) {
         setDirectFailed(false);
         setReady(false);
@@ -106,22 +133,28 @@ export function ChatVideoPlayer({
       }
     } catch {
       if (!mountedRef.current || requestId !== requestIdRef.current) return;
-      if (!currentHeadersRef.current) setHeaders(null);
+      if (!currentHeadersRef.current) {
+        setHeaders(null);
+        setHeaderError(true);
+      }
     }
   }, []);
 
   useEffect(() => {
+    clearBlobWatchdog();
     setStarted(false);
     setReady(false);
     setLoading(false);
     setError('');
+    setHeaderError(false);
     setDirectFailed(false);
     setPlayerVersion(0);
-  }, [attachment?.id, playbackUrl]);
+  }, [attachment?.id, clearBlobWatchdog, playbackUrl]);
 
   useEffect(() => {
     currentHeadersRef.current = null;
     setHeaders(null);
+    setHeaderError(false);
     void loadHeaders();
     return () => {
       requestIdRef.current += 1;
@@ -146,20 +179,33 @@ export function ChatVideoPlayer({
     inject(`window.__hubitPlay(${JSON.stringify({ url: playbackUrl, headers })}); true;`);
   };
 
+  const armBlobWatchdog = useCallback(() => {
+    clearBlobWatchdog();
+    blobWatchdogRef.current = setTimeout(() => {
+      blobWatchdogRef.current = null;
+      if (!mountedRef.current) return;
+      // No 'ready'/'playing'/'error' arrived in time — the fetch or blob()
+      // inside the WebView is stuck; surface the retryable error state.
+      setLoading(false);
+      setError('Не удалось воспроизвести видео');
+    }, MEDIA_PANEL_TIMEOUT_MS * 2);
+  }, [clearBlobWatchdog]);
+
   const enterBlobFallback = () => {
     setDirectFailed(true);
     setReady(false);
     setLoading(true);
+    armBlobWatchdog();
   };
 
   const handleDirectFailure = () => {
     const failedHeaders = currentHeadersRef.current;
     const failedPlaybackUrl = playbackUrl;
     const requestId = ++requestIdRef.current;
-    void getChatMediaRequestHeaders({
+    void withMediaPanelTimeout(getChatMediaRequestHeaders({
       forceRefresh: true,
       preserveSessionOnRefreshFailure: true,
-    })
+    }))
       .then((nextHeaders) => {
         if (
           !mountedRef.current
@@ -193,16 +239,33 @@ export function ChatVideoPlayer({
         {previewUrl ? (
           <Image source={{ uri: previewUrl, headers: headers || {} }} style={StyleSheet.absoluteFill} resizeMode="contain" />
         ) : null}
-        <Pressable
-          onPress={start}
-          disabled={!headers}
-          style={({ pressed }) => [styles.play, pressed && styles.pressed]}
-          accessibilityRole="button"
-          accessibilityLabel="Воспроизвести видео"
-        >
-          <Text style={styles.playMark}>▶</Text>
-          <Text style={styles.playText}>{headers ? 'Смотреть' : 'Подготавливаем…'}</Text>
-        </Pressable>
+        {headerError ? (
+          <View style={styles.headerErrorBox} accessibilityLiveRegion="polite">
+            <Text style={styles.error}>Не удалось подготовить видео</Text>
+            <Pressable
+              onPress={() => {
+                setHeaderError(false);
+                void loadHeaders();
+              }}
+              style={({ pressed }) => [styles.retry, pressed && styles.pressed]}
+              accessibilityRole="button"
+              accessibilityLabel="Повторить подготовку видео"
+            >
+              <Text style={styles.retryText}>Повторить</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <Pressable
+            onPress={start}
+            disabled={!headers}
+            style={({ pressed }) => [styles.play, pressed && styles.pressed]}
+            accessibilityRole="button"
+            accessibilityLabel="Воспроизвести видео"
+          >
+            <Text style={styles.playMark}>▶</Text>
+            <Text style={styles.playText}>{headers ? 'Смотреть' : 'Подготавливаем…'}</Text>
+          </Pressable>
+        )}
       </View>
     );
   }
@@ -254,15 +317,18 @@ export function ChatVideoPlayer({
               return;
             }
             if (payload.type === 'playing') {
+              clearBlobWatchdog();
               setLoading(false);
               setError('');
               return;
             }
             if (payload.type === 'error') {
+              clearBlobWatchdog();
               setLoading(false);
               setError('Не удалось воспроизвести видео');
             }
           } catch {
+            clearBlobWatchdog();
             setLoading(false);
             setError('Не удалось воспроизвести видео');
           }
@@ -280,6 +346,7 @@ export function ChatVideoPlayer({
           <Text style={styles.error}>{error}</Text>
           <Pressable
             onPress={() => {
+              clearBlobWatchdog();
               setStarted(false);
               setDirectFailed(false);
               setReady(false);
@@ -322,6 +389,7 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   coverText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   placeholder: { color: '#fff', fontSize: 18, fontWeight: '700' },
   error: { color: '#fff', fontSize: 15, fontWeight: '600', textAlign: 'center', paddingHorizontal: 24 },
+  headerErrorBox: { alignItems: 'center', gap: 10 },
   retry: {
     minHeight: 44,
     paddingHorizontal: 16,

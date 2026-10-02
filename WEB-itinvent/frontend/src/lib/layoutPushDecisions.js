@@ -33,6 +33,10 @@ export function resolveForegroundPushDecision(detail = {}, context = {}) {
     if (context.isMobileChatRoute && context.isVisible) {
       return { kind: 'suppress', reason: 'mobile_chat_route_visible' };
     }
+    // N2: desktop chat page already shows the inbox list + badges — no toast.
+    if (context.isDesktopChatRoute && context.isVisible) {
+      return { kind: 'suppress', reason: 'desktop_chat_route' };
+    }
     const isActiveVisibleConversation = (
       (context.isChatRoute || context.isTaskDiscussionRoute)
       && context.activeChatConversationId === conversationId

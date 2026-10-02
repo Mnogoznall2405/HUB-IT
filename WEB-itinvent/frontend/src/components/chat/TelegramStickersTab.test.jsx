@@ -93,7 +93,10 @@ describe('TelegramStickersTab', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Отправить стикер 🐈' }));
 
-    await waitFor(() => expect(onSendSticker).toHaveBeenCalledWith(stickerPack.stickers[0]));
+    await waitFor(() => expect(onSendSticker).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'sticker-1',
+      pack_short_name: stickerPack.short_name,
+    })));
     expect(screen.queryByRole('link')).not.toBeInTheDocument();
   });
 

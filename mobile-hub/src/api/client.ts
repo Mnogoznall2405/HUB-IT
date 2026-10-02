@@ -160,6 +160,94 @@ async function expireSession(expectedRefresh: string | null): Promise<void> {
   await tokenStore.clearExpiredTokens(expectedRefresh, publishSessionExpired);
 }
 
+async function deactivateSession(expectedRefresh: string | null): Promise<void> {
+  await tokenStore.clearDeactivatedTokens(expectedRefresh, publishSessionExpired);
+}
+
+type ErrorResponse = { status?: unknown; headers?: unknown; data?: unknown };
+
+function errorResponse(error: unknown): ErrorResponse | undefined {
+  return error && typeof error === 'object'
+    ? (error as { response?: ErrorResponse }).response
+    : undefined;
+}
+
+function responseHeader(headers: unknown, name: string): string {
+  if (!headers || typeof headers !== 'object') return '';
+  const getter = (headers as { get?: unknown }).get;
+  if (typeof getter === 'function') {
+    return String((getter as (header: string) => unknown).call(headers, name) ?? '').trim();
+  }
+  const record = headers as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (key.toLowerCase() === name) return String(record[key] ?? '').trim();
+  }
+  return '';
+}
+
+function isJsonResponse(response: ErrorResponse | undefined): boolean {
+  return responseHeader(response?.headers, 'content-type').toLowerCase().includes('application/json');
+}
+
+/**
+ * Reads the HUB-IT refusal kind: a 401 or 403 answered as `application/json`
+ * comes from the FastAPI backend itself — the backend always reports auth
+ * errors as JSON. An equally coded HTML page from IIS, a captive portal, a
+ * VPN proxy or a WAF is a transport failure and returns 0.
+ */
+function hubitRejectionStatus(error: unknown): 401 | 403 | 0 {
+  const response = errorResponse(error);
+  const status = Number(response?.status || 0);
+  if (status !== 401 && status !== 403) return 0;
+  return isJsonResponse(response) ? status as 401 | 403 : 0;
+}
+
+/**
+ * A local session ends only on an unambiguous HUB-IT refusal: HTTP 401
+ * answered as `application/json`. Credentials and offline data must survive
+ * every other failure.
+ */
+export function isDefinitiveAuthRejection(error: unknown): boolean {
+  return hubitRejectionStatus(error) === 401;
+}
+
+/**
+ * A JSON 403 from HUB-IT means the network itself is not allowed for this
+ * account (the admin IP allowlist is the only such path today). The session
+ * stays valid — tokens and offline data are preserved and reconnect keeps
+ * running until the user returns to an allowed network.
+ */
+export function isNetworkRestrictedRejection(error: unknown): boolean {
+  return hubitRejectionStatus(error) === 403;
+}
+
+/**
+ * A deactivated HUB-IT account is the only refusal that requires a full local
+ * wipe: HTTP 401 answered as `application/json` with
+ * `X-Hubit-Auth-Reason: user_inactive`. Servers before the C-1 rollout
+ * answered `/auth/me` with 400 {"detail":"Inactive user"} — the same signal,
+ * kept for compatibility and accepted only on that endpoint.
+ */
+export function isUserDeactivatedRejection(error: unknown): boolean {
+  const response = errorResponse(error);
+  if (!isJsonResponse(response)) return false;
+  const status = Number(response?.status || 0);
+  if (status === 401) {
+    return responseHeader(response?.headers, 'x-hubit-auth-reason') === 'user_inactive';
+  }
+  if (status === 400) {
+    const url = String(
+      error && typeof error === 'object'
+        ? (error as { config?: { url?: unknown } }).config?.url ?? ''
+        : '',
+    ).split('?')[0];
+    if (!url.endsWith('/auth/me')) return false;
+    const detail = (response?.data as { detail?: unknown } | undefined)?.detail;
+    return String(detail || '').trim() === 'Inactive user';
+  }
+  return false;
+}
+
 function boundedRefreshTimeout(timeoutMs?: number): number {
   const requested = Number(timeoutMs || 0);
   if (!Number.isFinite(requested) || requested <= 0) return AUTH_REFRESH_TIMEOUT_MS;
@@ -236,8 +324,11 @@ export async function getAuthenticatedAccessToken(
       if (currentAccessToken && !options.forceRefresh) return currentAccessToken;
       throw refreshError;
     }
-    const status = axios.isAxiosError(refreshError) ? refreshError.response?.status : undefined;
-    if ((status === 401 || status === 403) && !options.preserveSessionOnRefreshFailure) {
+    // A deactivated account is wiped even for preserve-session callers —
+    // the rejection is definitive and the offline data must go.
+    if (isUserDeactivatedRejection(refreshError)) {
+      await deactivateSession(expectedRefresh);
+    } else if (isDefinitiveAuthRejection(refreshError) && !options.preserveSessionOnRefreshFailure) {
       await expireSession(expectedRefresh);
     }
     throw refreshError;

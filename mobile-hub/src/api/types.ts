@@ -88,6 +88,8 @@ export type ChatConversationSummary = {
   last_message_preview?: string | null;
   last_message_at?: string | null;
   last_message_seq?: number;
+  /** Server id of the last message — the mark-read target (message_id). */
+  last_message_id?: string | null;
   viewer_last_read_seq?: number;
   unread_count?: number;
   avatar_url?: string | null;

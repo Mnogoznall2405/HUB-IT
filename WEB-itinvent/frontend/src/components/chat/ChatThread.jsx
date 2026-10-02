@@ -31,14 +31,17 @@ import ChatComposer from './ChatComposer';
 import ChatFileDropOverlay from './ChatFileDropOverlay';
 import ChatMessageList from './ChatMessageList';
 import ChatSelectionActionDock from './ChatSelectionActionDock';
+import useChatScheduledMessages from './useChatScheduledMessages';
 import ChatThreadComposerBridge from './ChatThreadComposerBridge';
-import ChatThreadHeader, { AiRunStatusBanner } from './ChatThreadHeader';
+import ChatThreadHeader from './ChatThreadHeader';
 import { useMainLayoutShell } from '../layout/MainLayoutShellContext';
 import {
   CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX,
   getConversationDisplayTitle,
+  getUnreadAnchorId,
 } from './chatHelpers';
 import {
+  capturePrependScrollRestoreState,
   computePrependScrollRestoreTop,
   shouldDeferPinnedBottomScroll,
   shouldRetryPrependRestore,
@@ -52,9 +55,12 @@ import {
 const LazyChatEmojiPanel = lazy(() => import('./ChatEmojiPanel'));
 
 const COMPOSER_STICK_DISTANCE_PX = CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX;
-const DESKTOP_EMOJI_PANEL_WIDTH = 'clamp(300px, 36%, 384px)';
-const DESKTOP_EMOJI_DOCK_MIN_WIDTH = 800;
-const resolveDesktopEmojiPanelWidth = (availableWidth) => Math.min(384, Math.max(300, availableWidth * 0.36));
+// Д3/Д5: центрированная колонка ленты — 728px в чатах, 768px в AI-пространстве.
+const THREAD_CONTENT_MAX_WIDTH = 728;
+const AI_THREAD_CONTENT_MAX_WIDTH = 768;
+// Панель эмодзи/стикеров — всегда поповер над полем ввода, без сжатия ленты.
+const DESKTOP_EMOJI_POPOVER_WIDTH = 'min(384px, calc(100% - 24px))';
+const DESKTOP_EMOJI_POPOVER_HEIGHT = 'min(460px, 68%)';
 const BLUR_SCROLL_DELTA_PX = 12;
 const BACK_SWIPE_EDGE_PX = 28;
 const BACK_SWIPE_START_PX = 14;
@@ -158,6 +164,7 @@ export const getTaskCompletedBannerText = (completedAt) => {
 const TaskCompletedBanner = memo(function TaskCompletedBanner({
   activeConversation,
   compactMobile,
+  fullWidth = false,
   onOpenTask,
   theme,
   ui,
@@ -184,7 +191,7 @@ const TaskCompletedBanner = memo(function TaskCompletedBanner({
         alignItems="center"
         justifyContent="space-between"
         sx={{
-          maxWidth: compactMobile ? '100%' : `${Number(ui?.density?.contentMaxWidth || ui?.contentMaxWidth || 980) + 56}px`,
+          maxWidth: compactMobile || fullWidth ? '100%' : `${Number(ui?.density?.contentMaxWidth || ui?.contentMaxWidth || 980) + 56}px`,
           mx: 'auto',
         }}
       >
@@ -227,6 +234,7 @@ const PinnedMessageBar = memo(function PinnedMessageBar({
   theme,
   ui,
   compactMobile,
+  fullWidth = false,
   pinnedMessage,
   onOpenPinnedMessage,
   onUnpinPinnedMessage,
@@ -252,7 +260,7 @@ const PinnedMessageBar = memo(function PinnedMessageBar({
         spacing={1}
         alignItems="center"
         sx={{
-          maxWidth: compactMobile ? '100%' : `${Number(density.contentMaxWidth || ui.contentMaxWidth || 980) + 56}px`,
+          maxWidth: compactMobile || fullWidth ? '100%' : `${Number(density.contentMaxWidth || ui.contentMaxWidth || 980) + 56}px`,
           mx: 'auto',
           width: '100%',
         }}
@@ -351,8 +359,15 @@ function ChatThread({
   threadWallpaperSx,
   messages,
   messagesLoading,
+  threadLoadError,
+  onRetryThreadLoad,
+  pendingNewCount,
+  onRetryFailedMessage,
+  onDiscardFailedMessage,
+  socketStatus,
   effectiveLastReadMessageId,
   messagesHasMore,
+  messagesHasNewer = false,
   loadingOlder,
   prependScrollRestoreRef,
   onLoadOlder,
@@ -411,6 +426,7 @@ function ChatThread({
   aiTypingStatus,
   aiStatus,
   onStopAiRun,
+  onRetryAiRun,
   pinnedMessage,
   onOpenPinnedMessage,
   onUnpinPinnedMessage,
@@ -419,6 +435,7 @@ function ChatThread({
   typingLine,
   contextPanelOpen,
   selectedFiles,
+  fileDialogOpen = false,
   fileCaption,
   onOpenFileDialog,
   onClearSelectedFiles,
@@ -430,14 +447,12 @@ function ChatThread({
   onComposerFocusChange,
   onToggleReaction,
   onPollVote,
-  onPollClose,
   onScrollToMessage,
   currentUserId,
   mobileEmojiPickerOpen = false,
   desktopEmojiPickerOpen = false,
   onInsertEmoji,
   onSendSticker,
-  onSendGif,
   voiceRecording = false,
   voiceRecordingDuration = 0,
   voiceRecordingLevelRef = null,
@@ -449,28 +464,20 @@ function ChatThread({
   const { openDrawer, headerMode } = useMainLayoutShell();
   const resolvedMobileInteractionsEnabled = Boolean(mobileInteractionsEnabled || isMobile);
   const composerDockRef = useRef(null);
+  // R22: the dock node swaps when selection mode, the composer bridge or the
+  // plain composer mount/unmount — a plain ref keeps the ResizeObserver stuck
+  // on the detached node, so the callback ref re-arms the observer.
+  const [composerDockNode, setComposerDockNode] = useState(null);
+  const composerDockCallbackRef = useCallback((node) => {
+    composerDockRef.current = node;
+    setComposerDockNode((current) => (current === node ? current : node));
+  }, []);
   const threadRootRef = useRef(null);
-  const [threadAvailableWidth, setThreadAvailableWidth] = useState(0);
-  const [desktopEmojiDocked, setDesktopEmojiDocked] = useState(false);
-  useLayoutEffect(() => {
-    if (compactMobile || !threadRootRef.current) return undefined;
-    const root = threadRootRef.current;
-    const measure = () => {
-      const width = root.getBoundingClientRect().width;
-      const docked = desktopEmojiPickerOpen && width >= DESKTOP_EMOJI_DOCK_MIN_WIDTH;
-      setDesktopEmojiDocked(docked);
-      setThreadAvailableWidth(width - (docked ? resolveDesktopEmojiPanelWidth(width) : 0));
-    };
-    measure();
-    if (typeof ResizeObserver !== 'function') return undefined;
-    const observer = new ResizeObserver(measure);
-    observer.observe(root);
-    return () => observer.disconnect();
-  }, [activeConversationId, activeConversation?.id, desktopEmojiPickerOpen, compactMobile]);
   const lastScrollTopRef = useRef(0);
   const lastProgrammaticScrollRef = useRef({ at: 0, priority: 0 });
   const composerFocusedRef = useRef(false);
   const threadPinnedToBottomRef = useRef(true);
+  const contentAnchorSnapshotRef = useRef(null);
   const threadPinnedScrollFrameRef = useRef(null);
   const threadViewportHeightRef = useRef(0);
   const threadContentHeightRef = useRef(0);
@@ -505,25 +512,45 @@ function ChatThread({
     ? JUMP_TO_LATEST_FAB_ICON_PX.mobile
     : JUMP_TO_LATEST_FAB_ICON_PX.desktop;
   const density = ui.density || {};
-  const wideMessageLayout = !isMobile && !compactMobile && threadAvailableWidth >= 880;
-  const contentMaxWidth = wideMessageLayout ? 760 : Number(density.contentMaxWidth || ui.contentMaxWidth || 980);
-  const conversationUi = useMemo(() => ({
-    ...ui,
-    wideMessageLayout,
-    contentMaxWidth,
-    density: { ...ui.density, contentMaxWidth },
-  }), [ui, wideMessageLayout, contentMaxWidth]);
   const aiRunStatus = String(aiStatus?.status || '').trim();
   const aiRunActive = aiRunStatus === 'queued' || aiRunStatus === 'running';
   const isAiConversation = String(activeConversation?.kind || '').trim() === 'ai';
+  // R31: OpenCode (sandbox) выключен администратором — беседа только для чтения.
+  const aiAgentReadOnly = isAiConversation && Boolean(aiStatus?.agent_read_only);
+  // "Send later" (regular chats only; the server switches it with CHAT_SCHEDULED_MESSAGES_ENABLED).
+  const scheduledApi = useChatScheduledMessages({
+    conversationId: String(activeConversationId || activeConversation?.id || '').trim(),
+    available: !isAiConversation && hasConversationTarget,
+  });
+  const scheduledMessages = useMemo(() => scheduledApi, [
+    scheduledApi.enabled, scheduledApi.items, scheduledApi.busy, scheduledApi.error,
+    scheduledApi.schedule, scheduledApi.update, scheduledApi.cancel, // eslint-disable-line react-hooks/exhaustive-deps
+  ]);
+  const contentMaxWidth = isAiConversation
+    ? AI_THREAD_CONTENT_MAX_WIDTH
+    : THREAD_CONTENT_MAX_WIDTH;
+  // Д2-2 (раздел 29): обычные беседы — лента на всю ширину, пузыри по краям;
+  // AI-тред остаётся центрированной колонкой в духе эталона раздела 23.
+  const feedFullWidth = !isAiConversation;
+  const conversationUi = useMemo(() => ({
+    ...ui,
+    contentMaxWidth,
+    density: { ...ui.density, contentMaxWidth },
+  }), [ui, contentMaxWidth]);
   const showAiSuggestions = isAiConversation
     && !messagesLoading
     && !(Array.isArray(messages) ? messages : []).some((message) => (
       String(message?.body || '').trim() || (Array.isArray(message?.attachments) && message.attachments.length > 0)
     ));
+  // Д7/AI9: 3–4 подсказки-кнопки в пустом AI-диалоге (примеры из эталона).
   const aiSuggestions = activeAiBot?.slug === 'document-converter'
     ? ['Проверь документ', 'Преобразуй в Word', 'Сделай PDF', 'Извлеки таблицу']
-    : ['Найди оборудование сотрудника', 'Подготовь отчёт', 'Проверь документ', 'Создай черновик письма'];
+    : [
+      'Найди в регламентах порядок замены картриджа',
+      'Сделай отчёт по оборудованию в Excel',
+      'Подготовь письмо об инвентаризации',
+      'Создай задачу на замену батареи',
+    ];
   const applyAiSuggestion = useCallback((value) => {
     if (composerTextBridge?.setMessageText) composerTextBridge.setMessageText(value);
     else onMessageTextChange?.(value);
@@ -536,6 +563,47 @@ function ChatThread({
     composerHeight,
   });
   const messageCount = Array.isArray(messages) ? messages.length : 0;
+
+  // R21: the "Непрочитанные сообщения" divider is pinned to the first unread
+  // message resolved when the conversation opens; marking messages as read
+  // must not slide it down the list.
+  const unreadAnchorStateRef = useRef({ conversationId: '', anchorId: '', resolved: false });
+  const unreadAnchorId = useMemo(() => {
+    const state = unreadAnchorStateRef.current;
+    const conversationId = String(activeConversationId || activeConversation?.id || '').trim();
+    if (state.conversationId !== conversationId) {
+      state.conversationId = conversationId;
+      state.anchorId = '';
+      state.resolved = false;
+    }
+    const list = Array.isArray(messages) ? messages : [];
+    const listMatchesConversation = list.length > 0
+      && list.every((message) => {
+        const owner = String(message?.conversation_id || '').trim();
+        return !owner || owner === conversationId;
+      });
+    if (!state.resolved && listMatchesConversation) {
+      state.resolved = true;
+      // No read boundary (R24) means no unread divider — the thread opens at
+      // the bottom and every loaded message counts as history.
+      if (String(effectiveLastReadMessageId || '').trim()) {
+        state.anchorId = getUnreadAnchorId(list, effectiveLastReadMessageId);
+      }
+    }
+    return state.anchorId;
+  }, [activeConversationId, activeConversation?.id, messages, effectiveLastReadMessageId]);
+
+  // R19/R27: while has_newer the unread tail extends past the loaded window —
+  // the badge counts unread below the visible area, including the unloaded
+  // part (server unread_count minus the unread still sitting in the window).
+  // Socket messages suppressed from a cut window bump unread_count and land
+  // here automatically.
+  const unloadedUnreadTail = messagesHasNewer && pendingNewCount != null
+    ? Math.max(0, Number(activeConversation?.unread_count || 0) - Number(pendingNewCount || 0))
+    : 0;
+  const jumpToLatestBadgeCount = pendingNewCount == null
+    ? Number(activeConversation?.unread_count || 0)
+    : Number(pendingNewCount || 0) + unloadedUnreadTail;
   const [historyAutoLoadEnabled, setHistoryAutoLoadEnabled] = useState(false);
   const loadingOlderRef = useRef(loadingOlder);
   loadingOlderRef.current = loadingOlder;
@@ -665,9 +733,20 @@ function ChatThread({
         if (prependScrollRestoreRef) {
           prependScrollRestoreRef.current = null;
         }
+        // R6: prepend сдвинул все элементы — обновить снимок якоря и высоту
+        // контента, иначе content ResizeObserver применит устаревшую
+        // компенсацию поверх восстановления (остаточный сдвиг ~10 px).
+        const container = threadScrollRef.current;
+        const content = threadContentRef?.current;
+        if (container) {
+          contentAnchorSnapshotRef.current = capturePrependScrollRestoreState(container);
+        }
+        if (content) {
+          threadContentHeightRef.current = Number(content.offsetHeight || content.scrollHeight || 0);
+        }
       },
     });
-  }, [messages, prependScrollRestoreRef, schedulePrependScrollRestoreLocal, threadScrollRef]);
+  }, [messages, prependScrollRestoreRef, schedulePrependScrollRestoreLocal, threadContentRef, threadScrollRef]);
 
   useLayoutEffect(() => {
     const previousSelectionMode = previousSelectionModeRef.current;
@@ -856,7 +935,20 @@ function ChatThread({
         const previousHeight = Number(threadContentHeightRef.current || 0);
         if (Math.abs(nextHeight - previousHeight) <= 1) return;
         threadContentHeightRef.current = nextHeight;
-        if (!threadPinnedToBottomRef.current) return;
+        if (!threadPinnedToBottomRef.current) {
+          const restore = contentAnchorSnapshotRef.current;
+          const targetTop = restore?.mode === 'anchor'
+            ? computePrependScrollRestoreTop(scrollNode, restore)
+            : null;
+          if (targetTop !== null && Number.isFinite(targetTop)) {
+            const applied = applyThreadScroll(scrollNode, targetTop, SCROLL_WRITE_PRIORITY.compensation);
+            if (applied !== null) {
+              lastScrollTopRef.current = applied;
+            }
+          }
+          contentAnchorSnapshotRef.current = capturePrependScrollRestoreState(scrollNode);
+          return;
+        }
         // #region agent log
         emitAgentDebugLog({
           location: 'ChatThread.jsx:contentResizeObserver',
@@ -882,10 +974,10 @@ function ChatThread({
     return () => {
       observer?.disconnect?.();
     };
-  }, [activeConversationId, messageCount, messagesLoading, prependScrollRestoreRef, threadContentRef, threadScrollRef, schedulePinnedBottomScroll]);
+  }, [activeConversationId, messageCount, messagesLoading, prependScrollRestoreRef, threadContentRef, threadScrollRef, applyThreadScroll, schedulePinnedBottomScroll]);
 
   useEffect(() => {
-    const node = composerDockRef.current;
+    const node = composerDockNode;
     if (!node) return undefined;
 
     const updateHeight = () => {
@@ -902,7 +994,7 @@ function ChatThread({
     observer.observe(node);
 
     return () => observer.disconnect();
-  }, []);
+  }, [composerDockNode]);
 
   useLayoutEffect(() => {
     const previousLayout = previousComposerLayoutRef.current;
@@ -1242,6 +1334,9 @@ function ChatThread({
     }
 
     lastScrollTopRef.current = currentScrollTop;
+    if (!threadPinnedToBottomRef.current) {
+      contentAnchorSnapshotRef.current = capturePrependScrollRestoreState(node);
+    }
     onThreadScroll?.(event);
   }, [composerRef, historyAutoLoadEnabled, isThreadScrollable, onThreadScroll]);
 
@@ -1325,9 +1420,6 @@ function ChatThread({
         display: 'flex',
         flexDirection: 'column',
         boxSizing: 'border-box',
-        paddingInlineEnd: desktopEmojiPickerOpen && !compactMobile && desktopEmojiDocked
-          ? DESKTOP_EMOJI_PANEL_WIDTH
-          : 0,
         bgcolor: compactMobile ? ui.threadBg : (ui.desktopShellBg || ui.threadBg),
         position: 'relative',
         overscrollBehaviorY: compactMobile ? 'none' : 'contain',
@@ -1346,9 +1438,14 @@ function ChatThread({
         ui={ui}
         isMobile={isMobile}
         compactMobile={compactMobile}
+        fullWidth={feedFullWidth}
         activeConversation={activeConversation}
+        activeAiBot={activeAiBot}
+        aiStatus={aiStatus}
+        navigate={navigate}
         headerSubtitle={headerSubtitle}
         typingLine={typingLine}
+        socketStatus={socketStatus}
         contextPanelOpen={contextPanelOpen}
         onBack={onBack}
         backLabel={backLabel}
@@ -1370,6 +1467,7 @@ function ChatThread({
       <TaskCompletedBanner
         activeConversation={activeConversation}
         compactMobile={compactMobile}
+        fullWidth={feedFullWidth}
         onOpenTask={onOpenTask}
         theme={theme}
         ui={ui}
@@ -1379,22 +1477,11 @@ function ChatThread({
         theme={theme}
         ui={ui}
         compactMobile={compactMobile}
+        fullWidth={feedFullWidth}
         pinnedMessage={selectionMode ? null : pinnedMessage}
         onOpenPinnedMessage={onOpenPinnedMessage}
         onUnpinPinnedMessage={onUnpinPinnedMessage}
       />
-
-      <AnimatePresence initial={false}>
-        {aiRunActive || aiRunStatus === 'failed' ? (
-          <AiRunStatusBanner
-            aiStatus={aiStatus}
-            theme={theme}
-            ui={ui}
-            compactMobile={compactMobile}
-            onStop={onStopAiRun}
-          />
-        ) : null}
-      </AnimatePresence>
 
       <Box
         onDragOver={onComposerDragOver}
@@ -1434,7 +1521,7 @@ function ChatThread({
             userSelect: 'none',
           }}
         >
-          <Box sx={{ maxWidth: { xs: '100%', md: `${contentMaxWidth}px` }, mx: 'auto', width: '100%' }}>
+          <Box sx={{ maxWidth: { xs: '100%', md: feedFullWidth ? '100%' : `${contentMaxWidth}px` }, mx: 'auto', width: '100%' }}>
             <ChatMessageList
               theme={theme}
               ui={conversationUi}
@@ -1445,7 +1532,10 @@ function ChatThread({
               navigate={navigate}
               messages={messages}
               messagesLoading={messagesLoading}
+              threadLoadError={threadLoadError}
+              onRetryThreadLoad={onRetryThreadLoad}
               effectiveLastReadMessageId={effectiveLastReadMessageId}
+              unreadAnchorId={unreadAnchorId}
               messagesHasMore={messagesHasMore}
               loadingOlder={loadingOlder}
               onLoadOlder={onLoadOlder}
@@ -1467,10 +1557,14 @@ function ChatThread({
               getReadTargetRef={getReadTargetRef}
               onToggleReaction={onToggleReaction}
               onPollVote={onPollVote}
-              onPollClose={onPollClose}
               onScrollToMessage={onScrollToMessage}
+              onRetryFailedMessage={onRetryFailedMessage}
+              onDiscardFailedMessage={onDiscardFailedMessage}
               currentUserId={currentUserId}
               aiTypingStatus={aiTypingStatus}
+              aiStatus={isAiConversation ? aiStatus : null}
+              onRetryAiRun={onRetryAiRun}
+              onStopAiRun={onStopAiRun}
             />
           </Box>
         </Box>
@@ -1502,9 +1596,9 @@ function ChatThread({
           }}
         >
           <Badge
-            badgeContent={Number(activeConversation?.unread_count || 0)}
+            badgeContent={jumpToLatestBadgeCount}
             color="primary"
-            invisible={Number(activeConversation?.unread_count || 0) <= 0}
+            invisible={jumpToLatestBadgeCount <= 0}
             overlap="circular"
             anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
           >
@@ -1541,32 +1635,69 @@ function ChatThread({
       {showAiSuggestions && !selectionMode ? (
         <Box
           aria-label="Примеры запросов"
+          data-testid="chat-ai-suggestions"
           sx={{
             px: compactMobile ? 1.25 : 2,
             pb: 1,
-            display: 'flex',
-            gap: 1,
-            overflowX: 'auto',
             flexShrink: 0,
-            scrollbarWidth: 'none',
-            '&::-webkit-scrollbar': { display: 'none' },
           }}
         >
-          {aiSuggestions.map((suggestion) => (
-            <Button
-              key={suggestion}
-              variant="outlined"
-              size="small"
-              onClick={() => applyAiSuggestion(suggestion)}
-              sx={{ minHeight: 44, flexShrink: 0, borderRadius: 999, textTransform: 'none' }}
-            >
-              {suggestion}
-            </Button>
-          ))}
+          <Box
+            sx={{
+              maxWidth: compactMobile ? '100%' : `${contentMaxWidth}px`,
+              mx: 'auto',
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 0.8,
+              justifyContent: compactMobile ? 'flex-start' : 'center',
+            }}
+          >
+            {aiSuggestions.map((suggestion) => (
+              <Button
+                key={suggestion}
+                variant="outlined"
+                size="small"
+                onClick={() => applyAiSuggestion(suggestion)}
+                sx={{
+                  minHeight: 44,
+                  flexShrink: 0,
+                  borderRadius: 999,
+                  textTransform: 'none',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  borderColor: ui.borderSoft,
+                  color: ui.textPrimary,
+                  bgcolor: alpha(ui.panelBg || theme.palette.background.paper, theme.palette.mode === 'dark' ? 0.6 : 0.86),
+                  '&:hover': { borderColor: ui.accentText, color: ui.accentText },
+                }}
+              >
+                {suggestion}
+              </Button>
+            ))}
+          </Box>
         </Box>
       ) : null}
 
-      {selectionMode ? (
+      {aiAgentReadOnly ? (
+        <Box
+          ref={composerDockCallbackRef}
+          role="status"
+          data-testid="chat-ai-agent-disabled"
+          sx={{
+            flexShrink: 0,
+            px: compactMobile ? 1.5 : 2,
+            py: 1.4,
+            textAlign: 'center',
+            fontSize: 13.5,
+            fontWeight: 600,
+            color: ui.textSecondary,
+            bgcolor: ui.composerBg || ui.panelBg || theme.palette.background.paper,
+            borderTop: `1px solid ${ui.borderSoft || theme.palette.divider}`,
+          }}
+        >
+          Агент отключён администратором. История доступна только для чтения.
+        </Box>
+      ) : selectionMode ? (
         <ChatSelectionActionDock
           theme={theme}
           ui={ui}
@@ -1588,6 +1719,7 @@ function ChatThread({
             compactMobile,
             activeConversationId,
             selectedFiles,
+            fileDialogOpen,
             fileCaption,
             onOpenFileDialog,
             onClearSelectedFiles,
@@ -1611,13 +1743,12 @@ function ChatThread({
             onComposerFocusChange: handleComposerFocusChange,
             mentionCandidates,
             onSearchMentionPeople,
-            composerDockRef,
+            composerDockRef: composerDockCallbackRef,
             keyboardInset,
             mobileEmojiPickerOpen,
             emojiPickerOpen: desktopEmojiPickerOpen,
             onInsertEmoji,
             onSendSticker,
-            onSendGif,
             currentUserId,
             voiceRecording,
             voiceRecordingDuration,
@@ -1628,6 +1759,7 @@ function ChatThread({
             isAiConversation,
             isAiGenerating: aiRunActive,
             onStopAiRun,
+            scheduled: scheduledMessages,
           }}
         />
       ) : (
@@ -1637,6 +1769,7 @@ function ChatThread({
           compactMobile={compactMobile}
           activeConversationId={activeConversationId}
           selectedFiles={selectedFiles}
+          fileDialogOpen={fileDialogOpen}
           fileCaption={fileCaption}
           onOpenFileDialog={onOpenFileDialog}
           onClearSelectedFiles={onClearSelectedFiles}
@@ -1664,13 +1797,12 @@ function ChatThread({
           onComposerFocusChange={handleComposerFocusChange}
           mentionCandidates={mentionCandidates}
           onSearchMentionPeople={onSearchMentionPeople}
-          composerDockRef={composerDockRef}
+          composerDockRef={composerDockCallbackRef}
           keyboardInset={keyboardInset}
           mobileEmojiPickerOpen={mobileEmojiPickerOpen}
           emojiPickerOpen={desktopEmojiPickerOpen}
           onInsertEmoji={onInsertEmoji}
           onSendSticker={onSendSticker}
-          onSendGif={onSendGif}
           currentUserId={currentUserId}
           voiceRecording={voiceRecording}
           voiceRecordingDuration={voiceRecordingDuration}
@@ -1681,33 +1813,37 @@ function ChatThread({
           isAiConversation={isAiConversation}
           isAiGenerating={aiRunActive}
           onStopAiRun={onStopAiRun}
+          scheduled={scheduledMessages}
         />
       )}
 
       {desktopEmojiPickerOpen && !compactMobile ? (
+        // Д5/Д6: панель эмодзи и стикеров — поповер над полем ввода,
+        // не сжимает ленту и не сдвигает шапку.
         <Box
           data-testid="chat-desktop-emoji-panel"
-          data-layout={desktopEmojiDocked ? 'docked' : 'overlay'}
+          data-layout="popover"
           role="dialog"
-          aria-label="Эмодзи, стикеры и GIF"
+          aria-label="Эмодзи и стикеры"
           sx={{
             position: 'absolute',
-            insetBlock: 0,
-            insetInlineEnd: 0,
+            right: { xs: 12, md: feedFullWidth ? 14 : `max(14px, calc(50% - ${Math.round(contentMaxWidth / 2)}px))` },
+            bottom: `${Math.max(72, composerHeight) + 10}px`,
             zIndex: 20,
-            width: DESKTOP_EMOJI_PANEL_WIDTH,
-            maxWidth: '100%',
+            width: DESKTOP_EMOJI_POPOVER_WIDTH,
+            height: DESKTOP_EMOJI_POPOVER_HEIGHT,
             minWidth: 0,
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
+            borderRadius: '16px',
             bgcolor: ui.composerBg || ui.panelBg || theme.palette.background.paper,
-            borderInlineStart: `1px solid ${ui.borderSoft || theme.palette.divider}`,
-            boxShadow: `-14px 0 32px ${alpha(theme.palette.common.black, theme.palette.mode === 'dark' ? 0.28 : 0.16)}`,
+            border: `1px solid ${ui.borderSoft || theme.palette.divider}`,
+            boxShadow: `0 14px 38px ${alpha(theme.palette.common.black, theme.palette.mode === 'dark' ? 0.42 : 0.2)}`,
           }}
         >
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, pl: 1.5, pr: 0.5, flexShrink: 0 }}>
-            <Typography variant="caption" sx={{ flex: 1, minWidth: 0 }}>Эмодзи, стикеры и GIF</Typography>
+            <Typography variant="caption" sx={{ flex: 1, minWidth: 0 }}>Эмодзи и стикеры</Typography>
             <IconButton aria-label="Закрыть панель эмодзи" onClick={() => {
               onCloseEmojiPicker?.();
               composerRef?.current?.focus?.();
@@ -1724,7 +1860,6 @@ function ChatThread({
               ui={ui}
               onInsertEmoji={onInsertEmoji}
               onSendSticker={onSendSticker}
-              onSendGif={onSendGif}
               currentUserId={currentUserId}
               onClose={onCloseEmojiPicker}
             />

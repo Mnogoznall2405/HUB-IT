@@ -612,7 +612,8 @@ describe('Database equipment row helpers', () => {
     expect(await screen.findByRole('button', { name: 'Добавить расходник' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Загрузить акт' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Добавить оборудование' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'QR Сканер' })).not.toBeInTheDocument();
+    // the QR scanner stays available on the consumables tab (the toolbar always offers it)
+    expect(screen.getByRole('button', { name: 'QR Сканер' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Оборудование' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Расходники' })).toBeInTheDocument();
   });

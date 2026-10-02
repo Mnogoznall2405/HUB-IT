@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { Box, Paper } from '@mui/material';
+import { Box } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChatSidebarSizingContext } from '../../components/chat/ChatSidebarSizingContext';
@@ -96,20 +96,20 @@ export default function ChatPageDesktopLayout({
 
   return (
     <ChatSidebarSizingContext.Provider value={sidebarSizing.context}>
-    <Paper
+    <Box
       data-testid="chat-desktop-shell"
-      elevation={0}
       sx={{
         flex: 1,
         minHeight: 0,
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
-        borderRadius: isPhone ? 0 : 1.5,
-        border: isPhone ? 'none' : `1px solid ${ui.desktopShellBorder || ui.borderSoft}`,
-        borderBottom: isPhone ? undefined : 'none',
+        // Д1: полноэкранный чат без карточной рамки/отступов/теней.
+        borderRadius: 0,
+        border: 'none',
+        borderBottom: 'none',
         bgcolor: isPhone ? ui.threadBg : ui.panelBg,
-        boxShadow: isPhone ? 'none' : `0 18px 42px ${alpha(theme.palette.common.black, theme.palette.mode === 'dark' ? 0.18 : 0.1)}`,
+        boxShadow: 'none',
       }}
     >
       <Box
@@ -294,7 +294,7 @@ export default function ChatPageDesktopLayout({
           </>
         )}
       </Box>
-    </Paper>
+    </Box>
     </ChatSidebarSizingContext.Provider>
   );
 }

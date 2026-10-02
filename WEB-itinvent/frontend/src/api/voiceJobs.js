@@ -83,6 +83,11 @@ export const voiceJobsAPI = {
     return response.data;
   },
 
+  revokeShareLink: async (token) => {
+    const response = await apiClient.delete(`/voice/share/${encodeURIComponent(token)}`);
+    return response.data;
+  },
+
   resolveShareLink: async (token, options = {}) => {
     const response = await apiClient.get(`/voice/share/${encodeURIComponent(token)}`, { signal: options?.signal });
     return response.data;

@@ -303,7 +303,7 @@ describe('FileAttachment', () => {
     expect(screen.getByRole('link')).toHaveStyle({ width: '180px', maxWidth: 'min(100%, 220px)' });
   });
 
-  it('keeps portrait media previews from collapsing narrower than the chat minimum', () => {
+  it('crops portrait media to the chat minimum width instead of letterboxing (Д2-8)', () => {
     renderWithTheme(
       <FileAttachment
         fileName="portrait-photo.png"
@@ -321,7 +321,64 @@ describe('FileAttachment', () => {
     );
 
     expect(screen.getByRole('link')).toHaveStyle({ width: '148px', maxWidth: 'min(100%, 216px)', minWidth: 'min(100%, 148px)' });
-    expect(screen.getByRole('img')).toHaveStyle({ objectFit: 'contain' });
+    const img = screen.getByRole('img');
+    expect(img).toHaveStyle({ objectFit: 'cover' });
+    // Конфликт minWidth/maxHeight → рамка 148×176 без серых полос, края обрезает cover.
+    expect(img.parentElement).toHaveStyle({ height: '176px' });
+    expect(img.parentElement.style.aspectRatio).toBe('');
+    expect(img.parentElement.style.border).toBe('');
+  });
+
+  it('keeps the photo frame at the image aspect ratio without a decorative border (Д2-8)', () => {
+    renderWithTheme(
+      <FileAttachment
+        fileName="square-photo.png"
+        fileSize={4096}
+        fileUrl="/files/square-photo.png"
+        mimeType="image/png"
+        theme={theme}
+        ui={ui}
+        previewWidth={900}
+        previewHeight={900}
+        mediaMaxWidth={216}
+        mediaMaxHeight={176}
+        mediaMinWidth={148}
+      />,
+    );
+
+    // ratio 1 → ширина = maxHeight (176), рамка квадратная.
+    expect(screen.getByRole('link')).toHaveStyle({ width: '176px' });
+    const img = screen.getByRole('img');
+    expect(img).toHaveStyle({ objectFit: 'cover' });
+    expect(img.parentElement).toHaveStyle({ aspectRatio: '900 / 900' });
+    expect(img.parentElement.style.border).toBe('');
+  });
+
+  it('adopts the natural image ratio when attachment dimensions are absent (Д2-8)', () => {
+    renderWithTheme(
+      <FileAttachment
+        fileName="nodims-photo.png"
+        fileSize={4096}
+        fileUrl="/files/nodims-photo.png"
+        mimeType="image/png"
+        theme={theme}
+        ui={ui}
+        mediaMaxWidth={216}
+        mediaMaxHeight={176}
+        mediaMinWidth={148}
+      />,
+    );
+
+    const img = screen.getByRole('img');
+    expect(img.parentElement).toHaveStyle({ aspectRatio: '4 / 3' });
+
+    Object.defineProperty(img, 'naturalWidth', { value: 800, configurable: true });
+    Object.defineProperty(img, 'naturalHeight', { value: 1600, configurable: true });
+    fireEvent.load(img);
+
+    // 9:19 при maxHeight 176 не влезает в minWidth 148 → cover-кадр 148×176.
+    expect(img.parentElement).toHaveStyle({ height: '176px' });
+    expect(img.parentElement.style.aspectRatio).toBe('');
   });
 
   it('renders video attachments with a preview surface and duration badge', () => {
@@ -569,5 +626,33 @@ describe('AttachmentCard', () => {
     expect(fileLink).toHaveAttribute('href', buildAttachmentUrl('msg-2', 'att-2', { inline: true }));
     expect(fileLink).toHaveTextContent('PDF');
     expect(screen.queryByText('Скачать')).not.toBeInTheDocument();
+  });
+
+  it('drops the grey placeholder background once the photo has loaded (Д2-8)', () => {
+    renderWithTheme(
+      <FileAttachment
+        fileName="phone-screenshot.png"
+        fileUrl="/files/phone-screenshot.png"
+        mimeType="image/png"
+        previewWidth={540}
+        previewHeight={1140}
+        mediaMaxWidth={360}
+        mediaMaxHeight={360}
+        mediaMinWidth={200}
+        onOpenPreview={() => {}}
+        theme={theme}
+        ui={{ ...ui, mediaPlaceholderBg: 'rgb(223, 231, 236)' }}
+      />,
+    );
+
+    const image = screen.getByRole('img', { name: 'phone-screenshot.png' });
+    const container = image.parentElement;
+    expect(container.style.backgroundColor).toBe('rgb(223, 231, 236)');
+    expect(image.style.objectFit).toBe('cover');
+
+    fireEvent.load(image);
+
+    expect(container.style.backgroundColor).toBe('transparent');
+    expect(image.style.backgroundColor).toBe('transparent');
   });
 });

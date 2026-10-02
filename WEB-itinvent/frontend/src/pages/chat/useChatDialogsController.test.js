@@ -10,7 +10,6 @@ describe('computeShouldRenderChatDialogs', () => {
       messageMenuAnchor: null,
       composerMenuAnchor: null,
       emojiAnchorEl: null,
-      groupOpen: false,
       shareOpen: false,
       forwardOpen: false,
       fileDialogOpen: false,
@@ -35,6 +34,16 @@ describe('computeShouldRenderChatDialogs', () => {
     expect(computeShouldRenderChatDialogs({
       isMobile: true,
       infoOpen: true,
+    })).toBe(true);
+  });
+
+  it('mounts the dialogs bundle when a structured-send dialog is open', () => {
+    expect(computeShouldRenderChatDialogs({
+      structuredDialog: 'poll',
+    })).toBe(true);
+
+    expect(computeShouldRenderChatDialogs({
+      structuredDialog: 'contact',
     })).toBe(true);
   });
 

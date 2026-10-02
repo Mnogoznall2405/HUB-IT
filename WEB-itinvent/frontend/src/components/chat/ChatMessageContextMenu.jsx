@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Popover } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import useMediaQuery from '@mui/material/useMediaQuery';
@@ -7,39 +7,37 @@ import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
-import ErrorOutlineRoundedIcon from '@mui/icons-material/ErrorOutlineRounded';
 import ForwardRoundedIcon from '@mui/icons-material/ForwardRounded';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
-import LinkRoundedIcon from '@mui/icons-material/LinkRounded';
-import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
 import ReplyRoundedIcon from '@mui/icons-material/ReplyRounded';
-import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded';
+import StopCircleOutlinedIcon from '@mui/icons-material/StopCircleOutlined';
+import UndoRoundedIcon from '@mui/icons-material/UndoRounded';
 
+import { chatAPI } from '../../api/client';
 import {
   canDeleteChatMessage,
   canEditChatMessage,
+  formatMessageTime,
   getMessagePreview,
 } from './chatHelpers';
+import { resolveChatMessagePoll } from './chatStructuredContent';
+import { CHAT_FONT_FAMILY } from './chatUiTokens';
 
-const TELEGRAM_CHAT_FONT_FAMILY = [
-  '"SF Pro Text"',
-  '"SF Pro Display"',
-  '"Segoe UI Variable Text"',
-  '"Segoe UI"',
-  'Roboto',
-  'Helvetica',
-  'Arial',
-  'sans-serif',
-].join(', ');
+import { ChatEmojiImage } from './ChatEmoji';
+import {
+  TELEGRAM_MESSAGE_MENU_REACTIONS,
+  TELEGRAM_MESSAGE_MENU_REACTIONS_EXPANDED,
+} from './chatReactions';
 
-export const TELEGRAM_MESSAGE_MENU_REACTIONS = ['❤️', '👍', '🗿', '🔥', '👎', '🥰', '👏', '😁'];
-export const TELEGRAM_MESSAGE_MENU_REACTIONS_EXPANDED = ['🤔', '😂', '😮', '😢', '🎉', '💯', '👀', '⚡'];
+export { TELEGRAM_MESSAGE_MENU_REACTIONS, TELEGRAM_MESSAGE_MENU_REACTIONS_EXPANDED };
 
 const ALL_MESSAGE_MENU_REACTIONS = [
   ...TELEGRAM_MESSAGE_MENU_REACTIONS,
   ...TELEGRAM_MESSAGE_MENU_REACTIONS_EXPANDED,
 ];
+
+const READS_PREVIEW_LIMIT = 6;
 
 function getCollapsedReactionCount(isMobile) {
   return isMobile ? 6 : 8;
@@ -48,18 +46,21 @@ function getCollapsedReactionCount(isMobile) {
 function getReactionMetrics(isMobile, expanded) {
   if (expanded) {
     return {
-      emojiSize: isMobile ? 22 : 24,
+      emojiSize: 26,
       cellSize: isMobile ? 34 : 36,
-      cellPadding: '6px',
+      cellPadding: '4px',
     };
   }
   return {
-    emojiSize: isMobile ? 22 : 24,
+    // R48: reaction images in the menu strip are 26-28 px.
+    emojiSize: 26,
     cellSize: null,
     cellPadding: isMobile ? '4px 1px' : '5px 2px',
   };
 }
 
+// Д2-6 (раздел 29, п.4): компактные пункты меню как в Telegram — ~36px,
+// шрифт 14, иконки 20px.
 function MessageMenuAction({
   icon: Icon,
   label,
@@ -83,16 +84,16 @@ function MessageMenuAction({
       sx={{
         display: 'flex',
         alignItems: 'center',
-        gap: compact ? 1.35 : 1.65,
+        gap: 1.25,
         width: '100%',
-        minHeight: compact ? 40 : 44,
-        px: compact ? 1.5 : 1.85,
+        minHeight: compact ? 40 : 36,
+        px: 1.5,
         py: 0,
         border: 'none',
         bgcolor: 'transparent',
         color: tone === 'danger' ? dangerColor : textColor,
-        fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-        fontSize: compact ? '0.875rem' : '0.9375rem',
+        fontFamily: CHAT_FONT_FAMILY,
+        fontSize: '14px',
         fontWeight: 400,
         lineHeight: 1.25,
         letterSpacing: '-0.01em',
@@ -103,7 +104,7 @@ function MessageMenuAction({
         '&:hover': disabled ? undefined : { bgcolor: hoverBg },
         '&:active': disabled ? undefined : { bgcolor: activeBg },
         '& .MuiSvgIcon-root': {
-          fontSize: compact ? 20 : 22,
+          fontSize: 20,
           color: tone === 'danger' ? dangerColor : 'inherit',
           opacity: tone === 'danger' ? 1 : 0.92,
           flexShrink: 0,
@@ -126,50 +127,57 @@ export default function ChatMessageContextMenu({
   usesPointerAnchor = false,
   message,
   activeConversation,
-  activeConversationId,
   messageMenuPinned = false,
   onToggleReactionFromMenu,
   onReplyFromMessageMenu,
   onCopyMessage,
   onTogglePinMessageFromMenu,
-  onCopyMessageLink,
   onForwardMessageFromMenu,
-  onReportMessageFromMenu,
   onSelectMessageFromMenu,
   onEditMessageFromMenu,
   onDeleteMessageFromMenu,
   onOpenReadsFromMessageMenu,
-  onOpenAttachmentFromMessageMenu,
-  onOpenTaskFromMessageMenu,
+  onStopPollFromMessageMenu,
+  onCancelPollVoteFromMessageMenu,
 }) {
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const [reactionsExpanded, setReactionsExpanded] = useState(false);
+  const [readersPreviewOpen, setReadersPreviewOpen] = useState(false);
+  const [readersState, setReadersState] = useState({ status: 'idle', items: [] });
+  const readersMessageIdRef = useRef('');
 
   const isDarkTheme = theme.palette.mode === 'dark';
   const popupSurface = ui.drawerBg || ui.panelBg || (isDarkTheme ? '#17212b' : '#ffffff');
   const popupSurfaceSoft = ui.surfaceMuted || ui.drawerBgSoft || (isDarkTheme ? '#232e3c' : '#f3f5f7');
   const popupTextColor = ui.textStrong || (isDarkTheme ? '#f5f7fa' : '#17212b');
+  const popupMetaColor = ui.textSecondary || (isDarkTheme ? 'rgba(255,255,255,0.6)' : '#707579');
   const popupHoverBg = ui.drawerHover || ui.surfaceHover || (isDarkTheme ? alpha('#ffffff', 0.07) : alpha('#17212b', 0.06));
   const popupActiveBg = ui.sidebarRowPressed || (isDarkTheme ? alpha('#ffffff', 0.1) : alpha('#17212b', 0.1));
   const popupDangerColor = ui.dangerText || (isDarkTheme ? '#ff7b7b' : '#d94d4d');
+  const popupDividerColor = ui.borderSoft || (isDarkTheme ? 'rgba(255,255,255,0.08)' : 'rgba(175,186,197,0.42)');
   const popupShadow = ui.shadowStrong || (isDarkTheme ? '0 16px 48px rgba(0, 0, 0, 0.44)' : '0 16px 40px rgba(15, 23, 42, 0.18)');
 
   const activeConversationKind = String(activeConversation?.kind || '').trim();
-  const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
   const canCopyMessage = Boolean(String(getMessagePreview(message) || '').trim());
   const canTogglePinMessage = Boolean(message?.id);
-  const canCopyMessageLink = Boolean(message?.id && (message?.conversation_id || activeConversationId));
   const canForwardMessage = Boolean(message?.id);
-  const canReportMessage = Boolean(message?.id && !message?.is_own);
   const canSelectMessage = Boolean(message?.id);
   const canEditMessage = canEditChatMessage(message);
   const canDeleteMessage = canDeleteChatMessage(message, { conversationKind: activeConversationKind });
-  const canOpenReadsFromMessage = activeConversationKind === 'group'
+  // Д2-6: «Прочитали: N» остаётся внизу меню только для своих сообщений в группах.
+  const readByCount = Math.max(0, Number(message?.read_by_count || 0));
+  const canShowReadReceipts = activeConversationKind === 'group'
     && Boolean(message?.is_own)
-    && Number(message?.read_by_count || 0) > 0;
-  const canOpenAttachmentFromMessage = attachments.length > 0;
-  const canOpenTaskFromMessage = Boolean(message?.kind === 'task_share' && message?.task_preview?.id);
+    && readByCount > 0;
   const canToggleReactions = typeof onToggleReactionFromMenu === 'function';
+  // R50: действия опроса — только здесь, не в карточке. Остановить может автор своего незакрытого опроса;
+  // снять голос — тот, кто проголосовал, пока опрос не закрыт.
+  const pollPayload = String(message?.kind || '').trim() === 'poll' ? resolveChatMessagePoll(message) : null;
+  const pollOpen = Boolean(pollPayload) && !pollPayload.closed;
+  const myPollOption = pollPayload?.my_option_index ?? null;
+  const canStopPoll = pollOpen && Boolean(message?.is_own) && typeof onStopPollFromMessageMenu === 'function';
+  const canCancelPollVote = pollOpen && myPollOption !== null && myPollOption >= 0
+    && typeof onCancelPollVoteFromMessageMenu === 'function';
 
   const visibleReactions = useMemo(
     () => (reactionsExpanded
@@ -179,17 +187,50 @@ export default function ChatMessageContextMenu({
   );
 
   const reactionMetrics = getReactionMetrics(isMobile, reactionsExpanded);
-  const menuWidth = isMobile ? 228 : 248;
+  const menuWidth = isMobile ? 232 : 240;
+  // The collapsed strip carries 8 images of 26 px (6 on a phone), so on desktop it is wider than the menu.
+  const collapsedStripWidth = isMobile ? menuWidth : 300;
   const reactionBarWidth = reactionsExpanded
     ? `min(calc(100vw - 24px), ${isMobile ? 292 : 320}px)`
-    : menuWidth;
+    : collapsedStripWidth;
   const showExpandButton = ALL_MESSAGE_MENU_REACTIONS.length > getCollapsedReactionCount(isMobile);
-  const shellWidth = reactionsExpanded ? reactionBarWidth : menuWidth;
+  const shellWidth = canToggleReactions ? reactionBarWidth : menuWidth;
 
   const handleClose = () => {
     setReactionsExpanded(false);
+    setReadersPreviewOpen(false);
+    setReadersState({ status: 'idle', items: [] });
     onClose?.();
   };
+
+  useEffect(() => {
+    setReadersPreviewOpen(false);
+    setReadersState({ status: 'idle', items: [] });
+  }, [open, message?.id]);
+
+  const loadReadersPreview = useCallback(async () => {
+    const messageId = String(message?.id || '').trim();
+    if (!messageId || typeof chatAPI.getMessageReads !== 'function') return;
+    readersMessageIdRef.current = messageId;
+    setReadersState((current) => (
+      current.status === 'loading' || current.status === 'ready'
+        ? current
+        : { status: 'loading', items: [] }
+    ));
+    try {
+      const data = await chatAPI.getMessageReads(messageId);
+      if (readersMessageIdRef.current !== messageId) return;
+      setReadersState({ status: 'ready', items: Array.isArray(data?.items) ? data.items : [] });
+    } catch {
+      if (readersMessageIdRef.current !== messageId) return;
+      setReadersState({ status: 'error', items: [] });
+    }
+  }, [message?.id]);
+
+  const handleReadsPreviewEnter = useCallback(() => {
+    setReadersPreviewOpen(true);
+    void loadReadersPreview();
+  }, [loadReadersPreview]);
 
   const handleReaction = (emoji) => {
     onToggleReactionFromMenu?.(message, emoji);
@@ -244,7 +285,10 @@ export default function ChatMessageContextMenu({
               px: reactionsExpanded ? 0.75 : (isMobile ? 0.55 : 0.65),
               py: reactionsExpanded ? 0.65 : (isMobile ? 0.35 : 0.45),
               borderRadius: reactionsExpanded ? 2.5 : 999,
-              bgcolor: popupSurfaceSoft,
+              // R41: dark surfaceMuted is white at 4.5% alpha and alpha() REPLACES the alpha, so
+              // alpha(surfaceMuted, .94) was a nearly white pill. Dark uses the opaque menu surface.
+              bgcolor: isDarkTheme ? popupSurface : alpha(popupSurfaceSoft, 0.94),
+              backdropFilter: 'blur(18px) saturate(1.12)',
               boxShadow: popupShadow,
             }}
           >
@@ -275,7 +319,7 @@ export default function ChatMessageContextMenu({
                   '&:active': { transform: 'scale(0.92)', opacity: 0.72 },
                 }}
               >
-                {emoji}
+                <ChatEmojiImage emoji={emoji} size={reactionMetrics.emojiSize} style={{ margin: 0, verticalAlign: 'top' }} />
               </Box>
             ))}
             {showExpandButton ? (
@@ -321,11 +365,13 @@ export default function ChatMessageContextMenu({
           sx={{
             width: menuWidth,
             alignSelf: reactionsExpanded ? 'center' : 'stretch',
-            borderRadius: isMobile ? 2.4 : 3,
-            bgcolor: popupSurface,
+            // Д2-6: компактное меню — радиус 12, полупрозрачный фон с блюром.
+            borderRadius: '12px',
+            bgcolor: alpha(popupSurface, 0.94),
+            backdropFilter: 'blur(18px) saturate(1.12)',
             boxShadow: popupShadow,
             overflow: 'hidden',
-            py: 0.35,
+            py: 0.5,
           }}
         >
           <MessageMenuAction
@@ -338,59 +384,33 @@ export default function ChatMessageContextMenu({
             activeBg={popupActiveBg}
             compact={isMobile}
           />
-          <MessageMenuAction
-            icon={ContentCopyOutlinedIcon}
-            label="Копировать текст"
-            onClick={() => { onCopyMessage?.(message); handleClose(); }}
-            disabled={!message || !canCopyMessage}
-            textColor={popupTextColor}
-            hoverBg={popupHoverBg}
-            activeBg={popupActiveBg}
-            compact={isMobile}
-          />
-          {canCopyMessageLink ? (
+          {canCancelPollVote ? (
             <MessageMenuAction
-              icon={LinkRoundedIcon}
-              label="Копировать ссылку на сообщение"
-              onClick={() => { onCopyMessageLink?.(message); handleClose(); }}
-              disabled={!message}
+              icon={UndoRoundedIcon}
+              label="Отменить голос"
+              onClick={() => { onCancelPollVoteFromMessageMenu?.(message, myPollOption); handleClose(); }}
               textColor={popupTextColor}
               hoverBg={popupHoverBg}
               activeBg={popupActiveBg}
               compact={isMobile}
             />
           ) : null}
-          <MessageMenuAction
-            icon={ForwardRoundedIcon}
-            label="Переслать"
-            onClick={() => { onForwardMessageFromMenu?.(message); handleClose(); }}
-            disabled={!message || !canForwardMessage}
-            textColor={popupTextColor}
-            hoverBg={popupHoverBg}
-            activeBg={popupActiveBg}
-            compact={isMobile}
-          />
-          {canReportMessage ? (
+          {canStopPoll ? (
             <MessageMenuAction
-              icon={ErrorOutlineRoundedIcon}
-              label="Пожаловаться"
-              onClick={() => { onReportMessageFromMenu?.(message); handleClose(); }}
+              icon={StopCircleOutlinedIcon}
+              label="Остановить опрос"
+              onClick={() => {
+                const confirmed = typeof window === 'undefined'
+                  || window.confirm('Остановить опрос? После этого голосовать будет нельзя.');
+                if (confirmed) onStopPollFromMessageMenu?.(message);
+                handleClose();
+              }}
               textColor={popupTextColor}
               hoverBg={popupHoverBg}
               activeBg={popupActiveBg}
               compact={isMobile}
             />
           ) : null}
-          <MessageMenuAction
-            icon={CheckCircleOutlineRoundedIcon}
-            label="Выделить"
-            onClick={() => { onSelectMessageFromMenu?.(message); handleClose(); }}
-            disabled={!message || !canSelectMessage}
-            textColor={popupTextColor}
-            hoverBg={popupHoverBg}
-            activeBg={popupActiveBg}
-            compact={isMobile}
-          />
           {canEditMessage ? (
             <MessageMenuAction
               icon={EditOutlinedIcon}
@@ -414,39 +434,36 @@ export default function ChatMessageContextMenu({
               compact={isMobile}
             />
           ) : null}
-          {canOpenReadsFromMessage ? (
-            <MessageMenuAction
-              icon={DoneAllRoundedIcon}
-              label="Кто прочитал"
-              onClick={() => { onOpenReadsFromMessageMenu?.(message); handleClose(); }}
-              textColor={popupTextColor}
-              hoverBg={popupHoverBg}
-              activeBg={popupActiveBg}
-              compact={isMobile}
-            />
-          ) : null}
-          {canOpenAttachmentFromMessage ? (
-            <MessageMenuAction
-              icon={OpenInNewRoundedIcon}
-              label="Открыть вложение"
-              onClick={() => { onOpenAttachmentFromMessageMenu?.(message); handleClose(); }}
-              textColor={popupTextColor}
-              hoverBg={popupHoverBg}
-              activeBg={popupActiveBg}
-              compact={isMobile}
-            />
-          ) : null}
-          {canOpenTaskFromMessage ? (
-            <MessageMenuAction
-              icon={TaskAltRoundedIcon}
-              label="Открыть задачу"
-              onClick={() => { onOpenTaskFromMessageMenu?.(message); handleClose(); }}
-              textColor={popupTextColor}
-              hoverBg={popupHoverBg}
-              activeBg={popupActiveBg}
-              compact={isMobile}
-            />
-          ) : null}
+          <MessageMenuAction
+            icon={ContentCopyOutlinedIcon}
+            label="Копировать текст"
+            onClick={() => { onCopyMessage?.(message); handleClose(); }}
+            disabled={!message || !canCopyMessage}
+            textColor={popupTextColor}
+            hoverBg={popupHoverBg}
+            activeBg={popupActiveBg}
+            compact={isMobile}
+          />
+          <MessageMenuAction
+            icon={ForwardRoundedIcon}
+            label="Переслать"
+            onClick={() => { onForwardMessageFromMenu?.(message); handleClose(); }}
+            disabled={!message || !canForwardMessage}
+            textColor={popupTextColor}
+            hoverBg={popupHoverBg}
+            activeBg={popupActiveBg}
+            compact={isMobile}
+          />
+          <MessageMenuAction
+            icon={CheckCircleOutlineRoundedIcon}
+            label="Выделить"
+            onClick={() => { onSelectMessageFromMenu?.(message); handleClose(); }}
+            disabled={!message || !canSelectMessage}
+            textColor={popupTextColor}
+            hoverBg={popupHoverBg}
+            activeBg={popupActiveBg}
+            compact={isMobile}
+          />
           {canDeleteMessage ? (
             <MessageMenuAction
               icon={DeleteOutlineIcon}
@@ -459,6 +476,125 @@ export default function ChatMessageContextMenu({
               activeBg={popupActiveBg}
               compact={isMobile}
             />
+          ) : null}
+
+          {canShowReadReceipts ? (
+            <Box
+              sx={{ position: 'relative' }}
+              onMouseEnter={handleReadsPreviewEnter}
+              onMouseLeave={() => setReadersPreviewOpen(false)}
+            >
+              <Box sx={{ mx: 0.75, my: 0.35, borderTop: `1px solid ${popupDividerColor}` }} />
+              <Box
+                component="button"
+                type="button"
+                role="menuitem"
+                aria-label={`Прочитали: ${readByCount}`}
+                aria-expanded={readersPreviewOpen}
+                data-testid="chat-message-menu-reads"
+                onClick={() => { onOpenReadsFromMessageMenu?.(message); handleClose(); }}
+                onFocus={handleReadsPreviewEnter}
+                onBlur={() => setReadersPreviewOpen(false)}
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1.25,
+                  width: '100%',
+                  minHeight: isMobile ? 36 : 32,
+                  px: 1.5,
+                  py: 0,
+                  border: 'none',
+                  bgcolor: 'transparent',
+                  color: popupMetaColor,
+                  fontFamily: CHAT_FONT_FAMILY,
+                  fontSize: '13px',
+                  fontWeight: 400,
+                  lineHeight: 1.25,
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                  transition: 'background-color 120ms ease',
+                  '&:hover': { bgcolor: popupHoverBg },
+                }}
+              >
+                <DoneAllRoundedIcon
+                  sx={{ fontSize: 18, color: ui.statusReadText || popupMetaColor, flexShrink: 0 }}
+                />
+                <span style={{ flex: 1, minWidth: 0 }}>Прочитали: {readByCount}</span>
+              </Box>
+              {readersPreviewOpen ? (
+                <Box
+                  data-testid="chat-message-menu-reads-preview"
+                  role="list"
+                  aria-label="Список прочитавших"
+                  sx={{
+                    position: 'absolute',
+                    left: 0,
+                    right: 0,
+                    bottom: 'calc(100% - 4px)',
+                    zIndex: 2,
+                    maxHeight: 196,
+                    overflowY: 'auto',
+                    overscrollBehavior: 'contain',
+                    borderRadius: '10px',
+                    bgcolor: alpha(popupSurface, 0.98),
+                    backdropFilter: 'blur(18px) saturate(1.12)',
+                    boxShadow: popupShadow,
+                    py: 0.5,
+                  }}
+                >
+                  {readersState.status === 'error' ? (
+                    <Box sx={{ px: 1.5, py: 0.75, fontSize: '13px', color: popupMetaColor }}>
+                      Не удалось загрузить список
+                    </Box>
+                  ) : readersState.status !== 'ready' ? (
+                    <Box sx={{ px: 1.5, py: 0.75, fontSize: '13px', color: popupMetaColor }}>
+                      Загрузка…
+                    </Box>
+                  ) : readersState.items.length === 0 ? (
+                    <Box sx={{ px: 1.5, py: 0.75, fontSize: '13px', color: popupMetaColor }}>
+                      Пока никто не прочитал
+                    </Box>
+                  ) : (
+                    <>
+                      {readersState.items.slice(0, READS_PREVIEW_LIMIT).map((item) => {
+                        const reader = item?.user || {};
+                        const readerName = String(reader.full_name || reader.username || 'Участник').trim();
+                        const readAt = formatMessageTime(item?.read_at);
+                        const readerKey = String(reader.id || reader.username || readerName);
+                        return (
+                          <Box
+                            key={`${readerKey}-${String(item?.read_at || '')}`}
+                            sx={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 1,
+                              px: 1.5,
+                              minHeight: 30,
+                              fontSize: '13px',
+                              color: popupTextColor,
+                            }}
+                          >
+                            <Box component="span" sx={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {readerName}
+                            </Box>
+                            {readAt ? (
+                              <Box component="span" sx={{ flexShrink: 0, fontSize: '12px', color: popupMetaColor, fontVariantNumeric: 'tabular-nums' }}>
+                                {readAt}
+                              </Box>
+                            ) : null}
+                          </Box>
+                        );
+                      })}
+                      {readersState.items.length > READS_PREVIEW_LIMIT ? (
+                        <Box sx={{ px: 1.5, py: 0.75, fontSize: '12px', color: popupMetaColor }}>
+                          …и ещё {readersState.items.length - READS_PREVIEW_LIMIT}
+                        </Box>
+                      ) : null}
+                    </>
+                  )}
+                </Box>
+              ) : null}
+            </Box>
           ) : null}
         </Box>
       </Box>

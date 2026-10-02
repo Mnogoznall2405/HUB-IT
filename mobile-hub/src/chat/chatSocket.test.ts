@@ -336,4 +336,46 @@ describe('ChatSocketClient lifecycle', () => {
     expect(MockWebSocket.instances).toHaveLength(1);
     client.disconnect();
   });
+
+  it('replays the presence watch set after a reconnect (M5)', async () => {
+    const watchFrames = (socket: MockWebSocket) => socket.send.mock.calls
+      .map(([raw]) => JSON.parse(String(raw)) as { type?: string; payload?: { user_ids?: number[] } })
+      .filter((message) => message.type === 'chat.watch_presence');
+    const client = new ChatSocketClient();
+    await client.connect();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    client.watchPresence([7, 9, 7]);
+    expect(watchFrames(first)).toEqual([
+      expect.objectContaining({ payload: { user_ids: [7, 9] } }),
+    ]);
+
+    first.close();
+    await jest.advanceTimersByTimeAsync(1_000);
+    const second = MockWebSocket.instances[1];
+    second.open();
+
+    expect(watchFrames(second)).toEqual([
+      expect.objectContaining({ payload: { user_ids: [7, 9] } }),
+    ]);
+    client.disconnect();
+  });
+
+  it('does not replay presence watches cleared on a scoped disconnect', async () => {
+    const watchFrames = (socket: MockWebSocket) => socket.send.mock.calls
+      .map(([raw]) => JSON.parse(String(raw)) as { type?: string })
+      .filter((message) => message.type === 'chat.watch_presence');
+    const client = new ChatSocketClient();
+    await client.connect();
+    const first = MockWebSocket.instances[0];
+    first.open();
+    client.watchPresence([7]);
+    client.disconnect({ reconnect: false, clearSubscriptions: true });
+
+    await client.connect();
+    const second = MockWebSocket.instances[1];
+    second.open();
+    expect(watchFrames(second)).toHaveLength(0);
+    client.disconnect();
+  });
 });

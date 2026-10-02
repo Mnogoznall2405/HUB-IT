@@ -4,6 +4,7 @@ import { buildChatDraftKey } from '../../components/chat/chatHelpers';
 import {
   buildFolderUnreadCounts,
   filterSidebarConversationsByFolder,
+  mergeServerFolderUnreadCounts,
 } from '../../components/chat/chatFolderUtils';
 import { buildAiSidebarRows } from './chatAiModel';
 
@@ -119,6 +120,7 @@ export default function useChatSidebarDerivedState({
   aiBots,
   conversationFilter,
   conversationIdsByFolder,
+  folderUnreadCounts,
   conversations,
   customFolders,
   deferredMessageText,
@@ -130,15 +132,35 @@ export default function useChatSidebarDerivedState({
   userId,
 }) {
   const draftCacheRef = useRef({ scopeKey: '', userId: '', drafts: {} });
+  const folderUnreadBaselineRef = useRef({ serverCounts: null, unreadById: null });
   const unreadTotal = useMemo(
     () => sumConversationUnreadTotal(conversations),
     [conversations],
   );
 
-  const conversationFilterCounts = useMemo(
-    () => buildFolderUnreadCounts(conversations, customFolders, conversationIdsByFolder),
-    [conversationIdsByFolder, conversations, customFolders],
-  );
+  // U2: server folder_unread_counts are primary; loaded rows only carry the
+  // optimistic delta since the snapshot those counts were taken from.
+  const conversationFilterCounts = useMemo(() => {
+    const localCounts = buildFolderUnreadCounts(conversations, customFolders, conversationIdsByFolder);
+    if (!folderUnreadCounts) return localCounts;
+    if (folderUnreadBaselineRef.current.serverCounts !== folderUnreadCounts) {
+      folderUnreadBaselineRef.current = {
+        serverCounts: folderUnreadCounts,
+        unreadById: new Map(
+          (Array.isArray(conversations) ? conversations : [])
+            .map((item) => [String(item?.id || '').trim(), Math.max(0, Number(item?.unread_count || 0))])
+            .filter(([conversationId]) => Boolean(conversationId)),
+        ),
+      };
+    }
+    return mergeServerFolderUnreadCounts({
+      serverCounts: folderUnreadCounts,
+      localCounts,
+      conversations,
+      baselineUnreadById: folderUnreadBaselineRef.current.unreadById,
+      conversationIdsByFolder,
+    });
+  }, [conversationIdsByFolder, conversations, customFolders, folderUnreadCounts]);
 
   const filteredConversations = useMemo(
     () => filterSidebarConversationsByFolder(conversations, conversationFilter, conversationIdsByFolder),

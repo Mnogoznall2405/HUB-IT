@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Stack } from '@mui/material';
 import { chatAPI } from '../../api/client';
 
@@ -148,6 +148,8 @@ export function ChatPageContent({
     setCustomFolders,
     conversationIdsByFolder,
     setConversationIdsByFolder,
+    folderUnreadCounts,
+    setFolderUnreadCounts,
     foldersLoading,
     setFoldersLoading,
     folderManagerOpen,
@@ -212,6 +214,7 @@ export function ChatPageContent({
     conversationsRef,
     degradedThreadRevalidateCountRef,
     draftWriteTimeoutRef,
+    failedThreadMessagesRef,
     fileInputRef,
     focusComposerRef,
     hasPendingInitialAnchorForConversationRef,
@@ -294,6 +297,7 @@ export function ChatPageContent({
     setConversationsLoading,
     setCustomFolders,
     setConversationIdsByFolder,
+    setFolderUnreadCounts,
     setFoldersLoading,
     setConversationFilter,
     canUseAiChat,
@@ -351,8 +355,11 @@ export function ChatPageContent({
     applyLatestThreadPayload,
     loadThreadBootstrap,
     loadMessages,
+    loadNewerMessages,
     loadOlderMessages,
     queueAutoScroll,
+    retryThreadLoad,
+    threadLoadError,
   } = core;
 
   const activeThreadRenderState = resolveActiveThreadRenderState({
@@ -378,9 +385,10 @@ export function ChatPageContent({
 
   const {
     replyMessage, setReplyMessage, editingMessage, setEditingMessage,
-    addGroupMember, closeGroupDialog, createGroup, creatingConversation, groupCreateDisabled,
-    groupMemberIds, groupOpen, groupSearch, groupSelectedUsers, groupTitle, groupUsers, groupUsersLoading,
-    openGroupDialog, patchGroupPresence, removeGroupMember, setGroupSearch, setGroupTitle,
+    addGroupMember, closeComposeFlow, composeFlow, createGroup, creatingConversation, groupCreateDisabled,
+    groupMaxMembers, groupSearch, groupSelectedUsers, groupStep, groupTitle,
+    groupUsers, groupUsersLoading, openDirectFlow,
+    openGroupDialog, patchGroupPresence, removeGroupMember, setGroupSearch, setGroupStep, setGroupTitle,
     openingPeerId, setOpeningPeerId,
     threadMenuAnchor, setThreadMenuAnchor, messageMenuAnchor, setMessageMenuAnchor,
     messageMenuMessage, setMessageMenuMessage, composerMenuAnchor, setComposerMenuAnchor,
@@ -442,9 +450,14 @@ export function ChatPageContent({
     setAiStatusByConversation,
   });
 
+  // R30: повтор и остановка сериализуются — двойной клик не должен
+  // порождать второй POST /retry до ответа сервера.
+  const aiRunActionInFlightRef = useRef(false);
   const stopActiveAiRun = useCallback(async () => {
     const conversationId = String(activeConversationId || '').trim();
     if (!conversationId || String(activeConversation?.kind || '').trim() !== 'ai') return;
+    if (aiRunActionInFlightRef.current) return;
+    aiRunActionInFlightRef.current = true;
     try {
       const status = await chatAPI.stopAiConversationRun(conversationId);
       setAiStatusByConversation((current) => ({
@@ -453,6 +466,26 @@ export function ChatPageContent({
       }));
     } catch (error) {
       notifyApiError(error, 'Не удалось остановить ответ агента.');
+    } finally {
+      aiRunActionInFlightRef.current = false;
+    }
+  }, [activeConversation?.kind, activeConversationId, notifyApiError, setAiStatusByConversation]);
+
+  const retryActiveAiRun = useCallback(async () => {
+    const conversationId = String(activeConversationId || '').trim();
+    if (!conversationId || String(activeConversation?.kind || '').trim() !== 'ai') return;
+    if (aiRunActionInFlightRef.current) return;
+    aiRunActionInFlightRef.current = true;
+    try {
+      const status = await chatAPI.retryAiConversationRun(conversationId);
+      setAiStatusByConversation((current) => ({
+        ...current,
+        [conversationId]: status,
+      }));
+    } catch (error) {
+      notifyApiError(error, 'Не удалось повторить запрос агента.');
+    } finally {
+      aiRunActionInFlightRef.current = false;
     }
   }, [activeConversation?.kind, activeConversationId, notifyApiError, setAiStatusByConversation]);
 
@@ -482,6 +515,7 @@ export function ChatPageContent({
     aiBots,
     conversationFilter,
     conversationIdsByFolder,
+    folderUnreadCounts,
     conversations,
     customFolders,
     deferredMessageText,
@@ -508,6 +542,7 @@ export function ChatPageContent({
     activeConversationId,
     deferredMessageText,
     logChatDebugRef,
+    skippedInitialSocketRefreshRef,
     watchedPresenceUserIds,
     watchedPresenceUserIdsKey,
   });
@@ -678,6 +713,7 @@ export function ChatPageContent({
     highlightResetTimeoutRef,
     setHighlightedMessageId,
     loadMessages,
+    loadNewerMessages,
     messagesHasNewerRef,
     queueAutoScroll,
     suppressThreadScrollCancelRef,
@@ -700,6 +736,7 @@ export function ChatPageContent({
     schedulePendingInitialAnchorSettle,
     handleThreadScroll,
     jumpToLatest,
+    ensureLatestThreadWindow,
     emitChatUnreadRefresh,
     scrollToMessage,
   } = anchorScroll;
@@ -784,6 +821,7 @@ export function ChatPageContent({
   const {
     buildReplyPreview,
     createOptimisticFileMessage,
+    createOptimisticStickerMessage,
     createOptimisticTextMessage,
     isLikelyOptimisticReplacement,
     revokeObjectUrls,
@@ -863,6 +901,7 @@ export function ChatPageContent({
   const {
     effectiveLastReadMessageId,
     getReadTargetRef,
+    pendingNewCount: activeThreadPendingNewCount,
   } = useReadReceipts({
     conversationId: activeConversationId,
     messages: activeThreadMessages,
@@ -984,6 +1023,7 @@ export function ChatPageContent({
 
   useChatActiveConversationThreadBootstrap({
     activeConversationId,
+    activeConversationIdRef,
     applyLatestThreadPayload,
     cancelPendingInitialAnchorRef,
     clearInitialViewportGuard,
@@ -1231,13 +1271,16 @@ export function ChatPageContent({
     activeConversationId,
     activeConversationIdRef,
     applyOutgoingThreadMessage,
+    ensureLatestThreadWindow,
     buildReplyPreview,
     cancelPendingInitialAnchor,
     composerRef,
     createOptimisticFileMessage,
+    createOptimisticStickerMessage,
     createOptimisticTextMessage,
     draftWriteTimeoutRef,
     editingMessage,
+    failedThreadMessagesRef,
     fileInputRef,
     flushDraftToStorage: core.flushDraftToStorage,
     focusComposer,
@@ -1270,6 +1313,8 @@ export function ChatPageContent({
   const {
     applySelectedImageEdit,
     handleComposerSend,
+    retryFailedMessage,
+    discardFailedMessage,
     cancelVoiceRecording,
     changeSendMediaAsFiles,
     clearSelectedFiles,
@@ -1307,7 +1352,16 @@ export function ChatPageContent({
     handleOpenEmojiPicker,
     handleOpenMenu,
     handleSendSticker,
-    handleSendGif,
+    structuredDialog,
+    openPollDialog,
+    openContactDialog,
+    sendLocationMessage,
+    closeStructuredDialog,
+    sendPollMessage,
+    sendContactMessage,
+    confirmLocationMessage,
+    locationDraft,
+    locationSending,
     clearEditingMessage,
     clearReplyMessage,
     handleComposerKeyDown,
@@ -1401,7 +1455,6 @@ export function ChatPageContent({
     messageMenuAnchor,
     composerMenuAnchor,
     emojiAnchorEl,
-    groupOpen,
     shareOpen,
     forwardOpen,
     fileDialogOpen,
@@ -1409,6 +1462,7 @@ export function ChatPageContent({
     documentPreview,
     messageReadsOpen,
     searchOpen,
+    structuredDialog,
     isMobile,
     infoOpen,
   });
@@ -1424,6 +1478,7 @@ export function ChatPageContent({
     degradedThreadRevalidateCountRef,
     lastConversationsLoadAtRef,
     lastForegroundRefreshAtRef,
+    loadChatFolders: core.loadChatFolders,
     loadConversations,
     loadMessages,
     loadMessagesRef,
@@ -1441,6 +1496,7 @@ export function ChatPageContent({
     markConversationReadLiveRef,
     markSocketActivity,
     mergeMessageIntoThread,
+    messagesHasNewerRef,
     onConversationRemoved: handleRemoteConversationRemoved,
     promoteConversationToTop,
     queueAutoScroll,
@@ -1541,6 +1597,52 @@ export function ChatPageContent({
 
   const skipRowEnterAnimation = isMobile && mobileTransitionDirection === -1;
 
+  // Д2-9: единый bag потока «карандаш» — сайдбар подменяет список чатов
+  // потоком «Новое сообщение» / «Создать группу» (правая колонка не трогается).
+  const composeFlowBag = useMemo(() => ({
+    mode: composeFlow,
+    step: groupStep,
+    onStepChange: setGroupStep,
+    query: groupSearch,
+    onQueryChange: setGroupSearch,
+    users: groupUsers,
+    usersLoading: groupUsersLoading,
+    selectedUsers: groupSelectedUsers,
+    onAddMember: addGroupMember,
+    onRemoveMember: removeGroupMember,
+    maxMembers: groupMaxMembers,
+    title: groupTitle,
+    onTitleChange: setGroupTitle,
+    creating: creatingConversation,
+    createDisabled: groupCreateDisabled,
+    onCreate: createGroup,
+    onClose: closeComposeFlow,
+    onOpenDirect: openDirectFlow,
+    onOpenGroup: openGroupDialog,
+    conversations,
+  }), [
+    addGroupMember,
+    closeComposeFlow,
+    composeFlow,
+    conversations,
+    createGroup,
+    creatingConversation,
+    groupCreateDisabled,
+    groupMaxMembers,
+    groupSearch,
+    groupSelectedUsers,
+    groupStep,
+    groupTitle,
+    groupUsers,
+    groupUsersLoading,
+    openDirectFlow,
+    openGroupDialog,
+    removeGroupMember,
+    setGroupSearch,
+    setGroupStep,
+    setGroupTitle,
+  ]);
+
   const pageLayoutCtx = useChatPageLayoutContext(
     useMemo(
       () => pickChatPageLayoutSections({
@@ -1549,6 +1651,7 @@ export function ChatPageContent({
         searchPeople, searchChats, searchResultEmpty, openingPeerId, handleOpenPeer, activeConversationId,
         sidebarWorkspace, setSidebarWorkspace,
         openConversation: openConversationFromSidebar, prefetchThreadBootstrap, conversationsLoading, filteredConversations, openGroupDialog,
+        compose: composeFlowBag,
         sidebarScrollRef, handleSidebarScroll, conversationFilter, handleActiveFolderChange: core.handleActiveFolderChange, customFolders, conversationFilterCounts,
         conversationIdsByFolder, handleOpenFolderManager, handleOpenArchiveFolder, handleToggleConversationInFolder,
         draftsByConversation, updateConversationSettings, requestDeleteConversation, requestLeaveConversation,
@@ -1557,7 +1660,9 @@ export function ChatPageContent({
         renameAiConversation,
         openingAiBotId, skipRowEnterAnimation, activeConversation, navigate: navigateFromChat, threadWallpaperSx,
         messages: activeThreadMessages, messagesLoading: activeThreadMessagesLoading,
-        effectiveLastReadMessageId, showOlderHistoryControl, loadingOlder, prependScrollRestoreRef, loadOlderMessages,
+        threadLoadError, retryThreadLoad, activeThreadPendingNewCount,
+        retryFailedMessage, discardFailedMessage,
+        effectiveLastReadMessageId, messagesHasNewer, showOlderHistoryControl, loadingOlder, prependScrollRestoreRef, loadOlderMessages,
         threadScrollRef, threadContentRef, handleThreadScroll, bottomRef, openMobileInboxView: handleThreadBack, handleOpenInfo,
         openTaskFromChat: handleThreadOpenTask, mobileBackLabel: embeddedBackLabel,
         openSearchDialog, handleOpenMenu, openMessageReads, openMediaViewer, handleReplyMessage,
@@ -1568,12 +1673,12 @@ export function ChatPageContent({
         handleOpenEmojiPicker, handleCloseEmojiPicker, handleComposerFocusChange, handleComposerSend, handleComposerPaste,
         handleComposerDrop, handleComposerDragOver, handleComposerDragLeave, mentionCandidates, searchMentionPeople,
         fileDragActive, showJumpToLatest, jumpToLatest, replyMessage, clearReplyMessage, editingMessage,
-        clearEditingMessage, aiTypingStatus, activeAiStatus, activeAiBot, stopActiveAiRun, pinnedMessage, handleOpenPinnedMessage,
+        clearEditingMessage, aiTypingStatus, activeAiStatus, activeAiBot, stopActiveAiRun, retryActiveAiRun, pinnedMessage, handleOpenPinnedMessage,
         handleUnpinPinnedMessage, highlightedMessageId, conversationMetaSubtitle, aiAwareTypingLine,
         renderDesktopRightPanel, selectedFiles, fileCaption, openFilePicker, clearSelectedFiles, preparingFiles,
         sendingFiles, fileUploadProgress, selectedFilesSummary, getReadTargetRef, handleToggleReaction, scrollToMessage,
         handlePollVote, handlePollClose,
-        emojiPickerOpen, insertEmojiAtSelection, handleSendSticker, handleSendGif, voiceRecording, voiceRecordingDuration,
+        emojiPickerOpen, insertEmojiAtSelection, handleSendSticker, voiceRecording, voiceRecordingDuration,
         voiceRecordingLevelRef, startVoiceRecording, stopVoiceRecording, cancelVoiceRecording, bindPinnedScroll,
         showTaskPanel, showContextPanel, taskPanelTaskId, closeTaskPanel, openTaskInTasks, handleTaskPanelUpdated,
         setContextPanelOpen, openShareDialog, handleAddGroupMembers, handleRemoveGroupMember, handleUpdateGroupMemberRole,
@@ -1586,9 +1691,9 @@ export function ChatPageContent({
         composerMenuAnchor, setComposerMenuAnchor, openMediaPicker, emojiAnchorEl, mediaFileInputRef,
         handleSelectFiles, fileDialogOpen, closeFileDialog, setFileCaption, sendMediaAsFiles, changeSendMediaAsFiles,
         sendFiles, removeSelectedFile, selectedImageEdits, applySelectedImageEdit, resetSelectedImageEdit,
-        groupOpen, closeGroupDialog, groupTitle, setGroupTitle, groupSearch, setGroupSearch, groupUsers, groupUsersLoading,
-        groupSelectedUsers, groupMemberIds, addGroupMember, removeGroupMember, creatingConversation, groupCreateDisabled,
-        createGroup, shareOpen, resetShareDialog, taskSearch, setTaskSearch, shareableTasks, shareableLoading,
+        structuredDialog, openPollDialog, openContactDialog, sendLocationMessage, closeStructuredDialog,
+        sendPollMessage, sendContactMessage, confirmLocationMessage, locationDraft, locationSending,
+        shareOpen, resetShareDialog, taskSearch, setTaskSearch, shareableTasks, shareableLoading,
         sharingTaskId, shareTaskFromHook, forwardOpen, closeForwardDialog, forwardMessages, forwardConversationQuery,
         setForwardConversationQuery, forwardTargets, forwardingConversationId, forwardHookMessageToConversation,
         attachmentPreview, closeAttachmentPreview, documentPreview, closeDocumentPreview,
@@ -1603,6 +1708,7 @@ export function ChatPageContent({
         searchPeople, searchChats, searchResultEmpty, openingPeerId, handleOpenPeer, activeConversationId,
         sidebarWorkspace, setSidebarWorkspace,
         openConversationFromSidebar, prefetchThreadBootstrap, conversationsLoading, filteredConversations, openGroupDialog,
+        composeFlowBag,
         sidebarScrollRef, handleSidebarScroll, conversationFilter, core.handleActiveFolderChange, customFolders, conversationFilterCounts,
         conversationIdsByFolder, handleOpenFolderManager, handleOpenArchiveFolder, handleToggleConversationInFolder,
         draftsByConversation, updateConversationSettings, requestDeleteConversation, requestLeaveConversation,
@@ -1611,7 +1717,9 @@ export function ChatPageContent({
         renameAiConversation,
         openingAiBotId, skipRowEnterAnimation, activeConversation, navigateFromChat, threadWallpaperSx,
         activeThreadMessages, activeThreadMessagesLoading,
-        effectiveLastReadMessageId, showOlderHistoryControl, loadingOlder, prependScrollRestoreRef, loadOlderMessages,
+        threadLoadError, retryThreadLoad, activeThreadPendingNewCount,
+        retryFailedMessage, discardFailedMessage,
+        effectiveLastReadMessageId, messagesHasNewer, showOlderHistoryControl, loadingOlder, prependScrollRestoreRef, loadOlderMessages,
         threadScrollRef, threadContentRef, handleThreadScroll, bottomRef, handleThreadBack, handleOpenInfo,
         handleThreadOpenTask, embeddedBackLabel,
         openSearchDialog, handleOpenMenu, openMessageReads, openMediaViewer, handleReplyMessage,
@@ -1622,12 +1730,12 @@ export function ChatPageContent({
         handleOpenEmojiPicker, handleCloseEmojiPicker, handleComposerFocusChange, handleComposerSend, handleComposerPaste,
         handleComposerDrop, handleComposerDragOver, handleComposerDragLeave, mentionCandidates, searchMentionPeople,
         fileDragActive, showJumpToLatest, jumpToLatest, replyMessage, clearReplyMessage, editingMessage,
-        clearEditingMessage, aiTypingStatus, activeAiStatus, activeAiBot, stopActiveAiRun, pinnedMessage, handleOpenPinnedMessage,
+        clearEditingMessage, aiTypingStatus, activeAiStatus, activeAiBot, stopActiveAiRun, retryActiveAiRun, pinnedMessage, handleOpenPinnedMessage,
         handleUnpinPinnedMessage, highlightedMessageId, conversationMetaSubtitle, aiAwareTypingLine,
         renderDesktopRightPanel, selectedFiles, fileCaption, openFilePicker, clearSelectedFiles, preparingFiles,
         sendingFiles, fileUploadProgress, selectedFilesSummary, getReadTargetRef, handleToggleReaction, scrollToMessage,
         handlePollVote, handlePollClose,
-        emojiPickerOpen, insertEmojiAtSelection, handleSendSticker, handleSendGif, voiceRecording, voiceRecordingDuration,
+        emojiPickerOpen, insertEmojiAtSelection, handleSendSticker, voiceRecording, voiceRecordingDuration,
         voiceRecordingLevelRef, startVoiceRecording, stopVoiceRecording, cancelVoiceRecording, bindPinnedScroll,
         showTaskPanel, showContextPanel, taskPanelTaskId, closeTaskPanel, openTaskInTasks, handleTaskPanelUpdated,
         setContextPanelOpen, openShareDialog, handleAddGroupMembers, handleRemoveGroupMember, handleUpdateGroupMemberRole,
@@ -1640,9 +1748,9 @@ export function ChatPageContent({
         composerMenuAnchor, setComposerMenuAnchor, openMediaPicker, emojiAnchorEl, mediaFileInputRef,
         handleSelectFiles, fileDialogOpen, closeFileDialog, setFileCaption, sendMediaAsFiles, changeSendMediaAsFiles,
         sendFiles, removeSelectedFile, selectedImageEdits, applySelectedImageEdit, resetSelectedImageEdit,
-        groupOpen, closeGroupDialog, groupTitle, setGroupTitle, groupSearch, setGroupSearch, groupUsers, groupUsersLoading,
-        groupSelectedUsers, groupMemberIds, addGroupMember, removeGroupMember, creatingConversation, groupCreateDisabled,
-        createGroup, shareOpen, resetShareDialog, taskSearch, setTaskSearch, shareableTasks, shareableLoading,
+        structuredDialog, openPollDialog, openContactDialog, sendLocationMessage, closeStructuredDialog,
+        sendPollMessage, sendContactMessage, confirmLocationMessage, locationDraft, locationSending,
+        shareOpen, resetShareDialog, taskSearch, setTaskSearch, shareableTasks, shareableLoading,
         sharingTaskId, shareTaskFromHook, forwardOpen, closeForwardDialog, forwardMessages, forwardConversationQuery,
         setForwardConversationQuery, forwardTargets, forwardingConversationId, forwardHookMessageToConversation,
         attachmentPreview, closeAttachmentPreview, documentPreview, closeDocumentPreview,
@@ -1676,7 +1784,9 @@ export function ChatPageContent({
       mobileBottomNavTransitionMs={CHAT_MOBILE_SCREEN_TRANSITION_MS}
       pageShellSx={{
         bgcolor: isPhone ? ui.threadBg : ui.pageBg,
-        gap: isPhone ? 0 : 1.5,
+        gap: 0,
+        // Д1: чат занимает всю высоту области контента; внешние отступы убраны
+        // в MainLayout (px/pt/pb = 0 на маршруте чата).
         height: '100%',
         flex: 1,
         minHeight: 0,
@@ -1684,7 +1794,7 @@ export function ChatPageContent({
         overscrollBehaviorY: 'none',
       }}
     >
-      <Stack spacing={embedded || isPhone ? 0 : 1.5} sx={{ flex: 1, minHeight: 0 }}>
+      <Stack spacing={0} sx={{ flex: 1, minHeight: 0 }}>
         <ChatPageMessageChrome
           isPhone={isPhone}
           fileInputRef={fileInputRef}

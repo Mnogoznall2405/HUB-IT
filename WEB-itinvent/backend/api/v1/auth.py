@@ -577,6 +577,13 @@ def _revoke_token_if_present(token: str | None) -> None:
         auth_runtime_store_service.revoke_jti(jti, ttl_seconds=token_ttl_seconds(token_data))
 
 
+def _close_sessions_and_contexts(user_id: int) -> int:
+    closed = session_service.close_user_sessions(int(user_id))
+    for item in session_service.list_sessions_by_user_ids({int(user_id)}):
+        session_auth_context_service.delete_session_context(item.get("session_id"))
+    return closed
+
+
 def _build_current_user_payload(current_user: User, request: Request) -> User:
     raw_user = user_service.get_by_id(int(current_user.id)) or user_service.get_by_username(current_user.username)
     if not raw_user:
@@ -1471,6 +1478,19 @@ async def refresh_auth_tokens(
     if not user:
         note_auth_session_metric("refresh_other_error", detail="user_not_found")
         raise HTTPException(status_code=401, detail="User not found")
+    if not bool(user.get("is_active", True)):
+        note_auth_session_metric(
+            "refresh_user_inactive",
+            network_zone=network_context.network_zone,
+        )
+        raise HTTPException(
+            status_code=401,
+            detail="User is not active",
+            headers={
+                "WWW-Authenticate": "Bearer",
+                "X-Hubit-Auth-Reason": "user_inactive",
+            },
+        )
     try:
         refreshed = await run_in_threadpool(
             auth_security_service.refresh_session_tokens,
@@ -2276,6 +2296,8 @@ async def update_user(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=404, detail="User not found")
+    if payload_data.get("is_active") is False:
+        await run_in_threadpool(_close_sessions_and_contexts, int(user_id))
     if payload_data.get("password") is not None or payload_data.get("is_active") is False:
         mobile_biometric_session_service.revoke_all_user_credentials(int(user_id))
     return User(**updated)
@@ -2296,7 +2318,8 @@ async def delete_user(
         if user_id == 1:
              raise HTTPException(status_code=403, detail="Cannot delete the default admin account.")
         raise HTTPException(status_code=404, detail="User not found")
-        
+    await run_in_threadpool(_close_sessions_and_contexts, int(user_id))
+
     return {"message": "User deleted successfully"}
 
 

@@ -203,6 +203,7 @@ async def send_chat_sticker(
             current_user_id=int(current_user.id),
             conversation_id=conversation_id,
             sticker_id=payload.sticker_id,
+            client_message_id=payload.client_message_id,
             reply_to_message_id=payload.reply_to_message_id,
             defer_push_notifications=True,
         )

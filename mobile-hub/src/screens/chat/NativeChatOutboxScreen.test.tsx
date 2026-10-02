@@ -52,7 +52,9 @@ it.each(['text', 'file'].flatMap((kind) => ['access', 'offline', 'user', 'return
   await act(async () => { finish(raw); });
   expect(api.sendTextMessage).not.toHaveBeenCalled();
   expect(api.sendFileMessage).not.toHaveBeenCalled();
-  expect(await createNativeChatOutbox(7, 'a').read()).toHaveLength(1);
+  // A real user switch purges the previous account's rows — they can never be
+  // delivered under the new session and only consume the shared blob budget.
+  expect(await createNativeChatOutbox(7, 'a').read()).toHaveLength(change === 'user' ? 0 : 1);
 });
 async function seed(userId = 7, title = 'Рабочая группа') {
   await expect(createNativeChatOutbox(userId, 'a', () => title).send({ ...message, sender_user_id: userId }, async () => { throw new Error('Network'); })).rejects.toThrow();
@@ -89,10 +91,18 @@ it('ignores a late file report from the previous user', async () => {
 });
 
 it('shows only the current user queue and retries with the original id', async () => {
-  await seed(); await seed(8, 'Чужой диалог');
+  await seed();
+  // A row left behind by another account (e.g. after a crash without logout
+  // cleanup) is hidden from this user's list — and purged on the first read.
+  const raw = JSON.parse(await SecureStore.getItemAsync('hubit_native_chat_outbox_v1') || '[]');
+  raw.push({ userId: 8, title: 'Чужой диалог', message: { ...message, id: 'pending:other', client_message_id: 'other', sender_user_id: 8 } });
+  await SecureStore.setItemAsync('hubit_native_chat_outbox_v1', JSON.stringify(raw));
+  resetNativeChatOutboxRowsCache();
   const view = await render(<NativeChatOutboxScreen />);
   await waitFor(() => expect(view.getByText('Рабочая группа')).toBeTruthy());
   expect(view.queryByText('Чужой диалог')).toBeNull();
+  const stored = JSON.parse(await SecureStore.getItemAsync('hubit_native_chat_outbox_v1') || '[]');
+  expect(stored.every((row: { userId: number }) => row.userId === 7)).toBe(true);
   await fireEvent.press(view.getByLabelText('Открыть диалог: Рабочая группа'));
   expect(router.push).toHaveBeenCalledWith({ pathname: '/(shell)/chat/[conversationId]', params: { conversationId: 'a' } });
   await fireEvent.press(view.getByLabelText('Повторить отправку'));
@@ -181,7 +191,8 @@ it('ignores an old removal confirmation after switching users', async () => {
     mockUserId = 8;
     await view.rerender(<NativeChatOutboxScreen />);
     await act(async () => { confirm?.(); });
-    expect(await createNativeChatOutbox(7, 'a').read()).toHaveLength(1);
+    // The new user's first read purges the rows of the previous account.
+    expect(await createNativeChatOutbox(7, 'a').read()).toHaveLength(0);
     expect(view.queryByText('Ожидающий текст')).toBeNull();
   } finally { alert.mockRestore(); }
 });

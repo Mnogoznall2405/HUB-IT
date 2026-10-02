@@ -2,6 +2,7 @@ import type { ChatMessage } from '../api/types';
 import {
   applyConversationEnvelope,
   applyReactionEnvelope,
+  applyReadReceiptDelta,
   buildChatThreadRowDecorations,
   clearConversationUnread,
   findLatestIncomingMessage,
@@ -257,6 +258,72 @@ describe('chat state', () => {
     expect(result.items[0].reactions).toEqual([
       expect.objectContaining({ emoji: '🔥', count: 3, user_ids: [1, 2, 3] }),
     ]);
+  });
+
+  it('keeps reactions and attachments when a sparse update omits them', () => {
+    const loaded = mergeMessages([], {
+      id: 'm1', conversation_id: 'c1', sender_user_id: 2, body_text: 'Фото',
+      sender: { id: 2, username: 'maria', full_name: 'Мария Иванова' },
+      attachments: [{ id: 'a1', kind: 'image', file_name: 'photo.jpg' }],
+      reactions: [{ emoji: '🔥', count: 2 }],
+      reply_preview: { id: 'm0', sender_name: 'Мария Иванова', body: 'Исходное' },
+    } as ChatMessage, 1);
+    // A lean chat.message.updated envelope normalizes to a sparse patch.
+    const sparse = messageFromEnvelope({ payload: {
+      id: 'm1', conversation_id: 'c1', conversation_seq: 4, edited_at: '2026-01-02T09:00:00Z',
+    } });
+    expect(sparse?.reactions).toBeUndefined();
+    const merged = mergeMessages(loaded, sparse!, 1);
+    expect(merged[0]).toMatchObject({
+      reactions: [{ emoji: '🔥', count: 2 }],
+      attachments: [{ id: 'a1', kind: 'image', file_name: 'photo.jpg' }],
+      sender: { id: 2, username: 'maria' },
+      reply_preview: { id: 'm0' },
+      edited_at: '2026-01-02T09:00:00Z',
+      conversation_seq: 4,
+    });
+  });
+
+  it('marks own messages read from the receipt target down the thread (M1)', () => {
+    // Newest-first thread: own-new (idx0), own-target (idx1), own-older (idx2), peer (idx3).
+    const current = [
+      { id: 'own-new', conversation_id: 'c1', sender_user_id: 1, delivery_status: 'sent' as const },
+      { id: 'own-target', conversation_id: 'c1', sender_user_id: 1, delivery_status: 'sent' as const },
+      { id: 'own-older', conversation_id: 'c1', sender_user_id: 1, delivery_status: 'sent' as const },
+      { id: 'peer', conversation_id: 'c1', sender_user_id: 2 },
+    ] as ChatMessage[];
+    const items = applyReadReceiptDelta(current, {
+      conversation_id: 'c1', message_id: 'own-target', delivery_status: 'read', read_by_count: 1,
+    }, 1);
+    expect(items[0].delivery_status).toBe('sent');
+    expect(items[1]).toMatchObject({ delivery_status: 'read', read_by_count: 1 });
+    expect(items[2]).toMatchObject({ delivery_status: 'read', read_by_count: 1 });
+    expect(items[3].delivery_status).toBeUndefined();
+  });
+
+  it('patches only the target message for a non-read delta and never lowers read_by_count (M1)', () => {
+    const current = [
+      { id: 'own-1', conversation_id: 'c1', sender_user_id: 1, delivery_status: 'read' as const, read_by_count: 2 },
+      { id: 'own-2', conversation_id: 'c1', sender_user_id: 1, delivery_status: 'sent' as const, read_by_count: 0 },
+    ] as ChatMessage[];
+    const sent = applyReadReceiptDelta(current, {
+      message_id: 'own-2', delivery_status: 'sent', read_by_count: 0,
+    }, 1);
+    expect(sent[0]).toBe(current[0]);
+    expect(sent[1]).toMatchObject({ delivery_status: 'sent', read_by_count: 0 });
+    const shrunk = applyReadReceiptDelta(current, {
+      message_id: 'own-1', delivery_status: 'read', read_by_count: 1,
+    }, 1);
+    expect(shrunk[0].read_by_count).toBe(2);
+  });
+
+  it('ignores read receipts for unknown or missing message ids (M1)', () => {
+    const current = [
+      { id: 'own-1', conversation_id: 'c1', sender_user_id: 1, delivery_status: 'sent' as const },
+    ] as ChatMessage[];
+    expect(applyReadReceiptDelta(current, { message_id: 'absent', delivery_status: 'read' }, 1)).toBe(current);
+    expect(applyReadReceiptDelta(current, {}, 1)).toBe(current);
+    expect(applyReadReceiptDelta(current, null, 1)).toBe(current);
   });
 
   it('optimistically adds and removes the current user reaction', () => {

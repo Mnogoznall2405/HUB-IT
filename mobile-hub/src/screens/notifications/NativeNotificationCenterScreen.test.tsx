@@ -163,7 +163,7 @@ describe('NativeNotificationCenterScreen', () => {
 
     fireEvent.press(view.getByTestId('native-notification-hub:hub-1'));
 
-    expect(openPortalPath).toHaveBeenCalledWith('/tasks?task=task-7');
+    await waitFor(() => expect(openPortalPath).toHaveBeenCalledWith('/tasks?task=task-7'));
     expect(notificationApi.markHubNotificationRead).not.toHaveBeenCalled();
     expect(view.getByText('Непрочитанных: 2')).toBeTruthy();
   });

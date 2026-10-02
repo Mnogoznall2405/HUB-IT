@@ -96,7 +96,7 @@ export default function useChatForwardMessages({
       batchRef.current = null;
 
       if (activeConversationIdRef.current === targetConversationId) {
-        upsertThreadMessages(forwardedMessages);
+        upsertThreadMessages(forwardedMessages, { liveAppear: true });
         const lastForwardedMessage = forwardedMessages[forwardedMessages.length - 1];
         if (lastForwardedMessage?.id) {
           startTransition(() => {

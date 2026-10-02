@@ -70,6 +70,15 @@ describe('DesktopProtocolHandoff', () => {
     expect(handoffMocks.launch).not.toHaveBeenCalled();
   });
 
+  it.each(['/chat', '/chat?conversation=conv-1'])(
+    'does not show the desktop banner or launch the protocol on the chat route: %s',
+    (path) => {
+      renderHandoff(path);
+      expect(screen.queryByTestId('desktop-protocol-handoff')).not.toBeInTheDocument();
+      expect(handoffMocks.launch).not.toHaveBeenCalled();
+    },
+  );
+
   it('renders inside the shell slot without launching again when the slot changes', () => {
     const tree = (key) => <ThemeProvider theme={createTheme()}><MemoryRouter>
       <DesktopProtocolHandoff /><DesktopHandoffSlot key={key} />

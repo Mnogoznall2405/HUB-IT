@@ -126,4 +126,36 @@ describe('useChatConversationsController', () => {
     expect(getOrFetchSWR).toHaveBeenCalledTimes(2);
     expect(lastConversationsLoadAtRef.current).toBe(123);
   });
+
+  it('R2: loadConversationsRef points at the real loadConversations callback', async () => {
+    getOrFetchSWR.mockResolvedValue({
+      data: { items: [{ id: 'c1', title: 'Chat' }] },
+      fromCache: false,
+      isFresh: true,
+    });
+    const loadConversationsRef = { current: null };
+
+    const { result } = renderHook(() => useChatConversationsController({
+      userCacheId: 'u1',
+      notifyApiError: vi.fn(),
+      setConversations: vi.fn(),
+      setConversationsLoading: vi.fn(),
+      conversationsRequestSeqRef: { current: 0 },
+      conversationsLoadingRequestSeqRef: { current: 0 },
+      conversationsLoadingRef: { current: false },
+      conversationsRef: { current: [] },
+      conversationsCacheKeyParts: ['chat', 'conversations', 'u1'],
+      conversationsCacheHydratedRef: { current: false },
+      lastConversationsLoadAtRef: { current: 0 },
+      sidebarScrollRef: { current: null },
+      loadConversationsRef,
+    }));
+
+    await waitFor(() => expect(loadConversationsRef.current).toBeTypeOf('function'));
+    expect(loadConversationsRef.current).toBe(result.current.loadConversations);
+
+    const items = await loadConversationsRef.current({ silent: true });
+    expect(items).toHaveLength(1);
+    expect(getOrFetchSWR).toHaveBeenCalled();
+  });
 });

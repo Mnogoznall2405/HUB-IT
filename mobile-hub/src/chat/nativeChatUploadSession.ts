@@ -1,7 +1,7 @@
 import { File, FileMode } from 'expo-file-system';
 import * as chatApi from '../api/chatApi';
 import type { ChatMessage } from '../api/types';
-import { buildAttachmentsFormData } from '../files/nativeFilePicker';
+import { buildAttachmentsFormData, inferNativeUploadMediaKind } from '../files/nativeFilePicker';
 import type { NativeChatDeliveryHelpers, NativeChatOutboxEntry } from './nativeChatOutbox';
 
 // Chunks must arrive in order, so a failed chunk gets bounded in-place retries
@@ -137,9 +137,9 @@ export async function deliverNativeChatUpload(
         files: sources.map((item, index) => ({
           file_name: item.picked.name,
           mime_type: item.picked.mimeType,
-          media_kind: upload.mediaKind
-            ? (index === 0 ? upload.mediaKind : undefined)
-            : (item.picked.source === 'document' ? 'file' : undefined),
+          // Per-file kind: mixed batches keep their own media type instead of
+          // silently dropping metadata for every file after the first.
+          media_kind: inferNativeUploadMediaKind(item.picked, upload.mediaKind, index),
           duration_seconds: index === 0 ? upload.durationSeconds : undefined,
           size: item.size,
           original_size: item.size,

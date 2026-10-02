@@ -133,6 +133,10 @@ _CHAT_WS_DURABLE_DEDUPE_SIZE = max(
     ),
 )
 CHAT_WS_RATE_LIMIT_RETRY_AFTER_MS = 1000
+_CHAT_WS_RATE_LIMIT_VIOLATION_RESET_SEC = max(
+    1.0,
+    float(str(os.getenv("CHAT_WS_RATE_LIMIT_VIOLATION_RESET_SEC", "60") or "60").strip() or "60"),
+)
 
 # Rolling sender metrics (process-wide).
 _SENDER_METRIC_SAMPLES = 256
@@ -145,16 +149,20 @@ class ChatWsCommandRateLimiter:
         self.tokens = self.capacity
         self.updated_at = time.monotonic()
         self.violations = 0
+        self.last_violation_at = 0.0
 
     def allow(self) -> tuple[bool, int]:
         now = time.monotonic()
         elapsed = max(0.0, now - self.updated_at)
         self.updated_at = now
         self.tokens = min(self.capacity, self.tokens + (elapsed * self.rate_per_sec))
+        if self.violations and (now - self.last_violation_at) >= _CHAT_WS_RATE_LIMIT_VIOLATION_RESET_SEC:
+            self.violations = 0
         if self.tokens >= 1.0:
             self.tokens -= 1.0
             return True, 0
         self.violations += 1
+        self.last_violation_at = now
         missing = max(0.0, 1.0 - self.tokens)
         retry_after_ms = max(
             CHAT_WS_RATE_LIMIT_RETRY_AFTER_MS,

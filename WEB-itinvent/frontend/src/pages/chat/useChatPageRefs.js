@@ -39,6 +39,9 @@ export default function useChatPageRefs({
   const suppressDraftSyncRef = useRef(false);
   const revealMessageRef = useRef(null);
   const loadMessagesRef = useRef(null);
+  // R4: failed outgoing bubbles keyed by conversation — shared between the
+  // composer (writes) and the thread controller (merges on thread reload).
+  const failedThreadMessagesRef = useRef(new Map());
   const markConversationReadLiveRef = useRef(null);
   const focusComposerRef = useRef(null);
   const shareComposeDraftRef = useRef(null);
@@ -113,6 +116,7 @@ export default function useChatPageRefs({
     conversationsRequestSeqRef,
     degradedThreadRevalidateCountRef,
     draftWriteTimeoutRef,
+    failedThreadMessagesRef,
     fileInputRef,
     focusComposerRef,
     hasPendingInitialAnchorForConversationRef,

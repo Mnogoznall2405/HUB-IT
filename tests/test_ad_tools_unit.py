@@ -127,10 +127,12 @@ class TestAdminOnlyAttribute:
         assert tool.admin_only is False, f"Tool '{tool_id}' should have admin_only=False"
 
     def test_unlock_draft_requires_admin(self):
-        """The unlock draft tool requires admin access."""
+        """The unlock draft tool is gated by the ad_users.manage portal permission."""
+        from backend.ai_chat.tool_permissions import tool_required_permissions
+
         tool = ai_tool_registry.get(AD_TOOL_ACTION_UNLOCK_DRAFT)
         assert tool is not None
-        assert tool.admin_only is True
+        assert tool_required_permissions(AD_TOOL_ACTION_UNLOCK_DRAFT) == ["ad_users.manage"]
 
 
 # ---------------------------------------------------------------------------

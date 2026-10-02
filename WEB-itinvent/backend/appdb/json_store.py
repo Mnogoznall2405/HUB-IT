@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from backend.appdb.db import app_session, initialize_app_schema
 from backend.appdb.models import AppJsonDocument, AppJsonRecord
@@ -82,6 +82,24 @@ class AppJsonDataStore:
             if row is None:
                 return default_content
             return self._decode_json(row.payload_json, default_content)
+
+    def get_document_version(self, file_name: str) -> str | None:
+        """Cheap per-document version marker (row updated_at) without reading payload."""
+        normalized_name = _normalize_filename(file_name)
+        with app_session(self._database_url) as session:
+            document_version = session.scalar(
+                select(AppJsonDocument.updated_at).where(
+                    AppJsonDocument.file_name == normalized_name
+                )
+            )
+            if document_version is not None:
+                return str(document_version)
+            record_version = session.scalar(
+                select(func.max(AppJsonRecord.updated_at)).where(
+                    AppJsonRecord.file_name == normalized_name
+                )
+            )
+        return str(record_version) if record_version is not None else None
 
     def save_json(self, file_name: str, data: Any) -> bool:
         normalized_name = _normalize_filename(file_name)

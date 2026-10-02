@@ -11,6 +11,7 @@ import {
   resolveChatMessageIsOwn,
 } from '../../chat/chatState';
 import { chatMessageMotionKey, type ChatMessageEnterKind } from '../../components/chat/ChatMessageEnterMotion';
+import { showNativeToast } from '../../components/nativeToast';
 import { setPinnedChatMessageId } from '../../chat/chatPinnedMessages';
 import {
   mergeNativeChatThreadHistory,
@@ -113,6 +114,9 @@ export function useThreadHistory({
   const loadingNewerRef = useRef(false);
   const reconnectSyncRef = useRef<number | null>(null);
   const loadedThreadScopeRef = useRef('');
+  // T13: non-local window entries collected since the last snapshot flush.
+  // The accumulated merge runs once per flush instead of per messages change.
+  const pendingWindowRef = useRef<Map<string, ChatMessage>>(new Map());
 
   useEffect(() => {
     leaveInFlightRef.current = false;
@@ -120,11 +124,13 @@ export function useThreadHistory({
     accumulatedMessagesRef.current = [];
     historyMayHaveGapsRef.current = false;
     loadedThreadScopeRef.current = '';
+    pendingWindowRef.current = new Map();
     setThreadHydrated(false);
     setMessages([]);
     setConversation(null);
     setTitle('Chat');
-  }, [conversationId, userId, leaveInFlightRef, setConversation, setMessages, setTitle]);
+    setHoldVisiblePosition(false);
+  }, [conversationId, userId, leaveInFlightRef, setConversation, setHoldVisiblePosition, setMessages, setTitle]);
 
   const loadInitial = useCallback(async () => {
     const generation = ++loadGenerationRef.current;
@@ -132,6 +138,9 @@ export function useThreadHistory({
     loadingOlderRef.current = false;
     loadingNewerRef.current = false;
     setLoadingOlder(false);
+    // T7: a superseded loadOlder can leave the hold flag stranded — every
+    // navigation path that resets the window releases it explicitly.
+    setHoldVisiblePosition(false);
     const scopeUserId = Number(userId || 0);
     const scopeConversationId = conversationId;
     const isCurrentLoad = () => (
@@ -147,14 +156,39 @@ export function useThreadHistory({
     let hadCachedSnapshot = false;
     let loadedLiveMessages = false;
     try {
-      const cached = scopeUserId
-        ? await readNativeEntitySnapshot<NativeChatThreadSnapshot>(
+      const snapshotPromise = scopeUserId
+        ? readNativeEntitySnapshot<NativeChatThreadSnapshot>(
           'chat-thread-details',
           scopeUserId,
           conversationId,
           Number.MAX_SAFE_INTEGER,
         )
-        : null;
+        : Promise.resolve(null);
+      // Start the network page before local reads finish; offline mode still
+      // performs zero requests.
+      const pagePromise = offlineMode
+        ? null
+        : messageId
+          ? chatApi.getThreadBootstrap(conversationId, {
+            focusMessageId: messageId,
+            limit: 80,
+            lightweight: false,
+          })
+          // M7: thread-bootstrap without an explicit focus resolves to the
+          // viewer's first-unread anchor on the backend (when a real unread
+          // backlog exists) or to the bottom otherwise. An older backend
+          // without the endpoint degrades to the plain latest page.
+          : chatApi.getThreadBootstrap(conversationId, { limit: 80, lightweight: false })
+            .catch(() => chatApi.getMessagesPage(conversationId, { limit: 80 }));
+      // A cancelled load may return before ever awaiting the page request.
+      void pagePromise?.catch(() => undefined);
+      const conversationResultPromise = offlineMode
+        ? null
+        : chatApi.getConversation(conversationId).then(
+          (value) => ({ value, error: null as unknown }),
+          (error: unknown) => ({ value: null, error }),
+        );
+      const cached = await snapshotPromise;
       if (!isCurrentLoad()) return;
       if (cached) {
         hadCachedSnapshot = true;
@@ -181,8 +215,7 @@ export function useThreadHistory({
         setLoading(false);
       }
       try {
-        const queued = await outbox.read();
-        const uploads = await outbox.readUploads();
+        const [queued, uploads] = await Promise.all([outbox.read(), outbox.readUploads()]);
         if (!isCurrentLoad()) return;
         uploads.forEach(({ id, upload }) => pendingAttachmentUploadsRef.current.set(id, upload));
         setMessages((current) => {
@@ -204,17 +237,7 @@ export function useThreadHistory({
         return;
       }
 
-      const conversationResultPromise = chatApi.getConversation(conversationId).then(
-        (value) => ({ value, error: null as unknown }),
-        (error: unknown) => ({ value: null, error }),
-      );
-      const page = messageId
-        ? await chatApi.getThreadBootstrap(conversationId, {
-          focusMessageId: messageId,
-          limit: 80,
-          lightweight: false,
-        })
-        : await chatApi.getMessagesPage(conversationId, { limit: 80 });
+      const page = await pagePromise!;
       if (!isCurrentLoad()) return;
       loadedLiveMessages = true;
       const normalized = mergeMessages([], page.items, userId);
@@ -241,17 +264,26 @@ export function useThreadHistory({
         const serverPinnedMessageId = String(rawPinnedMessageId || '').trim() || null;
         serverPinKnownRef.current = true;
         setPinnedMessageId(serverPinnedMessageId);
-        if (scopeUserId) void setPinnedChatMessageId(scopeUserId, conversationId, serverPinnedMessageId);
+        if (scopeUserId) void setPinnedChatMessageId(scopeUserId, conversationId, serverPinnedMessageId).catch(() => undefined);
       }
-      setUnreadBoundaryId(getUnreadBoundaryMessageId(normalized, page.viewer_last_read_message_id));
+      const anchorMode = 'initial_anchor_mode' in page
+        ? page.initial_anchor_mode
+        : undefined;
+      const anchorMessageId = 'initial_anchor_message_id' in page
+        ? String(page.initial_anchor_message_id || '').trim()
+        : '';
+      // A first_unread bootstrap anchor IS the unread boundary; without it the
+      // boundary derives from the viewer's last-read marker as before.
+      setUnreadBoundaryId(
+        anchorMode === 'first_unread' && anchorMessageId
+          ? anchorMessageId
+          : getUnreadBoundaryMessageId(normalized, page.viewer_last_read_message_id),
+      );
       setHasOlder(page.has_older);
       setOlderCursor(page.older_cursor_message_id);
       setHasNewer(page.has_newer);
       setNewerCursor(page.newer_cursor_message_id);
-      const responseAnchorId = 'initial_anchor_message_id' in page
-        ? String(page.initial_anchor_message_id || '').trim()
-        : '';
-      setFocusAnchorId(responseAnchorId || messageId || null);
+      setFocusAnchorId(anchorMessageId || messageId || null);
       nearBottomRef.current = !page.has_newer;
       setShowJumpToBottom(page.has_newer);
       setNewMessageCount(0);
@@ -260,7 +292,7 @@ export function useThreadHistory({
         markRead(findLatestIncomingMessage(normalized, userId));
       }
 
-      const conversationResult = await conversationResultPromise;
+      const conversationResult = await conversationResultPromise!;
       if (!isCurrentLoad()) return;
       if (conversationResult.value) {
         const liveConversation = conversationResult.value;
@@ -270,7 +302,7 @@ export function useThreadHistory({
           const serverPinnedMessageId = String(liveConversation.pinned_message_id || '').trim() || null;
           serverPinKnownRef.current = true;
           setPinnedMessageId(serverPinnedMessageId);
-          if (scopeUserId) void setPinnedChatMessageId(scopeUserId, conversationId, serverPinnedMessageId);
+          if (scopeUserId) void setPinnedChatMessageId(scopeUserId, conversationId, serverPinnedMessageId).catch(() => undefined);
         }
         if (isAiConversation(liveConversation)) {
           void chatApi.getAiBots().then((bots) => {
@@ -293,25 +325,36 @@ export function useThreadHistory({
     requestBottomAnchor, userId]);
 
   const pendingHistoryWriteRef = useRef<{
-    userId: number; conversationId: string; generation: number; snapshot: NativeChatThreadSnapshot;
+    userId: number; conversationId: string; generation: number;
+    snapshot: Omit<NativeChatThreadSnapshot, 'messages'>;
   } | null>(null);
   const flushHistoryWrite = useCallback(() => {
     const pending = pendingHistoryWriteRef.current;
     if (!pending) return;
     pendingHistoryWriteRef.current = null;
+    // T13: fold every window state collected since the previous flush into the
+    // durable history — the merge+sort no longer runs on each messages change.
+    const pendingWindow = pendingWindowRef.current;
+    pendingWindowRef.current = new Map();
+    if (pendingWindow.size) {
+      accumulatedMessagesRef.current = mergeNativeChatThreadHistory(
+        accumulatedMessagesRef.current, [...pendingWindow.values()], pending.userId,
+      );
+    }
     void scheduleNativeChatThreadSnapshotWrite(pending.userId, pending.conversationId,
-      pending.snapshot, { generation: pending.generation, currentUserId: pending.userId });
-  }, []);
+      { ...pending.snapshot, messages: [...accumulatedMessagesRef.current] },
+      { generation: pending.generation, currentUserId: pending.userId });
+  }, [accumulatedMessagesRef]);
   useEffect(() => {
     const owner = Number(userId || 0);
     if (!threadHydrated || historyUnavailableOffline || owner <= 0
       || loadedThreadScopeRef.current !== JSON.stringify([owner, conversationId])) return;
-    accumulatedMessagesRef.current = mergeNativeChatThreadHistory(
-      accumulatedMessagesRef.current, messages.filter((message) => !message.local_status), owner,
-    );
+    messages.forEach((message) => {
+      if (!message.local_status) pendingWindowRef.current.set(message.id, message);
+    });
     pendingHistoryWriteRef.current = {
       userId: owner, conversationId, generation: historySessionGeneration,
-      snapshot: { conversation, title, messages: [...accumulatedMessagesRef.current],
+      snapshot: { conversation, title,
         hasOlder, olderCursor, hasNewer, newerCursor, unreadBoundaryId,
         focusAnchorId, pinnedMessageId,
         historyMayHaveGaps: historyMayHaveGapsRef.current || hasOlder || hasNewer },
@@ -358,11 +401,20 @@ export function useThreadHistory({
       setOlderCursor(page.older_cursor_message_id);
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          if (isCurrentHistory()) setHoldVisiblePosition(false);
+          // T7: release the hold even when a search jump/jumpToBottom already
+          // bumped historyNavigationRef — otherwise the flag (and
+          // maintainVisibleContentPosition) stays on for the whole session.
+          if (mountedRef.current) setHoldVisiblePosition(false);
         });
       });
     } catch (cause) {
-      if (isCurrentHistory()) setError(formatApiError(cause, 'Не удалось загрузить предыдущие сообщения'));
+      if (isCurrentHistory()) {
+        // T6: the error block only renders for an empty list; with messages
+        // already on screen the failure surfaces as a toast.
+        const text = formatApiError(cause, 'Не удалось загрузить предыдущие сообщения');
+        setError(text);
+        showNativeToast(text);
+      }
     } finally {
       if (isCurrentHistory()) {
         loadingOlderRef.current = false;
@@ -409,7 +461,12 @@ export function useThreadHistory({
         markRead(findLatestIncomingMessage(mergeMessages([], page.items, userId), userId));
       }
     } catch (cause) {
-      if (isCurrentHistory()) setError(formatApiError(cause, 'Не удалось загрузить новые сообщения'));
+      if (isCurrentHistory()) {
+        // T6: same as loadOlder — a non-empty list never renders `error`.
+        const text = formatApiError(cause, 'Не удалось загрузить новые сообщения');
+        setError(text);
+        showNativeToast(text);
+      }
     } finally {
       if (isCurrentHistory()) loadingNewerRef.current = false;
     }
@@ -441,6 +498,10 @@ export function useThreadHistory({
         );
         if (!nearBottomRef.current) {
           // Keep the reader's window continuous. Forward pagination fills the gap.
+          // T11: mark the fetched ids as known — the early return below skips
+          // the loop that does it, and a duplicated WS delivery would
+          // otherwise count them as new (badge + enter-motion).
+          page.items.forEach((message) => knownMessageIdsRef.current.add(message.id));
           setHasNewer(true);
           setNewerCursor(olderWindowHead.id);
           setMessages((current) => current.filter((message) => message.local_status || !latestIds.has(message.id)));

@@ -8,6 +8,7 @@ import { recordReleaseHealthMetric } from '../diagnostics/diagnostics';
 
 export const HUBIT_NOTIFICATION_CHANNELS = Object.freeze({
   chat: 'hubit_chat',
+  chatAi: 'hubit_chat_ai',
   tasks: 'hubit_tasks',
   mail: 'hubit_mail',
   system: 'hubit_system',
@@ -51,6 +52,15 @@ export async function ensureAndroidNotificationChannels(): Promise<void> {
     Notifications.setNotificationChannelAsync(HUBIT_NOTIFICATION_CHANNELS.chat, {
       name: 'Чат',
       description: 'Новые сообщения и упоминания в чатах HUB-IT',
+      importance: Notifications.AndroidImportance.HIGH,
+      lockscreenVisibility: privateVisibility,
+      showBadge: true,
+      vibrationPattern: [0, 250, 120, 250],
+      groupId: HUBIT_NOTIFICATION_CHANNEL_GROUP,
+    }),
+    Notifications.setNotificationChannelAsync(HUBIT_NOTIFICATION_CHANNELS.chatAi, {
+      name: 'ИИ-агенты',
+      description: 'Ответы ИИ-агентов и события ИИ-диалогов HUB-IT',
       importance: Notifications.AndroidImportance.HIGH,
       lockscreenVisibility: privateVisibility,
       showBadge: true,

@@ -5,6 +5,7 @@ import {
   formatAge,
   formatAbsenceLabel,
   formatDate,
+  getEntryIdentity,
   pickPrimaryEmail,
   pickPrimaryPhone,
   pickQuickActionPhone,
@@ -36,16 +37,16 @@ describe('addressBookUtils', () => {
     expect(absenceChipColor({ kind: 'vacation' })).toBe('warning');
   });
 
-  it('pickQuickActionPhone prefers personal mobile over work phone', () => {
+  it('pickQuickActionPhone uses the same work-first phone as details', () => {
     const item = {
       work_phones: [{ kind: 'Рабочий телефон', value: '83452384202', normalized: '73452384202' }],
       personal_phones: [{ kind: 'Мобильный телефон', value: '89312250556', normalized: '79312250556' }],
     };
 
     const quick = pickQuickActionPhone(item);
-    expect(quick.value).toBe('89312250556');
-    expect(quick.digits).toBe('79312250556');
-    expect(quick.telHref).toBe('tel:+79312250556');
+    expect(quick.value).toBe('83452384202');
+    expect(quick.digits).toBe('73452384202');
+    expect(quick.telHref).toBe('tel:+73452384202');
   });
 
   it('pickPrimaryPhone prefers work phone over personal mobile', () => {
@@ -98,5 +99,17 @@ describe('addressBookUtils', () => {
       value: 'ivanov@zsgp.ru',
       email: item.work_emails[0],
     });
+  });
+
+  it('getEntryIdentity prefers employee_code and ignores list index', () => {
+    const first = { employee_code: 'E-100', full_name: 'Иванов Иван', department: 'ИТ', position: 'Инженер' };
+    const movedInList = { ...first, full_name: 'Иванов Иван Иванович' };
+
+    expect(getEntryIdentity(first)).toBe('E-100');
+    expect(getEntryIdentity(movedInList)).toBe('E-100');
+    expect(getEntryIdentity({ ...first, employee_code: '  ' })).toBe('Иванов Иван|ИТ|Инженер');
+    expect(getEntryIdentity({ full_name: 'Петров', department: 'ИТ', position: 'Инженер' }))
+      .toBe('Петров|ИТ|Инженер');
+    expect(getEntryIdentity(null)).toBe('||');
   });
 });

@@ -131,10 +131,6 @@ describe('useChatComposePrefillBootstrap helpers', () => {
 });
 
 describe('useChatComposePrefillBootstrap', () => {
-  it('exports a default hook function', () => {
-    expect(typeof useChatComposePrefillBootstrap).toBe('function');
-  });
-
   it('mounts without throwing when compose prefill route is absent', async () => {
     const { renderHook } = await import('@testing-library/react');
 

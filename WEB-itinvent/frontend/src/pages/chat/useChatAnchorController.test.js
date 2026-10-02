@@ -150,6 +150,55 @@ describe('useChatAnchorController', () => {
     });
   });
 
+  it('anchors the opened conversation on the server-provided first unread message', () => {
+    const refs = buildRefs();
+    refs.conversationsRef.current = [{ id: 'conv-1', unread_count: 12 }];
+    const anchorEl = { offsetTop: 340 };
+    const container = {
+      scrollTop: 0,
+      scrollHeight: 2000,
+      clientHeight: 400,
+      querySelector: vi.fn((selector) => (selector.includes('m-7') ? anchorEl : null)),
+    };
+    refs.threadScrollRef.current = container;
+    const setThreadScrollTop = vi.fn(() => true);
+
+    const { result } = renderHook(() => useChatAnchorController({
+      activeConversationId: 'conv-1',
+      ...refs,
+      logChatDebug: vi.fn(),
+      setShowJumpToLatest: vi.fn(),
+      setThreadScrollTop,
+      showJumpToLatestRef: { current: false },
+      syncThreadViewportState: vi.fn(),
+      viewerLastReadMessageId: 'm-2',
+    }));
+
+    act(() => {
+      expect(result.current.queueInitialThreadPosition('conv-1')).toBe('first_unread_top');
+      expect(result.current.resolvePendingInitialAnchorFromPayload('conv-1', {
+        items: [{ id: 'm-5', is_own: false }, { id: 'm-7', is_own: false }],
+        viewer_last_read_message_id: 'm-2',
+        initial_anchor_mode: 'first_unread',
+        initial_anchor_message_id: 'm-7',
+      })).toBe(true);
+    });
+
+    expect(refs.pendingInitialAnchorRef.current).toMatchObject({
+      conversationId: 'conv-1',
+      mode: 'first_unread_top',
+      anchorMessageId: 'm-7',
+      anchorResolved: true,
+      ready: true,
+    });
+
+    act(() => {
+      expect(result.current.applyPendingInitialAnchor({ source: 'test' })).toBe('changed');
+    });
+
+    expect(setThreadScrollTop).toHaveBeenCalledWith(340 - 14, { source: 'pendingAnchor:test' });
+  });
+
   it('cancelPendingInitialAnchor clears pending state and guard', () => {
     const refs = buildRefs();
     refs.pendingInitialAnchorRef.current = { conversationId: 'conv-1' };

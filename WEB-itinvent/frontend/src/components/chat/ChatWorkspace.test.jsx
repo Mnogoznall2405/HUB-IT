@@ -45,14 +45,17 @@ describe('complete chat context panel', () => {
     expect(await screen.findByRole('button', { name: 'Открыть карточку Участник 25' })).toBeInTheDocument();
     expect(api.detail).toHaveBeenCalledWith(conversation.id, expect.objectContaining({ signal: expect.any(AbortSignal) }));
   });
-  it('paginates media without losing the first page or duplicating items', async () => {
+  it('paginates media without losing the first page or duplicating items on scroll', async () => {
     api.attachments.mockResolvedValueOnce({ items: [photo('one')], has_more: true, next_before_attachment_id: 'one' })
+      .mockResolvedValueOnce({ items: [], has_more: false })
       .mockResolvedValueOnce({ items: [photo('one'), photo('two')], has_more: false });
     render(panel(), { wrapper });
-    fireEvent.click(await screen.findByRole('button', { name: 'Показать ещё вложения' }));
+    expect(await screen.findByRole('button', { name: 'Открыть one.jpg' })).toBeInTheDocument();
+    fireEvent.scroll(screen.getByTestId('chat-info-scroll'));
     expect(await screen.findByRole('button', { name: 'Открыть two.jpg' })).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Открыть one.jpg' })).toHaveLength(1);
-    expect(api.attachments).toHaveBeenLastCalledWith(conversation.id, expect.objectContaining({ before_attachment_id: 'one' }));
+    expect(api.attachments).toHaveBeenLastCalledWith(conversation.id, expect.objectContaining({ kind: 'image', before_attachment_id: 'one' }));
+    expect(screen.queryByRole('button', { name: 'Показать ещё вложения' })).not.toBeInTheDocument();
   });
   it('finds tasks in older history independently of loaded thread messages', async () => {
     api.messages.mockResolvedValueOnce({ items: [{ id: 'recent', kind: 'text', body: 'Текст' }], has_more: true })
@@ -60,7 +63,8 @@ describe('complete chat context panel', () => {
     const onOpenTask = vi.fn();
     render(panel({ onOpenTask }), { wrapper });
     fireEvent.click(screen.getByRole('button', { name: /Задачи/ }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Искать в более ранних сообщениях' }));
+    await waitFor(() => expect(api.messages).toHaveBeenCalledTimes(1));
+    fireEvent.scroll(screen.getByTestId('chat-info-scroll'));
     fireEvent.click(await screen.findByRole('button', { name: /Давняя задача/ }));
     expect(onOpenTask).toHaveBeenCalledWith('task-1');
     expect(api.messages).toHaveBeenLastCalledWith(conversation.id, { limit: 100, before_message_id: 'recent' });
@@ -71,25 +75,27 @@ describe('complete chat context panel', () => {
       .mockResolvedValueOnce({ items: [], has_more: false });
     render(panel(), { wrapper });
     fireEvent.click(screen.getByRole('button', { name: /Файлы/ }));
-    await waitFor(() => expect(api.attachments).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(api.attachments).toHaveBeenCalledTimes(3));
     await act(async () => resolvePhotos({ items: [photo('stale')], has_more: true, next_before_attachment_id: 'stale' }));
     expect(screen.queryByText('stale.jpg')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Показать ещё вложения' })).not.toBeInTheDocument();
   });
   it('retries a failed second attachment page with the same cursor', async () => {
     api.attachments.mockResolvedValueOnce({ items: [photo('one')], has_more: true, next_before_attachment_id: 'one' })
+      .mockResolvedValueOnce({ items: [], has_more: false })
       .mockRejectedValueOnce(new Error('Сеть недоступна'))
       .mockResolvedValueOnce({ items: [photo('two')], has_more: false });
     render(panel(), { wrapper });
-    fireEvent.click(await screen.findByRole('button', { name: 'Показать ещё вложения' }));
+    expect(await screen.findByRole('button', { name: 'Открыть one.jpg' })).toBeInTheDocument();
+    fireEvent.scroll(screen.getByTestId('chat-info-scroll'));
     await screen.findByRole('alert');
     fireEvent.click(screen.getByRole('button', { name: 'Повторить' }));
     expect(await screen.findByRole('button', { name: 'Открыть two.jpg' })).toBeInTheDocument();
-    expect(api.attachments).toHaveBeenLastCalledWith(conversation.id, expect.objectContaining({ before_attachment_id: 'one' }));
+    expect(api.attachments).toHaveBeenLastCalledWith(conversation.id, expect.objectContaining({ kind: 'image', before_attachment_id: 'one' }));
   });
-  it('loads audio through its own attachment filter', async () => {
+  it('loads voice attachments through their own attachment filter', async () => {
     render(panel(), { wrapper });
-    fireEvent.click(screen.getByRole('button', { name: /Аудио/, pressed: false }));
+    fireEvent.click(screen.getByRole('button', { name: /Голосовые/, pressed: false }));
     await waitFor(() => expect(api.attachments).toHaveBeenLastCalledWith(conversation.id, expect.objectContaining({ kind: 'audio' })));
   });
   it('stops showing loading when complete members arrive from the page detail loader', () => {
@@ -153,12 +159,12 @@ describe('conversation media gallery', () => {
   });
 });
 
-it('aligns outgoing wide bubbles on the left while keeping their own color', () => {
+it('aligns outgoing bubbles on the right in every layout while keeping their own color', () => {
   const { container, rerender } = render(<ChatBubble theme={theme} ui={{ ...ui, wideMessageLayout: true }} message={{ id: 'own', kind: 'text', body: 'Своё сообщение', is_own: true }} />, { wrapper });
   const surface = container.querySelector('[data-chat-bubble-surface]');
-  expect(surface.parentElement).toHaveClass('items-start');
+  expect(container.querySelector('[data-chat-message-id="own"]')).toHaveClass('items-end');
   const background = getComputedStyle(surface).backgroundColor;
   rerender(<ChatBubble theme={theme} ui={ui} message={{ id: 'own', kind: 'text', body: 'Своё сообщение', is_own: true }} />);
-  expect(container.querySelector('[data-chat-bubble-surface]').parentElement).toHaveClass('items-end');
+  expect(container.querySelector('[data-chat-message-id="own"]')).toHaveClass('items-end');
   expect(getComputedStyle(container.querySelector('[data-chat-bubble-surface]')).backgroundColor).toBe(background);
 });

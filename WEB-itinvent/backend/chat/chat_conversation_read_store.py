@@ -291,6 +291,41 @@ class ChatConversationReadStore:
                 conv_id: max(0, int(getattr(state, "unread_count", 0) or 0))
                 for conv_id, state in states_by_conversation.items()
             }
+            unread_mentions_by_conversation = {
+                conv_id: max(0, int(getattr(state, "unread_mention_count", 0) or 0))
+                for conv_id, state in states_by_conversation.items()
+            }
+
+            # AI8: AI conversations carry their owning bot so the sidebar can
+            # map a conversation to its assistant even when the bot row is
+            # disabled or missing from list_bots.
+            ai_bot_id_by_conversation: dict[str, str] = {}
+            ai_conversation_ids = [
+                conversation.id
+                for conversation in conversations
+                if _normalize_text(getattr(conversation, "kind", None)) == "ai"
+            ]
+            if ai_conversation_ids:
+                try:
+                    from backend.appdb.db import app_session
+                    from backend.appdb.models import AppAiBotConversation
+
+                    with app_session() as app_db:
+                        mappings = app_db.execute(
+                            select(AppAiBotConversation).where(
+                                AppAiBotConversation.conversation_id.in_(ai_conversation_ids),
+                                AppAiBotConversation.user_id == int(current_user_id),
+                            )
+                        ).scalars()
+                        for mapping in mappings:
+                            mapped_conversation_id = _normalize_text(mapping.conversation_id)
+                            mapped_bot_id = _normalize_text(mapping.bot_id)
+                            if mapped_conversation_id and mapped_bot_id:
+                                ai_bot_id_by_conversation[mapped_conversation_id] = mapped_bot_id
+                except Exception:
+                    # Bot↔conversation mapping is best-effort; the row still
+                    # renders and opens without it.
+                    pass
 
             participant_ids = {
                 int(member.user_id)
@@ -328,6 +363,7 @@ class ChatConversationReadStore:
                     state=states_by_conversation.get(conversation.id),
                     last_message=messages_by_id.get(conversation.last_message_id),
                     unread_count=unread_by_conversation.get(conversation.id, 0),
+                    unread_mention_count=unread_mentions_by_conversation.get(conversation.id, 0),
                     last_message_attachments=attachments_by_last_message.get(
                         _normalize_text(conversation.last_message_id),
                         [],
@@ -336,6 +372,7 @@ class ChatConversationReadStore:
                     task_payloads_by_id=task_payloads_by_id,
                     reads_by_message_id=reads_by_message_id,
                     states_by_user_id=states_by_conversation_user.get(conversation.id, {}),
+                    ai_bot_id=ai_bot_id_by_conversation.get(conversation.id),
                 )
                 items.append(summary)
 
@@ -416,6 +453,7 @@ class ChatConversationReadStore:
         result = payload if isinstance(payload, dict) else {
             "messages_unread_total": 0,
             "conversations_unread": 0,
+            "mentions_unread_total": 0,
         }
         self._service._cache_set(user_id=int(current_user_id), bucket="unread_summary", value=result, ttl_sec=5)
         return result
@@ -465,6 +503,7 @@ class ChatConversationReadStore:
             int(user_id): {
                 "messages_unread_total": 0,
                 "conversations_unread": 0,
+                "mentions_unread_total": 0,
             }
             for user_id in normalized_user_ids
         }
@@ -474,6 +513,7 @@ class ChatConversationReadStore:
                     ChatConversationUserState.user_id,
                     func.coalesce(func.sum(ChatConversationUserState.unread_count), 0),
                     func.count(ChatConversationUserState.conversation_id),
+                    func.coalesce(func.sum(ChatConversationUserState.unread_mention_count), 0),
                 )
                 .select_from(ChatConversationUserState)
                 .join(
@@ -493,15 +533,25 @@ class ChatConversationReadStore:
                     ChatConversationUserState.unread_count > 0,
                     ChatConversationUserState.is_archived.is_(False),
                     ChatConversation.is_archived.is_(False),
+                    # A3-2: muted conversations stay out of the global badge;
+                    # muted_until that already expired lifts the mute again.
+                    or_(
+                        ChatConversationUserState.is_muted.is_(False),
+                        and_(
+                            ChatConversationUserState.muted_until.is_not(None),
+                            ChatConversationUserState.muted_until <= datetime.now(timezone.utc),
+                        ),
+                    ),
                 ).group_by(ChatConversationUserState.user_id)
             ).all()
-        for user_id, messages_unread_total, conversations_unread in unread_rows:
+        for user_id, messages_unread_total, conversations_unread, mentions_unread_total in unread_rows:
             normalized_user_id = int(user_id or 0)
             if normalized_user_id <= 0:
                 continue
             result[normalized_user_id] = {
                 "messages_unread_total": max(0, int(messages_unread_total or 0)),
                 "conversations_unread": max(0, int(conversations_unread or 0)),
+                "mentions_unread_total": max(0, int(mentions_unread_total or 0)),
             }
         return result
 
@@ -618,6 +668,7 @@ class ChatConversationReadStore:
                     state=states_by_user_id.get(int(user_id)),
                     last_message=last_message,
                     unread_count=max(0, int(getattr(states_by_user_id.get(int(user_id)), "unread_count", 0) or 0)),
+                    unread_mention_count=max(0, int(getattr(states_by_user_id.get(int(user_id)), "unread_mention_count", 0) or 0)),
                     last_message_attachments=last_message_attachments,
                     reads_by_message_id=reads_by_message_id,
                     states_by_user_id=states_by_user_id,

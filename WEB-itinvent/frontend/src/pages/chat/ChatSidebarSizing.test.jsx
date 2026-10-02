@@ -39,7 +39,7 @@ beforeEach(() => { window.localStorage.clear(); vi.clearAllMocks(); });
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe('resizable chat sidebar', () => {
-  it('keeps one workspace title and exposes shell actions in the integrated header', () => {
+  it('keeps one workspace title and exposes shell actions in the integrated header', async () => {
     render(<Harness />);
     expect(screen.getAllByText('Чаты')).toHaveLength(1);
     expect(screen.queryByText('Собственное ФИО')).not.toBeInTheDocument();
@@ -47,7 +47,9 @@ describe('resizable chat sidebar', () => {
     expect(screen.queryByText(/В сети/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Уведомления' }));
     fireEvent.click(screen.getByRole('button', { name: 'Открыть главное меню' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Новый чат' }));
+    // Д2: «Новый чат» живёт в меню «Действия» рядом с поиск-пилюлей.
+    fireEvent.click(screen.getByRole('button', { name: 'Действия' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Новый чат' }));
     expect(openNotifications).toHaveBeenCalledOnce();
     expect(openDrawer).toHaveBeenCalledOnce();
     expect(createChat).toHaveBeenCalledOnce();
@@ -57,7 +59,8 @@ describe('resizable chat sidebar', () => {
     const first = render(<Harness />);
     const separator = screen.getByRole('separator', { name: 'Ширина списка чатов' });
     fireEvent.keyDown(separator, { key: 'ArrowRight' });
-    expect(separator).toHaveAttribute('aria-valuenow', '336');
+    // Д1: ширина по умолчанию 420, шаг клавиатуры 16 → 436.
+    expect(separator).toHaveAttribute('aria-valuenow', '436');
     fireEvent.click(screen.getByRole('button', { name: 'Свернуть список чатов' }));
     const row = screen.getByRole('button', { name: /Николаев Михаил Сергеевич, непрочитанных: 5/ });
     fireEvent.click(row);
@@ -69,20 +72,21 @@ describe('resizable chat sidebar', () => {
     expect(screen.getByRole('button', { name: 'Развернуть список чатов' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Поиск чатов' }));
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Поиск чатов' })).toHaveFocus());
-    expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '336');
+    expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow', '436');
   });
 
   it('clamps keyboard resize, resets by double click and collapses with Enter', () => {
     render(<Harness />);
     const separator = screen.getByRole('separator');
+    // Д1: эталонная геометрия сайдбара — 420 по умолчанию; Д2-5 — диапазон 260–520.
     fireEvent.keyDown(separator, { key: 'End' });
-    expect(separator).toHaveAttribute('aria-valuenow', '440');
+    expect(separator).toHaveAttribute('aria-valuenow', '520');
     fireEvent.keyDown(separator, { key: 'ArrowRight' });
-    expect(separator).toHaveAttribute('aria-valuenow', '440');
+    expect(separator).toHaveAttribute('aria-valuenow', '520');
     fireEvent.keyDown(separator, { key: 'Home' });
-    expect(separator).toHaveAttribute('aria-valuenow', '280');
+    expect(separator).toHaveAttribute('aria-valuenow', '260');
     fireEvent.doubleClick(separator);
-    expect(separator).toHaveAttribute('aria-valuenow', '320');
+    expect(separator).toHaveAttribute('aria-valuenow', '420');
     fireEvent.keyDown(separator, { key: 'Enter' });
     expect(screen.queryByRole('separator')).not.toBeInTheDocument();
   });
@@ -96,6 +100,20 @@ describe('resizable chat sidebar', () => {
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Поиск чатов' })).toHaveFocus());
   });
 
+  it('keeps the Чаты/ИИ switcher in the collapsed rail header (Д2-5, п. 5)', () => {
+    render(<Harness />);
+    fireEvent.click(screen.getByRole('button', { name: 'Свернуть список чатов' }));
+    const chatsTab = screen.getByRole('tab', { name: 'Чаты' });
+    const aiTab = screen.getByRole('tab', { name: 'ИИ' });
+    expect(chatsTab).toHaveAttribute('aria-selected', 'true');
+    expect(aiTab).toHaveAttribute('aria-selected', 'false');
+    // Сегментный вид: у выбранной вкладки явный фон из workspace-токенов.
+    expect(chatsTab).toHaveStyle({ backgroundColor: 'var(--chat-workspace-tab-active-bg)' });
+    fireEvent.click(aiTab);
+    expect(aiTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('button', { name: /Новый AI-чат/ })).toBeInTheDocument();
+  });
+
   it('does not apply stored desktop collapse to mobile', () => {
     window.localStorage.setItem('hub.chat.sidebarLayout', JSON.stringify({ width: 410, collapsed: true }));
     render(<Harness mobile />);
@@ -105,8 +123,8 @@ describe('resizable chat sidebar', () => {
   });
 
   it('survives unavailable and malformed storage', () => {
-    expect(readSidebarLayout({ getItem() { throw new Error('Blocked'); } })).toEqual({ width: 320, collapsed: false });
-    expect(readSidebarLayout({ getItem: () => 'null' })).toEqual({ width: 320, collapsed: false });
-    expect(readSidebarLayout({ getItem: () => '{"width":999,"collapsed":true}' })).toEqual({ width: 440, collapsed: true });
+    expect(readSidebarLayout({ getItem() { throw new Error('Blocked'); } })).toEqual({ width: 420, collapsed: false });
+    expect(readSidebarLayout({ getItem: () => 'null' })).toEqual({ width: 420, collapsed: false });
+    expect(readSidebarLayout({ getItem: () => '{"width":999,"collapsed":true}' })).toEqual({ width: 520, collapsed: true });
   });
 });

@@ -226,3 +226,187 @@ describe('ChatBubble structured rendering', () => {
     expect(screen.queryByTestId('chat-contact-card')).not.toBeInTheDocument();
   });
 });
+
+describe('Д2-10: single side-colored card without an outer bubble', () => {
+  const baseMessage = {
+    created_at: '2026-09-30T10:00:00Z',
+    sender: { id: 2, full_name: 'Пётр' },
+  };
+
+  it('renders an own poll as one card on the own side color, meta inside, reactions below', () => {
+    renderWithTheme(
+      <ChatBubble
+        theme={theme}
+        ui={ui}
+        message={{
+          ...baseMessage,
+          id: 'm-poll-own', kind: 'poll', is_own: true,
+          body: JSON.stringify({ question: 'Куда?', options: ['Да', 'Нет'] }),
+          poll: {
+            question: 'Куда?',
+            options: [{ text: 'Да', votes: 1 }, { text: 'Нет', votes: 0 }],
+            total_voters: 1, closed: false, my_option_index: 0,
+          },
+          reactions: [{ emoji: '👍', count: 2, user_ids: [3] }],
+        }}
+        conversationKind="direct"
+      />,
+    );
+
+    const poll = screen.getByTestId('chat-poll-card');
+    const card = poll.closest('[data-chat-card-surface]');
+    expect(card).not.toBeNull();
+    // Фон карточки — цвет исходящей стороны, у контента нет второй подложки/рамки.
+    expect(card).toHaveStyle({ backgroundColor: 'rgb(43, 82, 120)' });
+    expect(poll.style.backgroundColor).toBe('');
+    expect(poll.style.border).toBe('');
+    // Время/галочки внутри карточки справа снизу.
+    expect(card.querySelector('[data-chat-meta-layout="bottom"]')).not.toBeNull();
+    // Реакции рендерятся под карточкой, а не внутри неё.
+    const reactions = screen.getByTestId('chat-reactions-bar');
+    expect(card.contains(reactions)).toBe(false);
+    expect(card.compareDocumentPosition(reactions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('renders an incoming file without caption as a side-colored card', () => {
+    renderWithTheme(
+      <ChatBubble
+        theme={theme}
+        ui={ui}
+        message={{
+          ...baseMessage,
+          id: 'm-file', kind: 'file', is_own: false, body: '',
+          attachments: [{
+            id: 'att-1', file_name: 'report.pdf', file_size: 2048,
+            mime_type: 'application/pdf', original_url: '/files/report.pdf',
+          }],
+        }}
+        conversationKind="direct"
+      />,
+    );
+
+    const fileLink = screen.getByRole('link', { name: /Открыть файл report\.pdf/i });
+    const card = fileLink.closest('[data-chat-card-surface]');
+    expect(card).not.toBeNull();
+    expect(card).toHaveStyle({ backgroundColor: 'rgb(24, 37, 51)' });
+    // Файловая строка плоская — без внутренней рамки и второй подложки.
+    expect(fileLink.style.border).toBe('');
+    expect(fileLink.style.backgroundColor).toBe('transparent');
+    expect(card.querySelector('[data-chat-meta-layout="bottom"]')).not.toBeNull();
+  });
+
+  it('keeps a captioned file inside a regular bubble', () => {
+    renderWithTheme(
+      <ChatBubble
+        theme={theme}
+        ui={ui}
+        message={{
+          ...baseMessage,
+          id: 'm-file-caption', kind: 'file', is_own: false, body: 'Смотри файл',
+          attachments: [{
+            id: 'att-2', file_name: 'report.pdf', file_size: 2048,
+            mime_type: 'application/pdf', original_url: '/files/report.pdf',
+          }],
+        }}
+        conversationKind="direct"
+      />,
+    );
+
+    expect(document.querySelector('[data-chat-card-surface]')).toBeNull();
+    const surface = document.querySelector('[data-chat-bubble-surface]');
+    expect(surface).toHaveStyle({ backgroundColor: 'rgb(24, 37, 51)' });
+    expect(surface.textContent).toContain('Смотри файл');
+  });
+
+  it('renders a photo without caption as bare media with a meta overlay', () => {
+    renderWithTheme(
+      <ChatBubble
+        theme={theme}
+        ui={ui}
+        message={{
+          ...baseMessage,
+          id: 'm-photo', kind: 'text', is_own: false, body: '',
+          attachments: [{
+            id: 'att-3', file_name: 'photo.jpg', file_size: 4096,
+            mime_type: 'image/jpeg', original_url: '/files/photo.jpg',
+            width: 800, height: 1600,
+          }],
+        }}
+        conversationKind="direct"
+      />,
+    );
+
+    expect(document.querySelector('[data-chat-card-surface]')).toBeNull();
+    // R40: time on a photo is visible without hover (desktop included).
+    const mediaMeta = screen.getByTestId('chat-media-meta');
+    expect(mediaMeta).toBeInTheDocument();
+    expect(getComputedStyle(mediaMeta).opacity).not.toBe('0');
+    expect(screen.getByTestId('chat-bubble-meta-media')).toHaveTextContent(/\d{1,2}:\d{2}/);
+    expect(screen.getByRole('img', { name: 'photo.jpg' })).toBeInTheDocument();
+  });
+});
+
+describe('R51: time of a single large emoji', () => {
+  const emojiMessage = (extra = {}) => ({
+    id: 'm-emoji', kind: 'text', is_own: true, body: '😂', created_at: '2026-10-02T04:14:00Z',
+    sender: { id: 1, full_name: 'Я' },
+    ...extra,
+  });
+
+  it('puts the time in a small pill below the emoji instead of over it', () => {
+    renderWithTheme(<ChatBubble theme={theme} ui={ui} message={emojiMessage()} conversationKind="direct" />);
+
+    const body = document.querySelector('[data-chat-emoji-only="true"]');
+    const meta = screen.getByTestId('chat-bubble-meta-emoji');
+    expect(body).not.toBeNull();
+    expect(meta).toHaveAttribute('data-chat-meta-layout', 'emoji');
+    // In the flow after the emoji, not absolutely positioned over it.
+    expect(meta).toHaveStyle({ position: 'relative' });
+    expect(body.compareDocumentPosition(meta) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(body.contains(meta)).toBe(false);
+    expect(getComputedStyle(meta).backgroundColor).toBe('rgba(2, 6, 23, 0.5)');
+    // No space reserved for an overlaid time.
+    expect(getComputedStyle(body).paddingBottom).toBe('0px');
+    expect(screen.queryByTestId('chat-bubble-meta-bottom')).not.toBeInTheDocument();
+  });
+
+  it('keeps the pill next to the reactions when the emoji has reactions', () => {
+    renderWithTheme(
+      <ChatBubble
+        theme={theme}
+        ui={ui}
+        message={emojiMessage({ reactions: [{ emoji: '👍', count: 1, user_ids: [3] }] })}
+        conversationKind="direct"
+      />,
+    );
+    const footer = screen.getByTestId('chat-bubble-reaction-footer');
+    expect(footer.querySelector('[data-chat-meta-layout="emoji"]')).not.toBeNull();
+  });
+
+  it('leaves ordinary text messages on the regular meta layout', () => {
+    renderWithTheme(
+      <ChatBubble theme={theme} ui={ui} message={emojiMessage({ body: 'Привет всем, это обычное сообщение' })} conversationKind="direct" />,
+    );
+    expect(screen.queryByTestId('chat-bubble-meta-emoji')).not.toBeInTheDocument();
+  });
+});
+
+describe('R50: «не голосовал» is not «выбран первый вариант»', () => {
+  it('keeps my_option_index null for a server poll and for a body fallback', () => {
+    const server = resolveChatMessagePoll({
+      poll: { question: 'q', options: [{ text: 'a', votes: 0 }, { text: 'b', votes: 0 }], my_option_index: null },
+    });
+    expect(server.my_option_index).toBeNull();
+    const fromBody = parseChatPollBody(JSON.stringify({ question: 'q', options: ['a', 'b'], my_option_index: null }));
+    expect(fromBody.my_option_index).toBeNull();
+    expect(parseChatPollBody(JSON.stringify({ question: 'q', options: ['a', 'b'] })).my_option_index).toBeNull();
+  });
+
+  it('still returns a real chosen index, including the first option', () => {
+    const poll = (index) => resolveChatMessagePoll({
+      poll: { question: 'q', options: [{ text: 'a', votes: 1 }, { text: 'b', votes: 0 }], my_option_index: index },
+    });
+    expect(poll(0).my_option_index).toBe(0);
+    expect(poll(1).my_option_index).toBe(1);
+  });
+});

@@ -15,7 +15,6 @@ import threading
 from backend.api.deps import (
     get_current_active_user,
     get_current_admin_user,
-    get_current_database_id,
     get_request_scoped_database_id,
     require_any_permission,
     require_permission,
@@ -834,7 +833,7 @@ class EquipmentRecentActsListResponse(BaseModel):
 @router.get("/search/serial", response_model=EquipmentSearchResponse)
 async def search_by_serial(
     q: str = Query(..., min_length=1, description="Serial number or inventory number to search"),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user)
 ):
     """
@@ -896,7 +895,7 @@ async def search_by_employee(
     q: str = Query(..., min_length=1, description="Employee name or department"),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(50, ge=1, le=200, description="Results per page"),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user)
 ):
     """
@@ -923,7 +922,7 @@ async def get_employee_equipment(
     owner_no: int,
     all_databases: bool = Query(False, description="Search across all configured Hub databases"),
     employee_name: str = Query("", max_length=200, description="FIO used to resolve owner in other DBs"),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(get_current_active_user)
 ):
     """
@@ -971,7 +970,7 @@ async def get_employee_equipment(
 async def get_all_equipment(
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(50, ge=1, le=200, description="Results per page"),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user)
 ):
     """
@@ -992,7 +991,7 @@ async def get_all_equipment(
 @router.post("/by-inv-nos")
 async def get_equipment_by_inv_nos(
     payload: EquipmentByInvNosRequest,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user),
 ):
     """
@@ -1044,7 +1043,7 @@ async def get_equipment_by_inv_nos(
 @router.post("/current-acts", response_model=EquipmentCurrentActsResponse)
 async def get_equipment_current_acts(
     payload: EquipmentCurrentActsRequest,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user),
 ):
     """Lazy batch lookup of the current downloadable act for visible list rows.
@@ -1092,7 +1091,7 @@ async def get_equipment_current_acts(
 @router.get("/recent-cards", response_model=EquipmentRecentCardsListResponse)
 async def get_recent_equipment_cards(
     limit: int = Query(8, ge=1, le=50),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(get_current_active_user),
 ):
     """Get the current user's recent equipment cards for the selected ITINVENT database."""
@@ -1129,7 +1128,7 @@ async def touch_recent_equipment_card(
 @router.delete("/recent-cards/{inv_no}", response_model=dict)
 async def remove_recent_equipment_card(
     inv_no: str,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(get_current_active_user),
 ):
     """Remove one recent equipment card from the current user's selected database scope."""
@@ -1143,7 +1142,7 @@ async def remove_recent_equipment_card(
 
 @router.delete("/recent-cards", response_model=dict)
 async def clear_recent_equipment_cards(
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(get_current_active_user),
 ):
     """Clear all current-user recent equipment cards for the selected database."""
@@ -1157,7 +1156,7 @@ async def clear_recent_equipment_cards(
 @router.get("/acts/recent", response_model=EquipmentRecentActsListResponse)
 async def get_recent_equipment_acts(
     limit: int = Query(8, ge=1, le=50),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(get_current_active_user),
 ):
     """Get the current user's recent act documents for the selected ITINVENT database."""
@@ -1173,7 +1172,7 @@ async def get_recent_equipment_acts(
 @router.post("/acts/recent/touch", response_model=EquipmentRecentActResponse)
 async def touch_recent_equipment_act(
     payload: EquipmentRecentActTouchRequest,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(get_current_active_user),
 ):
     """Upsert a current-user recent act document event."""
@@ -1195,7 +1194,7 @@ async def touch_recent_equipment_act(
 @router.delete("/acts/recent/{doc_no}", response_model=dict)
 async def remove_recent_equipment_act(
     doc_no: int,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(get_current_active_user),
 ):
     """Remove one recent act from the current user's selected database scope."""
@@ -1209,7 +1208,7 @@ async def remove_recent_equipment_act(
 
 @router.delete("/acts/recent", response_model=dict)
 async def clear_recent_equipment_acts(
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(get_current_active_user),
 ):
     """Clear all current-user recent acts for the selected database."""
@@ -1259,7 +1258,7 @@ async def get_all_locations(
 async def get_locations(
     branch_id: str,
     response: Response,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user)
 ):
     """
@@ -1280,7 +1279,7 @@ async def get_locations(
 async def get_equipment_types(
     response: Response,
     ci_type: Optional[int] = Query(None, ge=1, le=20, description="Filter by CI_TYPE"),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user)
 ):
     """
@@ -1309,7 +1308,7 @@ async def get_models_by_type(
     response: Response,
     type_no: int = Query(..., ge=1, description="Equipment TYPE_NO"),
     ci_type: int = Query(1, ge=1, le=20, description="CI_TYPE category"),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user),
 ):
     """
@@ -1322,7 +1321,7 @@ async def get_models_by_type(
 
 @router.get("/types-raw")
 async def get_equipment_types_raw(
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user)
 ):
     """
@@ -1368,7 +1367,7 @@ async def get_equipment_types_raw(
 @router.get("/statuses", response_model=list[EquipmentStatus])
 async def get_statuses(
     response: Response,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user)
 ):
     """
@@ -1401,7 +1400,7 @@ async def search_owners(
 @router.get("/owners/departments")
 async def get_owner_departments(
     limit: int = Query(500, ge=1, le=2000, description="Maximum number of departments"),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user),
 ):
     """
@@ -1415,7 +1414,7 @@ async def get_all_equipment_grouped(
     page: int = Query(1, ge=1),
     limit: int = Query(1000, ge=1, le=10000),
     branch: Optional[str] = Query(None),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user)
 ):
     """
@@ -1470,7 +1469,7 @@ async def get_all_equipment_grouped(
 async def get_all_consumables_grouped(
     page: int = Query(1, ge=1),
     limit: int = Query(1000, ge=1, le=10000),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user)
 ):
     """
@@ -1617,7 +1616,7 @@ async def get_consumables_lookup(
 @router.post("/consumables/create", response_model=ConsumableCreateResponse)
 async def create_consumable(
     payload: ConsumableCreateRequest,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """Create new consumable item (CI_TYPE=4)."""
@@ -1685,7 +1684,7 @@ async def create_consumable(
 @router.post("/consumables/consume", response_model=ConsumableConsumeResponse)
 async def consume_consumable(
     payload: ConsumableConsumeRequest,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """Decrease consumable stock by qty."""
@@ -1721,7 +1720,7 @@ async def consume_consumable(
 @router.patch("/consumables/qty", response_model=ConsumableQtyUpdateResponse)
 async def update_consumable_qty(
     payload: ConsumableQtyUpdateRequest,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """Set exact consumable quantity."""
@@ -1755,7 +1754,7 @@ async def update_consumable_qty(
 @router.delete("/consumables/{item_id}", response_model=ConsumableDeleteResponse)
 async def delete_consumable(
     item_id: int,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_DELETE)),
 ):
     """Hard-delete one consumable card from ITEMS (CI_TYPE=4)."""
@@ -1795,7 +1794,7 @@ async def get_consumable_by_id(
 @router.get("/branches-list")
 async def get_branches_list(
     response: Response,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user)
 ):
     """
@@ -1816,7 +1815,7 @@ async def get_branches_list(
 @router.post("/create", response_model=EquipmentCreateResponse)
 async def create_equipment(
     payload: EquipmentCreateRequest,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """
@@ -1905,7 +1904,7 @@ async def create_equipment(
 async def update_equipment_by_inv(
     inv_no: str,
     payload: EquipmentUpdateRequest,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """
@@ -2042,7 +2041,7 @@ async def update_equipment_by_inv(
 @router.delete("/{inv_no}", response_model=dict)
 async def delete_equipment_by_inv(
     inv_no: str,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(get_current_admin_user),
 ):
     """Hard-delete one equipment card from ITEMS for admin users only."""
@@ -2071,7 +2070,7 @@ async def delete_equipment_by_inv(
 async def transfer_equipment(
     payload: TransferExecuteRequest,
     background_tasks: BackgroundTasks,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """
@@ -2106,7 +2105,7 @@ async def transfer_equipment(
 async def transfer_equipment_location(
     payload: TransferLocationRequest,
     background_tasks: BackgroundTasks,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """
@@ -2158,7 +2157,7 @@ async def transfer_equipment_location(
 async def create_transfer_act_without_move(
     payload: TransferActOnlyRequest,
     background_tasks: BackgroundTasks,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """
@@ -2197,7 +2196,7 @@ async def create_transfer_act_without_move(
 @router.get("/transfer/act-jobs/{job_id}", response_model=TransferExecuteResponse)
 async def get_transfer_act_job(
     job_id: str,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     job = await run_in_threadpool(transfer_act_job_service.get_job, job_id)
@@ -2212,7 +2211,7 @@ async def get_transfer_act_job(
 @router.post("/transfer/email", response_model=TransferEmailResult)
 async def send_transfer_acts(
     payload: TransferEmailRequest,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """
@@ -2245,7 +2244,7 @@ async def send_transfer_acts(
 @router.post("/transfer/to-db")
 async def transfer_equipment_to_db(
     payload: TransferToDbRequest,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """
@@ -2418,7 +2417,7 @@ async def parse_uploaded_act(
         False,
         description="Создать черновик без внешнего API-распознавания (ручное заполнение).",
     ),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """
@@ -2468,7 +2467,7 @@ async def parse_uploaded_act(
 @router.get("/acts/upload/draft/{draft_id}", response_model=UploadedActDraftResponse)
 async def get_uploaded_act_parse_draft(
     draft_id: str,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: Optional[User] = Depends(get_current_active_user),
 ):
     """
@@ -2490,7 +2489,7 @@ async def get_uploaded_act_parse_draft(
 @router.post("/acts/upload/commit", response_model=UploadedActCommitResponse)
 async def commit_uploaded_act(
     payload: UploadedActCommitRequest,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """
@@ -2581,7 +2580,7 @@ async def commit_uploaded_act(
 @router.post("/acts/upload/email", response_model=UploadedActEmailSendResponse)
 async def send_uploaded_act_email(
     payload: UploadedActEmailSendRequest,
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """
@@ -2778,7 +2777,7 @@ async def send_uploaded_act_email(
 @router.get("/acts/latest", response_model=EquipmentActSearchResponse)
 async def list_latest_equipment_acts(
     limit: int = Query(50, ge=1, le=100, description="Maximum number of newest documents to return"),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user),
 ):
     """List newest act/transfer documents for the inventory Acts tab feed."""
@@ -2879,7 +2878,7 @@ async def inspect_equipment_act_file(
     doc_no: str,
     item_id: Optional[int] = Query(None, description="Optional ITEM_ID for precise file lookup"),
     inv_no: Optional[str] = Query(None, description="Optional INV_NO for fallback item lookup"),
-    db_id: Optional[str] = Depends(get_current_database_id),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user),
 ):
     """

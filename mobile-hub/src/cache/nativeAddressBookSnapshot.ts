@@ -1,4 +1,5 @@
 import {
+  addNativeSnapshotClearListener,
   readNativeSnapshot,
   writeNativeSnapshot,
   type NativeSnapshot,
@@ -250,18 +251,72 @@ async function writeAddressBookSnapshot<T extends AddressBookPayload>(
   if (previous && isAddressBookManifest(previous.data)) {
     await cleanupScopes(userId, previous.data.shards.map((shard) => shard.scope));
   }
+  // Keep the freshly verified copy warm for the next screen entry.
+  directoryMemorySlot = { userId, snapshot: verified };
   return true;
 }
 
-export function readNativeAddressBookSnapshot<T extends AddressBookPayload>(userId: number): Promise<NativeSnapshot<T> | null> {
-  return withDirectoryOperation(userId, () => readAddressBookSnapshot<T>(userId));
+// N4: the parsed directory is kept in memory per user so reopening the screen
+// does not re-read and re-decrypt every shard. A single slot is enough — the
+// directory belongs to exactly one logged-in user at a time.
+type DirectoryMemorySlot = {
+  userId: number;
+  snapshot: NativeSnapshot<AddressBookPayload>;
+};
+
+let directoryMemorySlot: DirectoryMemorySlot | null = null;
+
+export function invalidateAddressBookDirectoryCache(userId?: number): void {
+  if (userId === undefined || directoryMemorySlot?.userId === userId) {
+    directoryMemorySlot = null;
+  }
+}
+
+// Logout/cache clear must drop the in-memory copy too. Partial test mocks of
+// the cache module may not expose the listener API, hence the typeof guard.
+if (typeof addNativeSnapshotClearListener === 'function') {
+  addNativeSnapshotClearListener(invalidateAddressBookDirectoryCache);
+}
+
+export function readNativeAddressBookSnapshot<T extends AddressBookPayload>(
+  userId: number,
+  options: { bypassMemory?: boolean } = {},
+): Promise<NativeSnapshot<T> | null> {
+  if (!options.bypassMemory) {
+    const cached = directoryMemorySlot;
+    if (cached && cached.userId === userId) {
+      return Promise.resolve(cached.snapshot as NativeSnapshot<T>);
+    }
+  }
+  return withDirectoryOperation(userId, async () => {
+    if (!options.bypassMemory) {
+      const slot = directoryMemorySlot;
+      if (slot && slot.userId === userId) {
+        return slot.snapshot as NativeSnapshot<T>;
+      }
+    }
+    // Post-write verification callers pass bypassMemory so the check re-reads
+    // the encrypted shards instead of the just-populated slot.
+    const snapshot = await readAddressBookSnapshot<T>(userId);
+    if (snapshot) directoryMemorySlot = { userId, snapshot };
+    return snapshot;
+  });
 }
 
 export function writeNativeAddressBookSnapshot<T extends AddressBookPayload>(userId: number, payload: T): Promise<boolean> {
   return withDirectoryOperation(userId, async () => {
-    try { return await writeAddressBookSnapshot(userId, payload); }
+    try {
+      const stored = await writeAddressBookSnapshot(userId, payload);
+      if (!stored) {
+        // Disk state after a failed write is uncertain — drop the cached copy.
+        invalidateAddressBookDirectoryCache(userId);
+        return false;
+      }
+      return true;
+    }
     catch (error) {
       await recordSnapshotFailure('address-book', 'shard-serialize-or-write', error);
+      invalidateAddressBookDirectoryCache(userId);
       return false;
     }
   });

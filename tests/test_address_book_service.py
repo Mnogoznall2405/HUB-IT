@@ -14,6 +14,7 @@ from backend.services.address_book_service import (
     classify_department_location,
     deduplicate_email_records,
     deduplicate_phone_records,
+    dismissed_employee_full_query,
     dismissed_employee_query,
     emails_query,
     employee_query,
@@ -23,10 +24,13 @@ from backend.services.address_book_service import (
     merge_personal_profile_records,
     normalize_email,
     normalize_phone,
+    normalize_search_text,
+    normalize_text,
     one_c_date_iso,
     parse_age_token,
     personal_documents_query,
     personal_profile_query,
+    phones_query,
 )
 
 
@@ -417,7 +421,7 @@ def test_get_personal_by_codes_reads_separate_cache_bucket():
         }
     )
     service = AddressBookService(data_manager=manager)
-    public_item = service.search("иванов")["items"][0]
+    public_item = service.search("иванов", include_age=True)["items"][0]
     assert public_item["age"] == calculate_age("1990-01-01")
     assert public_item.get("date_of_birth") is None
     assert public_item.get("passport_number") is None
@@ -447,6 +451,58 @@ def test_get_personal_by_codes_reads_separate_cache_bucket():
 
     allowed_item = service.search("иванов", include_hire_date=True)["items"][0]
     assert allowed_item["hire_date"] == "2021-05-17"
+
+
+def test_search_and_snapshot_without_flags_hide_personal_fields():
+    age = calculate_age("1990-01-01")
+    assert age is not None
+    manager = MemoryDataManager(
+        {
+            "items": [{
+                "full_name": "Иванов Иван",
+                "employee_code": "E1",
+                "work_phones": [{"value": "100"}],
+                "personal_phones": [{"value": "79990001122"}],
+                "work_emails": [{"value": "ivanov@zsgp.ru"}],
+                "personal_emails": [{"value": "ivanov@example.com"}],
+            }],
+            "personal_by_code": {"E1": {"date_of_birth": "1990-01-01"}},
+        }
+    )
+    service = AddressBookService(data_manager=manager)
+
+    default_item = service.search("иванов")["items"][0]
+    assert default_item.get("age") is None
+    assert default_item["personal_phones"] == []
+    assert default_item["personal_emails"] == []
+    assert default_item["work_phones"] == [{"value": "100"}]
+    assert default_item["work_emails"] == [{"value": "ivanov@zsgp.ru"}]
+
+    default_snapshot_item = service.snapshot()["items"][0]
+    assert default_snapshot_item.get("age") is None
+    assert default_snapshot_item["personal_phones"] == []
+    assert default_snapshot_item["personal_emails"] == []
+
+    # Hidden values must not be reachable through search (no oracle).
+    assert service.search("79990001122")["total"] == 0
+    assert service.search("ivanov@example.com")["total"] == 0
+    assert service.search(str(age))["total"] == 0
+
+    assert (
+        service.search(
+            "иванов",
+            include_age=True,
+            include_personal_phones=True,
+            include_personal_emails=True,
+        )["items"][0]["age"]
+        == age
+    )
+    assert service.search("79990001122", include_personal_phones=True)["total"] == 1
+    assert service.search("ivanov@example.com", include_personal_emails=True)["total"] == 1
+    assert service.search(str(age), include_age=True)["total"] == 1
+    snapshot_item = service.snapshot(include_personal_phones=True, include_personal_emails=True)["items"][0]
+    assert snapshot_item["personal_phones"] == [{"value": "79990001122"}]
+    assert snapshot_item["personal_emails"] == [{"value": "ivanov@example.com"}]
 
 
 def test_calculate_age_uses_birthday_and_rejects_invalid_dates():
@@ -495,13 +551,13 @@ def test_search_matches_by_age_exact_and_range():
     )
     service = AddressBookService(data_manager=manager)
 
-    exact = service.search(str(age_one))["items"]
+    exact = service.search(str(age_one), include_age=True)["items"]
     assert [item["employee_code"] for item in exact] == ["E1"]
 
-    ranged = service.search(f"{age_one}-{age_two}")["items"]
+    ranged = service.search(f"{age_one}-{age_two}", include_age=True)["items"]
     assert {item["employee_code"] for item in ranged} == {"E1", "E2"}
 
-    narrow = service.search(f"{age_one + 1}-{age_two - 1}")["items"]
+    narrow = service.search(f"{age_one + 1}-{age_two - 1}", include_age=True)["items"]
     assert narrow == []
 
     text_hit = service.search("иванов")["items"]
@@ -568,7 +624,7 @@ def test_search_orders_exact_age_above_incidental_text_hits():
     )
     service = AddressBookService(data_manager=manager)
 
-    found = service.search(token)["items"]
+    found = service.search(token, include_age=True)["items"]
     assert [item["employee_code"] for item in found] == ["E100", f"{token}01"]
 
 
@@ -698,7 +754,7 @@ def test_search_matches_name_department_position_city_and_phone():
     assert service.search("иванов")["total"] == 1
     assert service.search("мониторинг")["items"][0]["full_name"] == "Иванов Иван Иванович"
     assert service.search("санкт специалист")["total"] == 1
-    assert service.search("9199568055")["items"][0]["full_name"] == "Петров Петр Петрович"
+    assert service.search("9199568055", include_personal_phones=True)["items"][0]["full_name"] == "Петров Петр Петрович"
     assert service.search("ivanov@zsgp.ru")["items"][0]["full_name"] == "Иванов Иван Иванович"
     assert service.search("00зк-6031")["items"][0]["full_name"] == "Иванов Иван Иванович"
 
@@ -994,6 +1050,10 @@ def test_load_items_initializes_com_in_current_thread(monkeypatch):
             "department_location": "Москва",
             "position": "",
             "dismissal_date": "2026-08-31",
+            "work_phones": [],
+            "personal_phones": [],
+            "work_emails": [],
+            "personal_emails": [],
         }
     ]
     assert personal["E1"]["passport_number"] == "123456"
@@ -1020,3 +1080,800 @@ def test_sync_error_keeps_previous_cache():
     assert manager.payload["updated_at"] == "old"
     assert manager.payload["items"] == [{"full_name": "Кэш"}]
     assert manager.payload["last_error"] == "1C unavailable"
+
+
+def test_dismissed_full_query_has_no_surname_filter():
+    query = dismissed_employee_full_query()
+
+    assert "Текущие.ДатаУвольнения <> ДАТАВРЕМЯ(1, 1, 1)" in query
+    assert "Фамилия" not in query
+    # 1C forbids ORDER BY over ПРЕДСТАВЛЕНИЕ(..); sorting is done in Python.
+    assert "УПОРЯДОЧИТЬ" not in query
+
+
+def test_search_dismissed_reads_dismissed_items_bucket():
+    manager = MemoryDataManager(
+        {
+            "updated_at": "2026-09-01T10:00:00+00:00",
+            "dismissed_updated_at": "2026-09-02T10:00:00+00:00",
+            "items": [{"full_name": "Работающий", "employee_code": "E1"}],
+            "dismissed_items": [
+                {
+                    "full_name": "Уволенный Сотрудник",
+                    "employee_code": "E2",
+                    "dismissal_date": "2026-08-31",
+                }
+            ],
+        }
+    )
+    service = AddressBookService(data_manager=manager)
+
+    active = service.search("", dismissed=False)
+    dismissed = service.search("", dismissed=True)
+
+    assert [item["full_name"] for item in active["items"]] == ["Работающий"]
+    assert active.get("dismissed") is False
+    assert [item["full_name"] for item in dismissed["items"]] == ["Уволенный Сотрудник"]
+    assert dismissed.get("dismissed") is True
+    assert dismissed["items"][0]["dismissal_date"] == "2026-08-31"
+    assert dismissed["updated_at"] == "2026-09-02T10:00:00+00:00"
+    assert service.search("уволенный", dismissed=False)["total"] == 0
+    assert service.search("уволенный", dismissed=True)["total"] == 1
+
+
+def test_status_reports_dismissed_updated_at():
+    service = AddressBookService(
+        data_manager=MemoryDataManager(
+            {
+                "updated_at": "2026-09-01T10:00:00+00:00",
+                "dismissed_updated_at": "2026-09-02T10:00:00+00:00",
+                "items": [{"full_name": "A"}],
+                "dismissed_items": [{"full_name": "B"}],
+            }
+        )
+    )
+
+    status = service.get_status()
+
+    assert status["count"] == 1
+    assert status["dismissed_count"] == 1
+    assert status["dismissed_updated_at"] == "2026-09-02T10:00:00+00:00"
+
+
+def test_contact_queries_cover_dismissed_employees():
+    for query in (phones_query(), emails_query()):
+        assert "Текущие.ДатаУвольнения = ДАТАВРЕМЯ(1, 1, 1)" not in query
+        assert "Текущие.ДатаПриема <> ДАТАВРЕМЯ(1, 1, 1)" in query
+
+
+def test_dismissed_items_receive_contacts_from_shared_maps(monkeypatch):
+    service = AddressBookService(data_manager=MemoryDataManager())
+    connection = Fake1CConnection()
+
+    monkeypatch.setattr(
+        AddressBookService, "_connect_1c", lambda self: connection
+    )
+    monkeypatch.setattr(
+        AddressBookService,
+        "_load_employees",
+        lambda self, conn: [
+            {
+                "full_name": "Работающий",
+                "_employee_code": "E1",
+                "department": "",
+                "department_location": "",
+                "position": "",
+                "dismissal_date": "",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        AddressBookService,
+        "_load_dismissed_employees",
+        lambda self, conn: [
+            {
+                "full_name": "Уволенный",
+                "_employee_code": "E2",
+                "department": "",
+                "department_location": "",
+                "position": "",
+                "dismissal_date": "2026-08-31",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        AddressBookService,
+        "_load_phones",
+        lambda self, conn: {
+            "E2": {
+                "work": [{"kind": "Рабочий телефон", "value": "83450000000", "normalized": "73450000000"}],
+                "personal": [],
+            }
+        },
+    )
+    monkeypatch.setattr(
+        AddressBookService,
+        "_load_emails",
+        lambda self, conn: {
+            "E2": {
+                "work": [],
+                "personal": [{"kind": "Email", "value": "former@example.com", "normalized": "former@example.com"}],
+            }
+        },
+    )
+    monkeypatch.setattr(
+        AddressBookService, "_load_personal_data", lambda self, conn: {}
+    )
+    monkeypatch.setattr(
+        AddressBookService, "_load_employee_absences", lambda self, conn: {}
+    )
+    monkeypatch.setitem(sys.modules, "pythoncom", SimpleNamespace(
+        CoInitialize=lambda: None,
+        CoUninitialize=lambda: None,
+    ))
+
+    _, dismissed_items, _ = service._load_items_from_1c()
+
+    assert dismissed_items[0]["work_phones"] == [
+        {"kind": "Рабочий телефон", "value": "83450000000", "normalized": "73450000000"}
+    ]
+    assert dismissed_items[0]["personal_emails"] == [
+        {"kind": "Email", "value": "former@example.com", "normalized": "former@example.com"}
+    ]
+
+
+class VersionedMemoryDataManager(MemoryDataManager):
+    """In-memory store with an explicit document version (probe supported)."""
+
+    def __init__(self, payload=None, version="v1"):
+        super().__init__(payload)
+        self.version = version
+        self.load_count = 0
+        self.probe_count = 0
+
+    def get_document_version(self, filename):
+        self.probe_count += 1
+        return self.version if self.payload else None
+
+    def load_json(self, filename, default_content=None):
+        self.load_count += 1
+        return super().load_json(filename, default_content)
+
+    def save_json(self, filename, data):
+        result = super().save_json(filename, data)
+        self.version = f"v{self.load_count + self.probe_count + 1}:{len(str(data))}"
+        return result
+
+
+def test_load_cache_reuses_parsed_document_when_version_unchanged():
+    manager = VersionedMemoryDataManager({"items": [{"full_name": "А", "employee_code": "E1"}]})
+    service = AddressBookService(data_manager=manager)
+
+    first = service.load_cache()
+    second = service.load_cache()
+    service.get_status()
+    service.search("")
+
+    assert manager.load_count == 1
+    # Each call returns a defensive copy of the same parsed document.
+    assert first == second
+    assert first is not second
+    assert first["items"] is second["items"]
+
+
+def test_load_cache_invalidates_after_document_version_change():
+    manager = VersionedMemoryDataManager({"items": [{"full_name": "Старая", "employee_code": "E1"}]})
+    service = AddressBookService(data_manager=manager)
+
+    assert service.load_cache()["items"][0]["full_name"] == "Старая"
+    manager.payload = {"items": [{"full_name": "Новая", "employee_code": "E2"}]}
+    manager.version = "v2"
+
+    refreshed = service.load_cache()
+
+    assert manager.load_count == 2
+    assert refreshed["items"][0]["full_name"] == "Новая"
+
+
+def test_load_cache_falls_back_to_ttl_when_probe_missing(monkeypatch):
+    manager = MemoryDataManager({"items": [{"full_name": "А"}]})
+    load_calls = []
+    original_load = manager.load_json
+
+    def counting_load(filename, default_content=None):
+        load_calls.append(filename)
+        return original_load(filename, default_content)
+
+    manager.load_json = counting_load
+    service = AddressBookService(data_manager=manager)
+
+    service.load_cache()
+    service.load_cache()
+    assert len(load_calls) == 1
+
+    # Within the TTL window the parsed copy is reused even if payload changed.
+    manager.payload = {"items": [{"full_name": "Б"}]}
+    assert service.load_cache()["items"][0]["full_name"] == "А"
+
+    # After TTL expiry the document is re-read.
+    monkeypatch.setattr(
+        "backend.services.address_book_service.PARSED_CACHE_TTL_SECONDS", -1
+    )
+    assert service.load_cache()["items"][0]["full_name"] == "Б"
+    assert len(load_calls) == 2
+
+
+def test_save_cache_invalidates_parsed_document():
+    manager = VersionedMemoryDataManager({"items": [{"full_name": "До"}]})
+    service = AddressBookService(data_manager=manager)
+
+    assert service.load_cache()["items"][0]["full_name"] == "До"
+    service.save_cache({"items": [{"full_name": "После"}], "dismissed_items": [], "personal_by_code": {}})
+
+    assert service.load_cache()["items"][0]["full_name"] == "После"
+    assert manager.load_count == 2
+
+
+def test_load_cache_concurrent_readers_do_not_duplicate_parsing():
+    import concurrent.futures
+
+    manager = VersionedMemoryDataManager({"items": [{"full_name": "А", "employee_code": "E1"}]})
+    service = AddressBookService(data_manager=manager)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _i: service.search(""), range(32)))
+
+    assert manager.load_count == 1
+    assert all(result["total"] == 1 for result in results)
+
+
+def test_load_cache_probe_failure_uses_ttl_and_stays_safe():
+    class FailingProbeManager(VersionedMemoryDataManager):
+        def get_document_version(self, filename):
+            raise RuntimeError("db down")
+
+    manager = FailingProbeManager({"items": [{"full_name": "А"}]})
+    service = AddressBookService(data_manager=manager)
+
+    first = service.load_cache()
+    second = service.load_cache()
+
+    assert first["items"][0]["full_name"] == "А"
+    assert second["items"][0]["full_name"] == "А"
+    assert manager.load_count == 1
+
+
+def test_app_db_document_version_probe_tracks_writes(tmp_path, prebuilt_app_db):
+    import time as time_module
+
+    from backend.json_db.manager import JSONDataManager
+
+    database_url = f"sqlite:///{prebuilt_app_db.as_posix()}"
+    manager = JSONDataManager(data_dir=tmp_path, database_url=database_url)
+
+    assert manager.get_document_version("address_book_cache.json") is None
+
+    manager.save_json("address_book_cache.json", {"items": [{"full_name": "А"}]})
+    version_one = manager.get_document_version("address_book_cache.json")
+    assert version_one
+
+    service = AddressBookService(data_manager=manager)
+    assert service.load_cache()["items"][0]["full_name"] == "А"
+
+    # updated_at is clock-based; a pause guarantees the next write crosses a
+    # timer tick even on coarse-granularity clocks.
+    time_module.sleep(0.05)
+    manager.save_json("address_book_cache.json", {"items": [{"full_name": "Б"}]})
+
+    version_two = manager.get_document_version("address_book_cache.json")
+    assert version_two != version_one
+    assert service.load_cache()["items"][0]["full_name"] == "Б"
+
+
+def test_local_store_document_version_probe(tmp_path):
+    from local_store import SQLiteLocalStore
+
+    store = SQLiteLocalStore(data_dir=tmp_path / "data", db_path=tmp_path / "local.sqlite3")
+    assert store.get_document_version("address_book_cache.json") is None
+
+    store.save_json("address_book_cache.json", {"items": [{"full_name": "А"}]})
+    version = store.get_document_version("address_book_cache.json")
+    assert version
+
+    # Versions are per-file: unrelated writes must not bump the cache marker.
+    store.save_json("other_file.json", [{"x": 1}])
+    store.save_json("other_file.json", [{"x": 2}])
+    assert store.get_document_version("address_book_cache.json") == version
+    assert store.get_document_version("other_file.json")
+
+
+def test_search_filters_by_exact_department():
+    service = AddressBookService(
+        data_manager=MemoryDataManager(
+            {
+                "items": [
+                    {"full_name": "Иванов Иван", "employee_code": "E1", "department": "ИТ отдел", "department_location": "Тюмень"},
+                    {"full_name": "Петров Петр", "employee_code": "E2", "department": "ИТ отдел филиал", "department_location": "Тюмень"},
+                    {"full_name": "Сидорова Анна", "employee_code": "E3", "department": "Бухгалтерия", "department_location": "Москва"},
+                ]
+            }
+        )
+    )
+
+    result = service.search("", department="ИТ отдел")
+
+    assert result["total"] == 1
+    assert [item["employee_code"] for item in result["items"]] == ["E1"]
+
+
+def test_search_filters_by_exact_city_and_combined():
+    service = AddressBookService(
+        data_manager=MemoryDataManager(
+            {
+                "items": [
+                    {"full_name": "Иванов Иван", "employee_code": "E1", "department": "ИТ отдел", "department_location": "Тюмень"},
+                    {"full_name": "Петров Петр", "employee_code": "E2", "department": "ИТ отдел", "department_location": "Москва"},
+                    {"full_name": "Сидорова Анна", "employee_code": "E3", "department": "Бухгалтерия", "department_location": "Тюмень"},
+                ]
+            }
+        )
+    )
+
+    by_city = service.search("", city="  Тюмень  ")
+    assert {item["employee_code"] for item in by_city["items"]} == {"E1", "E3"}
+
+    combined = service.search("", department="ИТ отдел", city="Тюмень")
+    assert [item["employee_code"] for item in combined["items"]] == ["E1"]
+
+    combined_query = service.search("иванов", department="ИТ отдел", city="Тюмень")
+    assert [item["employee_code"] for item in combined_query["items"]] == ["E1"]
+
+
+def test_search_filters_apply_before_pagination():
+    items = [
+        {"full_name": f"Сотрудник {index:03d}", "employee_code": f"E{index}", "department": "ИТ" if index < 5 else "Бухгалтерия"}
+        for index in range(30)
+    ]
+    service = AddressBookService(data_manager=MemoryDataManager({"items": items}))
+
+    first_page = service.search("", limit=3, offset=0, department="ИТ")
+    second_page = service.search("", limit=3, offset=3, department="ИТ")
+
+    assert first_page["total"] == 5
+    assert first_page["has_more"] is True
+    assert len(first_page["items"]) == 3
+    assert second_page["has_more"] is False
+    assert len(second_page["items"]) == 2
+
+
+def test_search_employee_codes_exact_match():
+    service = AddressBookService(
+        data_manager=MemoryDataManager(
+            {
+                "items": [
+                    {"full_name": "Иванов Иван", "employee_code": "E1"},
+                    {"full_name": "Иванова Ольга", "employee_code": "E10"},
+                    {"full_name": "Петров Петр", "employee_code": "E2"},
+                ]
+            }
+        )
+    )
+
+    result = service.search("", employee_codes=["E1", "e2", "MISSING"])
+
+    assert {item["employee_code"] for item in result["items"]} == {"E1", "E2"}
+    assert result["total"] == 2
+
+
+def test_search_without_filter_params_behaves_as_before():
+    service = AddressBookService(
+        data_manager=MemoryDataManager(
+            {"items": [{"full_name": "Иванов Иван", "employee_code": "E1"}]}
+        )
+    )
+
+    result = service.search("иванов", limit=10)
+
+    assert result["total"] == 1
+    assert result["items"][0]["full_name"] == "Иванов Иван"
+
+
+def test_list_filters_returns_counts_and_no_personal_fields():
+    service = AddressBookService(
+        data_manager=MemoryDataManager(
+            {
+                "updated_at": "2026-10-01T00:00:00Z",
+                "items": [
+                    {"full_name": "А", "department": "ИТ отдел", "department_location": "Тюмень", "inn": "123"},
+                    {"full_name": "Б", "department": "ИТ отдел", "department_location": "Москва"},
+                    {"full_name": "В", "department": "Бухгалтерия", "department_location": "Тюмень"},
+                    {"full_name": "Г", "department": "", "department_location": ""},
+                ],
+                "dismissed_items": [
+                    {"full_name": "Уволенный", "department": "Архив", "department_location": "Казань"},
+                ],
+            }
+        )
+    )
+
+    active = service.list_filters()
+    assert active["departments"] == [
+        {"name": "Бухгалтерия", "count": 1},
+        {"name": "ИТ отдел", "count": 2},
+    ]
+    assert active["cities"] == [
+        {"name": "Москва", "count": 1},
+        {"name": "Тюмень", "count": 2},
+    ]
+    assert active["updated_at"] == "2026-10-01T00:00:00Z"
+    for bucket in (*active["departments"], *active["cities"]):
+        assert set(bucket.keys()) == {"name", "count"}
+
+    dismissed = service.list_filters(dismissed=True)
+    assert dismissed["departments"] == [{"name": "Архив", "count": 1}]
+    assert dismissed["cities"] == [{"name": "Казань", "count": 1}]
+
+
+# --- R2: defensive copying of nested structures handed out of the service ---
+
+
+def test_search_result_mutation_does_not_poison_cache():
+    """Mutating nested result lists/dicts must not leak into the shared cache."""
+    service = AddressBookService(
+        data_manager=MemoryDataManager(
+            {
+                "items": [
+                    {
+                        "full_name": "Иванов Иван",
+                        "employee_code": "E1",
+                        "work_phones": [{"kind": "Рабочий", "value": "+7 900 111-22-33"}],
+                        "absence": {"kind": "vacation", "starts_on": "2026-01-01"},
+                    }
+                ]
+            }
+        )
+    )
+
+    first = service.search("иванов")
+    first["items"][0]["work_phones"].append({"kind": "x", "value": "999"})
+    first["items"][0]["work_phones"][0]["value"] = "0"
+    first["items"][0]["absence"]["kind"] = "sick"
+
+    second = service.search("иванов")
+    assert second["items"][0]["work_phones"] == [{"kind": "Рабочий", "value": "+7 900 111-22-33"}]
+    assert second["items"][0]["absence"]["kind"] == "vacation"
+
+
+def test_get_person_by_code_returns_detached_copy():
+    service = AddressBookService(
+        data_manager=MemoryDataManager(
+            {
+                "items": [
+                    {
+                        "full_name": "Иванов Иван",
+                        "employee_code": "E1",
+                        "work_phones": [{"kind": "Рабочий", "value": "+7 900 111-22-33"}],
+                    }
+                ]
+            }
+        )
+    )
+
+    person = service.get_person_by_code("E1")
+    person["work_phones"].append({"kind": "x", "value": "999"})
+    person["work_phones"][0]["value"] = "0"
+
+    again = service.get_person_by_code("E1")
+    assert again["work_phones"] == [{"kind": "Рабочий", "value": "+7 900 111-22-33"}]
+
+
+def test_snapshot_returns_detached_items():
+    # R2: snapshot() is bulk-export sized, yet detach stays affordable
+    # (~0.6 s p50 over 51k records either way), so the read-only carve-out was
+    # dropped — mutating a snapshot row must not poison the parsed cache.
+    service = AddressBookService(
+        data_manager=MemoryDataManager(
+            {
+                "items": [
+                    {
+                        "full_name": "Иванов Иван",
+                        "employee_code": "E1",
+                        "work_phones": [{"kind": "Рабочий", "value": "+7 900 111-22-33"}],
+                    }
+                ]
+            }
+        )
+    )
+
+    snap = service.snapshot()
+    cached = service.load_cache()
+    assert snap["items"][0]["work_phones"] is not cached["items"][0]["work_phones"]
+
+    snap["items"][0]["work_phones"].append({"kind": "Рабочий", "value": "poison"})
+    assert service.snapshot()["items"][0]["work_phones"] == [
+        {"kind": "Рабочий", "value": "+7 900 111-22-33"}
+    ]
+    assert cached["items"][0]["work_phones"] == [
+        {"kind": "Рабочий", "value": "+7 900 111-22-33"}
+    ]
+
+
+def test_list_people_by_department_returns_detached_items():
+    service = AddressBookService(
+        data_manager=MemoryDataManager(
+            {
+                "items": [
+                    {
+                        "full_name": "Иванов Иван",
+                        "employee_code": "E1",
+                        "department": "ИТ отдел",
+                        "department_code": "IT",
+                        "work_phones": [{"kind": "Рабочий", "value": "100"}],
+                    }
+                ]
+            }
+        )
+    )
+
+    people = service.list_people_by_department_codes(["IT"])
+    people[0]["work_phones"].append({"kind": "x", "value": "999"})
+
+    assert service.search("иванов")["items"][0]["work_phones"] == [
+        {"kind": "Рабочий", "value": "100"}
+    ]
+
+
+# --- R3: version-keyed search index ---
+
+
+def _oracle_search(
+    service,
+    query="",
+    *,
+    limit=50,
+    offset=0,
+    dismissed=False,
+    department=None,
+    city=None,
+    employee_codes=None,
+    include_age=False,
+    include_hire_date=False,
+    include_inn=False,
+    include_personal_emails=False,
+    include_personal_phones=False,
+):
+    """Pre-index linear implementation kept verbatim as the R3 oracle."""
+    cache = service.load_cache()
+    source_key = "dismissed_items" if dismissed else "items"
+    items = [item for item in cache.get(source_key) or [] if isinstance(item, dict)]
+    personal_by_code = cache.get("personal_by_code")
+    if not isinstance(personal_by_code, dict):
+        personal_by_code = {}
+    tokens = normalize_search_text(query).split()
+    limited = max(1, min(int(limit or 50), 200))
+    safe_offset = max(0, int(offset or 0))
+
+    code_keys = {
+        normalize_search_text(code)
+        for code in (employee_codes or [])
+        if normalize_text(code)
+    }
+    if code_keys:
+        items = [
+            item
+            for item in items
+            if normalize_search_text(item.get("employee_code")) in code_keys
+        ]
+    department_key = normalize_search_text(department)
+    if department_key:
+        items = [
+            item
+            for item in items
+            if normalize_search_text(item.get("department")) == department_key
+        ]
+    city_key = normalize_search_text(city)
+    if city_key:
+        items = [
+            item
+            for item in items
+            if normalize_search_text(item.get("department_location")) == city_key
+        ]
+
+    if tokens:
+        def item_age(item):
+            if not include_age:
+                return None
+            return service._search_age(item, personal_by_code)
+
+        items = [
+            item
+            for item in items
+            if service._matches_query(
+                item,
+                tokens,
+                include_personal_emails=include_personal_emails,
+                include_personal_phones=include_personal_phones,
+                age=item_age(item),
+            )
+        ]
+        items.sort(
+            key=lambda item: (
+                -service._query_score(
+                    item,
+                    tokens,
+                    include_personal_emails=include_personal_emails,
+                    include_personal_phones=include_personal_phones,
+                    age=item_age(item),
+                ),
+                normalize_search_text(item.get("full_name")),
+                normalize_search_text(item.get("employee_code")),
+            )
+        )
+    else:
+        items.sort(
+            key=lambda item: (
+                normalize_search_text(item.get("full_name")),
+                normalize_search_text(item.get("employee_code")),
+            )
+        )
+
+    return {
+        "items": [
+            service._serialize_public_search_item(
+                item,
+                personal_by_code,
+                include_age=include_age,
+                include_hire_date=include_hire_date,
+                include_inn=include_inn,
+                include_personal_emails=include_personal_emails,
+                include_personal_phones=include_personal_phones,
+            )
+            for item in items[safe_offset : safe_offset + limited]
+        ],
+        "total": len(items),
+        "limit": limited,
+        "offset": safe_offset,
+        "has_more": safe_offset + limited < len(items),
+        "dismissed": bool(dismissed),
+        "updated_at": normalize_text(
+            cache.get("dismissed_updated_at") if dismissed else cache.get("updated_at")
+        ) or normalize_text(cache.get("updated_at")),
+        "last_error": normalize_text(cache.get("last_error")),
+    }
+
+
+def _rich_person(index, *, dismissed=False):
+    code = f"E{index:04d}"
+    return {
+        "full_name": f"Сотрудников{'а' if dismissed else ''} Имя{index} Отчество{index}",
+        "employee_code": code,
+        "department": f"Подразделение {index % 7}",
+        "department_code": f"D{index % 9}",
+        "department_location": f"Город{index % 5}",
+        "position": f"Должность {index % 11}",
+        "office_room": f"{100 + index % 50}",
+        "workplace_number": f"WP-{index}",
+        "workplace_id": f"WID-{index}",
+        "office_address": f"Адрес {index % 3}",
+        "middle_name": f"Отчество{index}",
+        "hire_date": f"20{10 + index % 15:02d}-0{1 + index % 9}-1{index % 9}",
+        "work_phones": [{"kind": "Рабочий", "value": f"+7 900 {index % 1000:03d}-00-{index % 100:02d}"}],
+        "work_emails": [{"kind": "Рабочая", "value": f"user{index}@zsgp.ru"}],
+        "personal_phones": [{"kind": "Личный", "value": f"8 999 {index % 1000:03d}-11-{index % 100:02d}"}],
+        "personal_emails": [{"kind": "Личная", "value": f"private{index}@secret.ru"}],
+    }
+
+
+def test_search_index_matches_linear_oracle():
+    items = [_rich_person(i) for i in range(120)]
+    items[0]["full_name"] = "Иванов Иван Петрович"
+    items[1]["full_name"] = "иванова ольга  сергеевна"
+    dismissed = [_rich_person(i, dismissed=True) for i in range(80)]
+    dismissed[0]["full_name"] = "Иванов Уволенный Петрович"
+    payload = {
+        "items": items,
+        "dismissed_items": dismissed,
+        "personal_by_code": {
+            "E0000": {"date_of_birth": "1985-04-15", "inn": "720000000001"},
+            "E0001": {"date_of_birth": "1990-12-31"},
+        },
+        "updated_at": "2026-09-30T12:00:00Z",
+        "dismissed_updated_at": "2026-09-30T12:30:00Z",
+    }
+    service = AddressBookService(data_manager=MemoryDataManager(payload))
+
+    flag_grid = [
+        {},
+        {"include_age": True},
+        {"include_personal_phones": True},
+        {"include_personal_emails": True},
+        {
+            "include_age": True,
+            "include_hire_date": True,
+            "include_inn": True,
+            "include_personal_emails": True,
+            "include_personal_phones": True,
+        },
+    ]
+    queries = [
+        "",
+        "иван",
+        "e0000",
+        "8999",
+        "+7 900 000",
+        "user1@zsgp.ru",
+        "private3@secret.ru",
+        "личный",
+        "wp-15",
+        "город2",
+        "30-40",
+        "41",
+        "сотрудников имя5",
+        "несуществующий маркер",
+    ]
+    extras = [
+        {},
+        {"department": "Подразделение 1"},
+        {"city": "Город2"},
+        {"employee_codes": ["E0000", "e0007", "MISSING"]},
+        {"limit": 5, "offset": 2},
+        {"department": "Подразделение 0", "city": "Город0", "limit": 3},
+    ]
+    for dismissed_flag in (False, True):
+        for query in queries:
+            for flags in flag_grid:
+                for extra in extras:
+                    actual = service.search(query, dismissed=dismissed_flag, **extra, **flags)
+                    expected = _oracle_search(service, query, dismissed=dismissed_flag, **extra, **flags)
+                    assert actual == expected, (
+                        f"divergence: dismissed={dismissed_flag} q={query!r} "
+                        f"flags={flags} extra={extra}"
+                    )
+
+
+def test_search_index_built_once_and_reused_for_same_document():
+    manager = VersionedMemoryDataManager(
+        {"items": [{"full_name": "А", "employee_code": "E1"}]}
+    )
+    service = AddressBookService(data_manager=manager)
+
+    service.search("а")
+    index = service._search_index
+    assert index is not None
+    assert index["document"] is service._cached_document
+
+    service.search("б")
+    service.search("", dismissed=True)
+    assert service._search_index is index
+    assert manager.load_count == 1
+
+
+def test_search_index_rebuilt_after_version_change():
+    manager = VersionedMemoryDataManager(
+        {"items": [{"full_name": "До", "employee_code": "E1"}]}
+    )
+    service = AddressBookService(data_manager=manager)
+
+    service.search("до")
+    old_index = service._search_index
+    assert old_index is not None
+
+    service.save_cache({"items": [{"full_name": "После", "employee_code": "E2"}]})
+    assert service._search_index is None
+
+    result = service.search("после")
+    assert result["total"] == 1
+    assert service._search_index is not None
+    assert service._search_index is not old_index
+
+
+def test_search_index_dropped_by_invalidate():
+    service = AddressBookService(
+        data_manager=MemoryDataManager({"items": [{"full_name": "А", "employee_code": "E1"}]})
+    )
+
+    service.search("а")
+    assert service._search_index is not None
+
+    service.invalidate_parsed_cache()
+    assert service._search_index is None

@@ -39,7 +39,7 @@ def consumable_delete_env():
     current = {"user": _make_user(role="admin")}
 
     app.dependency_overrides[deps.get_current_active_user] = lambda: current["user"]
-    app.dependency_overrides[deps.get_current_database_id] = lambda: "main"
+    app.dependency_overrides[deps.get_request_scoped_database_id] = lambda: "main"
 
     def set_user(**kwargs):
         current["user"] = _make_user(**kwargs)

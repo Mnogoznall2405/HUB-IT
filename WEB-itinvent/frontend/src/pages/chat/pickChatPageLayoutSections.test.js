@@ -132,7 +132,6 @@ describe('pickChatPageLayoutSections', () => {
       scrollToMessage: () => {},
       emojiPickerOpen: false,
       insertEmojiAtSelection: () => {},
-      handleSendGif: () => {},
       voiceRecording: false,
       voiceRecordingDuration: 0,
       voiceRecordingLevelRef: { current: 0 },
@@ -192,21 +191,7 @@ describe('pickChatPageLayoutSections', () => {
       changeSendMediaAsFiles: () => {},
       sendFiles: () => {},
       removeSelectedFile: () => {},
-      groupOpen: false,
-      closeGroupDialog: () => {},
-      groupTitle: '',
-      setGroupTitle: () => {},
-      groupSearch: '',
-      setGroupSearch: () => {},
-      groupUsers: [],
-      groupUsersLoading: false,
-      groupSelectedUsers: [],
-      groupMemberIds: [],
-      addGroupMember: () => {},
-      removeGroupMember: () => {},
-      creatingConversation: false,
-      groupCreateDisabled: false,
-      createGroup: () => {},
+      compose: { mode: 'group', step: 'members' },
       shareOpen: false,
       resetShareDialog: () => {},
       taskSearch: '',
@@ -252,6 +237,7 @@ describe('pickChatPageLayoutSections', () => {
     expect(sections.sidebar.activeConversationId).toBe('c1');
     expect(sections.sidebar.sidebarWorkspace).toBe('ai');
     expect(sections.sidebar.setSidebarWorkspace).toBe(input.setSidebarWorkspace);
+    expect(sections.sidebar.compose).toBe(input.compose);
     expect(sections.thread.messageText).toBe('');
     expect(sections.dialogs.searchOpen).toBe(false);
     expect(sections.dialogs.sendMediaAsFiles).toBe(true);

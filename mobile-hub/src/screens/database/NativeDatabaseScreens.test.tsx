@@ -71,6 +71,18 @@ jest.mock('../../database/nativeDatabaseActUpload', () => ({
   pickNativeDatabaseActPdf: jest.fn(),
 }));
 jest.mock('../../files/nativeAttachmentDownloads', () => ({ openNativeFile: jest.fn() }));
+
+jest.mock('react-native-safe-area-context', () => {
+  const React = require('react');
+  const actual = jest.requireActual('react-native-safe-area-context');
+  const insets = { top: 24, bottom: 0, left: 0, right: 0 };
+  return {
+    ...actual,
+    SafeAreaInsetsContext: React.createContext(insets),
+    initialWindowMetrics: { insets, frame: { x: 0, y: 0, width: 0, height: 0 } },
+    useSafeAreaInsets: () => insets,
+  };
+});
 jest.mock('../../cache/nativeSnapshotCache', () => ({
   readNativeCollectionSnapshot: jest.fn(),
   writeNativeCollectionSnapshot: jest.fn(async () => true),
@@ -162,6 +174,7 @@ beforeEach(() => {
   (databaseApi.listEquipmentModels as jest.Mock).mockResolvedValue([]);
   (databaseApi.searchEquipmentOwners as jest.Mock).mockResolvedValue([]);
   (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue({ success_count: 1, failed_count: 0, failed: [], retry_inv_nos: [], acts: [], job_status: 'done' });
+  (databaseApi.sendEquipmentTransferActsEmail as jest.Mock).mockResolvedValue({ success_count: 1, failed_count: 0, errors: [] });
   (databaseApi.deleteEquipment as jest.Mock).mockResolvedValue(undefined);
   (databaseApi.deleteConsumable as jest.Mock).mockResolvedValue(undefined);
   (databaseApi.recordEquipmentWork as jest.Mock).mockResolvedValue(undefined);
@@ -682,6 +695,14 @@ it('does not load database data without database.read', async () => {
   expect(databaseApi.searchEquipment).not.toHaveBeenCalled();
 });
 
+const fillEmployeeManually = async (view: Awaited<ReturnType<typeof render>>, name: string, fieldTestID = 'native-transfer-employee') => {
+  await act(async () => { fireEvent.press(view.getByTestId(fieldTestID)); });
+  await waitFor(() => expect(view.getByTestId('native-owner-picker-search')).toBeTruthy());
+  await act(async () => { fireEvent.changeText(view.getByTestId('native-owner-picker-search'), name); });
+  await waitFor(() => expect(view.getByTestId('native-owner-picker-manual')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-owner-picker-manual')); });
+};
+
 it('transfers one equipment card natively with a stable operation id', async () => {
   mockPermissions = ['database.read', 'database.write'];
   params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
@@ -691,8 +712,8 @@ it('transfers one equipment card natively with a stable operation id', async () 
   await waitFor(() => expect(view.getByTestId('native-equipment-transfer-owner')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
   await waitFor(() => expect(view.getByTestId('native-transfer-employee')).toBeTruthy());
-  await act(async () => { fireEvent.changeText(view.getByTestId('native-transfer-employee'), 'Петров П.П.'); });
-  await waitFor(() => expect(view.getByTestId('native-transfer-employee').props.value).toBe('Петров П.П.'));
+  await fillEmployeeManually(view, 'Петров П.П.');
+  await waitFor(() => expect(view.getByText('Петров П.П.')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
   await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledWith(
     'owner',
@@ -716,13 +737,263 @@ it('selects several cards and sends one server-supported bulk transfer request',
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-INV-2')); });
   await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-transfer-owner')); });
-  await act(async () => { fireEvent.changeText(view.getByTestId('native-transfer-employee'), 'Петров П.П.'); });
+  await fillEmployeeManually(view, 'Петров П.П.');
   await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-action-confirm')); });
   await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledWith(
     'owner',
     expect.objectContaining({ inv_nos: ['INV-1', 'INV-2'], new_employee: 'Петров П.П.', operation_id: expect.any(String) }),
     'ITINVENT',
   ));
+});
+
+it('substitutes a new employee from the ITINVENT owner directory search', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.searchEquipmentOwners as jest.Mock).mockResolvedValue([
+    { owner_no: 2900, name: 'Козлов К.К.', department: 'ИТ', email: 'kozlov@example.com' },
+    { owner_no: 42, name: 'Петров П.П.', department: 'ИТ', email: 'petrov@example.com' },
+  ]);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-employee')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-employee')); });
+  await waitFor(() => expect(view.getByTestId('native-owner-picker-search')).toBeTruthy());
+  await act(async () => { fireEvent.changeText(view.getByTestId('native-owner-picker-search'), 'Козл'); });
+  await waitFor(() => expect(databaseApi.searchEquipmentOwners).toHaveBeenCalledWith('Козл', 20, 'ITINVENT'));
+  await waitFor(() => expect(view.getByTestId('native-owner-picker-option-2900')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-owner-picker-option-2900')); });
+  await waitFor(() => expect(view.getByText('Козлов К.К.')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledWith(
+    'owner',
+    expect.objectContaining({
+      inv_nos: ['INV-1'],
+      new_employee: 'Козлов К.К.',
+      new_employee_no: 2900,
+      new_employee_dept: 'ИТ',
+      operation_id: expect.any(String),
+    }),
+    'ITINVENT',
+  ));
+});
+
+it('drops the picked owner id when the employee name is entered manually', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.searchEquipmentOwners as jest.Mock).mockResolvedValue([
+    { owner_no: 42, name: 'Петров П.П.', department: 'ИТ', email: '' },
+  ]);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-employee')); });
+  await act(async () => { fireEvent.changeText(view.getByTestId('native-owner-picker-search'), 'Петр'); });
+  await waitFor(() => expect(view.getByTestId('native-owner-picker-option-42')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-owner-picker-option-42')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-employee')); });
+  await act(async () => { fireEvent.changeText(view.getByTestId('native-owner-picker-search'), 'Иванов Тест'); });
+  await waitFor(() => expect(view.getByTestId('native-owner-picker-manual')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-owner-picker-manual')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalled());
+  const payload = (databaseApi.submitEquipmentTransfer as jest.Mock).mock.calls[0][1];
+  expect(payload.new_employee).toBe('Иванов Тест');
+  expect(payload.new_employee_no).toBeUndefined();
+  expect(payload.new_employee_dept).toBeUndefined();
+});
+
+it('picks branch and location from searchable sheets for a location transfer', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.listEquipmentBranches as jest.Mock).mockResolvedValue([
+    { id: 5, name: 'Филиал B' },
+    { id: 6, name: 'Филиал C' },
+  ]);
+  (databaseApi.listEquipmentLocations as jest.Mock).mockResolvedValue([
+    { id: 9, name: 'Склад B' },
+    { id: 10, name: 'Кабинет 404' },
+  ]);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-location')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-pick-branch')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-pick-branch')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-branch-option-5')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-branch-option-5')); });
+  await waitFor(() => expect(view.getByText('Филиал B')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-pick-location')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-location-search')).toBeTruthy());
+  await act(async () => { fireEvent.changeText(view.getByTestId('native-transfer-location-search'), 'Склад'); });
+  await waitFor(() => expect(view.queryByTestId('native-transfer-location-option-10')).toBeNull());
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-location-option-9')); });
+  await waitFor(() => expect(view.getByText('Склад B')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledWith(
+    'location',
+    expect.objectContaining({
+      inv_nos: ['INV-1'],
+      branch_no: 5,
+      loc_no: 9,
+      operation_id: expect.any(String),
+    }),
+    'ITINVENT',
+  ));
+});
+
+it('resolves the act issuer against the ITINVENT owner directory', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.searchEquipmentOwners as jest.Mock).mockResolvedValue([
+    { owner_no: 7, name: 'Сидоров С.С.', department: 'Склад', email: '' },
+  ]);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-act-only')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-issuer')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-issuer')); });
+  await waitFor(() => expect(view.getByTestId('native-owner-picker-search')).toBeTruthy());
+  await act(async () => { fireEvent.changeText(view.getByTestId('native-owner-picker-search'), 'Сидор'); });
+  await waitFor(() => expect(view.getByTestId('native-owner-picker-option-7')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-owner-picker-option-7')); });
+  await waitFor(() => expect(view.getByText('Сидоров С.С.')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledWith(
+    'act-only',
+    expect.objectContaining({
+      inv_nos: ['INV-1'],
+      issuer_employee: 'Сидоров С.С.',
+      issuer_owner_no: 7,
+      operation_id: expect.any(String),
+    }),
+    'ITINVENT',
+  ));
+});
+
+const transferResultWithAct = {
+  success_count: 1,
+  failed_count: 0,
+  failed: [],
+  retry_inv_nos: [],
+  acts: [{ act_id: 'act-1', old_employee: 'Иванов И.И.', new_employee: 'Петров П.П.', equipment_count: 1, file_name: 'act-1.pdf', file_type: 'pdf' as const }],
+  job_status: 'done' as const,
+};
+
+const runOwnerTransferToResult = async (view: Awaited<ReturnType<typeof render>>) => {
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
+  await fillEmployeeManually(view, 'Петров П.П.');
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-act-act-1')).toBeTruthy());
+};
+
+it('shows the transfer result with acts and sends them to the new employee by email', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(transferResultWithAct);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await runOwnerTransferToResult(view);
+  await waitFor(() => expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy());
+  expect(view.getByText('Иванов И.И. (1)')).toBeTruthy();
+  expect(view.getByTestId('native-transfer-email-send')).toBeTruthy();
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-email-mode-new')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-email-send')); });
+  await waitFor(() => expect(databaseApi.sendEquipmentTransferActsEmail).toHaveBeenCalledWith(
+    expect.objectContaining({ act_ids: ['act-1'], mode: 'new' }),
+    'ITINVENT',
+  ));
+});
+
+it('sends transfer acts to a recipient picked from the owner sheet', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(transferResultWithAct);
+  (databaseApi.searchEquipmentOwners as jest.Mock).mockResolvedValue([
+    { owner_no: 2900, name: 'Козлов К.К.', department: 'ИТ', email: 'kozlov@example.com' },
+  ]);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await runOwnerTransferToResult(view);
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-email-mode-employee')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-email-recipient')); });
+  await waitFor(() => expect(view.getByTestId('native-owner-picker-search')).toBeTruthy());
+  await act(async () => { fireEvent.changeText(view.getByTestId('native-owner-picker-search'), 'Козл'); });
+  await waitFor(() => expect(view.getByTestId('native-owner-picker-option-2900')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-owner-picker-option-2900')); });
+  await waitFor(() => expect(view.getByText(/Козлов К\.К\./)).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-email-send')); });
+  await waitFor(() => expect(databaseApi.sendEquipmentTransferActsEmail).toHaveBeenCalledWith(
+    expect.objectContaining({ act_ids: ['act-1'], mode: 'employee', owner_no: 2900 }),
+    'ITINVENT',
+  ));
+});
+
+it('does not show the email block after a location-only transfer', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(transferResultWithAct);
+  (databaseApi.listEquipmentBranches as jest.Mock).mockResolvedValue([{ id: 5, name: 'Филиал B' }]);
+  (databaseApi.listEquipmentLocations as jest.Mock).mockResolvedValue([{ id: 9, name: 'Склад B' }]);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-location')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-pick-branch')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-branch-option-5')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-branch-option-5')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-pick-location')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-location-option-9')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-location-option-9')); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-action-confirm')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await waitFor(() => expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy());
+  expect(view.getByTestId('native-transfer-act-act-1')).toBeTruthy();
+  expect(view.queryByTestId('native-transfer-email-send')).toBeNull();
+});
+
+it('retries only the failed positions from the transfer result', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.submitEquipmentTransfer as jest.Mock)
+    .mockResolvedValueOnce({
+      success_count: 0,
+      failed_count: 1,
+      failed: [{ inv_no: 'INV-1', error: 'Ошибка сервера' }],
+      retry_inv_nos: ['INV-1'],
+      acts: [],
+      job_status: 'done',
+    })
+    .mockResolvedValue({ ...transferResultWithAct, failed_count: 0 });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
+  await fillEmployeeManually(view, 'Петров П.П.');
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-retry-failed')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-retry-failed')); });
+  await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(2));
+  expect((databaseApi.submitEquipmentTransfer as jest.Mock).mock.calls[1][1].inv_nos).toEqual(['INV-1']);
+  await waitFor(() => expect(view.getByTestId('native-transfer-act-act-1')).toBeTruthy());
+});
+
+it('applies the top safe-area inset to the action modal header', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-employee')).toBeTruthy());
+  const modalRoot = view.getByLabelText('Закрыть операцию').parent?.parent;
+  expect(StyleSheet.flatten(modalRoot?.props.style)?.paddingTop).toBe(24);
 });
 
 it('picks, recognizes, verifies and commits a signed PDF act natively', async () => {
@@ -1167,7 +1438,7 @@ it('does not reload work history after a transfer from the bottom bar', async ()
   await waitFor(() => expect(view.getByTestId('native-equipment-transfer-owner')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
   await waitFor(() => expect(view.getByTestId('native-transfer-employee')).toBeTruthy());
-  await act(async () => { fireEvent.changeText(view.getByTestId('native-transfer-employee'), 'Петров П.П.'); });
+  await fillEmployeeManually(view, 'Петров П.П.');
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
   await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledWith(
     'owner',
@@ -1243,6 +1514,11 @@ it('keeps the smart scanner open after the first QR and opens the card from the 
 it('collects two different QRs and submits both inv_nos through the shared transfer actions', async () => {
   mockPermissions = ['database.read', 'database.write'];
   (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue({
+    ...transferResultWithAct,
+    success_count: 2,
+    acts: [{ act_id: 'act-9', old_employee: 'Иванов И.И.', new_employee: 'Петров П.П.', equipment_count: 2, file_name: 'act-9.pdf', file_type: 'pdf' }],
+  });
   const view = await render(<NativeDatabaseScreen />);
   await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
@@ -1262,13 +1538,18 @@ it('collects two different QRs and submits both inv_nos through the shared trans
 
   await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-batch-transfer-owner')); });
   await waitFor(() => expect(view.getByTestId('native-transfer-employee')).toBeTruthy());
-  await act(async () => { fireEvent.changeText(view.getByTestId('native-transfer-employee'), 'Петров П.П.'); });
+  await fillEmployeeManually(view, 'Петров П.П.');
   await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-batch-action-confirm')); });
   await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledWith(
     'owner',
     expect.objectContaining({ inv_nos: ['INV-2', 'INV-1'], new_employee: 'Петров П.П.', operation_id: expect.any(String) }),
     'ITINVENT',
   ));
+  // Панель и результат остаются видимыми до явного закрытия.
+  await waitFor(() => expect(view.getByTestId('native-transfer-act-act-9')).toBeTruthy());
+  expect(view.getByTestId('native-transfer-email-send')).toBeTruthy();
+  expect(view.getByTestId('native-database-scan-batch')).toBeTruthy();
+  await act(async () => { fireEvent.press(view.getByText('Готово')); });
   await waitFor(() => expect(view.queryByTestId('native-database-scan-batch')).toBeNull());
 });
 
@@ -1335,6 +1616,7 @@ it('asks «Открыть расходник?» over a 2+ item batch; «Отме
       expect.objectContaining({ text: 'Отмена' }),
       expect.objectContaining({ text: 'Открыть' }),
     ]),
+    expect.objectContaining({ onDismiss: expect.any(Function) }),
   );
   // Пока вопрос висит — сканер и список на месте, карточка не открыта.
   expect(view.getByTestId('native-database-qr-camera')).toBeTruthy();
@@ -1346,6 +1628,32 @@ it('asks «Открыть расходник?» over a 2+ item batch; «Отме
   await waitFor(() => expect(databaseApi.getConsumableById).toHaveBeenCalledWith(4821, 'ITINVENT'));
   await waitFor(() => expect(view.queryByTestId('native-database-qr-camera')).toBeNull());
   expect(view.queryByText('Выбрано: 2')).toBeNull();
+  alertSpy.mockRestore();
+});
+
+it('ignores repeated consumable scans while «Открыть расходник?» is open (Ш5-11)', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await scanQr(view, 'INV_NO: INV-1');
+  await scanQr(view, 'INV_NO: INV-2');
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+
+  // Карточка расходника остаётся в кадре — повторный скан не должен плодить Alert.
+  await scanQr(view, 'https://hubit.zsgp.ru/database?consumable=4821&db_id=ITINVENT');
+  await scanQr(view, 'https://hubit.zsgp.ru/database?consumable=4822&db_id=ITINVENT');
+  expect(alertSpy).toHaveBeenCalledTimes(1);
+  expect(databaseApi.getConsumableById).not.toHaveBeenCalled();
+  expect(view.getByText('Выбрано: 2')).toBeTruthy();
+
+  // «Отмена» сбрасывает блокировку — следующий скан снова задаёт вопрос.
+  const buttons = alertSpy.mock.calls.at(-1)?.[2] as Array<{ text: string; onPress?: () => void }>;
+  await act(async () => { buttons.find((button) => button.text === 'Отмена')?.onPress?.(); });
+  await scanQr(view, 'https://hubit.zsgp.ru/database?consumable=4823&db_id=ITINVENT');
+  expect(alertSpy).toHaveBeenCalledTimes(2);
   alertSpy.mockRestore();
 });
 
@@ -1463,8 +1771,10 @@ it('keeps only retry_inv_nos after a partial batch transfer error', async () => 
   await act(async () => { fireEvent.press(view.getByTestId('native-scan-batch-actions')); });
   await waitFor(() => expect(view.getByTestId('native-database-scan-batch')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-batch-transfer-owner')); });
-  await act(async () => { fireEvent.changeText(view.getByTestId('native-transfer-employee'), 'Петров П.П.'); });
+  await fillEmployeeManually(view, 'Петров П.П.');
   await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-batch-action-confirm')); });
+  await waitFor(() => expect(view.getByText('Перемещено: 1, ошибок: 1')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByText('Готово')); });
   await waitFor(() => expect(view.queryByTestId('native-database-scan-batch-row-INV-2')).toBeNull());
   expect(view.getByTestId('native-database-scan-batch-row-INV-1')).toBeTruthy();
 });

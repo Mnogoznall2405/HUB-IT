@@ -57,6 +57,17 @@ class AiToolRegistry:
             raise AiToolValidationError(f"Tool is disabled for this bot: {normalized_tool_id}")
         if tool.admin_only and not context.is_admin:
             raise PermissionError(f"Tool requires admin access: {normalized_tool_id}")
+        # AG-2: re-check the employee's portal permission so a tool call cannot
+        # be forged past the spec filter (lazy import: tools -> tool_permissions
+        # -> tools.context would otherwise form an import cycle).
+        from backend.ai_chat.tool_permissions import tool_required_permissions, user_can_use_tool
+
+        if not user_can_use_tool(normalized_tool_id, context.user_payload):
+            required = ", ".join(tool_required_permissions(normalized_tool_id))
+            raise PermissionError(
+                f"Нет доступа к данным ({normalized_tool_id}): "
+                f"требуется право {required or 'admin'} у сотрудника"
+            )
         try:
             args = tool.validate_args(raw_args)
         except ValidationError as exc:

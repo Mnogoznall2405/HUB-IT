@@ -305,6 +305,7 @@ function routePathFromHref(href: NativeModuleHref): string {
     if (href.params?.mode) query.set('mode', href.params.mode);
     if (href.params?.consumable) query.set('consumable', href.params.consumable);
     if (href.params?.databaseId) query.set('db_id', href.params.databaseId);
+    if (href.params?.scan) query.set('scan', href.params.scan);
     const suffix = query.toString();
     return `/database${suffix ? `?${suffix}` : ''}`;
   }
@@ -345,12 +346,16 @@ function routePathFromHref(href: NativeModuleHref): string {
   if (href.pathname === '/(shell)/mfu') return '/mfu';
   if (href.pathname === '/(shell)/statistics') return '/statistics';
   if (href.pathname === '/(shell)/help') return '/help';
-  if (href.pathname === '/(shell)/chat') return '/chat';
+  if (href.pathname === '/(shell)/chat') {
+    const workspace = href.params?.workspace;
+    return workspace ? `/chat?workspace=${encodeURIComponent(workspace)}` : '/chat';
+  }
   if (href.pathname === '/(shell)/chat/[conversationId]') {
-    const query = href.params.messageId
-      ? `?message=${encodeURIComponent(href.params.messageId)}`
-      : '';
-    return `/chat/${encodeURIComponent(href.params.conversationId)}${query}`;
+    const query = new URLSearchParams();
+    if (href.params.messageId) query.set('message', href.params.messageId);
+    if (href.params.workspace) query.set('workspace', href.params.workspace);
+    const suffix = query.toString();
+    return `/chat/${encodeURIComponent(href.params.conversationId)}${suffix ? `?${suffix}` : ''}`;
   }
   return href.pathname.replace('/(shell)', '');
 }

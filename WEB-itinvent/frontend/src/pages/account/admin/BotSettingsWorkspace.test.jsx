@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { AiBotsAdminSection } from './AiBotsAdminSection';
 import { AI_ITINVENT_TOOL_OPTIONS, AI_AD_TOOL_OPTIONS, AI_FILE_TOOL_OPTIONS, AI_OFFICE_TOOL_OPTIONS } from '../accountConstants';
 
+vi.mock('../../../api/aiBalance', () => ({ aiBalanceAPI: { get: vi.fn().mockResolvedValue({ balance: null, threshold: 0, low: false, status: 'unknown' }), check: vi.fn(), setThreshold: vi.fn() } }));
+
 const code = { id: 'code', title: 'OpenCode', slug: 'opencode', surface: 'sandbox', is_enabled: true, enabled_tools: [] };
 const helper = { id: 'helper', title: 'Помощник', slug: 'assistant', surface: 'corporate', is_enabled: true, enabled_tools: [] };
 function setup(bots = [code, helper]) {

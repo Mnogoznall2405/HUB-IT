@@ -12,13 +12,18 @@ import {
 } from './chatThreadHistory';
 import {
   compareThreadMessagePosition,
+  isFailedOptimisticThreadMessage,
+  normalizeThreadMessageClientId,
   normalizeThreadMessageId,
   reconcileThreadMessages,
   sortThreadMessages,
 } from './chatThreadMessages';
 import {
+  buildActiveThreadPollLoadOptions,
   buildCursorInvalidThreadReloadOptions,
   isChatReadConcurrencyFullError,
+  isTransientLoadMessagesError,
+  resolveChatReadRetryAfterMs,
   shouldNotifyLoadMessagesError,
 } from './chatThreadTransport';
 import {
@@ -27,6 +32,8 @@ import {
 } from './chatKeyedInFlight';
 
 const CHAT_SWR_STALE_TIME_MS = 30_000;
+export const CHAT_THREAD_LOAD_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
+const CHAT_THREAD_LOAD_RETRY_JITTER = 0.2;
 
 export default function useChatThreadController({
   activeConversationId,
@@ -42,6 +49,8 @@ export default function useChatThreadController({
   initialThreadCache,
   isInitialViewportGuardActiveRef,
   loadOlderInFlightCursorRef,
+  loadMessagesRef,
+  failedThreadMessagesRef,
   logChatDebugRef,
   notifyApiError,
   prependScrollRestoreRef,
@@ -62,6 +71,7 @@ export default function useChatThreadController({
   const messagesLoadingRef = useRef(false);
   const messagesHasMoreRef = useRef(false);
   const messagesHasNewerRef = useRef(false);
+  const loadingNewerRef = useRef(false);
   const olderHistoryExhaustedRef = useRef(new Map());
   const historyInFlightRef = useRef(null);
   if (!historyInFlightRef.current) {
@@ -85,6 +95,9 @@ export default function useChatThreadController({
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [viewerLastReadMessageId, setViewerLastReadMessageId] = useState(() => String(initialThreadCache?.data?.viewer_last_read_message_id || '').trim());
   const [viewerLastReadAt, setViewerLastReadAt] = useState(() => String(initialThreadCache?.data?.viewer_last_read_at || '').trim());
+  const [threadLoadError, setThreadLoadError] = useState(null);
+  const threadLoadRetryRef = useRef({ conversationId: '', attempt: 0, timerId: 0 });
+  const loadThreadBootstrapRef = useRef(null);
 
   messagesRef.current = messages;
   messagesLoadingRef.current = messagesLoading;
@@ -120,6 +133,52 @@ export default function useChatThreadController({
   const syncConversationPreview = useCallback((conversationId, lastMessage) => {
     syncConversationPreviewRef.current?.(conversationId, lastMessage);
   }, [syncConversationPreviewRef]);
+
+  const clearThreadLoadRetry = useCallback(() => {
+    const retry = threadLoadRetryRef.current;
+    if (retry.timerId) {
+      window.clearTimeout(retry.timerId);
+      retry.timerId = 0;
+    }
+    retry.attempt = 0;
+    retry.conversationId = '';
+  }, []);
+
+  const scheduleThreadLoadRetry = useCallback((conversationId, error) => {
+    const id = String(conversationId || '').trim();
+    if (!id) return;
+    // Nothing to retry when the thread already has content on screen; silent
+    // revalidate failures for hydrated threads keep their existing behaviour.
+    if (String(hydratedThreadConversationIdRef.current || '').trim() === id) return;
+    const retry = threadLoadRetryRef.current;
+    if (retry.conversationId !== id) {
+      retry.conversationId = id;
+      retry.attempt = 0;
+    }
+    const concurrencyFull = isChatReadConcurrencyFullError(error);
+    const transient = isTransientLoadMessagesError(error);
+    if ((!transient && !concurrencyFull) || retry.attempt >= CHAT_THREAD_LOAD_RETRY_DELAYS_MS.length) {
+      setThreadLoadError({ conversationId: id });
+      return false;
+    }
+    let delayMs = CHAT_THREAD_LOAD_RETRY_DELAYS_MS[retry.attempt];
+    if (concurrencyFull) {
+      delayMs = Math.max(delayMs, resolveChatReadRetryAfterMs(error, { attempt: retry.attempt }));
+    }
+    retry.attempt += 1;
+    const jittered = Math.round(delayMs * (1 + (Math.random() * 2 - 1) * CHAT_THREAD_LOAD_RETRY_JITTER));
+    window.clearTimeout(retry.timerId);
+    retry.timerId = window.setTimeout(() => {
+      retry.timerId = 0;
+      if (String(activeConversationIdRef.current || '').trim() !== id) return;
+      void loadThreadBootstrapRef.current?.(id, {
+        silent: true,
+        force: true,
+        reason: 'thread-bootstrap:retry',
+      });
+    }, Math.max(250, jittered));
+    return true;
+  }, [activeConversationIdRef, hydratedThreadConversationIdRef]);
 
   const scheduleThreadHydrate = useCallback((conversationId, messageItems, requestSeq) => {
     const id = String(conversationId || '').trim();
@@ -162,11 +221,48 @@ export default function useChatThreadController({
 
     setViewerLastReadMessageId(String(payload?.viewer_last_read_message_id || '').trim());
     setViewerLastReadAt(String(payload?.viewer_last_read_at || '').trim());
+    setThreadLoadError((current) => (current?.conversationId === normalizedConversationId ? null : current));
 
     let preservedOlderCount = 0;
     let nextMessages = items;
     setMessages((current) => {
-      const next = reconcileThreadMessages(current, items, {
+      // R4: failed outgoing bubbles live in a page-level ref so they survive
+      // conversation switches — a cold/cached reload wipes `current`, so
+      // merge them back here and let reconcile dedup by client_message_id.
+      let base = current;
+      const failedForConversation = failedThreadMessagesRef?.current?.get?.(normalizedConversationId);
+      if (failedForConversation?.size) {
+        // R12: only persisted items prove the message reached the server —
+        // optimistic bubbles may arrive via the SWR thread cache and must not
+        // be counted, otherwise the failed registry entry is dropped and
+        // "Повторить" has nothing to retry.
+        const persistedClientIds = new Set(
+          items
+            .filter((item) => !item?.isOptimistic && !item?.optimisticStatus)
+            .map((item) => normalizeThreadMessageClientId(item))
+            .filter(Boolean),
+        );
+        const failedToRestore = [];
+        failedForConversation.forEach((entry, failedId) => {
+          const clientId = String(entry?.clientMessageId || '').trim();
+          if (clientId && persistedClientIds.has(clientId)) {
+            failedForConversation.delete(failedId);
+            return;
+          }
+          const failedMessage = entry?.message;
+          if (
+            failedMessage?.id
+            && isFailedOptimisticThreadMessage(failedMessage, normalizedConversationId)
+            && !current.some((item) => normalizeThreadMessageId(item) === normalizeThreadMessageId(failedMessage))
+          ) {
+            failedToRestore.push(failedMessage);
+          }
+        });
+        if (failedToRestore.length) {
+          base = [...current, ...failedToRestore];
+        }
+      }
+      const next = reconcileThreadMessages(base, items, {
         conversationId: normalizedConversationId,
         preserveSendingOptimistic: true,
         mode: 'replaceWindowButPreserveFreshLocal',
@@ -224,7 +320,7 @@ export default function useChatThreadController({
     }
     setMessagesHasNewer(Boolean(payload?.has_newer));
     return items;
-  }, [activeConversationIdRef, hydratedThreadConversationIdRef]);
+  }, [activeConversationIdRef, failedThreadMessagesRef, hydratedThreadConversationIdRef]);
 
   const abortActiveThreadLoad = useCallback(() => {
     const controller = threadLoadAbortRef.current;
@@ -287,6 +383,8 @@ export default function useChatThreadController({
       setMessagesHasNewer(false);
       setViewerLastReadMessageId('');
       setViewerLastReadAt('');
+      setThreadLoadError(null);
+      clearThreadLoadRetry();
       return [];
     }
 
@@ -299,6 +397,7 @@ export default function useChatThreadController({
     // Abort only when switching conversations; same-key callers share in-flight.
     if (historyInFlightConversationRef.current && historyInFlightConversationRef.current !== id) {
       abortActiveThreadLoad();
+      clearThreadLoadRetry();
     }
     historyInFlightConversationRef.current = id;
 
@@ -308,6 +407,8 @@ export default function useChatThreadController({
       if (!effectiveSilent) {
         messagesLoadingRequestSeqRef.current = messagesRequestSeqRef.current + 1;
         setMessagesLoading(true);
+        threadLoadRetryRef.current.attempt = 0;
+        setThreadLoadError(null);
       } else if (messagesLoadingRef.current) {
         messagesLoadingRequestSeqRef.current = messagesRequestSeqRef.current + 1;
       }
@@ -322,6 +423,7 @@ export default function useChatThreadController({
         force: effectiveForce,
       });
 
+      let threadLoadRetryScheduled = false;
       try {
         const cacheKeyParts = buildChatThreadCacheKeyParts(userCacheId, id);
         const cachedEntry = !effectiveSilent && !effectiveForce
@@ -382,7 +484,8 @@ export default function useChatThreadController({
         }
         return Array.isArray(data?.items) ? data.items : [];
       } catch (error) {
-        if (String(error?.code || '') !== 'ERR_CANCELED' && String(error?.name || '') !== 'CanceledError') {
+        const requestCanceled = String(error?.code || '') === 'ERR_CANCELED' || String(error?.name || '') === 'CanceledError';
+        if (!requestCanceled) {
           logChatDebug('loadThreadBootstrap:error', {
             conversationId: id,
             reason,
@@ -390,16 +493,31 @@ export default function useChatThreadController({
             error: String(error?.message || error),
           });
           if (!effectiveSilent) notifyApiError(error, 'Не удалось открыть чат.');
+          if (
+            requestSeq === messagesRequestSeqRef.current
+            && String(activeConversationIdRef.current || '').trim() === id
+          ) {
+            threadLoadRetryScheduled = scheduleThreadLoadRetry(id, error) === true;
+          }
         }
         return [];
       } finally {
-        if (requestSeq === messagesLoadingRequestSeqRef.current) {
+        if (!threadLoadRetryScheduled && requestSeq === messagesLoadingRequestSeqRef.current) {
           messagesLoadingRequestSeqRef.current = 0;
           setMessagesLoading(false);
         }
       }
     });
-  }, [abortActiveThreadLoad, activeConversationIdRef, applyLatestThreadPayload, hydratedThreadConversationIdRef, logChatDebug, notifyApiError, resolvePendingInitialAnchorFromPayload, scheduleThreadHydrate, threadLoadAbortRef, userCacheId]);
+  }, [abortActiveThreadLoad, activeConversationIdRef, applyLatestThreadPayload, clearThreadLoadRetry, hydratedThreadConversationIdRef, logChatDebug, notifyApiError, resolvePendingInitialAnchorFromPayload, scheduleThreadHydrate, scheduleThreadLoadRetry, threadLoadAbortRef, userCacheId]);
+  loadThreadBootstrapRef.current = loadThreadBootstrap;
+
+  const retryThreadLoad = useCallback(() => {
+    const id = String(activeConversationIdRef.current || '').trim();
+    if (!id) return [];
+    clearThreadLoadRetry();
+    setThreadLoadError(null);
+    return loadThreadBootstrap(id, { force: true, reason: 'thread-load:manual-retry' });
+  }, [activeConversationIdRef, clearThreadLoadRetry, loadThreadBootstrap]);
 
   const loadMessages = useCallback(async (conversationId, {
     silent = false,
@@ -720,6 +838,13 @@ export default function useChatThreadController({
     userCacheId,
   ]);
 
+  // R2: shared ref must point at the real loader — polling, socket events and
+  // panel controllers call it without the function in scope.
+  useEffect(() => {
+    if (!loadMessagesRef) return;
+    loadMessagesRef.current = loadMessages;
+  }, [loadMessages, loadMessagesRef]);
+
   const loadOlderMessages = useCallback(async () => {
     const firstMessageId = String(messagesRef.current[0]?.id || '').trim();
     const conversationId = String(activeConversationId || '').trim();
@@ -752,9 +877,36 @@ export default function useChatThreadController({
     }
   }, [activeConversationId, loadMessages, loadOlderInFlightCursorRef, loadingOlder, messagesHasMore]);
 
+  // R19: approaching the bottom of a partial window (has_newer) loads the next
+  // page after the last persisted message. One request in flight; appending
+  // below the viewport keeps scrollTop untouched — no visible jump.
+  const loadNewerMessages = useCallback(async () => {
+    const conversationId = String(activeConversationIdRef.current || '').trim();
+    if (!conversationId || !messagesHasNewerRef.current) return;
+    if (loadingNewerRef.current) return;
+    const requestOptions = buildActiveThreadPollLoadOptions(messagesRef.current);
+    if (!requestOptions.afterMessageId) return;
+    loadingNewerRef.current = true;
+    logChatDebug('loadNewerMessages:start', {
+      conversationId,
+      afterMessageId: requestOptions.afterMessageId,
+    });
+    try {
+      await loadMessages(conversationId, {
+        ...requestOptions,
+        reason: 'loadNewerMessages',
+      });
+    } catch {
+      // Silent page-down failures stay quiet — the next approach retries.
+    } finally {
+      loadingNewerRef.current = false;
+    }
+  }, [activeConversationIdRef, loadMessages, logChatDebug]);
+
   useEffect(() => () => {
     abortActiveThreadLoad();
-  }, [abortActiveThreadLoad]);
+    clearThreadLoadRetry();
+  }, [abortActiveThreadLoad, clearThreadLoadRetry]);
 
   return {
     messages,
@@ -783,7 +935,10 @@ export default function useChatThreadController({
     applyLatestThreadPayload,
     loadThreadBootstrap,
     loadMessages,
+    loadNewerMessages,
     loadOlderMessages,
+    retryThreadLoad,
+    threadLoadError,
     queueAutoScroll,
     abortActiveThreadLoad,
   };

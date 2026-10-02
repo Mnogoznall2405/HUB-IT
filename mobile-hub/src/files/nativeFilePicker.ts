@@ -107,6 +107,25 @@ function resolveUploadByteSize(file: NativePickedFile): number {
   return Number.isFinite(reported) && reported > 0 ? reported : 0;
 }
 
+export type NativeUploadMediaKind = 'image' | 'video' | 'file' | 'audio';
+
+/** Per-file media kind. An explicit override describes a single-intent upload
+ * (voice note, video message) and applies to its first file only; every file
+ * without explicit metadata is classified by its own MIME type and source. */
+export function inferNativeUploadMediaKind(
+  file: NativePickedFile,
+  explicitKind?: NativeUploadMediaKind,
+  index = 0,
+): NativeUploadMediaKind {
+  if (explicitKind && index === 0) return explicitKind;
+  if (file.source === 'document') return 'file';
+  const mimeType = String(file.mimeType || '').toLowerCase();
+  if (mimeType.startsWith('image/')) return 'image';
+  if (mimeType.startsWith('video/')) return 'video';
+  if (mimeType.startsWith('audio/')) return 'audio';
+  return 'file';
+}
+
 export function buildAttachmentFormData(
   file: NativePickedFile,
   options: {
@@ -126,7 +145,7 @@ export function buildAttachmentsFormData(
     body?: string;
     clientMessageId?: string;
     replyToMessageId?: string;
-    mediaKind?: 'image' | 'video' | 'file' | 'audio';
+    mediaKind?: NativeUploadMediaKind;
     durationSeconds?: number;
   } = {},
 ): FormData {
@@ -146,11 +165,10 @@ export function buildAttachmentsFormData(
     formData.append('files_meta_json', JSON.stringify(sizedFiles.map((file, index) => {
       const meta: Record<string, unknown> = {
         transfer_encoding: 'identity',
+        // Every file gets its own kind — the backend renders mixed batches
+        // (photo + video + audio) per attachment, not per message.
+        media_kind: inferNativeUploadMediaKind(file, options.mediaKind, index),
       };
-      const mediaKind = options.mediaKind
-        ? index === 0 ? options.mediaKind : undefined
-        : file.source === 'document' ? 'file' : undefined;
-      if (mediaKind) meta.media_kind = mediaKind;
       if (index === 0 && options.durationSeconds != null) {
         meta.duration_seconds = options.durationSeconds;
       }

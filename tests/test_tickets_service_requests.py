@@ -26,7 +26,7 @@ WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
 if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
-from backend.appdb.models import AppBase, AppUser
+from backend.appdb.models import AppUser
 from backend.appdb.tickets_models import TicketEmployee, TicketEmployeeDocument, TicketObject, TicketRequest
 from backend.services.tickets_service import (
     CreateRequestDTO,
@@ -44,16 +44,16 @@ from backend.services.tickets_service import (
 # ---------------------------------------------------------------------------
 
 
-def _sqlite_url(temp_dir: str) -> str:
-    return f"sqlite:///{(Path(temp_dir) / 'tickets_requests.db').as_posix()}"
+def _sqlite_url(database_path: Path) -> str:
+    return f"sqlite:///{database_path.as_posix()}"
 
 
 @pytest.fixture
-def service(temp_dir, monkeypatch):
+def service(prebuilt_app_db, monkeypatch, request):
     """Create a TicketsService with a fresh SQLite database."""
     import backend.appdb.db as appdb
 
-    url = _sqlite_url(temp_dir)
+    url = _sqlite_url(prebuilt_app_db)
 
     appdb._engines.clear()
     appdb._session_factories.clear()
@@ -71,14 +71,13 @@ def service(temp_dir, monkeypatch):
         url,
         execution_options={"schema_translate_map": {"app": None, "system": None}},
     )
+    request.addfinalizer(engine.dispose)
 
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragma(dbapi_conn, connection_record):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=OFF")
         cursor.close()
-
-    AppBase.metadata.create_all(engine, checkfirst=True)
 
     SessionLocal = sessionmaker(bind=engine)
 

@@ -30,6 +30,7 @@ describe('useChatActiveConversationThreadBootstrap helpers', () => {
 function buildBootstrapHookArgs(overrides = {}) {
   return {
     activeConversationId: 'conv-1',
+    activeConversationIdRef: { current: 'conv-1' },
     applyLatestThreadPayload: vi.fn(),
     cancelPendingInitialAnchorRef: { current: vi.fn() },
     clearInitialViewportGuard: vi.fn(),
@@ -108,5 +109,28 @@ describe('useChatActiveConversationThreadBootstrap hook', () => {
       (call) => call[1] === CHAT_MOBILE_SCREEN_TRANSITION_MS,
     );
     expect(delayedCalls.length).toBe(2);
+  });
+
+  it('restarts the load on remount when the first bootstrap never hydrated', () => {
+    const args = buildBootstrapHookArgs();
+
+    const first = renderHook(() => useChatActiveConversationThreadBootstrap(args));
+    expect(args.loadThreadBootstrap).toHaveBeenCalledTimes(1);
+    first.unmount();
+
+    renderHook(() => useChatActiveConversationThreadBootstrap(args));
+    expect(args.loadThreadBootstrap).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not restart the load on remount when the thread already hydrated', () => {
+    const args = buildBootstrapHookArgs();
+
+    const first = renderHook(() => useChatActiveConversationThreadBootstrap(args));
+    expect(args.loadThreadBootstrap).toHaveBeenCalledTimes(1);
+    args.hydratedThreadConversationIdRef.current = 'conv-1';
+    first.unmount();
+
+    renderHook(() => useChatActiveConversationThreadBootstrap(args));
+    expect(args.loadThreadBootstrap).toHaveBeenCalledTimes(1);
   });
 });

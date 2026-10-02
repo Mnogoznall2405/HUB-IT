@@ -24,6 +24,8 @@ export default function useChatScrollController({
   threadViewportSyncFrameRef,
   bottomInstantSettleFrameRef,
   mobileKeyboardSettleTimeoutsRef,
+  messagesHasNewerRef,
+  onThreadApproachBottom,
   suppressThreadScrollCancel,
   traceProgrammaticThreadScroll,
   isInitialViewportGuardActive,
@@ -36,6 +38,8 @@ export default function useChatScrollController({
     showJumpToLatestRef,
     threadNearBottomRef,
     threadViewportSyncFrameRef,
+    messagesHasNewerRef,
+    onApproachBottom: onThreadApproachBottom,
   });
 
   const setThreadScrollTop = useCallback((nextScrollTop, { source = 'unknown' } = {}) => {

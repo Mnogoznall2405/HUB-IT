@@ -28,7 +28,7 @@ WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
 if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
-from backend.appdb.models import AppBase, AppUser
+from backend.appdb.models import AppUser
 from backend.appdb.tickets_models import (
     TicketEmployee,
     TicketFinancialOp,
@@ -53,16 +53,16 @@ from backend.services.tickets_notification_service import (
 # ---------------------------------------------------------------------------
 
 
-def _sqlite_url(temp_dir: str) -> str:
-    return f"sqlite:///{(Path(temp_dir) / 'tickets_notifications.db').as_posix()}"
+def _sqlite_url(database_path: Path) -> str:
+    return f"sqlite:///{database_path.as_posix()}"
 
 
 @pytest.fixture
-def db_setup(temp_dir, monkeypatch):
+def db_setup(prebuilt_app_db, monkeypatch, request):
     """Create a fresh SQLite database with all ticket tables and seed data."""
     import backend.appdb.db as appdb
 
-    url = _sqlite_url(temp_dir)
+    url = _sqlite_url(prebuilt_app_db)
 
     appdb._engines.clear()
     appdb._session_factories.clear()
@@ -80,14 +80,13 @@ def db_setup(temp_dir, monkeypatch):
         url,
         execution_options={"schema_translate_map": {"app": None, "system": None}},
     )
+    request.addfinalizer(engine.dispose)
 
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragma(dbapi_conn, connection_record):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=OFF")
         cursor.close()
-
-    AppBase.metadata.create_all(engine, checkfirst=True)
 
     SessionLocal = sessionmaker(bind=engine)
 
@@ -680,17 +679,26 @@ class TestGetAllPending:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 class TestDismissNotification:
     """Tests for dismiss_notification()."""
 
-    def test_dismiss_stores_for_user(self, service, db_setup):
+    @pytest.fixture
+    def service(self, monkeypatch):
+        monkeypatch.setattr(
+            'backend.services.tickets_notification_service.app_session',
+            lambda *args, **kwargs: pytest.fail('dismiss unit tests must not access the database'),
+        )
+        return TicketsNotificationService()
+
+    def test_dismiss_stores_for_user(self, service):
         """Dismissed notification is stored per user."""
         user = {"id": 42, "role": "operator"}
         service.dismiss_notification("test_notification_1", user)
 
         assert "test_notification_1" in service._dismissed[42]
 
-    def test_dismiss_does_not_affect_other_users(self, service, db_setup):
+    def test_dismiss_does_not_affect_other_users(self, service):
         """Dismissing for one user doesn't affect another."""
         user1 = {"id": 1, "role": "admin"}
         user2 = {"id": 2, "role": "operator"}
@@ -700,10 +708,11 @@ class TestDismissNotification:
         assert "notif_1" in service._dismissed.get(1, set())
         assert "notif_1" not in service._dismissed.get(2, set())
 
-    def test_dismiss_no_user_id_is_noop(self, service, db_setup):
+    def test_dismiss_no_user_id_is_noop(self, service):
         """Dismissing with no user id does nothing."""
         user = {"role": "admin"}  # no 'id' key
         service.dismiss_notification("notif_1", user)
+        assert service._dismissed == {}
         # Should not raise
 
 

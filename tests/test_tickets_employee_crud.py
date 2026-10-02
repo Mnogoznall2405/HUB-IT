@@ -5,17 +5,16 @@ Tests encryption, masking, validation, and basic CRUD flows.
 from __future__ import annotations
 
 import os
-import uuid
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 
 # Ensure crypto key is set for tests
 os.environ.setdefault("MAIL_CREDENTIALS_KEY", "test-key-for-tickets-employee-crud-unit-tests-32ch")
 
-from backend.appdb.db import app_session, initialize_app_schema
+from backend.appdb.db import app_session
 from backend.appdb.tickets_models import TicketEmployee, TicketEmployeeDocument
+from backend.services.address_book_service import AddressBookService
 from backend.services.secret_crypto_service import decrypt_secret, encrypt_secret
 from backend.services.tickets_service import (
     MASKED_VALUE,
@@ -29,12 +28,9 @@ from backend.services.tickets_service import (
 
 
 @pytest.fixture
-def db_url(temp_dir):
+def db_url(prebuilt_app_db):
     """Create a fresh SQLite database for each test."""
-    db_path = Path(temp_dir) / f"tickets_test_{uuid.uuid4().hex}.db"
-    url = f"sqlite:///{db_path.as_posix()}"
-    initialize_app_schema(url)
-    return url
+    return f"sqlite:///{prebuilt_app_db.as_posix()}"
 
 
 @pytest.fixture
@@ -668,11 +664,25 @@ class TestMapZupPersonToTicketEmployee:
         assert map_zup_person_to_ticket_employee({})["full_name"] == ""
 
 
+class _MemoryAddressBookData:
+    """Minimal JSON data manager for a real AddressBookService in unit tests."""
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def load_json(self, filename, default_content=None):
+        return self.payload or default_content
+
+    def save_json(self, filename, data):
+        self.payload = data
+        return True
+
+
 class TestSearchZupEmployees:
     def test_search_maps_address_book_items(self, service, monkeypatch):
         monkeypatch.setattr(
             "backend.services.address_book_service.address_book_service.search",
-            lambda query, limit: {
+            lambda query, limit, **kwargs: {
                 "items": [
                     {
                         "full_name": "Сидоров Сидор",
@@ -718,7 +728,7 @@ class TestSearchZupEmployees:
     def test_search_hides_personal_without_permission(self, service, monkeypatch):
         monkeypatch.setattr(
             "backend.services.address_book_service.address_book_service.search",
-            lambda query, limit: {
+            lambda query, limit, **kwargs: {
                 "items": [
                     {
                         "full_name": "Сидоров Сидор",
@@ -746,6 +756,41 @@ class TestSearchZupEmployees:
         assert result["include_personal"] is False
         assert "passport_number" not in result["items"][0]
         assert called["personal"] is False
+
+    def test_search_does_not_fall_back_to_personal_contacts_without_flags(
+        self, service, monkeypatch
+    ):
+        payload = {
+            "items": [
+                {
+                    "full_name": "Сидоров Сидор",
+                    "employee_code": "42",
+                    "work_phones": [],
+                    "personal_phones": [{"value": "79990001122"}],
+                    "work_emails": [],
+                    "personal_emails": [{"value": "private@example.com"}],
+                }
+            ],
+            "updated_at": "2026-07-23T00:00:00Z",
+        }
+        address_book = AddressBookService(data_manager=_MemoryAddressBookData(payload))
+        monkeypatch.setattr(
+            "backend.services.address_book_service.address_book_service.search",
+            address_book.search,
+        )
+
+        hidden = service.search_zup_employees("сидор", user_permissions=["tickets.read"])
+        assert hidden["items"][0]["phone"] is None
+        assert hidden["items"][0]["email"] is None
+
+        visible = service.search_zup_employees(
+            "сидор",
+            user_permissions=["tickets.read"],
+            include_personal_phones=True,
+            include_personal_emails=True,
+        )
+        assert visible["items"][0]["phone"] == "79990001122"
+        assert visible["items"][0]["email"] == "private@example.com"
 
 
 class TestEnsureEmployeeFromZup:
@@ -793,3 +838,46 @@ class TestEnsureEmployeeFromZup:
             user_permissions=["tickets.write", "tickets.personal_data.read"],
         )
         assert again["id"] == created["id"]
+
+    def test_ensure_does_not_fall_back_to_personal_contacts_without_flags(
+        self, service, monkeypatch
+    ):
+        payload = {
+            "items": [
+                {
+                    "full_name": "Сидоров Сидор",
+                    "employee_code": "42",
+                    "department": "IT",
+                    "department_location": "",
+                    "position": "Инженер",
+                    "work_phones": [],
+                    "personal_phones": [{"value": "79990001122"}],
+                    "work_emails": [],
+                    "personal_emails": [{"value": "private@example.com"}],
+                }
+            ],
+        }
+        address_book = AddressBookService(data_manager=_MemoryAddressBookData(payload))
+        monkeypatch.setattr(
+            "backend.services.address_book_service.address_book_service.get_person_by_code",
+            address_book.get_person_by_code,
+        )
+
+        created = service.ensure_employee_from_zup("42", user_permissions=["tickets.write"])
+        assert created["phone"] is None
+        assert created["email"] is None
+
+        updated = service.ensure_employee_from_zup(
+            "42",
+            user_permissions=["tickets.write"],
+            include_personal_phones=True,
+            include_personal_emails=True,
+        )
+        assert updated["id"] == created["id"]
+        assert updated["phone"] == "79990001122"
+        assert updated["email"] == "private@example.com"
+
+        cleared = service.ensure_employee_from_zup("42", user_permissions=["tickets.write"])
+        assert cleared["id"] == created["id"]
+        assert cleared["phone"] is None
+        assert cleared["email"] is None

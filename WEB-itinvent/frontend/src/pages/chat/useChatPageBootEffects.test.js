@@ -52,10 +52,6 @@ describe('useChatPageBootEffects helpers', () => {
 });
 
 describe('useChatPageBootEffects', () => {
-  it('exports a default hook function', () => {
-    expect(typeof useChatPageBootEffects).toBe('function');
-  });
-
   it('mounts without throwing', async () => {
     const { renderHook } = await import('@testing-library/react');
 

@@ -14,6 +14,7 @@ export const chatMessageSendingAPI = {
       body,
       body_format: options?.body_format || undefined,
       client_message_id: options?.client_message_id || undefined,
+      kind: options?.kind || undefined,
       reply_to_message_id: options?.reply_to_message_id || undefined,
     });
     return response.data;

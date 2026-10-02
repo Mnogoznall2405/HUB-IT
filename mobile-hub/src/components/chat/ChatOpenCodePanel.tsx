@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import * as chatApi from '../../api/chatApi';
+import { chatSocket } from '../../chat/chatSocket';
 import { useAuth } from '../../auth/AuthContext';
 import { useAiAgentAccess } from '../../chat/useAiAgentAccess';
 import {
@@ -72,8 +73,27 @@ function OpenCodePanel({ conversationId, offline, userId }: { conversationId: st
       pending.current = false;
       if (next === 'active') void load();
     });
-    return () => { live.current = false; sequence.current += 1; pending.current = false; clearInterval(timer); subscription.remove(); };
-  }, [load]));
+    // M6: refresh the panel state as soon as a run/sandbox event arrives —
+    // realtime-first, polling stays as the fallback.
+    const onAiEvent = (envelope: unknown) => {
+      const event = envelope as { conversation_id?: string; payload?: Record<string, unknown> };
+      const payload = event?.payload || {};
+      const eventConversationId = String(payload.conversation_id || event?.conversation_id || '').trim();
+      if (eventConversationId !== conversationId) return;
+      void load();
+    };
+    const offRun = chatSocket.on('chat.ai.run.updated', onAiEvent);
+    const offSandbox = chatSocket.on('chat.ai.sandbox.updated', onAiEvent);
+    return () => {
+      live.current = false;
+      sequence.current += 1;
+      pending.current = false;
+      clearInterval(timer);
+      subscription.remove();
+      offRun();
+      offSandbox();
+    };
+  }, [conversationId, load]));
 
   const runAction = async (key: string, action: () => Promise<void>, success: string, failure: string) => {
     if (mutation.current || !live.current || !access.allowed || offline) return;

@@ -22,8 +22,10 @@ jest.mock('expo-screen-capture', () => ({
 
 jest.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
+    appLockPendingUnlock: false,
     biometricEnabled: true,
     logout: mockLogout,
+    markAppLockUnlocked: jest.fn(),
     user: mockUser,
   }),
 }));

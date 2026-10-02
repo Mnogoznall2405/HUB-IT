@@ -10,7 +10,7 @@ export const NATIVE_DATABASE_ENABLED = resolveNativeDatabaseEnabled(process.env.
 export type NativeDatabaseDestination =
   | {
       pathname: '/(shell)/database';
-      params?: { q?: string; mode?: DatabaseViewMode; consumable?: string; databaseId?: string };
+      params?: { q?: string; mode?: DatabaseViewMode; consumable?: string; databaseId?: string; scan?: string };
     }
   | {
       pathname: '/(shell)/database/[invNo]';
@@ -35,7 +35,7 @@ export function nativeDatabaseDestinationFromPortalPath(path: string): NativeDat
   if (parsed.pathname !== '/database') return null;
 
   const supported = new Set([
-    'q', 'search', 'mode', 'tab',
+    'q', 'search', 'mode', 'tab', 'scan',
     'inv_no', 'invNo', 'equipment',
     'consumable', 'consumable_id', 'consumableId',
     'db_id',
@@ -72,9 +72,11 @@ export function nativeDatabaseDestinationFromPortalPath(path: string): NativeDat
   const modeValue = firstParam(parsed.searchParams, ['mode']);
   if (modeValue && !['equipment', 'consumables', 'acts'].includes(modeValue)) return null;
   const mode: DatabaseViewMode = modeValue === 'acts' || modeValue === 'consumables' ? modeValue : 'equipment';
+  const scanValue = firstParam(parsed.searchParams, ['scan']);
+  if (scanValue && scanValue !== '1') return null;
   return {
     pathname: '/(shell)/database',
-    params: { ...(query ? { q: query } : {}), ...(mode !== 'equipment' ? { mode } : {}) },
+    params: { ...(query ? { q: query } : {}), ...(mode !== 'equipment' ? { mode } : {}), ...(scanValue === '1' ? { scan: '1' } : {}) },
   };
 }
 

@@ -49,6 +49,21 @@ jest.mock('../api/chatApi', () => ({
 }));
 jest.mock('../files/nativeFilePicker', () => ({
   buildAttachmentsFormData: jest.fn(() => 'FORM_DATA'),
+  // Same classification as the real helper — kept inline so the unit test
+  // stays hermetic and does not need expo picker/file-system mocks.
+  inferNativeUploadMediaKind: (
+    file: { source: string; mimeType: string },
+    explicitKind?: 'image' | 'video' | 'file' | 'audio',
+    index = 0,
+  ) => {
+    if (explicitKind && index === 0) return explicitKind;
+    if (file.source === 'document') return 'file';
+    const mime = String(file.mimeType || '').toLowerCase();
+    if (mime.startsWith('image/')) return 'image';
+    if (mime.startsWith('video/')) return 'video';
+    if (mime.startsWith('audio/')) return 'audio';
+    return 'file';
+  },
 }));
 
 const message: ChatMessage = {
@@ -112,6 +127,39 @@ it('uploads a file in sequential chunks and completes the session', async () => 
   expect(jest.mocked(uploadChatFileChunk).mock.calls.map((call) => call[4].offset)).toEqual([0, 8, 16]);
   expect(completeChatUploadSession).toHaveBeenCalledWith('sess-1', expect.anything());
   expect(progress.at(-1)).toEqual([24, 24]);
+});
+
+it('creates the upload session with per-file media metadata for a mixed batch', async () => {
+  mockFiles.set('file:///document/clip.mp4', { size: 24 });
+  const mixed = {
+    userId: 7, message,
+    upload: {
+      body: '',
+      files: [
+        { uri: 'file:///document/report.pdf', name: 'report.pdf', mimeType: 'application/pdf', size: 24, source: 'gallery' as const },
+        { uri: 'file:///document/clip.mp4', name: 'clip.mp4', mimeType: 'video/mp4', size: 24, source: 'gallery' as const },
+      ],
+    },
+  } as NativeChatOutboxEntry;
+  jest.mocked(createChatUploadSession).mockResolvedValue(session({
+    files: [
+      session().files[0],
+      {
+        ...session().files[0],
+        file_id: 'f-2', file_name: 'clip.mp4', mime_type: 'video/mp4',
+      },
+    ],
+  }));
+
+  await deliverNativeChatUpload(mixed, { helpers: { patchUpload: jest.fn() } });
+
+  // UP-1: every file is classified by its own MIME type, not only files[0].
+  expect(createChatUploadSession).toHaveBeenCalledWith('chat-a', expect.objectContaining({
+    files: [
+      expect.objectContaining({ file_name: 'report.pdf', media_kind: 'file' }),
+      expect.objectContaining({ file_name: 'clip.mp4', media_kind: 'video' }),
+    ],
+  }), expect.anything());
 });
 
 it('reattaches to the persisted session and resumes after the acknowledged chunks', async () => {

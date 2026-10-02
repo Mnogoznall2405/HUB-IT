@@ -48,6 +48,88 @@ describe('chatThreadMessageMerge helpers', () => {
     expect(next[0]?.renderKey).toBe('rk1');
   });
 
+  it('upsertThreadMessagesInList replaces a failed optimistic row by client_message_id', () => {
+    const current = [
+      {
+        id: 'optimistic:c1:9',
+        conversation_id: 'c1',
+        client_message_id: 'client-9',
+        isOptimistic: true,
+        optimisticStatus: 'failed',
+        body: 'retry me',
+        created_at: '2026-01-01T00:00:00.000Z',
+        renderKey: 'optimistic:c1:9',
+      },
+    ];
+    const serverEcho = {
+      id: 'm9',
+      conversation_id: 'c1',
+      client_message_id: 'client-9',
+      is_own: true,
+      body: 'retry me',
+      created_at: '2026-01-01T00:00:01.000Z',
+    };
+    const next = upsertThreadMessagesInList(current, [serverEcho], {
+      activeConversationId: 'c1',
+      withStableMessageRenderKey: (message, existing) => ({
+        ...message,
+        renderKey: existing?.renderKey || message.renderKey,
+      }),
+    });
+
+    expect(next).toHaveLength(1);
+    expect(next[0]?.id).toBe('m9');
+    expect(next[0]?.optimisticStatus).toBeUndefined();
+    expect(next[0]?.renderKey).toBe('optimistic:c1:9');
+  });
+
+  it('upsertThreadMessagesInList marks live inserts with animateAppear only on push', () => {
+    const current = [{ id: 'm1', conversation_id: 'c1', created_at: '2026-01-01T00:00:00.000Z' }];
+    const next = upsertThreadMessagesInList(current, [{
+      id: 'm2',
+      conversation_id: 'c1',
+      created_at: '2026-01-01T00:00:01.000Z',
+    }], { activeConversationId: 'c1', liveAppear: true });
+
+    expect(next.find((item) => item.id === 'm2')?.animateAppear).toBe(true);
+    expect(next.find((item) => item.id === 'm1')?.animateAppear).toBeUndefined();
+  });
+
+  it('upsertThreadMessagesInList does not stamp animateAppear when liveAppear is off', () => {
+    const next = upsertThreadMessagesInList([], [{
+      id: 'm2',
+      conversation_id: 'c1',
+      created_at: '2026-01-01T00:00:01.000Z',
+    }], { activeConversationId: 'c1' });
+
+    expect(next[0]?.animateAppear).toBeUndefined();
+  });
+
+  it('upsertThreadMessagesInList keeps animateAppear on an existing flagged row', () => {
+    const current = [{
+      id: 'm1',
+      conversation_id: 'c1',
+      created_at: '2026-01-01T00:00:00.000Z',
+      animateAppear: true,
+      body: 'hi',
+    }];
+    const update = {
+      id: 'm1',
+      conversation_id: 'c1',
+      created_at: '2026-01-01T00:00:00.000Z',
+      body: 'hi',
+      delivery_status: 'read',
+    };
+    const next = upsertThreadMessagesInList(current, [update], {
+      activeConversationId: 'c1',
+      liveAppear: true,
+      withStableMessageRenderKey: (message, existing) => ({ ...existing, ...message }),
+    });
+
+    // Existing slot keeps its original object/flag — updates never re-arm animation.
+    expect(next.find((item) => item.id === 'm1')?.animateAppear).toBe(true);
+  });
+
   it('upsertThreadMessagesInList ignores other conversations', () => {
     const current = [{ id: 'm1', conversation_id: 'c1', created_at: '2026-01-01T00:00:00.000Z' }];
     const next = upsertThreadMessagesInList(current, [{

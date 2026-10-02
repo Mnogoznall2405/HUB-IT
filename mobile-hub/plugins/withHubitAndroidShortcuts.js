@@ -12,6 +12,15 @@ const SHORTCUTS_RESOURCE = '@xml/shortcuts';
 
 const SHORTCUTS = Object.freeze([
   {
+    id: 'hubit_scan_qr',
+    shortLabel: 'Сканировать QR',
+    shortLabelResource: 'hubit_shortcut_scan_qr_short',
+    longLabel: 'Сканировать QR оборудования',
+    longLabelResource: 'hubit_shortcut_scan_qr_long',
+    data: 'hubit://database?scan=1',
+    icon: '@drawable/hubit_shortcut_scan_qr',
+  },
+  {
     id: 'hubit_chat',
     shortLabel: 'Чат',
     shortLabelResource: 'hubit_shortcut_chat_short',
@@ -45,19 +54,33 @@ function xmlEscape(value) {
     .replace(/>/g, '&gt;');
 }
 
+const SCAN_QR_SHORTCUT_DRAWABLE = `<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+  <path
+    android:fillColor="#071d30"
+    android:pathData="M10,0h28c5.5,0 10,4.5 10,10v28c0,5.5 -4.5,10 -10,10H10c-5.5,0 -10,-4.5 -10,-10V10C0,4.5 4.5,0 10,0z" />
+  <path
+    android:fillColor="#ffffff"
+    android:pathData="M15,17V21H17V17H21V15H17C15.9,15 15,15.9 15,17M27,15H31C32.1,15 33,15.9 33,17V21H31V17H27V15M15,27V31C15,32.1 15.9,33 17,33H21V31H17V27H15M31,27H33V31C33,32.1 32.1,33 31,33H27V31H31V27M15,23H33V25H15V23" />
+</vector>
+`;
+
 function buildHubitShortcutsXml(packageName = 'ru.zsgp.hubit.mobile') {
   const activityName = `${packageName}.MainActivity`;
   const items = SHORTCUTS.map((shortcut) => `  <shortcut
     android:shortcutId="${xmlEscape(shortcut.id)}"
     android:enabled="true"
-    android:icon="@mipmap/ic_launcher"
+    android:icon="${shortcut.icon || '@mipmap/ic_launcher'}"
     android:shortcutShortLabel="@string/${shortcut.shortLabelResource}"
     android:shortcutLongLabel="@string/${shortcut.longLabelResource}">
     <intent
       android:action="android.intent.action.VIEW"
       android:targetPackage="${xmlEscape(packageName)}"
       android:targetClass="${xmlEscape(activityName)}"
-      android:data="hubit://portal?path=${encodeURIComponent(shortcut.portalPath)}" />
+      android:data="${xmlEscape(shortcut.data || `hubit://portal?path=${encodeURIComponent(shortcut.portalPath)}`)}" />
   </shortcut>`).join('\n');
   return `<?xml version="1.0" encoding="utf-8"?>
 <shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
@@ -136,11 +159,19 @@ function withHubitAndroidShortcuts(config) {
       buildHubitShortcutsXml(packageName),
       'utf8',
     );
+    const drawableDirectory = path.join(mod.modRequest.platformProjectRoot, 'app', 'src', 'main', 'res', 'drawable');
+    fs.mkdirSync(drawableDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(drawableDirectory, 'hubit_shortcut_scan_qr.xml'),
+      SCAN_QR_SHORTCUT_DRAWABLE,
+      'utf8',
+    );
     return mod;
   }]);
 }
 
 module.exports = withHubitAndroidShortcuts;
 module.exports.buildHubitShortcutsXml = buildHubitShortcutsXml;
+module.exports.SCAN_QR_SHORTCUT_DRAWABLE = SCAN_QR_SHORTCUT_DRAWABLE;
 module.exports.addShortcutsMetadata = addShortcutsMetadata;
 module.exports.addShortcutStringResources = addShortcutStringResources;

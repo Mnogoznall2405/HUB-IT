@@ -156,6 +156,7 @@ const permissionGroups = [
     group: 'Адресная книга',
     permissions: [
       { value: 'address_book.read', label: 'Адресная книга: просмотр — доступно всем', alwaysGranted: true },
+      { value: 'address_book.dismissed.read', label: 'Адресная книга: просмотр уволенных' },
       { value: 'address_book.age.read', label: 'Адресная книга: просмотр возраста' },
       { value: 'address_book.hire_date.read', label: 'Адресная книга: просмотр даты приёма на работу' },
       { value: 'address_book.personal_phone.read', label: 'Адресная книга: просмотр личных телефонов' },
@@ -290,6 +291,10 @@ export const staticRunbook = {
     'npm run build',
   ],
 };
+
+// Slug единого ассистента «HUB Ассистент» (DEFAULT_BOT_SLUG в backend/ai_chat/service.py).
+// Доступен всем с правом chat.ai.use без персональных допусков (AG-1/AG-6).
+export const AI_ASSISTANT_BOT_SLUG = 'corp-assistant';
 
 export const AI_ITINVENT_DEFAULT_TOOLS = [
   'itinvent.database.current',

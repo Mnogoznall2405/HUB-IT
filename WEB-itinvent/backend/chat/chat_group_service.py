@@ -43,6 +43,7 @@ def _advance_state_to_conversation_tip(
     state.last_read_seq = max(0, int(conversation.last_message_seq or 0))
     state.last_read_at = conversation.last_message_at
     state.unread_count = 0
+    state.unread_mention_count = 0
     state.updated_at = updated_at
 
 

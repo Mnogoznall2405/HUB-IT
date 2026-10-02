@@ -8,17 +8,20 @@ import {
 } from './accountNavigationConfig';
 
 describe('account navigation configuration', () => {
-  it('keeps About HUB-IT as the fifth personal settings section', () => {
+  it('keeps About HUB-IT as the last personal settings section', () => {
     expect(PERSONAL_SETTINGS_SECTIONS.map((section) => section.key)).toEqual([
       'appearance',
       'notifications',
+      'ai',
       'security',
       'app',
       'about',
     ]);
-    expect(PERSONAL_SETTINGS_SECTIONS[4].description).toBe(
+    expect(PERSONAL_SETTINGS_SECTIONS[5].description).toBe(
       'Возможности веб-версии и приложения для Windows',
     );
+    // the AI section is shown only to users who may use the assistant
+    expect(PERSONAL_SETTINGS_SECTIONS.find((section) => section.key === 'ai').permission).toBe('chat.ai.use');
   });
 
   it('allows administration for admins or users with at least one admin permission', () => {

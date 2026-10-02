@@ -77,10 +77,6 @@ describe('useChatMobileViewGuardEffects helpers', () => {
 });
 
 describe('useChatMobileViewGuardEffects', () => {
-  it('exports a default hook function', () => {
-    expect(typeof useChatMobileViewGuardEffects).toBe('function');
-  });
-
   it('mounts without throwing on desktop', async () => {
     const { renderHook } = await import('@testing-library/react');
     const { unmount } = renderHook(() => useChatMobileViewGuardEffects({

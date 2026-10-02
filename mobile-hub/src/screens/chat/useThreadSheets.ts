@@ -10,21 +10,26 @@ import type {
   ChatStickerPack,
   ChatTaskPreview,
   ChatUserSummary,
+  HubUser,
 } from '../../api/types';
 import { formatApiError } from '../../api/formatError';
 import { isAiConversation } from '../../chat/chatAiWorkspace';
 import type { ChatListAnchorReason } from '../../chat/chatListAnchor';
+import { createChatClientMessageId } from '../../chat/chatModels';
 import { mergeMessages } from '../../chat/chatState';
 import { getRecentStickerIds, rememberRecentSticker } from '../../chat/chatStickers';
+import type { createNativeChatOutbox, NativeChatOutboxCommand } from '../../chat/nativeChatOutbox';
 import { showNativeToast } from '../../components/nativeToast';
 import type { useThreadComposerState } from './useThreadComposerState';
 
 type Composer = ReturnType<typeof useThreadComposerState>;
+type ThreadOutbox = ReturnType<typeof createNativeChatOutbox>;
 
 /** Conversation sheets: info/members/rename, task share, sticker picker, emoji. */
 export function useThreadSheets({
   conversationId,
   userId,
+  user,
   offlineMode,
   mountedRef,
   loadGenerationRef,
@@ -32,6 +37,7 @@ export function useThreadSheets({
   conversation,
   mentionQuery,
   requestBottomAnchor,
+  outbox,
   setMessages,
   setConversation,
   setTitle,
@@ -39,6 +45,7 @@ export function useThreadSheets({
 }: {
   conversationId: string;
   userId?: number;
+  user?: HubUser | null;
   offlineMode: boolean;
   mountedRef: MutableRefObject<boolean>;
   loadGenerationRef: MutableRefObject<number>;
@@ -46,6 +53,7 @@ export function useThreadSheets({
   conversation: ChatConversationSummary | null;
   mentionQuery: string | null;
   requestBottomAnchor: (reason?: ChatListAnchorReason) => void;
+  outbox: ThreadOutbox;
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   setConversation: Dispatch<SetStateAction<ChatConversationSummary | null>>;
   setTitle: Dispatch<SetStateAction<string>>;
@@ -331,23 +339,87 @@ export function useThreadSheets({
     void loadShareableTasks();
   }, [composer, loadShareableTasks]);
 
+  // M3: sticker/task-share sends go through the durable outbox — the bubble is
+  // optimistic (local_status), the delivery host replays the command with the
+  // same client_message_id until the server confirms it, and mergeMessages
+  // reconciles the pending bubble with the realtime/HTTP acknowledgement.
+  const queueSpecialMessage = useCallback(async (
+    fields: Pick<ChatMessage, 'kind' | 'body_text' | 'body' | 'body_format' | 'task_preview' | 'attachments'>,
+    command: NativeChatOutboxCommand,
+    failureTitle: string,
+  ): Promise<ChatMessage | null> => {
+    const clientMessageId = createChatClientMessageId();
+    const replyMessage = composerMode?.type === 'reply' ? composerMode.message : null;
+    const pending: ChatMessage = {
+      id: `pending:${clientMessageId}`,
+      conversation_id: conversationId,
+      sender_user_id: Number(userId || 0),
+      sender: user ? {
+        id: user.id,
+        username: user.username,
+        full_name: user.full_name,
+        avatar_url: user.avatar_url,
+      } : null,
+      created_at: new Date().toISOString(),
+      client_message_id: clientMessageId,
+      is_own: true,
+      local_status: 'sending',
+      reactions: [],
+      ...fields,
+      reply_preview: replyMessage ? {
+        id: replyMessage.id,
+        sender_name: replyMessage.sender?.full_name || replyMessage.sender?.username || 'Сообщение',
+        kind: replyMessage.kind === 'file' || replyMessage.kind === 'task_share' ? replyMessage.kind : 'text' as const,
+        body: replyMessage.body_text || '',
+        attachments_count: replyMessage.attachments?.length || 0,
+      } : null,
+    };
+    requestBottomAnchor('own-send');
+    setMessages((current) => mergeMessages(
+      current.filter((message) => message.id !== pending.id),
+      pending,
+      userId,
+    ));
+    try {
+      const queued = await outbox.queue(pending, undefined, command);
+      if (isCurrentSendScope()) {
+        setMessages((current) => mergeMessages(current, queued.message, userId));
+      }
+      return queued.message;
+    } catch (cause) {
+      if (isCurrentSendScope()) {
+        setMessages((current) => current.map((message) => (
+          message.id === pending.id ? { ...message, local_status: 'failed' } : message
+        )));
+        showNativeToast(failureTitle, formatApiError(cause, 'Сообщение не поставлено в очередь. Повторите попытку.'));
+      }
+      return null;
+    }
+  }, [composerMode, conversationId, isCurrentSendScope, outbox, requestBottomAnchor, setMessages, user, userId]);
+
   const shareTask = useCallback(async (task: ChatTaskPreview) => {
     if (!isCurrentSendScope() || composerBusyRef.current) return;
     setComposerBusy(true);
     try {
-      const replyToMessageId = composerMode?.type === 'reply' ? composerMode.message.id : undefined;
-      const saved = await chatApi.shareTask(conversationId, task.id, replyToMessageId);
-      if (!isCurrentSendScope()) return;
-      requestBottomAnchor('own-send');
-      setMessages((current) => mergeMessages(current, saved, userId));
+      const queued = await queueSpecialMessage(
+        {
+          kind: 'task_share',
+          body: task.title,
+          body_text: task.title,
+          body_format: 'plain',
+          task_preview: task,
+          attachments: [],
+        },
+        { type: 'task_share', task_id: task.id },
+        'Не удалось отправить задачу',
+      );
+      if (!queued) return;
       setTaskPickerVisible(false);
       setComposerMode(null);
-    } catch (cause) {
-      if (isCurrentSendScope()) showNativeToast('Не удалось отправить задачу', formatApiError(cause, 'Повторите попытку'));
     } finally {
       if (isCurrentSendScope()) setComposerBusy(false);
     }
-  }, [composerMode, isCurrentSendScope, conversationId, requestBottomAnchor, userId]);
+  }, [composerBusyRef, isCurrentSendScope, queueSpecialMessage, setComposerBusy, setComposerMode]);
 
   const openStickerPicker = useCallback(async () => {
     composer.setAttachmentPickerVisible(false);
@@ -414,28 +486,39 @@ export function useThreadSheets({
     if (!isCurrentSendScope() || composerBusyRef.current) return;
     setStickerPickerVisible(false);
     setComposerBusy(true);
+    if (userId) {
+      void rememberRecentSticker(userId, sticker.id).then((recent) => {
+        if (isCurrentSendScope()) setRecentStickerIds(recent);
+      }).catch(() => undefined);
+    }
     try {
-      const replyToMessageId = composerMode?.type === 'reply' ? composerMode.message.id : undefined;
-      const saved = await chatApi.sendSticker(conversationId, sticker.id, replyToMessageId);
-      if (!isCurrentSendScope()) return;
-      if (userId) {
-        void rememberRecentSticker(userId, sticker.id).then((recent) => {
-          if (isCurrentSendScope()) setRecentStickerIds(recent);
-        }).catch(() => undefined);
-      }
-      requestBottomAnchor('own-send');
-      setMessages((current) => mergeMessages(current, {
-        ...saved,
-        is_own: true,
-        sender_user_id: saved.sender_user_id || Number(userId || 0),
-      }, userId));
+      const queued = await queueSpecialMessage(
+        {
+          kind: 'file',
+          body: '',
+          body_text: '',
+          body_format: 'plain',
+          attachments: [{
+            id: `pending-sticker:${sticker.id}`,
+            kind: 'sticker',
+            media_kind: 'sticker',
+            file_name: sticker.emoji || 'sticker.webp',
+            mime_type: sticker.mime_type || null,
+            file_size: sticker.file_size,
+            original_url: sticker.file_url || null,
+            preview_url: sticker.preview_url || undefined,
+            url: sticker.file_url || undefined,
+          }],
+        },
+        { type: 'sticker', sticker_id: sticker.id },
+        'Не удалось отправить стикер',
+      );
+      if (!queued) return;
       setComposerMode(null);
-    } catch (cause) {
-      if (isCurrentSendScope()) showNativeToast('Не удалось отправить стикер', formatApiError(cause, 'Повторите попытку'));
     } finally {
       if (isCurrentSendScope()) setComposerBusy(false);
     }
-  }, [composerMode, isCurrentSendScope, conversationId, requestBottomAnchor, userId]);
+  }, [composerBusyRef, isCurrentSendScope, queueSpecialMessage, setComposerBusy, setComposerMode, userId]);
 
   return {
     infoVisible,

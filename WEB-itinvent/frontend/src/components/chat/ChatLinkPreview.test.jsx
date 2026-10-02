@@ -60,4 +60,29 @@ describe('ChatLinkPreview', () => {
 
     expect(screen.getByText('Example article')).toHaveStyle({ color: 'rgba(255, 255, 255, 0.95)' });
   });
+
+  it('reserves compact card space while the preview loads', async () => {
+    mockGetLinkPreview.mockReturnValue(new Promise(() => {}));
+
+    renderPreview({ url: 'https://example.com/pending' });
+
+    const compact = await screen.findByTestId('chat-link-preview-compact');
+    expect(compact).toHaveStyle({ minHeight: '64px' });
+    expect(screen.getByText('Загрузка превью…')).toBeInTheDocument();
+    expect(compact).toHaveAttribute('href', 'https://example.com/pending');
+  });
+
+  it('keeps the compact fallback when the preview request fails', async () => {
+    mockGetLinkPreview.mockRejectedValue(new Error('preview failed'));
+
+    renderPreview({ url: 'https://example.com/fails' });
+
+    const compact = await screen.findByTestId('chat-link-preview-compact');
+    await waitFor(() => {
+      expect(screen.queryByText('Загрузка превью…')).not.toBeInTheDocument();
+    });
+    expect(compact).toHaveStyle({ minHeight: '64px' });
+    expect(screen.getByText('example.com')).toBeInTheDocument();
+    expect(compact).toHaveAttribute('href', 'https://example.com/fails');
+  });
 });

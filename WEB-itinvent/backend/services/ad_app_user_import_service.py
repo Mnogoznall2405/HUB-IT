@@ -506,6 +506,7 @@ class AdAppUserImportService:
         importable_logins: set[str],
         raw_ad_logins: set[str],
     ) -> None:
+        from backend.services.session_auth_context_service import session_auth_context_service
         from backend.services.session_service import session_service
 
         candidates: list[tuple[int, str, dict[str, Any]]] = []
@@ -552,6 +553,8 @@ class AdAppUserImportService:
             if not updated:
                 continue
             closed_sessions = int(session_service.close_user_sessions(user_id) or 0)
+            for session_item in session_service.list_sessions_by_user_ids({user_id}):
+                session_auth_context_service.delete_session_context(session_item.get("session_id"))
             result["deactivated"] += 1
             result["deactivated_users"].append(updated)
             result["sessions_closed"] += closed_sessions

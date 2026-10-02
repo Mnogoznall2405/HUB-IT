@@ -1,5 +1,10 @@
 import axios, { type InternalAxiosRequestConfig } from 'axios';
-import apiClient, { getAuthenticatedAccessToken } from './client';
+import apiClient, {
+  getAuthenticatedAccessToken,
+  isDefinitiveAuthRejection,
+  isNetworkRestrictedRejection,
+  isUserDeactivatedRejection,
+} from './client';
 import * as tokenStore from '../auth/tokenStore';
 import { subscribeSessionExpired } from '../auth/sessionEvents';
 import { setNativeOfflineReadOnly } from '../offline/nativeOfflinePolicy';
@@ -8,15 +13,17 @@ import { getApiInflightSummary, resetApiInflight } from '../diagnostics/apiInfli
 
 const originalAdapter = apiClient.defaults.adapter;
 
-function response(config: unknown, data: unknown, status = 200) {
+function response(config: unknown, data: unknown, status = 200, headers: Record<string, string> = {}) {
   return {
     data,
     status,
     statusText: status === 200 ? 'OK' : 'Unauthorized',
-    headers: {},
+    headers,
     config,
   };
 }
+
+const JSON_HEADERS = { 'content-type': 'application/json' };
 
 function unauthorized(config: unknown) {
   return Promise.reject({
@@ -70,7 +77,7 @@ describe('mobile API refresh', () => {
     await tokenStore.setTokens('current-access', 'current-refresh');
     jest.spyOn(axios, 'post').mockRejectedValue({
       isAxiosError: true,
-      response: response({}, {}, 401),
+      response: response({}, {}, 401, JSON_HEADERS),
     });
     const expired = jest.fn();
     const unsubscribe = subscribeSessionExpired(expired);
@@ -163,7 +170,7 @@ describe('mobile API refresh', () => {
     await writeNativeSnapshot('dashboard', 38, { prepared: true });
     jest.spyOn(axios, 'post').mockRejectedValue({
       isAxiosError: true,
-      response: response({}, {}, 401),
+      response: response({}, {}, 401, JSON_HEADERS),
     });
     apiClient.defaults.adapter = ((config: InternalAxiosRequestConfig) => unauthorized(config)) as never;
     const expired = jest.fn();
@@ -177,6 +184,98 @@ describe('mobile API refresh', () => {
       expect.objectContaining({ data: { prepared: true } }),
     );
     expect(expired).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
+  it.each([401, 403])('keeps credentials when refresh %s arrives without a JSON body', async (status) => {
+    await tokenStore.setTokens('expired-access', 'proxied-refresh');
+    jest.spyOn(axios, 'post').mockRejectedValue({
+      isAxiosError: true,
+      response: response({}, '<html>blocked</html>', status, { 'content-type': 'text/html' }),
+    });
+    apiClient.defaults.adapter = ((config: InternalAxiosRequestConfig) => unauthorized(config)) as never;
+    const expired = jest.fn();
+    const unsubscribe = subscribeSessionExpired(expired);
+
+    await expect(apiClient.get('/protected')).rejects.toBeTruthy();
+
+    // An equally coded HTML page from IIS, a captive portal or a WAF is not a
+    // HUB-IT refusal: the session survives and stays retryable.
+    expect(await tokenStore.getAccessToken()).toBe('expired-access');
+    expect(await tokenStore.getRefreshToken()).toBe('proxied-refresh');
+    expect(expired).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it('wipes tokens, offline data and marks the account when refresh reports user_inactive', async () => {
+    await tokenStore.setTokens('expired-access', 'deactivated-refresh');
+    await tokenStore.setSessionUserId(38);
+    await writeNativeSnapshot('dashboard', 38, { prepared: true });
+    jest.spyOn(axios, 'post').mockRejectedValue({
+      isAxiosError: true,
+      response: response({}, { detail: 'User is not active' }, 401, {
+        'content-type': 'application/json',
+        'x-hubit-auth-reason': 'user_inactive',
+      }),
+    });
+    const expired = jest.fn();
+    const unsubscribe = subscribeSessionExpired(expired);
+
+    await expect(getAuthenticatedAccessToken({ forceRefresh: true })).rejects.toBeTruthy();
+
+    expect(await tokenStore.getAccessToken()).toBeNull();
+    expect(await tokenStore.getRefreshToken()).toBeNull();
+    expect(await tokenStore.getSessionUserId()).toBeNull();
+    // Unlike an ordinary expiry, a deactivated account loses the encrypted
+    // snapshot and its keys — the mark survives a cold start.
+    await expect(readNativeSnapshot('dashboard', 38)).resolves.toBeNull();
+    expect(tokenStore.isSessionDeactivationMarked()).toBe(true);
+    await expect(tokenStore.readSessionDeactivationMark()).resolves.toBe(true);
+    expect(expired).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
+  it('wipes a deactivated session even for a preserve-session refresh caller', async () => {
+    await tokenStore.setTokens('expired-access', 'deactivated-refresh');
+    await tokenStore.setSessionUserId(38);
+    await writeNativeSnapshot('dashboard', 38, { prepared: true });
+    jest.spyOn(axios, 'post').mockRejectedValue({
+      isAxiosError: true,
+      response: response({}, { detail: 'User is not active' }, 401, {
+        'content-type': 'application/json',
+        'x-hubit-auth-reason': 'user_inactive',
+      }),
+    });
+    const expired = jest.fn();
+    const unsubscribe = subscribeSessionExpired(expired);
+
+    await expect(getAuthenticatedAccessToken({
+      forceRefresh: true,
+      preserveSessionOnRefreshFailure: true,
+    })).rejects.toBeTruthy();
+
+    expect(await tokenStore.getAccessToken()).toBeNull();
+    await expect(readNativeSnapshot('dashboard', 38)).resolves.toBeNull();
+    expect(tokenStore.isSessionDeactivationMarked()).toBe(true);
+    expect(expired).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
+  it('keeps the session on a JSON 403 refresh rejection from HUB-IT', async () => {
+    // The refresh handler never emits 403, and the admin IP allowlist 403 only
+    // restricts the current network — the session stays valid elsewhere.
+    await tokenStore.setTokens('expired-access', 'forbidden-refresh');
+    jest.spyOn(axios, 'post').mockRejectedValue({
+      isAxiosError: true,
+      response: response({}, { detail: 'denied' }, 403, JSON_HEADERS),
+    });
+    const expired = jest.fn();
+    const unsubscribe = subscribeSessionExpired(expired);
+
+    await expect(getAuthenticatedAccessToken({ forceRefresh: true })).rejects.toBeTruthy();
+
+    expect(await tokenStore.getRefreshToken()).toBe('forbidden-refresh');
+    expect(expired).not.toHaveBeenCalled();
     unsubscribe();
   });
 
@@ -266,6 +365,117 @@ describe('mobile API refresh', () => {
       code: 'HUBIT_OFFLINE_READ_ONLY',
     });
     expect(adapter).not.toHaveBeenCalled();
+  });
+});
+
+describe('isDefinitiveAuthRejection', () => {
+  it('treats JSON 401 from HUB-IT as a definitive rejection', () => {
+    expect(isDefinitiveAuthRejection({
+      response: { status: 401, headers: { 'content-type': 'application/json; charset=utf-8' } },
+    })).toBe(true);
+  });
+
+  it.each([
+    { status: 401, headers: {} },
+    { status: 403, headers: { 'content-type': 'application/json' } },
+    { status: 403, headers: { 'content-type': 'text/html' } },
+    { status: 403, headers: undefined },
+    { status: 429, headers: { 'content-type': 'application/json' } },
+    { status: 503, headers: { 'content-type': 'application/json' } },
+    { status: undefined, headers: undefined },
+  ])('treats %j as transport, not a session answer', (response) => {
+    expect(isDefinitiveAuthRejection({ response })).toBe(false);
+    expect(isDefinitiveAuthRejection(new Error('Network Error'))).toBe(false);
+  });
+});
+
+describe('isUserDeactivatedRejection', () => {
+  it('treats a JSON 401 with the user_inactive reason as deactivation', () => {
+    expect(isUserDeactivatedRejection({
+      response: {
+        status: 401,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'x-hubit-auth-reason': 'user_inactive',
+        },
+        data: { detail: 'User is not active' },
+      },
+    })).toBe(true);
+  });
+
+  it('accepts the legacy 400 «Inactive user» answer on /auth/me', () => {
+    expect(isUserDeactivatedRejection({
+      config: { url: '/auth/me' },
+      response: {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+        data: { detail: 'Inactive user' },
+      },
+    })).toBe(true);
+  });
+
+  it('keeps an ordinary JSON 401 on the session-expired semantics', () => {
+    const plain401 = {
+      response: { status: 401, headers: { 'content-type': 'application/json' } },
+    };
+    expect(isUserDeactivatedRejection(plain401)).toBe(false);
+    expect(isDefinitiveAuthRejection(plain401)).toBe(true);
+  });
+
+  it.each([
+    { desc: '401 JSON with a different reason', error: {
+      response: { status: 401, headers: {
+        'content-type': 'application/json',
+        'x-hubit-auth-reason': 'credentials_invalid',
+      } },
+    } },
+    { desc: '401 HTML with the header (proxy page, not HUB-IT)', error: {
+      response: { status: 401, headers: {
+        'content-type': 'text/html',
+        'x-hubit-auth-reason': 'user_inactive',
+      } },
+    } },
+    { desc: '400 «Inactive user» on another endpoint', error: {
+      config: { url: '/profile' },
+      response: { status: 400, headers: { 'content-type': 'application/json' }, data: { detail: 'Inactive user' } },
+    } },
+    { desc: '400 «Inactive user» on /auth/me without JSON', error: {
+      config: { url: '/auth/me' },
+      response: { status: 400, headers: { 'content-type': 'text/html' }, data: { detail: 'Inactive user' } },
+    } },
+    { desc: '400 with a different detail on /auth/me', error: {
+      config: { url: '/auth/me' },
+      response: { status: 400, headers: { 'content-type': 'application/json' }, data: { detail: 'Validation failed' } },
+    } },
+    { desc: 'JSON 403', error: {
+      response: { status: 403, headers: { 'content-type': 'application/json' } },
+    } },
+  ])('treats $desc as not a deactivation', ({ error }) => {
+    expect(isUserDeactivatedRejection(error)).toBe(false);
+    expect(isUserDeactivatedRejection(new Error('Network Error'))).toBe(false);
+  });
+});
+
+describe('isNetworkRestrictedRejection', () => {
+  it('treats JSON 403 from HUB-IT as a network restriction, not an expired session', () => {
+    expect(isNetworkRestrictedRejection({
+      response: {
+        status: 403,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+        data: { detail: 'Admin access from this IP is not allowed' },
+      },
+    })).toBe(true);
+  });
+
+  it.each([
+    { status: 403, headers: {} },
+    { status: 403, headers: { 'content-type': 'text/html' } },
+    { status: 401, headers: { 'content-type': 'application/json' } },
+    { status: 429, headers: { 'content-type': 'application/json' } },
+    { status: undefined, headers: undefined },
+  ])('treats %j as not a HUB-IT network restriction', (response) => {
+    expect(isNetworkRestrictedRejection({ response })).toBe(false);
+    expect(isNetworkRestrictedRejection(new Error('Network Error'))).toBe(false);
   });
 });
 

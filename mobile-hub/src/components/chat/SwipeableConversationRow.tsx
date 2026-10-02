@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, PanResponder, StyleSheet, Text, View } from 'react-native';
 import type { ChatConversationSummary } from '../../api/types';
 import {
@@ -11,6 +11,7 @@ import {
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
 import { ChatConversationRow } from './ChatConversationRow';
+import { FolderSwipeGestureContext } from './FolderSwipeHost';
 
 export const SwipeableConversationRow = memo(function SwipeableConversationRow({
   item,
@@ -67,13 +68,21 @@ export const SwipeableConversationRow = memo(function SwipeableConversationRow({
     return action;
   }, [hasUnread]);
   const [swipeAction, setSwipeAction] = useState<InboxRowSwipeAction | null>(null);
+  // CHAT-INBOX-06: while this row hosts the current touch the folder pager must
+  // not activate; an engaged pager in `capture` mode suppresses new row swipes.
+  const folderSwipe = useContext(FolderSwipeGestureContext);
+  useEffect(() => () => {
+    if (folderSwipe) folderSwipe.rowTouchActive.value = 0;
+  }, [folderSwipe]);
 
   const panResponder = useMemo(() => PanResponder.create({
     onMoveShouldSetPanResponder: (_, gesture) => (
-      shouldStartInboxRowSwipe(gesture.dx, gesture.dy)
+      folderSwipe?.rowsSuppressed.value !== 1
+      && shouldStartInboxRowSwipe(gesture.dx, gesture.dy)
     ),
     onMoveShouldSetPanResponderCapture: (_, gesture) => (
-      shouldStartInboxRowSwipe(gesture.dx, gesture.dy)
+      folderSwipe?.rowsSuppressed.value !== 1
+      && shouldStartInboxRowSwipe(gesture.dx, gesture.dy)
     ),
     onPanResponderMove: (_, gesture) => {
       if (!reduceMotion) {
@@ -98,7 +107,7 @@ export const SwipeableConversationRow = memo(function SwipeableConversationRow({
       reset();
     },
     onPanResponderTerminationRequest: (_, gesture) => !shouldKeepHorizontalSwipe(gesture.dx, gesture.dy),
-  }), [handleArchive, handleMute, handlePin, handleRead, offset, reduceMotion, reset, resolveAction]);
+  }), [folderSwipe, handleArchive, handleMute, handlePin, handleRead, offset, reduceMotion, reset, resolveAction]);
 
   const muteOpacity = offset.interpolate({
     inputRange: [0, INBOX_ROW_SWIPE_TRIGGER_DP],
@@ -131,7 +140,19 @@ export const SwipeableConversationRow = memo(function SwipeableConversationRow({
           </Animated.View>
         </>
       ) : null}
-      <Animated.View {...panResponder.panHandlers} style={{ transform: [{ translateX: offset }] }}>
+      <Animated.View
+        {...panResponder.panHandlers}
+        style={{ transform: [{ translateX: offset }] }}
+        onTouchStart={() => {
+          if (folderSwipe) folderSwipe.rowTouchActive.value = 1;
+        }}
+        onTouchEnd={() => {
+          if (folderSwipe) folderSwipe.rowTouchActive.value = 0;
+        }}
+        onTouchCancel={() => {
+          if (folderSwipe) folderSwipe.rowTouchActive.value = 0;
+        }}
+      >
         <ChatConversationRow
           item={item}
           active={active}

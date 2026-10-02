@@ -4,6 +4,7 @@ import { hubRealtimeSocket } from '../realtime/hubRealtimeSocket';
 import { setNativeBadgeCount } from '../notifications/notificationBadge';
 import { getNativeUnreadSnapshot } from '../notifications/nativeUnreadSnapshot';
 import { HUB_REALTIME_REFRESH_DEBOUNCE_MS, useNavUnreadCounts } from './useNavUnreadCounts';
+import { getNavigationBadgeCount } from './mobileNavItems';
 
 let taskChanged: ((payload: unknown) => void) | null = null;
 let localMailChanged: ((payload: unknown) => void) | null = null;
@@ -54,6 +55,11 @@ function Probe() {
   return <Text>{String(counts.tasks_open_total)}</Text>;
 }
 
+function ChatBadgeProbe() {
+  const counts = useNavUnreadCounts();
+  return <Text>{String(getNavigationBadgeCount('/chat', counts))}</Text>;
+}
+
 beforeEach(() => {
   taskChanged = null;
   localMailChanged = null;
@@ -80,6 +86,13 @@ it('shares the initial unread snapshot with the launcher badge', async () => {
     force: false,
   });
   expect(setNativeBadgeCount).toHaveBeenCalledWith(9);
+  view.unmount();
+});
+
+it('feeds the server chat total (chats + AI) into the bottom nav badge', async () => {
+  // AUDIT-AI-NOTIF: серверный chat_messages_unread_total уже включает ИИ-диалоги.
+  const view = await render(<ChatBadgeProbe />);
+  await waitFor(() => expect(view.getByText('3')).toBeTruthy());
   view.unmount();
 });
 

@@ -4,13 +4,10 @@ export default function useChatComposerUiController({
   composerRef,
   emojiAnchorEl,
   focusComposer,
-  handleComposerSend,
   isMobile,
   loadChatDialogsModule,
-  queueSelectedFiles,
   setComposerMenuAnchor,
   setEmojiAnchorEl,
-  setMessageText,
   setThreadMenuAnchor,
   syncComposerSelection,
 }) {
@@ -49,21 +46,6 @@ export default function useChatComposerUiController({
     }
   }, [emojiAnchorEl, isMobile, setEmojiAnchorEl]);
 
-  const handleSendGif = useCallback(async (gif) => {
-    if (!gif?.fullUrl) return;
-    try {
-      const resp = await fetch(gif.fullUrl);
-      const blob = await resp.blob();
-      const name = (gif.title || 'animation').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40) + '.gif';
-      const file = new File([blob], name, { type: 'image/gif' });
-      setEmojiAnchorEl(null);
-      await queueSelectedFiles([file]);
-    } catch {
-      setMessageText(gif.fullUrl);
-      window.requestAnimationFrame(() => handleComposerSend());
-    }
-  }, [handleComposerSend, queueSelectedFiles, setEmojiAnchorEl, setMessageText]);
-
   return {
     emojiPickerOpen,
     handleOpenMenu,
@@ -71,6 +53,5 @@ export default function useChatComposerUiController({
     handleOpenEmojiPicker,
     handleCloseEmojiPicker,
     handleComposerFocusChange,
-    handleSendGif,
   };
 }

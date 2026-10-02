@@ -35,6 +35,13 @@ export const PERSONAL_SETTINGS_SECTIONS = [
     icon: <NotificationsOutlinedIcon />,
   },
   {
+    key: 'ai',
+    label: 'ИИ-ассистент',
+    description: 'Личная память и предупреждения',
+    icon: <SmartToyOutlinedIcon />,
+    permission: 'chat.ai.use',
+  },
+  {
     key: 'security',
     label: 'Безопасность',
     description: '2FA, passkey и доверенные устройства',

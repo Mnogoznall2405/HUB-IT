@@ -3,6 +3,7 @@ import { startTransition, useEffect, useRef } from 'react';
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../../lib/chatFeature';
 import { emitAgentDebugLog } from '../../lib/debugClientLog';
 import {
+  chatSocket,
   CHAT_SOCKET_ACTIVITY_EVENT,
   CHAT_SOCKET_AI_RUN_UPDATED_EVENT,
   CHAT_SOCKET_CONVERSATION_REMOVED_EVENT,
@@ -16,6 +17,7 @@ import {
   CHAT_SOCKET_SNAPSHOT_EVENT,
   CHAT_SOCKET_STATUS_EVENT,
   CHAT_SOCKET_TYPING_EVENT,
+  CHAT_SOCKET_UNREAD_SUMMARY_EVENT,
 } from '../../lib/chatSocket';
 
 export default function useChatSocketEvents({
@@ -29,6 +31,7 @@ export default function useChatSocketEvents({
   hasPersistedThreadMessageEquivalent,
   lastConversationsLoadAtRef,
   latestActiveThreadSocketMessageRef,
+  loadChatFolders,
   loadConversations,
   loadMessages,
   loadMessagesRef,
@@ -38,6 +41,7 @@ export default function useChatSocketEvents({
   markSocketActivity,
   mergeAiStatusPayload,
   mergeMessageIntoThread,
+  messagesHasNewerRef,
   messagesLoadingRef,
   messagesRef,
   onConversationRemoved,
@@ -62,8 +66,31 @@ export default function useChatSocketEvents({
 }) {
   const readSeqByConversationRef = useRef(new Map());
 
+  const initialSocketStatusReplayedRef = useRef(false);
+
   useEffect(() => {
     if (!CHAT_FEATURE_ENABLED || !CHAT_WS_ENABLED) return undefined;
+    // The bootstrap socket can already be connected before this page mounts —
+    // its status event fired before we subscribed. Replay the live state so
+    // the header does not sit on a stale "connecting" (R1). Anything other
+    // than a fresh first connect means the initial connect already happened,
+    // so the next "connected" is a real reconnect that must refresh data.
+    // One-shot: this effect re-runs whenever a dep identity changes; replaying
+    // the live state again would clobber a later real transition.
+    if (!initialSocketStatusReplayedRef.current) {
+      initialSocketStatusReplayedRef.current = true;
+      const currentSocketStatus = chatSocket.getConnectionState();
+      if (currentSocketStatus !== 'connecting') {
+        skippedInitialSocketRefreshRef.current = true;
+      }
+      if (currentSocketStatus === 'connected') {
+        markSocketActivity('socket:init:connected');
+      }
+      if (currentSocketStatus !== socketStatusRef.current) {
+        socketStatusRef.current = currentSocketStatus;
+        setSocketStatus(currentSocketStatus);
+      }
+    }
     // Room + inbox can both deliver the same message.created; apply sidebar preview once.
     const previewAppliedByConversation = new Map();
     const handleSocketActivity = (event) => {
@@ -87,21 +114,37 @@ export default function useChatSocketEvents({
           skippedInitialSocketRefreshRef.current = true;
           return;
         }
+        // The active thread always catches up on reconnect — the conversations
+        // list throttle below must not skip it (P1-6).
+        if (
+          activeConversationIdRef.current
+          && !hasPendingInitialAnchorForConversation(activeConversationIdRef.current)
+        ) {
+          const requestOptions = buildActiveThreadPollLoadOptions(messagesRef.current);
+          void Promise.resolve(loadMessages(activeConversationIdRef.current, {
+            ...requestOptions,
+            reason: requestOptions.afterMessageId ? 'socket:connected:newer' : 'socket:connected:bootstrap',
+          })).catch(() => {});
+        }
         if ((Date.now() - Number(lastConversationsLoadAtRef.current || 0)) < 3000) return;
         if (conversationsLoadingRef.current) return;
         void Promise.resolve(loadConversations({ silent: true, force: true })).catch(() => {});
-        if (
-          activeConversationIdRef.current
-          && !messagesLoadingRef.current
-          && !hasPendingInitialAnchorForConversation(activeConversationIdRef.current)
-        ) {
-          void Promise.resolve(loadMessages(activeConversationIdRef.current, {
-            silent: true,
-            reason: 'socket:connected',
-            force: true,
-          })).catch(() => {});
-        }
       }
+    };
+
+    // U2: unread-driven events refresh the server folder_unread_counts payload —
+    // debounced so an unread.summary burst does not storm /chat/folders.
+    let folderCountsRefreshTimer = null;
+    const scheduleFolderCountsRefresh = () => {
+      if (typeof loadChatFolders !== 'function') return;
+      if (folderCountsRefreshTimer) window.clearTimeout(folderCountsRefreshTimer);
+      folderCountsRefreshTimer = window.setTimeout(() => {
+        folderCountsRefreshTimer = null;
+        void Promise.resolve(loadChatFolders({ silent: true })).catch(() => {});
+      }, 800);
+    };
+    const handleUnreadSummary = () => {
+      scheduleFolderCountsRefresh();
     };
 
     const handleSnapshot = () => {
@@ -149,6 +192,8 @@ export default function useChatSocketEvents({
         nextConversation,
         { promote: reason === 'message_created' || reason === 'created' },
       );
+      // U2: unread-bearing conversation updates refresh server folder counts.
+      scheduleFolderCountsRefresh();
       if (
         normalizedConversationId
         && normalizedConversationId === activeConversationIdRef.current
@@ -297,7 +342,7 @@ export default function useChatSocketEvents({
         && typeof document.hasFocus === 'function'
         && document.hasFocus()
       );
-      const shouldTreatAsRead = resolvedIsOwn || (isActive && tabIsVisibleAndFocused);
+      const shouldTreatAsRead = resolvedIsOwn || (isActive && tabIsVisibleAndFocused && threadNearBottomRef.current === true);
       // #region agent log
       emitAgentDebugLog({
         location: 'useChatSocketEvents.js:handleMessageCreated',
@@ -333,8 +378,14 @@ export default function useChatSocketEvents({
           };
         }
       }
-      if (!alreadyRendered) {
-        mergeMessageIntoThread(message);
+      // R27: while the loaded window is cut off from the tail (has_newer) a
+      // socket message must NOT be appended — the drain cursor is the last
+      // message of the contiguous window, so inserting it would leave a hole
+      // that no page can ever fill. Only bump the ↓ badge (unread_count) and
+      // update the sidebar preview; pages deliver the message contiguously.
+      const windowCutFromTail = Boolean(messagesHasNewerRef?.current);
+      if (!alreadyRendered && !windowCutFromTail) {
+        mergeMessageIntoThread(message, { liveAppear: true });
         startTransition(() => {
           syncConversationPreview(conversationId, message, shouldTreatAsRead ? {
             unread_count: 0,
@@ -352,6 +403,15 @@ export default function useChatSocketEvents({
             });
           }
         });
+      } else if (!alreadyRendered && windowCutFromTail) {
+        const skippedMessageId = String(message.id || '').trim();
+        if (previewAppliedByConversation.get(conversationId) !== skippedMessageId) {
+          previewAppliedByConversation.set(conversationId, skippedMessageId);
+          startTransition(() => {
+            syncConversationPreview(conversationId, message);
+            promoteConversationToTop(conversationId);
+          });
+        }
       }
       if (resolvedIsOwn) {
         if (messageSeq > 0) {
@@ -363,7 +423,9 @@ export default function useChatSocketEvents({
         setViewerLastReadMessageId(String(message.id || '').trim());
         setViewerLastReadAt(String(message.created_at || '').trim());
       } else if (isActive) {
-        if (tabIsVisibleAndFocused) {
+        // A message below the unloaded tail was never on screen — it must not
+        // be marked read while the window is cut (only read what was viewed).
+        if (tabIsVisibleAndFocused && threadNearBottomRef.current === true && !windowCutFromTail) {
           if (messageSeq > 0) {
             readSeqByConversationRef.current.set(conversationId, Math.max(
               messageSeq,
@@ -392,7 +454,7 @@ export default function useChatSocketEvents({
         // Own messages always stick to the bottom. Incoming messages only
         // pull the viewport down when the reader is already near the bottom,
         // so reading older history is never interrupted by a forced jump.
-        const shouldStickToBottom = !alreadyRendered && (
+        const shouldStickToBottom = !alreadyRendered && !windowCutFromTail && (
           resolvedIsOwn
           || (isActive && threadNearBottomRef.current)
         );
@@ -573,6 +635,7 @@ export default function useChatSocketEvents({
     window.addEventListener(CHAT_SOCKET_PRESENCE_UPDATED_EVENT, handlePresenceUpdated);
     window.addEventListener(CHAT_SOCKET_TYPING_EVENT, handleTyping);
     window.addEventListener(CHAT_SOCKET_AI_RUN_UPDATED_EVENT, handleAiRunUpdated);
+    window.addEventListener(CHAT_SOCKET_UNREAD_SUMMARY_EVENT, handleUnreadSummary);
 
     return () => {
       window.removeEventListener(CHAT_SOCKET_ACTIVITY_EVENT, handleSocketActivity);
@@ -588,6 +651,11 @@ export default function useChatSocketEvents({
       window.removeEventListener(CHAT_SOCKET_PRESENCE_UPDATED_EVENT, handlePresenceUpdated);
       window.removeEventListener(CHAT_SOCKET_TYPING_EVENT, handleTyping);
       window.removeEventListener(CHAT_SOCKET_AI_RUN_UPDATED_EVENT, handleAiRunUpdated);
+      window.removeEventListener(CHAT_SOCKET_UNREAD_SUMMARY_EVENT, handleUnreadSummary);
+      if (folderCountsRefreshTimer) {
+        window.clearTimeout(folderCountsRefreshTimer);
+        folderCountsRefreshTimer = null;
+      }
     };
   }, [
     activeConversation?.kind,
@@ -600,6 +668,7 @@ export default function useChatSocketEvents({
     hasPersistedThreadMessageEquivalent,
     lastConversationsLoadAtRef,
     latestActiveThreadSocketMessageRef,
+    loadChatFolders,
     loadConversations,
     loadMessages,
     loadMessagesRef,

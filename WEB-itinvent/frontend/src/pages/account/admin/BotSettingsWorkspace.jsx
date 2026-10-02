@@ -3,10 +3,13 @@ import { Alert, Box, Button, Chip, CircularProgress, Grid, Paper, Stack, Tab, Ta
 import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
 import AddOutlinedIcon from '@mui/icons-material/AddOutlined';
 import AgentAccessPanel from './AgentAccessPanel';
+import AssistantAccessInfo from './AssistantAccessInfo';
 import { createAiBotDraft, getAiBotEnabledTools } from './aiBotModel';
+import { AI_ASSISTANT_BOT_SLUG } from '../accountConstants';
 
 const describeType = (bot) => bot.surface === 'sandbox' ? 'OpenCode · файлы и код'
-  : bot.surface === 'general' ? 'Обычный ИИ-чат · доступен всем' : 'Агент HUB · персональный доступ';
+  : bot.surface === 'general' ? 'Обычный ИИ-чат · доступен всем'
+  : bot.slug === AI_ASSISTANT_BOT_SLUG ? 'HUB Ассистент · всем с правом ИИ' : 'Агент HUB · персональный доступ';
 const pack = (draft) => ({ ...draft, allowed_kb_scope: String(draft.allowed_kb_scope || '').split(',').map((v) => v.trim()).filter(Boolean) });
 
 function OpenCodeCapabilities() {
@@ -35,6 +38,7 @@ export default function BotSettingsWorkspace({ bots = [], loading, savingBotId, 
   const draft = creating ? newDraft : (bot && (draftsById[bot.id] || createAiBotDraft(bot)));
   const sandbox = !creating && bot?.surface === 'sandbox';
   const general = !creating && bot?.surface === 'general';
+  const unifiedAssistant = !creating && bot?.slug === AI_ASSISTANT_BOT_SLUG;
   const activeTab = (creating || general) && tab === 'access' ? 'tools' : tab;
   const busy = savingBotId === (creating ? 'new' : bot?.id);
   const change = (key, value) => creating ? setNewDraft((old) => ({ ...old, [key]: value })) : updateDraft(bot.id, key, value);
@@ -72,15 +76,21 @@ export default function BotSettingsWorkspace({ bots = [], loading, savingBotId, 
           </Stack>
           <Tabs value={activeTab} onChange={(_, value) => setTab(value)} variant="scrollable" scrollButtons="auto" aria-label="Разделы настроек агента">
             <Tab value="tools" label="Возможности" id="bot-tab-tools" aria-controls="bot-panel" />
-            {!creating && !general && <Tab value="access" label="Доступ сотрудников" id="bot-tab-access" aria-controls="bot-panel" />}
+            {!creating && !general && <Tab value="access" label={unifiedAssistant ? 'Доступ и возможности' : 'Доступ сотрудников'} id="bot-tab-access" aria-controls="bot-panel" />}
             <Tab value="settings" label={sandbox ? 'Оформление' : 'Настройки ответа'} id="bot-tab-settings" aria-controls="bot-panel" />
             {!creating && <Tab value="diagnostics" label="Диагностика" id="bot-tab-diagnostics" aria-controls="bot-panel" />}
           </Tabs>
           <Box role="tabpanel" id="bot-panel" aria-labelledby={`bot-tab-${activeTab}`} sx={{ minWidth: 0 }}>
-            {activeTab === 'access' && <Stack spacing={2}>
-              <Alert severity="info">Администраторы используют всех агентов автоматически. Другим сотрудникам нужен персональный доступ. Управлять назначениями могут администраторы и управляющие ботами; это право само по себе не открывает агента.</Alert>
+            {activeTab === 'access' && (unifiedAssistant ? (
+              <AssistantAccessInfo requiredPermission={bot?.required_permission} />
+            ) : <Stack spacing={2}>
+              <Alert severity="info">
+                Администраторы используют всех агентов автоматически. Другим сотрудникам нужен персональный доступ.
+                Управлять назначениями могут администраторы и управляющие ботами; это право само по себе не открывает агента.
+                {bot?.required_permission ? ` Дополнительно требуется право «${bot.required_permission}».` : ''}
+              </Alert>
               <AgentAccessPanel key={bot.id} botId={bot.id} embedded />
-            </Stack>}
+            </Stack>)}
             {activeTab === 'tools' && (sandbox ? <OpenCodeCapabilities /> : <Stack spacing={2}>
               {general && <Alert severity="info">Обычный ИИ-чат доступен всем активным пользователям.</Alert>}
               <Typography variant="body2" color="text.secondary">Включите нужные группы и выберите инструменты. Каждый вызов сохраняет ограничения сотрудника на данные и действия.</Typography>

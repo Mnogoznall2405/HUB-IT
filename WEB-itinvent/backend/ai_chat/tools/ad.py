@@ -249,11 +249,9 @@ class AdUnlockDraftTool(AiTool):
     description = (
         "Create a pending action card to unlock a locked Active Directory account. "
         "Does not unlock the account until the user confirms the action card. "
-        "Use after checking lockout status with ad.user.lockout_status and confirming the account is locked. "
-        "Requires admin access."
+        "Use after checking lockout status with ad.user.lockout_status and confirming the account is locked."
     )
     input_model = AdUnlockDraftArgs
-    admin_only = True
     stage = "checking_ad"
 
     def execute(self, *, context: AiToolExecutionContext, args: BaseModel) -> AiToolResult:

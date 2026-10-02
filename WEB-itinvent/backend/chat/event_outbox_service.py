@@ -288,6 +288,7 @@ class ChatEventOutboxService:
     ) -> int:
         """Re-enqueue delivery_state jobs for recent messages missing outbox rows."""
         from backend.chat.chat_delivery_state import build_delivery_state_outbox_job
+        from backend.chat.chat_mentions import resolve_mentioned_member_user_ids
 
         cutoff = _utc_now() - timedelta(seconds=max(30, int(lookback_sec)))
         repaired = 0
@@ -335,6 +336,11 @@ class ChatEventOutboxService:
                             member_user_ids=[int(uid) for uid in member_ids],
                             conversation_seq=int(getattr(message, "conversation_seq", 0) or 0),
                             seen_at=message.created_at or _utc_now(),
+                            mentioned_user_ids=resolve_mentioned_member_user_ids(
+                                member_user_ids=member_ids,
+                                sender_user_id=int(message.sender_user_id),
+                                body=getattr(message, "body", None),
+                            ),
                         )
                     )
             if jobs:
@@ -497,6 +503,7 @@ class ChatEventOutboxService:
                 member_user_ids=list(payload.get("member_user_ids") or []),
                 conversation_seq=int(payload.get("conversation_seq") or 0),
                 seen_at=seen_at,
+                mentioned_user_ids=list(payload.get("mentioned_user_ids") or []),
             )
 
     async def process_job(self, job: ChatEventOutboxJob) -> str:

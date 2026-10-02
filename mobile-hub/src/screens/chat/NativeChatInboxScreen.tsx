@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -33,8 +33,13 @@ import {
   filterAiConversations,
   groupAiSidebarRowsByDate,
   isAiConversation,
+  normalizeChatWorkspaceKey,
   type ChatWorkspaceKey,
 } from '../../chat/chatAiWorkspace';
+import {
+  getChatActiveWorkspace,
+  setChatActiveWorkspace,
+} from '../../chat/chatActiveWorkspace';
 import { filterConversationsByLocalQuery } from '../../chat/nativeChatLocalSearch';
 import { ChatRenameSheet } from '../../components/chat/ChatGroupEditSheets';
 import { AiConversationActionsSheet } from '../../components/chat/AiConversationActionsSheet';
@@ -60,7 +65,7 @@ type InboxListRow =
   | { key: string; type: 'conversation'; item: ChatConversationSummary }
   | { key: string; type: 'message'; item: ChatGlobalMessageSearchHit };
 
-export function NativeChatInboxScreen() {
+export function NativeChatInboxScreen({ requestedWorkspace }: { requestedWorkspace?: ChatWorkspaceKey } = {}) {
   const chatTokens = useChatTokens();
   const styles = useMemo(() => createStyles(chatTokens), [chatTokens]);
   const { user, offlineMode } = useAuth();
@@ -69,7 +74,7 @@ export function NativeChatInboxScreen() {
   ownerRef.current = ownerId;
   const bottomInset = useNativeBottomNavInset();
   const mountedRef = useRef(true);
-  const [workspace, setWorkspace] = useState<ChatWorkspaceKey>('chats');
+  const [workspace, setWorkspace] = useState<ChatWorkspaceKey>(() => normalizeChatWorkspaceKey(requestedWorkspace));
 
   const folders = useInboxFolders({
     userId: ownerId,
@@ -84,7 +89,6 @@ export function NativeChatInboxScreen() {
     customFolders,
     conversationIdsByFolder,
     systemUnreadCounts,
-    setSystemUnreadCounts,
     folderManagerOpen,
     setFolderManagerOpen,
     folderBusy,
@@ -109,7 +113,10 @@ export function NativeChatInboxScreen() {
     ownerRef,
     setActiveFolderKey,
     loadFolders,
-    onConversationRead: useCallback(() => setSystemUnreadCounts({}), [setSystemUnreadCounts]),
+    // M2: recount server folder badges after a mark-read instead of wiping
+    // them — the previous setSystemUnreadCounts({}) dropped counts for folders
+    // whose conversations are not loaded in the local list.
+    onConversationRead: useCallback(() => { void loadFolders(); }, [loadFolders]),
   });
   const {
     items,
@@ -178,11 +185,32 @@ export function NativeChatInboxScreen() {
     searchNewChatUsers,
   } = actions;
 
-  const changeWorkspace = useCallback((nextWorkspace: ChatWorkspaceKey) => {
+  const applyWorkspace = useCallback((nextWorkspace: ChatWorkspaceKey) => {
     setWorkspace(nextWorkspace);
     if (nextWorkspace === 'ai') setAiArchiveOpen(false);
     setFolderSwipeActive(false);
   }, [setAiArchiveOpen, setFolderSwipeActive]);
+
+  const changeWorkspace = useCallback((nextWorkspace: ChatWorkspaceKey) => {
+    applyWorkspace(nextWorkspace);
+    void setChatActiveWorkspace(ownerRef.current, nextWorkspace).catch(() => undefined);
+  }, [applyWorkspace, ownerRef]);
+
+  // AI-4: стартовый раздел — requestedWorkspace (push/ссылка) > сохранённый per-user > 'chats'.
+  useEffect(() => {
+    if (requestedWorkspace) {
+      const requested = normalizeChatWorkspaceKey(requestedWorkspace);
+      applyWorkspace(requested);
+      void setChatActiveWorkspace(ownerId, requested).catch(() => undefined);
+      return undefined;
+    }
+    let cancelled = false;
+    void getChatActiveWorkspace(ownerId).then((saved) => {
+      if (cancelled || !mountedRef.current || ownerRef.current !== ownerId) return;
+      applyWorkspace(saved);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [applyWorkspace, mountedRef, ownerId, ownerRef, requestedWorkspace]);
 
   const leaveInbox = useCallback(() => {
     if (assignConversation) {

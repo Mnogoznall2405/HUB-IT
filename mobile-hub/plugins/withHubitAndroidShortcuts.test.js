@@ -1,4 +1,5 @@
 const {
+  SCAN_QR_SHORTCUT_DRAWABLE,
   addShortcutStringResources,
   addShortcutsMetadata,
   buildHubitShortcutsXml,
@@ -13,6 +14,26 @@ it('generates trusted shortcuts for Chat, Tasks and Scan Center', () => {
   expect(xml).toContain('android:shortcutLongLabel="@string/hubit_shortcut_scan_long"');
   expect(xml).toContain('hubit://portal?path=%2Fchat');
   expect(xml).not.toContain('android:data="http');
+});
+
+it('adds the QR scan shortcut first with the scan deep link and keeps four shortcuts', () => {
+  const xml = buildHubitShortcutsXml();
+  expect((xml.match(/android:shortcutId=/g) || [])).toHaveLength(4);
+  expect(xml).toContain('android:shortcutId="hubit_scan_qr"');
+  expect(xml.indexOf('hubit_scan_qr')).toBeLessThan(xml.indexOf('hubit_chat'));
+  expect(xml).toContain('android:data="hubit://database?scan=1"');
+  expect(xml).toContain('android:icon="@drawable/hubit_shortcut_scan_qr"');
+  expect(xml).toContain('android:shortcutShortLabel="@string/hubit_shortcut_scan_qr_short"');
+  expect(SCAN_QR_SHORTCUT_DRAWABLE).toContain('<vector');
+});
+
+it('adds Android string resources for the QR scan shortcut', () => {
+  const stringsXml = { resources: {} };
+  addShortcutStringResources(stringsXml);
+  expect(stringsXml.resources.string).toEqual(expect.arrayContaining([
+    expect.objectContaining({ $: { name: 'hubit_shortcut_scan_qr_short' }, _: 'Сканировать QR' }),
+    expect.objectContaining({ $: { name: 'hubit_shortcut_scan_qr_long' }, _: 'Сканировать QR оборудования' }),
+  ]));
 });
 
 it('adds Android string resources required by shortcut labels', () => {

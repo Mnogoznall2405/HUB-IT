@@ -167,16 +167,38 @@ export async function readLocalImageDataUrl(uri: string): Promise<string> {
   return `data:${mime};base64,${base64}`;
 }
 
+// AUD-7: bound the edit cache — keep the newest files by mtime. Two exports in
+// the same millisecond would collide on the Date.now() name, so a sequence
+// suffix keeps every file unique (and the prune has something to bound).
+const EDIT_CACHE_KEEP_FILES = 30;
+let editSequence = 0;
+
+/** LRU-prune the edit cache to the `keep` most recent files; best-effort. */
+function pruneEditCache(directory: Directory, keep = EDIT_CACHE_KEEP_FILES): void {
+  try {
+    const files = directory.list().filter((entry): entry is File => entry instanceof File);
+    if (files.length <= keep) return;
+    files
+      .sort((a, b) => Number(a.lastModified || 0) - Number(b.lastModified || 0))
+      .slice(0, files.length - keep)
+      .forEach((file) => {
+        try { file.delete(); } catch { /* keep the rest */ }
+      });
+  } catch { /* pruning must never break the export */ }
+}
+
 export function writeEditedImageFromDataUrl(dataUrl: string): { uri: string; name: string; mimeType: string; size: number } {
   const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/.exec(String(dataUrl || '').trim());
   if (!match) throw new Error('Некорректный результат редактора');
   const mimeType = match[1] === 'image/png' ? 'image/png' : 'image/jpeg';
   const directory = new Directory(Paths.cache, 'hubit-edits');
   directory.create({ intermediates: true, idempotent: true });
-  const name = `chat-edit-${Date.now()}.${mimeType === 'image/png' ? 'png' : 'jpg'}`;
+  editSequence += 1;
+  const name = `chat-edit-${Date.now()}-${editSequence}.${mimeType === 'image/png' ? 'png' : 'jpg'}`;
   const file = new File(directory, name);
   if (file.exists) file.delete();
   file.write(match[2], { encoding: 'base64' });
+  pruneEditCache(directory);
   return {
     uri: file.uri,
     name,

@@ -3,10 +3,6 @@ import { describe, expect, it, vi } from 'vitest';
 import useChatOptimisticThreadMessages from './useChatOptimisticThreadMessages';
 
 describe('useChatOptimisticThreadMessages', () => {
-  it('exports a default hook function', () => {
-    expect(typeof useChatOptimisticThreadMessages).toBe('function');
-  });
-
   it('createOptimisticTextMessage increments seq ref', async () => {
     const { renderHook } = await import('@testing-library/react');
     const optimisticMessageSeqRef = { current: 0 };

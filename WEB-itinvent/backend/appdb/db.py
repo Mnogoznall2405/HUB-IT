@@ -242,7 +242,7 @@ def _initialize_app_schema_uncached(database_url: str | None = None) -> None:
     # sandbox LLM gateway). Schema-changing code is loaded only by the normal
     # application initialization path; gateway queries fail closed when 0099
     # has not been applied.
-    from backend.db_migrations import upgrade_internal_database
+    from backend.db_migrations import check_internal_database_revision, upgrade_internal_database
 
     engine = get_app_engine(database_url)
     if engine.dialect.name == "postgresql":
@@ -252,7 +252,9 @@ def _initialize_app_schema_uncached(database_url: str | None = None) -> None:
                     "Production APP_DATABASE_URL is not Alembic-initialized; "
                     "run backend Alembic migrations before startup."
                 )
-            upgrade_internal_database(ensure_app_database_configured(database_url), scope="app")
+            # Production never applies migrations on startup: only compare the revision
+            # with the code's head and log a warning (migrations run at release by command).
+            check_internal_database_revision(engine, ensure_app_database_configured(database_url), scope="app")
             return
         if not _postgres_dev_schema_auto_create_enabled():
             if not _postgres_has_alembic_version(engine):

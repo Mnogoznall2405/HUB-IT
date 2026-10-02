@@ -11,6 +11,7 @@ export const DEFAULT_NOTIFICATION_CHANNELS = {
   chat_direct: true,
   chat_group: true,
   chat_task: true,
+  chat_ai: true,
 } as const;
 
 export type NotificationChannels = {
@@ -23,6 +24,7 @@ export type NotificationChannels = {
   chat_direct: boolean;
   chat_group: boolean;
   chat_task: boolean;
+  chat_ai: boolean;
 };
 
 export type MailboxAuthMode = 'stored_credentials' | 'primary_credentials' | 'primary_session';
@@ -180,6 +182,7 @@ export function normalizeNotificationChannels(value: unknown = {}): Notification
     chat_direct: Boolean(source.chat_direct ?? legacyChatEnabled),
     chat_group: Boolean(source.chat_group ?? legacyChatEnabled),
     chat_task: Boolean(source.chat_task ?? legacyChatEnabled),
+    chat_ai: Boolean(source.chat_ai ?? legacyChatEnabled),
   };
 }
 

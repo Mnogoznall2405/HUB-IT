@@ -18,6 +18,12 @@ export type AddressBookAbsence = {
 };
 
 export type AddressBookEntry = {
+  // Stable ZUP key present in snapshot/search payloads; used for favorites
+  // and recents. Deliberately absent only for entries without a ZUP match.
+  employee_code?: string | null;
+  // Present on server-side dismissed-search rows (N5); never stored in the
+  // local snapshot — dismissed employees are server-only.
+  dismissal_date?: string | null;
   full_name?: string | null;
   department?: string | null;
   department_location?: string | null;
@@ -49,6 +55,9 @@ export type PickedEmail = {
 export type AbsenceChipColor = 'error' | 'info' | 'warning' | 'default';
 
 export const SEARCH_DEBOUNCE_MS = 300;
+// N4: local filtering over the in-memory index needs a much shorter delay —
+// the remote fallback search keeps the full SEARCH_DEBOUNCE_MS.
+export const LOCAL_SEARCH_DEBOUNCE_MS = 110;
 export const SEARCH_LIMIT = 50;
 
 export function normalizeText(value: unknown): string {
@@ -233,15 +242,41 @@ export function absenceChipColor(absence: AddressBookAbsence | null | undefined)
 
 export function splitHighlightParts(value: unknown, query: unknown): Array<{ text: string; match: boolean }> {
   const text = normalizeText(value);
-  const terms = normalizeText(query)
-    .split(/\s+/)
-    .map(escapeRegExp)
-    .filter(Boolean);
-  if (!text || terms.length === 0) return text ? [{ text, match: false }] : [];
+  const rawTerms = normalizeText(query).split(/\s+/).filter(Boolean);
+  if (!text || rawTerms.length === 0) return text ? [{ text, match: false }] : [];
 
-  const expression = new RegExp(`(${terms.join('|')})`, 'ig');
-  return text.split(expression).filter((part) => part !== '').map((part) => ({
-    text: part,
-    match: terms.some((term) => new RegExp(`^${term}$`, 'i').test(part)),
-  }));
+  // N4: no `new RegExp` per call — one lowercase pass with leftmost-first
+  // term order, identical to the previous `(t1|t2|...)` split semantics.
+  const lowered = text.toLowerCase();
+  const terms = rawTerms.map((term) => term.toLowerCase());
+  // A few chars change UTF-16 length under toLowerCase ('İ' → 'i̇'), which
+  // would misalign match offsets — map normalized positions back then.
+  let toSource: number[] | null = null;
+  if (lowered.length !== text.length) {
+    const map: number[] = [];
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i].toLowerCase();
+      for (let k = 0; k < ch.length; k++) map.push(i);
+    }
+    if (map.length === lowered.length) toSource = map;
+    else return [{ text, match: false }];
+  }
+  const parts: Array<{ text: string; match: boolean }> = [];
+  let cursor = 0;
+  let partStart = 0;
+  while (cursor < lowered.length) {
+    let matched = '';
+    for (const term of terms) {
+      if (term && lowered.startsWith(term, cursor)) { matched = term; break; }
+    }
+    if (!matched) { cursor += 1; continue; }
+    const origStart = toSource ? toSource[cursor] : cursor;
+    const origEnd = toSource ? toSource[cursor + matched.length - 1] + 1 : cursor + matched.length;
+    if (origStart > partStart) parts.push({ text: text.slice(partStart, origStart), match: false });
+    parts.push({ text: text.slice(origStart, origEnd), match: true });
+    cursor += matched.length;
+    partStart = origEnd;
+  }
+  if (partStart < text.length) parts.push({ text: text.slice(partStart), match: false });
+  return parts;
 }

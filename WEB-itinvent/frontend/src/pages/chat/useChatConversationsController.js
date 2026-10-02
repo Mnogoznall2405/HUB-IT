@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 
 import { chatAPI } from '../../api/client';
 import { sortSidebarConversations } from '../../components/chat/chatHelpers';
@@ -27,6 +27,7 @@ export default function useChatConversationsController({
   conversationsCacheKeyParts,
   conversationsCacheHydratedRef,
   lastConversationsLoadAtRef,
+  loadConversationsRef,
   sidebarScrollRef,
   staleTimeMs = 30_000,
 }) {
@@ -184,6 +185,13 @@ export default function useChatConversationsController({
     staleTimeMs,
     userCacheId,
   ]);
+
+  // R2: keep the shared ref pointing at the real loader — foreground
+  // reconciles and WS-gap catch-ups call it without the function in scope.
+  useEffect(() => {
+    if (!loadConversationsRef) return;
+    loadConversationsRef.current = loadConversations;
+  }, [loadConversations, loadConversationsRef]);
 
   const loadMoreConversations = useCallback(async () => {
     if (!CHAT_FEATURE_ENABLED) return [];

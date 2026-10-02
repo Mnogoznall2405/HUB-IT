@@ -58,7 +58,9 @@ export function parseChatPollBody(body) {
       })
       .filter(Boolean);
     if (!question || options.length < 2) return null;
-    const myIndex = Number(data.my_option_index);
+    const myIndex = data.my_option_index === null || data.my_option_index === undefined
+      ? -1
+      : Number(data.my_option_index);
     return {
       question,
       options,
@@ -84,7 +86,9 @@ export function resolveChatMessagePoll(message) {
       anonymous: Boolean(poll.anonymous),
       closed: Boolean(poll.closed),
       total_voters: Number(poll.total_voters) || 0,
-      my_option_index: Number.isInteger(Number(poll.my_option_index)) && Number(poll.my_option_index) >= 0
+      // Number(null) === 0: «не голосовал» нельзя превращать в «выбран первый вариант».
+      my_option_index: poll.my_option_index !== null && poll.my_option_index !== undefined
+        && Number.isInteger(Number(poll.my_option_index)) && Number(poll.my_option_index) >= 0
         ? Number(poll.my_option_index)
         : null,
     };

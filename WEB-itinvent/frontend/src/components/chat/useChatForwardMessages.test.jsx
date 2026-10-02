@@ -97,7 +97,7 @@ describe('useChatForwardMessages', () => {
     expect(upsertThreadMessages).toHaveBeenCalledWith([
       { id: 'f1', body: 'First' },
       { id: 'f2', body: 'Second' },
-    ]);
+    ], { liveAppear: true });
     expect(syncConversationPreview).toHaveBeenCalledWith('target-1', { id: 'f2', body: 'Second' }, { unread_count: 0 });
   });
 });

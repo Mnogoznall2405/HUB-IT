@@ -1,6 +1,12 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import * as authApi from '../api/authApi';
-import { warmApiConnection } from '../api/client';
+import {
+  isDefinitiveAuthRejection,
+  isNetworkRestrictedRejection,
+  isUserDeactivatedRejection,
+  warmApiConnection,
+} from '../api/client';
 import type { HubUser, LoginResponse, TwoFactorSetupResponse } from '../api/types';
 import * as tokenStore from './tokenStore';
 import { subscribeSessionExpired } from './sessionEvents';
@@ -16,6 +22,7 @@ import { bumpNativeChatThreadHistoryGeneration } from '../chat/nativeChatThreadH
 import {
   disableBiometricLogin,
   enableBiometricLogin,
+  getAppLockSettings,
   getBiometricLoginUserId,
   isBiometricLoginEnabled,
   unlockBiometricLogin,
@@ -29,14 +36,21 @@ export type BiometricUnlockResult = {
 type AuthContextValue = {
   user: HubUser | null;
   loading: boolean;
-  sessionRestoreState: 'idle' | 'checking' | 'unavailable' | 'expired';
+  sessionRestoreState: 'idle' | 'checking' | 'unavailable' | 'expired' | 'deactivated';
   retrySessionRestore: () => void;
   loginChallengeId: string | null;
   biometricEnabled: boolean;
   biometricEnrollmentAvailable: boolean;
   offlineMode: boolean;
+  /** Android reports no usable network at the physical layer. */
+  connectivityOffline: boolean;
+  /** HUB-IT answered JSON 403: the session is valid but this network is not allowed. */
+  sessionNetworkRestricted: boolean;
   vpnActive: boolean;
   offlineCacheKey: string | null;
+  /** App lock is armed for the cold start and still waits for the fingerprint. */
+  appLockPendingUnlock: boolean;
+  markAppLockUnlocked: () => void;
   /** `setup` while native 2FA enrollment is in progress. */
   login: (username: string, password: string) => Promise<LoginResponse>;
   startTwoFactorSetup: () => Promise<TwoFactorSetupResponse>;
@@ -54,7 +68,7 @@ type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 const SESSION_RESTORE_RETRY_DELAY_MS = 400;
-const SESSION_RESTORE_TIMEOUT_MS = 12_000;
+const SESSION_RESTORE_TIMEOUT_MS = 5_000;
 const SESSION_RESTORE_ATTEMPT_TIMEOUT_MS = 4_000;
 const SESSION_RECOVERY_ATTEMPT_TIMEOUT_MS = 5_000;
 
@@ -122,17 +136,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [biometricEnrollmentCode, setBiometricEnrollmentCode] = useState<string | null>(null);
   const [sessionOfflineMode, setSessionOfflineMode] = useState(false);
   const [connectivityOffline, setConnectivityOffline] = useState(false);
+  const [sessionNetworkRestricted, setSessionNetworkRestricted] = useState(false);
   const [connectivityKnownOnline, setConnectivityKnownOnline] = useState(false);
   const [vpnActive, setVpnActive] = useState(false);
   const [offlineCacheKey, setOfflineCacheKey] = useState<string | null>(null);
+  const [appLockPendingUnlock, setAppLockPendingUnlock] = useState(false);
   const lastApiSuccessAtRef = useRef(0);
   const offlineMode = sessionOfflineMode || connectivityOffline;
+  const userId = user ? Number(user.id) : null;
+
+  const markAppLockUnlocked = useCallback(() => {
+    setAppLockPendingUnlock(false);
+  }, []);
 
   const markApiOnline = useCallback(() => {
     setSessionRestoreState('idle');
     lastApiSuccessAtRef.current = Date.now();
     setSessionOfflineMode(false);
     setConnectivityOffline(false);
+    setSessionNetworkRestricted(false);
     setConnectivityKnownOnline(true);
   }, []);
 
@@ -156,8 +178,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await tokenStore.setCachedSessionUser(completed).catch(() => undefined);
   }, []);
 
+  // A deactivated account is wiped like a logout but without any server
+  // request: the backend already closed the session. The mark is stored first
+  // so a wipe started by headless background sync still finishes on the next
+  // cold start.
+  const wipeDeactivatedSession = useCallback(async () => {
+    authGenerationRef.current += 1;
+    restorePending.current = false;
+    chatSocket.disconnect({ reconnect: false, clearSubscriptions: true });
+    setUser(null);
+    setLoginChallengeId(null);
+    setTwoFactorSetupChallengeId(null);
+    setBiometricEnrollmentCode(null);
+    setBiometricEnabled(false);
+    setSessionOfflineMode(false);
+    setOfflineCacheKey(null);
+    setAppLockPendingUnlock(false);
+    setSessionNetworkRestricted(false);
+    setSessionRestoreState('deactivated');
+    setLoading(false);
+    await tokenStore.markSessionDeactivated().catch(() => undefined);
+    await endMobileSession({ contactServer: false }).catch(() => undefined);
+    bumpNativeChatThreadHistoryGeneration();
+  }, []);
+
   useEffect(() => {
     return subscribeSessionExpired(() => {
+      if (tokenStore.isSessionDeactivationMarked()) {
+        if (!logoutPromise.current) void wipeDeactivatedSession();
+        return;
+      }
       authGenerationRef.current += 1;
       restorePending.current = false;
       // An in-flight request can hit a definitive 401 while a user-initiated
@@ -170,6 +220,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setBiometricEnrollmentCode(null);
       setSessionOfflineMode(false);
       setOfflineCacheKey(null);
+      setAppLockPendingUnlock(false);
+      setSessionNetworkRestricted(false);
       setLoading(false);
     });
   }, []);
@@ -194,31 +246,76 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let active = true;
     const generation = authGenerationRef.current;
     const isCurrent = () => active && !logoutPromise.current && generation === authGenerationRef.current;
+    const expireStartupSession = async () => {
+      await tokenStore.clearTokens({ clearOfflineData: false });
+      if (!isCurrent()) return;
+      setUser(null);
+      setSessionOfflineMode(false);
+      setAppLockPendingUnlock(false);
+      setSessionNetworkRestricted(false);
+      setSessionRestoreState('expired');
+    };
     void (async () => {
       try {
         // Warm TCP+TLS while SecureStore reads run; the first authenticated
         // request then skips the handshake.
         warmApiConnection();
-        // The cached session user is deliberately not read here: identity is
-        // only trusted after the network session check, and parsing the cached
-        // blob would just add SecureStore IPC + JSON parse to the cold path.
-        const [biometrics, hasSession, initialConnectivity] = await Promise.all([
+        const [
+          biometrics,
+          hasAccessSession,
+          refreshToken,
+          sessionUserId,
+          cachedUser,
+          appLock,
+          initialConnectivity,
+          deactivationMarked,
+        ] = await Promise.all([
           isBiometricLoginEnabled(),
           tokenStore.hasSession(),
+          tokenStore.getRefreshToken(),
+          tokenStore.getSessionUserId(),
+          tokenStore.getCachedSessionUser(),
+          getAppLockSettings(),
           getNativeConnectivitySnapshot(),
+          tokenStore.readSessionDeactivationMark(),
         ]);
         if (!isCurrent()) return;
+        if (deactivationMarked) {
+          // The deactivation rejection may have been caught by headless
+          // background sync: finish the local wipe now and keep the account
+          // on the login screen. The cached identity is never restored.
+          await wipeDeactivatedSession();
+          return;
+        }
         setBiometricEnabled(biometrics);
+        const hasSession = Boolean(hasAccessSession || refreshToken);
+        const canReachNetwork = !initialConnectivity.available
+          || initialConnectivity.connected || initialConnectivity.online;
         if (initialConnectivity.available) {
-          const canReachNetwork = initialConnectivity.connected || initialConnectivity.online;
           setConnectivityOffline(!canReachNetwork);
           setConnectivityKnownOnline(canReachNetwork);
           setVpnActive(initialConnectivity.transport === 'vpn');
-          if (!canReachNetwork) {
-            setSessionOfflineMode(true);
-            if (hasSession) setSessionRestoreState('unavailable');
-            return;
-          }
+        }
+        const cachedIdentityValid = Boolean(
+          hasSession
+          && cachedUser
+          && sessionUserId !== null
+          && Number(cachedUser.id) === Number(sessionUserId),
+        );
+        if (cachedIdentityValid) {
+          // The saved identity opens the shell immediately — the network is
+          // never awaited. /auth/me keeps validating the session in the
+          // background through the recovery controller below.
+          setUser(cachedUser);
+          setSessionOfflineMode(true);
+          setSessionRestoreState('checking');
+          if (biometrics && appLock.enabled) setAppLockPendingUnlock(true);
+          return;
+        }
+        if (!canReachNetwork) {
+          setSessionOfflineMode(true);
+          if (hasSession) setSessionRestoreState('unavailable');
+          return;
         }
         if (!hasSession) { setSessionRestoreState('idle'); return; }
         setSessionRestoreState('checking');
@@ -233,18 +330,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }, SESSION_RESTORE_TIMEOUT_MS);
         } catch (error) {
           if (!isCurrent()) return;
-          const status = Number(
-            error && typeof error === 'object' && 'response' in error
-              ? (error as { response?: { status?: number } }).response?.status
-              : 0,
-          );
-          if (status === 401 || status === 403) {
-            await tokenStore.clearTokens({ clearOfflineData: false });
-            if (!isCurrent()) return;
-            setUser(null);
-            setSessionOfflineMode(false);
-            setSessionRestoreState('expired');
+          if (isUserDeactivatedRejection(error)) {
+            await wipeDeactivatedSession();
+            return;
+          }
+          if (isDefinitiveAuthRejection(error)) {
+            await expireStartupSession();
           } else {
+            // A JSON 403 («network not allowed for this account») preserves the
+            // stored session exactly like a transport failure — the user gets
+            // the shell back as soon as they return to an allowed network.
+            setSessionNetworkRestricted(isNetworkRestrictedRejection(error));
             setSessionRestoreState('unavailable');
             setUser(null);
             setSessionOfflineMode(true);
@@ -262,62 +358,121 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       active = false;
     };
-  }, [markApiOnline, restoreAttempt]);
+  }, [markApiOnline, restoreAttempt, wipeDeactivatedSession]);
 
   const retrySessionRestore = useCallback(() => {
     if (restorePending.current || user || loginChallengeId) return;
     restorePending.current = true;
     authGenerationRef.current += 1;
     setSessionOfflineMode(false);
+    setSessionNetworkRestricted(false);
     setSessionRestoreState('checking');
     setLoading(true);
     setRestoreAttempt((attempt) => attempt + 1);
   }, [user, loginChallengeId]);
 
+  // Session recovery never gives up while the app is on screen: attempts run
+  // immediately, on every native connectivity event that can reach a network
+  // (including transport/VPN changes), on return to the foreground and on a
+  // growing timer capped at 60 s. The local session ends only on an unambiguous
+  // JSON 401/403 from HUB-IT or when the server reports a different user id.
   useEffect(() => {
-    if (!sessionOfflineMode || !connectivityKnownOnline || logoutPromise.current) return undefined;
-    let active = true;
+    if (!user || !sessionOfflineMode || logoutPromise.current) return undefined;
+    let disposed = false;
     const generation = authGenerationRef.current;
-    const isCurrent = () => active && !logoutPromise.current && generation === authGenerationRef.current;
+    const expectedUserId = userId;
+    const isCurrent = () => !disposed && !logoutPromise.current && generation === authGenerationRef.current;
+    const retryDelaysMs = [2_000, 5_000, 15_000, 30_000, 60_000];
+    let failedAttempts = 0;
+    let inFlight = false;
+    let immediateRequested = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
-    const retryDelays = [0, 2_000, 5_000, 15_000];
+    let appActive = AppState.currentState === 'active';
 
-    const recover = async (attempt: number) => {
+    function clearRetryTimer() {
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+
+    async function expireSessionLocally() {
+      await tokenStore.clearTokens({ clearOfflineData: false });
       if (!isCurrent()) return;
+      setUser(null);
+      setSessionOfflineMode(false);
+      setAppLockPendingUnlock(false);
+      setSessionNetworkRestricted(false);
+      setSessionRestoreState('expired');
+    }
+
+    function scheduleRetry() {
+      if (!appActive || retryTimer || inFlight) return;
+      const delay = retryDelaysMs[Math.min(Math.max(failedAttempts - 1, 0), retryDelaysMs.length - 1)];
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        void runAttempt();
+      }, delay);
+    }
+
+    async function runAttempt() {
+      if (inFlight) { immediateRequested = true; return; }
+      if (!isCurrent()) return;
+      inFlight = true;
+      immediateRequested = false;
       try {
         const me = await authApi.fetchMe({ timeoutMs: SESSION_RECOVERY_ATTEMPT_TIMEOUT_MS });
         if (!isCurrent()) return;
+        if (Number(me.id) !== expectedUserId) {
+          // A session must never silently switch to another identity.
+          await expireSessionLocally();
+          return;
+        }
         setUser(me);
         markApiOnline();
         cacheSessionUserInBackground(me);
       } catch (error) {
         if (!isCurrent()) return;
-        const status = Number(
-          error && typeof error === 'object' && 'response' in error
-            ? (error as { response?: { status?: number } }).response?.status
-            : 0,
-        );
-        if (status === 401 || status === 403) {
-          await tokenStore.clearTokens({ clearOfflineData: false });
-          if (!isCurrent()) return;
-          setUser(null);
-          setSessionOfflineMode(false);
-          setSessionRestoreState('expired');
+        if (isUserDeactivatedRejection(error)) {
+          await wipeDeactivatedSession();
           return;
         }
-        const nextAttempt = attempt + 1;
-        if (nextAttempt < retryDelays.length) {
-          retryTimer = setTimeout(() => { void recover(nextAttempt); }, retryDelays[nextAttempt]);
+        if (isDefinitiveAuthRejection(error)) {
+          await expireSessionLocally();
+          return;
+        }
+        // JSON 403 keeps the session: the account is fine, this network is
+        // not allowed for it — report the restriction and keep retrying.
+        setSessionNetworkRestricted(isNetworkRestrictedRejection(error));
+        failedAttempts += 1;
+      } finally {
+        inFlight = false;
+        if (isCurrent()) {
+          if (immediateRequested) void runAttempt();
+          else scheduleRetry();
         }
       }
-    };
+    }
 
-    void recover(0);
+    setSessionRestoreState('checking');
+    void runAttempt();
+    const connectivitySubscription = subscribeNativeConnectivity((snapshot) => {
+      if (snapshot.connected || snapshot.online) void runAttempt();
+    });
+    const appStateSubscription = AppState.addEventListener('change', (nextState) => {
+      const wasActive = appActive;
+      appActive = nextState === 'active';
+      if (nextState === 'background') {
+        clearRetryTimer();
+        return;
+      }
+      if (nextState === 'active' && !wasActive) void runAttempt();
+    });
     return () => {
-      active = false;
-      if (retryTimer) clearTimeout(retryTimer);
+      disposed = true;
+      clearRetryTimer();
+      connectivitySubscription.remove();
+      appStateSubscription.remove();
     };
-  }, [connectivityKnownOnline, markApiOnline, sessionOfflineMode]);
+  }, [markApiOnline, sessionOfflineMode, userId, wipeDeactivatedSession]);
 
   const beginAuthentication = useCallback(() => {
     if (logoutPromise.current) throw new Error('Выход ещё выполняется. Дождитесь завершения и повторите вход.');
@@ -508,14 +663,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return { user: currentUser, offline: false };
       } catch (error: unknown) {
         assertCurrent();
-        const status = Number(
-          error
-          && typeof error === 'object'
-          && 'response' in error
-            ? (error as { response?: { status?: number } }).response?.status
-            : 0,
-        );
-        if (status === 401 || status === 403) {
+        if (isUserDeactivatedRejection(error)) {
+          await wipeDeactivatedSession();
+          throw new Error('Учётная запись отключена. Обратитесь к администратору.');
+        }
+        if (isDefinitiveAuthRejection(error)) {
           await skipBiometrics();
           throw new Error('Сессия завершена. Войдите по логину и паролю.');
         }
@@ -527,7 +679,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } finally {
       if (generation === authGenerationRef.current) setLoading(false);
     }
-  }, [beginAuthentication, markApiOnline, skipBiometrics]);
+  }, [beginAuthentication, markApiOnline, skipBiometrics, wipeDeactivatedSession]);
 
   const logout = useCallback(async () => {
     if (logoutPromise.current) return logoutPromise.current;
@@ -542,6 +694,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setBiometricEnabled(false);
     setSessionOfflineMode(false);
     setOfflineCacheKey(null);
+    setAppLockPendingUnlock(false);
+    setSessionNetworkRestricted(false);
     })();
     logoutPromise.current = pending;
     try { await pending; }
@@ -563,8 +717,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       biometricEnabled,
       biometricEnrollmentAvailable: Boolean(biometricEnrollmentCode),
       offlineMode,
+      connectivityOffline,
+      sessionNetworkRestricted,
       vpnActive,
       offlineCacheKey,
+      appLockPendingUnlock,
+      markAppLockUnlocked,
       login,
       startTwoFactorSetup,
       verifyTwoFactorSetup,
@@ -587,8 +745,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       biometricEnabled,
       biometricEnrollmentCode,
       offlineMode,
+      connectivityOffline,
+      sessionNetworkRestricted,
       vpnActive,
       offlineCacheKey,
+      appLockPendingUnlock,
+      markAppLockUnlocked,
       login,
       startTwoFactorSetup,
       verifyTwoFactorSetup,

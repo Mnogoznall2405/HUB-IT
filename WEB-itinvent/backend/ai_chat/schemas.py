@@ -128,6 +128,10 @@ class AiConversationStatusResponse(BaseModel):
     run_id: Optional[str] = None
     error_text: Optional[str] = None
     updated_at: Optional[str] = None
+    # R36: серверное «сейчас» — клиент считает возраст запуска без перекоса часов.
+    server_now: Optional[str] = None
+    # R31: агент выключен и беседу некому забрать (OpenCode) — только чтение.
+    agent_read_only: bool = False
 
 
 class AiConversationUpdateRequest(BaseModel):

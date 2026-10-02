@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
 
@@ -18,6 +19,12 @@ DEFAULT_1C_SERVER = "tmn-srv-1c-01.zsgp.corp,tmn-srv-1c-02.zsgp.corp"
 DEFAULT_1C_REF = "zar31"
 DEFAULT_SYNC_INTERVAL_SECONDS = 14_400
 CACHE_FILE = "address_book_cache.json"
+# Parsed payload is reused between requests; staleness is bounded by the
+# document version probe and, for stores without one, by this TTL.
+PARSED_CACHE_TTL_SECONDS = 30.0
+# Sentinel for "the store cannot report a document version" (probe missing
+# or failing) — in that mode the TTL above governs cache reuse.
+_VERSION_PROBE_UNSUPPORTED = object()
 # Open-ended ZUP states without ReturnsOn older than this are treated as stale noise.
 OPEN_ABSENCE_MAX_AGE_DAYS = 180
 ABSENCE_KIND_LABELS = {
@@ -508,6 +515,35 @@ def dismissed_employee_query(surname_count: int) -> str:
 """
 
 
+def dismissed_employee_full_query() -> str:
+    """Full dismissed directory (all employees with ДатаУвольнения set)."""
+    return """
+ВЫБРАТЬ РАЗЛИЧНЫЕ
+    ПРЕДСТАВЛЕНИЕ(Текущие.Сотрудник) КАК FullName,
+    Текущие.Сотрудник КАК EmployeeRef,
+    Текущие.Сотрудник.Код КАК EmployeeCode,
+    Текущие.ФизическоеЛицо.Отчество КАК MiddleName,
+    Текущие.ДатаПриема КАК HireDate,
+    Текущие.ДатаУвольнения КАК DismissalDate,
+    ПРЕДСТАВЛЕНИЕ(Текущие.ТекущееПодразделение) КАК Department,
+    Текущие.ТекущееПодразделение.Код КАК DepartmentCode,
+    ПодразделенияДополнительныеРеквизиты.Значение КАК DepartmentLocation,
+    ПРЕДСТАВЛЕНИЕ(Текущие.ТекущаяДолжность) КАК Position
+ИЗ
+    РегистрСведений.ТекущиеКадровыеДанныеСотрудников КАК Текущие
+        ЛЕВОЕ СОЕДИНЕНИЕ Справочник.ПодразделенияОрганизаций.ДополнительныеРеквизиты КАК ПодразделенияДополнительныеРеквизиты
+        ПО ПодразделенияДополнительныеРеквизиты.Ссылка = Текущие.ТекущееПодразделение
+            И ПодразделенияДополнительныеРеквизиты.Свойство.Наименование = "Местонахождение (Подразделения)"
+ГДЕ
+    Текущие.ДатаУвольнения <> ДАТАВРЕМЯ(1, 1, 1)
+    И Текущие.ДатаУвольнения <= &НаДату
+    И Текущие.ДатаПриема <> ДАТАВРЕМЯ(1, 1, 1)
+    И Текущие.Сотрудник <> ЗНАЧЕНИЕ(Справочник.Сотрудники.ПустаяСсылка)
+"""
+# NB: без УПОРЯДОЧИТЬ — в 1С запрещена сортировка по ПРЕДСТАВЛЕНИЕ(..).
+# Порядок задаётся в Python (_load_items_from_1c сортирует dismissed_items).
+
+
 def dismissed_employee_history_query() -> str:
     return """
 ВЫБРАТЬ
@@ -621,6 +657,7 @@ def employee_query() -> str:
 
 
 def phones_query() -> str:
+    """Contact phones for all employees (active + dismissed)."""
     return """
 ВЫБРАТЬ РАЗЛИЧНЫЕ
     Текущие.Сотрудник.Код КАК EmployeeCode,
@@ -633,8 +670,7 @@ def phones_query() -> str:
         ВНУТРЕННЕЕ СОЕДИНЕНИЕ Справочник.ФизическиеЛица.КонтактнаяИнформация КАК Контакты
         ПО Контакты.Ссылка = Текущие.ФизическоеЛицо
 ГДЕ
-    Текущие.ДатаУвольнения = ДАТАВРЕМЯ(1, 1, 1)
-    И Текущие.ДатаПриема <> ДАТАВРЕМЯ(1, 1, 1)
+    Текущие.ДатаПриема <> ДАТАВРЕМЯ(1, 1, 1)
     И Текущие.Сотрудник <> ЗНАЧЕНИЕ(Справочник.Сотрудники.ПустаяСсылка)
     И (
         Контакты.Вид.Наименование ПОДОБНО "%телефон%"
@@ -644,6 +680,7 @@ def phones_query() -> str:
 
 
 def emails_query() -> str:
+    """Contact emails for all employees (active + dismissed)."""
     return """
 ВЫБРАТЬ РАЗЛИЧНЫЕ
     Текущие.Сотрудник.Код КАК EmployeeCode,
@@ -655,8 +692,7 @@ def emails_query() -> str:
         ВНУТРЕННЕЕ СОЕДИНЕНИЕ Справочник.ФизическиеЛица.КонтактнаяИнформация КАК Контакты
         ПО Контакты.Ссылка = Текущие.ФизическоеЛицо
 ГДЕ
-    Текущие.ДатаУвольнения = ДАТАВРЕМЯ(1, 1, 1)
-    И Текущие.ДатаПриема <> ДАТАВРЕМЯ(1, 1, 1)
+    Текущие.ДатаПриема <> ДАТАВРЕМЯ(1, 1, 1)
     И Текущие.Сотрудник <> ЗНАЧЕНИЕ(Справочник.Сотрудники.ПустаяСсылка)
     И (
         Контакты.Вид.Наименование = "Email"
@@ -903,13 +939,193 @@ def env_positive_int(name: str, default: int, minimum: int) -> int:
         return max(int(default), minimum)
 
 
+def _detach_subtree(value: Any) -> Any:
+    """Deep-copy dict/list subtrees so callers cannot mutate the shared cache."""
+    if isinstance(value, dict):
+        return {key: _detach_subtree(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_detach_subtree(item) for item in value]
+    return value
+
+
+class _SearchEntry:
+    """Precomputed normalized strings for one cache item, built once per
+    document version. Public and restricted (personal) parts stay in separate
+    slots so permission-gated fields never leak into public matching."""
+
+    __slots__ = (
+        "item",
+        "fn",
+        "ec",
+        "dep",
+        "depcode",
+        "loc",
+        "pos",
+        "blob_pub",
+        "pt_pub",
+        "pd_pub",
+        "et_pub",
+        "ea_pub",
+        "bt_res_ph",
+        "pt_res",
+        "pd_res",
+        "bt_res_em",
+        "et_res",
+        "ea_res",
+        "born",
+    )
+
+
+def _contact_dicts(value: Any) -> list[dict[str, Any]]:
+    return [entry for entry in (value or []) if isinstance(entry, dict)]
+
+
+def _build_index_entry(item: dict[str, Any], personal_by_code: dict[str, Any]) -> _SearchEntry:
+    entry = _SearchEntry()
+    entry.item = item
+    entry.fn = normalize_search_text(item.get("full_name"))
+    entry.ec = normalize_search_text(item.get("employee_code"))
+    entry.dep = normalize_search_text(item.get("department"))
+    entry.depcode = normalize_search_text(item.get("department_code"))
+    entry.loc = normalize_search_text(item.get("department_location"))
+    entry.pos = normalize_search_text(item.get("position"))
+
+    work_phones = _contact_dicts(item.get("work_phones"))
+    work_emails = _contact_dicts(item.get("work_emails"))
+    personal_phones = _contact_dicts(item.get("personal_phones"))
+    personal_emails = _contact_dicts(item.get("personal_emails"))
+
+    public_parts = [
+        entry.fn,
+        entry.dep,
+        entry.depcode,
+        entry.loc,
+        entry.pos,
+        entry.ec,
+        normalize_search_text(item.get("office_room")),
+        normalize_search_text(item.get("workplace_number")),
+        normalize_search_text(item.get("workplace_id")),
+        normalize_search_text(item.get("office_address")),
+        normalize_search_text(item.get("middle_name")),
+    ]
+    public_parts.extend(
+        normalize_search_text(phone.get("value")) for phone in work_phones
+    )
+    public_parts.extend(
+        normalize_search_text(phone.get("kind")) for phone in work_phones
+    )
+    public_parts.extend(
+        normalize_search_text(email.get("value")) for email in work_emails
+    )
+    public_parts.extend(
+        normalize_search_text(email.get("kind")) for email in work_emails
+    )
+    entry.blob_pub = " ".join(part for part in public_parts if part)
+
+    entry.bt_res_ph = " ".join(
+        part
+        for part in (
+            [normalize_search_text(phone.get("value")) for phone in personal_phones]
+            + [normalize_search_text(phone.get("kind")) for phone in personal_phones]
+        )
+        if part
+    )
+    entry.bt_res_em = " ".join(
+        part
+        for part in (
+            [normalize_search_text(email.get("value")) for email in personal_emails]
+            + [normalize_search_text(email.get("kind")) for email in personal_emails]
+        )
+        if part
+    )
+
+    entry.pt_pub = " ".join(
+        part for part in (normalize_search_text(phone.get("value")) for phone in work_phones) if part
+    )
+    entry.pd_pub = " ".join(
+        part for part in (normalize_phone(phone.get("value", "")) for phone in work_phones) if part
+    )
+    entry.et_pub = " ".join(
+        part for part in (normalize_search_text(email.get("value")) for email in work_emails) if part
+    )
+    entry.ea_pub = " ".join(
+        part for part in (normalize_email(email.get("value", "")) for email in work_emails) if part
+    )
+    entry.pt_res = " ".join(
+        part for part in (normalize_search_text(phone.get("value")) for phone in personal_phones) if part
+    )
+    entry.pd_res = " ".join(
+        part for part in (normalize_phone(phone.get("value", "")) for phone in personal_phones) if part
+    )
+    entry.et_res = " ".join(
+        part for part in (normalize_search_text(email.get("value")) for email in personal_emails) if part
+    )
+    entry.ea_res = " ".join(
+        part for part in (normalize_email(email.get("value", "")) for email in personal_emails) if part
+    )
+
+    personal = personal_by_code.get(normalize_text(item.get("employee_code")))
+    entry.born = (
+        _born_date(personal.get("date_of_birth")) if isinstance(personal, dict) else None
+    )
+    return entry
+
+
+def _born_date(value: Any) -> date | None:
+    """Parse date_of_birth once at index build (calculate_age equivalent)."""
+    text = normalize_text(value)[:10]
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _age_from_born(born: date | None, today: date) -> int | None:
+    if born is None:
+        return None
+    age = today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+    return age if 0 <= age <= 120 else None
+
+
+def _build_search_index(document: dict[str, Any]) -> dict[str, Any]:
+    """Precompute normalized match/score strings for both item lists.
+
+    Kept next to the parsed cache and keyed by object identity — the index is
+    dropped whenever the cached document is replaced or invalidated.
+    """
+    personal = document.get("personal_by_code")
+    personal_map = personal if isinstance(personal, dict) else {}
+    return {
+        "document": document,
+        "items": [
+            _build_index_entry(item, personal_map)
+            for item in document.get("items") or []
+            if isinstance(item, dict)
+        ],
+        "dismissed_items": [
+            _build_index_entry(item, personal_map)
+            for item in document.get("dismissed_items") or []
+            if isinstance(item, dict)
+        ],
+    }
+
+
 class AddressBookService:
     def __init__(self, data_manager: JSONDataManager | None = None) -> None:
         self.data_manager = data_manager or JSONDataManager()
         self._sync_lock = threading.Lock()
+        self._cache_lock = threading.Lock()
+        self._cached_document: dict[str, Any] | None = None
+        self._cached_version: str | None = None
+        self._cache_loaded_at = 0.0
+        # Version-keyed search index; lives next to the parsed document and is
+        # dropped whenever the document is re-parsed or invalidated.
+        self._search_index: dict[str, Any] | None = None
 
-    def load_cache(self) -> dict[str, Any]:
-        payload = self.data_manager.load_json(CACHE_FILE, default_content=empty_cache())
+    @staticmethod
+    def _normalize_cache_payload(payload: Any) -> dict[str, Any]:
         if not isinstance(payload, dict):
             return empty_cache()
         result = empty_cache()
@@ -918,10 +1134,73 @@ class AddressBookService:
             result["items"] = []
         if not isinstance(result.get("dismissed_items"), list):
             result["dismissed_items"] = []
-        personal = result.get("personal_by_code")
-        if not isinstance(personal, dict):
+        if not isinstance(result.get("personal_by_code"), dict):
             result["personal_by_code"] = {}
         return result
+
+    def _probe_cache_version(self) -> Any:
+        """Cheap document version marker; _VERSION_PROBE_UNSUPPORTED when unavailable."""
+        getter = getattr(self.data_manager, "get_document_version", None)
+        if not callable(getter):
+            return _VERSION_PROBE_UNSUPPORTED
+        try:
+            value = getter(CACHE_FILE)
+        except NotImplementedError:
+            return _VERSION_PROBE_UNSUPPORTED
+        except Exception:
+            logger.warning("Address book cache version probe failed", exc_info=True)
+            return _VERSION_PROBE_UNSUPPORTED
+        return str(value) if value is not None else ""
+
+    def invalidate_parsed_cache(self) -> None:
+        """Drop the parsed document copy (called after writes and by tests)."""
+        with self._cache_lock:
+            self._cached_document = None
+            self._cached_version = None
+            self._cache_loaded_at = 0.0
+            self._search_index = None
+
+    def _load_cache_locked(self, probe: Any) -> dict[str, Any]:
+        """Return the canonical parsed document; caller must hold _cache_lock."""
+        cached = self._cached_document
+        if cached is not None:
+            if probe is _VERSION_PROBE_UNSUPPORTED:
+                if time.monotonic() - self._cache_loaded_at < PARSED_CACHE_TTL_SECONDS:
+                    return cached
+            elif probe == self._cached_version:
+                return cached
+        normalized = self._normalize_cache_payload(
+            self.data_manager.load_json(CACHE_FILE, default_content=empty_cache())
+        )
+        self._cached_document = normalized
+        self._cached_version = None if probe is _VERSION_PROBE_UNSUPPORTED else probe
+        self._cache_loaded_at = time.monotonic()
+        self._search_index = None
+        return normalized
+
+    def load_cache(self) -> dict[str, Any]:
+        probe = self._probe_cache_version()
+        with self._cache_lock:
+            # Callers may mutate top-level keys (sync error bookkeeping), so
+            # hand out a shallow copy; nested structures are read-only by
+            # convention across internal consumers. Public item dictionaries
+            # are detached per call — see _detach_subtree at the serializers.
+            return dict(self._load_cache_locked(probe))
+
+    def _load_search_context(self, source_key: str) -> tuple[dict[str, Any], list[_SearchEntry]]:
+        """Snapshot of the parsed cache plus the version-keyed search index.
+
+        Both are produced under one lock so the index always refers to the
+        exact document the caller sees.
+        """
+        probe = self._probe_cache_version()
+        with self._cache_lock:
+            document = self._load_cache_locked(probe)
+            index = self._search_index
+            if index is None or index["document"] is not document:
+                index = _build_search_index(document)
+                self._search_index = index
+            return dict(document), index[source_key]
 
     def get_person_by_code(self, employee_code: str) -> dict[str, Any] | None:
         code = normalize_text(employee_code)
@@ -931,7 +1210,7 @@ class AddressBookService:
             if not isinstance(item, dict):
                 continue
             if normalize_text(item.get("employee_code")) == code:
-                return item
+                return _detach_subtree(item)
         return None
 
     def get_personal_by_codes(self, codes: Iterable[str] | None = None) -> dict[str, dict[str, str]]:
@@ -962,6 +1241,9 @@ class AddressBookService:
 
     def save_cache(self, payload: dict[str, Any]) -> None:
         self.data_manager.save_json(CACHE_FILE, payload)
+        # The row was rewritten; the next load must re-read + re-parse and
+        # must not match the stale version marker.
+        self.invalidate_parsed_cache()
 
     def get_status(self) -> dict[str, Any]:
         cache = self.load_cache()
@@ -969,6 +1251,9 @@ class AddressBookService:
             "count": len(cache.get("items") or []),
             "dismissed_count": len(cache.get("dismissed_items") or []),
             "updated_at": normalize_text(cache.get("updated_at")),
+            "dismissed_updated_at": normalize_text(
+                cache.get("dismissed_updated_at") or cache.get("updated_at")
+            ),
             "last_attempt_at": normalize_text(cache.get("last_attempt_at")),
             "last_error": normalize_text(cache.get("last_error")),
             "sync_in_progress": self._sync_lock.locked(),
@@ -1030,14 +1315,18 @@ class AddressBookService:
         limit: int = 50,
         *,
         offset: int = 0,
-        include_age: bool = True,
+        department: str | None = None,
+        city: str | None = None,
+        employee_codes: Iterable[str] | None = None,
+        include_age: bool = False,
         include_hire_date: bool = False,
         include_inn: bool = False,
-        include_personal_emails: bool = True,
-        include_personal_phones: bool = True,
+        include_personal_emails: bool = False,
+        include_personal_phones: bool = False,
+        dismissed: bool = False,
     ) -> dict[str, Any]:
-        cache = self.load_cache()
-        items = [item for item in cache.get("items") or [] if isinstance(item, dict)]
+        source_key = "dismissed_items" if dismissed else "items"
+        cache, entries = self._load_search_context(source_key)
         personal_by_code = cache.get("personal_by_code")
         if not isinstance(personal_by_code, dict):
             personal_by_code = {}
@@ -1045,43 +1334,57 @@ class AddressBookService:
         limited = max(1, min(int(limit or 50), 200))
         safe_offset = max(0, int(offset or 0))
 
-        if tokens:
-            def item_age(item: dict[str, Any]) -> int | None:
-                if not include_age:
-                    return None
-                return self._search_age(item, personal_by_code)
+        # Phase C: exact-match filters run before scoring and pagination so
+        # total/has_more reflect the filtered set.
+        code_keys = {
+            normalize_search_text(code)
+            for code in (employee_codes or [])
+            if normalize_text(code)
+        }
+        if code_keys:
+            entries = [entry for entry in entries if entry.ec in code_keys]
+        department_key = normalize_search_text(department)
+        if department_key:
+            entries = [entry for entry in entries if entry.dep == department_key]
+        city_key = normalize_search_text(city)
+        if city_key:
+            entries = [entry for entry in entries if entry.loc == city_key]
 
-            items = [
-                item
-                for item in items
-                if self._matches_query(
-                    item,
-                    tokens,
+        if tokens:
+            # Query-invariant token forms are prepared once — the entry loop
+            # below runs them against 50k+ records.
+            prepared = [
+                (token, normalize_phone(token), normalize_email(token), parse_age_token(token))
+                for token in tokens
+            ]
+            today = date.today()
+            scored: list[tuple[int, _SearchEntry]] = []
+            for entry in entries:
+                age = _age_from_born(entry.born, today) if include_age else None
+                if self._entry_matches_query(
+                    entry,
+                    prepared,
                     include_personal_emails=include_personal_emails,
                     include_personal_phones=include_personal_phones,
-                    age=item_age(item),
-                )
-            ]
-            items.sort(
-                key=lambda item: (
-                    -self._query_score(
-                        item,
-                        tokens,
-                        include_personal_emails=include_personal_emails,
-                        include_personal_phones=include_personal_phones,
-                        age=item_age(item),
-                    ),
-                    normalize_search_text(item.get("full_name")),
-                    normalize_search_text(item.get("employee_code")),
-                )
-            )
+                    age=age,
+                ):
+                    scored.append(
+                        (
+                            self._entry_query_score(
+                                entry,
+                                prepared,
+                                include_personal_emails=include_personal_emails,
+                                include_personal_phones=include_personal_phones,
+                                age=age,
+                            ),
+                            entry,
+                        )
+                    )
+            scored.sort(key=lambda pair: (-pair[0], pair[1].fn, pair[1].ec))
+            items = [entry.item for _score, entry in scored]
         else:
-            items.sort(
-                key=lambda item: (
-                    normalize_search_text(item.get("full_name")),
-                    normalize_search_text(item.get("employee_code")),
-                )
-            )
+            entries = sorted(entries, key=lambda entry: (entry.fn, entry.ec))
+            items = [entry.item for entry in entries]
 
         return {
             "items": [
@@ -1100,22 +1403,61 @@ class AddressBookService:
             "limit": limited,
             "offset": safe_offset,
             "has_more": safe_offset + limited < len(items),
-            "updated_at": normalize_text(cache.get("updated_at")),
+            "dismissed": bool(dismissed),
+            "updated_at": normalize_text(
+                cache.get("dismissed_updated_at") if dismissed else cache.get("updated_at")
+            ) or normalize_text(cache.get("updated_at")),
+            "last_error": normalize_text(cache.get("last_error")),
+        }
+
+    def list_filters(self, *, dismissed: bool = False) -> dict[str, Any]:
+        """Distinct departments/cities with counts for the C2 filter UI.
+
+        Only work directory fields are aggregated — personal data is never
+        part of the response.
+        """
+        cache = self.load_cache()
+        source_key = "dismissed_items" if dismissed else "items"
+        items = [item for item in cache.get(source_key) or [] if isinstance(item, dict)]
+
+        def collect(field: str) -> list[dict[str, Any]]:
+            by_key: dict[str, dict[str, Any]] = {}
+            for item in items:
+                name = normalize_text(item.get(field))
+                if not name:
+                    continue
+                key = normalize_search_text(name)
+                bucket = by_key.get(key)
+                if bucket is None:
+                    by_key[key] = {"name": name, "count": 1}
+                else:
+                    bucket["count"] += 1
+            return sorted(by_key.values(), key=lambda row: normalize_search_text(row["name"]))
+
+        return {
+            "departments": collect("department"),
+            "cities": collect("department_location"),
+            "dismissed": bool(dismissed),
+            "updated_at": normalize_text(
+                cache.get("dismissed_updated_at") if dismissed else cache.get("updated_at")
+            ) or normalize_text(cache.get("updated_at")),
             "last_error": normalize_text(cache.get("last_error")),
         }
 
     def snapshot(
         self,
         *,
-        include_age: bool = True,
+        include_age: bool = False,
         include_hire_date: bool = False,
         include_inn: bool = False,
-        include_personal_emails: bool = True,
-        include_personal_phones: bool = True,
+        include_personal_emails: bool = False,
+        include_personal_phones: bool = False,
+        dismissed: bool = False,
     ) -> dict[str, Any]:
         """Return one permission-filtered, internally consistent directory revision."""
         cache = self.load_cache()
-        items = [item for item in cache.get("items") or [] if isinstance(item, dict)]
+        source_key = "dismissed_items" if dismissed else "items"
+        items = [item for item in cache.get(source_key) or [] if isinstance(item, dict)]
         items.sort(
             key=lambda item: (
                 normalize_search_text(item.get("full_name")),
@@ -1125,6 +1467,10 @@ class AddressBookService:
         personal_by_code = cache.get("personal_by_code")
         if not isinstance(personal_by_code, dict):
             personal_by_code = {}
+        # R2: rows are fully detached like search() results — the measured
+        # deep-detach cost over 51k records is within noise of the shallow
+        # serializer (~0.6 s p50 either way), so snapshot keeps the same
+        # mutation-safety guarantee instead of a read-only carve-out.
         public_items = [
             self._serialize_public_search_item(
                 item,
@@ -1143,7 +1489,10 @@ class AddressBookService:
             "limit": len(public_items),
             "offset": 0,
             "has_more": False,
-            "updated_at": normalize_text(cache.get("updated_at")),
+            "dismissed": bool(dismissed),
+            "updated_at": normalize_text(
+                cache.get("dismissed_updated_at") if dismissed else cache.get("updated_at")
+            ) or normalize_text(cache.get("updated_at")),
             "last_error": normalize_text(cache.get("last_error")),
         }
 
@@ -1152,13 +1501,15 @@ class AddressBookService:
         item: dict[str, Any],
         personal_by_code: dict[str, Any],
         *,
-        include_age: bool = True,
+        include_age: bool = False,
         include_hire_date: bool = False,
         include_inn: bool = False,
-        include_personal_emails: bool = True,
-        include_personal_phones: bool = True,
+        include_personal_emails: bool = False,
+        include_personal_phones: bool = False,
     ) -> dict[str, Any]:
-        public_item = dict(item)
+        # Deep-copy so callers mutating nested contact lists/dicts cannot
+        # corrupt the shared parsed cache (R2).
+        public_item = _detach_subtree(item)
         for key in PERSONAL_CACHE_KEYS:
             public_item.pop(key, None)
         public_item.pop("age", None)
@@ -1189,8 +1540,8 @@ class AddressBookService:
         item: dict[str, Any],
         tokens: list[str],
         *,
-        include_personal_emails: bool = True,
-        include_personal_phones: bool = True,
+        include_personal_emails: bool = False,
+        include_personal_phones: bool = False,
         age: int | None = None,
     ) -> bool:
         phones = list(item.get("work_phones") or [])
@@ -1327,13 +1678,107 @@ class AddressBookService:
             return None
         return calculate_age(personal.get("date_of_birth"))
 
+    def _entry_matches_query(
+        self,
+        entry: _SearchEntry,
+        prepared_tokens: list[tuple[str, str, str, tuple[int, int] | None]],
+        *,
+        include_personal_emails: bool = False,
+        include_personal_phones: bool = False,
+        age: int | None = None,
+    ) -> bool:
+        """Index-based equivalent of _matches_query over precomputed strings.
+
+        ``prepared_tokens`` items are ``(token, phone_form, email_form,
+        age_range)`` — the query-invariant normalizations are hoisted out of
+        the per-record loop.
+        """
+        for token, token_phone, token_email, age_range in prepared_tokens:
+            if token in entry.blob_pub:
+                continue
+            if include_personal_phones and token in entry.bt_res_ph:
+                continue
+            if include_personal_emails and token in entry.bt_res_em:
+                continue
+            if token_phone and (
+                token_phone in entry.pd_pub
+                or (include_personal_phones and token_phone in entry.pd_res)
+            ):
+                continue
+            if token_email and (
+                token_email in entry.ea_pub
+                or (include_personal_emails and token_email in entry.ea_res)
+            ):
+                continue
+            if age_range is not None and age is not None and age_range[0] <= age <= age_range[1]:
+                continue
+            return False
+        return True
+
+    @staticmethod
+    def _indexed_field_score(text: str, tokens: list[str], contains_score: int, prefix_score: int | None = None) -> int:
+        if not text:
+            return 0
+        score = 0
+        for token in tokens:
+            if token not in text:
+                continue
+            if prefix_score is not None and text.startswith(token):
+                score += prefix_score
+            else:
+                score += contains_score
+        return score
+
+    def _entry_query_score(
+        self,
+        entry: _SearchEntry,
+        prepared_tokens: list[tuple[str, str, str, tuple[int, int] | None]],
+        *,
+        include_personal_emails: bool = False,
+        include_personal_phones: bool = False,
+        age: int | None = None,
+    ) -> int:
+        """Index-based equivalent of _query_score over precomputed strings."""
+        raw_tokens = [token for token, _phone, _email, _age in prepared_tokens]
+        score = (
+            self._indexed_field_score(entry.fn, raw_tokens, contains_score=120, prefix_score=160)
+            + self._indexed_field_score(entry.pos, raw_tokens, contains_score=45)
+            + self._indexed_field_score(entry.dep, raw_tokens, contains_score=35)
+            + self._indexed_field_score(entry.depcode, raw_tokens, contains_score=50, prefix_score=70)
+            + self._indexed_field_score(entry.ec, raw_tokens, contains_score=40, prefix_score=60)
+            + self._indexed_field_score(entry.loc, raw_tokens, contains_score=30)
+        )
+        for token, token_phone, _email, _age in prepared_tokens:
+            if token_phone and (
+                token_phone in entry.pd_pub
+                or (include_personal_phones and token_phone in entry.pd_res)
+            ):
+                score += 35
+                continue
+            if token in entry.pt_pub or (include_personal_phones and token in entry.pt_res):
+                score += 20
+        for token, _phone, token_email, _age in prepared_tokens:
+            if token_email and (
+                token_email in entry.ea_pub
+                or (include_personal_emails and token_email in entry.ea_res)
+            ):
+                score += 40
+                continue
+            if token in entry.et_pub or (include_personal_emails and token in entry.et_res):
+                score += 25
+        if age is not None:
+            for _token, _phone, _email, age_range in prepared_tokens:
+                if age_range is not None and age_range[0] <= age <= age_range[1]:
+                    score += AGE_MATCH_SCORE
+        return score
+
     def _query_score(
         self,
         item: dict[str, Any],
         tokens: list[str],
         *,
-        include_personal_emails: bool = True,
-        include_personal_phones: bool = True,
+        include_personal_emails: bool = False,
+        include_personal_phones: bool = False,
         age: int | None = None,
     ) -> int:
         phones = list(item.get("work_phones") or [])
@@ -1376,7 +1821,7 @@ class AddressBookService:
         ]
         matched.sort(key=lambda item: normalize_search_text(item.get("full_name")))
         limited = max(1, min(int(limit or 500), 2000))
-        return matched[:limited]
+        return [_detach_subtree(item) for item in matched[:limited]]
 
     def list_people_by_department_names(
         self,
@@ -1401,7 +1846,7 @@ class AddressBookService:
                 matched.append(item)
         matched.sort(key=lambda item: normalize_search_text(item.get("full_name")))
         limited = max(1, min(int(limit or 500), 2000))
-        return matched[:limited]
+        return [_detach_subtree(item) for item in matched[:limited]]
 
     def list_department_names(self, query: str = "", limit: int = 50) -> dict[str, Any]:
         cache = self.load_cache()
@@ -1640,9 +2085,16 @@ class AddressBookService:
             }
             dismissed_items: list[dict[str, Any]] = []
             for employee in dismissed_employees:
-                employee["employee_code"] = employee.pop("_employee_code", "")
+                employee_code = employee.pop("_employee_code", "")
+                employee["employee_code"] = employee_code
                 if normalize_search_text(employee.get("full_name")) in active_names:
                     continue
+                employee_phones = phones.get(employee_code, {"work": [], "personal": []})
+                employee_emails = emails.get(employee_code, {"work": [], "personal": []})
+                employee["work_phones"] = employee_phones.get("work", [])
+                employee["personal_phones"] = employee_phones.get("personal", [])
+                employee["work_emails"] = employee_emails.get("work", [])
+                employee["personal_emails"] = employee_emails.get("personal", [])
                 dismissed_items.append(employee)
             dismissed_items.sort(
                 key=lambda item: (
@@ -1713,22 +2165,18 @@ class AddressBookService:
         return self._read_employee_selection(connection, selection)
 
     def _load_dismissed_employees(self, connection: Any) -> list[dict[str, Any]]:
-        surnames = self._dismissed_candidate_surnames()
-        rows: list[dict[str, Any]] = []
-        for offset in range(0, len(surnames), 50):
-            batch = surnames[offset : offset + 50]
-            parameters = {"НаДату": datetime.now()}
-            parameters.update({
-                f"Фамилия{index}": f"{surname} %"
-                for index, surname in enumerate(batch)
-            })
-            selection = execute_query(
-                connection,
-                dismissed_employee_query(len(batch)),
-                parameters=parameters,
-            )
-            rows.extend(self._read_employee_selection(connection, selection))
+        selection = execute_query(
+            connection,
+            dismissed_employee_full_query(),
+            parameters={"НаДату": datetime.now()},
+        )
+        rows = self._read_employee_selection(connection, selection)
         self._enrich_dismissed_employee_history(connection, rows)
+        for row in rows:
+            row.setdefault("work_phones", [])
+            row.setdefault("personal_phones", [])
+            row.setdefault("work_emails", [])
+            row.setdefault("personal_emails", [])
         return rows
 
     @staticmethod

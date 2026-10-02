@@ -261,13 +261,17 @@ export function useInboxActions({
 
   // F-INBOX-SWIPE: deep right swipe marks the conversation read (the server
   // has no mark-as-unread; unread badge flip is optimistic).
+  // CHAT-INBOX-01: mark-read требует id последнего сообщения. Без него бейдж
+  // не обнуляем — запрос был бы отклонён сервером, а бейдж вернулся бы на refresh.
   const toggleReadConversation = useCallback(async (item: ChatConversationSummary) => {
     if (Number(item.unread_count || 0) <= 0) return;
+    const lastMessageId = String(item.last_message_id || '').trim();
+    if (!lastMessageId) return;
     setItems((current) => current.map((row) => (
       row.id === item.id ? { ...row, unread_count: 0 } : row
     )));
     try {
-      await chatApi.markConversationRead(item.id);
+      await chatApi.markConversationRead(item.id, lastMessageId);
       if (!mountedRef.current) return;
     } catch (cause) {
       if (mountedRef.current) {
@@ -290,6 +294,7 @@ export function useInboxActions({
     try {
       if (workspace === 'ai') {
         const aiBots = await chatApi.getAiBots();
+        if (!mountedRef.current) return;
         setUsers([]);
         setBots(aiBots);
         setNewChatOpen(true);
@@ -299,16 +304,18 @@ export function useInboxActions({
         chatApi.getChatUsers(),
         chatApi.getAiBots().catch(() => []),
       ]);
+      if (!mountedRef.current) return;
       setUsers(chatUsers);
       setBots(aiBots);
       setNewChatOpen(true);
     } catch (cause) {
+      if (!mountedRef.current) return;
       showNativeToast(
         workspace === 'ai' ? 'Не удалось открыть AI-чат' : 'Не удалось создать диалог',
         formatApiError(cause, 'Повторите попытку'),
       );
     }
-  }, [workspace]);
+  }, [mountedRef, workspace]);
 
   const searchNewChatUsers = useCallback((query: string) => (
     chatApi.getChatUsers({ query, limit: 50 })

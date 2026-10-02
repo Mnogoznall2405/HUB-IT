@@ -36,7 +36,7 @@ function InlineNodes({
               key={index}
               style={[styles.link, isOwn ? styles.linkOwn : null]}
               onPress={isSafeMarkdownHref(href) ? () => {
-                void Linking.openURL(href);
+                void Linking.openURL(href).catch(() => undefined);
               } : undefined}
               accessibilityRole={isSafeMarkdownHref(href) ? 'link' : undefined}
             >
@@ -116,7 +116,7 @@ export function ChatMarkdownBody({
             <View key={index} style={styles.list}>
               {block.items.map((item, itemIndex) => (
                 <View key={itemIndex} style={styles.listItem}>
-                  <Text style={[styles.text, textColor, deleted && styles.deleted]}>
+                  <Text style={[styles.text, styles.listMarker, textColor, deleted && styles.deleted]}>
                     {block.ordered ? `${itemIndex + 1}.` : '•'}
                   </Text>
                   <Text style={[styles.text, styles.listText, textColor, deleted && styles.deleted]}>
@@ -176,7 +176,11 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   },
   list: { marginVertical: 2, gap: 3 },
   listItem: { flexDirection: 'row', gap: 8 },
-  listText: { flex: 1 },
+  listMarker: { flexShrink: 0 },
+  // flexShrink only (auto basis): the item text keeps its natural width so a
+  // shrink-to-fit bubble sizes to content; `flex: 1` collapsed it to the
+  // marker width and wrapped the text by syllables (BUG-LIST).
+  listText: { flexShrink: 1 },
   codeScroll: { marginVertical: 6, maxWidth: '100%' },
   codeBlock: {
     paddingHorizontal: 10,

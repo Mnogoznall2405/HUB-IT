@@ -48,6 +48,15 @@ const DEFAULT_SETTINGS = {
 };
 
 const ACCEPT = '.mp3,.wav,.flac,.m4a,.aac,.ogg,.wma,.mp4,.mkv,.mov,.avi,.webm,.wmv,.flv,.m4v';
+const formatUploadLimit = (bytes) => (
+  bytes >= 1024 ** 3
+    ? `${(bytes / (1024 ** 3)).toFixed(1)} ГБ`
+    : `${(bytes / (1024 ** 2)).toFixed(1)} МБ`
+);
+
+const getLocalDateIso = (date = new Date()) => (
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+);
 
 function LlmModelField({ label, value, onChange, options, defaultValue }) {
   const values = (options || []).map((o) => o.value);
@@ -82,7 +91,7 @@ function LlmModelField({ label, value, onChange, options, defaultValue }) {
   );
 }
 
-function VoiceUploadDialog({ open, onClose, onUploaded, options }) {
+function VoiceUploadDialog({ open, onClose, onUploaded, onPartiallyUploaded, options }) {
   const [files, setFiles] = useState([]);
   const [dragOver, setDragOver] = useState(false);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
@@ -115,7 +124,7 @@ function VoiceUploadDialog({ open, onClose, onUploaded, options }) {
     [files, maxBytes],
   );
 
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = getLocalDateIso();
   const dateInFuture = Boolean(
     settings.meeting_date && /^\d{4}-\d{2}-\d{2}$/.test(settings.meeting_date)
       && settings.meeting_date > todayIso,
@@ -148,6 +157,7 @@ function VoiceUploadDialog({ open, onClose, onUploaded, options }) {
     };
     if (payload.stt_engine === 'whisper') delete payload.stt_engine;
     const failures = [];
+    const uploadedIdx = new Set();
     try {
       for (let i = 0; i < files.length; i += 1) {
         setCurrentIdx(i);
@@ -157,6 +167,7 @@ function VoiceUploadDialog({ open, onClose, onUploaded, options }) {
           await voiceJobsAPI.uploadJob(files[i], payload, (event) => {
             if (event.total) setProgress(Math.round((event.loaded / event.total) * 100));
           });
+          uploadedIdx.add(i);
         } catch (err) {
           const detail = err?.response?.data?.detail;
           failures.push(`${files[i].name}: ${typeof detail === 'string' ? detail : 'ошибка отправки'}`);
@@ -167,9 +178,15 @@ function VoiceUploadDialog({ open, onClose, onUploaded, options }) {
         onUploaded?.();
         return;
       }
+      // Частичный сбой: диалог остаётся открытым, отправленные файлы убираем из списка,
+      // чтобы повторная отправка не создала дубликаты задач.
+      setFiles((prev) => prev.filter((_, i) => !uploadedIdx.has(i)));
+      setCurrentIdx(0);
+      setProgress(0);
       setError(`Отправлено ${files.length - failures.length} из ${files.length}. Не отправлены: ${failures.join('; ')}`);
       setBusy(false);
-      onUploaded?.();
+      // Страница обновляет список задач без закрытия диалога и смены вкладки.
+      onPartiallyUploaded?.();
     } catch (err) {
       const detail = err?.response?.data?.detail;
       setError(typeof detail === 'string' ? detail : 'Не удалось отправить файл');
@@ -230,7 +247,7 @@ function VoiceUploadDialog({ open, onClose, onUploaded, options }) {
                       noWrap
                     >
                       {idx === currentIdx && busy ? '→ ' : ''}{f.name} · {(f.size / 1024 / 1024).toFixed(1)} МБ
-                      {tooBig ? ` — больше лимита ${(maxBytes / 1024 / 1024 / 1024).toFixed(1)} ГБ` : ''}
+                      {tooBig ? ` — больше лимита ${formatUploadLimit(maxBytes)}` : ''}
                     </Typography>
                     {!busy && (
                       <IconButton size="small" aria-label={`Убрать ${f.name}`} onClick={() => setFiles((prev) => prev.filter((_, i) => i !== idx))}>
@@ -268,8 +285,10 @@ function VoiceUploadDialog({ open, onClose, onUploaded, options }) {
             />
           </Stack>
           <FormControl size="small" fullWidth>
-            <InputLabel>Язык записи</InputLabel>
+            <InputLabel id="voice-upload-language-label">Язык записи</InputLabel>
             <Select
+              id="voice-upload-language"
+              labelId="voice-upload-language-label"
               label="Язык записи"
               value={settings.language}
               onChange={(e) => set('language', e.target.value)}
@@ -312,8 +331,10 @@ function VoiceUploadDialog({ open, onClose, onUploaded, options }) {
               <Stack spacing={2}>
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
                   <FormControl size="small" fullWidth>
-                    <InputLabel>Распознавание речи</InputLabel>
+                    <InputLabel id="voice-upload-stt-engine-label">Распознавание речи</InputLabel>
                     <Select
+                      id="voice-upload-stt-engine"
+                      labelId="voice-upload-stt-engine-label"
                       label="Распознавание речи"
                       value={settings.stt_engine}
                       onChange={(e) => set('stt_engine', e.target.value)}
@@ -326,8 +347,10 @@ function VoiceUploadDialog({ open, onClose, onUploaded, options }) {
                   </FormControl>
                   {!isApiStt && (
                     <FormControl size="small" fullWidth>
-                      <InputLabel>Модель распознавания</InputLabel>
+                      <InputLabel id="voice-upload-whisper-model-label">Модель распознавания</InputLabel>
                       <Select
+                        id="voice-upload-whisper-model"
+                        labelId="voice-upload-whisper-model-label"
                         label="Модель распознавания"
                         value={settings.whisper_model}
                         onChange={(e) => set('whisper_model', e.target.value)}
@@ -339,8 +362,10 @@ function VoiceUploadDialog({ open, onClose, onUploaded, options }) {
                     </FormControl>
                   )}
                   <FormControl size="small" fullWidth>
-                    <InputLabel>Очистка голоса</InputLabel>
+                    <InputLabel id="voice-upload-separator-label">Очистка голоса</InputLabel>
                     <Select
+                      id="voice-upload-separator"
+                      labelId="voice-upload-separator-label"
                       label="Очистка голоса"
                       value={settings.separator}
                       onChange={(e) => set('separator', e.target.value)}

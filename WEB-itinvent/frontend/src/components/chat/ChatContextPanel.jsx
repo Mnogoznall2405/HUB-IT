@@ -4,6 +4,7 @@ import {
   Box,
   Button,
   ButtonBase,
+  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
@@ -30,14 +31,17 @@ import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ChevronLeftRoundedIcon from '@mui/icons-material/ChevronLeftRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
+import HomeWorkRoundedIcon from '@mui/icons-material/HomeWorkRounded';
 import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
 import KeyboardArrowRightRoundedIcon from '@mui/icons-material/KeyboardArrowRightRounded';
 import FiberManualRecordRoundedIcon from '@mui/icons-material/FiberManualRecordRounded';
+import MeetingRoomRoundedIcon from '@mui/icons-material/MeetingRoomRounded';
 import NotificationsOutlinedIcon from '@mui/icons-material/NotificationsOutlined';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import PersonOutlineRoundedIcon from '@mui/icons-material/PersonOutlineRounded';
 import PhoneRoundedIcon from '@mui/icons-material/PhoneRounded';
 import PhotoLibraryOutlinedIcon from '@mui/icons-material/PhotoLibraryOutlined';
+import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import StickyNote2OutlinedIcon from '@mui/icons-material/StickyNote2Outlined';
@@ -53,6 +57,7 @@ import MailOutlineRoundedIcon from '@mui/icons-material/MailOutlineRounded';
 import ChatBrokenMediaThumb from './ChatBrokenMediaThumb';
 import ChatRightPanelHeader from './ChatRightPanelHeader';
 import { chatAPI } from '../../api/client';
+import { findAddressBookEntryForChatUser, pickAddressBookWorkplace } from '../../lib/addressBookChat';
 import { CHAT_FEATURE_ENABLED } from '../../lib/chatFeature';
 import { ConversationAvatar, PresenceAvatar } from './ChatCommon';
 import {
@@ -205,6 +210,47 @@ const EMPTY_SUMMARY = {
   recent_videos: [],
   recent_files: [],
   recent_audio: [],
+};
+
+const ATTACHMENT_STREAM_KINDS = new Set(['image', 'video', 'file', 'audio']);
+const MEDIA_STREAM_KINDS = ['image', 'video'];
+const EMPTY_ATTACHMENT_STREAM = Object.freeze({
+  items: [],
+  cursor: '',
+  hasMore: false,
+  loading: false,
+  loadingMore: false,
+  error: '',
+  started: false,
+});
+const PANEL_LOAD_MORE_THRESHOLD_PX = 280;
+
+const mergeAttachmentItems = (...lists) => {
+  const unique = new Map();
+  lists.flat().forEach((item) => {
+    if (!item) return;
+    const key = `${item.message_id || item.messageId || ''}:${item.id || ''}`;
+    if (!unique.has(key)) unique.set(key, item);
+  });
+  return [...unique.values()];
+};
+
+const sortAttachmentsDesc = (items) => [...items].sort((left, right) => (
+  new Date(right?.created_at || 0).getTime() - new Date(left?.created_at || 0).getTime()
+));
+
+const formatMediaDuration = (value) => {
+  const totalSeconds = Math.max(0, Math.round(Number(value || 0)));
+  if (!totalSeconds) return '';
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+};
+
+const normalizeOfficeValue = (value) => String(value || '').trim();
+const normalizeOfficeRoomValue = (value) => {
+  const text = normalizeOfficeValue(value);
+  return text && text !== '0' ? text : '';
 };
 
 const MESSAGE_LINK_PATTERN = /(https?:\/\/[^\s<>"']+)/gi;
@@ -430,31 +476,11 @@ function InfoNavRow({ icon, label, value, onClick }) {
   );
 }
 
-function MediaKindTabs({ imageCount, videoCount, value, onChange }) {
-  return (
-    <Stack direction="row" spacing={0.75} sx={{ px: 1.25, py: 1 }}>
-      {[
-        { key: 'image', label: 'Фото', count: imageCount },
-        { key: 'video', label: 'Видео', count: videoCount },
-      ].map((tab) => (
-        <Button
-          key={tab.key}
-          size="small"
-          variant={value === tab.key ? 'contained' : 'text'}
-          onClick={() => onChange(tab.key)}
-          sx={{ textTransform: 'none', fontWeight: 800, minHeight: 36, boxShadow: 'none' }}
-        >
-          {tab.label}{tab.count ? ` ${tab.count}` : ''}
-        </Button>
-      ))}
-    </Stack>
-  );
-}
-
 function ConversationMediaThumb({ item, onOpen }) {
   const src = normalizeChatAttachmentUrl(item?.variant_urls?.thumb || item?.variant_urls?.preview || item?.variant_urls?.poster)
     || buildAttachmentUrl(item.message_id || item.messageId, item.id, { inline: true });
   const downloadUrl = buildAttachmentUrl(item.message_id || item.messageId, item.id);
+  const durationLabel = formatMediaDuration(item?.duration_seconds ?? item?.duration ?? item?.video_duration);
   return (
     <Box
       role="button"
@@ -487,33 +513,76 @@ function ConversationMediaThumb({ item, onOpen }) {
         onDownload={() => window.open(downloadUrl, '_blank', 'noopener,noreferrer')}
       />
       {isVideoAttachment(item) ? (
-        <Box sx={{ position: 'absolute', bottom: 4, right: 4, bgcolor: 'var(--chat-sheet-panel-overlay, rgba(15,23,42,0.72))', px: 0.5, py: 0.25, borderRadius: 0.5 }}>
-          <Typography sx={{ color: '#fff', fontSize: '0.65rem', fontWeight: 700 }}>Видео</Typography>
+        <Box
+          sx={{
+            position: 'absolute',
+            bottom: 4,
+            right: 4,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 0.25,
+            bgcolor: 'var(--chat-sheet-panel-overlay, rgba(15,23,42,0.72))',
+            px: 0.5,
+            py: 0.25,
+            borderRadius: 0.5,
+          }}
+        >
+          <PlayArrowRoundedIcon sx={{ fontSize: 11, color: '#fff' }} />
+          {durationLabel ? (
+            <Typography sx={{ color: '#fff', fontSize: '0.65rem', fontWeight: 700 }}>
+              {durationLabel}
+            </Typography>
+          ) : null}
         </Box>
       ) : null}
     </Box>
   );
 }
 
-function InfoRowTelegram({ icon, label, value }) {
+function InfoRowTelegram({ icon, label, value, onClick = null, copied = false }) {
+  const isButton = typeof onClick === 'function';
   return (
     <Stack
+      component={isButton ? 'button' : 'div'}
+      type={isButton ? 'button' : undefined}
+      onClick={onClick || undefined}
+      title={isButton ? 'Нажмите, чтобы скопировать' : undefined}
       direction="row"
       spacing={2}
       alignItems="flex-start"
       sx={{
         px: 3,
         py: 2,
+        width: '100%',
+        border: 0,
+        bgcolor: 'transparent',
+        color: 'inherit',
+        font: 'inherit',
+        cursor: isButton ? 'pointer' : 'default',
+        textAlign: 'left',
         borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)',
+        transition: 'background-color 0.16s ease',
+        ...(isButton ? {
+          '&:hover': { bgcolor: 'var(--chat-sheet-panel-accent-soft)' },
+          '&:focus-visible': { outline: '2px solid var(--chat-sheet-panel-accent)', outlineOffset: -2 },
+        } : {}),
       }}
     >
       <Box sx={{ mt: 0.5 }}>{icon}</Box>
       <Box sx={{ flex: 1, minWidth: 0 }}>
-        <Typography sx={{ color: 'var(--chat-sheet-panel-text)', fontSize: '1rem', wordBreak: 'break-word' }}>
+        <Typography component="span" sx={{ display: 'block', color: 'var(--chat-sheet-panel-text)', fontSize: '1rem', wordBreak: 'break-word' }}>
           {value}
         </Typography>
-        <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', fontSize: '0.85rem', mt: 0.25 }}>
-          {label}
+        <Typography
+          component="span"
+          sx={{
+            display: 'block',
+            color: copied ? 'var(--chat-sheet-panel-accent)' : 'var(--chat-sheet-panel-soft)',
+            fontSize: '0.85rem',
+            mt: 0.25,
+          }}
+        >
+          {copied ? 'Скопировано' : label}
         </Typography>
       </Box>
     </Stack>
@@ -548,12 +617,13 @@ function MobileProfileActionButton({ children, onClick, disabled = false, ariaLa
   );
 }
 
-function MobileProfileInfoRow({ icon, label, value, trailing = null, onClick = null }) {
+function MobileProfileInfoRow({ icon, label, value, trailing = null, onClick = null, copied = false }) {
   return (
     <Box
       component={onClick ? 'button' : 'div'}
       type={onClick ? 'button' : undefined}
       onClick={onClick}
+      title={onClick ? 'Нажмите, чтобы скопировать' : undefined}
       sx={{
         display: 'flex',
         alignItems: 'center',
@@ -568,6 +638,7 @@ function MobileProfileInfoRow({ icon, label, value, trailing = null, onClick = n
         textAlign: 'left',
         minHeight: 44,
         borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)',
+        '&:active': onClick ? { bgcolor: 'var(--chat-sheet-panel-accent-soft)' } : undefined,
       }}
     >
       <Box
@@ -596,12 +667,12 @@ function MobileProfileInfoRow({ icon, label, value, trailing = null, onClick = n
         <Typography
           sx={{
             mt: 0.2,
-            color: 'var(--chat-sheet-panel-soft)',
+            color: copied ? 'var(--chat-sheet-panel-accent)' : 'var(--chat-sheet-panel-soft)',
             fontSize: '0.92rem',
             lineHeight: 1.15,
           }}
         >
-          {label}
+          {copied ? 'Скопировано' : label}
         </Typography>
       </Box>
       {trailing ? (
@@ -697,12 +768,15 @@ function ConversationNotificationsToggle({ muted, disabled, onChange }) {
   );
 }
 
-function MobileProfileTabButton({ label, active, onClick, count = 0 }) {
+function PanelTabButton({ label, active, onClick, count = 0 }) {
   return (
     <ButtonBase
+      type="button"
+      aria-pressed={Boolean(active)}
       onClick={onClick}
       sx={{
         minWidth: 0,
+        flexShrink: 0,
         px: 1.6,
         py: 1.2,
         color: active ? 'var(--chat-sheet-panel-accent)' : 'var(--chat-sheet-panel-muted)',
@@ -712,6 +786,13 @@ function MobileProfileTabButton({ label, active, onClick, count = 0 }) {
         fontSize: '0.98rem',
         fontWeight: active ? 800 : 600,
         whiteSpace: 'nowrap',
+        '&:hover': {
+          bgcolor: 'var(--chat-sheet-panel-accent-soft)',
+        },
+        '&:focus-visible': {
+          outline: '2px solid var(--chat-sheet-panel-accent)',
+          outlineOffset: -2,
+        },
         '&:active': {
           opacity: 0.72,
         },
@@ -735,6 +816,211 @@ function MobileProfileTabButton({ label, active, onClick, count = 0 }) {
         />
       ) : null}
     </ButtonBase>
+  );
+}
+
+function PanelTabsBar({ options, value, onChange, testId, sticky = false }) {
+  return (
+    <Box
+      data-testid={testId}
+      sx={{
+        display: 'flex',
+        alignItems: 'stretch',
+        gap: 0.15,
+        overflowX: 'auto',
+        overflowY: 'hidden',
+        px: 0.75,
+        flexShrink: 0,
+        borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)',
+        bgcolor: 'var(--chat-sheet-panel-bg)',
+        scrollbarWidth: 'none',
+        msOverflowStyle: 'none',
+        '&::-webkit-scrollbar': { display: 'none' },
+        ...(sticky ? { position: 'sticky', top: 0, zIndex: 3 } : {}),
+      }}
+    >
+      {options.map((tab) => (
+        <PanelTabButton
+          key={tab.key}
+          label={tab.label}
+          count={tab.count}
+          active={value === tab.key}
+          onClick={() => onChange(tab.key)}
+        />
+      ))}
+    </Box>
+  );
+}
+
+function PanelFileRow({ item, leading = null, subtitleParts = [] }) {
+  const href = buildAttachmentUrl(item.message_id || item.messageId, item.id, { inline: true });
+  const meta = [
+    ...subtitleParts,
+    formatFileSize(item.file_size),
+  ].filter(Boolean).join(' · ');
+  return (
+    <Box
+      component="a"
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 1.5,
+        px: 2,
+        py: 1.15,
+        textDecoration: 'none',
+        color: 'var(--chat-sheet-panel-text)',
+        '&:hover': { bgcolor: 'var(--chat-sheet-panel-bg-hover)' },
+        '&:active': { opacity: 0.76 },
+      }}
+    >
+      <Box
+        sx={{
+          width: 42,
+          height: 42,
+          borderRadius: 2.25,
+          bgcolor: 'var(--chat-sheet-panel-card)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: 'var(--chat-sheet-panel-muted)',
+          fontSize: '0.7rem',
+          fontWeight: 800,
+          flexShrink: 0,
+        }}
+      >
+        {leading || getFileExtension(item.file_name) || 'FILE'}
+      </Box>
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Typography sx={{ fontWeight: 700, fontSize: '0.88rem' }} noWrap>
+          {item.file_name || 'Файл'}
+        </Typography>
+        {meta ? (
+          <Typography variant="caption" sx={{ color: 'var(--chat-sheet-panel-muted)' }} noWrap>
+            {meta}
+          </Typography>
+        ) : null}
+      </Box>
+    </Box>
+  );
+}
+
+function PanelLinkRow({ item }) {
+  let hostname = '';
+  try {
+    hostname = new URL(item.url).hostname.replace(/^www\./i, '');
+  } catch {
+    hostname = '';
+  }
+  return (
+    <Box
+      component="a"
+      href={item.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 1.5,
+        px: 2,
+        py: 1.15,
+        textDecoration: 'none',
+        color: 'var(--chat-sheet-panel-text)',
+        '&:hover': { bgcolor: 'var(--chat-sheet-panel-bg-hover)' },
+        '&:active': { opacity: 0.76 },
+      }}
+    >
+      <Box
+        sx={{
+          width: 40,
+          height: 40,
+          borderRadius: '50%',
+          bgcolor: 'var(--chat-sheet-panel-accent-soft)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0,
+        }}
+      >
+        <OpenInNewRoundedIcon sx={{ color: 'var(--chat-sheet-panel-accent)', fontSize: 20 }} />
+      </Box>
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Typography sx={{ color: 'var(--chat-sheet-panel-accent)', fontWeight: 600, fontSize: '0.9rem', wordBreak: 'break-all' }} noWrap>
+          {item.title || item.url}
+        </Typography>
+        <Typography variant="caption" sx={{ color: 'var(--chat-sheet-panel-soft)', fontSize: '0.75rem' }} noWrap>
+          {hostname || item.url}{item.created_at ? ` · ${formatFullDate(item.created_at)}` : ''}
+        </Typography>
+      </Box>
+    </Box>
+  );
+}
+
+function PanelTaskRow({ item, onOpenTask }) {
+  const { task } = item;
+  const statusMeta = getStatusMeta(task?.status);
+  return (
+    <Box
+      role="button"
+      tabIndex={0}
+      onClick={() => onOpenTask?.(task?.id)}
+      onKeyDown={(event) => {
+        if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+          event.preventDefault();
+          onOpenTask?.(task?.id);
+        }
+      }}
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 1.5,
+        px: 2,
+        py: 1.15,
+        cursor: 'pointer',
+        '&:hover': { bgcolor: 'var(--chat-sheet-panel-bg-hover)' },
+        '&:active': { opacity: 0.76 },
+      }}
+    >
+      <Box
+        sx={{
+          width: 40,
+          height: 40,
+          borderRadius: '50%',
+          bgcolor: 'var(--chat-sheet-panel-accent-soft)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0,
+        }}
+      >
+        <TaskAltOutlinedIcon sx={{ color: 'var(--chat-sheet-panel-accent)', fontSize: 20 }} />
+      </Box>
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Typography sx={{ fontWeight: 700, fontSize: '0.88rem', overflowWrap: 'anywhere' }} noWrap>
+          {task?.title || 'Задача'}
+        </Typography>
+        <Typography variant="caption" sx={{ color: 'var(--chat-sheet-panel-muted)' }} noWrap>
+          {getTaskAssignee(task)} · {task?.due_at ? formatFullDate(task.due_at) : 'Без срока'}
+        </Typography>
+      </Box>
+      <Box
+        component="span"
+        sx={{
+          px: 0.7,
+          py: 0.15,
+          borderRadius: 999,
+          bgcolor: 'var(--chat-sheet-panel-card)',
+          color: 'var(--chat-sheet-panel-muted)',
+          fontSize: '0.66rem',
+          fontWeight: 800,
+          flexShrink: 0,
+        }}
+      >
+        {statusMeta[0]}
+      </Box>
+    </Box>
   );
 }
 
@@ -1282,19 +1568,18 @@ export default function ChatContextPanel({
   onOpenTask,
 }) {
   const summaryRequestSeqRef = useRef(0);
-  const attachmentRequestSeqRef = useRef(0);
+  const attachmentStreamsRef = useRef({});
+  const attachmentSeqsRef = useRef({});
+  const panelScrollRef = useRef(null);
+  const copiedTimerRef = useRef(0);
   const [summary, setSummary] = useState(EMPTY_SUMMARY);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState('');
   const [summaryRetry, setSummaryRetry] = useState(0);
   const [assetKind, setAssetKind] = useState('media');
-  const [mediaSubKind, setMediaSubKind] = useState('image');
-  const [attachments, setAttachments] = useState([]);
-  const [attachmentsLoading, setAttachmentsLoading] = useState(false);
-  const [attachmentsLoadingMore, setAttachmentsLoadingMore] = useState(false);
-  const [attachmentsError, setAttachmentsError] = useState('');
-  const [attachmentsHasMore, setAttachmentsHasMore] = useState(false);
-  const [attachmentsCursor, setAttachmentsCursor] = useState('');
+  const [attachmentStreams, setAttachmentStreams] = useState({});
+  const [peerWorkplace, setPeerWorkplace] = useState(null);
+  const [copiedField, setCopiedField] = useState('');
   const [taskVisibleCount, setTaskVisibleCount] = useState(TASK_PAGE_SIZE);
   const [participantsExpanded, setParticipantsExpanded] = useState(false);
   const [participantSearch, setParticipantSearch] = useState('');
@@ -1426,31 +1711,44 @@ export default function ChatContextPanel({
       ? [
           { key: 'media', label: 'Медиа', count: assetCounts.image + assetCounts.video },
           { key: 'file', label: 'Файлы', count: assetCounts.file },
-          { key: 'audio', label: 'Аудио', count: assetCounts.audio },
           { key: 'link', label: 'Ссылки', count: assetCounts.link },
+          { key: 'audio', label: 'Голосовые', count: assetCounts.audio },
           { key: 'task', label: 'Задачи', count: assetCounts.task },
         ]
       : [
           { key: 'media', label: 'Медиа', count: assetCounts.image + assetCounts.video },
           { key: 'file', label: 'Файлы', count: assetCounts.file },
-          { key: 'audio', label: 'Аудио', count: assetCounts.audio },
           { key: 'link', label: 'Ссылки', count: assetCounts.link },
+          { key: 'audio', label: 'Голосовые', count: assetCounts.audio },
           { key: 'task', label: 'Задачи', count: assetCounts.task },
           { key: 'member', label: 'Участники', count: assetCounts.member },
         ]
   ), [assetCounts.audio, assetCounts.file, assetCounts.image, assetCounts.link, assetCounts.member, assetCounts.task, assetCounts.video, isDirect, isNotes]);
 
   const attachmentItems = useMemo(() => {
-    const items = Array.isArray(attachments) ? attachments : [];
-    if (assetKind === 'media' || assetKind === 'image' || assetKind === 'video') {
-      const subKind = assetKind === 'media' ? mediaSubKind : assetKind;
-      if (subKind === 'video') {
-        return items.filter((item) => isVideoAttachment(item));
-      }
-      return items.filter((item) => isImageAttachment(item) && !isVideoAttachment(item));
+    if (assetKind === 'media') {
+      return sortAttachmentsDesc(mergeAttachmentItems(
+        attachmentStreams.image?.items || [],
+        attachmentStreams.video?.items || [],
+      ));
     }
-    return items;
-  }, [assetKind, attachments, mediaSubKind]);
+    if (ATTACHMENT_STREAM_KINDS.has(assetKind)) {
+      return attachmentStreams[assetKind]?.items || [];
+    }
+    return [];
+  }, [assetKind, attachmentStreams]);
+
+  const activeAttachmentKinds = useMemo(() => (
+    assetKind === 'media'
+      ? MEDIA_STREAM_KINDS
+      : (ATTACHMENT_STREAM_KINDS.has(assetKind) ? [assetKind] : [])
+  ), [assetKind]);
+
+  const isAttachmentKind = activeAttachmentKinds.length > 0;
+
+  const attachmentsLoading = activeAttachmentKinds.some((kind) => attachmentStreams[kind]?.loading);
+  const attachmentsLoadingMore = activeAttachmentKinds.some((kind) => attachmentStreams[kind]?.loadingMore);
+  const attachmentsError = activeAttachmentKinds.map((kind) => attachmentStreams[kind]?.error).find(Boolean) || '';
 
   const mobileTabKeys = useMemo(
     () => mobileTabOptions.map((tab) => tab.key),
@@ -1526,7 +1824,6 @@ export default function ChatContextPanel({
   useEffect(() => {
     if (!conversationId) {
       setAssetKind('media');
-      setMediaSubKind('image');
       return;
     }
 
@@ -1664,73 +1961,152 @@ export default function ChatContextPanel({
     setMemberActionTarget(member || null);
   }, []);
 
-  const loadAttachments = useCallback(async ({ append = false, beforeAttachmentId } = {}) => {
-    if (!conversationId || assetKind === 'task' || assetKind === 'link' || assetKind === 'member') return;
-    const requestKind = assetKind === 'media' ? mediaSubKind : assetKind;
+  const patchAttachmentStream = useCallback((kind, patch) => {
+    attachmentStreamsRef.current = {
+      ...attachmentStreamsRef.current,
+      [kind]: { ...(attachmentStreamsRef.current[kind] || EMPTY_ATTACHMENT_STREAM), ...patch },
+    };
+    setAttachmentStreams((current) => ({
+      ...current,
+      [kind]: { ...(current[kind] || EMPTY_ATTACHMENT_STREAM), ...patch },
+    }));
+  }, []);
 
-    const requestSeq = attachmentRequestSeqRef.current + 1;
-    attachmentRequestSeqRef.current = requestSeq;
-
+  const loadAttachmentStream = useCallback(async (kind, { append = false } = {}) => {
+    if (!conversationId || !ATTACHMENT_STREAM_KINDS.has(kind)) return;
+    const stream = attachmentStreamsRef.current[kind] || EMPTY_ATTACHMENT_STREAM;
     if (append) {
-      setAttachmentsLoadingMore(true);
-    } else {
-      setAttachmentsLoading(true);
-      setAttachments([]);
-      setAttachmentsError('');
+      if (!stream.hasMore || !stream.cursor || stream.loading || stream.loadingMore) return;
+    } else if ((stream.loading || stream.started) && !stream.error) {
+      return;
     }
+
+    const seq = (attachmentSeqsRef.current[kind] || 0) + 1;
+    attachmentSeqsRef.current[kind] = seq;
+    patchAttachmentStream(kind, append ? { loadingMore: true, error: '' } : { loading: true, error: '', started: true });
 
     try {
       const payload = await chatAPI.getConversationAttachments(conversationId, {
-        kind: requestKind,
+        kind,
         limit: ATTACHMENT_PAGE_SIZE,
-        before_attachment_id: beforeAttachmentId,
+        before_attachment_id: append ? stream.cursor : undefined,
       });
-      if (requestSeq !== attachmentRequestSeqRef.current) return;
+      if (seq !== attachmentSeqsRef.current[kind]) return;
       const items = Array.isArray(payload?.items) ? payload.items : [];
-      setAttachments((current) => [...new Map((append ? [...current, ...items] : items).map((item) => [item.id, item])).values()]);
-      setAttachmentsHasMore(Boolean(payload?.has_more && payload?.next_before_attachment_id && payload.next_before_attachment_id !== beforeAttachmentId));
-      setAttachmentsCursor(String(payload?.next_before_attachment_id || '').trim());
+      const nextCursor = String(payload?.next_before_attachment_id || '').trim();
+      const base = attachmentStreamsRef.current[kind] || EMPTY_ATTACHMENT_STREAM;
+      patchAttachmentStream(kind, {
+        items: mergeAttachmentItems(base.items, items),
+        hasMore: Boolean(payload?.has_more && nextCursor && nextCursor !== stream.cursor),
+        cursor: nextCursor || stream.cursor,
+      });
     } catch (error) {
-      if (requestSeq !== attachmentRequestSeqRef.current) return;
-      if (!append) {
-        setAttachments([]);
-        setAttachmentsHasMore(false);
-        setAttachmentsCursor('');
-      }
-      setAttachmentsError(error?.message || 'Не удалось загрузить вложения.');
+      if (seq !== attachmentSeqsRef.current[kind]) return;
+      patchAttachmentStream(kind, { error: error?.message || 'Не удалось загрузить вложения.' });
     } finally {
-      if (requestSeq === attachmentRequestSeqRef.current) {
-        setAttachmentsLoading(false);
-        setAttachmentsLoadingMore(false);
+      if (seq === attachmentSeqsRef.current[kind]) {
+        patchAttachmentStream(kind, { loading: false, loadingMore: false });
       }
     }
-  }, [assetKind, conversationId, mediaSubKind]);
+  }, [conversationId, patchAttachmentStream]);
 
+  // Сброс лент вложений и рабочего места при смене разговора или новых сообщениях
   useEffect(() => {
-    if (!conversationId) {
-      setAttachments([]);
-      setAttachmentsError('');
-      setAttachmentsHasMore(false);
-      setAttachmentsCursor('');
-      setAttachmentsLoading(false);
-      setAttachmentsLoadingMore(false);
+    attachmentStreamsRef.current = {};
+    Object.keys(attachmentSeqsRef.current).forEach((kind) => {
+      attachmentSeqsRef.current[kind] += 1;
+    });
+    setAttachmentStreams({});
+    setPeerWorkplace(null);
+  }, [conversationId, activeConversation?.last_message_at]);
+
+  // Ленивая загрузка активных потоков вложений
+  useEffect(() => {
+    if (!panelVisible || !conversationId) return;
+    activeAttachmentKinds.forEach((kind) => {
+      const stream = attachmentStreamsRef.current[kind] || EMPTY_ATTACHMENT_STREAM;
+      if (!stream.started && !stream.loading) void loadAttachmentStream(kind);
+    });
+  }, [panelVisible, conversationId, activeAttachmentKinds, attachmentStreams, loadAttachmentStream]);
+
+  const retryFailedAttachmentStreams = useCallback(() => {
+    activeAttachmentKinds.forEach((kind) => {
+      const stream = attachmentStreamsRef.current[kind] || EMPTY_ATTACHMENT_STREAM;
+      if (!stream.error || stream.loading || stream.loadingMore) return;
+      void loadAttachmentStream(kind, { append: stream.items.length > 0 });
+    });
+  }, [activeAttachmentKinds, loadAttachmentStream]);
+
+  // Догрузка при приближении к низу панели (вместо кнопки «Показать ещё»)
+  const maybeLoadMorePanelContent = useCallback((container) => {
+    if (!container) return;
+    if (container.scrollHeight - container.scrollTop - container.clientHeight > PANEL_LOAD_MORE_THRESHOLD_PX) return;
+    if (isAttachmentKind) {
+      activeAttachmentKinds.forEach((kind) => {
+        const stream = attachmentStreamsRef.current[kind] || EMPTY_ATTACHMENT_STREAM;
+        // После ошибки догрузка возобновляется только явным «Повторить».
+        if (stream.hasMore && !stream.error && !stream.loading && !stream.loadingMore) {
+          void loadAttachmentStream(kind, { append: true });
+        }
+      });
       return;
     }
-
-    if (assetKind === 'task' || assetKind === 'link' || assetKind === 'member') {
-      setAttachments([]);
-      setAttachmentsError('');
-      setAttachmentsHasMore(false);
-      setAttachmentsCursor('');
-      setAttachmentsLoading(false);
-      setAttachmentsLoadingMore(false);
+    if (assetKind === 'task') {
+      if (taskItems.length > taskVisibleCount) {
+        setTaskVisibleCount((count) => count + TASK_PAGE_SIZE);
+      } else if (panelHistory.hasMore && !panelHistory.loading && !panelHistory.error) {
+        panelHistory.loadMore();
+      }
       return;
     }
+    if (assetKind === 'link' && panelHistory.hasMore && !panelHistory.loading && !panelHistory.error) {
+      panelHistory.loadMore();
+    }
+  }, [activeAttachmentKinds, assetKind, isAttachmentKind, loadAttachmentStream, panelHistory, taskItems.length, taskVisibleCount]);
 
-    if (!panelVisible) return;
-    void loadAttachments();
-    return () => { attachmentRequestSeqRef.current += 1; };
-  }, [assetKind, conversationId, loadAttachments, panelVisible, activeConversation?.last_message_at]);
+  const handlePanelScroll = useCallback((event) => {
+    maybeLoadMorePanelContent(event?.currentTarget);
+  }, [maybeLoadMorePanelContent]);
+
+  // Автодогрузка, пока контент вкладки не заполняет панель и скролл ещё недоступен
+  useEffect(() => {
+    const container = panelScrollRef.current;
+    if (!container || !panelVisible) return;
+    if (!container.scrollHeight || container.scrollHeight > container.clientHeight + 8) return;
+    maybeLoadMorePanelContent(container);
+  }, [attachmentItems.length, linkItems.length, taskVisibleCount, assetKind, panelVisible, maybeLoadMorePanelContent]);
+
+  // Рабочее место сотрудника из адресной книги (office_address/office_room не входят в chat-схему)
+  const subjectUserId = String(subject?.id || '').trim();
+  const subjectLookupEmail = String(subject?.corporate_email || subject?.email || '').trim();
+  const subjectLookupName = String(subject?.full_name || '').trim();
+  useEffect(() => {
+    if (!isDirect || !panelVisible || !subjectUserId) return undefined;
+    if (subject?.office_address || subject?.office_room) return undefined;
+    let cancelled = false;
+    findAddressBookEntryForChatUser(subject)
+      .then((entry) => { if (!cancelled) setPeerWorkplace(pickAddressBookWorkplace(entry)); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [isDirect, panelVisible, subjectUserId, subjectLookupEmail, subjectLookupName]);
+
+  const handleCopyInfoValue = useCallback((field, value) => {
+    const text = String(value || '').trim();
+    if (!text || typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return;
+    navigator.clipboard.writeText(text)
+      .then(() => {
+        setCopiedField(field);
+        if (typeof window !== 'undefined') {
+          window.clearTimeout(copiedTimerRef.current);
+          copiedTimerRef.current = window.setTimeout(() => setCopiedField(''), 1600);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => () => {
+    if (typeof window !== 'undefined') window.clearTimeout(copiedTimerRef.current);
+  }, []);
 
   if (!activeConversation) {
     return embedded ? null : (
@@ -1773,23 +2149,30 @@ export default function ChatContextPanel({
   const showPinnedBadge = Boolean(activeConversation?.is_pinned);
   const showMutedBadge = Boolean(activeConversation?.is_muted);
   const showArchivedBadge = Boolean(activeConversation?.is_archived);
-  const taskBrowserHasMore = taskItems.length > taskVisibleCount;
-  const assetControls = (
-    <Stack spacing={1} sx={{ px: 1, py: 1 }}>
+  const panelStatus = (
+    <Stack spacing={1} sx={{ px: 1.5, py: 1 }}>
       {summaryError ? <Alert severity="error" action={<Button onClick={() => setSummaryRetry((value) => value + 1)}>Повторить</Button>}>{summaryError}</Alert> : null}
-      {['media', 'image', 'video', 'file', 'audio'].includes(assetKind) ? (
+      {isAttachmentKind ? (
         <>
-          {attachmentsLoading ? <Typography role="status">Загрузка вложений…</Typography> : null}
-          {attachmentsError ? <Alert severity="error" action={<Button onClick={() => loadAttachments({ append: attachments.length > 0, beforeAttachmentId: attachmentsCursor })}>Повторить</Button>}>{attachmentsError}</Alert> : null}
-          {attachmentsHasMore ? <Button disabled={attachmentsLoadingMore || attachmentsLoading} onClick={() => loadAttachments({ append: true, beforeAttachmentId: attachmentsCursor })}>{attachmentsLoadingMore ? 'Загрузка…' : 'Показать ещё вложения'}</Button> : null}
+          {attachmentsError ? (
+            <Alert severity="error" action={<Button size="small" onClick={retryFailedAttachmentStreams}>Повторить</Button>}>{attachmentsError}</Alert>
+          ) : null}
+          {attachmentsLoadingMore ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 0.5 }} role="status">
+              <CircularProgress size={20} sx={{ color: 'var(--chat-sheet-panel-accent)' }} />
+            </Box>
+          ) : null}
         </>
       ) : null}
-      {assetKind === 'task' && taskBrowserHasMore ? <Button onClick={() => setTaskVisibleCount((count) => count + TASK_PAGE_SIZE)}>Показать ещё задачи</Button> : null}
       {assetKind === 'task' || assetKind === 'link' ? (
         <>
           {panelHistory.error ? <Alert severity="error" action={<Button onClick={panelHistory.retry}>Повторить</Button>}>{panelHistory.error}</Alert> : null}
-          {panelHistory.loading ? <Typography role="status">Загрузка истории…</Typography> : null}
-          {panelHistory.hasMore ? <Button disabled={panelHistory.loading} onClick={panelHistory.loadMore}>Искать в более ранних сообщениях</Button> : null}
+          {panelHistory.loading && !panelHistory.items.length ? <Typography role="status">Загрузка истории…</Typography> : null}
+          {panelHistory.loading && panelHistory.items.length > 0 ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 0.5 }} role="status">
+              <CircularProgress size={20} sx={{ color: 'var(--chat-sheet-panel-accent)' }} />
+            </Box>
+          ) : null}
         </>
       ) : null}
       {assetKind === 'member' && memberDetails.loading ? <Typography role="status">Загрузка участников…</Typography> : null}
@@ -1816,6 +2199,8 @@ export default function ChatContextPanel({
     && (currentMemberRole === 'owner' || memberActionRole === 'member');
   const subjectCorporateEmail = String(subject?.corporate_email || '').trim();
   const subjectCorporatePhone = String(subject?.corporate_phone || '').trim();
+  const subjectOfficeAddress = normalizeOfficeValue(subject?.office_address) || normalizeOfficeValue(peerWorkplace?.office_address);
+  const subjectOfficeRoom = normalizeOfficeRoomValue(subject?.office_room) || normalizeOfficeRoomValue(peerWorkplace?.office_room);
   const subjectBirthday = String(subject?.birth_date || subject?.birthday || '').trim();
   const subjectName = String(subject?.full_name || subject?.username || activeConversation?.title || 'сотрудника').trim();
   const profileDialogTitle = isGroup ? 'Карточка участника' : 'Карточка сотрудника';
@@ -1956,6 +2341,9 @@ export default function ChatContextPanel({
         </Box>
 
         <Box
+          ref={panelScrollRef}
+          onScroll={handlePanelScroll}
+          data-testid="chat-info-scroll"
           className="chat-scroll-hidden"
           sx={{
             flex: 1,
@@ -1993,11 +2381,11 @@ export default function ChatContextPanel({
             <ConversationAvatar
               conversation={activeConversation}
               online={Boolean(isDirect && activeConversation?.direct_peer?.presence?.is_online)}
-              size={80}
+              size={110}
             />
             <Typography
               sx={{
-                mt: 2.75,
+                mt: 2.5,
                 fontSize: '2rem',
                 lineHeight: 1.08,
                 fontWeight: 800,
@@ -2009,14 +2397,16 @@ export default function ChatContextPanel({
             <Typography
               sx={{
                 mt: 0.7,
-                color: 'var(--chat-sheet-panel-muted)',
+                color: isDirect && subject?.presence?.is_online
+                  ? 'var(--chat-sheet-panel-accent)'
+                  : 'var(--chat-sheet-panel-muted)',
                 fontSize: '1.02rem',
                 lineHeight: 1.2,
               }}
             >
               {isNotes
                 ? 'Сохраняйте ссылки, файлы и напоминания для себя'
-                : (conversationHeaderSubtitle || 'был(а) недавно')}
+                : (conversationHeaderSubtitle || (isDirect && subject?.presence?.is_online ? 'в сети' : 'был(а) недавно'))}
             </Typography>
           </Box>
 
@@ -2044,11 +2434,27 @@ export default function ChatContextPanel({
                     value={subject.city}
                   />
                 ) : null}
+                {subjectOfficeAddress ? (
+                  <MobileProfileInfoRow
+                    icon={<HomeWorkRoundedIcon sx={{ fontSize: 22 }} />}
+                    label="Адрес офиса"
+                    value={subjectOfficeAddress}
+                  />
+                ) : null}
+                {subjectOfficeRoom ? (
+                  <MobileProfileInfoRow
+                    icon={<MeetingRoomRoundedIcon sx={{ fontSize: 22 }} />}
+                    label="Кабинет"
+                    value={subjectOfficeRoom}
+                  />
+                ) : null}
                 {subjectCorporateEmail ? (
                   <MobileProfileInfoRow
                     icon={<MailOutlineRoundedIcon sx={{ fontSize: 22 }} />}
                     label="Корпоративная почта"
                     value={subjectCorporateEmail}
+                    copied={copiedField === 'email'}
+                    onClick={() => handleCopyInfoValue('email', subjectCorporateEmail)}
                   />
                 ) : null}
                 {subjectCorporatePhone ? (
@@ -2056,6 +2462,8 @@ export default function ChatContextPanel({
                     icon={<PhoneRoundedIcon sx={{ fontSize: 22 }} />}
                     label="Корпоративный телефон"
                     value={subjectCorporatePhone}
+                    copied={copiedField === 'phone'}
+                    onClick={() => handleCopyInfoValue('phone', subjectCorporatePhone)}
                   />
                 ) : null}
                 {subjectBirthday ? (
@@ -2096,33 +2504,13 @@ export default function ChatContextPanel({
             />
           </Box>
 
-          <Box
-            data-testid="chat-context-mobile-tabs"
-            sx={{
-              mt: 0.4,
-              borderTop: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)',
-              borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)',
-              display: 'flex',
-              justifyContent: 'flex-start',
-              gap: 0.15,
-              overflowX: 'auto',
-              px: 0.75,
-              scrollbarWidth: 'none',
-              msOverflowStyle: 'none',
-              '&::-webkit-scrollbar': {
-                display: 'none',
-              },
-            }}
-          >
-            {mobileTabOptions.map((tab) => (
-              <MobileProfileTabButton
-                key={tab.key}
-                label={tab.label}
-                count={tab.count}
-                active={assetKind === tab.key}
-                onClick={() => setAssetKind(tab.key)}
-              />
-            ))}
+          <Box sx={{ mt: 0.4, borderTop: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)' }}>
+            <PanelTabsBar
+              testId="chat-context-mobile-tabs"
+              options={mobileTabOptions}
+              value={assetKind}
+              onChange={setAssetKind}
+            />
           </Box>
 
           <Box
@@ -2131,87 +2519,41 @@ export default function ChatContextPanel({
             onTouchEnd={handleMobileTabTouchEnd}
             sx={{ minHeight: 220, bgcolor: 'var(--chat-sheet-panel-bg)' }}
           >
-            {attachmentsLoading && (assetKind === 'media' || assetKind === 'file') ? (
+            {attachmentsLoading && !attachmentItems.length && isAttachmentKind ? (
               assetKind === 'media' ? <SheetGridSkeleton /> : <SheetListSkeleton rows={5} />
             ) : null}
 
-            {!attachmentsLoading && assetKind === 'media' ? (
-              <>
-                <MediaKindTabs
-                  imageCount={assetCounts.image}
-                  videoCount={assetCounts.video}
-                  value={mediaSubKind}
-                  onChange={setMediaSubKind}
-                />
-                {attachmentItems.length === 0 ? (
-                  <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 6, fontSize: '0.95rem' }}>
-                    {mediaSubKind === 'video' ? 'Нет видео' : 'Нет фото'}
-                  </Typography>
-                ) : (
-                  <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1px', bgcolor: 'var(--chat-sheet-panel-grid)' }}>
-                    {attachmentItems.map((item) => (
-                      <ConversationMediaThumb
-                        key={item.id}
-                        item={item}
-                        onOpen={onOpenAttachmentPreview}
-                      />
-                    ))}
-                  </Box>
-                )}
-              </>
-            ) : null}
-
-            {!attachmentsLoading && (assetKind === 'file' || assetKind === 'audio') ? (
+            {!(attachmentsLoading && !attachmentItems.length) && assetKind === 'media' ? (
               attachmentItems.length === 0 ? (
                 <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 6, fontSize: '0.95rem' }}>
-                  Нет файлов
+                  Нет медиа
+                </Typography>
+              ) : (
+                <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1px', bgcolor: 'var(--chat-sheet-panel-grid)' }}>
+                  {attachmentItems.map((item) => (
+                    <ConversationMediaThumb
+                      key={item.id}
+                      item={item}
+                      onOpen={onOpenAttachmentPreview}
+                    />
+                  ))}
+                </Box>
+              )
+            ) : null}
+
+            {!(attachmentsLoading && !attachmentItems.length) && (assetKind === 'file' || assetKind === 'audio') ? (
+              attachmentItems.length === 0 ? (
+                <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 6, fontSize: '0.95rem' }}>
+                  {assetKind === 'audio' ? 'Нет голосовых' : 'Нет файлов'}
                 </Typography>
               ) : (
                 <Stack spacing={0} sx={{ py: 0.8 }}>
-                  {participantSearchField}
                   {attachmentItems.map((item) => (
-                    <Box
+                    <PanelFileRow
                       key={item.id}
-                      component="a"
-                      href={buildAttachmentUrl(item.message_id || item.messageId, item.id, { inline: true })}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      sx={{
-                        px: 2.6,
-                        py: 1.5,
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 1.5,
-                        textDecoration: 'none',
-                        color: 'var(--chat-sheet-panel-text)',
-                        '&:active': { opacity: 0.76 },
-                      }}
-                    >
-                      <Box
-                        sx={{
-                          width: 42,
-                          height: 42,
-                          borderRadius: 2.25,
-                          bgcolor: 'var(--chat-sheet-panel-card)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          color: 'var(--chat-sheet-panel-muted)',
-                          fontSize: '0.7rem',
-                          fontWeight: 800,
-                        }}
-                      >
-                        {getFileExtension(item.file_name) || 'FILE'}
-                      </Box>
-                      <Box sx={{ flex: 1, minWidth: 0 }}>
-                        <Typography sx={{ fontSize: '0.96rem', fontWeight: 600 }} noWrap>
-                          {item.file_name}
-                        </Typography>
-                        <Typography sx={{ mt: 0.1, color: 'var(--chat-sheet-panel-soft)', fontSize: '0.83rem' }}>
-                          {formatFileSize(item.file_size)}
-                        </Typography>
-                      </Box>
-                    </Box>
+                      item={item}
+                      subtitleParts={assetKind === 'audio' ? [formatMediaDuration(item.duration_seconds)] : []}
+                    />
                   ))}
                 </Stack>
               )
@@ -2225,30 +2567,7 @@ export default function ChatContextPanel({
               ) : (
                 <Stack spacing={0} sx={{ py: 0.8 }}>
                   {linkItems.map((item) => (
-                    <Box
-                      key={item.id}
-                      component="a"
-                      href={item.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      sx={{
-                        px: 2.6,
-                        py: 1.5,
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 1.5,
-                        textDecoration: 'none',
-                        color: 'var(--chat-sheet-panel-text)',
-                        '&:active': { opacity: 0.76 },
-                      }}
-                    >
-                      <OpenInNewRoundedIcon sx={{ color: 'var(--chat-sheet-panel-icon)' }} />
-                      <Box sx={{ flex: 1, minWidth: 0 }}>
-                        <Typography sx={{ color: 'var(--chat-sheet-panel-accent)', fontSize: '0.95rem', fontWeight: 600 }} noWrap>
-                          {item.title}
-                        </Typography>
-                      </Box>
-                    </Box>
+                    <PanelLinkRow key={item.id} item={item} />
                   ))}
                 </Stack>
               )
@@ -2262,36 +2581,11 @@ export default function ChatContextPanel({
               ) : (
                 <Stack spacing={0} sx={{ py: 0.8 }}>
                   {visibleTaskItems.map((item) => (
-                    <Box
+                    <PanelTaskRow
                       key={`${item.messageId}-${item.task.id}`}
-                      component="button"
-                      type="button"
-                      onClick={() => onOpenTask?.(item.task.id)}
-                      sx={{
-                        px: 2.6,
-                        py: 1.5,
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 1.5,
-                        width: '100%',
-                        border: 'none',
-                        textAlign: 'left',
-                        bgcolor: 'transparent',
-                        color: 'var(--chat-sheet-panel-text)',
-                        cursor: 'pointer',
-                        '&:active': { opacity: 0.76 },
-                      }}
-                    >
-                      <TaskAltOutlinedIcon sx={{ color: 'var(--chat-sheet-panel-icon)' }} />
-                      <Box sx={{ flex: 1, minWidth: 0 }}>
-                        <Typography sx={{ fontSize: '0.96rem', fontWeight: 600, overflowWrap: 'anywhere' }}>
-                          {item.task.title}
-                        </Typography>
-                        <Typography sx={{ mt: 0.1, color: 'var(--chat-sheet-panel-soft)', fontSize: '0.83rem' }}>
-                          {item.task.due_at ? formatFullDate(item.task.due_at) : 'Без срока'}
-                        </Typography>
-                      </Box>
-                    </Box>
+                      item={item}
+                      onOpenTask={onOpenTask}
+                    />
                   ))}
                 </Stack>
               )
@@ -2415,7 +2709,7 @@ export default function ChatContextPanel({
                 </Stack>
               )
             ) : null}
-            {assetControls}
+            {panelStatus}
           </Box>
         </Box>
 
@@ -2495,7 +2789,12 @@ export default function ChatContextPanel({
       />
 
       {/* Профиль */}
-      <Box data-testid="chat-info-scroll" sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
+      <Box
+        ref={panelScrollRef}
+        onScroll={handlePanelScroll}
+        data-testid="chat-info-scroll"
+        sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}
+      >
       <Box
         component={isDirect ? ButtonBase : 'div'}
         type={isDirect ? 'button' : undefined}
@@ -2504,7 +2803,7 @@ export default function ChatContextPanel({
         sx={{
           width: '100%',
           px: 2,
-          py: 2,
+          py: 2.5,
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
@@ -2519,17 +2818,25 @@ export default function ChatContextPanel({
         <ConversationAvatar
           conversation={activeConversation}
           online={Boolean(isDirect && activeConversation?.direct_peer?.presence?.is_online)}
-          size={80}
+          size={96}
         />
-        <Typography sx={{ fontWeight: 700, fontSize: '1.2rem' }}>
+        <Typography sx={{ fontWeight: 800, fontSize: '1.3rem', letterSpacing: '-0.015em', textAlign: 'center' }}>
           {activeConversation?.title || 'Без имени'}
         </Typography>
-        <Typography sx={{ color: 'var(--chat-sheet-panel-muted)', textAlign: 'center', px: 1 }}>
+        <Typography
+          sx={{
+            color: isDirect && subject?.presence?.is_online
+              ? 'var(--chat-sheet-panel-accent)'
+              : 'var(--chat-sheet-panel-muted)',
+            textAlign: 'center',
+            px: 1,
+          }}
+        >
           {isNotes
             ? 'Сохраняйте ссылки, файлы и напоминания для себя'
             : isTask
               ? 'Участники синхронизируются с карточкой задачи'
-              : (conversationHeaderSubtitle || (isGroup ? `${assetCounts.member} участников` : 'был(а) недавно'))}
+              : (conversationHeaderSubtitle || (isGroup ? `${assetCounts.member} участников` : (isDirect && subject?.presence?.is_online ? 'в сети' : 'был(а) недавно')))}
         </Typography>
         {isTask && taskId ? (
           <Button
@@ -2595,18 +2902,36 @@ export default function ChatContextPanel({
                 value={subject.city}
               />
             ) : null}
-            {String(subject?.corporate_email || '').trim() ? (
+            {subjectOfficeAddress ? (
+              <InfoRowTelegram
+                icon={<HomeWorkRoundedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+                label="Адрес офиса"
+                value={subjectOfficeAddress}
+              />
+            ) : null}
+            {subjectOfficeRoom ? (
+              <InfoRowTelegram
+                icon={<MeetingRoomRoundedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+                label="Кабинет"
+                value={subjectOfficeRoom}
+              />
+            ) : null}
+            {subjectCorporateEmail ? (
               <InfoRowTelegram
                 icon={<MailOutlineRoundedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
                 label="Корпоративная почта"
-                value={subject.corporate_email}
+                value={subjectCorporateEmail}
+                copied={copiedField === 'email'}
+                onClick={() => handleCopyInfoValue('email', subjectCorporateEmail)}
               />
             ) : null}
-            {String(subject?.corporate_phone || '').trim() ? (
+            {subjectCorporatePhone ? (
               <InfoRowTelegram
                 icon={<PhoneRoundedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
                 label="Корпоративный телефон"
-                value={subject.corporate_phone}
+                value={subjectCorporatePhone}
+                copied={copiedField === 'phone'}
+                onClick={() => handleCopyInfoValue('phone', subjectCorporatePhone)}
               />
             ) : null}
           </>
@@ -2654,128 +2979,50 @@ export default function ChatContextPanel({
 
         {/* Медиа и содержимое — табы как в Telegram */}
         <Box sx={{ borderTop: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)' }}>
-          {/* Табы */}
-          <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', position: 'sticky', top: 0, zIndex: 2, bgcolor: 'var(--chat-sheet-panel-bg)', borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)' }}>
-            {[
-              { key: 'media', label: 'Медиа', count: assetCounts.image + assetCounts.video },
-              { key: 'file', label: 'Файлы', count: assetCounts.file },
-              { key: 'audio', label: 'Аудио', count: assetCounts.audio },
-              { key: 'link', label: 'Ссылки', count: linkItems.length },
-              { key: 'task', label: 'Задачи', count: assetCounts.task },
-              ...(!isDirect && !isNotes ? [{ key: 'member', label: 'Участники', count: assetCounts.member }] : []),
-            ].map((tab) => (
-              <Box
-                key={tab.key}
-                component="button"
-                type="button"
-                onClick={() => setAssetKind(tab.key)}
-                aria-pressed={assetKind === tab.key}
-                sx={{
-                  appearance: 'none',
-                  WebkitAppearance: 'none',
-                  flex: '0 0 auto',
-                  px: 2,
-                  py: 1.5,
-                  textAlign: 'center',
-                  border: 0,
-                  bgcolor: 'transparent',
-                  cursor: 'pointer',
-                  position: 'relative',
-                  color: assetKind === tab.key ? 'var(--chat-sheet-panel-accent)' : 'var(--chat-sheet-panel-muted)',
-                  fontWeight: 600,
-                  fontSize: '0.85rem',
-                  whiteSpace: 'nowrap',
-                  '&:active': { opacity: 0.7 },
-                }}
-              >
-                {tab.label} {tab.count > 0 && <span style={{ opacity: 0.6 }}>({tab.count})</span>}
-                {assetKind === tab.key && (
-                  <Box
-                    sx={{
-                      position: 'absolute',
-                      bottom: 0,
-                      left: '20%',
-                      right: '20%',
-                      height: 2,
-                      bgcolor: 'var(--chat-sheet-panel-accent)',
-                      borderRadius: 1,
-                    }}
-                  />
-                )}
-              </Box>
-            ))}
-          </Box>
+          {/* Табы — одна строка с горизонтальной прокруткой */}
+          <PanelTabsBar
+            testId="chat-context-tabs"
+            options={mobileTabOptions}
+            value={assetKind}
+            onChange={setAssetKind}
+            sticky
+          />
 
           {/* Сетка медиа / список ссылок и задач */}
-          <Box sx={{ px: 1, py: 1, minHeight: 120 }}>
-            {assetKind === 'media' || assetKind === 'image' || assetKind === 'video' ? (
-              <>
-                <MediaKindTabs
-                  imageCount={assetCounts.image}
-                  videoCount={assetCounts.video}
-                  value={assetKind === 'media' ? mediaSubKind : assetKind}
-                  onChange={(next) => {
-                    if (assetKind !== 'media') setAssetKind('media');
-                    setMediaSubKind(next);
-                  }}
-                />
-                {attachmentItems.length === 0 ? (
-                  <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 4, fontSize: '0.9rem' }}>
-                    {mediaSubKind === 'video' ? 'Нет видео' : 'Нет фото'}
-                  </Typography>
-                ) : (
-                  <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 0.5 }}>
-                    {attachmentItems.map((item) => (
-                      <ConversationMediaThumb
-                        key={item.id}
-                        item={item}
-                        onOpen={onOpenAttachmentPreview}
-                      />
-                    ))}
-                  </Box>
-                )}
-              </>
-            ) : (assetKind === 'file' || assetKind === 'audio') ? (
+          <Box sx={{ minHeight: 120 }}>
+            {attachmentsLoading && !attachmentItems.length && isAttachmentKind ? (
+              assetKind === 'media' ? <SheetGridSkeleton /> : <SheetListSkeleton rows={5} />
+            ) : null}
+            {!(attachmentsLoading && !attachmentItems.length) && assetKind === 'media' ? (
+              attachmentItems.length === 0 ? (
+                <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 4, fontSize: '0.9rem' }}>
+                  Нет медиа
+                </Typography>
+              ) : (
+                <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1px', bgcolor: 'var(--chat-sheet-panel-grid)' }}>
+                  {attachmentItems.map((item) => (
+                    <ConversationMediaThumb
+                      key={item.id}
+                      item={item}
+                      onOpen={onOpenAttachmentPreview}
+                    />
+                  ))}
+                </Box>
+              )
+            ) : (assetKind === 'file' || assetKind === 'audio') && !(attachmentsLoading && !attachmentItems.length) ? (
               /* Список файлов */
               attachmentItems.length === 0 ? (
                 <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 4, fontSize: '0.9rem' }}>
-                  Нет файлов
+                  {assetKind === 'audio' ? 'Нет голосовых' : 'Нет файлов'}
                 </Typography>
               ) : (
-                <Stack spacing={0.5}>
+                <Stack spacing={0} sx={{ py: 0.5 }}>
                   {attachmentItems.map((item) => (
-                    <Box
+                    <PanelFileRow
                       key={item.id}
-                      component="a"
-                      href={buildAttachmentUrl(item.message_id, item.id, { inline: true })}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      sx={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 1.5,
-                        px: 1.5,
-                        py: 1.2,
-                        borderRadius: 1,
-                        bgcolor: 'var(--chat-sheet-panel-card)',
-                        cursor: 'pointer',
-                        '&:active': { opacity: 0.8 },
-                      }}
-                    >
-                      <Box sx={{ width: 40, height: 40, borderRadius: 1, bgcolor: 'var(--chat-sheet-panel-bg-strong)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <Typography sx={{ color: 'var(--chat-sheet-panel-muted)', fontSize: '0.7rem', fontWeight: 700 }}>
-                          {getFileExtension(item.file_name)}
-                        </Typography>
-                      </Box>
-                      <Box sx={{ flex: 1, minWidth: 0 }}>
-                        <Typography sx={{ color: 'var(--chat-sheet-panel-text)', fontSize: '0.9rem', fontWeight: 600 }} noWrap>
-                          {item.file_name}
-                        </Typography>
-                        <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', fontSize: '0.75rem' }}>
-                          {formatFileSize(item.file_size)}
-                        </Typography>
-                      </Box>
-                    </Box>
+                      item={item}
+                      subtitleParts={assetKind === 'audio' ? [formatMediaDuration(item.duration_seconds)] : []}
+                    />
                   ))}
                 </Stack>
               )
@@ -2786,33 +3033,9 @@ export default function ChatContextPanel({
                   {panelHistory.loading ? 'Загрузка ссылок…' : panelHistory.hasMore ? 'В загруженной части ссылок нет' : 'Нет ссылок'}
                 </Typography>
               ) : (
-                <Stack spacing={0.5}>
+                <Stack spacing={0} sx={{ py: 0.5 }}>
                   {linkItems.map((item) => (
-                    <Box
-                      key={item.id}
-                      component="a"
-                      href={item.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      sx={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 1.5,
-                        px: 1.5,
-                        py: 1.2,
-                        borderRadius: 1,
-                        bgcolor: 'var(--chat-sheet-panel-card)',
-                        textDecoration: 'none',
-                        '&:active': { opacity: 0.8 },
-                      }}
-                    >
-                      <OpenInNewRoundedIcon sx={{ color: 'var(--chat-sheet-panel-icon)', fontSize: 20 }} />
-                      <Box sx={{ flex: 1, minWidth: 0 }}>
-                        <Typography sx={{ color: 'var(--chat-sheet-panel-accent)', fontSize: '0.9rem', fontWeight: 600 }} noWrap>
-                          {item.title}
-                        </Typography>
-                      </Box>
-                    </Box>
+                    <PanelLinkRow key={item.id} item={item} />
                   ))}
                 </Stack>
               )
@@ -2823,34 +3046,13 @@ export default function ChatContextPanel({
                   {panelHistory.loading ? 'Загрузка задач…' : panelHistory.hasMore ? 'В загруженной части задач нет' : 'Нет задач'}
                 </Typography>
               ) : (
-                <Stack spacing={0.5}>
+                <Stack spacing={0} sx={{ py: 0.5 }}>
                   {visibleTaskItems.map((item) => (
-                    <Box
+                    <PanelTaskRow
                       key={`${item.messageId}-${item.task.id}`}
-                      component={ButtonBase}
-                      onClick={() => onOpenTask?.(item.task.id)}
-                      sx={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 1.5,
-                        px: 1.5,
-                        py: 1.2,
-                        borderRadius: 1,
-                        bgcolor: 'var(--chat-sheet-panel-card)',
-                        cursor: 'pointer',
-                        '&:active': { opacity: 0.8 },
-                      }}
-                    >
-                      <TaskAltOutlinedIcon sx={{ color: 'var(--chat-sheet-panel-icon)', fontSize: 20 }} />
-                      <Box sx={{ flex: 1, minWidth: 0 }}>
-                        <Typography sx={{ color: 'var(--chat-sheet-panel-text)', fontSize: '0.9rem', fontWeight: 600, overflowWrap: 'anywhere', textAlign: 'left' }}>
-                          {item.task.title}
-                        </Typography>
-                        <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', fontSize: '0.75rem' }}>
-                          {item.task.due_at ? formatFullDate(item.task.due_at) : 'Без срока'}
-                        </Typography>
-                      </Box>
-                    </Box>
+                      item={item}
+                      onOpenTask={onOpenTask}
+                    />
                   ))}
                 </Stack>
               )
@@ -2860,7 +3062,7 @@ export default function ChatContextPanel({
                   {memberDetails.loading ? 'Загрузка участников…' : memberDetails.error ? 'Список участников недоступен' : 'Нет участников'}
                 </Typography>
               ) : (
-                <Stack spacing={0.5}>
+                <Stack spacing={0.5} sx={{ px: 1.5, py: 0.75 }}>
                   {participantSearchField}
                   {canManageMembers ? (
                     <Button
@@ -2959,7 +3161,7 @@ export default function ChatContextPanel({
                 </Stack>
               )
             ) : null}
-            {assetControls}
+            {panelStatus}
           </Box>
         </Box>
       </Box>

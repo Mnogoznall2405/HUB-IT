@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from pathlib import Path
 import sys
 
@@ -28,6 +29,7 @@ if _env_path.exists():
                     key, _, value = line.partition("=")
                     os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
+from backend.ai_chat.balance import ai_balance_service
 from backend.ai_chat.service import ai_chat_service
 
 
@@ -53,14 +55,40 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 async def main() -> None:
     ai_chat_service.initialize_runtime()
     idle_delay_sec = _env_float("AI_CHAT_WORKER_IDLE_DELAY_SEC", 0.5, 0.05, 30.0)
     busy_delay_sec = _env_float("AI_CHAT_WORKER_BUSY_DELAY_SEC", 0.1, 0.01, 10.0)
     batch_size = _env_int("AI_CHAT_WORKER_BATCH_SIZE", 4, 1, 32)
     concurrency = _env_int("AI_CHAT_WORKER_CONCURRENCY", 2, 1, 16)
+    # AI3: stale-run watchdog is opt-in (flag off by default, dry-run capable).
+    watchdog_enabled = _env_flag("AI_RUN_WATCHDOG_ENABLED", False)
+    watchdog_dry_run = _env_flag("AI_RUN_WATCHDOG_DRY_RUN", False)
+    watchdog_interval_sec = _env_float("AI_RUN_WATCHDOG_INTERVAL_SEC", 300.0, 30.0, 86400.0)
+    last_watchdog_at = 0.0
+    # AG: provider balance warning is opt-in too (a network call to the provider on a schedule).
+    balance_check_enabled = _env_flag("AI_BALANCE_CHECK_ENABLED", False)
+    balance_check_interval_sec = _env_float("AI_BALANCE_CHECK_INTERVAL_SEC", 1800.0, 60.0, 86400.0)
+    last_balance_check_at = 0.0
     logger.info("AI chat worker started: batch_size=%s concurrency=%s", batch_size, concurrency)
     while True:
+        if balance_check_enabled and (last_balance_check_at == 0.0 or (time.monotonic() - last_balance_check_at) >= balance_check_interval_sec):
+            last_balance_check_at = time.monotonic()
+            try:
+                await asyncio.to_thread(ai_balance_service.check)
+            except Exception:
+                logger.exception("AI balance check cycle failed")
+        if watchdog_enabled and (time.monotonic() - last_watchdog_at) >= watchdog_interval_sec:
+            last_watchdog_at = time.monotonic()
+            try:
+                await asyncio.to_thread(ai_chat_service.reap_stale_runs, dry_run=watchdog_dry_run)
+            except Exception:
+                logger.exception("AI run watchdog cycle failed")
         try:
             processed = 0
             remaining = batch_size

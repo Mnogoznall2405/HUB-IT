@@ -51,10 +51,17 @@ describe('Telegram-style composer interactions', () => {
     rerender(<Fixture voiceRecording={false} />);
     expect(input()).toHaveFocus();
   });
-  it('caps the message at the server limit and shows the remaining count near it', () => {
+  it('shows the remaining count near the server limit without truncating the text', () => {
     render(<Fixture initialText={'а'.repeat(CHAT_MESSAGE_BODY_MAX_LENGTH - 10)} />);
-    expect(input()).toHaveAttribute('maxLength', String(CHAT_MESSAGE_BODY_MAX_LENGTH));
+    expect(input()).not.toHaveAttribute('maxLength');
     expect(screen.getByText('10')).toBeInTheDocument();
+  });
+  it('keeps text over the server limit and blocks sending with a warning', () => {
+    render(<Fixture initialText={'а'.repeat(CHAT_MESSAGE_BODY_MAX_LENGTH + 10)} />);
+    expect(input()).toHaveValue('а'.repeat(CHAT_MESSAGE_BODY_MAX_LENGTH + 10));
+    expect(screen.getByText('-10')).toBeInTheDocument();
+    expect(screen.getByText('Слишком длинное сообщение')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Отправить' })).toBeDisabled();
   });
   it('exposes expanded state on the emoji toggle and the mention listbox', () => {
     render(<Fixture emojiPickerOpen />);
@@ -72,7 +79,7 @@ describe('Telegram-style composer interactions', () => {
   });
   it('follows the compact desktop capsule height', () => {
     render(<Fixture ui={buildChatUiTokens(theme, { compactDesktop: true })} />);
-    expect(screen.getByTestId('chat-composer-capsule')).toHaveStyle({ minHeight: '34px' });
+    expect(screen.getByTestId('chat-composer-capsule')).toHaveStyle({ minHeight: '44px' });
   });
 
   it('keeps a disabled save action instead of switching to voice when editing becomes empty', () => {

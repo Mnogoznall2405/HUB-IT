@@ -27,6 +27,7 @@ const CHAT_NOTIFICATION_CHANNELS = [
   ['chat_direct', 'Личные сообщения'],
   ['chat_group', 'Групповые беседы'],
   ['chat_task', 'Диалоги задач'],
+  ['chat_ai', 'Уведомления ИИ-агентов'],
 ];
 
 export function NotificationChannelsSettingsCard({ embedded = false }) {
@@ -60,6 +61,7 @@ export function NotificationChannelsSettingsCard({ embedded = false }) {
         chat_direct: enabled,
         chat_group: enabled,
         chat_task: enabled,
+        chat_ai: enabled,
       }
       : { [key]: enabled };
     setChannels((prev) => ({ ...prev, ...optimisticPatch }));
@@ -111,7 +113,7 @@ export function NotificationChannelsSettingsCard({ embedded = false }) {
                 color="text.secondary"
                 sx={{ pl: { xs: 0, sm: 6.5 }, lineHeight: 1.45 }}
               >
-                Общий выключатель для личных сообщений, групповых бесед и диалогов задач.
+                Общий выключатель для личных сообщений, групповых бесед, диалогов задач и ответов ИИ-агентов.
               </Typography>
               <FormGroup sx={{ pl: { xs: 0.5, sm: 5.5 } }}>
                 {CHAT_NOTIFICATION_CHANNELS.map(([key, label]) => (
@@ -129,6 +131,18 @@ export function NotificationChannelsSettingsCard({ embedded = false }) {
                     sx={{ m: 0, minHeight: 40 }}
                   />
                 ))}
+                <FormControlLabel
+                  control={(
+                    <Switch
+                      name="chat_sound"
+                      checked={Boolean(channels.chat_sound)}
+                      onChange={(event) => handleToggle('chat_sound', event?.target?.checked)}
+                      disabled={loading || saving || !chatEnabled}
+                    />
+                  )}
+                  label="Звук сообщений"
+                  sx={{ m: 0, minHeight: 40 }}
+                />
               </FormGroup>
             </Stack>
 

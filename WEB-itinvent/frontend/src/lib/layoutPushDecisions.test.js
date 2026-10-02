@@ -28,6 +28,16 @@ describe('resolveForegroundPushDecision', () => {
     expect(d).toEqual({ kind: 'suppress', reason: 'active_visible_conversation' });
   });
 
+  it('N2: suppresses chat push toasts on the visible desktop chat route', () => {
+    const d = resolveForegroundPushDecision(chat, {
+      isChatRoute: true,
+      isDesktopChatRoute: true,
+      isVisible: true,
+      activeChatConversationId: 'other',
+    });
+    expect(d).toEqual({ kind: 'suppress', reason: 'desktop_chat_route' });
+  });
+
   it('returns a claim-chat toast for a new conversation message', () => {
     const d = resolveForegroundPushDecision(chat, { activeChatConversationId: 'other' });
     expect(d.kind).toBe('claim-chat');

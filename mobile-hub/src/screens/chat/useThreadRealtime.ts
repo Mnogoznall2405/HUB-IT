@@ -1,12 +1,15 @@
-import { useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import { useFocusEffect } from 'expo-router';
 import type { ChatConversationSummary, ChatMessage } from '../../api/types';
 import {
   applyReactionEnvelope,
+  applyReadReceiptDelta,
   mergeMessages,
   messageFromEnvelope,
   resolveChatMessageIsOwn,
 } from '../../chat/chatState';
 import { chatSocket, shouldUseChatHttpFallback, type ChatSocketStatus } from '../../chat/chatSocket';
+import { getActiveNativeChatConversationId } from '../../chat/chatActiveConversation';
 import {
   applyTypingParticipant,
   parsePresenceEnvelope,
@@ -20,6 +23,7 @@ export function useThreadRealtime({
   conversationId,
   userId,
   offlineMode,
+  hasNewer,
   mountedRef,
   markedReadRef,
   knownMessageIdsRef,
@@ -45,6 +49,10 @@ export function useThreadRealtime({
   conversationId: string;
   userId?: number;
   offlineMode: boolean;
+  /** True while the loaded window is detached from the bottom of history
+   * (search jump / mid-history focus): a fresh socket message then must not be
+   * merged into the slice — it would land at data[0] next to unrelated items. */
+  hasNewer: boolean;
   mountedRef: MutableRefObject<boolean>;
   markedReadRef: MutableRefObject<string>;
   knownMessageIdsRef: MutableRefObject<Set<string>>;
@@ -69,8 +77,14 @@ export function useThreadRealtime({
 }) {
   const [status, setStatus] = useState<ChatSocketStatus>(chatSocket.getStatus());
   const [typingParticipants, setTypingParticipants] = useState<Array<{ userId: number; name: string }>>([]);
+  // M6: live AI run status line for the open conversation (chat.ai.run.updated).
+  const [aiRunStatus, setAiRunStatus] = useState<{ botTitle: string; statusText: string; status: string } | null>(null);
   const connectedOnceRef = useRef(chatSocket.getStatus() === 'connected');
   const incomingTypingTimeoutsRef = useRef(new Map<number, ReturnType<typeof setTimeout>>());
+  // Socket handlers read the detached-window flag through a ref so a hasNewer
+  // flip does not re-subscribe the conversation.
+  const hasNewerRef = useRef(hasNewer);
+  hasNewerRef.current = hasNewer;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -83,6 +97,10 @@ export function useThreadRealtime({
         loadGenerationRef.current += 1;
         incomingTypingTimeoutsRef.current.forEach((timer) => clearTimeout(timer));
         incomingTypingTimeoutsRef.current.clear();
+        // An in-place conversationId switch keeps this state — drop the stale
+        // typing line and AI status along with their timers.
+        setTypingParticipants([]);
+        setAiRunStatus(null);
         if (typingIdleRef.current) clearTimeout(typingIdleRef.current);
         if (pendingAnchorTimerRef.current) clearTimeout(pendingAnchorTimerRef.current);
         if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
@@ -112,8 +130,16 @@ export function useThreadRealtime({
         messageEnterMotionsRef.current.set(chatMessageMotionKey(message), 'incoming');
       }
       knownMessageIdsRef.current.add(message.id);
-      setMessages((current) => mergeMessages(current, message, userId));
-      if (nearBottomRef.current) {
+      // Detached history window (hasNewer — a mid-history slice reached via a
+      // search jump): merging would pin the fresh message at data[0] next to
+      // unrelated older items. It only counts towards jump-to-bottom; the gap
+      // is fetched by jumpToBottom/loadNewer. Attached == nearBottom && !hasNewer,
+      // same invariant the scroll handler uses.
+      const detached = hasNewerRef.current;
+      if (!detached) {
+        setMessages((current) => mergeMessages(current, message, userId));
+      }
+      if (!detached && nearBottomRef.current) {
         requestBottomAnchor();
         markRead(message);
       }
@@ -139,6 +165,33 @@ export function useThreadRealtime({
     const offReaction = chatSocket.on('chat.message.reaction', (envelope: unknown) => {
       setMessages((current) => applyReactionEnvelope(current, envelope).items);
     });
+    // M1: room read receipts update the loaded window in place — no refetch.
+    const offMessageRead = chatSocket.on('chat.message.read', (envelope: unknown) => {
+      const event = envelope as { conversation_id?: string; payload?: Record<string, unknown> };
+      const payload = event?.payload || {};
+      const eventConversationId = String(payload.conversation_id || event?.conversation_id || '').trim();
+      if (eventConversationId !== conversationId) return;
+      setMessages((current) => applyReadReceiptDelta(current, payload, userId));
+    });
+    // M6: AI run lifecycle for this conversation → header status line; a
+    // terminal event also triggers the message catch-up in case the reply
+    // message event raced ahead of the status update.
+    const offAiRun = chatSocket.on('chat.ai.run.updated', (envelope: unknown) => {
+      const event = envelope as { conversation_id?: string; payload?: Record<string, unknown> };
+      const payload = event?.payload || {};
+      const eventConversationId = String(payload.conversation_id || event?.conversation_id || '').trim();
+      if (eventConversationId !== conversationId) return;
+      const aiStatus = String(payload.status || '').trim();
+      const botTitle = String(payload.bot_title || '').trim();
+      const statusText = String(payload.status_text || '').trim();
+      const terminal = ['completed', 'failed', 'cancelled', 'succeeded', 'expired'].includes(aiStatus);
+      if (!terminal) {
+        setAiRunStatus({ botTitle, statusText, status: aiStatus });
+      } else {
+        setAiRunStatus(null);
+        void syncLatestMessages();
+      }
+    });
     const applyTyping = (envelope: unknown) => {
       const parsed = parseTypingEnvelope(envelope);
       if (!parsed || parsed.conversationId !== conversationId || parsed.userId === Number(userId || 0)) {
@@ -159,7 +212,7 @@ export function useThreadRealtime({
             false,
           ));
           incomingTypingTimeoutsRef.current.delete(parsed.userId);
-        }, 4000));
+        }, parsed.expiresInMs));
       } else {
         incomingTypingTimeoutsRef.current.delete(parsed.userId);
       }
@@ -174,7 +227,9 @@ export function useThreadRealtime({
         if (current.direct_peer?.id === parsed.userId) {
           return { ...current, direct_peer: { ...current.direct_peer, presence: parsed.presence } };
         }
-        if (!current.members?.length) return current;
+        // Presence frames for non-members must not allocate a new conversation
+        // object — each one would re-render the whole thread screen.
+        if (!current.members?.some((member) => member.user.id === parsed.userId)) return current;
         return {
           ...current,
           members: current.members.map((member) => (
@@ -191,6 +246,10 @@ export function useThreadRealtime({
       loadGenerationRef.current += 1;
       incomingTypingTimeoutsRef.current.forEach((timer) => clearTimeout(timer));
       incomingTypingTimeoutsRef.current.clear();
+      // An in-place conversationId switch keeps this state — reset it here so
+      // the next conversation does not inherit the typing line / AI status.
+      setTypingParticipants([]);
+      setAiRunStatus(null);
       if (typingIdleRef.current) clearTimeout(typingIdleRef.current);
       if (pendingAnchorTimerRef.current) clearTimeout(pendingAnchorTimerRef.current);
       if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
@@ -205,6 +264,8 @@ export function useThreadRealtime({
       offUpdated();
       offDeleted();
       offReaction();
+      offMessageRead();
+      offAiRun();
       offTypingStarted();
       offTypingStopped();
       offPresence();
@@ -212,14 +273,17 @@ export function useThreadRealtime({
     };
   }, [conversationId, loadInitial, markRead, offlineMode, requestBottomAnchor, syncLatestMessages, userId]);
 
-  useEffect(() => {
+  // Focus-scoped: pushed-over thread screens stay mounted — without this gate
+  // every stacked screen would keep its own 15s poller while disconnected.
+  useFocusEffect(useCallback(() => {
     if (offlineMode || !shouldUseChatHttpFallback(status)) return undefined;
-    void syncLatestMessages();
-    const timer = setInterval(() => {
-      void syncLatestMessages();
-    }, 15_000);
+    const syncIfActive = () => {
+      if (getActiveNativeChatConversationId() === conversationId) void syncLatestMessages();
+    };
+    syncIfActive();
+    const timer = setInterval(syncIfActive, 15_000);
     return () => clearInterval(timer);
-  }, [offlineMode, status, syncLatestMessages]);
+  }, [conversationId, offlineMode, status, syncLatestMessages]));
 
-  return { status, typingParticipants };
+  return { status, typingParticipants, aiRunStatus };
 }

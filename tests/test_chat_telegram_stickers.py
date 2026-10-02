@@ -478,3 +478,198 @@ def test_persist_imported_pack_restores_old_files_when_commit_fails(monkeypatch,
     assert (existing_dir / "old.webp").read_bytes() == b"old"
     assert not (existing_dir / "new.webp").exists()
     assert not list(storage_root.glob(".backup-*"))
+
+
+class _FakeAllResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+def _make_default_pack_session(*, packs_and_memberships, write_queue, added):
+    """Fake session: read phase returns (pack_id, membership_id) rows via .all(),
+    write phase consumes queued scalar/scalars results and records .add() calls."""
+
+    class Session:
+        def __init__(self):
+            self._queue = iter(write_queue)
+
+        def execute(self, _statement):
+            if self._queue is None:
+                return _FakeAllResult(packs_and_memberships)
+            return next(self._queue)
+
+        def add(self, item):
+            added.append(item)
+
+    class ReadSession(Session):
+        def __init__(self):
+            self._queue = None
+
+    return ReadSession(), Session()
+
+
+def test_list_packs_installs_missing_default_pack(monkeypatch, temp_dir: str):
+    storage_root = Path(temp_dir)
+    service = TelegramStickerService(storage_root=storage_root, token_getter=lambda: "token")
+    pack = ChatStickerPack(id="pack-1", short_name="frrl52", title="Funny", sticker_type="regular")
+    pack_dir = storage_root / pack.id
+    pack_dir.mkdir()
+    (pack_dir / "sticker.webp").write_bytes(b"webp")
+    (pack_dir / _PREVIEW_CACHE_MARKER).write_text("ready", encoding="ascii")
+
+    added = []
+    read_session, write_session = _make_default_pack_session(
+        packs_and_memberships=[(pack.id, None)],
+        write_queue=[
+            _FakeScalarResult(single=pack),
+            _FakeScalarResult(items=["sticker.webp"]),
+            _FakeScalarResult(single=None),
+        ],
+        added=added,
+    )
+
+    @contextmanager
+    def fake_read_session():
+        yield read_session
+
+    @contextmanager
+    def fake_write_session():
+        yield write_session
+
+    monkeypatch.setattr(telegram_sticker_module, "chat_read_session", fake_read_session)
+    monkeypatch.setattr(telegram_sticker_module, "chat_write_session", fake_write_session)
+    monkeypatch.setattr(
+        telegram_sticker_module,
+        "default_sticker_pack_short_names",
+        lambda: ("Frrl52",),
+    )
+    monkeypatch.setattr(service, "_serialize_packs", lambda **_kwargs: {"items": [{"id": pack.id}]})
+
+    result = service.list_packs(current_user_id=7)
+
+    assert result["items"] == [{"id": "pack-1"}]
+    assert any(
+        isinstance(item, ChatUserStickerPack)
+        and item.user_id == 7
+        and item.pack_id == pack.id
+        for item in added
+    )
+
+
+def test_list_packs_skips_default_install_when_already_added(monkeypatch, temp_dir: str):
+    storage_root = Path(temp_dir)
+    service = TelegramStickerService(storage_root=storage_root, token_getter=lambda: "token")
+    added = []
+    write_calls = []
+    read_session, _write_session = _make_default_pack_session(
+        packs_and_memberships=[("pack-1", 42)],
+        write_queue=[],
+        added=added,
+    )
+
+    @contextmanager
+    def fake_read_session():
+        yield read_session
+
+    @contextmanager
+    def fake_write_session():
+        write_calls.append("write")
+        yield _write_session
+
+    monkeypatch.setattr(telegram_sticker_module, "chat_read_session", fake_read_session)
+    monkeypatch.setattr(telegram_sticker_module, "chat_write_session", fake_write_session)
+    monkeypatch.setattr(
+        telegram_sticker_module,
+        "default_sticker_pack_short_names",
+        lambda: ("frrl52",),
+    )
+    monkeypatch.setattr(service, "_serialize_packs", lambda **_kwargs: {"items": []})
+
+    service.list_packs(current_user_id=7)
+
+    assert write_calls == []
+    assert added == []
+
+
+def test_remove_pack_refuses_default_pack(monkeypatch, temp_dir: str):
+    storage_root = Path(temp_dir)
+    service = TelegramStickerService(storage_root=storage_root, token_getter=lambda: "token")
+    membership = ChatUserStickerPack(user_id=7, pack_id="pack-1")
+    deleted = []
+
+    class Session:
+        def __init__(self):
+            self._queue = iter([
+                _FakeScalarResult(single=membership),
+                _FakeScalarResult(single="frrl52"),
+            ])
+
+        def execute(self, _statement):
+            return next(self._queue)
+
+        def delete(self, item):
+            deleted.append(item)
+
+    @contextmanager
+    def fake_write_session():
+        yield Session()
+
+    monkeypatch.setattr(telegram_sticker_module, "chat_write_session", fake_write_session)
+    monkeypatch.setattr(
+        telegram_sticker_module,
+        "default_sticker_pack_short_names",
+        lambda: ("Frrl52",),
+    )
+
+    with pytest.raises(ValueError, match="нельзя удалить"):
+        service.remove_pack(current_user_id=7, pack_id="pack-1")
+
+    assert deleted == []
+
+
+def test_remove_pack_deletes_non_default_pack(monkeypatch, temp_dir: str):
+    storage_root = Path(temp_dir)
+    service = TelegramStickerService(storage_root=storage_root, token_getter=lambda: "token")
+    membership = ChatUserStickerPack(user_id=7, pack_id="pack-9")
+    deleted = []
+
+    class Session:
+        def __init__(self):
+            self._queue = iter([
+                _FakeScalarResult(single=membership),
+                _FakeScalarResult(single="user_added_pack"),
+            ])
+
+        def execute(self, _statement):
+            return next(self._queue)
+
+        def delete(self, item):
+            deleted.append(item)
+
+    @contextmanager
+    def fake_write_session():
+        yield Session()
+
+    monkeypatch.setattr(telegram_sticker_module, "chat_write_session", fake_write_session)
+    monkeypatch.setattr(
+        telegram_sticker_module,
+        "default_sticker_pack_short_names",
+        lambda: ("frrl52",),
+    )
+
+    result = service.remove_pack(current_user_id=7, pack_id="pack-9")
+
+    assert result == {"ok": True}
+    assert deleted == [membership]
+
+
+def test_default_pack_list_respects_env_override(monkeypatch):
+    monkeypatch.setenv("CHAT_DEFAULT_STICKER_PACKS", "PackOne, PackTwo ,,")
+    assert telegram_sticker_module.default_sticker_pack_short_names() == ("PackOne", "PackTwo")
+
+    monkeypatch.delenv("CHAT_DEFAULT_STICKER_PACKS")
+    names = telegram_sticker_module.default_sticker_pack_short_names()
+    assert "peach_goma" in names and "X264WebmPack" in names

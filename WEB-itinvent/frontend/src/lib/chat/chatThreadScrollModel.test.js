@@ -86,6 +86,62 @@ describe('chatThreadScrollModel prepend restore', () => {
     });
   });
 
+  it('uses elementFromPoint probe instead of scanning every message node', () => {
+    const row = {
+      getAttribute: (attr) => attr === 'data-message-id' ? 'msg-probe' : '',
+      getBoundingClientRect: () => ({ top: 150, bottom: 230 }),
+    };
+    const hitNode = {
+      closest: (selector) => (String(selector || '').includes('data-message-id') ? row : null),
+    };
+    const container = {
+      scrollTop: 80,
+      scrollHeight: 900,
+      ownerDocument: { elementFromPoint: () => hitNode },
+      contains: (node) => node === row,
+      getBoundingClientRect: () => ({ top: 100, left: 0, width: 600 }),
+      querySelector: () => null,
+      querySelectorAll: () => {
+        throw new Error('linear scan must not run when the probe hit a message row');
+      },
+    };
+
+    expect(capturePrependScrollRestoreState(container)).toEqual({
+      mode: 'anchor',
+      virtual: false,
+      scrollHeight: 900,
+      scrollTop: 80,
+      anchorMessageId: 'msg-probe',
+      anchorViewportOffset: 50,
+    });
+  });
+
+  it('falls back to the linear scan when elementFromPoint misses message rows', () => {
+    const anchor = {
+      getAttribute: (attr) => attr === 'data-chat-message-id' ? 'msg-fallback' : '',
+      getBoundingClientRect: () => ({ top: 180, bottom: 220 }),
+    };
+    const container = {
+      scrollTop: 80,
+      scrollHeight: 900,
+      ownerDocument: { elementFromPoint: () => null },
+      getBoundingClientRect: () => ({ top: 100, left: 0, width: 600 }),
+      querySelector: () => null,
+      querySelectorAll: (selector) => (
+        String(selector || '').includes('data-chat-message-id') ? [anchor] : []
+      ),
+    };
+
+    expect(capturePrependScrollRestoreState(container)).toEqual({
+      mode: 'anchor',
+      virtual: false,
+      scrollHeight: 900,
+      scrollTop: 80,
+      anchorMessageId: 'msg-fallback',
+      anchorViewportOffset: 80,
+    });
+  });
+
   it('restores anchor position after prepend using viewport offset delta', () => {
     const anchor = {
       getAttribute: (attr) => attr === 'data-chat-message-id' ? 'msg-anchor' : '',

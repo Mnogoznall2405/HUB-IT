@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { AiBotsAdminSection, resolveAvailableSettingsTabs, SETTINGS_PERMISSION_GROUPS } from './Settings';
 
+vi.mock('../api/aiBalance', () => ({ aiBalanceAPI: { get: vi.fn().mockResolvedValue({ balance: null, threshold: 0, low: false, status: 'unknown' }), check: vi.fn(), setThreshold: vi.fn() } }));
+
 vi.mock('../contexts/AuthContext', () => ({
   useAuth: () => ({
     user: { id: 1, username: 'admin' },

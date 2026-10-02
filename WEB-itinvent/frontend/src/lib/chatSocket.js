@@ -28,7 +28,10 @@ export const CHAT_SOCKET_AI_SANDBOX_UPDATED_EVENT = 'chat-ws-ai-sandbox-updated'
 export const CHAT_SOCKET_MESSAGE_REACTION_EVENT = 'chat-ws-message-reaction';
 
 const HEARTBEAT_MS = 25_000;
+const HEARTBEAT_PROBE_TIMEOUT_MS = 5_000;
 const REQUEST_TIMEOUT_MS = 15_000;
+const SEND_MESSAGE_TIMEOUT_MS = 7_000;
+const RATE_LIMITED_CLOSE_CODE = 4429;
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000];
 const RECONNECT_JITTER_RATIO = 0.25;
 const STABLE_CONNECTION_MS = 5_000;
@@ -223,12 +226,19 @@ class ChatSocketClient {
     this.messageQueue = [];
     this.pendingConversationSubscriptions = new Map();
     this.missedPongs = 0;
-    this.maxMissedPongs = 3;
+    this.maxMissedPongs = 2;
     this.stableConnectionTimer = null;
     this.authBlocked = false;
     this.resumeRecoverInFlight = false;
     this.socketOpenedAt = null;
     this.failedHandshakeCount = 0;
+    this.rateLimitRetryAfterMs = 0;
+    this.connectivityWatchersAttached = false;
+    this.handleNetworkOnline = () => this.probeSocketConnection();
+    this.handleVisibilityChange = () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      this.probeSocketConnection();
+    };
   }
 
   hasActiveOrPendingSocket() {
@@ -331,6 +341,7 @@ class ChatSocketClient {
       },
     }, {
       requireOpen: true,
+      timeoutMs: SEND_MESSAGE_TIMEOUT_MS,
     });
   }
 
@@ -363,6 +374,7 @@ class ChatSocketClient {
 
   connect() {
     if (!CHAT_WS_ENABLED || !canUseBrowserSocket()) return;
+    this.ensureConnectivityWatchers();
     if (this.authBlocked) {
       // #region agent log
       emitAgentDebugLog({
@@ -395,6 +407,7 @@ class ChatSocketClient {
       if (this.socket !== socket) return;
       this.resumeRecoverInFlight = false;
       this.missedPongs = 0;
+      this.rateLimitRetryAfterMs = 0;
       this.socketOpenedAt = Date.now();
       this.failedHandshakeCount = 0;
       this.setStatus('connected');
@@ -478,7 +491,11 @@ class ChatSocketClient {
         }
       }
       if (!this.manualClose && !authBlocked && this.retainCount > 0) {
-        this.scheduleReconnect();
+        this.scheduleReconnect(
+          closeCode === RATE_LIMITED_CLOSE_CODE
+            ? this.resolveRateLimitRetryAfterMs(event?.reason)
+            : 0,
+        );
       }
     };
   }
@@ -514,6 +531,76 @@ class ChatSocketClient {
     this.setStatus('disconnected');
   }
 
+  // Drop the current transport and reconnect immediately, keeping the offline
+  // queue intact (unlike close(), which is terminal and clears the queue).
+  reconnectNow() {
+    if (!CHAT_WS_ENABLED || !canUseBrowserSocket()) return;
+    this.manualClose = false;
+    this.resumeRecoverInFlight = false;
+    if (this.reconnectTimer) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.stopHeartbeat();
+    const socket = this.socket;
+    this.socket = null;
+    if (socket) {
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onerror = null;
+      socket.onclose = null;
+      try {
+        socket.close();
+      } catch {
+        // Ignore socket close errors.
+      }
+    }
+    this.rejectPendingRequests(new Error('Chat websocket reconnecting'));
+    this.setStatus('disconnected');
+    if (this.retainCount > 0) {
+      this.connect();
+    }
+  }
+
+  ensureConnectivityWatchers() {
+    if (this.connectivityWatchersAttached) return;
+    if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
+    this.connectivityWatchersAttached = true;
+    window.addEventListener('online', this.handleNetworkOnline);
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      document.addEventListener('visibilitychange', this.handleVisibilityChange);
+    }
+  }
+
+  // Out-of-band liveness probe on network recovery / tab reactivation.
+  probeSocketConnection() {
+    if (this.retainCount <= 0 || this.authBlocked || this.manualClose) return;
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      // Backoff can outlive the offline period; retry immediately instead.
+      if (!this.hasActiveOrPendingSocket()) {
+        if (this.reconnectTimer) {
+          window.clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
+        this.connect();
+      }
+      return;
+    }
+    this.sendCommand({ type: 'chat.ping' }, { timeoutMs: HEARTBEAT_PROBE_TIMEOUT_MS })
+      .catch(() => {
+        if (this.socket === socket && socket.readyState === WebSocket.OPEN) {
+          this.forceSocketReconnect();
+        }
+      });
+  }
+
+  resolveRateLimitRetryAfterMs(reason) {
+    const match = /retry_after_ms=(\d+)/.exec(String(reason || ''));
+    if (match) return Math.max(0, Number(match[1]) || 0);
+    return Math.max(0, Number(this.rateLimitRetryAfterMs) || 0);
+  }
+
   send(payload) {
     if (!CHAT_WS_ENABLED || !canUseBrowserSocket()) return false;
     const socket = this.socket;
@@ -541,12 +628,13 @@ class ChatSocketClient {
       return Promise.reject(new Error('Chat websocket is not connected'));
     }
     const requestId = createRequestId();
+    const timeoutMs = Math.max(1000, Number(options?.timeoutMs) || REQUEST_TIMEOUT_MS);
     return new Promise((resolve, reject) => {
       const timeoutId = window.setTimeout(() => {
         this.pendingRequests.delete(requestId);
         reject(new Error('Chat websocket command timed out'));
-      }, REQUEST_TIMEOUT_MS);
-      this.pendingRequests.set(requestId, { resolve, reject, timeoutId });
+      }, timeoutMs);
+      this.pendingRequests.set(requestId, { resolve, reject, timeoutId, timeoutMs });
       const socket = this.socket;
       const dispatched = this.send({
         ...command,
@@ -601,8 +689,19 @@ class ChatSocketClient {
       return;
     }
     if (eventType === 'chat.error' || eventType === 'error') {
-      const message = String(payload?.detail || payload?.code || 'Chat websocket error');
-      this.rejectPendingRequest(requestId, new Error(message));
+      const code = String(payload?.code || '').trim();
+      const message = String(payload?.detail || code || 'Chat websocket error');
+      const error = new Error(message);
+      if (code) error.chatErrorCode = code;
+      if (requestId) error.requestId = requestId;
+      const retryAfterMs = Number(payload?.retry_after_ms);
+      if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+        error.retryAfterMs = retryAfterMs;
+        if (code === 'rate_limited') {
+          this.rateLimitRetryAfterMs = retryAfterMs;
+        }
+      }
+      this.rejectPendingRequest(requestId, error);
       return;
     }
     if (eventType === 'chat.snapshot') {
@@ -697,11 +796,15 @@ class ChatSocketClient {
     }
   }
 
-  scheduleReconnect() {
+  scheduleReconnect(minDelayMs = 0) {
     if (this.reconnectTimer || this.retainCount <= 0) return;
     const baseDelay = RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)];
     const jitter = baseDelay * RECONNECT_JITTER_RATIO * ((Math.random() * 2) - 1);
-    const delay = Math.max(0, Math.min(RECONNECT_DELAYS_MS[RECONNECT_DELAYS_MS.length - 1], baseDelay + jitter));
+    const delay = Math.max(
+      0,
+      Math.min(RECONNECT_DELAYS_MS[RECONNECT_DELAYS_MS.length - 1], baseDelay + jitter),
+      Number(minDelayMs) || 0,
+    );
     this.reconnectAttempt += 1;
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
@@ -735,21 +838,13 @@ class ChatSocketClient {
         });
         // #endregion
         // Connection is dead, force reconnect
-        this.stopHeartbeat();
-        if (this.socket) {
-          try {
-            this.socket.close();
-          } catch {}
-        }
-        this.socket = null;
-        this.setStatus('disconnected');
-        this.scheduleReconnect();
+        this.forceSocketReconnect();
         return;
       }
       this.missedPongs += 1;
       this.sendCommand({
         type: 'chat.ping',
-      }).catch(() => {
+      }, { timeoutMs: HEARTBEAT_PROBE_TIMEOUT_MS }).catch(() => {
         // Ping failed, will be handled by missedPongs check
       });
     }, HEARTBEAT_MS);
@@ -764,6 +859,22 @@ class ChatSocketClient {
       window.clearTimeout(this.stableConnectionTimer);
       this.stableConnectionTimer = null;
     }
+  }
+
+  // Forced reconnect on a dead transport: queued commands must not wait for
+  // their timeout to notice the socket is gone.
+  forceSocketReconnect() {
+    this.stopHeartbeat();
+    const socket = this.socket;
+    if (socket) {
+      try {
+        socket.close();
+      } catch {}
+    }
+    this.socket = null;
+    this.rejectPendingRequests(new Error('Chat websocket heartbeat timeout'));
+    this.setStatus('disconnected');
+    this.scheduleReconnect();
   }
 
   resetAuthBlock() {
@@ -908,15 +1019,47 @@ class ChatSocketClient {
     // their request_id is still registered when the server responds after flush.
     this.pendingRequests.forEach((pending, requestId) => {
       window.clearTimeout(pending.timeoutId);
+      // R7: preserve the per-command timeout (e.g. SEND_MESSAGE_TIMEOUT_MS)
+      // instead of re-arming the generic REQUEST_TIMEOUT_MS.
       pending.timeoutId = window.setTimeout(() => {
         this.pendingRequests.delete(requestId);
         pending.reject(new Error('Chat websocket command timed out'));
-      }, REQUEST_TIMEOUT_MS);
+      }, Math.max(1000, Number(pending.timeoutMs) || REQUEST_TIMEOUT_MS));
     });
     const queued = [...this.messageQueue];
     this.messageQueue = [];
     if (queued.length === 0) return;
-    queued.forEach((payload) => {
+    // Collapse mark_read bursts: only the latest marker per conversation matters
+    // and older ones would burn the per-user WS rate budget on flush.
+    const lastMarkReadIndexByConversation = new Map();
+    queued.forEach((payload, index) => {
+      if (String(payload?.type || '').trim() === 'chat.mark_read') {
+        lastMarkReadIndexByConversation.set(normalizeConversationId(payload?.conversation_id), index);
+      }
+    });
+    const flushed = lastMarkReadIndexByConversation.size === 0
+      ? queued
+      : queued.filter((payload, index) => {
+        if (String(payload?.type || '').trim() !== 'chat.mark_read') return true;
+        const key = normalizeConversationId(payload?.conversation_id);
+        const keep = lastMarkReadIndexByConversation.get(key) === index;
+        if (!keep) {
+          const surviving = queued[lastMarkReadIndexByConversation.get(key)];
+          const requestId = String(payload?.request_id || '').trim();
+          if (requestId) {
+            // Resolve with the surviving marker so callers don't HTTP-fallback
+            // a superseded (older) read position.
+            this.resolvePendingRequest(requestId, {
+              collapsed: true,
+              message_id: String(
+                surviving?.payload?.message_id || payload?.payload?.message_id || '',
+              ).trim(),
+            });
+          }
+        }
+        return keep;
+      });
+    flushed.forEach((payload) => {
       const requestId = String(payload?.request_id || '').trim();
       // Skip messages whose request_id already timed out (no longer in pendingRequests).
       if (requestId && !this.pendingRequests.has(requestId)) return;

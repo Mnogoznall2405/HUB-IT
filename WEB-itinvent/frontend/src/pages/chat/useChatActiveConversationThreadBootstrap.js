@@ -1,4 +1,4 @@
-import { useLayoutEffect } from 'react';
+import { useEffect, useLayoutEffect } from 'react';
 
 import { invalidateSWRCacheByPrefix, peekSWRCache } from '../../lib/swrCache';
 import { buildChatThreadCacheKeyParts } from './chatCacheKeys';
@@ -16,6 +16,7 @@ export function shouldInvalidateThreadCacheFromNotification(requestedConversatio
 
 export default function useChatActiveConversationThreadBootstrap({
   activeConversationId,
+  activeConversationIdRef,
   applyLatestThreadPayload,
   cancelPendingInitialAnchorRef,
   clearInitialViewportGuard,
@@ -44,6 +45,16 @@ export default function useChatActiveConversationThreadBootstrap({
   setViewerLastReadMessageId,
   userCacheId,
 }) {
+  // Aborted bootstrap (unmount/StrictMode replay) must not leave the layout key
+  // marked as handled — a remount without data has to start the load again.
+  useEffect(() => () => {
+    const activeId = String(activeConversationIdRef?.current || '').trim();
+    const hydratedId = String(hydratedThreadConversationIdRef?.current || '').trim();
+    if (activeId && hydratedId !== activeId) {
+      lastHandledThreadLayoutKeyRef.current = '';
+    }
+  }, [activeConversationIdRef, hydratedThreadConversationIdRef, lastHandledThreadLayoutKeyRef]);
+
   useLayoutEffect(() => {
     const layoutKey = buildActiveConversationThreadLayoutKey(userCacheId, activeConversationId);
     if (lastHandledThreadLayoutKeyRef.current === layoutKey) return;

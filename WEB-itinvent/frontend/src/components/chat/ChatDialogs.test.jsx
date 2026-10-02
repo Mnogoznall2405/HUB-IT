@@ -63,20 +63,6 @@ const buildProps = (overrides = {}) => ({
   onSendFiles: vi.fn(),
   onRemoveSelectedFile: vi.fn(),
   onClearSelectedFiles: vi.fn(),
-  groupOpen: false,
-  onCloseGroup: vi.fn(),
-  groupTitle: '',
-  onGroupTitleChange: vi.fn(),
-  groupSearch: '',
-  onGroupSearchChange: vi.fn(),
-  groupUsers: [],
-  groupUsersLoading: false,
-  groupSelectedUsers: [],
-  onAddGroupMember: vi.fn(),
-  onRemoveGroupMember: vi.fn(),
-  creatingConversation: false,
-  groupCreateDisabled: false,
-  onCreateGroup: vi.fn(),
   shareOpen: false,
   onCloseShare: vi.fn(),
   taskSearch: '',
@@ -507,12 +493,42 @@ describe('ChatDialogs attachment preview', () => {
       expect(screen.getByText('Фото или видео')).toBeInTheDocument();
       expect(screen.getByText('Файл')).toBeInTheDocument();
       expect(screen.getByText('Задача')).toBeInTheDocument();
+      expect(screen.getByText('Опрос')).toBeInTheDocument();
+      expect(screen.getByText('Контакт')).toBeInTheDocument();
+      expect(screen.getByText('Геопозиция')).toBeInTheDocument();
 
       fireEvent.click(screen.getByTestId('mobile-composer-attachment-file'));
       expect(onOpenFilePicker).toHaveBeenCalledTimes(1);
 
       fireEvent.click(screen.getByTestId('mobile-composer-attachment-task'));
       expect(onOpenShare).toHaveBeenCalledTimes(1);
+    } finally {
+      mobileMatchMedia.restore();
+    }
+  });
+
+  it('invokes structured-send callbacks from the mobile attachment popup', () => {
+    const mobileMatchMedia = installMobileMatchMediaMock();
+    const anchor = document.createElement('button');
+    const onOpenPollDialog = vi.fn();
+    const onOpenContactDialog = vi.fn();
+    const onSendLocation = vi.fn();
+
+    try {
+      renderWithTheme(buildProps({
+        activeConversationId: 'conv-1',
+        composerMenuAnchor: anchor,
+        onOpenPollDialog,
+        onOpenContactDialog,
+        onSendLocation,
+      }));
+
+      fireEvent.click(screen.getByTestId('mobile-composer-attachment-poll'));
+      expect(onOpenPollDialog).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByTestId('mobile-composer-attachment-contact'));
+      expect(onOpenContactDialog).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByTestId('mobile-composer-attachment-location'));
+      expect(onSendLocation).toHaveBeenCalledTimes(1);
     } finally {
       mobileMatchMedia.restore();
     }
@@ -539,92 +555,14 @@ describe('ChatDialogs attachment preview', () => {
     }
   });
 
-  it('renders group search results and selected users as separate lists', () => {
-    const onAddGroupMember = vi.fn();
-    const onRemoveGroupMember = vi.fn();
-    const users = [
-      { id: 2, username: 'assignee', full_name: 'Task Assignee', presence: { is_online: true, status_text: 'В сети' } },
-      { id: 3, username: 'reviewer', full_name: 'Task Reviewer', presence: { is_online: false, status_text: 'Не в сети' } },
-    ];
+  // Д2-9: групповой Dialog удалён — поток «Создать группу» живёт внутри
+  // колонки списка чатов (ChatGroupCreateFlow), а не в слое диалогов.
+  it('does not render the legacy group-creation dialog', () => {
+    renderWithTheme(buildProps({}));
 
-    renderWithTheme(buildProps({
-      groupOpen: true,
-      groupUsers: users,
-      groupSelectedUsers: [users[1]],
-      onAddGroupMember,
-      onRemoveGroupMember,
-    }));
-
-    expect(screen.getByTestId('group-dialog-desktop-layout')).toBeInTheDocument();
-    const searchResults = screen.getByTestId('group-user-search-results');
-    expect(searchResults).toBeInTheDocument();
-    expect(screen.getByTestId('group-selected-users')).toBeInTheDocument();
-    expect(screen.getByText('Выбранные участники')).toBeInTheDocument();
-
-    expect(within(searchResults).getByRole('checkbox', { name: /Task Assignee/ })).toHaveAttribute('aria-checked', 'false');
-    expect(within(searchResults).getByRole('checkbox', { name: /Task Reviewer/ })).toHaveAttribute('aria-checked', 'true');
-
-    fireEvent.click(within(searchResults).getByRole('checkbox', { name: /Task Assignee/ }));
-    expect(onAddGroupMember).toHaveBeenCalledWith(users[0]);
-
-    fireEvent.click(within(searchResults).getByRole('checkbox', { name: /Task Reviewer/ }));
-    expect(onRemoveGroupMember).toHaveBeenCalledWith(3);
-  });
-
-  it('passes participant search changes through the unified picker input', () => {
-    const onGroupSearchChange = vi.fn();
-
-    renderWithTheme(buildProps({
-      groupOpen: true,
-      onGroupSearchChange,
-    }));
-
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'reviewer' } });
-
-    expect(onGroupSearchChange).toHaveBeenCalledWith('reviewer');
-  });
-
-  it('keeps create button disabled when the group form is incomplete', () => {
-    renderWithTheme(buildProps({
-      groupOpen: true,
-      groupTitle: 'Новая группа',
-      groupCreateDisabled: true,
-      groupSelectedUsers: [{ id: 2, username: 'assignee', full_name: 'Task Assignee', presence: { is_online: true, status_text: 'В сети' } }],
-    }));
-
-    const disabledButton = screen.getAllByRole('button').find((button) => button.hasAttribute('disabled'));
-    expect(disabledButton).toBeTruthy();
-    expect(screen.getByText((content) => content.includes('2'))).toBeInTheDocument();
-  });
-
-  it('renders a telegram-like mobile member picker with check rows and a floating next action', () => {
-    const mobileMatchMedia = installMobileMatchMediaMock();
-    const onAddGroupMember = vi.fn();
-    const onRemoveGroupMember = vi.fn();
-    const users = [
-      { id: 2, username: 'assignee', full_name: 'Task Assignee', presence: { is_online: true, status_text: 'В сети' } },
-      { id: 3, username: 'reviewer', full_name: 'Task Reviewer', presence: { is_online: false, status_text: 'Был(а) недавно' } },
-    ];
-
-    try {
-      renderWithTheme(buildProps({
-        groupOpen: true,
-        groupUsers: users,
-        groupSelectedUsers: [users[1]],
-        onAddGroupMember,
-        onRemoveGroupMember,
-      }));
-
-      fireEvent.click(within(screen.getByTestId('group-user-search-results')).getByText('Task Assignee'));
-      expect(onAddGroupMember).toHaveBeenCalledWith(users[0]);
-
-      fireEvent.click(within(screen.getByTestId('group-user-search-results')).getByText('Task Reviewer'));
-      expect(onRemoveGroupMember).toHaveBeenCalledWith(3);
-
-      expect(screen.getByRole('button', { name: 'Next group step' })).toBeVisible();
-    } finally {
-      mobileMatchMedia.restore();
-    }
+    expect(screen.queryByTestId('group-dialog-desktop-layout')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('group-user-search-results')).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('shows thread actions menu and toggles chat settings', () => {
@@ -662,7 +600,7 @@ describe('ChatDialogs attachment preview', () => {
     expect(onRequestDeleteConversation).toHaveBeenCalledWith(expect.objectContaining({ id: 'conv-1' }));
   });
 
-  it('shows Telegram-like message actions and forwards reply/share/report actions', () => {
+  it('shows Telegram-like message actions and forwards reply/share actions', () => {
     const anchor = document.createElement('button');
     document.body.appendChild(anchor);
     const onReplyFromMessageMenu = vi.fn();
@@ -705,14 +643,14 @@ describe('ChatDialogs attachment preview', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Закрепить' }));
     expect(onTogglePinMessageFromMenu).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-1' }));
 
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Копировать ссылку на сообщение' }));
-    expect(onCopyMessageLink).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-1' }));
+    // Пункт «Копировать ссылку на сообщение» убран из контекстного меню.
+    expect(screen.queryByRole('menuitem', { name: 'Копировать ссылку на сообщение' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Переслать' }));
     expect(onForwardMessageFromMenu).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-1' }));
 
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Пожаловаться' }));
-    expect(onReportMessageFromMenu).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-1' }));
+    // Пункт «Пожаловаться» убран из контекстного меню (автоотправка жалоб не подключена).
+    expect(screen.queryByRole('menuitem', { name: 'Пожаловаться' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Выделить' }));
     expect(onSelectMessageFromMenu).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-1' }));

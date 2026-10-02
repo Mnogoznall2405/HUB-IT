@@ -88,12 +88,19 @@ export async function getConversations(): Promise<ChatConversationSummary[]> {
   return (await getConversationPage()).items;
 }
 
-export async function markConversationRead(conversationId: string, lastMessageId?: string): Promise<void> {
+/**
+ * Marks the conversation read up to `lastMessageId`.
+ * The backend mark-read endpoint requires `message_id` and rejects a bare
+ * request, so an empty id resolves to `false` — a skipped call that callers
+ * can detect, not a silent success. Returns `true` once the POST completes.
+ */
+export async function markConversationRead(conversationId: string, lastMessageId?: string): Promise<boolean> {
   const messageId = String(lastMessageId || '').trim();
-  if (!messageId) return;
+  if (!messageId) return false;
   await apiClient.post(`/chat/conversations/${conversationId}/read`, {
     message_id: messageId,
   });
+  return true;
 }
 
 export async function deleteMessage(conversationId: string, messageId: string): Promise<ChatMessage> {
@@ -338,11 +345,20 @@ export async function getShareableTasks(
 export async function shareTask(
   conversationId: string,
   taskId: string,
-  replyToMessageId?: string,
+  options: {
+    clientMessageId?: string;
+    replyToMessageId?: string;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<ChatMessage> {
   const { data } = await apiClient.post<unknown>(
     `/chat/conversations/${conversationId}/messages/task-share`,
-    { task_id: taskId, reply_to_message_id: replyToMessageId || undefined },
+    {
+      task_id: taskId,
+      client_message_id: options.clientMessageId || undefined,
+      reply_to_message_id: options.replyToMessageId || undefined,
+    },
+    { signal: options.signal },
   );
   return requiredMessage(data);
 }
@@ -391,11 +407,20 @@ export async function getLinkPreview(url: string): Promise<{
 export async function sendSticker(
   conversationId: string,
   stickerId: string,
-  replyToMessageId?: string,
+  options: {
+    clientMessageId?: string;
+    replyToMessageId?: string;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<ChatMessage> {
   const { data } = await apiClient.post<unknown>(
     `/chat/conversations/${conversationId}/messages/sticker`,
-    { sticker_id: stickerId, reply_to_message_id: replyToMessageId || undefined },
+    {
+      sticker_id: stickerId,
+      client_message_id: options.clientMessageId || undefined,
+      reply_to_message_id: options.replyToMessageId || undefined,
+    },
+    { signal: options.signal },
   );
   return requiredMessage(data);
 }
@@ -454,12 +479,14 @@ export async function forwardMessage(
   targetConversationId: string,
   sourceMessageId: string,
   body?: string,
+  clientMessageId?: string,
 ): Promise<ChatMessage> {
   const { data } = await apiClient.post<unknown>(
     `/chat/conversations/${targetConversationId}/messages/forward`, {
     source_message_id: sourceMessageId,
     body: body || undefined,
     body_format: 'plain',
+    client_message_id: clientMessageId || undefined,
   });
   return requiredMessage(data);
 }

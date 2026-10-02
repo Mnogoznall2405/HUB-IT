@@ -19,6 +19,7 @@ export const NATIVE_SNAPSHOT_SCOPES = [
   'chat-thread-details',
   'address-book',
   'address-book-chat-links',
+  'address-book-favorites',
   'mail-inbox',
   'notifications',
   'mail-message-details',
@@ -49,7 +50,7 @@ type NativeSnapshotEnvelope<T> = {
 export type NativeSnapshot<T> = Pick<NativeSnapshotEnvelope<T>, 'savedAt' | 'data'>;
 
 export type NativeEntitySnapshotScope = Extract<NativeSnapshotScope,
-  'construction-details' | 'feed-post-details' | 'chat-thread-details' | 'address-book-chat-links' | 'mail-message-details' | 'mail-conversation-details' | 'task-details' | 'docflow-task-details' | 'database-item-details' | 'my-file-details' | 'company-structure-people'>;
+  'construction-details' | 'feed-post-details' | 'chat-thread-details' | 'address-book-chat-links' | 'address-book-favorites' | 'mail-message-details' | 'mail-conversation-details' | 'task-details' | 'docflow-task-details' | 'database-item-details' | 'my-file-details' | 'company-structure-people'>;
 
 export type NativeCollectionSnapshotScope = Extract<NativeSnapshotScope,
   'feed-inbox' | 'tasks-inbox' | 'chat-inbox' | 'mail-inbox' | 'docflow-inbox' | 'database-inbox' | 'statistics-inbox' | 'my-files-lists'>;
@@ -735,6 +736,15 @@ export async function writeNativeEntitySnapshot<T>(
   return current;
 }
 
+// Modules that keep parsed snapshots in memory register here so a user
+// logout/cache clear drops their copies as well.
+const snapshotClearListeners = new Set<(userId: number) => void>();
+
+export function addNativeSnapshotClearListener(listener: (userId: number) => void): () => void {
+  snapshotClearListeners.add(listener);
+  return () => { snapshotClearListeners.delete(listener); };
+}
+
 export async function clearNativeSnapshots(userId: number): Promise<void> {
   const owner = normalizedUserId(userId);
   if (!owner || Platform.OS === 'web') return;
@@ -748,6 +758,9 @@ export async function clearNativeSnapshots(userId: number): Promise<void> {
       NATIVE_SNAPSHOT_SCOPES.map((scope) => SecureStore.deleteItemAsync(cacheKey(scope, owner))),
     );
     await clearEncryptedNativeSnapshots(owner);
+    for (const listener of [...snapshotClearListeners]) {
+      try { listener(owner); } catch { /* listener failures must not block logout */ }
+    }
   })().finally(() => { if (clearingUsers.get(owner) === pending) clearingUsers.delete(owner); });
   clearingUsers.set(owner, pending);
   return pending;

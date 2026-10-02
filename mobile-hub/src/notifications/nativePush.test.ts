@@ -71,7 +71,7 @@ describe('native push lifecycle', () => {
       HUBIT_NOTIFICATION_CHANNEL_GROUP,
       expect.objectContaining({ name: 'HUB-IT' }),
     );
-    expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledTimes(5);
+    expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledTimes(6);
     for (const [, channel] of (Notifications.setNotificationChannelAsync as jest.Mock).mock.calls) {
       expect(channel).toEqual(expect.objectContaining({ groupId: HUBIT_NOTIFICATION_CHANNEL_GROUP }));
     }

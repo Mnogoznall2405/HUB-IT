@@ -1,11 +1,30 @@
 """Pure chat notification recipient planning."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
 from backend.chat.models import conversation_state_is_muted
 from backend.chat.utils import normalize_text as _normalize_text
+
+
+AI_REPLY_NOTIFICATION_TITLE = "ИИ ответил"
+AI_REPLY_PREVIEW_LIMIT = 140
+_MARKDOWN_NOISE = re.compile(r"[*_`#>~|]+")
+_MARKDOWN_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+_MEMORY_MARK_LINE = re.compile(r"\n*_?Учтена личная память:[^\n]*_?\s*$")
+
+
+def ai_reply_preview(value: object, limit: int = AI_REPLY_PREVIEW_LIMIT) -> str:
+    """Beginning of an AI answer as plain text for a notification (no markdown, no memory mark)."""
+    text = _MEMORY_MARK_LINE.sub("", str(value or ""))
+    text = _MARKDOWN_LINK.sub(r"\1", text)
+    text = _MARKDOWN_NOISE.sub("", text)
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[: max(1, limit - 1)].rstrip() + "…"
 
 
 @dataclass(frozen=True)
@@ -62,7 +81,12 @@ def build_chat_notification_recipient_plans(
             continue
 
         current_event_type = normalized_event_type
-        if normalized_kind == "direct":
+        if normalized_kind == "ai":
+            # The answer of the assistant is a normal incoming message for the employee who left
+            # the chat: "ИИ ответил: <beginning of the answer>", not "<bot>: <whole markdown>".
+            current_title = AI_REPLY_NOTIFICATION_TITLE
+            current_body = ai_reply_preview(base_body)
+        elif normalized_kind == "direct":
             current_title = resolved_sender_name
             current_body = base_body
             if base_title and base_title != default_title:
@@ -73,7 +97,7 @@ def build_chat_notification_recipient_plans(
             prefix = f"[{base_title}] " if base_title and base_title != default_title else ""
             current_body = f"{prefix}{resolved_sender_name}: {base_body}"
 
-        if is_mentioned:
+        if is_mentioned and normalized_kind != "ai":
             current_event_type = "chat.mention"
             if normalized_kind == "direct":
                 current_title = resolved_sender_name

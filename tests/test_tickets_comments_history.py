@@ -26,7 +26,7 @@ WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
 if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
-from backend.appdb.models import AppBase, AppUser
+from backend.appdb.models import AppUser
 from backend.appdb.tickets_models import (
     TicketChangeHistory,
     TicketComment,
@@ -50,16 +50,16 @@ from backend.services.tickets_service import (
 # ---------------------------------------------------------------------------
 
 
-def _sqlite_url(temp_dir: str) -> str:
-    return f"sqlite:///{(Path(temp_dir) / 'tickets_comments_history.db').as_posix()}"
+def _sqlite_url(database_path: Path) -> str:
+    return f"sqlite:///{database_path.as_posix()}"
 
 
 @pytest.fixture
-def service(temp_dir, monkeypatch):
+def service(prebuilt_app_db, monkeypatch, request):
     """Create a TicketsService with a fresh SQLite database."""
     import backend.appdb.db as appdb
 
-    url = _sqlite_url(temp_dir)
+    url = _sqlite_url(prebuilt_app_db)
 
     appdb._engines.clear()
     appdb._session_factories.clear()
@@ -77,14 +77,13 @@ def service(temp_dir, monkeypatch):
         url,
         execution_options={"schema_translate_map": {"app": None, "system": None}},
     )
+    request.addfinalizer(engine.dispose)
 
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragma(dbapi_conn, connection_record):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=OFF")
         cursor.close()
-
-    AppBase.metadata.create_all(engine, checkfirst=True)
 
     SessionLocal = sessionmaker(bind=engine)
 
@@ -402,8 +401,10 @@ class TestGetHistory:
         page2 = service.get_history(req["id"], Pagination(page=2, page_size=20))
         assert len(page2.items) == 5
 
-    def test_history_records_are_immutable(self, service):
+    @pytest.mark.unit
+    def test_history_records_are_immutable(self):
         """No update/delete methods exist for history records."""
+        service = TicketsService()
         # Verify that TicketsService has no methods to edit or delete history
         assert not hasattr(service, "update_history")
         assert not hasattr(service, "delete_history")

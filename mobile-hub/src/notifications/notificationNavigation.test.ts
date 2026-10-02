@@ -65,4 +65,43 @@ describe('notification portal navigation', () => {
       params: { taskId: 'task-42' },
     });
   });
+
+  it('routes an AI Chat push into the ИИ workspace', () => {
+    expect(portalPathFromNotificationResponse(responseWithData({
+      route: '/chat?conversation=ai-1&message=message-7',
+      conversation_kind: 'ai',
+    }))).toBe('/chat?conversation=ai-1&message=message-7&workspace=ai');
+    expect(portalPathFromNotificationResponse(responseWithData({
+      conversation_id: 'ai-1',
+      conversation_kind: 'ai',
+    }))).toBe('/chat?conversation=ai-1&workspace=ai');
+  });
+
+  it('does not duplicate workspace when the Chat route already carries it', () => {
+    expect(portalPathFromNotificationResponse(responseWithData({
+      route: '/chat?conversation=ai-1&workspace=ai',
+      conversation_kind: 'ai',
+    }))).toBe('/chat?conversation=ai-1&workspace=ai');
+  });
+
+  it('leaves non-AI routes and conversations unchanged', () => {
+    expect(portalPathFromNotificationResponse(responseWithData({
+      route: '/tasks?task=42',
+      conversation_kind: 'ai',
+    }))).toBe('/tasks?task=42');
+    expect(portalPathFromNotificationResponse(responseWithData({
+      conversation_id: 'conversation-2',
+      conversation_kind: 'direct',
+    }))).toBe('/chat?conversation=conversation-2');
+  });
+
+  it('opens the native AI thread with the workspace param', () => {
+    expect(notificationOpenHrefFromResponse(responseWithData({
+      conversation_id: 'ai-1',
+      conversation_kind: 'ai',
+    }))).toEqual({
+      pathname: '/(shell)/chat/[conversationId]',
+      params: { conversationId: 'ai-1', workspace: 'ai' },
+    });
+  });
 });

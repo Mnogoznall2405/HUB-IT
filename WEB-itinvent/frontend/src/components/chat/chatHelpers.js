@@ -10,6 +10,8 @@ export const CHAT_FILE_ACCEPT = '.jpg,.jpeg,.png,.gif,.webp,.bmp,.mp4,.mov,.webm
 export const CHAT_MAX_FILE_COUNT = 5;
 export const CHAT_MAX_FILE_BYTES = 1024 * 1024 * 1024;
 export const CHAT_MESSAGE_BODY_MAX_LENGTH = 12000;
+export const CHAT_POLL_MIN_OPTIONS = 2;
+export const CHAT_POLL_MAX_OPTIONS = 10;
 export const CHAT_MESSAGE_COUNTER_THRESHOLD = 500;
 export const CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX = 180;
 export const CHAT_IMAGE_ATTACHMENT_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
@@ -192,13 +194,34 @@ export const formatSidebarConversationTime = (value) => {
   return date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', ...(date.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }) });
 };
 
-export const formatMessageTime = (value) => {
+// Д2-3: Intl-форматтеры создаются один раз, а готовые подписи кешируются по
+// ISO-строке — toLocaleTimeString/toLocaleString на каждый пузырь и каждый
+// рендер давали заметную долю длинных задач при прокрутке с догрузкой истории.
+const MESSAGE_TIME_FORMATTER = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' });
+const FULL_DATE_FORMATTER = new Intl.DateTimeFormat('ru-RU', {
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+});
+const DATE_LABEL_CACHE_LIMIT = 4000;
+const messageTimeCache = new Map();
+const fullDateCache = new Map();
+
+const formatCachedDate = (cache, formatter, value) => {
   const raw = String(value || '').trim();
   if (!raw) return '';
+  const cached = cache.get(raw);
+  if (cached !== undefined) return cached;
   const date = new Date(raw);
-  if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  const label = Number.isNaN(date.getTime()) ? '' : formatter.format(date);
+  if (cache.size >= DATE_LABEL_CACHE_LIMIT) cache.clear();
+  cache.set(raw, label);
+  return label;
 };
+
+export const formatMessageTime = (value) => formatCachedDate(messageTimeCache, MESSAGE_TIME_FORMATTER, value);
 
 export const formatMessageMetaLabel = (message) => {
   const time = formatMessageTime(message?.created_at);
@@ -243,19 +266,7 @@ export function getChatInlineMetaReserveWidth({
   return `${widthRem.toFixed(2)}rem`;
 }
 
-export const formatFullDate = (value) => {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  const date = new Date(raw);
-  if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleString('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-};
+export const formatFullDate = (value) => formatCachedDate(fullDateCache, FULL_DATE_FORMATTER, value);
 
 export const getDateDividerLabel = (value) => {
   const raw = String(value || '').trim();
@@ -727,6 +738,22 @@ export const getPersonContextLine = (person) => {
   return workplace ? `${workplace} · ${status}` : status;
 };
 
+// Д2-9: локальный фильтр людей — ФИО, логин, должность, подразделение, город, почта.
+export const matchesPersonQuery = (person, query) => {
+  const needle = normalizeTrimmedChatText(query).toLowerCase();
+  if (!needle) return true;
+  const fields = [
+    person?.full_name,
+    person?.username,
+    person?.job_title,
+    person?.department,
+    person?.city,
+    person?.email,
+    person?.mailbox_login,
+  ];
+  return fields.some((value) => String(value || '').toLowerCase().includes(needle));
+};
+
 export const sortByName = (items) => (
   [...items].sort((left, right) => {
     const a = normalizeTrimmedChatText(left?.full_name || left?.username || left?.title).toLowerCase();
@@ -851,8 +878,10 @@ export const getUnreadAnchorId = (messages, viewerLastReadMessageId) => {
   return '';
 };
 
-export const buildTimelineItems = (messages, viewerLastReadMessageId) => {
-  const unreadAnchorId = getUnreadAnchorId(messages, viewerLastReadMessageId);
+export const buildTimelineItems = (messages, viewerLastReadMessageId, unreadAnchorIdOverride) => {
+  const unreadAnchorId = unreadAnchorIdOverride === undefined
+    ? getUnreadAnchorId(messages, viewerLastReadMessageId)
+    : String(unreadAnchorIdOverride || '').trim();
   const timeline = [];
   let lastDateKey = '';
   let unreadInserted = false;
@@ -885,4 +914,22 @@ export const buildTimelineItems = (messages, viewerLastReadMessageId) => {
   }
 
   return timeline;
+};
+
+// ADR-0002: shared chat helpers live in components/chat; pages/chat re-export.
+export const resolveActiveAiBotRecord = ({
+  aiBots,
+  activeConversationId,
+  aiStatus,
+}) => {
+  const items = Array.isArray(aiBots) ? aiBots : [];
+  const normalizedConversationId = String(activeConversationId || '').trim();
+  const normalizedBotId = String(aiStatus?.bot_id || '').trim();
+  return items.find((item) => (
+    Array.isArray(item?.conversation_ids)
+    && item.conversation_ids.some((id) => String(id || '').trim() === normalizedConversationId)
+  ))
+    || items.find((item) => String(item?.conversation_id || '').trim() === normalizedConversationId)
+    || items.find((item) => normalizedBotId && String(item?.id || '').trim() === normalizedBotId)
+    || null;
 };

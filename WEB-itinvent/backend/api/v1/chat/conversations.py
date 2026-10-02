@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 
 from backend.api.deps import require_permission
 from backend.chat.schemas import (
+    ChatConfigResponse,
     ChatConversationDetailResponse,
     ChatConversationListResponse,
     ChatConversationMembersRequest,
@@ -83,6 +84,18 @@ async def get_chat_conversations(
             db_ms=meta.get("db_ms"),
             executor_wait_ms=meta.get("executor_wait_ms"),
         )
+
+
+@router.get("/config", response_model=ChatConfigResponse)
+async def get_chat_config(
+    current_user: User = Depends(require_permission(PERM_CHAT_READ)),
+):
+    from backend.chat.scheduled_messages import scheduled_messages_enabled
+
+    return {
+        "group_max_members": int(chat_api().chat_service.group_max_members),
+        "scheduled_messages_enabled": bool(scheduled_messages_enabled()),
+    }
 
 
 @router.get("/unread-summary", response_model=ChatUnreadSummaryResponse)

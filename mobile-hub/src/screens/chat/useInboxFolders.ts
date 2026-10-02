@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type MutableRefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { Alert } from 'react-native';
 import * as chatApi from '../../api/chatApi';
 import type {
@@ -8,8 +8,10 @@ import type {
 import { formatApiError } from '../../api/formatError';
 import { setActiveChatFolderKey } from '../../chat/chatActiveFolder';
 import {
+  buildChatFolderTabList,
   buildConversationIdsByFolder,
   DEFAULT_CHAT_FOLDER_KEY,
+  normalizeFolderKey,
   resolveFolderSwipeTarget,
   toggleConversationIdInFolderMap,
   type ChatCustomFolder,
@@ -36,6 +38,11 @@ export function useInboxFolders({
   const foldersStartingRef = useRef(false);
   const foldersScopeRef = useRef<{ owner: number } | null>(null);
   const foldersInFlightRef = useRef<Promise<void> | null>(null);
+  // CHAT-INBOX-05: set when a reload is deduped by an in-flight request — the
+  // runner then fetches once more so post-mutation state is never stale.
+  const foldersDirtyRef = useRef(false);
+  // CHAT-INBOX-04: owner whose folder list was last confirmed by the server.
+  const [foldersSyncedOwner, setFoldersSyncedOwner] = useState<number | null>(null);
   const [activeFolderKey, setActiveFolderKey] = useState(DEFAULT_CHAT_FOLDER_KEY);
   const [customFolders, setCustomFolders] = useState<ChatCustomFolder[]>([]);
   const [conversationIdsByFolder, setConversationIdsByFolder] = useState<Record<string, string[]>>({});
@@ -51,18 +58,21 @@ export function useInboxFolders({
       foldersScopeRef.current = { owner: userId };
       foldersStartingRef.current = false;
       foldersInFlightRef.current = null;
+      foldersDirtyRef.current = false;
       setCustomFolders([]);
       setConversationIdsByFolder({});
       setSystemUnreadCounts({});
       setActiveFolderKey(DEFAULT_CHAT_FOLDER_KEY);
+      setFoldersSyncedOwner(null);
     }
     const scope = foldersScopeRef.current;
     const isCurrent = () => mountedRef.current && ownerRef.current === userId && foldersScopeRef.current === scope;
-    if (foldersStartingRef.current && !foldersInFlightRef.current) return;
     if (foldersInFlightRef.current) {
+      foldersDirtyRef.current = true;
       await foldersInFlightRef.current;
       return;
     }
+    if (foldersStartingRef.current) return;
     foldersStartingRef.current = true;
     let cached = false;
     const applyFolders = (payload: ChatFolderListResponse) => {
@@ -85,31 +95,49 @@ export function useInboxFolders({
       if (isCurrent()) foldersStartingRef.current = false;
       return;
     }
-    const request = chatApi.listChatFolders();
-    foldersInFlightRef.current = request.then(() => undefined, () => undefined);
     try {
-      const payload = await request;
-      if (!isCurrent()) return;
-      applyFolders(payload);
-      if (userId) void writeNativeSnapshot('chat-folders', userId, payload);
-    } catch {
-      if (isCurrent() && !cached) {
-        setCustomFolders([]);
-        setConversationIdsByFolder({});
-        setSystemUnreadCounts({});
-      }
+      // CHAT-INBOX-05: reloads deduped mid-flight only flag the scope dirty —
+      // keep fetching until no mutation slipped between request and response.
+      do {
+        foldersDirtyRef.current = false;
+        const request = chatApi.listChatFolders();
+        foldersInFlightRef.current = request.then(() => undefined, () => undefined);
+        try {
+          const payload = await request;
+          if (!isCurrent()) return;
+          applyFolders(payload);
+          setFoldersSyncedOwner(userId);
+          if (userId) void writeNativeSnapshot('chat-folders', userId, payload);
+        } catch {
+          if (isCurrent() && !cached) {
+            setCustomFolders([]);
+            setConversationIdsByFolder({});
+            setSystemUnreadCounts({});
+          }
+        } finally {
+          foldersInFlightRef.current = null;
+        }
+      } while (isCurrent() && foldersDirtyRef.current);
     } finally {
-      if (isCurrent()) {
-        foldersStartingRef.current = false;
-        foldersInFlightRef.current = null;
-      }
+      if (isCurrent()) foldersStartingRef.current = false;
     }
   }, [mountedRef, offlineMode, ownerRef, userId]);
 
   const changeFolder = useCallback((folderKey: string) => {
     setActiveFolderKey(folderKey);
-    if (userId) void setActiveChatFolderKey(userId, folderKey);
+    if (userId) void setActiveChatFolderKey(userId, folderKey).catch(() => undefined);
   }, [userId]);
+
+  // CHAT-INBOX-04: the persisted folder may have been deleted on another
+  // device. Once the server list arrives, fall back to the default tab so a
+  // stale key cannot leave the inbox without a selected folder.
+  useEffect(() => {
+    if (foldersSyncedOwner !== userId) return;
+    const knownKeys = new Set(buildChatFolderTabList(customFolders).map((tab) => tab.key));
+    if (!knownKeys.has(normalizeFolderKey(activeFolderKey))) {
+      changeFolder(DEFAULT_CHAT_FOLDER_KEY);
+    }
+  }, [activeFolderKey, changeFolder, customFolders, foldersSyncedOwner, userId]);
 
   const swipeFolder = useCallback((direction: 'prev' | 'next') => {
     if (workspace !== 'chats') return;
@@ -181,6 +209,11 @@ export function useInboxFolders({
       else await chatApi.removeFolderConversation(folderId, conversationId);
       await loadFolders();
     } catch (cause) {
+      // CHAT-INBOX-05: roll the optimistic membership edit back before the
+      // resync — a failed toggle must not leave phantom membership.
+      setConversationIdsByFolder((current) => (
+        toggleConversationIdInFolderMap(current, folderId, conversationId, !included)
+      ));
       await loadFolders();
       showNativeToast('Не удалось обновить папку', formatApiError(cause, 'Повторите попытку'));
     }

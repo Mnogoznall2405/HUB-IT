@@ -483,6 +483,106 @@ def test_send_chat_message_notification_fans_out_to_web_and_native_subscriptions
     assert native_calls[0]["route"] == "/chat?conversation=conv-1&message=msg-native-fanout"
 
 
+def test_send_chat_message_notification_routes_ai_to_native_ai_channel(monkeypatch):
+    service = ChatPushService()
+    captured: dict[str, object] = {}
+    native_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        service,
+        "_get_active_subscriptions",
+        lambda **_: [object()],
+    )
+    monkeypatch.setattr(
+        service,
+        "_send_payload_to_subscriptions",
+        lambda **kwargs: captured.update(kwargs) or ChatPushSendResult(sent=1),
+    )
+    monkeypatch.setattr(
+        "backend.services.native_push_service.native_push_service.send_notification",
+        lambda **kwargs: native_calls.append(kwargs) or NativePushSendResult(tokens=1, sent=1),
+    )
+
+    result = service.send_chat_message_notification(
+        recipient_user_id=7,
+        conversation_id="conv-ai-1",
+        message_id="msg-ai-1",
+        title="AI title",
+        body="AI body",
+        preference_channel="chat_ai",
+        conversation_kind="ai",
+    )
+
+    assert result.sent == 2
+    assert len(native_calls) == 1
+    assert native_calls[0]["native_channel"] == "hubit_chat_ai"
+    assert native_calls[0]["channel"] == "chat"
+    payload = captured["payload"]
+    assert payload["channel"] == "chat"
+    assert payload["data"]["conversation_kind"] == "ai"
+
+
+def test_send_chat_message_notification_keeps_default_native_channel_for_human_chat(monkeypatch):
+    service = ChatPushService()
+    native_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        service,
+        "_get_active_subscriptions",
+        lambda **_: [object()],
+    )
+    monkeypatch.setattr(
+        service,
+        "_send_payload_to_subscriptions",
+        lambda **_: ChatPushSendResult(sent=1),
+    )
+    monkeypatch.setattr(
+        "backend.services.native_push_service.native_push_service.send_notification",
+        lambda **kwargs: native_calls.append(kwargs) or NativePushSendResult(tokens=1, sent=1),
+    )
+
+    service.send_chat_message_notification(
+        recipient_user_id=7,
+        conversation_id="conv-1",
+        message_id="msg-human-1",
+        title="Chat title",
+        body="Chat body",
+        preference_channel="chat_direct",
+        conversation_kind="direct",
+    )
+
+    assert len(native_calls) == 1
+    assert native_calls[0]["native_channel"] == "hubit_chat"
+
+
+def test_send_chat_message_notification_respects_chat_ai_preference(monkeypatch):
+    service = ChatPushService()
+    preference_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        "backend.chat.push_service.notification_preferences_service.is_enabled",
+        lambda **kwargs: preference_calls.append(kwargs) or False,
+    )
+    monkeypatch.setattr(
+        service,
+        "_get_active_subscriptions",
+        lambda **_: (_ for _ in ()).throw(AssertionError("disabled chat_ai must skip delivery")),
+    )
+
+    result = service.send_chat_message_notification(
+        recipient_user_id=7,
+        conversation_id="conv-ai-1",
+        message_id="msg-ai-disabled",
+        title="AI title",
+        body="AI body",
+        preference_channel="chat_ai",
+        conversation_kind="ai",
+    )
+
+    assert result.sent == 0
+    assert preference_calls == [{"user_id": 7, "channel": "chat_ai"}]
+
+
 def test_send_notification_skips_non_system_push_during_quiet_hours(monkeypatch):
     import backend.chat.push_service as push_service_module
 

@@ -10,14 +10,19 @@ from backend.api.v1 import tickets as tickets_api
 from backend.models.auth import User
 
 
-def _make_user(*, role: str = "viewer", permissions: list[str] | None = None) -> User:
+def _make_user(
+    *,
+    role: str = "viewer",
+    permissions: list[str] | None = None,
+    use_custom_permissions: bool = True,
+) -> User:
     return User(
         id=42,
         username="ticket-user",
         full_name="Ticket User",
         role=role,
         permissions=permissions or [],
-        use_custom_permissions=True,
+        use_custom_permissions=use_custom_permissions,
         custom_permissions=permissions or [],
         is_active=True,
     )
@@ -106,8 +111,9 @@ def test_zup_search_requires_tickets_read_permission(monkeypatch):
 def test_zup_search_allows_tickets_read(monkeypatch):
     captured = {}
 
-    def _search(*, query="", limit=20, user_permissions=None):
+    def _search(*, query="", limit=20, user_permissions=None, **kwargs):
         captured["permissions"] = list(user_permissions or [])
+        captured.update(kwargs)
         return {
             "items": [{"full_name": "Иванов", "employee_code": "1"}],
             "total": 1,
@@ -128,6 +134,120 @@ def test_zup_search_allows_tickets_read(monkeypatch):
     assert response.json()["items"][0]["full_name"] == "Иванов"
     assert captured["permissions"] == ["tickets.read", "tickets.personal_data.read"]
     assert response.json()["include_personal"] is True
+    assert captured["include_personal_phones"] is False
+    assert captured["include_personal_emails"] is False
+
+
+def test_zup_search_hides_personal_contacts_without_address_book_rights(monkeypatch):
+    captured = {}
+
+    def _search(*, query="", limit=20, user_permissions=None, **kwargs):
+        captured.update(kwargs)
+        return {"items": [], "total": 0, "source": "zup", "synced_at": None}
+
+    monkeypatch.setattr(tickets_api.tickets_service, "search_zup_employees", _search)
+    client = _client_for(lambda: _make_user(permissions=["tickets.read", "tickets.write"]))
+
+    response = client.get("/tickets/employees/zup-search", params={"q": "иванов"})
+
+    assert response.status_code == 200
+    assert captured["include_personal_phones"] is False
+    assert captured["include_personal_emails"] is False
+
+
+def test_zup_search_passes_address_book_personal_contact_rights(monkeypatch):
+    captured = {}
+
+    def _search(*, query="", limit=20, user_permissions=None, **kwargs):
+        captured.update(kwargs)
+        return {"items": [], "total": 0, "source": "zup", "synced_at": None}
+
+    monkeypatch.setattr(tickets_api.tickets_service, "search_zup_employees", _search)
+    client = _client_for(
+        lambda: _make_user(
+            permissions=[
+                "tickets.read",
+                "address_book.personal_phone.read",
+                "address_book.personal_email.read",
+            ]
+        )
+    )
+
+    response = client.get("/tickets/employees/zup-search", params={"q": "иванов"})
+
+    assert response.status_code == 200
+    assert captured["include_personal_phones"] is True
+    assert captured["include_personal_emails"] is True
+
+
+def test_admin_zup_search_receives_personal_contact_flags(monkeypatch):
+    captured = {}
+
+    def _search(*, query="", limit=20, user_permissions=None, **kwargs):
+        captured.update(kwargs)
+        return {"items": [], "total": 0, "source": "zup", "synced_at": None}
+
+    monkeypatch.setattr(tickets_api.tickets_service, "search_zup_employees", _search)
+    client = _client_for(
+        lambda: _make_user(role="admin", use_custom_permissions=False)
+    )
+
+    response = client.get("/tickets/employees/zup-search", params={"q": "иванов"})
+
+    assert response.status_code == 200
+    assert captured["include_personal_phones"] is True
+    assert captured["include_personal_emails"] is True
+
+
+def test_employee_from_zup_forwards_personal_contact_flags(monkeypatch):
+    captured = {}
+
+    def _ensure(employee_code, user_permissions=None, **kwargs):
+        captured.update({"employee_code": employee_code, **kwargs})
+        return {"id": 1, "full_name": "Сидоров Сидор"}
+
+    monkeypatch.setattr(tickets_api.tickets_service, "ensure_employee_from_zup", _ensure)
+
+    client = _client_for(lambda: _make_user(permissions=["tickets.write"]))
+    response = client.post("/tickets/employees/from-zup", json={"employee_code": "42"})
+    assert response.status_code == 200
+    assert captured["employee_code"] == "42"
+    assert captured["include_personal_phones"] is False
+    assert captured["include_personal_emails"] is False
+
+    client = _client_for(
+        lambda: _make_user(
+            permissions=[
+                "tickets.write",
+                "address_book.personal_phone.read",
+                "address_book.personal_email.read",
+            ]
+        )
+    )
+    response = client.post("/tickets/employees/from-zup", json={"employee_code": "42"})
+    assert response.status_code == 200
+    assert captured["include_personal_phones"] is True
+    assert captured["include_personal_emails"] is True
+
+
+def test_admin_employee_from_zup_receives_personal_contact_flags(monkeypatch):
+    captured = {}
+
+    def _ensure(employee_code, user_permissions=None, **kwargs):
+        captured.update({"employee_code": employee_code, **kwargs})
+        return {"id": 1, "full_name": "Сидоров Сидор"}
+
+    monkeypatch.setattr(tickets_api.tickets_service, "ensure_employee_from_zup", _ensure)
+    client = _client_for(
+        lambda: _make_user(role="admin", use_custom_permissions=False)
+    )
+
+    response = client.post("/tickets/employees/from-zup", json={"employee_code": "42"})
+
+    assert response.status_code == 200
+    assert captured["employee_code"] == "42"
+    assert captured["include_personal_phones"] is True
+    assert captured["include_personal_emails"] is True
 
 
 def test_admin_can_reach_notification_rule_update(monkeypatch):

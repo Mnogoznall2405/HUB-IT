@@ -7,7 +7,6 @@ export function computeShouldRenderChatDialogs({
   messageMenuAnchor,
   composerMenuAnchor,
   emojiAnchorEl,
-  groupOpen,
   shareOpen,
   forwardOpen,
   fileDialogOpen,
@@ -15,6 +14,7 @@ export function computeShouldRenderChatDialogs({
   documentPreview,
   messageReadsOpen,
   searchOpen,
+  structuredDialog,
   isMobile,
   infoOpen,
 } = {}) {
@@ -23,7 +23,6 @@ export function computeShouldRenderChatDialogs({
     || messageMenuAnchor
     || composerMenuAnchor
     || emojiAnchorEl
-    || groupOpen
     || shareOpen
     || forwardOpen
     || fileDialogOpen
@@ -31,6 +30,7 @@ export function computeShouldRenderChatDialogs({
     || documentPreview
     || messageReadsOpen
     || searchOpen
+    || structuredDialog
     || (isMobile && infoOpen),
   );
 }
@@ -40,7 +40,6 @@ export default function useChatDialogsController({
   messageMenuAnchor,
   composerMenuAnchor,
   emojiAnchorEl,
-  groupOpen,
   shareOpen,
   forwardOpen,
   fileDialogOpen,
@@ -48,6 +47,7 @@ export default function useChatDialogsController({
   documentPreview,
   messageReadsOpen,
   searchOpen,
+  structuredDialog,
   isMobile,
   infoOpen,
   preloadOnIdle = false,
@@ -58,7 +58,6 @@ export default function useChatDialogsController({
       messageMenuAnchor,
       composerMenuAnchor,
       emojiAnchorEl,
-      groupOpen,
       shareOpen,
       forwardOpen,
       fileDialogOpen,
@@ -66,6 +65,7 @@ export default function useChatDialogsController({
       documentPreview,
       messageReadsOpen,
       searchOpen,
+      structuredDialog,
       isMobile,
       infoOpen,
     }),
@@ -76,13 +76,13 @@ export default function useChatDialogsController({
       emojiAnchorEl,
       fileDialogOpen,
       forwardOpen,
-      groupOpen,
       infoOpen,
       isMobile,
       messageMenuAnchor,
       messageReadsOpen,
       searchOpen,
       shareOpen,
+      structuredDialog,
       threadMenuAnchor,
     ],
   );

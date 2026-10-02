@@ -68,3 +68,23 @@ it('does not deliver when the session no longer owns the task', async () => {
   expect(transport).not.toHaveBeenCalled();
   expect(await readNativeChatOutbox(userId)).toHaveLength(1);
 });
+
+it('runs at most one drain at a time: a concurrent call returns without a second pump', async () => {
+  await createNativeChatOutbox(userId, 'chat-x').queue(pending);
+  let releaseFirst!: (value: ChatMessage) => void;
+  const firstTransport = jest.fn(() => new Promise<ChatMessage>((resolve) => { releaseFirst = resolve; }));
+  const first = drainNativeChatOutboxInBackground(userId, drainOptions(firstTransport));
+  const started = Date.now();
+  while (!firstTransport.mock.calls.length && Date.now() - started < 2000) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  expect(firstTransport).toHaveBeenCalledTimes(1);
+  const secondTransport = jest.fn(async () => saved);
+  // The token is still held by the first drain — no parallel pump is allowed.
+  await drainNativeChatOutboxInBackground(userId, drainOptions(secondTransport));
+  expect(secondTransport).not.toHaveBeenCalled();
+  releaseFirst(saved);
+  await first;
+  expect(firstTransport).toHaveBeenCalledTimes(1);
+  expect(await readNativeChatOutbox(userId)).toEqual([]);
+});

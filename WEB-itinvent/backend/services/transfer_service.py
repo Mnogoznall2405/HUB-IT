@@ -142,6 +142,13 @@ def _replace_document_placeholders(document: Any, replacements: dict[str, str]) 
     paragraphs = list(document.paragraphs)
     for table in document.tables:
         paragraphs.extend(_iter_table_paragraphs(table))
+    for section in document.sections:
+        for story in (section.header, section.footer):
+            if story.is_linked_to_previous:
+                continue
+            paragraphs.extend(story.paragraphs)
+            for table in story.tables:
+                paragraphs.extend(_iter_table_paragraphs(table))
 
     for paragraph in paragraphs:
         updated_text = paragraph.text
@@ -220,6 +227,9 @@ def _build_docx_act(
 
         for idx, item in enumerate(items, 1):
             row = table.add_row()
+            tr_pr = row._tr.get_or_add_trPr()
+            if tr_pr.find(qn("w:cantSplit")) is None:
+                tr_pr.append(OxmlElement("w:cantSplit"))
             cells_data = [
                 str(idx),
                 str(item.get("type_name") or ""),

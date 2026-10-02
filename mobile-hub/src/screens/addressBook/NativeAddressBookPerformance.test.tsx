@@ -26,6 +26,7 @@ jest.mock('../../api/addressBookApi', () => ({
   getCompleteAddressBook: jest.fn(),
   getAddressBookStatus: jest.fn(),
   syncAddressBook: jest.fn(),
+  searchAddressBook: jest.fn(async () => ({ items: [], total: 0 })),
 }));
 
 jest.mock('../../cache/nativeAddressBookSnapshot', () => ({

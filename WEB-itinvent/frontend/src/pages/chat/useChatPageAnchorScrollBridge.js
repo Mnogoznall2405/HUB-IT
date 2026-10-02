@@ -34,6 +34,7 @@ export default function useChatPageAnchorScrollBridge({
   highlightResetTimeoutRef,
   setHighlightedMessageId,
   loadMessages,
+  loadNewerMessages,
   messagesHasNewerRef,
   queueAutoScroll,
   suppressThreadScrollCancelRef,
@@ -92,7 +93,9 @@ export default function useChatPageAnchorScrollBridge({
     bottomInstantSettleFrameRef,
     bottomRef,
     isInitialViewportGuardActive: (...args) => anchorGuardBridgeRef.current.isInitialViewportGuardActive(...args),
+    messagesHasNewerRef,
     mobileKeyboardSettleTimeoutsRef,
+    onThreadApproachBottom: loadNewerMessages,
     pinnedScrollRef,
     setShowJumpToLatest,
     showJumpToLatestRef,
@@ -147,6 +150,7 @@ export default function useChatPageAnchorScrollBridge({
   isInitialViewportGuardActiveRef.current = isInitialViewportGuardActive;
 
   const {
+    ensureLatestThreadWindow,
     handleThreadScroll,
     jumpToLatest,
   } = useChatThreadInteractionController({
@@ -157,7 +161,6 @@ export default function useChatPageAnchorScrollBridge({
     loadMessages,
     logChatDebug,
     messagesHasNewerRef,
-    messagesRef,
     pendingInitialAnchorRef,
     queueAutoScroll,
     scheduleThreadViewportStateSync,
@@ -198,6 +201,7 @@ export default function useChatPageAnchorScrollBridge({
     schedulePendingInitialAnchorSettle,
     handleThreadScroll,
     jumpToLatest,
+    ensureLatestThreadWindow,
     emitChatUnreadRefresh,
     scrollToMessage,
   };

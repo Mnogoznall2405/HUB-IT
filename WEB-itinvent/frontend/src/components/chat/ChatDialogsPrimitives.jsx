@@ -1,11 +1,11 @@
-import { Box, Checkbox, Paper, Skeleton, Stack, Typography } from '@mui/material';
+import { Box, CircularProgress, IconButton, Paper, Skeleton, Stack, Typography } from '@mui/material';
 import { alpha } from '@mui/material/styles';
+import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
 import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 
 import { PresenceAvatar } from './ChatCommon';
-import { formatFullDate, getPersonContextLine, getSearchResultPreview } from './chatHelpers';
-import { CHAT_FONT_FAMILY } from './chatUiTokens';
+import { formatFullDate, formatPresenceText, getSearchResultPreview } from './chatHelpers';
 
 function DialogSkeletonLine({ ui, width = '100%', height = 14, radius = 999, sx }) {
   return (
@@ -89,135 +89,368 @@ function SearchResultCard({ item, ui, onOpen }) {
   );
 }
 
-function GroupUserRow({
+// Д2-9: подсветка совпадений поискового запроса внутри строк (как в Telegram Web A).
+function HighlightMatch({ text, query, accent = 'inherit' }) {
+  const source = String(text ?? '');
+  const tokens = String(query || '')
+    .trim()
+    .toLocaleLowerCase('ru-RU')
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!source || tokens.length === 0) return source;
+  const lowered = source.toLocaleLowerCase('ru-RU');
+  const ranges = [];
+  tokens.forEach((token) => {
+    let from = 0;
+    for (;;) {
+      const at = lowered.indexOf(token, from);
+      if (at < 0) break;
+      ranges.push([at, at + token.length]);
+      from = at + token.length;
+    }
+  });
+  if (!ranges.length) return source;
+  ranges.sort((a, b) => (a[0] - b[0]) || (b[1] - a[1]));
+  const merged = [];
+  ranges.forEach(([start, end]) => {
+    const last = merged[merged.length - 1];
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  });
+  const parts = [];
+  let cursor = 0;
+  merged.forEach(([start, end], index) => {
+    if (start > cursor) parts.push(source.slice(cursor, start));
+    parts.push(
+      // Сегменты детерминированы позицией в строке — индексный ключ безопасен.
+      <Box
+        component="span"
+        key={`hl-${index}`}
+        sx={{ color: accent, fontWeight: 700 }}
+      >
+        {source.slice(start, end)}
+      </Box>,
+    );
+    cursor = end;
+  });
+  if (cursor < source.length) parts.push(source.slice(cursor));
+  return parts;
+}
+
+// Д2-9: метастрока «статус · должность». «В сети» — акцентом,
+// «был(а)…» — серым; должность после разделителя. Одна строка с ellipsis.
+function PersonStatusJobLine({ item, ui, query = '', component = 'p' }) {
+  const accentColor = ui.accentText || '#3390ec';
+  const mutedColor = ui.textSecondary || '#8a939d';
+  const online = Boolean(item?.presence?.is_online);
+  const rawStatus = formatPresenceText(item?.presence);
+  const lowered = rawStatus
+    ? rawStatus.charAt(0).toLocaleLowerCase('ru-RU') + rawStatus.slice(1)
+    : '';
+  // «в сети» — как есть; время последнего визита читается как «был(а) вчера в 19:25».
+  const status = online || !lowered || /^(был|не в сети)/i.test(lowered)
+    ? lowered
+    : `был(а) ${lowered}`;
+  const job = String(item?.job_title || '').trim();
+  return (
+    <Typography
+      component={component}
+      variant="body2"
+      sx={{
+        color: mutedColor,
+        fontSize: '0.82rem',
+        lineHeight: 1.3,
+        display: 'block',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        minWidth: 0,
+      }}
+    >
+      <Box component="span" sx={{ color: online ? accentColor : mutedColor }}>
+        <HighlightMatch text={status} query={query} accent={online ? accentColor : mutedColor} />
+      </Box>
+      {job ? (
+        <Box component="span" sx={{ color: mutedColor }}>
+          {' · '}
+          <HighlightMatch text={job} query={query} accent={accentColor} />
+        </Box>
+      ) : null}
+    </Typography>
+  );
+}
+
+// Д2-9: строка выбора человека ~56px без разделителей, цветной аватар
+// (PresenceAvatar уже красит по Telegram-палитре и подставляет фото).
+function PersonPickerRow({
   item,
   ui,
-  onAction,
-  checked = false,
+  onPress,
+  opening = false,
+  checked = null,
+  disabled = false,
+  query = '',
 }) {
   const accentColor = ui.accentText || '#3390ec';
   const primaryText = ui.textStrong || ui.bubbleOtherText || '#17212b';
   const hoverBg = ui.drawerHover || ui.surfaceHover || alpha(primaryText, 0.06);
+  const selectable = checked !== null;
+  const name = item?.full_name || item?.username || 'Пользователь';
   return (
     <Paper
       elevation={0}
       component="button"
       type="button"
-      role="checkbox"
-      aria-checked={checked}
+      role={selectable ? 'checkbox' : 'button'}
+      aria-checked={selectable ? checked : undefined}
+      aria-disabled={disabled || undefined}
       data-user-id={String(item?.id || '')}
-      onClick={() => onAction?.(item)}
+      onClick={() => {
+        if (disabled) return;
+        onPress?.(item);
+      }}
       sx={{
         width: '100%',
-        px: 1.35,
-        py: 0.9,
-        borderRadius: 0,
+        minHeight: 56,
+        px: 1.2,
+        py: 0.8,
+        mx: 0,
+        borderRadius: 2,
         display: 'flex',
         alignItems: 'center',
-        gap: 1.35,
+        gap: 1.4,
         textAlign: 'left',
         color: primaryText,
-        cursor: 'pointer',
+        cursor: disabled ? 'default' : 'pointer',
         bgcolor: 'transparent',
-        transition: 'background-color 120ms ease',
-        '&:hover': { bgcolor: hoverBg },
-        '&:active': { opacity: 0.76 },
+        opacity: disabled ? 0.45 : 1,
+        transition: 'background-color 120ms ease, opacity 120ms ease',
+        '&:hover': { bgcolor: disabled ? 'transparent' : hoverBg },
+        '&:active': disabled ? {} : { opacity: 0.84 },
       }}
     >
-      {/* Avatar with check overlay */}
-      <Box sx={{ position: 'relative', flexShrink: 0 }}>
-        <PresenceAvatar item={item} online={Boolean(item?.presence?.is_online)} size={46} />
-        {checked ? (
-          <Box
-            sx={{
-              position: 'absolute',
-              inset: 0,
-              borderRadius: '50%',
-              bgcolor: accentColor,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              animation: 'fadeIn 120ms ease',
-              '@keyframes fadeIn': { from: { opacity: 0, transform: 'scale(0.7)' }, to: { opacity: 1, transform: 'scale(1)' } },
-            }}
-          >
-            <CheckRoundedIcon sx={{ fontSize: 26, color: '#fff' }} />
-          </Box>
-        ) : null}
-      </Box>
+      <PresenceAvatar item={item} online={Boolean(item?.presence?.is_online)} size={44} colorSeed={item?.id} />
       <Box sx={{ minWidth: 0, flex: 1 }}>
         <Typography
           variant="body1"
-          sx={{ fontWeight: checked ? 700 : 600, color: checked ? accentColor : primaryText, fontFamily: 'inherit', lineHeight: 1.35 }}
+          sx={{
+            fontWeight: 600,
+            color: checked ? accentColor : primaryText,
+            fontFamily: 'inherit',
+            fontSize: '0.95rem',
+            lineHeight: 1.35,
+          }}
           noWrap
         >
-          {item?.full_name || item?.username || 'Пользователь'}
+          <HighlightMatch text={name} query={query} accent={accentColor} />
         </Typography>
-        <Typography variant="body2" sx={{ color: ui.textSecondary, fontSize: '0.82rem', lineHeight: 1.3 }} noWrap>
-          {getPersonContextLine(item)}
-        </Typography>
+        <PersonStatusJobLine item={item} ui={ui} query={query} />
       </Box>
+      {opening ? <CircularProgress size={18} sx={{ flexShrink: 0 }} /> : null}
+      {selectable ? (
+        <Box
+          aria-hidden="true"
+          sx={{
+            flexShrink: 0,
+            width: 24,
+            height: 24,
+            borderRadius: '50%',
+            border: `2px solid ${checked ? accentColor : (ui.borderSoft || alpha(primaryText, 0.3))}`,
+            bgcolor: checked ? accentColor : 'transparent',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            transition: 'background-color 120ms ease, border-color 120ms ease',
+          }}
+        >
+          {checked ? <CheckRoundedIcon sx={{ fontSize: 15, color: '#fff' }} /> : null}
+        </Box>
+      ) : null}
     </Paper>
   );
 }
 
-function GroupUserCheckboxRow({ item, ui, checked = false, onToggle, compact = false }) {
-  return <GroupUserRow item={item} ui={ui} checked={checked} onAction={onToggle} />;
-}
-
-function SelectedUserPill({ item, ui, onRemove }) {
-  const accentColor = ui.accentText || '#3390ec';
-  const primaryText = ui.textStrong || ui.bubbleOtherText || '#17212b';
-  const bgColor = ui.drawerBg || ui.panelBg || '#17212b';
-  const shortName = String(item?.full_name || item?.username || 'Участник').split(' ')[0];
+// Обёртка сохраняет прежнее имя GroupUserCheckboxRow для выбора участников группы.
+function GroupUserCheckboxRow({ item, ui, checked = false, disabled = false, onToggle, query = '' }) {
   return (
-    <Stack
-      alignItems="center"
-      spacing={0.4}
-      sx={{ flex: '0 0 auto', width: 68, cursor: onRemove ? 'pointer' : 'default', pt: 0.5, pb: 0.25 }}
-      onClick={() => onRemove?.(item)}
-    >
-      {/* Extra padding so presence dot + close badge don't clip */}
-      <Box sx={{ position: 'relative', p: '3px' }}>
-        <PresenceAvatar item={item} online={Boolean(item?.presence?.is_online)} size={46} />
-        {onRemove ? (
-          <Box
-            sx={{
-              position: 'absolute',
-              top: 0,
-              right: 0,
-              width: 18,
-              height: 18,
-              borderRadius: '50%',
-              bgcolor: bgColor,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              border: `2px solid ${bgColor}`,
-              zIndex: 2,
-            }}
-          >
-            <CloseRoundedIcon sx={{ fontSize: 11, color: accentColor }} />
-          </Box>
-        ) : null}
-      </Box>
-      <Typography
-        variant="caption"
-        sx={{ color: primaryText, fontWeight: 600, fontSize: '0.74rem', lineHeight: 1.2, textAlign: 'center', width: '100%', px: 0.25 }}
-        noWrap
-      >
-        {shortName}
-      </Typography>
-    </Stack>
+    <PersonPickerRow
+      item={item}
+      ui={ui}
+      checked={checked}
+      disabled={disabled}
+      query={query}
+      onPress={onToggle}
+    />
   );
 }
 
+// Д2-9: чип выбранного участника внутри поискового поля (аватар + имя + ×).
+function SelectedMemberChip({ item, ui, onRemove }) {
+  const accentColor = ui.accentText || '#3390ec';
+  const primaryText = ui.textStrong || ui.bubbleOtherText || '#17212b';
+  const shortName = String(item?.full_name || item?.username || 'Участник').trim().split(/\s+/)[0];
+  const chipBg = ui.surfaceMuted || alpha(accentColor, 0.14);
+  return (
+    <Box
+      component="span"
+      sx={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 0.5,
+        maxWidth: 160,
+        height: 28,
+        pl: 0.25,
+        pr: 0.5,
+        borderRadius: 999,
+        bgcolor: chipBg,
+        color: primaryText,
+        flexShrink: 0,
+      }}
+    >
+      <PresenceAvatar item={item} online={false} size={22} colorSeed={item?.id} />
+      <Box
+        component="span"
+        sx={{
+          fontSize: '0.82rem',
+          fontWeight: 600,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {shortName}
+      </Box>
+      {onRemove ? (
+        <Box
+          component="button"
+          type="button"
+          aria-label={`Убрать ${shortName}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove(item);
+          }}
+          sx={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 18,
+            height: 18,
+            border: 'none',
+            borderRadius: '50%',
+            bgcolor: 'transparent',
+            color: ui.textSecondary || '#8a939d',
+            cursor: 'pointer',
+            p: 0,
+            '&:hover': { color: primaryText, bgcolor: alpha(primaryText, 0.1) },
+          }}
+        >
+          <CloseRoundedIcon sx={{ fontSize: 14 }} />
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
+// Д2-9: общая шапка потоков «Новое сообщение» / «Новая группа» —
+// стрелка назад + заголовок (+ счётчик выбранных).
+function ComposeFlowHeader({ ui, title, subtitle = '', onBack, backLabel = 'Назад', compactMobile = false, children }) {
+  const primaryText = ui.textStrong || ui.textPrimary || '#17212b';
+  return (
+    <Box
+      className={compactMobile ? 'chat-safe-top' : undefined}
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 0.5,
+        px: compactMobile ? 1.25 : 1,
+        py: compactMobile ? 0.75 : 0.75,
+        borderBottom: `1px solid ${ui.borderSoft || alpha(primaryText, 0.12)}`,
+        bgcolor: ui.sidebarHeaderBg || 'transparent',
+      }}
+    >
+      <IconButton
+        aria-label={backLabel}
+        onClick={onBack}
+        size={compactMobile ? 'medium' : 'small'}
+        sx={{ color: primaryText, ml: -0.25 }}
+      >
+        <ArrowBackRoundedIcon />
+      </IconButton>
+      <Box sx={{ minWidth: 0, flex: 1 }}>
+        <Typography
+          component="div"
+          variant="subtitle1"
+          sx={{ fontWeight: 800, fontSize: compactMobile ? '1.05rem' : '1rem', lineHeight: 1.25, color: primaryText }}
+          noWrap
+        >
+          {title}
+        </Typography>
+        {subtitle ? (
+          <Typography
+            component="div"
+            variant="caption"
+            sx={{ color: ui.textSecondary, fontWeight: 500, lineHeight: 1.3 }}
+            noWrap
+          >
+            {subtitle}
+          </Typography>
+        ) : null}
+      </Box>
+      {children}
+    </Box>
+  );
+}
+
+// Д2-9: плавающая круглая кнопка-акцент («→» к шагу названия, «✓» создать).
+function ComposeActionFab({ ui, onClick, disabled = false, loading = false, label, icon = null, sx = {} }) {
+  const active = !disabled && !loading;
+  return (
+    <Box
+      component="button"
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={() => {
+        if (disabled || loading) return;
+        onClick?.();
+      }}
+      aria-disabled={disabled || loading}
+      sx={{
+        position: 'absolute',
+        right: 20,
+        bottom: 20,
+        zIndex: 10,
+        width: 56,
+        height: 56,
+        borderRadius: '50%',
+        border: 'none',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        cursor: active ? 'pointer' : 'default',
+        bgcolor: active ? (ui.composeFabBg || ui.accentText || '#3390ec') : (ui.surfaceMuted || alpha(ui.textSecondary || '#8a939d', 0.28)),
+        color: active ? (ui.composeFabText || '#ffffff') : (ui.textSecondary || '#8a939d'),
+        boxShadow: active ? (ui.composeFabShadow || '0 8px 20px rgba(0,0,0,0.28)') : 'none',
+        transition: 'transform 150ms ease, opacity 150ms ease, background-color 150ms ease',
+        '&:hover': active ? { transform: 'scale(1.05)' } : {},
+        '&:active': active ? { transform: 'scale(0.96)' } : {},
+        ...sx,
+      }}
+    >
+      {loading ? <CircularProgress size={22} sx={{ color: 'inherit' }} /> : icon}
+    </Box>
+  );
+}
 
 export {
   DialogSkeletonLine,
   DialogListSkeleton,
   SearchResultCard,
-  GroupUserRow,
+  HighlightMatch,
+  PersonStatusJobLine,
+  PersonPickerRow,
   GroupUserCheckboxRow,
-  SelectedUserPill,
+  SelectedMemberChip,
+  ComposeFlowHeader,
+  ComposeActionFab,
 };

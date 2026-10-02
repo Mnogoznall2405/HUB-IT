@@ -1,6 +1,7 @@
 import { NativeModal as Modal } from '../ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useContext, useEffect, useState } from 'react';
+import { SafeAreaInsetsContext, initialWindowMetrics } from 'react-native-safe-area-context';
 import {
   ActivityIndicator,
   Pressable,
@@ -60,6 +61,7 @@ export function NativeDatabaseActUploadModal({
   onClose: () => void;
   onCommitted: (message: string) => Promise<void> | void;
 }) {
+  const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
   const [file, setFile] = useState<UploadedActFile | null>(null);
   const [draft, setDraft] = useState<UploadedActDraft | null>(null);
   const [form, setForm] = useState<DraftForm>(EMPTY_FORM);
@@ -196,7 +198,7 @@ export function NativeDatabaseActUploadModal({
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={close} accessibilityViewIsModal>
-      <View style={[styles.modal, { backgroundColor: tokens.pageBg }]}> 
+      <View style={[styles.modal, { backgroundColor: tokens.pageBg, paddingTop: insets?.top || 0 }]}>
         <View style={[styles.header, { borderBottomColor: tokens.borderSoft }]}> 
           <Pressable disabled={busy} accessibilityRole="button" accessibilityLabel="Закрыть загрузку акта" onPress={close} style={styles.headerAction}>
             <Text style={[styles.headerText, { color: tokens.textSecondary }]}>Отмена</Text>

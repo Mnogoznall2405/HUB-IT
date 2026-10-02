@@ -47,13 +47,17 @@ export function useSingleAudio() {
 }
 
 export function AudioPlayButton({ src, playing, onToggle, title }) {
+  const context = String(title || '').replace(/^Прослушать(?::|\s)?\s*/i, '').trim();
+  const label = [playing ? 'Пауза' : 'Прослушать', context].filter(Boolean).join(' ');
+  const tooltip = playing && context ? `Приостановить ${context}` : (title || 'Прослушать');
   return (
-    <Tooltip title={title || 'Прослушать'}>
+    <Tooltip title={tooltip}>
       <span>
         <IconButton
           size="small"
           color={playing ? 'primary' : 'default'}
-          aria-label={playing ? 'Пауза' : 'Прослушать'}
+          aria-label={label}
+          aria-pressed={playing}
           onClick={() => onToggle(src)}
           disabled={!src}
         >

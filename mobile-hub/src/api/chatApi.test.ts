@@ -265,8 +265,18 @@ describe('native Chat API contract', () => {
   });
 
   it('does not send an invalid mark-read request without a message id', async () => {
-    await markConversationRead('conversation-1');
+    // CHAT-INBOX-01: a skipped call reports false instead of silently succeeding.
+    await expect(markConversationRead('conversation-1')).resolves.toBe(false);
+    await expect(markConversationRead('conversation-1', '  ')).resolves.toBe(false);
     expect(mockedClient.post).not.toHaveBeenCalled();
+  });
+
+  it('reports true once the mark-read request completes', async () => {
+    mockedClient.post.mockResolvedValueOnce({ data: { changed: true } });
+    await expect(markConversationRead('conversation-1', 'message-2')).resolves.toBe(true);
+    expect(mockedClient.post).toHaveBeenCalledWith('/chat/conversations/conversation-1/read', {
+      message_id: 'message-2',
+    });
   });
 
   it('uses the existing web Chat endpoints for native settings and rich sending', async () => {
@@ -294,7 +304,7 @@ describe('native Chat API contract', () => {
       .mockResolvedValueOnce({ data: { id: 'my-file-1' } });
 
     await updateConversationSettings('conversation-1', { is_muted: true });
-    await shareTask('conversation-1', 'task-7', 'message-1');
+    await shareTask('conversation-1', 'task-7', { replyToMessageId: 'message-1' });
     await sendSticker('conversation-1', 'sticker-2');
     await saveAttachmentToMyFiles('message-3', 'attachment-4');
 
@@ -305,12 +315,14 @@ describe('native Chat API contract', () => {
     expect(mockedClient.post).toHaveBeenNthCalledWith(
       1,
       '/chat/conversations/conversation-1/messages/task-share',
-      { task_id: 'task-7', reply_to_message_id: 'message-1' },
+      { task_id: 'task-7', client_message_id: undefined, reply_to_message_id: 'message-1' },
+      { signal: undefined },
     );
     expect(mockedClient.post).toHaveBeenNthCalledWith(
       2,
       '/chat/conversations/conversation-1/messages/sticker',
-      { sticker_id: 'sticker-2', reply_to_message_id: undefined },
+      { sticker_id: 'sticker-2', client_message_id: undefined, reply_to_message_id: undefined },
+      { signal: undefined },
     );
     expect(mockedClient.post).toHaveBeenNthCalledWith(
       3,

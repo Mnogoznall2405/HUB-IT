@@ -6,6 +6,7 @@ import {
   mediaSelectionBadge,
   reorderPanelAssets,
   toggleMediaSelection,
+  withMediaPanelTimeout,
   type PanelMediaAsset,
 } from './chatAttachmentPanel';
 
@@ -71,5 +72,21 @@ describe('attachment panel helpers', () => {
       .toEqual(['d', 'a', 'b', 'c']);
     expect(reorderPanelAssets(selected, ['b', 'x', 'b', 'a', 'c', 'd']).map((item) => item.id))
       .toEqual(['b', 'a', 'c', 'd']);
+  });
+
+  it('passes a settled value through withMediaPanelTimeout', async () => {
+    await expect(withMediaPanelTimeout(Promise.resolve('ok'), 50)).resolves.toBe('ok');
+  });
+
+  it('rejects a hung promise after the panel timeout', async () => {
+    jest.useFakeTimers();
+    try {
+      const pending = withMediaPanelTimeout(new Promise(() => {}), 8000);
+      const assertion = expect(pending).rejects.toThrow('media panel timeout');
+      await jest.advanceTimersByTimeAsync(8000);
+      await assertion;
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

@@ -33,6 +33,8 @@ export const buildChatSendUploadItems = (items, sendMediaAsFiles = false) => (
       preparedSize: originalSize,
       transferSize: originalSize,
       finalSize: originalSize,
+      imageWidth: Number(item?.originalImageWidth || 0) || item?.imageWidth || 0,
+      imageHeight: Number(item?.originalImageHeight || 0) || item?.imageHeight || 0,
       transferEncoding: 'identity',
       media_kind: 'file',
       mediaKind: 'file',
@@ -62,6 +64,7 @@ export default function useChatFileSending({
   activeConversation,
   activeConversationId,
   applyOutgoingThreadMessage,
+  ensureLatestThreadWindow,
   buildReplyPreview,
   cancelPendingInitialAnchor,
   createOptimisticFileMessage,
@@ -75,6 +78,7 @@ export default function useChatFileSending({
   notifyWarning,
   patchThreadMessage,
   preparingFiles,
+  registerFailedOutgoingMessage,
   removeThreadMessage,
   replyMessage,
   revokeObjectUrls,
@@ -166,8 +170,15 @@ export default function useChatFileSending({
     }
 
     if ((existingItems.length + uniqueIncomingFiles.length) > CHAT_MAX_FILE_COUNT) {
-      notifyWarning?.(`Можно отправить не более ${CHAT_MAX_FILE_COUNT} файлов за один раз.`);
-      return false;
+      // C5: media-only selections are allowed past the per-message limit —
+      // sendFiles splits them into albums of CHAT_MAX_FILE_COUNT.
+      const nextItemsAllMedia = [...existingItems, ...uniqueIncomingFiles].every(
+        (item) => isChatMediaFile(item?.originalFile || item?.file || item),
+      );
+      if (!nextItemsAllMedia) {
+        notifyWarning?.(`Можно отправить не более ${CHAT_MAX_FILE_COUNT} файлов за один раз.`);
+        return false;
+      }
     }
 
     const hasRequestedMediaMode = typeof options?.sendMediaAsFiles === 'boolean';
@@ -409,7 +420,6 @@ export default function useChatFileSending({
 
     // Capture current state into local variables before clearing UI
     const snapshotUploadItems = buildChatSendUploadItems(selectedUploadItems, sendMediaAsFiles);
-    const snapshotFiles = snapshotUploadItems.map((item) => item?.file).filter(Boolean);
     const snapshotCaption = fileCaption;
     const restored = restoredAttemptRef.current;
     const uploadAttempt = restored?.items === selectedUploadItems && restored.conversationId === conversationId
@@ -429,13 +439,38 @@ export default function useChatFileSending({
     }
     const abortController = typeof AbortController === 'function' ? new AbortController() : null;
     const draftReplyMessage = replyMessage ? { ...replyMessage } : null;
-    const optimisticMessage = createOptimisticFileMessage({
+    const draftReplyPreview = buildReplyPreview(draftReplyMessage);
+
+    // C5: a media-only selection larger than one album is sent as sequential
+    // messages of CHAT_MAX_FILE_COUNT attachments, keeping the original order.
+    const isMediaAlbum = snapshotUploadItems.every(
+      (item) => isChatMediaFile(item?.originalFile || item?.file),
+    );
+    const albumChunks = [];
+    if (snapshotUploadItems.length > CHAT_MAX_FILE_COUNT) {
+      if (!isMediaAlbum) {
+        notifyWarning?.(`Можно отправить не более ${CHAT_MAX_FILE_COUNT} файлов за один раз.`);
+        return;
+      }
+      for (let index = 0; index < snapshotUploadItems.length; index += CHAT_MAX_FILE_COUNT) {
+        albumChunks.push(snapshotUploadItems.slice(index, index + CHAT_MAX_FILE_COUNT));
+      }
+    } else {
+      albumChunks.push(snapshotUploadItems);
+    }
+    const isAlbumSend = albumChunks.length > 1;
+    const optimisticMessages = albumChunks.map((chunkItems, chunkIndex) => createOptimisticFileMessage({
       conversationId,
-      files: snapshotFiles,
-      mediaKinds: snapshotUploadItems.map((item) => item?.media_kind || item?.mediaKind || ''),
-      body: snapshotCaption,
-      replyPreview: buildReplyPreview(draftReplyMessage),
-    });
+      files: chunkItems.map((item) => item?.file).filter(Boolean),
+      mediaKinds: chunkItems.map((item) => item?.media_kind || item?.mediaKind || ''),
+      mediaDimensions: chunkItems.map((item) => (
+        Number(item?.imageWidth || 0) > 0 && Number(item?.imageHeight || 0) > 0
+          ? { width: Number(item.imageWidth), height: Number(item.imageHeight) }
+          : null
+      )),
+      body: chunkIndex === 0 ? snapshotCaption : '',
+      replyPreview: chunkIndex === 0 ? draftReplyPreview : null,
+    }));
     fileUploadAbortRef.current = abortController;
 
     // Clear UI immediately — dialog closes, composer is free
@@ -447,60 +482,100 @@ export default function useChatFileSending({
     setReplyMessage(null);
     setSendingFiles(true);
 
-    if (optimisticMessage) {
+    // R20: close the newer-messages gap before the optimistic bubbles land so
+    // they sit after the real tail of the history.
+    await ensureLatestThreadWindow?.();
+    optimisticMessages.forEach((optimisticMessage, index) => {
+      if (!optimisticMessage) return;
       applyOutgoingThreadMessage(conversationId, optimisticMessage, {
-        scroll: true,
+        scroll: index === 0,
         scrollSource: 'sendFiles',
       });
-    }
+    });
 
+    // Object URLs stay alive while a failed ⚠ bubble still shows previews.
+    const settledOptimisticIds = new Set();
     try {
-      const serverMessage = await chatAPI.sendFiles(conversationId, snapshotUploadItems, {
-        uploadAttempt,
-        client_message_id: snapshotUploadItems[0]?.voiceClientMessageId,
-        body: snapshotCaption,
-        reply_to_message_id: draftReplyMessage?.id || undefined,
-        signal: abortController?.signal,
-        onUploadProgress: (progressEvent) => {
-          const loaded = Number(progressEvent?.loaded || 0);
-          const total = Number(progressEvent?.total || totalBytes || 0);
-          if (total <= 0) return;
-          const nextProgress = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
-          if (optimisticMessage?.id) {
-            patchThreadMessage(optimisticMessage.id, { uploadProgress: nextProgress });
+      for (let chunkIndex = 0; chunkIndex < albumChunks.length; chunkIndex += 1) {
+        const chunkItems = albumChunks[chunkIndex];
+        const optimisticMessage = optimisticMessages[chunkIndex];
+        try {
+          const serverMessage = await chatAPI.sendFiles(conversationId, chunkItems, {
+            uploadAttempt: isAlbumSend ? {} : uploadAttempt,
+            client_message_id: optimisticMessage?.client_message_id
+              || chunkItems[0]?.voiceClientMessageId
+              || undefined,
+            body: chunkIndex === 0 ? snapshotCaption : '',
+            reply_to_message_id: chunkIndex === 0 ? (draftReplyMessage?.id || undefined) : undefined,
+            signal: abortController?.signal,
+            onUploadProgress: (progressEvent) => {
+              const loaded = Number(progressEvent?.loaded || 0);
+              const total = Number(progressEvent?.total || totalBytes || 0);
+              if (total <= 0) return;
+              const nextProgress = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
+              if (optimisticMessage?.id) {
+                patchThreadMessage(optimisticMessage.id, { uploadProgress: nextProgress });
+              }
+            },
+          });
+          if (chunkIndex === 0) {
+            cancelPendingInitialAnchor();
+            logChatDebug('sendFiles:autoScroll', {
+              conversationId,
+            });
           }
-        },
-      });
-      cancelPendingInitialAnchor();
-      logChatDebug('sendFiles:autoScroll', {
-        conversationId,
-      });
-      if (serverMessage?.id) {
-        applyOutgoingThreadMessage(conversationId, serverMessage, {
-          replaceId: optimisticMessage?.id,
-          scroll: true,
-          scrollSource: 'sendFiles:server',
-        });
-        if (activeConversation?.kind === 'ai') {
-          setOptimisticAiQueuedStatus(conversationId, activeConversation?.title);
+          if (serverMessage?.id) {
+            settledOptimisticIds.add(optimisticMessage?.id);
+            applyOutgoingThreadMessage(conversationId, serverMessage, {
+              replaceId: optimisticMessage?.id,
+              scroll: chunkIndex === 0,
+              scrollSource: 'sendFiles:server',
+            });
+            if (activeConversation?.kind === 'ai') {
+              setOptimisticAiQueuedStatus(conversationId, activeConversation?.title);
+            }
+          } else if (optimisticMessage?.id) {
+            if (isAlbumSend) {
+              registerFailedOutgoingMessage(conversationId, optimisticMessage, {
+                replyToMessageId: draftReplyMessage?.id,
+                fileResend: { uploadItems: chunkItems },
+              });
+            } else {
+              settledOptimisticIds.add(optimisticMessage.id);
+              removeThreadMessage(optimisticMessage.id);
+            }
+          }
+        } catch (error) {
+          const canceled = String(error?.code || '') === 'ERR_CANCELED';
+          if (optimisticMessage?.id) {
+            if (isAlbumSend && !canceled) {
+              registerFailedOutgoingMessage(conversationId, optimisticMessage, {
+                replyToMessageId: draftReplyMessage?.id,
+                fileResend: { uploadItems: chunkItems },
+              });
+            } else {
+              settledOptimisticIds.add(optimisticMessage.id);
+              removeThreadMessage(optimisticMessage.id);
+            }
+          }
+          if (!canceled && mountedRef.current) {
+            if (!isAlbumSend) {
+              retainFailedUpload(conversationId, {
+                items: [...selectedUploadItems], caption: snapshotCaption, asFiles: sendMediaAsFiles,
+                reply: draftReplyMessage,
+                attempt: uploadAttempt,
+              });
+            }
+            notifyApiError(error, 'Не удалось отправить файлы в чат.');
+          }
         }
-      } else if (optimisticMessage?.id) {
-        removeThreadMessage(optimisticMessage.id);
-      }
-    } catch (error) {
-      if (optimisticMessage?.id) {
-        removeThreadMessage(optimisticMessage.id);
-      }
-      if (String(error?.code || '') !== 'ERR_CANCELED' && mountedRef.current) {
-        retainFailedUpload(conversationId, {
-          items: [...selectedUploadItems], caption: snapshotCaption, asFiles: sendMediaAsFiles,
-          reply: draftReplyMessage,
-          attempt: uploadAttempt,
-        });
-        notifyApiError(error, 'Не удалось отправить файлы в чат.');
       }
     } finally {
-      revokeObjectUrls(optimisticMessage?.optimisticObjectUrls);
+      optimisticMessages.forEach((optimisticMessage) => {
+        if (settledOptimisticIds.has(optimisticMessage?.id)) {
+          revokeObjectUrls(optimisticMessage?.optimisticObjectUrls);
+        }
+      });
       fileUploadAbortRef.current = null;
       setSendingFiles(false);
       setFileUploadProgress(0);
@@ -510,6 +585,7 @@ export default function useChatFileSending({
     activeConversation?.title,
     activeConversationId,
     applyOutgoingThreadMessage,
+    ensureLatestThreadWindow,
     buildReplyPreview,
     cancelPendingInitialAnchor,
     createOptimisticFileMessage,
@@ -519,6 +595,7 @@ export default function useChatFileSending({
     notifyApiError,
     patchThreadMessage,
     preparingFiles,
+    registerFailedOutgoingMessage,
     removeThreadMessage,
     retainFailedUpload,
     replyMessage,
@@ -545,6 +622,8 @@ export default function useChatFileSending({
     const items = [{ file, originalFile: file, media_kind: 'audio', duration_seconds: duration,
       mime_type: mimeType || file.type || 'audio/webm', voiceClientMessageId: clientMessageId }];
     try {
+      // R20: same no-gap rule — reach the latest window before the voice send.
+      await ensureLatestThreadWindow?.();
       const message = await chatAPI.sendFiles(conversationId, items, { client_message_id: clientMessageId });
       if (message?.id && mountedRef.current) applyOutgoingThreadMessage(conversationId, message);
     } catch (error) {
@@ -552,7 +631,7 @@ export default function useChatFileSending({
       retainFailedUpload(conversationId, { items, caption: '', asFiles: false, reply: null });
       notifyApiError(error, 'Не удалось отправить голосовое сообщение. Запись сохранена для повтора.');
     }
-  }, [activeConversationId, applyOutgoingThreadMessage, notifyApiError, retainFailedUpload]);
+  }, [activeConversationId, applyOutgoingThreadMessage, ensureLatestThreadWindow, notifyApiError, retainFailedUpload]);
 
   const closeFileDialog = useCallback(() => {
     if (preparingFiles || sendingFiles) return;

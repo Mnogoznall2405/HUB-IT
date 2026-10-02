@@ -118,7 +118,9 @@ describe('MobileMenu page', () => {
 
     renderMobileMenu();
 
-    expect(screen.getByTestId('mobile-menu-app-grid')).toBeEmptyDOMElement();
+    // without any permission only the always-available Help entry remains in the grid
+    const gridItems = Array.from(screen.getByTestId('mobile-menu-app-grid').querySelectorAll('[data-testid^="mobile-menu-item-"]'));
+    expect(gridItems.map((node) => node.getAttribute('data-testid'))).toEqual(['mobile-menu-item-help']);
     expect(screen.queryByTestId('mobile-menu-action-admin')).not.toBeInTheDocument();
     expect(screen.getByTestId('mobile-menu-action-profile')).toBeInTheDocument();
     expect(screen.getByTestId('mobile-menu-action-settings')).toBeInTheDocument();

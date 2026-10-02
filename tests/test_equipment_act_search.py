@@ -23,7 +23,7 @@ class FakeDB:
         return self._responses.pop(0) if self._responses else []
 
 
-def test_search_equipment_acts_returns_empty_for_short_query():
+def test_search_equipment_acts_falls_back_to_latest_feed_for_short_query():
     fake_db = FakeDB()
 
     def fake_get_db(db_id=None):
@@ -31,8 +31,10 @@ def test_search_equipment_acts_returns_empty_for_short_query():
 
     result = search_equipment_acts("a", db_id="main", get_db_fn=fake_get_db)
 
-    assert result == {"query": "a", "total": 0, "acts": [], "truncated": False}
-    assert fake_db.calls == []
+    assert result == {"query": "", "total": 0, "acts": [], "truncated": False}
+    assert len(fake_db.calls) == 1
+    assert "LIKE ?" not in fake_db.calls[0][0]
+    assert fake_db.calls[0][1] == ()
 
 
 def test_search_equipment_acts_matches_doc_number_and_enriches_type_name(monkeypatch):
