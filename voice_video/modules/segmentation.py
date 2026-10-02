@@ -432,10 +432,13 @@ class MeetingSegmentation:
             prompt_file = PROJECT_ROOT / 'action_registry_prompt.txt'
             response_text = self._call_llm(
                 str(prompt_file), context,
-                max_tokens=14000, use_json_mode=False,
+                max_tokens=14000, use_json_mode=True,
                 model=self.config.openai_model
             )
-            return response_text
+            # LLM отдаёт JSON, таблицу собираем сами: «|» в тексте или пропущенная
+            # колонка больше не ломают разбор поручений в веб-интерфейсе.
+            from .action_registry import registry_markdown_from_llm
+            return registry_markdown_from_llm(response_text)
         except Exception as e:
             logger.error(f"❌ Ошибка сборки реестра поручений: {e}", exc_info=True)
             return None

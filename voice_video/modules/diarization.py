@@ -19,6 +19,7 @@ except ImportError:
     DiarizationPipeline = getattr(whisperx, "DiarizationPipeline", None)
 
 from .audio_processor import ProcessingConfig, retry_on_failure, monitor_memory, cleanup_memory
+from .speaker_utils import TurnIndex, assign_words_by_overlap, mean_normalized, pick_embedding_spans
 from config import DEVICE, HF_TOKEN, MODELS_DIR, PROJECT_ROOT, REFERENCE_VOICES_DIR
 
 logger = logging.getLogger(__name__)
@@ -100,19 +101,55 @@ def vote_speaker_for_span(start_time: float, end_time: float, diarization_index:
     return max(speaker_votes, key=speaker_votes.get) if speaker_votes else "SPEAKER_UNKNOWN"
 
 
-def _word_speaker_runs(words: List[Dict], index: Dict[float, str], fallback: str,
-                       min_run_dur: float) -> List[Tuple[str, List[Dict]]]:
-    """Группирует слова в серии по спикеру; короткие вспышки сливает с соседями."""
-    runs: List[Tuple[str, List[Dict]]] = []
-    last = None
+def build_speaker_index(diarize_segments: List[Dict], overlap_assign: bool):
+    """Индекс для назначения спикеров.
+
+    overlap_assign=True — TurnIndex: спикер по наибольшему пересечению со словом
+    (детерминированно и при одновременной речи). False — прежний индекс «100 мс ->
+    спикер», где при наложении побеждает спикер, записанный последним.
+    """
+    if overlap_assign:
+        return TurnIndex(diarize_segments)
+    index = {}
+    for segment in diarize_segments:
+        start = segment.get('start', 0)
+        end = segment.get('end', 0)
+        speaker = segment.get('speaker', 'UNKNOWN')
+        current_time = start
+        while current_time <= end:
+            index[round(current_time, 1)] = speaker
+            current_time += 0.1  # шаг 100мс
+    return index
+
+
+def speaker_for_segment(index, start_time: float, end_time: float) -> str:
+    """Спикер сегмента по любому из индексов build_speaker_index."""
+    if isinstance(index, TurnIndex):
+        return index.speaker_for_span(float(start_time), float(end_time)) or "SPEAKER_UNKNOWN"
+    return vote_speaker_for_span(start_time, end_time, index)
+
+
+def _word_speakers(words: List[Dict], index, fallback: str) -> List[str]:
+    if isinstance(index, TurnIndex):
+        return assign_words_by_overlap(words, index, fallback)
+    out, last = [], None
     for w in words:
         mid = (w['start'] + w['end']) / 2
         speaker = speaker_at_time(index, mid) or last or fallback
+        out.append(speaker)
+        last = speaker
+    return out
+
+
+def _word_speaker_runs(words: List[Dict], index, fallback: str,
+                       min_run_dur: float) -> List[Tuple[str, List[Dict]]]:
+    """Группирует слова в серии по спикеру; короткие вспышки сливает с соседями."""
+    runs: List[Tuple[str, List[Dict]]] = []
+    for w, speaker in zip(words, _word_speakers(words, index, fallback)):
         if runs and runs[-1][0] == speaker:
             runs[-1][1].append(w)
         else:
             runs.append([speaker, [w]])
-        last = speaker
 
     merged: List[Tuple[str, List[Dict]]] = []
     for i, (speaker, ws) in enumerate(runs):
@@ -126,7 +163,7 @@ def _word_speaker_runs(words: List[Dict], index: Dict[float, str], fallback: str
     return merged
 
 
-def split_segments_by_word_speakers(segments: List[Dict], diarization_index: Dict[float, str],
+def split_segments_by_word_speakers(segments: List[Dict], diarization_index,
                                     word_segments: Optional[List[Dict]],
                                     min_run_dur: float = 0.4) -> List[Dict]:
     """Назначает спикеров на уровне слов и режет сегменты в точках смены спикера.
@@ -158,7 +195,7 @@ def split_segments_by_word_speakers(segments: List[Dict], diarization_index: Dic
         else:
             seg_words = []
 
-        base = vote_speaker_for_span(start, end, diarization_index)
+        base = speaker_for_segment(diarization_index, start, end)
         if len(seg_words) < 2:
             segment_with_speaker = segment.copy()
             segment_with_speaker['speaker'] = base
@@ -288,6 +325,11 @@ class SpeakerDiarization:
                 cache_dir=str(MODELS_DIR / ".pyannote")
             ).to(self.device)
         else:
+            logger.warning(
+                "⚠️ Локальная WeSpeaker-модель (models--pyannote--wespeaker-voxceleb-resnet34-LM) "
+                "не найдена — используется старая pyannote/embedding: узнавание по голосу хуже, "
+                "эталоны с другой размерностью будут пересчитаны"
+            )
             self.embedding_model = Model.from_pretrained(
                 "pyannote/embedding",
                 token=self.hf_token,
@@ -420,44 +462,20 @@ class SpeakerDiarization:
             logger.error(f"❌ Ошибка назначения спикеров: {e}")
             return segments
     
-    def _create_diarization_index(self, diarize_segments: List[Dict]) -> Dict[float, str]:
+    def _create_diarization_index(self, diarize_segments: List[Dict]):
         """Создает индекс диаризации для быстрого поиска спикеров."""
-        index = {}
-        
-        for segment in diarize_segments:
-            start = segment.get('start', 0)
-            end = segment.get('end', 0)
-            speaker = segment.get('speaker', 'UNKNOWN')
-            
-            # Создаем записи для каждой секунды в сегменте
-            current_time = start
-            while current_time <= end:
-                index[round(current_time, 1)] = speaker
-                current_time += 0.1  # шаг 100мс
-        
-        return index
-    
-    def _find_best_speaker_for_segment(self, start_time: float, end_time: float, diarization_index: Dict[float, str]) -> str:
+        return build_speaker_index(
+            diarize_segments, bool(getattr(self.config, 'diarization_overlap_assign', False))
+        )
+
+    def _find_best_speaker_for_segment(self, start_time: float, end_time: float, diarization_index) -> str:
         """Находит наиболее подходящего спикера для сегмента."""
-        speaker_votes = {}
-        
-        # Собираем голоса спикеров в пределах временного интервала
-        current_time = start_time
-        while current_time <= end_time:
-            time_key = round(current_time, 1)
-            if time_key in diarization_index:
-                speaker = diarization_index[time_key]
-                speaker_votes[speaker] = speaker_votes.get(speaker, 0) + 1
-            current_time += 0.1
-        
-        # Возвращаем спикера с наибольшим количеством голосов
-        if speaker_votes:
-            return max(speaker_votes, key=speaker_votes.get)
-        else:
-            return "SPEAKER_UNKNOWN"
+        return speaker_for_segment(diarization_index, start_time, end_time)
     
     def extract_speaker_embeddings(self, audio_file: str, segments_with_speakers: List[Dict]) -> Dict[str, np.ndarray]:
         """Извлекает эмбеддинги для каждого спикера."""
+        if getattr(self.config, 'speaker_embeddings_improved', False):
+            return self._extract_speaker_embeddings_improved(audio_file, segments_with_speakers)
         try:
             logger.info("🧬 Извлечение эмбеддингов спикеров...")
             
@@ -521,6 +539,54 @@ class SpeakerDiarization:
             logger.error(f"❌ Ошибка извлечения эмбеддингов спикеров: {e}")
             return {}
     
+    def _extract_speaker_embeddings_improved(
+        self, audio_file: str, segments_with_speakers: List[Dict]
+    ) -> Dict[str, np.ndarray]:
+        """SPEAKER_EMBEDDINGS_IMPROVED: до 15 самых длинных реплик спикера, центральные
+        ≤8 с, нормированные векторы. Звук читается один раз, без временных файлов."""
+        try:
+            logger.info("🧬 Извлечение эмбеддингов спикеров (улучшенный режим)...")
+            if not self.embedding_inference:
+                self.load_embedding_model()
+            sample_rate = 16000
+            waveform = whisperx.load_audio(audio_file)  # float32, 16 кГц моно
+
+            by_speaker: Dict[str, List[Dict]] = {}
+            for segment in segments_with_speakers:
+                by_speaker.setdefault(segment.get('speaker', 'UNKNOWN'), []).append(segment)
+
+            speaker_embeddings = {}
+            for speaker, speaker_segments in by_speaker.items():
+                spans = (pick_embedding_spans(speaker_segments, min_duration=2.0)
+                         or pick_embedding_spans(speaker_segments, min_duration=1.0))
+                if not spans:
+                    logger.warning(f"⚠️ Нет подходящих реплик для спикера {speaker}")
+                    continue
+                vectors = []
+                for start_time, end_time in spans:
+                    chunk = waveform[int(start_time * sample_rate):int(end_time * sample_rate)]
+                    if len(chunk) < sample_rate // 2:
+                        continue
+                    try:
+                        tensor = torch.from_numpy(np.ascontiguousarray(chunk)).float().unsqueeze(0)
+                        embedding = self.embedding_inference({"waveform": tensor, "sample_rate": sample_rate})
+                        vectors.append(self._embedding_to_numpy(embedding))
+                    except Exception as e:
+                        logger.debug(f"Эмбеддинг из памяти не получен ({e}), читаю через файл")
+                        embedding = self._extract_segment_embedding(audio_file, start_time, end_time)
+                        if embedding is not None:
+                            vectors.append(embedding)
+                speaker_embedding = mean_normalized(vectors)
+                if speaker_embedding is not None:
+                    speaker_embeddings[speaker] = speaker_embedding
+                    logger.debug(f"✅ Эмбеддинг {speaker}: {len(vectors)} отрезков")
+            del waveform
+            logger.info(f"✅ Извлечено эмбеддингов: {len(speaker_embeddings)} спикеров")
+            return speaker_embeddings
+        except Exception as e:
+            logger.error(f"❌ Ошибка извлечения эмбеддингов спикеров: {e}")
+            return {}
+
     def _extract_segment_embedding(self, audio_file: str, start_time: float, end_time: float) -> Optional[np.ndarray]:
         """Извлекает эмбеддинг для конкретного сегмента аудио."""
         try:
@@ -944,7 +1010,9 @@ class SpeakerDiarization:
                     continue
             
             if embeddings:
-                # Усредняем эмбеддинги
+                # Усредняем эмбеддинги (в улучшенном режиме — нормированные)
+                if getattr(self.config, 'speaker_embeddings_improved', False):
+                    return mean_normalized(embeddings)
                 reference_embedding = np.mean(embeddings, axis=0)
                 return reference_embedding
             else:

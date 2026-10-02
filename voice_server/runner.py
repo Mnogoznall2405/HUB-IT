@@ -66,6 +66,14 @@ def build_process_argv(stored_path: str, settings: Dict[str, Any]) -> List[str]:
     num_speakers = int(s.get("num_speakers") or 0)
     if num_speakers > 0:
         argv += ["--num-speakers", str(num_speakers)]
+    else:
+        for key, flag in (("min_speakers", "--min-speakers"), ("max_speakers", "--max-speakers")):
+            try:
+                value = int(s.get(key) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            if 0 < value <= 20:
+                argv += [flag, str(value)]
     if s.get("custom_vocabulary"):
         argv += ["--custom-vocabulary", str(s["custom_vocabulary"])]
     if s.get("chunk_duration"):
@@ -338,6 +346,13 @@ def run_job(job: Dict[str, Any]) -> None:
 
             elif kind == "resume":
                 base = str(job.get("base_filename") or "")
+                # Regeneration renumbers the registry: pin legacy statuses to keys first.
+                try:
+                    pinned = store.backfill_assignment_keys(base, pipeline.meeting_assignments(base))
+                    if pinned:
+                        log_file.write(f"assignment statuses pinned to keys: {pinned}\n")
+                except Exception as exc:
+                    logger.warning("Job %s: assignment key backfill failed: %s", job_id, exc)
                 speaker_map = dict(job.get("speaker_map") or {})
                 enrollments = list(job.get("enroll") or [])
                 enroll_results: List[Dict[str, Any]] = []

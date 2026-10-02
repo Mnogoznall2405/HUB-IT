@@ -96,7 +96,9 @@ class VoiceAssignmentStatus(Base):
 
     id = Column(String(36), primary_key=True)
     base_filename = Column(String(512), nullable=False)
-    num = Column(String(16), nullable=False)
+    num = Column(String(16), nullable=False)  # display number at the time of marking
+    item_key = Column(String(64), nullable=True)  # stable id (pipeline.assignment_key); NULL = legacy row
+    task_id = Column(String(64), nullable=True)  # hub task created from this assignment
     status = Column(String(16), nullable=False, default="pending")
     comment = Column(Text, nullable=True)
     marked_by = Column(String(256), nullable=True)
@@ -107,6 +109,7 @@ class VoiceAssignmentStatus(Base):
 
     __table_args__ = (
         Index("ix_voice_assignment_statuses_base", "base_filename"),
+        Index("uq_voice_assignment_statuses_base_key", "base_filename", "item_key", unique=True),
         {"schema": VOICE_SCHEMA},
     )
 

@@ -434,7 +434,10 @@ def enroll_speaker_voice(voice_path: str, speaker_name: str) -> bool:
         print('🧬 Вычисляю эмбеддинг голоса (загрузка pyannote, ~30с)...')
         from modules.main_processor import ProcessingConfig
         from modules.diarization import SpeakerDiarization
-        diar = SpeakerDiarization(ProcessingConfig(enable_ai_analysis=False))
+        diar = SpeakerDiarization(ProcessingConfig(
+            enable_ai_analysis=False,
+            speaker_embeddings_improved=getattr(app_config, 'SPEAKER_EMBEDDINGS_IMPROVED', False),
+        ))
         embedding = diar._create_reference_embedding([target_wav])
         if embedding is None:
             print('❌ Не удалось создать эмбеддинг — проверьте, что на записи чистая речь')
@@ -502,6 +505,10 @@ def main() -> int:
                         default='INFO', help='Уровень логов в терминале (по умолчанию: INFO)')
     parser.add_argument('--batch', action='store_true', help='Пакетная обработка папки')
     parser.add_argument('--no-diarization', action='store_true', help='Отключить диаризацию спикеров')
+    parser.add_argument('--min-speakers', type=int, default=None, metavar='N',
+                        help='Минимум спикеров для диаризации (диапазон надёжнее точного числа)')
+    parser.add_argument('--max-speakers', type=int, default=None, metavar='N',
+                        help='Максимум спикеров для диаризации')
     parser.add_argument('--num-speakers', type=int, default=None, metavar='N',
                         help='Точное число спикеров (если известно; иначе авто)')
     parser.add_argument('--separator', default=None,
@@ -597,6 +604,8 @@ def main() -> int:
             ),
             diarization_clustering_threshold=getattr(app_config, 'DIARIZATION_CLUSTERING_THRESHOLD', None),
             diarization_min_duration_off=getattr(app_config, 'DIARIZATION_MIN_DURATION_OFF', None),
+            diarization_overlap_assign=getattr(app_config, 'DIARIZATION_OVERLAP_ASSIGN', False),
+            speaker_embeddings_improved=getattr(app_config, 'SPEAKER_EMBEDDINGS_IMPROVED', False),
             meeting_date=args.meeting_date,
         )
         res = MainProcessor(resume_config).resume_speaker_naming(args.resume_speakers)
@@ -659,9 +668,26 @@ def main() -> int:
             diarization_clustering_threshold=getattr(app_config, 'DIARIZATION_CLUSTERING_THRESHOLD', None),
             diarization_min_duration_off=getattr(app_config, 'DIARIZATION_MIN_DURATION_OFF', None),
             diarization_audio=getattr(app_config, 'DIARIZATION_AUDIO', 'processed'),
+            diarization_overlap_assign=getattr(app_config, 'DIARIZATION_OVERLAP_ASSIGN', False),
+            speaker_embeddings_improved=getattr(app_config, 'SPEAKER_EMBEDDINGS_IMPROVED', False),
             use_checkpoints=not args.fresh,
             meeting_date=args.meeting_date,
         )
+        if args.min_speakers:
+            config_kwargs['diarization_min_speakers'] = args.min_speakers
+        if args.max_speakers:
+            config_kwargs['diarization_max_speakers'] = args.max_speakers
+        # Один конец диапазона против умолчаний ProcessingConfig (1..10) — не даём min > max
+        lo = config_kwargs.get('diarization_min_speakers', 1)
+        hi = config_kwargs.get('diarization_max_speakers', 10)
+        if lo > hi:
+            if args.max_speakers and args.min_speakers:
+                lo, hi = hi, lo
+            elif args.min_speakers:
+                hi = lo
+            else:
+                lo = hi
+            config_kwargs['diarization_min_speakers'], config_kwargs['diarization_max_speakers'] = lo, hi
         from modules.main_processor import ProcessingConfig
         config = ProcessingConfig(**config_kwargs)
 

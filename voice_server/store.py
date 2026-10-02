@@ -352,7 +352,7 @@ def revoke_share_link(token: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Assignment statuses (per meeting base + assignment num)
+# Assignment statuses (per meeting base + stable assignment key)
 # ---------------------------------------------------------------------------
 
 def get_assignment_statuses(base_filename: str) -> List[Dict[str, Any]]:
@@ -364,35 +364,98 @@ def get_assignment_statuses(base_filename: str) -> List[Dict[str, Any]]:
     return [_row_to_dict(row) for row in rows]
 
 
+def backfill_assignment_keys(base_filename: str, items: List[Dict[str, Any]]) -> int:
+    """Give legacy rows (keyed only by ``num``) the key of the row currently at that number.
+
+    Must run against the registry the statuses were set on — i.e. before the
+    registry is regenerated (resume) — afterwards ``num`` points elsewhere.
+    Idempotent; never steals a key that a keyed row already has.
+    """
+    key_by_num = {str(i.get("num")): str(i.get("key")) for i in items or [] if i.get("key")}
+    if not key_by_num:
+        return 0
+    updated = 0
+    with _engine().begin() as conn:
+        legacy = conn.execute(
+            text(
+                "SELECT id, num FROM voice.voice_assignment_statuses "
+                "WHERE base_filename = :base AND item_key IS NULL"
+            ),
+            {"base": base_filename},
+        ).fetchall()
+        for row in legacy:
+            key = key_by_num.get(str(row._mapping["num"]))
+            if not key:
+                continue
+            result = conn.execute(
+                text(
+                    """
+                    UPDATE voice.voice_assignment_statuses SET item_key = :key
+                    WHERE id = :id AND NOT EXISTS (
+                        SELECT 1 FROM voice.voice_assignment_statuses
+                        WHERE base_filename = :base AND item_key = :key
+                    )
+                    """
+                ),
+                {"key": key, "id": row._mapping["id"], "base": base_filename},
+            )
+            updated += int(getattr(result, "rowcount", 0) or 0)
+    return updated
+
+
 def upsert_assignment_status(
     base_filename: str,
+    key: str,
     num: str,
     status: str = "pending",
     comment: str = "",
     marked_by: str = "",
+    task_id: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """Status/comment by stable key; ``task_id`` is set once and never cleared by later updates."""
     import uuid as _uuid
-    from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
     with _engine().begin() as conn:
         conn.execute(
             text(
                 """
-                INSERT INTO voice.voice_assignment_statuses
-                    (id, base_filename, num, status, comment, marked_by, created_at, updated_at)
-                VALUES (:id, :base, :num, :st, :cm, :mb, :ts, :ts)
-                ON CONFLICT (base_filename, num) DO UPDATE SET
-                    status = :st, comment = :cm, marked_by = :mb, updated_at = :ts
+                INSERT INTO voice.voice_assignment_statuses AS s
+                    (id, base_filename, item_key, num, status, comment, marked_by, task_id,
+                     created_at, updated_at)
+                VALUES (:id, :base, :key, :num, :st, :cm, :mb, :task, :ts, :ts)
+                ON CONFLICT (base_filename, item_key) DO UPDATE SET
+                    num = excluded.num,
+                    status = excluded.status,
+                    comment = excluded.comment,
+                    marked_by = excluded.marked_by,
+                    task_id = COALESCE(excluded.task_id, s.task_id),
+                    updated_at = excluded.updated_at
                 """
             ),
             {
                 "id": _uuid.uuid4().hex[:12],
                 "base": base_filename,
+                "key": key,
                 "num": num,
                 "st": status,
                 "cm": comment,
                 "mb": marked_by,
+                "task": task_id,
                 "ts": now,
             },
         )
-    return {"base_filename": base_filename, "num": num, "status": status, "comment": comment}
+        row = conn.execute(
+            text(
+                "SELECT task_id FROM voice.voice_assignment_statuses "
+                "WHERE base_filename = :base AND item_key = :key"
+            ),
+            {"base": base_filename, "key": key},
+        ).fetchone()
+    return {
+        "base_filename": base_filename,
+        "key": key,
+        "num": num,
+        "status": status,
+        "comment": comment,
+        "task_id": row._mapping["task_id"] if row else task_id,
+    }

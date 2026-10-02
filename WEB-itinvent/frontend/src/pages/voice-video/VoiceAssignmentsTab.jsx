@@ -51,6 +51,11 @@ const errorDetailOr = (err, fallback) => {
   return typeof detail === 'string' && detail.trim() ? detail : fallback;
 };
 
+
+// Статус-ключ поручения: стабильный key от сервера (переживает пересборку
+// реестра); без него (старые данные) — номер строки.
+const skOf = (item) => item?.key || `#${item?.num}`;
+
 function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, items: itemsProp, onSeekTime, currentSec = null }) {
   const [items, setItems] = useState(null);
   const [error, setError] = useState('');
@@ -66,16 +71,21 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
   const [notice, setNotice] = useState(null);
   const [clipPlayer, setClipPlayer] = useState(null);
   const [filter, setFilter] = useState('all');
-  const [createdNums, setCreatedNums] = useState(() => new Set());
-  const [statuses, setStatuses] = useState({});
-  const [commentDialog, setCommentDialog] = useState(null); // { num, comment }
+  const [statuses, setStatuses] = useState({}); // по статус-ключу поручения (skOf)
+  const [commentDialog, setCommentDialog] = useState(null); // { item, comment }
   const [rowMenu, setRowMenu] = useState(null); // { anchor, item }
   const clipMediaRef = useRef(null);
   const searchSeq = useRef(0);
 
   const isPriority = (task) => /‼|!\uFE0F|!\u203C/i.test(String(task || ''));
-  const isDone = (num) => statuses[num]?.status === 'done';
-  const isInProgress = (num) => statuses[num]?.status === 'in_progress';
+  const isDone = (item) => statuses[skOf(item)]?.status === 'done';
+  const isInProgress = (item) => statuses[skOf(item)]?.status === 'in_progress';
+  const hasTask = (item) => Boolean(statuses[skOf(item)]?.task_id);
+  const refOf = (item) => ({ num: item.num, key: item.key });
+  const patchStatus = (item, patch) => setStatuses((prev) => ({
+    ...prev,
+    [skOf(item)]: { ...prev[skOf(item)], num: item.num, key: item.key, ...patch },
+  }));
 
   const closeClipPlayer = useCallback(() => {
     clipMediaRef.current?.pause?.();
@@ -114,7 +124,7 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
       .then((data) => {
         if (!cancelled) {
           const map = {};
-          (data.items || []).forEach((s) => { map[s.num] = s; });
+          (data.items || []).forEach((s) => { map[skOf(s)] = s; });
           setStatuses(map);
         }
       })
@@ -122,22 +132,22 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
     return () => { cancelled = true; };
   }, [base]);
 
-  const toggleDone = async (num) => {
-    const newStatus = isDone(num) ? 'pending' : 'done';
+  const toggleDone = async (item) => {
+    const newStatus = isDone(item) ? 'pending' : 'done';
     setStatusError('');
     try {
-      await voiceJobsAPI.updateAssignmentStatus(base, num, newStatus, statuses[num]?.comment || '');
-      setStatuses((prev) => ({ ...prev, [num]: { ...prev[num], num, status: newStatus } }));
+      await voiceJobsAPI.updateAssignmentStatus(base, refOf(item), newStatus, statuses[skOf(item)]?.comment || '');
+      patchStatus(item, { status: newStatus });
     } catch (err) {
       setStatusError(errorDetailOr(err, 'Не удалось изменить статус поручения'));
     }
   };
 
-  const setInProgress = async (num) => {
+  const setInProgress = async (item) => {
     setStatusError('');
     try {
-      await voiceJobsAPI.updateAssignmentStatus(base, num, 'in_progress', statuses[num]?.comment || '');
-      setStatuses((prev) => ({ ...prev, [num]: { ...prev[num], num, status: 'in_progress' } }));
+      await voiceJobsAPI.updateAssignmentStatus(base, refOf(item), 'in_progress', statuses[skOf(item)]?.comment || '');
+      patchStatus(item, { status: 'in_progress' });
     } catch (err) {
       setStatusError(errorDetailOr(err, 'Не удалось изменить статус поручения'));
     }
@@ -147,8 +157,9 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
     if (!commentDialog) return;
     setCommentError('');
     try {
-      await voiceJobsAPI.updateAssignmentStatus(base, commentDialog.num, statuses[commentDialog.num]?.status || 'pending', commentDialog.comment);
-      setStatuses((prev) => ({ ...prev, [commentDialog.num]: { ...prev[commentDialog.num], num: commentDialog.num, comment: commentDialog.comment } }));
+      const { item } = commentDialog;
+      await voiceJobsAPI.updateAssignmentStatus(base, refOf(item), statuses[skOf(item)]?.status || 'pending', commentDialog.comment);
+      patchStatus(item, { comment: commentDialog.comment });
       setCommentDialog(null);
     } catch (err) {
       setCommentError(errorDetailOr(err, 'Не удалось сохранить комментарий'));
@@ -181,7 +192,7 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
     if (!taskDialog || !assignee || !title.trim() || creating) return;
     setCreating(true);
     try {
-      await hubTasksAPI.createTask({
+      const created = await hubTasksAPI.createTask({
         title: title.trim(),
         description: [
           `Поручение №${taskDialog.num} из протокола «${base}», таймкод ${taskDialog.time}.`,
@@ -195,7 +206,14 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
         text: `Задача «${title.trim()}» создана для ${assignee.full_name || assignee.username}`,
         severity: 'success',
       });
-      setCreatedNums((prev) => new Set(prev).add(taskDialog.num));
+      // Связь с задачей хранится на сервере: после перезагрузки повторно не создать.
+      // POST /hub/tasks -> { items: [task], created }
+      const taskId = created?.items?.[0]?.id ?? created?.id ?? 'created';
+      const item = taskDialog;
+      patchStatus(item, { task_id: String(taskId) });
+      voiceJobsAPI.updateAssignmentStatus(
+        base, refOf(item), statuses[skOf(item)]?.status || 'pending', statuses[skOf(item)]?.comment || '', { taskId },
+      ).catch(() => {});
       setTaskDialog(null);
     } catch (err) {
       setNotice({
@@ -229,21 +247,21 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
   const today = new Date().toISOString().slice(0, 10);
   const isOverdue = (item) => {
     const d = parseDeadline(item.deadline);
-    return Boolean(d && d < today) && !isDone(item.num);
+    return Boolean(d && d < today) && !isDone(item);
   };
   // T41: статус поручения — чип с текстом, а не только цвет/мета-строка.
   const statusOf = (item) => {
-    if (isDone(item.num)) return { label: 'Выполнено', color: 'success' };
+    if (isDone(item)) return { label: 'Выполнено', color: 'success' };
     if (isOverdue(item)) return { label: 'Просрочено', color: 'error' };
-    if (isInProgress(item.num)) return { label: 'В работе', color: 'primary' };
+    if (isInProgress(item)) return { label: 'В работе', color: 'primary' };
     return { label: 'Новое', color: 'default' };
   };
   const visible = items.filter((item) => {
     if (filter === 'noassignee') return !String(item.assignee || '').trim();
     if (filter === 'overdue') return isOverdue(item);
     if (filter === 'priority') return isPriority(item.task);
-    if (filter === 'done') return isDone(item.num);
-    if (filter === 'pending') return !isDone(item.num);
+    if (filter === 'done') return isDone(item);
+    if (filter === 'pending') return !isDone(item);
     return true;
   });
   // T41: разделы (section) — заголовки групп, порядок первого появления.
@@ -327,7 +345,7 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
           <Stack spacing={1} sx={{ minWidth: 0, mb: 1 }}>
         {groupItems.map((item) => (
           <Paper
-            key={item.num}
+            key={skOf(item)}
             variant="outlined"
             data-assign-nearest={item.num === nearestNum ? '1' : undefined}
             sx={{
@@ -387,7 +405,7 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
                     label={statusOf(item).label}
                     sx={{ height: 18, fontSize: '0.68rem', verticalAlign: '1px', '& .MuiChip-label': { px: 0.5 } }}
                   />
-                  {createdNums.has(item.num) ? ' · Задача создана' : ''}
+                  {hasTask(item) ? ' · Задача создана' : ''}
                 </Typography>
               </Box>
               <IconButton
@@ -413,17 +431,17 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
         {rowMenu && [
           <MenuItem
             key="done"
-            onClick={() => { const it = rowMenu.item; setRowMenu(null); toggleDone(it.num); }}
+            onClick={() => { const it = rowMenu.item; setRowMenu(null); toggleDone(it); }}
           >
-            <ListItemIcon><TaskAltOutlinedIcon fontSize="small" color={isDone(rowMenu.item.num) ? 'success' : 'inherit'} /></ListItemIcon>
-            {isDone(rowMenu.item.num)
+            <ListItemIcon><TaskAltOutlinedIcon fontSize="small" color={isDone(rowMenu.item) ? 'success' : 'inherit'} /></ListItemIcon>
+            {isDone(rowMenu.item)
               ? `Вернуть в работу (поручение №${rowMenu.item.num})`
               : `Отметить выполненным (поручение №${rowMenu.item.num})`}
           </MenuItem>,
-          !isDone(rowMenu.item.num) && !isInProgress(rowMenu.item.num) && (
+          !isDone(rowMenu.item) && !isInProgress(rowMenu.item) && (
             <MenuItem
               key="progress"
-              onClick={() => { const it = rowMenu.item; setRowMenu(null); setInProgress(it.num); }}
+              onClick={() => { const it = rowMenu.item; setRowMenu(null); setInProgress(it); }}
             >
               <ListItemIcon><PlayArrowOutlinedIcon fontSize="small" /></ListItemIcon>
               {`Взять в работу (поручение №${rowMenu.item.num})`}
@@ -434,14 +452,14 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
             onClick={() => {
               const it = rowMenu.item;
               setCommentError('');
-              setCommentDialog({ num: it.num, comment: statuses[it.num]?.comment || '' });
+              setCommentDialog({ item: it, comment: statuses[skOf(it)]?.comment || '' });
               setRowMenu(null);
             }}
           >
             <ListItemIcon><CommentOutlinedIcon fontSize="small" /></ListItemIcon>
             {`Комментарий (поручение №${rowMenu.item.num})`}
           </MenuItem>,
-          canCreateTasks && !createdNums.has(rowMenu.item.num) && (
+          canCreateTasks && !hasTask(rowMenu.item) && (
             <MenuItem
               key="task"
               onClick={() => { const it = rowMenu.item; setRowMenu(null); openTaskDialog(it); }}
@@ -516,7 +534,7 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
 
       {/* Comment dialog */}
       <Dialog open={Boolean(commentDialog)} onClose={() => setCommentDialog(null)} maxWidth="sm" fullWidth>
-        <DialogTitle>Комментарий к поручению {commentDialog?.num}</DialogTitle>
+        <DialogTitle>Комментарий к поручению {commentDialog?.item?.num}</DialogTitle>
         <DialogContent>
           {commentError && <Alert severity="error" sx={{ mb: 2 }}>{commentError}</Alert>}
           <TextField

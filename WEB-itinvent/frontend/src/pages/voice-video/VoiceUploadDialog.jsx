@@ -35,6 +35,8 @@ const DEFAULT_SETTINGS = {
   language: 'ru',
   separator: 'kim',
   num_speakers: 0,
+  min_speakers: 0,
+  max_speakers: 0,
   enable_diarization: true,
   enable_alignment: true,
   enable_ai_analysis: true,
@@ -150,6 +152,8 @@ function VoiceUploadDialog({ open, onClose, onUploaded, onPartiallyUploaded, opt
     const payload = {
       ...settings,
       num_speakers: Math.min(20, Math.max(0, Number(settings.num_speakers) || 0)),
+      min_speakers: Math.min(20, Math.max(0, Number(settings.min_speakers) || 0)) || undefined,
+      max_speakers: Math.min(20, Math.max(0, Number(settings.max_speakers) || 0)) || undefined,
       meeting_date: meetingDate || undefined,
       llm_model: settings.llm_model?.trim() || undefined,
       segmentation_model: settings.segmentation_model?.trim() || undefined,
@@ -270,7 +274,7 @@ function VoiceUploadDialog({ open, onClose, onUploaded, onPartiallyUploaded, opt
               value={settings.meeting_date}
               onChange={(e) => set('meeting_date', e.target.value)}
               error={dateInFuture}
-              helperText={dateInFuture ? 'Дата встречи не может быть в будущем' : 'Пусто — определим из имени файла'}
+              helperText={dateInFuture ? 'Дата встречи не может быть в будущем' : 'Пусто — из имени файла или даты записи'}
               fullWidth
             />
             <TextField
@@ -283,6 +287,22 @@ function VoiceUploadDialog({ open, onClose, onUploaded, onPartiallyUploaded, opt
               helperText="0 — определить автоматически"
               fullWidth
             />
+          </Stack>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+            {[['min_speakers', 'Участников от'], ['max_speakers', 'Участников до']].map(([key, label]) => (
+              <TextField
+                key={key}
+                size="small"
+                type="number"
+                label={label}
+                value={settings[key]}
+                disabled={Number(settings.num_speakers) > 0}
+                inputProps={{ min: 0, max: 20 }}
+                onChange={(e) => set(key, Math.min(20, Math.max(0, Number(e.target.value) || 0)))}
+                helperText={Number(settings.num_speakers) > 0 ? 'Задано точное число' : 'Диапазон надёжнее точного числа; 0 — авто'}
+                fullWidth
+              />
+            ))}
           </Stack>
           <FormControl size="small" fullWidth>
             <InputLabel id="voice-upload-language-label">Язык записи</InputLabel>

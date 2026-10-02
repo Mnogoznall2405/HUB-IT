@@ -122,6 +122,12 @@ class MainProcessor:
             # Дата встречи для реестра поручений: из флага или из имени файла
             if not getattr(self.config, 'meeting_date', None):
                 self.config.meeting_date = self._extract_meeting_date(base_filename)
+            if not getattr(self.config, 'meeting_date', None):
+                # Нет ни флага, ни даты в имени — дата записи из метаданных файла
+                from .media_meta import media_recording_date
+                self.config.meeting_date = media_recording_date(file_path)
+                if self.config.meeting_date:
+                    logger.info(f"📅 Дата встречи по метаданным записи: {self.config.meeting_date}")
 
             # Этап 1: Обработка аудио
             logger.info("🎵 Этап 1: Извлечение и обработка аудио...")
