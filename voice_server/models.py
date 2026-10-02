@@ -7,6 +7,7 @@ from sqlalchemy import (
     BigInteger,
     Column,
     DateTime,
+    Float,
     Index,
     Integer,
     JSON,
@@ -29,7 +30,7 @@ class VoiceJob(Base):
     __tablename__ = "voice_jobs"
 
     id = Column(String(36), primary_key=True)
-    kind = Column(String(16), nullable=False, default="process")  # process|resume|enroll
+    kind = Column(String(16), nullable=False, default="process")  # process|resume|enroll|label
     status = Column(String(16), nullable=False, default="queued")  # queued|processing|done|failed|cancelled
 
     # Meeting/file identity
@@ -106,5 +107,41 @@ class VoiceAssignmentStatus(Base):
 
     __table_args__ = (
         Index("ix_voice_assignment_statuses_base", "base_filename"),
+        {"schema": VOICE_SCHEMA},
+    )
+
+
+class VoiceLabelProject(Base):
+    """Manual diarization labeling: auto draft from pyannote + human corrections."""
+
+    __tablename__ = "label_projects"
+
+    id = Column(String(36), primary_key=True)
+    title = Column(String(512), nullable=False)
+    original_filename = Column(String(1024), nullable=True)
+    media_path = Column(Text, nullable=True)
+    audio_path = Column(Text, nullable=True)  # browser-playable mp3 from the draft run
+    duration = Column(Float, nullable=True)
+    status = Column(String(16), nullable=False, default="queued")  # queued|processing|ready|failed
+    job_id = Column(String(36), nullable=True)  # latest draft job
+    aux_job_id = Column(String(36), nullable=True)  # latest variant/enroll job
+    settings = Column(JSON, nullable=True)
+    variants = Column(JSON, nullable=True)  # {name: {segments, audio, separator, created_at}}
+    auto_segments = Column(JSON, nullable=True)  # pyannote draft, kept for comparison
+    segments = Column(JSON, nullable=True)  # current (human-corrected) labeling
+    speakers = Column(JSON, nullable=True)  # {label: {name, user_id}}
+    version = Column(Integer, nullable=False, default=0)  # optimistic lock for saves
+    error = Column(Text, nullable=True)
+
+    created_by = Column(String(256), nullable=True)
+    updated_by = Column(String(256), nullable=True)
+    edited_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_label_projects_created_at", "created_at"),
         {"schema": VOICE_SCHEMA},
     )

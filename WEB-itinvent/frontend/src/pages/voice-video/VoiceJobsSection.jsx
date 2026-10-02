@@ -46,6 +46,7 @@ const KIND_LABELS = {
   process: 'Новая запись',
   resume: 'Обновление имён',
   enroll: 'Новый голос',
+  label: 'Черновик разметки',
 };
 
 const STAGE_LABELS = {

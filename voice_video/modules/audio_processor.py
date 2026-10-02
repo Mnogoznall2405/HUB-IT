@@ -73,6 +73,7 @@ class ProcessingConfig:
     diarization_num_speakers: int = 0  # точное число спикеров, 0 = авто
     diarization_clustering_threshold: Optional[float] = None  # порог слияния кластеров pyannote (ниже = больше спикеров)
     diarization_min_duration_off: Optional[float] = None  # мин. пауза разделения реплик спикера (ниже = ловит короткие перебивки)
+    diarization_audio: str = "processed"  # raw | processed — звук для диаризации (STT всегда processed)
     speaker_embedding_window: str = "whole"  # размер окна для эмбеддингов
     voice_activity_detection: bool = True  # детекция голосовой активности
     enable_speaker_identification: bool = True  # сопоставлять SPEAKER_* с reference_voices

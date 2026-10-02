@@ -44,7 +44,7 @@ from .auth import (
     web_actor,
 )
 from .config import config
-from . import pipeline, store
+from . import labeling, pipeline, store
 
 logger = logging.getLogger("voice-server")
 
@@ -55,6 +55,8 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+
+app.include_router(labeling.router)
 
 JOB_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 

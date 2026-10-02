@@ -22,6 +22,7 @@ import { voiceJobsAPI } from '../../api/voiceJobs';
 import { voiceVoicesAPI } from '../../api/voiceVoices';
 import { useAuth } from '../../contexts/AuthContext';
 import VoiceJobsSection from './VoiceJobsSection';
+import VoiceLabelingSection from './VoiceLabelingSection';
 import VoiceMeetingsSection from './VoiceMeetingsSection';
 import VoiceVoicesSection from './VoiceVoicesSection';
 import VoiceMeetingDrawer from './VoiceMeetingDrawer';
@@ -254,6 +255,8 @@ function VoiceVideoPage() {
     (tabIndex, opts) => {
       if (tabIndex === 1) return loadJobs(opts);
       if (tabIndex === 2) return loadVoices(opts);
+      // «Разметка» загружает и опрашивает свой список сама.
+      if (tabIndex === 3) return Promise.resolve(true);
       return loadMeetings(opts);
     },
     [loadJobs, loadMeetings, loadVoices],
@@ -588,6 +591,7 @@ function VoiceVideoPage() {
       sx={tabSx}
     />,
     <Tab key="voices" label="Голоса" sx={tabSx} />,
+    ...(canManage ? [<Tab key="labeling" label="Разметка" sx={tabSx} />] : []),
   ];
 
   if (!canRead) {
@@ -817,6 +821,7 @@ function VoiceVideoPage() {
             onChanged={() => loadVoices({ busy: true })}
           />
         )}
+        {tab === 3 && canManage && <VoiceLabelingSection />}
       </PageShell>
 
       <VoiceUploadDialog

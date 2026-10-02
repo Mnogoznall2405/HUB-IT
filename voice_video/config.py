@@ -214,6 +214,13 @@ DIARIZATION_MIN_DURATION_OFF = (
     if os.getenv('DIARIZATION_MIN_DURATION_OFF') else None
 )
 
+# Какой звук отдавать диаризации: processed — после сепаратора и нормализации
+# (как раньше), raw — исходный 16 кГц моно. Выбирать по сравнению DER на
+# вкладке «Разметка» (/voice). На распознавание слов не влияет.
+DIARIZATION_AUDIO = os.getenv('DIARIZATION_AUDIO', 'processed').strip().lower()
+if DIARIZATION_AUDIO not in ('raw', 'processed'):
+    DIARIZATION_AUDIO = 'processed'
+
 # STT API: вырезание тишины перед отправкой (1 = резать, 0 = слать всё)
 STT_CUT_SILENCE = os.getenv('STT_CUT_SILENCE', '1').strip().lower() in ('1', 'true', 'yes', 'on')
 

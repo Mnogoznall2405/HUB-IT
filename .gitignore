@@ -153,6 +153,7 @@ voice_video/reference_voices/
 voice_video/unassigned_speakers/
 voice_video/voice_fingerprints/
 voice_video/data/
+voice_video/labeling/
 data/scan_server/*.backup_*
 /archive/
 /backups/
