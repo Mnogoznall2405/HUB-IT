@@ -8,6 +8,7 @@ The pipeline itself lives outside the monorepo and stays source of truth for:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -173,11 +174,27 @@ _ASSIGNMENT_SEP_RE = re.compile(r"^[\s:\-]+$")
 _ASSIGNMENT_SECTION_RE = re.compile(r"^#{2,3}\s+(.+)")
 
 
+_KEY_NORM_RE = re.compile(r"[^0-9a-zа-яё]+", re.IGNORECASE)
+
+
+def assignment_key(section: str, task: str, occurrence: int = 0) -> str:
+    """Stable id of an assignment row: its wording, not its position in the table.
+
+    Regenerating the registry (resume naming) reorders/renumbers rows; a status
+    keyed by ``num`` would then silently move to another assignment. A reworded
+    task gets a new key — its status is lost rather than misattributed.
+    """
+    norm = _KEY_NORM_RE.sub(" ", f"{section} | {task}".lower().replace("ё", "е")).strip()
+    raw = f"{norm}#{occurrence}" if occurrence else norm
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
 def meeting_assignments(base_filename: str) -> List[Dict[str, Any]]:
     """Parse the markdown ``action_registry`` table from the report JSON.
 
     Rows look like ``| 1 | [04:59](clips/clip_01.mp4) | text | Name | deadline |``.
     Sections (``### heading``) become ``section`` field; numbering is continuous.
+    Tolerates a stray ``|`` inside the task text and a missing deadline column.
     """
     data = load_report_json(base_filename) or {}
     registry = data.get("action_registry")
@@ -186,6 +203,8 @@ def meeting_assignments(base_filename: str) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     current_section = ""
     counter = 0
+    seen: Dict[str, int] = {}
+    skipped = 0
     for line in registry.splitlines():
         stripped = line.strip()
         sec_match = _ASSIGNMENT_SECTION_RE.match(stripped)
@@ -195,16 +214,29 @@ def meeting_assignments(base_filename: str) -> List[Dict[str, Any]]:
         if not (stripped.startswith("|") and stripped.endswith("|")):
             continue
         cells = [c.strip() for c in stripped.strip("|").split("|")]
-        if len(cells) < 5:
-            continue
         if cells[0] in ("№", "#") or _ASSIGNMENT_SEP_RE.match(cells[0]):
             continue
-        _orig_num, time_cell, task, assignee, deadline = cells[:5]
+        if len(cells) >= 5:
+            time_cell = cells[1]
+            task = " / ".join(c for c in cells[2:-2] if c)
+            assignee, deadline = cells[-2], cells[-1]
+        elif len(cells) == 4:
+            time_cell, task, assignee, deadline = cells[1], cells[2], cells[3], ""
+        else:
+            skipped += 1
+            continue
+        if not task:
+            skipped += 1
+            continue
         counter += 1
         link = _ASSIGNMENT_LINK_RE.match(time_cell)
+        base_key = assignment_key(current_section, task)
+        occurrence = seen.get(base_key, 0)
+        seen[base_key] = occurrence + 1
         items.append(
             {
                 "num": str(counter),
+                "key": assignment_key(current_section, task, occurrence),
                 "section": current_section,
                 "time": link.group(1) if link else time_cell,
                 "clip": Path(link.group(2)).name if link else "",
@@ -213,6 +245,8 @@ def meeting_assignments(base_filename: str) -> List[Dict[str, Any]]:
                 "deadline": deadline,
             }
         )
+    if skipped:
+        logger.warning("assignments %s: skipped %d malformed registry row(s)", base_filename, skipped)
     return items
 
 
@@ -481,6 +515,19 @@ def speaker_naming_from_transcript(data: Optional[Dict[str, Any]]) -> Dict[str, 
     return naming if isinstance(naming, dict) else {}
 
 
+def _recurring_view(info: Any) -> Optional[Dict[str, Any]]:
+    """Same unknown voice in other meetings (SPEAKER_RECURRING); only meetings that still exist."""
+    if not isinstance(info, dict) or not info.get("id"):
+        return None
+    meetings = [
+        m for m in (info.get("meetings") or [])
+        if isinstance(m, str) and transcript_path(m)
+    ][:50]
+    if not meetings:
+        return None
+    return {"id": str(info["id"])[:16], "meetings": meetings}
+
+
 def meeting_speakers(base_filename: str) -> Dict[str, Any]:
     """Aggregate speaker state for one meeting from transcript + samples."""
     data = load_transcript(base_filename)
@@ -517,6 +564,7 @@ def meeting_speakers(base_filename: str) -> Dict[str, Any]:
                 first_seen[label] = float(start)
             except (TypeError, ValueError):
                 pass
+    recurring = naming.get("recurring") if isinstance(naming.get("recurring"), dict) else {}
     speakers: List[Dict[str, Any]] = []
     for label in sorted(unresolved):
         detail = details.get(label) or {}
@@ -528,6 +576,7 @@ def meeting_speakers(base_filename: str) -> Dict[str, Any]:
                 "distance": detail.get("distance"),
                 "has_sample": bool(resolve_speaker_sample(base_filename, label, data)),
                 "first_segment_start": first_seen.get(label),
+                "recurring": _recurring_view(recurring.get(label)),
             }
         )
     resolved: List[Dict[str, Any]] = []

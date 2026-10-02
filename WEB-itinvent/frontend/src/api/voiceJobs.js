@@ -105,8 +105,14 @@ export const voiceJobsAPI = {
     return response.data;
   },
 
-  updateAssignmentStatus: async (base, num, status, comment = '') => {
-    const response = await apiClient.put(`/voice/meetings/${encodeURIComponent(base)}/assignments/status`, { num, status, comment });
+  // ref: { num, key } — key (стабильный id поручения) переживает пересборку реестра;
+  // строка/число — старый вызов только по номеру.
+  updateAssignmentStatus: async (base, ref, status, comment = '', { taskId } = {}) => {
+    const target = ref && typeof ref === 'object' ? ref : { num: ref };
+    const payload = { num: String(target.num), status, comment };
+    if (target.key) payload.key = target.key;
+    if (taskId !== undefined && taskId !== null && taskId !== '') payload.task_id = String(taskId);
+    const response = await apiClient.put(`/voice/meetings/${encodeURIComponent(base)}/assignments/status`, payload);
     return response.data;
   },
 

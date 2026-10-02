@@ -221,6 +221,37 @@ DIARIZATION_AUDIO = os.getenv('DIARIZATION_AUDIO', 'processed').strip().lower()
 if DIARIZATION_AUDIO not in ('raw', 'processed'):
     DIARIZATION_AUDIO = 'processed'
 
+def _env_flag(name: str, default: str = '0') -> bool:
+    return os.getenv(name, default).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+# Назначение спикера словам по наибольшему пересечению с репликами диаризации
+# (детерминированно при одновременной речи). 0 — прежний индекс «100 мс -> спикер».
+DIARIZATION_OVERLAP_ASSIGN = _env_flag('DIARIZATION_OVERLAP_ASSIGN')
+# Эмбеддинги для узнавания по голосу: до 15 самых длинных реплик, центральные ≤8 с,
+# нормированные векторы. 0 — прежние 5 первых реплик целиком.
+SPEAKER_EMBEDDINGS_IMPROVED = _env_flag('SPEAKER_EMBEDDINGS_IMPROVED')
+# «Эксклюзивная» разметка community-1 (pyannote.audio ≥ 4): в каждый момент один
+# говорящий — проще и точнее привязка слов STT к спикерам.
+DIARIZATION_EXCLUSIVE = _env_flag('DIARIZATION_EXCLUSIVE')
+# Повторяющиеся неизвестные голоса между встречами (voice_video/data/recurring_voices.json)
+SPEAKER_RECURRING = _env_flag('SPEAKER_RECURRING')
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, '') or default)
+    except ValueError:
+        return default
+
+
+SPEAKER_RECURRING_SIMILARITY = _env_float('SPEAKER_RECURRING_SIMILARITY', 0.6)
+# Пороги узнавания по эталонам — косинусное РАССТОЯНИЕ (1 - похожесть), меньше = строже.
+# Подбирать на вкладке «Разметка» → «Подбор порога узнавания».
+SPEAKER_ID_STRICT = _env_float('SPEAKER_ID_STRICT', 0.25)
+SPEAKER_ID_MODERATE = _env_float('SPEAKER_ID_MODERATE', 0.35)
+SPEAKER_ID_LOOSE = _env_float('SPEAKER_ID_LOOSE', 0.45)
+
 # STT API: вырезание тишины перед отправкой (1 = резать, 0 = слать всё)
 STT_CUT_SILENCE = os.getenv('STT_CUT_SILENCE', '1').strip().lower() in ('1', 'true', 'yes', 'on')
 

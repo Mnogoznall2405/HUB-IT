@@ -185,3 +185,68 @@ def diarization_error(
         "mapping": mapping,
         "collar": collar,
     }
+
+
+# ---------------------------------------------------------------------------
+# Speaker identification threshold calibration
+# ---------------------------------------------------------------------------
+
+CURRENT_ID_THRESHOLDS = {"strict": 0.25, "moderate": 0.35, "loose": 0.45}
+
+
+def _norm_name(value: str) -> str:
+    return " ".join(str(value or "").replace("ё", "е").lower().strip().strip(".").split())
+
+
+def suggest_id_thresholds(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Thresholds from labeled voices vs reference voices.
+
+    rows: [{"name": employee name, "scores": {reference voice: cosine similarity}}].
+    Positive pair = the employee's own reference voice, negative = any other.
+    Pipeline thresholds are cosine *distances* (1 - similarity): a speaker is
+    auto-named when distance <= strict. When the clouds overlap we favour
+    avoiding wrong names (threshold just above the worst negative).
+    """
+    positives: List[float] = []
+    negatives: List[float] = []
+    for row in rows or []:
+        own = _norm_name(row.get("name"))
+        for ref, sim in (row.get("scores") or {}).items():
+            try:
+                value = float(sim)
+            except (TypeError, ValueError):
+                continue
+            (positives if own and _norm_name(ref) == own else negatives).append(value)
+    result: Dict[str, Any] = {
+        "positives": len(positives),
+        "negatives": len(negatives),
+        "min_positive": round(min(positives), 4) if positives else None,
+        "max_negative": round(max(negatives), 4) if negatives else None,
+        "current": dict(CURRENT_ID_THRESHOLDS),
+        "separable": None,
+        "suggested": None,
+    }
+    if not positives:
+        result["note"] = "Нет эталонов для размеченных сотрудников — сначала запишите голоса"
+        return result
+    min_pos = min(positives)
+    if not negatives:
+        similarity = min_pos - 0.05
+        result["separable"] = True
+        result["note"] = "Нет чужих эталонов для сравнения — порог ориентировочный"
+    elif min_pos > max(negatives):
+        similarity = (min_pos + max(negatives)) / 2
+        result["separable"] = True
+    else:
+        similarity = max(negatives) + 0.02
+        result["separable"] = False
+        result["note"] = ("Свои и чужие голоса пересекаются — порог выбран так, чтобы не "
+                          "подписывать чужие голоса; часть своих останется «неизвестными»")
+    strict = round(min(1.0, max(0.05, 1.0 - similarity)), 2)
+    result["suggested"] = {
+        "strict": strict,
+        "moderate": round(min(1.0, strict + 0.07), 2),
+        "loose": round(min(1.0, strict + 0.15), 2),
+        "similarity": round(similarity, 4),
+    }
+    return result

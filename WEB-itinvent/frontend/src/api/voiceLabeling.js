@@ -51,8 +51,8 @@ export const voiceLabelingAPI = {
     return response.data;
   },
 
-  createVariant: async (id, separator) => {
-    const response = await apiClient.post(`${projectPath(id)}/variants`, { separator });
+  createVariant: async (id, separator, exclusive = false) => {
+    const response = await apiClient.post(`${projectPath(id)}/variants`, { separator, exclusive });
     return response.data;
   },
 
@@ -63,6 +63,21 @@ export const voiceLabelingAPI = {
 
   enrollVoices: async (id, { labels = [], replace = false } = {}) => {
     const response = await apiClient.post(`${projectPath(id)}/enroll`, { labels, replace });
+    return response.data;
+  },
+
+  calibrate: async (id) => {
+    const response = await apiClient.post(`${projectPath(id)}/calibrate`);
+    return response.data;
+  },
+
+  getCalibration: async (id) => {
+    const response = await apiClient.get(`${projectPath(id)}/calibration`);
+    return response.data;
+  },
+
+  getOverallCalibration: async () => {
+    const response = await apiClient.get('/voice/labeling/calibration');
     return response.data;
   },
 

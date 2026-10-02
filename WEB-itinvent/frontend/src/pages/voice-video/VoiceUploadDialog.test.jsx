@@ -157,3 +157,24 @@ describe('VoiceUploadDialog: подписи форм (T18)', () => {
       .toBeInTheDocument();
   });
 });
+
+describe('VoiceUploadDialog: диапазон спикеров', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('передаёт «Участников от/до», а точное число их отключает', async () => {
+    voiceJobsAPI.uploadJob.mockResolvedValue({});
+    const onUploaded = vi.fn();
+    const { container } = render(
+      <VoiceUploadDialog open onClose={vi.fn()} onUploaded={onUploaded} options={{}} />,
+    );
+    addFiles(container, ['a.mp3']);
+    fireEvent.change(screen.getByLabelText('Участников от'), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('Участников до'), { target: { value: '8' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Отправить на обработку' }));
+    await vi.waitFor(() => expect(onUploaded).toHaveBeenCalled());
+    expect(voiceJobsAPI.uploadJob.mock.calls[0][1]).toMatchObject({ min_speakers: 3, max_speakers: 8 });
+
+    fireEvent.change(screen.getByLabelText('Число участников'), { target: { value: '5' } });
+    expect(screen.getByLabelText('Участников от')).toBeDisabled();
+  });
+});

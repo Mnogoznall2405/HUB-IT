@@ -256,7 +256,8 @@ def test_meeting_assignments_contract(vv_tree):
     items = pipeline.meeting_assignments(base)
     assert len(items) == 2
     first = items[0]
-    assert set(first) == {"num", "section", "time", "clip", "task", "assignee", "deadline"}
+    assert set(first) == {"num", "key", "section", "time", "clip", "task", "assignee", "deadline"}
+    assert len(first["key"]) == 16 and first["key"] != items[1]["key"]
     assert first["num"] == "1"
     assert first["time"] == "04:59"
     assert first["clip"] == "clip_01.mp4"
@@ -551,3 +552,72 @@ def test_archiver_cycle_missing_archive_dir_warns(vv_tree, tmp_path, monkeypatch
     stats = arch.archive_cycle()
 
     assert stats == _arch_stats()
+
+
+def _write_registry(vv_tree, base, registry):
+    mdir = vv_tree / "output" / base
+    mdir.mkdir()
+    (mdir / f"{base}_report.json").write_text(
+        json.dumps({"action_registry": registry}, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def test_assignment_key_survives_reordering_and_renumbering(vv_tree):
+    """Statuses are keyed by wording: regeneration must not move them to other rows."""
+    head = "| № | Время | Поручение | Ответственный | Срок |\n|---|---|---|---|---|\n"
+    _write_registry(vv_tree, "m_a", head + (
+        "| 1 | 01:00 | Подписать ДС | Иванов | 01.10 |\n"
+        "| 2 | 02:00 | Направить отчёт | Петров | — |\n"
+    ))
+    _write_registry(vv_tree, "m_b", "### Объект\n\n" + head + (
+        "| 1 | 02:05 | Направить  отчёт. | Петров П.П. | 03.10 |\n"
+        "| 2 | 01:10 | Подписать ДС | Иванов | — |\n"
+    ))
+    a = {i["task"]: i["key"] for i in pipeline.meeting_assignments("m_a")}
+    b = pipeline.meeting_assignments("m_b")
+    # Section is part of the key; same section + same wording (modulo punctuation/spaces) -> same key.
+    assert pipeline.assignment_key("", "Направить отчёт") == pipeline.assignment_key("", "направить  ОТЧЁТ.")
+    assert a["Подписать ДС"] == pipeline.assignment_key("", "Подписать ДС")
+    assert b[1]["key"] == pipeline.assignment_key("Объект", "Подписать ДС")
+    assert b[1]["num"] == "2"
+
+
+def test_assignment_duplicates_get_distinct_keys_and_tolerant_rows(vv_tree):
+    head = "| № | Время | Поручение | Ответственный | Срок |\n|---|---|---|---|---|\n"
+    _write_registry(vv_tree, "m_c", head + (
+        "| 1 | 01:00 | Доложить ГД | Иванов | — |\n"
+        "| 2 | 02:00 | Доложить ГД | Иванов | — |\n"
+        "| 3 | 03:00 | Сверить A | B итоги | Петров | 05.10 |\n"  # stray pipe inside the task
+        "| 4 | 04:00 | Без срока | Сидоров |\n"  # missing deadline column
+        "| 5 | 05:00 |\n"  # garbage
+    ))
+    items = pipeline.meeting_assignments("m_c")
+    assert [i["num"] for i in items] == ["1", "2", "3", "4"]
+    assert items[0]["key"] != items[1]["key"]
+    assert items[2]["task"] == "Сверить A / B итоги" and items[2]["assignee"] == "Петров"
+    assert items[3]["assignee"] == "Сидоров" and items[3]["deadline"] == ""
+
+
+def test_build_process_argv_speaker_range():
+    argv = " ".join(runner.build_process_argv("in.mp4", {"min_speakers": 3, "max_speakers": 8}))
+    assert "--min-speakers 3" in argv and "--max-speakers 8" in argv
+    exact = runner.build_process_argv("in.mp4", {"num_speakers": 5, "min_speakers": 3})
+    assert "--num-speakers" in exact and "--min-speakers" not in exact  # exact number wins
+    junk = runner.build_process_argv("in.mp4", {"min_speakers": "abc", "max_speakers": 99})
+    assert "--min-speakers" not in junk and "--max-speakers" not in junk
+
+
+def test_meeting_speakers_recurring_only_existing_meetings(vv_tree):
+    for base in ("m_now", "m_old"):
+        mdir = vv_tree / "output" / base
+        mdir.mkdir()
+    (vv_tree / "output" / "m_old" / "m_old_transcript.json").write_text("{}", encoding="utf-8")
+    (vv_tree / "output" / "m_now" / "m_now_transcript.json").write_text(json.dumps({
+        "segments": [{"start": 1, "end": 2, "speaker": "SPEAKER_00", "text": "x"}],
+        "speaker_naming": {
+            "remaining_unresolved_speakers": ["SPEAKER_00"],
+            "recurring": {"SPEAKER_00": {"id": "R007", "meetings": ["m_old", "m_deleted"], "count": 3}},
+        },
+    }), encoding="utf-8")
+    speaker = pipeline.meeting_speakers("m_now")["unresolved"][0]
+    assert speaker["recurring"] == {"id": "R007", "meetings": ["m_old"]}

@@ -27,7 +27,13 @@ from .audio_processor import (
     AudioChunker,
     resolve_cpu_threads,
 )
-from .diarization import apply_pipeline_tuning, split_segments_by_word_speakers
+from .diarization import (
+    apply_pipeline_tuning,
+    build_speaker_index,
+    run_diarization,
+    speaker_for_segment,
+    split_segments_by_word_speakers,
+)
 from config import DEVICE, MODELS_DIR, HF_TOKEN, TEMP_DIR, OPENROUTER_KEY, STT_ENGINE, STT_API_MODELS, STT_CHUNK_SECONDS
 
 logger = logging.getLogger(__name__)
@@ -613,11 +619,13 @@ class TranscriptionProcessor:
             audio = whisperx.load_audio(audio_file)
             
             # Выполняем диаризацию
-            diarize_segments = self.diarize_model(
+            diarize_segments = run_diarization(
+                self.diarize_model,
                 audio,
                 num_speakers=(getattr(self.config, 'diarization_num_speakers', 0) or None),
                 min_speakers=self.config.diarization_min_speakers,
-                max_speakers=self.config.diarization_max_speakers
+                max_speakers=self.config.diarization_max_speakers,
+                exclusive=bool(getattr(self.config, 'diarization_exclusive', False)),
             )
 
             diarize_segments = self._normalize_diarization_segments(diarize_segments)
@@ -708,42 +716,16 @@ class TranscriptionProcessor:
             logger.error(f"❌ Ошибка назначения спикеров: {e}")
             return segments
     
-    def _create_diarization_index(self, diarize_segments: List[Dict]) -> Dict[float, str]:
+    def _create_diarization_index(self, diarize_segments: List[Dict]):
         """Создает индекс диаризации для быстрого поиска спикеров."""
-        index = {}
-        
-        for segment in diarize_segments:
-            start = segment.get('start', 0)
-            end = segment.get('end', 0)
-            speaker = segment.get('speaker', 'UNKNOWN')
-            
-            # Создаем записи для каждой секунды в сегменте
-            current_time = start
-            while current_time <= end:
-                index[round(current_time, 1)] = speaker
-                current_time += 0.1  # шаг 100мс
-        
-        return index
-    
-    def _find_best_speaker_for_segment(self, start_time: float, end_time: float, diarization_index: Dict[float, str]) -> str:
+        return build_speaker_index(
+            diarize_segments, bool(getattr(self.config, 'diarization_overlap_assign', False))
+        )
+
+    def _find_best_speaker_for_segment(self, start_time: float, end_time: float, diarization_index) -> str:
         """Находит наиболее подходящего спикера для сегмента."""
-        speaker_votes = {}
-        
-        # Собираем голоса спикеров в пределах временного интервала
-        current_time = start_time
-        while current_time <= end_time:
-            time_key = round(current_time, 1)
-            if time_key in diarization_index:
-                speaker = diarization_index[time_key]
-                speaker_votes[speaker] = speaker_votes.get(speaker, 0) + 1
-            current_time += 0.1
-        
-        # Возвращаем спикера с наибольшим количеством голосов
-        if speaker_votes:
-            return max(speaker_votes, key=speaker_votes.get)
-        else:
-            return "SPEAKER_UNKNOWN"
-    
+        return speaker_for_segment(diarization_index, start_time, end_time)
+
     @retry_on_failure(max_retries=2, delay=1.0)
     def transcribe_audio(self, audio_file: str, language: str = None,
                          diarization_audio_file: Optional[str] = None) -> Dict:
@@ -810,6 +792,9 @@ class TranscriptionProcessor:
             # Добавляем информацию о диаризации в результат
             if result:
                 result['diarization'] = diarize_segments is not None
+                # Сырые реплики нужны профилям голосов: из них видно наложения речи
+                if diarize_segments:
+                    result['diarize_segments'] = diarize_segments
                 result['speakers_count'] = len(set(seg.get('speaker', 'UNKNOWN') for seg in result.get('segments', []))) if diarize_segments else 0
                 result['language'] = language
             

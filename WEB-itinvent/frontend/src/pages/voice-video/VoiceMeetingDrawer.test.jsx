@@ -2144,4 +2144,20 @@ describe('VoiceMeetingDrawer: доработка по «Ревью 14» (T55, P6
     const stack = row.querySelector('.MuiStack-root');
     expect(window.getComputedStyle(stack).flexWrap).toBe('wrap');
   });
+
+  it('повторяющийся голос: чип «встречался ещё в N записях» со списком встреч', async () => {
+    render14({
+      speakers: {
+        resolved: [],
+        unresolved: [{
+          speaker: 'SPEAKER_00', has_sample: false, first_segment_start: 0,
+          recurring: { id: 'R003', meetings: ['m_old1', 'm_old2'] },
+        }],
+      },
+    });
+    await screen.findByText('первая реплика');
+    fireEvent.click(screen.getByRole('tab', { name: /Участники/ }));
+    const row = await screen.findByTestId('speaker-row');
+    expect(within(row).getByText('встречался ещё в 2 записях')).toBeInTheDocument();
+  });
 });

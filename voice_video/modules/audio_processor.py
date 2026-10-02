@@ -74,6 +74,11 @@ class ProcessingConfig:
     diarization_clustering_threshold: Optional[float] = None  # порог слияния кластеров pyannote (ниже = больше спикеров)
     diarization_min_duration_off: Optional[float] = None  # мин. пауза разделения реплик спикера (ниже = ловит короткие перебивки)
     diarization_audio: str = "processed"  # raw | processed — звук для диаризации (STT всегда processed)
+    diarization_overlap_assign: bool = False  # спикер слова по наибольшему пересечению (DIARIZATION_OVERLAP_ASSIGN)
+    speaker_embeddings_improved: bool = False  # лучшие реплики + нормировка (SPEAKER_EMBEDDINGS_IMPROVED)
+    diarization_exclusive: bool = False  # exclusive_speaker_diarization community-1 (DIARIZATION_EXCLUSIVE)
+    speaker_recurring: bool = False  # реестр повторяющихся неизвестных голосов (SPEAKER_RECURRING)
+    speaker_recurring_similarity: float = 0.6  # косинусная похожесть для «тот же голос»
     speaker_embedding_window: str = "whole"  # размер окна для эмбеддингов
     voice_activity_detection: bool = True  # детекция голосовой активности
     enable_speaker_identification: bool = True  # сопоставлять SPEAKER_* с reference_voices

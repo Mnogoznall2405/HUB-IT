@@ -738,7 +738,7 @@ def test_variant_job_and_metrics(api, vv_tree, monkeypatch):
 
     detail = api.get(f"/api/v1/voice/labeling/projects/{pid}").json()
     assert detail["variants"] == [{
-        "name": "kim", "audio": "processed", "separator": "kim",
+        "name": "kim", "audio": "processed", "separator": "kim", "exclusive": False,
         "created_at": detail["variants"][0]["created_at"], "segments_count": 1, "speakers_count": 1,
     }]
 
@@ -806,3 +806,108 @@ def test_peaks_endpoint(api, vv_tree):
     (vv_tree / "labeling" / pid / "peaks.json").write_text('{"step":0.1,"peaks":[1,2]}', encoding="utf-8")
     assert api.get(f"/api/v1/voice/labeling/projects/{pid}").json()["has_peaks"] is True
     assert api.get(f"/api/v1/voice/labeling/projects/{pid}/peaks").json()["peaks"] == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# Speaker identification threshold calibration
+# ---------------------------------------------------------------------------
+
+def test_suggest_thresholds_separable_and_overlapping():
+    rows = [
+        {"name": "Иванов И.И.", "scores": {"Иванов И.И": 0.82, "Петров П.П": 0.31}},
+        {"name": "Петров П.П.", "scores": {"Иванов И.И": 0.40, "Петров П.П": 0.70}},
+    ]
+    res = labeling_metrics.suggest_id_thresholds(rows)
+    assert (res["positives"], res["negatives"]) == (2, 2)
+    assert res["min_positive"] == 0.7 and res["max_negative"] == 0.4 and res["separable"] is True
+    assert res["suggested"] == {"strict": 0.45, "moderate": 0.52, "loose": 0.6, "similarity": 0.55}
+
+    rows[1]["scores"]["Иванов И.И"] = 0.75  # foreign voice more similar than own -> overlap
+    res = labeling_metrics.suggest_id_thresholds(rows)
+    assert res["separable"] is False
+    assert res["suggested"]["similarity"] == 0.77 and res["suggested"]["strict"] == 0.23
+
+    none = labeling_metrics.suggest_id_thresholds([{"name": "Сидоров", "scores": {"Иванов И.И": 0.2}}])
+    assert none["positives"] == 0 and none["suggested"] is None and none["note"]
+
+
+def test_calibration_job_and_endpoints(api, vv_tree, monkeypatch):
+    segs = [
+        {"id": "s1", "start": 0, "end": 10, "speaker": "SPEAKER_00", "text": ""},
+        {"id": "s2", "start": 10, "end": 20, "speaker": "SPEAKER_01", "text": ""},
+    ]
+    pid = _ready_project(api, vv_tree, segs, {"SPEAKER_00": {"name": "Иванов И.И.", "user_id": 1}})
+    out_dir = vv_tree / "labeling" / pid
+    assert api.get(f"/api/v1/voice/labeling/projects/{pid}/calibration").json() == {"available": False}
+
+    resp = api.post(f"/api/v1/voice/labeling/projects/{pid}/calibrate")
+    assert resp.status_code == 201, resp.text
+    job = store.get_job(resp.json()["aux_job"]["id"])
+    assert list(job["settings"]["calibrate"]) == ["SPEAKER_00"]  # only named speakers
+
+    def on_run(argv):
+        assert argv[argv.index("--mode") + 1] == "calibrate"
+        spec = json.loads(Path(argv[argv.index("--samples-spec") + 1]).read_text(encoding="utf-8"))
+        assert spec["SPEAKER_00"]["spans"] == [[0.0, 10.0]]
+        (out_dir / "calibration.json").write_text(json.dumps({
+            "created_at": "2026-10-02T12:00:00Z", "embedding_mode": "improved",
+            "items": [{"label": "SPEAKER_00", "name": "Иванов И.И.",
+                       "scores": {"Иванов И.И": 0.81, "Петров П.П": 0.35, "Сидоров": "bad"}}],
+        }), encoding="utf-8")
+        return 0
+
+    _fake_runner(monkeypatch, vv_tree, on_run)
+    runner.run_job(job)
+    assert store.get_job(job["id"])["status"] == "done"
+
+    data = api.get(f"/api/v1/voice/labeling/projects/{pid}/calibration").json()
+    assert data["available"] is True and data["embedding_mode"] == "improved"
+    assert data["rows"] == [{
+        "label": "SPEAKER_00", "name": "Иванов И.И.", "own_similarity": 0.81,
+        "best_other": "Петров П.П", "best_other_similarity": 0.35,
+    }]
+    assert data["suggestion"]["suggested"]["strict"] == 0.42
+
+    overall = api.get("/api/v1/voice/labeling/calibration").json()
+    assert overall["projects"] == 1 and overall["suggestion"]["positives"] == 1
+
+
+def test_calibration_job_fails_without_output(api, vv_tree, monkeypatch):
+    pid = _ready_project(
+        api, vv_tree,
+        [{"id": "s1", "start": 0, "end": 5, "speaker": "SPEAKER_00", "text": ""}],
+        {"SPEAKER_00": {"name": "Иванов", "user_id": None}},
+    )
+    job = store.get_job(api.post(f"/api/v1/voice/labeling/projects/{pid}/calibrate").json()["aux_job"]["id"])
+    _fake_runner(monkeypatch, vv_tree, lambda argv: 0)
+    runner.run_job(job)
+    assert store.get_job(job["id"])["status"] == "failed"
+
+
+def test_calibrate_requires_named_speakers(api, vv_tree):
+    pid = _ready_project(api, vv_tree, [{"id": "s1", "start": 0, "end": 5, "speaker": "SPEAKER_00", "text": ""}])
+    assert api.post(f"/api/v1/voice/labeling/projects/{pid}/calibrate").status_code == 422
+
+
+def test_exclusive_raw_variant(api, vv_tree, monkeypatch):
+    segs = [{"id": "s1", "start": 0, "end": 10, "speaker": "SPEAKER_00", "text": ""}]
+    pid = _ready_project(api, vv_tree, segs)
+    out_dir = vv_tree / "labeling" / pid
+    resp = api.post(f"/api/v1/voice/labeling/projects/{pid}/variants", json={"separator": "none", "exclusive": True})
+    assert resp.status_code == 201, resp.text
+    job = store.get_job(resp.json()["aux_job"]["id"])
+
+    def on_run(argv):
+        assert "--exclusive" in argv and argv[argv.index("--audio") + 1] == "raw"
+        assert "--separator" not in argv
+        (out_dir / "variant_ex_raw.json").write_text(json.dumps({
+            "audio": "raw", "separator": "none", "exclusive": True,
+            "segments": [{"start": 0, "end": 10, "speaker": "SPEAKER_00"}],
+        }), encoding="utf-8")
+        return 0
+
+    _fake_runner(monkeypatch, vv_tree, on_run)
+    runner.run_job(job)
+    metrics = api.get(f"/api/v1/voice/labeling/projects/{pid}/metrics?collar=0").json()
+    titles = {m["name"]: m["title"] for m in metrics["items"]}
+    assert titles["ex_raw"] == "Сырой звук, эксклюзивная"

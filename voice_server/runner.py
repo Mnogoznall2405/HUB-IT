@@ -66,6 +66,14 @@ def build_process_argv(stored_path: str, settings: Dict[str, Any]) -> List[str]:
     num_speakers = int(s.get("num_speakers") or 0)
     if num_speakers > 0:
         argv += ["--num-speakers", str(num_speakers)]
+    else:
+        for key, flag in (("min_speakers", "--min-speakers"), ("max_speakers", "--max-speakers")):
+            try:
+                value = int(s.get(key) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            if 0 < value <= 20:
+                argv += [flag, str(value)]
     if s.get("custom_vocabulary"):
         argv += ["--custom-vocabulary", str(s["custom_vocabulary"])]
     if s.get("chunk_duration"):
@@ -126,11 +134,13 @@ def build_label_argv(
             raise ValueError(f"invalid variant name: {name!r}")
         audio = "processed" if raw.get("audio") == "processed" else "raw"
         argv += ["--mode", "variant", "--variant-name", name, "--audio", audio]
-        if s.get("separator"):
+        if raw.get("exclusive"):
+            argv.append("--exclusive")
+        if audio == "processed" and s.get("separator"):
             argv += ["--separator", str(s["separator"])]
         s["with_text"] = False
-    elif mode == "samples":
-        argv += ["--mode", "samples", "--audio", "processed", "--samples-spec", str(samples_spec)]
+    elif mode in ("samples", "calibrate"):
+        argv += ["--mode", mode, "--audio", "processed", "--samples-spec", str(samples_spec)]
         if s.get("separator"):
             argv += ["--separator", str(s["separator"])]
         argv += ["--log-level", "INFO"]
@@ -338,6 +348,13 @@ def run_job(job: Dict[str, Any]) -> None:
 
             elif kind == "resume":
                 base = str(job.get("base_filename") or "")
+                # Regeneration renumbers the registry: pin legacy statuses to keys first.
+                try:
+                    pinned = store.backfill_assignment_keys(base, pipeline.meeting_assignments(base))
+                    if pinned:
+                        log_file.write(f"assignment statuses pinned to keys: {pinned}\n")
+                except Exception as exc:
+                    logger.warning("Job %s: assignment key backfill failed: %s", job_id, exc)
                 speaker_map = dict(job.get("speaker_map") or {})
                 enrollments = list(job.get("enroll") or [])
                 enroll_results: List[Dict[str, Any]] = []
@@ -412,6 +429,9 @@ def _run_label_job(job: Dict[str, Any], log_file, result: Dict[str, Any], finish
         return
     if action == labeling.ACTION_ENROLL:
         _enroll_label_voices(job, out_dir, stored_path, settings, log_file, result, finish)
+        return
+    if action == labeling.ACTION_CALIBRATE:
+        _calibrate_label_voices(job, project_id, out_dir, stored_path, settings, log_file, result, finish)
         return
 
     label_store.set_status(project_id, "processing")
@@ -525,3 +545,28 @@ def _enroll_label_voices(job, out_dir, stored_path, settings, log_file, result, 
     result["enroll"] = enroll_results
     ok = bool(enroll_results) and all(r.get("ok") for r in enroll_results)
     finish("done" if ok else "failed", None if ok else "Не все голоса записаны в эталоны")
+
+
+def _calibrate_label_voices(job, project_id, out_dir, stored_path, settings, log_file, result, finish) -> None:
+    """Similarity of labeled named voices with every reference voice (threshold tuning)."""
+    spec = {
+        str(label): item
+        for label, item in (settings.get("calibrate") or {}).items()
+        if labeling.SPEAKER_LABEL_RE.match(str(label)) and isinstance(item, dict)
+    }
+    spec_path = Path(out_dir) / "calibrate_spec.json"
+    spec_path.write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+    calibration = Path(out_dir) / labeling.CALIBRATION_FILE
+    previous = calibration.stat().st_mtime if calibration.exists() else None
+    argv = build_label_argv(stored_path, str(out_dir), settings, mode="calibrate", samples_spec=str(spec_path))
+    log_file.write("$ " + " ".join(argv) + "\n")
+    rc = _run_subprocess(job["id"], argv, log_file)
+    result["returncode"] = rc
+    _cleanup_temp(Path(stored_path).stem, log_file)
+    if not _finish_rc(rc, finish, LABEL_DRAFT_PY):
+        return
+    fresh = calibration.exists() and calibration.stat().st_mtime != previous
+    if not fresh or labeling.load_calibration(project_id) is None:
+        finish("failed", "calibration.json не получен")
+        return
+    finish("done")

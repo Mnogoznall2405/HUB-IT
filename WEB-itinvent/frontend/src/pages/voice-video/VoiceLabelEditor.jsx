@@ -35,6 +35,7 @@ import PlayArrowOutlinedIcon from '@mui/icons-material/PlayArrowOutlined';
 import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
 import UndoOutlinedIcon from '@mui/icons-material/UndoOutlined';
 import { voiceLabelingAPI } from '../../api/voiceLabeling';
+import VoiceLabelCalibrationPanel from './VoiceLabelCalibrationPanel';
 import VoiceLabelQualityPanel from './VoiceLabelQualityPanel';
 import VoiceLabelWaveform from './VoiceLabelWaveform';
 import { hubTaskSupportAPI } from '../../api/hubTaskSupport';
@@ -820,6 +821,13 @@ function VoiceLabelEditor({ projectId, onClose }) {
           variants={project.variants}
           dirty={dirty}
           savedVersion={version}
+          onProjectUpdate={mergeAux}
+        />
+        <VoiceLabelCalibrationPanel
+          projectId={projectId}
+          auxJob={project.aux_job}
+          dirty={dirty}
+          hasNamedSpeakers={savedNamedLabels.length > 0}
           onProjectUpdate={mergeAux}
         />
         </Stack>

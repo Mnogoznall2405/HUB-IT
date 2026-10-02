@@ -68,7 +68,7 @@ describe('VoiceAssignmentsTab', () => {
     let menu = await openRowMenu('1');
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Отметить выполненным (поручение №1)' }));
     await waitFor(() => {
-      expect(voiceJobsAPI.updateAssignmentStatus).toHaveBeenCalledWith('test', '1', 'done', '');
+      expect(voiceJobsAPI.updateAssignmentStatus).toHaveBeenCalledWith('test', { num: '1', key: undefined }, 'done', '');
     });
 
     menu = await openRowMenu('1');
@@ -104,7 +104,7 @@ describe('VoiceAssignmentsTab', () => {
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('Не удалось изменить статус поручения');
-    expect(voiceJobsAPI.updateAssignmentStatus).toHaveBeenCalledWith('test', '1', 'pending', '');
+    expect(voiceJobsAPI.updateAssignmentStatus).toHaveBeenCalledWith('test', { num: '1', key: undefined }, 'pending', '');
   });
 
   it('shows an error when an assignment cannot be moved to in progress', async () => {
@@ -116,7 +116,7 @@ describe('VoiceAssignmentsTab', () => {
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('Не удалось изменить статус поручения');
-    expect(voiceJobsAPI.updateAssignmentStatus).toHaveBeenCalledWith('test', '1', 'in_progress', '');
+    expect(voiceJobsAPI.updateAssignmentStatus).toHaveBeenCalledWith('test', { num: '1', key: undefined }, 'in_progress', '');
   });
 
   it('keeps the comment dialog open and shows save errors', async () => {
@@ -251,5 +251,67 @@ describe('VoiceAssignmentsTab', () => {
     const nearest = document.querySelector('[data-assign-nearest="1"]');
     expect(nearest).toBeInTheDocument();
     expect(nearest).toHaveTextContent('Сдать отчёт');
+  });
+
+  // --- Стабильные ключи поручений: статус не «переезжает» при пересборке реестра ---
+  it('статус берётся по ключу поручения, а не по номеру строки', async () => {
+    voiceJobsAPI.getAssignments.mockResolvedValueOnce({
+      items: [
+        { num: '1', key: 'bbbbbbbbbbbbbbbb', time: '01:00', task: 'Сдать отчёт', assignee: '', deadline: '' },
+        { num: '2', key: 'aaaaaaaaaaaaaaaa', time: '02:00', task: 'Провести инструктаж', assignee: 'Иванов', deadline: '' },
+      ],
+    });
+    // Статус ставили, когда «Провести инструктаж» было №1.
+    voiceJobsAPI.getAssignmentStatuses.mockResolvedValueOnce({
+      items: [{ num: '1', key: 'aaaaaaaaaaaaaaaa', status: 'done' }],
+    });
+    render(<VoiceAssignmentsTab base="test" />);
+    await screen.findByText('Провести инструктаж');
+    const meta2 = await screen.findByText(/^№2 · Иванов ·$/);
+    await waitFor(() => expect(within(meta2).getByText('Выполнено')).toBeInTheDocument());
+    expect(within(screen.getByText(/^№1 · Без ответственного ·$/)).getByText('Новое')).toBeInTheDocument();
+
+    const menu = await openRowMenu('2');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Вернуть в работу (поручение №2)' }));
+    await waitFor(() => expect(voiceJobsAPI.updateAssignmentStatus).toHaveBeenCalledWith(
+      'test', { num: '2', key: 'aaaaaaaaaaaaaaaa' }, 'pending', '',
+    ));
+  });
+
+  it('созданная задача сохраняется на сервере и повторно не предлагается', async () => {
+    voiceJobsAPI.getAssignments.mockResolvedValueOnce({
+      items: [{ num: '1', key: 'cccccccccccccccc', time: '04:59', task: 'Провести инструктаж', assignee: 'Иванов', deadline: '' }],
+    });
+    hubTaskSupportAPI.getAssignees.mockResolvedValueOnce({
+      items: [{ id: 'user-1', username: 'ivanov', full_name: 'Иванов Иван' }],
+    });
+    hubTasksAPI.createTask.mockResolvedValueOnce({ items: [{ id: 'task-77' }], created: 1 });
+    render(<VoiceAssignmentsTab base="test" canCreateTasks />);
+
+    const menu = await openRowMenu('1');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Создать задачу (поручение №1)' }));
+    fireEvent.change(screen.getByRole('combobox', { name: 'Исполнитель' }), { target: { value: 'Иванов' } });
+    fireEvent.click(await screen.findByRole('option', { name: 'Иванов Иван' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Создать задачу' }));
+
+    await waitFor(() => expect(voiceJobsAPI.updateAssignmentStatus).toHaveBeenCalledWith(
+      'test', { num: '1', key: 'cccccccccccccccc' }, 'pending', '', { taskId: 'task-77' },
+    ));
+    expect(await screen.findByText(/Задача создана/)).toBeInTheDocument();
+    const again = await openRowMenu('1');
+    expect(within(again).queryByRole('menuitem', { name: 'Создать задачу (поручение №1)' })).not.toBeInTheDocument();
+  });
+
+  it('после перезагрузки задача видна по task_id из статусов', async () => {
+    voiceJobsAPI.getAssignments.mockResolvedValueOnce({
+      items: [{ num: '1', key: 'dddddddddddddddd', time: '04:59', task: 'Провести инструктаж', assignee: 'Иванов', deadline: '' }],
+    });
+    voiceJobsAPI.getAssignmentStatuses.mockResolvedValueOnce({
+      items: [{ num: '1', key: 'dddddddddddddddd', status: 'pending', task_id: 'task-5' }],
+    });
+    render(<VoiceAssignmentsTab base="test" canCreateTasks />);
+    expect(await screen.findByText(/Задача создана/)).toBeInTheDocument();
+    const menu = await openRowMenu('1');
+    expect(within(menu).queryByRole('menuitem', { name: 'Создать задачу (поручение №1)' })).not.toBeInTheDocument();
   });
 });

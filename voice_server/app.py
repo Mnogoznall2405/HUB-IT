@@ -455,8 +455,10 @@ def meeting_detail(
 
 class AssignmentStatusPayload(BaseModel):
     num: str = Field(..., min_length=1, max_length=16)
+    key: Optional[str] = Field(None, pattern="^[0-9a-f]{16}$")
     status: str = Field("done", pattern="^(pending|in_progress|done)$")
     comment: str = Field("", max_length=2000)
+    task_id: Optional[str] = Field(None, max_length=64)
 
 
 @app.get("/api/v1/voice/meetings/{base}/assignments/status")
@@ -465,7 +467,12 @@ def get_assignment_statuses(
     user: Dict[str, Any] = Depends(require_web_permission(PERM_READ)),
 ) -> Dict[str, Any]:
     safe_base = _meeting_or_404(base)
-    return {"items": store.get_assignment_statuses(safe_base)}
+    # Legacy rows (keyed by row number only) get the key of the current row once.
+    store.backfill_assignment_keys(safe_base, pipeline.meeting_assignments(safe_base))
+    rows = [r for r in store.get_assignment_statuses(safe_base) if r.get("item_key")]
+    for row in rows:
+        row["key"] = row.get("item_key")
+    return {"items": rows}
 
 
 @app.put("/api/v1/voice/meetings/{base}/assignments/status")
@@ -475,12 +482,23 @@ def update_assignment_status(
     user: Dict[str, Any] = Depends(require_web_permission(PERM_READ)),
 ) -> Dict[str, Any]:
     safe_base = _meeting_or_404(base)
+    key = payload.key
+    if not key:
+        # Old clients send only the row number: resolve it against the current registry.
+        match = next(
+            (i for i in pipeline.meeting_assignments(safe_base) if i.get("num") == payload.num), None
+        )
+        if not match:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Assignment not found")
+        key = match["key"]
     return store.upsert_assignment_status(
         safe_base,
+        key=key,
         num=payload.num,
         status=payload.status,
         comment=payload.comment,
         marked_by=web_actor(user),
+        task_id=(payload.task_id or "").strip() or None,
     )
 
 
