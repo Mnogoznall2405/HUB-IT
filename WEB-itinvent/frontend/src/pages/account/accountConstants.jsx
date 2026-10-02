@@ -353,6 +353,12 @@ export const AI_ITINVENT_TOOL_OPTIONS = [
   { id: 'itinvent.action.pc_cleaning_draft', label: 'Черновик чистки ПК' },
   { id: 'itinvent.user.by_name', label: 'Поиск пользователя по имени' },
   { id: 'itinvent.user.full_context', label: 'Полный IT-контекст пользователя' },
+  { id: 'itinvent.computers.search', label: 'Поиск компьютеров (ПК, пользователь, PST, профили)' },
+  { id: 'itinvent.computers.get', label: 'Карточка компьютера: аптайм, перезагрузка, диски, PST' },
+  { id: 'itinvent.computers.changes', label: 'Изменения железа (агент инвентаризации)' },
+  { id: 'itinvent.computers.software_search', label: 'Поиск установленных программ' },
+  { id: 'itinvent.audit.dismissed_with_equipment', label: 'Аудит: уволенные с техникой' },
+  { id: 'itinvent.acts.pending', label: 'Неподписанные акты передачи' },
   { id: AI_ITINVENT_MULTI_DB_TOOL_ID, label: 'Мульти-БД поиск (admin)' },
 ];
 
@@ -372,6 +378,7 @@ export const AI_OFFICE_TOOL_OPTIONS = [
   { id: 'office.tasks.projects', label: 'Проекты задач' },
   { id: 'office.announcements.list', label: 'Список объявлений' },
   { id: 'office.announcements.get', label: 'Открыть объявление' },
+  { id: 'office.mailbox.quota_report', label: 'Отчёт по квотам почтовых ящиков (IT)' },
 ];
 
 export const AI_OFFICE_ACTION_TOOL_OPTIONS = [
@@ -386,6 +393,7 @@ export const AI_MFU_TOOL_OPTIONS = [
   { id: 'mfu.devices.list', label: 'Список МФУ / принтеров' },
   { id: 'mfu.device.status', label: 'Статус МФУ (SNMP/ping)' },
   { id: 'mfu.pages.monthly', label: 'Страницы по месяцам' },
+  { id: 'mfu.devices.low_toner', label: 'Заканчивается тонер' },
 ];
 
 export const AI_NETWORK_TOOL_OPTIONS = [
@@ -414,12 +422,35 @@ export const AI_KB_TOOL_OPTIONS = [
   { id: 'kb.articles.search', label: 'Поиск статей базы знаний' },
   { id: 'kb.articles.get', label: 'Открыть статью базы знаний' },
   { id: 'kb.attachments.get_text', label: 'Читать текст вложения статьи' },
+  { id: 'kb.attachments.send', label: 'Отправить файл из базы знаний' },
   { id: 'kb.categories.list', label: 'Список категорий базы знаний' },
 ];
 
 export const AI_CHAT_TOOL_OPTIONS = [
   { id: 'chat.users.search', label: 'Поиск пользователей Hub' },
   { id: 'chat.conversations.search', label: 'Поиск диалогов Hub' },
+];
+
+export const AI_SELF_TOOL_OPTIONS = [
+  { id: 'me.equipment', label: 'Моя техника' },
+  { id: 'me.computer.health', label: 'Состояние моего компьютера' },
+  { id: 'me.account.status', label: 'Моя учётная запись: пароль и блокировка' },
+  { id: 'me.mailbox.quota', label: 'Мой почтовый ящик: заполненность' },
+  { id: 'me.files.search', label: 'Мои файлы: поиск' },
+  { id: 'me.files.attach', label: 'Мои файлы: приложить к ответу' },
+  { id: 'me.it_requests', label: 'Мои заявки на закупку (1С)' },
+  { id: 'helpdesk.request_draft', label: 'Обращение в IT (черновик с подтверждением)' },
+];
+
+export const AI_DIRECTORY_TOOL_OPTIONS = [
+  { id: 'directory.people.search', label: 'Справочник сотрудников' },
+  { id: 'directory.department.get', label: 'Оргструктура: руководитель подразделения' },
+];
+
+export const AI_WAREHOUSE_TOOL_OPTIONS = [
+  { id: 'warehouse.balances.search', label: 'Остатки на складах 1С' },
+  { id: 'warehouse.it_requests.search', label: 'ИТ-заявки на закупку' },
+  { id: 'warehouse.it_requests.get', label: 'Карточка ИТ-заявки' },
 ];
 
 export const AI_CHAT_ACTION_TOOL_OPTIONS = [
@@ -434,3 +465,6 @@ export const AI_NETWORK_TOOL_IDS = new Set(AI_NETWORK_TOOL_OPTIONS.map((item) =>
 export const AI_AD_TOOL_IDS = new Set(AI_AD_TOOL_OPTIONS.map((item) => item.id));
 export const AI_KB_TOOL_IDS = new Set(AI_KB_TOOL_OPTIONS.map((item) => item.id));
 export const AI_CHAT_TOOL_IDS = new Set([...AI_CHAT_TOOL_OPTIONS, ...AI_CHAT_ACTION_TOOL_OPTIONS].map((item) => item.id));
+export const AI_SELF_TOOL_IDS = new Set(AI_SELF_TOOL_OPTIONS.map((item) => item.id));
+export const AI_DIRECTORY_TOOL_IDS = new Set(AI_DIRECTORY_TOOL_OPTIONS.map((item) => item.id));
+export const AI_WAREHOUSE_TOOL_IDS = new Set(AI_WAREHOUSE_TOOL_OPTIONS.map((item) => item.id));

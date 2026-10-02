@@ -10,6 +10,7 @@ from backend.ai_chat.tools.context import (
     AiToolExecutionContext,
     MFU_TOOL_DEVICES_LIST,
     MFU_TOOL_DEVICE_STATUS,
+    MFU_TOOL_LOW_TONER,
     MFU_TOOL_PAGES_MONTHLY,
 )
 from backend.ai_chat.tools.registry import ai_tool_registry
@@ -322,9 +323,104 @@ class MfuPagesMonthlyTool(AiTool):
         )
 
 
+class MfuLowTonerArgs(BaseModel):
+    threshold_percent: int = Field(default=15, ge=1, le=60, description="Supply level at or below this percent is low")
+    branch: Optional[str] = Field(default=None, max_length=200)
+    database_id: Optional[str] = Field(default=None, max_length=128)
+    limit: int = Field(default=30, ge=1, le=100)
+
+    @field_validator("branch", "database_id", mode="before")
+    @classmethod
+    def _normalize(cls, value):
+        return _normalize_text(value) or None
+
+
+def _known(value: object) -> str | None:
+    text = _normalize_text(value)
+    return None if not text or text == "Не указано" else text
+
+
+def _runtime_supplies(runtime: dict[str, Any]) -> list[dict[str, Any]]:
+    snmp = runtime.get("snmp") if isinstance(runtime.get("snmp"), dict) else runtime
+    return [item for item in list((snmp or {}).get("supplies") or []) if isinstance(item, dict)]
+
+
+class MfuLowTonerTool(AiTool):
+    tool_id = MFU_TOOL_LOW_TONER
+    description = (
+        "Printers/MFU whose toner, drum or other supplies are at or below a threshold (default 15%) by the last SNMP "
+        "poll: device, location, IP and low supplies with percent. Use for 'где заканчивается тонер', "
+        "'какие картриджи скоро менять'; then itinvent.action.cartridge_replacement_draft for a replacement."
+    )
+    input_model = MfuLowTonerArgs
+    stage = "checking_mfu"
+
+    def execute(self, *, context: AiToolExecutionContext, args: MfuLowTonerArgs) -> AiToolResult:
+        try:
+            _require_permission(context, PERM_MFU_READ)
+        except PermissionError as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error=str(exc))
+        database_id = _resolve_db(context, args.database_id)
+        if not database_id:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error="ITinvent database is not configured.")
+        try:
+            from backend.api.v1.mfu import _normalize_device_row
+            from backend.services.mfu_monitor_service import mfu_runtime_monitor
+
+            rows = get_all_equipment_flat(db_id=database_id, limit=5000) or []
+            states = mfu_runtime_monitor.read_persisted_runtime_states()
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error=str(exc))
+        branch_text = _normalize_text(args.branch).lower()
+        low_devices: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict) or not _is_mfu_row(row):
+                continue
+            device = _normalize_device_row(row, database_id)
+            state = states.get(_normalize_text(device.get("key")))
+            if not state:
+                continue
+            if branch_text and branch_text not in _normalize_text(device.get("branch_name")).lower():
+                continue
+            low = []
+            for supply in _runtime_supplies(state.get("runtime") or {}):
+                percent = _to_int(supply.get("percent"))
+                if percent is not None and percent <= args.threshold_percent:
+                    low.append({"name": _normalize_text(supply.get("name")) or None, "percent": percent})
+            if not low:
+                continue
+            low.sort(key=lambda item: item["percent"])
+            low_devices.append(
+                {
+                    "inv_no": device.get("inv_no") or None,
+                    "model": _known(device.get("model_name")),
+                    "branch": _known(device.get("branch_name")),
+                    "location": _known(device.get("location_name")),
+                    "ip_address": device.get("ip_address") or state.get("ip_address") or None,
+                    "low_supplies": low,
+                    "checked_at": state.get("updated_at"),
+                }
+            )
+        low_devices.sort(key=lambda item: item["low_supplies"][0]["percent"])
+        return AiToolResult(
+            tool_id=self.tool_id,
+            ok=True,
+            database_id=database_id,
+            data={
+                "threshold_percent": args.threshold_percent,
+                "devices_with_snmp": len(states),
+                "total": len(low_devices),
+                "count": min(len(low_devices), args.limit),
+                "truncated": len(low_devices) > args.limit,
+                "items": low_devices[: args.limit],
+            },
+        )
+
+
 for _tool in [
     MfuDevicesListTool(),
     MfuDeviceStatusTool(),
     MfuPagesMonthlyTool(),
+    MfuLowTonerTool(),
 ]:
     ai_tool_registry.register(_tool)

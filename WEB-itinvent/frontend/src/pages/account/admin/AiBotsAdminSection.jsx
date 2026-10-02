@@ -42,6 +42,12 @@ import {
   AI_OFFICE_ACTION_TOOL_OPTIONS,
   AI_OFFICE_TOOL_OPTIONS,
   AI_OFFICE_TOOL_IDS,
+  AI_SELF_TOOL_OPTIONS,
+  AI_SELF_TOOL_IDS,
+  AI_DIRECTORY_TOOL_OPTIONS,
+  AI_DIRECTORY_TOOL_IDS,
+  AI_WAREHOUSE_TOOL_OPTIONS,
+  AI_WAREHOUSE_TOOL_IDS,
 } from '../accountConstants';
 import {
   createAiBotDraft,
@@ -54,6 +60,9 @@ import {
   getAiBotMfuTools,
   getAiBotNetworkTools,
   getAiBotOfficeTools,
+  getAiBotSelfTools,
+  getAiBotDirectoryTools,
+  getAiBotWarehouseTools,
   isAiBotLiveDataEnabled,
 } from './aiBotModel';
 
@@ -207,6 +216,36 @@ export function AiBotsAdminSection({
     const networkToolsEnabled = getAiBotNetworkTools(draft).length > 0;
     const kbToolsEnabled = getAiBotKbTools(draft).length > 0;
     const chatToolsEnabled = getAiBotChatTools(draft).length > 0;
+    const selfToolsEnabled = getAiBotSelfTools(draft).length > 0;
+    const directoryToolsEnabled = getAiBotDirectoryTools(draft).length > 0;
+    const warehouseToolsEnabled = getAiBotWarehouseTools(draft).length > 0;
+
+    const toggleWarehouseTools = (checked) => {
+      const warehouseIds = AI_WAREHOUSE_TOOL_OPTIONS.map((item) => item.id);
+      if (checked) {
+        onChange('enabled_tools', Array.from(new Set([...enabledTools, ...warehouseIds])));
+        return;
+      }
+      onChange('enabled_tools', enabledTools.filter((item) => !AI_WAREHOUSE_TOOL_IDS.has(item)));
+    };
+
+    const toggleDirectoryTools = (checked) => {
+      const directoryIds = AI_DIRECTORY_TOOL_OPTIONS.map((item) => item.id);
+      if (checked) {
+        onChange('enabled_tools', Array.from(new Set([...enabledTools, ...directoryIds])));
+        return;
+      }
+      onChange('enabled_tools', enabledTools.filter((item) => !AI_DIRECTORY_TOOL_IDS.has(item)));
+    };
+
+    const toggleSelfTools = (checked) => {
+      const selfIds = AI_SELF_TOOL_OPTIONS.map((item) => item.id);
+      if (checked) {
+        onChange('enabled_tools', Array.from(new Set([...enabledTools, ...selfIds])));
+        return;
+      }
+      onChange('enabled_tools', enabledTools.filter((item) => !AI_SELF_TOOL_IDS.has(item)));
+    };
 
     const toggleKbTools = (checked) => {
       const kbIds = AI_KB_TOOL_OPTIONS.map((item) => item.id);
@@ -297,7 +336,7 @@ export function AiBotsAdminSection({
           <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 1 }}>
             <FormControlLabel control={<Switch checked={draft.allow_file_input} onChange={(event) => onChange('allow_file_input', event.target.checked)} />} label="Принимать файлы" />
             <FormControlLabel control={<Switch checked={draft.allow_generated_artifacts} onChange={(event) => onChange('allow_generated_artifacts', event.target.checked)} />} label="Генерировать файлы" />
-            <FormControlLabel control={<Switch checked={draft.allow_kb_document_delivery} onChange={(event) => onChange('allow_kb_document_delivery', event.target.checked)} />} label="Отправлять KB-шаблоны" />
+            <FormControlLabel control={<Switch checked={draft.allow_kb_document_delivery} onChange={(event) => onChange('allow_kb_document_delivery', event.target.checked)} />} label="Отправлять файлы базы знаний" />
             <FormControlLabel control={<Switch checked={draft.is_enabled} onChange={(event) => onChange('is_enabled', event.target.checked)} />} label="Включён" />
           </Stack>
         </Grid>
@@ -616,6 +655,114 @@ export function AiBotsAdminSection({
               <Collapse in={kbToolsEnabled} unmountOnExit>
                 <Grid container spacing={0.5}>
                   {AI_KB_TOOL_OPTIONS.map((tool) => (
+                    <Grid item xs={12} md={6} key={tool.id}>
+                      <FormControlLabel
+                        control={(
+                          <Checkbox
+                            size="small"
+                            checked={enabledTools.includes(tool.id)}
+                            onChange={(event) => toggleOfficeTool(tool.id, event.target.checked)}
+                          />
+                        )}
+                        label={tool.label}
+                      />
+                    </Grid>
+                  ))}
+                </Grid>
+              </Collapse>
+            </Stack>
+          </Paper>
+        </Grid>
+        <Grid item xs={12}>
+          <Paper variant="outlined" sx={getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '12px' })}>
+            <Stack spacing={1.1}>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'flex-start', md: 'center' }}>
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Мои данные и обращения в IT</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Только данные самого сотрудника: его техника, компьютер и учётная запись. Обращение в IT создаётся после подтверждения.
+                  </Typography>
+                </Box>
+                <FormControlLabel
+                  control={<Switch checked={selfToolsEnabled} onChange={(event) => toggleSelfTools(event.target.checked)} />}
+                  label="Самообслуживание"
+                />
+              </Stack>
+              <Collapse in={selfToolsEnabled} unmountOnExit>
+                <Grid container spacing={0.5}>
+                  {AI_SELF_TOOL_OPTIONS.map((tool) => (
+                    <Grid item xs={12} md={6} key={tool.id}>
+                      <FormControlLabel
+                        control={(
+                          <Checkbox
+                            size="small"
+                            checked={enabledTools.includes(tool.id)}
+                            onChange={(event) => toggleOfficeTool(tool.id, event.target.checked)}
+                          />
+                        )}
+                        label={tool.label}
+                      />
+                    </Grid>
+                  ))}
+                </Grid>
+              </Collapse>
+            </Stack>
+          </Paper>
+        </Grid>
+        <Grid item xs={12}>
+          <Paper variant="outlined" sx={getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '12px' })}>
+            <Stack spacing={1.1}>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'flex-start', md: 'center' }}>
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Справочник сотрудников и оргструктура</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Рабочие телефоны, e-mail, кабинет и отсутствие коллег; руководители подразделений. Личные данные ассистенту не передаются.
+                  </Typography>
+                </Box>
+                <FormControlLabel
+                  control={<Switch checked={directoryToolsEnabled} onChange={(event) => toggleDirectoryTools(event.target.checked)} />}
+                  label="Справочник"
+                />
+              </Stack>
+              <Collapse in={directoryToolsEnabled} unmountOnExit>
+                <Grid container spacing={0.5}>
+                  {AI_DIRECTORY_TOOL_OPTIONS.map((tool) => (
+                    <Grid item xs={12} md={6} key={tool.id}>
+                      <FormControlLabel
+                        control={(
+                          <Checkbox
+                            size="small"
+                            checked={enabledTools.includes(tool.id)}
+                            onChange={(event) => toggleOfficeTool(tool.id, event.target.checked)}
+                          />
+                        )}
+                        label={tool.label}
+                      />
+                    </Grid>
+                  ))}
+                </Grid>
+              </Collapse>
+            </Stack>
+          </Paper>
+        </Grid>
+        <Grid item xs={12}>
+          <Paper variant="outlined" sx={getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '12px' })}>
+            <Stack spacing={1.1}>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'flex-start', md: 'center' }}>
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Склад 1С</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Остатки номенклатуры по складам и ИТ-заявки на закупку. Только чтение; нужны права склада 1С.
+                  </Typography>
+                </Box>
+                <FormControlLabel
+                  control={<Switch checked={warehouseToolsEnabled} onChange={(event) => toggleWarehouseTools(event.target.checked)} />}
+                  label="Склад 1С"
+                />
+              </Stack>
+              <Collapse in={warehouseToolsEnabled} unmountOnExit>
+                <Grid container spacing={0.5}>
+                  {AI_WAREHOUSE_TOOL_OPTIONS.map((tool) => (
                     <Grid item xs={12} md={6} key={tool.id}>
                       <FormControlLabel
                         control={(

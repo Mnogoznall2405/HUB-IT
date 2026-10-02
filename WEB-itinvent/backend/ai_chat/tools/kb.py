@@ -1,6 +1,8 @@
 """Knowledge base tools for ai_chat: on-demand article search and open."""
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -11,6 +13,7 @@ from backend.ai_chat.tools.context import (
     KB_TOOL_ARTICLES_GET,
     KB_TOOL_ARTICLES_SEARCH,
     KB_TOOL_ATTACHMENT_GET_TEXT,
+    KB_TOOL_ATTACHMENT_SEND,
     KB_TOOL_CATEGORIES_LIST,
 )
 from backend.ai_chat.tools.registry import ai_tool_registry
@@ -32,6 +35,8 @@ def _index_search(*, query: str, limit: int, current_user: dict[str, Any]) -> li
         return []
 
 DEFAULT_LIMIT = 10
+# Size cap for a KB file the agent attaches to its answer (the file is read into memory).
+KB_SEND_MAX_BYTES = max(1, int(os.environ.get("AI_KB_SEND_MAX_MB", "50") or 50)) * 1024 * 1024
 MAX_LIMIT = 20
 _MAX_TEXT_FIELD = 2000
 _MAX_LIST_ITEMS = 40
@@ -58,6 +63,17 @@ def _tool_user(context: AiToolExecutionContext) -> dict[str, Any]:
     return user if isinstance(user, dict) else {"id": user_id}
 
 
+def _attachment_refs(attachments: list[Any], limit: int = 10) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": _normalize_text(item.get("id")),
+            "file_name": _normalize_text(item.get("file_name") or item.get("name")) or None,
+        }
+        for item in list(attachments or [])[:limit]
+        if isinstance(item, dict) and _normalize_text(item.get("id"))
+    ]
+
+
 def _article_card(row: dict[str, Any]) -> dict[str, Any]:
     attachments = row.get("attachments") if isinstance(row.get("attachments"), list) else []
     return {
@@ -71,6 +87,7 @@ def _article_card(row: dict[str, Any]) -> dict[str, Any]:
         "updated_at": _normalize_text(row.get("updated_at")) or None,
         "primary_attachment_id": _normalize_text(row.get("primary_attachment_id")) or None,
         "attachments_count": len(attachments),
+        "attachments": _attachment_refs(attachments),
     }
 
 
@@ -305,10 +322,78 @@ class KbCategoriesListTool(AiTool):
         )
 
 
+class KbAttachmentSendTool(AiTool):
+    tool_id = KB_TOOL_ATTACHMENT_SEND
+    description = (
+        "Attach a file from a published knowledge base article (form, template, instruction, document) "
+        "to your answer in this chat. Find it first with kb.articles.search / kb.articles.get and pass "
+        "article_id and attachment_id. The file is delivered right after your text answer; call this "
+        "only when the user asked for the file itself, and never claim delivery if this tool failed."
+    )
+    input_model = KbAttachmentGetTextArgs
+    stage = "checking_kb"
+
+    def execute(self, *, context: AiToolExecutionContext, args: KbAttachmentGetTextArgs) -> AiToolResult:
+        if not bool(getattr(context, "allow_kb_document_delivery", False)):
+            return AiToolResult(
+                tool_id=self.tool_id,
+                ok=False,
+                error=(
+                    "Отправка файлов из базы знаний выключена в настройках агента. "
+                    "Дай ссылку на статью вместо файла."
+                ),
+            )
+        user = _tool_user(context)
+        try:
+            article = kb_service.get_article(args.article_id, current_user=user)
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error=str(exc))
+        if not isinstance(article, dict):
+            return AiToolResult(tool_id=self.tool_id, ok=False, error="KB article not found or not available to this employee.")
+        if _normalize_text(article.get("status")).lower() != "published":
+            return AiToolResult(tool_id=self.tool_id, ok=False, error="Only files of published KB articles can be sent.")
+        try:
+            attachment = kb_service.get_attachment(
+                article_id=args.article_id,
+                attachment_id=args.attachment_id,
+                current_user=user,
+            )
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error=str(exc))
+        if not isinstance(attachment, dict):
+            return AiToolResult(tool_id=self.tool_id, ok=False, error="KB attachment not found.")
+        try:
+            size = Path(str(attachment.get("path") or "")).stat().st_size
+        except OSError:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error="KB attachment file is missing on the server.")
+        if size > KB_SEND_MAX_BYTES:
+            return AiToolResult(
+                tool_id=self.tool_id,
+                ok=False,
+                error=(
+                    f"Файл слишком большой для отправки в чат ({size // (1024 * 1024)} МБ, "
+                    f"лимит {KB_SEND_MAX_BYTES // (1024 * 1024)} МБ). Дай ссылку на статью."
+                ),
+            )
+        return AiToolResult(
+            tool_id=self.tool_id,
+            ok=True,
+            data={
+                "article_id": args.article_id,
+                "attachment_id": args.attachment_id,
+                "article_title": _normalize_text(article.get("title")) or None,
+                "file_name": _normalize_text(attachment.get("file_name") or attachment.get("name")) or None,
+                "size": size,
+                "delivery": "attached_after_answer",
+            },
+        )
+
+
 for tool in [
     KbArticlesSearchTool(),
     KbArticlesGetTool(),
     KbAttachmentGetTextTool(),
+    KbAttachmentSendTool(),
     KbCategoriesListTool(),
 ]:
     ai_tool_registry.register(tool)

@@ -379,8 +379,60 @@ _AI_ASSISTANT_CAPABILITIES: tuple[dict[str, Any], ...] = (
     {
         "key": "computers.read",
         "group": "itinvent",
-        "label": "Компьютеры сотрудника и их статус в сети",
+        "label": "Компьютеры: поиск по ПК, пользователю, PST и профилям; аптайм, перезагрузка, диски, изменения железа, программы",
         "permissions": ["computers.read"],
+    },
+    {
+        "key": "self",
+        "group": "self",
+        "label": "Мои данные: моя техника, мой компьютер, моя учётная запись, мой почтовый ящик, мои заявки на закупку и обращение в IT",
+        "permissions": ["chat.ai.use"],
+    },
+    {
+        "key": "self.files",
+        "group": "self",
+        "label": "Мои файлы: найти и приложить свой файл к ответу",
+        "permissions": ["my_files.read"],
+    },
+    {
+        "key": "directory.people",
+        "group": "directory",
+        "label": "Справочник сотрудников: рабочие телефоны, e-mail, кабинет, отсутствие",
+        "permissions": ["address_book.read"],
+    },
+    {
+        "key": "directory.structure",
+        "group": "directory",
+        "label": "Оргструктура: руководители подразделений",
+        "permissions": ["company_structure.read"],
+    },
+    {
+        "key": "itinvent.audit",
+        "group": "itinvent",
+        "label": "Аудит: уволенные сотрудники с техникой, неподписанные акты передачи",
+        "permissions": ["database.read", "address_book.dismissed.read"],
+        "it_only": True,
+    },
+    {
+        "key": "office.mailbox_quota",
+        "group": "office",
+        "label": "Квоты почтовых ящиков: переполненные ящики",
+        "permissions": ["mail.quotas.read"],
+        "it_only": True,
+    },
+    {
+        "key": "warehouse.balances",
+        "group": "warehouse",
+        "label": "Склад 1С: остатки номенклатуры по складам",
+        "permissions": ["warehouse_1c.read"],
+        "it_only": True,
+    },
+    {
+        "key": "warehouse.it_requests",
+        "group": "warehouse",
+        "label": "Склад 1С: ИТ-заявки на закупку, стадии и просрочки",
+        "permissions": ["warehouse_1c.it_requests.read"],
+        "it_only": True,
     },
     {
         "key": "office.mail",
@@ -410,7 +462,7 @@ _AI_ASSISTANT_CAPABILITIES: tuple[dict[str, Any], ...] = (
     {
         "key": "mfu",
         "group": "mfu",
-        "label": "МФУ и принтеры: список, статус SNMP/ping, счётчики страниц",
+        "label": "МФУ и принтеры: список, статус SNMP/ping, счётчики страниц, заканчивающийся тонер",
         "permissions": ["mfu.read"],
     },
     {
@@ -582,7 +634,7 @@ async def get_ai_assistant_capabilities(
         item = dict(row)
         item["granted"] = _capability_granted(row, effective=effective, is_admin=is_admin)
         if allowed_groups is not None and item.get("group") in {
-            "itinvent", "office", "files", "mfu", "network", "ad", "kb", "chat",
+            "itinvent", "office", "files", "mfu", "network", "ad", "kb", "chat", "self", "directory", "warehouse",
         }:
             # AG-2: учитываем и фактический набор групп из filter_tools_for_user,
             # и точные права строки — групповая доступность не должна

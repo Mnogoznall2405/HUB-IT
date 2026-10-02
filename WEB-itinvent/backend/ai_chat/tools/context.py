@@ -67,6 +67,34 @@ KB_TOOL_ARTICLES_SEARCH = "kb.articles.search"
 KB_TOOL_ARTICLES_GET = "kb.articles.get"
 KB_TOOL_ATTACHMENT_GET_TEXT = "kb.attachments.get_text"
 KB_TOOL_CATEGORIES_LIST = "kb.categories.list"
+KB_TOOL_ATTACHMENT_SEND = "kb.attachments.send"
+# Inventory agent data (computers.read): search hosts and open one host's health.
+ITINVENT_TOOL_COMPUTERS_SEARCH = "itinvent.computers.search"
+ITINVENT_TOOL_COMPUTERS_GET = "itinvent.computers.get"
+# Self-service tools: answer only about the employee who asks (identity comes from
+# the portal account, never from tool arguments).
+SELF_TOOL_EQUIPMENT = "me.equipment"
+SELF_TOOL_COMPUTER_HEALTH = "me.computer.health"
+SELF_TOOL_ACCOUNT_STATUS = "me.account.status"
+HELPDESK_TOOL_REQUEST_DRAFT = "helpdesk.request_draft"
+SELF_TOOL_MAILBOX_QUOTA = "me.mailbox.quota"
+SELF_TOOL_FILES_SEARCH = "me.files.search"
+SELF_TOOL_FILES_ATTACH = "me.files.attach"
+# Company directory (work contacts only) and org structure.
+DIRECTORY_TOOL_PEOPLE_SEARCH = "directory.people.search"
+DIRECTORY_TOOL_DEPARTMENT_GET = "directory.department.get"
+# IT reports over inventory-agent, ITinvent, ZUP and mailbox-quota data.
+ITINVENT_TOOL_COMPUTERS_CHANGES = "itinvent.computers.changes"
+ITINVENT_TOOL_COMPUTERS_SOFTWARE = "itinvent.computers.software_search"
+ITINVENT_TOOL_AUDIT_DISMISSED = "itinvent.audit.dismissed_with_equipment"
+OFFICE_TOOL_MAILBOX_QUOTA_REPORT = "office.mailbox.quota_report"
+ITINVENT_TOOL_ACTS_PENDING = "itinvent.acts.pending"
+MFU_TOOL_LOW_TONER = "mfu.devices.low_toner"
+# 1C warehouse (read-only).
+WAREHOUSE_TOOL_BALANCES_SEARCH = "warehouse.balances.search"
+WAREHOUSE_TOOL_IT_REQUESTS_SEARCH = "warehouse.it_requests.search"
+WAREHOUSE_TOOL_IT_REQUEST_GET = "warehouse.it_requests.get"
+SELF_TOOL_IT_REQUESTS = "me.it_requests"
 VOICE_TOOL_MEETINGS_SEARCH = "voice.meetings.search"
 VOICE_TOOL_MEETING_GET = "voice.meeting.get"
 CHAT_TOOL_USERS_SEARCH = "chat.users.search"
@@ -158,6 +186,9 @@ AI_TOOL_GROUP_NETWORK = "network"
 AI_TOOL_GROUP_AD = "ad"
 AI_TOOL_GROUP_KB = "kb"
 AI_TOOL_GROUP_CHAT = "chat"
+AI_TOOL_GROUP_SELF = "self"
+AI_TOOL_GROUP_DIRECTORY = "directory"
+AI_TOOL_GROUP_WAREHOUSE = "warehouse"
 AI_TOOL_GROUP_OTHER = "other"
 AI_TOOL_GROUPS_ALL = (
     AI_TOOL_GROUP_ITINVENT,
@@ -168,6 +199,9 @@ AI_TOOL_GROUPS_ALL = (
     AI_TOOL_GROUP_AD,
     AI_TOOL_GROUP_KB,
     AI_TOOL_GROUP_CHAT,
+    AI_TOOL_GROUP_SELF,
+    AI_TOOL_GROUP_DIRECTORY,
+    AI_TOOL_GROUP_WAREHOUSE,
     AI_TOOL_GROUP_OTHER,
 )
 
@@ -194,6 +228,12 @@ def get_tool_group(tool_id: object) -> str:
         return AI_TOOL_GROUP_KB
     if normalized.startswith("chat."):
         return AI_TOOL_GROUP_CHAT
+    if normalized.startswith(("me.", "helpdesk.")):
+        return AI_TOOL_GROUP_SELF
+    if normalized.startswith("directory."):
+        return AI_TOOL_GROUP_DIRECTORY
+    if normalized.startswith("warehouse."):
+        return AI_TOOL_GROUP_WAREHOUSE
     return AI_TOOL_GROUP_OTHER
 
 
@@ -335,6 +375,8 @@ class AiToolExecutionContext:
     tool_settings: dict[str, Any]
     allow_generated_artifacts: bool = True
     trigger_message_id: str = ""
+    # Bot setting "send KB files": kb.attachments.send is refused when it is off.
+    allow_kb_document_delivery: bool = False
 
     @property
     def is_admin(self) -> bool:

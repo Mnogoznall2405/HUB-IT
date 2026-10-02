@@ -157,3 +157,47 @@ def test_ai_kb_fts_migration_creates_matching_gin_index():
     assert "to_tsvector('simple', concat_ws(' ', title, content))" in source
     assert 'INDEX_NAME = "ix_app_ai_kb_chunks_fts_simple"' in source
     assert "DROP INDEX IF EXISTS app.{INDEX_NAME}" in source
+
+
+def test_ai_kb_index_includes_attachment_file_names(monkeypatch, tmp_path):
+    """Файл без извлекаемого текста находится по имени: «бланк отпуска» → Бланк_отпуска.pdf."""
+    retrieval_module = importlib.import_module("backend.ai_chat.retrieval")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    from sqlalchemy import select
+
+    article_id = f"kb-name-{time.time_ns()}"
+    scan = tmp_path / "scan.pdf"
+    scan.write_bytes(b"%PDF-scan")
+    article = {
+        "id": article_id,
+        "title": "Кадровые документы",
+        "status": "published",
+        "updated_at": "2026-10-02T00:00:00Z",
+        "content": {},
+        "attachments": [{"id": "att-1", "file_name": "Бланк_отпуска.pdf", "size": 9}],
+    }
+    kb_service = retrieval_module.kb_service
+    monkeypatch.setattr(kb_service, "list_articles", lambda **kw: {"items": [article], "total": 1})
+    monkeypatch.setattr(kb_service, "resolve_effective_primary_attachment", lambda art: art["attachments"][0])
+    monkeypatch.setattr(
+        kb_service,
+        "get_attachment",
+        lambda article_id, attachment_id, current_user=None: {
+            "id": attachment_id,
+            "file_name": "Бланк_отпуска.pdf",
+            "path": str(scan),
+        },
+    )
+    monkeypatch.setattr(retrieval_module, "extract_text_from_path", lambda *a, **k: "")
+
+    retrieval_module.AiKbRetrievalService().sync_index()
+
+    with appdb_db.app_session() as session:
+        contents = [
+            row.content
+            for row in session.scalars(
+                select(app_models.AppAiKbChunk).where(app_models.AppAiKbChunk.kb_article_id == article_id)
+            ).all()
+        ]
+    assert any("Бланк_отпуска.pdf" in content for content in contents)

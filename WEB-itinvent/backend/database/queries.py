@@ -4044,6 +4044,40 @@ def get_owner_email_by_no(owner_no: int, db_id: Optional[str] = None) -> Optiona
     return _reference_get_owner_email_by_no(owner_no, db_id, get_db_fn=get_db)
 
 
+def find_owner_nos_by_identity(
+    *,
+    email: Optional[str] = None,
+    display_name: Optional[str] = None,
+    db_id: Optional[str] = None,
+    limit: int = 3,
+) -> Dict[str, List[int]]:
+    """Exact (not fuzzy) OWNER lookups used to map a portal account to its ITinvent owner.
+
+    Returns OWNER_NO lists for an exact e-mail match and an exact display-name match;
+    callers decide what counts as unambiguous.
+    """
+    db = get_db(db_id)
+    top = max(1, min(int(limit or 3), 10))
+    result: Dict[str, List[int]] = {"email": [], "name": []}
+    email_text = str(email or "").strip().lower()
+    if email_text and "@" in email_text:
+        rows = db.execute_query(
+            f"SELECT TOP {top} o.OWNER_NO FROM OWNERS o "
+            "WHERE LOWER(LTRIM(RTRIM(COALESCE(o.OWNER_EMAIL, '')))) = ?",
+            (email_text,),
+        ) or []
+        result["email"] = [int(row.get("OWNER_NO")) for row in rows if row.get("OWNER_NO") is not None]
+    name_text = " ".join(str(display_name or "").split())
+    if name_text:
+        rows = db.execute_query(
+            f"SELECT TOP {top} o.OWNER_NO FROM OWNERS o "
+            "WHERE LTRIM(RTRIM(COALESCE(o.OWNER_DISPLAY_NAME, ''))) = ?",
+            (name_text,),
+        ) or []
+        result["name"] = [int(row.get("OWNER_NO")) for row in rows if row.get("OWNER_NO") is not None]
+    return result
+
+
 def create_equipment_item(
     serial_no: str,
     employee_name: str,

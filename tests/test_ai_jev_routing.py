@@ -407,3 +407,195 @@ def test_expansion_idempotent_for_routed_group():
     assert payload["data"]["code"] == "already_enabled"
     # specs не дублируются
     assert len(env["tool_specs"]) == 1
+
+
+# ---------- follow-up fixes: acks in dialog, cache key, fallback, tool mode, sticky ----------
+
+
+@pytest.mark.parametrize("text", ["да", "ок", "хорошо", "давай", "👍"])
+def test_ack_is_not_smalltalk_inside_dialog(text):
+    """«да» после вопроса бота — подтверждение, которому нужны инструменты."""
+    assert service_module._is_short_smalltalk(text) is True
+    assert service_module._is_short_smalltalk(text, has_dialog_context=True) is False
+
+
+@pytest.mark.parametrize("text", ["привет", "спасибо", "до свидания"])
+def test_greeting_stays_smalltalk_inside_dialog(text):
+    assert service_module._is_short_smalltalk(text, has_dialog_context=True) is True
+
+
+def test_message_with_attachment_is_never_smalltalk():
+    assert service_module._is_short_smalltalk("ок", has_attachment=True) is False
+    assert service_module._is_short_smalltalk("спасибо", has_attachment=True) is False
+
+
+def test_dialog_context_needs_earlier_message_or_sticky_groups():
+    # recent_messages ends with the trigger message itself.
+    assert service_module._has_jev_dialog_context(recent_messages=["Пользователь: да"]) is False
+    assert service_module._has_jev_dialog_context(
+        recent_messages=["Бот: Выгрузить в Excel?", "Пользователь: да"]
+    ) is True
+    assert service_module._has_jev_dialog_context(recent_messages=[], sticky_groups={"files"}) is True
+
+
+def test_ack_in_dialog_is_routed_through_jev(monkeypatch):
+    monkeypatch.setenv("AI_JEV_ROUTING", "1")
+    monkeypatch.setattr(service_module.jev_client, "is_configured", lambda: True)
+    calls = []
+    monkeypatch.setattr(
+        service_module.jev_client,
+        "decide",
+        lambda **kw: calls.append(kw) or _jev_decision({"g_files": 0.9}),
+    )
+    routed = service_module._route_tool_groups_jev(
+        trigger_text="да",
+        available_groups={"itinvent", "files", "other"},
+        recent_messages=["Бот: Выгрузить список в Excel?", "Пользователь: да"],
+    )
+    assert len(calls) == 1
+    assert "files" in routed
+
+
+def test_group_routing_cache_key_depends_on_dialog_context(monkeypatch):
+    monkeypatch.setenv("AI_JEV_ROUTING", "1")
+    monkeypatch.setattr(service_module.jev_client, "is_configured", lambda: True)
+    calls = []
+    monkeypatch.setattr(
+        service_module.jev_client,
+        "decide",
+        lambda **kw: calls.append(kw) or _jev_decision({}),
+    )
+    available = {"itinvent", "office", "other"}
+    service_module._route_tool_groups_jev(
+        trigger_text="а у Петрова?",
+        available_groups=available,
+        recent_messages=["Пользователь: найди ноутбук Иванова", "Пользователь: а у Петрова?"],
+    )
+    service_module._route_tool_groups_jev(
+        trigger_text="а у Петрова?",
+        available_groups=available,
+        recent_messages=["Пользователь: напиши письмо Иванову", "Пользователь: а у Петрова?"],
+    )
+    service_module._route_tool_groups_jev(
+        trigger_text="а у Петрова?",
+        available_groups=available,
+        recent_messages=["Пользователь: напиши письмо Иванову", "Пользователь: а у Петрова?"],
+        has_attachment=True,
+    )
+    assert len(calls) == 3
+
+
+def test_group_routing_failure_is_not_cached(monkeypatch):
+    monkeypatch.setenv("AI_JEV_ROUTING", "1")
+    monkeypatch.setattr(service_module.jev_client, "is_configured", lambda: True)
+    calls = []
+
+    def _flaky(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise TimeoutError("jev timeout")
+        return _jev_decision({"g_mfu": 0.9})
+
+    monkeypatch.setattr(service_module.jev_client, "decide", _flaky)
+    available = {"itinvent", "mfu", "other"}
+    first = service_module._route_tool_groups_jev(trigger_text="сколько напечатано", available_groups=available)
+    second = service_module._route_tool_groups_jev(trigger_text="сколько напечатано", available_groups=available)
+    assert len(calls) == 2
+    assert "mfu" not in first
+    assert "mfu" in second
+
+
+def test_tool_routing_failure_is_not_cached(monkeypatch):
+    monkeypatch.setenv("AI_JEV_ROUTING", "1")
+    monkeypatch.setenv("AI_JEV_ROUTING_MODE", "tool")
+    monkeypatch.setattr(service_module.jev_client, "is_configured", lambda: True)
+    calls = []
+
+    def _flaky(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise TimeoutError("jev timeout")
+        return _jev_decision({})
+
+    monkeypatch.setattr(service_module.jev_client, "decide", _flaky)
+    specs = [{"tool_id": "mfu.devices.list", "description": "список МФУ"}]
+    service_module._route_tools_jev(trigger_text="сколько напечатано", tool_specs=specs)
+    service_module._route_tools_jev(trigger_text="сколько напечатано", tool_specs=specs)
+    assert len(calls) == 2
+
+
+def test_tool_routing_cache_key_depends_on_candidate_tools(monkeypatch):
+    """Разные права внутри одной группы — разные наборы инструментов и ключи кэша."""
+    monkeypatch.setenv("AI_JEV_ROUTING", "1")
+    monkeypatch.setenv("AI_JEV_ROUTING_MODE", "tool")
+    monkeypatch.setattr(service_module.jev_client, "is_configured", lambda: True)
+    calls = []
+    monkeypatch.setattr(
+        service_module.jev_client,
+        "decide",
+        lambda **kw: calls.append(kw) or _jev_decision({}),
+    )
+    read_only = [{"tool_id": "ad.user.password_status", "description": "статус пароля"}]
+    manage = read_only + [{"tool_id": "ad.action.unlock_draft", "description": "разблокировка"}]
+    service_module._route_tools_jev(trigger_text="учётка Иванова", tool_specs=read_only, available_groups={"ad"})
+    service_module._route_tools_jev(trigger_text="учётка Иванова", tool_specs=manage, available_groups={"ad"})
+    assert len(calls) == 2
+
+
+def test_expansion_adds_missing_tools_of_partially_routed_group():
+    """Tool-mode: группа «подключена» одним resolver-инструментом, поиск ещё недоступен."""
+    env = _expansion_env()
+    env["all_tool_specs"] = [
+        {"tool_id": "itinvent.entity.resolve", "description": "resolver"},
+        {"tool_id": "itinvent.equipment.search", "description": "поиск техники"},
+    ]
+    env["tool_specs"] = [{"tool_id": "itinvent.entity.resolve", "description": "resolver"}]
+    env["routed_groups"] = {"itinvent"}
+    payload, _ = service_module._handle_tool_group_expansion(
+        call={"tool_id": "ai.request_tool_group", "args": {"group": "itinvent"}},
+        **env,
+    )
+    assert payload["data"]["code"] == "accepted"
+    assert [s["tool_id"] for s in payload["data"]["enabled_tools"]] == ["itinvent.equipment.search"]
+    assert {s["tool_id"] for s in env["tool_specs"]} == {"itinvent.entity.resolve", "itinvent.equipment.search"}
+    assert env["expanded_groups"] == {"itinvent"}
+
+
+def test_expansion_hands_over_group_usage_rules():
+    env = _expansion_env()
+    payload, _ = service_module._handle_tool_group_expansion(
+        call={"tool_id": "ai.request_tool_group", "args": {"group": "mfu"}},
+        **env,
+    )
+    assert payload["data"]["usage_rules"] == service_module.AI_MFU_TOOL_ROUTING_GUIDE
+
+
+class _FakeRunsSession:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, statement):
+        return SimpleNamespace(scalars=lambda: list(self._rows))
+
+
+def test_sticky_groups_skip_smalltalk_runs(monkeypatch):
+    """«спасибо» между вопросами не обрывает прилипание группы."""
+    rows = [
+        '{"routed_groups": []}',
+        '{"routed_groups": ["other"]}',
+        '{"routed_groups": ["itinvent", "other"]}',
+    ]
+    monkeypatch.setattr(service_module, "app_session", lambda: _FakeRunsSession(rows))
+    sticky = service_module.AiChatService()._sticky_tool_groups(conversation_id="conv-1")
+    assert sticky == {"itinvent", "other"}
+
+
+def test_sticky_groups_empty_when_no_domain_run(monkeypatch):
+    monkeypatch.setattr(service_module, "app_session", lambda: _FakeRunsSession(['{"routed_groups": []}']))
+    assert service_module.AiChatService()._sticky_tool_groups(conversation_id="conv-1") == set()
