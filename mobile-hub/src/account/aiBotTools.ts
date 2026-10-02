@@ -136,6 +136,7 @@ export const AI_BOT_TOOL_GROUPS: Array<{ key: string; title: string; options: Ai
       { id: 'kb.articles.search', label: 'Поиск статей базы знаний' },
       { id: 'kb.articles.get', label: 'Открыть статью базы знаний' },
       { id: 'kb.attachments.get_text', label: 'Читать текст вложения статьи' },
+      { id: 'kb.attachments.send', label: 'Отправить файл из базы знаний' },
       { id: 'kb.categories.list', label: 'Список категорий базы знаний' },
     ],
   },

@@ -46,6 +46,10 @@ def _normalize_tags(value: Any) -> list[str]:
     return [str(item or "").strip() for item in value if str(item or "").strip()]
 
 
+# v2: attachment file names are part of the indexed text.
+_KB_INDEX_LAYOUT_VERSION = 2
+
+
 def _article_to_text(article: dict[str, Any]) -> str:
     content = article.get("content") if isinstance(article.get("content"), dict) else {}
     lines = [
@@ -158,11 +162,22 @@ class AiKbRetrievalService:
                     if extracted:
                         attachment_texts.append(extracted[:12000])
                 base_text = _article_to_text(article)
+                # File names are searchable too: "бланк заявления на отпуск" must find
+                # Zayavlenie_na_otpusk.docx even when the file has no extractable text.
+                attachment_names = "\n".join(
+                    f"Файл: {_normalize_text((item or {}).get('file_name'))}"
+                    for item in list(article.get("attachments") or [])
+                    if _normalize_text((item or {}).get("file_name"))
+                )
                 attachment_blob = "\n\n".join(attachment_texts)
-                combined = "\n\n".join(part for part in [base_text, attachment_blob] if part).strip()
+                combined = "\n\n".join(
+                    part for part in [base_text, attachment_names, attachment_blob] if part
+                ).strip()
                 content_hash = hashlib.sha256(
                     json.dumps(
                         {
+                            # Bump when the indexed text layout changes so existing chunks are rebuilt.
+                            "index_layout": _KB_INDEX_LAYOUT_VERSION,
                             "updated_at": article.get("updated_at"),
                             "title": article.get("title"),
                             "summary": article.get("summary"),

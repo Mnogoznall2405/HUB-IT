@@ -414,6 +414,7 @@ export const AI_KB_TOOL_OPTIONS = [
   { id: 'kb.articles.search', label: 'Поиск статей базы знаний' },
   { id: 'kb.articles.get', label: 'Открыть статью базы знаний' },
   { id: 'kb.attachments.get_text', label: 'Читать текст вложения статьи' },
+  { id: 'kb.attachments.send', label: 'Отправить файл из базы знаний' },
   { id: 'kb.categories.list', label: 'Список категорий базы знаний' },
 ];
 

@@ -424,3 +424,133 @@ def test_route_tools_jev_failure_falls_back_to_narrow_set(monkeypatch):
     )
     # «x» не даёт keyword-hit и mfu не входит в базовый {files, kb} — пустой сет.
     assert result == set()
+
+
+# ---------- kb.attachments.send ----------
+
+
+def _send_ctx(*, allow: bool = True):
+    ctx = _ctx()
+    ctx.allow_kb_document_delivery = allow
+    return ctx
+
+
+def _patch_kb_file(monkeypatch, tmp_path, *, status="published", size=12, article_visible=True, attachment_present=True):
+    file_path = tmp_path / "Бланк отпуска.docx"
+    file_path.write_bytes(b"x" * size)
+    monkeypatch.setattr(kb_module.user_service, "get_by_id", lambda uid: {"id": uid, "role": "viewer"})
+    monkeypatch.setattr(
+        kb_module.kb_service,
+        "get_article",
+        lambda article_id, current_user=None: (
+            {"id": article_id, "title": "Отпуск", "status": status} if article_visible else None
+        ),
+    )
+    monkeypatch.setattr(
+        kb_module.kb_service,
+        "get_attachment",
+        lambda article_id, attachment_id, current_user=None: (
+            {"id": attachment_id, "file_name": "Бланк отпуска.docx", "path": str(file_path)}
+            if attachment_present
+            else None
+        ),
+    )
+
+
+def test_kb_attachment_send_registered_in_kb_group():
+    registry = importlib.import_module("backend.ai_chat.tools").ai_tool_registry
+    assert registry.get("kb.attachments.send") is not None
+    assert tools_context_module.get_tool_group("kb.attachments.send") == tools_context_module.AI_TOOL_GROUP_KB
+
+
+def test_kb_attachment_send_requires_kb_read_permission():
+    permissions = importlib.import_module("backend.ai_chat.tool_permissions")
+    assert permissions.tool_required_permissions("kb.attachments.send") == ["kb.read"]
+
+
+def test_kb_attachment_send_returns_delivery(monkeypatch, tmp_path):
+    _patch_kb_file(monkeypatch, tmp_path)
+    result = kb_module.KbAttachmentSendTool().execute(
+        context=_send_ctx(),
+        args=kb_module.KbAttachmentGetTextArgs(article_id="art-1", attachment_id="att-1"),
+    )
+    assert result.ok is True
+    assert result.data["file_name"] == "Бланк отпуска.docx"
+    assert result.data["article_title"] == "Отпуск"
+    assert result.data["delivery"] == "attached_after_answer"
+
+
+def test_kb_attachment_send_refused_when_bot_setting_off(monkeypatch, tmp_path):
+    _patch_kb_file(monkeypatch, tmp_path)
+    result = kb_module.KbAttachmentSendTool().execute(
+        context=_send_ctx(allow=False),
+        args=kb_module.KbAttachmentGetTextArgs(article_id="art-1", attachment_id="att-1"),
+    )
+    assert result.ok is False
+    assert "выключена" in result.error
+
+
+@pytest.mark.parametrize(
+    "kwargs, fragment",
+    [
+        ({"article_visible": False}, "not available"),
+        ({"status": "draft"}, "published"),
+        ({"attachment_present": False}, "attachment not found"),
+    ],
+)
+def test_kb_attachment_send_rejects_unavailable_files(monkeypatch, tmp_path, kwargs, fragment):
+    _patch_kb_file(monkeypatch, tmp_path, **kwargs)
+    result = kb_module.KbAttachmentSendTool().execute(
+        context=_send_ctx(),
+        args=kb_module.KbAttachmentGetTextArgs(article_id="art-1", attachment_id="att-1"),
+    )
+    assert result.ok is False
+    assert fragment in result.error
+
+
+def test_kb_attachment_send_rejects_too_large_file(monkeypatch, tmp_path):
+    _patch_kb_file(monkeypatch, tmp_path, size=2048)
+    monkeypatch.setattr(kb_module, "KB_SEND_MAX_BYTES", 1024)
+    result = kb_module.KbAttachmentSendTool().execute(
+        context=_send_ctx(),
+        args=kb_module.KbAttachmentGetTextArgs(article_id="art-1", attachment_id="att-1"),
+    )
+    assert result.ok is False
+    assert "слишком большой" in result.error
+
+
+def test_kb_search_cards_list_attachment_names(monkeypatch):
+    monkeypatch.setattr(kb_module.user_service, "get_by_id", lambda uid: {"id": uid})
+    monkeypatch.setattr(
+        kb_module.kb_service,
+        "list_articles",
+        lambda **kw: {
+            "total": 1,
+            "items": [
+                {
+                    "id": "art-1",
+                    "title": "Отпуск",
+                    "attachments": [{"id": "att-1", "file_name": "Бланк отпуска.docx"}],
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(kb_module, "_index_search", lambda **kw: [])
+    result = kb_module.KbArticlesSearchTool().execute(
+        context=_ctx(), args=kb_module.KbArticlesSearchArgs(query="отпуск")
+    )
+    assert result.data["items"][0]["attachments"] == [{"id": "att-1", "file_name": "Бланк отпуска.docx"}]
+
+
+def test_extract_kb_file_deliveries_keeps_ok_unique_calls():
+    traces = [
+        {"tool_id": "kb.attachments.send", "status": "ok", "args": {"article_id": "a", "attachment_id": "1"}},
+        {"tool_id": "kb.attachments.send", "status": "ok", "args": {"article_id": "a", "attachment_id": "1"}},
+        {"tool_id": "kb.attachments.send", "status": "error", "args": {"article_id": "b", "attachment_id": "2"}},
+        {"tool_id": "kb.articles.get", "status": "ok", "args": {"article_id": "c"}},
+        {"tool_id": "kb.attachments.send", "status": "ok", "args": {"article_id": "d", "attachment_id": "4"}},
+    ]
+    assert service_module._extract_kb_file_deliveries(traces) == [
+        {"article_id": "a", "attachment_id": "1"},
+        {"article_id": "d", "attachment_id": "4"},
+    ]

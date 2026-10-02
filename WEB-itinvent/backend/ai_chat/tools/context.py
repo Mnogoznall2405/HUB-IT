@@ -67,6 +67,7 @@ KB_TOOL_ARTICLES_SEARCH = "kb.articles.search"
 KB_TOOL_ARTICLES_GET = "kb.articles.get"
 KB_TOOL_ATTACHMENT_GET_TEXT = "kb.attachments.get_text"
 KB_TOOL_CATEGORIES_LIST = "kb.categories.list"
+KB_TOOL_ATTACHMENT_SEND = "kb.attachments.send"
 VOICE_TOOL_MEETINGS_SEARCH = "voice.meetings.search"
 VOICE_TOOL_MEETING_GET = "voice.meeting.get"
 CHAT_TOOL_USERS_SEARCH = "chat.users.search"
@@ -335,6 +336,8 @@ class AiToolExecutionContext:
     tool_settings: dict[str, Any]
     allow_generated_artifacts: bool = True
     trigger_message_id: str = ""
+    # Bot setting "send KB files": kb.attachments.send is refused when it is off.
+    allow_kb_document_delivery: bool = False
 
     @property
     def is_admin(self) -> bool:

@@ -297,7 +297,7 @@ export function AiBotsAdminSection({
           <Stack direction="row" sx={{ flexWrap: 'wrap', gap: 1 }}>
             <FormControlLabel control={<Switch checked={draft.allow_file_input} onChange={(event) => onChange('allow_file_input', event.target.checked)} />} label="Принимать файлы" />
             <FormControlLabel control={<Switch checked={draft.allow_generated_artifacts} onChange={(event) => onChange('allow_generated_artifacts', event.target.checked)} />} label="Генерировать файлы" />
-            <FormControlLabel control={<Switch checked={draft.allow_kb_document_delivery} onChange={(event) => onChange('allow_kb_document_delivery', event.target.checked)} />} label="Отправлять KB-шаблоны" />
+            <FormControlLabel control={<Switch checked={draft.allow_kb_document_delivery} onChange={(event) => onChange('allow_kb_document_delivery', event.target.checked)} />} label="Отправлять файлы базы знаний" />
             <FormControlLabel control={<Switch checked={draft.is_enabled} onChange={(event) => onChange('is_enabled', event.target.checked)} />} label="Включён" />
           </Stack>
         </Grid>

@@ -3053,6 +3053,160 @@ def test_ai_jev_routing_unattached_group_is_requested_not_reported_disabled(tmp_
     assert "ai.files.create" in result_payload["used_tools"]
 
 
+def test_ai_kb_attachment_send_delivers_kb_file_after_answer(tmp_path, monkeypatch):
+    """The agent finds a KB file and kb.attachments.send attaches it to the chat after the answer."""
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_kb_send.db")
+
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    app_models = importlib.import_module("backend.appdb.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+    kb_service = importlib.import_module("backend.services.kb_service").kb_service
+
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+    kb_file = tmp_path / "Бланк отпуска.docx"
+    kb_file.write_bytes(b"PK-fake-docx")
+    seen_viewers: list[object] = []
+
+    def fake_get_article(article_id, current_user=None):
+        seen_viewers.append(current_user)
+        if article_id != "kb-art-1":
+            return None
+        return {"id": "kb-art-1", "title": "Отпуск", "status": "published"}
+
+    def fake_get_attachment(*, article_id, attachment_id, current_user=None):
+        if (article_id, attachment_id) != ("kb-art-1", "kb-att-1"):
+            return None
+        return {
+            "id": attachment_id,
+            "file_name": "Бланк отпуска.docx",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "path": str(kb_file),
+        }
+
+    monkeypatch.setattr(kb_service, "get_article", fake_get_article)
+    monkeypatch.setattr(kb_service, "get_attachment", fake_get_attachment)
+
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(importlib.import_module("backend.ai_chat.tools.kb"), "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
+    monkeypatch.setattr(
+        ai_chat_module.ai_kb_retrieval_service, "retrieve_template_candidates", lambda **kwargs: [], raising=False
+    )
+    monkeypatch.setattr(
+        chat_service_module.chat_push_service,
+        "send_chat_message_notification",
+        lambda *args, **kwargs: None,
+        raising=False,
+    )
+
+    completion_calls: list[dict[str, object]] = []
+
+    def fake_complete_json(**kwargs):
+        completion_calls.append(kwargs)
+        if len(completion_calls) == 1:
+            return {
+                "answer_markdown": "",
+                "artifacts": [],
+                "kb_attachment_send": None,
+                "tool_calls": [
+                    {"tool_id": "kb.attachments.send", "args": {"article_id": "kb-art-1", "attachment_id": "kb-att-1"}}
+                ],
+            }, {"output_tokens": 6}
+        return {
+            "answer_markdown": "Отправляю бланк заявления на отпуск.",
+            "artifacts": [],
+            "kb_attachment_send": None,
+            "tool_calls": [],
+        }, {"output_tokens": 8}
+
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "complete_json", fake_complete_json)
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "get_status", lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"})
+
+    chat_db.initialize_chat_schema(database_url)
+
+    actor = temp_user_service.create_user(
+        username="operator_kb_send",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        full_name="Operator KB",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "kb.read"],
+    )
+
+    bot = temp_ai_service.ensure_default_bot()
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
+    temp_ai_service.update_bot(bot["id"], {
+        "enabled_tools": ["kb.articles.search", "kb.articles.get", "kb.attachments.send"],
+        "allow_kb_document_delivery": True,
+    })
+    opened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+
+    with chat_db.chat_session(database_url) as session:
+        conversation = session.get(chat_models.ChatConversation, opened["id"])
+        user_message = chat_models.ChatMessage(
+            id="msg-human-kb-send-1",
+            conversation_id=opened["id"],
+            sender_user_id=int(actor["id"]),
+            body="Скинь бланк заявления на отпуск",
+            body_format="plain",
+            conversation_seq=1,
+            created_at=datetime.now(timezone.utc),
+        )
+        conversation.last_message_id = user_message.id
+        conversation.last_message_seq = 1
+        conversation.last_message_at = user_message.created_at
+        conversation.updated_at = user_message.created_at
+        session.add(user_message)
+
+    queued = temp_ai_service.queue_run_for_message(
+        conversation_id=opened["id"],
+        trigger_message_id="msg-human-kb-send-1",
+        current_user_id=int(actor["id"]),
+    )
+    assert queued is not None
+    assert temp_ai_service.process_next_run() is True
+
+    with chat_db.chat_session(database_url) as session:
+        messages = list(
+            session.execute(
+                select(chat_models.ChatMessage)
+                .where(chat_models.ChatMessage.conversation_id == opened["id"])
+                .order_by(chat_models.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+        attachments = list(session.execute(select(chat_models.ChatMessageAttachment)).scalars())
+        runs = list(session.execute(select(app_models.AppAiBotRun)).scalars())
+
+    assert [message.kind for message in messages] == ["text", "text", "file"]
+    assert messages[1].body == "Отправляю бланк заявления на отпуск."
+    assert [item.file_name for item in attachments] == ["Бланк отпуска.docx"]
+    result_payload = json.loads(str(runs[0].result_json or "{}"))
+    assert result_payload["kb_files_delivered"][0]["attachment_id"] == "kb-att-1"
+    assert result_payload["file_generation_errors"] == []
+    # Access is checked for the employee, not the bot user, both in the tool and at send time.
+    assert seen_viewers and all(int((viewer or {}).get("id") or 0) == int(actor["id"]) for viewer in seen_viewers)
+    assert "kb.attachments.send" in str(completion_calls[0].get("user_prompt") or "")
+
+
 def test_ai_files_create_tool_sends_generated_attachment_from_runtime(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_files.db")
 

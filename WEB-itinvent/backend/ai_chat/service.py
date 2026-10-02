@@ -49,6 +49,7 @@ from backend.ai_chat.tools.context import (
     AI_TOOL_GROUPS_ALL,
     AiToolExecutionContext,
     DEFAULT_ITINVENT_TOOL_IDS,
+    KB_TOOL_ATTACHMENT_SEND,
     get_available_database_options,
     get_enabled_tool_groups,
     get_tool_group,
@@ -300,7 +301,13 @@ AI_AD_TOOL_ROUTING_GUIDE = (
 )
 AI_KB_TOOL_ROUTING_GUIDE = (
     "Use kb tools when the user asks for instructions, known-issue fixes or reference docs: "
-    "search articles first, then open the relevant one."
+    "search articles first, then open the relevant one. kb.articles.search also matches text inside "
+    "attached files and their file names. When the user asks to send/give/attach a file, form, template "
+    "or document from the knowledge base (\"скинь бланк\", \"пришли инструкцию файлом\"), find the article, "
+    "pick the attachment by file name (kb.articles.get lists attachments) and call kb.attachments.send with "
+    "article_id and attachment_id; the file is attached right after your answer, so briefly say which file "
+    "you are sending. If several files fit, ask which one instead of sending all. Do not send files the user "
+    "did not ask for, and if kb.attachments.send fails, say so and give the article title instead."
 )
 AI_CHAT_TOOL_ROUTING_GUIDE = (
     "To message a colleague or group, resolve the recipient with chat.users.search or "
@@ -965,12 +972,13 @@ _JEV_GROUP_QUESTIONS: dict[str, dict[str, str]] = {
     },
     AI_TOOL_GROUP_KB: {
         "question": (
-            "Нужны ли статьи базы знаний: инструкции, FAQ, решения типовых проблем, "
-            "регламенты, шаблоны и справочные материалы?"
+            "Нужны ли статьи базы знаний или их файлы: инструкции, FAQ, решения типовых проблем, "
+            "регламенты, бланки, шаблоны и справочные документы (найти или прислать файлом)?"
         ),
         "true_label": (
             "да — «как настроить VPN по инструкции»; «есть ли статья про замену картриджа»; "
-            "«найди регламент по закупкам»; «что делать если не работает почта»"
+            "«найди регламент по закупкам»; «что делать если не работает почта»; "
+            "«скинь бланк заявления на отпуск»; «пришли инструкцию по VPN файлом»"
         ),
         "false_label": (
             "нет — «найди конкретное устройство» (ITinvent); «отправь письмо»; "
@@ -2285,6 +2293,28 @@ def _normalize_kb_attachment_send(value: Any) -> dict[str, str] | None:
         "article_id": article_id,
         "attachment_id": attachment_id,
     }
+
+
+# At most this many KB files are attached to one answer (one chat message).
+AI_KB_SEND_MAX_FILES = 3
+
+
+def _extract_kb_file_deliveries(tool_traces: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+    """KB files the model asked to attach: successful kb.attachments.send calls, deduplicated."""
+    deliveries: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for trace in list(tool_traces or []):
+        if not isinstance(trace, dict):
+            continue
+        if _normalize_text(trace.get("tool_id")) != KB_TOOL_ATTACHMENT_SEND or trace.get("status") != "ok":
+            continue
+        args = trace.get("args") if isinstance(trace.get("args"), dict) else {}
+        key = (_normalize_text(args.get("article_id")), _normalize_text(args.get("attachment_id")))
+        if not all(key) or key in seen:
+            continue
+        seen.add(key)
+        deliveries.append({"article_id": key[0], "attachment_id": key[1]})
+    return deliveries[:AI_KB_SEND_MAX_FILES]
 
 
 def _can_auto_send_template(candidates: list[dict[str, Any]]) -> bool:
@@ -3988,6 +4018,76 @@ class AiChatService:
         )
         return None
 
+    def _send_kb_file_deliveries(
+        self,
+        *,
+        bot_user_id: int,
+        conversation_id: str,
+        viewer_user_id: int,
+        deliveries: list[dict[str, str]],
+    ) -> list[dict[str, Any]]:
+        """Attach KB files chosen via kb.attachments.send in one chat message.
+
+        Access is re-checked for the employee at send time (the article may have been
+        unpublished or restricted since the tool call). Raises on delivery failure.
+        """
+        viewer = user_service.get_by_id(int(viewer_user_id)) or {"id": int(viewer_user_id)}
+        uploads: list[UploadFile] = []
+        delivered: list[dict[str, Any]] = []
+        try:
+            for item in deliveries:
+                article = kb_service.get_article(item["article_id"], current_user=viewer)
+                if not isinstance(article, dict) or _normalize_text(article.get("status")).lower() != "published":
+                    logger.warning(
+                        "KB file delivery skipped, article unavailable: article_id=%s attachment_id=%s",
+                        item["article_id"],
+                        item["attachment_id"],
+                    )
+                    continue
+                attachment = kb_service.get_attachment(
+                    article_id=item["article_id"],
+                    attachment_id=item["attachment_id"],
+                    current_user=viewer,
+                )
+                if not attachment:
+                    logger.warning(
+                        "KB file delivery skipped, attachment unavailable: article_id=%s attachment_id=%s",
+                        item["article_id"],
+                        item["attachment_id"],
+                    )
+                    continue
+                file_name = _normalize_text(attachment.get("file_name")) or "document.bin"
+                content_type = _normalize_text(attachment.get("content_type")) or "application/octet-stream"
+                uploads.append(
+                    _build_upload_file(
+                        file_name=file_name,
+                        content_type=content_type,
+                        payload=Path(str(attachment["path"])).read_bytes(),
+                    )
+                )
+                delivered.append({**item, "file_name": file_name, "content_type": content_type})
+            if not uploads:
+                return []
+            files_message = chat_service.send_files(
+                current_user_id=int(bot_user_id),
+                conversation_id=conversation_id,
+                body="",
+                uploads=uploads,
+                defer_push_notifications=True,
+            )
+        finally:
+            for upload in uploads:
+                try:
+                    upload.file.close()
+                except Exception:
+                    pass
+        self._enqueue_message_side_effects_after_send(
+            conversation_id=conversation_id,
+            message_id=_normalize_text(files_message.get("id")),
+            message=files_message,
+        )
+        return delivered
+
     def _send_kb_template_attachment(
         self,
         *,
@@ -4290,6 +4390,44 @@ class AiChatService:
                 )
             generated_files: list[dict[str, Any]] = []
             file_generation_errors = _extract_generated_file_errors_from_tool_traces(tool_traces)
+            kb_files_delivered: list[dict[str, Any]] = []
+            kb_file_deliveries = [
+                item
+                for item in _extract_kb_file_deliveries(tool_traces)
+                if not (
+                    delivered_kb_attachment
+                    and item["article_id"] == _normalize_text(delivered_kb_attachment.get("article_id"))
+                    and item["attachment_id"] == _normalize_text(delivered_kb_attachment.get("attachment_id"))
+                )
+            ]
+            if kb_file_deliveries and bool(getattr(bot, "allow_kb_document_delivery", False)):
+                report_stage(AI_RUN_STAGE_GENERATING_FILES)
+                try:
+                    kb_files_delivered = self._send_kb_file_deliveries(
+                        bot_user_id=bot_user_id,
+                        conversation_id=run.conversation_id,
+                        viewer_user_id=int(run.user_id),
+                        deliveries=kb_file_deliveries,
+                    )
+                except Exception as exc:
+                    logger.warning("AI KB file delivery failed: run_id=%s error=%s", run.id, exc)
+                    file_generation_errors.append(
+                        {
+                            "error_code": "kb_file_delivery_failed",
+                            "message": _normalize_text(exc) or "KB file delivery failed",
+                            "field_path": None,
+                            "suggested_fix": None,
+                        }
+                    )
+                if len(kb_files_delivered) < len(kb_file_deliveries) and not file_generation_errors:
+                    file_generation_errors.append(
+                        {
+                            "error_code": "kb_file_unavailable",
+                            "message": "файл из базы знаний больше недоступен",
+                            "field_path": None,
+                            "suggested_fix": None,
+                        }
+                    )
             file_specs = list(generated_file_specs or [])
             if artifacts and _artifacts_allowed_for_file_specs(file_specs):
                 try:
@@ -4370,6 +4508,7 @@ class AiChatService:
                                 "file_generation_errors": file_generation_errors,
                                 "kb_attachment_send": kb_attachment_send,
                                 "kb_attachment_delivered": delivered_kb_attachment,
+                                "kb_files_delivered": kb_files_delivered,
                                 "tool_traces": tool_traces,
                                 "routed_groups": list(routed_groups or []),
                                 # J10: actual tool usage + J2 expansions for the
@@ -4486,6 +4625,7 @@ class AiChatService:
             ),
             tool_settings=normalize_tool_settings(_json_loads(getattr(bot, "tool_settings_json", "{}"), {})),
             allow_generated_artifacts=bool(getattr(bot, "allow_generated_artifacts", False)),
+            allow_kb_document_delivery=bool(getattr(bot, "allow_kb_document_delivery", False)),
             trigger_message_id=_normalize_text(run_payload.get("trigger_message_id")),
         )
 
