@@ -10,7 +10,8 @@
     "ad",
     "kb",
     "chat",
-    "other"
+    "other",
+    "self"
   ],
   "questions": [
     {
@@ -277,6 +278,88 @@
       ],
       "requires_permission": "ad_users.read",
       "note": "Для сотрудника без права ad_users.read ожидается отказ, а не подмена данных."
+    },
+    {
+      "id": "self-1",
+      "category": "self",
+      "question": "Что за мной числится из техники?",
+      "expected_groups": [
+        "self"
+      ],
+      "requires_permission": "chat.ai.use"
+    },
+    {
+      "id": "self-2",
+      "category": "self",
+      "question": "Почему у меня так тормозит компьютер?",
+      "expected_groups": [
+        "self"
+      ],
+      "requires_permission": "chat.ai.use"
+    },
+    {
+      "id": "self-3",
+      "category": "self",
+      "question": "Когда мне нужно менять пароль?",
+      "expected_groups": [
+        "self"
+      ],
+      "requires_permission": "chat.ai.use"
+    },
+    {
+      "id": "self-4",
+      "category": "self",
+      "question": "Не печатает принтер, создай заявку в IT.",
+      "expected_groups": [
+        "self"
+      ],
+      "requires_permission": "chat.ai.use"
+    },
+    {
+      "id": "self-5",
+      "category": "self",
+      "question": "Меня не пускает в систему, что случилось с учёткой?",
+      "expected_groups": [
+        "self"
+      ],
+      "requires_permission": "chat.ai.use"
+    },
+    {
+      "id": "computers-1",
+      "category": "computers",
+      "question": "Где лежит PST-архив пользователя kozlovskii.me?",
+      "expected_groups": [
+        "itinvent"
+      ],
+      "requires_permission": "computers.read"
+    },
+    {
+      "id": "computers-2",
+      "category": "computers",
+      "question": "За каким компьютером сидит Иванов?",
+      "expected_groups": [
+        "itinvent"
+      ],
+      "requires_permission": "computers.read"
+    },
+    {
+      "id": "computers-3",
+      "category": "computers",
+      "question": "Сколько дней не перезагружался компьютер WS-042 и ждёт ли он перезагрузки?",
+      "expected_groups": [
+        "itinvent"
+      ],
+      "requires_permission": "computers.read"
+    },
+    {
+      "id": "boundary-self-1",
+      "category": "boundary",
+      "question": "Когда истекает пароль у Петрова?",
+      "expected_groups": [
+        "ad"
+      ],
+      "requires_permission": "ad_users.read",
+      "note": "Вопрос о другом сотруднике — не self-группа."
     }
   ]
 }

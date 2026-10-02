@@ -353,6 +353,8 @@ export const AI_ITINVENT_TOOL_OPTIONS = [
   { id: 'itinvent.action.pc_cleaning_draft', label: 'Черновик чистки ПК' },
   { id: 'itinvent.user.by_name', label: 'Поиск пользователя по имени' },
   { id: 'itinvent.user.full_context', label: 'Полный IT-контекст пользователя' },
+  { id: 'itinvent.computers.search', label: 'Поиск компьютеров (ПК, пользователь, PST, профили)' },
+  { id: 'itinvent.computers.get', label: 'Карточка компьютера: аптайм, перезагрузка, диски, PST' },
   { id: AI_ITINVENT_MULTI_DB_TOOL_ID, label: 'Мульти-БД поиск (admin)' },
 ];
 
@@ -423,6 +425,13 @@ export const AI_CHAT_TOOL_OPTIONS = [
   { id: 'chat.conversations.search', label: 'Поиск диалогов Hub' },
 ];
 
+export const AI_SELF_TOOL_OPTIONS = [
+  { id: 'me.equipment', label: 'Моя техника' },
+  { id: 'me.computer.health', label: 'Состояние моего компьютера' },
+  { id: 'me.account.status', label: 'Моя учётная запись: пароль и блокировка' },
+  { id: 'helpdesk.request_draft', label: 'Обращение в IT (черновик с подтверждением)' },
+];
+
 export const AI_CHAT_ACTION_TOOL_OPTIONS = [
   { id: 'chat.action.message_send_draft', label: 'Черновик сообщения в чат' },
 ];
@@ -435,3 +444,4 @@ export const AI_NETWORK_TOOL_IDS = new Set(AI_NETWORK_TOOL_OPTIONS.map((item) =>
 export const AI_AD_TOOL_IDS = new Set(AI_AD_TOOL_OPTIONS.map((item) => item.id));
 export const AI_KB_TOOL_IDS = new Set(AI_KB_TOOL_OPTIONS.map((item) => item.id));
 export const AI_CHAT_TOOL_IDS = new Set([...AI_CHAT_TOOL_OPTIONS, ...AI_CHAT_ACTION_TOOL_OPTIONS].map((item) => item.id));
+export const AI_SELF_TOOL_IDS = new Set(AI_SELF_TOOL_OPTIONS.map((item) => item.id));

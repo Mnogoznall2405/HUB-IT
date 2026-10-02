@@ -76,6 +76,9 @@ _PREFIX_PERMISSIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("chat.action.", (PERM_CHAT_WRITE,)),
     ("chat.", (PERM_CHAT_READ,)),
     ("voice.", (PERM_VOICE_READ,)),
+    # Self-service: only the asking employee's own data, so the assistant permission is enough.
+    ("me.", (PERM_CHAT_AI_USE,)),
+    ("helpdesk.", (PERM_CHAT_AI_USE,)),
 )
 
 

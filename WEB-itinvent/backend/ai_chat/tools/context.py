@@ -68,6 +68,15 @@ KB_TOOL_ARTICLES_GET = "kb.articles.get"
 KB_TOOL_ATTACHMENT_GET_TEXT = "kb.attachments.get_text"
 KB_TOOL_CATEGORIES_LIST = "kb.categories.list"
 KB_TOOL_ATTACHMENT_SEND = "kb.attachments.send"
+# Inventory agent data (computers.read): search hosts and open one host's health.
+ITINVENT_TOOL_COMPUTERS_SEARCH = "itinvent.computers.search"
+ITINVENT_TOOL_COMPUTERS_GET = "itinvent.computers.get"
+# Self-service tools: answer only about the employee who asks (identity comes from
+# the portal account, never from tool arguments).
+SELF_TOOL_EQUIPMENT = "me.equipment"
+SELF_TOOL_COMPUTER_HEALTH = "me.computer.health"
+SELF_TOOL_ACCOUNT_STATUS = "me.account.status"
+HELPDESK_TOOL_REQUEST_DRAFT = "helpdesk.request_draft"
 VOICE_TOOL_MEETINGS_SEARCH = "voice.meetings.search"
 VOICE_TOOL_MEETING_GET = "voice.meeting.get"
 CHAT_TOOL_USERS_SEARCH = "chat.users.search"
@@ -159,6 +168,7 @@ AI_TOOL_GROUP_NETWORK = "network"
 AI_TOOL_GROUP_AD = "ad"
 AI_TOOL_GROUP_KB = "kb"
 AI_TOOL_GROUP_CHAT = "chat"
+AI_TOOL_GROUP_SELF = "self"
 AI_TOOL_GROUP_OTHER = "other"
 AI_TOOL_GROUPS_ALL = (
     AI_TOOL_GROUP_ITINVENT,
@@ -169,6 +179,7 @@ AI_TOOL_GROUPS_ALL = (
     AI_TOOL_GROUP_AD,
     AI_TOOL_GROUP_KB,
     AI_TOOL_GROUP_CHAT,
+    AI_TOOL_GROUP_SELF,
     AI_TOOL_GROUP_OTHER,
 )
 
@@ -195,6 +206,8 @@ def get_tool_group(tool_id: object) -> str:
         return AI_TOOL_GROUP_KB
     if normalized.startswith("chat."):
         return AI_TOOL_GROUP_CHAT
+    if normalized.startswith(("me.", "helpdesk.")):
+        return AI_TOOL_GROUP_SELF
     return AI_TOOL_GROUP_OTHER
 
 

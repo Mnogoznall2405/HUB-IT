@@ -18,6 +18,7 @@ from backend.database import queries
 from backend.database.equipment_db import invalidate_equipment_cache
 from backend.services.authorization_service import (
     PERM_CHAT_AI_USE,
+    PERM_CHAT_WRITE,
     PERM_DATABASE_WRITE,
     PERM_MAIL_ACCESS,
     PERM_TASKS_CREATE,
@@ -54,6 +55,7 @@ ACTION_WORKS_BATTERY = "itinvent.works.battery"
 ACTION_WORKS_COMPONENT = "itinvent.works.component"
 ACTION_WORKS_PC_CLEANING = "itinvent.works.pc_cleaning"
 ACTION_CHAT_MESSAGE_SEND = "chat.message.send"
+ACTION_HELPDESK_REQUEST_CREATE = "helpdesk.request.create"
 ACTION_WORKS_TYPES = frozenset(
     {
         ACTION_WORKS_CARTRIDGE,
@@ -1081,6 +1083,79 @@ def build_office_task_draft(
     )
 
 
+def _build_helpdesk_request_preview(payload: dict[str, Any]) -> dict[str, Any]:
+    priority = _normalize_text(payload.get("priority"), "normal")
+    return {
+        "title": "Обращение в IT",
+        "summary": _normalize_text(payload.get("title")),
+        "effects": ["создание задачи в IT-проекте", "уведомление IT-отдела"],
+        "task": {
+            "title": _normalize_text(payload.get("title")),
+            "description_preview": _normalize_text(payload.get("description"))[:500],
+            "category": _normalize_text(payload.get("category_label")) or None,
+            "priority": priority,
+            "urgent": priority == "high",
+            "computers": [str(item) for item in list(payload.get("computers") or [])[:5]],
+        },
+    }
+
+
+def build_helpdesk_request_draft(
+    *,
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    normalized_payload = dict(payload or {})
+    return create_pending_action(
+        action_type=ACTION_HELPDESK_REQUEST_CREATE,
+        conversation_id=conversation_id,
+        run_id=run_id,
+        requester_user_id=requester_user_id,
+        database_id=None,
+        payload=normalized_payload,
+        preview=_build_helpdesk_request_preview(normalized_payload),
+    )
+
+
+def _helpdesk_task_description(payload: dict[str, Any]) -> str:
+    lines = [_normalize_text(payload.get("description")), ""]
+    lines.append(f"Категория: {_normalize_text(payload.get('category_label')) or 'Другое'}")
+    requester = _normalize_text(payload.get("requester_name"))
+    login = _normalize_text(payload.get("requester_login"))
+    if requester or login:
+        lines.append(f"Сотрудник: {requester}{f' ({login})' if login else ''}".strip())
+    computers = [str(item) for item in list(payload.get("computers") or []) if _normalize_text(item)]
+    if computers:
+        lines.append("Компьютер: " + "; ".join(computers[:5]))
+    lines.append("")
+    lines.append("Создано через ИИ-ассистента Hub.")
+    return "\n".join(lines).strip()
+
+
+def _execute_helpdesk_request_create(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
+    # Self-service: any employee who may use the assistant can file a request to IT;
+    # the IT project and the dispatcher come from server settings, not from the model.
+    _require_permission(current_user, PERM_CHAT_AI_USE)
+    from backend.ai_chat.tools.self_service import helpdesk_settings
+
+    settings = helpdesk_settings()
+    if not settings.get("project_id") or not settings.get("assignee_user_id"):
+        raise ValueError("Приём обращений в IT через ассистента не настроен")
+    task = hub_service.create_task(
+        title=f"[IT] {_normalize_text(payload.get('title'))}"[:300],
+        description=_helpdesk_task_description(payload),
+        assignee_user_id=int(settings["assignee_user_id"]),
+        controller_user_id=int(settings.get("controller_user_id") or 0),
+        due_at=None,
+        project_id=settings["project_id"],
+        priority="high" if _normalize_text(payload.get("priority")) == "high" else "normal",
+        actor=_user_dict(current_user),
+    )
+    return {"success": True, "task": task, "task_id": _normalize_text(task.get("id")) or None}
+
+
 _WORKS_ACTION_TITLES = {
     ACTION_WORKS_CARTRIDGE: "Замена картриджа",
     ACTION_WORKS_BATTERY: "Замена батареи",
@@ -2005,6 +2080,8 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
                 )
             elif row.action_type == ACTION_CHAT_MESSAGE_SEND:
                 result = _execute_chat_message_send(payload=payload, current_user=current_user)
+            elif row.action_type == ACTION_HELPDESK_REQUEST_CREATE:
+                result = _execute_helpdesk_request_create(payload=payload, current_user=current_user)
             elif row.action_type == ACTION_SANDBOX_PERMISSION:
                 _require_permission(current_user, PERM_CHAT_AI_USE)
                 permission_id = _normalize_text(payload.get("permission_id"))

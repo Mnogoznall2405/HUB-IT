@@ -1797,6 +1797,48 @@ def test_ai_transfer_confirm_uses_shared_service_without_owner_creation(tmp_path
     assert calls[0]["payload"]["new_employee_no"] == 55
 
 
+def test_ai_helpdesk_request_confirm_creates_one_it_task(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_helpdesk_confirm.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    monkeypatch.setenv("AI_HELPDESK_PROJECT_ID", "proj-it")
+    monkeypatch.setenv("AI_HELPDESK_ASSIGNEE_USER_ID", "42")
+    card = action_cards.build_helpdesk_request_draft(
+        conversation_id="conv-1",
+        run_id="run-1",
+        requester_user_id=99,
+        payload={
+            "title": "Не печатает принтер",
+            "description": "Замятие бумаги в 214",
+            "category_label": "Принтер / МФУ",
+            "priority": "normal",
+            "computers": ["WS-01, IP 10.0.0.5, статус online"],
+        },
+    )
+    assert card["action_type"] == "helpdesk.request.create"
+    assert card["preview"]["title"] == "Обращение в IT"
+    assert card["preview"]["task"]["computers"] == ["WS-01, IP 10.0.0.5, статус online"]
+
+    created: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        action_cards.hub_service,
+        "create_task",
+        lambda **kwargs: created.append(kwargs) or {"id": f"task-{len(created)}"},
+    )
+
+    confirmed = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["chat.ai.use"]))
+    repeated = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["chat.ai.use"]))
+
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["result"]["task_id"] == "task-1"
+    assert repeated["status"] == "confirmed"
+    assert len(created) == 1
+    assert created[0]["project_id"] == "proj-it"
+    assert created[0]["actor"]["id"] == 99
+
+
 def test_ai_transfer_confirm_sends_generated_act_to_chat(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_transfer_confirm_sends_act.db")
     appdb_db = importlib.import_module("backend.appdb.db")

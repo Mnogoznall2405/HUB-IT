@@ -42,6 +42,8 @@ import {
   AI_OFFICE_ACTION_TOOL_OPTIONS,
   AI_OFFICE_TOOL_OPTIONS,
   AI_OFFICE_TOOL_IDS,
+  AI_SELF_TOOL_OPTIONS,
+  AI_SELF_TOOL_IDS,
 } from '../accountConstants';
 import {
   createAiBotDraft,
@@ -54,6 +56,7 @@ import {
   getAiBotMfuTools,
   getAiBotNetworkTools,
   getAiBotOfficeTools,
+  getAiBotSelfTools,
   isAiBotLiveDataEnabled,
 } from './aiBotModel';
 
@@ -207,6 +210,16 @@ export function AiBotsAdminSection({
     const networkToolsEnabled = getAiBotNetworkTools(draft).length > 0;
     const kbToolsEnabled = getAiBotKbTools(draft).length > 0;
     const chatToolsEnabled = getAiBotChatTools(draft).length > 0;
+    const selfToolsEnabled = getAiBotSelfTools(draft).length > 0;
+
+    const toggleSelfTools = (checked) => {
+      const selfIds = AI_SELF_TOOL_OPTIONS.map((item) => item.id);
+      if (checked) {
+        onChange('enabled_tools', Array.from(new Set([...enabledTools, ...selfIds])));
+        return;
+      }
+      onChange('enabled_tools', enabledTools.filter((item) => !AI_SELF_TOOL_IDS.has(item)));
+    };
 
     const toggleKbTools = (checked) => {
       const kbIds = AI_KB_TOOL_OPTIONS.map((item) => item.id);
@@ -616,6 +629,42 @@ export function AiBotsAdminSection({
               <Collapse in={kbToolsEnabled} unmountOnExit>
                 <Grid container spacing={0.5}>
                   {AI_KB_TOOL_OPTIONS.map((tool) => (
+                    <Grid item xs={12} md={6} key={tool.id}>
+                      <FormControlLabel
+                        control={(
+                          <Checkbox
+                            size="small"
+                            checked={enabledTools.includes(tool.id)}
+                            onChange={(event) => toggleOfficeTool(tool.id, event.target.checked)}
+                          />
+                        )}
+                        label={tool.label}
+                      />
+                    </Grid>
+                  ))}
+                </Grid>
+              </Collapse>
+            </Stack>
+          </Paper>
+        </Grid>
+        <Grid item xs={12}>
+          <Paper variant="outlined" sx={getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '12px' })}>
+            <Stack spacing={1.1}>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'flex-start', md: 'center' }}>
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Мои данные и обращения в IT</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Только данные самого сотрудника: его техника, компьютер и учётная запись. Обращение в IT создаётся после подтверждения.
+                  </Typography>
+                </Box>
+                <FormControlLabel
+                  control={<Switch checked={selfToolsEnabled} onChange={(event) => toggleSelfTools(event.target.checked)} />}
+                  label="Самообслуживание"
+                />
+              </Stack>
+              <Collapse in={selfToolsEnabled} unmountOnExit>
+                <Grid container spacing={0.5}>
+                  {AI_SELF_TOOL_OPTIONS.map((tool) => (
                     <Grid item xs={12} md={6} key={tool.id}>
                       <FormControlLabel
                         control={(

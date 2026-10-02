@@ -7,6 +7,7 @@ import {
   AI_MFU_TOOL_IDS,
   AI_NETWORK_TOOL_IDS,
   AI_OFFICE_TOOL_IDS,
+  AI_SELF_TOOL_IDS,
 } from '../accountConstants';
 
 export const getAiBotEnabledTools = (value) => (
@@ -21,6 +22,7 @@ export const getAiBotNetworkTools = (value) => getAiBotEnabledTools(value).filte
 export const getAiBotAdTools = (value) => getAiBotEnabledTools(value).filter((item) => AI_AD_TOOL_IDS.has(item));
 export const getAiBotKbTools = (value) => getAiBotEnabledTools(value).filter((item) => AI_KB_TOOL_IDS.has(item));
 export const getAiBotChatTools = (value) => getAiBotEnabledTools(value).filter((item) => AI_CHAT_TOOL_IDS.has(item));
+export const getAiBotSelfTools = (value) => getAiBotEnabledTools(value).filter((item) => AI_SELF_TOOL_IDS.has(item));
 
 export const isAiBotLiveDataEnabled = (value) => getAiBotItinventTools(value).length > 0;
 

@@ -379,8 +379,14 @@ _AI_ASSISTANT_CAPABILITIES: tuple[dict[str, Any], ...] = (
     {
         "key": "computers.read",
         "group": "itinvent",
-        "label": "Компьютеры сотрудника и их статус в сети",
+        "label": "Компьютеры: поиск по ПК, пользователю, PST и профилям; аптайм, перезагрузка, диски",
         "permissions": ["computers.read"],
+    },
+    {
+        "key": "self",
+        "group": "self",
+        "label": "Мои данные: моя техника, мой компьютер, моя учётная запись и обращение в IT",
+        "permissions": ["chat.ai.use"],
     },
     {
         "key": "office.mail",
@@ -582,7 +588,7 @@ async def get_ai_assistant_capabilities(
         item = dict(row)
         item["granted"] = _capability_granted(row, effective=effective, is_admin=is_admin)
         if allowed_groups is not None and item.get("group") in {
-            "itinvent", "office", "files", "mfu", "network", "ad", "kb", "chat",
+            "itinvent", "office", "files", "mfu", "network", "ad", "kb", "chat", "self",
         }:
             # AG-2: учитываем и фактический набор групп из filter_tools_for_user,
             # и точные права строки — групповая доступность не должна

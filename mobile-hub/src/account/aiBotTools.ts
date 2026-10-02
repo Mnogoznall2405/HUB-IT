@@ -60,6 +60,8 @@ export const AI_BOT_TOOL_GROUPS: Array<{ key: string; title: string; options: Ai
       { id: 'itinvent.action.pc_cleaning_draft', label: 'Черновик чистки ПК' },
       { id: 'itinvent.user.by_name', label: 'Поиск пользователя по имени' },
       { id: 'itinvent.user.full_context', label: 'Полный IT-контекст пользователя' },
+      { id: 'itinvent.computers.search', label: 'Поиск компьютеров (ПК, пользователь, PST, профили)' },
+      { id: 'itinvent.computers.get', label: 'Карточка компьютера: аптайм, перезагрузка, диски, PST' },
       { id: AI_ITINVENT_MULTI_DB_TOOL_ID, label: 'Мульти-БД поиск (admin)' },
     ],
   },
@@ -138,6 +140,16 @@ export const AI_BOT_TOOL_GROUPS: Array<{ key: string; title: string; options: Ai
       { id: 'kb.attachments.get_text', label: 'Читать текст вложения статьи' },
       { id: 'kb.attachments.send', label: 'Отправить файл из базы знаний' },
       { id: 'kb.categories.list', label: 'Список категорий базы знаний' },
+    ],
+  },
+  {
+    key: 'self',
+    title: 'Мои данные и обращения в IT',
+    options: [
+      { id: 'me.equipment', label: 'Моя техника' },
+      { id: 'me.computer.health', label: 'Состояние моего компьютера' },
+      { id: 'me.account.status', label: 'Моя учётная запись: пароль и блокировка' },
+      { id: 'helpdesk.request_draft', label: 'Обращение в IT (черновик с подтверждением)' },
     ],
   },
   {

@@ -45,6 +45,7 @@ from backend.ai_chat.tools.context import (
     AI_TOOL_GROUP_AD,
     AI_TOOL_GROUP_KB,
     AI_TOOL_GROUP_CHAT,
+    AI_TOOL_GROUP_SELF,
     AI_TOOL_GROUP_OTHER,
     AI_TOOL_GROUPS_ALL,
     AiToolExecutionContext,
@@ -235,12 +236,12 @@ AI_ITINVENT_TOOL_ROUTING_GUIDE = (
     "- When the user asks 'which computer belongs to [employee]' or 'what device is assigned to [name]': use itinvent.user.computer with the employee name.\n"
     "- To resolve a person's identity by name, surname, or login before equipment lookup: use itinvent.user.by_name first.\n"
     "- For questions like 'where does [name] work' or 'find employee [name]': use itinvent.user.by_name.\n"
-    "- COMPUTER/OUTLOOK SEARCH: When user asks 'где архив', 'где PST', 'где outlook', 'где почта' followed by ANY identifier (email like kozlovskii.me, name, or filename): immediately use itinvent.computers.outlook_search with query parameter.\n"
-    "- Examples that MUST trigger outlook_search: 'где архив kozlovskii.me', 'где PST Иванова', 'где лежит archive.pst', 'outlook на компьютере Петрова'.\n"
-    "- PROFILE SEARCH: When user asks 'где профиль', 'на каком компьютере сидит', 'за каким ПК', 'где работает' followed by Russian surname or login: use itinvent.computers.profile_search.\n"
-    "- Examples: 'где профиль Козловский', 'на каком компьютере сидит Иванов', 'за каким ПК Петров' → use itinvent.computers.profile_search.\n"
+    "- COMPUTER/OUTLOOK SEARCH: for 'где архив', 'где PST', 'где outlook' followed by an identifier (email-like login such as kozlovskii.me, surname or file name) call itinvent.computers.search with field='outlook'.\n"
+    "- Examples: 'где архив kozlovskii.me', 'где PST Иванова', 'где лежит archive.pst', 'outlook на компьютере Петрова'.\n"
+    "- PROFILE / WORKSTATION SEARCH: for 'где профиль', 'на каком компьютере сидит', 'за каким ПК' followed by a surname or login call itinvent.computers.search with field='profiles' (profile folders) or field='user' (who is logged in); open one result with itinvent.computers.get for uptime, pending reboot, disks and all PST files.\n"
+    "- Examples: 'где профиль Козловский' → field='profiles'; 'на каком компьютере сидит Иванов', 'за каким ПК Петров' → field='user'.\n"
     "- DO NOT interpret email-like strings (e.g., kozlovskii.me) as external websites when asked about archives/PST location.\n"
-    "- NEVER say you lack access to computer data вЂ” the computers.outlook_search and computers.profile_search tools are available."
+    "- If itinvent.computers.search is not among the enabled tools, say that computer data is not connected for this assistant instead of guessing."
 )
 AI_FILE_TOOL_ROUTING_GUIDE = (
     "File generation routing:\n"
@@ -314,6 +315,15 @@ AI_CHAT_TOOL_ROUTING_GUIDE = (
     "chat.conversations.search, then create chat.action.message_send_draft. "
     "Never claim a message was sent before the user confirms the action card."
 )
+AI_SELF_TOOL_ROUTING_GUIDE = (
+    "Self-service tools answer only about the employee you talk to; they take no 'who' argument. "
+    "'Что за мной числится' → me.equipment; 'почему тормозит / нужно ли перезагрузиться / мало места' → "
+    "me.computer.health (explain pending reboot, long uptime, high RAM, low disk in plain words and what to do); "
+    "'когда менять пароль / не пускает в систему' → me.account.status (you cannot unlock or reset passwords). "
+    "When the employee reports a problem that the knowledge base and these checks do not solve, or asks to create "
+    "a request to IT, call helpdesk.request_draft with a short title and the employee's description; the request is "
+    "created only after the employee confirms the card. Never use these tools to look up another person."
+)
 # Rules handed to the model together with the specs of a group enabled mid-run (J2).
 _AI_TOOL_GROUP_ROUTING_GUIDES: dict[str, str] = {
     AI_TOOL_GROUP_ITINVENT: AI_ITINVENT_TOOL_ROUTING_GUIDE,
@@ -324,6 +334,7 @@ _AI_TOOL_GROUP_ROUTING_GUIDES: dict[str, str] = {
     AI_TOOL_GROUP_AD: AI_AD_TOOL_ROUTING_GUIDE,
     AI_TOOL_GROUP_KB: AI_KB_TOOL_ROUTING_GUIDE,
     AI_TOOL_GROUP_CHAT: AI_CHAT_TOOL_ROUTING_GUIDE,
+    AI_TOOL_GROUP_SELF: AI_SELF_TOOL_ROUTING_GUIDE,
 }
 AI_ANSWER_STYLE_GUIDE = (
     "Answer style and structure rules (Russian):\n"
@@ -997,6 +1008,20 @@ _JEV_GROUP_QUESTIONS: dict[str, dict[str, str]] = {
         "false_label": (
             "нет — «напиши письмо по почте» (office/mail); «найди оборудование»; "
             "«привет» без запроса на сообщение"
+        ),
+    },
+    AI_TOOL_GROUP_SELF: {
+        "question": (
+            "Спрашивает ли сотрудник о СЕБЕ — своей технике, своём компьютере, своей учётной записи/пароле — "
+            "или хочет создать обращение (заявку) в IT-отдел?"
+        ),
+        "true_label": (
+            "да — «что за мной числится»; «почему тормозит мой компьютер»; «когда мне менять пароль»; "
+            "«не пускает в систему»; «создай заявку в IT, не печатает принтер»; «вызови айтишника»"
+        ),
+        "false_label": (
+            "нет — вопросы о технике или учётке ДРУГОГО сотрудника («что числится за Ивановым»); "
+            "«найди статью»; «напиши письмо»; «привет»"
         ),
     },
 }
@@ -5223,7 +5248,7 @@ class AiChatService:
             and not _is_network_tool_id((item or {}).get("tool_id"))
             and not _is_ad_tool_id((item or {}).get("tool_id"))
             and get_tool_group((item or {}).get("tool_id"))
-            not in {AI_TOOL_GROUP_KB, AI_TOOL_GROUP_CHAT}
+            not in {AI_TOOL_GROUP_KB, AI_TOOL_GROUP_CHAT, AI_TOOL_GROUP_SELF}
         ]
         # Tool descriptions share the same 32k input budget as dialogue and files.
         itinvent_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(itinvent_tool_specs), 3500)
@@ -5234,6 +5259,10 @@ class AiChatService:
         ad_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(ad_tool_specs), 400)
         kb_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(kb_tool_specs), 800)
         chat_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(chat_tool_specs), 800)
+        self_tool_specs = [
+            item for item in tool_specs if get_tool_group((item or {}).get("tool_id")) == AI_TOOL_GROUP_SELF
+        ]
+        self_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(self_tool_specs), 800)
         other_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(other_tool_specs), 300)
         file_tools_available = bool(file_tool_specs) and bool(tool_context.allow_generated_artifacts)
         # Groups the employee may use but routing left out of this step: the
@@ -5425,6 +5454,16 @@ class AiChatService:
                     (
                         AI_CHAT_TOOL_ROUTING_GUIDE
                         if chat_tool_specs
+                        else ""
+                    ),
+                    (
+                        f"Enabled self-service tools (only about the current employee):\n{self_tool_specs_text}"
+                        if self_tool_specs
+                        else ""
+                    ),
+                    (
+                        AI_SELF_TOOL_ROUTING_GUIDE
+                        if self_tool_specs
                         else ""
                     ),
                     (
