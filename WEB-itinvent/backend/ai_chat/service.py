@@ -46,11 +46,13 @@ from backend.ai_chat.tools.context import (
     AI_TOOL_GROUP_KB,
     AI_TOOL_GROUP_CHAT,
     AI_TOOL_GROUP_SELF,
+    AI_TOOL_GROUP_DIRECTORY,
     AI_TOOL_GROUP_OTHER,
     AI_TOOL_GROUPS_ALL,
     AiToolExecutionContext,
     DEFAULT_ITINVENT_TOOL_IDS,
     KB_TOOL_ATTACHMENT_SEND,
+    SELF_TOOL_FILES_ATTACH,
     get_available_database_options,
     get_enabled_tool_groups,
     get_tool_group,
@@ -241,7 +243,10 @@ AI_ITINVENT_TOOL_ROUTING_GUIDE = (
     "- PROFILE / WORKSTATION SEARCH: for 'где профиль', 'на каком компьютере сидит', 'за каким ПК' followed by a surname or login call itinvent.computers.search with field='profiles' (profile folders) or field='user' (who is logged in); open one result with itinvent.computers.get for uptime, pending reboot, disks and all PST files.\n"
     "- Examples: 'где профиль Козловский' → field='profiles'; 'на каком компьютере сидит Иванов', 'за каким ПК Петров' → field='user'.\n"
     "- DO NOT interpret email-like strings (e.g., kozlovskii.me) as external websites when asked about archives/PST location.\n"
-    "- If itinvent.computers.search is not among the enabled tools, say that computer data is not connected for this assistant instead of guessing."
+    "- If itinvent.computers.search is not among the enabled tools, say that computer data is not connected for this assistant instead of guessing.\n"
+    "- IT reports: 'что поменялось в железе / сняли монитор / меняли диск' → itinvent.computers.changes; 'у кого стоит <программа>', "
+    "'где старая версия' → itinvent.computers.software_search (version_below); 'уволенные не сдали технику' → "
+    "itinvent.audit.dismissed_with_equipment (rows with needs_check=true are namesakes — say they need manual verification)."
 )
 AI_FILE_TOOL_ROUTING_GUIDE = (
     "File generation routing:\n"
@@ -267,6 +272,7 @@ AI_OFFICE_TOOL_ROUTING_GUIDE = (
     "- Workday summary, urgent items, unread mail or what needs attention: use office.workday.summary.\n"
     "- List available task projects/boards: use office.tasks.projects.\n"
     "- Announcements/news questions: use office.announcements.list to search, then office.announcements.get for a specific announcement.\n"
+    "- Full or over-quota Exchange mailboxes of employees (IT): office.mailbox.quota_report; the employee's own mailbox: me.mailbox.quota.\n"
     "- If recipient, task, assignee, controller, project, message or due date is ambiguous, resolve first or ask a short clarification."
 )
 AI_MFU_TOOL_ROUTING_GUIDE = (
@@ -319,10 +325,18 @@ AI_SELF_TOOL_ROUTING_GUIDE = (
     "Self-service tools answer only about the employee you talk to; they take no 'who' argument. "
     "'Что за мной числится' → me.equipment; 'почему тормозит / нужно ли перезагрузиться / мало места' → "
     "me.computer.health (explain pending reboot, long uptime, high RAM, low disk in plain words and what to do); "
-    "'когда менять пароль / не пускает в систему' → me.account.status (you cannot unlock or reset passwords). "
+    "'когда менять пароль / не пускает в систему' → me.account.status (you cannot unlock or reset passwords); "
+    "'почему не уходят письма / ящик переполнен' → me.mailbox.quota; 'найди мой файл / приложи мой отчёт' → me.files.search, "
+    "then me.files.attach (the file is attached right after your answer). "
     "When the employee reports a problem that the knowledge base and these checks do not solve, or asks to create "
     "a request to IT, call helpdesk.request_draft with a short title and the employee's description; the request is "
     "created only after the employee confirms the card. Never use these tools to look up another person."
+)
+AI_DIRECTORY_TOOL_ROUTING_GUIDE = (
+    "Company directory: phones, e-mails, position, department, office room and current absence of colleagues → "
+    "directory.people.search (department + absent_only for 'кто отсутствует в отделе'); head of a department and "
+    "where it sits in the structure → directory.department.get. Only work contacts are available; never invent "
+    "personal phones or private data. If a colleague is absent, mention the return date."
 )
 # Rules handed to the model together with the specs of a group enabled mid-run (J2).
 _AI_TOOL_GROUP_ROUTING_GUIDES: dict[str, str] = {
@@ -335,6 +349,7 @@ _AI_TOOL_GROUP_ROUTING_GUIDES: dict[str, str] = {
     AI_TOOL_GROUP_KB: AI_KB_TOOL_ROUTING_GUIDE,
     AI_TOOL_GROUP_CHAT: AI_CHAT_TOOL_ROUTING_GUIDE,
     AI_TOOL_GROUP_SELF: AI_SELF_TOOL_ROUTING_GUIDE,
+    AI_TOOL_GROUP_DIRECTORY: AI_DIRECTORY_TOOL_ROUTING_GUIDE,
 }
 AI_ANSWER_STYLE_GUIDE = (
     "Answer style and structure rules (Russian):\n"
@@ -1022,6 +1037,20 @@ _JEV_GROUP_QUESTIONS: dict[str, dict[str, str]] = {
         "false_label": (
             "нет — вопросы о технике или учётке ДРУГОГО сотрудника («что числится за Ивановым»); "
             "«найди статью»; «напиши письмо»; «привет»"
+        ),
+    },
+    AI_TOOL_GROUP_DIRECTORY: {
+        "question": (
+            "Нужен ли справочник сотрудников или оргструктура: телефон, e-mail, должность, кабинет коллеги, "
+            "кто в отпуске/на больничном, кто руководитель подразделения?"
+        ),
+        "true_label": (
+            "да — «телефон Петрова»; «кто бухгалтер по зарплате»; «Иванова в отпуске?»; "
+            "«кто руководитель бухгалтерии»; «кто отсутствует в отделе продаж»"
+        ),
+        "false_label": (
+            "нет — «что числится за Петровым» (ITinvent); «пароль Петрова» (AD); «напиши Петрову в чате» (chat); "
+            "вопросы о себе (self)"
         ),
     },
 }
@@ -1809,6 +1838,70 @@ def _format_tool_results_for_prompt(results: list[dict[str, Any]]) -> str:
     return _json_dumps(normalized)
 
 
+def _schema_type_label(schema: dict[str, Any], defs: dict[str, Any]) -> str:
+    ref = _normalize_text(schema.get("$ref"))
+    if ref:
+        schema = defs.get(ref.rsplit("/", 1)[-1], {}) if isinstance(defs, dict) else {}
+    if isinstance(schema.get("enum"), list):
+        return "|".join(str(item) for item in schema["enum"][:12])
+    variants = schema.get("anyOf") if isinstance(schema.get("anyOf"), list) else None
+    if variants:
+        labels = [_schema_type_label(item, defs) for item in variants if isinstance(item, dict)]
+        labels = [label for label in labels if label and label != "null"]
+        return "|".join(dict.fromkeys(labels)) or "any"
+    kind = _normalize_text(schema.get("type")) or "any"
+    if kind == "array":
+        items = schema.get("items") if isinstance(schema.get("items"), dict) else {}
+        return f"{_schema_type_label(items, defs)}[]"
+    return kind
+
+
+def _tool_spec_args_signature(input_schema: Any, *, with_descriptions: bool) -> str:
+    schema = input_schema if isinstance(input_schema, dict) else {}
+    defs = schema.get("$defs") if isinstance(schema.get("$defs"), dict) else {}
+    properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    required = set(schema.get("required") or [])
+    parts: list[str] = []
+    for name, prop in properties.items():
+        prop = prop if isinstance(prop, dict) else {}
+        label = f"{name}{'*' if name in required else ''}: {_schema_type_label(prop, defs)}"
+        description = _normalize_text(prop.get("description"))
+        if with_descriptions and description:
+            label += f" ({description[:70]})"
+        parts.append(label)
+    return ", ".join(parts) if parts else "no arguments"
+
+
+def _format_tool_specs_for_prompt(specs: list[dict[str, Any]], token_limit: int) -> str:
+    """Compact one-line-per-tool listing that always keeps every tool.
+
+    The full JSON schema of ~40 tools does not fit the prompt budget and used to be
+    cut mid-text, so the last tools of a group were silently invisible to the model.
+    When the budget is tight, descriptions are shortened first; a tool id is never dropped.
+    """
+    rows = [item for item in list(specs or []) if isinstance(item, dict) and _normalize_text(item.get("tool_id"))]
+    if not rows:
+        return "No tools."
+    max_chars = max(0, int(token_limit or 0)) * 4
+    text = ""
+    for description_limit, arg_descriptions in ((400, True), (220, True), (220, False), (120, False), (60, False), (0, False)):
+        lines = []
+        for item in rows:
+            description = _normalize_text(item.get("description"))
+            if description_limit and len(description) > description_limit:
+                description = description[:description_limit].rsplit(" ", 1)[0] + "…"
+            head = f"- {_normalize_text(item.get('tool_id'))}"
+            if description_limit:
+                head += f": {description}"
+            if item.get("admin_only"):
+                head += " [admin only]"
+            lines.append(f"{head} | args: {_tool_spec_args_signature(item.get('input_schema'), with_descriptions=arg_descriptions)}")
+        text = "\n".join(lines)
+        if not max_chars or len(text) <= max_chars:
+            return text
+    return text
+
+
 _EQUIPMENT_EXPORT_COLUMNS = [
     "Инв. номер",
     "Серийный номер",
@@ -2340,6 +2433,21 @@ def _extract_kb_file_deliveries(tool_traces: list[dict[str, Any]] | None) -> lis
         seen.add(key)
         deliveries.append({"article_id": key[0], "attachment_id": key[1]})
     return deliveries[:AI_KB_SEND_MAX_FILES]
+
+
+def _extract_my_file_deliveries(tool_traces: list[dict[str, Any]] | None) -> list[str]:
+    """Own 'My files' the model asked to attach: successful me.files.attach calls, deduplicated."""
+    file_ids: list[str] = []
+    for trace in list(tool_traces or []):
+        if not isinstance(trace, dict):
+            continue
+        if _normalize_text(trace.get("tool_id")) != SELF_TOOL_FILES_ATTACH or trace.get("status") != "ok":
+            continue
+        args = trace.get("args") if isinstance(trace.get("args"), dict) else {}
+        file_id = _normalize_text(args.get("file_id"))
+        if file_id and file_id not in file_ids:
+            file_ids.append(file_id)
+    return file_ids[:AI_KB_SEND_MAX_FILES]
 
 
 def _can_auto_send_template(candidates: list[dict[str, Any]]) -> bool:
@@ -4113,6 +4221,57 @@ class AiChatService:
         )
         return delivered
 
+    def _send_my_file_deliveries(
+        self,
+        *,
+        bot_user_id: int,
+        conversation_id: str,
+        owner_user_id: int,
+        file_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        """Attach the employee's own My files in one chat message (owner/antivirus re-checked)."""
+        from backend.ai_chat.tools.self_service import load_my_file_for_delivery
+        from backend.services.my_files_service import MyFilesService
+
+        uploads: list[UploadFile] = []
+        delivered: list[dict[str, Any]] = []
+        try:
+            for file_id in file_ids:
+                try:
+                    payload = load_my_file_for_delivery(file_id=file_id, user_id=int(owner_user_id))
+                except Exception as exc:
+                    logger.warning("My file delivery skipped: file_id=%s error=%s", file_id, type(exc).__name__)
+                    continue
+                uploads.append(
+                    _build_upload_file(
+                        file_name=payload.file_name,
+                        content_type=payload.media_type,
+                        payload=MyFilesService._read_payload_bytes(payload),
+                    )
+                )
+                delivered.append({"file_id": file_id, "file_name": payload.file_name})
+            if not uploads:
+                return []
+            files_message = chat_service.send_files(
+                current_user_id=int(bot_user_id),
+                conversation_id=conversation_id,
+                body="",
+                uploads=uploads,
+                defer_push_notifications=True,
+            )
+        finally:
+            for upload in uploads:
+                try:
+                    upload.file.close()
+                except Exception:
+                    pass
+        self._enqueue_message_side_effects_after_send(
+            conversation_id=conversation_id,
+            message_id=_normalize_text(files_message.get("id")),
+            message=files_message,
+        )
+        return delivered
+
     def _send_kb_template_attachment(
         self,
         *,
@@ -4460,6 +4619,36 @@ class AiChatService:
                 except GeneratedFileError as exc:
                     logger.warning("AI generated artifacts were rejected: run_id=%s error=%s", run.id, exc)
                     file_generation_errors.append(exc.to_payload())
+            my_files_delivered: list[dict[str, Any]] = []
+            my_file_ids = _extract_my_file_deliveries(tool_traces)
+            if my_file_ids:
+                report_stage(AI_RUN_STAGE_GENERATING_FILES)
+                try:
+                    my_files_delivered = self._send_my_file_deliveries(
+                        bot_user_id=bot_user_id,
+                        conversation_id=run.conversation_id,
+                        owner_user_id=int(run.user_id),
+                        file_ids=my_file_ids,
+                    )
+                except Exception as exc:
+                    logger.warning("AI my-files delivery failed: run_id=%s error=%s", run.id, exc)
+                    file_generation_errors.append(
+                        {
+                            "error_code": "my_file_delivery_failed",
+                            "message": _normalize_text(exc) or "My file delivery failed",
+                            "field_path": None,
+                            "suggested_fix": None,
+                        }
+                    )
+                if len(my_files_delivered) < len(my_file_ids) and not file_generation_errors:
+                    file_generation_errors.append(
+                        {
+                            "error_code": "my_file_unavailable",
+                            "message": "файл из «Моих файлов» больше недоступен",
+                            "field_path": None,
+                            "suggested_fix": None,
+                        }
+                    )
             if file_specs and bool(bot.allow_generated_artifacts):
                 report_stage(AI_RUN_STAGE_GENERATING_FILES)
                 uploads: list[UploadFile] = []
@@ -4534,6 +4723,7 @@ class AiChatService:
                                 "kb_attachment_send": kb_attachment_send,
                                 "kb_attachment_delivered": delivered_kb_attachment,
                                 "kb_files_delivered": kb_files_delivered,
+                                "my_files_delivered": my_files_delivered,
                                 "tool_traces": tool_traces,
                                 "routed_groups": list(routed_groups or []),
                                 # J10: actual tool usage + J2 expansions for the
@@ -5248,22 +5438,26 @@ class AiChatService:
             and not _is_network_tool_id((item or {}).get("tool_id"))
             and not _is_ad_tool_id((item or {}).get("tool_id"))
             and get_tool_group((item or {}).get("tool_id"))
-            not in {AI_TOOL_GROUP_KB, AI_TOOL_GROUP_CHAT, AI_TOOL_GROUP_SELF}
+            not in {AI_TOOL_GROUP_KB, AI_TOOL_GROUP_CHAT, AI_TOOL_GROUP_SELF, AI_TOOL_GROUP_DIRECTORY}
         ]
         # Tool descriptions share the same 32k input budget as dialogue and files.
-        itinvent_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(itinvent_tool_specs), 3500)
-        file_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(file_tool_specs), 1500)
-        office_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(office_tool_specs), 1500)
-        mfu_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(mfu_tool_specs), 400)
-        network_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(network_tool_specs), 400)
-        ad_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(ad_tool_specs), 400)
-        kb_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(kb_tool_specs), 800)
-        chat_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(chat_tool_specs), 800)
+        itinvent_tool_specs_text = _format_tool_specs_for_prompt(itinvent_tool_specs, 3500)
+        file_tool_specs_text = _format_tool_specs_for_prompt(file_tool_specs, 1500)
+        office_tool_specs_text = _format_tool_specs_for_prompt(office_tool_specs, 1500)
+        mfu_tool_specs_text = _format_tool_specs_for_prompt(mfu_tool_specs, 700)
+        network_tool_specs_text = _format_tool_specs_for_prompt(network_tool_specs, 700)
+        ad_tool_specs_text = _format_tool_specs_for_prompt(ad_tool_specs, 700)
+        kb_tool_specs_text = _format_tool_specs_for_prompt(kb_tool_specs, 800)
+        chat_tool_specs_text = _format_tool_specs_for_prompt(chat_tool_specs, 800)
         self_tool_specs = [
             item for item in tool_specs if get_tool_group((item or {}).get("tool_id")) == AI_TOOL_GROUP_SELF
         ]
-        self_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(self_tool_specs), 800)
-        other_tool_specs_text = _truncate_tokens(_format_tool_results_for_prompt(other_tool_specs), 300)
+        self_tool_specs_text = _format_tool_specs_for_prompt(self_tool_specs, 1000)
+        directory_tool_specs = [
+            item for item in tool_specs if get_tool_group((item or {}).get("tool_id")) == AI_TOOL_GROUP_DIRECTORY
+        ]
+        directory_tool_specs_text = _format_tool_specs_for_prompt(directory_tool_specs, 500)
+        other_tool_specs_text = _format_tool_specs_for_prompt(other_tool_specs, 300)
         file_tools_available = bool(file_tool_specs) and bool(tool_context.allow_generated_artifacts)
         # Groups the employee may use but routing left out of this step: the
         # prompt must not call them "disabled", the model should request them.
@@ -5464,6 +5658,16 @@ class AiChatService:
                     (
                         AI_SELF_TOOL_ROUTING_GUIDE
                         if self_tool_specs
+                        else ""
+                    ),
+                    (
+                        f"Enabled company directory tools:\n{directory_tool_specs_text}"
+                        if directory_tool_specs
+                        else ""
+                    ),
+                    (
+                        AI_DIRECTORY_TOOL_ROUTING_GUIDE
+                        if directory_tool_specs
                         else ""
                     ),
                     (

@@ -355,6 +355,9 @@ export const AI_ITINVENT_TOOL_OPTIONS = [
   { id: 'itinvent.user.full_context', label: 'Полный IT-контекст пользователя' },
   { id: 'itinvent.computers.search', label: 'Поиск компьютеров (ПК, пользователь, PST, профили)' },
   { id: 'itinvent.computers.get', label: 'Карточка компьютера: аптайм, перезагрузка, диски, PST' },
+  { id: 'itinvent.computers.changes', label: 'Изменения железа (агент инвентаризации)' },
+  { id: 'itinvent.computers.software_search', label: 'Поиск установленных программ' },
+  { id: 'itinvent.audit.dismissed_with_equipment', label: 'Аудит: уволенные с техникой' },
   { id: AI_ITINVENT_MULTI_DB_TOOL_ID, label: 'Мульти-БД поиск (admin)' },
 ];
 
@@ -374,6 +377,7 @@ export const AI_OFFICE_TOOL_OPTIONS = [
   { id: 'office.tasks.projects', label: 'Проекты задач' },
   { id: 'office.announcements.list', label: 'Список объявлений' },
   { id: 'office.announcements.get', label: 'Открыть объявление' },
+  { id: 'office.mailbox.quota_report', label: 'Отчёт по квотам почтовых ящиков (IT)' },
 ];
 
 export const AI_OFFICE_ACTION_TOOL_OPTIONS = [
@@ -429,7 +433,15 @@ export const AI_SELF_TOOL_OPTIONS = [
   { id: 'me.equipment', label: 'Моя техника' },
   { id: 'me.computer.health', label: 'Состояние моего компьютера' },
   { id: 'me.account.status', label: 'Моя учётная запись: пароль и блокировка' },
+  { id: 'me.mailbox.quota', label: 'Мой почтовый ящик: заполненность' },
+  { id: 'me.files.search', label: 'Мои файлы: поиск' },
+  { id: 'me.files.attach', label: 'Мои файлы: приложить к ответу' },
   { id: 'helpdesk.request_draft', label: 'Обращение в IT (черновик с подтверждением)' },
+];
+
+export const AI_DIRECTORY_TOOL_OPTIONS = [
+  { id: 'directory.people.search', label: 'Справочник сотрудников' },
+  { id: 'directory.department.get', label: 'Оргструктура: руководитель подразделения' },
 ];
 
 export const AI_CHAT_ACTION_TOOL_OPTIONS = [
@@ -445,3 +457,4 @@ export const AI_AD_TOOL_IDS = new Set(AI_AD_TOOL_OPTIONS.map((item) => item.id))
 export const AI_KB_TOOL_IDS = new Set(AI_KB_TOOL_OPTIONS.map((item) => item.id));
 export const AI_CHAT_TOOL_IDS = new Set([...AI_CHAT_TOOL_OPTIONS, ...AI_CHAT_ACTION_TOOL_OPTIONS].map((item) => item.id));
 export const AI_SELF_TOOL_IDS = new Set(AI_SELF_TOOL_OPTIONS.map((item) => item.id));
+export const AI_DIRECTORY_TOOL_IDS = new Set(AI_DIRECTORY_TOOL_OPTIONS.map((item) => item.id));

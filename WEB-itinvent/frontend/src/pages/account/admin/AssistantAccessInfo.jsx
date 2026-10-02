@@ -26,9 +26,10 @@ const GROUP_LABELS = {
   network: 'Сеть',
   chat: 'Чат',
   self: 'Мои данные и обращения в IT',
+  directory: 'Справочник и оргструктура',
   other: 'Прочее',
 };
-const GROUP_ORDER = ['self', 'files', 'kb', 'itinvent', 'office', 'mfu', 'ad', 'network', 'chat', 'other'];
+const GROUP_ORDER = ['self', 'directory', 'files', 'kb', 'itinvent', 'office', 'mfu', 'ad', 'network', 'chat', 'other'];
 
 const PERMISSION_LABELS = new Map(
   SETTINGS_PERMISSION_GROUPS.flatMap((group) =>

@@ -77,6 +77,17 @@ SELF_TOOL_EQUIPMENT = "me.equipment"
 SELF_TOOL_COMPUTER_HEALTH = "me.computer.health"
 SELF_TOOL_ACCOUNT_STATUS = "me.account.status"
 HELPDESK_TOOL_REQUEST_DRAFT = "helpdesk.request_draft"
+SELF_TOOL_MAILBOX_QUOTA = "me.mailbox.quota"
+SELF_TOOL_FILES_SEARCH = "me.files.search"
+SELF_TOOL_FILES_ATTACH = "me.files.attach"
+# Company directory (work contacts only) and org structure.
+DIRECTORY_TOOL_PEOPLE_SEARCH = "directory.people.search"
+DIRECTORY_TOOL_DEPARTMENT_GET = "directory.department.get"
+# IT reports over inventory-agent, ITinvent, ZUP and mailbox-quota data.
+ITINVENT_TOOL_COMPUTERS_CHANGES = "itinvent.computers.changes"
+ITINVENT_TOOL_COMPUTERS_SOFTWARE = "itinvent.computers.software_search"
+ITINVENT_TOOL_AUDIT_DISMISSED = "itinvent.audit.dismissed_with_equipment"
+OFFICE_TOOL_MAILBOX_QUOTA_REPORT = "office.mailbox.quota_report"
 VOICE_TOOL_MEETINGS_SEARCH = "voice.meetings.search"
 VOICE_TOOL_MEETING_GET = "voice.meeting.get"
 CHAT_TOOL_USERS_SEARCH = "chat.users.search"
@@ -169,6 +180,7 @@ AI_TOOL_GROUP_AD = "ad"
 AI_TOOL_GROUP_KB = "kb"
 AI_TOOL_GROUP_CHAT = "chat"
 AI_TOOL_GROUP_SELF = "self"
+AI_TOOL_GROUP_DIRECTORY = "directory"
 AI_TOOL_GROUP_OTHER = "other"
 AI_TOOL_GROUPS_ALL = (
     AI_TOOL_GROUP_ITINVENT,
@@ -180,6 +192,7 @@ AI_TOOL_GROUPS_ALL = (
     AI_TOOL_GROUP_KB,
     AI_TOOL_GROUP_CHAT,
     AI_TOOL_GROUP_SELF,
+    AI_TOOL_GROUP_DIRECTORY,
     AI_TOOL_GROUP_OTHER,
 )
 
@@ -208,6 +221,8 @@ def get_tool_group(tool_id: object) -> str:
         return AI_TOOL_GROUP_CHAT
     if normalized.startswith(("me.", "helpdesk.")):
         return AI_TOOL_GROUP_SELF
+    if normalized.startswith("directory."):
+        return AI_TOOL_GROUP_DIRECTORY
     return AI_TOOL_GROUP_OTHER
 
 

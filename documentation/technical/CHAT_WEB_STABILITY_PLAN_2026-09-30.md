@@ -1772,6 +1772,28 @@ domain-ключей (старая гарантия «file intent всегда д
   `eval_questions.json` (`self-*`, `computers-*`, `boundary-self-1`).
 - Тесты: `tests/test_ai_self_service_tools.py`, `test_ai_helpdesk_request_confirm_creates_one_it_task`.
 
+### AG-4d — справочник, свои ящик и файлы, IT-отчёты, компактные описания инструментов
+
+**Статус: сделано (2026-10-02), инструменты включаются администратором в настройках бота.**
+- Группа `directory`: `directory.people.search` (справочник ЗУП: должность, отдел, кабинет, рабочие
+  телефоны/e-mail, текущее отсутствие с датой выхода; право `address_book.read`) и
+  `directory.department.get` (руководитель подразделения и путь в оргструктуре;
+  `company_structure.read`). Личные телефоны/e-mail, возраст, дата приёма и ИНН модели не передаются
+  ни при каких правах — используется allowlist `company_structure_service._safe_person`.
+- Группа `self`: `me.mailbox.quota` (свой ящик по точному e-mail из последнего снимка квот),
+  `me.files.search` / `me.files.attach` («Мои файлы», право `my_files.read`; файл прикладывается после
+  ответа с повторной проверкой владельца, статуса и антивируса, лимит `AI_MY_FILES_ATTACH_MAX_MB`).
+- IT: `itinvent.computers.changes` (изменения железа за 1–30 дней), `itinvent.computers.software_search`
+  (программы по данным агента, фильтр `version_below`) — оба в рамках компьютеров, видимых сотруднику;
+  `itinvent.audit.dismissed_with_equipment` (уволенные в ЗУП за N дней с техникой в ITinvent, совпадение
+  по точному e-mail или ФИО, однофамильцы работающих помечаются `needs_check`; права `database.read` +
+  `address_book.dismissed.read`); `office.mailbox.quota_report` (`mail.quotas.read`).
+- Исправлено: описания инструментов передавались модели полным JSON Schema и обрезались посередине
+  (ITinvent ~26 тыс. символов при лимите 14 тыс., AD/сеть — 1,6 тыс.), последние инструменты групп были
+  невидимы. Теперь `_format_tool_specs_for_prompt` — строка на инструмент, при нехватке места сначала
+  сокращаются описания, инструмент не выбрасывается никогда; лимиты AD/сети/МФУ 400 → 700 токенов.
+- Тесты: `tests/test_ai_stage2_tools.py`.
+
 ### AG-5 — сравнение моделей
 
 **Статус: харнесс готов, прогон — за пользователем (нужен API-ключ).**

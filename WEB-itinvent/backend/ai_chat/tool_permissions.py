@@ -11,6 +11,7 @@ from typing import Any, Iterable
 
 from backend.ai_chat.tools.context import (
     AD_TOOL_ACTION_UNLOCK_DRAFT,
+    ITINVENT_TOOL_AUDIT_DISMISSED,
     CHAT_TOOL_ACTION_MESSAGE_SEND_DRAFT,
     ITINVENT_TOOL_EQUIPMENT_SEARCH_MULTI_DB,
     NETWORK_TOOL_ACTION_WOL_DRAFT,
@@ -22,16 +23,21 @@ from backend.ai_chat.tools.context import (
 from backend.services.authorization_service import (
     PERM_AD_USERS_MANAGE,
     PERM_AD_USERS_READ,
+    PERM_ADDRESS_BOOK_DISMISSED_READ,
+    PERM_ADDRESS_BOOK_READ,
     PERM_ANNOUNCEMENTS_READ,
     PERM_CHAT_AI_USE,
     PERM_CHAT_READ,
     PERM_CHAT_WRITE,
+    PERM_COMPANY_STRUCTURE_READ,
     PERM_COMPUTERS_READ,
     PERM_DATABASE_READ,
     PERM_DATABASE_WRITE,
     PERM_KB_READ,
     PERM_MAIL_ACCESS,
+    PERM_MAIL_QUOTAS_READ,
     PERM_MFU_READ,
+    PERM_MY_FILES_READ,
     PERM_NETWORKS_READ,
     PERM_NETWORKS_WRITE,
     PERM_TASKS_CREATE,
@@ -53,6 +59,8 @@ _EXACT_PERMISSIONS: dict[str, tuple[str, ...]] = {
     AD_TOOL_ACTION_UNLOCK_DRAFT: (PERM_AD_USERS_MANAGE,),
     NETWORK_TOOL_ACTION_WOL_DRAFT: (PERM_NETWORKS_WRITE,),
     CHAT_TOOL_ACTION_MESSAGE_SEND_DRAFT: (PERM_CHAT_WRITE,),
+    # Joins ITinvent equipment with the ZUP list of dismissed employees.
+    ITINVENT_TOOL_AUDIT_DISMISSED: (PERM_DATABASE_READ, PERM_ADDRESS_BOOK_DISMISSED_READ),
     # Legacy computer-profile tool ids (kept in case they are re-enabled).
     "itinvent.user.computer": (PERM_COMPUTERS_READ,),
     "itinvent.equipment.online_status": (PERM_COMPUTERS_READ,),
@@ -77,8 +85,12 @@ _PREFIX_PERMISSIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("chat.", (PERM_CHAT_READ,)),
     ("voice.", (PERM_VOICE_READ,)),
     # Self-service: only the asking employee's own data, so the assistant permission is enough.
+    ("me.files.", (PERM_MY_FILES_READ,)),
     ("me.", (PERM_CHAT_AI_USE,)),
     ("helpdesk.", (PERM_CHAT_AI_USE,)),
+    ("directory.people.", (PERM_ADDRESS_BOOK_READ,)),
+    ("directory.department.", (PERM_COMPANY_STRUCTURE_READ,)),
+    ("office.mailbox.", (PERM_MAIL_QUOTAS_READ,)),
 )
 
 

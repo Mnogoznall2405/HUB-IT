@@ -27,6 +27,9 @@ from backend.ai_chat.tools.context import (
     SELF_TOOL_ACCOUNT_STATUS,
     SELF_TOOL_COMPUTER_HEALTH,
     SELF_TOOL_EQUIPMENT,
+    SELF_TOOL_FILES_ATTACH,
+    SELF_TOOL_FILES_SEARCH,
+    SELF_TOOL_MAILBOX_QUOTA,
 )
 from backend.ai_chat.tools.registry import ai_tool_registry
 
@@ -341,5 +344,176 @@ class HelpdeskRequestDraftTool(AiTool):
         return AiToolResult(tool_id=self.tool_id, ok=True, data={"action_card": card})
 
 
-for tool in [MyEquipmentTool(), MyComputerHealthTool(), MyAccountStatusTool(), HelpdeskRequestDraftTool()]:
+_GB = 1024 ** 3
+# A personal file the assistant attaches to its answer is read into memory.
+MY_FILES_ATTACH_MAX_BYTES = max(1, int(os.environ.get("AI_MY_FILES_ATTACH_MAX_MB", "50") or 50)) * 1024 * 1024
+MAX_MY_FILES = 10
+
+
+def _gb(value: Any) -> Optional[float]:
+    try:
+        return round(int(value) / _GB, 2)
+    except (TypeError, ValueError):
+        return None
+
+
+class MyMailboxQuotaTool(AiTool):
+    tool_id = SELF_TOOL_MAILBOX_QUOTA
+    description = (
+        "How full the asking employee's own Exchange mailbox is (no arguments): used, quota, free space and "
+        "percent from the latest quota snapshot. Use for 'почему не уходят/не приходят письма', 'ящик переполнен?'. "
+        "For the size of local PST archives use me.computer.health."
+    )
+    input_model = _NoArgs
+    stage = "checking_office"
+
+    def execute(self, *, context: AiToolExecutionContext, args: BaseModel) -> AiToolResult:
+        from backend.services.mailbox_quota_service import mailbox_quota_service
+
+        identity = resolve_self_identity(context)
+        if not identity.emails:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error="В вашей учётной записи портала не указан e-mail.")
+        try:
+            snapshot = mailbox_quota_service.get_latest_snapshot()
+            if snapshot is None:
+                return AiToolResult(tool_id=self.tool_id, ok=False, error="Данные о квотах почтовых ящиков ещё не загружены.")
+            rows = []
+            for email in identity.emails:
+                page = mailbox_quota_service.list_rows(int(snapshot.id), search=email, limit=10)
+                rows.extend(
+                    row for row in page.items if _normalize_text(row.email).lower() == email
+                )
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error=f"Данные о квотах недоступны: {exc}")
+        if not rows:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error="Ваш почтовый ящик не найден в последнем отчёте о квотах.")
+        items = [
+            {
+                "email": row.email,
+                "used_gb": _gb(row.used_bytes),
+                "quota_gb": _gb(row.quota_bytes),
+                "free_gb": _gb(row.free_bytes),
+                "used_percent": row.used_percent,
+                "over_quota": bool(row.used_percent is not None and row.used_percent >= 100),
+                "warning": bool(row.used_percent is not None and 90 <= row.used_percent < 100),
+            }
+            for row in rows
+        ]
+        snapshot_payload = snapshot.model_dump(mode="json") if hasattr(snapshot, "model_dump") else {}
+        return AiToolResult(
+            tool_id=self.tool_id,
+            ok=True,
+            data={
+                "snapshot_at": _normalize_text(
+                    snapshot_payload.get("collected_at") or snapshot_payload.get("imported_at")
+                ) or None,
+                "items": items,
+            },
+        )
+
+
+class MyFilesSearchArgs(BaseModel):
+    query: str = Field(..., min_length=2, max_length=200, description="Part of the file or folder name")
+    limit: int = Field(default=MAX_MY_FILES, ge=1, le=MAX_MY_FILES)
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def _normalize(cls, value):
+        return _normalize_text(value)
+
+
+class MyFilesAttachArgs(BaseModel):
+    file_id: str = Field(..., min_length=1, max_length=80)
+
+    @field_validator("file_id", mode="before")
+    @classmethod
+    def _normalize(cls, value):
+        return _normalize_text(value)
+
+
+class MyFilesSearchTool(AiTool):
+    tool_id = SELF_TOOL_FILES_SEARCH
+    description = (
+        "Search the asking employee's own 'My files' storage by file or folder name. Returns file ids, names, "
+        "folders, sizes and dates; attach one to the answer with me.files.attach."
+    )
+    input_model = MyFilesSearchArgs
+    stage = "checking_office"
+
+    def execute(self, *, context: AiToolExecutionContext, args: MyFilesSearchArgs) -> AiToolResult:
+        from backend.services.my_files_service import my_files_service
+
+        try:
+            payload = my_files_service.list_files(user_id=int(context.user_id), query=args.query)
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error=f"«Мои файлы» недоступны: {exc}")
+        items = [
+            {
+                "file_id": _normalize_text(item.get("id")),
+                "file_name": _normalize_text(item.get("download_file_name") or item.get("original_file_name")) or None,
+                "folder": _normalize_text(item.get("folder_name")) or None,
+                "size_mb": round(int(item.get("original_size_bytes") or 0) / (1024 * 1024), 2),
+                "updated_at": _normalize_text(item.get("updated_at")) or None,
+                "ready": _normalize_text(item.get("status")) == "ready",
+            }
+            for item in list(payload.get("items") or [])
+            if isinstance(item, dict)
+        ]
+        total = len(items)
+        return AiToolResult(
+            tool_id=self.tool_id,
+            ok=True,
+            data={"count": min(total, args.limit), "total": total, "truncated": total > args.limit, "items": items[: args.limit]},
+        )
+
+
+def load_my_file_for_delivery(*, file_id: str, user_id: int):
+    """Owner, readiness, antivirus and expiry checks of My files; raises when not deliverable."""
+    from backend.services.my_files_service import my_files_service
+
+    payload = my_files_service.get_download(file_id=file_id, user_id=int(user_id))
+    if int(payload.download_size_bytes or 0) > MY_FILES_ATTACH_MAX_BYTES:
+        raise ValueError(
+            f"Файл слишком большой для отправки в чат (лимит {MY_FILES_ATTACH_MAX_BYTES // (1024 * 1024)} МБ)."
+        )
+    return payload
+
+
+class MyFilesAttachTool(AiTool):
+    tool_id = SELF_TOOL_FILES_ATTACH
+    description = (
+        "Attach one of the asking employee's own 'My files' (file_id from me.files.search) to your answer in this "
+        "chat. The file is delivered right after the text answer; call it only when the employee asked for the file."
+    )
+    input_model = MyFilesAttachArgs
+    stage = "checking_office"
+
+    def execute(self, *, context: AiToolExecutionContext, args: MyFilesAttachArgs) -> AiToolResult:
+        try:
+            payload = load_my_file_for_delivery(file_id=args.file_id, user_id=int(context.user_id))
+        except ValueError as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error=str(exc))
+        except Exception:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error="Файл не найден, ещё обрабатывается или недоступен.")
+        return AiToolResult(
+            tool_id=self.tool_id,
+            ok=True,
+            data={
+                "file_id": args.file_id,
+                "file_name": payload.file_name,
+                "size_mb": round(int(payload.download_size_bytes or 0) / (1024 * 1024), 2),
+                "delivery": "attached_after_answer",
+            },
+        )
+
+
+for tool in [
+    MyEquipmentTool(),
+    MyComputerHealthTool(),
+    MyAccountStatusTool(),
+    MyMailboxQuotaTool(),
+    MyFilesSearchTool(),
+    MyFilesAttachTool(),
+    HelpdeskRequestDraftTool(),
+]:
     ai_tool_registry.register(tool)

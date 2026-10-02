@@ -379,14 +379,46 @@ _AI_ASSISTANT_CAPABILITIES: tuple[dict[str, Any], ...] = (
     {
         "key": "computers.read",
         "group": "itinvent",
-        "label": "Компьютеры: поиск по ПК, пользователю, PST и профилям; аптайм, перезагрузка, диски",
+        "label": "Компьютеры: поиск по ПК, пользователю, PST и профилям; аптайм, перезагрузка, диски, изменения железа, программы",
         "permissions": ["computers.read"],
     },
     {
         "key": "self",
         "group": "self",
-        "label": "Мои данные: моя техника, мой компьютер, моя учётная запись и обращение в IT",
+        "label": "Мои данные: моя техника, мой компьютер, моя учётная запись, мой почтовый ящик и обращение в IT",
         "permissions": ["chat.ai.use"],
+    },
+    {
+        "key": "self.files",
+        "group": "self",
+        "label": "Мои файлы: найти и приложить свой файл к ответу",
+        "permissions": ["my_files.read"],
+    },
+    {
+        "key": "directory.people",
+        "group": "directory",
+        "label": "Справочник сотрудников: рабочие телефоны, e-mail, кабинет, отсутствие",
+        "permissions": ["address_book.read"],
+    },
+    {
+        "key": "directory.structure",
+        "group": "directory",
+        "label": "Оргструктура: руководители подразделений",
+        "permissions": ["company_structure.read"],
+    },
+    {
+        "key": "itinvent.audit",
+        "group": "itinvent",
+        "label": "Аудит: уволенные сотрудники с техникой",
+        "permissions": ["database.read", "address_book.dismissed.read"],
+        "it_only": True,
+    },
+    {
+        "key": "office.mailbox_quota",
+        "group": "office",
+        "label": "Квоты почтовых ящиков: переполненные ящики",
+        "permissions": ["mail.quotas.read"],
+        "it_only": True,
     },
     {
         "key": "office.mail",
@@ -588,7 +620,7 @@ async def get_ai_assistant_capabilities(
         item = dict(row)
         item["granted"] = _capability_granted(row, effective=effective, is_admin=is_admin)
         if allowed_groups is not None and item.get("group") in {
-            "itinvent", "office", "files", "mfu", "network", "ad", "kb", "chat", "self",
+            "itinvent", "office", "files", "mfu", "network", "ad", "kb", "chat", "self", "directory",
         }:
             # AG-2: учитываем и фактический набор групп из filter_tools_for_user,
             # и точные права строки — групповая доступность не должна

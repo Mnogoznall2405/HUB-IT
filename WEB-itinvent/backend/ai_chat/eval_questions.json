@@ -10,6 +10,7 @@
     "ad",
     "kb",
     "chat",
+    "directory",
     "other",
     "self"
   ],
@@ -360,6 +361,87 @@
       ],
       "requires_permission": "ad_users.read",
       "note": "Вопрос о другом сотруднике — не self-группа."
+    },
+    {
+      "id": "directory-1",
+      "category": "directory",
+      "question": "Какой рабочий телефон у Петрова из бухгалтерии?",
+      "expected_groups": [
+        "directory"
+      ],
+      "requires_permission": "address_book.read"
+    },
+    {
+      "id": "directory-2",
+      "category": "directory",
+      "question": "Кто руководитель отдела логистики?",
+      "expected_groups": [
+        "directory"
+      ],
+      "requires_permission": "company_structure.read"
+    },
+    {
+      "id": "directory-3",
+      "category": "directory",
+      "question": "Кто сейчас в отпуске в отделе продаж?",
+      "expected_groups": [
+        "directory"
+      ],
+      "requires_permission": "address_book.read"
+    },
+    {
+      "id": "self-6",
+      "category": "self",
+      "question": "Почему у меня не уходят письма, ящик не переполнен?",
+      "expected_groups": [
+        "self"
+      ],
+      "requires_permission": "chat.ai.use"
+    },
+    {
+      "id": "self-7",
+      "category": "self",
+      "question": "Найди в моих файлах отчёт за сентябрь и пришли сюда.",
+      "expected_groups": [
+        "self"
+      ],
+      "requires_permission": "my_files.read"
+    },
+    {
+      "id": "computers-4",
+      "category": "computers",
+      "question": "Что поменялось в железе компьютеров за последнюю неделю?",
+      "expected_groups": [
+        "itinvent"
+      ],
+      "requires_permission": "computers.read"
+    },
+    {
+      "id": "computers-5",
+      "category": "computers",
+      "question": "На каких компьютерах установлен AnyDesk?",
+      "expected_groups": [
+        "itinvent"
+      ],
+      "requires_permission": "computers.read"
+    },
+    {
+      "id": "audit-1",
+      "category": "audit",
+      "question": "Кто из уволенных за квартал не сдал технику?",
+      "expected_groups": [
+        "itinvent"
+      ],
+      "requires_permission": "database.read"
+    },
+    {
+      "id": "mail-quota-1",
+      "category": "mail",
+      "question": "У кого почтовые ящики заполнены больше чем на 90%?",
+      "expected_groups": [
+        "office"
+      ],
+      "requires_permission": "mail.quotas.read"
     }
   ]
 }
