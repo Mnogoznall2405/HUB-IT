@@ -2911,6 +2911,148 @@ def test_ai_chat_service_opens_one_dialog_queues_run_and_filters_hidden_bot_user
     assert any(str(item["username"]) == "operator" for item in public_users)
 
 
+def test_ai_jev_routing_unattached_group_is_requested_not_reported_disabled(tmp_path, monkeypatch):
+    """JEV routed nothing: the prompt offers ai.request_tool_group instead of calling
+    the permitted file tools "disabled", and the model can widen the run and create the file."""
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_jev_expand.db")
+
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    app_models = importlib.import_module("backend.appdb.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setenv("AI_JEV_ROUTING", "1")
+    monkeypatch.setenv("AI_JEV_ROUTING_MODE", "group")
+    ai_chat_module._jev_routing_cache.clear()
+    monkeypatch.setattr(ai_chat_module.jev_client, "is_configured", lambda: True)
+    monkeypatch.setattr(
+        ai_chat_module.jev_client,
+        "decide",
+        lambda **kw: SimpleNamespace(
+            model="typesafe/jev-1.13",
+            answers={key: SimpleNamespace(probability=0.0) for key in kw["questions"]},
+        ),
+    )
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
+    monkeypatch.setattr(
+        chat_service_module.chat_push_service,
+        "send_chat_message_notification",
+        lambda *args, **kwargs: None,
+        raising=False,
+    )
+
+    completion_calls: list[dict[str, object]] = []
+
+    def fake_complete_json(**kwargs):
+        completion_calls.append(kwargs)
+        if len(completion_calls) == 1:
+            return {
+                "answer_markdown": "",
+                "artifacts": [],
+                "kb_attachment_send": None,
+                "tool_calls": [{"tool_id": "ai.request_tool_group", "args": {"group": "files"}}],
+            }, {"output_tokens": 6}
+        if len(completion_calls) == 2:
+            return {
+                "answer_markdown": "",
+                "artifacts": [],
+                "kb_attachment_send": None,
+                "tool_calls": [
+                    {
+                        "tool_id": "ai.files.create",
+                        "args": {"files": [{"format": "txt", "file_name": "itog.txt", "content": "Итог беседы."}]},
+                    }
+                ],
+            }, {"output_tokens": 12}
+        return {
+            "answer_markdown": "Готово, итог приложен.",
+            "artifacts": [],
+            "kb_attachment_send": None,
+            "tool_calls": [],
+        }, {"output_tokens": 8}
+
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "complete_json", fake_complete_json)
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "get_status", lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"})
+
+    chat_db.initialize_chat_schema(database_url)
+
+    actor = temp_user_service.create_user(
+        username="operator_jev",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        full_name="Operator Jev",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "kb.read"],
+    )
+
+    bot = temp_ai_service.ensure_default_bot()
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
+    temp_ai_service.update_bot(bot["id"], {
+        "enabled_tools": ["ai.files.create", "kb.articles.search"],
+        "allow_generated_artifacts": True,
+    })
+    opened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+
+    with chat_db.chat_session(database_url) as session:
+        conversation = session.get(chat_models.ChatConversation, opened["id"])
+        user_message = chat_models.ChatMessage(
+            id="msg-human-jev-1",
+            conversation_id=opened["id"],
+            sender_user_id=int(actor["id"]),
+            body="Подведи итог нашей беседы",
+            body_format="plain",
+            conversation_seq=1,
+            created_at=datetime.now(timezone.utc),
+        )
+        conversation.last_message_id = user_message.id
+        conversation.last_message_seq = 1
+        conversation.last_message_at = user_message.created_at
+        conversation.updated_at = user_message.created_at
+        session.add(user_message)
+
+    queued = temp_ai_service.queue_run_for_message(
+        conversation_id=opened["id"],
+        trigger_message_id="msg-human-jev-1",
+        current_user_id=int(actor["id"]),
+    )
+    assert queued is not None
+    assert temp_ai_service.process_next_run() is True
+
+    first_user_prompt = str(completion_calls[0].get("user_prompt") or "")
+    assert "File tools are disabled for this bot." not in first_user_prompt
+    assert "File tools are not attached to this step" in first_user_prompt
+    assert "ai.request_tool_group" in first_user_prompt
+
+    with chat_db.chat_session(database_url) as session:
+        attachments = list(session.execute(select(chat_models.ChatMessageAttachment)).scalars())
+        runs = list(session.execute(select(app_models.AppAiBotRun)).scalars())
+    assert [item.file_name for item in attachments] == ["itog.txt"]
+    result_payload = json.loads(str(runs[0].result_json or "{}"))
+    assert result_payload["expanded_groups"] == ["files"]
+    assert "ai.files.create" in result_payload["used_tools"]
+
+
 def test_ai_files_create_tool_sends_generated_attachment_from_runtime(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_files.db")
 
