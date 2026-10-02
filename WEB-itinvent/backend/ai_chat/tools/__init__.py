@@ -15,6 +15,7 @@ from backend.ai_chat.tools import computers  # noqa: F401
 from backend.ai_chat.tools import self_service  # noqa: F401
 from backend.ai_chat.tools import directory  # noqa: F401
 from backend.ai_chat.tools import it_reports  # noqa: F401
+from backend.ai_chat.tools import warehouse  # noqa: F401
 from backend.ai_chat.tools import tool_group_request  # noqa: F401
 
 __all__ = ["ai_tool_registry"]

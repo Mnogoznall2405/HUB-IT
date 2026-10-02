@@ -612,6 +612,54 @@ class TransferActReminderService:
             "upload_url": self._build_upload_url(reminder_id=reminder_id_value, task_id=task_id_value, db_id=db_id),
         }
 
+    def list_open_reminders(
+        self,
+        *,
+        db_id: Optional[str] = None,
+        assignee_user_id: Optional[int] = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Read-only: open reminders (signed act not uploaded yet), oldest first, with pending groups."""
+        safe_limit = max(1, min(int(limit or 50), 200))
+        where = ["status = 'open'"]
+        params: list[Any] = []
+        if _normalize_text(db_id):
+            where.append("db_id = ?")
+            params.append(_normalize_text(db_id))
+        if assignee_user_id:
+            where.append("assignee_user_id = ?")
+            params.append(int(assignee_user_id))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM {self._REMINDERS_TABLE}
+                WHERE {' AND '.join(where)}
+                ORDER BY created_at ASC
+                LIMIT {safe_limit}
+                """,
+                tuple(params),
+            ).fetchall()
+            result: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                groups = [
+                    self._serialize_group_row(group_row)
+                    for group_row in self._list_group_rows(conn, _normalize_text(item.get("reminder_id")))
+                ]
+                result.append(
+                    {
+                        "reminder_id": _normalize_text(item.get("reminder_id")),
+                        "task_id": _normalize_text(item.get("task_id")),
+                        "db_id": _normalize_text(item.get("db_id")) or None,
+                        "assignee_user_id": int(item.get("assignee_user_id") or 0),
+                        "new_employee_name": _normalize_text(item.get("new_employee_name")),
+                        "created_at": _normalize_text(item.get("created_at")) or None,
+                        "pending_groups": [group for group in groups if not group.get("completed_at")],
+                    }
+                )
+        return result
+
     def enrich_task(self, task: dict[str, Any]) -> dict[str, Any]:
         item = dict(task or {})
         reminder = self.get_reminder(task_id=_normalize_text(item.get("id")))

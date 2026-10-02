@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, field_validator
 from backend.ai_chat.tools.base import AiTool, AiToolResult
 from backend.ai_chat.tools.context import (
     AiToolExecutionContext,
+    ITINVENT_TOOL_ACTS_PENDING,
     ITINVENT_TOOL_AUDIT_DISMISSED,
     ITINVENT_TOOL_COMPUTERS_CHANGES,
     ITINVENT_TOOL_COMPUTERS_SOFTWARE,
@@ -422,5 +423,98 @@ class MailboxQuotaReportTool(AiTool):
         )
 
 
-for tool in [ComputersChangesTool(), SoftwareSearchTool(), DismissedWithEquipmentTool(), MailboxQuotaReportTool()]:
+# ---------------------------------------------------------------- unsigned transfer acts
+
+
+class ActsPendingArgs(BaseModel):
+    mine_only: bool = Field(default=False, description="Only reminders assigned to the asking employee")
+    older_than_days: int = Field(default=0, ge=0, le=365, description="Only reminders open longer than N days")
+    limit: int = Field(default=20, ge=1, le=MAX_ROWS)
+
+
+def _age_days(value: Any) -> Optional[int]:
+    text = _normalize_text(value)
+    if not text:
+        return None
+    try:
+        created = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return max(0, (datetime.now(timezone.utc) - created).days)
+
+
+class ActsPendingTool(AiTool):
+    tool_id = ITINVENT_TOOL_ACTS_PENDING
+    description = (
+        "Equipment transfers whose signed act has not been uploaded yet (open act reminders of the selected ITinvent "
+        "database): new owner, previous owners, inventory numbers, responsible IT employee and days open. "
+        "Use for 'какие акты не подписаны', 'мои незакрытые акты', 'акты висят больше недели'."
+    )
+    input_model = ActsPendingArgs
+    stage = "checking_itinvent"
+
+    def execute(self, *, context: AiToolExecutionContext, args: ActsPendingArgs) -> AiToolResult:
+        from backend.services.transfer_act_reminder_service import transfer_act_reminder_service
+        from backend.services.user_service import user_service
+
+        database_id = _normalize_text(context.effective_database_id) or None
+        assignee_user_id = int(context.user_id or 0) if args.mine_only else None
+        if args.mine_only and not assignee_user_id:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error="Не удалось определить пользователя портала.")
+        try:
+            reminders = transfer_act_reminder_service.list_open_reminders(
+                db_id=database_id,
+                assignee_user_id=assignee_user_id,
+                limit=200,
+            )
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error=f"Напоминания об актах недоступны: {exc}")
+
+        names: dict[int, Optional[str]] = {}
+
+        def _assignee_name(user_id: int) -> Optional[str]:
+            if user_id not in names:
+                try:
+                    user = user_service.get_by_id(user_id) or {}
+                except Exception:
+                    user = {}
+                names[user_id] = _normalize_text(user.get("full_name") or user.get("username")) or None
+            return names[user_id]
+
+        rows = []
+        for reminder in reminders:
+            groups = list(reminder.get("pending_groups") or [])
+            if not groups:
+                continue
+            age = _age_days(reminder.get("created_at"))
+            if args.older_than_days and (age is None or age < args.older_than_days):
+                continue
+            rows.append(
+                {
+                    "new_employee": reminder.get("new_employee_name") or None,
+                    "responsible": _assignee_name(int(reminder.get("assignee_user_id") or 0)),
+                    "created_at": reminder.get("created_at"),
+                    "days_open": age,
+                    "previous_owners": sorted({group.get("old_employee_name") for group in groups if group.get("old_employee_name")}),
+                    "inv_nos": [inv for group in groups for inv in list(group.get("inv_nos") or [])][:20],
+                    "equipment_count": sum(int(group.get("equipment_count") or 0) for group in groups),
+                }
+            )
+        return AiToolResult(
+            tool_id=self.tool_id,
+            ok=True,
+            database_id=database_id,
+            data={
+                "mine_only": args.mine_only,
+                "total": len(rows),
+                "count": min(len(rows), args.limit),
+                "truncated": len(rows) > args.limit,
+                "items": rows[: args.limit],
+            },
+        )
+
+
+for tool in [ComputersChangesTool(), SoftwareSearchTool(), DismissedWithEquipmentTool(), MailboxQuotaReportTool(), ActsPendingTool()]:
     ai_tool_registry.register(tool)

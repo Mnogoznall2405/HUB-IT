@@ -385,7 +385,7 @@ _AI_ASSISTANT_CAPABILITIES: tuple[dict[str, Any], ...] = (
     {
         "key": "self",
         "group": "self",
-        "label": "Мои данные: моя техника, мой компьютер, моя учётная запись, мой почтовый ящик и обращение в IT",
+        "label": "Мои данные: моя техника, мой компьютер, моя учётная запись, мой почтовый ящик, мои заявки на закупку и обращение в IT",
         "permissions": ["chat.ai.use"],
     },
     {
@@ -409,7 +409,7 @@ _AI_ASSISTANT_CAPABILITIES: tuple[dict[str, Any], ...] = (
     {
         "key": "itinvent.audit",
         "group": "itinvent",
-        "label": "Аудит: уволенные сотрудники с техникой",
+        "label": "Аудит: уволенные сотрудники с техникой, неподписанные акты передачи",
         "permissions": ["database.read", "address_book.dismissed.read"],
         "it_only": True,
     },
@@ -418,6 +418,20 @@ _AI_ASSISTANT_CAPABILITIES: tuple[dict[str, Any], ...] = (
         "group": "office",
         "label": "Квоты почтовых ящиков: переполненные ящики",
         "permissions": ["mail.quotas.read"],
+        "it_only": True,
+    },
+    {
+        "key": "warehouse.balances",
+        "group": "warehouse",
+        "label": "Склад 1С: остатки номенклатуры по складам",
+        "permissions": ["warehouse_1c.read"],
+        "it_only": True,
+    },
+    {
+        "key": "warehouse.it_requests",
+        "group": "warehouse",
+        "label": "Склад 1С: ИТ-заявки на закупку, стадии и просрочки",
+        "permissions": ["warehouse_1c.it_requests.read"],
         "it_only": True,
     },
     {
@@ -448,7 +462,7 @@ _AI_ASSISTANT_CAPABILITIES: tuple[dict[str, Any], ...] = (
     {
         "key": "mfu",
         "group": "mfu",
-        "label": "МФУ и принтеры: список, статус SNMP/ping, счётчики страниц",
+        "label": "МФУ и принтеры: список, статус SNMP/ping, счётчики страниц, заканчивающийся тонер",
         "permissions": ["mfu.read"],
     },
     {
@@ -620,7 +634,7 @@ async def get_ai_assistant_capabilities(
         item = dict(row)
         item["granted"] = _capability_granted(row, effective=effective, is_admin=is_admin)
         if allowed_groups is not None and item.get("group") in {
-            "itinvent", "office", "files", "mfu", "network", "ad", "kb", "chat", "self", "directory",
+            "itinvent", "office", "files", "mfu", "network", "ad", "kb", "chat", "self", "directory", "warehouse",
         }:
             # AG-2: учитываем и фактический набор групп из filter_tools_for_user,
             # и точные права строки — групповая доступность не должна

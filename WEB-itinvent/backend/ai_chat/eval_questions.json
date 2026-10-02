@@ -11,6 +11,7 @@
     "kb",
     "chat",
     "directory",
+    "warehouse",
     "other",
     "self"
   ],
@@ -442,6 +443,51 @@
         "office"
       ],
       "requires_permission": "mail.quotas.read"
+    },
+    {
+      "id": "acts-1",
+      "category": "audit",
+      "question": "Какие акты передачи не подписаны больше недели?",
+      "expected_groups": [
+        "itinvent"
+      ],
+      "requires_permission": "database.read"
+    },
+    {
+      "id": "mfu-toner-1",
+      "category": "mfu",
+      "question": "Где заканчивается тонер?",
+      "expected_groups": [
+        "mfu"
+      ],
+      "requires_permission": "mfu.read"
+    },
+    {
+      "id": "warehouse-1",
+      "category": "warehouse",
+      "question": "Сколько картриджей CF259A на складе?",
+      "expected_groups": [
+        "warehouse"
+      ],
+      "requires_permission": "warehouse_1c.read"
+    },
+    {
+      "id": "warehouse-2",
+      "category": "warehouse",
+      "question": "Какие ИТ-заявки просрочены?",
+      "expected_groups": [
+        "warehouse"
+      ],
+      "requires_permission": "warehouse_1c.it_requests.read"
+    },
+    {
+      "id": "self-requests-1",
+      "category": "self",
+      "question": "Где моя заявка на ноутбук?",
+      "expected_groups": [
+        "self"
+      ],
+      "requires_permission": "chat.ai.use"
     }
   ]
 }

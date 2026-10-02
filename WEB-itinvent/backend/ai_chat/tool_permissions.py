@@ -44,6 +44,8 @@ from backend.services.authorization_service import (
     PERM_TASKS_READ,
     PERM_TASKS_WRITE,
     PERM_VOICE_READ,
+    PERM_WAREHOUSE_1C_IT_REQUESTS_READ,
+    PERM_WAREHOUSE_1C_READ,
     authorization_service,
 )
 
@@ -91,6 +93,8 @@ _PREFIX_PERMISSIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("directory.people.", (PERM_ADDRESS_BOOK_READ,)),
     ("directory.department.", (PERM_COMPANY_STRUCTURE_READ,)),
     ("office.mailbox.", (PERM_MAIL_QUOTAS_READ,)),
+    ("warehouse.it_requests.", (PERM_WAREHOUSE_1C_IT_REQUESTS_READ,)),
+    ("warehouse.", (PERM_WAREHOUSE_1C_READ,)),
 )
 
 

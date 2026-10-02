@@ -30,6 +30,7 @@ if _env_path.exists():
                     os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 from backend.ai_chat.balance import ai_balance_service
+from backend.ai_chat.it_digest import it_digest_service
 from backend.ai_chat.service import ai_chat_service
 
 
@@ -75,6 +76,11 @@ async def main() -> None:
     balance_check_enabled = _env_flag("AI_BALANCE_CHECK_ENABLED", False)
     balance_check_interval_sec = _env_float("AI_BALANCE_CHECK_INTERVAL_SEC", 1800.0, 60.0, 86400.0)
     last_balance_check_at = 0.0
+    # Morning IT digest is opt-in; it runs beside the run loop so slow sources never delay answers.
+    digest_enabled = _env_flag("AI_IT_DIGEST_ENABLED", False)
+    digest_check_interval_sec = _env_float("AI_IT_DIGEST_CHECK_INTERVAL_SEC", 60.0, 15.0, 3600.0)
+    last_digest_check_at = 0.0
+    digest_task: asyncio.Task | None = None
     logger.info("AI chat worker started: batch_size=%s concurrency=%s", batch_size, concurrency)
     while True:
         if balance_check_enabled and (last_balance_check_at == 0.0 or (time.monotonic() - last_balance_check_at) >= balance_check_interval_sec):
@@ -83,6 +89,15 @@ async def main() -> None:
                 await asyncio.to_thread(ai_balance_service.check)
             except Exception:
                 logger.exception("AI balance check cycle failed")
+        if (
+            digest_enabled
+            and (digest_task is None or digest_task.done())
+            and (time.monotonic() - last_digest_check_at) >= digest_check_interval_sec
+        ):
+            if digest_task is not None and not digest_task.cancelled() and digest_task.exception() is not None:
+                logger.error("AI IT digest cycle failed", exc_info=digest_task.exception())
+            last_digest_check_at = time.monotonic()
+            digest_task = asyncio.create_task(asyncio.to_thread(it_digest_service.run_if_due))
         if watchdog_enabled and (time.monotonic() - last_watchdog_at) >= watchdog_interval_sec:
             last_watchdog_at = time.monotonic()
             try:

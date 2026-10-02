@@ -425,6 +425,40 @@ class MfuRuntimeMonitor:
         cutoff = datetime.now(timezone.utc) - timedelta(days=self.runtime_state_ttl_days)
         return cutoff.isoformat()
 
+    def read_persisted_runtime_states(self) -> Dict[str, Dict[str, Any]]:
+        """Read-only view of the persisted runtime state (any process may call it).
+
+        Unlike the start-up seed loader it deletes nothing; the in-memory cache lives
+        only in the process that runs the monitor, other processes read this table.
+        """
+        if not self.persist_runtime_state:
+            return {}
+        conn = self._connect_runtime_db()
+        if conn is None:
+            return {}
+        out: Dict[str, Dict[str, Any]] = {}
+        try:
+            with conn:
+                rows = conn.execute(
+                    f"SELECT device_key, ip_address, runtime_json, updated_at FROM {self._RUNTIME_TABLE}",
+                ).fetchall()
+            for row in rows:
+                key = str(row["device_key"] or "").strip()
+                if not key:
+                    continue
+                try:
+                    runtime_payload = json.loads(str(row["runtime_json"] or "") or "{}")
+                except Exception:
+                    runtime_payload = {}
+                out[key] = {
+                    "ip_address": str(row["ip_address"] or "").strip(),
+                    "runtime": runtime_payload if isinstance(runtime_payload, dict) else {},
+                    "updated_at": str(row["updated_at"] or "").strip() or None,
+                }
+        except Exception as exc:
+            logger.warning("MFU persisted runtime read failed: %s", exc)
+        return out
+
     def _load_runtime_state_seed(self) -> Dict[str, Dict[str, Any]]:
         if not self.persist_runtime_state:
             return {}

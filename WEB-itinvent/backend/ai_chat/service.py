@@ -47,6 +47,7 @@ from backend.ai_chat.tools.context import (
     AI_TOOL_GROUP_CHAT,
     AI_TOOL_GROUP_SELF,
     AI_TOOL_GROUP_DIRECTORY,
+    AI_TOOL_GROUP_WAREHOUSE,
     AI_TOOL_GROUP_OTHER,
     AI_TOOL_GROUPS_ALL,
     AiToolExecutionContext,
@@ -246,7 +247,8 @@ AI_ITINVENT_TOOL_ROUTING_GUIDE = (
     "- If itinvent.computers.search is not among the enabled tools, say that computer data is not connected for this assistant instead of guessing.\n"
     "- IT reports: 'что поменялось в железе / сняли монитор / меняли диск' → itinvent.computers.changes; 'у кого стоит <программа>', "
     "'где старая версия' → itinvent.computers.software_search (version_below); 'уволенные не сдали технику' → "
-    "itinvent.audit.dismissed_with_equipment (rows with needs_check=true are namesakes — say they need manual verification)."
+    "itinvent.audit.dismissed_with_equipment (rows with needs_check=true are namesakes — say they need manual verification); "
+    "'какие акты не подписаны / мои незакрытые акты' → itinvent.acts.pending (mine_only=true for 'мои')."
 )
 AI_FILE_TOOL_ROUTING_GUIDE = (
     "File generation routing:\n"
@@ -280,7 +282,9 @@ AI_MFU_TOOL_ROUTING_GUIDE = (
     "- Questions about printers, MFU, plotters, their list, status or location: use mfu.devices.list.\n"
     "- Current SNMP/ping status, toner level, drum level, page counter for a specific device: use mfu.device.status with inv_no or ip_address.\n"
     "- Monthly page count history or print volume trends: use mfu.pages.monthly with inv_no or ip_address.\n"
-    "- If the device is not identified, use mfu.devices.list first to find inv_no or ip_address, then proceed."
+    "- If the device is not identified, use mfu.devices.list first to find inv_no or ip_address, then proceed.\n"
+    "- 'Где заканчивается тонер / что пора менять' across the fleet: mfu.devices.low_toner (threshold_percent, default 15); "
+    "data comes from the last saved SNMP poll, mention checked_at."
 )
 AI_NETWORK_TOOL_ROUTING_GUIDE = (
     "Network infrastructure tool routing:\n"
@@ -327,7 +331,8 @@ AI_SELF_TOOL_ROUTING_GUIDE = (
     "me.computer.health (explain pending reboot, long uptime, high RAM, low disk in plain words and what to do); "
     "'когда менять пароль / не пускает в систему' → me.account.status (you cannot unlock or reset passwords); "
     "'почему не уходят письма / ящик переполнен' → me.mailbox.quota; 'найди мой файл / приложи мой отчёт' → me.files.search, "
-    "then me.files.attach (the file is attached right after your answer). "
+    "then me.files.attach (the file is attached right after your answer); 'где моя заявка на ноутбук / когда придёт монитор' → "
+    "me.it_requests (1C IT purchase requests where the employee is the initiator). "
     "When the employee reports a problem that the knowledge base and these checks do not solve, or asks to create "
     "a request to IT, call helpdesk.request_draft with a short title and the employee's description; the request is "
     "created only after the employee confirms the card. Never use these tools to look up another person."
@@ -337,6 +342,13 @@ AI_DIRECTORY_TOOL_ROUTING_GUIDE = (
     "directory.people.search (department + absent_only for 'кто отсутствует в отделе'); head of a department and "
     "where it sits in the structure → directory.department.get. Only work contacts are available; never invent "
     "personal phones or private data. If a colleague is absent, mention the return date."
+)
+AI_WAREHOUSE_TOOL_ROUTING_GUIDE = (
+    "1C warehouse (read-only): stock of a nomenclature item by warehouse → warehouse.balances.search with the item "
+    "name or code ('сколько CF259A на складе'); IT purchase requests, their stage, overdue ones → "
+    "warehouse.it_requests.search (overdue_only=true for 'просроченные'), one request with positions → "
+    "warehouse.it_requests.get. Stock in 1C is not ITinvent equipment: for equipment assigned to people use ITinvent. "
+    "If 1C does not respond, say so instead of guessing quantities."
 )
 # Rules handed to the model together with the specs of a group enabled mid-run (J2).
 _AI_TOOL_GROUP_ROUTING_GUIDES: dict[str, str] = {
@@ -350,6 +362,7 @@ _AI_TOOL_GROUP_ROUTING_GUIDES: dict[str, str] = {
     AI_TOOL_GROUP_CHAT: AI_CHAT_TOOL_ROUTING_GUIDE,
     AI_TOOL_GROUP_SELF: AI_SELF_TOOL_ROUTING_GUIDE,
     AI_TOOL_GROUP_DIRECTORY: AI_DIRECTORY_TOOL_ROUTING_GUIDE,
+    AI_TOOL_GROUP_WAREHOUSE: AI_WAREHOUSE_TOOL_ROUTING_GUIDE,
 }
 AI_ANSWER_STYLE_GUIDE = (
     "Answer style and structure rules (Russian):\n"
@@ -914,11 +927,11 @@ _JEV_GROUP_QUESTIONS: dict[str, dict[str, str]] = {
         "question": (
             "Нужны ли данные ITinvent: оборудование/техника и её карточки, сотрудники и их "
             "компьютеры (профили, pst-архивы, папки почты), инвентарные или серийные номера, "
-            "филиалы, локации, история перемещений, расходники, акты, аналитика по парку?"
+            "филиалы, локации, история перемещений, расходники, акты (в т.ч. неподписанные), аналитика по парку?"
         ),
         "true_label": (
             "да — «найди ноутбук 100234»; «что числится за Ивановым»; «перемести принтер "
-            "на Петрова»; «история перемещений монитора»; «сколько техники в филиале»"
+            "на Петрова»; «история перемещений монитора»; «сколько техники в филиале»; «какие акты не подписаны»"
         ),
         "false_label": (
             "нет — «сбрось пароль в AD»; «пингани сервер»; «напиши письмо коллеге»; "
@@ -961,7 +974,7 @@ _JEV_GROUP_QUESTIONS: dict[str, dict[str, str]] = {
         ),
         "true_label": (
             "да — «сколько страниц напечатал МФУ за месяц»; «какой картридж в HP M404»; "
-            "«статус принтера в бухгалтерии»; «уровень тонера»"
+            "«статус принтера в бухгалтерии»; «уровень тонера»; «где заканчивается тонер»"
         ),
         "false_label": (
             "нет — «перемести принтер на Иванова» (это ITinvent-действие); «пингани принтер» "
@@ -1027,12 +1040,13 @@ _JEV_GROUP_QUESTIONS: dict[str, dict[str, str]] = {
     },
     AI_TOOL_GROUP_SELF: {
         "question": (
-            "Спрашивает ли сотрудник о СЕБЕ — своей технике, своём компьютере, своей учётной записи/пароле — "
-            "или хочет создать обращение (заявку) в IT-отдел?"
+            "Спрашивает ли сотрудник о СЕБЕ — своей технике, своём компьютере, своей учётной записи/пароле, "
+            "своей заявке на закупку техники — или хочет создать обращение (заявку) в IT-отдел?"
         ),
         "true_label": (
             "да — «что за мной числится»; «почему тормозит мой компьютер»; «когда мне менять пароль»; "
-            "«не пускает в систему»; «создай заявку в IT, не печатает принтер»; «вызови айтишника»"
+            "«не пускает в систему»; «создай заявку в IT, не печатает принтер»; «вызови айтишника»; "
+            "«где моя заявка на ноутбук»"
         ),
         "false_label": (
             "нет — вопросы о технике или учётке ДРУГОГО сотрудника («что числится за Ивановым»); "
@@ -1051,6 +1065,20 @@ _JEV_GROUP_QUESTIONS: dict[str, dict[str, str]] = {
         "false_label": (
             "нет — «что числится за Петровым» (ITinvent); «пароль Петрова» (AD); «напиши Петрову в чате» (chat); "
             "вопросы о себе (self)"
+        ),
+    },
+    AI_TOOL_GROUP_WAREHOUSE: {
+        "question": (
+            "Нужны ли данные склада 1С: остатки номенклатуры (картриджи, мониторы, комплектующие) на складах "
+            "или ИТ-заявки на закупку оборудования, их стадии и просрочки?"
+        ),
+        "true_label": (
+            "да — «сколько CF259A на складе»; «есть ли мониторы Dell на складе»; «какие ИТ-заявки просрочены»; "
+            "«статус заявки 123-ИТ»"
+        ),
+        "false_label": (
+            "нет — «что числится за Ивановым» (ITinvent); «уровень тонера в МФУ» (MFU); "
+            "«где МОЯ заявка» (self)"
         ),
     },
 }
@@ -5438,7 +5466,13 @@ class AiChatService:
             and not _is_network_tool_id((item or {}).get("tool_id"))
             and not _is_ad_tool_id((item or {}).get("tool_id"))
             and get_tool_group((item or {}).get("tool_id"))
-            not in {AI_TOOL_GROUP_KB, AI_TOOL_GROUP_CHAT, AI_TOOL_GROUP_SELF, AI_TOOL_GROUP_DIRECTORY}
+            not in {
+                AI_TOOL_GROUP_KB,
+                AI_TOOL_GROUP_CHAT,
+                AI_TOOL_GROUP_SELF,
+                AI_TOOL_GROUP_DIRECTORY,
+                AI_TOOL_GROUP_WAREHOUSE,
+            }
         ]
         # Tool descriptions share the same 32k input budget as dialogue and files.
         itinvent_tool_specs_text = _format_tool_specs_for_prompt(itinvent_tool_specs, 3500)
@@ -5457,6 +5491,10 @@ class AiChatService:
             item for item in tool_specs if get_tool_group((item or {}).get("tool_id")) == AI_TOOL_GROUP_DIRECTORY
         ]
         directory_tool_specs_text = _format_tool_specs_for_prompt(directory_tool_specs, 500)
+        warehouse_tool_specs = [
+            item for item in tool_specs if get_tool_group((item or {}).get("tool_id")) == AI_TOOL_GROUP_WAREHOUSE
+        ]
+        warehouse_tool_specs_text = _format_tool_specs_for_prompt(warehouse_tool_specs, 600)
         other_tool_specs_text = _format_tool_specs_for_prompt(other_tool_specs, 300)
         file_tools_available = bool(file_tool_specs) and bool(tool_context.allow_generated_artifacts)
         # Groups the employee may use but routing left out of this step: the
@@ -5668,6 +5706,16 @@ class AiChatService:
                     (
                         AI_DIRECTORY_TOOL_ROUTING_GUIDE
                         if directory_tool_specs
+                        else ""
+                    ),
+                    (
+                        f"Enabled 1C warehouse tools:\n{warehouse_tool_specs_text}"
+                        if warehouse_tool_specs
+                        else ""
+                    ),
+                    (
+                        AI_WAREHOUSE_TOOL_ROUTING_GUIDE
+                        if warehouse_tool_specs
                         else ""
                     ),
                     (

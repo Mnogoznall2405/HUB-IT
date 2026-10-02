@@ -358,6 +358,7 @@ export const AI_ITINVENT_TOOL_OPTIONS = [
   { id: 'itinvent.computers.changes', label: 'Изменения железа (агент инвентаризации)' },
   { id: 'itinvent.computers.software_search', label: 'Поиск установленных программ' },
   { id: 'itinvent.audit.dismissed_with_equipment', label: 'Аудит: уволенные с техникой' },
+  { id: 'itinvent.acts.pending', label: 'Неподписанные акты передачи' },
   { id: AI_ITINVENT_MULTI_DB_TOOL_ID, label: 'Мульти-БД поиск (admin)' },
 ];
 
@@ -392,6 +393,7 @@ export const AI_MFU_TOOL_OPTIONS = [
   { id: 'mfu.devices.list', label: 'Список МФУ / принтеров' },
   { id: 'mfu.device.status', label: 'Статус МФУ (SNMP/ping)' },
   { id: 'mfu.pages.monthly', label: 'Страницы по месяцам' },
+  { id: 'mfu.devices.low_toner', label: 'Заканчивается тонер' },
 ];
 
 export const AI_NETWORK_TOOL_OPTIONS = [
@@ -436,12 +438,19 @@ export const AI_SELF_TOOL_OPTIONS = [
   { id: 'me.mailbox.quota', label: 'Мой почтовый ящик: заполненность' },
   { id: 'me.files.search', label: 'Мои файлы: поиск' },
   { id: 'me.files.attach', label: 'Мои файлы: приложить к ответу' },
+  { id: 'me.it_requests', label: 'Мои заявки на закупку (1С)' },
   { id: 'helpdesk.request_draft', label: 'Обращение в IT (черновик с подтверждением)' },
 ];
 
 export const AI_DIRECTORY_TOOL_OPTIONS = [
   { id: 'directory.people.search', label: 'Справочник сотрудников' },
   { id: 'directory.department.get', label: 'Оргструктура: руководитель подразделения' },
+];
+
+export const AI_WAREHOUSE_TOOL_OPTIONS = [
+  { id: 'warehouse.balances.search', label: 'Остатки на складах 1С' },
+  { id: 'warehouse.it_requests.search', label: 'ИТ-заявки на закупку' },
+  { id: 'warehouse.it_requests.get', label: 'Карточка ИТ-заявки' },
 ];
 
 export const AI_CHAT_ACTION_TOOL_OPTIONS = [
@@ -458,3 +467,4 @@ export const AI_KB_TOOL_IDS = new Set(AI_KB_TOOL_OPTIONS.map((item) => item.id))
 export const AI_CHAT_TOOL_IDS = new Set([...AI_CHAT_TOOL_OPTIONS, ...AI_CHAT_ACTION_TOOL_OPTIONS].map((item) => item.id));
 export const AI_SELF_TOOL_IDS = new Set(AI_SELF_TOOL_OPTIONS.map((item) => item.id));
 export const AI_DIRECTORY_TOOL_IDS = new Set(AI_DIRECTORY_TOOL_OPTIONS.map((item) => item.id));
+export const AI_WAREHOUSE_TOOL_IDS = new Set(AI_WAREHOUSE_TOOL_OPTIONS.map((item) => item.id));

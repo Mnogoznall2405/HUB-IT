@@ -88,6 +88,13 @@ ITINVENT_TOOL_COMPUTERS_CHANGES = "itinvent.computers.changes"
 ITINVENT_TOOL_COMPUTERS_SOFTWARE = "itinvent.computers.software_search"
 ITINVENT_TOOL_AUDIT_DISMISSED = "itinvent.audit.dismissed_with_equipment"
 OFFICE_TOOL_MAILBOX_QUOTA_REPORT = "office.mailbox.quota_report"
+ITINVENT_TOOL_ACTS_PENDING = "itinvent.acts.pending"
+MFU_TOOL_LOW_TONER = "mfu.devices.low_toner"
+# 1C warehouse (read-only).
+WAREHOUSE_TOOL_BALANCES_SEARCH = "warehouse.balances.search"
+WAREHOUSE_TOOL_IT_REQUESTS_SEARCH = "warehouse.it_requests.search"
+WAREHOUSE_TOOL_IT_REQUEST_GET = "warehouse.it_requests.get"
+SELF_TOOL_IT_REQUESTS = "me.it_requests"
 VOICE_TOOL_MEETINGS_SEARCH = "voice.meetings.search"
 VOICE_TOOL_MEETING_GET = "voice.meeting.get"
 CHAT_TOOL_USERS_SEARCH = "chat.users.search"
@@ -181,6 +188,7 @@ AI_TOOL_GROUP_KB = "kb"
 AI_TOOL_GROUP_CHAT = "chat"
 AI_TOOL_GROUP_SELF = "self"
 AI_TOOL_GROUP_DIRECTORY = "directory"
+AI_TOOL_GROUP_WAREHOUSE = "warehouse"
 AI_TOOL_GROUP_OTHER = "other"
 AI_TOOL_GROUPS_ALL = (
     AI_TOOL_GROUP_ITINVENT,
@@ -193,6 +201,7 @@ AI_TOOL_GROUPS_ALL = (
     AI_TOOL_GROUP_CHAT,
     AI_TOOL_GROUP_SELF,
     AI_TOOL_GROUP_DIRECTORY,
+    AI_TOOL_GROUP_WAREHOUSE,
     AI_TOOL_GROUP_OTHER,
 )
 
@@ -223,6 +232,8 @@ def get_tool_group(tool_id: object) -> str:
         return AI_TOOL_GROUP_SELF
     if normalized.startswith("directory."):
         return AI_TOOL_GROUP_DIRECTORY
+    if normalized.startswith("warehouse."):
+        return AI_TOOL_GROUP_WAREHOUSE
     return AI_TOOL_GROUP_OTHER
 
 
