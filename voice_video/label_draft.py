@@ -7,18 +7,24 @@
 пайплайне: сепарация → нормализация → STT, затем слова раскладываются по
 репликам диаризации.
 
-Использование:
-    python label_draft.py <медиа> --out <папка> [--with-text] [--num-speakers N]
-                          [--min-speakers N] [--max-speakers N]
-                          [--stt-engine whisper|gemini|grok|mai] [--separator kim|...|none]
+Режимы:
+    --mode draft    черновик: draft.json, audio.mp3 (плеер), peaks.json (волна)
+    --mode variant  ещё один вариант диаризации для сравнения (--audio raw|processed):
+                    variant_<имя>.json
+    --mode samples  образцы голосов по размеченным репликам (--samples-spec spec.json):
+                    samples/<метка>.wav — для записи в эталоны reference_voices
 
-Результат: <папка>/draft.json и <папка>/audio.mp3 (для плеера в браузере).
+Использование:
+    python label_draft.py <медиа> --out <папка> [--mode draft] [--with-text]
+                          [--num-speakers N] [--min-speakers N] [--max-speakers N]
+                          [--stt-engine whisper|gemini|grok|mai] [--separator kim|...|none]
 """
 
 import argparse
 import bisect
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -27,6 +33,12 @@ logger = logging.getLogger("label_draft")
 
 DRAFT_FILE = "draft.json"
 AUDIO_FILE = "audio.mp3"
+PEAKS_FILE = "peaks.json"
+VARIANT_PREFIX = "variant_"
+SAMPLES_DIR = "samples"
+PEAKS_STEP_SEC = 0.1
+SAMPLE_MAX_SEC = 30.0  # эталон голоса: до 30 с самых длинных реплик
+SAMPLE_MIN_SPAN_SEC = 1.5
 MERGE_GAP_SEC = 0.3  # склеивать соседние реплики одного спикера с паузой не длиннее
 WORD_SNAP_SEC = 1.0  # слово вне реплик — к ближайшей реплике, если она не дальше
 
@@ -151,6 +163,42 @@ def words_from_transcription(result: Dict) -> List[Dict]:
     ]
 
 
+def pick_sample_spans(spans: List[List[float]], max_total: float = SAMPLE_MAX_SEC,
+                      min_span: float = SAMPLE_MIN_SPAN_SEC) -> List[List[float]]:
+    """Самые длинные реплики спикера для эталона голоса, суммарно не длиннее max_total."""
+    clean = []
+    for span in spans or []:
+        try:
+            start, end = float(span[0]), float(span[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if end - start >= min_span:
+            clean.append([start, end])
+    clean.sort(key=lambda sp: sp[1] - sp[0], reverse=True)
+    picked, total = [], 0.0
+    for start, end in clean:
+        if total >= max_total:
+            break
+        take = min(end - start, max_total - total)
+        picked.append([start, start + take])
+        total += take
+    return sorted(picked)
+
+
+def peaks_from_samples(samples, sample_rate: int, step: float = PEAKS_STEP_SEC) -> List[int]:
+    """Огибающая для волны в редакторе: максимум |x| на окно, 0..100."""
+    import numpy as np
+
+    data = np.abs(np.asarray(samples, dtype=np.float32))
+    window = max(1, int(sample_rate * step))
+    n = len(data) // window
+    if n == 0:
+        return []
+    env = data[: n * window].reshape(n, window).max(axis=1)
+    top = float(np.percentile(env, 99)) or float(env.max()) or 1.0
+    return [int(v) for v in np.clip(env / top * 100.0, 0, 100).round()]
+
+
 # ---------------------------------------------------------------------------
 # Запуск (тяжёлые импорты — только здесь)
 # ---------------------------------------------------------------------------
@@ -158,7 +206,14 @@ def words_from_transcription(result: Dict) -> List[Dict]:
 def _parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Черновик диаризации для редактора разметки")
     parser.add_argument("media", help="Аудио/видео файл")
-    parser.add_argument("--out", required=True, help="Папка результата (draft.json, audio.mp3)")
+    parser.add_argument("--out", required=True, help="Папка проекта разметки")
+    parser.add_argument("--mode", choices=("draft", "variant", "samples"), default="draft",
+                        help="draft — черновик; variant — доп. вариант диаризации для сравнения; "
+                             "samples — образцы голосов для эталонов")
+    parser.add_argument("--audio", choices=("raw", "processed"), default="raw",
+                        help="Звук для диаризации/образцов: сырой или после сепаратора")
+    parser.add_argument("--variant-name", default="processed")
+    parser.add_argument("--samples-spec", default=None, help="JSON {метка: [[start, end], ...]}")
     parser.add_argument("--with-text", action="store_true", help="Добавить текст реплик (STT)")
     parser.add_argument("--num-speakers", type=int, default=0)
     parser.add_argument("--min-speakers", type=int, default=0)
@@ -168,6 +223,12 @@ def _parse_args(argv=None):
     parser.add_argument("--language", default="ru")
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args(argv)
+
+
+def _write_json(path: Path, payload) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
 
 
 def main(argv=None) -> int:
@@ -196,9 +257,7 @@ def main(argv=None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     import config as app_config
-    from pydub import AudioSegment
-    from modules.audio_processor import AudioProcessor, ProcessingConfig, cleanup_memory
-    from modules.diarization import SpeakerDiarization
+    from modules.audio_processor import AudioProcessor, ProcessingConfig
 
     separator = args.separator or getattr(app_config, "SEPARATOR_ENGINE", "kim")
     cfg = ProcessingConfig(
@@ -224,56 +283,152 @@ def main(argv=None) -> int:
     audio_processor = AudioProcessor(cfg)
     raw_wav = out_dir / "raw.wav"
     processed_wav = out_dir / "processed.wav"
-    try:
+
+    def ensure_raw() -> bool:
+        if raw_wav.exists():
+            return True
         print("🎵 Этап 1: Извлечение аудио (16 кГц моно, без сепарации)...", flush=True)
-        if not audio_processor.extract_audio(str(media), str(raw_wav)):
-            print("❌ Не удалось извлечь аудио")
-            return 1
-        raw_audio = AudioSegment.from_wav(str(raw_wav))
-        duration = len(raw_audio) / 1000.0
-        raw_audio.export(str(out_dir / AUDIO_FILE), format="mp3", bitrate="64k")
-        del raw_audio
+        return audio_processor.extract_audio(str(media), str(raw_wav))
 
-        print("👥 Этап 3: Диаризация по сырому звуку...", flush=True)
-        turns = SpeakerDiarization(cfg).perform_diarization(str(raw_wav))
-        cleanup_memory()
-        if not turns:
-            print("❌ Диаризация не дала результата")
-            return 1
+    def ensure_processed() -> Path:
+        if processed_wav.exists():
+            return processed_wav
+        print(f"🎵 Этап 1: Извлечение аудио и сепарация ({separator})...", flush=True)
+        if audio_processor.process_audio(str(media), str(processed_wav)):
+            return processed_wav
+        print("⚠️ Сепарация не удалась — используется сырой звук")
+        return raw_wav if ensure_raw() else processed_wav
 
-        words = None
-        if args.with_text:
-            print("📝 Этап 2: Транскрипция для подсказки текста...", flush=True)
-            from modules.transcription import TranscriptionProcessor
-            if not audio_processor.process_audio(str(media), str(processed_wav)):
-                print("⚠️ Обработка аудио для STT не удалась — текст будет по сырому звуку")
-                processed_wav = raw_wav
-            stt_cfg = cfg
-            stt_cfg.enable_diarization = False  # диаризация уже сделана по сырому звуку
-            stt = TranscriptionProcessor(stt_cfg.whisper_model, stt_cfg).transcribe_audio(
-                str(processed_wav), args.language
-            )
-            words = words_from_transcription(stt)
-            cleanup_memory()
-            if not words:
-                print("⚠️ STT не вернул текст — черновик без текста")
-
-        draft = build_draft(turns, words, duration)
-        tmp = out_dir / (DRAFT_FILE + ".tmp")
-        tmp.write_text(json.dumps(draft, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(out_dir / DRAFT_FILE)
-        print(
-            f"✅ Черновик готов: {len(draft['segments'])} реплик, "
-            f"{len(draft['speakers'])} спикеров, {duration / 60:.1f} мин",
-            flush=True,
-        )
-        return 0
+    try:
+        if args.mode == "draft":
+            return _run_draft(args, cfg, out_dir, ensure_raw, ensure_processed, raw_wav)
+        if args.mode == "variant":
+            return _run_variant(args, cfg, out_dir, ensure_raw, ensure_processed, raw_wav, separator)
+        return _run_samples(args, out_dir, ensure_raw, ensure_processed, raw_wav)
     finally:
-        for tmp_wav in (raw_wav, out_dir / "processed.wav"):
+        for tmp_wav in (raw_wav, processed_wav):
             try:
                 tmp_wav.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def _diarize(cfg, wav: Path) -> List[Dict]:
+    from modules.audio_processor import cleanup_memory
+    from modules.diarization import SpeakerDiarization
+
+    turns = SpeakerDiarization(cfg).perform_diarization(str(wav))
+    cleanup_memory()
+    return turns or []
+
+
+def _run_draft(args, cfg, out_dir: Path, ensure_raw, ensure_processed, raw_wav: Path) -> int:
+    from pydub import AudioSegment
+    from modules.audio_processor import cleanup_memory
+
+    if not ensure_raw():
+        print("❌ Не удалось извлечь аудио")
+        return 1
+    raw_audio = AudioSegment.from_wav(str(raw_wav))
+    duration = len(raw_audio) / 1000.0
+    raw_audio.export(str(out_dir / AUDIO_FILE), format="mp3", bitrate="64k")
+    try:
+        _write_json(out_dir / PEAKS_FILE, {
+            "step": PEAKS_STEP_SEC,
+            "peaks": peaks_from_samples(raw_audio.get_array_of_samples(), raw_audio.frame_rate),
+        })
+    except Exception as exc:  # волна — удобство, не повод валить черновик
+        print(f"⚠️ Волна не построена: {exc}")
+    del raw_audio
+
+    print("👥 Этап 3: Диаризация по сырому звуку...", flush=True)
+    turns = _diarize(cfg, raw_wav)
+    if not turns:
+        print("❌ Диаризация не дала результата")
+        return 1
+
+    words = None
+    if args.with_text:
+        print("📝 Этап 2: Транскрипция для подсказки текста...", flush=True)
+        from modules.transcription import TranscriptionProcessor
+        stt_audio = ensure_processed()
+        cfg.enable_diarization = False  # диаризация уже сделана по сырому звуку
+        stt = TranscriptionProcessor(cfg.whisper_model, cfg).transcribe_audio(str(stt_audio), args.language)
+        words = words_from_transcription(stt)
+        cleanup_memory()
+        if not words:
+            print("⚠️ STT не вернул текст — черновик без текста")
+
+    draft = build_draft(turns, words, duration)
+    _write_json(out_dir / DRAFT_FILE, draft)
+    print(
+        f"✅ Черновик готов: {len(draft['segments'])} реплик, "
+        f"{len(draft['speakers'])} спикеров, {duration / 60:.1f} мин",
+        flush=True,
+    )
+    return 0
+
+
+def _run_variant(args, cfg, out_dir: Path, ensure_raw, ensure_processed, raw_wav: Path, separator: str) -> int:
+    if args.audio == "processed":
+        wav = ensure_processed()
+    else:
+        if not ensure_raw():
+            print("❌ Не удалось извлечь аудио")
+            return 1
+        wav = raw_wav
+    print(f"👥 Этап 3: Диаризация варианта «{args.variant_name}» ({args.audio})...", flush=True)
+    turns = _diarize(cfg, wav)
+    if not turns:
+        print("❌ Диаризация не дала результата")
+        return 1
+    draft = build_draft(turns, None, None)
+    payload = {
+        "name": args.variant_name,
+        "audio": args.audio,
+        "separator": separator if args.audio == "processed" else "none",
+        "num_speakers": cfg.diarization_num_speakers or None,
+        "min_speakers": cfg.diarization_min_speakers,
+        "max_speakers": cfg.diarization_max_speakers,
+        "segments": draft["segments"],
+    }
+    _write_json(out_dir / f"{VARIANT_PREFIX}{args.variant_name}.json", payload)
+    print(f"✅ Вариант готов: {len(draft['segments'])} реплик, {len(draft['speakers'])} спикеров", flush=True)
+    return 0
+
+
+def _run_samples(args, out_dir: Path, ensure_raw, ensure_processed, raw_wav: Path) -> int:
+    from pydub import AudioSegment
+
+    if not args.samples_spec:
+        print("❌ Не задан --samples-spec")
+        return 1
+    spec = json.loads(Path(args.samples_spec).read_text(encoding="utf-8"))
+    wav = ensure_processed() if args.audio == "processed" else (raw_wav if ensure_raw() else None)
+    if not wav or not Path(wav).exists():
+        print("❌ Не удалось подготовить аудио")
+        return 1
+    audio = AudioSegment.from_wav(str(wav))
+    samples_dir = out_dir / SAMPLES_DIR
+    samples_dir.mkdir(exist_ok=True)
+    made = 0
+    for label, spans in (spec or {}).items():
+        if not re.match(r"^[A-Za-z0-9_-]{1,64}$", str(label)):
+            continue
+        picked = pick_sample_spans(spans)
+        if not picked:
+            print(f"⚠️ {label}: нет реплик длиннее {SAMPLE_MIN_SPAN_SEC} с")
+            continue
+        sample = AudioSegment.silent(duration=0)
+        for start, end in picked:
+            if len(sample):
+                sample += AudioSegment.silent(duration=250)
+            sample += audio[int(start * 1000):int(end * 1000)]
+        sample.set_channels(1).set_frame_rate(16000).export(str(samples_dir / f"{label}.wav"), format="wav")
+        made += 1
+        print(f"🎧 Образец {label}: {len(sample) / 1000:.0f} с", flush=True)
+    print(f"✅ Образцов голосов: {made}", flush=True)
+    return 0 if made else 1
 
 
 if __name__ == "__main__":

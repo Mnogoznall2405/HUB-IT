@@ -139,6 +139,7 @@ class MainProcessor:
                 self._ckpt_save(base_filename, 'audio', file_path, audio_result)
 
             processed_audio_path = str(temp_audio_path)
+            diarization_audio_path = self._diarization_audio_path(base_filename, processed_audio_path)
 
             # Этап 2: Транскрипция (+ интегрированная диаризация для облачного STT
             # — идёт параллельно: API по сети, диаризация на GPU)
@@ -149,7 +150,8 @@ class MainProcessor:
                 logger.info("📝 Этап 2: Транскрипция аудио с диаризацией...")
                 transcription_result = self.transcription_processor.transcribe_audio(
                     processed_audio_path,
-                    self.config.language
+                    self.config.language,
+                    diarization_audio_file=diarization_audio_path,
                 )
                 if not transcription_result or not transcription_result.get('segments'):
                     raise Exception("Ошибка транскрипции")
@@ -175,7 +177,7 @@ class MainProcessor:
                     # Этап 3: Дополнительная диаризация (если WhisperX диаризация отключена)
                     logger.info("👥 Этап 3: Дополнительная диаризация спикеров...")
                     diarization_result = self.speaker_diarization.process_diarization(
-                        processed_audio_path, transcription_result
+                        diarization_audio_path, transcription_result
                     )
                     if not diarization_result or not diarization_result.get('success'):
                         logger.warning("⚠️ Дополнительная диаризация не удалась")
@@ -285,6 +287,17 @@ class MainProcessor:
                 'error': str(e),
                 'processed_at': datetime.now().isoformat()
             }
+
+    def _diarization_audio_path(self, base_filename: str, processed_audio_path: str) -> str:
+        """Звук для диаризации: сырой (DIARIZATION_AUDIO=raw) или тот же, что для STT."""
+        if getattr(self.config, 'diarization_audio', 'processed') != 'raw':
+            return processed_audio_path
+        raw_path = TEMP_DIR / f"{base_filename}_raw.wav"
+        if raw_path.exists():
+            logger.info("🎭 Диаризация по сырому звуку (DIARIZATION_AUDIO=raw)")
+            return str(raw_path)
+        logger.warning("⚠️ DIARIZATION_AUDIO=raw, но сырой звук не найден — диаризация по обработанному")
+        return processed_audio_path
 
     def resume_speaker_naming(self, base_filename: str) -> Dict[str, Any]:
         """Повторная идентификация/именование спикеров и перегенерация анализа

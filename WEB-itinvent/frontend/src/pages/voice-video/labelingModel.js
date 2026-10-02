@@ -220,3 +220,40 @@ export function pruneSpeakers(speakers, segments, keepLabels = []) {
 export function labelingSnapshot(segments, speakers, title) {
   return JSON.stringify({ segments, speakers, title });
 }
+
+// --- Zoomed waveform view -------------------------------------------------
+
+export const ZOOM_LEVELS = [10, 30, 120];
+
+// Keep the view still while the playhead stays inside it; re-anchor when it
+// leaves (playhead lands at 20% of the window) — no constant jitter.
+export function nextViewStart(prevStart, t, windowSec, duration) {
+  const maxStart = Math.max(0, (Number(duration) || 0) - windowSec);
+  const clamp = (v) => Math.min(Math.max(0, v), maxStart || Math.max(0, v));
+  const start = Number.isFinite(prevStart) ? prevStart : 0;
+  if (t >= start && t <= start + windowSec * 0.9) return clamp(start);
+  return clamp(t - windowSec * 0.2);
+}
+
+export function timeAtX(x, width, viewStart, windowSec) {
+  if (!(width > 0)) return viewStart;
+  return viewStart + (Math.min(Math.max(0, x), width) / width) * windowSec;
+}
+
+// Peaks inside [viewStart, viewStart + windowSec] resampled to `columns` bars (max per bar).
+export function peaksForView(peaks, step, viewStart, windowSec, columns) {
+  const out = new Array(Math.max(0, columns)).fill(0);
+  if (!peaks?.length || !(step > 0) || !(columns > 0)) return out;
+  for (let c = 0; c < columns; c += 1) {
+    const t0 = viewStart + (c / columns) * windowSec;
+    const t1 = viewStart + ((c + 1) / columns) * windowSec;
+    const i0 = Math.floor(t0 / step);
+    const i1 = Math.max(i0 + 1, Math.ceil(t1 / step));
+    let max = 0;
+    for (let i = Math.max(0, i0); i < Math.min(peaks.length, i1); i += 1) {
+      if (peaks[i] > max) max = peaks[i];
+    }
+    out[c] = max;
+  }
+  return out;
+}

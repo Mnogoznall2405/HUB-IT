@@ -110,3 +110,24 @@ describe('labelingModel', () => {
     expect(Object.keys(pruneSpeakers(speakers, [], ['SPEAKER_01']))).toEqual(['SPEAKER_01']);
   });
 });
+
+describe('labelingModel: waveform view', () => {
+  it('keeps the view while the playhead is inside and re-anchors outside', async () => {
+    const { nextViewStart } = await import('./labelingModel');
+    expect(nextViewStart(0, 5, 30, 100)).toBe(0);
+    expect(nextViewStart(0, 28, 30, 100)).toBe(22);
+    expect(nextViewStart(50, 10, 30, 100)).toBe(4);
+    expect(nextViewStart(0, 99, 30, 100)).toBe(70);
+    expect(nextViewStart(0, 5, 30, 10)).toBe(0);
+  });
+
+  it('maps x to time and resamples peaks per bar', async () => {
+    const { peaksForView, timeAtX } = await import('./labelingModel');
+    expect(timeAtX(50, 100, 10, 30)).toBe(25);
+    expect(timeAtX(-5, 100, 10, 30)).toBe(10);
+    const peaks = [1, 9, 2, 3, 8, 0, 0, 0];
+    expect(peaksForView(peaks, 0.5, 0, 2, 2)).toEqual([9, 3]);
+    expect(peaksForView(peaks, 0.5, 2, 2, 1)).toEqual([8]);
+    expect(peaksForView([], 0.5, 0, 2, 3)).toEqual([0, 0, 0]);
+  });
+});

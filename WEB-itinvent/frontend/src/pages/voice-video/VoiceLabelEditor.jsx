@@ -4,9 +4,15 @@ import {
   Autocomplete,
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Divider,
+  LinearProgress,
   FormControlLabel,
   IconButton,
   Menu,
@@ -29,6 +35,8 @@ import PlayArrowOutlinedIcon from '@mui/icons-material/PlayArrowOutlined';
 import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
 import UndoOutlinedIcon from '@mui/icons-material/UndoOutlined';
 import { voiceLabelingAPI } from '../../api/voiceLabeling';
+import VoiceLabelQualityPanel from './VoiceLabelQualityPanel';
+import VoiceLabelWaveform from './VoiceLabelWaveform';
 import { hubTaskSupportAPI } from '../../api/hubTaskSupport';
 import {
   addSegmentAt,
@@ -51,6 +59,7 @@ import {
 } from './labelingModel';
 
 const AUTOSAVE_MS = 30000;
+const AUX_POLL_MS = 5000;
 const HISTORY_LIMIT = 100;
 const SEEK_STEP = 2;
 const SEEK_STEP_LONG = 10;
@@ -251,6 +260,10 @@ function VoiceLabelEditor({ projectId, onClose }) {
   const [speakerMenu, setSpeakerMenu] = useState(null); // { anchor, segId }
   const [mergeMenu, setMergeMenu] = useState(null); // { anchor, label }
   const [exportMenu, setExportMenu] = useState(null);
+  const [peaks, setPeaks] = useState(null);
+  const [enrollOpen, setEnrollOpen] = useState(false);
+  const [enrollReplace, setEnrollReplace] = useState(false);
+  const [enrollBusy, setEnrollBusy] = useState(false);
   const mediaRef = useRef(null);
   const listRef = useRef(null);
   const stateRef = useRef({});
@@ -281,6 +294,29 @@ function VoiceLabelEditor({ projectId, onClose }) {
 
   useEffect(() => { load(); }, [load]);
 
+  const hasPeaks = Boolean(project?.has_peaks);
+  useEffect(() => {
+    if (!hasPeaks) return undefined;
+    const controller = new AbortController();
+    voiceLabelingAPI.getPeaks(projectId, { signal: controller.signal })
+      .then((data) => setPeaks(data?.peaks ? data : null))
+      .catch(() => setPeaks(null));
+    return () => controller.abort();
+  }, [projectId, hasPeaks]);
+
+  // Variant / enroll jobs: refresh only their status, never the edited segments.
+  const mergeAux = useCallback((data) => {
+    setProject((prev) => (prev ? { ...prev, aux_job: data.aux_job, variants: data.variants } : prev));
+  }, []);
+  const auxActive = ['queued', 'processing'].includes(project?.aux_job?.status);
+  useEffect(() => {
+    if (!auxActive) return undefined;
+    const timer = setInterval(() => {
+      voiceLabelingAPI.getProject(projectId).then(mergeAux).catch(() => {});
+    }, AUX_POLL_MS);
+    return () => clearInterval(timer);
+  }, [auxActive, projectId, mergeAux]);
+
   const order = useMemo(() => speakerOrder(segments, extraLabels), [segments, extraLabels]);
   const stats = useMemo(() => speakerStats(segments), [segments]);
   const currentIdx = useMemo(() => findSegmentIndexAt(segments, currentTime), [segments, currentTime]);
@@ -289,6 +325,11 @@ function VoiceLabelEditor({ projectId, onClose }) {
   const dirty = Boolean(project) && labelingSnapshot(segments, prunedSpeakers, title) !== savedSnapshot;
   const duration = Number(project?.duration) || 0;
   const nameOf = useCallback((label) => speakers[label]?.name || label, [speakers]);
+  const savedNamedLabels = useMemo(
+    () => Object.keys(prunedSpeakers).filter((label) => (stats[label]?.count || 0) > 0),
+    [prunedSpeakers, stats],
+  );
+  const enrollJob = project?.aux_job?.action === 'enroll' ? project.aux_job : null;
 
   // Every edit goes through here so it can be undone.
   const commit = useCallback((next) => {
@@ -403,6 +444,12 @@ function VoiceLabelEditor({ projectId, onClose }) {
       return;
     }
     commit(next);
+  }, [commit]);
+
+  const commitBoundary = useCallback((id, edge, t) => {
+    const st = stateRef.current;
+    const next = setBoundary(st.segments, id, edge, t, st.duration);
+    if (next) commit(next);
   }, [commit]);
 
   const doAdd = useCallback(() => {
@@ -620,6 +667,17 @@ function VoiceLabelEditor({ projectId, onClose }) {
               selectedId={selectedId}
               onSeek={(t) => seek(t)}
             />
+            <VoiceLabelWaveform
+              peaks={peaks}
+              segments={segments}
+              order={order}
+              duration={duration}
+              currentTime={currentTime}
+              selectedId={selectedId}
+              onSeek={(t) => seek(t)}
+              onSelect={setSelectedId}
+              onBoundaryCommit={commitBoundary}
+            />
           </Paper>
 
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
@@ -667,7 +725,8 @@ function VoiceLabelEditor({ projectId, onClose }) {
           </Paper>
         </Stack>
 
-        <Paper variant="outlined" sx={{ p: 1.5, alignSelf: 'start' }}>
+        <Stack spacing={1.5} sx={{ alignSelf: 'start', minWidth: 0 }}>
+        <Paper variant="outlined" sx={{ p: 1.5 }}>
           <Stack direction="row" alignItems="center" sx={{ mb: 1 }}>
             <Typography variant="subtitle2" sx={{ flex: 1 }}>Спикеры</Typography>
             <Button size="small" startIcon={<AddOutlinedIcon />} onClick={addSpeaker}>Добавить</Button>
@@ -721,8 +780,89 @@ function VoiceLabelEditor({ projectId, onClose }) {
               );
             })}
           </Stack>
+          <Divider sx={{ my: 1.5 }} />
+          <Button
+            fullWidth
+            variant="outlined"
+            disabled={dirty || !savedNamedLabels.length || auxActive}
+            onClick={() => setEnrollOpen(true)}
+          >
+            Записать голоса в эталоны ({savedNamedLabels.length})
+          </Button>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+            {dirty
+              ? 'Сначала сохраните разметку.'
+              : 'По 30 с самых длинных реплик каждого сотрудника — для автоопределения в протоколах.'}
+          </Typography>
+          {enrollJob && ['queued', 'processing'].includes(enrollJob.status) && (
+            <LinearProgress sx={{ mt: 1 }} variant={enrollJob.progress ? 'determinate' : 'indeterminate'} value={enrollJob.progress || 0} />
+          )}
+          {enrollJob && ['done', 'failed'].includes(enrollJob.status) && (
+            <Stack spacing={0.25} sx={{ mt: 1 }}>
+              {(enrollJob.enroll || []).map((r) => (
+                <Typography
+                  key={`${r.label}-${r.name}`}
+                  variant="caption"
+                  color={r.ok ? 'success.main' : 'error.main'}
+                >
+                  {r.name}: {r.skipped === 'exists' ? 'уже есть в эталонах' : r.ok ? 'записан' : 'не записан'}
+                </Typography>
+              ))}
+              {enrollJob.status === 'failed' && !(enrollJob.enroll || []).length && (
+                <Typography variant="caption" color="error.main">Ошибка: {enrollJob.error || 'не удалось'}</Typography>
+              )}
+            </Stack>
+          )}
         </Paper>
+        <VoiceLabelQualityPanel
+          projectId={projectId}
+          auxJob={project.aux_job}
+          variants={project.variants}
+          dirty={dirty}
+          savedVersion={version}
+          onProjectUpdate={mergeAux}
+        />
+        </Stack>
       </Box>
+
+      <Dialog open={enrollOpen} onClose={enrollBusy ? undefined : () => setEnrollOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Записать голоса в эталоны</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            Будут записаны сотрудники из сохранённой разметки:
+          </Typography>
+          {savedNamedLabels.map((label) => (
+            <Typography key={label} variant="body2">• {speakers[label]?.name} ({label})</Typography>
+          ))}
+          <FormControlLabel
+            sx={{ mt: 1 }}
+            control={<Checkbox checked={enrollReplace} onChange={(e) => setEnrollReplace(e.target.checked)} />}
+            label="Заменить голоса, которые уже есть в эталонах"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEnrollOpen(false)} disabled={enrollBusy}>Отмена</Button>
+          <Button
+            variant="contained"
+            disabled={enrollBusy}
+            onClick={async () => {
+              setEnrollBusy(true);
+              setSaveError('');
+              try {
+                mergeAux(await voiceLabelingAPI.enrollVoices(projectId, { labels: savedNamedLabels, replace: enrollReplace }));
+                setEnrollOpen(false);
+              } catch (err) {
+                setSaveError(extractDetail(err, 'Не удалось записать голоса'));
+                setEnrollOpen(false);
+              } finally {
+                setEnrollBusy(false);
+              }
+            }}
+          >
+            Записать
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Menu open={Boolean(speakerMenu)} anchorEl={speakerMenu?.anchor} onClose={() => setSpeakerMenu(null)}>
         {order.map((label, idx) => (

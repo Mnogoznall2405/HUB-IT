@@ -41,6 +41,31 @@ export const voiceLabelingAPI = {
     return response.data;
   },
 
+  getPeaks: async (id, options = {}) => {
+    const response = await apiClient.get(`${projectPath(id)}/peaks`, { signal: options?.signal });
+    return response.data;
+  },
+
+  getMetrics: async (id, params = {}) => {
+    const response = await apiClient.get(`${projectPath(id)}/metrics`, { params });
+    return response.data;
+  },
+
+  createVariant: async (id, separator) => {
+    const response = await apiClient.post(`${projectPath(id)}/variants`, { separator });
+    return response.data;
+  },
+
+  deleteVariant: async (id, name) => {
+    const response = await apiClient.delete(`${projectPath(id)}/variants/${encodeURIComponent(name)}`);
+    return response.data;
+  },
+
+  enrollVoices: async (id, { labels = [], replace = false } = {}) => {
+    const response = await apiClient.post(`${projectPath(id)}/enroll`, { labels, replace });
+    return response.data;
+  },
+
   mediaUrl: (id) => `/api/v1${projectPath(id)}/media`,
 
   rttmUrl: (id, { names = false, source = 'edited' } = {}) => (

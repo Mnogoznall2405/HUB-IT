@@ -745,8 +745,14 @@ class TranscriptionProcessor:
             return "SPEAKER_UNKNOWN"
     
     @retry_on_failure(max_retries=2, delay=1.0)
-    def transcribe_audio(self, audio_file: str, language: str = None) -> Dict:
-        """Основной метод транскрипции аудио с поддержкой диаризации."""
+    def transcribe_audio(self, audio_file: str, language: str = None,
+                         diarization_audio_file: Optional[str] = None) -> Dict:
+        """Основной метод транскрипции аудио с поддержкой диаризации.
+
+        diarization_audio_file — отдельный звук для диаризации (например, сырой,
+        без сепаратора); по умолчанию тот же, что и для STT.
+        """
+        diar_audio = diarization_audio_file or audio_file
         try:
             logger.info(f"🎙️ Начало транскрипции: {Path(audio_file).name}")
             
@@ -765,7 +771,7 @@ class TranscriptionProcessor:
                     logger.info("⚡ Параллельный запуск: API STT + GPU-диаризация")
                     with ThreadPoolExecutor(max_workers=2) as ex:
                         fut_stt = ex.submit(self._transcribe_api, audio_file, language)
-                        fut_diar = ex.submit(self.perform_diarization, audio_file)
+                        fut_diar = ex.submit(self.perform_diarization, diar_audio)
                         result = fut_stt.result()
                         diarize_segments = fut_diar.result()
                 else:
@@ -790,7 +796,7 @@ class TranscriptionProcessor:
 
                 # Локальный whisper: диаризация после транскрипции (одна GPU-очередь)
                 if self.config.enable_diarization:
-                    diarize_segments = self.perform_diarization(audio_file)
+                    diarize_segments = self.perform_diarization(diar_audio)
 
             if result and 'segments' in result:
                 result['segments'] = self._apply_text_corrections(result['segments'])

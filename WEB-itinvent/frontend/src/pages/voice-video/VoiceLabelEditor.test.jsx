@@ -13,6 +13,11 @@ vi.mock('../../api/voiceLabeling', () => ({
     createProject: vi.fn(),
     retryProject: vi.fn(),
     deleteProject: vi.fn(),
+    getPeaks: vi.fn(async () => ({ step: 0.1, peaks: [10, 50, 90] })),
+    getMetrics: vi.fn(async () => ({ edited: false, collar: 0.25, reference_segments: 2, items: [] })),
+    createVariant: vi.fn(),
+    deleteVariant: vi.fn(),
+    enrollVoices: vi.fn(),
     mediaUrl: vi.fn((id) => `/api/v1/voice/labeling/projects/${id}/media`),
     rttmUrl: vi.fn((id) => `/api/v1/voice/labeling/projects/${id}/rttm`),
   },
@@ -38,6 +43,17 @@ const project = (over = {}) => ({
 });
 
 const rowOf = (text) => screen.getByText(text).closest('[data-seg-id]');
+
+// jsdom: no canvas backend and no PointerEvent (fireEvent would drop clientX).
+HTMLCanvasElement.prototype.getContext = () => null;
+if (typeof window.PointerEvent === 'undefined') {
+  window.PointerEvent = class PointerEvent extends MouseEvent {
+    constructor(type, init = {}) {
+      super(type, init);
+      this.pointerId = init.pointerId ?? 1;
+    }
+  };
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -129,5 +145,93 @@ describe('VoiceLabelingSection', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Разметить' }));
     expect(await screen.findByText('добрый день')).toBeInTheDocument();
     expect(voiceLabelingAPI.getProject).toHaveBeenCalledWith('p1');
+  });
+});
+
+
+describe('VoiceLabelEditor: waveform, quality and voices', () => {
+  const rect = { left: 0, top: 0, width: 300, height: 96, right: 300, bottom: 96, x: 0, y: 0 };
+
+  it('drags the end of the selected segment on the waveform as one undoable edit', async () => {
+    voiceLabelingAPI.getProject.mockResolvedValue(project({ has_peaks: true }));
+    render(<VoiceLabelEditor projectId="p1" onClose={() => {}} />);
+    await screen.findByText('добрый день');
+    const wave = screen.getByTestId('label-waveform');
+    wave.getBoundingClientRect = () => rect;
+
+    fireEvent.click(rowOf('добрый день'));
+    const endHandle = await screen.findByRole('separator', { name: 'Конец реплики' });
+    // 30 s window over 300 px: x = 70 -> 7 s.
+    fireEvent.pointerDown(endHandle, { clientX: 50, pointerId: 1 });
+    fireEvent.pointerMove(wave, { clientX: 70, pointerId: 1 });
+    fireEvent.pointerUp(wave, { clientX: 70, pointerId: 1 });
+
+    expect(within(rowOf('добрый день')).getByRole('button', { name: /0:00\.0–0:07\.0/ })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: 'z', code: 'KeyZ', ctrlKey: true });
+    expect(within(rowOf('добрый день')).getByRole('button', { name: /0:00\.0–0:05\.0/ })).toBeInTheDocument();
+    expect(voiceLabelingAPI.getPeaks).toHaveBeenCalledWith('p1', expect.anything());
+  });
+
+  it('shows DER per variant and queues a cleaned-audio variant', async () => {
+    voiceLabelingAPI.getProject.mockResolvedValue(project({ edited_at: '2026-10-02T10:00:00Z' }));
+    voiceLabelingAPI.getMetrics.mockResolvedValue({
+      edited: true,
+      collar: 0.25,
+      reference_segments: 2,
+      items: [
+        { name: 'auto', title: 'Черновик: сырой звук', der: 0.123, miss: 0.01, false_alarm: 0.02, confusion: 0.093, hypothesis_speakers: 3, reference_speakers: 2 },
+        { name: 'kim', title: 'Очищенный звук (kim)', der: 0.2, miss: 0.05, false_alarm: 0.05, confusion: 0.1, hypothesis_speakers: 2, reference_speakers: 2 },
+      ],
+    });
+    voiceLabelingAPI.createVariant.mockResolvedValue({
+      aux_job: { id: 'j2', action: 'variant', status: 'queued', progress: 0 },
+      variants: [],
+    });
+    render(<VoiceLabelEditor projectId="p1" onClose={() => {}} />);
+
+    const table = await screen.findByRole('table', { name: 'Метрики диаризации' });
+    expect(within(table).getByText('12.3%')).toBeInTheDocument();
+    expect(within(table).getByText('20.0%')).toBeInTheDocument();
+    expect(within(table).getByText('лучше').closest('tr')).toHaveTextContent('Черновик: сырой звук');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Прогнать на очищенном звуке' }));
+    await waitFor(() => expect(voiceLabelingAPI.createVariant).toHaveBeenCalledWith('p1', 'kim'));
+    expect(await screen.findByText(/Диаризация варианта/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Прогнать на очищенном звуке' })).toBeDisabled();
+  });
+
+  it('enrolls saved named speakers into reference voices', async () => {
+    voiceLabelingAPI.getProject.mockResolvedValue(project({
+      speakers: { SPEAKER_00: { name: 'Иванов И.И.', user_id: 1 } },
+    }));
+    voiceLabelingAPI.enrollVoices.mockResolvedValue({
+      aux_job: {
+        id: 'j3', action: 'enroll', status: 'done',
+        enroll: [{ ok: true, label: 'SPEAKER_00', name: 'Иванов И.И' }],
+      },
+      variants: [],
+    });
+    render(<VoiceLabelEditor projectId="p1" onClose={() => {}} />);
+    await screen.findByText('добрый день');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Записать голоса в эталоны (1)' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Заменить голоса, которые уже есть в эталонах' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Записать' }));
+
+    await waitFor(() => expect(voiceLabelingAPI.enrollVoices).toHaveBeenCalledWith(
+      'p1', { labels: ['SPEAKER_00'], replace: true },
+    ));
+    expect(await screen.findByText('Иванов И.И: записан')).toBeInTheDocument();
+  });
+
+  it('blocks enrollment while there are unsaved edits', async () => {
+    voiceLabelingAPI.getProject.mockResolvedValue(project({
+      speakers: { SPEAKER_00: { name: 'Иванов И.И.', user_id: 1 } },
+    }));
+    render(<VoiceLabelEditor projectId="p1" onClose={() => {}} />);
+    await screen.findByText('начнём');
+    fireEvent.click(rowOf('начнём'));
+    fireEvent.keyDown(window, { key: 'Delete', code: 'Delete' });
+    expect(screen.getByRole('button', { name: /Записать голоса в эталоны/ })).toBeDisabled();
   });
 });

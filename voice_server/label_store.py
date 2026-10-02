@@ -16,10 +16,10 @@ from sqlalchemy import text
 from .config import config
 from .db import get_voice_engine
 
-_JSON_KEYS = ("settings", "auto_segments", "segments", "speakers")
+_JSON_KEYS = ("settings", "auto_segments", "segments", "speakers", "variants")
 _DATE_KEYS = ("created_at", "updated_at", "edited_at")
 _LIST_COLUMNS = (
-    "id, title, original_filename, duration, status, job_id, settings, speakers, "
+    "id, title, original_filename, duration, status, job_id, aux_job_id, settings, speakers, "
     "version, error, created_by, updated_by, edited_at, created_at, updated_at"
 )
 
@@ -121,6 +121,43 @@ def set_job(project_id: str, job_id: str) -> None:
                 "error = NULL, updated_at = :now WHERE id = :id"
             ),
             {"job": job_id, "now": _now(), "id": project_id},
+        )
+
+
+def set_aux_job(project_id: str, job_id: str) -> None:
+    """Variant/enroll jobs: tracked separately so the ready labeling stays editable."""
+    with _engine().begin() as conn:
+        conn.execute(
+            text("UPDATE voice.label_projects SET aux_job_id = :job, updated_at = :now WHERE id = :id"),
+            {"job": job_id, "now": _now(), "id": project_id},
+        )
+
+
+def set_variant(project_id: str, name: str, payload: Optional[Dict[str, Any]]) -> None:
+    """Merge (or remove with ``None``) one diarization variant (row-locked read-modify-write)."""
+    engine = _engine()
+    lock = " FOR UPDATE" if engine.dialect.name == "postgresql" else ""
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(f"SELECT variants FROM voice.label_projects WHERE id = :id{lock}"),
+            {"id": project_id},
+        ).fetchone()
+        if row is None:
+            return
+        current = row._mapping["variants"]
+        if isinstance(current, str):
+            try:
+                current = json.loads(current)
+            except (ValueError, TypeError):
+                current = None
+        variants = dict(current or {})
+        if payload is None:
+            variants.pop(name, None)
+        else:
+            variants[name] = payload
+        conn.execute(
+            text("UPDATE voice.label_projects SET variants = :v, updated_at = :now WHERE id = :id"),
+            {"v": _dumps(variants), "now": _now(), "id": project_id},
         )
 
 

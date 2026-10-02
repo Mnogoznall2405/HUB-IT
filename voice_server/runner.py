@@ -6,6 +6,7 @@ never takes the API or worker down, and GPU memory is fully released on exit.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -107,10 +108,33 @@ def build_enroll_argv(sample_path: str, speaker_name: str) -> List[str]:
     ]
 
 
-def build_label_argv(stored_path: str, out_dir: str, settings: Dict[str, Any]) -> List[str]:
-    """Diarization-only draft for the labeling editor (no LLM, optional STT text)."""
-    s = labeling.normalize_settings(settings or {})
+def build_label_argv(
+    stored_path: str,
+    out_dir: str,
+    settings: Dict[str, Any],
+    *,
+    mode: str = "draft",
+    samples_spec: Optional[str] = None,
+) -> List[str]:
+    """label_draft.py: draft (no LLM, optional STT text) / variant / voice samples."""
+    raw = settings or {}
+    s = labeling.normalize_settings(raw)
     argv = [config.voicevideo_python, LABEL_DRAFT_PY, stored_path, "--out", out_dir]
+    if mode == "variant":
+        name = str(raw.get("variant_name") or "")
+        if not labeling.VARIANT_NAME_RE.match(name):
+            raise ValueError(f"invalid variant name: {name!r}")
+        audio = "processed" if raw.get("audio") == "processed" else "raw"
+        argv += ["--mode", "variant", "--variant-name", name, "--audio", audio]
+        if s.get("separator"):
+            argv += ["--separator", str(s["separator"])]
+        s["with_text"] = False
+    elif mode == "samples":
+        argv += ["--mode", "samples", "--audio", "processed", "--samples-spec", str(samples_spec)]
+        if s.get("separator"):
+            argv += ["--separator", str(s["separator"])]
+        argv += ["--log-level", "INFO"]
+        return argv
     for key, flag in (
         ("num_speakers", "--num-speakers"),
         ("min_speakers", "--min-speakers"),
@@ -382,6 +406,14 @@ def _run_label_job(job: Dict[str, Any], log_file, result: Dict[str, Any], finish
         finish("failed", "Stored file not found")
         return
 
+    action = settings.get("action") or labeling.ACTION_DRAFT
+    if action == labeling.ACTION_VARIANT:
+        _build_label_variant(job, project_id, out_dir, stored_path, settings, log_file, result, finish)
+        return
+    if action == labeling.ACTION_ENROLL:
+        _enroll_label_voices(job, out_dir, stored_path, settings, log_file, result, finish)
+        return
+
     label_store.set_status(project_id, "processing")
     try:
         _build_label_draft(job, project_id, out_dir, stored_path, settings, log_file, result, finish)
@@ -418,3 +450,78 @@ def _build_label_draft(job, project_id, out_dir, stored_path, settings, log_file
     )
     result["segments"] = len(draft["segments"])
     finish("done")
+
+
+def _finish_rc(rc: int, finish, what: str) -> bool:
+    """Common non-zero exit handling for auxiliary label jobs; True when rc == 0."""
+    if rc == 0:
+        return True
+    if rc == -15:
+        finish("cancelled")
+    elif rc == -9:
+        finish("failed", "Job timeout exceeded")
+    else:
+        finish("failed", f"{what} exited with code {rc}")
+    return False
+
+
+def _build_label_variant(job, project_id, out_dir, stored_path, settings, log_file, result, finish) -> None:
+    """Extra diarization variant (e.g. on separator-cleaned audio) for DER comparison."""
+    name = str(settings.get("variant_name") or "")
+    argv = build_label_argv(stored_path, str(out_dir), settings, mode="variant")
+    log_file.write("$ " + " ".join(argv) + "\n")
+    rc = _run_subprocess(job["id"], argv, log_file)
+    result["returncode"] = rc
+    _cleanup_temp(Path(stored_path).stem, log_file)
+    if not _finish_rc(rc, finish, LABEL_DRAFT_PY):
+        return
+    project = label_store.get_project(project_id) or {}
+    try:
+        variant = labeling.load_variant(out_dir, name, project.get("duration"))
+    except Exception as exc:
+        finish("failed", f"Invalid variant: {exc}")
+        return
+    variant["created_at"] = datetime.now(timezone.utc).isoformat()
+    label_store.set_variant(project_id, name, variant)
+    result["segments"] = len(variant["segments"])
+    finish("done")
+
+
+def _enroll_label_voices(job, out_dir, stored_path, settings, log_file, result, finish) -> None:
+    """Cut voice samples from labeled spans and enroll them into reference_voices."""
+    items = [i for i in (settings.get("enroll") or []) if isinstance(i, dict)]
+    spec = {
+        str(i.get("label")): i.get("spans") or []
+        for i in items
+        if labeling.SPEAKER_LABEL_RE.match(str(i.get("label") or ""))
+    }
+    spec_path = Path(out_dir) / "samples_spec.json"
+    spec_path.write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+    argv = build_label_argv(stored_path, str(out_dir), settings, mode="samples", samples_spec=str(spec_path))
+    log_file.write("$ " + " ".join(argv) + "\n")
+    rc = _run_subprocess(job["id"], argv, log_file)
+    result["returncode"] = rc
+    _cleanup_temp(Path(stored_path).stem, log_file)
+    if not _finish_rc(rc, finish, LABEL_DRAFT_PY):
+        return
+
+    enroll_results: List[Dict[str, Any]] = []
+    for item in items:
+        label = str(item.get("label") or "")
+        name = pipeline.sanitize_base(str(item.get("name") or ""))
+        sample = Path(out_dir) / labeling.SAMPLES_DIR / f"{label}.wav"
+        if not name or not sample.exists():
+            enroll_results.append({"ok": False, "label": label, "name": name, "error": "no sample"})
+            continue
+        if pipeline.voice_exists(name) and not item.get("replace"):
+            enroll_results.append({"ok": True, "label": label, "name": name, "skipped": "exists"})
+            continue
+        if item.get("replace"):
+            _purge_voice_reference(name, log_file)
+        rc = _run_subprocess(job["id"], build_enroll_argv(str(sample), name), log_file)
+        enroll_results.append({"ok": rc == 0, "label": label, "name": name, "rc": rc})
+        if rc in (-15, -9):
+            break
+    result["enroll"] = enroll_results
+    ok = bool(enroll_results) and all(r.get("ok") for r in enroll_results)
+    finish("done" if ok else "failed", None if ok else "Не все голоса записаны в эталоны")

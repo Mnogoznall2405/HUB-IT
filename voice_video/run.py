@@ -658,6 +658,7 @@ def main() -> int:
             ),
             diarization_clustering_threshold=getattr(app_config, 'DIARIZATION_CLUSTERING_THRESHOLD', None),
             diarization_min_duration_off=getattr(app_config, 'DIARIZATION_MIN_DURATION_OFF', None),
+            diarization_audio=getattr(app_config, 'DIARIZATION_AUDIO', 'processed'),
             use_checkpoints=not args.fresh,
             meeting_date=args.meeting_date,
         )

@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 
 from .auth import PERM_MANAGE, require_web_permission, web_actor
 from .config import config
-from . import label_store, pipeline, store
+from . import label_store, labeling_metrics, pipeline, store
 
 logger = logging.getLogger("voice-server")
 
@@ -38,6 +38,12 @@ MAX_SPEAKERS_SETTING = 20
 # Browser-playable sources; anything else is played from the draft's mp3.
 BROWSER_VIDEO_EXTENSIONS = {".mp4", ".webm", ".m4v", ".mov"}
 DRAFT_FILE = "draft.json"
+PEAKS_FILE = "peaks.json"
+VARIANT_PREFIX = "variant_"
+SAMPLES_DIR = "samples"
+VARIANT_NAME_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
+MAX_ENROLL_SPANS = 300
+ACTION_DRAFT, ACTION_VARIANT, ACTION_ENROLL = "draft", "variant", "enroll"
 
 
 # ---------------------------------------------------------------------------
@@ -251,12 +257,16 @@ def _job_brief(job_id: Optional[str]) -> Optional[Dict[str, Any]]:
     job = store.get_job(str(job_id))
     if not job:
         return None
+    settings = job.get("settings") or {}
+    result = job.get("result") or {}
     return {
         "id": job.get("id"),
+        "action": settings.get("action") or ACTION_DRAFT,
         "status": job.get("status"),
         "stage": job.get("stage"),
         "progress": job.get("progress") or 0,
         "error": job.get("error"),
+        "enroll": result.get("enroll") if isinstance(result, dict) else None,
     }
 
 
@@ -288,7 +298,72 @@ def _project_view(project: Dict[str, Any], *, full: bool) -> Dict[str, Any]:
         view["auto_segments_count"] = len(project.get("auto_segments") or [])
         source = playback_source(project) if project.get("status") == "ready" else None
         view["media_kind"] = source["kind"] if source else None
+        view["aux_job"] = _job_brief(project.get("aux_job_id"))
+        view["variants"] = variants_summary(project.get("variants"))
+        pdir = project_dir(str(project.get("id") or ""))
+        view["has_peaks"] = bool(pdir and (pdir / PEAKS_FILE).exists())
     return view
+
+
+def variants_summary(variants: Any) -> List[Dict[str, Any]]:
+    out = []
+    for name, data in sorted((variants or {}).items()):
+        if not isinstance(data, dict):
+            continue
+        segs = data.get("segments") or []
+        out.append({
+            "name": name,
+            "audio": data.get("audio"),
+            "separator": data.get("separator"),
+            "created_at": data.get("created_at"),
+            "segments_count": len(segs),
+            "speakers_count": len({s.get("speaker") for s in segs}),
+        })
+    return out
+
+
+def load_variant(out_dir: Path, name: str, duration: Optional[float]) -> Dict[str, Any]:
+    """Read ``variant_<name>.json`` written by ``label_draft.py --mode variant``."""
+    if not VARIANT_NAME_RE.match(name or ""):
+        raise ValueError("invalid variant name")
+    data = json.loads((out_dir / f"{VARIANT_PREFIX}{name}.json").read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("variant: object expected")
+    return {
+        "audio": data.get("audio") if data.get("audio") in ("raw", "processed") else None,
+        "separator": str(data.get("separator") or "")[:32] or None,
+        "segments": validate_segments(data.get("segments") or [], duration),
+    }
+
+
+def enroll_spans(segments: List[Dict[str, Any]], label: str, limit: int = MAX_ENROLL_SPANS) -> List[List[float]]:
+    """Longest saved spans of one speaker (the script picks up to 30 s of them)."""
+    spans = [
+        [float(s["start"]), float(s["end"])]
+        for s in segments or []
+        if s.get("speaker") == label and float(s["end"]) > float(s["start"])
+    ]
+    spans.sort(key=lambda sp: sp[1] - sp[0], reverse=True)
+    return sorted(spans[:limit])
+
+
+def compute_metrics(project: Dict[str, Any], collar: float) -> Dict[str, Any]:
+    reference = project.get("segments") or []
+    hypotheses = [("auto", "Черновик: сырой звук", project.get("auto_segments") or [])]
+    for item in variants_summary(project.get("variants")):
+        data = (project.get("variants") or {}).get(item["name"]) or {}
+        title = f"Очищенный звук ({item['separator']})" if item["audio"] == "processed" else item["name"]
+        hypotheses.append((item["name"], title, data.get("segments") or []))
+    rows = []
+    for name, title, segs in hypotheses:
+        metrics = labeling_metrics.diarization_error(reference, segs, collar=collar)
+        rows.append({"name": name, "title": title, **metrics})
+    return {
+        "edited": bool(project.get("edited_at")),
+        "collar": collar,
+        "reference_segments": len(reference),
+        "items": rows,
+    }
 
 
 def _enqueue_label_job(project: Dict[str, Any], actor: str) -> Dict[str, Any]:
@@ -488,3 +563,120 @@ def project_rttm(
         media_type="text/plain; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="label_{project_id}{suffix}.rttm"'},
     )
+
+
+def _require_ready_without_aux(project: Dict[str, Any]) -> None:
+    if project.get("status") != "ready":
+        raise HTTPException(status.HTTP_409_CONFLICT, "Черновик разметки ещё не готов")
+    aux = _job_brief(project.get("aux_job_id"))
+    if aux and aux.get("status") in store.ACTIVE_STATUSES:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Уже выполняется другая операция по этой разметке")
+    media = Path(str(project.get("media_path") or ""))
+    if not media.name or not media.exists():
+        raise HTTPException(status.HTTP_409_CONFLICT, "Исходный файл удалён — загрузите заново")
+
+
+def _enqueue_aux_job(project: Dict[str, Any], actor: str, settings: Dict[str, Any]) -> Dict[str, Any]:
+    job = store.create_job(
+        kind="label",
+        created_by=actor,
+        original_filename=project.get("original_filename"),
+        stored_path=str(project.get("media_path") or ""),
+        settings={**(project.get("settings") or {}), **settings, "label_project_id": project["id"]},
+    )
+    label_store.set_aux_job(project["id"], str(job["id"]))
+    return job
+
+
+@router.get("/projects/{project_id}/peaks")
+def project_peaks(
+    project_id: str,
+    user: Dict[str, Any] = Depends(require_web_permission(PERM_MANAGE)),
+) -> FileResponse:
+    _project_or_404(project_id)
+    pdir = project_dir(project_id)
+    path = pdir / PEAKS_FILE if pdir else None
+    if not path or not path.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Waveform not found")
+    return FileResponse(path, media_type="application/json")
+
+
+class VariantRequest(BaseModel):
+    separator: str = Field("kim", max_length=32)
+
+
+@router.post("/projects/{project_id}/variants", status_code=status.HTTP_201_CREATED)
+def create_variant(
+    project_id: str,
+    payload: VariantRequest,
+    user: Dict[str, Any] = Depends(require_web_permission(PERM_MANAGE)),
+) -> Dict[str, Any]:
+    """Diarize the same media on separated (cleaned) audio to compare with the raw draft."""
+    project = _project_or_404(project_id)
+    _require_ready_without_aux(project)
+    separator = str(payload.separator or "").strip()
+    if separator not in pipeline.SEPARATOR_ENGINES or separator == "none":
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Unknown separator")
+    _enqueue_aux_job(
+        project,
+        web_actor(user),
+        {"action": ACTION_VARIANT, "variant_name": separator, "audio": "processed",
+         "separator": separator, "with_text": False},
+    )
+    return _project_view(label_store.get_project(project_id) or project, full=True)
+
+
+@router.delete("/projects/{project_id}/variants/{name}")
+def delete_variant(
+    project_id: str,
+    name: str,
+    user: Dict[str, Any] = Depends(require_web_permission(PERM_MANAGE)),
+) -> Dict[str, Any]:
+    project = _project_or_404(project_id)
+    if name not in (project.get("variants") or {}):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Variant not found")
+    label_store.set_variant(project_id, name, None)
+    return _project_view(label_store.get_project(project_id) or project, full=True)
+
+
+@router.get("/projects/{project_id}/metrics")
+def project_metrics(
+    project_id: str,
+    collar: float = Query(labeling_metrics.DEFAULT_COLLAR, ge=0.0, le=1.0),
+    user: Dict[str, Any] = Depends(require_web_permission(PERM_MANAGE)),
+) -> Dict[str, Any]:
+    return compute_metrics(_project_or_404(project_id), collar)
+
+
+class EnrollRequest(BaseModel):
+    labels: List[str] = Field(default_factory=list, max_length=MAX_SPEAKERS)
+    replace: bool = False
+
+
+@router.post("/projects/{project_id}/enroll", status_code=status.HTTP_201_CREATED)
+def enroll_voices(
+    project_id: str,
+    payload: EnrollRequest,
+    user: Dict[str, Any] = Depends(require_web_permission(PERM_MANAGE)),
+) -> Dict[str, Any]:
+    """Save voices of named speakers (from the saved labeling) into reference_voices."""
+    project = _project_or_404(project_id)
+    _require_ready_without_aux(project)
+    speakers = project.get("speakers") or {}
+    segments = project.get("segments") or []
+    labels = [str(l).strip() for l in payload.labels or []] or sorted(speakers)
+    items = []
+    for label in dict.fromkeys(labels):
+        name = pipeline.sanitize_base((speakers.get(label) or {}).get("name") or "")
+        if not SPEAKER_LABEL_RE.match(label) or not name:
+            continue
+        spans = enroll_spans(segments, label)
+        if spans:
+            items.append({"label": label, "name": name, "spans": spans, "replace": bool(payload.replace)})
+    if not items:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Нет сохранённых спикеров с назначенным сотрудником и репликами",
+        )
+    _enqueue_aux_job(project, web_actor(user), {"action": ACTION_ENROLL, "enroll": items, "with_text": False})
+    return _project_view(label_store.get_project(project_id) or project, full=True)

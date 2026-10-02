@@ -583,3 +583,226 @@ def test_cancelled_in_queue_shows_failed_and_can_retry(api, vv_tree):
     listed = api.get("/api/v1/voice/labeling/projects").json()["items"][0]
     assert listed["status"] == "failed" and listed["error"]
     assert api.post(f"/api/v1/voice/labeling/projects/{pid}/retry").status_code == 201
+
+
+# ---------------------------------------------------------------------------
+# DER, variants, voice enrollment
+# ---------------------------------------------------------------------------
+
+from voice_server import labeling_metrics  # noqa: E402
+
+
+def _s(start, end, spk):
+    return {"start": start, "end": end, "speaker": spk}
+
+
+def test_hungarian_matches_bruteforce():
+    import itertools
+    import random
+
+    rnd = random.Random(7)
+    for _ in range(200):
+        rows, cols = rnd.randint(1, 5), rnd.randint(1, 5)
+        w = [[rnd.randint(0, 9) for _ in range(cols)] for _ in range(rows)]
+        if rows <= cols:
+            best = max(sum(w[i][p[i]] for i in range(rows)) for p in itertools.permutations(range(cols), rows))
+        else:
+            best = max(sum(w[p[j]][j] for j in range(cols)) for p in itertools.permutations(range(rows), cols))
+        assert sum(w[r][c] for r, c in labeling_metrics.hungarian_max(w)) == best
+
+
+def test_der_perfect_with_renamed_speakers():
+    ref = [_s(0, 10, "A"), _s(10, 20, "B")]
+    res = labeling_metrics.diarization_error(ref, [_s(0, 10, "x"), _s(10, 20, "y")], collar=0)
+    assert res["der"] == 0.0 and res["mapping"] == {"x": "A", "y": "B"}
+
+
+def test_der_components():
+    ref = [_s(0, 10, "A"), _s(10, 20, "B")]
+    merged = labeling_metrics.diarization_error(ref, [_s(0, 20, "x")], collar=0)
+    assert merged["confusion"] == 0.5 and merged["miss"] == 0.0 and merged["der"] == 0.5
+    missed = labeling_metrics.diarization_error(ref, [_s(0, 10, "x")], collar=0)
+    assert missed["miss"] == 0.5 and missed["confusion"] == 0.0
+    extra = labeling_metrics.diarization_error(ref, [_s(0, 20, "x"), _s(0, 5, "y")], collar=0)
+    assert extra["false_alarm"] == 0.25
+    # Overlap in the reference counts both speakers.
+    both = labeling_metrics.diarization_error([_s(0, 10, "A"), _s(0, 10, "B")], [_s(0, 10, "x")], collar=0)
+    assert both["reference_speech_sec"] == 20.0 and both["miss"] == 0.5
+    empty = labeling_metrics.diarization_error([], [_s(0, 1, "x")])
+    assert empty["der"] is None
+
+
+def test_der_collar_forgives_boundary_shift():
+    ref = [_s(0, 10, "A"), _s(10, 20, "B")]
+    hyp = [_s(0, 10.2, "x"), _s(10.2, 20, "y")]
+    assert labeling_metrics.diarization_error(ref, hyp, collar=0)["der"] > 0
+    assert labeling_metrics.diarization_error(ref, hyp, collar=0.25)["der"] == 0.0
+
+
+def test_enroll_spans_longest_first_then_sorted():
+    segs = [_s(0, 1, "A"), _s(5, 10, "A"), _s(2, 4, "A"), _s(3, 9, "B")]
+    assert labeling.enroll_spans(segs, "A", limit=2) == [[2.0, 4.0], [5.0, 10.0]]
+    assert labeling.enroll_spans(segs, "C") == []
+
+
+def test_pick_sample_spans_caps_total():
+    picked = label_draft.pick_sample_spans([[0, 20], [30, 50], [60, 61], [70, 71]], max_total=30)
+    assert picked == [[0.0, 20.0], [30.0, 40.0]]
+    assert label_draft.pick_sample_spans([[0, 1]]) == []
+
+
+def test_peaks_from_samples_scales_to_100():
+    pytest.importorskip("numpy")
+    peaks = label_draft.peaks_from_samples([0] * 800 + [1000] * 800, 8000, step=0.1)
+    assert peaks == [0, 100]
+
+
+def test_build_label_argv_modes():
+    variant = runner.build_label_argv(
+        "m.mp4", "out", {"variant_name": "kim", "audio": "processed", "separator": "kim", "with_text": True},
+        mode="variant",
+    )
+    joined = " ".join(variant)
+    assert "--mode variant --variant-name kim --audio processed" in joined
+    assert "--separator kim" in joined and "--with-text" not in variant
+    with pytest.raises(ValueError):
+        runner.build_label_argv("m", "o", {"variant_name": "../x"}, mode="variant")
+    samples = runner.build_label_argv("m", "o", {"separator": "kim"}, mode="samples", samples_spec="o/spec.json")
+    assert "--samples-spec o/spec.json" in " ".join(samples) and "--audio processed" in " ".join(samples)
+
+
+def _ready_project(api, vv_tree, segments, speakers=None):
+    resp = api.post(
+        "/api/v1/voice/labeling/projects",
+        files={"file": ("m.mp4", b"0" * 10, "video/mp4")},
+        data={"settings_json": json.dumps({"with_text": False, "separator": "kim"})},
+    )
+    pid = resp.json()["id"]
+    store.update_job(resp.json()["job"]["id"], status="done")
+    label_store.apply_draft(pid, segments=segments, duration=60.0, audio_path=None)
+    if speakers is not None:
+        version = label_store.get_project(pid)["version"]
+        label_store.save_labeling(
+            pid, expected_version=version, segments=segments, speakers=speakers, title=None, updated_by="t"
+        )
+    return pid
+
+
+def _fake_runner(monkeypatch, vv_tree, on_run):
+    calls = []
+
+    def fake_run(job_id, argv, log_file, env_extra=None):
+        calls.append(argv)
+        return on_run(argv)
+
+    monkeypatch.setattr(runner, "_run_subprocess", fake_run)
+    monkeypatch.setattr(runner, "config", SimpleNamespace(
+        voicevideo_python="python", data_dir=vv_tree.parent / "data", log_tail_lines=50,
+    ))
+    return calls
+
+
+def test_variant_job_and_metrics(api, vv_tree, monkeypatch):
+    segs = [
+        {"id": "s1", "start": 0, "end": 10, "speaker": "SPEAKER_00", "text": ""},
+        {"id": "s2", "start": 10, "end": 20, "speaker": "SPEAKER_01", "text": ""},
+    ]
+    pid = _ready_project(api, vv_tree, segs)
+    out_dir = vv_tree / "labeling" / pid
+
+    # Reference = human edit: second half is actually SPEAKER_00 too.
+    version = label_store.get_project(pid)["version"]
+    edited = [dict(segs[0]), dict(segs[1], speaker="SPEAKER_00")]
+    label_store.save_labeling(pid, expected_version=version, segments=edited, speakers={}, title=None, updated_by="t")
+
+    assert api.post(f"/api/v1/voice/labeling/projects/{pid}/variants", json={"separator": "none"}).status_code == 422
+    resp = api.post(f"/api/v1/voice/labeling/projects/{pid}/variants", json={"separator": "kim"})
+    assert resp.status_code == 201, resp.text
+    aux = resp.json()["aux_job"]
+    assert aux["action"] == "variant" and aux["status"] == "queued"
+    assert resp.json()["status"] == "ready"  # labeling stays editable
+    # Second aux job while the first is queued -> conflict.
+    assert api.post(f"/api/v1/voice/labeling/projects/{pid}/variants", json={"separator": "kim"}).status_code == 409
+
+    def on_run(argv):
+        assert "--mode" in argv and "variant" in argv
+        (out_dir / "variant_kim.json").write_text(json.dumps({
+            "audio": "processed", "separator": "kim",
+            "segments": [{"start": 0, "end": 20, "speaker": "SPEAKER_00"}],
+        }), encoding="utf-8")
+        return 0
+
+    _fake_runner(monkeypatch, vv_tree, on_run)
+    runner.run_job(store.get_job(aux["id"]))
+    assert store.get_job(aux["id"])["status"] == "done"
+
+    detail = api.get(f"/api/v1/voice/labeling/projects/{pid}").json()
+    assert detail["variants"] == [{
+        "name": "kim", "audio": "processed", "separator": "kim",
+        "created_at": detail["variants"][0]["created_at"], "segments_count": 1, "speakers_count": 1,
+    }]
+
+    metrics = api.get(f"/api/v1/voice/labeling/projects/{pid}/metrics?collar=0").json()
+    assert metrics["edited"] is True
+    by_name = {m["name"]: m for m in metrics["items"]}
+    assert by_name["auto"]["der"] == 0.5  # draft split one person into two
+    assert by_name["kim"]["der"] == 0.0
+    assert by_name["kim"]["title"] == "Очищенный звук (kim)"
+
+    assert api.delete(f"/api/v1/voice/labeling/projects/{pid}/variants/kim").json()["variants"] == []
+    assert api.delete(f"/api/v1/voice/labeling/projects/{pid}/variants/kim").status_code == 404
+
+
+def test_enroll_job_cuts_samples_and_enrolls(api, vv_tree, monkeypatch):
+    segs = [
+        {"id": "s1", "start": 0, "end": 10, "speaker": "SPEAKER_00", "text": ""},
+        {"id": "s2", "start": 10, "end": 20, "speaker": "SPEAKER_01", "text": ""},
+        {"id": "s3", "start": 20, "end": 25, "speaker": "SPEAKER_02", "text": ""},
+    ]
+    speakers = {
+        "SPEAKER_00": {"name": "Иванов И.И.", "user_id": 1},
+        "SPEAKER_01": {"name": "Петров П.П.", "user_id": 2},
+    }
+    pid = _ready_project(api, vv_tree, segs, speakers)
+    out_dir = vv_tree / "labeling" / pid
+    # Voice dirs use pipeline.sanitize_base (no trailing dot — Windows paths).
+    (vv_tree / "reference_voices" / "Петров П.П").mkdir(parents=True)  # already enrolled
+
+    resp = api.post(f"/api/v1/voice/labeling/projects/{pid}/enroll", json={})
+    assert resp.status_code == 201, resp.text
+    job = store.get_job(resp.json()["aux_job"]["id"])
+    labels = [i["label"] for i in job["settings"]["enroll"]]
+    assert labels == ["SPEAKER_00", "SPEAKER_01"]  # unnamed SPEAKER_02 skipped
+
+    def on_run(argv):
+        if "--mode" in argv:
+            spec = json.loads(Path(argv[argv.index("--samples-spec") + 1]).read_text(encoding="utf-8"))
+            assert spec["SPEAKER_00"] == [[0.0, 10.0]]
+            (out_dir / "samples").mkdir(exist_ok=True)
+            for label in spec:
+                (out_dir / "samples" / f"{label}.wav").write_bytes(b"w")
+            return 0
+        assert argv[argv.index("--speaker-name") + 1] == "Иванов И.И"
+        return 0
+
+    calls = _fake_runner(monkeypatch, vv_tree, on_run)
+    runner.run_job(job)
+    done = store.get_job(job["id"])
+    assert done["status"] == "done", done
+    assert [c for c in calls if "--enroll-voice" in c].__len__() == 1
+    enroll = api.get(f"/api/v1/voice/labeling/projects/{pid}").json()["aux_job"]["enroll"]
+    assert {e["name"]: e.get("skipped") for e in enroll} == {"Иванов И.И": None, "Петров П.П": "exists"}
+
+
+def test_enroll_requires_named_speakers(api, vv_tree):
+    pid = _ready_project(api, vv_tree, [{"id": "s1", "start": 0, "end": 5, "speaker": "SPEAKER_00", "text": ""}])
+    resp = api.post(f"/api/v1/voice/labeling/projects/{pid}/enroll", json={"labels": ["SPEAKER_00"]})
+    assert resp.status_code == 422
+
+
+def test_peaks_endpoint(api, vv_tree):
+    pid = _ready_project(api, vv_tree, [{"id": "s1", "start": 0, "end": 5, "speaker": "SPEAKER_00", "text": ""}])
+    assert api.get(f"/api/v1/voice/labeling/projects/{pid}/peaks").status_code == 404
+    (vv_tree / "labeling" / pid / "peaks.json").write_text('{"step":0.1,"peaks":[1,2]}', encoding="utf-8")
+    assert api.get(f"/api/v1/voice/labeling/projects/{pid}").json()["has_peaks"] is True
+    assert api.get(f"/api/v1/voice/labeling/projects/{pid}/peaks").json()["peaks"] == [1, 2]

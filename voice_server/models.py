@@ -123,8 +123,10 @@ class VoiceLabelProject(Base):
     audio_path = Column(Text, nullable=True)  # browser-playable mp3 from the draft run
     duration = Column(Float, nullable=True)
     status = Column(String(16), nullable=False, default="queued")  # queued|processing|ready|failed
-    job_id = Column(String(36), nullable=True)
+    job_id = Column(String(36), nullable=True)  # latest draft job
+    aux_job_id = Column(String(36), nullable=True)  # latest variant/enroll job
     settings = Column(JSON, nullable=True)
+    variants = Column(JSON, nullable=True)  # {name: {segments, audio, separator, created_at}}
     auto_segments = Column(JSON, nullable=True)  # pyannote draft, kept for comparison
     segments = Column(JSON, nullable=True)  # current (human-corrected) labeling
     speakers = Column(JSON, nullable=True)  # {label: {name, user_id}}
