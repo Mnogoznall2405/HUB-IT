@@ -86,6 +86,7 @@ const NODE_TEST_FILES = [
   'src/pages/tasks/taskFormatters.test.js',
   'src/pages/tasks/taskUserUtils.test.js',
   'src/pages/tasks/tasksMobileCopy.test.js',
+  'src/pages/voice-video/labelingModel.test.js',
   'src/pages/voice-video/mediaParts.test.js',
 ];
 

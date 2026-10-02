@@ -16,7 +16,7 @@ from .db import get_voice_engine
 
 logger = logging.getLogger("voice-server")
 
-JOB_KINDS = {"process", "resume", "enroll"}
+JOB_KINDS = {"process", "resume", "enroll", "label"}
 ACTIVE_STATUSES = {"queued", "processing"}
 TERMINAL_STATUSES = {"done", "failed", "cancelled"}
 

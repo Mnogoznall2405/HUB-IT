@@ -17,11 +17,12 @@ from typing import Any, Dict, List, Optional
 
 from .config import config
 from .notify import notify_protocol_ready
-from . import pipeline, store
+from . import label_store, labeling, pipeline, store
 
 logger = logging.getLogger("voice-worker")
 
 RUN_PY = "run.py"
+LABEL_DRAFT_PY = "label_draft.py"
 
 # run.py logs stage markers to stdout; map them to (stage key, progress %).
 _STAGE_MARKERS = [
@@ -104,6 +105,29 @@ def build_enroll_argv(sample_path: str, speaker_name: str) -> List[str]:
         "--speaker-name", speaker_name,
         "--log-level", "INFO",
     ]
+
+
+def build_label_argv(stored_path: str, out_dir: str, settings: Dict[str, Any]) -> List[str]:
+    """Diarization-only draft for the labeling editor (no LLM, optional STT text)."""
+    s = labeling.normalize_settings(settings or {})
+    argv = [config.voicevideo_python, LABEL_DRAFT_PY, stored_path, "--out", out_dir]
+    for key, flag in (
+        ("num_speakers", "--num-speakers"),
+        ("min_speakers", "--min-speakers"),
+        ("max_speakers", "--max-speakers"),
+    ):
+        if s.get(key):
+            argv += [flag, str(int(s[key]))]
+    if s.get("with_text"):
+        argv.append("--with-text")
+        if s.get("stt_engine"):
+            argv += ["--stt-engine", str(s["stt_engine"])]
+        if s.get("separator"):
+            argv += ["--separator", str(s["separator"])]
+    if s.get("language"):
+        argv += ["--language", str(s["language"])]
+    argv += ["--log-level", "INFO"]
+    return argv
 
 
 _LLM_ENV_KEYS = {
@@ -335,9 +359,62 @@ def run_job(job: Dict[str, Any]) -> None:
                 ok = all(item.get("ok") for item in enroll_results) if enroll_results else False
                 _finish("done" if ok else "failed", None if ok else "enroll failed")
 
+            elif kind == "label":
+                _run_label_job(job, log_file, result, _finish)
+
             else:
                 _finish("failed", f"Unknown job kind: {kind}")
 
         except Exception as exc:
             logger.exception("Job %s crashed", job_id)
             _finish("failed", str(exc))
+
+
+def _run_label_job(job: Dict[str, Any], log_file, result: Dict[str, Any], finish) -> None:
+    """Build the automatic diarization draft and hand it to the labeling project."""
+    settings = job.get("settings") or {}
+    project_id = str(settings.get("label_project_id") or "")
+    out_dir = labeling.project_dir(project_id)
+    stored_path = str(job.get("stored_path") or "")
+    if not out_dir or not stored_path or not Path(stored_path).exists():
+        if project_id:
+            label_store.set_status(project_id, "failed", "Stored file not found")
+        finish("failed", "Stored file not found")
+        return
+
+    label_store.set_status(project_id, "processing")
+    try:
+        _build_label_draft(job, project_id, out_dir, stored_path, settings, log_file, result, finish)
+    except Exception as exc:
+        label_store.set_status(project_id, "failed", str(exc)[:500])
+        raise
+
+
+def _build_label_draft(job, project_id, out_dir, stored_path, settings, log_file, result, finish) -> None:
+    job_id = job["id"]
+    argv = build_label_argv(stored_path, str(out_dir), settings)
+    log_file.write("$ " + " ".join(argv) + "\n")
+    rc = _run_subprocess(job_id, argv, log_file)
+    result["returncode"] = rc
+    _cleanup_temp(Path(stored_path).stem, log_file)
+
+    if rc != 0:
+        error = {-15: "Отменено", -9: "Job timeout exceeded"}.get(rc, f"label_draft.py exited with code {rc}")
+        label_store.set_status(project_id, "failed", error)
+        finish("cancelled" if rc == -15 else "failed", None if rc == -15 else error)
+        return
+    try:
+        draft = labeling.load_draft(out_dir)
+    except Exception as exc:
+        logger.exception("Job %s: invalid labeling draft", job_id)
+        label_store.set_status(project_id, "failed", f"Invalid draft: {exc}")
+        finish("failed", f"Invalid draft: {exc}")
+        return
+    label_store.apply_draft(
+        project_id,
+        segments=draft["segments"],
+        duration=draft["duration"],
+        audio_path=draft["audio_path"],
+    )
+    result["segments"] = len(draft["segments"])
+    finish("done")
