@@ -238,6 +238,18 @@ const SpeakerAssignRow = React.memo(function SpeakerAssignRow({
             />
           </Tooltip>
         )}
+        {speaker.recurring?.meetings?.length > 0 && (
+          <Tooltip title={`Тот же голос (${speaker.recurring.id}) в записях: ${speaker.recurring.meetings.join(', ')}. Назовите и запишите в эталоны — дальше он будет определяться сам.`}>
+            <Chip
+              size="small"
+              variant="outlined"
+              label={speaker.recurring.meetings.length === 1
+                ? 'встречался ещё в 1 записи'
+                : `встречался ещё в ${speaker.recurring.meetings.length} записях`}
+              sx={{ flexShrink: 0 }}
+            />
+          </Tooltip>
+        )}
         {editable && (renameField ? (
           <TextField
             size="small"

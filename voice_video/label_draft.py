@@ -13,6 +13,8 @@
                     variant_<имя>.json
     --mode samples  образцы голосов по размеченным репликам (--samples-spec spec.json):
                     samples/<метка>.wav — для записи в эталоны reference_voices
+    --mode calibrate похожесть голосов размеченных сотрудников с каждым эталоном
+                    (--samples-spec, тем же способом, что в протоколах): calibration.json
 
 Использование:
     python label_draft.py <медиа> --out <папка> [--mode draft] [--with-text]
@@ -32,6 +34,7 @@ from typing import Dict, List, Optional
 logger = logging.getLogger("label_draft")
 
 DRAFT_FILE = "draft.json"
+CALIBRATION_FILE = "calibration.json"
 AUDIO_FILE = "audio.mp3"
 PEAKS_FILE = "peaks.json"
 VARIANT_PREFIX = "variant_"
@@ -207,12 +210,15 @@ def _parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Черновик диаризации для редактора разметки")
     parser.add_argument("media", help="Аудио/видео файл")
     parser.add_argument("--out", required=True, help="Папка проекта разметки")
-    parser.add_argument("--mode", choices=("draft", "variant", "samples"), default="draft",
+    parser.add_argument("--mode", choices=("draft", "variant", "samples", "calibrate"), default="draft",
                         help="draft — черновик; variant — доп. вариант диаризации для сравнения; "
-                             "samples — образцы голосов для эталонов")
+                             "samples — образцы голосов для эталонов; "
+                             "calibrate — похожесть размеченных голосов с эталонами")
     parser.add_argument("--audio", choices=("raw", "processed"), default="raw",
                         help="Звук для диаризации/образцов: сырой или после сепаратора")
     parser.add_argument("--variant-name", default="processed")
+    parser.add_argument("--exclusive", action="store_true",
+                        help="Эксклюзивная разметка community-1 (один говорящий в момент времени)")
     parser.add_argument("--samples-spec", default=None, help="JSON {метка: [[start, end], ...]}")
     parser.add_argument("--with-text", action="store_true", help="Добавить текст реплик (STT)")
     parser.add_argument("--num-speakers", type=int, default=0)
@@ -304,6 +310,8 @@ def main(argv=None) -> int:
             return _run_draft(args, cfg, out_dir, ensure_raw, ensure_processed, raw_wav)
         if args.mode == "variant":
             return _run_variant(args, cfg, out_dir, ensure_raw, ensure_processed, raw_wav, separator)
+        if args.mode == "calibrate":
+            return _run_calibrate(args, cfg, out_dir, ensure_processed, app_config)
         return _run_samples(args, out_dir, ensure_raw, ensure_processed, raw_wav)
     finally:
         for tmp_wav in (raw_wav, processed_wav):
@@ -377,6 +385,7 @@ def _run_variant(args, cfg, out_dir: Path, ensure_raw, ensure_processed, raw_wav
             print("❌ Не удалось извлечь аудио")
             return 1
         wav = raw_wav
+    cfg.diarization_exclusive = bool(args.exclusive)
     print(f"👥 Этап 3: Диаризация варианта «{args.variant_name}» ({args.audio})...", flush=True)
     turns = _diarize(cfg, wav)
     if not turns:
@@ -387,6 +396,7 @@ def _run_variant(args, cfg, out_dir: Path, ensure_raw, ensure_processed, raw_wav
         "name": args.variant_name,
         "audio": args.audio,
         "separator": separator if args.audio == "processed" else "none",
+        "exclusive": bool(args.exclusive),
         "num_speakers": cfg.diarization_num_speakers or None,
         "min_speakers": cfg.diarization_min_speakers,
         "max_speakers": cfg.diarization_max_speakers,
@@ -430,6 +440,56 @@ def _run_samples(args, out_dir: Path, ensure_raw, ensure_processed, raw_wav: Pat
     print(f"✅ Образцов голосов: {made}", flush=True)
     return 0 if made else 1
 
+
+def _run_calibrate(args, cfg, out_dir: Path, ensure_processed, app_config) -> int:
+    """Похожесть (1 - косинусное расстояние) каждого размеченного голоса с каждым эталоном.
+
+    Эмбеддинги — тем же способом, что при автоопределении в протоколах
+    (звук после сепаратора, SPEAKER_EMBEDDINGS_IMPROVED из .env).
+    """
+    from datetime import datetime, timezone
+    from scipy.spatial.distance import cosine
+    from modules.diarization import SpeakerDiarization
+
+    spec = json.loads(Path(args.samples_spec).read_text(encoding="utf-8")) if args.samples_spec else {}
+    segments = []
+    names = {}
+    for label, item in (spec or {}).items():
+        if not re.match(r"^[A-Za-z0-9_-]{1,64}$", str(label)) or not isinstance(item, dict):
+            continue
+        names[label] = str(item.get("name") or "")
+        for span in item.get("spans") or []:
+            segments.append({"start": float(span[0]), "end": float(span[1]), "speaker": label})
+    if not segments:
+        print("❌ Нет размеченных реплик для подбора порога")
+        return 1
+
+    wav = ensure_processed()
+    cfg.speaker_embeddings_improved = bool(getattr(app_config, "SPEAKER_EMBEDDINGS_IMPROVED", False))
+    diar = SpeakerDiarization(cfg)
+    print("🧬 Этап 3.5: Эмбеддинги размеченных голосов...", flush=True)
+    embeddings = diar.extract_speaker_embeddings(str(wav), segments)
+    if not embeddings:
+        print("❌ Эмбеддинги не получены")
+        return 1
+    dim = next(int(len(e)) for e in embeddings.values())
+    references = diar._load_reference_embeddings(Path(app_config.REFERENCE_VOICES_DIR), expected_dim=dim)
+    items = []
+    for label, emb in sorted(embeddings.items()):
+        scores = {
+            ref: round(1.0 - float(cosine(emb, ref_emb)), 4)
+            for ref, ref_emb in references.items()
+            if len(ref_emb) == dim
+        }
+        items.append({"label": label, "name": names.get(label, ""), "scores": scores})
+    _write_json(out_dir / CALIBRATION_FILE, {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "embedding_mode": "improved" if cfg.speaker_embeddings_improved else "legacy",
+        "references": len(references),
+        "items": items,
+    })
+    print(f"✅ Похожесть посчитана: {len(items)} голосов × {len(references)} эталонов", flush=True)
+    return 0
 
 if __name__ == "__main__":
     sys.exit(main())

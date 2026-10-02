@@ -18,6 +18,9 @@ vi.mock('../../api/voiceLabeling', () => ({
     createVariant: vi.fn(),
     deleteVariant: vi.fn(),
     enrollVoices: vi.fn(),
+    calibrate: vi.fn(),
+    getCalibration: vi.fn(async () => ({ available: false })),
+    getOverallCalibration: vi.fn(async () => ({ projects: 0, suggestion: null })),
     mediaUrl: vi.fn((id) => `/api/v1/voice/labeling/projects/${id}/media`),
     rttmUrl: vi.fn((id) => `/api/v1/voice/labeling/projects/${id}/rttm`),
   },
@@ -194,10 +197,11 @@ describe('VoiceLabelEditor: waveform, quality and voices', () => {
     expect(within(table).getByText('20.0%')).toBeInTheDocument();
     expect(within(table).getByText('лучше').closest('tr')).toHaveTextContent('Черновик: сырой звук');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Прогнать на очищенном звуке' }));
-    await waitFor(() => expect(voiceLabelingAPI.createVariant).toHaveBeenCalledWith('p1', 'kim'));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Эксклюзивная разметка' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Прогнать вариант' }));
+    await waitFor(() => expect(voiceLabelingAPI.createVariant).toHaveBeenCalledWith('p1', 'kim', true));
     expect(await screen.findByText(/Диаризация варианта/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Прогнать на очищенном звуке' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Прогнать вариант' })).toBeDisabled();
   });
 
   it('enrolls saved named speakers into reference voices', async () => {
@@ -233,5 +237,43 @@ describe('VoiceLabelEditor: waveform, quality and voices', () => {
     fireEvent.click(rowOf('начнём'));
     fireEvent.keyDown(window, { key: 'Delete', code: 'Delete' });
     expect(screen.getByRole('button', { name: /Записать голоса в эталоны/ })).toBeDisabled();
+  });
+});
+
+
+describe('VoiceLabelEditor: подбор порога узнавания', () => {
+  it('запускает расчёт и показывает похожесть и рекомендацию для .env', async () => {
+    voiceLabelingAPI.getProject.mockResolvedValue(project({
+      speakers: { SPEAKER_00: { name: 'Иванов И.И.', user_id: 1 } },
+    }));
+    voiceLabelingAPI.calibrate.mockResolvedValue({
+      aux_job: { id: 'j9', action: 'calibrate', status: 'done' },
+      variants: [],
+    });
+    const suggestion = {
+      positives: 2, negatives: 4, min_positive: 0.7, max_negative: 0.4, separable: true,
+      current: { strict: 0.25, moderate: 0.35, loose: 0.45 },
+      suggested: { strict: 0.45, moderate: 0.52, loose: 0.6, similarity: 0.55 },
+    };
+    voiceLabelingAPI.getCalibration
+      .mockResolvedValueOnce({ available: false })
+      .mockResolvedValue({
+        available: true,
+        embedding_mode: 'improved',
+        rows: [{ label: 'SPEAKER_00', name: 'Иванов И.И.', own_similarity: 0.81, best_other: 'Петров П.П', best_other_similarity: 0.35 }],
+        suggestion,
+      });
+    voiceLabelingAPI.getOverallCalibration.mockResolvedValue({ projects: 3, suggestion });
+    render(<VoiceLabelEditor projectId="p1" onClose={() => {}} />);
+    await screen.findByText('добрый день');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Посчитать похожесть с эталонами' }));
+    await waitFor(() => expect(voiceLabelingAPI.calibrate).toHaveBeenCalledWith('p1'));
+    const table = await screen.findByRole('table', { name: 'Похожесть с эталонами' });
+    expect(within(table).getByText('81%')).toBeInTheDocument();
+    expect(within(table).getByText('Петров П.П · 35%')).toBeInTheDocument();
+    const env = await screen.findAllByTestId('calibration-env');
+    expect(env[0]).toHaveTextContent('SPEAKER_ID_STRICT=0.45');
+    expect(screen.getByText(/Разметок: 3/)).toBeInTheDocument();
   });
 });

@@ -30,6 +30,7 @@ from .audio_processor import (
 from .diarization import (
     apply_pipeline_tuning,
     build_speaker_index,
+    run_diarization,
     speaker_for_segment,
     split_segments_by_word_speakers,
 )
@@ -618,11 +619,13 @@ class TranscriptionProcessor:
             audio = whisperx.load_audio(audio_file)
             
             # Выполняем диаризацию
-            diarize_segments = self.diarize_model(
+            diarize_segments = run_diarization(
+                self.diarize_model,
                 audio,
                 num_speakers=(getattr(self.config, 'diarization_num_speakers', 0) or None),
                 min_speakers=self.config.diarization_min_speakers,
-                max_speakers=self.config.diarization_max_speakers
+                max_speakers=self.config.diarization_max_speakers,
+                exclusive=bool(getattr(self.config, 'diarization_exclusive', False)),
             )
 
             diarize_segments = self._normalize_diarization_segments(diarize_segments)
@@ -789,6 +792,9 @@ class TranscriptionProcessor:
             # Добавляем информацию о диаризации в результат
             if result:
                 result['diarization'] = diarize_segments is not None
+                # Сырые реплики нужны профилям голосов: из них видно наложения речи
+                if diarize_segments:
+                    result['diarize_segments'] = diarize_segments
                 result['speakers_count'] = len(set(seg.get('speaker', 'UNKNOWN') for seg in result.get('segments', []))) if diarize_segments else 0
                 result['language'] = language
             

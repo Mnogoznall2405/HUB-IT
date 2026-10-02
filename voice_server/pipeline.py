@@ -515,6 +515,19 @@ def speaker_naming_from_transcript(data: Optional[Dict[str, Any]]) -> Dict[str, 
     return naming if isinstance(naming, dict) else {}
 
 
+def _recurring_view(info: Any) -> Optional[Dict[str, Any]]:
+    """Same unknown voice in other meetings (SPEAKER_RECURRING); only meetings that still exist."""
+    if not isinstance(info, dict) or not info.get("id"):
+        return None
+    meetings = [
+        m for m in (info.get("meetings") or [])
+        if isinstance(m, str) and transcript_path(m)
+    ][:50]
+    if not meetings:
+        return None
+    return {"id": str(info["id"])[:16], "meetings": meetings}
+
+
 def meeting_speakers(base_filename: str) -> Dict[str, Any]:
     """Aggregate speaker state for one meeting from transcript + samples."""
     data = load_transcript(base_filename)
@@ -551,6 +564,7 @@ def meeting_speakers(base_filename: str) -> Dict[str, Any]:
                 first_seen[label] = float(start)
             except (TypeError, ValueError):
                 pass
+    recurring = naming.get("recurring") if isinstance(naming.get("recurring"), dict) else {}
     speakers: List[Dict[str, Any]] = []
     for label in sorted(unresolved):
         detail = details.get(label) or {}
@@ -562,6 +576,7 @@ def meeting_speakers(base_filename: str) -> Dict[str, Any]:
                 "distance": detail.get("distance"),
                 "has_sample": bool(resolve_speaker_sample(base_filename, label, data)),
                 "first_segment_start": first_seen.get(label),
+                "recurring": _recurring_view(recurring.get(label)),
             }
         )
     resolved: List[Dict[str, Any]] = []

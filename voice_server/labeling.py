@@ -40,10 +40,12 @@ BROWSER_VIDEO_EXTENSIONS = {".mp4", ".webm", ".m4v", ".mov"}
 DRAFT_FILE = "draft.json"
 PEAKS_FILE = "peaks.json"
 VARIANT_PREFIX = "variant_"
+CALIBRATION_FILE = "calibration.json"
 SAMPLES_DIR = "samples"
 VARIANT_NAME_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 MAX_ENROLL_SPANS = 300
 ACTION_DRAFT, ACTION_VARIANT, ACTION_ENROLL = "draft", "variant", "enroll"
+ACTION_CALIBRATE = "calibrate"
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +317,7 @@ def variants_summary(variants: Any) -> List[Dict[str, Any]]:
             "name": name,
             "audio": data.get("audio"),
             "separator": data.get("separator"),
+            "exclusive": bool(data.get("exclusive")),
             "created_at": data.get("created_at"),
             "segments_count": len(segs),
             "speakers_count": len({s.get("speaker") for s in segs}),
@@ -332,6 +335,7 @@ def load_variant(out_dir: Path, name: str, duration: Optional[float]) -> Dict[st
     return {
         "audio": data.get("audio") if data.get("audio") in ("raw", "processed") else None,
         "separator": str(data.get("separator") or "")[:32] or None,
+        "exclusive": bool(data.get("exclusive")),
         "segments": validate_segments(data.get("segments") or [], duration),
     }
 
@@ -352,8 +356,7 @@ def compute_metrics(project: Dict[str, Any], collar: float) -> Dict[str, Any]:
     hypotheses = [("auto", "Черновик: сырой звук", project.get("auto_segments") or [])]
     for item in variants_summary(project.get("variants")):
         data = (project.get("variants") or {}).get(item["name"]) or {}
-        title = f"Очищенный звук ({item['separator']})" if item["audio"] == "processed" else item["name"]
-        hypotheses.append((item["name"], title, data.get("segments") or []))
+        hypotheses.append((item["name"], variant_title(item["name"], data), data.get("segments") or []))
     rows = []
     for name, title, segs in hypotheses:
         metrics = labeling_metrics.diarization_error(reference, segs, collar=collar)
@@ -602,7 +605,16 @@ def project_peaks(
 
 
 class VariantRequest(BaseModel):
-    separator: str = Field("kim", max_length=32)
+    separator: str = Field("kim", max_length=32)  # "none" — сырой звук
+    exclusive: bool = False  # exclusive_speaker_diarization community-1
+
+
+def variant_title(name: str, data: Dict[str, Any]) -> str:
+    audio = "очищенный звук" if data.get("audio") == "processed" else "сырой звук"
+    if data.get("audio") == "processed" and data.get("separator"):
+        audio = f"очищенный звук ({data['separator']})"
+    title = audio[:1].upper() + audio[1:]
+    return f"{title}, эксклюзивная" if data.get("exclusive") else title
 
 
 @router.post("/projects/{project_id}/variants", status_code=status.HTTP_201_CREATED)
@@ -611,17 +623,22 @@ def create_variant(
     payload: VariantRequest,
     user: Dict[str, Any] = Depends(require_web_permission(PERM_MANAGE)),
 ) -> Dict[str, Any]:
-    """Diarize the same media on separated (cleaned) audio to compare with the raw draft."""
+    """Another diarization of the same media (cleaned audio and/or exclusive mode) for DER comparison."""
     project = _project_or_404(project_id)
     _require_ready_without_aux(project)
     separator = str(payload.separator or "").strip()
-    if separator not in pipeline.SEPARATOR_ENGINES or separator == "none":
+    if separator not in pipeline.SEPARATOR_ENGINES:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Unknown separator")
+    if separator == "none" and not payload.exclusive:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Сырой звук без эксклюзивного режима — это и есть черновик")
+    audio = "raw" if separator == "none" else "processed"
+    name = ("ex_" if payload.exclusive else "") + ("raw" if audio == "raw" else separator)
     _enqueue_aux_job(
         project,
         web_actor(user),
-        {"action": ACTION_VARIANT, "variant_name": separator, "audio": "processed",
-         "separator": separator, "with_text": False},
+        {"action": ACTION_VARIANT, "variant_name": name, "audio": audio,
+         "separator": separator if audio == "processed" else None,
+         "exclusive": bool(payload.exclusive), "with_text": False},
     )
     return _project_view(label_store.get_project(project_id) or project, full=True)
 
@@ -680,3 +697,123 @@ def enroll_voices(
         )
     _enqueue_aux_job(project, web_actor(user), {"action": ACTION_ENROLL, "enroll": items, "with_text": False})
     return _project_view(label_store.get_project(project_id) or project, full=True)
+
+
+def load_calibration(project_id: str) -> Optional[Dict[str, Any]]:
+    pdir = project_dir(project_id)
+    path = pdir / CALIBRATION_FILE if pdir else None
+    if not path or not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+        return None
+    items = []
+    for item in data["items"]:
+        if not isinstance(item, dict) or not isinstance(item.get("scores"), dict):
+            continue
+        scores = {}
+        for ref, sim in item["scores"].items():
+            try:
+                scores[str(ref)[:256]] = round(float(sim), 4)
+            except (TypeError, ValueError):
+                continue
+        items.append({
+            "label": str(item.get("label") or "")[:64],
+            "name": str(item.get("name") or "")[:MAX_NAME_LEN],
+            "scores": scores,
+        })
+    return {
+        "created_at": data.get("created_at"),
+        "embedding_mode": data.get("embedding_mode"),
+        "items": items,
+    }
+
+
+def _calibration_rows_view(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Per speaker: own reference similarity and the most similar foreign reference."""
+    rows = []
+    for item in items:
+        own_key = labeling_metrics._norm_name(item.get("name"))
+        own = None
+        best_other, best_other_sim = None, None
+        for ref, sim in item.get("scores", {}).items():
+            if labeling_metrics._norm_name(ref) == own_key:
+                own = sim
+            elif best_other_sim is None or sim > best_other_sim:
+                best_other, best_other_sim = ref, sim
+        rows.append({
+            "label": item.get("label"),
+            "name": item.get("name"),
+            "own_similarity": own,
+            "best_other": best_other,
+            "best_other_similarity": best_other_sim,
+        })
+    return rows
+
+
+@router.post("/projects/{project_id}/calibrate", status_code=status.HTTP_201_CREATED)
+def calibrate_project(
+    project_id: str,
+    user: Dict[str, Any] = Depends(require_web_permission(PERM_MANAGE)),
+) -> Dict[str, Any]:
+    """GPU job: similarity of each saved named speaker with every reference voice."""
+    project = _project_or_404(project_id)
+    _require_ready_without_aux(project)
+    speakers = project.get("speakers") or {}
+    segments = project.get("segments") or []
+    spec = {}
+    for label, info in sorted(speakers.items()):
+        name = str((info or {}).get("name") or "").strip()
+        spans = enroll_spans(segments, label)
+        if SPEAKER_LABEL_RE.match(label) and name and spans:
+            spec[label] = {"name": name, "spans": spans}
+    if not spec:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Нет сохранённых спикеров с назначенным сотрудником и репликами",
+        )
+    _enqueue_aux_job(project, web_actor(user), {"action": ACTION_CALIBRATE, "calibrate": spec, "with_text": False})
+    return _project_view(label_store.get_project(project_id) or project, full=True)
+
+
+@router.get("/projects/{project_id}/calibration")
+def project_calibration(
+    project_id: str,
+    user: Dict[str, Any] = Depends(require_web_permission(PERM_MANAGE)),
+) -> Dict[str, Any]:
+    _project_or_404(project_id)
+    data = load_calibration(project_id)
+    if not data:
+        return {"available": False}
+    return {
+        "available": True,
+        "created_at": data["created_at"],
+        "embedding_mode": data["embedding_mode"],
+        "rows": _calibration_rows_view(data["items"]),
+        "suggestion": labeling_metrics.suggest_id_thresholds(data["items"]),
+    }
+
+
+@router.get("/calibration")
+def overall_calibration(
+    user: Dict[str, Any] = Depends(require_web_permission(PERM_MANAGE)),
+) -> Dict[str, Any]:
+    """Suggestion over all labeled meetings (more meetings -> more reliable thresholds)."""
+    items: List[Dict[str, Any]] = []
+    projects = 0
+    modes = set()
+    for project in label_store.list_projects(limit=500):
+        data = load_calibration(str(project.get("id") or ""))
+        if not data or not data["items"]:
+            continue
+        projects += 1
+        modes.add(data.get("embedding_mode"))
+        items.extend(data["items"])
+    return {
+        "projects": projects,
+        "embedding_modes": sorted(m for m in modes if m),
+        "suggestion": labeling_metrics.suggest_id_thresholds(items),
+    }

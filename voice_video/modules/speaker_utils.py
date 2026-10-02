@@ -137,3 +137,94 @@ def mean_normalized(vectors):
     if not vecs:
         return None
     return l2_normalize(np.mean(vecs, axis=0))
+
+
+# --- «Чистые» реплики для профиля голоса ------------------------------------
+
+def subtract_intervals(span: Tuple[float, float], others: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    """Части отрезка span, не пересекающиеся ни с одним из others."""
+    pieces = [span]
+    for o_start, o_end in sorted(others):
+        nxt = []
+        for p_start, p_end in pieces:
+            if o_end <= p_start or o_start >= p_end:
+                nxt.append((p_start, p_end))
+                continue
+            if o_start > p_start:
+                nxt.append((p_start, o_start))
+            if o_end < p_end:
+                nxt.append((o_end, p_end))
+        pieces = nxt
+    return pieces
+
+
+def solo_segments(segments: Sequence[Dict], speaker: str, turns: Optional[Sequence[Dict]],
+                  pad: float = 0.2) -> List[Dict]:
+    """Реплики спикера без мест, где по диаризации говорит кто-то ещё (±pad).
+
+    Без turns (resume по сохранённому транскрипту) — реплики как есть.
+    """
+    own = [s for s in segments or [] if s.get("speaker") == speaker]
+    if not turns:
+        return own
+    index = TurnIndex([t for t in turns if str(t.get("speaker")) != speaker])
+    out = []
+    for seg in own:
+        start = float(seg.get("start", seg.get("start_time", 0)) or 0)
+        end = float(seg.get("end", seg.get("end_time", 0)) or 0)
+        if end <= start:
+            continue
+        others = [(s - pad, e + pad) for s, e, _ in index._candidates(start, end, slack=pad)]
+        for p_start, p_end in subtract_intervals((start, end), others):
+            out.append({"start": p_start, "end": p_end, "speaker": speaker})
+    return out
+
+
+# --- Повторяющиеся неизвестные голоса между встречами ------------------------
+
+def cosine_similarity(a, b) -> float:
+    import numpy as np
+
+    va, vb = l2_normalize(a), l2_normalize(b)
+    if va.shape != vb.shape or not va.any() or not vb.any():
+        return -1.0
+    return float(np.dot(va, vb))
+
+
+def match_recurring(entries: Sequence[Dict], embedding, threshold: float) -> Tuple[Optional[Dict], float]:
+    """Ближайший повторяющийся голос с похожестью ≥ threshold (размерность должна совпадать)."""
+    best, best_sim = None, -1.0
+    for entry in entries or []:
+        sim = cosine_similarity(entry.get("embedding") or [], embedding)
+        if sim > best_sim:
+            best, best_sim = entry, sim
+    if best is not None and best_sim >= threshold:
+        return best, best_sim
+    return None, best_sim
+
+
+def register_recurring(entries: List[Dict], embedding, base: str, label: str, threshold: float,
+                       max_occurrences: int = 200) -> Dict:
+    """Находит или заводит повторяющийся голос и отмечает встречу. Мутирует entries.
+
+    Центр голоса — нормированное среднее с весом по числу встреч, чтобы один
+    шумный прогон не сдвигал его сильно. Повтор той же (встреча, метка) не
+    увеличивает счётчик (resume, повторная обработка).
+    """
+    import numpy as np
+
+    vec = l2_normalize(embedding)
+    entry, _ = match_recurring(entries, vec, threshold)
+    if entry is None:
+        next_num = 1 + max((int(str(e.get("id", "R0"))[1:] or 0) for e in entries), default=0)
+        entry = {"id": f"R{next_num:03d}", "embedding": vec.tolist(), "occurrences": []}
+        entries.append(entry)
+    occ = entry.setdefault("occurrences", [])
+    if not any(o.get("base") == base and o.get("label") == label for o in occ):
+        n = len({o.get("base") for o in occ})
+        if n:
+            old = np.asarray(entry["embedding"], dtype=np.float64)
+            entry["embedding"] = l2_normalize(old * min(n, 20) + vec).tolist()
+        occ.append({"base": base, "label": label})
+        del occ[:-max_occurrences]
+    return entry

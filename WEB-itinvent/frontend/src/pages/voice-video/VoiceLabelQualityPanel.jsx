@@ -3,7 +3,9 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
+  FormControlLabel,
   IconButton,
   LinearProgress,
   MenuItem,
@@ -27,6 +29,7 @@ const SEPARATORS = [
   ['melband', 'MelBand Roformer'],
   ['viperx', 'BS-Roformer Viperx'],
   ['demucs', 'Demucs'],
+  ['none', 'Без сепаратора (сырой)'],
 ];
 
 const pct = (v) => (v === null || v === undefined ? '—' : `${(v * 100).toFixed(1)}%`);
@@ -42,6 +45,8 @@ function VoiceLabelQualityPanel({ projectId, auxJob, variants, dirty, savedVersi
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [separator, setSeparator] = useState('kim');
+  const [exclusive, setExclusive] = useState(false);
+  const duplicateOfDraft = separator === 'none' && !exclusive;
   const [busy, setBusy] = useState(false);
   const variantJobActive = auxJob?.action === 'variant' && ['queued', 'processing'].includes(auxJob.status);
   const anyAuxActive = auxJob && ['queued', 'processing'].includes(auxJob.status);
@@ -66,7 +71,7 @@ function VoiceLabelQualityPanel({ projectId, auxJob, variants, dirty, savedVersi
     setBusy(true);
     setError('');
     try {
-      onProjectUpdate(await voiceLabelingAPI.createVariant(projectId, separator));
+      onProjectUpdate(await voiceLabelingAPI.createVariant(projectId, separator, exclusive));
     } catch (err) {
       setError(extractDetail(err, 'Не удалось поставить в очередь'));
     } finally {
@@ -163,8 +168,12 @@ function VoiceLabelQualityPanel({ projectId, auxJob, variants, dirty, savedVersi
         >
           {SEPARATORS.map(([v, l]) => <MenuItem key={v} value={v}>{l}</MenuItem>)}
         </TextField>
-        <Button variant="outlined" onClick={runVariant} disabled={busy || anyAuxActive}>
-          Прогнать на очищенном звуке
+        <FormControlLabel
+          control={<Checkbox size="small" checked={exclusive} onChange={(e) => setExclusive(e.target.checked)} />}
+          label={<Typography variant="caption">Эксклюзивная разметка</Typography>}
+        />
+        <Button variant="outlined" onClick={runVariant} disabled={busy || anyAuxActive || duplicateOfDraft}>
+          Прогнать вариант
         </Button>
       </Stack>
       {variantJobActive && (

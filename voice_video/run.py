@@ -606,6 +606,12 @@ def main() -> int:
             diarization_min_duration_off=getattr(app_config, 'DIARIZATION_MIN_DURATION_OFF', None),
             diarization_overlap_assign=getattr(app_config, 'DIARIZATION_OVERLAP_ASSIGN', False),
             speaker_embeddings_improved=getattr(app_config, 'SPEAKER_EMBEDDINGS_IMPROVED', False),
+            diarization_exclusive=getattr(app_config, 'DIARIZATION_EXCLUSIVE', False),
+            speaker_recurring=getattr(app_config, 'SPEAKER_RECURRING', False),
+            speaker_recurring_similarity=getattr(app_config, 'SPEAKER_RECURRING_SIMILARITY', 0.6),
+            strict_similarity_threshold=getattr(app_config, 'SPEAKER_ID_STRICT', 0.25),
+            moderate_similarity_threshold=getattr(app_config, 'SPEAKER_ID_MODERATE', 0.35),
+            loose_similarity_threshold=getattr(app_config, 'SPEAKER_ID_LOOSE', 0.45),
             meeting_date=args.meeting_date,
         )
         res = MainProcessor(resume_config).resume_speaker_naming(args.resume_speakers)
@@ -670,6 +676,12 @@ def main() -> int:
             diarization_audio=getattr(app_config, 'DIARIZATION_AUDIO', 'processed'),
             diarization_overlap_assign=getattr(app_config, 'DIARIZATION_OVERLAP_ASSIGN', False),
             speaker_embeddings_improved=getattr(app_config, 'SPEAKER_EMBEDDINGS_IMPROVED', False),
+            diarization_exclusive=getattr(app_config, 'DIARIZATION_EXCLUSIVE', False),
+            speaker_recurring=getattr(app_config, 'SPEAKER_RECURRING', False),
+            speaker_recurring_similarity=getattr(app_config, 'SPEAKER_RECURRING_SIMILARITY', 0.6),
+            strict_similarity_threshold=getattr(app_config, 'SPEAKER_ID_STRICT', 0.25),
+            moderate_similarity_threshold=getattr(app_config, 'SPEAKER_ID_MODERATE', 0.35),
+            loose_similarity_threshold=getattr(app_config, 'SPEAKER_ID_LOOSE', 0.45),
             use_checkpoints=not args.fresh,
             meeting_date=args.meeting_date,
         )

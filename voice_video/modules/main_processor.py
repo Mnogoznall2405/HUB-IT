@@ -207,7 +207,9 @@ class MainProcessor:
                 segments_with_speakers, speaker_naming_result = self._resolve_speaker_names(
                     processed_audio_path,
                     segments_with_speakers,
-                    base_filename
+                    base_filename,
+                    diarize_turns=(transcription_result.get('diarize_segments')
+                                   or diarization_result.get('diarization_result')),
                 )
                 self._ckpt_save(base_filename, 'speakers', file_path, {
                     'segments': segments_with_speakers,
@@ -504,7 +506,8 @@ class MainProcessor:
         self,
         audio_file: str,
         segments_with_speakers: List[Dict[str, Any]],
-        base_filename: str
+        base_filename: str,
+        diarize_turns: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """Сначала пытается сопоставить спикеров автоматически, затем спрашивает ФИО для оставшихся."""
         speaker_naming_result = {
@@ -518,11 +521,13 @@ class MainProcessor:
         if not self.config.enable_diarization or not segments_with_speakers:
             return segments_with_speakers, speaker_naming_result
 
+        speaker_embeddings: Dict[str, Any] = {}
         if self.config.enable_speaker_identification:
             try:
                 speaker_embeddings = self.speaker_diarization.extract_speaker_embeddings(
                     audio_file,
-                    segments_with_speakers
+                    segments_with_speakers,
+                    diarize_turns,
                 )
                 identification_details = self.speaker_diarization.get_speaker_identification_details(
                     speaker_embeddings
@@ -557,6 +562,22 @@ class MainProcessor:
             logger.info(f"👤 Принудительные имена применены: {list(forced_map.keys())}")
 
         unresolved_speakers = self.speaker_diarization.get_unresolved_speakers(segments_with_speakers)
+
+        if unresolved_speakers and speaker_embeddings and getattr(self.config, 'speaker_recurring', False):
+            try:
+                from .recurring import register_meeting_voices, registry_path
+                recurring = register_meeting_voices(
+                    registry_path(PROJECT_ROOT),
+                    base_filename,
+                    {label: speaker_embeddings.get(label) for label in unresolved_speakers},
+                    float(getattr(self.config, 'speaker_recurring_similarity', 0.6)),
+                )
+                speaker_naming_result['recurring'] = recurring
+                repeated = {k: v['count'] for k, v in recurring.items() if v.get('count', 1) > 1}
+                if repeated:
+                    logger.info(f"🔁 Повторяющиеся голоса: {repeated}")
+            except Exception as e:
+                logger.warning(f"⚠️ Реестр повторяющихся голосов пропущен: {e}")
 
         if unresolved_speakers and self.config.export_unknown_speaker_samples:
             sample_paths = self.speaker_diarization.export_unknown_speaker_samples(

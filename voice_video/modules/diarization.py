@@ -19,7 +19,13 @@ except ImportError:
     DiarizationPipeline = getattr(whisperx, "DiarizationPipeline", None)
 
 from .audio_processor import ProcessingConfig, retry_on_failure, monitor_memory, cleanup_memory
-from .speaker_utils import TurnIndex, assign_words_by_overlap, mean_normalized, pick_embedding_spans
+from .speaker_utils import (
+    TurnIndex,
+    assign_words_by_overlap,
+    mean_normalized,
+    pick_embedding_spans,
+    solo_segments,
+)
 from config import DEVICE, HF_TOKEN, MODELS_DIR, PROJECT_ROOT, REFERENCE_VOICES_DIR
 
 logger = logging.getLogger(__name__)
@@ -75,6 +81,53 @@ def apply_pipeline_tuning(diarize_wrapper, config) -> None:
         logger.info(f"🎛️ Диаризация: применены параметры {params}")
     except Exception as e:
         logger.warning(f"⚠️ Не удалось применить параметры диаризации {params}: {e}")
+
+
+def _pyannote_major_version() -> int:
+    try:
+        import pyannote.audio as _pa
+        return int(str(getattr(_pa, "__version__", "0")).split(".")[0])
+    except Exception:
+        return 0
+
+
+def run_diarization(diarize_wrapper, audio, *, num_speakers, min_speakers, max_speakers,
+                    exclusive: bool = False, sample_rate: int = 16000):
+    """Диаризация через WhisperX DiarizationPipeline.
+
+    exclusive=True (DIARIZATION_EXCLUSIVE) — берём ``exclusive_speaker_diarization``
+    community-1 (pyannote.audio ≥ 4): в каждый момент один говорящий, тот, кого
+    скорее всего распознал STT. WhisperX отдаёт только обычную разметку с
+    наложениями, поэтому зовём pipeline напрямую; при любой проблеме — как раньше.
+    """
+    if exclusive:
+        pipeline = getattr(diarize_wrapper, 'model', None)
+        if pipeline is None or _pyannote_major_version() < 4:
+            logger.warning("⚠️ DIARIZATION_EXCLUSIVE: нужен pyannote.audio ≥ 4 — обычная диаризация")
+        else:
+            try:
+                kwargs = {}
+                if num_speakers:
+                    kwargs['num_speakers'] = num_speakers
+                else:
+                    kwargs['min_speakers'] = min_speakers
+                    kwargs['max_speakers'] = max_speakers
+                waveform = torch.from_numpy(np.ascontiguousarray(audio)).float().unsqueeze(0)
+                output = pipeline({"waveform": waveform, "sample_rate": sample_rate}, **kwargs)
+                exclusive_ann = getattr(output, 'exclusive_speaker_diarization', None)
+                if exclusive_ann is not None:
+                    logger.info("🎭 Эксклюзивная диаризация community-1 (без наложений)")
+                    return exclusive_ann
+                logger.warning("⚠️ Модель не вернула exclusive_speaker_diarization — обычная разметка")
+                return getattr(output, 'speaker_diarization', output)
+            except Exception as e:
+                logger.warning(f"⚠️ Эксклюзивная диаризация не удалась ({e}) — обычная")
+    return diarize_wrapper(
+        audio,
+        num_speakers=num_speakers or None,
+        min_speakers=min_speakers,
+        max_speakers=max_speakers,
+    )
 
 
 def speaker_at_time(diarization_index: Dict[float, str], t: float, radius: float = 0.3) -> Optional[str]:
@@ -360,11 +413,13 @@ class SpeakerDiarization:
             audio = whisperx.load_audio(audio_file)
             
             # Выполняем диаризацию
-            diarize_result = self.diarize_model(
+            diarize_result = run_diarization(
+                self.diarize_model,
                 audio,
                 num_speakers=(self.num_speakers or getattr(self.config, 'diarization_num_speakers', 0) or None),
                 min_speakers=self.config.diarization_min_speakers,
-                max_speakers=self.config.diarization_max_speakers
+                max_speakers=self.config.diarization_max_speakers,
+                exclusive=bool(getattr(self.config, 'diarization_exclusive', False)),
             )
             
             # Освобождаем память
@@ -472,10 +527,11 @@ class SpeakerDiarization:
         """Находит наиболее подходящего спикера для сегмента."""
         return speaker_for_segment(diarization_index, start_time, end_time)
     
-    def extract_speaker_embeddings(self, audio_file: str, segments_with_speakers: List[Dict]) -> Dict[str, np.ndarray]:
+    def extract_speaker_embeddings(self, audio_file: str, segments_with_speakers: List[Dict],
+                                   diarize_turns: Optional[List[Dict]] = None) -> Dict[str, np.ndarray]:
         """Извлекает эмбеддинги для каждого спикера."""
         if getattr(self.config, 'speaker_embeddings_improved', False):
-            return self._extract_speaker_embeddings_improved(audio_file, segments_with_speakers)
+            return self._extract_speaker_embeddings_improved(audio_file, segments_with_speakers, diarize_turns)
         try:
             logger.info("🧬 Извлечение эмбеддингов спикеров...")
             
@@ -540,10 +596,12 @@ class SpeakerDiarization:
             return {}
     
     def _extract_speaker_embeddings_improved(
-        self, audio_file: str, segments_with_speakers: List[Dict]
+        self, audio_file: str, segments_with_speakers: List[Dict],
+        diarize_turns: Optional[List[Dict]] = None,
     ) -> Dict[str, np.ndarray]:
-        """SPEAKER_EMBEDDINGS_IMPROVED: до 15 самых длинных реплик спикера, центральные
-        ≤8 с, нормированные векторы. Звук читается один раз, без временных файлов."""
+        """SPEAKER_EMBEDDINGS_IMPROVED: до 30 самых длинных «чистых» реплик спикера
+        (без мест, где по диаризации говорит кто-то ещё), центральные ≤8 с,
+        нормированные векторы. Звук читается один раз, без временных файлов."""
         try:
             logger.info("🧬 Извлечение эмбеддингов спикеров (улучшенный режим)...")
             if not self.embedding_inference:
@@ -557,8 +615,9 @@ class SpeakerDiarization:
 
             speaker_embeddings = {}
             for speaker, speaker_segments in by_speaker.items():
-                spans = (pick_embedding_spans(speaker_segments, min_duration=2.0)
-                         or pick_embedding_spans(speaker_segments, min_duration=1.0))
+                solo = solo_segments(speaker_segments, speaker, diarize_turns)
+                spans = (pick_embedding_spans(solo, max_spans=30, min_duration=2.0)
+                         or pick_embedding_spans(speaker_segments, max_spans=30, min_duration=1.0))
                 if not spans:
                     logger.warning(f"⚠️ Нет подходящих реплик для спикера {speaker}")
                     continue

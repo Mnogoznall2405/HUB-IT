@@ -605,3 +605,19 @@ def test_build_process_argv_speaker_range():
     assert "--num-speakers" in exact and "--min-speakers" not in exact  # exact number wins
     junk = runner.build_process_argv("in.mp4", {"min_speakers": "abc", "max_speakers": 99})
     assert "--min-speakers" not in junk and "--max-speakers" not in junk
+
+
+def test_meeting_speakers_recurring_only_existing_meetings(vv_tree):
+    for base in ("m_now", "m_old"):
+        mdir = vv_tree / "output" / base
+        mdir.mkdir()
+    (vv_tree / "output" / "m_old" / "m_old_transcript.json").write_text("{}", encoding="utf-8")
+    (vv_tree / "output" / "m_now" / "m_now_transcript.json").write_text(json.dumps({
+        "segments": [{"start": 1, "end": 2, "speaker": "SPEAKER_00", "text": "x"}],
+        "speaker_naming": {
+            "remaining_unresolved_speakers": ["SPEAKER_00"],
+            "recurring": {"SPEAKER_00": {"id": "R007", "meetings": ["m_old", "m_deleted"], "count": 3}},
+        },
+    }), encoding="utf-8")
+    speaker = pipeline.meeting_speakers("m_now")["unresolved"][0]
+    assert speaker["recurring"] == {"id": "R007", "meetings": ["m_old"]}

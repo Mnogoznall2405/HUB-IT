@@ -173,3 +173,56 @@ def test_rendered_registry_parses_in_voice_server(tmp_path, monkeypatch):
         ("Объект А", "Сверить / итоги", "Иванов", "01.10"),
         ("Объект А", "Доложить ГД", "—", "—"),
     ]
+
+
+def test_subtract_intervals_and_solo_segments():
+    assert su.subtract_intervals((0, 10), [(2, 3), (5, 12)]) == [(0, 2), (3, 5)]
+    assert su.subtract_intervals((0, 10), []) == [(0, 10)]
+    segs = [{"start": 0, "end": 10, "speaker": "A"}, {"start": 20, "end": 25, "speaker": "B"}]
+    turns = [{"start": 0, "end": 10, "speaker": "A"}, {"start": 4, "end": 5, "speaker": "B"}]
+    solo = su.solo_segments(segs, "A", turns, pad=0.2)
+    assert [(round(s["start"], 1), round(s["end"], 1)) for s in solo] == [(0.0, 3.8), (5.2, 10.0)]
+    assert su.solo_segments(segs, "A", None) == [segs[0]]
+
+
+def test_recurring_registry_matches_updates_and_dedupes():
+    pytest.importorskip("numpy")
+    entries = []
+    a = su.register_recurring(entries, [1, 0, 0], "m1", "SPEAKER_01", threshold=0.6)
+    assert a["id"] == "R001" and len(entries) == 1
+    same = su.register_recurring(entries, [0.9, 0.1, 0], "m2", "SPEAKER_00", threshold=0.6)
+    assert same is a and [o["base"] for o in a["occurrences"]] == ["m1", "m2"]
+    su.register_recurring(entries, [0.9, 0.1, 0], "m2", "SPEAKER_00", threshold=0.6)  # resume: no dup
+    assert len(a["occurrences"]) == 2
+    other = su.register_recurring(entries, [0, 1, 0], "m2", "SPEAKER_02", threshold=0.6)
+    assert other["id"] == "R002" and len(entries) == 2
+    # Different embedding size never matches.
+    found, sim = su.match_recurring(entries, [1, 0, 0, 0], 0.1)
+    assert found is None and sim == -1.0
+
+
+def test_recurring_registry_file_roundtrip(tmp_path, monkeypatch):
+    pytest.importorskip("numpy")
+    import sys
+    import types
+
+    # recurring.py uses a relative import of speaker_utils: load both as a tiny package.
+    pkg = types.ModuleType("vvmods")
+    pkg.__path__ = [str(ROOT / "voice_video" / "modules")]
+    monkeypatch.setitem(sys.modules, "vvmods", pkg)
+    spec = importlib.util.spec_from_file_location("vvmods.recurring", ROOT / "voice_video" / "modules" / "recurring.py")
+    rec = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "vvmods.recurring", rec)
+    spec.loader.exec_module(rec)
+
+    path = rec.registry_path(tmp_path)
+    assert rec.load_registry(path) == []
+    first = rec.register_meeting_voices(path, "m1", {"SPEAKER_01": [1, 0, 0]}, threshold=0.6)
+    assert first == {"SPEAKER_01": {"id": "R001", "meetings": [], "count": 1}}
+    second = rec.register_meeting_voices(
+        path, "m2", {"SPEAKER_00": [0.95, 0.05, 0], "SPEAKER_03": [0, 0, 1]}, threshold=0.6,
+    )
+    assert second["SPEAKER_00"] == {"id": "R001", "meetings": ["m1"], "count": 2}
+    assert second["SPEAKER_03"]["id"] == "R002"
+    path.write_text("broken", encoding="utf-8")
+    assert rec.load_registry(path) == []  # corrupt file -> start over, no crash
