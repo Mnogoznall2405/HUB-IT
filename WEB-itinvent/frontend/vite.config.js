@@ -88,6 +88,7 @@ const NODE_TEST_FILES = [
   'src/pages/tasks/tasksMobileCopy.test.js',
   'src/pages/voice-video/labelingModel.test.js',
   'src/pages/voice-video/mediaParts.test.js',
+  'src/pages/voice-video/meetingTitle.test.js',
 ];
 
 const TEST_PROJECTS = [

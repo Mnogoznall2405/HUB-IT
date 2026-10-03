@@ -233,7 +233,7 @@ describe('VoiceMeetingsSection: длинные названия протокол
     expect(style.whiteSpace).toBe('nowrap');
   });
 
-  it('clamps a long protocol name inside its desktop table cell', () => {
+  it('clamps a long protocol name inside the desktop card', () => {
     window.matchMedia = () => ({
       matches: false,
       media: '',
@@ -263,7 +263,7 @@ describe('VoiceMeetingsSection: длинные названия протокол
       name: /^Открыть протокол Еженедельное совещание отдела эксплуатации/,
     });
     const style = window.getComputedStyle(button);
-    expect(style.maxWidth).toBe('360px');
+    expect(style.maxWidth).toBe('100%');
     expect(style.overflow).toBe('hidden');
     expect(style.textOverflow).toBe('ellipsis');
     expect(style.whiteSpace).toBe('nowrap');
@@ -494,7 +494,7 @@ describe('VoiceMeetingsSection: плотные строки протоколов
     expect(screen.getByText('+3')).toBeVisible();
   });
 
-  it('drops the open column from the desktop table and keeps a fixed actions column', () => {
+  it('desktop: карточки в списке по месяцам, у каждой дата, название без служебного префикса и меню действий', () => {
     window.matchMedia = (query) => ({
       matches: false,
       media: query,
@@ -505,19 +505,28 @@ describe('VoiceMeetingsSection: плотные строки протоколов
       removeEventListener: () => {},
       dispatchEvent: () => false,
     });
-    render(<VoiceMeetingsSection meetings={[meeting, { ...meeting, base_filename: 'j123456789012_Второе' }]} canManage onDelete={vi.fn()} />);
+    render(
+      <VoiceMeetingsSection
+        meetings={[
+          { ...meeting, base_filename: 'j123456789012_2026-09-25_Планерка_Магадан', speaker_names: ['Иванов И.И.', 'Петрова А.С.'] },
+          { ...meeting, base_filename: '2026-08-30_Совет', speaker_names: [] },
+        ]}
+        canManage
+        onDelete={vi.fn()}
+      />,
+    );
 
-    expect(screen.queryByRole('columnheader', { name: 'Открыть' })).not.toBeInTheDocument();
-    const headers = screen.getAllByRole('columnheader');
-    expect(headers[headers.length - 1]).toHaveTextContent('Действия');
-
-    const cells = screen.getAllByRole('cell');
-    const actionsCells = cells.filter((c) => c.querySelector('[aria-haspopup="menu"]'));
-    expect(actionsCells.length).toBe(2);
-    expect(actionsCells[0]).toHaveStyle({ width: '56px' });
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Сентябрь 2026' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Август 2026' })).toBeInTheDocument();
+    expect(screen.getAllByRole('listitem')).toHaveLength(2);
+    // Дата берётся из названия; название — без даты и подчёркиваний.
+    expect(screen.getByText('Планерка Магадан')).toBeInTheDocument();
+    expect(screen.getByText(/Иванов И\.И\., Петрова А\.С\./)).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /Действия с протоколом/ })).toHaveLength(2);
   });
 
-  it('T54: колонка «Отчёты» убрана; «Реплик» выровнен вправо; отчёты в меню ⋮', () => {
+  it('отчёты доступны из меню «⋮» карточки', () => {
     window.matchMedia = (query) => ({
       matches: false,
       media: query,
@@ -530,21 +539,13 @@ describe('VoiceMeetingsSection: плотные строки протоколов
     });
     render(<VoiceMeetingsSection meetings={[meeting]} canManage onDelete={vi.fn()} />);
 
-    expect(screen.queryByRole('columnheader', { name: 'Отчёты' })).not.toBeInTheDocument();
     expect(screen.queryByText(/html, docx/)).not.toBeInTheDocument();
-
-    const segHeader = screen.getByRole('columnheader', { name: 'Реплик' });
-    expect(segHeader).toHaveStyle({ textAlign: 'right' });
-    const segCell = screen.getAllByRole('cell').find((c) => c.textContent === '4');
-    expect(segCell).toHaveStyle({ textAlign: 'right' });
-
-    // Доступ к отчётам сохранён через меню строки.
     fireEvent.click(screen.getByRole('button', { name: 'Действия с протоколом Еженедельное совещание' }));
     const menu = screen.getByRole('menu');
     expect(within(menu).getByRole('menuitem', { name: /html/ })).toBeInTheDocument();
   });
 
-  it('opens the protocol by name and by row click', () => {
+  it('opens the protocol by name and by card click', () => {
     window.matchMedia = (query) => ({
       matches: false,
       media: query,
@@ -561,7 +562,7 @@ describe('VoiceMeetingsSection: плотные строки протоколов
     fireEvent.click(screen.getByRole('button', { name: 'Открыть протокол Еженедельное совещание' }));
     expect(onOpen).toHaveBeenCalledWith(meeting.base_filename);
 
-    fireEvent.click(screen.getAllByRole('row')[1]);
+    fireEvent.click(screen.getByRole('listitem'));
     expect(onOpen).toHaveBeenCalledTimes(2);
   });
 

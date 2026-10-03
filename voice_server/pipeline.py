@@ -169,6 +169,82 @@ def meeting_topics(base_filename: str) -> List[Dict[str, Any]]:
     return items
 
 
+def _str_list(value: Any, limit: int = 50, max_len: int = 1000) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    out = []
+    for item in value[:limit]:
+        text = str(item or "").strip() if not isinstance(item, dict) else str(item.get("text") or "").strip()
+        if text:
+            out.append(text[:max_len])
+    return out
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and number >= 0 else None  # NaN guard
+
+
+def meeting_summary(base_filename: str) -> Dict[str, Any]:
+    """«Сводка» for the meeting page: summary, decisions, open questions, topics, participants.
+
+    Built from ``<base>_report.json`` (pipeline output); every field is optional
+    and type-checked — old reports simply yield fewer sections.
+    """
+    data = load_report_json(base_filename) or {}
+    topics_out: List[Dict[str, Any]] = []
+    decisions: List[Dict[str, Any]] = []
+    questions: List[Dict[str, Any]] = []
+    for topic in data.get("topics") or []:
+        if not isinstance(topic, dict):
+            continue
+        title = str(topic.get("topic_title") or topic.get("topic_guess") or "").strip()[:300]
+        start = _safe_float(topic.get("start_time"))
+        end = _safe_float(topic.get("end_time"))
+        topic_decisions = _str_list(topic.get("key_decisions"))
+        topic_questions = _str_list(topic.get("open_questions"))
+        topics_out.append({
+            "title": title,
+            "start": start,
+            "end": end,
+            "summary": str(topic.get("summary") or "").strip()[:4000],
+            "decisions_count": len(topic_decisions),
+            "sentiment": str(topic.get("sentiment") or "").strip()[:40],
+        })
+        decisions += [{"text": t, "topic": title, "start": start} for t in topic_decisions]
+        questions += [{"text": t, "topic": title, "start": start} for t in topic_questions]
+    topics_out.sort(key=lambda t: (t["start"] is None, t["start"] or 0))
+
+    participants = []
+    for p in data.get("participants") or []:
+        if not isinstance(p, dict) or not str(p.get("name") or "").strip():
+            continue
+        participants.append({
+            "name": str(p["name"]).strip()[:256],
+            "share": _safe_float(p.get("participation_percentage")),
+            "seconds": _safe_float(p.get("total_duration_seconds")),
+            "segments": int(p.get("segments_count") or 0) if str(p.get("segments_count") or "0").isdigit() else 0,
+        })
+    participants.sort(key=lambda p: -(p["share"] or 0))
+
+    meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    summary = data.get("summary")
+    return {
+        "available": bool(data),
+        "duration": str(meta.get("total_duration") or "")[:32],
+        "summary": summary.strip()[:20000] if isinstance(summary, str) else "",
+        "protocol": data.get("protocol").strip()[:100000] if isinstance(data.get("protocol"), str) else "",
+        "decisions": decisions[:200],
+        "open_questions": questions[:200],
+        "topics": topics_out[:100],
+        "participants": participants[:50],
+        "keywords": _str_list(data.get("keywords"), limit=15, max_len=60),
+    }
+
+
 _ASSIGNMENT_LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]*)\)")
 _ASSIGNMENT_SEP_RE = re.compile(r"^[\s:\-]+$")
 _ASSIGNMENT_SECTION_RE = re.compile(r"^#{2,3}\s+(.+)")
