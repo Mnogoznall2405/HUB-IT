@@ -42,6 +42,7 @@ import {
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import { useNavigate } from 'react-router-dom';
+import ArrowBackOutlinedIcon from '@mui/icons-material/ArrowBackOutlined';
 import AssignmentOutlinedIcon from '@mui/icons-material/AssignmentOutlined';
 import CloseOutlinedIcon from '@mui/icons-material/CloseOutlined';
 import CompressOutlinedIcon from '@mui/icons-material/CompressOutlined';
@@ -72,6 +73,7 @@ import ShareOutlinedIcon from '@mui/icons-material/ShareOutlined';
 import SkipNextOutlinedIcon from '@mui/icons-material/SkipNextOutlined';
 import SkipPreviousOutlinedIcon from '@mui/icons-material/SkipPreviousOutlined';
 import SubjectOutlinedIcon from '@mui/icons-material/SubjectOutlined';
+import SummarizeOutlinedIcon from '@mui/icons-material/SummarizeOutlined';
 import TopicOutlinedIcon from '@mui/icons-material/TopicOutlined';
 import UnfoldMoreOutlinedIcon from '@mui/icons-material/UnfoldMoreOutlined';
 import { voiceJobsAPI } from '../../api/voiceJobs';
@@ -79,6 +81,8 @@ import { hubTaskSupportAPI } from '../../api/hubTaskSupport';
 import { stashMailComposePrefill } from '../../lib/mailComposePrefill';
 import { AudioPlayButton, useSingleAudio } from './useSingleAudio.jsx';
 import VoiceAssignmentsTab from './VoiceAssignmentsTab';
+import VoiceMeetingSummary from './VoiceMeetingSummary';
+import { formatMeetingDate, parseMeetingTitle } from './meetingTitle';
 import { pickMergedPart, speakerMediaSrc } from './mediaParts.js';
 
 const displayName = (base) => String(base || '').replace(/^j[0-9a-f]{12}_/, '');
@@ -395,7 +399,7 @@ const TranscriptSegRow = React.memo(function TranscriptSegRow({ index, style, da
       <Chip
         size="small"
         icon={<AssignmentOutlinedIcon sx={{ fontSize: 14 }} />}
-        label={markers.length > 1 ? `${markers.length}` : ''}
+        label={markers.length > 1 ? `№${markers[0].num} +${markers.length - 1}` : `№${markers[0].num}`}
         clickable
         aria-label={`У реплики поручени${markers.length > 1 ? `я: ${markers.map((m) => `№${m.num}`).join(', ')}` : `е №${markers[0].num}`}`}
         onClick={() => onMarkerClick('assign')}
@@ -590,10 +594,74 @@ const TranscriptViewport = React.memo(function TranscriptViewport({
   );
 });
 
+// Карточка встречи: всплывающее окно (variant="dialog") или отдельная страница
+// внутри раздела (variant="page") — содержимое одно и то же.
+function MeetingShell({ variant, open, onClose, onKeyDown, isMobile, children }) {
+  if (variant === 'page') {
+    if (!open) return null;
+    return (
+      <Box
+        role="region"
+        aria-label="Карточка встречи"
+        onKeyDown={onKeyDown}
+        sx={{
+          display: 'flex',
+          flexDirection: 'column',
+          position: 'relative',
+          // Высота экрана за вычетом шапки приложения: плеер, текст и панели
+          // прокручиваются внутри, страница целиком — нет.
+          height: { xs: 'calc(100dvh - 128px)', sm: 'calc(100dvh - 96px)' },
+          minHeight: 480,
+          bgcolor: 'background.paper',
+          border: '1px solid',
+          borderColor: 'divider',
+          borderRadius: { xs: 0, sm: 2 },
+          mx: { xs: -2, sm: 0 },
+          overflow: 'hidden',
+          '@media (pointer: coarse)': {
+            '& .MuiIconButton-root': { width: 44, height: 44 },
+          },
+        }}
+      >
+        {children}
+      </Box>
+    );
+  }
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      onKeyDown={onKeyDown}
+      fullScreen={isMobile}
+      maxWidth="lg"
+      fullWidth
+      // T46: закрытие мгновенное (≤100мс) — выходная анимация отключена,
+      // вход остаётся стандартной.
+      transitionDuration={{ enter: 225, exit: 0 }}
+      PaperProps={{
+        sx: {
+          height: isMobile ? '100%' : '90vh',
+          maxHeight: isMobile ? '100%' : '90vh',
+          display: 'flex',
+          flexDirection: 'column',
+          position: 'relative',
+          '@media (pointer: coarse)': {
+            '& .MuiIconButton-root': { width: 44, height: 44 },
+          },
+        },
+      }}
+    >
+      {children}
+    </Dialog>
+  );
+}
+
 function VoiceMeetingDrawer({
   meeting, open, onClose, canManage, canCreateTasks = false, voices, onAssigned,
   loadError = '', onRetryLoad, onActiveShareLinkChange, shareNavWarning = false,
+  variant = 'dialog',
 }) {
+  const isPage = variant === 'page';
   const theme = useTheme();
   const navigate = useNavigate();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
@@ -601,8 +669,8 @@ function VoiceMeetingDrawer({
   // получает горизонтальную прокрутку (Ревью 9: scrollWidth 354 при 318).
   const isNarrow = useMediaQuery(theme.breakpoints.down(360));
   // Фаза 4 (утверждённая): на <md — вкладки контента, на ≥md — вкладки правой панели.
-  const [mobileTab, setMobileTab] = useState('talk');        // talk|topics|assign|more
-  const [panelTab, setPanelTab] = useState('topics');        // topics|assign|speakers|files
+  const [mobileTab, setMobileTab] = useState('summary');     // summary|talk|topics|assign|more
+  const [panelTab, setPanelTab] = useState('summary');       // summary|topics|assign|speakers|files
   const [mediaRate, setMediaRate] = useState(1);
   // T55: позиция указателя над шкалой ({frac, dragging}) — hover-подсказка
   // и перетаскивание бегунка (seek — при отпускании).
@@ -767,8 +835,8 @@ function VoiceMeetingDrawer({
     setMetaProject(meeting?.web_meta?.project || '');
     setMetaFeedback(null);
     setMailError('');
-    setMobileTab('talk');
-    setPanelTab('topics');
+    setMobileTab('summary');
+    setPanelTab('summary');
     setMediaTime(0);
     setMediaDuration(0);
     setMediaPlaying(false);
@@ -780,7 +848,6 @@ function VoiceMeetingDrawer({
     setPlayerCompact(false);
     setFollowSegment(true);
     pendingSegRef.current = null;
-    segSizeMapRef.current = new Map();
     segVisibleRef.current = [0, 0];
     setPlayerBig(false);
     setNameEditor(null);
@@ -1059,11 +1126,15 @@ function VoiceMeetingDrawer({
   }, [filteredSegments, flashStart, mobileTab, panelTab]);
 
   // T47: размеры строк специфичны для набора реплик и раскладки —
-  // при смене списка пересчитываем карту высот с нуля.
+  // при смене списка карта высот начинается с нуля. Карта создаётся во время
+  // рендера, а не в эффекте: эффекты строк (замер высоты) выполняются раньше
+  // эффектов родителя, и замена карты в эффекте стирала только что сделанные
+  // замеры — строки оставались с оценочной высотой (лишние пустоты в тексте).
+  const segSizeMap = useMemo(() => new Map(), [filteredSegments, isMobile]);
+  segSizeMapRef.current = segSizeMap;
   useEffect(() => {
-    segSizeMapRef.current = new Map();
     segListRef.current?.resetAfterIndex?.(0);
-  }, [filteredSegments, isMobile]);
+  }, [segSizeMap]);
 
   useEffect(() => {
     if (flashStart == null) return undefined;
@@ -1570,7 +1641,9 @@ function VoiceMeetingDrawer({
           </span>
         </Tooltip>
         <Box sx={{ flex: 1 }} />
-        {isNarrow ? (
+        {/* На телефоне скорость и режимы видео — в меню «⋮»: с touch-кнопками
+            44px полная строка не помещается в 360–414px. */}
+        {isMobile ? (
           <>
             <IconButton
               size="small"
@@ -1702,6 +1775,35 @@ function VoiceMeetingDrawer({
   // T42: скелетон при загрузке, ошибка с «Повторить», понятное пустое состояние.
   // T46: тяжёлые панели — мемоизированные элементы; тик плеера их не трогает
   // (topicsPanel — по границам тем, assignmentsPanel — раз в секунду).
+  const openPanel = React.useCallback((tab) => {
+    if (isMobile) setMobileTab(tab === 'speakers' || tab === 'files' ? 'more' : tab);
+    else setPanelTab(tab);
+  }, [isMobile]);
+
+  const titleInfo = useMemo(() => parseMeetingTitle(base), [base]);
+  const protocolDoc = useMemo(() => (
+    reports.find((r) => r.kind === 'protocol' && r.ext === 'docx')
+    || reports.find((r) => r.ext === 'docx')
+    || null
+  ), [reports]);
+  const openShareDialog = React.useCallback(() => {
+    setShareLinks([]);
+    setShareCreateError('');
+    setShareCloseWarning(false);
+    setShareOpen(true);
+  }, []);
+
+  const summaryPanel = base ? (
+    <VoiceMeetingSummary
+      base={base}
+      duration={timelineDuration > 0 ? fmtTime(timelineDuration) : ''}
+      assignmentItems={assignmentItems}
+      unresolvedCount={unresolved.length}
+      onSeek={seekMedia}
+      onOpenTab={openPanel}
+    />
+  ) : null;
+
   const topicsPanel = useMemo(() => (
     <Stack spacing={0.75}>
       {(topicsStatus === 'idle' || topicsStatus === 'loading') && topics.length === 0 && (
@@ -1804,13 +1906,13 @@ function VoiceMeetingDrawer({
     onMarkerClick: goToPanel,
     onNameClick: openNameEditor,
     pendingRef: pendingSegRef,
-    sizeMap: segSizeMapRef.current,
+    sizeMap: segSizeMap,
     listRef: segListRef,
     onMeasure: onSegMeasured,
   }), [
     filteredSegments, activeSegmentIndex, flashStart, matchCursor, matchStarts,
     deferredQuery, isMobile, theme, speakerColorMap, unresolvedSet, firstUnnamedIdx,
-    assignmentMarkers, canManage, seekAndShow, goToPanel, openNameEditor, onSegMeasured,
+    assignmentMarkers, canManage, seekAndShow, goToPanel, openNameEditor, onSegMeasured, segSizeMap,
   ]);
 
   // T39: Enter/стрелки в поле поиска и кнопки ↑/↓ ходят по совпадениям
@@ -2266,30 +2368,21 @@ function VoiceMeetingDrawer({
   ]);
 
   return (
-    <Dialog
+    <MeetingShell
+      variant={variant}
       open={open}
       onClose={closeDrawer}
       onKeyDown={handleDrawerKeyDown}
-      fullScreen={isMobile}
-      maxWidth="lg"
-      fullWidth
-      // T46: закрытие мгновенное (≤100мс) — выходная анимация отключена,
-      // вход остаётся стандартной.
-      transitionDuration={{ enter: 225, exit: 0 }}
-      PaperProps={{
-        sx: {
-          height: isMobile ? '100%' : '90vh',
-          maxHeight: isMobile ? '100%' : '90vh',
-          display: 'flex',
-          flexDirection: 'column',
-          position: 'relative',
-          '@media (pointer: coarse)': {
-            '& .MuiIconButton-root': { width: 44, height: 44 },
-          },
-        },
-      }}
+      isMobile={isMobile}
     >
-      <Box sx={{ px: 2, py: isMobile ? 1 : 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+      <Box sx={{ px: { xs: 1.5, sm: 2 }, py: isMobile ? 1 : 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
+        {isPage && (
+          <Tooltip title="К списку протоколов">
+            <IconButton onClick={closeDrawer} aria-label="К списку протоколов" sx={{ flexShrink: 0 }}>
+              <ArrowBackOutlinedIcon />
+            </IconButton>
+          </Tooltip>
+        )}
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <DialogTitle
             title={displayName(base)}
@@ -2298,8 +2391,10 @@ function VoiceMeetingDrawer({
               minWidth: 0,
               // T36: у названия не должно быть подложки — выглядит как поле ввода.
               background: 'transparent',
-              fontSize: '1rem',
+              fontSize: isMobile ? '1rem' : '1.2rem',
+              fontWeight: 700,
               lineHeight: 1.25,
+              border: 0,
               display: '-webkit-box',
               WebkitBoxOrient: 'vertical',
               WebkitLineClamp: isMobile ? 2 : 1,
@@ -2307,7 +2402,7 @@ function VoiceMeetingDrawer({
               overflowWrap: 'anywhere',
             }}
           >
-            {displayName(base)}
+            {titleInfo.title}
           </DialogTitle>
           {/* T36: мета — длительность · реплики (из загруженного текста) ·
               участники · отчёты; «Источник доступен» — шум, остаются только
@@ -2321,6 +2416,7 @@ function VoiceMeetingDrawer({
             title={base}
           >
             {[
+              titleInfo.date ? formatMeetingDate(titleInfo.date, { weekday: true }) : null,
               timelineDuration > 0 ? fmtTime(timelineDuration) : null,
               (transcriptData?.total ?? meeting?.segments_count) != null
                 ? `${transcriptData?.total ?? meeting.segments_count} ${plural(transcriptData?.total ?? meeting.segments_count, ['реплика', 'реплики', 'реплик'])}`
@@ -2342,7 +2438,30 @@ function VoiceMeetingDrawer({
             ].filter(Boolean).join(' · ')}
           </Typography>
         </Box>
-        <Stack direction="row" spacing={0.5} alignItems="center">
+        <Stack direction="row" spacing={0.75} alignItems="center">
+          {!isMobile && protocolDoc && (
+            <Button
+              size="small"
+              variant="contained"
+              disableElevation
+              startIcon={<DownloadOutlinedIcon />}
+              href={voiceJobsAPI.reportUrl(base, protocolDoc.name, true)}
+              sx={{ whiteSpace: 'nowrap' }}
+            >
+              Скачать протокол
+            </Button>
+          )}
+          {!isMobile && base && (
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<ShareOutlinedIcon />}
+              onClick={openShareDialog}
+              sx={{ whiteSpace: 'nowrap' }}
+            >
+              Поделиться
+            </Button>
+          )}
           <IconButton
             size="small"
             aria-label="Действия с протоколом"
@@ -2373,10 +2492,7 @@ function VoiceMeetingDrawer({
               <MenuItem
                 onClick={() => {
                   setMenuAnchor(null);
-                  setShareLinks([]);
-                  setShareCreateError('');
-                  setShareCloseWarning(false);
-                  setShareOpen(true);
+                  openShareDialog();
                 }}
               >
                 <ListItemIcon><ShareOutlinedIcon fontSize="small" /></ListItemIcon>
@@ -2392,7 +2508,9 @@ function VoiceMeetingDrawer({
               </MenuItem>
             )}
           </Menu>
-          <IconButton onClick={closeDrawer} size="small" aria-label="Закрыть"><CloseOutlinedIcon /></IconButton>
+          {!isPage && (
+            <IconButton onClick={closeDrawer} size="small" aria-label="Закрыть"><CloseOutlinedIcon /></IconButton>
+          )}
         </Stack>
       </Box>
       <Divider />
@@ -2482,7 +2600,8 @@ function VoiceMeetingDrawer({
               <Tabs
                 value={mobileTab}
                 onChange={(_e, v) => setMobileTab(v)}
-                variant="fullWidth"
+                variant={isNarrow ? 'fullWidth' : 'scrollable'}
+                scrollButtons={false}
                 sx={{ minHeight: 44, flexShrink: 0 }}
                 aria-label="Навигация по карточке протокола"
               >
@@ -2490,6 +2609,13 @@ function VoiceMeetingDrawer({
                     иконка + бейдж, полное имя в aria-label и title.
                     Без фрагментов-обёрток: MUI Tabs инжектирует
                     selected/onChange только в прямых детей-Tab. */}
+                <Tab
+                  value="summary"
+                  label={isNarrow ? tabLabelNarrow(<SummarizeOutlinedIcon fontSize="small" />) : 'Сводка'}
+                  aria-label="Сводка"
+                  title="Сводка"
+                  sx={compactPanelTabSx}
+                />
                 <Tab
                   value="talk"
                   label={isNarrow ? tabLabelNarrow(<SubjectOutlinedIcon fontSize="small" />) : 'Текст'}
@@ -2530,6 +2656,7 @@ function VoiceMeetingDrawer({
                 onWheel={() => setFollowSegment(false)}
                 onTouchMove={() => setFollowSegment(false)}
               >
+                {mobileTab === 'summary' && summaryPanel}
                 {mobileTab === 'talk' && transcriptPanel}
                 {mobileTab === 'topics' && topicsPanel}
                 {mobileTab === 'assign' && assignmentsPanel}
@@ -2575,6 +2702,7 @@ function VoiceMeetingDrawer({
                   sx={{ minHeight: 44, flexShrink: 0 }}
                   aria-label="Панель протокола"
                 >
+                  <Tab value="summary" label="Сводка" aria-label="Сводка" sx={compactPanelTabSx} />
                   <Tab value="topics" label={tabLabel('Темы', topics.length)} aria-label="Темы" sx={compactPanelTabSx} />
                   <Tab
                     value="assign"
@@ -2597,6 +2725,7 @@ function VoiceMeetingDrawer({
                 </Tabs>
                 <Divider />
                 <Box sx={{ flex: 1, overflow: 'auto', p: 1.5, minHeight: 0 }}>
+                  {panelTab === 'summary' && summaryPanel}
                   {panelTab === 'topics' && topicsPanel}
                   {panelTab === 'assign' && assignmentsPanel}
                   {panelTab === 'speakers' && speakersPanel}
@@ -2829,7 +2958,7 @@ function VoiceMeetingDrawer({
           )}
         </DialogActions>
       </Dialog>
-    </Dialog>
+    </MeetingShell>
   );
 }
 

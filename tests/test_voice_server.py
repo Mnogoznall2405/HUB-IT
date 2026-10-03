@@ -621,3 +621,39 @@ def test_meeting_speakers_recurring_only_existing_meetings(vv_tree):
     }), encoding="utf-8")
     speaker = pipeline.meeting_speakers("m_now")["unresolved"][0]
     assert speaker["recurring"] == {"id": "R007", "meetings": ["m_old"]}
+
+
+def test_meeting_summary_flattens_decisions_and_survives_junk(vv_tree):
+    mdir = vv_tree / "output" / "m_sum"
+    mdir.mkdir()
+    (mdir / "m_sum_report.json").write_text(json.dumps({
+        "metadata": {"total_duration": "15:25"},
+        "summary": "## Итоги\nДоговорились по смете.",
+        "protocol": "# Протокол",
+        "topics": [
+            {"topic_title": "ГПР", "start_time": 420, "end_time": 640, "summary": "s2",
+             "key_decisions": ["Сдать ГПР к 25.09"], "open_questions": [], "sentiment": "нейтральный"},
+            {"topic_title": "Смета", "start_time": 0, "end_time": 160,
+             "key_decisions": ["Подписать ДС", "", None], "open_questions": ["Сумма?"]},
+            "garbage",
+            {"topic_title": "Битое время", "start_time": "abc", "key_decisions": "не список"},
+        ],
+        "participants": [
+            {"name": "Петрова", "participation_percentage": 30.5, "segments_count": 10},
+            {"name": "Иванов", "participation_percentage": 55, "segments_count": "x"},
+            {"name": ""},
+        ],
+        "keywords": ["смета", "ГПР"],
+    }, ensure_ascii=False), encoding="utf-8")
+    res = pipeline.meeting_summary("m_sum")
+    assert res["available"] is True and res["duration"] == "15:25"
+    assert [t["title"] for t in res["topics"]] == ["Смета", "ГПР", "Битое время"]
+    assert res["topics"][2]["start"] is None
+    assert res["decisions"] == [
+        {"text": "Сдать ГПР к 25.09", "topic": "ГПР", "start": 420.0},
+        {"text": "Подписать ДС", "topic": "Смета", "start": 0.0},
+    ]
+    assert res["open_questions"] == [{"text": "Сумма?", "topic": "Смета", "start": 0.0}]
+    assert [p["name"] for p in res["participants"]] == ["Иванов", "Петрова"]
+    assert res["participants"][0]["segments"] == 0
+    assert pipeline.meeting_summary("missing")["available"] is False

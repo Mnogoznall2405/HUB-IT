@@ -759,6 +759,15 @@ def export_reports_zip(
     )
 
 
+@app.get("/api/v1/voice/meetings/{base}/summary")
+def meeting_summary(
+    base: str,
+    user: Dict[str, Any] = Depends(require_web_permission(PERM_READ)),
+) -> Dict[str, Any]:
+    safe_base = _meeting_or_404(base)
+    return pipeline.meeting_summary(safe_base)
+
+
 @app.get("/api/v1/voice/meetings/{base}/topics")
 def meeting_topics(
     base: str,

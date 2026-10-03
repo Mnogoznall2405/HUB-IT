@@ -619,6 +619,35 @@ function VoiceVideoPage() {
           },
         }}
       >
+        {selectedMeeting ? (
+          <VoiceMeetingDrawer
+            variant="page"
+            meeting={selectedMeeting}
+            open={Boolean(selectedMeeting)}
+            loadError={meetingLoadError}
+            onRetryLoad={() => {
+              const base = selectedMeeting?.base_filename;
+              if (base) refreshMeeting(base);
+            }}
+            onClose={closeMeeting}
+            // T27: пока открыт диалог с неотозванной ссылкой, «Назад»/жест не закрывают
+            // карточку молча — иначе ссылку уже нельзя отозвать из интерфейса.
+            onActiveShareLinkChange={(active) => {
+              activeShareLinkRef.current = Boolean(active);
+              // Диалог закрыт или ссылка отозвана — предупреждение больше не нужно.
+              if (!active) setShareNavWarning(false);
+            }}
+            shareNavWarning={shareNavWarning}
+            canManage={canManage}
+            canCreateTasks={hasPermission('tasks.create') || hasPermission('tasks.write')}
+            voices={voices}
+            onAssigned={async (base) => {
+              await refreshVisible();
+              await refreshMeeting(base);
+            }}
+          />
+        ) : (
+        <>
         {/* B6: на мобильном название и действия — в первой строке, вкладки —
             отдельной строкой на всю ширину; на ≥ sm вкладки и кнопки в одном ряду. */}
         {isMobile ? (
@@ -822,6 +851,8 @@ function VoiceVideoPage() {
           />
         )}
         {tab === 3 && canManage && <VoiceLabelingSection />}
+        </>
+        )}
       </PageShell>
 
       <VoiceUploadDialog
@@ -839,31 +870,6 @@ function VoiceVideoPage() {
         }}
       />
 
-      <VoiceMeetingDrawer
-        meeting={selectedMeeting}
-        open={Boolean(selectedMeeting)}
-        loadError={meetingLoadError}
-        onRetryLoad={() => {
-          const base = selectedMeeting?.base_filename;
-          if (base) refreshMeeting(base);
-        }}
-        onClose={closeMeeting}
-        // T27: пока открыт диалог с неотозванной ссылкой, «Назад»/жест не закрывают
-        // карточку молча — иначе ссылку уже нельзя отозвать из интерфейса.
-        onActiveShareLinkChange={(active) => {
-          activeShareLinkRef.current = Boolean(active);
-          // Диалог закрыт или ссылка отозвана — предупреждение больше не нужно.
-          if (!active) setShareNavWarning(false);
-        }}
-        shareNavWarning={shareNavWarning}
-        canManage={canManage}
-        canCreateTasks={hasPermission('tasks.create') || hasPermission('tasks.write')}
-        voices={voices}
-        onAssigned={async (base) => {
-          await refreshVisible();
-          await refreshMeeting(base);
-        }}
-      />
     </MainLayout>
   );
 }

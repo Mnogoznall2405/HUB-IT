@@ -13,6 +13,7 @@ vi.mock('react-router-dom', () => ({
 
 vi.mock('../../api/voiceJobs', () => ({
   voiceJobsAPI: {
+    getSummary: vi.fn(() => Promise.resolve({ available: false, summary: '', decisions: [], open_questions: [], topics: [], participants: [], keywords: [] })),
     getTranscript: vi.fn(),
     getTopics: vi.fn(),
     getAssignments: vi.fn(),
@@ -71,6 +72,13 @@ vi.mock('react-window', () => {
 vi.mock('react-virtualized-auto-sizer', () => ({
   default: ({ children }) => children({ width: 800, height: 600 }),
 }));
+
+// По умолчанию карточка открывается на «Сводке»; многие проверки относятся к тексту
+// и темам — переходим туда (на <sm это вкладка «Текст», на ≥sm — «Темы» справа).
+const leaveSummary = () => {
+  const talkTab = screen.queryByRole('tab', { name: 'Текст' });
+  fireEvent.click(talkTab || screen.getByRole('tab', { name: /^Темы/ }));
+};
 
 const makeMeeting = (base, extra = {}) => ({
   base_filename: base,
@@ -473,7 +481,7 @@ describe('VoiceMeetingDrawer: доступность (T15)', () => {
       />,
     );
 
-    const dialog = screen.getByRole('dialog', { name: /A_base/ });
+    const dialog = screen.getByRole('dialog', { name: /A base/ });
     expect(dialog).toBeInTheDocument();
     expect(document.getElementById(dialog.getAttribute('aria-labelledby'))).toBeInTheDocument();
   });
@@ -494,7 +502,7 @@ describe('VoiceMeetingDrawer: доступность (T15)', () => {
       />,
     );
 
-    expect(screen.getByRole('heading', { name: 'A_base', level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'A base', level: 2 })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: /Участники/ }));
     expect(screen.getByRole('heading', { name: 'Опознанные участники', level: 3 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /Неопознанные участники/, level: 3 })).toBeInTheDocument();
@@ -670,7 +678,7 @@ describe('VoiceMeetingDrawer: мобильная компоновка (T16)', ()
     );
     window.matchMedia = originalMatchMedia;
 
-    const dialog = screen.getByRole('dialog', { name: /A_base/ });
+    const dialog = screen.getByRole('dialog', { name: /A base/ });
     const paper = dialog.closest('.MuiDialog-paper') || dialog.querySelector('.MuiDialog-paper');
     expect(window.getComputedStyle(paper).maxHeight).toBe('100%');
   });
@@ -931,17 +939,26 @@ describe('VoiceMeetingDrawer: фаза 4 — единая карточка (T28�
     ],
     total: 3,
   };
-  const renderMediaDrawer = (extra = {}) => render(
-    <ThemeProvider theme={theme}>
-      <VoiceMeetingDrawer
-        open
-        meeting={makeMeeting('A_base', { has_media: true, ...extra })}
-        onClose={vi.fn()}
-        canManage={false}
-        voices={[]}
-      />
-    </ThemeProvider>,
-  );
+  // По умолчанию открыта «Сводка»; тесты этого блока проверяют текст и темы —
+  // переключаемся туда, где они были до появления сводки (на <sm — «Текст»).
+  const renderMediaDrawer = (extra = {}, { keepSummary = false } = {}) => {
+    const result = render(
+      <ThemeProvider theme={theme}>
+        <VoiceMeetingDrawer
+          open
+          meeting={makeMeeting('A_base', { has_media: true, ...extra })}
+          onClose={vi.fn()}
+          canManage={false}
+          voices={[]}
+        />
+      </ThemeProvider>,
+    );
+    if (!keepSummary) {
+      const talkTab = screen.queryByRole('tab', { name: 'Текст' });
+      fireEvent.click(talkTab || screen.getByRole('tab', { name: /^Темы/ }));
+    }
+    return result;
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -963,15 +980,18 @@ describe('VoiceMeetingDrawer: фаза 4 — единая карточка (T28�
     voiceJobsAPI.getAssignmentStatuses.mockResolvedValue({ items: [] });
   });
 
-  it('T28: грузит транскрипт/темы/поручения при открытии; текст и темы видны без переключения вкладок', async () => {
-    renderMediaDrawer();
+  it('T28: грузит транскрипт/темы/поручения при открытии; справа сначала сводка, темы — за вкладкой', async () => {
+    renderMediaDrawer({}, { keepSummary: true });
 
     await waitFor(() => expect(voiceJobsAPI.getTranscript).toHaveBeenCalledWith('A_base', expect.anything(), expect.anything()));
     expect(voiceJobsAPI.getTopics).toHaveBeenCalledWith('A_base', expect.anything());
     expect(voiceJobsAPI.getAssignments).toHaveBeenCalledWith('A_base', expect.anything());
 
-    // Две колонки на ≥md: слева всегда транскрипт, справа по умолчанию — темы.
+    // Две колонки на ≥md: слева всегда транскрипт, справа по умолчанию — сводка.
     expect(await screen.findByText('первая реплика')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Сводка' })).toHaveAttribute('aria-selected', 'true');
+    expect(voiceJobsAPI.getSummary).toHaveBeenCalledWith('A_base', expect.anything());
+    fireEvent.click(screen.getByRole('tab', { name: /^Темы/ }));
     expect(await screen.findByRole('button', { name: /Перейти к теме «Вторая тема»/ })).toBeInTheDocument();
 
     // Поручения — за вкладкой правой панели.
@@ -1209,6 +1229,7 @@ describe('VoiceMeetingDrawer: фаза 4 — единая карточка (T28�
         />
       </ThemeProvider>,
     );
+    leaveSummary();
 
     expect(await screen.findByText('Запись удалена, доступен текст')).toBeInTheDocument();
     expect(document.querySelector('video')).not.toBeInTheDocument();
@@ -1241,6 +1262,7 @@ describe('VoiceMeetingDrawer: фаза 4 — единая карточка (T28�
         />
       </ThemeProvider>,
     );
+    leaveSummary();
 
     const video = document.querySelector('video');
     expect(video.src).toContain('P1_base');
@@ -1287,13 +1309,14 @@ describe('VoiceMeetingDrawer: фаза 4 — единая карточка (T28�
     renderMediaDrawer();
     await screen.findByText('первая реплика');
     const tabs = screen.getByRole('tablist', { name: 'Панель протокола' });
+    expect(within(tabs).getByRole('tab', { name: 'Сводка' })).toBeInTheDocument();
     expect(within(tabs).getByRole('tab', { name: 'Темы' })).toBeInTheDocument();
     expect(within(tabs).getByRole('tab', { name: /Поручения/ })).toBeInTheDocument();
     expect(within(tabs).getByRole('tab', { name: /Участники/ })).toBeInTheDocument();
     expect(within(tabs).getByRole('tab', { name: /Файлы/ })).toBeInTheDocument();
     // fullWidth-раскладка: скролл-стрелок быть не должно.
     expect(within(tabs).queryAllByRole('button').length).toBe(0);
-    expect(within(tabs).getAllByRole('tab')).toHaveLength(4);
+    expect(within(tabs).getAllByRole('tab')).toHaveLength(5);
   });
 
   it('P4-2: тулбар транскрипта — поиск и участник в одной строке, без длинной подсказки', async () => {
@@ -1383,7 +1406,7 @@ describe('VoiceMeetingDrawer: фаза 4 — единая карточка (T28�
       speakers: { resolved: [{ name: 'Иван Петров' }], unresolved: [{ speaker: 'S2', has_sample: false }] },
       segments_count: 364,
     });
-    const title = screen.getByRole('dialog', { name: /A_base/ }).querySelector('.MuiDialogTitle-root');
+    const title = screen.getByRole('dialog', { name: /A base/ }).querySelector('.MuiDialogTitle-root');
     // Подложка названия убрана (Ревью 10: фон выглядел как поле ввода).
     expect(title).toHaveStyle({ background: 'transparent' });
 
@@ -1673,9 +1696,11 @@ describe('VoiceMeetingDrawer: фаза 4 — единая карточка (T28�
       await screen.findByPlaceholderText('Поиск по тексту…');
       expect(screen.getByLabelText('Участник')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /Следить/ })).toBeInTheDocument();
-      expect(screen.getByRole('combobox', { name: 'Скорость воспроизведения' })).toBeInTheDocument();
+      // На телефоне скорость и режимы видео — в меню «⋮» (иначе строка плеера
+      // не помещается в 390px и обрезается), ±5 с остаются в строке.
       expect(screen.getByRole('button', { name: 'Назад на 5 секунд' })).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Ещё действия плеера' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Ещё действия плеера' })).toBeInTheDocument();
+      expect(screen.queryByRole('combobox', { name: 'Скорость воспроизведения' })).not.toBeInTheDocument();
     } finally {
       window.matchMedia = originalMatchMedia;
     }
@@ -1691,17 +1716,21 @@ describe('VoiceMeetingDrawer: доработка T38 (P5-1…P5-3) + P5-4/5, ф�
     ],
     total: 4,
   };
-  const renderP5 = (extra = {}) => render(
-    <ThemeProvider theme={theme}>
-      <VoiceMeetingDrawer
-        open
-        meeting={makeMeeting('A_base', { has_media: true, ...extra })}
-        onClose={vi.fn()}
-        canManage={false}
-        voices={[]}
-      />
-    </ThemeProvider>,
-  );
+  const renderP5 = (extra = {}) => {
+    const result = render(
+      <ThemeProvider theme={theme}>
+        <VoiceMeetingDrawer
+          open
+          meeting={makeMeeting('A_base', { has_media: true, ...extra })}
+          onClose={vi.fn()}
+          canManage={false}
+          voices={[]}
+        />
+      </ThemeProvider>,
+    );
+    leaveSummary();
+    return result;
+  };
   const mockMobile = () => {
     const originalMatchMedia = window.matchMedia;
     window.matchMedia = (query) => ({
@@ -1802,17 +1831,21 @@ describe('VoiceMeetingDrawer: фаза 6 — производительност�
     start: i * 2,
     start_time_formatted: '00:00',
   }));
-  const renderP6 = (extra = {}) => render(
-    <ThemeProvider theme={theme}>
-      <VoiceMeetingDrawer
-        open
-        meeting={makeMeeting('A_base', { has_media: true, ...extra })}
-        onClose={vi.fn()}
-        canManage
-        voices={[{ name: 'Иван Петров' }]}
-      />
-    </ThemeProvider>,
-  );
+  const renderP6 = (extra = {}) => {
+    const result = render(
+      <ThemeProvider theme={theme}>
+        <VoiceMeetingDrawer
+          open
+          meeting={makeMeeting('A_base', { has_media: true, ...extra })}
+          onClose={vi.fn()}
+          canManage
+          voices={[{ name: 'Иван Петров' }]}
+        />
+      </ThemeProvider>,
+    );
+    leaveSummary();
+    return result;
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();

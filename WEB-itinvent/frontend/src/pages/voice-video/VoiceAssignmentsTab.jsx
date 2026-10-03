@@ -4,12 +4,14 @@ import {
   Autocomplete,
   Box,
   Button,
+  Checkbox,
   Chip,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   IconButton,
+  LinearProgress,
   ListItemIcon,
   Menu,
   MenuItem,
@@ -45,6 +47,12 @@ const timecodeToSec = (raw) => {
 };
 // «0:MM:SS» → «M:SS» — без нулевого часа (P5-время): «0:01:00» → «1:00».
 const fmtClock = (raw) => String(raw || '').replace(/^0+:(\d{1,2}):(\d{2})$/, (m, mm, ss) => `${Number(mm)}:${ss}`);
+
+// «—», «-», пусто — модель/реестр так обозначают «нет данных».
+const isBlank = (value) => {
+  const text = String(value ?? '').trim();
+  return !text || /^[—–-]+$/.test(text);
+};
 
 const errorDetailOr = (err, fallback) => {
   const detail = err?.response?.data?.detail;
@@ -256,8 +264,15 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
     if (isInProgress(item)) return { label: 'В работе', color: 'primary' };
     return { label: 'Новое', color: 'default' };
   };
+  const doneCount = items.filter(isDone).length;
+  const accentOf = (item) => {
+    if (isDone(item)) return 'success.main';
+    if (isOverdue(item)) return 'error.main';
+    if (isInProgress(item)) return 'primary.main';
+    return 'divider';
+  };
   const visible = items.filter((item) => {
-    if (filter === 'noassignee') return !String(item.assignee || '').trim();
+    if (filter === 'noassignee') return isBlank(item.assignee);
     if (filter === 'overdue') return isOverdue(item);
     if (filter === 'priority') return isPriority(item.task);
     if (filter === 'done') return isDone(item);
@@ -298,6 +313,20 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
           {notice.text}
         </Alert>
       )}
+      <Box sx={{ mb: 1.5 }} data-testid="assignments-progress">
+        <Stack direction="row" spacing={1} alignItems="center">
+          <LinearProgress
+            variant="determinate"
+            value={items.length ? Math.round((doneCount / items.length) * 100) : 0}
+            color="success"
+            aria-label={`Выполнено ${doneCount} из ${items.length}`}
+            sx={{ flex: 1, height: 8, borderRadius: 4 }}
+          />
+          <Typography variant="body2" sx={{ fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
+            {doneCount} из {items.length}
+          </Typography>
+        </Stack>
+      </Box>
       {/* T41: сводка — это сами чипы-фильтры со счётчиками (отдельной строки
           «Все/…» нет); порядок: всего → просрочено → без ответственного. */}
       <Stack direction="row" spacing={1} sx={{ mb: 1.5, flexWrap: 'wrap', rowGap: 0.5 }}>
@@ -318,9 +347,17 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
           onClick={() => setFilter('overdue')}
         />
         <Chip
+          aria-pressed={filter === 'pending'}
+          size="small"
+          label={`Открытые (${items.length - doneCount})`}
+          variant={filter === 'pending' ? 'filled' : 'outlined'}
+          color={filter === 'pending' ? 'primary' : 'default'}
+          onClick={() => setFilter('pending')}
+        />
+        <Chip
           aria-pressed={filter === 'noassignee'}
           size="small"
-          label={`Без ответственного (${items.filter((i) => !String(i.assignee || '').trim()).length})`}
+          label={`Без ответственного (${items.filter((i) => isBlank(i.assignee)).length})`}
           variant={filter === 'noassignee' ? 'filled' : 'outlined'}
           color={filter === 'noassignee' ? 'warning' : 'default'}
           onClick={() => setFilter('noassignee')}
@@ -350,11 +387,21 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
             data-assign-nearest={item.num === nearestNum ? '1' : undefined}
             sx={{
               p: 1, minWidth: 0,
+              borderLeft: '4px solid',
+              borderLeftColor: accentOf(item),
               borderColor: item.num === nearestNum ? 'primary.main' : undefined,
               bgcolor: item.num === nearestNum ? 'action.selected' : undefined,
+              opacity: isDone(item) ? 0.72 : 1,
             }}
           >
-            <Stack direction="row" spacing={1} alignItems="flex-start" sx={{ minWidth: 0 }}>
+            <Stack direction="row" spacing={0.5} alignItems="flex-start" sx={{ minWidth: 0 }}>
+              <Checkbox
+                size="small"
+                checked={isDone(item)}
+                onChange={() => toggleDone(item)}
+                inputProps={{ 'aria-label': `Выполнено: поручение №${item.num}` }}
+                sx={{ p: 0.5, mt: '-2px', flexShrink: 0 }}
+              />
               {item.clip || onSeekTime ? (
                 // T30: таймкод перематывает основной плеер (onSeekTime);
                 // без него — прежнее поведение: отдельный clip-диалог.
@@ -385,6 +432,8 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
                     WebkitBoxOrient: 'vertical',
                     WebkitLineClamp: 2,
                     overflow: 'hidden',
+                    textDecoration: isDone(item) ? 'line-through' : 'none',
+                    fontWeight: isDone(item) ? 400 : 500,
                   }}
                 >
                   {isPriority(item.task) && (
@@ -394,8 +443,8 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
                 </Typography>
                 <Typography variant="caption" component="div" color="text.secondary" noWrap>
                   {/* P5-4: пустые поля (нет срока) не выводятся — без «—». */}
-                  №{item.num} · {String(item.assignee || '').trim() || 'Без ответственного'}
-                  {item.deadline ? ` · ${item.deadline}` : ''}
+                  №{item.num} · {isBlank(item.assignee) ? 'Без ответственного' : String(item.assignee).trim()}
+                  {isBlank(item.deadline) ? '' : ` · ${item.deadline}`}
                   {' · '}
                   <Chip
                     size="small"

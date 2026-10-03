@@ -129,6 +129,13 @@ export const voiceJobsAPI = {
     return response.data;
   },
 
+  getSummary: async (base, options = {}) => {
+    const response = await apiClient.get(`/voice/meetings/${encodeURIComponent(base)}/summary`, {
+      signal: options?.signal,
+    });
+    return response.data;
+  },
+
   getTopics: async (base, options = {}) => {
     const response = await apiClient.get(`/voice/meetings/${encodeURIComponent(base)}/topics`, {
       signal: options?.signal,

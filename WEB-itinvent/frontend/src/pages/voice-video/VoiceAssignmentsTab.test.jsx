@@ -314,4 +314,38 @@ describe('VoiceAssignmentsTab', () => {
     const menu = await openRowMenu('1');
     expect(within(menu).queryByRole('menuitem', { name: 'Создать задачу (поручение №1)' })).not.toBeInTheDocument();
   });
+
+  it('чекбокс в строке отмечает поручение выполненным, прогресс обновляется', async () => {
+    voiceJobsAPI.getAssignments.mockResolvedValueOnce({
+      items: [
+        { num: '1', key: 'eeeeeeeeeeeeeeee', time: '01:00', task: 'Первое', assignee: 'Иванов', deadline: '' },
+        { num: '2', key: 'ffffffffffffffff', time: '02:00', task: 'Второе', assignee: 'Петров', deadline: '' },
+      ],
+    });
+    render(<VoiceAssignmentsTab base="test" />);
+    await screen.findByText('Первое');
+    expect(screen.getByLabelText('Выполнено 0 из 2')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Выполнено: поручение №1' }));
+    await waitFor(() => expect(voiceJobsAPI.updateAssignmentStatus).toHaveBeenCalledWith(
+      'test', { num: '1', key: 'eeeeeeeeeeeeeeee' }, 'done', '',
+    ));
+    expect(await screen.findByLabelText('Выполнено 1 из 2')).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Выполнено: поручение №1' })).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Открытые (1)' })).toBeInTheDocument();
+  });
+
+  it('прочерк вместо ответственного/срока считается пустым значением', async () => {
+    voiceJobsAPI.getAssignments.mockResolvedValueOnce({
+      items: [
+        { num: '1', key: '1111111111111111', time: '01:00', task: 'Без исполнителя', assignee: '—', deadline: '—' },
+        { num: '2', key: '2222222222222222', time: '02:00', task: 'С исполнителем', assignee: 'Иванов', deadline: '' },
+      ],
+    });
+    render(<VoiceAssignmentsTab base="test" />);
+    await screen.findByText('Без исполнителя');
+    expect(screen.getByRole('button', { name: 'Без ответственного (1)' })).toBeInTheDocument();
+    expect(screen.getByText(/^№1 · Без ответственного ·$/)).toBeInTheDocument();
+    expect(screen.queryByText(/№1 · —/)).not.toBeInTheDocument();
+  });
 });

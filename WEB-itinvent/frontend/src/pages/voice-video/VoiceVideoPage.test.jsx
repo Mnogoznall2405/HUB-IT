@@ -34,6 +34,7 @@ vi.mock('../../components/layout/PageShell', () => ({
 
 vi.mock('../../api/voiceJobs', () => ({
   voiceJobsAPI: {
+    getSummary: vi.fn(() => Promise.resolve({ available: false, summary: '', decisions: [], open_questions: [], topics: [], participants: [], keywords: [] })),
     listJobs: vi.fn(),
     listMeetings: vi.fn(),
     getOptions: vi.fn(),
@@ -363,7 +364,7 @@ describe('VoiceVideoPage: карточка встречи (refreshMeeting)', () 
     voiceJobsAPI.getMeeting.mockResolvedValueOnce(detailA);
     render(<VoiceVideoPage />);
     await act(async () => {});
-    fireEvent.click(screen.getByText('A_meet'));
+    fireEvent.click(screen.getByText('A meet'));
     await screen.findByText('Сервер недоступен, попробуйте позже');
     const retry = screen.getByRole('button', { name: 'Повторить' });
     fireEvent.click(retry);
@@ -379,24 +380,24 @@ describe('VoiceVideoPage: карточка встречи (refreshMeeting)', () 
     ));
     render(<VoiceVideoPage />);
     await act(async () => {});
-    fireEvent.click(screen.getByText('A_meet'));
+    fireEvent.click(screen.getByText('A meet'));
     // Закрыть и открыть B, пока детали A ещё грузятся.
-    fireEvent.click(screen.getByRole('button', { name: 'Закрыть' }));
+    fireEvent.click(screen.getByRole('button', { name: 'К списку протоколов' }));
     await waitFor(() => {
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(screen.queryByRole('region', { name: 'Карточка встречи' })).not.toBeInTheDocument();
     });
-    fireEvent.click(screen.getByText('B_meet'));
+    fireEvent.click(screen.getByText('B meet'));
     await act(async () => {
       reqB.resolve(detailB);
     });
-    const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText('B_meet')).toBeInTheDocument();
+    const dialog = screen.getByRole('region', { name: 'Карточка встречи' });
+    expect(within(dialog).getByText('B meet')).toBeInTheDocument();
     // Поздний ответ A не должен перезаписать карточку B.
     await act(async () => {
       reqA.resolve(detailA);
     });
-    expect(within(dialog).getByText('B_meet')).toBeInTheDocument();
-    expect(within(dialog).queryByText('A_meet')).not.toBeInTheDocument();
+    expect(within(dialog).getByText('B meet')).toBeInTheDocument();
+    expect(within(dialog).queryByText('A meet')).not.toBeInTheDocument();
   });
 
   it('после закрытия карточка не открывается заново из позднего ответа', async () => {
@@ -404,15 +405,15 @@ describe('VoiceVideoPage: карточка встречи (refreshMeeting)', () 
     voiceJobsAPI.getMeeting.mockImplementation(() => reqA.promise);
     render(<VoiceVideoPage />);
     await act(async () => {});
-    fireEvent.click(screen.getByText('A_meet'));
-    fireEvent.click(screen.getByRole('button', { name: 'Закрыть' }));
+    fireEvent.click(screen.getByText('A meet'));
+    fireEvent.click(screen.getByRole('button', { name: 'К списку протоколов' }));
     await waitFor(() => {
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(screen.queryByRole('region', { name: 'Карточка встречи' })).not.toBeInTheDocument();
     });
     await act(async () => {
       reqA.resolve(detailA);
     });
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Карточка встречи' })).not.toBeInTheDocument();
   });
 });
 
@@ -456,7 +457,7 @@ describe('VoiceVideoPage: карточка обновляется с polling п�
   it('баннер «Имена обновляются» снимается после завершения resume-задачи', async () => {
     render(<VoiceVideoPage />);
     await act(async () => {});
-    fireEvent.click(screen.getByText('R_meet'));
+    fireEvent.click(screen.getByText('R meet'));
     await act(async () => {});
     expect(screen.getByText(/Имена обновляются/)).toBeInTheDocument();
     await act(async () => {
@@ -497,7 +498,7 @@ describe('VoiceVideoPage: состояния списков (V04)', () => {
     // Повторный запуск показывает данные.
     voiceJobsAPI.listMeetings.mockResolvedValue({ items: [meetL], total: 1 });
     fireEvent.click(screen.getByRole('button', { name: 'Повторить' }));
-    await screen.findByText('L_meet');
+    await screen.findByText('L meet');
   });
 
   it('ошибка задач на другой вкладке не теряется молча', async () => {
@@ -805,15 +806,15 @@ describe('VoiceVideoPage: URL состояния карточки (V12)', () => 
     render(<VoiceVideoPage />);
     await act(async () => {});
 
-    fireEvent.click(screen.getByText(/Deep_link_meeting/));
-    await screen.findByRole('dialog');
+    fireEvent.click(screen.getByText(/Deep link meeting/));
+    await screen.findByRole('region', { name: 'Карточка встречи' });
     expect(new URL(window.location.href).searchParams.get('meeting')).toBe(meeting.base_filename);
 
     window.history.replaceState({}, '', '/voice');
     await act(async () => {
       window.dispatchEvent(new PopStateEvent('popstate'));
     });
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Карточка встречи' })).not.toBeInTheDocument());
   });
 
   it('не размонтирует диалог «Поделиться» по «Назад», оставляя ссылку доступной для отзыва (T27)', async () => {
@@ -821,8 +822,8 @@ describe('VoiceVideoPage: URL состояния карточки (V12)', () => 
     render(<VoiceVideoPage />);
     await act(async () => {});
 
-    fireEvent.click(screen.getByText(/Deep_link_meeting/));
-    await screen.findByRole('dialog');
+    fireEvent.click(screen.getByText(/Deep link meeting/));
+    await screen.findByRole('region', { name: 'Карточка встречи' });
     fireEvent.click(screen.getByRole('button', { name: 'Действия с протоколом' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Поделиться ссылкой' }));
     fireEvent.click(screen.getByRole('button', { name: 'Создать ссылку' }));
@@ -848,8 +849,8 @@ describe('VoiceVideoPage: URL состояния карточки (V12)', () => 
     render(<VoiceVideoPage />);
     await act(async () => {});
 
-    fireEvent.click(screen.getByText(/Deep_link_meeting/));
-    await screen.findByRole('dialog');
+    fireEvent.click(screen.getByText(/Deep link meeting/));
+    await screen.findByRole('region', { name: 'Карточка встречи' });
     fireEvent.click(screen.getByRole('button', { name: 'Действия с протоколом' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Поделиться ссылкой' }));
     fireEvent.click(screen.getByRole('button', { name: 'Создать ссылку' }));
@@ -891,14 +892,14 @@ describe('VoiceVideoPage: URL состояния карточки (V12)', () => 
     try {
       render(<VoiceVideoPage />);
       await act(async () => {});
-      fireEvent.click(screen.getByText(/Deep_link_meeting/));
-      await screen.findByRole('dialog');
+      fireEvent.click(screen.getByText(/Deep link meeting/));
+      await screen.findByRole('region', { name: 'Карточка встречи' });
       expect(window.history.state).toMatchObject({ meeting: expect.any(String) });
 
-      fireEvent.click(screen.getByRole('button', { name: 'Закрыть' }));
+      fireEvent.click(screen.getByRole('button', { name: 'К списку протоколов' }));
 
       expect(back).toHaveBeenCalledTimes(1);
-      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      await waitFor(() => expect(screen.queryByRole('region', { name: 'Карточка встречи' })).not.toBeInTheDocument());
       expect(new URL(window.location.href).searchParams.has('meeting')).toBe(false);
     } finally {
       back.mockRestore();
@@ -909,7 +910,7 @@ describe('VoiceVideoPage: URL состояния карточки (V12)', () => 
     window.history.replaceState({}, '', `/voice?meeting=${encodeURIComponent(meeting.base_filename)}`);
     render(<VoiceVideoPage />);
 
-    await screen.findByRole('dialog');
+    await screen.findByRole('region', { name: 'Карточка встречи' });
     expect(voiceJobsAPI.getMeeting).toHaveBeenCalledWith(
       meeting.base_filename,
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
@@ -922,12 +923,12 @@ describe('VoiceVideoPage: URL состояния карточки (V12)', () => 
     const back = vi.spyOn(window.history, 'back');
     try {
       render(<VoiceVideoPage />);
-      await screen.findByRole('dialog');
+      await screen.findByRole('region', { name: 'Карточка встречи' });
 
-      fireEvent.click(screen.getByRole('button', { name: 'Закрыть' }));
+      fireEvent.click(screen.getByRole('button', { name: 'К списку протоколов' }));
 
       expect(back).not.toHaveBeenCalled();
-      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      await waitFor(() => expect(screen.queryByRole('region', { name: 'Карточка встречи' })).not.toBeInTheDocument());
       expect(new URL(window.location.href).pathname).toBe('/voice');
       expect(new URL(window.location.href).searchParams.has('meeting')).toBe(false);
     } finally {
@@ -1006,7 +1007,7 @@ describe('VoiceVideoPage: загрузчики и AbortController (V23, N4)', ()
       jobsHolder.resolve({ items: [jobA], queue: { queued: 1, processing: 0 } });
       meetingsHolder.resolve({ items: [meetA], total: 1 });
     });
-    await screen.findByText('A_meet');
+    await screen.findByText('A meet');
     expect(screen.queryByText('Задачи недоступны')).not.toBeInTheDocument();
     expect(screen.queryByText('Протоколы недоступны')).not.toBeInTheDocument();
     // Имя вкладки содержит бейдж очереди — матчим по началу имени.
@@ -1026,7 +1027,7 @@ describe('VoiceVideoPage: загрузчики и AbortController (V23, N4)', ()
     );
     await act(async () => {});
     await act(async () => {});
-    await screen.findByText('A_meet');
+    await screen.findByText('A meet');
     fireEvent.click(screen.getByRole('tab', { name: /^Задачи/ }));
     await screen.findByText('A_job.mp3');
     expect(screen.queryByText(/Задач пока нет/)).not.toBeInTheDocument();
@@ -1041,7 +1042,7 @@ describe('VoiceVideoPage: загрузчики и AbortController (V23, N4)', ()
     );
     render(<VoiceVideoPage />);
     await act(async () => {});
-    await screen.findByText('A_meet');
+    await screen.findByText('A meet');
 
     const first = deferred();
     const second = deferred();
@@ -1193,7 +1194,7 @@ describe('VoiceVideoPage: кликабельные чипы сводки (T45)',
   it('чип «Ошибок» ведёт на вкладку «Задачи» с фильтром «Ошибка»', async () => {
     render(<VoiceVideoPage />);
     await act(async () => {});
-    await screen.findByText('A_meet');
+    await screen.findByText('A meet');
 
     fireEvent.click(await screen.findByRole('button', { name: /Показать задачи с ошибками/ }));
 
@@ -1208,7 +1209,7 @@ describe('VoiceVideoPage: кликабельные чипы сводки (T45)',
   it('чип «В очереди» ведёт на вкладку «Задачи» с фильтром «В очереди»', async () => {
     render(<VoiceVideoPage />);
     await act(async () => {});
-    await screen.findByText('A_meet');
+    await screen.findByText('A meet');
 
     fireEvent.click(await screen.findByRole('button', { name: /Показать задачи в очереди/ }));
 

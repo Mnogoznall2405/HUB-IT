@@ -17,19 +17,13 @@ import {
   Popover,
   Skeleton,
   Stack,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
   TablePagination,
-  TableRow,
   TextField,
   Tooltip,
   Typography,
   useMediaQuery,
 } from '@mui/material';
-import { useTheme } from '@mui/material/styles';
+import { alpha, useTheme } from '@mui/material/styles';
 import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
 import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
 import CloseOutlinedIcon from '@mui/icons-material/CloseOutlined';
@@ -40,6 +34,7 @@ import ArrowUpwardOutlinedIcon from '@mui/icons-material/ArrowUpwardOutlined';
 import ArrowDownwardOutlinedIcon from '@mui/icons-material/ArrowDownwardOutlined';
 import MoreVertOutlinedIcon from '@mui/icons-material/MoreVertOutlined';
 import { voiceJobsAPI } from '../../api/voiceJobs';
+import { parseMeetingTitle } from './meetingTitle';
 
 // N14: секунды в мете не нужны — «29.09.2026, 15:00» вместо «15:00:00».
 const formatTime = (value) => {
@@ -184,6 +179,159 @@ const MetaLine = ({ meeting }) => {
     </Typography>
   );
 };
+
+const MONTHS_NOM = [
+  'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+  'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь',
+];
+const MONTHS_SHORT = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+
+// Дата встречи: из названия файла, иначе — время изменения протокола.
+const meetingDate = (meeting) => {
+  const parsed = parseMeetingTitle(meeting.base_filename);
+  if (parsed.date) return { iso: parsed.date, fromName: true };
+  const t = Number(meeting.modified_at);
+  if (!Number.isFinite(t) || t <= 0) return { iso: '', fromName: false };
+  return { iso: new Date(t * 1000).toISOString().slice(0, 10), fromName: false };
+};
+
+export function groupMeetingsByMonth(meetings) {
+  const groups = [];
+  const index = new Map();
+  for (const meeting of meetings || []) {
+    const { iso } = meetingDate(meeting);
+    const key = iso ? iso.slice(0, 7) : 'unknown';
+    if (!index.has(key)) {
+      const label = iso ? `${MONTHS_NOM[Number(iso.slice(5, 7)) - 1]} ${iso.slice(0, 4)}` : 'Без даты';
+      const group = { key, label, items: [] };
+      index.set(key, group);
+      groups.push(group);
+    }
+    index.get(key).items.push(meeting);
+  }
+  return groups;
+}
+
+function DateBadge({ iso }) {
+  if (!iso) return <Box sx={{ width: 48, flexShrink: 0 }} />;
+  const day = Number(iso.slice(8, 10));
+  const month = MONTHS_SHORT[Number(iso.slice(5, 7)) - 1];
+  return (
+    <Box
+      aria-hidden
+      sx={{
+        width: 48,
+        flexShrink: 0,
+        textAlign: 'center',
+        py: 0.5,
+        borderRadius: 1.5,
+        bgcolor: (t) => alpha(t.palette.primary.main, 0.08),
+        color: 'primary.main',
+        lineHeight: 1.1,
+      }}
+    >
+      <Typography component="div" sx={{ fontWeight: 800, fontSize: '1.15rem', lineHeight: 1.1 }}>{day}</Typography>
+      <Typography component="div" variant="caption" sx={{ fontWeight: 600, textTransform: 'uppercase', fontSize: '0.65rem' }}>
+        {month}
+      </Typography>
+    </Box>
+  );
+}
+
+function MeetingCard({ meeting, jobs, isMobile, canManage, busy, onOpen, onDelete }) {
+  const { title } = parseMeetingTitle(meeting.base_filename);
+  const { iso } = meetingDate(meeting);
+  const tags = [meeting.project, ...(meeting.tags || [])].filter(Boolean);
+  const maxTags = isMobile ? MAX_VISIBLE_TAGS_XS : MAX_VISIBLE_TAGS;
+  const shown = [...new Set(tags)].slice(0, maxTags);
+  const rest = new Set(tags).size - shown.length;
+  const names = meeting.speaker_names || [];
+  const count = meeting.segments_count;
+  const people = names.length
+    ? `${names.slice(0, 3).join(', ')}${names.length > 3 ? ` и ещё ${names.length - 3}` : ''}`
+    : '';
+  return (
+    <Paper
+      component="li"
+      variant="outlined"
+      onClick={() => onOpen?.(meeting.base_filename)}
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: { xs: 1, sm: 1.5 },
+        p: { xs: 1, sm: 1.25 },
+        cursor: 'pointer',
+        transition: 'border-color .15s, box-shadow .15s',
+        '&:hover': { borderColor: 'primary.main', boxShadow: 1 },
+      }}
+    >
+      <DateBadge iso={iso} />
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0 }}>
+          <Button
+            type="button"
+            color="inherit"
+            aria-label={`Открыть протокол ${displayName(meeting.base_filename)}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpen?.(meeting.base_filename);
+            }}
+            sx={{
+              minWidth: 0,
+              maxWidth: '100%',
+              display: 'block',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              p: 0,
+              justifyContent: 'flex-start',
+              textAlign: 'left',
+              fontWeight: 700,
+              fontSize: '0.95rem',
+              textTransform: 'none',
+            }}
+            title={meeting.base_filename}
+          >
+            {title}
+          </Button>
+        </Box>
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          noWrap
+          sx={{ display: 'block', minWidth: 0 }}
+        >
+          {[
+            count ? `${count} ${plural(count, ['реплика', 'реплики', 'реплик'])}` : null,
+            people || null,
+          ].filter(Boolean).join(' · ')}
+        </Typography>
+        {(shown.length > 0 || rest > 0 || isMobile) && (
+          <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', flexWrap: 'nowrap', overflow: 'hidden', mt: 0.5 }}>
+            {/* На телефоне статус — в строке чипов под названием: справа он отнимал
+                у названия почти всю ширину. */}
+            {isMobile && <MeetingStatusChip meeting={meeting} jobs={jobs} />}
+            {shown.map((t) => (
+              <Chip
+                key={t}
+                size="small"
+                variant="outlined"
+                label={t}
+                color={t === meeting.project ? 'info' : 'default'}
+                style={{ flexGrow: 0, flexShrink: 1, flexBasis: 'auto', minWidth: 0, maxWidth: 140 }}
+              />
+            ))}
+            {rest > 0 && (
+              <Chip size="small" variant="outlined" label={`+${rest}`} style={{ flexGrow: 0, flexShrink: 0, flexBasis: 'auto' }} />
+            )}
+          </Box>
+        )}
+      </Box>
+      {!isMobile && <MeetingStatusChip meeting={meeting} jobs={jobs} />}
+      <ProtocolMenu meeting={meeting} canManage={canManage} busy={busy} onDelete={onDelete} />
+    </Paper>
+  );
+}
 
 function MeetingsSkeleton() {
   return (
@@ -616,175 +764,41 @@ function VoiceMeetingsSection({
   // Данные уже на экране, но идёт перезагрузка (фильтры, страница, «Обновить») — показываем индикатор.
   const busyIndicator = loading ? <LinearProgress sx={{ mb: 1.5 }} /> : null;
 
-  if (isMobile) {
-    return (
-      <Box>
-        {toolbar}
-        {busyIndicator}
-        <Stack spacing={0.75}>
-          {meetings.map((meeting) => {
-            const tags = [meeting.project, ...(meeting.tags || [])].filter(Boolean);
-            const shown = tags.slice(0, MAX_VISIBLE_TAGS_XS);
-            const rest = tags.length - shown.length;
-            return (
-              <Paper
-                key={meeting.base_filename}
-                variant="outlined"
-                sx={{ p: 1, cursor: 'pointer' }}
-                onClick={() => onOpen?.(meeting.base_filename)}
-              >
-                <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
-                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                    <Button
-                      type="button"
-                      color="inherit"
-                      aria-label={`Открыть протокол ${displayName(meeting.base_filename)}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onOpen?.(meeting.base_filename);
-                      }}
-                      sx={{
-                        alignSelf: 'flex-start',
-                        flex: '1 1 auto',
-                        minWidth: 0,
-                        maxWidth: '100%',
-                        display: 'block',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                        p: 0,
-                        justifyContent: 'flex-start',
-                        textAlign: 'left',
-                        fontWeight: 600,
-                        textTransform: 'none',
-                      }}
-                      title={meeting.base_filename}
-                    >
-                      {displayName(meeting.base_filename)}
-                    </Button>
-                    {/* N18/T45: статус обработки — текстовый чип рядом с названием,
-                        чтобы мета-строка не обрезала важное на 320 px. */}
-                    <MeetingStatusChip meeting={meeting} jobs={jobs} />
-                    </Box>
-                    <MetaLine meeting={meeting} />
-                    {(shown.length > 0 || rest > 0) && (
-                      <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', flexWrap: 'nowrap', overflow: 'hidden', mt: 0.25 }}>
-                        {/* N18: чипы тегов сжимаются с ellipsis, поэтому «+N»
-                            всегда виден и строка не режется посреди чипа. */}
-                        {shown.map((t) => (
-                          <Chip key={t} size="small" variant="outlined" label={t} style={{ flexGrow: 0, flexShrink: 1, flexBasis: 'auto', minWidth: 0, maxWidth: 120 }} />
-                        ))}
-                        {rest > 0 && (
-                          <Chip size="small" variant="outlined" label={`+${rest}`} style={{ flexGrow: 0, flexShrink: 0, flexBasis: 'auto' }} />
-                        )}
-                      </Box>
-                    )}
-                  </Box>
-                  <ProtocolMenu
-                    meeting={meeting}
-                    canManage={canManage}
-                    busy={busyBase === meeting.base_filename}
-                    onDelete={onDelete}
-                  />
-                </Box>
-              </Paper>
-            );
-          })}
-        </Stack>
-        {pagination}
-      </Box>
-    );
-  }
+  const groups = groupMeetingsByMonth(meetings);
 
   return (
     <Box>
       {toolbar}
       {busyIndicator}
-      <TableContainer component={Paper}>
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Встреча</TableCell>
-              <TableCell align="right">Реплик</TableCell>
-              <TableCell>Статус</TableCell>
-              <TableCell>Изменено</TableCell>
-              <TableCell align="center" sx={{ width: 56 }}>Действия</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {meetings.map((meeting) => (
-              <TableRow
-                key={meeting.base_filename}
-                hover
-                sx={{ cursor: 'pointer' }}
-                onClick={() => onOpen?.(meeting.base_filename)}
-              >
-                <TableCell>
-                  <Button
-                    type="button"
-                    variant="text"
-                    color="inherit"
-                    aria-label={`Открыть протокол ${displayName(meeting.base_filename)}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onOpen?.(meeting.base_filename);
-                    }}
-                    sx={{
-                      minWidth: 0,
-                      maxWidth: 360,
-                      display: 'block',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                      p: 0,
-                      justifyContent: 'flex-start',
-                      textAlign: 'left',
-                      textTransform: 'none',
-                    }}
-                    title={meeting.base_filename}
-                  >
-                    {displayName(meeting.base_filename)}
-                  </Button>
-                  {(() => {
-                    // N14: десктопные чипы ограничены тремя — как на мобильной
-                    // карточке; проект идёт первым (сохраняет цветовое отличие).
-                    const chips = [
-                      meeting.project && { label: meeting.project, color: 'info' },
-                      ...(meeting.tags || []).map((t) => ({ label: t, color: 'default' })),
-                    ].filter(Boolean);
-                    if (!chips.length) return null;
-                    const shown = chips.slice(0, MAX_VISIBLE_TAGS);
-                    const rest = chips.length - shown.length;
-                    return (
-                      <Box sx={{ display: 'flex', gap: 0.5, mt: 0.5, flexWrap: 'wrap' }}>
-                        {shown.map((c) => (
-                          <Chip key={c.label} size="small" color={c.color} variant="outlined" label={c.label} />
-                        ))}
-                        {rest > 0 && <Chip size="small" variant="outlined" label={`+${rest}`} />}
-                      </Box>
-                    );
-                  })()}
-                </TableCell>
-                <TableCell align="right">{meeting.segments_count || '—'}</TableCell>
-                {/* T45: статус обработки — текстовый чип (готово / нужны имена /
-                    в обработке / ошибка), а не только цвет. */}
-                <TableCell><MeetingStatusChip meeting={meeting} jobs={jobs} /></TableCell>
-                <TableCell>{formatTime(meeting.modified_at)}</TableCell>
-                <TableCell align="center" sx={{ width: 56 }}>
-                  <ProtocolMenu
-                    meeting={meeting}
-                    canManage={canManage}
-                    busy={busyBase === meeting.base_filename}
-                    onDelete={onDelete}
-                  />
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-        {pagination}
-      </TableContainer>
+      <Stack spacing={1.5} data-testid="meetings-list">
+        {groups.map((group) => (
+          <Box key={group.key} component="section" aria-label={group.label}>
+            <Typography
+              variant="overline"
+              component="h2"
+              color="text.secondary"
+              sx={{ display: 'block', px: 0.5, mb: 0.5, lineHeight: 1.8, fontWeight: 700, letterSpacing: '0.06em' }}
+            >
+              {group.label}
+            </Typography>
+            <Stack spacing={0.75} component="ul" sx={{ m: 0, p: 0, listStyle: 'none' }}>
+              {group.items.map((meeting) => (
+                <MeetingCard
+                  key={meeting.base_filename}
+                  meeting={meeting}
+                  jobs={jobs}
+                  isMobile={isMobile}
+                  canManage={canManage}
+                  busy={busyBase === meeting.base_filename}
+                  onOpen={onOpen}
+                  onDelete={onDelete}
+                />
+              ))}
+            </Stack>
+          </Box>
+        ))}
+      </Stack>
+      <Paper variant="outlined" sx={{ mt: 1.5 }}>{pagination}</Paper>
     </Box>
   );
 }
