@@ -5,6 +5,7 @@ import { chatStickersAPI } from '../../api/chatStickers';
 import { CHAT_WS_ENABLED } from '../../lib/chatFeature';
 import { chatSocket } from '../../lib/chatSocket';
 import { resolveServerMessageFromSendAck } from '../../lib/chat/chatSendAck';
+import { isTransientChatSendError } from '../../lib/chat/chatSendErrorPolicy';
 import { buildChatDraftKey, CHAT_MESSAGE_BODY_MAX_LENGTH } from './chatHelpers';
 
 export default function useChatComposerSending({
@@ -139,6 +140,23 @@ export default function useChatComposerSending({
     return serverMessage;
   }, [logChatDebug, readSelectedDatabaseId, socketStatusRef]);
 
+  // Транзитный сбой (нет сети, таймаут, 502/503/504, мёртвый WS) уже виден
+  // пользователю: пузырь с ⚠ и индикатор соединения в шапке, а сообщение уйдёт
+  // повторно после восстановления связи. Тост ошибки показываем только на
+  // отказ сервера по существу (validation_error, forbidden, 4xx).
+  const notifySendFailure = useCallback((error, conversationId) => {
+    if (isTransientChatSendError(error)) {
+      logChatDebug('sendMessage:transientFailure', {
+        conversationId,
+        status: error?.response?.status || undefined,
+        code: error?.code || undefined,
+        error: String(error?.message || error),
+      });
+      return;
+    }
+    notifyApiError(error, 'Не удалось отправить сообщение.');
+  }, [logChatDebug, notifyApiError]);
+
   const sendMessage = useCallback(async () => {
     const conversationId = String(activeConversationId || '').trim();
     const rawBody = String(latestMessageTextRef.current || '');
@@ -235,7 +253,7 @@ export default function useChatComposerSending({
       if (optimisticMessage?.id) {
         markOptimisticMessageFailed(conversationId, optimisticMessage, draftReplyMessage?.id);
       }
-      notifyApiError(error, 'Не удалось отправить сообщение.');
+      notifySendFailure(error, conversationId);
       return false;
     }
   }, [
@@ -258,6 +276,7 @@ export default function useChatComposerSending({
     markOptimisticMessageFailed,
     mergeMessageIntoThread,
     notifyApiError,
+    notifySendFailure,
     readSelectedDatabaseId,
     replyMessage,
     setEditingMessage,
@@ -330,7 +349,7 @@ export default function useChatComposerSending({
         fileResend: entry.fileResend,
         stickerResend: entry.stickerResend,
       });
-      notifyApiError(error, 'Не удалось отправить сообщение.');
+      notifySendFailure(error, entry.conversationId);
       return false;
     }
   }, [
@@ -341,7 +360,7 @@ export default function useChatComposerSending({
     deliverOptimisticMessage,
     ensureLatestThreadWindow,
     markOptimisticMessageFailed,
-    notifyApiError,
+    notifySendFailure,
     setOptimisticAiQueuedStatus,
   ]);
 

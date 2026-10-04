@@ -247,6 +247,66 @@ describe('useChatComposerSending', () => {
     },
   );
 
+  it('no network: marks the bubble failed without an error toast, in send and in retry', async () => {
+    const applyOutgoingThreadMessage = vi.fn();
+    const notifyApiError = vi.fn();
+    const apiRef = { current: null };
+    const networkError = () => Object.assign(new Error('Network Error'), {
+      isAxiosError: true,
+      code: 'ERR_NETWORK',
+      request: {},
+    });
+    chatSocket.sendMessage
+      .mockRejectedValueOnce(new Error('Chat websocket is not connected'))
+      .mockRejectedValueOnce(new Error('Chat websocket is not connected'));
+    chatAPI.sendMessage
+      .mockRejectedValueOnce(networkError())
+      .mockRejectedValueOnce(networkError());
+
+    render(
+      <Harness
+        apiRef={apiRef}
+        applyOutgoingThreadMessage={applyOutgoingThreadMessage}
+        notifyApiError={notifyApiError}
+      />,
+    );
+
+    fireEvent.click(document.querySelector('button'));
+
+    await waitFor(() => expect(applyOutgoingThreadMessage).toHaveBeenLastCalledWith(
+      'conversation-1',
+      expect.objectContaining({ id: 'optimistic-1', optimisticStatus: 'failed' }),
+      expect.objectContaining({ scroll: false }),
+    ));
+
+    expect(await apiRef.current.retryFailedMessage('optimistic-1')).toBe(false);
+    expect(chatAPI.sendMessage).toHaveBeenCalledTimes(2);
+    expect(applyOutgoingThreadMessage).toHaveBeenLastCalledWith(
+      'conversation-1',
+      expect.objectContaining({ id: 'optimistic-1', optimisticStatus: 'failed' }),
+      expect.objectContaining({ scroll: false }),
+    );
+    expect(notifyApiError).not.toHaveBeenCalled();
+  });
+
+  it('server rejection over HTTP (413) still shows the error toast', async () => {
+    const notifyApiError = vi.fn();
+    const rejection = Object.assign(new Error('Request failed with status code 413'), {
+      isAxiosError: true,
+      request: {},
+      response: { status: 413, data: { detail: 'Слишком длинное сообщение' } },
+    });
+    chatSocket.sendMessage.mockRejectedValueOnce(new Error('Chat websocket is not connected'));
+    chatAPI.sendMessage.mockRejectedValueOnce(rejection);
+
+    render(<Harness applyOutgoingThreadMessage={vi.fn()} notifyApiError={notifyApiError} />);
+
+    fireEvent.click(document.querySelector('button'));
+
+    await waitFor(() => expect(notifyApiError).toHaveBeenCalledTimes(1));
+    expect(notifyApiError).toHaveBeenCalledWith(rejection, 'Не удалось отправить сообщение.');
+  });
+
   it('R4: failures land in the shared failedThreadMessagesRef when provided', async () => {
     const applyOutgoingThreadMessage = vi.fn();
     const failedThreadMessagesRef = { current: new Map() };
