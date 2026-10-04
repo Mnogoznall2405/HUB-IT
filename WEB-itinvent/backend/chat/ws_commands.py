@@ -533,6 +533,42 @@ async def dispatch_chat_ws_command(
             )
         return
 
+    if message_type == "chat.client_state":
+        from backend.chat.desktop_presence import (
+            desktop_active_window_sec,
+            desktop_refresh_interval_sec,
+        )
+        from backend.chat.schemas import ChatWsClientStatePayload
+
+        client_state = ChatWsClientStatePayload.model_validate(payload)
+        result = None
+        if client_state.client_kind == "desktop":
+            result = chat_api.chat_realtime.set_desktop_client_state(
+                connection_id,
+                foreground=bool(client_state.foreground),
+            )
+        await chat_api.chat_realtime.send_command_ok(
+            connection_id,
+            request_id=request_id,
+            payload={
+                "desktop_active_window_sec": int(desktop_active_window_sec()),
+                "refresh_interval_ms": int(desktop_refresh_interval_sec() * 1000),
+            },
+        )
+        if result and result.get("published"):
+            # Browser tabs of the same user silence their local notifications
+            # while the desktop is active (volatile, coalesced per user).
+            await chat_api.chat_realtime.publish_user_event(
+                user_id=int(current_user.id),
+                event_type="chat.desktop_presence",
+                payload={
+                    "user_id": int(current_user.id),
+                    "active": True,
+                    "expires_in_ms": int(result.get("expires_in_ms") or 0),
+                },
+            )
+        return
+
     if message_type == "chat.ping":
         await chat_api.chat_realtime.send_pong(
             connection_id,

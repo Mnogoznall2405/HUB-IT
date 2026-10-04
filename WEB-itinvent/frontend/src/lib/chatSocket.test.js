@@ -614,6 +614,66 @@ describe('chatSocket client lifecycle', () => {
     chatSocket.close(true);
   });
 
+  it('desktop client state is not queued offline and is replayed with the latest value after reconnect', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const firstSocket = MockWebSocket.instances[0];
+
+    chatSocket.reportClientState({ clientKind: 'desktop', foreground: true });
+    expect(chatSocket.messageQueue).toHaveLength(0);
+
+    firstSocket.emitOpen();
+    const sentOnOpen = firstSocket.sent.map((item) => JSON.parse(item));
+    expect(sentOnOpen).toContainEqual({
+      type: 'chat.client_state',
+      payload: { client_kind: 'desktop', foreground: true },
+    });
+
+    chatSocket.reportClientState({ clientKind: 'desktop', foreground: false });
+    firstSocket.emitClose({ code: 1006 });
+    await vi.runOnlyPendingTimersAsync();
+    const secondSocket = MockWebSocket.instances[1];
+    secondSocket.emitOpen();
+    const replayed = secondSocket.sent
+      .map((item) => JSON.parse(item))
+      .filter((item) => item.type === 'chat.client_state');
+    expect(replayed).toEqual([{
+      type: 'chat.client_state',
+      payload: { client_kind: 'desktop', foreground: false },
+    }]);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('tracks chat.desktop_presence until it expires or is released', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+    socket.emitOpen();
+    const now = Date.now();
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'chat.desktop_presence',
+        payload: { user_id: 9, active: true, expires_in_ms: 120000 },
+      }),
+    });
+    expect(chatSocket.isDesktopActiveElsewhere(now + 1000)).toBe(true);
+    expect(chatSocket.isDesktopActiveElsewhere(now + 121000)).toBe(false);
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'chat.desktop_presence',
+        payload: { user_id: 9, active: false, expires_in_ms: 0 },
+      }),
+    });
+    expect(chatSocket.isDesktopActiveElsewhere(now + 1000)).toBe(false);
+
+    release();
+    chatSocket.close(true);
+  });
+
   it('does not queue volatile typing commands while offline', async () => {
     const { chatSocket } = await loadChatSocket();
     const release = chatSocket.retain();

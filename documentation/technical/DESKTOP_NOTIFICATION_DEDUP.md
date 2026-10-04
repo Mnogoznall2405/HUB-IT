@@ -72,14 +72,24 @@ polling уведомлений не создаются. Жизненный ци�
 
 ## Решение по Web Push suppression
 
-В 0.2.0 presence **не подавляет Web Push**. Текущая `ChatPushSubscription` надёжно идентифицирует
-конкретную browser installation только по endpoint, но не связана с Desktop WebView-сессией.
-Сам Desktop WebView не регистрирует Web Push subscription. Поэтому подавление всех подписок
-пользователя при одном активном Desktop привело бы к потере уведомлений в Chrome на другом ПК.
+**Исходно (0.2.0):** session presence (`/api/v1/desktop-presence`, TTL 180 с) Web Push не подавлял —
+дубль на разных клиентах считался лучше пропуска.
 
-До появления доказуемой связи «эта subscription отображает то же самое Desktop-окно» сервер
-предпочитает редкий дубль на разных клиентах пропущенному уведомлению. Отдельный Chrome продолжает
-получать push независимо от свежего или устаревшего Desktop presence.
+**Текущее решение пользователя: «если активен десктоп — веб молчит».** Подавление строится не на
+session presence выше, а на chat WebSocket (см. [CHAT_BACKEND_ARCHITECTURE.md](CHAT_BACKEND_ARCHITECTURE.md#hub-desktop-активен--веб-молчит)):
+
+- пользователь *desktop-активен*, если у него есть живое chat-WS-соединение HUB Desktop и окно
+  Desktop было в foreground последние `CHAT_DESKTOP_ACTIVE_WINDOW_SEC` (по умолчанию 120 с);
+- пока он desktop-активен, сервер не отправляет браузерный Web Push (все `ChatPushSubscription`)
+  по сообщениям чата, включая @mention; браузерные вкладки не показывают toast, системное
+  уведомление и звук о новых сообщениях (счётчики/бейджи остаются);
+- push в mobile-hub (FCM) по умолчанию не трогается (`CHAT_PUSH_SUPPRESS_MOBILE_WHEN_DESKTOP_ACTIVE=0`);
+- ошибка чтения признака — fail-open (push отправляется как раньше);
+- откат без деплоя: `CHAT_PUSH_SUPPRESS_WEB_WHEN_DESKTOP_ACTIVE=0` (только серверный push; вкладки
+  продолжают молчать, пока получают `chat.desktop_presence`).
+
+Принятый риск: Chrome на другом ПК молчит, пока Desktop пользователя в foreground (или 120 с после
+ухода в фон). Desktop сам продолжает показывать свои уведомления.
 
 ## Проверки
 
@@ -90,7 +100,7 @@ polling уведомлений не создаются. Жизненный ци�
 - store повреждённой/неизвестной версии считается пустым;
 - bridge payload проверяется на точный минимум полей;
 - backend presence тестируется на auth, session binding, TTL, multiple sessions и disconnect;
-- push regression подтверждает отсутствие global suppression.
+- push regression: Web Push подавляется только при desktop-активном пользователе (WS + foreground ≤ окна), fail-open при ошибке presence (`tests/test_chat_desktop_presence_push.py`).
 
 ## Эксплуатация
 

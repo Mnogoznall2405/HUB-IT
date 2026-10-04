@@ -39,7 +39,7 @@ endpoint → app database; React → versioned bridge v1; backend → Web Push p
 | Crash/sleep без disconnect | Stale presence | TTL 180 секунд; correctness не зависит от DELETE |
 | Flood уникальными device IDs | Рост БД | Клиентский device ID отсутствует; одна строка на session; upsert и rate limit |
 | Удаление чужого presence | Нарушение доставки | DELETE ограничен текущей authenticated session |
-| Global push suppression | Пропущенные уведомления на другом ПК | В 0.2.0 suppression отсутствует; future suppression только per exact endpoint/context |
+| Global push suppression | Пропущенные уведомления на другом ПК | Session presence не подавляет push. Решение пользователя «десктоп активен → веб молчит»: подавление браузерного Web Push только своего user, пока жив Desktop chat-WS и foreground ≤ 120 с; маркер чистится при disconnect, иначе истекает; ошибка чтения → fail-open. Остаточный риск: свой JS/XSS может объявить `client_kind=desktop` и заглушить push своего же аккаунта |
 | Replay heartbeat после logout | Продление presence | Active-session validation; revoked/closed session получает 401 |
 | Notification injection | Внешняя навигация/лог-инъекция | Exact envelope, local route allowlist, controls/limits, exact bridge v1 schema |
 | Local dedupe poisoning | Скрытие локального события | Store ограничен 300 id и тем же origin; server delivery не зависит от него |
@@ -50,7 +50,9 @@ endpoint → app database; React → versioned bridge v1; backend → Web Push p
 1. Presence write не содержит выбираемый клиентом user/session/device identifier.
 2. Freshness вычисляется server-side по UTC и ограничена 180 секундами.
 3. Строки разных сессий одного пользователя не перезаписывают друг друга.
-4. Никакое решение 0.2.0 не подавляет все push subscriptions пользователя.
+4. Session presence этого документа не подавляет push. Подавление браузерного Web Push по решению
+   «если активен десктоп — веб молчит» опирается на chat-WS Desktop + foreground ≤ 120 с
+   (см. CHAT_BACKEND_ARCHITECTURE.md); затрагивает только push самого пользователя, fail-open.
 5. Presence endpoint не возвращает список устройств или session identifiers.
 6. Ошибка presence fail-open только для доставки: HUB продолжает работу и push не теряется.
 
@@ -68,5 +70,5 @@ Authenticated XSS может поддерживать presence своей сес
 - две session одного user дают две независимые строки;
 - TTL boundary и cleanup используют server clock;
 - disconnect удаляет только текущую session;
-- push selection не зависит от Desktop presence;
+- push selection не зависит от session Desktop presence (подавление — только по chat-WS desktop-активности);
 - логи/response не содержат session id, Windows username и notification payload.

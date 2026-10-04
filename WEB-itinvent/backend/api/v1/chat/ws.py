@@ -109,6 +109,7 @@ async def _ws_post_connect_bootstrap(
         )
     except Exception:
         pass
+    await _send_desktop_presence_state(connection_id=connection_id, user_id=int(user_id))
     if first_connection:
         try:
             from backend.chat.realtime_publisher import schedule_presence_updated
@@ -116,6 +117,50 @@ async def _ws_post_connect_bootstrap(
             schedule_presence_updated(int(user_id))
         except Exception:
             pass
+
+
+async def _send_desktop_presence_state(*, connection_id: str, user_id: int) -> None:
+    """Tell a freshly connected socket whether the user's HUB Desktop is active.
+
+    Best effort: an unknown state (read error) sends nothing, so browser tabs
+    keep notifying as before.
+    """
+    try:
+        from backend.chat.desktop_presence import desktop_active_remaining_sec
+
+        remaining_sec = await asyncio.to_thread(desktop_active_remaining_sec, int(user_id))
+        if not remaining_sec or remaining_sec <= 0:
+            return
+        if not chat_api().chat_realtime.is_connection_registered(connection_id):
+            return
+        await chat_api().chat_realtime.send_to_connection(
+            connection_id,
+            event_type="chat.desktop_presence",
+            payload={
+                "user_id": int(user_id),
+                "active": True,
+                "expires_in_ms": int(remaining_sec * 1000),
+            },
+        )
+    except Exception:
+        pass
+
+
+async def _publish_desktop_released(user_id: int) -> None:
+    try:
+        realtime = chat_api().chat_realtime
+        remaining_sec = float(realtime.local_desktop_active_remaining_sec(int(user_id)) or 0.0)
+        await realtime.publish_user_event(
+            user_id=int(user_id),
+            event_type="chat.desktop_presence",
+            payload={
+                "user_id": int(user_id),
+                "active": remaining_sec > 0,
+                "expires_in_ms": int(remaining_sec * 1000),
+            },
+        )
+    except Exception:
+        pass
 
 
 @router.websocket("/ws")
@@ -409,6 +454,11 @@ async def chat_websocket(websocket: WebSocket):
             close_code=watchdog_close.get("close_code") if watchdog_close.get("close_code") is not None else close_code,
             close_reason=str(watchdog_close.get("close_reason") or "") or close_reason,
         )
+        if disconnect_state.get("desktop_released"):
+            asyncio.create_task(
+                _publish_desktop_released(int(disconnect_state.get("user_id") or 0)),
+                name=f"chat-desktop-released:{connection_id}",
+            )
         if disconnect_state.get("last_connection"):
             try:
                 from backend.chat.realtime_publisher import schedule_presence_updated

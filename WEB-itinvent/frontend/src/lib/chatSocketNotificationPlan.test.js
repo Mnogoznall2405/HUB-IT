@@ -109,6 +109,40 @@ describe('resolveChatMessageNotificationPlan', () => {
     expect(channelOff.shouldPlaySound).toBe(false);
   });
 
+  it('desktop active: a browser tab stays silent (no toast, OS notification or sound), mentions too', () => {
+    const mention = {
+      conversation_id: 'c1',
+      payload: { id: 'm2', text: '@me', mentioned_user_ids: [9] },
+    };
+    const hiddenCtx = {
+      ...visibleCtx,
+      isVisible: false,
+      chatMessageSoundEnabled: true,
+      desktopActiveElsewhere: true,
+    };
+    for (const item of [envelope, mention]) {
+      const plan = resolveChatMessageNotificationPlan(item, hiddenCtx);
+      expect(plan.kind).toBe('plan');
+      expect(plan.suppress).toBe('desktop_active');
+      expect(plan.shouldPlaySound).toBe(false);
+      expect(plan.toast).toBeNull();
+      expect(plan.system).toBeNull();
+    }
+  });
+
+  it('desktop active: the HUB Desktop itself keeps notifying', () => {
+    const plan = resolveChatMessageNotificationPlan(envelope, {
+      ...visibleCtx,
+      isVisible: false,
+      chatMessageSoundEnabled: true,
+      desktopActiveElsewhere: true,
+      isDesktopRuntime: true,
+    });
+    expect(plan.suppress).toBeNull();
+    expect(plan.shouldPlaySound).toBe(true);
+    expect(plan.system).not.toBeNull();
+  });
+
   it('exposes the resolved sender name for the hidden-tab title (N3)', () => {
     const plan = resolveChatMessageNotificationPlan(envelope, visibleCtx);
     expect(plan.senderName).toBe('Иван Петров');

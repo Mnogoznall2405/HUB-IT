@@ -157,6 +157,7 @@ vi.mock('../../lib/chatSocket', () => ({
     subscribeInbox: mockChatSocketSubscribeInbox,
     unsubscribeInbox: mockChatSocketUnsubscribeInbox,
     getConnectionState: mockChatSocketGetConnectionState,
+    isDesktopActiveElsewhere: () => false,
   },
   CHAT_SOCKET_MESSAGE_CREATED_EVENT: 'chat-ws-message-created',
   CHAT_SOCKET_STATUS_EVENT: 'chat-ws-status',

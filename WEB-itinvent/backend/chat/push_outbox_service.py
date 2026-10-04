@@ -357,6 +357,10 @@ class ChatPushOutboxService:
                     note = f"partial_delivery failed={int(result.failed or 0)} disabled={int(result.disabled or 0)}"
                 self.mark_sent(job_id=job.id, last_error=note)
                 outcome = OUTBOX_STATUS_SENT
+            elif int(getattr(result, "suppressed", 0) or 0) > 0 and int(result.failed or 0) <= 0:
+                note = f"suppressed: {getattr(result, 'suppressed_reason', '') or 'policy'}"
+                self.mark_suppressed(job_id=job.id, last_error=note)
+                outcome = OUTBOX_STATUS_SUPPRESSED
             elif int(result.failed or 0) > 0:
                 note = f"delivery_failed failed={int(result.failed or 0)} disabled={int(result.disabled or 0)}"
                 if int(job.attempt_count) >= self.max_attempts:

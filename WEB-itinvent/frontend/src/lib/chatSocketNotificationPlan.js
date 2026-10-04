@@ -36,6 +36,10 @@ export function resolveChatMessageNotificationPlan(envelope = {}, context = {}) 
   }
 
   const isVisible = Boolean(context.isVisible);
+  // "Desktop active → web stays silent": a browser tab of a user whose HUB
+  // Desktop is in use shows neither toast, OS notification nor sound — the
+  // desktop notifies. Counters/badges are updated elsewhere and stay.
+  const desktopActiveElsewhere = Boolean(context.desktopActiveElsewhere) && !context.isDesktopRuntime;
   const isActiveVisibleConversation = (
     (context.isChatRoute || context.isTaskDiscussionRoute)
     && context.activeChatConversationId === conversationId
@@ -51,7 +55,9 @@ export function resolveChatMessageNotificationPlan(envelope = {}, context = {}) 
         ? 'desktop_chat_route'
         : !context.chatChannelEnabled
           ? 'notifications_disabled'
-          : null;
+          : desktopActiveElsewhere
+            ? 'desktop_active'
+            : null;
 
   // AG: a finished AI answer reads "ИИ ответил: <beginning of the answer>" in toast, OS notification and sound.
   const isAiReply = String(message?.conversation_kind || '').trim() === 'ai';
@@ -74,6 +80,7 @@ export function resolveChatMessageNotificationPlan(envelope = {}, context = {}) 
       Boolean(context.chatMessageSoundEnabled)
       && !isActiveVisibleConversation
       && context.chatChannelEnabled !== false
+      && !desktopActiveElsewhere
     ),
   };
   if (suppress) return plan;

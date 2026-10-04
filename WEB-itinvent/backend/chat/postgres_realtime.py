@@ -817,7 +817,8 @@ class ChatRealtimePostgresBus:
         )
         cursor = conn.execute(
             sql.SQL(
-                "SELECT 1 FROM {} WHERE user_id = %s AND expires_at > NOW() LIMIT 1"
+                "SELECT 1 FROM {} WHERE user_id = %s AND expires_at > NOW() "
+                "AND connection_id NOT LIKE 'desktop:%%' LIMIT 1"
             ).format(self._qualified_presence_table()),
             (int(user_id),),
         )
@@ -1268,7 +1269,8 @@ class ChatRealtimePostgresBus:
         cursor = conn.execute(
             sql.SQL(
                 "SELECT user_id, MAX(touched_at) FROM {} "
-                "WHERE expires_at > NOW() GROUP BY user_id"
+                "WHERE expires_at > NOW() AND connection_id NOT LIKE 'desktop:%%' "
+                "GROUP BY user_id"
             ).format(self._qualified_presence_table())
         )
         return list(cursor.fetchall())

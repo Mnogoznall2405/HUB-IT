@@ -282,6 +282,36 @@ def test_chat_push_outbox_worker_marks_job_no_subscriptions_without_retry(chat_o
     assert int(job.attempt_count or 0) == 1
 
 
+def test_chat_push_outbox_worker_marks_desktop_active_skip_as_suppressed(chat_outbox_env, monkeypatch):
+    service = chat_outbox_env["service"]
+    conversation = chat_outbox_env["conversation"]
+    worker = chat_outbox_env["worker"]
+
+    monkeypatch.setattr(type(chat_push_service_module.chat_push_service), "enabled", property(lambda self: True))
+    monkeypatch.setattr(
+        chat_push_service_module.chat_push_service,
+        "send_chat_message_notification",
+        lambda **kwargs: chat_push_service_module.ChatPushSendResult(
+            suppressed=1,
+            suppressed_reason="desktop_active",
+        ),
+    )
+
+    created = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Desktop is open",
+        defer_push_notifications=True,
+    )
+    _flush_deferred_chat_notifications(service, created)
+
+    asyncio.run(worker.poll_once())
+    job = _get_outbox_job(created["id"])
+
+    assert job.status == "suppressed"
+    assert job.last_error == "suppressed: desktop_active"
+
+
 def test_chat_push_outbox_worker_retries_transient_failures_and_then_marks_terminal_failed(chat_outbox_env, monkeypatch):
     service = chat_outbox_env["service"]
     conversation = chat_outbox_env["conversation"]

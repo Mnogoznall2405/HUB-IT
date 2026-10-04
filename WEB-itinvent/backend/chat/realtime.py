@@ -211,6 +211,11 @@ class ChatRealtimeConnection:
     sender_task: asyncio.Task | None = None
     last_presence_touch_at: float = 0.0
     connected_at: float = 0.0
+    # HUB Desktop (WebView2) state reported via chat.client_state.
+    client_kind: str = "browser"
+    desktop_foreground: bool = False
+    desktop_active_until: float = 0.0
+    desktop_recorded_at: float = 0.0
     queue_full_count: int = 0
     send_timeout_count: int = 0
     coalesced_events: int = 0
@@ -589,6 +594,7 @@ class ChatRealtimeManager:
         self._ws_rate_limited_connection_ids: set[str] = set()
         self._typing_started_sent_at: dict[tuple[int, str], float] = {}
         self._ws_rate_limiters_by_user: dict[int, ChatWsCommandRateLimiter] = {}
+        self._desktop_marker_tasks: dict[str, asyncio.Task] = {}
         self._redis_bus = ChatRealtimeRedisBus(self)
         self._realtime_transport = resolve_chat_realtime_transport()
         if self._realtime_transport == "redis":
@@ -656,6 +662,10 @@ class ChatRealtimeManager:
     @property
     def node_id(self) -> str:
         return _CHAT_REALTIME_NODE_ID
+
+    @property
+    def realtime_transport(self) -> str:
+        return self._realtime_transport
 
     async def start(self) -> None:
         await self._transport_bus.start()
@@ -858,10 +868,142 @@ class ChatRealtimeManager:
                 user_id=int(connection.user_id),
                 connection_id=normalized_connection_id,
             )
+        desktop_released = (
+            connection.client_kind == "desktop"
+            and float(connection.desktop_active_until or 0.0) > 0.0
+        )
+        if desktop_released:
+            self._schedule_desktop_marker(
+                user_id=int(connection.user_id),
+                connection_id=normalized_connection_id,
+                active_until_ts=None,
+            )
         return {
             "user_id": int(connection.user_id),
             "last_connection": last_connection,
+            "desktop_released": bool(desktop_released),
         }
+
+    def set_desktop_client_state(self, connection_id: str, *, foreground: bool) -> Optional[dict]:
+        """Mark a connection as HUB Desktop and record its foreground activity.
+
+        Returns ``None`` for an unknown connection, otherwise
+        ``{"published": bool, "expires_in_ms": int}`` where ``published`` tells
+        the caller to notify the user's other sockets (state changed or the
+        shared marker was refreshed).
+        """
+        from backend.chat.desktop_presence import (
+            desktop_active_window_sec,
+            desktop_record_min_interval_sec,
+        )
+
+        window_sec = float(desktop_active_window_sec())
+        now_ts = _ts_now()
+        normalized_connection_id = str(connection_id or "").strip()
+        with self._lock:
+            connection = self._connections.get(normalized_connection_id)
+            if connection is None:
+                return None
+            was_active = float(connection.desktop_active_until or 0.0) > now_ts
+            state_changed = (
+                connection.client_kind != "desktop"
+                or bool(connection.desktop_foreground) != bool(foreground)
+            )
+            connection.client_kind = "desktop"
+            connection.desktop_foreground = bool(foreground)
+            if not foreground and not state_changed:
+                # Still in background: the window keeps running down from the
+                # moment the window left the foreground.
+                remaining = max(0.0, float(connection.desktop_active_until or 0.0) - now_ts)
+                return {"published": False, "expires_in_ms": int(remaining * 1000)}
+            if not foreground and not was_active:
+                # First report is "background": never was active, nothing to record.
+                return {"published": False, "expires_in_ms": 0}
+            connection.desktop_active_until = now_ts + window_sec
+            should_record = (
+                state_changed
+                or not was_active
+                or (now_ts - float(connection.desktop_recorded_at or 0.0)) >= desktop_record_min_interval_sec()
+            )
+            if should_record:
+                connection.desktop_recorded_at = now_ts
+            user_id = int(connection.user_id)
+            active_until_ts = float(connection.desktop_active_until)
+        if should_record:
+            self._schedule_desktop_marker(
+                user_id=user_id,
+                connection_id=normalized_connection_id,
+                active_until_ts=active_until_ts,
+            )
+        return {"published": bool(should_record), "expires_in_ms": int(window_sec * 1000)}
+
+    def local_desktop_active_remaining_sec(self, user_id: int) -> float:
+        """Desktop-active seconds left for ``user_id`` from this node's own sockets."""
+        normalized_user_id = int(user_id or 0)
+        now_ts = _ts_now()
+        remaining = 0.0
+        with self._lock:
+            for connection_id in list(self._user_connection_ids.get(normalized_user_id, set())):
+                connection = self._connections.get(connection_id)
+                if connection is None or connection.client_kind != "desktop":
+                    continue
+                remaining = max(remaining, float(connection.desktop_active_until or 0.0) - now_ts)
+        return max(0.0, remaining)
+
+    def _schedule_desktop_marker(
+        self,
+        *,
+        user_id: int,
+        connection_id: str,
+        active_until_ts: Optional[float],
+    ) -> None:
+        """Write/clear the shared desktop marker off the event loop (best effort)."""
+        from backend.chat.desktop_presence import get_desktop_presence_store
+
+        store = get_desktop_presence_store(self._realtime_transport)
+        if store is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        def _write() -> None:
+            try:
+                if active_until_ts is None:
+                    store.clear(node_id=self.node_id, connection_id=connection_id, user_id=int(user_id))
+                else:
+                    store.record(
+                        node_id=self.node_id,
+                        connection_id=connection_id,
+                        user_id=int(user_id),
+                        expires_at=datetime.fromtimestamp(float(active_until_ts), tz=timezone.utc),
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "chat.realtime desktop presence %s failed user_id=%s error=%s",
+                    "clear" if active_until_ts is None else "record",
+                    int(user_id),
+                    exc.__class__.__name__,
+                )
+
+        # Keep record/clear of one connection ordered: a late record must not
+        # resurrect a marker that disconnect already removed.
+        previous = self._desktop_marker_tasks.get(connection_id)
+
+        async def _run() -> None:
+            if previous is not None and not previous.done():
+                await asyncio.gather(previous, return_exceptions=True)
+            await asyncio.to_thread(_write)
+
+        task = loop.create_task(_run(), name=f"chat-desktop-presence:{connection_id}")
+        self._desktop_marker_tasks[connection_id] = task
+
+        def _forget(finished: asyncio.Task) -> None:
+            if self._desktop_marker_tasks.get(connection_id) is finished:
+                self._desktop_marker_tasks.pop(connection_id, None)
+
+        task.add_done_callback(_forget)
 
     def note_user_activity(self, user_id: int, *, at: Optional[datetime] = None) -> None:
         """Record that the user was active (send/typing). last_seen must not lag behind messages."""
@@ -1664,6 +1806,7 @@ class ChatRealtimeManager:
             return (
                 normalized.startswith("chat.typing.")
                 or normalized == "chat.presence.updated"
+                or normalized == "chat.desktop_presence"
                 or normalized.startswith("task_canvas.")
                 or normalized.startswith("tasks.presence.")
             )
@@ -1675,6 +1818,8 @@ class ChatRealtimeManager:
         if normalized_event_type == "chat.conversation.updated":
             return True
         if normalized_event_type == "chat.unread.summary":
+            return True
+        if normalized_event_type == "chat.desktop_presence":
             return True
         if normalized_event_type.startswith("task_canvas."):
             return True
@@ -1703,6 +1848,9 @@ class ChatRealtimeManager:
         if normalized_event_type == "chat.unread.summary":
             uid = int(target_user_id or 0 or int((payload or {}).get("user_id", 0) or 0))
             return f"inbox_meta:{uid}" if uid > 0 else "inbox_meta:0"
+        if normalized_event_type == "chat.desktop_presence":
+            uid = int(target_user_id or 0 or int((payload or {}).get("user_id", 0) or 0))
+            return f"desktop_presence:{uid}"
         if normalized_event_type.startswith("task_canvas."):
             connection_id = _normalize_text((payload or {}).get("connection_id"))
             target_connection_id = _normalize_text((payload or {}).get("target_connection_id"))

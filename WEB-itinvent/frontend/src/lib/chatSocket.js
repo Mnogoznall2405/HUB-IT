@@ -224,6 +224,10 @@ class ChatSocketClient {
     this.activeConversationIds = new Set();
     this.watchedPresenceUserIds = new Set();
     this.watchedPresenceUserIdsKey = '';
+    // HUB Desktop reports its window activity; browser tabs learn about it
+    // through chat.desktop_presence and silence their own notifications.
+    this.clientState = null;
+    this.desktopActiveUntil = 0;
     this.pendingRequests = new Map();
     this.reconnectAttempt = 0;
     this.manualClose = false;
@@ -269,6 +273,8 @@ class ChatSocketClient {
       this.activeConversationIds.clear();
       this.watchedPresenceUserIds.clear();
       this.watchedPresenceUserIdsKey = '';
+      this.desktopActiveUntil = 0;
+      this.clientState = null;
       this.close(true);
     }
   }
@@ -366,6 +372,26 @@ class ChatSocketClient {
     return Boolean(this.socket && this.socket.readyState === WebSocket.OPEN);
   }
 
+  /**
+   * HUB Desktop only: report window activity. Re-sent on every (re)connect;
+   * never queued offline — the next open sends the latest state.
+   */
+  reportClientState({ clientKind = 'desktop', foreground = false } = {}) {
+    if (clientKind !== 'desktop') return false;
+    this.clientState = { client_kind: 'desktop', foreground: Boolean(foreground) };
+    if (!CHAT_WS_ENABLED || !this.isOpen()) return false;
+    try {
+      this.socket.send(JSON.stringify({ type: 'chat.client_state', payload: { ...this.clientState } }));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  isDesktopActiveElsewhere(now = Date.now()) {
+    return Number(now) < Number(this.desktopActiveUntil || 0);
+  }
+
   sendTyping(conversationId, isTyping) {
     const normalizedConversationId = normalizeConversationId(conversationId);
     if (!normalizedConversationId) return;
@@ -435,6 +461,9 @@ class ChatSocketClient {
             user_ids: Array.from(this.watchedPresenceUserIds),
           },
         });
+      }
+      if (this.clientState) {
+        this.send({ type: 'chat.client_state', payload: { ...this.clientState } });
       }
     };
     socket.onmessage = (event) => {
@@ -791,6 +820,13 @@ class ChatSocketClient {
     }
     if (eventType === 'chat.presence.updated') {
       dispatchWindowEvent(CHAT_SOCKET_PRESENCE_UPDATED_EVENT, envelope);
+      return;
+    }
+    if (eventType === 'chat.desktop_presence') {
+      const expiresInMs = Math.max(0, Number(payload?.expires_in_ms) || 0);
+      this.desktopActiveUntil = payload?.active === true && expiresInMs > 0
+        ? Date.now() + expiresInMs
+        : 0;
       return;
     }
     if (eventType === 'chat.typing.started' || eventType === 'chat.typing.stopped') {

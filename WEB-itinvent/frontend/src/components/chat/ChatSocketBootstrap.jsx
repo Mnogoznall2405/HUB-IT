@@ -8,6 +8,7 @@ import {
   CHAT_SOCKET_SESSION_EXPIRED_EVENT,
   chatSocket,
 } from '../../lib/chatSocket';
+import { startChatDesktopClientStateReporting } from '../../lib/chatDesktopClientState';
 import { DESKTOP_LIFECYCLE_RECOVERY_EVENT } from '../../lib/desktopLifecycle';
 
 export const AUTH_TOKEN_REFRESHED_EVENT = 'auth-token-refreshed';
@@ -32,6 +33,11 @@ export default function ChatSocketBootstrap() {
       chatSocket.unsubscribeInbox();
       releaseSocket();
     };
+  }, [hasChatPermission]);
+
+  useEffect(() => {
+    if (!hasChatPermission || !CHAT_WS_ENABLED) return undefined;
+    return startChatDesktopClientStateReporting();
   }, [hasChatPermission]);
 
   useEffect(() => {

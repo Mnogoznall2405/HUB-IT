@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictBool, field_validator
 
 
 class ChatUserSummary(BaseModel):
@@ -769,3 +769,12 @@ class ChatFolderMutationResponse(BaseModel):
 ChatMessageResponse.model_rebuild()
 ChatUserSummary.model_rebuild()
 ChatMessageReadReceipt.model_rebuild()
+
+
+class ChatWsClientStatePayload(BaseModel):
+    """`chat.client_state` WS command: HUB Desktop reports its window activity."""
+
+    model_config = {"extra": "ignore"}
+
+    client_kind: Literal["desktop", "browser"]
+    foreground: StrictBool = False

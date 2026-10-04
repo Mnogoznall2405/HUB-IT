@@ -138,6 +138,7 @@ import {
   DESKTOP_OPEN_COMMAND_PALETTE_EVENT,
   DESKTOP_SHARED_FILES_EVENT,
   DESKTOP_WINDOW_STATE_CHANGED_EVENT,
+  isDesktopBridgeReady,
   isDesktopCapabilityAvailable,
   requestDesktopCheckForUpdates,
   requestDesktopOpenCurrentInBrowser,
@@ -939,6 +940,8 @@ function MainLayout({
         chatMessageSoundEnabled: normalizeNotificationPreferences(notificationPreferencesRef.current).chat_sound,
         isDesktopChatRoute,
         chatNotificationState: getChatNotificationState(),
+        desktopActiveElsewhere: chatSocket.isDesktopActiveElsewhere(),
+        isDesktopRuntime: isDesktopBridgeReady(),
       });
       if (plan.kind === 'ignore') return;
       if (plan.kind === 'suppress') {

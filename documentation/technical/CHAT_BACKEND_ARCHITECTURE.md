@@ -34,7 +34,8 @@ upload_*, attachment_media, realtime   Infra (existing)
 | `chat_formatting.py` | `_iso`, previews, safe names, probes |
 | `chat_delivery_state.py` | Unread counters, sender seen, conversation state |
 | `realtime_publisher.py` | Publish helpers for HTTP handlers (`_common.py` re-exports) |
-| `ws_commands.py` | WebSocket command dispatch (`subscribe`, `send_message`, `mark_read`, …) |
+| `ws_commands.py` | WebSocket command dispatch (`subscribe`, `send_message`, `mark_read`, `client_state`, …) |
+| `desktop_presence.py` | Distributed «HUB Desktop активен» markers for push routing |
 | `link_preview_service.py` | SSRF-safe link preview fetch + OG meta parse |
 
 ## API transport layer
@@ -63,6 +64,37 @@ upload_*, attachment_media, realtime   Infra (existing)
   tables and columns. Apply the existing Chat Alembic migrations before starting
   runtime. The existing non-production schema bootstrap remains available when
   the application is explicitly configured for development.
+
+## HUB Desktop активен — веб молчит
+
+Решение пользователя: пока HUB Desktop пользователя активен, браузер о сообщениях чата молчит.
+
+- **Признак.** Пользователь *desktop-активен*, если у него есть живое chat-WS-соединение от HUB
+  Desktop (WebView2) и окно Desktop было в foreground последние `CHAT_DESKTOP_ACTIVE_WINDOW_SEC`
+  (по умолчанию 120, минимум 60).
+- **Протокол.** Desktop (`lib/chatDesktopClientState.js`, только при готовом desktop bridge)
+  шлёт WS-команду `chat.client_state` `{client_kind: "desktop", foreground: bool}` при подключении,
+  при смене foreground (debounce 500 мс) и каждые 40 с в foreground. Payload валидирует
+  `ChatWsClientStatePayload` (strict bool, `client_kind ∈ {desktop, browser}`); команда проходит
+  общий WS rate limit. Старые клиенты без команды = не Desktop.
+- **Хранение между процессами.** `ChatRealtimeManager.set_desktop_client_state` держит состояние на
+  соединении и (не чаще окна/4 на соединение, сразу при смене состояния) пишет маркер в общий
+  presence-store текущего транспорта (`backend/chat/desktop_presence.py`):
+  `postgres` — строка в существующей `chat_realtime_presence` с `connection_id = desktop:<ws id>` и
+  `expires_at` = конец окна (обычные presence-чтения такие строки исключают; новая таблица и
+  миграция не нужны); `redis` — hash `CHAT_DESKTOP_PRESENCE_PREFIX:<user_id>`; `local` — только
+  память процесса. Disconnect удаляет маркер (запись/удаление одного соединения упорядочены),
+  остановка узла чистит строки узла, crash — маркер истекает сам.
+- **Push.** `ChatPushService.send_chat_message_notification` (единая точка для узлов чата и
+  `itinvent-chat-push-worker`) читает `desktop_active_remaining_sec`: при desktop-активности не
+  отправляет браузерный Web Push (включая @mention), FCM mobile-hub — только при
+  `CHAT_PUSH_SUPPRESS_MOBILE_WHEN_DESKTOP_ACTIVE=1`. Outbox-задача получает статус `suppressed`
+  (`suppressed: desktop_active`). Ошибка чтения → fail-open. Аварийное отключение:
+  `CHAT_PUSH_SUPPRESS_WEB_WHEN_DESKTOP_ACTIVE=0`.
+- **Вкладки.** Сокеты пользователя получают volatile-событие `chat.desktop_presence`
+  `{active, expires_in_ms}` (при записи маркера, при disconnect Desktop и при подключении новой
+  вкладки, если Desktop уже активен). `resolveChatMessageNotificationPlan` вне Desktop runtime
+  возвращает `suppress: 'desktop_active'` без звука; счётчики и бейджи обновляются как обычно.
 
 ## Task canvas realtime
 

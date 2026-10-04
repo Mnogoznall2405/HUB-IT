@@ -97,6 +97,27 @@ class ChatPushSendResult:
     sent: int = 0
     disabled: int = 0
     failed: int = 0
+    # Deliveries deliberately skipped by policy (e.g. HUB Desktop is active).
+    suppressed: int = 0
+    suppressed_reason: str = ""
+
+
+def _desktop_active_push_suppression(recipient_user_id: int) -> tuple[bool, bool]:
+    """(skip_web, skip_native) for a chat message push; fail-open on any error."""
+    try:
+        from backend.chat import desktop_presence
+
+        skip_web_enabled = desktop_presence.suppress_web_push_when_desktop_active()
+        skip_native_enabled = desktop_presence.suppress_mobile_push_when_desktop_active()
+        if not skip_web_enabled and not skip_native_enabled:
+            return False, False
+        remaining_sec = desktop_presence.desktop_active_remaining_sec(int(recipient_user_id))
+    except Exception:
+        logger.warning("chat push: desktop presence check failed", exc_info=True)
+        return False, False
+    if remaining_sec is None or remaining_sec <= 0:
+        return False, False
+    return bool(skip_web_enabled), bool(skip_native_enabled)
 
 
 class ChatPushService:
@@ -468,6 +489,8 @@ class ChatPushService:
         ttl: int = DEFAULT_PUSH_TTL_SEC,
         app_badge_count: Optional[int] = None,
         native_channel: Optional[str] = None,
+        skip_web_push: bool = False,
+        skip_native_push: bool = False,
     ) -> ChatPushSendResult:
         normalized_channel = _normalize_text(channel) or "system"
         if notification_preferences_service.is_quiet_hours_active(
@@ -488,7 +511,11 @@ class ChatPushService:
                     return ChatPushSendResult()
             except Exception:
                 logger.warning("mail push: failed to read notification preferences", exc_info=True)
-        subscriptions = self._get_active_subscriptions(recipient_user_id=int(recipient_user_id))
+        subscriptions = (
+            []
+            if skip_web_push
+            else self._get_active_subscriptions(recipient_user_id=int(recipient_user_id))
+        )
         headers: dict[str, Any] = {}
         if normalized_channel in {"chat", "mail", "tasks"}:
             headers["Urgency"] = "high"
@@ -535,28 +562,29 @@ class ChatPushService:
         native_tokens = 0
         # Browser/PWA and native registrations are independent clients. A browser
         # subscription must not silence FCM on the user's Android devices.
-        try:
-            from backend.services.native_push_service import native_push_service
+        if not skip_native_push:
+            try:
+                from backend.services.native_push_service import native_push_service
 
-            native_result = native_push_service.send_notification(
-                recipient_user_id=int(recipient_user_id),
-                title=payload["title"],
-                body=payload["body"],
-                channel=normalized_channel,
-                route=normalized_route,
-                tag=normalized_tag,
-                data=payload_data,
-                ttl=ttl,
-                app_badge_count=payload.get("app_badge_count"),
-                native_channel=native_channel,
-            )
-            native_tokens = int(getattr(native_result, "tokens", 0) or 0)
-            result.sent += int(getattr(native_result, "sent", 0) or 0)
-            result.disabled += int(getattr(native_result, "disabled", 0) or 0)
-            result.failed += int(getattr(native_result, "failed", 0) or 0)
-        except Exception:
-            logger.warning("Native push send failed", exc_info=True)
-            result.failed += 1
+                native_result = native_push_service.send_notification(
+                    recipient_user_id=int(recipient_user_id),
+                    title=payload["title"],
+                    body=payload["body"],
+                    channel=normalized_channel,
+                    route=normalized_route,
+                    tag=normalized_tag,
+                    data=payload_data,
+                    ttl=ttl,
+                    app_badge_count=payload.get("app_badge_count"),
+                    native_channel=native_channel,
+                )
+                native_tokens = int(getattr(native_result, "tokens", 0) or 0)
+                result.sent += int(getattr(native_result, "sent", 0) or 0)
+                result.disabled += int(getattr(native_result, "disabled", 0) or 0)
+                result.failed += int(getattr(native_result, "failed", 0) or 0)
+            except Exception:
+                logger.warning("Native push send failed", exc_info=True)
+                result.failed += 1
 
         subscription_count = web_subscription_count + native_tokens
         logger.info(
@@ -641,6 +669,14 @@ class ChatPushService:
                 "message": normalized_message_id,
             })
             route = f"/chat?{route_query}"
+        skip_web_push, skip_native_push = _desktop_active_push_suppression(int(recipient_user_id))
+        if skip_web_push and skip_native_push:
+            logger.info(
+                "APP_PUSH_SKIP desktop_active user_id=%s message_id=%s",
+                int(recipient_user_id),
+                normalized_message_id,
+            )
+            return ChatPushSendResult(suppressed=1, suppressed_reason="desktop_active")
         notification_data = {
             "conversation_id": normalized_conversation_id,
             "message_id": normalized_message_id,
@@ -659,7 +695,17 @@ class ChatPushService:
             data=notification_data,
             ttl=CHAT_PUSH_TTL_SEC,
             native_channel=_fcm_channel(resolved_conversation_kind),
+            skip_web_push=skip_web_push,
+            skip_native_push=skip_native_push,
         )
+        if skip_web_push:
+            logger.info(
+                "APP_PUSH_SKIP web desktop_active user_id=%s message_id=%s",
+                int(recipient_user_id),
+                normalized_message_id,
+            )
+            result.suppressed += 1
+            result.suppressed_reason = "desktop_active"
         if int(result.sent or 0) > 0:
             self._record_chat_push_delivery(
                 recipient_user_id=int(recipient_user_id),
