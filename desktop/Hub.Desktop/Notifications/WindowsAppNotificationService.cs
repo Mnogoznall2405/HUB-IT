@@ -73,6 +73,18 @@ public sealed class WindowsAppNotificationService : IDesktopNotificationService,
                         .AddArgument("eventId", request.Id))
                 .BuildNotification();
 
+            var tag = DesktopNotificationGrouping.GetTag(request.Id);
+            if (tag is not null)
+            {
+                notification.Tag = tag;
+            }
+
+            var group = DesktopNotificationGrouping.GetGroup(request.Route);
+            if (group is not null)
+            {
+                notification.Group = group;
+            }
+
             _manager.Show(notification);
             DesktopLog.Info("Windows app notification shown");
             return true;
