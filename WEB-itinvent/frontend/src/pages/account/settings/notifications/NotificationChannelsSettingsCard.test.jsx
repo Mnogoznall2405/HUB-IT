@@ -1,7 +1,20 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { NotificationChannelsSettingsCard } from './NotificationChannelsSettingsCard';
+import { NotificationProvider } from '../../../../contexts/NotificationContext';
+import { NotificationChannelsSettingsCard as Card } from './NotificationChannelsSettingsCard';
+
+function NotificationChannelsSettingsCard(props) {
+  return (
+    <NotificationProvider>
+      <Card {...props} />
+    </NotificationProvider>
+  );
+}
+
+const serverError = (detail) => Object.assign(new Error('Request failed with status code 500'), {
+  response: { status: 500, data: { detail } },
+});
 
 const mocks = vi.hoisted(() => ({
   getPreferences: vi.fn(),
@@ -105,5 +118,49 @@ describe('NotificationChannelsSettingsCard', () => {
     expect(screen.getByRole('checkbox', { name: 'Групповые беседы' })).not.toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Диалоги задач' })).not.toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Уведомления ИИ-агентов' })).not.toBeChecked();
+  });
+
+  it('rolls the switch back and shows an error toast when saving fails', async () => {
+    mocks.updatePreferences.mockRejectedValueOnce(serverError('Сервис настроек недоступен'));
+    render(<NotificationChannelsSettingsCard />);
+
+    const mailSwitch = await screen.findByRole('checkbox', { name: 'Почта' });
+    expect(mailSwitch).toBeChecked();
+    fireEvent.click(mailSwitch);
+    expect(mailSwitch).not.toBeChecked(); // optimistic
+
+    expect(await screen.findByText('Сервис настроек недоступен')).toBeInTheDocument();
+    await waitFor(() => expect(mailSwitch).toBeChecked());
+    expect(mailSwitch).not.toBeDisabled();
+  });
+
+  it('rolls back every chat category when the master switch fails', async () => {
+    mocks.updatePreferences.mockRejectedValueOnce(serverError('boom'));
+    render(<NotificationChannelsSettingsCard />);
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Получать уведомления о чатах' }));
+
+    expect(await screen.findByText('boom')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole('checkbox', { name: 'Получать уведомления о чатах' })).toBeChecked();
+    });
+    expect(screen.getByRole('checkbox', { name: 'Личные сообщения' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Уведомления ИИ-агентов' })).toBeChecked();
+  });
+
+  it('shows a load error with retry instead of default switches', async () => {
+    mocks.getPreferences.mockRejectedValueOnce(serverError('db down'));
+    render(<NotificationChannelsSettingsCard />);
+
+    expect(await screen.findByText('Не удалось загрузить настройки уведомлений.')).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Почта' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Повторить' }));
+
+    await waitFor(() => {
+      expect(screen.queryByText('Не удалось загрузить настройки уведомлений.')).not.toBeInTheDocument();
+    });
+    expect(screen.getByRole('checkbox', { name: 'Почта' })).not.toBeDisabled();
+    expect(mocks.getPreferences).toHaveBeenCalledTimes(2);
   });
 });

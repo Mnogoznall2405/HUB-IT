@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
+  Button,
   FormControlLabel,
   FormGroup,
   Paper,
@@ -9,6 +11,7 @@ import {
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import { settingsAPI } from '../../../../api/client';
+import { useNotification } from '../../../../contexts/NotificationContext';
 import {
   dispatchNotificationPreferencesChanged,
   normalizeNotificationPreferences,
@@ -33,17 +36,30 @@ const CHAT_NOTIFICATION_CHANNELS = [
 export function NotificationChannelsSettingsCard({ embedded = false }) {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  const { notifyApiError } = useNotification();
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
   const [channels, setChannels] = useState(() => normalizeNotificationPreferences());
+  const channelsRef = useRef(channels);
+  channelsRef.current = channels;
+  // Номер последнего изменения по каждому полю и общий счётчик запросов:
+  // откатываем поле, только если ошибка пришла по его последнему изменению,
+  // а ответ сервера применяем, только если после него не было новых PATCH.
+  const fieldVersionRef = useRef({});
+  const requestSeqRef = useRef(0);
+  const pendingSavesRef = useRef(0);
 
   const loadPreferences = useCallback(async () => {
     setLoading(true);
+    setLoadError(false);
     try {
       const data = await settingsAPI.getNotificationPreferences();
       const nextChannels = normalizeNotificationPreferences(data?.channels);
       setChannels(nextChannels);
       dispatchNotificationPreferencesChanged(nextChannels);
+    } catch {
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -64,19 +80,43 @@ export function NotificationChannelsSettingsCard({ embedded = false }) {
         chat_ai: enabled,
       }
       : { [key]: enabled };
+    const affectedKeys = Object.keys(optimisticPatch);
+    const previousValues = {};
+    const versions = {};
+    affectedKeys.forEach((field) => {
+      previousValues[field] = Boolean(channelsRef.current?.[field]);
+      versions[field] = (fieldVersionRef.current[field] || 0) + 1;
+      fieldVersionRef.current[field] = versions[field];
+    });
+    requestSeqRef.current += 1;
+    const requestSeq = requestSeqRef.current;
     setChannels((prev) => ({ ...prev, ...optimisticPatch }));
+    pendingSavesRef.current += 1;
     setSaving(true);
     try {
       const data = await settingsAPI.updateNotificationPreferences({ [key]: enabled });
-      const nextChannels = normalizeNotificationPreferences(data?.channels);
-      setChannels(nextChannels);
-      dispatchNotificationPreferencesChanged(nextChannels);
+      if (requestSeq === requestSeqRef.current) {
+        const nextChannels = normalizeNotificationPreferences(data?.channels);
+        setChannels(nextChannels);
+        dispatchNotificationPreferencesChanged(nextChannels);
+      }
+    } catch (error) {
+      const rollback = {};
+      affectedKeys.forEach((field) => {
+        if (fieldVersionRef.current[field] === versions[field]) rollback[field] = previousValues[field];
+      });
+      if (Object.keys(rollback).length > 0) {
+        setChannels((prev) => ({ ...prev, ...rollback }));
+      }
+      notifyApiError(error, 'Не удалось сохранить настройку уведомлений.', { source: 'settings' });
     } finally {
-      setSaving(false);
+      pendingSavesRef.current = Math.max(0, pendingSavesRef.current - 1);
+      if (pendingSavesRef.current === 0) setSaving(false);
     }
-  }, []);
+  }, [notifyApiError]);
 
   const chatEnabled = CHAT_NOTIFICATION_CHANNELS.some(([key]) => Boolean(channels[key]));
+  const switchesLocked = loading || saving || loadError;
 
   return (
     <SectionCard
@@ -86,6 +126,18 @@ export function NotificationChannelsSettingsCard({ embedded = false }) {
       contentSx={{ p: 1.5 }}
     >
       <Stack spacing={1.1}>
+        {loadError ? (
+          <Alert
+            severity="error"
+            action={(
+              <Button color="inherit" size="small" onClick={() => { void loadPreferences(); }} disabled={loading}>
+                Повторить
+              </Button>
+            )}
+          >
+            Не удалось загрузить настройки уведомлений.
+          </Alert>
+        ) : null}
         <Paper
           variant="outlined"
           sx={getOfficeSubtlePanelSx(ui, {
@@ -102,7 +154,7 @@ export function NotificationChannelsSettingsCard({ embedded = false }) {
                     name="chat"
                     checked={chatEnabled}
                     onChange={(event) => handleToggle('chat', event?.target?.checked)}
-                    disabled={loading || saving}
+                    disabled={switchesLocked}
                   />
                 )}
                 label="Получать уведомления о чатах"
@@ -124,7 +176,7 @@ export function NotificationChannelsSettingsCard({ embedded = false }) {
                         name={key}
                         checked={Boolean(channels[key])}
                         onChange={(event) => handleToggle(key, event?.target?.checked)}
-                        disabled={loading || saving || !chatEnabled}
+                        disabled={switchesLocked || !chatEnabled}
                       />
                     )}
                     label={label}
@@ -137,7 +189,7 @@ export function NotificationChannelsSettingsCard({ embedded = false }) {
                       name="chat_sound"
                       checked={Boolean(channels.chat_sound)}
                       onChange={(event) => handleToggle('chat_sound', event?.target?.checked)}
-                      disabled={loading || saving || !chatEnabled}
+                      disabled={switchesLocked || !chatEnabled}
                     />
                   )}
                   label="Звук сообщений"
@@ -159,7 +211,7 @@ export function NotificationChannelsSettingsCard({ embedded = false }) {
                         name={key}
                         checked={Boolean(channels[key])}
                         onChange={(event) => handleToggle(key, event?.target?.checked)}
-                        disabled={loading || saving}
+                        disabled={switchesLocked}
                       />
                     )}
                     label={label}
