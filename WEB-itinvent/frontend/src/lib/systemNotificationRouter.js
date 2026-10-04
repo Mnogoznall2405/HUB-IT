@@ -62,7 +62,22 @@ function canShowBrowserNotification() {
     && window.Notification.permission === 'granted';
 }
 
-export function routeSystemNotification(value, { onNavigate, source } = {}) {
+function resolveBrowserNotificationTag(browserTag, fallbackId) {
+  const normalizedTag = typeof browserTag === 'string' ? browserTag.trim() : '';
+  return normalizedTag && normalizedTag.length <= 128 && ID_PATTERN.test(normalizedTag)
+    ? normalizedTag
+    : fallbackId;
+}
+
+// browserTag/renotify only change how the browser Notification is displayed
+// (e.g. one replaceable notification per chat). Delivery dedup stays keyed by
+// envelope.id, and the desktop bridge payload is unchanged.
+export function routeSystemNotification(value, {
+  onNavigate,
+  source,
+  browserTag,
+  renotify = false,
+} = {}) {
   const envelope = createSystemNotificationEnvelope(value);
   if (!envelope || hasDeliveredSystemNotification(envelope.id) || pendingNativeIds.has(envelope.id)) return null;
 
@@ -87,8 +102,8 @@ export function routeSystemNotification(value, { onNavigate, source } = {}) {
   try {
     const notification = new window.Notification(envelope.title, {
       body: envelope.body,
-      tag: envelope.id,
-      renotify: false,
+      tag: resolveBrowserNotificationTag(browserTag, envelope.id),
+      renotify: renotify === true && resolveBrowserNotificationTag(browserTag, '') !== '',
     });
     markSystemNotificationDelivered(envelope.id);
     notification.onclick = () => {

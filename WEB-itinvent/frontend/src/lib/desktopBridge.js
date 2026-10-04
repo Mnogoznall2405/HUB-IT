@@ -6,6 +6,7 @@ const READY_MESSAGE_TYPE = 'desktop.ready';
 const HOST_READY_MESSAGE_TYPE = 'desktop.hostReady';
 const CAPABILITIES_MESSAGE_TYPE = 'desktop.capabilities';
 const SHOW_NOTIFICATION_MESSAGE_TYPE = 'notification.show';
+const CLEAR_NOTIFICATION_GROUP_MESSAGE_TYPE = 'notification.clearGroup';
 const SHELL_STATUS_MESSAGE_TYPE = 'shell.status';
 const QUICK_ROUTES_MESSAGE_TYPE = 'shell.quickRoutes';
 const PRINT_CURRENT_DOCUMENT_MESSAGE_TYPE = 'document.printCurrent';
@@ -88,6 +89,9 @@ export const DESKTOP_WINDOW_STATE_CHANGED_EVENT = 'itinvent:desktop-window-state
 export const DESKTOP_OPEN_COMMAND_PALETTE_EVENT = 'itinvent:desktop-open-command-palette';
 export const DESKTOP_CAPABILITIES_CHANGED_EVENT = 'itinvent:desktop-capabilities-changed';
 export const DESKTOP_EQUIPMENT_QR_PRINT_CAPABILITY = 'equipment-qr-print';
+export const DESKTOP_NOTIFICATION_CLEAR_GROUP_CAPABILITY = 'notification-clear-group';
+const MAXIMUM_NOTIFICATION_GROUP_LENGTH = 64;
+const NOTIFICATION_GROUP_PATTERN = /^(?:chat|task):[A-Za-z0-9._:-]{1,59}$/u;
 export const DESKTOP_MAIL_COMPOSE_COMPLETED_EVENT = 'itinvent:desktop-mail-compose-completed';
 export const DESKTOP_SYSTEM_RESUME_EVENT = 'desktop.system.resume';
 export const DESKTOP_NETWORK_CHANGED_EVENT = 'desktop.network.changed';
@@ -893,6 +897,32 @@ export function showDesktopNotification({ id, title, body, route, onResult } = {
     return true;
   } catch {
     pendingNotificationResults.get(id)?.(false);
+    return false;
+  }
+}
+
+export function isValidDesktopNotificationGroup(group) {
+  return typeof group === 'string'
+    && group.length <= MAXIMUM_NOTIFICATION_GROUP_LENGTH
+    && NOTIFICATION_GROUP_PATTERN.test(group);
+}
+
+// Removes every native notification of a chat/task group. Old hosts without
+// the capability would reject the unknown message type, so it is not sent.
+export function clearDesktopNotificationGroup(group) {
+  if (!isDesktopCapabilityAvailable(DESKTOP_NOTIFICATION_CLEAR_GROUP_CAPABILITY)) return false;
+  if (!isValidDesktopNotificationGroup(group)) return false;
+
+  try {
+    const transport = getWebViewTransport();
+    if (!transport) return false;
+    transport.postMessage({
+      type: CLEAR_NOTIFICATION_GROUP_MESSAGE_TYPE,
+      version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+      group,
+    });
+    return true;
+  } catch {
     return false;
   }
 }

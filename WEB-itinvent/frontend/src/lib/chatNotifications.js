@@ -13,6 +13,10 @@ import {
   hasDeliveredSystemNotification,
   routeSystemNotification,
 } from './systemNotificationRouter';
+import {
+  buildChatConversationNotificationTag,
+  rememberChatConversationNotification,
+} from './chatNotificationClear';
 import { buildTaskDetailPath } from './taskNavigation';
 
 export const CHAT_NOTIFICATIONS_ENABLED_KEY = 'itinvent_chat_notifications_enabled';
@@ -626,13 +630,20 @@ export function createChatSystemNotification({
     created_at: Number.isFinite(Date.parse(createdAt)) ? String(createdAt) : new Date().toISOString(),
     urgency: normalizedUrgency,
   });
+  // Envelope id stays per message (delivery dedup, desktop bridge id); the
+  // browser notification is replaced per conversation and alerts again.
   const result = routeSystemNotification(envelope, {
     onNavigate: typeof onNavigate === 'function'
       ? (target) => onNavigate(target)
       : undefined,
+    browserTag: buildChatConversationNotificationTag(normalizedConversationId),
+    renotify: true,
   });
   if (result?.delivery === 'desktop') {
     return { queued: false, native: true, messageId: normalizedMessageId };
+  }
+  if (result?.delivery === 'browser') {
+    rememberChatConversationNotification(normalizedConversationId, result.notification);
   }
   return result?.delivery === 'browser'
     ? { queued: true, messageId: normalizedMessageId }

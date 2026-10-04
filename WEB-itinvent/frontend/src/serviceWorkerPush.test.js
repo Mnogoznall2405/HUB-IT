@@ -15,12 +15,18 @@ describe('service worker background push', () => {
     listeners = {};
     visibleNotifications = [];
     showNotification = vi.fn(async (title, options) => {
-      visibleNotifications.push({
+      // Browsers replace a visible notification that has the same tag.
+      visibleNotifications = visibleNotifications.filter((item) => item.tag !== options.tag);
+      const notification = {
         title,
         tag: options.tag,
+        renotify: options.renotify,
         data: options.data,
-        close: vi.fn(),
-      });
+        close: vi.fn(() => {
+          visibleNotifications = visibleNotifications.filter((item) => item !== notification);
+        }),
+      };
+      visibleNotifications.push(notification);
     });
 
     workerSelf = {
@@ -66,6 +72,88 @@ describe('service worker background push', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  const dispatchChatPush = ({ messageId, conversationId = '7' }) => {
+    let lifetimePromise;
+    listeners.push({
+      data: {
+        json: () => ({
+          title: 'New chat message',
+          body: `Message ${messageId}`,
+          channel: 'chat',
+          tag: `chat:msg:${messageId}`,
+          data: {
+            route: `/chat?conversation=${conversationId}&message=${messageId}`,
+            ...(conversationId ? { conversation_id: conversationId } : {}),
+            message_id: messageId,
+          },
+        }),
+      },
+      waitUntil: (promise) => {
+        lifetimePromise = promise;
+      },
+    });
+    return lifetimePromise;
+  };
+
+  it('keeps one re-alerting notification per chat and still suppresses a repeated message', async () => {
+    await dispatchChatPush({ messageId: '50' });
+    await dispatchChatPush({ messageId: '51' });
+
+    expect(showNotification).toHaveBeenCalledTimes(2);
+    expect(visibleNotifications).toHaveLength(1);
+    expect(visibleNotifications[0]).toEqual(expect.objectContaining({
+      tag: 'chat:conv:7',
+      renotify: true,
+      data: expect.objectContaining({ conversation_id: '7', message_id: '51' }),
+    }));
+
+    // After the in-memory window, the visible notification still dedupes by message_id.
+    await vi.advanceTimersByTimeAsync(61_000);
+    await dispatchChatPush({ messageId: '51' });
+    expect(showNotification).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the per-message tag without renotify when conversation_id is missing', async () => {
+    await dispatchChatPush({ messageId: '52', conversationId: '' });
+
+    expect(visibleNotifications[0]).toEqual(expect.objectContaining({
+      tag: 'chat:msg:52',
+      renotify: false,
+    }));
+  });
+
+  it('closes only the opened chat notifications on a same-origin clear request', async () => {
+    await dispatchChatPush({ messageId: '60', conversationId: '7' });
+    await dispatchChatPush({ messageId: '61', conversationId: '8' });
+    const [chatSeven, chatEight] = visibleNotifications;
+
+    let foreignPromise;
+    listeners.message({
+      origin: 'https://evil.example',
+      data: { type: 'itinvent:chat-clear-conversation-notifications', conversation_id: '7' },
+      waitUntil: (promise) => {
+        foreignPromise = promise;
+      },
+    });
+    await foreignPromise;
+    expect(chatSeven.close).not.toHaveBeenCalled();
+
+    let clearPromise;
+    listeners.message({
+      origin: 'https://hub.example',
+      source: { url: 'https://hub.example/chat?conversation=7' },
+      data: { type: 'itinvent:chat-clear-conversation-notifications', conversation_id: '7' },
+      waitUntil: (promise) => {
+        clearPromise = promise;
+      },
+    });
+    await clearPromise;
+
+    expect(chatSeven.close).toHaveBeenCalledTimes(1);
+    expect(chatEight.close).not.toHaveBeenCalled();
+    expect(visibleNotifications).toEqual([chatEight]);
   });
 
   it('keeps a background chat notification visible for the operating system', async () => {

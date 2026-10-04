@@ -54,6 +54,7 @@ import useChatHealthBootstrap from './useChatHealthBootstrap';
 import useChatThreadPrefetch from './useChatThreadPrefetch';
 import useChatComposerSelection from './useChatComposerSelection';
 import useChatMarkReadLive from './useChatMarkReadLive';
+import useChatConversationNotificationClear from './useChatConversationNotificationClear';
 import useChatActiveConversation from './useChatActiveConversation';
 import useChatAiPresentation from './useChatAiPresentation';
 import useChatConversationDetailService from './useChatConversationDetailService';
@@ -912,6 +913,14 @@ export function ChatPageContent({
     markRead: markConversationReadLive,
     onOptimisticRead: handleOptimisticRead,
     onReadSyncError: handleReadReceiptsSyncError,
+  });
+
+  // "One notification per chat": opening the chat (or returning to it) removes
+  // its system notifications. On phones only the thread screen counts.
+  useChatConversationNotificationClear({
+    conversationId: activeConversationId,
+    taskId: embedded ? (embeddedTaskId || activeTaskConversationTaskId) : activeTaskConversationTaskId,
+    threadVisible: embedded || !isMobile || resolvedMobileView === 'thread',
   });
 
   const { revealMessage } = useChatRevealMessage({

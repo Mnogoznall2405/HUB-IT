@@ -145,6 +145,65 @@ function buildChatNotificationTag(messageId) {
   return `chat:msg:${normalizedMessageId}`;
 }
 
+const CHAT_CONVERSATION_NOTIFICATION_TAG_PREFIX = 'chat:conv:';
+
+// "One notification per chat": a chat push with conversation_id shares a
+// per-conversation tag, so the newest message replaces the previous one and
+// alerts again (renotify). Without conversation_id the legacy per-message tag
+// is kept. Duplicate suppression stays per message via data.message_id.
+function buildChatConversationNotificationTag(conversationId) {
+  const normalizedConversationId = String(conversationId || '').trim();
+  if (!normalizedConversationId) return '';
+  return `${CHAT_CONVERSATION_NOTIFICATION_TAG_PREFIX}${normalizedConversationId}`;
+}
+
+function resolveChatPushNotificationTag(conversationId, messageId) {
+  return buildChatConversationNotificationTag(conversationId) || buildChatNotificationTag(messageId);
+}
+
+function matchesChatNotificationConversationId(notification, conversationId) {
+  const normalizedConversationId = String(conversationId || '').trim();
+  if (!normalizedConversationId || !notification) return false;
+  const dataConversationId = String(notification?.data?.conversation_id || '').trim();
+  const itemTag = String(notification?.tag || '').trim();
+  return dataConversationId === normalizedConversationId
+    || itemTag === buildChatConversationNotificationTag(normalizedConversationId);
+}
+
+async function closeChatConversationNotifications(conversationId) {
+  const normalizedConversationId = String(conversationId || '').trim();
+  if (!normalizedConversationId || typeof self.registration?.getNotifications !== 'function') return 0;
+  let notifications = [];
+  try {
+    notifications = await self.registration.getNotifications();
+  } catch {
+    return 0;
+  }
+  let closedCount = 0;
+  (Array.isArray(notifications) ? notifications : []).forEach((item) => {
+    if (!matchesChatNotificationConversationId(item, normalizedConversationId)) return;
+    try {
+      item.close?.();
+      closedCount += 1;
+    } catch {
+      // Closing a notification is best-effort.
+    }
+  });
+  return closedCount;
+}
+
+function isTrustedClientMessage(event) {
+  const origin = String(event?.origin || '').trim();
+  if (origin && origin !== self.location.origin) return false;
+  const sourceUrl = String(event?.source?.url || '').trim();
+  if (!sourceUrl) return true;
+  try {
+    return new URL(sourceUrl, self.location.origin).origin === self.location.origin;
+  } catch {
+    return false;
+  }
+}
+
 function matchesChatNotificationMessageId(notification, messageId) {
   const normalizedMessageId = String(messageId || '').trim();
   if (!normalizedMessageId || !notification) return false;
@@ -942,7 +1001,7 @@ self.addEventListener('push', (event) => {
     const tag = String(
       payload?.tag
       || (pushChannel === 'chat' && pushMessageId
-        ? buildChatNotificationTag(pushMessageId)
+        ? resolveChatPushNotificationTag(pushConversationId, pushMessageId)
         : `${pushChannel}:${pushConversationId || pushMessageId || String(data?.notification_id || '').trim()}`)
     ).trim() || 'system';
     if (pushChannel === 'chat' && pushMessageId) {
@@ -1029,7 +1088,7 @@ self.addEventListener('push', (event) => {
       const notificationActions = normalizeNotificationActions(payload?.actions, route);
       const vibratePattern = normalizeVibratePattern(payload?.vibrate);
       const normalizedTag = pushChannel === 'chat' && pushMessageId
-        ? buildChatNotificationTag(pushMessageId)
+        ? resolveChatPushNotificationTag(pushConversationId, pushMessageId)
         : tag;
       const notificationOptions = {
         body,
@@ -1051,7 +1110,10 @@ self.addEventListener('push', (event) => {
       }
       if (pushChannel === 'chat') {
         notificationOptions.requireInteraction = false;
-        notificationOptions.renotify = false;
+        // A per-conversation tag replaces the previous notification of the
+        // chat; renotify makes the replacement alert again. Per-message tags
+        // are unique, so renotify stays off for them.
+        notificationOptions.renotify = normalizedTag.startsWith(CHAT_CONVERSATION_NOTIFICATION_TAG_PREFIX);
       }
       if (payload?.require_interaction === true && pushChannel !== 'chat') {
         notificationOptions.requireInteraction = true;
@@ -1175,6 +1237,15 @@ self.addEventListener('message', (event) => {
       await broadcastRuntimeState('update-available');
       await self.skipWaiting();
     })());
+    return;
+  }
+
+  if (messageType === 'itinvent:chat-clear-conversation-notifications') {
+    if (!isTrustedClientMessage(event)) return;
+    const conversationId = String(event?.data?.conversation_id || '').trim();
+    if (!conversationId) return;
+    const clearPromise = closeChatConversationNotifications(conversationId);
+    if (typeof event?.waitUntil === 'function') event.waitUntil(clearPromise);
     return;
   }
 

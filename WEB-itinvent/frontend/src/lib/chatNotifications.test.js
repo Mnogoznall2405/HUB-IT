@@ -133,7 +133,7 @@ describe('chatNotifications', () => {
     });
   });
 
-  it('deduplicates foreground browser notifications per message and deep-links on click', async () => {
+  it('deduplicates foreground browser notifications per message, replaces them per chat and deep-links on click', async () => {
     const { createChatSystemNotification } = await import('./chatNotifications');
     const onNavigate = vi.fn();
 
@@ -155,10 +155,21 @@ describe('chatNotifications', () => {
     expect(first).toEqual(expect.objectContaining({ queued: true, messageId: 'msg-1' }));
     expect(second).toBeNull();
     expect(notificationInstances).toHaveLength(1);
-    expect(notificationInstances[0].options.tag).toBe('chat:msg:msg-1');
+    expect(notificationInstances[0].options).toMatchObject({ tag: 'chat:conv:conv-1', renotify: true });
 
     notificationInstances[0].onclick?.();
     expect(onNavigate).toHaveBeenCalledWith('/chat?conversation=conv-1&message=msg-1');
+
+    const next = createChatSystemNotification({
+      messageId: 'msg-2',
+      title: 'Sender',
+      body: 'Next message',
+      conversationId: 'conv-1',
+      onNavigate,
+    });
+    expect(next).toEqual(expect.objectContaining({ queued: true, messageId: 'msg-2' }));
+    expect(notificationInstances).toHaveLength(2);
+    expect(notificationInstances[1].options).toMatchObject({ tag: 'chat:conv:conv-1', renotify: true });
   });
 
   it('builds the canonical task discussion route for task-chat notifications', async () => {
