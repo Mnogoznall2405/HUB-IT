@@ -2318,8 +2318,13 @@ useEffect(() => {
         sx={{
           position: 'fixed',
           top: 'var(--app-shell-safe-top-offset)',
-          left: 0,
+          // Same offset as the AppBar: on sm+ the permanent Drawer sits above
+          // this layer and would otherwise cover the banner's start.
+          left: { xs: 0, sm: effectiveSidebarCollapsed ? `${DRAWER_RAIL_WIDTH}px` : DRAWER_WIDTH_CSS_VAR },
           right: 0,
+          transition: (theme) => theme.transitions.create('left', {
+            duration: theme.transitions.duration.standard,
+          }),
           zIndex: theme.zIndex.appBar + 1,
           pointerEvents: 'none',
           '& > *': {
