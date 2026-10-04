@@ -35,6 +35,9 @@ const RATE_LIMITED_CLOSE_CODE = 4429;
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000];
 const RECONNECT_JITTER_RATIO = 0.25;
 const STABLE_CONNECTION_MS = 5_000;
+// A handshake stuck in CONNECTING (TCP accepted, upgrade never completed) would
+// otherwise block connect()/probes forever: give up and reconnect with backoff.
+const CONNECT_TIMEOUT_MS = 10_000;
 const MAX_QUEUED_MESSAGES = 100;
 const NON_RECONNECTABLE_CLOSE_CODES = new Set([1008, 4000, 4400, 4401, 4403, 4404, 4503]);
 const VOLATILE_OFFLINE_COMMANDS = new Set(['chat.typing', 'chat.ping']);
@@ -215,6 +218,7 @@ class ChatSocketClient {
     this.connectionState = 'disconnected';
     this.retainCount = 0;
     this.reconnectTimer = null;
+    this.connectTimeoutTimer = null;
     this.heartbeatTimer = null;
     this.wantInbox = false;
     this.activeConversationIds = new Set();
@@ -402,9 +406,11 @@ class ChatSocketClient {
     const socket = new window.WebSocket(url);
     this.socket = socket;
     this.socketOpenedAt = null;
+    this.armConnectTimeout(socket);
     this.setStatus(this.reconnectAttempt > 0 ? 'reconnecting' : 'connecting');
     socket.onopen = () => {
       if (this.socket !== socket) return;
+      this.clearConnectTimeout();
       this.resumeRecoverInFlight = false;
       this.missedPongs = 0;
       this.rateLimitRetryAfterMs = 0;
@@ -437,11 +443,13 @@ class ChatSocketClient {
     };
     socket.onerror = () => {
       if (this.socket !== socket) return;
+      this.clearConnectTimeout();
       this.resumeRecoverInFlight = false;
       this.setStatus('disconnected');
     };
     socket.onclose = (event) => {
       if (this.socket !== socket) return;
+      this.clearConnectTimeout();
       this.resumeRecoverInFlight = false;
       this.socket = null;
       this.stopHeartbeat();
@@ -514,6 +522,7 @@ class ChatSocketClient {
       this.reconnectTimer = null;
     }
     this.stopHeartbeat();
+    this.clearConnectTimeout();
     const socket = this.socket;
     this.socket = null;
     if (socket) {
@@ -542,6 +551,7 @@ class ChatSocketClient {
       this.reconnectTimer = null;
     }
     this.stopHeartbeat();
+    this.clearConnectTimeout();
     const socket = this.socket;
     this.socket = null;
     if (socket) {
@@ -796,6 +806,54 @@ class ChatSocketClient {
     }
   }
 
+  armConnectTimeout(socket) {
+    this.clearConnectTimeout();
+    this.connectTimeoutTimer = window.setTimeout(() => {
+      this.connectTimeoutTimer = null;
+      this.handleConnectTimeout(socket);
+    }, CONNECT_TIMEOUT_MS);
+  }
+
+  clearConnectTimeout() {
+    if (this.connectTimeoutTimer) {
+      window.clearTimeout(this.connectTimeoutTimer);
+      this.connectTimeoutTimer = null;
+    }
+  }
+
+  handleConnectTimeout(socket) {
+    if (this.socket !== socket || socket.readyState !== WebSocket.CONNECTING) return;
+    // #region agent log
+    emitAgentDebugLog({
+      location: 'chatSocket.js:connectTimeout',
+      message: 'websocket handshake timed out, dropping socket',
+      hypothesisId: 'H1',
+      data: {
+        timeoutMs: CONNECT_TIMEOUT_MS,
+        reconnectAttempt: this.reconnectAttempt,
+        retainCount: this.retainCount,
+      },
+    });
+    // #endregion
+    // Detach first so a late open/close of the abandoned socket cannot touch state.
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onerror = null;
+    socket.onclose = null;
+    try {
+      socket.close();
+    } catch {
+      // Ignore close errors on a half-open transport.
+    }
+    this.socket = null;
+    this.resumeRecoverInFlight = false;
+    this.rejectPendingRequests(new Error('Chat websocket connect timed out'));
+    this.setStatus('disconnected');
+    if (!this.manualClose && !this.authBlocked && this.retainCount > 0) {
+      this.scheduleReconnect();
+    }
+  }
+
   scheduleReconnect(minDelayMs = 0) {
     if (this.reconnectTimer || this.retainCount <= 0) return;
     const baseDelay = RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)];
@@ -865,6 +923,7 @@ class ChatSocketClient {
   // their timeout to notice the socket is gone.
   forceSocketReconnect() {
     this.stopHeartbeat();
+    this.clearConnectTimeout();
     const socket = this.socket;
     if (socket) {
       try {
@@ -918,6 +977,7 @@ class ChatSocketClient {
       // Stale WS 401 from before sleep must not block reconnect after a live session refresh.
       this.authBlocked = false;
       this.stopHeartbeat();
+      this.clearConnectTimeout();
       if (this.reconnectTimer) {
         window.clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;

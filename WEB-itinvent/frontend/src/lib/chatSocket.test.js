@@ -966,4 +966,87 @@ describe('chatSocket client lifecycle', () => {
     release();
     chatSocket.close(true);
   });
+
+  // Connect-timeout automaton: a handshake hanging in CONNECTING (TCP accepted,
+  // upgrade never finished) cannot be reproduced reliably through E2E.
+  it('drops a socket stuck in CONNECTING after 10s and reconnects with backoff', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const stuck = MockWebSocket.instances[0];
+
+    // While CONNECTING, connect()/online probes must not open a parallel socket.
+    window.dispatchEvent(new window.Event('online'));
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(stuck.readyState).toBe(MockWebSocket.CONNECTING);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(stuck.readyState).toBe(MockWebSocket.CLOSED);
+    expect(chatSocket.socket).toBeNull();
+    expect(chatSocket.getConnectionState()).toBe('disconnected');
+
+    // First backoff step is 1s (jitter is zeroed by the Math.random mock).
+    await vi.advanceTimersByTimeAsync(999);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(chatSocket.socket).toBe(MockWebSocket.instances[1]);
+    expect(chatSocket.getConnectionState()).toBe('reconnecting');
+
+    MockWebSocket.instances[1].emitOpen();
+    expect(chatSocket.getConnectionState()).toBe('connected');
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('does not close a socket that opened before the connect timeout', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    await vi.advanceTimersByTimeAsync(9_000);
+    socket.emitOpen();
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect(socket.readyState).toBe(MockWebSocket.OPEN);
+    expect(chatSocket.socket).toBe(socket);
+    expect(chatSocket.getConnectionState()).toBe('connected');
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('ignores a late open of a socket abandoned by the connect timeout', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    chatSocket.subscribeConversation('conv-1');
+    const stuck = MockWebSocket.instances[0];
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(chatSocket.getConnectionState()).toBe('disconnected');
+
+    // The abandoned transport finally completes its handshake.
+    stuck.emitOpen();
+    expect(chatSocket.getConnectionState()).toBe('disconnected');
+    expect(chatSocket.socket).toBeNull();
+    expect(stuck.sent).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    const replacement = MockWebSocket.instances[1];
+    expect(chatSocket.socket).toBe(replacement);
+    stuck.emitClose({ code: 1006 });
+    expect(chatSocket.socket).toBe(replacement);
+    expect(chatSocket.getConnectionState()).toBe('reconnecting');
+
+    replacement.emitOpen();
+    const subscribed = replacement.sent
+      .map((raw) => JSON.parse(raw))
+      .filter((message) => message.type === 'chat.subscribe_conversation');
+    expect(subscribed.map((message) => message.conversation_id)).toEqual(['conv-1']);
+
+    release();
+    chatSocket.close(true);
+  });
 });
