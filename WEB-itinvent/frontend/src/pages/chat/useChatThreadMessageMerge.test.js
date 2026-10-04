@@ -60,6 +60,71 @@ describe('useChatThreadMessageMerge', () => {
     unmount();
   });
 
+  // Реестр failed восстанавливает пузыри при рефреше треда: серверная копия
+  // (socket message.created/updated) и запоздалый локальный «failed» после неё
+  // должны снимать запись, иначе дубль возвращается при следующем рефреше.
+  it('server copy and a late local failed update prune the failed registry', async () => {
+    const { renderHook, act } = await import('@testing-library/react');
+    const failedBubble = {
+      id: 'optimistic:c1:2',
+      isOptimistic: true,
+      optimisticStatus: 'failed',
+      conversation_id: 'c1',
+      kind: 'text',
+      client_message_id: 'client-2',
+      body: 'offline',
+      created_at: '2026-01-01T00:00:00.000Z',
+    };
+    const serverCopy = {
+      id: 'm2',
+      is_own: true,
+      conversation_id: 'c1',
+      kind: 'text',
+      client_message_id: 'client-2',
+      body: 'offline',
+      created_at: '2026-01-01T00:00:05.000Z',
+    };
+    const failedThreadMessagesRef = { current: new Map() };
+    const register = () => failedThreadMessagesRef.current.set('c1', new Map([
+      [failedBubble.id, { conversationId: 'c1', clientMessageId: 'client-2', message: failedBubble }],
+    ]));
+    const messagesRef = { current: [failedBubble] };
+    const setMessages = vi.fn((updater) => {
+      if (typeof updater === 'function') messagesRef.current = updater(messagesRef.current);
+    });
+    const { result, unmount } = renderHook(() => useChatThreadMessageMerge({
+      activeConversationIdRef: { current: 'c1' },
+      failedThreadMessagesRef,
+      isLikelyOptimisticReplacement: () => false,
+      messagesRef,
+      promoteConversationToTop: vi.fn(),
+      queueAutoScroll: vi.fn(),
+      setMessages,
+      setViewerLastReadAt: vi.fn(),
+      setViewerLastReadMessageId: vi.fn(),
+      syncConversationPreview: vi.fn(),
+      withStableMessageRenderKey: (message) => message,
+    }));
+
+    register();
+    act(() => {
+      result.current.mergeMessageIntoThread(serverCopy);
+    });
+    expect(messagesRef.current.map((item) => item.id)).toEqual(['m2']);
+    expect(failedThreadMessagesRef.current.get('c1').size).toBe(0);
+
+    // HTTP fallback fails after the server copy landed: markOptimisticMessageFailed
+    // registers the bubble again and re-applies it.
+    register();
+    act(() => {
+      result.current.applyOutgoingThreadMessage('c1', failedBubble);
+    });
+    expect(messagesRef.current.map((item) => item.id)).toEqual(['m2']);
+    expect(failedThreadMessagesRef.current.get('c1').size).toBe(0);
+
+    unmount();
+  });
+
   it('applyOutgoingThreadMessage scrolls when requested', async () => {
     const { renderHook, act } = await import('@testing-library/react');
     const queueAutoScroll = vi.fn();

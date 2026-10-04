@@ -2,6 +2,8 @@ import { startTransition, useCallback } from 'react';
 
 import { emitAgentDebugLog } from '../../lib/debugClientLog';
 import {
+  collectPersistedThreadClientIds,
+  pruneFailedThreadMessagesRegistry,
   removeThreadMessageFromList,
   resolveThreadMessageMerge,
   upsertThreadMessagesInList,
@@ -9,6 +11,7 @@ import {
 
 export default function useChatThreadMessageMerge({
   activeConversationIdRef,
+  failedThreadMessagesRef = null,
   isLikelyOptimisticReplacement,
   messagesRef,
   promoteConversationToTop,
@@ -47,7 +50,22 @@ export default function useChatThreadMessageMerge({
       withStableMessageRenderKey,
       liveAppear,
     }));
-  }, [activeConversationIdRef, setMessages, withStableMessageRenderKey]);
+    // A server copy settles its send: drop the failed-registry entry with the
+    // same client_message_id so a thread refresh never restores the bubble.
+    // A late local "failed" update for an already persisted send is dropped
+    // by the merge above, and its fresh registry entry is pruned here too.
+    const persistedClientIds = collectPersistedThreadClientIds(incoming);
+    const alreadyPersisted = collectPersistedThreadClientIds(messagesRef?.current);
+    incoming.forEach((message) => {
+      const clientId = String(message?.client_message_id || '').trim();
+      if (clientId && alreadyPersisted.has(clientId)) persistedClientIds.add(clientId);
+    });
+    pruneFailedThreadMessagesRegistry(
+      failedThreadMessagesRef?.current,
+      activeConversationId,
+      persistedClientIds,
+    );
+  }, [activeConversationIdRef, failedThreadMessagesRef, messagesRef, setMessages, withStableMessageRenderKey]);
 
   const upsertThreadMessage = useCallback((message, { replaceId = '', liveAppear = false } = {}) => {
     if (!message?.id) return;

@@ -4,6 +4,42 @@ import {
   sortThreadMessages,
 } from './chatThreadMessages';
 
+// A row produced on this client (optimistic send / failed / retry), as opposed
+// to a server copy (ACK, message.created, history page).
+function isLocalOptimisticThreadMessage(message) {
+  return Boolean(message?.isOptimistic || message?.optimisticStatus);
+}
+
+// Client ids of rows the server has confirmed (persisted copies).
+export function collectPersistedThreadClientIds(messages) {
+  const ids = new Set();
+  (Array.isArray(messages) ? messages : []).forEach((item) => {
+    if (!item || isLocalOptimisticThreadMessage(item)) return;
+    const clientId = normalizeThreadMessageClientId(item);
+    if (clientId) ids.add(clientId);
+  });
+  return ids;
+}
+
+// Failed-bubble registry (conversationId → Map<optimisticId, entry>): drop the
+// entries the server already persisted so a thread refresh never restores
+// them next to the server copy. Returns the number of removed entries.
+export function pruneFailedThreadMessagesRegistry(registry, conversationId, persistedClientIds) {
+  const normalizedConversationId = String(conversationId || '').trim();
+  if (!registry || typeof registry.get !== 'function' || !normalizedConversationId) return 0;
+  const byConversation = registry.get(normalizedConversationId);
+  if (!byConversation?.size || !persistedClientIds?.size) return 0;
+  let removed = 0;
+  Array.from(byConversation.entries()).forEach(([failedId, entry]) => {
+    const clientId = String(entry?.clientMessageId || entry?.message?.client_message_id || '').trim();
+    if (clientId && persistedClientIds.has(clientId)) {
+      byConversation.delete(failedId);
+      removed += 1;
+    }
+  });
+  return removed;
+}
+
 export function removeThreadMessageFromList(messages, messageId) {
   const normalizedMessageId = String(messageId || '').trim();
   if (!normalizedMessageId) return Array.isArray(messages) ? messages : [];
@@ -38,21 +74,33 @@ export function upsertThreadMessagesInList(
     const normalizedReplaceId = String(replacementMap.get(messageId) || '').trim();
     if (!messageId) return;
 
-    const existingIndex = next.findIndex((item) => {
-      const itemId = String(item?.id || '').trim();
-      if (itemId === messageId || (normalizedReplaceId && itemId === normalizedReplaceId)) {
-        return true;
-      }
-      // A server echo of an optimistic bubble (sending or failed) replaces it
-      // by client_message_id — isLikelyOptimisticReplacement only covers
-      // 'sending', so 'failed' bubbles would duplicate without this.
-      if (item?.isOptimistic) {
-        const itemClientId = normalizeThreadMessageClientId(item);
-        const incomingClientId = normalizeThreadMessageClientId(message);
-        if (itemClientId && incomingClientId && itemClientId === incomingClientId) return true;
-      }
-      return false;
-    });
+    const incomingClientId = normalizeThreadMessageClientId(message);
+    const incomingIsLocalOptimistic = isLocalOptimisticThreadMessage(message);
+    // A local optimistic status update (sending → failed, retry) must never
+    // resurrect a bubble the server copy already replaced: the persisted row
+    // with the same client_message_id wins regardless of event order.
+    if (incomingIsLocalOptimistic && incomingClientId && next.some((item) => (
+      !isLocalOptimisticThreadMessage(item)
+      && normalizeThreadMessageClientId(item) === incomingClientId
+    ))) {
+      return;
+    }
+
+    // Same-client rows: the exact id first, then the explicit replace target,
+    // then an optimistic bubble (sending or failed) with the same
+    // client_message_id — isLikelyOptimisticReplacement only covers 'sending',
+    // so 'failed' bubbles would duplicate without the last rule.
+    const isSameClientOptimisticRow = (item) => {
+      if (!incomingClientId || !item?.isOptimistic) return false;
+      return normalizeThreadMessageClientId(item) === incomingClientId;
+    };
+    let existingIndex = next.findIndex((item) => String(item?.id || '').trim() === messageId);
+    if (existingIndex < 0 && normalizedReplaceId) {
+      existingIndex = next.findIndex((item) => String(item?.id || '').trim() === normalizedReplaceId);
+    }
+    if (existingIndex < 0) {
+      existingIndex = next.findIndex(isSameClientOptimisticRow);
+    }
 
     if (existingIndex >= 0) {
       const existing = next[existingIndex];
@@ -64,13 +112,20 @@ export function upsertThreadMessagesInList(
       if (String(existing?.id || '').trim() !== messageId) {
         changed = true;
       }
-      if (normalizedReplaceId) {
-        const beforeLength = next.length;
-        next = next.filter((item, index) => (
-          index === existingIndex || String(item?.id || '').trim() !== normalizedReplaceId
-        ));
-        if (next.length !== beforeLength) changed = true;
-      }
+      // Invariant: one row per message id / client_message_id. Drop the
+      // replace target and, for a server copy, every other local bubble of
+      // the same send (and stray rows with the same id) — whatever order the
+      // ACK, message.created, HTTP answer and history pages arrived in.
+      const beforeLength = next.length;
+      next = next.filter((item, index) => {
+        if (index === existingIndex) return true;
+        const itemId = String(item?.id || '').trim();
+        if (itemId === messageId) return false;
+        if (normalizedReplaceId && itemId === normalizedReplaceId) return false;
+        if (!incomingIsLocalOptimistic && isSameClientOptimisticRow(item)) return false;
+        return true;
+      });
+      if (next.length !== beforeLength) changed = true;
       return;
     }
 

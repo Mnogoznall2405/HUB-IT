@@ -300,6 +300,14 @@ export const reconcileThreadMessages = (currentMessages, incomingMessages, {
     });
   }
 
+  // Preserved local rows (fresh tail / loaded older) may already be the server
+  // copy of a local bubble: they settle it just like an incoming item.
+  next.forEach((message) => {
+    if (isOptimisticThreadMessage(message) || message?.optimisticStatus) return;
+    const clientMessageId = normalizeThreadMessageClientId(message);
+    if (clientMessageId) serverClientIds.add(clientMessageId);
+  });
+
   if (preserveSendingOptimistic) {
     current.forEach((message) => {
       const clientMessageId = normalizeThreadMessageClientId(message);

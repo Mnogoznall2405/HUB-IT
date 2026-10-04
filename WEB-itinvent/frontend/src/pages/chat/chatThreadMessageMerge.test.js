@@ -6,10 +6,12 @@ import {
   revokeOptimisticObjectUrls,
 } from './chatOptimisticMessages';
 import {
+  pruneFailedThreadMessagesRegistry,
   removeThreadMessageFromList,
   resolveThreadMessageMerge,
   upsertThreadMessagesInList,
 } from './chatThreadMessageMerge';
+import { withStableThreadMessageRenderKey } from './chatOptimisticMessages';
 
 describe('chatThreadMessageMerge helpers', () => {
   it('upsertThreadMessagesInList appends message for active conversation', () => {
@@ -81,6 +83,92 @@ describe('chatThreadMessageMerge helpers', () => {
     expect(next[0]?.id).toBe('m9');
     expect(next[0]?.optimisticStatus).toBeUndefined();
     expect(next[0]?.renderKey).toBe('optimistic:c1:9');
+  });
+
+  // Инвариант «один пузырь на client_message_id» при любом порядке событий
+  // офлайн-отправки (ACK / message.created / message.updated / страница истории
+  // / HTTP-ошибка). E2E ловит гонку лишь ~1/6, поэтому порядки зафиксированы тут.
+  describe('one row per client_message_id regardless of event order', () => {
+    const failedBubble = {
+      id: 'optimistic:c1:2',
+      conversation_id: 'c1',
+      client_message_id: 'client-2',
+      isOptimistic: true,
+      optimisticStatus: 'failed',
+      is_own: true,
+      body: 'offline',
+      delivery_status: 'sending',
+      created_at: '2026-01-01T00:00:10.000Z',
+      renderKey: 'optimistic:c1:2',
+    };
+    const serverCopy = {
+      id: 'm2',
+      conversation_id: 'c1',
+      client_message_id: 'client-2',
+      conversation_seq: 2,
+      is_own: true,
+      body: 'offline',
+      delivery_status: 'sent',
+      created_at: '2026-01-01T00:00:20.000Z',
+    };
+    const base = [{
+      id: 'm1', conversation_id: 'c1', conversation_seq: 1, body: 'before', created_at: '2026-01-01T00:00:00.000Z',
+    }];
+    const merge = (current, incoming) => upsertThreadMessagesInList(current, incoming, {
+      activeConversationId: 'c1',
+      withStableMessageRenderKey: withStableThreadMessageRenderKey,
+    });
+    const copiesOf = (list) => list.filter((item) => item.client_message_id === 'client-2');
+
+    it('collapses a failed bubble and an already appended server copy on the next update', () => {
+      // Trace of the flaky E2E run: the newer page appended the server copy
+      // after the failed bubble, then chat.message.updated merged into the
+      // failed bubble (first client-id match) → two rows with id m2.
+      const current = [...base, failedBubble, serverCopy];
+      const next = merge(current, [{ ...serverCopy, delivery_status: 'read' }]);
+
+      expect(copiesOf(next)).toHaveLength(1);
+      expect(copiesOf(next)[0]).toMatchObject({ id: 'm2', delivery_status: 'read' });
+      expect(copiesOf(next)[0].optimisticStatus).toBeUndefined();
+      expect(next.map((item) => item.id)).toEqual(['m1', 'm2']);
+    });
+
+    it('ignores a late local "failed" update once the server copy is in the thread', () => {
+      // message.created replaced the sending bubble, then the HTTP fallback
+      // failed and markOptimisticMessageFailed re-applied the local bubble.
+      const afterServer = merge([...base, { ...failedBubble, optimisticStatus: 'sending' }], [serverCopy]);
+      expect(copiesOf(afterServer).map((item) => item.id)).toEqual(['m2']);
+
+      const next = merge(afterServer, [failedBubble]);
+      expect(next).toBe(afterServer);
+    });
+
+    it('server copy replaces the failed bubble in every arrival order', () => {
+      const orders = [
+        [failedBubble, serverCopy, { ...serverCopy, delivery_status: 'read' }],
+        [serverCopy, failedBubble, { ...serverCopy, delivery_status: 'read' }],
+        [{ ...failedBubble, optimisticStatus: 'sending' }, serverCopy, failedBubble],
+        [{ ...failedBubble, optimisticStatus: 'sending' }, failedBubble, serverCopy, serverCopy],
+      ];
+      orders.forEach((events) => {
+        const result = events.reduce((list, event) => merge(list, [event]), base);
+        expect(copiesOf(result).map((item) => item.id)).toEqual(['m2']);
+      });
+    });
+  });
+
+  it('pruneFailedThreadMessagesRegistry drops only entries the server persisted', () => {
+    const byConversation = new Map([
+      ['optimistic:1', { clientMessageId: 'client-1' }],
+      ['optimistic:2', { clientMessageId: 'client-2' }],
+      ['optimistic:3', { message: { client_message_id: 'client-3' } }],
+    ]);
+    const registry = new Map([['c1', byConversation], ['c2', new Map([['optimistic:x', { clientMessageId: 'client-1' }]])]]);
+
+    expect(pruneFailedThreadMessagesRegistry(registry, 'c1', new Set(['client-1', 'client-3']))).toBe(2);
+    expect(Array.from(byConversation.keys())).toEqual(['optimistic:2']);
+    expect(registry.get('c2').size).toBe(1);
+    expect(pruneFailedThreadMessagesRegistry(null, 'c1', new Set(['client-2']))).toBe(0);
   });
 
   it('upsertThreadMessagesInList marks live inserts with animateAppear only on push', () => {

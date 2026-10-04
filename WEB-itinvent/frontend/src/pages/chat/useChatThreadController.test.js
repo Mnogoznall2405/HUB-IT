@@ -585,6 +585,57 @@ describe('useChatThreadController', () => {
     expect(byConversation.size).toBe(0);
   });
 
+  it('R4: failed entry is dropped when the server copy is already in the thread', async () => {
+    const failedThreadMessagesRef = { current: new Map() };
+    const failedMessage = {
+      id: 'optimistic:2',
+      conversation_id: 'conv-1',
+      client_message_id: 'cm-2',
+      body: 'late ack',
+      created_at: '2026-04-28T08:01:00.000Z',
+      isOptimistic: true,
+      optimisticStatus: 'failed',
+      is_own: true,
+    };
+    const byConversation = new Map([
+      [failedMessage.id, { conversationId: 'conv-1', clientMessageId: 'cm-2', message: failedMessage }],
+    ]);
+    failedThreadMessagesRef.current.set('conv-1', byConversation);
+
+    let api = null;
+    render(React.createElement(Harness, {
+      failedThreadMessagesRef,
+      activeConversationId: 'conv-1',
+      onReady: (value) => { api = value; },
+    }));
+    await waitFor(() => expect(api).not.toBeNull());
+    // Server copy arrived over the socket (failed bubble already replaced).
+    await act(async () => {
+      api.setMessages(() => [
+        { id: 'msg-1', conversation_id: 'conv-1', body: 'hello', created_at: '2026-04-28T08:00:00.000Z' },
+        {
+          id: 'msg-9',
+          conversation_id: 'conv-1',
+          client_message_id: 'cm-2',
+          body: 'late ack',
+          created_at: '2026-04-28T08:02:00.000Z',
+          is_own: true,
+        },
+      ]);
+    });
+
+    // Stale payload (e.g. SWR cache) without the server copy.
+    await act(async () => {
+      api.applyLatestThreadPayload('conv-1', {
+        items: [{ id: 'msg-1', conversation_id: 'conv-1', body: 'hello', created_at: '2026-04-28T08:00:00.000Z' }],
+        has_older: false,
+      });
+    });
+
+    await waitFor(() => expect(api.messages.map((m) => m.id)).toEqual(['msg-1', 'msg-9']));
+    expect(byConversation.size).toBe(0);
+  });
+
   it('R4: a failure recorded while another conversation was active appears on return to A', async () => {
     const failedThreadMessagesRef = { current: new Map() };
     let api = null;
@@ -785,6 +836,69 @@ describe('useChatThreadController', () => {
         await api.loadNewerMessages();
       });
       expect(chatAPI.getMessages).not.toHaveBeenCalled();
+    });
+
+    // Офлайн-отправка (E2E «c) отправитель офлайн», ~1/6): WS-кадр ушёл после
+    // возврата сети, а сервер-копия пришла страницей after_message_id, пока в
+    // ленте висел failed-пузырь — append по id давал второй пузырь, а реестр
+    // failed восстанавливал его при следующем рефреше.
+    it('merges the server copy of a failed bubble from a newer page by client_message_id', async () => {
+      const failedThreadMessagesRef = { current: new Map() };
+      const failedMessage = {
+        id: 'optimistic:conv-1:1',
+        conversation_id: 'conv-1',
+        client_message_id: 'cm-offline',
+        body: 'offline hello',
+        created_at: '2026-04-28T10:00:00.000Z',
+        isOptimistic: true,
+        optimisticStatus: 'failed',
+        is_own: true,
+        renderKey: 'optimistic:conv-1:1',
+      };
+      failedThreadMessagesRef.current.set('conv-1', new Map([
+        [failedMessage.id, { conversationId: 'conv-1', clientMessageId: 'cm-offline', message: failedMessage }],
+      ]));
+      let api = null;
+      render(React.createElement(Harness, {
+        failedThreadMessagesRef,
+        initialThreadCache: buildPartialWindowCache(),
+        onReady: (value) => { api = value; },
+      }));
+      await waitFor(() => expect(api?.messagesHasNewer).toBe(true));
+      await act(async () => {
+        api.setMessages((current) => [...current, failedMessage]);
+      });
+
+      chatAPI.getMessages.mockResolvedValueOnce({
+        items: [{
+          id: 'msg-65',
+          conversation_id: 'conv-1',
+          client_message_id: 'cm-offline',
+          body: 'offline hello',
+          created_at: '2026-04-28T10:00:05.000Z',
+          is_own: true,
+        }],
+        has_older: true,
+        has_newer: false,
+      });
+      await act(async () => {
+        await api.loadNewerMessages();
+      });
+
+      const copies = api.messages.filter((message) => message.client_message_id === 'cm-offline');
+      expect(copies).toHaveLength(1);
+      expect(copies[0].id).toBe('msg-65');
+      expect(copies[0].optimisticStatus).toBeUndefined();
+      expect(copies[0].renderKey).toBe('optimistic:conv-1:1');
+      expect(failedThreadMessagesRef.current.get('conv-1').size).toBe(0);
+
+      // A later refresh whose payload predates the server copy must not
+      // resurrect the failed bubble next to it.
+      await act(async () => {
+        api.applyLatestThreadPayload('conv-1', buildPartialWindowCache().data);
+      });
+      const afterRefresh = api.messages.filter((message) => message.client_message_id === 'cm-offline');
+      expect(afterRefresh.map((message) => message.id)).toEqual(['msg-65']);
     });
 
     it('uses the last persisted message as cursor, skipping optimistic tail', async () => {

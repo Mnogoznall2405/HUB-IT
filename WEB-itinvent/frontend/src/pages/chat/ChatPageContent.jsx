@@ -839,6 +839,7 @@ export function ChatPageContent({
     upsertThreadMessages,
   } = useChatThreadMessageMerge({
     activeConversationIdRef,
+    failedThreadMessagesRef,
     isLikelyOptimisticReplacement,
     messagesRef,
     promoteConversationToTop,

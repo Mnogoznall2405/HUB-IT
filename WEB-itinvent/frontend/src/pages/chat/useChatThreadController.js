@@ -13,7 +13,6 @@ import {
 import {
   compareThreadMessagePosition,
   isFailedOptimisticThreadMessage,
-  normalizeThreadMessageClientId,
   normalizeThreadMessageId,
   reconcileThreadMessages,
   sortThreadMessages,
@@ -26,6 +25,12 @@ import {
   resolveChatReadRetryAfterMs,
   shouldNotifyLoadMessagesError,
 } from './chatThreadTransport';
+import {
+  collectPersistedThreadClientIds,
+  pruneFailedThreadMessagesRegistry,
+  upsertThreadMessagesInList,
+} from './chatThreadMessageMerge';
+import { withStableThreadMessageRenderKey } from './chatOptimisticMessages';
 import {
   buildHistoryInFlightKey,
   createKeyedInFlightController,
@@ -236,19 +241,19 @@ export default function useChatThreadController({
         // optimistic bubbles may arrive via the SWR thread cache and must not
         // be counted, otherwise the failed registry entry is dropped and
         // "Повторить" has nothing to retry.
-        const persistedClientIds = new Set(
-          items
-            .filter((item) => !item?.isOptimistic && !item?.optimisticStatus)
-            .map((item) => normalizeThreadMessageClientId(item))
-            .filter(Boolean),
+        // The server copy may already sit in `current` (ACK / socket / newer
+        // page) while this payload predates it — it proves delivery too.
+        const persistedClientIds = collectPersistedThreadClientIds(items);
+        collectPersistedThreadClientIds(current.filter((item) => (
+          String(item?.conversation_id || '').trim() === normalizedConversationId
+        ))).forEach((clientId) => persistedClientIds.add(clientId));
+        pruneFailedThreadMessagesRegistry(
+          failedThreadMessagesRef.current,
+          normalizedConversationId,
+          persistedClientIds,
         );
         const failedToRestore = [];
-        failedForConversation.forEach((entry, failedId) => {
-          const clientId = String(entry?.clientMessageId || '').trim();
-          if (clientId && persistedClientIds.has(clientId)) {
-            failedForConversation.delete(failedId);
-            return;
-          }
+        failedForConversation.forEach((entry) => {
           const failedMessage = entry?.message;
           if (
             failedMessage?.id
@@ -725,8 +730,19 @@ export default function useChatThreadController({
           const seen = new Set(current.map((item) => item.id));
           const newer = items.filter((item) => !seen.has(item.id));
           if (newer.length === 0) return current;
-          return [...current, ...newer];
+          // A newer page may carry the server copy of a local sending/failed
+          // bubble: merge it by client_message_id instead of appending a
+          // second row (upsert also keeps the list ordered).
+          return upsertThreadMessagesInList(current, newer, {
+            activeConversationId: id,
+            withStableMessageRenderKey: withStableThreadMessageRenderKey,
+          });
         });
+        pruneFailedThreadMessagesRegistry(
+          failedThreadMessagesRef?.current,
+          id,
+          collectPersistedThreadClientIds(items),
+        );
         return items;
       }
 
@@ -825,6 +841,7 @@ export default function useChatThreadController({
     applyLatestThreadPayload,
     capturePrependScrollRestore,
     conversationsRef,
+    failedThreadMessagesRef,
     hasPendingInitialAnchorForConversation,
     hydratedThreadConversationIdRef,
     loadThreadBootstrap,

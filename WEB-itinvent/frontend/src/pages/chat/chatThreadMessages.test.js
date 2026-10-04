@@ -365,6 +365,37 @@ describe('chatThreadMessages', () => {
 
       expect(next.some((item) => item.id === 'optimistic:client-9')).toBe(true);
     });
+
+    it('drops local bubbles whose server copy is preserved as a fresh local row', () => {
+      // The payload predates the server copy (it arrived via socket / newer
+      // page): the preserved persisted row settles both the failed and the
+      // sending bubble of the same client_message_id.
+      const local = (status) => ({
+        id: `optimistic:${status}`,
+        client_message_id: `client-${status}`,
+        conversation_id: 'conv-1',
+        body: status,
+        created_at: '2026-06-27T10:03:00',
+        isOptimistic: true,
+        optimisticStatus: status,
+      });
+      const current = [
+        baseMessage({ id: 'msg-1', created_at: '2026-06-27T10:00:00' }),
+        baseMessage({ id: 'msg-2', client_message_id: 'client-failed', created_at: '2026-06-27T10:04:00' }),
+        baseMessage({ id: 'msg-3', client_message_id: 'client-sending', created_at: '2026-06-27T10:05:00' }),
+        local('failed'),
+        local('sending'),
+      ];
+      const incoming = [baseMessage({ id: 'msg-1', created_at: '2026-06-27T10:00:00' })];
+
+      const next = reconcileThreadMessages(current, incoming, {
+        conversationId: 'conv-1',
+        preserveSendingOptimistic: true,
+        mode: 'replaceWindowButPreserveFreshLocal',
+      });
+
+      expect(next.map((item) => item.id)).toEqual(['msg-1', 'msg-2', 'msg-3']);
+    });
   });
 
   describe('hasPersistedThreadMessageEquivalent', () => {
