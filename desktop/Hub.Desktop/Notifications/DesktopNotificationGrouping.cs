@@ -5,6 +5,10 @@ namespace Hub.Desktop.Notifications;
 
 /// <summary>
 /// Computes Windows app notification Tag/Group from a validated notification request.
+/// Chat and task-discussion notifications get Group <c>chat:&lt;conversationId&gt;</c> /
+/// <c>task:&lt;taskId&gt;</c> and use the group as Tag, so a newer notification of the same chat
+/// replaces the previous one ("one notification per chat"). Other notifications use Tag = Id.
+/// The whole group is removed via <c>notification.clearGroup</c> when the chat is opened.
 /// Windows limits both values to 64 characters; longer values are replaced by a stable hash.
 /// </summary>
 internal static class DesktopNotificationGrouping
@@ -19,6 +23,20 @@ internal static class DesktopNotificationGrouping
         }
 
         return Limit("id", id.Trim());
+    }
+
+    /// <summary>
+    /// Tag for a notification: the group when present (replacement within the chat/task),
+    /// otherwise the per-event id.
+    /// </summary>
+    public static string? ResolveTag(string? id, string? group)
+    {
+        if (!string.IsNullOrWhiteSpace(group))
+        {
+            return group.Length <= MaximumLength ? group : Limit("group", group);
+        }
+
+        return GetTag(id);
     }
 
     public static string? GetGroup(string? route)

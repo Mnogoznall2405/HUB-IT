@@ -16,4 +16,8 @@ public sealed class UnavailableDesktopNotificationService : IDesktopNotification
     {
         return false;
     }
+
+    public void ClearGroup(string group)
+    {
+    }
 }

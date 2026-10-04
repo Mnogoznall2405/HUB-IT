@@ -230,10 +230,87 @@ public sealed class DesktopBridgeProtocolTests
     }
 
     [Fact]
+    public void AdvertisesNotificationClearGroupOnlyWhenNotificationsAreAvailable()
+    {
+        static string[] Capabilities(bool available)
+        {
+            using var document = JsonDocument.Parse(
+                DesktopBridgeProtocol.CreateCapabilitiesMessage(available));
+            return document.RootElement.GetProperty("capabilities")
+                .EnumerateArray()
+                .Select(item => item.GetString()!)
+                .ToArray();
+        }
+
+        var available = Capabilities(true);
+        Assert.Contains("notification-clear-group", available);
+        Assert.True(available.Length <= 16);
+        Assert.All(available, item => Assert.Matches("^[a-z][a-z0-9-]*$", item));
+        Assert.DoesNotContain("notification-clear-group", Capabilities(false));
+    }
+
+    [Fact]
+    public void ParsesNotificationClearGroupCommand()
+    {
+        var parsed = DesktopBridgeProtocol.TryParseInbound(
+            "{\"type\":\"notification.clearGroup\",\"version\":1,\"group\":\"chat:7f3c-a.b_c:d\"}",
+            out var message);
+
+        Assert.True(parsed);
+        Assert.Equal(DesktopInboundMessageType.ClearNotificationGroup, message.Type);
+        Assert.Equal("chat:7f3c-a.b_c:d", message.NotificationGroup);
+        Assert.Null(message.Notification);
+    }
+
+    [Fact]
+    public void AcceptsTaskGroupAtMaximumLength()
+    {
+        var group = "task:" + new string('a', 59);
+        Assert.Equal(64, group.Length);
+
+        Assert.True(DesktopBridgeProtocol.TryParseInbound(
+            $"{{\"type\":\"notification.clearGroup\",\"version\":1,\"group\":\"{group}\"}}",
+            out var message));
+        Assert.Equal(group, message.NotificationGroup);
+    }
+
+    [Theory]
+    [InlineData("{\"type\":\"notification.clearGroup\",\"version\":1,\"group\":\"chat:7\",\"extra\":1}")]
+    [InlineData("{\"type\":\"notification.clearGroup\",\"version\":2,\"group\":\"chat:7\"}")]
+    [InlineData("{\"type\":\"notification.clearGroup\",\"group\":\"chat:7\"}")]
+    [InlineData("{\"type\":\"notification.clearGroup\",\"version\":1}")]
+    [InlineData("{\"type\":\"notification.clearGroup\",\"version\":1,\"group\":7}")]
+    [InlineData("{\"type\":\"notification.clearGroup\",\"version\":1,\"group\":null}")]
+    [InlineData("{\"type\":\"notification.clearGroup\",\"version\":1,\"group\":\"\"}")]
+    [InlineData("{\"type\":\"notification.clearGroup\",\"version\":1,\"group\":\"chat:\"}")]
+    [InlineData("{\"type\":\"notification.clearGroup\",\"version\":1,\"group\":\"chat:a b\"}")]
+    [InlineData("{\"type\":\"notification.clearGroup\",\"version\":1,\"group\":\"chat:a/b\"}")]
+    [InlineData("{\"type\":\"notification.clearGroup\",\"version\":1,\"group\":\"chat:a#b\"}")]
+    [InlineData("{\"type\":\"notification.clearGroup\",\"version\":1,\"group\":\"mail:7\"}")]
+    [InlineData("{\"type\":\"notification.clearGroup\",\"version\":1,\"group\":\"Chat:7\"}")]
+    [InlineData("{\"type\":\"notification.clearGroup\",\"version\":1,\"group\":\"chat#abc\"}")]
+    [InlineData("{\"type\":\"notification.clearGroup\",\"version\":1,\"group\":\"chat:\u0007\"}")]
+    public void RejectsInvalidNotificationClearGroupCommand(string json)
+    {
+        Assert.False(DesktopBridgeProtocol.TryParseInbound(json, out _));
+    }
+
+    [Fact]
+    public void RejectsNotificationClearGroupLongerThanSixtyFourCharacters()
+    {
+        var group = "chat:" + new string('a', 60);
+        Assert.Equal(65, group.Length);
+
+        Assert.False(DesktopBridgeProtocol.TryParseInbound(
+            $"{{\"type\":\"notification.clearGroup\",\"version\":1,\"group\":\"{group}\"}}",
+            out _));
+    }
+
+    [Fact]
     public void CreatesSeparateStrictCapabilitiesMessage()
     {
         using var document = JsonDocument.Parse(
-            DesktopBridgeProtocol.CreateCapabilitiesMessage());
+            DesktopBridgeProtocol.CreateCapabilitiesMessage(false));
         var root = document.RootElement;
 
         Assert.Equal("desktop.capabilities", root.GetProperty("type").GetString());

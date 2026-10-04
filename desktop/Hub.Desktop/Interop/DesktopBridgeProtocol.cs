@@ -29,6 +29,7 @@ public enum DesktopInboundMessageType
     OpenMailComposeWindow,
     MailComposeWindowCloseResult,
     MailComposeWindowSent,
+    ClearNotificationGroup,
 }
 
 public enum DesktopThemeMode
@@ -58,7 +59,8 @@ public sealed record DesktopInboundMessage(
     DesktopDownloadedFileAction DownloadedFileAction = DesktopDownloadedFileAction.None,
     DesktopMailComposeWindowCommand? MailComposeWindow = null,
     DesktopEquipmentQrPrintCommand? EquipmentQrPrint = null,
-    DesktopOpenFileDialogCommand? OpenFileDialog = null);
+    DesktopOpenFileDialogCommand? OpenFileDialog = null,
+    string? NotificationGroup = null);
 
 public static class DesktopBridgeProtocol
 {
@@ -74,8 +76,11 @@ public static class DesktopBridgeProtocol
     public const int MaximumQuickRoutes = 12;
     public const int MaximumQuickRouteIdLength = 32;
     public const int MaximumQuickRouteLabelLength = 48;
+    public const int MaximumNotificationGroupLength = 64;
+    public const string NotificationClearGroupCapability = "notification-clear-group";
     private const string ReadyMessageType = "desktop.ready";
     private const string ShowNotificationMessageType = "notification.show";
+    private const string ClearNotificationGroupMessageType = "notification.clearGroup";
     private const string SetThemeMessageType = "appearance.theme";
     private const string OpenDownloadedFileMessageType = "file.openDownloaded";
     private const string PrepareDownloadedFileMessageType = "file.prepareDownload";
@@ -143,6 +148,7 @@ public static class DesktopBridgeProtocol
             {
                 ReadyMessageType => TryParseReady(root, out message),
                 ShowNotificationMessageType => TryParseNotification(root, out message),
+                ClearNotificationGroupMessageType => TryParseClearNotificationGroup(root, out message),
                 SetThemeMessageType => TryParseTheme(root, out message),
                 OpenDownloadedFileMessageType => TryParseOpenDownloadedFile(root, out message),
                 PrepareDownloadedFileMessageType => TryParsePrepareDownloadedFile(root, out message),
@@ -226,24 +232,38 @@ public static class DesktopBridgeProtocol
             accepted,
         });
 
-    public static string CreateCapabilitiesMessage()
+    /// <summary>
+    /// Builds the <c>desktop.capabilities</c> message. <c>notification-clear-group</c> is advertised
+    /// only when notifications are available (same value as <c>notifications</c> in host-ready).
+    /// </summary>
+    public static string CreateCapabilitiesMessage(bool notificationsAvailable)
     {
+        var capabilities = new List<string>
+        {
+            "command-palette",
+            "desktop-actions",
+            "equipment-qr-print",
+            "file-actions-v2",
+            "mail-compose-window",
+        };
+        if (notificationsAvailable)
+        {
+            capabilities.Add(NotificationClearGroupCapability);
+        }
+
+        capabilities.AddRange(new[]
+        {
+            "print",
+            "quick-routes",
+            "shell-status",
+            "vnc-preflight",
+        });
+
         return JsonSerializer.Serialize(new
         {
             type = CapabilitiesMessageType,
             version = CurrentVersion,
-            capabilities = new[]
-            {
-                "command-palette",
-                "desktop-actions",
-                "equipment-qr-print",
-                "file-actions-v2",
-                "mail-compose-window",
-                "print",
-                "quick-routes",
-                "shell-status",
-                "vnc-preflight",
-            },
+            capabilities,
         });
     }
 
@@ -527,6 +547,53 @@ public static class DesktopBridgeProtocol
             DesktopInboundMessageType.ShowNotification,
             new DesktopNotificationRequest(id, title, body, route));
         return true;
+    }
+
+    private static bool TryParseClearNotificationGroup(JsonElement root, out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "group")
+            || !TryGetBoundedString(root, "group", MaximumNotificationGroupLength, out var group)
+            || !IsValidNotificationGroup(group))
+        {
+            return false;
+        }
+
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.ClearNotificationGroup,
+            NotificationGroup: group);
+        return true;
+    }
+
+    /// <summary>
+    /// Accepts <c>chat:&lt;id&gt;</c> / <c>task:&lt;id&gt;</c> with id of 1..59 chars
+    /// <c>[A-Za-z0-9._:-]</c>, so the whole group never exceeds 64 characters.
+    /// </summary>
+    public static bool IsValidNotificationGroup([NotNullWhen(true)] string? value)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length > MaximumNotificationGroupLength)
+        {
+            return false;
+        }
+
+        string id;
+        if (value.StartsWith("chat:", StringComparison.Ordinal))
+        {
+            id = value["chat:".Length..];
+        }
+        else if (value.StartsWith("task:", StringComparison.Ordinal))
+        {
+            id = value["task:".Length..];
+        }
+        else
+        {
+            return false;
+        }
+
+        return id.Length is >= 1 and <= 59
+            && id.All(character =>
+                char.IsAsciiLetterOrDigit(character)
+                || character is '.' or '_' or ':' or '-');
     }
 
     private static bool TryParseTheme(JsonElement root, out DesktopInboundMessage message)

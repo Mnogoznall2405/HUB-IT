@@ -73,13 +73,15 @@ public sealed class WindowsAppNotificationService : IDesktopNotificationService,
                         .AddArgument("eventId", request.Id))
                 .BuildNotification();
 
-            var tag = DesktopNotificationGrouping.GetTag(request.Id);
+            // SuppressDisplay stays at its default (false): a replacement for the same chat/task
+            // must pop up again instead of silently updating Action Center.
+            var group = DesktopNotificationGrouping.GetGroup(request.Route);
+            var tag = DesktopNotificationGrouping.ResolveTag(request.Id, group);
             if (tag is not null)
             {
                 notification.Tag = tag;
             }
 
-            var group = DesktopNotificationGrouping.GetGroup(request.Route);
             if (group is not null)
             {
                 notification.Group = group;
@@ -93,6 +95,29 @@ public sealed class WindowsAppNotificationService : IDesktopNotificationService,
         {
             DesktopLog.Error("Windows app notification display failed", exception);
             return false;
+        }
+    }
+
+    public void ClearGroup(string group)
+    {
+        if (_disposed || !_registered || string.IsNullOrWhiteSpace(group))
+        {
+            return;
+        }
+
+        _ = ClearGroupCoreAsync(group);
+    }
+
+    private async Task ClearGroupCoreAsync(string group)
+    {
+        try
+        {
+            await _manager.RemoveByGroupAsync(group);
+            DesktopLog.Info("Windows app notification group cleared");
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Error("Windows app notification group clear failed", exception);
         }
     }
 

@@ -356,11 +356,13 @@ public sealed class DesktopBridgeHost : IDisposable
         if (message.Type == DesktopInboundMessageType.Ready)
         {
             _bridgeReady = true;
+            var notificationsAvailable = _notifications.IsAvailable;
             _core.PostWebMessageAsJson(
                 DesktopBridgeProtocol.CreateHostReadyMessage(
-                    _notifications.IsAvailable,
+                    notificationsAvailable,
                     _windowsUsername));
-            _core.PostWebMessageAsJson(DesktopBridgeProtocol.CreateCapabilitiesMessage());
+            _core.PostWebMessageAsJson(
+                DesktopBridgeProtocol.CreateCapabilitiesMessage(notificationsAvailable));
             DesktopLog.Info("Desktop bridge handshake completed");
             Ready?.Invoke(this, EventArgs.Empty);
             return;
@@ -587,6 +589,20 @@ public sealed class DesktopBridgeHost : IDisposable
             catch (Exception exception)
             {
                 DesktopLog.Error("Desktop file-action response failed", exception);
+            }
+            return;
+        }
+
+        if (message.Type == DesktopInboundMessageType.ClearNotificationGroup
+            && message.NotificationGroup is { } notificationGroup)
+        {
+            try
+            {
+                _notifications.ClearGroup(notificationGroup);
+            }
+            catch (Exception exception)
+            {
+                DesktopLog.Error("Desktop notification group clear failed", exception);
             }
             return;
         }

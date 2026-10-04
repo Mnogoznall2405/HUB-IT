@@ -23,6 +23,26 @@ public sealed class DesktopNotificationGroupingTests
     }
 
     [Theory]
+    [InlineData("chat:msg:42", "chat:7", "chat:7")]
+    [InlineData("task:msg:1", "task:t-9", "task:t-9")]
+    [InlineData("ticket:42", null, "ticket:42")]
+    [InlineData("ticket:42", "", "ticket:42")]
+    public void ResolvesTagFromGroupOrId(string id, string? group, string expected)
+    {
+        Assert.Equal(expected, DesktopNotificationGrouping.ResolveTag(id, group));
+    }
+
+    [Fact]
+    public void ResolvedTagNeverExceedsWindowsLimit()
+    {
+        var tag = DesktopNotificationGrouping.ResolveTag("x", "chat:" + new string('a', 100));
+
+        Assert.NotNull(tag);
+        Assert.True(tag.Length <= DesktopNotificationGrouping.MaximumLength);
+        Assert.Null(DesktopNotificationGrouping.ResolveTag(null, null));
+    }
+
+    [Theory]
     [InlineData("/chat")]
     [InlineData("/chat?conversation=")]
     [InlineData("/tasks")]

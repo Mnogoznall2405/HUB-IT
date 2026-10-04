@@ -148,6 +148,18 @@ public sealed class FallbackDesktopNotificationServiceTests
         Assert.Equal(Request.Route, primary.Request.Route);
     }
 
+    [Fact]
+    public void ClearGroupDelegatesToPrimaryChannel()
+    {
+        var primary = new StubNotificationService(isAvailable: true, showResult: true);
+        var service = new FallbackDesktopNotificationService(primary);
+        service.SetFallback(_ => true);
+
+        service.ClearGroup("chat:7");
+
+        Assert.Equal(new[] { "chat:7" }, primary.ClearedGroups);
+    }
+
     private sealed class StubNotificationService(bool isAvailable, bool showResult)
         : IDesktopNotificationService
     {
@@ -155,11 +167,15 @@ public sealed class FallbackDesktopNotificationServiceTests
 
         public int ShowCalls { get; private set; }
 
+        public List<string> ClearedGroups { get; } = new();
+
         public bool TryShow(DesktopNotificationRequest request)
         {
             ShowCalls += 1;
             return showResult;
         }
+
+        public void ClearGroup(string group) => ClearedGroups.Add(group);
     }
 
     private sealed class SequenceNotificationService(params bool[] results)
@@ -176,6 +192,10 @@ public sealed class FallbackDesktopNotificationServiceTests
             ShowCalls += 1;
             return _results.Count > 0 && _results.Dequeue();
         }
+
+        public void ClearGroup(string group)
+        {
+        }
     }
 
     private sealed class CapturingNotificationService : IDesktopNotificationService
@@ -188,6 +208,10 @@ public sealed class FallbackDesktopNotificationServiceTests
         {
             Request = request;
             return true;
+        }
+
+        public void ClearGroup(string group)
+        {
         }
     }
 }

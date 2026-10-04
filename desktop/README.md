@@ -39,6 +39,7 @@ Windows desktop-shell для корпоративного портала HUB. К
 - versioned React/C# handshake определяет desktop runtime до первого React render;
 - `notification.result` возвращает результат обработки `notification.show` по ID. Web отмечает доставку только при `accepted: true`; отказ или таймаут 10 секунд освобождает ожидающий запрос без отметки о доставке. Старый host принимает прежний формат запроса, но без ответа доставка остаётся неподтверждённой;
 - системные уведомления для новых сообщений чата: Windows App SDK toast с автоматическим fallback на tray balloon;
+- одно уведомление на чат: toast чата/обсуждения задачи получает Group и Tag `chat:<conversationId>` / `task:<taskId>`, новое сообщение того же чата заменяет предыдущее и снова всплывает; при открытии чата Web отправляет `notification.clearGroup`, и host снимает уведомления этой группы из Action Center (только для Windows toast; tray balloon не очищается). Команда доступна при capability `notification-clear-group` в `desktop.capabilities`, которая объявляется только при доступных уведомлениях;
 - клик по уведомлению активирует HUB и открывает переданный внутренний маршрут чата через React Router без перезагрузки страницы.
 
 ## Требования
@@ -244,10 +245,11 @@ lazy-loaded интерфейса. Один прогон не считается 
 React -> C#: {"type":"desktop.ready","version":1}
 C# -> React: {"type":"desktop.hostReady","version":1,"capabilities":{"notifications":true}}
 React -> C#: {"type":"notification.show","version":1,"id":"chat:msg:42","title":"Иван","body":"Новое сообщение","route":"/chat?conversation=7&message=42"}
+React -> C#: {"type":"notification.clearGroup","version":1,"group":"chat:7"}
 C# -> React: {"type":"navigation.open","version":1,"route":"/chat?conversation=7&message=42"}
 ```
 
-Host принимает сообщение только при точном совпадении configured origin, текущего WebView origin, версии, размера и JSON-схемы. Неизвестные типы и дополнительные поля отклоняются. `route` обязан быть относительным внутренним путём; внешние URL, protocol-relative URL, backslash и управляющие символы блокируются. Текст уведомления в лог не записывается.
+Host принимает сообщение только при точном совпадении configured origin, текущего WebView origin, версии, размера и JSON-схемы. Неизвестные типы и дополнительные поля отклоняются. `route` обязан быть относительным внутренним путём; внешние URL, protocol-relative URL, backslash и управляющие символы блокируются. Текст уведомления в лог не записывается. `group` в `notification.clearGroup` — ровно `chat:<id>` или `task:<id>`, где id — 1–59 символов `[A-Za-z0-9._:-]` (итог ≤64); ответ Web-стороне не отправляется.
 
 ## Уведомления чата
 

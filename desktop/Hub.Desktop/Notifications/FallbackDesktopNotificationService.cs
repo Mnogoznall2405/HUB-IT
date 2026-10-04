@@ -81,6 +81,16 @@ public sealed class FallbackDesktopNotificationService : IDesktopNotificationSer
         }
     }
 
+    /// <summary>
+    /// Clears the group in the primary channel only; tray balloon and the persistent fallback window
+    /// have no per-group history, so there is nothing to clear there.
+    /// </summary>
+    public void ClearGroup(string group)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(group);
+        _primary.ClearGroup(group);
+    }
+
     private bool TryDeliver(DesktopNotificationRequest request)
     {
         if (_fallbackEnabled && _preferFallback && _fallback?.Invoke(request) == true)
