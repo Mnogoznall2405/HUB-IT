@@ -214,6 +214,9 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: backendTarget,
           changeOrigin: true,
+          // Chat realtime (/api/v1/chat/ws) needs the WS upgrade proxied too;
+          // without it the socket hangs in CONNECTING and chat falls back to polling.
+          ws: true,
         }
       }
     },
