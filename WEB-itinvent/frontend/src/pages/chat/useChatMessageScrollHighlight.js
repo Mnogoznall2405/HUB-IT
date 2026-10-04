@@ -2,6 +2,7 @@ import { useCallback, useEffect } from 'react';
 
 import { CHAT_MESSAGE_HIGHLIGHT_MS } from './chatPageConstants';
 import { emitChatUnreadRefresh } from './chatUnreadRefresh';
+import { getChatThreadRenderWindow } from '../../lib/chat/chatThreadRenderWindow';
 
 export function scheduleMessageHighlight({
   messageId,
@@ -33,7 +34,22 @@ export function scrollThreadToMessage({
   cancelPendingInitialAnchor();
   const selector = `[data-chat-message-id="${normalizedMessageId}"]`;
   const target = threadScrollRef.current?.querySelector?.(selector);
-  if (!target) return false;
+  if (!target) {
+    // Сообщение загружено, но вне окна рендера: окно центрируется на нём,
+    // прокрутка и подсветка — после монтирования.
+    const renderWindow = getChatThreadRenderWindow(threadScrollRef.current);
+    return Boolean(renderWindow?.ensureMessageRendered?.(normalizedMessageId, (container) => {
+      const node = container?.querySelector?.(selector);
+      if (!node) return;
+      traceProgrammaticThreadScroll('scrollToMessage:renderWindow', {
+        messageId: normalizedMessageId,
+        behavior: 'auto',
+        block: 'center',
+      });
+      node.scrollIntoView({ behavior: 'auto', block: 'center' });
+      highlightMessage(normalizedMessageId);
+    }));
+  }
   traceProgrammaticThreadScroll('scrollToMessage', {
     messageId: normalizedMessageId,
     behavior: 'smooth',

@@ -42,6 +42,7 @@ const NODE_TEST_FILES = [
   'src/lib/aiReplyPreview.test.js',
   'src/lib/appBranding.test.js',
   'src/lib/appPushPermissions.test.js',
+  'src/lib/chat/chatThreadRenderWindow.test.js',
   'src/lib/chat/chatThreadScrollModel.test.js',
   'src/lib/chat/emojiImages.test.js',
   'src/lib/desktopQuickRoutes.test.js',

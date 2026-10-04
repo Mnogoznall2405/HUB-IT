@@ -64,7 +64,19 @@ export const capturePrependScrollRestoreState = (container) => {
   }
 
   const containerRect = container.getBoundingClientRect();
-  const anchorNode = findTopVisibleMessageNode(container, containerRect);
+  let anchorNode = findTopVisibleMessageNode(container, containerRect);
+  if (anchorNode && !anchorNode.hasAttribute?.('data-chat-message-id')) {
+    anchorNode = anchorNode.querySelector?.('[data-chat-message-id]') || anchorNode;
+  }
+  // Первое смонтированное сообщение — граница prepend: над ним появятся более
+  // ранние, и его шапка серии (имя отправителя, отступ) может исчезнуть.
+  // Якорь на нём «уводит» ленту на высоту шапки — берём следующее сообщение.
+  if (anchorNode && container.querySelector('[data-chat-message-id]') === anchorNode) {
+    const nextNode = container.querySelectorAll('[data-chat-message-id]')[1];
+    if (nextNode && nextNode.getBoundingClientRect().top < containerRect.bottom) {
+      anchorNode = nextNode;
+    }
+  }
 
   if (!anchorNode) {
     return {

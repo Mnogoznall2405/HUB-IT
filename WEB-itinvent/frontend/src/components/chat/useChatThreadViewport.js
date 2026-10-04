@@ -1,6 +1,7 @@
 import { useCallback, useRef } from 'react';
 
 import { CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX } from './chatHelpers';
+import { getChatThreadRenderWindow } from '../../lib/chat/chatThreadRenderWindow';
 
 export default function useChatThreadViewport({
   showJumpToLatestRef,
@@ -15,7 +16,11 @@ export default function useChatThreadViewport({
 
   const syncThreadViewportState = useCallback((node) => {
     if (!node) return;
-    const nearBottom = (node.scrollHeight - node.scrollTop - node.clientHeight) <= CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX;
+    // Окно рендера, срезанное снизу, — не «низ ленты»: новые сообщения не
+    // должны прокручивать к хвосту, кнопка «к последним» остаётся видимой.
+    const renderWindowCutsNewer = Boolean(getChatThreadRenderWindow(node)?.hasHiddenNewer?.());
+    const nearBottom = !renderWindowCutsNewer
+      && (node.scrollHeight - node.scrollTop - node.clientHeight) <= CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX;
     threadNearBottomRef.current = nearBottom;
     const hasNewer = Boolean(messagesHasNewerRef?.current);
     // R19: while the window is cut off from the newest messages the jump
@@ -25,7 +30,7 @@ export default function useChatThreadViewport({
       showJumpToLatestRef.current = nextShowJumpToLatest;
       setShowJumpToLatest(nextShowJumpToLatest);
     }
-    if (nearBottom && hasNewer) {
+    if (!renderWindowCutsNewer && nearBottom && hasNewer) {
       onApproachBottomRef.current?.();
     }
   }, [messagesHasNewerRef, setShowJumpToLatest, showJumpToLatestRef, threadNearBottomRef]);

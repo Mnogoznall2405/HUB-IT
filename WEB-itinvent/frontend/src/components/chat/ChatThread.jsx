@@ -827,6 +827,25 @@ function ChatThread({
     threadPinnedScrollFrameRef.current = window.requestAnimationFrame(tick);
   }, [scrollPinnedThreadToBottom, shouldDeferThreadPinnedScroll]);
 
+  // Окно рендера ленты само сдвинуло прокрутку (якорь, переход к сообщению,
+  // возврат к хвосту) — синхронизируем закрепление к низу, снимок якоря и
+  // высоту контента, чтобы content ResizeObserver не «компенсировал» поверх.
+  const handleRenderWindowCommit = useCallback(() => {
+    const container = threadScrollRef.current;
+    if (!container) return;
+    const scrollTop = Number(container.scrollTop || 0);
+    const distanceFromBottom = Number(container.scrollHeight || 0) - scrollTop - Number(container.clientHeight || 0);
+    threadPinnedToBottomRef.current = distanceFromBottom <= COMPOSER_STICK_DISTANCE_PX;
+    lastScrollTopRef.current = scrollTop;
+    contentAnchorSnapshotRef.current = threadPinnedToBottomRef.current
+      ? null
+      : capturePrependScrollRestoreState(container);
+    const content = threadContentRef?.current;
+    if (content) {
+      threadContentHeightRef.current = Number(content.offsetHeight || content.scrollHeight || 0);
+    }
+  }, [threadContentRef, threadScrollRef]);
+
   const schedulePinnedBottomScrollRef = useRef(schedulePinnedBottomScroll);
   schedulePinnedBottomScrollRef.current = schedulePinnedBottomScroll;
 
@@ -1543,6 +1562,8 @@ function ChatThread({
               threadScrollRef={threadScrollRef}
               threadContentRef={threadContentRef}
               bottomRef={bottomRef}
+              prependScrollRestoreRef={prependScrollRestoreRef}
+              onRenderWindowCommit={handleRenderWindowCommit}
               onOpenReads={onOpenReads}
               onOpenAttachmentPreview={onOpenAttachmentPreview}
               onReplyMessage={onReplyMessage}

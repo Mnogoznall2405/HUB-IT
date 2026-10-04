@@ -3,6 +3,7 @@ import { useCallback } from 'react';
 import { emitAgentDebugLog } from '../../lib/debugClientLog';
 import useChatThreadViewport from '../../components/chat/useChatThreadViewport';
 import { getChatBottomInstantSettleFrames } from './chatKeyboardModel';
+import { getChatThreadRenderWindow } from '../../lib/chat/chatThreadRenderWindow';
 import {
   capturePrependScrollRestoreState,
   computePrependScrollRestoreTop,
@@ -86,6 +87,8 @@ export default function useChatScrollController({
     settleFrames = 0,
     userInitiated = false,
   } = {}) => {
+    // Окно рендера срезано снизу — сначала вернуть его к хвосту ленты.
+    getChatThreadRenderWindow(threadScrollRef.current)?.showLatest?.();
     const pinnedScroll = pinnedScrollRef.current;
     const framesToSettle = Math.max(0, Math.floor(Number(settleFrames || 0)));
     if (typeof pinnedScroll === 'function') {
@@ -186,6 +189,7 @@ export default function useChatScrollController({
   const scrollThreadBottomIntoView = useCallback(({ source = 'unknown', behavior = 'smooth' } = {}) => {
     const container = threadScrollRef.current;
     if (!container) return false;
+    getChatThreadRenderWindow(container)?.showLatest?.();
     if (typeof bottomRef.current?.scrollIntoView === 'function') {
       traceProgrammaticThreadScroll(source, {
         behavior,

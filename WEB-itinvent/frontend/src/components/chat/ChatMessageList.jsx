@@ -21,6 +21,8 @@ import { CHAT_FONT_FAMILY } from './chatUiTokens';
 import {
   buildTimelineItems,
 } from './chatHelpers';
+import { sliceTimelineForRenderWindow } from '../../lib/chat/chatThreadRenderWindow';
+import useChatThreadRenderWindow from './useChatThreadRenderWindow';
 
 const GROUP_WINDOW_MS = 10 * 60 * 1000;
 
@@ -526,6 +528,8 @@ const ChatMessageList = memo(function ChatMessageList({
   threadScrollRef,
   threadContentRef,
   bottomRef,
+  prependScrollRestoreRef,
+  onRenderWindowCommit,
   onOpenReads,
   onOpenAttachmentPreview,
   onReplyMessage,
@@ -556,6 +560,23 @@ const ChatMessageList = memo(function ChatMessageList({
     () => buildTimelineItems(normalizedMessages, effectiveLastReadMessageId, unreadAnchorId),
     [effectiveLastReadMessageId, normalizedMessages, unreadAnchorId],
   );
+  // Окно рендера: в DOM только срез ленты (≤ CHAT_RENDER_WINDOW_MAX сообщений),
+  // загруженная история остаётся в state целиком.
+  const renderWindow = useChatThreadRenderWindow({
+    messages: normalizedMessages,
+    conversationId: activeConversation?.id,
+    threadScrollRef,
+    prependScrollRestoreRef,
+    onRenderWindowCommit,
+    onLoadOlder,
+  });
+  const renderRange = renderWindow.range;
+  const visibleTimelineItems = useMemo(() => (
+    renderRange.start <= 0 && renderRange.end >= normalizedMessages.length
+      ? timelineItems
+      : sliceTimelineForRenderWindow(timelineItems, renderRange)
+  ), [normalizedMessages.length, renderRange, timelineItems]);
+  const hiddenOlderCount = renderWindow.hiddenOlderCount;
   const servicePillBg = ui.servicePillBg || alpha(ui.composerDockBg || ui.panelBg || theme.palette.background.paper, 0.78);
   const servicePillText = ui.servicePillText || ui.textSecondary;
   const selectedMessageIdSet = useMemo(
@@ -576,16 +597,20 @@ const ChatMessageList = memo(function ChatMessageList({
     return '';
   }, [activeConversation?.kind, normalizedMessages]);
 
+  // Серии считаются только для смонтированного окна (соседи — из полного
+  // списка, чтобы граница окна не разрывала серию).
   const groupedMetaById = useMemo(() => {
     const entries = new Map();
-    normalizedMessages.forEach((message, index) => {
-      entries.set(message.id, {
+    const end = Math.min(normalizedMessages.length, renderRange.end);
+    for (let index = Math.max(0, renderRange.start); index < end; index += 1) {
+      const message = normalizedMessages[index];
+      entries.set(message?.id, {
         groupedWithPrevious: shouldGroupMessages(normalizedMessages[index - 1], message),
         groupedWithNext: shouldGroupMessages(message, normalizedMessages[index + 1]),
       });
-    });
+    }
     return entries;
-  }, [normalizedMessages]);
+  }, [normalizedMessages, renderRange]);
 
   return (
     <>
@@ -644,19 +669,26 @@ const ChatMessageList = memo(function ChatMessageList({
         </Stack>
         )
       ) : (
-        <Stack ref={threadContentRef} data-testid="chat-thread-content" spacing={0} sx={{ overflowAnchor: 'none' }}>
-          {messagesHasMore ? (
+        <Stack
+          ref={threadContentRef}
+          data-testid="chat-thread-content"
+          data-hidden-older={hiddenOlderCount}
+          data-hidden-newer={renderWindow.hiddenNewerCount}
+          spacing={0}
+          sx={{ overflowAnchor: 'none' }}
+        >
+          {messagesHasMore || hiddenOlderCount > 0 ? (
             <LoadOlderSentinel
-              loadingOlder={loadingOlder}
-              onLoadOlder={onLoadOlder}
-              historyAutoLoadEnabled={historyAutoLoadEnabled}
+              loadingOlder={hiddenOlderCount > 0 ? false : loadingOlder}
+              onLoadOlder={renderWindow.loadOlderFromSentinel}
+              historyAutoLoadEnabled={hiddenOlderCount > 0 || historyAutoLoadEnabled}
               threadScrollRef={threadScrollRef}
               ui={ui}
               servicePillBg={servicePillBg}
             />
           ) : null}
 
-          {timelineItems.map((item) => {
+          {visibleTimelineItems.map((item) => {
             if (item.type === 'date') {
               return (
                 <TimelineMarker
