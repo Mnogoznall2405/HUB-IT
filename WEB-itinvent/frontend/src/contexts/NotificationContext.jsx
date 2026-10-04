@@ -477,3 +477,8 @@ export function useNotification() {
   }
   return value;
 }
+
+/** Как useNotification, но без провайдера возвращает null (изолированный рендер компонента). */
+export function useOptionalNotification() {
+  return useContext(NotificationContext);
+}

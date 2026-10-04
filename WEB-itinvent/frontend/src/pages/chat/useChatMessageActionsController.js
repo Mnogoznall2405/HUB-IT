@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { chatAPI } from '../../api/client';
 import { CHAT_SOCKET_AI_SANDBOX_UPDATED_EVENT } from '../../lib/chatSocket';
 import { buildSandboxPermissionCard } from '../../components/chat/sandboxPermissionCard';
+import { useConfirmDialog } from '../../components/feedback/ConfirmDialogProvider';
 import useChatForwardMessages from '../../components/chat/useChatForwardMessages';
 import useChatMessageMenuActions from '../../components/chat/useChatMessageMenuActions';
 import useChatSelectedMessageActions from '../../components/chat/useChatSelectedMessageActions';
@@ -43,6 +44,7 @@ export default function useChatMessageActionsController({
   syncConversationPreview,
   upsertThreadMessages,
 }) {
+  const { confirm: confirmDialog } = useConfirmDialog();
   const [mailActionEditor, setMailActionEditor] = useState(null);
   const [forwardOpen, setForwardOpen] = useState(false);
   const [forwardConversationQuery, setForwardConversationQuery] = useState('');
@@ -173,14 +175,19 @@ export default function useChatMessageActionsController({
     const messageId = String(message?.id || '').trim();
     closeMessageMenu();
     if (!conversationId || !messageId) return;
-    if (typeof window !== 'undefined' && !window.confirm('Удалить сообщение?')) return;
+    const confirmed = await confirmDialog({
+      title: 'Удалить сообщение?',
+      confirmLabel: 'Удалить',
+      destructive: true,
+    });
+    if (!confirmed) return;
     try {
       const updated = await chatAPI.deleteChatMessage(conversationId, messageId);
       mergeMessageIntoThread(updated);
     } catch (error) {
       notifyApiError(error, 'Не удалось удалить сообщение.');
     }
-  }, [activeConversationIdRef, closeMessageMenu, mergeMessageIntoThread, notifyApiError]);
+  }, [activeConversationIdRef, closeMessageMenu, confirmDialog, mergeMessageIntoThread, notifyApiError]);
 
   const {
     copySelectedMessages: selectedCopySelectedMessages,

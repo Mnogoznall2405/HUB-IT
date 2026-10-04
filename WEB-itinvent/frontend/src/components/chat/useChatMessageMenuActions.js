@@ -3,6 +3,24 @@ import { useCallback } from 'react';
 import { chatAPI } from '../../api/client';
 import { getMessagePreview } from './chatHelpers';
 
+/**
+ * Общий вход в режим редактирования: пункт «Изменить» меню сообщения и ↑ в пустом композере.
+ */
+export function startChatMessageEditing({
+  message,
+  focusComposer,
+  setEditingMessage,
+  setMessageText,
+  setReplyMessage,
+}) {
+  if (!message?.id) return false;
+  setReplyMessage(null);
+  setEditingMessage(message);
+  setMessageText(String(message?.body || '').trim());
+  focusComposer({ forceMobile: true });
+  return true;
+}
+
 export default function useChatMessageMenuActions({
   activeConversationIdRef,
   buildPinnedMessagePayload,
@@ -100,11 +118,13 @@ export default function useChatMessageMenuActions({
 
   const handleEditFromMessageMenu = useCallback((message) => {
     closeMessageMenu();
-    if (!message?.id) return;
-    setReplyMessage(null);
-    setEditingMessage(message);
-    setMessageText(String(message?.body || '').trim());
-    focusComposer({ forceMobile: true });
+    startChatMessageEditing({
+      message,
+      focusComposer,
+      setEditingMessage,
+      setMessageText,
+      setReplyMessage,
+    });
   }, [closeMessageMenu, focusComposer, setEditingMessage, setMessageText, setReplyMessage]);
 
   const handleCopyMessage = useCallback(async (message) => {
@@ -119,8 +139,10 @@ export default function useChatMessageMenuActions({
       await navigator.clipboard.writeText(text);
     } catch {
       notifyWarning('Не удалось скопировать сообщение.');
+      return;
     }
-  }, [closeMessageMenu, notifyWarning]);
+    notifyInfo?.('Скопировано', { durationMs: 2000, dedupeMode: 'recent' });
+  }, [closeMessageMenu, notifyInfo, notifyWarning]);
 
   const handleCopyMessageLink = useCallback(async (message) => {
     closeMessageMenu();

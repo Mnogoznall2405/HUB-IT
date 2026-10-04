@@ -1,6 +1,7 @@
 import { useCallback, useLayoutEffect, useRef } from 'react';
 
 import { chatAPI } from '../../api/client';
+import { useConfirmDialog } from '../feedback/ConfirmDialogProvider';
 import { canDeleteChatMessage, getMessagePreview } from './chatHelpers';
 
 export default function useChatSelectedMessageActions({
@@ -23,6 +24,7 @@ export default function useChatSelectedMessageActions({
   setReplyMessage,
   setThreadMenuAnchor,
 }) {
+  const { confirm: confirmDialog } = useConfirmDialog();
   const selectionGeneration = useRef(0);
   const selectionKey = selectedMessages.map(message => message.id).join(',');
   useLayoutEffect(() => {
@@ -93,7 +95,14 @@ export default function useChatSelectedMessageActions({
     const confirmLabel = deletable.length === 1
       ? 'Удалить сообщение?'
       : `Удалить ${deletable.length} сообщений?`;
-    if (typeof window !== 'undefined' && !window.confirm(confirmLabel)) return;
+    const confirmed = await confirmDialog({
+      title: confirmLabel,
+      confirmLabel: 'Удалить',
+      destructive: true,
+    });
+    if (!confirmed) return;
+    if (selectionGeneration.current !== generation
+      || activeConversationIdRef?.current !== sourceConversationId) return;
 
     try {
       for (const message of deletable) {
@@ -111,6 +120,7 @@ export default function useChatSelectedMessageActions({
   }, [
     activeConversationIdRef,
     clearSelectedMessages,
+    confirmDialog,
     conversationKind,
     mergeMessageIntoThread,
     notifyApiError,

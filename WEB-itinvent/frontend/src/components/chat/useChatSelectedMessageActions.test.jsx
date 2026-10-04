@@ -1,8 +1,9 @@
 import React from 'react';
-import { fireEvent, render, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { chatAPI } from '../../api/client';
+import { ConfirmDialogProvider } from '../feedback/ConfirmDialogProvider';
 import useChatSelectedMessageActions from './useChatSelectedMessageActions';
 
 vi.mock('../../api/client', () => ({
@@ -90,28 +91,61 @@ describe('useChatSelectedMessageActions', () => {
   it('deletes selected own messages through chatAPI and clears selection', async () => {
     const clearSelectedMessages = vi.fn();
     const mergeMessageIntoThread = vi.fn();
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const confirmSpy = vi.spyOn(window, 'confirm');
     chatAPI.deleteChatMessage.mockResolvedValue({ id: 'm1', is_deleted: true });
 
     render(
-      <Harness
+      <ConfirmDialogProvider>
+        <Harness
         selectedMessages={[{ id: 'm1', conversation_id: 'c1', is_own: true, body: 'Hi' }]}
         clipboardWriteText={vi.fn()}
         setForwardOpen={vi.fn()}
         setReplyMessage={vi.fn()}
         clearSelectedMessages={clearSelectedMessages}
         mergeMessageIntoThread={mergeMessageIntoThread}
-      />,
+        />
+      </ConfirmDialogProvider>,
     );
 
-    fireEvent.click(document.querySelectorAll('button')[3]);
+    fireEvent.click(screen.getByRole('button', { name: 'delete' }));
+    await screen.findByRole('dialog', { name: 'Удалить сообщение?' });
+    expect(chatAPI.deleteChatMessage).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Удалить' }));
 
     await waitFor(() => {
       expect(chatAPI.deleteChatMessage).toHaveBeenCalledWith('c1', 'm1');
       expect(mergeMessageIntoThread).toHaveBeenCalledWith({ id: 'm1', is_deleted: true });
       expect(clearSelectedMessages).toHaveBeenCalledTimes(1);
     });
+    expect(confirmSpy).not.toHaveBeenCalled();
 
     confirmSpy.mockRestore();
+  });
+
+  it('keeps the selection and does not delete when the dialog is cancelled', async () => {
+    const clearSelectedMessages = vi.fn();
+
+    render(
+      <ConfirmDialogProvider>
+        <Harness
+          selectedMessages={[
+            { id: 'm1', conversation_id: 'c1', is_own: true, body: 'Hi' },
+            { id: 'm2', conversation_id: 'c1', is_own: true, body: 'There' },
+          ]}
+          clipboardWriteText={vi.fn()}
+          setForwardOpen={vi.fn()}
+          setReplyMessage={vi.fn()}
+          clearSelectedMessages={clearSelectedMessages}
+        />
+      </ConfirmDialogProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'delete' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Удалить 2 сообщений?' });
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(chatAPI.deleteChatMessage).not.toHaveBeenCalled();
+    expect(clearSelectedMessages).not.toHaveBeenCalled();
   });
 });

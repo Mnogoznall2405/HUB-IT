@@ -15,6 +15,8 @@ import { chatAPI } from '../../api/client';
 function Harness({
   activeConversationIdRef = { current: 'conv-active' },
   clipboardWriteText = vi.fn().mockResolvedValue(undefined),
+  notifyInfo = vi.fn(),
+  notifyWarning = vi.fn(),
   persistPinnedMessage = vi.fn(),
   pinnedMessage = null,
   setMessageMenuAnchor = vi.fn(),
@@ -31,9 +33,9 @@ function Harness({
     buildPinnedMessagePayload: (message) => ({ id: message?.id, preview: message?.body || '' }),
     focusComposer: vi.fn(),
     loadChatDialogsModule: vi.fn(),
-    notifyInfo: vi.fn(),
+    notifyInfo,
     notifySuccess: vi.fn(),
-    notifyWarning: vi.fn(),
+    notifyWarning,
     openMediaViewer: vi.fn(),
     openMessageReads: vi.fn(),
     openTaskFromChat: vi.fn(),
@@ -61,6 +63,7 @@ function Harness({
       >
         open menu
       </button>
+      <button type="button" onClick={() => actions.handleCopyMessage({ id: 'msg-5', kind: 'text', body: 'Текст' })}>copy text</button>
     </>
   );
 }
@@ -80,6 +83,28 @@ describe('useChatMessageMenuActions', () => {
     await waitFor(() => {
       expect(clipboardWriteText).toHaveBeenCalledWith('http://localhost:3000/chat?conversation=conv-active&message=msg-1');
     });
+  });
+
+  it('confirms a copied message with a short toast and reports clipboard failures instead', async () => {
+    const notifyInfo = vi.fn();
+    const notifyWarning = vi.fn();
+    const ok = render(<Harness notifyInfo={notifyInfo} notifyWarning={notifyWarning} />);
+    fireEvent.click(ok.getByRole('button', { name: 'copy text' }));
+    await waitFor(() => expect(notifyInfo).toHaveBeenCalledWith('Скопировано', expect.any(Object)));
+    expect(notifyWarning).not.toHaveBeenCalled();
+    ok.unmount();
+
+    notifyInfo.mockClear();
+    const denied = render(
+      <Harness
+        clipboardWriteText={vi.fn().mockRejectedValue(new Error('NotAllowedError'))}
+        notifyInfo={notifyInfo}
+        notifyWarning={notifyWarning}
+      />,
+    );
+    fireEvent.click(denied.getByRole('button', { name: 'copy text' }));
+    await waitFor(() => expect(notifyWarning).toHaveBeenCalledWith('Не удалось скопировать сообщение.'));
+    expect(notifyInfo).not.toHaveBeenCalled();
   });
 
   it('pins, unpins, selects, and opens menu anchors without page state in Chat.jsx', () => {

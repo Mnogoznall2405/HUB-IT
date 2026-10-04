@@ -22,6 +22,8 @@ import {
   Typography,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
+import { useConfirmDialog } from '../feedback/ConfirmDialogProvider';
+import { useOptionalNotification } from '../../contexts/NotificationContext';
 import useChatPanelHistory from './useChatPanelHistory';
 import useChatPanelMembers from './useChatPanelMembers';
 import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
@@ -1588,6 +1590,8 @@ export default function ChatContextPanel({
   const [memberActionAnchorEl, setMemberActionAnchorEl] = useState(null);
   const [memberActionTarget, setMemberActionTarget] = useState(null);
   const [groupActionBusy, setGroupActionBusy] = useState(false);
+  const { confirm: confirmDialog, prompt: promptDialog } = useConfirmDialog();
+  const notifyApiError = useOptionalNotification()?.notifyApiError;
   const mobileTabTouchStartRef = useRef(null);
   const conversationId = String(activeConversation?.id || '').trim();
   const isDirect = activeConversation?.kind === 'direct';
@@ -1856,13 +1860,16 @@ export default function ChatContextPanel({
     try {
       await action();
     } catch (error) {
-      const detail = error?.response?.data?.detail || error?.message || 'Не удалось выполнить действие.';
-      if (typeof window !== 'undefined') window.alert(detail);
+      if (typeof notifyApiError === 'function') {
+        notifyApiError(error, 'Не удалось выполнить действие.');
+      } else {
+        console.error('Chat group action failed', error);
+      }
     } finally {
       setGroupActionBusy(false);
       closeMemberActionMenu();
     }
-  }, [closeMemberActionMenu]);
+  }, [closeMemberActionMenu, notifyApiError]);
 
   // Состояния для диалога добавления участников
   const [addMembersOpen, setAddMembersOpen] = useState(false);
@@ -1939,21 +1946,32 @@ export default function ChatContextPanel({
     return () => window.clearTimeout(timeoutId);
   }, [addMembersOpen, addMembersSearch, loadAddMembersUsers]);
 
-  const handleRenameGroup = useCallback(() => {
-    if (!canManageOwners || typeof window === 'undefined') return;
+  const handleRenameGroup = useCallback(async () => {
+    if (!canManageOwners) return;
     setInfoMenuAnchorEl(null);
-    const nextTitle = window.prompt('Новое название группы', String(activeConversation?.title || '').trim());
+    const nextTitle = await promptDialog({
+      title: 'Переименовать группу',
+      label: 'Новое название группы',
+      initialValue: String(activeConversation?.title || '').trim(),
+      confirmLabel: 'Сохранить',
+    });
     const normalizedTitle = String(nextTitle || '').trim();
     if (!normalizedTitle) return;
     void runGroupAction(() => onUpdateGroupProfile?.({ title: normalizedTitle }));
-  }, [activeConversation?.title, canManageOwners, onUpdateGroupProfile, runGroupAction]);
+  }, [activeConversation?.title, canManageOwners, onUpdateGroupProfile, promptDialog, runGroupAction]);
 
-  const handleLeaveGroup = useCallback(() => {
-    if (!isGroup || currentMemberRole === 'owner' || typeof window === 'undefined') return;
+  const handleLeaveGroup = useCallback(async () => {
+    if (!isGroup || currentMemberRole === 'owner') return;
     setInfoMenuAnchorEl(null);
-    if (!window.confirm(`Покинуть беседу «${String(activeConversation?.title || 'группу').trim()}»?\nПосле выхода вы перестанете получать новые сообщения.`)) return;
+    const confirmed = await confirmDialog({
+      title: `Покинуть беседу «${String(activeConversation?.title || 'группу').trim()}»?`,
+      message: 'После выхода вы перестанете получать новые сообщения.',
+      confirmLabel: 'Покинуть',
+      destructive: true,
+    });
+    if (!confirmed) return;
     void runGroupAction(() => onLeaveGroup?.());
-  }, [activeConversation?.title, currentMemberRole, isGroup, onLeaveGroup, runGroupAction]);
+  }, [activeConversation?.title, confirmDialog, currentMemberRole, isGroup, onLeaveGroup, runGroupAction]);
 
   const handleOpenMemberActions = useCallback((event, member) => {
     event?.stopPropagation?.();
@@ -2252,9 +2270,16 @@ export default function ChatContextPanel({
       {canTransferSelectedOwnership ? (
         <MenuItem
           disabled={groupActionBusy}
-          onClick={() => {
-            if (typeof window !== 'undefined' && !window.confirm('Передать владельца группы этому участнику?')) return;
-            void runGroupAction(() => onTransferGroupOwnership?.(memberActionUserId));
+          onClick={async () => {
+            const targetUserId = memberActionUserId;
+            closeMemberActionMenu();
+            const confirmed = await confirmDialog({
+              title: 'Передать владельца группы этому участнику?',
+              confirmLabel: 'Передать',
+              destructive: true,
+            });
+            if (!confirmed) return;
+            void runGroupAction(() => onTransferGroupOwnership?.(targetUserId));
           }}
         >
           Передать ownership
@@ -2263,9 +2288,16 @@ export default function ChatContextPanel({
       {canRemoveSelectedMember ? (
         <MenuItem
           disabled={groupActionBusy}
-          onClick={() => {
-            if (typeof window !== 'undefined' && !window.confirm('Исключить участника из группы?')) return;
-            void runGroupAction(() => onRemoveGroupMember?.(memberActionUserId));
+          onClick={async () => {
+            const targetUserId = memberActionUserId;
+            closeMemberActionMenu();
+            const confirmed = await confirmDialog({
+              title: 'Исключить участника из группы?',
+              confirmLabel: 'Исключить',
+              destructive: true,
+            });
+            if (!confirmed) return;
+            void runGroupAction(() => onRemoveGroupMember?.(targetUserId));
           }}
           sx={{ color: 'var(--chat-sheet-warning, #d64b4b) !important' }}
         >

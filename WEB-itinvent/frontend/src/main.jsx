@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
 import { NotificationProvider } from './contexts/NotificationContext'
+import { ConfirmDialogProvider } from './components/feedback/ConfirmDialogProvider'
 import { PreferencesProvider } from './contexts/PreferencesContext'
 import {
   bindPwaRuntime,
@@ -91,7 +92,9 @@ const startApplication = async () => {
     <React.StrictMode>
       <PreferencesProvider>
         <NotificationProvider>
-          <App />
+          <ConfirmDialogProvider>
+            <App />
+          </ConfirmDialogProvider>
         </NotificationProvider>
       </PreferencesProvider>
     </React.StrictMode>,

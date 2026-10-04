@@ -30,12 +30,15 @@ export default function useChatPageComposerStack({
   logChatDebug,
   mediaFileInputRef,
   mergeMessageIntoThread,
+  messages,
+  messagesHasNewer,
   notifyApiError,
   notifyWarning,
   patchThreadMessage,
   removeThreadMessage,
   replyMessage,
   revokeObjectUrls,
+  selectedMessageCount,
   setComposerMenuAnchor,
   setEditingMessage,
   setEmojiAnchorEl,
@@ -149,11 +152,20 @@ export default function useChatPageComposerStack({
   });
 
   const composerInteraction = useChatComposerInteractionController({
+    editingMessage,
+    emojiPickerOpen: composerUi.emojiPickerOpen,
     focusComposer,
     handleComposerSend,
+    isMobile,
+    latestMessageTextRef,
+    messages,
+    messagesHasNewer,
+    replyMessage,
+    selectedMessageCount,
     setEditingMessage,
     setMessageText,
     setReplyMessage,
+    voiceRecording: uploads.voiceRecording,
   });
 
   return {

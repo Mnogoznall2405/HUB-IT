@@ -1,8 +1,9 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { createTheme, ThemeProvider } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
 import ChatMessageContextMenu from './ChatMessageContextMenu';
+import { ConfirmDialogProvider } from '../feedback/ConfirmDialogProvider';
 
 vi.mock('../../api/client', () => ({
   chatAPI: {
@@ -25,6 +26,7 @@ function renderMenu(overrides = {}) {
   document.body.appendChild(anchor);
   return render(
     <ThemeProvider theme={theme}>
+      <ConfirmDialogProvider>
       <ChatMessageContextMenu
         theme={theme}
         ui={ui}
@@ -39,6 +41,7 @@ function renderMenu(overrides = {}) {
         onSelectMessageFromMenu={vi.fn()}
         {...overrides}
       />
+      </ConfirmDialogProvider>
     </ThemeProvider>,
   );
 }
@@ -60,20 +63,24 @@ const pollMessage = (poll, extra = {}) => ({
 });
 
 describe('ChatMessageContextMenu poll actions (R50)', () => {
-  it('offers «Остановить опрос» to the author of an open poll and asks for confirmation', () => {
+  it('offers «Остановить опрос» to the author of an open poll and asks for confirmation', async () => {
     const onStopPollFromMessageMenu = vi.fn();
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
     const first = renderMenu({ message: pollMessage({}), onStopPollFromMessageMenu });
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Остановить опрос' }));
-    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole('dialog', { name: 'Остановить опрос?' })).toHaveTextContent('После этого голосовать будет нельзя.');
+    fireEvent.click(screen.getByRole('button', { name: 'Отмена' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Остановить опрос?' })).not.toBeInTheDocument());
     expect(onStopPollFromMessageMenu).not.toHaveBeenCalled(); // declined
 
     first.unmount();
     renderMenu({ message: pollMessage({}), onStopPollFromMessageMenu });
     fireEvent.click(screen.getByRole('menuitem', { name: 'Остановить опрос' }));
-    expect(onStopPollFromMessageMenu).toHaveBeenCalledWith(expect.objectContaining({ id: 'poll-1' }));
-    confirm.mockRestore();
+    await screen.findByRole('dialog', { name: 'Остановить опрос?' });
+    fireEvent.click(screen.getByRole('button', { name: 'Остановить' }));
+    await waitFor(() => {
+      expect(onStopPollFromMessageMenu).toHaveBeenCalledWith(expect.objectContaining({ id: 'poll-1' }));
+    });
   });
 
   it('hides «Остановить опрос» for a poll of somebody else and for a closed poll', () => {

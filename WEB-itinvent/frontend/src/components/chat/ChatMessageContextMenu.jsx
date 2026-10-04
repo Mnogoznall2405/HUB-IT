@@ -15,6 +15,7 @@ import StopCircleOutlinedIcon from '@mui/icons-material/StopCircleOutlined';
 import UndoRoundedIcon from '@mui/icons-material/UndoRounded';
 
 import { chatAPI } from '../../api/client';
+import { useConfirmDialog } from '../feedback/ConfirmDialogProvider';
 import {
   canDeleteChatMessage,
   canEditChatMessage,
@@ -141,6 +142,7 @@ export default function ChatMessageContextMenu({
   onCancelPollVoteFromMessageMenu,
 }) {
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+  const { confirm: confirmDialog } = useConfirmDialog();
   const [reactionsExpanded, setReactionsExpanded] = useState(false);
   const [readersPreviewOpen, setReadersPreviewOpen] = useState(false);
   const [readersState, setReadersState] = useState({ status: 'idle', items: [] });
@@ -400,10 +402,16 @@ export default function ChatMessageContextMenu({
               icon={StopCircleOutlinedIcon}
               label="Остановить опрос"
               onClick={() => {
-                const confirmed = typeof window === 'undefined'
-                  || window.confirm('Остановить опрос? После этого голосовать будет нельзя.');
-                if (confirmed) onStopPollFromMessageMenu?.(message);
+                const targetMessage = message;
                 handleClose();
+                void confirmDialog({
+                  title: 'Остановить опрос?',
+                  message: 'После этого голосовать будет нельзя.',
+                  confirmLabel: 'Остановить',
+                  destructive: true,
+                }).then((confirmed) => {
+                  if (confirmed) onStopPollFromMessageMenu?.(targetMessage);
+                });
               }}
               textColor={popupTextColor}
               hoverBg={popupHoverBg}
