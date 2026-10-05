@@ -297,6 +297,31 @@ async def get_conversation_ai_status(
         chat_api()._raise_chat_http_error(exc)
 
 
+def _after_choice_reply(card: dict[str, Any], current_user: User) -> None:
+    """A pressed choice button posted the employee's reply: publish it and start the assistant run.
+
+    Both steps are repeat-safe (the realtime client de-duplicates by message id, a run is queued per trigger
+    message), so a double click does no harm.
+    """
+    if not isinstance(card, dict) or card.get("action_type") != "ai.choice.reply" or card.get("status") != "confirmed":
+        return
+    result = card.get("result") or {}
+    message_id = str(result.get("message_id") or "").strip()
+    conversation_id = str(result.get("conversation_id") or card.get("conversation_id") or "").strip()
+    if not message_id or not conversation_id:
+        return
+    chat_api()._schedule_chat_background_task(
+        chat_api()._publish_message_created_after_send(conversation_id=conversation_id, message_id=message_id),
+        label="publish_choice_reply",
+    )
+    chat_api()._schedule_ai_run_for_message(
+        current_user_id=int(current_user.id),
+        conversation_id=conversation_id,
+        message_id=message_id,
+        conversation_kind="ai",
+    )
+
+
 @router.post("/ai/actions/{action_id}/confirm")
 async def confirm_ai_action(
     action_id: str,
@@ -306,12 +331,14 @@ async def confirm_ai_action(
     from backend.ai_chat.action_cards import confirm_action
 
     try:
-        return await chat_api()._run_chat_call(
+        card = await chat_api()._run_chat_call(
             confirm_action,
             action_id=action_id,
             current_user=current_user,
             payload_overrides=payload,
         )
+        _after_choice_reply(card, current_user)
+        return card
     except LookupError:
         raise HTTPException(status_code=404, detail="Action was not found")
     except Exception as exc:

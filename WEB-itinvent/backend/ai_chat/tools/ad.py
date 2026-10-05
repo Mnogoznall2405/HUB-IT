@@ -28,6 +28,34 @@ from backend.services.ad_users_service import (
 )
 
 
+def _candidate_choice_card(context: AiToolExecutionContext, candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Buttons «who exactly» for several AD namesakes; None when a card cannot be made."""
+    choices = []
+    for item in candidates[:8]:
+        login = str(item.get("login") or "").strip()
+        name = str(item.get("display_name") or "").strip()
+        if not login:
+            continue
+        department = str(item.get("department") or "").strip()
+        label = " · ".join(part for part in (name or login, login, department) if part)
+        choices.append({"label": label, "reply": f"{name or login} ({login})"})
+    if len(choices) < 2:
+        return None
+    try:
+        from backend.ai_chat.action_cards import build_choice_card
+
+        return build_choice_card(
+            conversation_id=context.conversation_id,
+            run_id=context.run_id,
+            requester_user_id=int(context.user_id),
+            title="Выберите сотрудника",
+            summary="Найдено несколько подходящих учётных записей.",
+            choices=choices,
+        )
+    except Exception:
+        return None
+
+
 class AdUserPasswordStatusArgs(BaseModel):
     query: str = Field(
         ...,
@@ -51,7 +79,8 @@ class AdUserPasswordStatusTool(AiTool):
         "how many days remain before the company password rotation, or whether the password must be changed now. "
         "The query can be in Russian (Козловский Максим) or Latin (kozlovskii_me). "
         "The result never includes passwords, hashes, or raw LDAP dumps. "
-        "If status=ambiguous, ask the user to choose one candidate."
+        "If status=ambiguous, the employee is shown buttons to pick the right person (choice_buttons_shown=true): "
+        "answer with one short line like 'Выберите сотрудника кнопкой ниже' and do not list the candidates in text."
     )
     input_model = AdUserPasswordStatusArgs
     admin_only = False
@@ -62,11 +91,17 @@ class AdUserPasswordStatusTool(AiTool):
         payload: dict[str, Any] = lookup_ad_user_password_status(typed_args.query, limit=typed_args.limit)
         status = str(payload.get("status") or "").strip().lower()
         ok = status in {"matched", "ambiguous", "not_found"}
+        data = dict(payload) if ok else None
+        if data is not None and status == "ambiguous":
+            card = _candidate_choice_card(context, list(payload.get("candidates") or []))
+            if card is not None:
+                data["action_card"] = card
+                data["choice_buttons_shown"] = True
         return AiToolResult(
             tool_id=self.tool_id,
             ok=ok,
             database_id=None,
-            data=payload if ok else None,
+            data=data,
             error=str(payload.get("error") or "AD password status lookup failed.") if not ok else None,
         )
 

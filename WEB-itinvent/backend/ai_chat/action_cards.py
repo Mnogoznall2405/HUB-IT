@@ -48,6 +48,8 @@ ACTION_OFFICE_TASK_CREATE = "office.task.create"
 ACTION_OFFICE_TASK_COMMENT = "office.task.comment"
 ACTION_OFFICE_TASK_STATUS = "office.task.status"
 ACTION_REPORT_FORMAT_CHOICE = "ai.report.format_choice"
+ACTION_AI_CHOICE = "ai.choice.reply"
+AI_CHOICE_MAX_OPTIONS = 8
 ACTION_DOC_CONVERT_FORMAT_CHOICE = "ai.doc.convert.format_choice"
 ACTION_SANDBOX_PERMISSION = "ai.sandbox.permission"
 ACTION_WORKS_CARTRIDGE = "itinvent.works.cartridge"
@@ -604,6 +606,63 @@ def _build_report_format_preview(*, payload: dict[str, Any], database_id: str | 
             "source": ", ".join(source_tool_ids[:4]) or ("User content" if source_file_spec else "ITinvent"),
             "formats": list(REPORT_FORMAT_CHOICES),
         },
+    }
+
+
+def build_choice_card(
+    *,
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+    title: str,
+    summary: str,
+    choices: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Buttons the employee presses instead of typing an answer (for example which of several namesakes).
+
+    Each choice is ``{"label": shown on the button, "reply": text sent to the assistant as the employee's message}``.
+    """
+    normalized: list[dict[str, str]] = []
+    for index, item in enumerate(list(choices or [])[:AI_CHOICE_MAX_OPTIONS]):
+        label = _normalize_text((item or {}).get("label"))[:160]
+        reply = _normalize_text((item or {}).get("reply")) or label
+        if label and reply:
+            normalized.append({"id": str(index + 1), "label": label, "reply": reply[:500]})
+    if len(normalized) < 2:
+        raise ValueError("A choice card needs at least two options")
+    return create_pending_action(
+        action_type=ACTION_AI_CHOICE,
+        conversation_id=conversation_id,
+        run_id=run_id,
+        requester_user_id=requester_user_id,
+        database_id=None,
+        payload={"choices": normalized},
+        preview={
+            "title": _normalize_text(title) or "Выберите вариант",
+            "summary": _normalize_text(summary),
+            "choices": [{"id": item["id"], "label": item["label"]} for item in normalized],
+        },
+    )
+
+
+def _execute_ai_choice(*, row: AppAiPendingAction, payload: dict[str, Any], current_user: Any, payload_overrides: dict[str, Any] | None) -> dict[str, Any]:
+    _require_permission(current_user, PERM_CHAT_AI_USE)
+    chosen_id = _normalize_text((payload_overrides or {}).get("choice"))
+    choice = next((item for item in list(payload.get("choices") or []) if _normalize_text(item.get("id")) == chosen_id), None)
+    if choice is None:
+        raise ValueError("Unknown choice")
+    from backend.chat.service import chat_service
+
+    message = chat_service.send_message(
+        current_user_id=int(_user_attr(current_user, "id", 0) or 0),
+        conversation_id=_normalize_text(row.conversation_id),
+        body=_normalize_text(choice.get("reply")),
+    )
+    return {
+        "success": True,
+        "choice": choice.get("label"),
+        "message_id": _normalize_text(message.get("id")) or None,
+        "conversation_id": _normalize_text(row.conversation_id),
     }
 
 
@@ -2058,6 +2117,8 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
                 row.payload_json = _json_dumps(payload)
                 row.preview_json = _json_dumps(_build_office_mail_preview_v2(action_type=row.action_type, payload=payload))
                 result = _execute_office_mail(action_type=row.action_type, payload=payload, current_user=current_user, row=row)
+            elif row.action_type == ACTION_AI_CHOICE:
+                result = _execute_ai_choice(row=row, payload=payload, current_user=current_user, payload_overrides=payload_overrides)
             elif row.action_type == ACTION_REPORT_FORMAT_CHOICE:
                 result = _execute_report_format_choice(
                     row=row, payload=payload, current_user=current_user, payload_overrides=payload_overrides

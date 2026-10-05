@@ -502,6 +502,10 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
   };
   const isReportFormatChoice = actionType === 'ai.report.format_choice';
   const isDocConvertFormatChoice = actionType === 'ai.doc.convert.format_choice';
+  const isAiChoice = actionType === 'ai.choice.reply';
+  const choices = isAiChoice && Array.isArray(preview.choices)
+    ? preview.choices.filter((choice) => choice && choice.id && choice.label)
+    : [];
   const report = preview.report && typeof preview.report === 'object' ? preview.report : null;
   const docConvert = preview.doc_convert && typeof preview.doc_convert === 'object' ? preview.doc_convert : null;
   const supportedDocumentFormats = ['xlsx', 'csv', 'docx', 'pdf', 'txt', 'md', 'json'];
@@ -548,6 +552,16 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
       setBusy('');
     }
   };
+  const runChoice = async (choice) => {
+    if (typeof onConfirmAction !== 'function' || !card.id || !choice?.id) return;
+    const busyKey = `choice:${choice.id}`;
+    setBusy(busyKey);
+    try {
+      await onConfirmAction(card, message, { choice: choice.id });
+    } finally {
+      setBusy('');
+    }
+  };
   const runReportFormat = async (format) => {
     if (typeof onConfirmAction !== 'function' || !card.id || !format) return;
     const busyKey = `format:${format}`;
@@ -586,6 +600,7 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
           <Box
             component="span"
             sx={{
+              display: isAiChoice ? 'none' : undefined,
               flexShrink: 0,
               px: 0.75,
               py: 0.25,
@@ -695,7 +710,21 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
         ) : null}
             {isPending ? (
           <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap" sx={{ pt: 0.35 }}>
-            {isReportFormatChoice || isDocConvertFormatChoice ? (
+            {isAiChoice ? (
+              choices.map((choice) => (
+                <Button
+                  key={choice.id}
+                  size="small"
+                  variant="outlined"
+                  data-testid="chat-ai-choice-button"
+                  onClick={() => runChoice(choice)}
+                  disabled={Boolean(busy)}
+                  sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 700, justifyContent: 'flex-start', textAlign: 'left' }}
+                >
+                  {busy === `choice:${choice.id}` ? '...' : choice.label}
+                </Button>
+              ))
+            ) : isReportFormatChoice || isDocConvertFormatChoice ? (
               (isDocConvertFormatChoice ? docConvertFormats : reportFormats).map((format) => (
                 <Button
                   key={format}
@@ -814,7 +843,7 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
             </Button>
             ) : null}
           </Stack>
-        ) : status === 'confirmed' && !isSandboxPermission ? (
+        ) : status === 'confirmed' && !isSandboxPermission && !isAiChoice ? (
           <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap" sx={{ pt: 0.35 }}>
             <Button
               size="small"

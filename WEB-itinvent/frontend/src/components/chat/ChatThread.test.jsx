@@ -639,6 +639,47 @@ describe('ChatBubble', () => {
     });
   });
 
+  it('shows the namesakes as buttons and sends the picked choice id back', async () => {
+    const onConfirmAction = vi.fn();
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="ai"
+        message={{
+          id: 'msg-ai-choice',
+          kind: 'text',
+          body: 'Выберите сотрудника кнопкой ниже',
+          is_own: false,
+          action_card: {
+            id: 'action-ai-choice',
+            action_type: 'ai.choice.reply',
+            status: 'pending',
+            preview: {
+              title: 'Выберите сотрудника',
+              choices: [
+                { id: '1', label: 'Санду А.О. · sandu.ao' },
+                { id: '2', label: 'Санду Андрей Олегович · sandu_ao' },
+              ],
+            },
+          },
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+        onConfirmAction={onConfirmAction}
+        onCancelAction={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Подтвердить' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Санду Андрей Олегович · sandu_ao' }));
+    await waitFor(() => expect(onConfirmAction).toHaveBeenCalledTimes(1));
+    expect(onConfirmAction.mock.calls[0][0].id).toBe('action-ai-choice');
+    expect(onConfirmAction.mock.calls[0][2]).toEqual({ choice: '2' });
+  });
+
   it('offers inline allow-once, session and reject actions on a sandbox permission card', async () => {
     const onConfirmAction = vi.fn();
     const onCancelAction = vi.fn();
