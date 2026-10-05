@@ -50,6 +50,29 @@ def _is_mfu_row(row: dict[str, Any]) -> bool:
     return any(kw in combined for kw in _MFU_KEYWORDS)
 
 
+def _persisted_ping_states() -> dict[str, dict[str, Any]]:
+    """Ping state of every monitored device, read from the persisted runtime table.
+
+    The in-memory cache lives only in the process that runs the monitor; the AI worker is another
+    process, so it reads what the monitor persisted.
+    """
+    try:
+        from backend.services.mfu_monitor_service import mfu_runtime_monitor
+
+        return mfu_runtime_monitor.read_persisted_runtime_states() or {}
+    except Exception:
+        return {}
+
+
+def _ping_of(states: dict[str, dict[str, Any]], device_key: str | None) -> tuple[str, str | None]:
+    state = states.get(str(device_key or "")) or {}
+    ping = (state.get("runtime") or {}).get("ping") or {}
+    status = _normalize_text(ping.get("status"), "unknown").lower()
+    if status not in {"online", "offline"}:
+        status = "unknown"
+    return status, ping.get("checked_at") or state.get("updated_at")
+
+
 def _build_device_preview(row: dict[str, Any], db_id: str | None) -> dict[str, Any]:
     return {
         "inv_no": _normalize_text(row.get("inv_no") or row.get("INV_NO")),
@@ -129,8 +152,10 @@ def _require_permission(context: AiToolExecutionContext, permission: str) -> Non
 class MfuDevicesListTool(AiTool):
     tool_id = MFU_TOOL_DEVICES_LIST
     description = (
-        "List MFU/printer devices from the ITinvent equipment database. "
-        "Filters by type/model/vendor keywords. Optionally filter by branch name or search query."
+        "List MFU/printer devices from the ITinvent equipment database with their ping status (online/offline) "
+        "from the monitoring. To count or list ALL printers/MFUs call it WITHOUT query; the result has the "
+        "totals total, ping_online, ping_offline, ping_unknown. Use query only for a specific model, vendor, "
+        "location or inventory number, and branch to limit to one branch."
     )
     input_model = MfuDevicesListArgs
     stage = "checking_mfu"
@@ -164,6 +189,7 @@ class MfuDevicesListTool(AiTool):
             if query_text:
                 haystack = " ".join([
                     _normalize_text(row.get("inv_no") or row.get("INV_NO")),
+                    _normalize_text(row.get("type_name") or row.get("TYPE_NAME")),
                     _normalize_text(row.get("model_name") or row.get("MODEL_NAME")),
                     _normalize_text(row.get("vendor_name") or row.get("VENDOR_NAME") or row.get("manufacturer")),
                     _normalize_text(row.get("branch_name") or row.get("BRANCH_NAME")),
@@ -176,6 +202,24 @@ class MfuDevicesListTool(AiTool):
 
         total = len(filtered)
         items = [_build_device_preview(row, database_id) for row in filtered[: max(1, min(args.limit, MAX_LIMIT))]]
+        states = _persisted_ping_states()
+        counts = {"online": 0, "offline": 0, "unknown": 0}
+        from backend.api.v1.mfu import _normalize_device_row
+
+        by_preview: list[tuple[dict[str, Any], dict[str, Any]]] = list(zip(items, filtered[: len(items)]))
+        for row in filtered:
+            try:
+                key = _normalize_device_row(row, database_id).get("key")
+            except Exception:
+                key = None
+            status, _checked = _ping_of(states, key)
+            counts[status] += 1
+        for preview, row in by_preview:
+            try:
+                key = _normalize_device_row(row, database_id).get("key")
+            except Exception:
+                key = None
+            preview["ping"], preview["ping_checked_at"] = _ping_of(states, key)
         return AiToolResult(
             tool_id=self.tool_id,
             ok=True,
@@ -186,6 +230,9 @@ class MfuDevicesListTool(AiTool):
                 "count": len(items),
                 "total": total,
                 "truncated": total > len(items),
+                "ping_online": counts["online"],
+                "ping_offline": counts["offline"],
+                "ping_unknown": counts["unknown"],
                 "items": items,
             },
         )
@@ -248,6 +295,11 @@ class MfuDeviceStatusTool(AiTool):
             except Exception:
                 runtime = {}
 
+        ping_state = (runtime or {}).get("ping") or {}
+        if device_key and _normalize_text(ping_state.get("status"), "unknown").lower() == "unknown":
+            persisted = _persisted_ping_states().get(device_key) or {}
+            if persisted.get("runtime"):
+                runtime = persisted["runtime"]
         return AiToolResult(
             tool_id=self.tool_id,
             ok=True,
