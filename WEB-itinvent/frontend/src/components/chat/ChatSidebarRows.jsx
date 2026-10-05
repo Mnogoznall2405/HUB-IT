@@ -587,7 +587,7 @@ function PersonSearchRow({
         padding: `${density.sidebarResultRowPy}px ${density.sidebarResultRowPx}px`,
       }}
     >
-      <PresenceAvatar item={person} online={Boolean(person?.presence?.is_online)} size={compactMobile ? 54 : density.sidebarAvatar} colorSeed={person?.id} />
+      <PresenceAvatar item={person} online={Boolean(person?.presence?.is_online)} size={density.sidebarAvatar} colorSeed={person?.id} />
       <div className="min-w-0 flex-1">
         <p
           className={joinClasses('truncate font-semibold tracking-[-0.01em] text-[color:var(--chat-text-primary)]', compactMobile ? 'text-[17px]' : 'text-[16px]')}

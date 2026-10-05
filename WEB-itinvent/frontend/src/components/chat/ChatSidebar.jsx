@@ -1380,8 +1380,8 @@ function ChatSidebar({
             compactMobile ? 'bottom-4 right-4' : 'bottom-5 right-5',
           )}
           style={{
-            width: 56,
-            height: 56,
+            width: 44,
+            height: 44,
             backgroundColor: 'var(--chat-compose-fab-bg)',
             color: 'var(--chat-compose-fab-text)',
             boxShadow: 'var(--chat-compose-fab-shadow)',
