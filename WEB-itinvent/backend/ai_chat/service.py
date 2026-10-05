@@ -336,7 +336,9 @@ AI_SELF_TOOL_ROUTING_GUIDE = (
     "When the employee reports a problem that the knowledge base and these checks do not solve, or asks to create "
     "a request to IT, call helpdesk.request_draft with a short title you choose yourself and the employee's description; "
     "the request goes to IT as an e-mail only after the employee confirms the card. If it is not clear from the words what "
-    "the problem is, do not call the tool: ask the employee to describe it in detail first. Never use these tools to look up another person."
+    "the problem is, do not call the tool: ask the employee to describe it in detail first. When you have just asked for such a "
+    "description, the employee's next message IS the description (even if it is emotional or general, like 'ничего не работает, помогите'): "
+    "call helpdesk.request_draft right away with it, do not start checking the account or the computer instead. Never use these tools to look up another person."
 )
 AI_DIRECTORY_TOOL_ROUTING_GUIDE = (
     "Company directory: phones, e-mails, position, department, office room and current absence of colleagues → "

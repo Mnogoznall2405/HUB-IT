@@ -908,7 +908,14 @@ def _entry_password_status(entry: Any, *, include_raw: bool = False) -> dict[str
     login = _entry_value(entry, "sAMAccountName")
     if not display_name and not login:
         return None
-    status = calculate_password_expiration_status(_entry_pwd_last_set_raw(entry))
+    pwd_last_set_raw = _entry_pwd_last_set_raw(entry)
+    status = calculate_password_expiration_status(pwd_last_set_raw)
+    # "Password never expires" accounts must not be reported as expired by the policy calculation.
+    status = _apply_password_never_expires(
+        status,
+        never_expires=_entry_password_never_expires(entry),
+        pwd_last_set_raw=pwd_last_set_raw,
+    )
     if not include_raw:
         status.pop("pwd_last_set", None)
     return {
@@ -1046,7 +1053,7 @@ def lookup_ad_user_password_status(query: str, *, limit: int = 5) -> dict[str, A
     if conn is None:
         return {"status": "error", "error": "LDAP connection is not configured or bind failed.", "query": normalized_query}
 
-    attributes = ["sAMAccountName", "displayName", "department", "title", "mail", "pwdLastSet"]
+    attributes = ["sAMAccountName", "displayName", "department", "title", "mail", "pwdLastSet", "userAccountControl"]
     try:
         conn.search(
             search_base=_resolve_ad_search_base(),
@@ -1140,7 +1147,7 @@ def lookup_ad_mailbox_password_status(query: str, *, limit: int = 5) -> dict[str
     if conn is None:
         return {"status": "error", "error": "LDAP connection is not configured or bind failed.", "query": normalized_query}
 
-    attributes = ["sAMAccountName", "displayName", "department", "title", "mail", "pwdLastSet"]
+    attributes = ["sAMAccountName", "displayName", "department", "title", "mail", "pwdLastSet", "userAccountControl"]
     try:
         conn.search(
             search_base=_resolve_ad_search_base(),
@@ -1209,7 +1216,7 @@ def list_ad_mailboxes_expiring_soon(*, days_threshold: int = 3, limit: int = 50)
     if conn is None:
         return {"status": "error", "error": "LDAP connection is not configured or bind failed."}
 
-    attributes = ["sAMAccountName", "displayName", "department", "title", "mail", "pwdLastSet"]
+    attributes = ["sAMAccountName", "displayName", "department", "title", "mail", "pwdLastSet", "userAccountControl"]
     # Search enabled mailbox accounts (dot in sAMAccountName) with a real pwdLastSet
     search_filter = (
         "(&"
@@ -1485,6 +1492,58 @@ def get_ad_user_groups(query: str, *, include_builtin: bool = False) -> dict[str
         "groups": groups,
         "group_count": len(groups),
     }
+
+
+_AD_INFO_LOGON_RE = re.compile(
+    r"^\s*(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})\s*<(logon|logoff)>\s*@\s*([A-Za-z0-9_.\-]+)", re.IGNORECASE
+)
+
+
+def _login_family_key(login: object) -> str:
+    return re.sub(r"[._\-]", "", str(login or "").strip().lower())
+
+
+def get_ad_last_logon_computers(login: str) -> list[dict[str, Any]]:
+    """Computers an employee last logged on, from the AD "Telephones -> Notes" field (``info``).
+
+    A logon script writes ``2026/10/02 09:22:21 <logon> @ TMN-IT-0009`` there. People often have several AD
+    accounts that differ only by the separator (``ivanov.ii`` / ``ivanov_ii``): all accounts whose login is
+    equal after removing ``.``, ``_`` and ``-`` are read. Newest record first.
+    """
+    family = _login_family_key(login)
+    if not family:
+        return []
+    conn = _open_ad_connection()
+    if conn is None:
+        return []
+    prefix = re.split(r"[._\-]", str(login).strip().lower(), maxsplit=1)[0]
+    result: list[dict[str, Any]] = []
+    try:
+        conn.search(
+            search_base=_resolve_ad_search_base(),
+            search_filter=f"(&(objectCategory=person)(objectClass=user)(sAMAccountName={escape_filter_chars(prefix)}*))",
+            attributes=["sAMAccountName", "displayName", "info"],
+            search_scope=SUBTREE,
+            size_limit=20,
+        )
+        for entry in list(getattr(conn, "entries", []) or []):
+            sam = _entry_value(entry, "sAMAccountName")
+            if _login_family_key(sam) != family:
+                continue
+            match = _AD_INFO_LOGON_RE.match(_entry_value(entry, "info"))
+            if not match:
+                continue
+            result.append({"login": sam, "at": match.group(1), "event": match.group(2).lower(), "computer": match.group(3)})
+    except Exception as exc:
+        logger.warning("AD last logon computers lookup failed: %s", exc)
+        return []
+    finally:
+        try:
+            conn.unbind()
+        except Exception:
+            pass
+    result.sort(key=lambda item: item["at"], reverse=True)
+    return result
 
 
 def get_ad_user_logon_history(query: str) -> dict[str, Any]:

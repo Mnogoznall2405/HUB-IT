@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
@@ -74,21 +75,62 @@ def _my_equipment_rows(identity: SelfIdentity) -> list[dict[str, Any]]:
     return list(queries.get_equipment_by_owner(int(identity.owner_no), identity.database_id) or [])
 
 
+_STALE_HOST_DAYS = 30
+
+
+def _ad_last_logon_hostnames(identity: SelfIdentity) -> list[str]:
+    """Computer names from the AD "Notes" field of the employee's accounts, newest logon first."""
+    if not identity.ad_login:
+        return []
+    try:
+        from backend.services.ad_users_service import get_ad_last_logon_computers
+
+        records = get_ad_last_logon_computers(identity.ad_login)
+    except Exception as exc:
+        logger.warning("self computers: AD last logon failed: %s", type(exc).__name__)
+        return []
+    return list(dict.fromkeys(str(item.get("computer") or "").strip() for item in records if item.get("computer")))
+
+
+def _host_last_seen(host: dict[str, Any]) -> float:
+    for key in ("last_seen_at", "last_seen", "updated_at"):
+        if not host.get(key):
+            continue
+        try:
+            return float(host[key])
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
 def _my_hosts(identity: SelfIdentity, equipment_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Inventory hosts of this employee: logged in under the own AD login, or own equipment."""
+    """Inventory hosts of this employee, the one he last logged on first.
+
+    Sources: the computer in the AD "Notes" field (written by the logon script, exact host name), hosts where
+    the employee is logged in under the own AD login, and own ITinvent equipment.
+    """
     from backend.api.v1.inventory import _get_inventory_app_store, _get_inventory_host, _normalize_mac
     from backend.ai_chat.tools.itinvent import _row_value
 
     hosts: dict[str, dict[str, Any]] = {}
+    preferred: list[str] = []
     login = identity.ad_login
     app_store = _get_inventory_app_store()
+    if app_store is not None:
+        for hostname in _ad_last_logon_hostnames(identity):
+            for mac in sorted(app_store.search_host_keys(hostname, {"identity"}) or set()):
+                host = _get_inventory_host(mac)
+                if isinstance(host, dict) and _normalize_text(host.get("hostname")).lower() == hostname.lower():
+                    key = _normalize_mac(host.get("mac_address") or mac)
+                    hosts[key] = host
+                    preferred.append(key)
     if login and app_store is not None:
         for mac in sorted(app_store.search_host_keys(login, {"user"}) or set()):
             host = _get_inventory_host(mac)
             if not isinstance(host, dict):
                 continue
             if login in {normalize_login(host.get("user_login")), normalize_login(host.get("current_user"))}:
-                hosts[_normalize_mac(host.get("mac_address") or mac)] = host
+                hosts.setdefault(_normalize_mac(host.get("mac_address") or mac), host)
     for row in equipment_rows:
         mac = _normalize_mac(_row_value(row, "mac_address", "mac"))
         if not mac or mac in hosts:
@@ -96,7 +138,13 @@ def _my_hosts(identity: SelfIdentity, equipment_rows: list[dict[str, Any]]) -> l
         host = _get_inventory_host(mac)
         if isinstance(host, dict):
             hosts[mac] = host
-    return list(hosts.values())[:_MAX_HOSTS]
+    ordered = [hosts[key] for key in dict.fromkeys(preferred) if key in hosts]
+    rest = sorted((host for key, host in hosts.items() if key not in set(preferred)), key=_host_last_seen, reverse=True)
+    if ordered:
+        # The AD record names the computer in use now: other hosts not seen for a month are old machines.
+        cutoff = time.time() - _STALE_HOST_DAYS * 86400
+        rest = [host for host in rest if _host_last_seen(host) >= cutoff]
+    return (ordered + rest)[:_MAX_HOSTS]
 
 
 def _self_computer_view(raw: dict[str, Any], identity: SelfIdentity) -> dict[str, Any]:
