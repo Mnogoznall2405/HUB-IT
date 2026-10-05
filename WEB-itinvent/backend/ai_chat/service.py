@@ -334,8 +334,9 @@ AI_SELF_TOOL_ROUTING_GUIDE = (
     "then me.files.attach (the file is attached right after your answer); 'где моя заявка на ноутбук / когда придёт монитор' → "
     "me.it_requests (1C IT purchase requests where the employee is the initiator). "
     "When the employee reports a problem that the knowledge base and these checks do not solve, or asks to create "
-    "a request to IT, call helpdesk.request_draft with a short title and the employee's description; the request is "
-    "created only after the employee confirms the card. Never use these tools to look up another person."
+    "a request to IT, call helpdesk.request_draft with a short title you choose yourself and the employee's description; "
+    "the request goes to IT as an e-mail only after the employee confirms the card. If it is not clear from the words what "
+    "the problem is, do not call the tool: ask the employee to describe it in detail first. Never use these tools to look up another person."
 )
 AI_DIRECTORY_TOOL_ROUTING_GUIDE = (
     "Company directory: phones, e-mails, position, department, office room and current absence of colleagues → "

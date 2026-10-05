@@ -88,7 +88,7 @@ CATALOG: dict[str, list[tuple[str, str]]] = {
         ("me.equipment", "Моя техника"),
         ("me.computer.health", "Состояние моего компьютера"),
         ("me.account.status", "Моя учётная запись: пароль и блокировка"),
-        ("helpdesk.request_draft", "Обращение в IT (черновик, title, description)"),
+        ("helpdesk.request_draft", "Заявка в IT письмом на it@zsgp.ru (title — тему придумай сам, description). Если из слов не ясно, в чём проблема, НЕ вызывай: попроси описать подробно"),
     ],
     "directory": [
         ("directory.people.search", "Справочник сотрудников"),
@@ -108,7 +108,9 @@ RULES = (
     "Return JSON only. Top-level keys: answer_markdown, tool_calls. tool_calls is optional, up to 3 objects "
     "{tool_id,args}. If you request tool_calls leave answer_markdown empty. Tool results arrive in the next "
     "user message. Do not invent live data without tool results. Drafts (letters, tasks, messages, unlocks) "
-    "are only prepared for the employee's confirmation - never say they were already sent or done."
+    "are only prepared for the employee's confirmation - never say they were already sent or done. "
+    "When the employee asks for a request to IT, call helpdesk.request_draft right away with a title you choose; "
+    "do not look up their equipment first."
 )
 
 SENT = r"(отправил[аи]?\b|разблокировал[аи]?\b|создал[аи]? задачу|письмо отправлено|уже отправлен)"
@@ -191,6 +193,7 @@ S = [
     ("it-request", "не печатает принтер, создай заявку в IT", {"self"}, {"helpdesk.request_draft"}, r"принтер",
      {"helpdesk.request_draft": {"status": "draft_ready"}},
      R(r"подтверд|черновик|обращени|заявк"), R(SENT)),
+    ("it-vague", "создай заявку в IT", set(), set(), None, {}, R(r"опиш|подроб|уточн|что (именно|случилось)|\?"), R(SENT)),
     ("phone", "какой рабочий телефон у Смирновой из отдела кадров?", {"directory"}, {"directory.people.search"}, None,
      {"directory.people.search": {"items": [{"name": "Смирнова Ольга", "department": "Отдел кадров", "phone": "+7 495 123-45-67 доб. 214"}]}},
      R(r"214"), R()),

@@ -278,16 +278,49 @@ def _helpdesk_args(**overrides):
 
 
 def test_helpdesk_draft_requires_configuration(monkeypatch, portal_user):
+    # No Hub-task settings and no mail address: nothing to send to.
     monkeypatch.delenv("AI_HELPDESK_PROJECT_ID", raising=False)
     monkeypatch.delenv("AI_HELPDESK_ASSIGNEE_USER_ID", raising=False)
+    monkeypatch.delenv("AI_HELPDESK_EMAIL", raising=False)
+    monkeypatch.setattr(self_service, "DEFAULT_HELPDESK_EMAIL", "")
     result = self_service.HelpdeskRequestDraftTool().execute(context=_ctx(), args=_helpdesk_args())
     assert result.ok is False
     assert "не настроен" in result.error
 
 
+def test_helpdesk_draft_without_hub_task_settings_prepares_mail_to_it(monkeypatch, portal_user):
+    monkeypatch.delenv("AI_HELPDESK_PROJECT_ID", raising=False)
+    monkeypatch.delenv("AI_HELPDESK_ASSIGNEE_USER_ID", raising=False)
+    monkeypatch.delenv("AI_HELPDESK_EMAIL", raising=False)
+    _owner_lookup(monkeypatch, email=[101])
+    monkeypatch.setattr(queries, "get_equipment_by_owner", lambda owner_no, db_id: [])
+    _patch_inventory(monkeypatch, {"AA0000000001": _host("AA0000000001", user_login="ivanov_ii")}, {"AA0000000001"})
+    captured = {}
+    monkeypatch.setattr(
+        action_cards,
+        "build_office_mail_draft",
+        lambda **kw: captured.update(kw) or {"id": "card-mail", "action_type": "office.mail.send"},
+    )
+    result = self_service.HelpdeskRequestDraftTool().execute(context=_ctx(), args=_helpdesk_args())
+    assert result.ok is True
+    assert captured["action_type"] == "office.mail.send"
+    assert captured["payload"]["to"] == ["it@zsgp.ru"]
+    assert captured["payload"]["subject"] == "Заявка в IT: Не печатает принтер"
+    assert "замятие" in captured["payload"]["body"] and "WS-01" in captured["payload"]["body"]
+
+
+def test_helpdesk_draft_asks_for_details_when_description_is_too_short(monkeypatch, portal_user):
+    result = self_service.HelpdeskRequestDraftTool().execute(
+        context=_ctx(), args=_helpdesk_args(title="Проблема", description="не работает")
+    )
+    assert result.ok is False
+    assert "подробнее" in result.error
+
+
 def test_helpdesk_draft_builds_card_with_own_computer(monkeypatch, portal_user):
     monkeypatch.setenv("AI_HELPDESK_PROJECT_ID", "proj-it")
     monkeypatch.setenv("AI_HELPDESK_ASSIGNEE_USER_ID", "42")
+    monkeypatch.delenv("AI_HELPDESK_EMAIL", raising=False)
     _owner_lookup(monkeypatch, email=[101])
     monkeypatch.setattr(queries, "get_equipment_by_owner", lambda owner_no, db_id: [])
     _patch_inventory(monkeypatch, {"AA0000000001": _host("AA0000000001", user_login="ivanov_ii", pending=True)}, {"AA0000000001"})

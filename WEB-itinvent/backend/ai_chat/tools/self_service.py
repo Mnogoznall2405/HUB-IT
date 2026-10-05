@@ -278,6 +278,40 @@ def helpdesk_settings() -> dict[str, Any]:
     }
 
 
+DEFAULT_HELPDESK_EMAIL = "it@zsgp.ru"
+HELPDESK_MIN_DESCRIPTION_WORDS = 4
+
+
+def helpdesk_mail_address() -> str:
+    """Address a request to IT is e-mailed to; empty means the Hub-task flow is configured and used instead."""
+    explicit = _normalize_text(os.getenv("AI_HELPDESK_EMAIL"))
+    if explicit:
+        return explicit
+    settings = helpdesk_settings()
+    if settings["project_id"] and settings["assignee_user_id"]:
+        return ""
+    return DEFAULT_HELPDESK_EMAIL
+
+
+def _helpdesk_mail_body(args: "HelpdeskRequestDraftArgs", *, requester: str, login: str, computers: list[str]) -> str:
+    import html
+
+    def _p(text: str) -> str:
+        return "<p>" + html.escape(text).replace("\n", "<br>") + "</p>"
+
+    parts = [_p(args.description)]
+    parts.append(_p(f"Категория: {HELPDESK_CATEGORIES.get(args.category, HELPDESK_CATEGORIES['other'])}"))
+    if args.urgent:
+        parts.append(_p("Срочно: сотрудник не может работать."))
+    who = requester or login
+    if who:
+        parts.append(_p(f"Сотрудник: {who}" + (f" ({login})" if login and login != who else "")))
+    if computers:
+        parts.append(_p("Компьютер: " + "; ".join(computers)))
+    parts.append(_p("Заявка подготовлена ассистентом HUB-IT по просьбе сотрудника."))
+    return "".join(parts)
+
+
 def _computer_lines(computers: list[dict[str, Any]]) -> list[str]:
     lines = []
     for item in computers:
@@ -297,9 +331,11 @@ def _computer_lines(computers: list[dict[str, Any]]) -> list[str]:
 class HelpdeskRequestDraftTool(AiTool):
     tool_id = HELPDESK_TOOL_REQUEST_DRAFT
     description = (
-        "Prepare a request to the IT department on behalf of the asking employee (a confirmation card; "
-        "nothing is created until the employee confirms). Use when the employee reports a problem the "
+        "Prepare a request to the IT department on behalf of the asking employee as an e-mail to the IT mailbox "
+        "(a confirmation card; nothing is sent until the employee confirms). Use when the employee reports a problem the "
         "knowledge base did not solve or asks to 'создать заявку/обращение в IT', 'вызвать айтишника'. "
+        "Choose the subject yourself (title). If the description does not make clear what the problem is, do NOT call it: "
+        "ask the employee to describe it in detail. "
         "Call it right away from what the employee already wrote - do not first look up their equipment or "
         "ask for the model or inventory number; the employee's computer (hostname, IP, status) is attached "
         "automatically and missing details are noted in the description. Write title and description from "
@@ -309,8 +345,18 @@ class HelpdeskRequestDraftTool(AiTool):
     stage = "checking_office"
 
     def execute(self, *, context: AiToolExecutionContext, args: HelpdeskRequestDraftArgs) -> AiToolResult:
+        if len(args.description.split()) < HELPDESK_MIN_DESCRIPTION_WORDS:
+            return AiToolResult(
+                tool_id=self.tool_id,
+                ok=False,
+                error=(
+                    "Описание слишком короткое, чтобы IT поняло задачу. Не создавайте заявку: попросите сотрудника "
+                    "описать подробнее, что случилось, где (кабинет, программа, устройство) и с какого момента."
+                ),
+            )
+        mail_to = helpdesk_mail_address()
         settings = helpdesk_settings()
-        if not settings["project_id"] or not settings["assignee_user_id"]:
+        if not mail_to and (not settings["project_id"] or not settings["assignee_user_id"]):
             return AiToolResult(
                 tool_id=self.tool_id,
                 ok=False,
@@ -326,6 +372,30 @@ class HelpdeskRequestDraftTool(AiTool):
                 computer_lines = _computer_lines(collect_self_computers(identity))
             except Exception as exc:
                 logger.warning("helpdesk draft: computer context failed: %s", type(exc).__name__)
+        if mail_to:
+            from backend.ai_chat.action_cards import build_office_mail_draft
+            from backend.ai_chat.tools.office import _require_permission
+            from backend.services.authorization_service import PERM_MAIL_ACCESS
+
+            _require_permission(context, PERM_MAIL_ACCESS)
+            card = build_office_mail_draft(
+                action_type="office.mail.send",
+                conversation_id=context.conversation_id,
+                run_id=context.run_id,
+                requester_user_id=int(context.user_id),
+                payload={
+                    "to": [mail_to],
+                    "subject": f"Заявка в IT: {args.title}",
+                    "body": _helpdesk_mail_body(
+                        args,
+                        requester=identity.full_name or "",
+                        login=identity.ad_login or "",
+                        computers=computer_lines,
+                    ),
+                    "is_html": True,
+                },
+            )
+            return AiToolResult(tool_id=self.tool_id, ok=True, data={"action_card": card, "mailed_to": mail_to})
         from backend.ai_chat.action_cards import build_helpdesk_request_draft
 
         card = build_helpdesk_request_draft(
