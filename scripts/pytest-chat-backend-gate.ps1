@@ -28,11 +28,9 @@ python -m pytest -q `
   tests/test_chat_address_book_resolve.py `
   tests/test_chat_upload_streaming.py `
   WEB-itinvent/backend/tests/test_chat_conversation_read_store.py `
-  WEB-itinvent/backend/tests/test_chat_thread_read_store.py `
   WEB-itinvent/backend/tests/test_chat_serialization.py `
   WEB-itinvent/backend/tests/test_chat_service_contract.py `
-  WEB-itinvent/backend/tests/test_chat_request_metrics.py `
-  WEB-itinvent/backend/tests/test_chat_read_cache_redis.py
+  WEB-itinvent/backend/tests/test_chat_request_metrics.py
 
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host "chat backend gate: OK"

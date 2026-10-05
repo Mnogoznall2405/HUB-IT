@@ -5,6 +5,8 @@ import importlib
 import sys
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
 
@@ -13,6 +15,17 @@ if str(WEB_ROOT) not in sys.path:
 
 chat_api_module = importlib.import_module("backend.api.v1.chat")
 realtime_publisher_module = importlib.import_module("backend.chat.realtime_publisher")
+
+
+@pytest.fixture(autouse=True)
+def _reset_unread_summary_debounce_state():
+    """The debounce task/ids are process-wide; a task left over from a test with another
+    event loop would otherwise swallow (or fire during) the next test."""
+    realtime_publisher_module._pending_unread_user_ids.clear()
+    realtime_publisher_module._unread_summary_flush_task = None
+    yield
+    realtime_publisher_module._pending_unread_user_ids.clear()
+    realtime_publisher_module._unread_summary_flush_task = None
 
 
 def test_mark_read_publish_fanout_is_bounded(monkeypatch):
@@ -202,7 +215,17 @@ def test_publish_message_updated_notifies_without_conversation_updated_fanout(mo
             for user_id in list(user_ids or [])
         }
 
+    def fake_get_unread_summaries(*, user_ids):
+        return {
+            int(user_id): {
+                "messages_unread_total": int(user_id),
+                "conversations_unread": 1,
+            }
+            for user_id in list(user_ids or [])
+        }
+
     monkeypatch.setattr(chat_api_module, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(chat_api_module.chat_service, "get_unread_summaries", fake_get_unread_summaries)
     monkeypatch.setattr(chat_api_module.chat_service, "get_messages_for_users", fake_get_messages_for_users)
     monkeypatch.setattr(chat_api_module.chat_realtime, "publish_inbox_event", fake_publish_inbox_event)
     monkeypatch.setattr(chat_api_module.chat_realtime, "publish_user_event", fake_publish_user_event)
@@ -249,7 +272,17 @@ def test_publish_message_deleted_notifies_without_conversation_updated_fanout(mo
             for user_id in list(user_ids or [])
         }
 
+    def fake_get_unread_summaries(*, user_ids):
+        return {
+            int(user_id): {
+                "messages_unread_total": int(user_id),
+                "conversations_unread": 1,
+            }
+            for user_id in list(user_ids or [])
+        }
+
     monkeypatch.setattr(chat_api_module, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(chat_api_module.chat_service, "get_unread_summaries", fake_get_unread_summaries)
     monkeypatch.setattr(chat_api_module.chat_service, "get_messages_for_users", fake_get_messages_for_users)
     monkeypatch.setattr(chat_api_module.chat_realtime, "publish_inbox_event", fake_publish_inbox_event)
     monkeypatch.setattr(chat_api_module.chat_realtime, "publish_conversation_event", fake_publish_conversation_event)
