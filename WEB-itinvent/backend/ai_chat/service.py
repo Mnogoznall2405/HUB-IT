@@ -935,7 +935,7 @@ _JEV_GROUP_QUESTIONS: dict[str, dict[str, str]] = {
         ),
         "false_label": (
             "нет — «сбрось пароль в AD»; «пингани сервер»; «напиши письмо коллеге»; "
-            "«какая сегодня погода»; вопросы о компьютере Иванова только как «он в сети?» "
+            "«какие принтеры онлайн или с ошибкой» (это МФУ); «какая сегодня погода»; вопросы о компьютере Иванова только как «он в сети?» "
             "без данных карточки — это сеть, не ITinvent"
         ),
     },
@@ -969,26 +969,30 @@ _JEV_GROUP_QUESTIONS: dict[str, dict[str, str]] = {
     },
     AI_TOOL_GROUP_MFU: {
         "question": (
-            "Запрос про принтеры и МФУ как устройства печати: картриджи, тонер, счётчики "
-            "страниц, статус устройства, SNMP, ежемесячная печать?"
+            "Запрос про принтеры и МФУ как устройства печати: онлайн/офлайн, ошибка или неисправность, "
+            "не печатает, картриджи, тонер, счётчики страниц, статус устройства, SNMP, ежемесячная печать "
+            "(в том числе когда нужен отчёт или файл по принтерам)?"
         ),
         "true_label": (
             "да — «сколько страниц напечатал МФУ за месяц»; «какой картридж в HP M404»; "
-            "«статус принтера в бухгалтерии»; «уровень тонера»; «где заканчивается тонер»"
+            "«статус принтера в бухгалтерии»; «уровень тонера»; «где заканчивается тонер»; «сколько МФУ онлайн»; "
+            "«какие принтеры с ошибкой»; «принтер не печатает»; «таблица по принтерам в excel»"
         ),
         "false_label": (
             "нет — «перемести принтер на Иванова» (это ITinvent-действие); «пингани принтер» "
-            "(это сеть); «история перемещений МФУ» (это ITinvent)"
+            "(это сеть); «история перемещений МФУ» (это ITinvent); «картриджи на складе» (склад)"
         ),
     },
     AI_TOOL_GROUP_NETWORK: {
         "question": (
-            "Запрос про сеть и доступность: ping, DNS, SSL-сертификаты, TCP-порты, розетки, "
-            "коммутаторы, VLAN, состояние/аптайм сервера, Wake-on-LAN?"
+            "Запрос про сеть и доступность: ping, DNS, SSL-сертификаты, TCP-порты, розетки, патч-панели, "
+            "кабельная инфраструктура, порты и свободные порты коммутаторов, VLAN, состояние/аптайм сервера, "
+            "Wake-on-LAN?"
         ),
         "true_label": (
             "да — «пингани 10.0.0.5»; «проверь сертификат portal.local»; «какая розетка у "
-            "компьютера Иванова»; «включи компьютер по WoL»; «аптайм сервера»"
+            "компьютера Иванова»; «включи компьютер по WoL»; «аптайм сервера»; «покажи патч-панели в серверной»; "
+            "«свободные порты на коммутаторе»; «к какому порту подключена розетка 12-A-04»"
         ),
         "false_label": (
             "нет — «что числится за Ивановым» (ITinvent); «сбрось пароль» (AD); "
@@ -997,16 +1001,17 @@ _JEV_GROUP_QUESTIONS: dict[str, dict[str, str]] = {
     },
     AI_TOOL_GROUP_AD: {
         "question": (
-            "Запрос про Active Directory: срок действия/статус пароля, блокировка или "
-            "разблокировка учётной записи, группы пользователя, история входов?"
+            "Запрос про Active Directory: срок действия/статус пароля, забытый или сброшенный пароль, блокировка "
+            "или разблокировка учётной записи, вход в систему и учётка, группы пользователя, история входов?"
         ),
         "true_label": (
             "да — «когда истекает пароль у kozlovskii.me»; «разблокируй учётку Иванова»; "
-            "«в каких группах состоит Петров»; «история входов пользователя»"
+            "«в каких группах состоит Петров»; «история входов пользователя»; «забыл пароль от учётки»; "
+            "«не могу войти в компьютер под своей учёткой»; «сбрось пароль»"
         ),
         "false_label": (
             "нет — «найди компьютер Иванова» (ITinvent); «пингани контроллер домена» (сеть); "
-            "«напиши письмо» (почта)"
+            "«напиши письмо» (почта); «не могу войти в почту» (почта)"
         ),
     },
     AI_TOOL_GROUP_KB: {
@@ -4902,9 +4907,9 @@ class AiChatService:
             """Execute a single tool call, returning (result, trace). Never raises."""
             tool_id = _normalize_text(call.get("tool_id"))
             tool = ai_tool_registry.get(tool_id)
-            if callable(report_stage):
-                report_stage(_normalize_text(getattr(tool, "stage", None)) or AI_RUN_STAGE_CHECKING_ITINVENT)
             try:
+                if callable(report_stage):
+                    report_stage(_normalize_text(getattr(tool, "stage", None)) or AI_RUN_STAGE_CHECKING_ITINVENT)
                 result, audit_row = ai_tool_registry.execute(
                     tool_id=tool_id,
                     raw_args=call.get("args") or {},
@@ -4920,6 +4925,8 @@ class AiChatService:
                     "diagnostic": diagnostic,
                 }
                 return payload, trace
+            except AiRunCancelled:
+                raise
             except AiToolValidationError as exc:
                 error_text = _truncate(exc, limit=400)
                 logger.warning(
@@ -5025,11 +5032,15 @@ class AiChatService:
                         for idx in group:
                             result_payload, result_trace = _execute_single_call(limited_calls[idx])
                             indexed_results[idx] = (result_payload, result_trace)
+                    except AiRunCancelled:
+                        raise
                     except RuntimeError:
                         # No running loop — safe to use asyncio.run
                         parallel_results = asyncio.run(_run_parallel(group))
                         for idx, (result_payload, result_trace) in parallel_results:
                             indexed_results[idx] = (result_payload, result_trace)
+                except AiRunCancelled:
+                    raise
                 except Exception as exc:
                     # Fallback: if parallel execution fails for any reason, run sequentially
                     logger.warning("Parallel tool execution failed, falling back to sequential: %s", exc)
