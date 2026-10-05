@@ -32,9 +32,14 @@ export default function BotSettingsWorkspace({ bots = [], loading, savingBotId, 
   openrouterConfigured, draftsById, newDraft, setNewDraft, updateDraft, renderFields }) {
   const [selected, setSelected] = useState(null);
   const [tab, setTab] = useState('tools');
+  const [showDisabled, setShowDisabled] = useState(false);
   const list = Array.isArray(bots) ? bots : [];
+  const activeBots = list.filter((item) => item.is_enabled !== false);
+  const disabledBots = list.filter((item) => item.is_enabled === false);
+  const selectedDisabled = disabledBots.some((item) => item.id === selected);
+  const visibleBots = showDisabled || selectedDisabled ? list : activeBots;
   const creating = selected === 'new';
-  const bot = list.find((item) => item.id === selected) || list[0];
+  const bot = list.find((item) => item.id === selected) || activeBots[0] || list[0];
   const draft = creating ? newDraft : (bot && (draftsById[bot.id] || createAiBotDraft(bot)));
   const sandbox = !creating && bot?.surface === 'sandbox';
   const general = !creating && bot?.surface === 'general';
@@ -58,11 +63,14 @@ export default function BotSettingsWorkspace({ bots = [], loading, savingBotId, 
         <Stack spacing={1}>
           {loading && <CircularProgress size={22} aria-label="Загрузка агентов" />}
           {!loading && !list.length && <Typography color="text.secondary">AI-боты ещё не созданы.</Typography>}
-          {list.map((item) => <Button key={item.id} variant={!creating && item.id === bot?.id ? 'contained' : 'outlined'}
+          {visibleBots.map((item) => <Button key={item.id} variant={!creating && item.id === bot?.id ? 'contained' : 'outlined'}
             onClick={() => { setSelected(item.id); setTab('tools'); }} sx={{ textAlign: 'left', justifyContent: 'flex-start', textTransform: 'none', p: 1.25 }}>
             <Box sx={{ minWidth: 0, overflowWrap: 'anywhere' }}><Typography fontWeight={600}>{item.title}</Typography>
               <Typography variant="caption">{describeType(item)}{!item.is_enabled ? ' · выключен' : ''}</Typography></Box>
           </Button>)}
+          {disabledBots.length > 0 && <Button size="small" onClick={() => setShowDisabled((value) => !value)} sx={{ textTransform: "none", justifyContent: "flex-start" }}>
+            {showDisabled || selectedDisabled ? "Скрыть выключенных" : `Выключенные агенты (${disabledBots.length})`}
+          </Button>}
         </Stack>
       </Grid>
       <Grid item xs={12} md={9} sx={{ minWidth: 0 }}>
