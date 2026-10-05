@@ -151,3 +151,37 @@ it('scales crop coordinates when annotations were exported at a smaller resoluti
   await act(async () => { mockExporterProps.onExported(mockExporterProps.requestId, 'data'); });
   expect(manipulate).toHaveBeenCalledWith('file:///smaller.jpg', [{ crop: { originX: 100, originY: 0, width: 400, height: 400 } }], expect.anything());
 });
+
+describe('album mode', () => {
+  const second: NativePickedFile = { ...photo, uri: 'file:///second.png', name: 'second.png' };
+
+  it('shows the album strip with a send counter and switches photos with the current one handed over', async () => {
+    const onSelectFile = jest.fn();
+    const view = await render(
+      <ChatImageEditorSheet file={photo} files={[photo, second]} onSelectFile={onSelectFile}
+        onCancel={jest.fn()} onConfirm={jest.fn()} />,
+    );
+    expect(view.getByLabelText('Фото 1 из 2').props.accessibilityState.selected).toBe(true);
+    expect(view.getByText('2')).toBeTruthy();
+
+    await fireEvent.press(view.getByLabelText('Фото 2 из 2'));
+    await waitFor(() => expect(onSelectFile).toHaveBeenCalledWith(photo, 1));
+  });
+
+  it('removes a photo from the strip', async () => {
+    const onRemoveFile = jest.fn();
+    const view = await render(
+      <ChatImageEditorSheet file={photo} files={[photo, second]} onRemoveFile={onRemoveFile}
+        onSelectFile={jest.fn()} onCancel={jest.fn()} onConfirm={jest.fn()} />,
+    );
+    await fireEvent.press(view.getByLabelText('Убрать second.png'));
+    expect(onRemoveFile).toHaveBeenCalledWith(1);
+  });
+
+  it('hides the strip for a single photo', async () => {
+    const view = await render(
+      <ChatImageEditorSheet file={photo} files={[photo]} onCancel={jest.fn()} onConfirm={jest.fn()} />,
+    );
+    expect(view.queryByLabelText('Фото 1 из 1')).toBeNull();
+  });
+});

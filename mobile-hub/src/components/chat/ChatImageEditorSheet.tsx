@@ -12,6 +12,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { File } from 'expo-file-system';
 import { SafeAreaInsetsContext, initialWindowMetrics } from 'react-native-safe-area-context';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
@@ -40,6 +41,8 @@ import type { NativePickedFile } from '../../files/nativeFilePicker';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
 import { ChatImageRecipeExporter } from './ChatImageRecipeExporter';
 import { ChatKeyboardAvoidingHost } from './ChatKeyboardAvoidingHost';
+
+type IconName = React.ComponentProps<typeof MaterialCommunityIcons>['name'];
 
 const BRUSH_COLORS = ['#ffffff', '#ff3b30', '#ffcc00', '#000000'] as const;
 type ImageFrame = { uri: string; size: { width: number; height: number }; recipe: ChatImageEditRecipe };
@@ -71,6 +74,9 @@ export function ChatImageEditorSheet({
   caption,
   onChangeCaption,
   confirmLabel = 'Отправить фото',
+  files,
+  onSelectFile,
+  onRemoveFile,
   onCancel,
   onConfirm,
 }: {
@@ -79,6 +85,11 @@ export function ChatImageEditorSheet({
   caption?: string;
   onChangeCaption?: (value: string) => void;
   confirmLabel?: string;
+  /** Every photo of the album; a thumbnail strip is shown when there are several. */
+  files?: NativePickedFile[];
+  /** Switch to another photo; `edited` is the current one with its edits applied. */
+  onSelectFile?: (edited: NativePickedFile, nextIndex: number) => void;
+  onRemoveFile?: (index: number) => void;
   onCancel: () => void;
   onConfirm: (file: NativePickedFile) => void | Promise<void>;
 }) {
@@ -352,9 +363,9 @@ export function ChatImageEditorSheet({
     },
   }), []);
 
-  const finishEditedFile = async (uri: string, name = file?.name, mimeType = file?.mimeType, size?: number) => {
-    if (!file) return;
-    if (uri === file.uri) { await onConfirm(file); return; }
+  const buildEditedFile = async (uri: string, name = file?.name, mimeType = file?.mimeType, size?: number): Promise<NativePickedFile | null> => {
+    if (!file) return null;
+    if (uri === file.uri) return file;
     let nextSize = Number(size || 0);
     if (!(nextSize > 0)) {
       try {
@@ -363,16 +374,17 @@ export function ChatImageEditorSheet({
         nextSize = Number(file.size || 0);
       }
     }
-    await onConfirm({
+    return {
       ...file,
       uri,
       name: String(name || file.name).replace(/\.[^.]+$/, '') + (String(mimeType || '').includes('png') ? '.png' : '.jpg'),
       mimeType: mimeType || 'image/jpeg',
       size: Math.max(1, nextSize || Number(file.size || 0) || 1),
-    });
+    };
   };
 
-  const sendCurrent = async () => {
+  /** Bakes the pending edits into a file and hands it to `deliver` (send or switch photo). */
+  const deliverCurrent = async (deliver: (edited: NativePickedFile) => void | Promise<void>) => {
     if (!file || !previewUri || disabledRef.current || operationRef.current) return;
     const operation = Symbol('image-send');
     operationRef.current = operation;
@@ -388,10 +400,14 @@ export function ChatImageEditorSheet({
         commitOverlay(textOperation);
         setTextValue('');
       }
+      let edited: NativePickedFile | null;
       if (shouldExportChatImageRecipe(recipe)) {
         const exported = await exportImage(previewUri, recipe, operation);
-        if (current()) await finishEditedFile(exported.uri, exported.name, exported.mimeType, exported.size);
-      } else await finishEditedFile(previewUri, file.name.replace(/\.[^.]+$/, '') + '.jpg', 'image/jpeg');
+        edited = current() ? await buildEditedFile(exported.uri, exported.name, exported.mimeType, exported.size) : null;
+      } else {
+        edited = await buildEditedFile(previewUri, file.name.replace(/\.[^.]+$/, '') + '.jpg', 'image/jpeg');
+      }
+      if (edited && current()) await deliver(edited);
     } catch {
       if (current()) {
         setError('Не удалось подготовить фото к отправке');
@@ -399,6 +415,14 @@ export function ChatImageEditorSheet({
     } finally {
       if (current()) { operationRef.current = null; setWorking(false); }
     }
+  };
+
+  const sendCurrent = () => deliverCurrent((edited) => onConfirm(edited));
+  const activeIndex = files ? files.indexOf(file as NativePickedFile) : -1;
+  const albumFiles = files && files.length > 1 && activeIndex >= 0 ? files : null;
+  const switchTo = (index: number) => {
+    if (index === activeIndex) return;
+    void deliverCurrent((edited) => onSelectFile?.(edited, index));
   };
 
   const cancel = () => {
@@ -450,241 +474,354 @@ export function ChatImageEditorSheet({
   })) : null, [imageBox, overlayRecipe, styles]);
 
   const disabled = working || Boolean(busy);
+  const topInset = Math.max(0, insets?.top || 0);
+  const bottomInset = Math.max(0, insets?.bottom || 0);
 
   return (
+    // Full-screen, Telegram-style: big photo, tool icons, caption + round send.
     <Modal
       visible={Boolean(file)}
-      animationType={reduceMotion ? 'none' : 'slide'}
-      transparent
+      animationType={reduceMotion ? 'none' : 'fade'}
+      statusBarTranslucent
+      navigationBarTranslucent
       onRequestClose={cancel}
     >
-      <ChatKeyboardAvoidingHost style={styles.backdrop}>
-        <View style={[styles.sheet, { paddingBottom: Math.max(16, (insets?.bottom || 0) + 12) }]} accessibilityViewIsModal>
-          <View style={styles.handle} />
-          <Text style={styles.title}>Редактировать фото</Text>
-          <ScrollView testID="chat-image-editor-scroll" style={styles.scroll} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-          <Text style={styles.hint}>{TOOL_HELP[tool]}</Text>
-          <View
-            testID="chat-image-editor-stage"
-            style={[styles.stage, { height: Math.min(280, Math.max(140, windowHeight * 0.35)) }]}
-            onLayout={(event) => setStageSize({
-              width: event.nativeEvent.layout.width,
-              height: event.nativeEvent.layout.height,
-            })}
-          >
-            {previewUri ? (
-              <Image source={{ uri: previewUri }} style={styles.preview} resizeMode="contain" />
+      <ChatKeyboardAvoidingHost style={styles.screen}>
+        <View style={styles.fill} accessibilityViewIsModal>
+        <View style={[styles.topBar, { paddingTop: topInset + 6 }]}>
+          <IconButton icon="close" label="Отменить фото" onPress={cancel} />
+          <View style={styles.topSpacer} />
+          <IconButton
+            icon="undo"
+            label="Отменить"
+            disabled={disabled || pastFrames.length === 0}
+            onPress={() => {
+              const frame = pastFrames[pastFrames.length - 1];
+              if (!frame) return;
+              setFutureFrames((frames) => [frameRef.current, ...frames].slice(0, 30));
+              setPastFrames((frames) => frames.slice(0, -1));
+              restoreFrame(frame);
+            }}
+          />
+          <IconButton
+            icon="redo"
+            label="Повторить"
+            disabled={disabled || futureFrames.length === 0}
+            onPress={() => {
+              const frame = futureFrames[0];
+              if (!frame) return;
+              setPastFrames((frames) => [...frames, frameRef.current].slice(-30));
+              setFutureFrames((frames) => frames.slice(1));
+              restoreFrame(frame);
+            }}
+          />
+          <IconButton
+            icon="restore"
+            label="Сбросить изменения"
+            disabled={disabled || (!overlayRecipe.operations.length && previewUri === originalUri)}
+            onPress={() => {
+              rememberFrame();
+              setPreviewUri(originalUri);
+              setHistory(createChatImageEditorHistory());
+              setDraft(null);
+              setError('');
+            }}
+          />
+        </View>
+        <View
+          testID="chat-image-editor-stage"
+          style={styles.stage}
+          onLayout={(event) => setStageSize({
+            width: event.nativeEvent.layout.width,
+            height: event.nativeEvent.layout.height,
+          })}
+        >
+          {previewUri ? (
+            <Image source={{ uri: previewUri }} style={styles.preview} resizeMode="contain" />
+          ) : null}
+          <View style={StyleSheet.absoluteFill} {...panResponder.panHandlers}>
+            {imageBox ? (
+              <View
+                pointerEvents="none"
+                style={[
+                  styles.overlayBox,
+                  {
+                    left: imageBox.originX,
+                    top: imageBox.originY,
+                    width: imageBox.width,
+                    height: imageBox.height,
+                  },
+                ]}
+              >
+                {overlayNodes}
+                {draft?.type === 'crop' ? (
+                  <View
+                    style={[
+                      styles.cropRect,
+                      {
+                        left: draft.x * imageBox.width,
+                        top: draft.y * imageBox.height,
+                        width: draft.width * imageBox.width,
+                        height: draft.height * imageBox.height,
+                      },
+                    ]}
+                  />
+                ) : null}
+              </View>
             ) : null}
-            <View style={StyleSheet.absoluteFill} {...panResponder.panHandlers}>
-              {imageBox ? (
-                <View
-                  pointerEvents="none"
-                  style={[
-                    styles.overlayBox,
-                    {
-                      left: imageBox.originX,
-                      top: imageBox.originY,
-                      width: imageBox.width,
-                      height: imageBox.height,
-                    },
-                  ]}
-                >
-                  {overlayNodes}
-                  {draft?.type === 'crop' ? (
-                    <View
-                      style={[
-                        styles.cropRect,
-                        {
-                          left: draft.x * imageBox.width,
-                          top: draft.y * imageBox.height,
-                          width: draft.width * imageBox.width,
-                          height: draft.height * imageBox.height,
-                        },
-                      ]}
-                    />
-                  ) : null}
-                </View>
-              ) : null}
-            </View>
           </View>
-          {onChangeCaption ? <View style={styles.captionSection}>
-            <Text style={styles.fieldLabel}>Подпись к фото</Text>
-            <TextInput value={caption || ''} onChangeText={onChangeCaption}
-              editable={!disabled} multiline maxLength={12000}
-              placeholder="Добавить подпись" placeholderTextColor={chatTokens.textSecondary}
-              accessibilityLabel="Подпись к фото" style={styles.captionInput} />
-          </View> : null}
-          {error ? <Text style={styles.error} accessibilityRole="alert">{error}</Text> : null}
-          <View style={styles.toolbar} accessibilityRole="toolbar" accessibilityLabel="Инструменты редактирования">
-            <ToolChip label="Кадрировать" active={tool === 'crop'} disabled={disabled} onPress={() => setTool('crop')} />
-            <ToolChip
+          {working || busy ? (
+            <View style={styles.workingVeil} pointerEvents="none">
+              <ActivityIndicator color="#fff" />
+            </View>
+          ) : null}
+        </View>
+        <View style={styles.bottom}>
+          <ScrollView
+            testID="chat-image-editor-scroll"
+            style={styles.optionsScroll}
+            contentContainerStyle={styles.optionsContent}
+            keyboardShouldPersistTaps="handled"
+          >
+            <Text style={styles.hint}>{TOOL_HELP[tool]}</Text>
+            {error ? <Text style={styles.error} accessibilityRole="alert">{error}</Text> : null}
+            {tool === 'crop' ? (
+              <View style={styles.actions}>
+                <ToolChip label="Квадратный кадр" disabled={disabled} onPress={() => {
+                  const rect = cropRectForAspect(imageSize.width, imageSize.height, '1:1' as ChatImageCropAspect);
+                  if (rect) void applyActions([{ crop: rect }]);
+                }} />
+                <ToolChip label="Кадр 4:3" disabled={disabled} onPress={() => {
+                  const rect = cropRectForAspect(imageSize.width, imageSize.height, '4:3');
+                  if (rect) void applyActions([{ crop: rect }]);
+                }} />
+                <ToolChip label="Кадр 16:9" disabled={disabled} onPress={() => {
+                  const rect = cropRectForAspect(imageSize.width, imageSize.height, '16:9');
+                  if (rect) void applyActions([{ crop: rect }]);
+                }} />
+              </View>
+            ) : null}
+            {tool === 'draw' || tool === 'text' ? (
+              <View style={styles.actions}>
+                {BRUSH_COLORS.map((color) => (
+                  <Pressable
+                    key={color}
+                    disabled={disabled}
+                    onPress={() => setBrushColor(color)}
+                    style={[styles.color, { backgroundColor: color }, brushColor === color && styles.colorActive]}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Цвет ${color}`}
+                    accessibilityState={{ selected: brushColor === color }}
+                  />
+                ))}
+              </View>
+            ) : null}
+            {tool !== 'crop' ? <View style={styles.actions}>
+              <Text style={styles.fieldLabel}>{tool === 'text' ? 'Размер текста' : 'Толщина кисти'}</Text>
+              {([{ label: 'Маленький', value: 1.2 }, { label: 'Средний', value: 2.2 }, { label: 'Большой', value: 3.5 }]).map((size) => (
+                <ToolChip key={size.value} label={size.label} active={brushSize === size.value}
+                  disabled={disabled} onPress={() => setBrushSize(size.value)} />
+              ))}
+            </View> : null}
+            {tool === 'text' ? <Text style={styles.fieldLabel}>Надпись на изображении</Text> : null}
+            {tool === 'text' ? (
+              <View style={styles.textRow}>
+                <TextInput
+                  value={textValue}
+                  onChangeText={setTextValue}
+                  placeholder="Текст на фото"
+                  placeholderTextColor="rgba(255,255,255,0.5)"
+                  style={styles.textInput}
+                  accessibilityLabel="Текст на фото"
+                  editable={!disabled}
+                  multiline
+                  maxLength={500}
+                />
+                <Pressable
+                  onPress={() => {
+                    const nextText = textValue.trim();
+                    if (!nextText) return;
+                    commitOverlay({
+                      type: 'text',
+                      x: 0.5,
+                      y: 0.5,
+                      text: nextText,
+                      color: brushColor,
+                      size: brushSize / 40,
+                    });
+                    setTextValue('');
+                    textValueRef.current = '';
+                  }}
+                  disabled={disabled || !textValue.trim()}
+                  style={({ pressed }) => [styles.chip, pressed && styles.pressed]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Добавить текст по центру"
+                >
+                  <Text style={styles.chipText}>По центру</Text>
+                </Pressable>
+              </View>
+            ) : null}
+          </ScrollView>
+          <View style={styles.toolRow} accessibilityRole="toolbar" accessibilityLabel="Инструменты редактирования">
+            <ToolIcon icon="crop" label="Кадрировать" active={tool === 'crop'} disabled={disabled} onPress={() => setTool('crop')} />
+            <ToolIcon
+              icon="rotate-right"
               label="Повернуть на 90 градусов"
               disabled={disabled}
               onPress={() => void applyActions([{ rotate: nextImageRotation(0) }])}
             />
-            <ToolChip label="Рисовать" active={tool === 'draw'} disabled={disabled} onPress={() => setTool('draw')} />
-            <ToolChip label="Добавить текст" active={tool === 'text'} disabled={disabled} onPress={() => setTool('text')} />
-            <ToolChip label="Размыть" active={tool === 'blur'} disabled={disabled} onPress={() => setTool('blur')} />
-            <ToolChip
-              label="Отменить"
-              disabled={disabled || pastFrames.length === 0}
-              onPress={() => {
-                const frame = pastFrames[pastFrames.length - 1];
-                if (!frame) return;
-                setFutureFrames((frames) => [frameRef.current, ...frames].slice(0, 30));
-                setPastFrames((frames) => frames.slice(0, -1));
-                restoreFrame(frame);
-              }}
-            />
-            <ToolChip
-              label="Повторить"
-              disabled={disabled || futureFrames.length === 0}
-              onPress={() => {
-                const frame = futureFrames[0];
-                if (!frame) return;
-                setPastFrames((frames) => [...frames, frameRef.current].slice(-30));
-                setFutureFrames((frames) => frames.slice(1));
-                restoreFrame(frame);
-              }}
-            />
-            <ToolChip
-              label="Сбросить изменения"
-              disabled={disabled || (!overlayRecipe.operations.length && previewUri === originalUri)}
-              onPress={() => {
-                rememberFrame();
-                setPreviewUri(originalUri);
-                setHistory(createChatImageEditorHistory());
-                setDraft(null);
-                setError('');
-              }}
-            />
+            <ToolIcon icon="brush" label="Рисовать" active={tool === 'draw'} disabled={disabled} onPress={() => setTool('draw')} />
+            <ToolIcon icon="format-text" label="Добавить текст" active={tool === 'text'} disabled={disabled} onPress={() => setTool('text')} />
+            <ToolIcon icon="blur" label="Размыть" active={tool === 'blur'} disabled={disabled} onPress={() => setTool('blur')} />
           </View>
-          {tool === 'crop' ? (
-            <View style={styles.actions}>
-              <ToolChip label="Квадратный кадр" disabled={disabled} onPress={() => {
-                const rect = cropRectForAspect(imageSize.width, imageSize.height, '1:1' as ChatImageCropAspect);
-                if (rect) void applyActions([{ crop: rect }]);
-              }} />
-              <ToolChip label="Кадр 4:3" disabled={disabled} onPress={() => {
-                const rect = cropRectForAspect(imageSize.width, imageSize.height, '4:3');
-                if (rect) void applyActions([{ crop: rect }]);
-              }} />
-              <ToolChip label="Кадр 16:9" disabled={disabled} onPress={() => {
-                const rect = cropRectForAspect(imageSize.width, imageSize.height, '16:9');
-                if (rect) void applyActions([{ crop: rect }]);
-              }} />
-            </View>
-          ) : null}
-          {tool === 'draw' || tool === 'text' ? (
-            <View style={styles.actions}>
-              {BRUSH_COLORS.map((color) => (
-                <Pressable
-                  key={color}
-                  disabled={disabled}
-                  onPress={() => setBrushColor(color)}
-                  style={[styles.color, { backgroundColor: color }, brushColor === color && styles.colorActive]}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Цвет ${color}`}
-                  accessibilityState={{ selected: brushColor === color }}
-                />
+          {albumFiles ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              style={styles.strip}
+              contentContainerStyle={styles.stripContent}
+            >
+              {albumFiles.map((item, index) => (
+                <View key={`${item.uri}:${index}`} style={styles.thumbWrap}>
+                  <Pressable
+                    onPress={() => switchTo(index)}
+                    disabled={disabled}
+                    style={[styles.thumb, index === activeIndex && styles.thumbActive]}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Фото ${index + 1} из ${albumFiles.length}`}
+                    accessibilityState={{ selected: index === activeIndex }}
+                  >
+                    <Image source={{ uri: item.uri }} style={styles.thumbImage} />
+                  </Pressable>
+                  {onRemoveFile ? (
+                    <Pressable
+                      onPress={() => onRemoveFile(index)}
+                      disabled={disabled}
+                      hitSlop={6}
+                      style={styles.thumbRemove}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Убрать ${item.name}`}
+                    >
+                      <MaterialCommunityIcons name="close" size={12} color="#fff" />
+                    </Pressable>
+                  ) : null}
+                </View>
               ))}
-            </View>
+            </ScrollView>
           ) : null}
-          {tool !== 'crop' ? <View style={styles.actions}>
-            <Text style={styles.fieldLabel}>{tool === 'text' ? 'Размер текста' : 'Толщина кисти'}</Text>
-            {([{ label: 'Маленький', value: 1.2 }, { label: 'Средний', value: 2.2 }, { label: 'Большой', value: 3.5 }]).map((size) => (
-              <ToolChip key={size.value} label={size.label} active={brushSize === size.value}
-                disabled={disabled} onPress={() => setBrushSize(size.value)} />
-            ))}
-          </View> : null}
-          {tool === 'text' ? <Text style={styles.fieldLabel}>Надпись на изображении</Text> : null}
-          {tool === 'text' ? (
-            <View style={styles.textRow}>
+          <View style={[styles.captionBar, { paddingBottom: Math.max(8, bottomInset) }]}>
+            {onChangeCaption ? (
               <TextInput
-                value={textValue}
-                onChangeText={setTextValue}
-                placeholder="Текст на фото"
-                placeholderTextColor={chatTokens.textSecondary}
-                style={styles.textInput}
-                accessibilityLabel="Текст на фото"
+                value={caption || ''}
+                onChangeText={onChangeCaption}
                 editable={!disabled}
                 multiline
-                maxLength={500}
+                maxLength={12000}
+                placeholder="Добавить подпись…"
+                placeholderTextColor="rgba(255,255,255,0.5)"
+                accessibilityLabel="Подпись к фото"
+                style={styles.captionInput}
               />
-              <Pressable
-                onPress={() => {
-                  const nextText = textValue.trim();
-                  if (!nextText) return;
-                  commitOverlay({
-                    type: 'text',
-                    x: 0.5,
-                    y: 0.5,
-                    text: nextText,
-                    color: brushColor,
-                    size: brushSize / 40,
-                  });
-                  setTextValue('');
-                  textValueRef.current = '';
-                }}
-                disabled={disabled || !textValue.trim()}
-                style={({ pressed }) => [styles.chip, pressed && styles.pressed]}
-                accessibilityRole="button"
-                accessibilityLabel="Добавить текст по центру"
-              >
-                <Text style={styles.chipText}>По центру</Text>
-              </Pressable>
-            </View>
-          ) : null}
-          {working || busy ? <ActivityIndicator color={chatTokens.composerActionBg} /> : null}
-          </ScrollView>
-          <View style={styles.footer}>
-            <Pressable
-              onPress={cancel}
-              style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}
-              accessibilityRole="button"
-              accessibilityLabel="Отменить фото"
-            >
-              <Text style={styles.secondaryText}>Отмена</Text>
-            </Pressable>
+            ) : <View style={styles.captionInput} />}
             <Pressable
               onPress={() => void sendCurrent()}
               disabled={disabled || !previewUri}
-              style={({ pressed }) => [styles.primary, disabled && styles.disabled, pressed && styles.pressed]}
+              style={({ pressed }) => [styles.sendButton, disabled && styles.disabled, pressed && styles.pressed]}
               accessibilityRole="button"
               accessibilityLabel={confirmLabel}
             >
-              <Text style={styles.primaryText}>{confirmLabel === 'Отправить фото' ? 'Отправить' : confirmLabel}</Text>
+              <MaterialCommunityIcons name={confirmLabel === 'Отправить фото' ? 'send' : 'check'} size={22} color="#fff" />
+              {albumFiles && confirmLabel === 'Отправить фото' ? (
+                <View style={styles.sendCount}><Text style={styles.sendCountText}>{albumFiles.length}</Text></View>
+              ) : null}
             </Pressable>
           </View>
-          {exportJob ? (
-            <ChatImageRecipeExporter
-              requestId={exportJob.requestId}
-              imageDataUrl={exportJob.imageDataUrl}
-              recipeJson={exportJob.recipeJson}
-              onReady={() => undefined}
-              onExported={(requestId, dataUrl) => {
-                const pending = pendingExportRef.current;
-                if (pending?.id !== requestId || activeFileRef.current !== file) return;
-                pendingExportRef.current = null;
-                setExportJob(null);
-                try {
-                  pending.resolve(writeEditedImageFromDataUrl(dataUrl));
-                } catch {
-                  pending.reject(new Error('Не удалось сохранить изменения'));
-                }
-              }}
-              onError={(requestId) => {
-                const pending = pendingExportRef.current;
-                if (pending?.id !== requestId) return;
-                pendingExportRef.current = null;
-                setExportJob(null);
+        </View>
+        {exportJob ? (
+          <ChatImageRecipeExporter
+            requestId={exportJob.requestId}
+            imageDataUrl={exportJob.imageDataUrl}
+            recipeJson={exportJob.recipeJson}
+            onReady={() => undefined}
+            onExported={(requestId, dataUrl) => {
+              const pending = pendingExportRef.current;
+              if (pending?.id !== requestId || activeFileRef.current !== file) return;
+              pendingExportRef.current = null;
+              setExportJob(null);
+              try {
+                pending.resolve(writeEditedImageFromDataUrl(dataUrl));
+              } catch {
                 pending.reject(new Error('Не удалось сохранить изменения'));
-              }}
-            />
-          ) : null}
+              }
+            }}
+            onError={(requestId) => {
+              const pending = pendingExportRef.current;
+              if (pending?.id !== requestId) return;
+              pendingExportRef.current = null;
+              setExportJob(null);
+              pending.reject(new Error('Не удалось сохранить изменения'));
+            }}
+          />
+        ) : null}
         </View>
       </ChatKeyboardAvoidingHost>
     </Modal>
+  );
+}
+
+function IconButton({
+  icon,
+  label,
+  disabled = false,
+  onPress,
+}: {
+  icon: IconName;
+  label: string;
+  disabled?: boolean;
+  onPress: () => void;
+}) {
+  const { styles } = useChatStyles(createStyles);
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      hitSlop={6}
+      style={({ pressed }) => [styles.iconButton, disabled && styles.disabled, pressed && styles.pressed]}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled }}
+    >
+      <MaterialCommunityIcons name={icon} size={24} color="#fff" />
+    </Pressable>
+  );
+}
+
+function ToolIcon({
+  icon,
+  label,
+  active = false,
+  disabled = false,
+  onPress,
+}: {
+  icon: IconName;
+  label: string;
+  active?: boolean;
+  disabled?: boolean;
+  onPress: () => void;
+}) {
+  const { styles } = useChatStyles(createStyles);
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      style={({ pressed }) => [styles.toolIcon, active && styles.toolIconActive, disabled && styles.disabled, pressed && styles.pressed]}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled, selected: active }}
+    >
+      <MaterialCommunityIcons name={icon} size={26} color={active ? '#fff' : 'rgba(255,255,255,0.78)'} />
+    </Pressable>
   );
 }
 
@@ -720,37 +857,19 @@ function ToolChip({
 }
 
 const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    justifyContent: 'flex-end',
-    backgroundColor: 'rgba(0,0,0,0.45)',
-  },
-  sheet: {
-    maxHeight: '94%',
-    backgroundColor: chatTokens.panelBg,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 16,
-    gap: 10,
-  },
-  handle: {
-    alignSelf: 'center',
-    width: 38,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: chatTokens.borderSoft,
-  },
-  scroll: { flexShrink: 1 },
-  scrollContent: { gap: 10 },
-  title: { color: chatTokens.textPrimary, fontSize: 18, fontWeight: '700' },
-  hint: { color: chatTokens.textSecondary, fontSize: 13, lineHeight: 18 },
-  stage: {
-    width: '100%',
-    borderRadius: 12,
-    overflow: 'hidden',
-    backgroundColor: '#0b1118',
-  },
+  screen: { flex: 1, backgroundColor: '#000' },
+  fill: { flex: 1 },
+  topBar: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingBottom: 4 },
+  topSpacer: { flex: 1 },
+  iconButton: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
+  stage: { flex: 1, backgroundColor: '#000', overflow: 'hidden' },
   preview: { width: '100%', height: '100%' },
+  workingVeil: {
+    ...StyleSheet.absoluteFill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.35)',
+  },
   overlayBox: { position: 'absolute', overflow: 'hidden' },
   stamp: { position: 'absolute' },
   overlayText: {
@@ -767,54 +886,88 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
     borderColor: '#fff',
     borderStyle: 'dashed',
   },
+  bottom: { backgroundColor: '#0e1621' },
+  optionsScroll: { flexGrow: 0, maxHeight: 150 },
+  optionsContent: { gap: 8, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 4 },
+  hint: { color: 'rgba(255,255,255,0.6)', fontSize: 12, lineHeight: 16 },
   error: { color: chatTokens.dangerText, fontSize: 13 },
-  toolbar: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
   actions: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', alignItems: 'center' },
   chip: {
-    minHeight: 40,
+    minHeight: 36,
     paddingHorizontal: 12,
-    borderRadius: 12,
+    borderRadius: 18,
     justifyContent: 'center',
-    backgroundColor: chatTokens.sidebarSearchBg,
+    backgroundColor: 'rgba(255,255,255,0.12)',
   },
   chipActive: { backgroundColor: chatTokens.composerActionBg },
-  chipText: { color: chatTokens.textPrimary, fontWeight: '600' },
+  chipText: { color: '#fff', fontWeight: '600', fontSize: 13 },
   chipTextActive: { color: '#fff' },
-  color: { width: 44, height: 44, borderRadius: 22, borderWidth: 2, borderColor: 'transparent' },
-  colorActive: { borderColor: chatTokens.composerActionBg },
+  color: { width: 36, height: 36, borderRadius: 18, borderWidth: 2, borderColor: 'rgba(255,255,255,0.25)' },
+  colorActive: { borderColor: chatTokens.composerActionBg, borderWidth: 3 },
   textRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
-  captionSection: { gap: 6 },
-  fieldLabel: { color: chatTokens.textSecondary, fontSize: 13 },
-  captionInput: { minHeight: 48, maxHeight: 112, padding: 12, borderRadius: 12,
-    backgroundColor: chatTokens.sidebarSearchBg, color: chatTokens.textPrimary, fontSize: 15 },
+  fieldLabel: { color: 'rgba(255,255,255,0.6)', fontSize: 12 },
   textInput: {
     flex: 1,
     minWidth: 120,
-    minHeight: 44,
-    borderRadius: 12,
+    minHeight: 40,
+    borderRadius: 18,
     paddingHorizontal: 12,
-    backgroundColor: chatTokens.sidebarSearchBg,
-    color: chatTokens.textPrimary,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    color: '#fff',
   },
-  footer: { flexDirection: 'row', flexShrink: 0, gap: 10, marginTop: 4 },
-  secondary: {
-    flex: 1,
-    minHeight: 44,
-    borderRadius: 14,
+  toolRow: { flexDirection: 'row', justifyContent: 'space-around', paddingHorizontal: 8, paddingVertical: 6 },
+  toolIcon: { width: 52, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
+  toolIconActive: { backgroundColor: chatTokens.composerActionBg },
+  strip: { flexGrow: 0 },
+  stripContent: { gap: 8, paddingHorizontal: 12, paddingVertical: 6 },
+  thumbWrap: { width: 54, height: 54 },
+  thumb: { width: 54, height: 54, borderRadius: 8, overflow: 'hidden', borderWidth: 2, borderColor: 'transparent', opacity: 0.7 },
+  thumbActive: { borderColor: chatTokens.composerActionBg, opacity: 1 },
+  thumbImage: { width: '100%', height: '100%' },
+  thumbRemove: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: chatTokens.sidebarSearchBg,
+    backgroundColor: 'rgba(0,0,0,0.72)',
   },
-  secondaryText: { color: chatTokens.textPrimary, fontWeight: '700' },
-  primary: {
+  captionBar: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, paddingHorizontal: 10, paddingTop: 6 },
+  captionInput: {
     flex: 1,
     minHeight: 44,
-    borderRadius: 14,
+    maxHeight: 112,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    color: '#fff',
+    fontSize: 16,
+  },
+  sendButton: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: chatTokens.composerActionBg,
   },
-  primaryText: { color: chatTokens.composerActionText, fontWeight: '700' },
-  disabled: { opacity: 0.6 },
-  pressed: { transform: [{ scale: 0.97 }], opacity: 0.92 },
+  sendCount: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fff',
+  },
+  sendCountText: { color: '#000', fontSize: 11, fontWeight: '800' },
+  disabled: { opacity: 0.5 },
+  pressed: { transform: [{ scale: 0.95 }], opacity: 0.9 },
 });

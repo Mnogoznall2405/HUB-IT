@@ -2,6 +2,7 @@ import { act, render } from '@testing-library/react-native';
 import React from 'react';
 import { AppState } from 'react-native';
 import type { HubUser } from '../api/types';
+import { setActiveNativeChatConversationId } from '../chat/chatActiveConversation';
 import { chatSocket } from '../chat/chatSocket';
 import { hubRealtimeSocket } from '../realtime/hubRealtimeSocket';
 import { AppLifecycle } from './AppLifecycle';
@@ -139,5 +140,38 @@ describe('AppLifecycle deferred socket suspend (W12)', () => {
 
     expect(hubRealtimeSocket.suspend).not.toHaveBeenCalled();
     expect(hubRealtimeSocket.resume).toHaveBeenCalled();
+  });
+});
+
+// Registered once while AppLifecycle is imported; per-test mock resets would drop the call.
+const registeredNotificationHandler = (jest.requireMock('expo-notifications') as {
+  setNotificationHandler: jest.Mock;
+}).setNotificationHandler.mock.calls[0]?.[0].handleNotification as (n: unknown) => Promise<{
+  shouldShowBanner: boolean; shouldPlaySound: boolean; shouldShowList: boolean;
+}>;
+
+describe('foreground notification presentation', () => {
+  const present = async (conversationId: string, appState: 'active' | 'background') => {
+    const handler = registeredNotificationHandler;
+    Object.defineProperty(AppState, 'currentState', { configurable: true, value: appState });
+    return handler({ request: { content: { data: { conversation_id: conversationId } } } });
+  };
+
+  afterEach(() => {
+    setActiveNativeChatConversationId(null);
+    Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active' });
+  });
+
+  it('stays silent for the conversation that is open on screen', async () => {
+    setActiveNativeChatConversationId('c-1');
+    await expect(present('c-1', 'active')).resolves.toMatchObject({
+      shouldShowBanner: false, shouldShowList: false, shouldPlaySound: false,
+    });
+  });
+
+  it('still notifies for another conversation, and for the open one while backgrounded', async () => {
+    setActiveNativeChatConversationId('c-1');
+    await expect(present('c-2', 'active')).resolves.toMatchObject({ shouldShowBanner: true, shouldPlaySound: true });
+    await expect(present('c-1', 'background')).resolves.toMatchObject({ shouldShowBanner: true, shouldPlaySound: true });
   });
 });

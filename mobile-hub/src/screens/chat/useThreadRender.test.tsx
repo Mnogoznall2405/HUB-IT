@@ -50,6 +50,20 @@ const photoMessage = (id: string, createdAt: string, sender = 2): ChatMessage =>
   }],
 });
 
+// An album is ONE message carrying several photos.
+const albumMessage = (id: string, createdAt: string, caption = ''): ChatMessage => {
+  const base = photoMessage(id, createdAt);
+  return {
+    ...base,
+    kind: 'file',
+    body_text: caption,
+    attachments: [
+      ...(base.attachments || []),
+      { ...(base.attachments || [])[0], id: `att-${id}-2`, preview_url: `https://cdn.example/${id}-2-preview.jpg` },
+    ],
+  };
+};
+
 const noop = () => undefined;
 const noopAsync = async () => undefined;
 
@@ -117,43 +131,38 @@ beforeEach(() => {
 // T12: buildChatMediaAlbumMap returns fresh album objects for every rebuild;
 // the render hook must keep album prop identity stable so album rows skip
 // rerenders caused by unrelated messages.
-it('does not rerender album rows when an unrelated message changes', async () => {
-  const photoA = photoMessage('m-album-1', '2026-08-23T08:00:00Z');
-  const photoB = photoMessage('m-album-2', '2026-08-23T08:01:00Z');
+it('does not rerender the album row when an unrelated message changes', async () => {
+  const album = albumMessage('m-album-1', '2026-08-23T08:00:00Z');
   const tail = textMessage('m-tail', 'Хвост', '2026-08-23T08:02:00Z');
-  // Newest-first window: tail text + a two-photo album (m-album-1 is head).
   const view = await render(
-    <RenderHarness messages={[tail, photoB, photoA]} />,
+    <RenderHarness messages={[tail, album]} />,
   );
 
-  // Sanity: the album head renders the grid bubble, the collapsed member does not.
   expect(view.getByTestId('chat-media-album')).toBeTruthy();
   expect(mockBubbleRender.mock.calls.map(([id]) => id).sort()).toEqual(['m-album-1', 'm-tail']);
 
   mockBubbleRender.mockClear();
   const editedTail = { ...tail, body_text: 'Хвост (изменено)' };
   await act(async () => {
-    view.rerender(<RenderHarness messages={[editedTail, photoB, photoA]} />);
+    view.rerender(<RenderHarness messages={[editedTail, album]} />);
   });
 
-  // Only the edited row rerenders; both album members keep memo identity.
+  // Only the edited row rerenders; the album keeps memo identity.
   expect(mockBubbleRender.mock.calls.map(([id]) => id)).toEqual(['m-tail']);
 });
 
-it('rerenders album rows when album content actually changes', async () => {
-  const photoA = photoMessage('m-album-1', '2026-08-23T08:00:00Z');
-  const photoB = photoMessage('m-album-2', '2026-08-23T08:01:00Z');
+it('rerenders the album row when its caption changes', async () => {
+  const album = albumMessage('m-album-1', '2026-08-23T08:00:00Z');
   const tail = textMessage('m-tail', 'Хвост', '2026-08-23T08:02:00Z');
   const view = await render(
-    <RenderHarness messages={[tail, photoB, photoA]} />,
+    <RenderHarness messages={[tail, album]} />,
   );
   expect(view.getByTestId('chat-media-album')).toBeTruthy();
 
   mockBubbleRender.mockClear();
-  // A captioned member changes the album caption → new album object → rerender.
-  const captionedB = { ...photoB, body_text: 'Подпись альбома' };
+  const captioned = { ...album, body_text: 'Подпись альбома' };
   await act(async () => {
-    view.rerender(<RenderHarness messages={[tail, captionedB, photoA]} />);
+    view.rerender(<RenderHarness messages={[tail, captioned]} />);
   });
   expect(mockBubbleRender.mock.calls.map(([id]) => id)).toContain('m-album-1');
 });

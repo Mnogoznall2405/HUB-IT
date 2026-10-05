@@ -1,7 +1,7 @@
 import { useContext } from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaInsetsContext } from 'react-native-safe-area-context';
-import { ChatBottomSheet } from './ChatBottomSheet';
+import { ChatInlineSheet } from './ChatInlineSheet';
 import type { NativePickedFile } from '../../files/nativeFilePicker';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
 
@@ -41,12 +41,14 @@ export function ChatAttachmentDraftSheet({
   const progressText = progress == null ? '' : ` ${Math.round(progress * 100)}%`;
 
   return (
-    <ChatBottomSheet
+    // Inline (not a Modal window): a Modal sheet came out lifted above the
+    // screen bottom on some Android builds, hiding the caption and send button.
+    <ChatInlineSheet
       visible={visible}
       onClose={busy ? () => {} : onCancel}
       dismissAccessibilityLabel="Закрыть предпросмотр вложений"
-      avoidKeyboard
       sheetStyle={[styles.sheet, { paddingBottom: Math.max(20, (insets?.bottom || 0) + 12) }]}
+      contentStyle={styles.content}
     >
           <View style={styles.header}>
             <Text style={styles.title}>{files.length > 1 ? `Выбрано файлов: ${files.length}` : 'Вложение'}</Text>
@@ -61,7 +63,8 @@ export function ChatAttachmentDraftSheet({
             </Pressable>
           </View>
 
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={{ flexShrink: 1 }} contentContainerStyle={styles.files}>
+          <ScrollView style={styles.body} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.files}>
             {files.map((file, index) => (
               <View key={`${file.uri}:${index}`} style={styles.fileCard}>
                 {file.mimeType.startsWith('image/') ? (
@@ -103,6 +106,7 @@ export function ChatAttachmentDraftSheet({
             accessibilityLabel="Подпись к вложениям"
           />
           {error ? <Text style={styles.error} accessibilityLiveRegion="polite">{error}</Text> : null}
+          </ScrollView>
           <Pressable
             disabled={busy || !files.length}
             onPress={onSend}
@@ -112,17 +116,19 @@ export function ChatAttachmentDraftSheet({
           >
             <Text style={styles.sendText}>{busy ? `Отправляем${progressText}` : error ? 'Повторить' : 'Отправить'}</Text>
           </Pressable>
-    </ChatBottomSheet>
+    </ChatInlineSheet>
   );
 }
 
 const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   sheet: {
-    maxHeight: '78%',
+    maxHeight: '72%',
     paddingHorizontal: 16,
     paddingTop: 12,
     paddingBottom: 20,
   },
+  content: { flexShrink: 1 },
+  body: { flexGrow: 0, flexShrink: 1 },
   header: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   title: { color: chatTokens.textPrimary, fontSize: 17, fontWeight: '700' },
   headerButton: { minWidth: 48, minHeight: 44, alignItems: 'flex-end', justifyContent: 'center' },

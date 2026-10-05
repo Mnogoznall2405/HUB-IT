@@ -3,6 +3,7 @@ import { router, usePathname } from 'expo-router';
 import { useEffect, useRef } from 'react';
 import { Alert, AppState, Platform } from 'react-native';
 import { useAuth } from '../auth/AuthContext';
+import { getActiveNativeChatConversationId } from '../chat/chatActiveConversation';
 import { chatSocket } from '../chat/chatSocket';
 import {
   ensureAndroidNotificationChannels,
@@ -57,12 +58,21 @@ function scheduleAfterInitialRender(callback: () => void): () => void {
 }
 
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-  }),
+  handleNotification: async (notification) => {
+    // The conversation on screen already shows the message: no banner, sound
+    // or drawer entry for it (the open thread marks it read itself).
+    const data = notification.request.content.data as Record<string, unknown> | undefined;
+    const conversationId = String(data?.conversation_id || data?.conversationId || '').trim();
+    const viewing = AppState.currentState === 'active'
+      && Boolean(conversationId)
+      && conversationId === getActiveNativeChatConversationId();
+    return {
+      shouldShowBanner: !viewing,
+      shouldShowList: !viewing,
+      shouldPlaySound: !viewing,
+      shouldSetBadge: false,
+    };
+  },
 });
 
 const handledResponseKeys = new Set<string>();

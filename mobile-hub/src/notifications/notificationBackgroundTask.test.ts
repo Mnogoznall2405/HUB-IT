@@ -64,6 +64,27 @@ describe('notification background action task', () => {
     );
   });
 
+  it('skips the «sending» update for a fast reply and removes the confirmation shortly after it is posted', async () => {
+    await handleNotificationBackgroundTask(response());
+
+    const titles = jest.mocked(Notifications.scheduleNotificationAsync).mock.calls
+      .map(([request]) => (request.content as { title?: string }).title);
+    expect(titles).toEqual(['Ответ отправлен']);
+    expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith('chat:msg:message-7');
+  });
+
+  it('marks the conversation read in parallel with the reply, not after it', async () => {
+    let resolveSend: (value: { id: string }) => void = () => undefined;
+    (chatApi.sendTextMessage as jest.Mock).mockImplementationOnce(
+      () => new Promise<{ id: string }>((resolve) => { resolveSend = resolve; }),
+    );
+    const task = handleNotificationBackgroundTask(response());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(chatApi.markConversationRead).toHaveBeenCalledTimes(1);
+    resolveSend({ id: 'sent-1' });
+    await task;
+  });
+
   it('returns after delivery when badge reconciliation stalls', async () => {
     jest.mocked(reconcileNativeBadge).mockImplementationOnce(
       () => new Promise<number | null>(() => undefined),
@@ -71,7 +92,7 @@ describe('notification background action task', () => {
 
     const result = await Promise.race([
       handleNotificationBackgroundTask(response()).then(() => 'completed'),
-      new Promise<string>((resolve) => setTimeout(() => resolve('timed-out'), 100)),
+      new Promise<string>((resolve) => setTimeout(() => resolve('timed-out'), 2_500)),
     ]);
 
     expect(result).toBe('completed');
@@ -84,7 +105,7 @@ describe('notification background action task', () => {
 
     const result = await Promise.race([
       handleNotificationBackgroundTask(response()).then(() => 'completed'),
-      new Promise<string>((resolve) => setTimeout(() => resolve('timed-out'), 100)),
+      new Promise<string>((resolve) => setTimeout(() => resolve('timed-out'), 2_500)),
     ]);
 
     expect(result).toBe('completed');
@@ -99,7 +120,10 @@ describe('notification background action task', () => {
     );
 
     const task = handleNotificationBackgroundTask(response());
+    // A fast send never posts «Отправка…»; a slow one does, after the short delay.
     await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
 
     expect(Notifications.dismissNotificationAsync).not.toHaveBeenCalledWith('chat:msg:message-7');
     expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(

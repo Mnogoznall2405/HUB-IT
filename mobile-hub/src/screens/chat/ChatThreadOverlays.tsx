@@ -1,4 +1,5 @@
 import React from 'react';
+import { Alert } from 'react-native';
 import type { ChatAttachment, ChatConversationSummary, ChatMessage } from '../../api/types';
 import type { ChatMenuAnchor } from '../../chat/chatMessageMenuLayout';
 import { isAiConversation, resolveAiBotForConversation } from '../../chat/chatAiWorkspace';
@@ -16,7 +17,6 @@ import { ChatConversationInfoSheet } from '../../components/chat/ChatConversatio
 import { ChatParticipantProfileSheet } from '../../components/chat/ChatParticipantProfileSheet';
 import { ChatMemberPickerSheet, ChatRenameSheet } from '../../components/chat/ChatGroupEditSheets';
 import { ChatTaskShareSheet } from '../../components/chat/ChatTaskShareSheet';
-import { ChatStickerPickerSheet } from '../../components/chat/ChatStickerPickerSheet';
 import { ChatEmojiPickerSheet } from '../../components/chat/ChatEmojiPickerSheet';
 import { ChatImageEditorSheet } from '../../components/chat/ChatImageEditorSheet';
 import type { ChatAiBot } from '../../api/types';
@@ -182,11 +182,14 @@ export function ChatThreadOverlays({
     sendLocation,
     sendContact,
     sendPoll,
-    sendGif,
     sendPickedFiles,
     attachmentDraftClientMessageIdRef,
   } = send;
   const { openTask } = sheets;
+  // An all-photo draft is edited and sent from the full-screen album editor.
+  const editorFileInDraft = Boolean(imageEditorFile && attachmentDraftFiles.includes(imageEditorFile));
+  const albumDraft = editorFileInDraft
+    && attachmentDraftFiles.every((item) => item.mimeType.startsWith('image/'));
   const { startSelection } = selection;
 
   return (
@@ -262,6 +265,14 @@ export function ChatThreadOverlays({
         onSendFiles={(files, caption) => {
           setAttachmentPickerVisible(false);
           void sendPickedFiles(files, { body: caption });
+        }}
+        onEditFiles={(files, caption, editIndex) => {
+          setAttachmentPickerVisible(false);
+          setAttachmentDraftError('');
+          if (caption) setText(caption);
+          setAttachmentDraftFiles(files);
+          // Same object identity: the editor result replaces this draft entry.
+          setImageEditorFile(files[editIndex] ?? null);
         }}
         onOpenCamera={() => void pickAndSendAttachment('camera')}
         onOpenGallery={() => void pickAndSendAttachment('gallery')}
@@ -420,37 +431,84 @@ export function ChatThreadOverlays({
         onSearch={(query) => void loadShareableTasks(query)}
         onShare={(task) => void shareTask(task)}
       />
-      <ChatStickerPickerSheet
-        visible={stickerPickerVisible}
-        packs={stickerPacks}
-        recentIds={recentStickerIds}
-        loading={stickerPickerLoading}
-        importing={stickerImporting}
-        onClose={() => setStickerPickerVisible(false)}
-        onSend={(sticker) => void sendSticker(sticker)}
-        onImport={(source) => void importStickerPack(source)}
-        onRemove={removeStickerPack}
-      />
       <ChatEmojiPickerSheet
-        visible={emojiPickerVisible}
-        onClose={() => setEmojiPickerVisible(false)}
-        onSelect={(emoji) => {
-          setText((current) => `${current}${emoji}`);
-          setEmojiPickerVisible(false);
+        visible={emojiPickerVisible || stickerPickerVisible}
+        tab={stickerPickerVisible ? 'stickers' : 'emoji'}
+        onChangeTab={(nextTab) => {
+          if (nextTab === 'stickers') {
+            void openStickerPicker();
+            return;
+          }
+          setStickerPickerVisible(false);
+          setEmojiPickerVisible(true);
         }}
-        onSelectGif={(gif) => void sendGif(gif)}
-        onOpenStickers={() => void openStickerPicker()}
+        onClose={() => {
+          setEmojiPickerVisible(false);
+          setStickerPickerVisible(false);
+        }}
+        onSelect={(emoji) => setText((current) => `${current}${emoji}`)}
+        stickerPacks={stickerPacks}
+        recentStickerIds={recentStickerIds}
+        stickersLoading={stickerPickerLoading}
+        stickerImporting={stickerImporting}
+        onSendSticker={(sticker) => void sendSticker(sticker)}
+        onImportStickerPack={(source) => void importStickerPack(source)}
+        onRemoveStickerPack={removeStickerPack}
       />
       <ChatImageEditorSheet
         file={imageEditorFile}
         busy={composerBusy}
         caption={text}
         onChangeCaption={setText}
-        confirmLabel={attachmentDraftFiles.some((file) => file === imageEditorFile) ? 'Сохранить фото' : 'Отправить фото'}
-        onCancel={() => setImageEditorFile(null)}
+        files={albumDraft ? attachmentDraftFiles : undefined}
+        confirmLabel={editorFileInDraft && !albumDraft ? 'Сохранить фото' : 'Отправить фото'}
+        onSelectFile={(edited, nextIndex) => {
+          const next = attachmentDraftFiles.map((item) => (item === imageEditorFile ? edited : item));
+          setAttachmentDraftFiles(next);
+          setImageEditorFile(next[nextIndex] ?? null);
+        }}
+        onRemoveFile={(index) => {
+          const next = attachmentDraftFiles.filter((_, itemIndex) => itemIndex !== index);
+          setAttachmentDraftFiles(next);
+          if (!next.length) {
+            attachmentDraftClientMessageIdRef.current = '';
+            setAttachmentDraftError('');
+            setImageEditorFile(null);
+          } else if (attachmentDraftFiles[index] === imageEditorFile) {
+            setImageEditorFile(next[Math.min(index, next.length - 1)]);
+          }
+        }}
+        onCancel={() => {
+          const discard = () => {
+            attachmentDraftClientMessageIdRef.current = '';
+            setAttachmentDraftFiles([]);
+            setAttachmentDraftError('');
+            setImageEditorFile(null);
+          };
+          // Closing the album editor drops the whole album (and its edits) —
+          // ask first when there is more than one photo.
+          if (albumDraft && attachmentDraftFiles.length > 1) {
+            Alert.alert(
+              'Отменить отправку?',
+              `Выбранные фото (${attachmentDraftFiles.length}) и правки будут сброшены.`,
+              [
+                { text: 'Продолжить', style: 'cancel' },
+                { text: 'Отменить', style: 'destructive', onPress: discard },
+              ],
+            );
+            return;
+          }
+          if (albumDraft) discard();
+          else setImageEditorFile(null);
+        }}
         onConfirm={async (file: NativePickedFile) => {
           if (!isCurrentSendScope()) return;
-          if (attachmentDraftFiles.some((item) => item === imageEditorFile)) {
+          if (albumDraft) {
+            const next = attachmentDraftFiles.map((item) => (item === imageEditorFile ? file : item));
+            if (await sendAttachmentDraft(next)) setImageEditorFile(null);
+            return;
+          }
+          if (editorFileInDraft) {
             setAttachmentDraftFiles((files) => files.map((item) => item === imageEditorFile ? file : item));
             setImageEditorFile(null);
             return;

@@ -43,7 +43,6 @@ function useHarness(outbox: FakeOutbox) {
     pendingAttachmentUploadsRef: pendingAttachmentUploadsRef as never,
     uploadControllersRef,
     setAttachmentTransfers: () => {},
-    setEmojiPickerVisible: () => {},
     composer,
   });
   return { composer, send };

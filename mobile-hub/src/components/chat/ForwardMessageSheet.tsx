@@ -4,7 +4,7 @@ import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-a
 import { russianPlural } from '../../utils/russianPlural';
 import type { ChatConversationSummary, ChatMessage } from '../../api/types';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
-import { ChatBottomSheet } from './ChatBottomSheet';
+import { ChatInlineSheet } from './ChatInlineSheet';
 
 export function ForwardMessageSheet({
   message,
@@ -37,18 +37,20 @@ export function ForwardMessageSheet({
   }, [conversations, query]);
 
   return (
-    <ChatBottomSheet
+    // Inline (not a Modal window): a Modal sheet came out lifted above the
+    // screen bottom on some Android builds, hiding the list tail and «Отмена».
+    <ChatInlineSheet
       visible={Boolean(message)}
       onClose={() => { if (!busy) onClose(); }}
       dismissAccessibilityLabel="Закрыть пересылку"
-      avoidKeyboard
       sheetStyle={[styles.sheet, {
         paddingBottom: Math.max(20, insets?.bottom || 0),
         paddingLeft: 12 + (insets?.left || 0), paddingRight: 12 + (insets?.right || 0),
       }]}
       sheetTestID="chat-forward-sheet"
+      contentStyle={styles.content}
     >
-        <View accessibilityViewIsModal>
+        <View accessibilityViewIsModal style={styles.content}>
           <Text style={styles.title}>
             {count > 1 ? `Переслать ${count} ${russianPlural(count, ['сообщение', 'сообщения', 'сообщений'])}` : 'Переслать сообщение'}
           </Text>
@@ -97,16 +99,17 @@ export function ForwardMessageSheet({
             <Text style={styles.cancelText}>Отмена</Text>
           </Pressable>
         </View>
-    </ChatBottomSheet>
+    </ChatInlineSheet>
   );
 }
 
 const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   sheet: {
-    maxHeight: '78%',
+    maxHeight: '72%',
     paddingHorizontal: 12,
     paddingBottom: 20,
   },
+  content: { flexShrink: 1 },
   title: { marginHorizontal: 8, marginBottom: 10, color: chatTokens.textPrimary, fontSize: 17, fontWeight: '700' },
   search: {
     minHeight: 44,

@@ -12,26 +12,22 @@ import type { ChatSticker, ChatStickerPack } from '../../api/types';
 import { buildStickerPickerRows, type StickerPickerRow } from '../../chat/chatPickerRows';
 import { collectRecentStickers } from '../../chat/chatStickers';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
-import { ChatInlineSheet } from './ChatInlineSheet';
 import { ChatStickerImage } from './ChatStickerImage';
 
-export function ChatStickerPickerSheet({
-  visible,
+/** Stickers tab body of the unified emoji/stickers panel (ChatEmojiPickerSheet). */
+export function ChatStickerPickerContent({
   packs,
   recentIds = [],
   loading,
   importing,
-  onClose,
   onSend,
   onImport,
   onRemove,
 }: {
-  visible: boolean;
   packs: ChatStickerPack[];
   recentIds?: string[];
   loading?: boolean;
   importing?: boolean;
-  onClose: () => void;
   onSend: (sticker: ChatSticker) => void;
   onImport?: (source: string) => void;
   onRemove?: (pack: ChatStickerPack) => void;
@@ -41,11 +37,6 @@ export function ChatStickerPickerSheet({
   const [preview, setPreview] = useState<ChatSticker | null>(null);
   const recent = useMemo(() => collectRecentStickers(packs, recentIds), [packs, recentIds]);
   const rows = useMemo(() => buildStickerPickerRows(packs, recent), [packs, recent]);
-
-  const close = () => {
-    setPreview(null);
-    onClose();
-  };
 
   const renderRow = useCallback(({ item }: { item: StickerPickerRow }) => {
     if (item.kind === 'header') {
@@ -87,69 +78,54 @@ export function ChatStickerPickerSheet({
   }, [onRemove, onSend, styles]);
 
   return (
-    <ChatInlineSheet
-      visible={visible}
-      onClose={close}
-      dismissAccessibilityLabel="Скрыть панель стикеров"
-      sheetStyle={styles.sheet}
-    >
-      <View style={styles.titleRow}>
-        <Text style={styles.title}>Стикеры</Text>
-        <Pressable
-          onPress={close}
-          style={styles.close}
-          accessibilityRole="button"
-          accessibilityLabel="Закрыть стикеры"
-        >
-          <Text style={styles.closeText}>Закрыть</Text>
-        </Pressable>
-      </View>
-          {onImport ? (
-            <View style={styles.importRow}>
-              <TextInput
-                value={source}
-                onChangeText={setSource}
-                placeholder="t.me/addstickers/имя или short name"
-                placeholderTextColor={chatTokens.textSecondary}
-                style={styles.importInput}
-                accessibilityLabel="Ссылка на набор стикеров"
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              <Pressable
-                onPress={() => {
-                  const next = source.trim();
-                  if (!next || importing) return;
-                  onImport(next);
-                  setSource('');
-                }}
-                disabled={importing || !source.trim()}
-                style={({ pressed }) => [
-                  styles.importButton,
-                  (importing || !source.trim()) && styles.disabled,
-                  pressed && styles.pressed,
-                ]}
-                accessibilityRole="button"
-                accessibilityLabel="Добавить набор"
-              >
-                <Text style={styles.importButtonText}>Добавить</Text>
-              </Pressable>
-            </View>
-          ) : null}
-          {loading || importing ? <ActivityIndicator color={chatTokens.composerActionBg} /> : null}
-          <FlatList
-            testID="chat-sticker-picker-list"
-            data={rows}
-            keyExtractor={(item) => item.id}
-            renderItem={renderRow}
-            keyboardShouldPersistTaps="handled"
-            initialNumToRender={6}
-            maxToRenderPerBatch={5}
-            updateCellsBatchingPeriod={32}
-            windowSize={5}
-            contentContainerStyle={styles.scroll}
-            ListEmptyComponent={!loading ? <Text style={styles.empty}>Добавленных наборов стикеров пока нет</Text> : null}
+    <View style={styles.root}>
+      {onImport ? (
+        <View style={styles.importRow}>
+          <TextInput
+            value={source}
+            onChangeText={setSource}
+            placeholder="t.me/addstickers/имя или short name"
+            placeholderTextColor={chatTokens.textSecondary}
+            style={styles.importInput}
+            accessibilityLabel="Ссылка на набор стикеров"
+            autoCapitalize="none"
+            autoCorrect={false}
           />
+          <Pressable
+            onPress={() => {
+              const next = source.trim();
+              if (!next || importing) return;
+              onImport(next);
+              setSource('');
+            }}
+            disabled={importing || !source.trim()}
+            style={({ pressed }) => [
+              styles.importButton,
+              (importing || !source.trim()) && styles.disabled,
+              pressed && styles.pressed,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Добавить набор"
+          >
+            <Text style={styles.importButtonText}>Добавить</Text>
+          </Pressable>
+        </View>
+      ) : null}
+      {loading || importing ? <ActivityIndicator color={chatTokens.composerActionBg} /> : null}
+      <FlatList
+        testID="chat-sticker-picker-list"
+        data={rows}
+        keyExtractor={(item) => item.id}
+        renderItem={renderRow}
+        keyboardShouldPersistTaps="handled"
+        initialNumToRender={6}
+        maxToRenderPerBatch={5}
+        updateCellsBatchingPeriod={32}
+        windowSize={5}
+        style={styles.list}
+        contentContainerStyle={styles.scroll}
+        ListEmptyComponent={!loading ? <Text style={styles.empty}>Добавленных наборов стикеров пока нет</Text> : null}
+      />
       {preview ? (
         <View style={styles.preview} pointerEvents="none">
           <ChatStickerImage
@@ -161,20 +137,13 @@ export function ChatStickerPickerSheet({
           {preview.emoji ? <Text style={styles.previewEmoji}>{preview.emoji}</Text> : null}
         </View>
       ) : null}
-    </ChatInlineSheet>
+    </View>
   );
 }
 
 const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
-  sheet: {
-    height: '72%',
-    paddingHorizontal: 14,
-    paddingBottom: 10,
-  },
-  titleRow: { minHeight: 44, flexDirection: 'row', alignItems: 'center' },
-  title: { flex: 1, color: chatTokens.textPrimary, fontSize: 19, fontWeight: '700' },
-  close: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 },
-  closeText: { color: chatTokens.accentText, fontSize: 16, fontWeight: '700' },
+  root: { flex: 1 },
+  list: { flex: 1 },
   importRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
   importInput: {
     flex: 1,
@@ -198,7 +167,7 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   packTitle: { color: chatTokens.textSecondary, fontSize: 13, fontWeight: '600', marginBottom: 6 },
   remove: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 },
   removeText: { color: chatTokens.dangerText, fontSize: 13, fontWeight: '700' },
-  grid: { flexDirection: 'row', flexWrap: 'wrap' },
+  grid: { flexDirection: 'row' },
   sticker: { width: '25%', minHeight: 70, alignItems: 'center', justifyContent: 'center', borderRadius: 14 },
   empty: { padding: 22, color: chatTokens.textSecondary, textAlign: 'center' },
   pressed: { backgroundColor: chatTokens.sidebarRowSoftActive },

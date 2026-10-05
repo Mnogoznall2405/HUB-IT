@@ -30,6 +30,9 @@ import {
 
 export const HUBIT_NOTIFICATION_BACKGROUND_TASK = 'hubit-notification-actions-v1';
 const QUICK_REPLY_SEND_TIMEOUT_MS = 8_000;
+// A fast send finishes before this: the «Отправка…» update is only worth its own
+// notification round trip when the network is actually slow.
+const SENDING_FEEDBACK_DELAY_MS = 900;
 
 function quickReplyTimeoutError(): Error {
   return Object.assign(new Error(`quick reply timeout after ${QUICK_REPLY_SEND_TIMEOUT_MS}ms`), {
@@ -134,14 +137,23 @@ export async function handleNotificationBackgroundTask(
 
   let replyItem: PendingChatReply | null = null;
   try {
+    let sendingFeedback: Promise<void> | null = null;
+    let sendingTimer: ReturnType<typeof setTimeout> | null = null;
     if (action === HUBIT_CHAT_REPLY_ACTION) {
       replyItem = await pendingReplyFromResponse(data, userId);
-      await showReplySending(replyItem);
+      const slowItem = replyItem;
+      sendingTimer = setTimeout(() => { sendingFeedback = showReplySending(slowItem); }, SENDING_FEEDBACK_DELAY_MS);
     }
-    if (action === HUBIT_CHAT_REPLY_ACTION) {
-      await withQuickReplyDeadline(processNotificationAction(data));
-    } else {
-      await processNotificationAction(data);
+    try {
+      if (action === HUBIT_CHAT_REPLY_ACTION) {
+        await withQuickReplyDeadline(processNotificationAction(data));
+      } else {
+        await processNotificationAction(data);
+      }
+    } finally {
+      if (sendingTimer) clearTimeout(sendingTimer);
+      // A «sending» update still in flight must land before the final one.
+      if (sendingFeedback) await sendingFeedback;
     }
     if (replyItem) {
       await showReplySent(replyItem);

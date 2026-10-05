@@ -16,7 +16,6 @@ import {
   buildPendingAttachmentMessage,
   type PendingAttachmentMediaKind,
 } from '../../chat/chatAttachmentTransfers';
-import { downloadGifToCache, type ChatGifItem } from '../../chat/chatGiphy';
 import { chatMessageMotionKey, type ChatMessageEnterKind } from '../../components/chat/ChatMessageEnterMotion';
 import type { ChatAttachmentTransfer } from '../../components/chat/ChatDocumentAttachment';
 import { showNativeToast } from '../../components/nativeToast';
@@ -53,7 +52,6 @@ export function useThreadSend({
   pendingAttachmentUploadsRef,
   uploadControllersRef,
   setAttachmentTransfers,
-  setEmojiPickerVisible,
   composer,
 }: {
   conversationId: string;
@@ -70,7 +68,6 @@ export function useThreadSend({
   pendingAttachmentUploadsRef: MutableRefObject<Map<string, PendingAttachmentUpload>>;
   uploadControllersRef: MutableRefObject<Map<string, AbortController>>;
   setAttachmentTransfers: Dispatch<SetStateAction<Record<string, ChatAttachmentTransfer>>>;
-  setEmojiPickerVisible: Dispatch<SetStateAction<boolean>>;
   composer: Composer;
 }) {
   const {
@@ -336,6 +333,8 @@ export function useThreadSend({
       body?: string;
       replyToMessageId?: string;
       replyPreview?: ChatMessage['reply_preview'];
+      /** Draft to restore if queuing fails (defaults to the current draft state). */
+      draftFiles?: NativePickedFile[];
     } = {},
   ): Promise<boolean> => {
     if (!files.length || !isCurrentSendScope()) return false;
@@ -389,7 +388,7 @@ export function useThreadSend({
     requestBottomAnchor('own-send');
     const replyModeSnapshot = !previousUpload && composerMode?.type === 'reply' ? composerMode : null;
     const captionSnapshot = upload.body;
-    const draftFilesSnapshot = attachmentDraftFiles;
+    const draftFilesSnapshot = extra.draftFiles ?? attachmentDraftFiles;
     let postClearRevision = -1;
     if (!previousUpload) {
       // S2: composer (caption + reply + draft files) clears immediately;
@@ -516,6 +515,8 @@ export function useThreadSend({
         setAttachmentDraftError('');
         attachmentDraftClientMessageIdRef.current = createClientMessageId();
         setAttachmentDraftFiles(files);
+        // Telegram-style: a set of photos opens straight in the album editor.
+        if (files.every((file) => file.mimeType.startsWith('image/'))) setImageEditorFile(files[0]);
         return;
       }
       await sendPickedFile(files[0]);
@@ -536,15 +537,16 @@ export function useThreadSend({
     }
   }, [isCurrentSendScope, mountedRef, sendPickedFile]);
 
-  const sendAttachmentDraft = useCallback(async () => {
-    if (!attachmentDraftFiles.length || attachmentDraftSendRef.current) return;
+  /** Sends the draft (or `overrideFiles`, e.g. the album after editor changes). Resolves true once queued. */
+  const sendAttachmentDraft = useCallback(async (overrideFiles?: NativePickedFile[]): Promise<boolean> => {
+    const files = overrideFiles ?? attachmentDraftFiles;
+    if (!files.length || attachmentDraftSendRef.current) return false;
     attachmentDraftSendRef.current = true;
     setComposerBusy(true);
-    const files = attachmentDraftFiles;
     const clientMessageId = attachmentDraftClientMessageIdRef.current || createClientMessageId();
     attachmentDraftClientMessageIdRef.current = '';
     setAttachmentDraftError('');
-    try { await sendPickedFiles(files, { clientMessageId }); }
+    try { return await sendPickedFiles(files, { clientMessageId, draftFiles: files }); }
     finally {
       attachmentDraftSendRef.current = false;
       if (mountedRef.current) setComposerBusy(false);
@@ -741,24 +743,6 @@ export function useThreadSend({
     }
   }, [isCurrentSendScope, mountedRef, setMessages, user?.id]);
 
-  const sendGif = useCallback(async (gif: ChatGifItem) => {
-    // The download can take seconds; without the busy guard a second tap
-    // downloads and sends the same GIF again.
-    if (composerBusyRef.current) return;
-    setEmojiPickerVisible(false);
-    setComposerBusy(true);
-    try {
-      const file = await downloadGifToCache(gif);
-      await sendPickedFile(file);
-    } catch (cause) {
-      if (mountedRef.current) {
-        showNativeToast('Не удалось отправить GIF', formatApiError(cause, 'Повторите попытку'));
-      }
-    } finally {
-      if (mountedRef.current) setComposerBusy(false);
-    }
-  }, [composerBusyRef, mountedRef, sendPickedFile, setComposerBusy, setEmojiPickerVisible]);
-
   return {
     sendBody,
     sendMessage,
@@ -777,7 +761,6 @@ export function useThreadSend({
     sendPoll,
     votePoll,
     closePoll,
-    sendGif,
     setAttachmentTransfersForIds,
     clearAttachmentTransfersForIds,
     attachmentDraftClientMessageIdRef,

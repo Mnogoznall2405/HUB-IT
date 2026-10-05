@@ -182,6 +182,9 @@ export const ChatBottomSheet = memo(function ChatBottomSheet({
       transparent
       onRequestClose={onClose}
       statusBarTranslucent
+      // Same as the full-screen viewers: without it the dialog window can end above
+      // the navigation bar while the sheet is laid out for the full screen.
+      navigationBarTranslucent
     >
       {/* Modal is a separate native view hierarchy on Android: RNGH gestures
           need their own GestureHandlerRootView inside it. */}

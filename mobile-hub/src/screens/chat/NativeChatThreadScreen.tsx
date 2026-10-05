@@ -66,10 +66,10 @@ import {
   subscribeNativeChatConversationRead,
 } from '../../chat/chatActiveConversation';
 import { nextChatThreadBackAction } from '../../chat/chatGestures';
+import { dismissConversationNotifications } from '../../notifications/conversationNotifications';
 import { findUnreadMentionMessageId } from '../../chat/chatMentions';
 import { detectChatBodyFormat } from '../../chat/chatMarkdown';
 import { shouldShowSenderAvatarsForKind } from '../../chat/chatBubbleLayout';
-import { downloadGifToCache, type ChatGifItem } from '../../chat/chatGiphy';
 import { getRecentStickerIds, rememberRecentSticker } from '../../chat/chatStickers';
 import { ChatAttachmentDraftSheet } from '../../components/chat/ChatAttachmentDraftSheet';
 import type { ChatAttachmentTransfer } from '../../components/chat/ChatDocumentAttachment';
@@ -139,7 +139,6 @@ import {
 } from '../../components/chat/ChatMessageEnterMotion';
 import { ChatConversationInfoSheet } from '../../components/chat/ChatConversationInfoSheet';
 import { ChatParticipantProfileSheet } from '../../components/chat/ChatParticipantProfileSheet';
-import { ChatEmojiPickerSheet } from '../../components/chat/ChatEmojiPickerSheet';
 import { ChatMemberPickerSheet, ChatRenameSheet } from '../../components/chat/ChatGroupEditSheets';
 import { ChatHeader } from '../../components/chat/ChatHeader';
 import { TypingDots } from '../../components/chat/TypingDots';
@@ -156,7 +155,6 @@ import {
 } from '../../components/chat/ChatMentionSuggestions';
 import { ChatMessageSearch } from '../../components/chat/ChatMessageSearch';
 import { ChatImageEditorSheet } from '../../components/chat/ChatImageEditorSheet';
-import { ChatStickerPickerSheet } from '../../components/chat/ChatStickerPickerSheet';
 import { ChatTaskShareSheet } from '../../components/chat/ChatTaskShareSheet';
 import { ForwardMessageSheet } from '../../components/chat/ForwardMessageSheet';
 import { MessageActionsSheet } from '../../components/chat/MessageActionsSheet';
@@ -500,16 +498,21 @@ export function NativeChatThreadScreen({
   // read receipt that markRead skipped.
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
-      if (state !== 'active' || !nearBottomRef.current) return;
+      if (state !== 'active') return;
+      if (getActiveNativeChatConversationId() === conversationId) {
+        void dismissConversationNotifications(conversationId);
+      }
+      if (!nearBottomRef.current) return;
       markReadRef.current(findLatestIncomingMessage(messagesRef.current, user?.id));
     });
     return () => subscription.remove();
-  }, [user?.id]);
+  }, [conversationId, user?.id]);
 
   // Focus-scoped, not mount-scoped: pushed-over thread screens stay mounted
   // and must not claim the "active" slot (the HTTP fallback polls only for it).
   useFocusEffect(useCallback(() => {
     setActiveNativeChatConversationId(conversationId);
+    void dismissConversationNotifications(conversationId);
     return () => {
       if (getActiveNativeChatConversationId() === conversationId) {
         setActiveNativeChatConversationId(null);
@@ -691,7 +694,6 @@ export function NativeChatThreadScreen({
     pendingAttachmentUploadsRef,
     uploadControllersRef,
     setAttachmentTransfers,
-    setEmojiPickerVisible,
     composer: composerState,
   });
   const {
@@ -706,7 +708,6 @@ export function NativeChatThreadScreen({
     retryPendingMessage,
     pickAndSendAttachment,
     sendAttachmentDraft,
-    sendGif,
     attachmentDraftClientMessageIdRef,
   } = send;
 

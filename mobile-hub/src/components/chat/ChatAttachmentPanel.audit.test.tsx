@@ -42,11 +42,13 @@ const panelElement = (
   visible: boolean,
   onSendFiles: (files: NativePickedFile[], caption: string) => void = jest.fn(),
   onClose: () => void = jest.fn(),
+  onEditFiles?: (files: NativePickedFile[], caption: string, editIndex: number) => void,
 ) => (
   <ChatAttachmentPanel
     visible={visible}
     onClose={onClose}
     onSendFiles={onSendFiles}
+    onEditFiles={onEditFiles}
     onOpenCamera={jest.fn()}
   />
 );
@@ -217,7 +219,44 @@ describe('AUD-8 preview insets', () => {
     const closeStyle = StyleSheet.flatten(view.getByLabelText('Закрыть предпросмотр').props.style);
     expect(closeStyle.top).toBeGreaterThanOrEqual(insets.top);
     expect(closeStyle.right).toBeGreaterThanOrEqual(insets.right);
-    const removeStyle = StyleSheet.flatten(view.getByLabelText('Убрать из отправки').props.style);
+    const removeStyle = StyleSheet.flatten(view.getByTestId('chat-attachment-preview-actions').props.style);
     expect(removeStyle.bottom).toBeGreaterThanOrEqual(insets.bottom);
+  });
+});
+
+describe('selected photo editing', () => {
+  it('opens the editor with the whole selection at the tapped photo and closes the panel', async () => {
+    exeForMetadata.mockResolvedValue([mediaRow('e1'), mediaRow('e2')]);
+    const onEditFiles = jest.fn();
+    const onSendFiles = jest.fn();
+    const onClose = jest.fn();
+    const view = await render(panelElement(true, onSendFiles, onClose, onEditFiles));
+    await flush();
+    await flush();
+
+    await fireEvent.press(view.getByLabelText('Фото e1.jpg'));
+    await fireEvent.press(view.getByLabelText('Фото e2.jpg'));
+    await fireEvent.press(view.getByLabelText('Предпросмотр 2 из 2'));
+
+    expect(onEditFiles).toHaveBeenCalledTimes(1);
+    const [files, caption, editIndex] = onEditFiles.mock.calls[0];
+    expect(files.map((file: NativePickedFile) => file.name)).toEqual(['e1.jpg', 'e2.jpg']);
+    expect(caption).toBe('');
+    expect(editIndex).toBe(1);
+    expect(onSendFiles).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('keeps the plain preview when a video is in the selection', async () => {
+    exeForMetadata.mockResolvedValue([{ ...mediaRow('v9'), mediaType: MediaLibrary.MediaType.VIDEO, duration: 5000 }]);
+    const onEditFiles = jest.fn();
+    const view = await render(panelElement(true, jest.fn(), jest.fn(), onEditFiles));
+    await flush();
+    await flush();
+
+    await fireEvent.press(view.getByLabelText('Видео v9.jpg'));
+    await fireEvent.press(view.getByLabelText('Предпросмотр 1 из 1'));
+    expect(onEditFiles).not.toHaveBeenCalled();
+    expect(view.getByLabelText('Убрать из отправки')).toBeTruthy();
   });
 });

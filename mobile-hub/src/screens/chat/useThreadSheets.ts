@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import { Alert } from 'react-native';
 import { router } from 'expo-router';
 import * as chatApi from '../../api/chatApi';
@@ -72,6 +72,8 @@ export function useThreadSheets({
   const [taskPickerLoading, setTaskPickerLoading] = useState(false);
   const [stickerPickerVisible, setStickerPickerVisible] = useState(false);
   const [stickerPacks, setStickerPacks] = useState<ChatStickerPack[]>([]);
+  const stickerPacksLoadedRef = useRef(false);
+  useEffect(() => { stickerPacksLoadedRef.current = false; }, [userId]);
   const [stickerPickerLoading, setStickerPickerLoading] = useState(false);
   const [stickerImporting, setStickerImporting] = useState(false);
   const [recentStickerIds, setRecentStickerIds] = useState<string[]>([]);
@@ -427,7 +429,9 @@ export function useThreadSheets({
     setPollCreateVisible(false);
     setTaskPickerVisible(false);
     setStickerPickerVisible(true);
-    setStickerPickerLoading(true);
+    // Packs already loaded: show them at once and refresh silently, so flipping
+    // between the emoji and sticker tabs does not flash a spinner.
+    if (!stickerPacksLoadedRef.current) setStickerPickerLoading(true);
     try {
       const [packs, recent] = await Promise.all([
         chatApi.getStickerPacks(),
@@ -436,6 +440,7 @@ export function useThreadSheets({
       if (mountedRef.current) {
         setStickerPacks(packs);
         setRecentStickerIds(recent);
+        stickerPacksLoadedRef.current = true;
       }
     } catch (cause) {
       if (mountedRef.current) showNativeToast('Не удалось загрузить стикеры', formatApiError(cause, 'Повторите попытку'));
@@ -484,7 +489,6 @@ export function useThreadSheets({
 
   const sendSticker = useCallback(async (sticker: ChatSticker) => {
     if (!isCurrentSendScope() || composerBusyRef.current) return;
-    setStickerPickerVisible(false);
     setComposerBusy(true);
     if (userId) {
       void rememberRecentSticker(userId, sticker.id).then((recent) => {

@@ -84,11 +84,14 @@ export async function processNotificationAction(
 
   if (!body) throw new Error('Введите текст ответа');
   if (body.length > 12000) throw new Error('Ответ превышает 12 000 символов');
+  // The read receipt does not depend on the reply: send both at once instead of
+  // making the notification wait for two round trips in a row.
+  const markRead = chatApi.markConversationRead(conversationId, messageId || undefined).catch(() => undefined);
   await chatApi.sendTextMessage(conversationId, body, {
     clientMessageId: details.clientMessageId,
     replyToMessageId: messageId || undefined,
   });
-  await chatApi.markConversationRead(conversationId, messageId || undefined).catch(() => undefined);
+  await markRead;
   // The background feedback layer updates this exact notification identifier.
   // Dismissing here races with the final "sent" update and can leave Android's
   // RemoteInput UI spinning or remove the confirmation after it is posted.

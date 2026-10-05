@@ -81,23 +81,6 @@ jest.mock('../../api/chatApi', () => ({
   getLinkPreview: jest.fn(),
 }));
 
-jest.mock('../../chat/chatGiphy', () => ({
-  ...jest.requireActual('../../chat/chatGiphy'),
-  fetchChatGifs: jest.fn(async () => [{
-    id: 'gif-1',
-    title: 'кот',
-    previewUrl: 'https://media.giphy.com/preview.gif',
-    fullUrl: 'https://media.giphy.com/full.gif',
-  }]),
-  downloadGifToCache: jest.fn(async () => ({
-    uri: 'file:///cache/gif_gif-1.gif',
-    name: 'gif_gif-1.gif',
-    mimeType: 'image/gif',
-    size: 32,
-    source: 'gif',
-  })),
-}));
-
 jest.mock('../../files/chatMediaRequest', () => ({
   getChatMediaRequestHeaders: jest.fn(async () => ({ Authorization: 'Bearer test-token' })),
 }));
@@ -1935,7 +1918,7 @@ describe('native Chat screens', () => {
     expect(mockedChatApi.sendFileMessage).toHaveBeenCalledTimes(1);
   });
 
-  it('edits one photo in a group without sending it or losing the group caption', async () => {
+  it('opens a picked photo set in the album editor and sends it as one edited group with the caption', async () => {
     jest.spyOn(Image, 'getSize').mockImplementation((_uri, success) => {
       success?.(1200, 800); return Promise.resolve({ width: 1200, height: 800 });
     });
@@ -1949,19 +1932,41 @@ describe('native Chat screens', () => {
     const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
     await fireEvent.press(view.getByLabelText('Добавить вложение'));
     await fireEvent.press(view.getByLabelText('Галерея'));
-    await waitFor(() => expect(view.getByText('Выбрано файлов: 2')).toBeTruthy());
-    await fireEvent.changeText(view.getByLabelText('Подпись к вложениям'), 'Комплект');
-    await fireEvent.press(view.getByLabelText('Редактировать one.png'));
-    expect(view.getByLabelText('Подпись к фото').props.value).toBe('Комплект');
+    await waitFor(() => expect(view.getByLabelText('Фото 2 из 2')).toBeTruthy());
+    await fireEvent.changeText(view.getByLabelText('Подпись к фото'), 'Комплект');
     await fireEvent.press(view.getByLabelText('Повернуть на 90 градусов'));
     await waitFor(() => expect(view.getByLabelText('Отменить').props.accessibilityState.disabled).toBe(false));
-    await fireEvent.press(view.getByLabelText('Сохранить фото'));
+    await fireEvent.press(view.getByLabelText('Фото 2 из 2'));
+    await waitFor(() => expect(view.getByLabelText('Фото 2 из 2').props.accessibilityState.selected).toBe(true));
+    expect(view.getByLabelText('Подпись к фото').props.value).toBe('Комплект');
     expect(mockedChatApi.sendFileMessage).not.toHaveBeenCalled();
-    expect(view.getByLabelText('Подпись к вложениям').props.value).toBe('Комплект');
-    await fireEvent.press(view.getByLabelText('Отправить вложения'));
+    await fireEvent.press(view.getByLabelText('Отправить фото'));
     await waitFor(() => expect(build).toHaveBeenCalledWith([
       expect.objectContaining({ uri: 'file:///edited-one.jpg', name: 'one.jpg', mimeType: 'image/jpeg' }), files[1],
     ], expect.objectContaining({ body: 'Комплект' })));
+  });
+
+  it('asks before dropping a multi-photo album from the editor and keeps it on «Продолжить»', async () => {
+    jest.spyOn(Image, 'getSize').mockImplementation((_uri, success) => {
+      success?.(1200, 800); return Promise.resolve({ width: 1200, height: 800 });
+    });
+    jest.spyOn(nativeFilePicker, 'pickNativeAttachments').mockResolvedValue([
+      { uri: 'file:///one.png', name: 'one.png', mimeType: 'image/png', size: 123, source: 'gallery' as const },
+      { uri: 'file:///two.jpg', name: 'two.jpg', mimeType: 'image/jpeg', size: 456, source: 'gallery' as const },
+    ]);
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await fireEvent.press(view.getByLabelText('Добавить вложение'));
+    await fireEvent.press(view.getByLabelText('Галерея'));
+    await waitFor(() => expect(view.getByLabelText('Фото 2 из 2')).toBeTruthy());
+    await fireEvent.press(view.getByLabelText('Отменить фото'));
+
+    expect(alert).toHaveBeenCalledWith('Отменить отправку?', expect.stringContaining('(2)'), expect.any(Array));
+    expect(view.getByLabelText('Фото 2 из 2')).toBeTruthy();
+    const discard = (alert.mock.calls[0][2] as Array<{ text: string; onPress?: () => void }>)
+      .find((button) => button.text === 'Отменить');
+    await act(async () => { discard?.onPress?.(); });
+    await waitFor(() => expect(view.queryByLabelText('Фото 2 из 2')).toBeNull());
   });
 
   it('keeps the single photo and caption when durable file preparation fails', async () => {
@@ -2599,19 +2604,16 @@ describe('native Chat screens', () => {
     await waitFor(() => expect(view.getByText('Складская беседа')).toBeTruthy());
   });
 
-  it('sends a GIF from the emoji sheet through the files endpoint', async () => {
+  it('keeps the emoji panel open so several emoji can be inserted in a row', async () => {
     const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
     await waitFor(() => expect(view.getByLabelText('Открыть эмодзи')).toBeTruthy());
     await fireEvent.press(view.getByLabelText('Открыть эмодзи'));
-    await fireEvent.press(view.getByLabelText('GIF'));
-    await waitFor(() => expect(view.getByLabelText('Отправить GIF кот')).toBeTruthy());
-    await fireEvent.press(view.getByLabelText('Отправить GIF кот'));
+    await fireEvent.press(view.getByLabelText('Вставить 😀'));
+    await fireEvent.press(view.getByLabelText('Вставить 😁'));
 
-    await waitFor(() => expect(mockedChatApi.sendFileMessage).toHaveBeenCalledWith(
-      'conversation-1',
-      expect.any(FormData),
-      expect.objectContaining({ onProgress: expect.any(Function) }),
-    ));
+    expect(view.getByLabelText('Вставить 😀')).toBeTruthy();
+    expect(view.getByLabelText('Текст сообщения').props.value).toContain('😀😁');
+    expect(view.queryByLabelText('GIF')).toBeNull();
   });
 
   it('searches the native emoji catalog and opens stickers from the same sheet', async () => {
@@ -2624,12 +2626,15 @@ describe('native Chat screens', () => {
     await fireEvent.press(view.getByLabelText('Стикеры'));
     await waitFor(() => expect(mockedChatApi.getStickerPacks).toHaveBeenCalled());
     expect(view.getByText('Офис')).toBeTruthy();
-    expect(view.getByLabelText('Закрыть стикеры')).toBeTruthy();
-    await fireEvent.press(view.getByLabelText('Закрыть стикеры'));
+    await fireEvent.press(view.getByLabelText('Эмодзи'));
+    await waitFor(() => expect(view.queryByText('Офис')).toBeNull());
+    expect(view.getByLabelText('Поиск эмодзи')).toBeTruthy();
+    await fireEvent.press(view.getByLabelText('Стикеры'));
+    await fireEvent.press(view.getByLabelText('Закрыть панель эмодзи и стикеров'));
     await waitFor(() => expect(view.queryByText('Офис')).toBeNull());
   });
 
-  it('closes the sticker sheet immediately while the selected sticker is queued for delivery', async () => {
+  it('keeps the sticker panel open (Telegram) while the selected sticker is queued for delivery', async () => {
     let completeSend: ((value: Awaited<ReturnType<typeof chatApi.sendSticker>>) => void) | undefined;
     mockedChatApi.sendSticker.mockImplementationOnce(() => new Promise((resolve) => {
       completeSend = resolve;
@@ -2641,9 +2646,9 @@ describe('native Chat screens', () => {
     await waitFor(() => expect(view.getByLabelText('Отправить стикер 📎')).toBeTruthy());
     await fireEvent.press(view.getByLabelText('Отправить стикер 📎'));
 
-    // M3: the sheet closes on the optimistic bubble; the durable outbox calls
-    // the sticker API with the client_message_id idempotency key.
-    expect(view.queryByText('Офис')).toBeNull();
+    // M3: the optimistic bubble appears and the panel stays for the next sticker;
+    // the durable outbox calls the sticker API with the client_message_id key.
+    expect(view.getByText('Офис')).toBeTruthy();
     await waitFor(() => expect(mockedChatApi.sendSticker).toHaveBeenCalledWith(
       'conversation-1',
       'sticker-1',

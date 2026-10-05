@@ -62,6 +62,7 @@ export function ChatAttachmentPanel({
   visible,
   onClose,
   onSendFiles,
+  onEditFiles,
   onOpenCamera,
   onOpenGallery,
   onOpenDocument,
@@ -74,6 +75,8 @@ export function ChatAttachmentPanel({
   visible: boolean;
   onClose: () => void;
   onSendFiles: (files: NativePickedFile[], caption: string) => void;
+  /** Hands the selection over for editing: `editIndex` is the photo to open in the editor. */
+  onEditFiles?: (files: NativePickedFile[], caption: string, editIndex: number) => void;
   onOpenCamera?: () => void;
   onOpenGallery?: () => void;
   onOpenDocument?: () => void;
@@ -323,6 +326,25 @@ export function ChatAttachmentPanel({
     closePanel();
   }, [caption, closePanel, onSendFiles, selected]);
 
+  // Telegram: tapping a selected photo opens the full-screen editor with the whole
+  // selection (caption, tools, album strip); videos fall back to the plain preview.
+  const openSelectedAsset = useCallback((asset: PanelMediaAsset) => {
+    const editable = onEditFiles && selected.every((item) => item.mediaType === 'photo');
+    if (!editable) {
+      setPreviewAsset(asset);
+      return;
+    }
+    const editIndex = selected.findIndex((item) => item.id === asset.id);
+    if (editIndex < 0 || sendingRef.current) return;
+    sendingRef.current = true;
+    const files = selected.map(mediaAssetToPickedFile);
+    const captionText = caption.trim();
+    setSelected([]);
+    setCaption('');
+    onEditFiles(files, captionText, editIndex);
+    closePanel();
+  }, [caption, closePanel, onEditFiles, selected]);
+
   // Swipe up on the handle expands to the full gallery; swipe down collapses
   // or closes. The gesture runs on the UI thread; state changes go via runOnJS.
   const handlePan = Gesture.Pan()
@@ -568,7 +590,7 @@ export function ChatAttachmentPanel({
                 orderSV={selectedOrder}
                 dragIdSV={selectedDragId}
                 txSV={selectedDragTx}
-                onPreview={setPreviewAsset}
+                onPreview={openSelectedAsset}
                 onRemove={(id) => setSelected((items) => items.filter((x) => x.id !== id))}
                 onCommit={commitSelectedOrder}
                 onDragFlag={setStripDraggingFlag}
@@ -651,18 +673,23 @@ export function ChatAttachmentPanel({
             <MaterialCommunityIcons name="close" size={26} color="#fff" />
           </Pressable>
           {previewAsset ? (
-            <Pressable
-              style={[styles.previewRemove, { bottom: Math.max(40, insets?.bottom || 0) }]}
-              onPress={() => {
-                setSelected((items) => items.filter((x) => x.id !== previewAsset.id));
-                setPreviewAsset(null);
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Убрать из отправки"
+            <View
+              testID="chat-attachment-preview-actions"
+              style={[styles.previewActions, { bottom: Math.max(40, insets?.bottom || 0) }]}
             >
-              <MaterialCommunityIcons name="trash-can-outline" size={20} color="#fff" />
-              <Text style={styles.previewRemoveText}>Убрать</Text>
-            </Pressable>
+              <Pressable
+                style={[styles.previewButton, styles.previewRemove]}
+                onPress={() => {
+                  setSelected((items) => items.filter((x) => x.id !== previewAsset.id));
+                  setPreviewAsset(null);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Убрать из отправки"
+              >
+                <MaterialCommunityIcons name="trash-can-outline" size={20} color="#fff" />
+                <Text style={styles.previewRemoveText}>Убрать</Text>
+              </Pressable>
+            </View>
           ) : null}
         </View>
       </Modal>
@@ -909,18 +936,24 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   previewBackdrop: { flex: 1, backgroundColor: '#000', justifyContent: 'center' },
   previewImage: { flex: 1 },
   previewClose: { position: 'absolute', top: 40, right: 20 },
-  previewRemove: {
+  previewActions: {
     position: 'absolute',
     bottom: 40,
-    alignSelf: 'center',
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  previewButton: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderRadius: 20,
-    backgroundColor: 'rgba(200,60,60,0.85)',
   },
+  previewRemove: { backgroundColor: 'rgba(200,60,60,0.85)' },
   previewRemoveText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   loader: { marginTop: 32 },
   empty: {

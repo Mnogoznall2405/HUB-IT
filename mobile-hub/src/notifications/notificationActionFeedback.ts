@@ -6,6 +6,8 @@ import {
 import type { PendingChatReply } from './pendingNotificationReplies';
 
 const NOTIFICATION_OPERATION_TIMEOUT_MS = 1_500;
+// The confirmation stays just long enough to read, then leaves the drawer by itself.
+const SENT_CONFIRMATION_VISIBLE_MS = 1_200;
 
 async function settleNotificationOperation(operation: () => Promise<unknown>): Promise<boolean> {
   return new Promise((resolve) => {
@@ -34,6 +36,7 @@ async function replaceFeedback(
   title: string,
   body: string,
   retryable: boolean,
+  autoDismissMs = 0,
 ): Promise<void> {
   const fallbackIdentifier = pendingReplyNotificationId(item);
   const sourceIdentifier = String(item.notificationId || '').trim();
@@ -65,6 +68,13 @@ async function replaceFeedback(
     await settleNotificationOperation(
       () => Notifications.dismissNotificationAsync(sourceIdentifier),
     );
+    return;
+  }
+  if (presented && autoDismissMs > 0) {
+    await new Promise<void>((resolve) => setTimeout(resolve, autoDismissMs));
+    await settleNotificationOperation(
+      () => Notifications.dismissNotificationAsync(feedbackIdentifier),
+    );
   }
 }
 
@@ -83,7 +93,7 @@ export async function showReplyPending(item: PendingChatReply): Promise<void> {
 }
 
 export async function showReplySent(item: PendingChatReply): Promise<void> {
-  await replaceFeedback(item, 'Ответ отправлен', 'Сообщение доставлено в чат HUB-IT.', false)
+  await replaceFeedback(item, 'Ответ отправлен', 'Сообщение доставлено в чат HUB-IT.', false, SENT_CONFIRMATION_VISIBLE_MS)
     .catch(() => undefined);
 }
 

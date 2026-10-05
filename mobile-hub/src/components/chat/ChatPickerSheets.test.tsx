@@ -4,7 +4,7 @@ import { render } from '@testing-library/react-native';
 import type { ChatStickerPack } from '../../api/types';
 import { CHAT_EMOJI_GROUPS } from '../../chat/chatEmoji';
 import { ChatEmojiPickerSheet } from './ChatEmojiPickerSheet';
-import { ChatStickerPickerSheet } from './ChatStickerPickerSheet';
+import { ChatStickerPickerContent } from './ChatStickerPickerContent';
 
 jest.mock('./ChatStickerImage', () => ({
   ChatStickerImage: () => {
@@ -17,7 +17,15 @@ jest.mock('./ChatStickerImage', () => ({
 describe('native chat picker virtualization', () => {
   it('renders emoji rows in bounded batches instead of mounting the full catalog', async () => {
     const view = await render(
-      <ChatEmojiPickerSheet visible onClose={jest.fn()} onSelect={jest.fn()} />,
+      <ChatEmojiPickerSheet
+        visible
+        tab="emoji"
+        onChangeTab={jest.fn()}
+        onClose={jest.fn()}
+        onSelect={jest.fn()}
+        stickerPacks={[]}
+        onSendSticker={jest.fn()}
+      />,
     );
     const list = view.getByTestId('chat-emoji-picker-list');
     const emojiCount = CHAT_EMOJI_GROUPS.reduce((sum, group) => sum + group.emojis.length, 0);
@@ -39,10 +47,8 @@ describe('native chat picker virtualization', () => {
       })),
     }));
     const view = await render(
-      <ChatStickerPickerSheet
-        visible
+      <ChatStickerPickerContent
         packs={packs}
-        onClose={jest.fn()}
         onSend={jest.fn()}
       />,
     );
