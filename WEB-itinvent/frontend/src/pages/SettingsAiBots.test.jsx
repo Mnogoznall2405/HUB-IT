@@ -210,7 +210,7 @@ describe('AiBotsAdminSection', () => {
     expect(screen.getByText(/Инструменты не выбраны/)).toBeInTheDocument();
 
     fireEvent.click(screen.getAllByLabelText(/Инструменты ITinvent/i).slice(-1)[0]);
-    fireEvent.click(screen.getAllByRole('button').slice(-1)[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
 
     expect(onSave).toHaveBeenCalledWith('bot-1', expect.objectContaining({
       enabled_tools: expect.arrayContaining([
@@ -307,7 +307,7 @@ describe('AiBotsAdminSection', () => {
     fireEvent.click(screen.getByText('Admin Assistant'));
     fireEvent.mouseDown(screen.getByLabelText(/Режим базы данных/i));
     fireEvent.click(screen.getByRole('option', { name: /Админ: несколько баз/i }));
-    fireEvent.click(screen.getAllByRole('button').slice(-1)[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
 
     expect(onSave).toHaveBeenCalledWith('bot-2', expect.objectContaining({
       enabled_tools: expect.arrayContaining(['itinvent.equipment.search_multi_db']),
@@ -367,7 +367,7 @@ describe('AiBotsAdminSection', () => {
     fireEvent.click(screen.getAllByLabelText(/Инструменты файлов/i).slice(-1)[0]);
     expect(screen.getByLabelText(/Создание файлов/i)).toBeChecked();
     expect(screen.getByLabelText(/Красивые отчёты/i)).toBeChecked();
-    fireEvent.click(screen.getAllByRole('button').slice(-1)[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
 
     expect(onSave).toHaveBeenCalledWith('bot-3', expect.objectContaining({
       enabled_tools: expect.arrayContaining(['ai.files.create', 'ai.files.report']),
@@ -425,7 +425,7 @@ describe('AiBotsAdminSection', () => {
     fireEvent.click(screen.getAllByLabelText(/Офисные инструменты/i).slice(-1)[0]);
     expect(screen.getByLabelText(/Поиск писем/i)).toBeChecked();
     expect(screen.getByLabelText(/Черновик смены статуса задачи/i)).toBeChecked();
-    fireEvent.click(screen.getAllByRole('button').slice(-1)[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
 
     expect(onSave).toHaveBeenCalledWith('bot-4', expect.objectContaining({
       enabled_tools: expect.arrayContaining([
@@ -489,7 +489,7 @@ describe('AiBotsAdminSection', () => {
 
     fireEvent.click(screen.getAllByLabelText(/AD инструменты/i).slice(-1)[0]);
     expect(screen.getByLabelText(/Срок смены пароля AD/i)).toBeChecked();
-    fireEvent.click(screen.getAllByRole('button').slice(-1)[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
 
     expect(onSave).toHaveBeenCalledWith('bot-5', expect.objectContaining({
       enabled_tools: expect.arrayContaining(['ad.user.password_status']),
