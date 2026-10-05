@@ -710,6 +710,68 @@ export default function ChatMediaPreviewDialog({
             </Stack>
           </Box>
         ) : null}
+        {previewItems.length > 1 ? (
+          <Stack
+            data-testid="chat-attachment-preview-filmstrip"
+            direction="row"
+            spacing={0.75}
+            sx={{
+              position: 'absolute',
+              left: '50%',
+              bottom: 10,
+              transform: 'translateX(-50%)',
+              maxWidth: 'calc(100% - 24px)',
+              overflowX: 'auto',
+              p: 0.5,
+              borderRadius: 2,
+              bgcolor: alpha('#000000', 0.42),
+              opacity: previewChromeActive ? 1 : 0,
+              pointerEvents: previewChromeActive ? 'auto' : 'none',
+              transition: 'opacity 180ms ease',
+              zIndex: 2,
+            }}
+          >
+            {previewItems.map((item, itemIndex) => {
+              const itemKey = mediaGalleryKey(item);
+              const itemActive = itemIndex === safePreviewIndex;
+              const itemThumb = normalizeChatAttachmentUrl(
+                (isPreviewVideo(item) ? item?.posterUrl : '') || item?.previewUrl || item?.originalUrl || item?.fileUrl || '',
+              );
+              return (
+                <Box
+                  key={itemKey || itemIndex}
+                  component="button"
+                  type="button"
+                  aria-label={`Перейти к медиа ${itemIndex + 1}`}
+                  aria-current={itemActive ? 'true' : undefined}
+                  onClick={() => setPreviewSelection(itemKey)}
+                  sx={{
+                    flex: '0 0 auto',
+                    width: 48,
+                    height: 48,
+                    p: 0,
+                    border: itemActive ? '2px solid #fff' : '2px solid transparent',
+                    borderRadius: 1,
+                    overflow: 'hidden',
+                    cursor: 'pointer',
+                    bgcolor: alpha('#ffffff', 0.12),
+                    opacity: itemActive ? 1 : 0.7,
+                  }}
+                >
+                  {itemThumb ? (
+                    <Box
+                      component="img"
+                      src={itemThumb}
+                      alt=""
+                      loading="lazy"
+                      sx={{ display: 'block', width: '100%', height: '100%', objectFit: 'cover' }}
+                    />
+                  ) : null}
+                </Box>
+              );
+            })}
+          </Stack>
+        ) : null}
       </DialogContent>
       <Menu
         anchorEl={previewMenuAnchorEl}

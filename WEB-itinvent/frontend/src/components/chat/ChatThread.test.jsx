@@ -2105,7 +2105,7 @@ describe('ChatBubble', () => {
     expect(screen.queryByTestId('chat-bubble-meta-bottom')).not.toBeInTheDocument();
   });
 
-  it('collapses large galleries into four tiles with a +N overlay', () => {
+  it('collapses albums above ten tiles with a +N overlay', () => {
     renderWithTheme(
       <ChatBubble
         conversationKind="direct"
@@ -2120,6 +2120,12 @@ describe('ChatBubble', () => {
             { id: 'att-3', file_name: 'three.jpg', mime_type: 'image/jpeg', file_size: 1024, width: 1200, height: 900 },
             { id: 'att-4', file_name: 'four.jpg', mime_type: 'image/jpeg', file_size: 1024, width: 1200, height: 900 },
             { id: 'att-5', file_name: 'five.jpg', mime_type: 'image/jpeg', file_size: 1024, width: 1200, height: 900 },
+            { id: 'att-6', file_name: '6.jpg', mime_type: 'image/jpeg', file_size: 1024, width: 1200, height: 900 },
+            { id: 'att-7', file_name: '7.jpg', mime_type: 'image/jpeg', file_size: 1024, width: 1200, height: 900 },
+            { id: 'att-8', file_name: '8.jpg', mime_type: 'image/jpeg', file_size: 1024, width: 1200, height: 900 },
+            { id: 'att-9', file_name: '9.jpg', mime_type: 'image/jpeg', file_size: 1024, width: 1200, height: 900 },
+            { id: 'att-10', file_name: '10.jpg', mime_type: 'image/jpeg', file_size: 1024, width: 1200, height: 900 },
+            { id: 'att-11', file_name: '11.jpg', mime_type: 'image/jpeg', file_size: 1024, width: 1200, height: 900 },
           ],
         }}
         navigate={vi.fn()}

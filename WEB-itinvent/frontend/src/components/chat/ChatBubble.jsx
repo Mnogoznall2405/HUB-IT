@@ -64,6 +64,7 @@ import {
   shouldSuppressNativeMessageGesture,
 } from './chatBubbleGesturePolicy';
 import useChatBubbleGestures from './useChatBubbleGestures';
+import { getAlbumTiles } from './chatAlbumLayout';
 
 export {
   isMobileMessageLongPress,
@@ -152,23 +153,6 @@ function isShortInlineMessage(body = '', { compactMobile = false } = {}) {
   if (normalized.includes('\n')) return false;
   const inlineLimit = compactMobile ? 34 : 24;
   return normalized.length <= inlineLimit;
-}
-
-function getGalleryAttachmentsForDisplay(attachments) {
-  const source = Array.isArray(attachments) ? attachments : [];
-  return source.slice(0, Math.min(source.length, 4));
-}
-
-function getGalleryTileSx(totalCount, index) {
-  if (totalCount === 3 && index === 0) {
-    return { gridColumn: '1 / -1' };
-  }
-  return {};
-}
-
-function getGalleryAspectRatio(totalCount, index) {
-  if (totalCount === 3 && index === 0) return '16 / 10';
-  return '1 / 1';
 }
 
 function ReplyPreviewBlock({ replyPreview, theme, ui, isOwn, compactMobile = false, onScrollToMessage }) {
@@ -1353,7 +1337,8 @@ export function ChatBubble({
     return () => window.removeEventListener('mousedown', handleOutside, true);
   }, [reactionPickerOpen]);
 
-  const imageOnlyGallery = attachments.length > 1 && attachments.every((attachment) => isImageAttachment(attachment));
+  const imageOnlyGallery = attachments.length > 1
+    && attachments.every((attachment) => isImageAttachment(attachment) || isVideoAttachment(attachment));
   const showMediaMetaOverlay = mediaOnlyAttachments && !attachmentCaption;
   const hasReactions = Array.isArray(message?.reactions) && message.reactions.length > 0;
   const reactionFooter = hasReactions && !showMediaMetaOverlay;
@@ -1368,11 +1353,10 @@ export function ChatBubble({
   const mediaPreviewMaxWidth = compactMobile ? 216 : 300;
   const mediaPreviewMaxHeight = compactMobile ? 176 : 300;
   const mediaPreviewMinWidth = compactMobile ? 148 : 200;
-  const galleryPreviewMaxWidth = compactMobile ? 196 : 248;
-  const displayedGalleryAttachments = imageOnlyGallery ? getGalleryAttachmentsForDisplay(attachments) : [];
-  const galleryHiddenCount = imageOnlyGallery && attachments.length > displayedGalleryAttachments.length
-    ? attachments.length - displayedGalleryAttachments.length
-    : 0;
+  const galleryPreviewMaxWidth = compactMobile ? 232 : 300;
+  const albumLayout = imageOnlyGallery ? getAlbumTiles(attachments.length) : { tiles: [], hiddenCount: 0 };
+  const displayedGalleryAttachments = imageOnlyGallery ? attachments.slice(0, albumLayout.tiles.length) : [];
+  const galleryHiddenCount = albumLayout.hiddenCount;
   const mediaFrameSx = imageOnlyGallery
     ? { width: galleryPreviewMaxWidth, maxWidth: '100%' }
     : mediaOnlyAttachments
@@ -1531,7 +1515,7 @@ export function ChatBubble({
                   data-testid="chat-attachment-gallery"
                   sx={{
                     display: 'grid',
-                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                    gridTemplateColumns: 'repeat(6, minmax(0, 1fr))',
                     gap: '2px',
                   }}
                 >
@@ -1541,7 +1525,7 @@ export function ChatBubble({
                       sx={{
                         position: 'relative',
                         minWidth: 0,
-                        ...getGalleryTileSx(displayedGalleryAttachments.length, index),
+                        gridColumn: `span ${albumLayout.tiles[index]?.span || 3}`,
                       }}
                     >
                       <AttachmentCard
@@ -1549,7 +1533,7 @@ export function ChatBubble({
                         attachment={{
                           ...attachment,
                           mediaMaxWidth: '100%',
-                          forcedAspectRatio: getGalleryAspectRatio(displayedGalleryAttachments.length, index),
+                          forcedAspectRatio: albumLayout.tiles[index]?.aspectRatio || '1 / 1',
                         }}
                         theme={theme}
                         ui={ui}
