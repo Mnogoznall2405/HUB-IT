@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Button,
   Chip,
-  Paper,
   Stack,
   Typography,
 } from '@mui/material';
+import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import NotificationsActiveOutlinedIcon from '@mui/icons-material/NotificationsActiveOutlined';
 import { useTheme } from '@mui/material/styles';
 import { useAuth } from '../../../../contexts/AuthContext';
@@ -97,7 +100,7 @@ export function ChatNotificationsSettingsCard({ embedded = false }) {
   return (
     <SectionCard
       title="Фоновая доставка чатов"
-      description="Здесь настраивается только доставка на этом устройстве. Типы чатов включаются одним блоком выше."
+      description="Приходят ли сообщения, когда вкладка закрыта. Какие чаты включены — выше."
       action={(
         <Stack direction="row" spacing={0.6} useFlexGap flexWrap="wrap" justifyContent="flex-end">
           <Chip
@@ -186,18 +189,23 @@ export function ChatNotificationsSettingsCard({ embedded = false }) {
           </Alert>
         ) : null}
 
-        <Paper
+        <Accordion
+          disableGutters
           variant="outlined"
+          data-testid="chat-push-diagnostics"
           sx={getOfficeSubtlePanelSx(ui, {
-            p: 1.2,
             borderRadius: '12px',
             bgcolor: ui.panelInset,
+            '&:before': { display: 'none' },
           })}
         >
-          <Stack spacing={0.75}>
+          <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />} sx={{ minHeight: 44 }}>
             <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
-              Push-диагностика
+              Диагностика доставки
             </Typography>
+          </AccordionSummary>
+          <AccordionDetails sx={{ pt: 0 }}>
+          <Stack spacing={0.75}>
             <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
               <Chip
                 size="small"
@@ -231,7 +239,8 @@ export function ChatNotificationsSettingsCard({ embedded = false }) {
               Последнее подтверждение именно фоновой доставки: {lastBackgroundConfirmedAt ? formatDateTime(lastBackgroundConfirmedAt) : '—'}
             </Typography>
           </Stack>
-        </Paper>
+          </AccordionDetails>
+        </Accordion>
       </Stack>
     </SectionCard>
   );
