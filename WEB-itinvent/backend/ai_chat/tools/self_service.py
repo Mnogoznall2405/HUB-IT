@@ -300,8 +300,10 @@ class HelpdeskRequestDraftTool(AiTool):
         "Prepare a request to the IT department on behalf of the asking employee (a confirmation card; "
         "nothing is created until the employee confirms). Use when the employee reports a problem the "
         "knowledge base did not solve or asks to 'создать заявку/обращение в IT', 'вызвать айтишника'. "
-        "Write title and description from the employee's words; the employee's computer (hostname, IP, "
-        "status) is attached automatically."
+        "Call it right away from what the employee already wrote - do not first look up their equipment or "
+        "ask for the model or inventory number; the employee's computer (hostname, IP, status) is attached "
+        "automatically and missing details are noted in the description. Write title and description from "
+        "the employee's words."
     )
     input_model = HelpdeskRequestDraftArgs
     stage = "checking_office"

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from backend.ai_chat.tools.base import AiTool, AiToolResult
 from backend.ai_chat.tools.context import (
@@ -248,6 +249,51 @@ class WorkdaySummaryArgs(BaseModel):
     task_limit: int = Field(default=10, ge=1, le=25)
 
 
+_EMAIL_IN_TEXT_RE = re.compile(r"[^\s<>\"',;()]+@[^\s<>\"',;()]+\.[^\s<>\"',;()]+")
+_RECIPIENT_DICT_KEYS = ("email", "address", "mail", "value", "e-mail")
+
+
+def coerce_mail_recipients(value) -> list[str]:
+    """Turn whatever a model sent for to/cc/bcc into a flat, de-duplicated list of e-mail addresses.
+
+    Accepts None, a string with ``,``/``;``/newline separators, a list of strings (each may hold several
+    addresses or the ``Имя <addr@host>`` form) and a list of objects with an ``email``-like key. A value that
+    has no e-mail address (for example only a person's name) raises ``ValueError`` with a hint for the model.
+    """
+    if value is None:
+        return []
+    if isinstance(value, (str, dict)):
+        value = [value]
+    if not isinstance(value, (list, tuple, set)):
+        raise ValueError("recipients must be a list of e-mail addresses")
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if isinstance(item, dict):
+            raw = next((item.get(key) for key in _RECIPIENT_DICT_KEYS if item.get(key)), "")
+        else:
+            raw = item
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        for part in re.split(r"[;,\n]+", text):
+            part = part.strip()
+            if not part:
+                continue
+            match = _EMAIL_IN_TEXT_RE.search(part)
+            if not match:
+                raise ValueError(
+                    f"'{part}' is not an e-mail address: find the contact with office.mail.contacts.resolve "
+                    "first and pass its e-mail address"
+                )
+            address = match.group(0).strip(".")
+            key = address.lower()
+            if key not in seen:
+                seen.add(key)
+                result.append(address)
+    return result
+
+
 class MailDraftArgs(BaseModel):
     to: list[str] = Field(..., min_length=1, max_length=50)
     cc: list[str] = Field(default_factory=list, max_length=50)
@@ -262,9 +308,16 @@ class MailDraftArgs(BaseModel):
     @field_validator("to", "cc", "bcc", mode="before")
     @classmethod
     def _normalize_recipients(cls, value):
-        if isinstance(value, str):
-            return [part.strip() for part in value.replace(";", ",").split(",") if part.strip()]
-        return value
+        return coerce_mail_recipients(value)
+
+    @model_validator(mode="after")
+    def _drop_duplicate_recipients(self):
+        # An address listed in "to" is not repeated in cc/bcc, and one in cc not in bcc.
+        seen = {item.lower() for item in self.to}
+        self.cc = [item for item in self.cc if item.lower() not in seen]
+        seen |= {item.lower() for item in self.cc}
+        self.bcc = [item for item in self.bcc if item.lower() not in seen]
+        return self
 
     @field_validator("subject", "body", "mailbox_id", mode="before")
     @classmethod
@@ -512,7 +565,12 @@ class WorkdaySummaryTool(AiTool):
 
 class MailSendDraftTool(AiTool):
     tool_id = OFFICE_TOOL_ACTION_MAIL_SEND_DRAFT
-    description = "Create a confirmation-card draft for sending a new email. Does not send mail before user confirmation."
+    description = (
+        "Create a confirmation-card draft for sending a new email. Does not send mail before user confirmation. "
+        "Args: to (list of e-mail addresses, at least one), cc and bcc (lists of e-mail addresses, omit or [] if none), "
+        "subject, body. Put every addressee in to; people the user asks to copy go in cc. Use e-mail addresses only: "
+        "resolve names with office.mail.contacts.resolve first."
+    )
     input_model = MailDraftArgs
     stage = "checking_office"
 
