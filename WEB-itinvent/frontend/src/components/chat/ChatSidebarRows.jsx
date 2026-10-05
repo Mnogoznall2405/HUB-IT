@@ -271,6 +271,9 @@ function ConversationRowMeta({
   return (
     <div className="flex shrink-0 flex-col items-end gap-0.5 pt-0.5">
       <div className="flex items-center gap-0.5">
+        {!compactMobile && item.is_archived ? <ArchiveOutlinedIcon sx={{ fontSize: 15, color: subtleIconColor }} /> : null}
+        {!compactMobile && item.is_muted ? <NotificationsOffOutlinedIcon sx={{ fontSize: 15, color: subtleIconColor }} /> : null}
+        {!compactMobile && item.is_pinned ? <PushPinOutlinedIcon sx={{ fontSize: 15, color: subtleIconColor }} /> : null}
         {showReceipts ? (
           deliveryStatus === 'read'
             ? <DoneAllRoundedIcon data-testid="sidebar-delivery-read" sx={{ fontSize: 15, color: receiptColor }} />
@@ -289,13 +292,6 @@ function ConversationRowMeta({
           {formatSidebarConversationTime(item.last_message_at || item.updated_at)}
         </span>
       </div>
-      {!compactMobile && (item.is_pinned || item.is_muted || item.is_archived) ? (
-        <div className="flex items-center gap-0.5">
-          {item.is_pinned ? <PushPinOutlinedIcon sx={{ fontSize: 15, color: subtleIconColor }} /> : null}
-          {item.is_muted ? <NotificationsOffOutlinedIcon sx={{ fontSize: 15, color: subtleIconColor }} /> : null}
-          {item.is_archived ? <ArchiveOutlinedIcon sx={{ fontSize: 15, color: subtleIconColor }} /> : null}
-        </div>
-      ) : null}
     </div>
   );
 }
