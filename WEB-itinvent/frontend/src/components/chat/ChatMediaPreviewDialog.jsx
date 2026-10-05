@@ -234,6 +234,30 @@ export default function ChatMediaPreviewDialog({
     };
   }, [attachmentPreview, safePreviewIndex, bumpPreviewChromeVisibility, clearPreviewChromeTimer]);
 
+  const previewOpen = Boolean(attachmentPreview);
+  useEffect(() => {
+    // Просмотр фото открывается на весь экран монитора; выходим из полноэкранного режима при закрытии.
+    if (!previewOpen || typeof document === 'undefined') return undefined;
+    const root = document.documentElement;
+    if (document.fullscreenElement || typeof root?.requestFullscreen !== 'function') return undefined;
+    let entered = false;
+    let closed = false;
+    try {
+      Promise.resolve(root.requestFullscreen()).then(() => {
+        entered = true;
+        if (closed && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      }).catch(() => {});
+    } catch {
+      return undefined;
+    }
+    return () => {
+      closed = true;
+      if (entered && document.fullscreenElement) {
+        try { Promise.resolve(document.exitFullscreen()).catch(() => {}); } catch { /* ignore */ }
+      }
+    };
+  }, [previewOpen]);
+
   useEffect(() => {
     if (!attachmentPreview || !canStepPreview) return undefined;
     const handlePreviewKeyDown = (event) => {
@@ -495,8 +519,8 @@ export default function ChatMediaPreviewDialog({
                   }}
                   sx={{
                     display: 'block',
-                    maxWidth: '100%',
-                    maxHeight: fullScreen ? 'calc(100dvh - 96px)' : 'calc(100dvh - 120px)',
+                    width: '100%',
+                    height: fullScreen ? 'calc(100dvh - 96px)' : 'calc(100dvh - 120px)',
                     objectFit: 'contain',
                     borderRadius: 0,
                     boxShadow: 'none',

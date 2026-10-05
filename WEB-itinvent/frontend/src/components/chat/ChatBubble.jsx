@@ -1365,8 +1365,8 @@ export function ChatBubble({
     && emojiOnlyCount === 0
     && Boolean(body)
     && !showMediaMetaOverlay;
-  const mediaPreviewMaxWidth = compactMobile ? 216 : 360;
-  const mediaPreviewMaxHeight = compactMobile ? 176 : 360;
+  const mediaPreviewMaxWidth = compactMobile ? 216 : 300;
+  const mediaPreviewMaxHeight = compactMobile ? 176 : 300;
   const mediaPreviewMinWidth = compactMobile ? 148 : 200;
   const galleryPreviewMaxWidth = compactMobile ? 196 : 248;
   const displayedGalleryAttachments = imageOnlyGallery ? getGalleryAttachmentsForDisplay(attachments) : [];

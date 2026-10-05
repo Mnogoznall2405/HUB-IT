@@ -1357,7 +1357,7 @@ export function AttachmentCard({
   const attachmentKind = getAttachmentKind(attachment);
   const stickerPackShortName = attachmentKind === 'sticker' ? getStickerPackShortName(attachment) : '';
   const fileUrl = isImageAttachment(attachment)
-    ? (directPreviewUrl || thumbUrl || previewUrl || openUrl || originalUrl)
+    ? (directPreviewUrl || previewUrl || thumbUrl || openUrl || originalUrl)
     : (attachmentKind === 'video' ? (directPreviewUrl || previewUrl || openUrl || originalUrl) : openUrl);
   const posterUrl = attachmentKind === 'video' || attachmentKind === 'sticker'
     ? (directPosterUrl || normalizeChatAttachmentUrl(variantUrls.poster))
