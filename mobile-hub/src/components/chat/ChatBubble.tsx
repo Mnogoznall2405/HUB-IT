@@ -301,7 +301,8 @@ export const ChatBubble = memo(function ChatBubble({
         {/* The tail is absolutely positioned to the row edge; the inserted
             selection mark shifts the bubble, so the tail would visually detach
             — hide it while selected (DEV-TAIL-1). */}
-        {groupPosition === 'last' && !selected ? (
+        {/* Photo-only and sticker-only messages have no bubble body, so a tail would float beside the media. */}
+        {groupPosition === 'last' && !selected && !stickerOnly && !bleedMedia ? (
           <View
             style={[styles.tail, isOwn
               ? styles.tailOwn

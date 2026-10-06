@@ -9,7 +9,8 @@ export function postAuthDestination(
 ): PostAuthDestination {
   if (platform !== 'web') {
     const pendingPath = consumePendingPortalPath();
-    return hrefForPortalPath(pendingPath || '/dashboard');
+    // `webFallback` is the user's home route: chats when they are available.
+    return hrefForPortalPath(pendingPath || (webFallback === '/(shell)/chat' ? '/chat' : '/dashboard'));
   }
   return webFallback;
 }

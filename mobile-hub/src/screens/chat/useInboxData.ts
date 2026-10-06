@@ -18,6 +18,8 @@ import {
   writeNativeChatInboxSnapshot,
 } from '../../chat/nativeChatInboxSnapshot';
 import { getActiveChatFolderKey } from '../../chat/chatActiveFolder';
+import { trackWork } from '../../diagnostics/perfProbes';
+import { noteInboxCacheReady, noteInboxLiveReady, noteInboxLoadStart } from '../../diagnostics/uiTiming';
 import { listNativeChatDraftPreviews } from '../../chat/chatDrafts';
 import {
   applyTypingParticipant,
@@ -25,6 +27,14 @@ import {
   parseTypingEnvelope,
   type TypingParticipant,
 } from '../../chat/chatTyping';
+
+// The cache write encrypts and verifies the whole inbox on the JS thread; a busy
+// chat fires conversation events every second, so batch them into one write.
+export const INBOX_SNAPSHOT_DEBOUNCE_MS = 2_500;
+export const UNREAD_FOLDERS_RELOAD_DEBOUNCE_MS = 2_500;
+// Returning to the list while the socket is live and the list was refreshed moments
+// ago needs no new HTTP round trip: realtime events already keep it current.
+export const INBOX_FOCUS_REFRESH_MIN_INTERVAL_MS = 20_000;
 
 /** Inbox list data: page loading, socket updates, durable snapshot writes,
  * HTTP fallback and focus refresh. */
@@ -73,6 +83,7 @@ export function useInboxData({
   const loadScopeRef = useRef<{ owner: number } | null>(null);
   const loadInFlightRef = useRef<Promise<void> | null>(null);
   const loadDirtyRef = useRef(false);
+  const lastLiveLoadAtRef = useRef(0);
   const connectedOnceRef = useRef(chatSocket.getStatus() === 'connected');
   const socketStatusRef = useRef<ChatSocketStatus>(chatSocket.getStatus());
   const [items, setItems] = useState<ChatConversationSummary[]>([]);
@@ -94,6 +105,7 @@ export function useInboxData({
       loadStartingRef.current = false;
       loadInFlightRef.current = null;
       loadDirtyRef.current = false;
+      lastLiveLoadAtRef.current = 0;
       loadingMoreRef.current = false;
       setLoadingMore(false);
       // A pull-refresh interrupted by the owner switch never reaches its
@@ -118,7 +130,7 @@ export function useInboxData({
       return;
     }
     loadStartingRef.current = true;
-    if (mode === 'initial') setLoading(true);
+    if (mode === 'initial') { setLoading(true); noteInboxLoadStart(); }
     if (mode === 'refresh') setRefreshing(true);
     let cached = false;
     if (mode === 'initial' && userId) {
@@ -131,6 +143,7 @@ export function useInboxData({
         setNextCursor(snapshot.data.next_cursor);
         setHydratedOwner(userId);
         setLoading(false);
+        noteInboxCacheReady();
       }
     }
     if (offlineMode) {
@@ -138,7 +151,7 @@ export function useInboxData({
         if (!cached && mode !== 'silent') {
           setError('Нет подключения и сохранённых диалогов.');
         }
-        if (mode === 'initial') setLoading(false);
+        if (mode === 'initial') { setLoading(false); noteInboxLiveReady(); }
         if (mode === 'refresh') setRefreshing(false);
       }
       loadStartingRef.current = false;
@@ -179,6 +192,7 @@ export function useInboxData({
         setNextCursor(page.next_cursor);
         setHydratedOwner(userId);
         setError('');
+        lastLiveLoadAtRef.current = Date.now();
         if (userId) void writeNativeChatInboxSnapshot(userId, page);
       } catch (cause) {
         if (isCurrent() && mode !== 'silent') {
@@ -191,7 +205,7 @@ export function useInboxData({
     if (isCurrent()) {
       loadStartingRef.current = false;
       loadInFlightRef.current = null;
-      if (mode === 'initial') setLoading(false);
+      if (mode === 'initial') { setLoading(false); noteInboxLiveReady(); }
       if (mode === 'refresh') setRefreshing(false);
     }
   }, [itemsRef, mountedRef, offlineMode, ownerRef, userId]);
@@ -273,12 +287,14 @@ export function useInboxData({
       const payload = (envelope as { payload?: { conversation?: { id?: string }; item?: { id?: string } } })?.payload;
       const restoredId = String(payload?.conversation?.id || payload?.item?.id || '').trim();
       if (restoredId) removedConversationIdsRef.current.delete(restoredId);
-      setItems((current) => applyConversationEnvelope(
-        current,
-        envelope,
-        userId,
-        getActiveNativeChatConversationId(),
-      ).items);
+      setItems((current) => {
+        const done = trackWork('inbox-apply');
+        try {
+          return applyConversationEnvelope(current, envelope, userId, getActiveNativeChatConversationId()).items;
+        } finally {
+          done();
+        }
+      });
       setSnapshotRevision((revision) => revision + 1);
     };
     const offUpdated = chatSocket.on('chat.conversation.updated', applyEnvelope);
@@ -306,7 +322,7 @@ export function useInboxData({
       unreadSummaryTimer = setTimeout(() => {
         unreadSummaryTimer = null;
         if (ownerRef.current === userId) void loadFolders();
-      }, 800);
+      }, UNREAD_FOLDERS_RELOAD_DEBOUNCE_MS);
     });
     const offConversationRead = subscribeNativeChatConversationRead((conversationId) => {
       if (ownerRef.current !== userId) return;
@@ -391,8 +407,12 @@ export function useInboxData({
   }, [mountedRef, ownerRef, userId]);
 
   useFocusEffect(useCallback(() => {
-    void load('silent');
-    void loadFolders();
+    const fresh = socketStatusRef.current === 'connected'
+      && Date.now() - lastLiveLoadAtRef.current < INBOX_FOCUS_REFRESH_MIN_INTERVAL_MS;
+    if (!fresh) {
+      void load('silent');
+      void loadFolders();
+    }
     void refreshDrafts();
   }, [load, loadFolders, refreshDrafts]));
 
@@ -403,7 +423,7 @@ export function useInboxData({
       page: { items, has_more: hasMore, next_cursor: nextCursor },
       removedConversationIds: [...removedConversationIdsRef.current],
     };
-    const timer = setTimeout(flushInboxSnapshot, 250);
+    const timer = setTimeout(flushInboxSnapshot, INBOX_SNAPSHOT_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [snapshotRevision, hydratedOwner, userId, items, hasMore, nextCursor, flushInboxSnapshot]);
 

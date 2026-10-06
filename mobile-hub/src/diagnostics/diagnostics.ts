@@ -6,6 +6,7 @@ import { Platform } from 'react-native';
 import { makeSnapshotDiagnostic, normalizeSnapshotDiagnostic, type SnapshotDiagnostic, type SnapshotDiagnosticMetrics } from './snapshotDiagnostic';
 import { getChatSendTimingSummary, resetChatSendTiming, type ChatSendTimingSummary } from './chatSendTiming';
 import { getApiInflightSummary, resetApiInflight, type ApiInflightSummary } from './apiInflight';
+import { getUiTimingSummary, resetUiTiming, type UiTimingSummary } from './uiTiming';
 import {
   getAndroidProcessHealthSnapshot,
   normalizeAndroidProcessHealth,
@@ -62,7 +63,7 @@ export type DiagnosticEvent = {
 };
 
 export type DiagnosticReport = {
-  schemaVersion: 5;
+  schemaVersion: 6;
   generatedAt: string;
   app: {
     version: string;
@@ -75,6 +76,7 @@ export type DiagnosticReport = {
   releaseHealth: ReleaseHealthSnapshot;
   androidProcessHealth: AndroidProcessHealthSnapshot;
   chatSendTiming: ChatSendTimingSummary;
+  uiTiming: UiTimingSummary;
   apiInflight: ApiInflightSummary;
 };
 
@@ -207,7 +209,7 @@ function normalizeEvents(value: unknown): DiagnosticEvent[] {
     .filter((item) => allowed.has(item.code as DiagnosticCode) && !Number.isNaN(new Date(String(item.at || '')).getTime()))
     .map((item) => ({
       code: item.code as DiagnosticCode, at: String(item.at),
-      ...(item.code === 'native_snapshot_error' && item.snapshot
+      ...((item.code === 'native_snapshot_error' || item.code === 'ui_render_error') && item.snapshot
         ? { snapshot: normalizeSnapshotDiagnostic(item.snapshot) } : {}),
     }))
     .slice(-MAX_EVENTS);
@@ -251,6 +253,7 @@ export async function clearDiagnosticEvents(): Promise<void> {
   await diagnosticMutation;
   await releaseHealthMutation.catch(() => undefined);
   resetChatSendTiming();
+  resetUiTiming();
   resetApiInflight();
   await Promise.all([
     SecureStore.deleteItemAsync(STORAGE_KEY),
@@ -264,10 +267,11 @@ export function buildDiagnosticReport(
   releaseHealth = buildReleaseHealthSnapshot(normalizeReleaseHealth(null)),
   androidProcessHealth = normalizeAndroidProcessHealth({ supported: false, entries: [] }),
   chatSendTiming = getChatSendTimingSummary(),
+  uiTiming = getUiTimingSummary(),
   apiInflight = getApiInflightSummary(),
 ): DiagnosticReport {
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     generatedAt,
     app: {
       version: String(Application.nativeApplicationVersion || 'unknown'),
@@ -280,6 +284,7 @@ export function buildDiagnosticReport(
     releaseHealth,
     androidProcessHealth,
     chatSendTiming,
+    uiTiming,
     apiInflight,
   };
 }

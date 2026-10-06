@@ -1,7 +1,6 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useState } from 'react';
 import {
-  ActivityIndicator,
   FlatList,
   Pressable,
   StyleSheet,
@@ -20,6 +19,7 @@ import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInse
 import { NativeWarehouse1CBalanceCard } from './NativeWarehouse1CCards';
 import { NativeWarehouse1CActiveChip } from './NativeWarehouse1CFilterRow';
 import { NativeWarehouse1CFilterSheet } from './NativeWarehouse1CFilterSheet';
+import { FadeInRow, SkeletonCards } from '../ui/LoadingSkeleton';
 
 export function Warehouse1cMetaNotice({
   meta,
@@ -174,7 +174,7 @@ export function NativeWarehouse1CBalancesPanel({
         {searched && !loading ? <Text accessibilityLiveRegion="polite" style={[styles.count, { color: tokens.textSecondary }]}>Найдено: {items.length}{meta?.total != null ? ` из ${meta.total}` : ''}</Text> : null}
         {loading && items.length === 0 ? (
           <View style={styles.loading}>
-            <ActivityIndicator color={tokens.primary} />
+            <SkeletonCards tokens={tokens} count={3} />
             <Text style={[styles.hint, { color: tokens.textSecondary }]}>Запрашиваем остатки в 1С…</Text>
           </View>
         ) : null}
@@ -200,8 +200,10 @@ export function NativeWarehouse1CBalancesPanel({
             </Text>
           ) : null
         }
-        renderItem={({ item }) => (
-          <NativeWarehouse1CBalanceCard item={item} tokens={tokens} onMovements={onOpenMovements} />
+        renderItem={({ item, index }) => (
+          <FadeInRow index={index}>
+            <NativeWarehouse1CBalanceCard item={item} tokens={tokens} onMovements={onOpenMovements} />
+          </FadeInRow>
         )}
         refreshing={refreshing}
         onRefresh={searched ? onRefresh : undefined}

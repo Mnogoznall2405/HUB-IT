@@ -126,15 +126,23 @@ function addShortcutsMetadata(androidManifest) {
   }
   mainActivity['meta-data'] = metadata;
   const filters = mainActivity['intent-filter'] || [];
-  const hasTextShare = filters.some((filter) => (
-    (filter.action || []).some((action) => action.$?.['android:name'] === 'android.intent.action.SEND')
-    && (filter.data || []).some((data) => data.$?.['android:mimeType'] === 'text/plain')
-  ));
-  if (!hasTextShare) {
+  // Text, and files of any type (one or several): HUB-IT then appears in the system share
+  // sheet next to Telegram and the like. The files are routed by the app (chat, mail, task).
+  const shareFilters = [
+    ['android.intent.action.SEND', 'text/plain'],
+    ['android.intent.action.SEND', '*/*'],
+    ['android.intent.action.SEND_MULTIPLE', '*/*'],
+  ];
+  for (const [actionName, mimeType] of shareFilters) {
+    const present = filters.some((filter) => (
+      (filter.action || []).some((action) => action.$?.['android:name'] === actionName)
+      && (filter.data || []).some((data) => data.$?.['android:mimeType'] === mimeType)
+    ));
+    if (present) continue;
     filters.push({
-      action: [{ $: { 'android:name': 'android.intent.action.SEND' } }],
+      action: [{ $: { 'android:name': actionName } }],
       category: [{ $: { 'android:name': 'android.intent.category.DEFAULT' } }],
-      data: [{ $: { 'android:mimeType': 'text/plain' } }],
+      data: [{ $: { 'android:mimeType': mimeType } }],
     });
   }
   mainActivity['intent-filter'] = filters;

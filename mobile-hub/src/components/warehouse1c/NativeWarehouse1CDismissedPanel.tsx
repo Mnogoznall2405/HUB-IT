@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   FlatList,
   Pressable,
   StyleSheet,
@@ -17,6 +16,7 @@ import type { FluentTokens } from '../../theme/fluentTokens';
 import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { NativeWarehouse1CDismissedCard } from './NativeWarehouse1CCards';
 import { Warehouse1cMetaNotice } from './NativeWarehouse1CBalancesPanel';
+import { FadeInRow, SkeletonCards } from '../ui/LoadingSkeleton';
 
 export function NativeWarehouse1CDismissedPanel({
   tokens,
@@ -81,7 +81,7 @@ export function NativeWarehouse1CDismissedPanel({
         {!loading ? <Text accessibilityLiveRegion="polite" style={[styles.count, { color: tokens.textSecondary }]}>Показано: {filtered.length} из {items.length}</Text> : null}
         {loading && items.length === 0 ? (
           <View style={styles.loading}>
-            <ActivityIndicator color={tokens.primary} />
+            <SkeletonCards tokens={tokens} count={3} />
             <Text style={[styles.hint, { color: tokens.textSecondary }]}>Ищем склады уволенных сотрудников…</Text>
           </View>
         ) : null}
@@ -99,12 +99,14 @@ export function NativeWarehouse1CDismissedPanel({
         renderItem={({ item, index }) => {
           const key = item.warehouseRef || item.warehouseName || String(index);
           return (
-            <NativeWarehouse1CDismissedCard
-              item={item}
-              expanded={expandedRefs.has(key)}
-              onToggle={() => onToggle(key)}
-              tokens={tokens}
-            />
+            <FadeInRow index={index}>
+              <NativeWarehouse1CDismissedCard
+                item={item}
+                expanded={expandedRefs.has(key)}
+                onToggle={() => onToggle(key)}
+                tokens={tokens}
+              />
+            </FadeInRow>
           );
         }}
         refreshing={refreshing}

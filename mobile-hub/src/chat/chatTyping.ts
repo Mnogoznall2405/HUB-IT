@@ -55,6 +55,25 @@ export function formatTypingLine(participants: TypingParticipant[]): string {
   return `${names[0]} и ещё ${names.length - 1} печатают…`;
 }
 
+/** "Фамилия Имя Отчество" -> "Фамилия Имя": the patronymic only makes a header line overflow. */
+export function shortPersonName(name: string): string {
+  return String(name || '').trim().split(/\s+/).slice(0, 2).join(' ');
+}
+
+/** Header status while someone types; the animated dots are drawn after the text.
+ * A direct chat already names the person in its title, so it only says "печатает". */
+export function formatTypingStatus(
+  participants: TypingParticipant[],
+  conversationKind?: string | null,
+): string {
+  const names = participants.map((item) => shortPersonName(item.name)).filter(Boolean);
+  if (!participants.length) return '';
+  if (conversationKind === 'direct' && participants.length === 1) return 'печатает';
+  if (!names.length || names.length === 1) return `${names[0] || 'Участник'} печатает`;
+  if (names.length === 2) return `${names[0]} и ${names[1]} печатают`;
+  return `${names[0]} и ещё ${names.length - 1} печатают`;
+}
+
 export function parsePresenceEnvelope(envelope: unknown): {
   userId: number;
   presence: {

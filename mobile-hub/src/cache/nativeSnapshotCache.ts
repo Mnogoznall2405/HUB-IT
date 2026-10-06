@@ -504,14 +504,14 @@ export async function writeNativeCollectionSnapshot<T>(
   let stored = false;
   let current: Promise<void>;
   current = previous.catch(() => undefined).then(async () => {
-    const currentEntry = await readNativeCollectionSnapshot<T>(scope, owner, key).catch(() => null);
-    if (
-      currentEntry
-      && nativeCollectionPayloadIsComplete(scope, currentEntry.data)
-      && !nativeCollectionPayloadIsComplete(scope, data)
-    ) {
-      stored = true;
-      return;
+    // Only an incomplete payload can be refused in favour of a complete stored one,
+    // so a complete payload (the normal case) skips a full decrypt + parse of the cache.
+    if (!nativeCollectionPayloadIsComplete(scope, data)) {
+      const currentEntry = await readNativeCollectionSnapshot<T>(scope, owner, key).catch(() => null);
+      if (currentEntry && nativeCollectionPayloadIsComplete(scope, currentEntry.data)) {
+        stored = true;
+        return;
+      }
     }
     const existing = await readNativeSnapshot<
       NativeCollectionSnapshotManifest | NativeEntitySnapshotBundle<T> | T

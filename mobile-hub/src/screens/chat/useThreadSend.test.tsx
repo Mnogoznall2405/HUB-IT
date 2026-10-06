@@ -104,3 +104,34 @@ it('reuses the same client_message_id when a failed attachment draft send is ret
     await view.unmount();
   }
 });
+
+// Files shared from another app are confirmed first: a draft, never an instant send.
+describe('files shared into the chat', () => {
+  const pdf: NativePickedFile = {
+    uri: 'file:///share/report.pdf', name: 'report.pdf', mimeType: 'application/pdf', size: 500, source: 'document',
+  };
+
+  it('puts a shared document in the draft without sending it', async () => {
+    const queue = jest.fn();
+    const view = await renderHook(() => useHarness({ queue }));
+    try {
+      await act(async () => { view.result.current.send.openSharedFiles([pdf]); });
+      expect(view.result.current.composer.attachmentDraftFiles).toEqual([pdf]);
+      expect(view.result.current.composer.imageEditorFile).toBeNull();
+      expect(queue).not.toHaveBeenCalled();
+    } finally {
+      await view.unmount();
+    }
+  });
+
+  it('opens the album editor when every shared file is a photo', async () => {
+    const view = await renderHook(() => useHarness({ queue: jest.fn() }));
+    try {
+      await act(async () => { view.result.current.send.openSharedFiles([photo, { ...photo, uri: 'file:///drafts/second.jpg' }]); });
+      expect(view.result.current.composer.attachmentDraftFiles).toHaveLength(2);
+      expect(view.result.current.composer.imageEditorFile?.uri).toBe(photo.uri);
+    } finally {
+      await view.unmount();
+    }
+  });
+});

@@ -13,6 +13,7 @@ import { KeyboardStickyView, useKeyboardState } from 'react-native-keyboard-cont
 import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import Animated, { runOnJS, SlideInDown } from 'react-native-reanimated';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
+import { useUiOpenTiming } from '../../diagnostics/uiOpenTiming';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
 import {
   resolveSheetEdgeStyle,
@@ -52,6 +53,7 @@ export const ChatInlineSheet = memo(function ChatInlineSheet({
 }) {
   const { styles, chatTokens } = useChatStyles(createStyles);
   const reduceMotion = useReducedMotion();
+  useUiOpenTiming('inline-sheet', visible);
   const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
   const keyboardState = useKeyboardState();
   const { height: windowHeight } = useWindowDimensions();

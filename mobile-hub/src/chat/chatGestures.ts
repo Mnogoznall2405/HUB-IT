@@ -44,10 +44,19 @@ export function shouldLockInboxRefresh(dx: number, dy: number): boolean {
   return Math.abs(dx) >= 8 && Math.abs(dx) >= Math.abs(dy);
 }
 
+/** Gesture Handler reports velocity in points per SECOND. The old 0.5 threshold treated it
+ * as points per millisecond, so any 28 dp drag committed and folders switched by accident. */
+export const FOLDER_SWIPE_FLICK_VELOCITY = 600;
+export const FOLDER_SWIPE_FLICK_MIN_DP = 36;
+
 export function shouldTriggerFolderSwipe(dx: number, velocityX = 0): boolean {
   'worklet';
   return Math.abs(dx) >= FOLDER_SWIPE_TRIGGER_DP
-    || (Math.abs(dx) >= 28 && Math.abs(velocityX) >= 0.5 && Math.sign(dx) === Math.sign(velocityX));
+    || (
+      Math.abs(dx) >= FOLDER_SWIPE_FLICK_MIN_DP
+      && Math.abs(velocityX) >= FOLDER_SWIPE_FLICK_VELOCITY
+      && Math.sign(dx) === Math.sign(velocityX)
+    );
 }
 
 export function folderSwipeDirection(dx: number): 'next' | 'prev' {

@@ -46,11 +46,12 @@ async function persistInboxSnapshot(
   options: { removedConversationIds?: string[]; isCurrent?: () => boolean },
 ): Promise<boolean> {
   if (!isConversationPage(page) || options.isCurrent?.() === false) return false;
-  const existing = await readNativeChatInboxSnapshot(userId);
-  if (options.isCurrent?.() === false) return false;
   const removedIds = new Set(options.removedConversationIds || []);
   // A first online page must not replace a previously complete offline catalog,
-  // but fresh items from that page still need to be merged in (OFF-08).
+  // but fresh items from that page still need to be merged in (OFF-08). Only a
+  // partial page can need that, so a complete one skips reading the old cache.
+  const existing = page.has_more ? await readNativeChatInboxSnapshot(userId) : null;
+  if (options.isCurrent?.() === false) return false;
   if (page.has_more && existing?.data.has_more === false) {
     const byId = new Map<string, ChatConversationPage['items'][number]>();
     [...(existing.data.items || []), ...(page.items || [])].forEach((item) => {

@@ -7,6 +7,7 @@ import {
   isNativeOfflineMutationBlocked,
 } from '../offline/nativeOfflinePolicy';
 import { noteApiRequestEnd, noteApiRequestStart } from '../diagnostics/apiInflight';
+import { noteRequestEnd, noteRequestStart } from '../diagnostics/perfProbes';
 
 type RetryConfig = InternalAxiosRequestConfig & {
   _retry?: boolean;
@@ -79,15 +80,18 @@ function assertRequestSession(config: RetryConfig): void {
 // for every dispatch — including 401 retries re-dispatched below.
 apiClient.interceptors.request.use((config) => {
   noteApiRequestStart();
+  noteRequestStart(config);
   return config;
 });
 apiClient.interceptors.response.use(
   (result) => {
     noteApiRequestEnd();
+    noteRequestEnd(result.config, false);
     return result;
   },
   (error: unknown) => {
     noteApiRequestEnd();
+    noteRequestEnd((error as { config?: object } | null)?.config, true);
     return Promise.reject(error);
   },
 );

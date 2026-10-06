@@ -17,7 +17,9 @@ export function createNativeConnectivityRecoveryController({
   recover,
   onOffline,
   onRecovered = () => undefined,
-  retryDelaysMs = [2_000, 5_000, 15_000, 30_000],
+  // The first attempt runs at once when the network returns; retries then back off
+  // from 1 s so the "no connection" state clears within seconds, not half a minute.
+  retryDelaysMs = [1_000, 2_000, 4_000, 8_000, 15_000],
 }: NativeConnectivityRecoveryOptions): NativeConnectivityRecoveryController {
   const delays = retryDelaysMs.length ? [...retryDelaysMs] : [30_000];
   let disposed = false;

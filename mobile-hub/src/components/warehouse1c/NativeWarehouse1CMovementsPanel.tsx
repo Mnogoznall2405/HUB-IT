@@ -24,6 +24,7 @@ import {
   movementPeriodDates,
   type Warehouse1cMovementPeriod,
 } from './nativeWarehouse1cFilters';
+import { FadeInRow, SkeletonCards } from '../ui/LoadingSkeleton';
 
 export { WAREHOUSE_1C_PERIOD_OPTIONS, movementPeriodDates };
 export type { Warehouse1cMovementPeriod };
@@ -162,7 +163,7 @@ export function NativeWarehouse1CMovementsPanel({
         ) : null}
         {loading && items.length === 0 ? (
           <View style={styles.loading}>
-            <ActivityIndicator color={tokens.primary} />
+            <SkeletonCards tokens={tokens} count={3} />
             <Text style={[styles.hint, { color: tokens.textSecondary }]}>Запрашиваем движения в 1С…</Text>
           </View>
         ) : null}
@@ -201,8 +202,10 @@ export function NativeWarehouse1CMovementsPanel({
             </Pressable>
           ) : null
         }
-        renderItem={({ item }) => (
-          <NativeWarehouse1CMovementCard item={item} tokens={tokens} onPress={onOpenDetail} />
+        renderItem={({ item, index }) => (
+          <FadeInRow index={index}>
+            <NativeWarehouse1CMovementCard item={item} tokens={tokens} onPress={onOpenDetail} />
+          </FadeInRow>
         )}
         refreshing={refreshing}
         onRefresh={searched ? onRefresh : undefined}

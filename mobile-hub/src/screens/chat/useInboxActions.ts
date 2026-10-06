@@ -9,6 +9,7 @@ import type {
   ChatUserSummary,
 } from '../../api/types';
 import { formatApiError } from '../../api/formatError';
+import { noteThreadOpenTap, type ThreadOpenSource } from '../../diagnostics/uiTiming';
 import { isAiConversation, type ChatWorkspaceKey } from '../../chat/chatAiWorkspace';
 import { nextInboxRowSettings } from '../../chat/chatGestures';
 import { filterConversationsByLocalQuery } from '../../chat/nativeChatLocalSearch';
@@ -231,7 +232,8 @@ export function useInboxActions({
     await applyConversationSettings(item, settings);
   }, [applyConversationSettings]);
 
-  const goConversation = useCallback((conversationId: string, messageId?: string) => {
+  const goConversation = useCallback((conversationId: string, messageId?: string, source: ThreadOpenSource = 'other') => {
+    noteThreadOpenTap(messageId ? 'search' : source);
     router.push({
       pathname: '/(shell)/chat/[conversationId]',
       params: messageId ? { conversationId, messageId } : { conversationId },
@@ -239,7 +241,7 @@ export function useInboxActions({
   }, []);
 
   const openConversation = useCallback((item: ChatConversationSummary) => {
-    goConversation(item.id);
+    goConversation(item.id, undefined, 'list');
   }, [goConversation]);
 
   const openConversationActions = useCallback((item: ChatConversationSummary) => {

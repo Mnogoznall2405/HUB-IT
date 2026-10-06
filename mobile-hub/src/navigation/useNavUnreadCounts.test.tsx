@@ -17,11 +17,19 @@ jest.mock('../auth/AuthContext', () => ({
     hasPermission: mockHasPermission,
   }),
 }));
+const mockChatHandlers = new Map<string, (envelope: unknown) => void>();
 jest.mock('../chat/chatSocket', () => ({
-  chatSocket: { on: jest.fn(() => jest.fn()) },
+  chatSocket: {
+    getStatus: jest.fn(() => 'connected'),
+    on: jest.fn((event: string, handler: (envelope: unknown) => void) => {
+      mockChatHandlers.set(event, handler);
+      return jest.fn();
+    }),
+  },
 }));
 jest.mock('../realtime/hubRealtimeSocket', () => ({
   hubRealtimeSocket: {
+    getStatus: jest.fn(() => 'connected'),
     on: jest.fn(() => jest.fn()),
     onTaskChanged: jest.fn((listener) => {
       taskChanged = listener;
@@ -63,6 +71,7 @@ function ChatBadgeProbe() {
 beforeEach(() => {
   taskChanged = null;
   localMailChanged = null;
+  mockChatHandlers.clear();
   jest.clearAllMocks();
   jest.mocked(getNativeUnreadSnapshot).mockResolvedValue({
     tasks_open: 2,
@@ -125,5 +134,31 @@ it('updates the Android badge immediately after a local mail read change', async
   await act(async () => localMailChanged?.({ delta: -1 }));
 
   expect(setNativeBadgeCount).toHaveBeenCalledWith(8);
+  view.unmount();
+});
+
+it('applies the chat total from a realtime unread summary without refetching three endpoints', async () => {
+  const view = await render(<ChatBadgeProbe />);
+  await waitFor(() => expect(view.getByText('3')).toBeTruthy());
+  jest.mocked(getNativeUnreadSnapshot).mockClear();
+
+  await act(async () => mockChatHandlers.get('chat.unread.summary')?.({ payload: { messages_unread_total: 9 } }));
+
+  expect(view.getByText('9')).toBeTruthy();
+  expect(getNativeUnreadSnapshot).not.toHaveBeenCalled();
+  // Conversation/message events are always followed by the summary: no refetch of their own.
+  expect(mockChatHandlers.has('chat.conversation.updated')).toBe(false);
+  expect(mockChatHandlers.has('chat.message.created')).toBe(false);
+  view.unmount();
+});
+
+it('falls back to a refresh when an unread summary carries no usable total', async () => {
+  const view = await render(<ChatBadgeProbe />);
+  await waitFor(() => expect(view.getByText('3')).toBeTruthy());
+  jest.mocked(getNativeUnreadSnapshot).mockClear();
+
+  await act(async () => mockChatHandlers.get('chat.unread.summary')?.({ payload: {} }));
+
+  await waitFor(() => expect(getNativeUnreadSnapshot).toHaveBeenCalledTimes(1), { timeout: HUB_REALTIME_REFRESH_DEBOUNCE_MS + 2000 });
   view.unmount();
 });

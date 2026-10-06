@@ -31,7 +31,7 @@ import {
   todayProtocolDate,
 } from '../../tasks/taskFormat';
 import { useFluentTokens, type FluentTokens } from '../../theme/fluentTokens';
-import { pickNativeTaskFile } from '../../tasks/nativeTaskFiles';
+import { pickNativeTaskFile, TASK_FILE_MAX_BYTES } from '../../tasks/nativeTaskFiles';
 import {
   AccountLoading,
   AccountPrimaryButton,
@@ -146,6 +146,11 @@ export function NativeTaskCreateScreen() {
     const fallbackTitle = share.text.trim().split(/\r?\n/, 1)[0] || 'Новая задача';
     setTitle((share.subject || fallbackTitle).slice(0, 300));
     setDescription(share.text.slice(0, 12_000));
+    if (share.copiedFiles?.length) {
+      const accepted = share.copiedFiles.filter((file) => file.size > 0 && file.size <= TASK_FILE_MAX_BYTES);
+      setFiles(accepted.map((file) => ({ uri: file.uri, name: file.name, mimeType: file.mimeType, size: file.size })));
+      if (accepted.length < share.copiedFiles.length) setError('Часть файлов не добавлена: к задаче можно прикрепить файлы до 20 МБ.');
+    }
   }, []);
 
   const goBack = useCallback(() => {

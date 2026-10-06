@@ -537,6 +537,16 @@ export function useThreadSend({
     }
   }, [isCurrentSendScope, mountedRef, sendPickedFile]);
 
+  /** Files shared into this chat from another app: always shown in the draft first, so the
+   * user can add a caption and confirm before anything is sent (photos open the album editor). */
+  const openSharedFiles = useCallback((files: NativePickedFile[]) => {
+    if (!files.length || !isCurrentSendScope()) return;
+    setAttachmentDraftError('');
+    attachmentDraftClientMessageIdRef.current = createClientMessageId();
+    setAttachmentDraftFiles(files);
+    if (files.every((file) => file.mimeType.startsWith('image/'))) setImageEditorFile(files[0]);
+  }, [isCurrentSendScope, setAttachmentDraftError, setAttachmentDraftFiles, setImageEditorFile]);
+
   /** Sends the draft (or `overrideFiles`, e.g. the album after editor changes). Resolves true once queued. */
   const sendAttachmentDraft = useCallback(async (overrideFiles?: NativePickedFile[]): Promise<boolean> => {
     const files = overrideFiles ?? attachmentDraftFiles;
@@ -756,6 +766,7 @@ export function useThreadSend({
     retryPendingMessage,
     pickAndSendAttachment,
     sendAttachmentDraft,
+    openSharedFiles,
     sendLocation,
     sendContact,
     sendPoll,

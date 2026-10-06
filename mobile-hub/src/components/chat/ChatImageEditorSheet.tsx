@@ -39,6 +39,7 @@ import {
 } from '../../chat/chatImageEditorCanvas';
 import type { NativePickedFile } from '../../files/nativeFilePicker';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
+import { useUiOpenTiming } from '../../diagnostics/uiOpenTiming';
 import { ChatImageRecipeExporter } from './ChatImageRecipeExporter';
 import { ChatKeyboardAvoidingHost } from './ChatKeyboardAvoidingHost';
 
@@ -97,6 +98,7 @@ export function ChatImageEditorSheet({
   const { height: windowHeight } = useWindowDimensions();
   const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
   const reduceMotion = useReducedMotion();
+  useUiOpenTiming('photo-editor', Boolean(file));
   const [previewUri, setPreviewUri] = useState(file?.uri || '');
   const [working, setWorking] = useState(false);
   const [error, setError] = useState('');

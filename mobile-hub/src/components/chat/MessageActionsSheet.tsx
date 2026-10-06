@@ -10,6 +10,7 @@ import {
   type ChatMenuAnchor,
 } from '../../chat/chatMessageMenuLayout';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
+import { useUiOpenTiming } from '../../diagnostics/uiOpenTiming';
 
 export const MESSAGE_MENU_REACTIONS = ['❤️', '👍', '🗿', '🔥', '👎', '🥰', '👏', '😁'] as const;
 export const MESSAGE_MENU_REACTIONS_EXPANDED = ['🤔', '😂', '😮', '😢', '🎉', '💯', '👀', '⚡'] as const;
@@ -66,6 +67,7 @@ export function MessageActionsSheet({
   renderBubble,
 }: Props) {
   const { styles, chatTokens } = useChatStyles(createStyles);
+  useUiOpenTiming('message-actions', Boolean(message));
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
   const reduceMotion = useReducedMotion();

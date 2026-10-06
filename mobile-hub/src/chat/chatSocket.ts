@@ -2,6 +2,7 @@ import * as Crypto from 'expo-crypto';
 import { API_V1_BASE } from '../api/config';
 import { getAuthenticatedAccessToken } from '../api/client';
 import { subscribeAccessTokenChanges } from '../auth/tokenStore';
+import { noteRealtimeEvent } from '../diagnostics/perfProbes';
 
 type SocketHandler = (payload: unknown) => void;
 export type ChatSocketStatus =
@@ -308,6 +309,7 @@ export class ChatSocketClient {
         };
         const eventType = String(envelope?.type || '').trim();
         if (!eventType) return;
+        noteRealtimeEvent(eventType);
         if (eventType === 'chat.pong' || eventType === 'chat.command.ok') return;
         if (eventType === 'chat.auth.required') {
           this.handleAuthRequired();

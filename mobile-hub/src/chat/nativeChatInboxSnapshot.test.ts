@@ -48,10 +48,9 @@ it('merges a fresh incomplete page into a complete Chat snapshot without shrinki
   );
 });
 
-it('commits a complete refreshed Chat catalog', async () => {
-  jest.mocked(readNativeCollectionSnapshot).mockResolvedValueOnce({ savedAt: 10, data: page(false) });
-
+it('commits a complete refreshed Chat catalog without reading the old cache first', async () => {
   await expect(writeNativeChatInboxSnapshot(17, page(false))).resolves.toBe(true);
+  expect(readNativeCollectionSnapshot).not.toHaveBeenCalled();
   expect(writeNativeCollectionSnapshot).toHaveBeenCalledWith('chat-inbox', 17, 'default', page(false));
 });
 
@@ -85,6 +84,6 @@ it('skips a stale owner write after asynchronous snapshot reading', async () => 
     current = false;
     return null;
   });
-  await expect(writeNativeChatInboxSnapshot(17, page(false), { isCurrent: () => current })).resolves.toBe(false);
+  await expect(writeNativeChatInboxSnapshot(17, page(true), { isCurrent: () => current })).resolves.toBe(false);
   expect(writeNativeCollectionSnapshot).not.toHaveBeenCalled();
 });

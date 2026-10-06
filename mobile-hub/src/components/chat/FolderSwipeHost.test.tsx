@@ -1,6 +1,6 @@
 import { act, render } from '@testing-library/react-native';
 import { useContext } from 'react';
-import { View } from 'react-native';
+import { Text, View } from 'react-native';
 import type { PanGesture } from 'react-native-gesture-handler';
 import {
   FolderSwipeGestureContext,
@@ -53,10 +53,36 @@ describe('folder swipe lifecycle', () => {
       handlers().onTouchesDown?.(touch(10, 10) as never, mgr as never);
       handlers().onTouchesMove?.(touch(60, 13) as never, mgr as never);
       handlers().onUpdate?.(update(50, 3) as never);
-      handlers().onEnd?.(update(-36, 3, -0.8) as never);
+      handlers().onEnd?.(update(-40, 3, -900) as never);
     });
     expect(mgr.activate).toHaveBeenCalled();
     expect(onSwipe).toHaveBeenCalledWith('next');
+  });
+
+  it('does not switch the folder after a slow short drag', async () => {
+    const onSwipe = jest.fn();
+    await render(<FolderSwipeHost onSwipeFolder={onSwipe}><View /></FolderSwipeHost>);
+    const mgr = manager();
+    await act(async () => {
+      handlers().onTouchesDown?.(touch(10, 10) as never, mgr as never);
+      handlers().onTouchesMove?.(touch(60, 13) as never, mgr as never);
+      handlers().onUpdate?.(update(-45, 3) as never);
+      handlers().onEnd?.(update(-45, 3, -150) as never);
+    });
+    expect(onSwipe).not.toHaveBeenCalled();
+  });
+
+  it('never switches past the first or last folder', async () => {
+    const onSwipe = jest.fn();
+    await render(<FolderSwipeHost hasNext={false} onSwipeFolder={onSwipe}><View /></FolderSwipeHost>);
+    const mgr = manager();
+    await act(async () => {
+      handlers().onTouchesDown?.(touch(10, 10) as never, mgr as never);
+      handlers().onTouchesMove?.(touch(60, 13) as never, mgr as never);
+      handlers().onUpdate?.(update(-120, 3) as never);
+      handlers().onEnd?.(update(-120, 3, -1500) as never);
+    });
+    expect(onSwipe).not.toHaveBeenCalled();
   });
 
   it('cancels an active gesture and releases refresh when disabled', async () => {
@@ -194,5 +220,72 @@ describe('row ↔ folder pager coordination (CHAT-INBOX-06)', () => {
     });
     expect(mgr.activate).toHaveBeenCalled();
     expect(sync!.rowsSuppressed.value).toBe(0);
+  });
+});
+
+describe('folder pager preview', () => {
+  beforeEach(() => { lastGesture = null; });
+
+  const HIDDEN = { includeHiddenElements: true };
+  const renderNeighbor = (side: 'prev' | 'next') => <Text>{side === 'prev' ? 'Левая папка' : 'Правая папка'}</Text>;
+
+  it('draws only the neighbour the finger pulls in, and only while swiping', async () => {
+    const view = await render(
+      <FolderSwipeHost folderKey="personal" renderNeighbor={renderNeighbor} onSwipeFolder={jest.fn()}><View /></FolderSwipeHost>,
+    );
+    expect(view.queryByText('Правая папка', HIDDEN)).toBeNull();
+    const mgr = manager();
+    await act(async () => {
+      handlers().onTouchesDown?.(touch(300, 10) as never, mgr as never);
+      handlers().onTouchesMove?.(touch(250, 13) as never, mgr as never);
+      handlers().onUpdate?.(update(-50, 3) as never);
+    });
+    expect(view.getByText('Правая папка', HIDDEN)).toBeTruthy();
+    expect(view.queryByText('Левая папка', HIDDEN)).toBeNull();
+    // Released short of the threshold: the page springs back and the preview goes away.
+    await act(async () => { handlers().onEnd?.(update(-50, 3, -100) as never); });
+    expect(view.queryByText('Правая папка', HIDDEN)).toBeNull();
+  });
+
+  it('keeps the preview until the new folder is rendered, then drops it without a bounce', async () => {
+    const onSwipe = jest.fn();
+    const view = await render(
+      <FolderSwipeHost folderKey="personal" renderNeighbor={renderNeighbor} onSwipeFolder={onSwipe}><View /></FolderSwipeHost>,
+    );
+    const mgr = manager();
+    await act(async () => {
+      handlers().onTouchesDown?.(touch(300, 10) as never, mgr as never);
+      handlers().onTouchesMove?.(touch(250, 13) as never, mgr as never);
+      handlers().onUpdate?.(update(-100, 3) as never);
+      handlers().onEnd?.(update(-100, 3, -1200) as never);
+    });
+    expect(onSwipe).toHaveBeenCalledWith('next');
+    // Still parked on the preview: the new list has not been rendered yet.
+    expect(view.getByText('Правая папка', HIDDEN)).toBeTruthy();
+    await view.rerender(
+      <FolderSwipeHost folderKey="groups" renderNeighbor={renderNeighbor} onSwipeFolder={onSwipe}><View /></FolderSwipeHost>,
+    );
+    expect(view.queryByText('Правая папка', HIDDEN)).toBeNull();
+  });
+
+  it('does not leave the list parked off-screen when the folder never changes', async () => {
+    jest.useFakeTimers();
+    try {
+      const view = await render(
+        <FolderSwipeHost folderKey="personal" renderNeighbor={renderNeighbor} onSwipeFolder={jest.fn()}><View /></FolderSwipeHost>,
+      );
+      const mgr = manager();
+      await act(async () => {
+        handlers().onTouchesDown?.(touch(300, 10) as never, mgr as never);
+        handlers().onTouchesMove?.(touch(250, 13) as never, mgr as never);
+        handlers().onUpdate?.(update(-100, 3) as never);
+        handlers().onEnd?.(update(-100, 3, -1200) as never);
+      });
+      expect(view.getByText('Правая папка', HIDDEN)).toBeTruthy();
+      await act(async () => { jest.advanceTimersByTime(600); });
+      expect(view.queryByText('Правая папка', HIDDEN)).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

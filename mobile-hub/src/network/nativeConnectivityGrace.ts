@@ -1,6 +1,9 @@
 import type { NativeConnectivitySnapshot } from '../network/nativeConnectivity';
 
-export const RECENT_API_SUCCESS_GRACE_MS = 30_000;
+// A physical offline event right after a successful API call is held back this long
+// (Wi-Fi <-> mobile handover flaps end within seconds) and then rechecked. 30 s made
+// the app look online long after the network was gone.
+export const RECENT_API_SUCCESS_GRACE_MS = 8_000;
 
 export type DeferredOfflineController = {
   apply: (snapshot: NativeConnectivitySnapshot) => void;

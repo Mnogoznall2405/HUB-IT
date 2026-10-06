@@ -3,6 +3,7 @@ import {
   formatChatPresenceText,
   formatPresenceSubtitle,
   formatTypingLine,
+  formatTypingStatus,
   parsePresenceEnvelope,
   parseTypingEnvelope,
 } from './chatTyping';
@@ -61,5 +62,24 @@ describe('native chat typing', () => {
       userId: 7,
       presence: { status: 'online' },
     });
+  });
+});
+
+describe('formatTypingStatus (conversation header)', () => {
+  const maria = { userId: 1, name: 'Иванова Мария Петровна' };
+  const ivan = { userId: 2, name: 'Сидоров Иван Олегович' };
+
+  it('says only "печатает" in a direct chat — the title already names the person', () => {
+    expect(formatTypingStatus([maria], 'direct')).toBe('печатает');
+  });
+
+  it('names the typist as "Фамилия Имя" without the patronymic in a group', () => {
+    expect(formatTypingStatus([maria], 'group')).toBe('Иванова Мария печатает');
+    expect(formatTypingStatus([maria, ivan], 'group')).toBe('Иванова Мария и Сидоров Иван печатают');
+    expect(formatTypingStatus([maria, ivan, { userId: 3, name: 'Петров Пётр' }], 'group')).toBe('Иванова Мария и ещё 2 печатают');
+  });
+
+  it('is empty when nobody types', () => {
+    expect(formatTypingStatus([], 'group')).toBe('');
   });
 });

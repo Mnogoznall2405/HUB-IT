@@ -4,6 +4,7 @@ import { SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import { ChatInlineSheet } from './ChatInlineSheet';
 import type { NativePickedFile } from '../../files/nativeFilePicker';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
+import { useUiOpenTiming } from '../../diagnostics/uiOpenTiming';
 
 function fileSizeLabel(size: number): string {
   if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} МБ`;
@@ -38,6 +39,7 @@ export function ChatAttachmentDraftSheet({
 }) {
   const { chatTokens, styles } = useChatStyles(createStyles);
   const insets = useContext(SafeAreaInsetsContext);
+  useUiOpenTiming('draft-sheet', visible);
   const progressText = progress == null ? '' : ` ${Math.round(progress * 100)}%`;
 
   return (

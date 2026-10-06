@@ -9,6 +9,7 @@ import {
   resolveChatMessageIsOwn,
 } from '../../chat/chatState';
 import { chatSocket, shouldUseChatHttpFallback, type ChatSocketStatus } from '../../chat/chatSocket';
+import { trackWork } from '../../diagnostics/perfProbes';
 import { getActiveNativeChatConversationId } from '../../chat/chatActiveConversation';
 import {
   applyTypingParticipant,
@@ -137,7 +138,10 @@ export function useThreadRealtime({
       // same invariant the scroll handler uses.
       const detached = hasNewerRef.current;
       if (!detached) {
-        setMessages((current) => mergeMessages(current, message, userId));
+        setMessages((current) => {
+          const done = trackWork('thread-apply');
+          try { return mergeMessages(current, message, userId); } finally { done(); }
+        });
       }
       if (!detached && nearBottomRef.current) {
         requestBottomAnchor();

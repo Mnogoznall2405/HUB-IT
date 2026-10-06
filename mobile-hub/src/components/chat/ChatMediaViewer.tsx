@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-area-context';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
+import { useUiOpenTiming } from '../../diagnostics/uiOpenTiming';
 import {
   clampMediaTranslation,
   clampMediaZoom,
@@ -54,6 +55,7 @@ function mediaKey(item?: ChatMediaItem | null): string {
 
 export function ChatMediaViewer(props: Omit<ComponentProps<typeof ChatMediaViewerPage>, 'closeRequestRef'>) {
   const reduceMotion = useReducedMotion();
+  useUiOpenTiming('media-viewer', Boolean(props.item));
   const closeRequestRef = useRef<(() => void) | null>(null);
   return (
     <Modal testID="chat-media-modal" visible={Boolean(props.item)} animationType={reduceMotion ? 'none' : 'fade'} transparent

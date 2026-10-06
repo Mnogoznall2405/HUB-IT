@@ -12,6 +12,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
+import { useUiOpenTiming } from '../../diagnostics/uiOpenTiming';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
 
 export const SHEET_DISMISS_TRIGGER_DP = 90;
@@ -85,6 +86,7 @@ export const ChatBottomSheet = memo(function ChatBottomSheet({
 }) {
   const { styles, chatTokens } = useChatStyles(createStyles);
   const reduceMotion = useReducedMotion();
+  useUiOpenTiming('bottom-sheet', visible);
   const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
   const dragY = useSharedValue(0);
   // Closing by backdrop/back leaves dragY mid-flight — reset for the next open.

@@ -3,6 +3,7 @@ import { Directory, File, Paths } from 'expo-file-system';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { recordSnapshotFailure } from '../diagnostics/diagnostics';
+import { trackWork } from '../diagnostics/perfProbes';
 
 const SNAPSHOT_DIRECTORY_NAME = 'hubit-native-snapshots';
 const KEY_PREFIX = 'hubit_native_snapshot_aes_key_v2';
@@ -80,6 +81,19 @@ async function getOrCreateEncryptionKey(userId: number): Promise<Crypto.AESEncry
   return request;
 }
 
+let base64LookupTable: Uint8Array | null = null;
+
+// A char-code table: the old decoder ran four String.indexOf scans per 4 characters,
+// which cost hundreds of milliseconds of JS time on a 350 KB snapshot.
+function base64Lookup(): Uint8Array {
+  if (base64LookupTable) return base64LookupTable;
+  const table = new Uint8Array(128);
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  for (let index = 0; index < alphabet.length; index += 1) table[alphabet.charCodeAt(index)] = index;
+  base64LookupTable = table;
+  return table;
+}
+
 function decodeCombinedBase64(encoded: string): Uint8Array {
   // expo-crypto 57.0.2 declares string input, but Android's fromCombined
   // takes ByteArray, whose JSI converter accepts only Uint8Array. Decode here;
@@ -87,17 +101,80 @@ function decodeCombinedBase64(encoded: string): Uint8Array {
   if (encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
     throw new Error('Invalid encrypted snapshot base64');
   }
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0;
   const bytes = new Uint8Array((encoded.length / 4) * 3 - padding);
+  const lookup = base64Lookup();
   for (let index = 0, offset = 0; index < encoded.length; index += 4) {
-    const block = (alphabet.indexOf(encoded[index]) << 18) | (alphabet.indexOf(encoded[index + 1]) << 12)
-      | (Math.max(0, alphabet.indexOf(encoded[index + 2])) << 6) | Math.max(0, alphabet.indexOf(encoded[index + 3]));
+    // '=' maps to 0 in the table, as the previous indexOf-based decoder treated it.
+    const block = (lookup[encoded.charCodeAt(index)] << 18) | (lookup[encoded.charCodeAt(index + 1)] << 12)
+      | (lookup[encoded.charCodeAt(index + 2)] << 6) | lookup[encoded.charCodeAt(index + 3)];
     bytes[offset++] = block >>> 16;
     if (offset < bytes.length) bytes[offset++] = (block >>> 8) & 255;
     if (offset < bytes.length) bytes[offset++] = block & 255;
   }
   return bytes;
+}
+
+// Decrypting a snapshot costs JS-thread time (base64 decode, UTF-8, parse by the
+// caller): the diagnostics showed repeated reads/writes of the same cache stalling
+// the UI. The decrypted text of the last known on-disk generation is kept in
+// memory, validated against the file's size and modification time, so a changed
+// file (another JS context, restore) is never served from the cache.
+const PLAINTEXT_CACHE_MAX_CHARS = 10_000_000;
+// Equipment-catalog shards are read in bulk and rarely again: caching them would only
+// evict the small, frequently used snapshots (inbox, folders, threads).
+const UNCACHED_SCOPE_PREFIXES = ['database-catalog'];
+const plaintextCache = new Map<string, { signature: string; plaintext: string }>();
+let plaintextCacheChars = 0;
+
+function snapshotCacheKey(owner: number, scope: string): string {
+  return `${owner}:${safeScope(scope)}`;
+}
+
+function fileSignature(file: File): string | null {
+  try {
+    const modified = file.lastModified;
+    const size = file.size;
+    return typeof modified === 'number' && Number.isFinite(modified) && typeof size === 'number' && size > 0
+      ? `${size}:${modified}`
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function forgetCachedPlaintext(key: string): void {
+  const existing = plaintextCache.get(key);
+  if (!existing) return;
+  plaintextCacheChars -= existing.plaintext.length;
+  plaintextCache.delete(key);
+}
+
+function rememberPlaintext(key: string, file: File, plaintext: string): void {
+  forgetCachedPlaintext(key);
+  if (UNCACHED_SCOPE_PREFIXES.some((prefix) => key.includes(`:${prefix}`))) return;
+  const signature = fileSignature(file);
+  if (!signature || plaintext.length > PLAINTEXT_CACHE_MAX_CHARS) return;
+  plaintextCache.set(key, { signature, plaintext });
+  plaintextCacheChars += plaintext.length;
+  // Map keeps insertion order: drop the least recently stored entries first.
+  for (const oldest of plaintextCache.keys()) {
+    if (plaintextCacheChars <= PLAINTEXT_CACHE_MAX_CHARS) break;
+    forgetCachedPlaintext(oldest);
+  }
+}
+
+function cachedPlaintext(key: string, file: File): string | null {
+  const entry = plaintextCache.get(key);
+  if (!entry) return null;
+  if (!file.exists || fileSignature(file) !== entry.signature) {
+    forgetCachedPlaintext(key);
+    return null;
+  }
+  // Refresh recency.
+  plaintextCache.delete(key);
+  plaintextCache.set(key, entry);
+  return entry.plaintext;
 }
 
 function snapshotFileState(file?: File): { exists: boolean | null; size: number | null } {
@@ -188,6 +265,7 @@ async function performEncryptedNativeSnapshotWrite(scope: string, owner: number,
     const verified = await decryptSnapshotFile(target, scope, owner, (value) => { stage = value; }, sizes);
     stage = 'commit-verify';
     if (verified !== plaintext) throw new Error('Snapshot commit verification failed');
+    rememberPlaintext(snapshotCacheKey(owner, scope), target, plaintext);
   } catch (error) {
     await report(error);
     // Never delete through the source File object after move, even if move rejects late.
@@ -210,15 +288,33 @@ async function performEncryptedNativeSnapshotWrite(scope: string, owner: number,
   return true;
 }
 
+/** TEMPORARY diagnostics name: `chat-inbox-collection-<hash>-0` -> `chat-inbox`. */
+function snapshotWorkName(kind: 'write' | 'read', scope: string): string {
+  const family = scope.split('-collection-')[0].split('-entity-')[0].replace(/[^a-z0-9-]/gi, '').toLowerCase();
+  return `snap-${kind}:${family}`.slice(0, 32);
+}
+
 export function writeEncryptedNativeSnapshot(scope: string, userId: number, plaintext: string): Promise<boolean> {
   const owner = normalizedUserId(userId);
   if (!owner || Platform.OS === 'web' || clearingUsers.has(owner)) return Promise.resolve(false);
-  return withSnapshotOperation(scope, owner, () => performEncryptedNativeSnapshotWrite(scope, owner, plaintext));
+  const done = trackWork(snapshotWorkName('write', scope));
+  const cacheKey = snapshotCacheKey(owner, scope);
+  return withSnapshotOperation(scope, owner, async () => {
+    // Re-writing identical content (a refresh that changed nothing) would redo a full
+    // encrypt + verify for no durable change.
+    try {
+      const current = snapshotFile(scope, owner);
+      if (cachedPlaintext(cacheKey, current) === plaintext) return true;
+    } catch { /* fall through to a normal write */ }
+    forgetCachedPlaintext(cacheKey);
+    return performEncryptedNativeSnapshotWrite(scope, owner, plaintext);
+  }).finally(done);
 }
 
 export function readEncryptedNativeSnapshot(scope: string, userId: number): Promise<string | null> {
   const owner = normalizedUserId(userId);
   if (!owner || Platform.OS === 'web' || clearingUsers.has(owner)) return Promise.resolve(null);
+  const done = trackWork(snapshotWorkName('read', scope));
   return withSnapshotOperation(scope, owner, async () => {
     let stage = 'directory';
     let file: File | undefined;
@@ -239,7 +335,11 @@ export function readEncryptedNativeSnapshot(scope: string, userId: number): Prom
         }
       }
       if (!file.exists && !backup.exists) return null;
+      const cacheKey = snapshotCacheKey(owner, scope);
+      const fromCache = file.exists ? cachedPlaintext(cacheKey, file) : null;
+      if (fromCache !== null) return fromCache;
       const plaintext = await decryptSnapshotFile(file, scope, owner, (value) => { stage = value; }, sizes);
+      if (file.exists) rememberPlaintext(cacheKey, file, plaintext);
       stage = 'read-cleanup';
       try {
         if (backup.exists) backup.delete();
@@ -260,13 +360,14 @@ export function readEncryptedNativeSnapshot(scope: string, userId: number): Prom
       // A transient bridge/key/read error is not evidence that either generation is corrupt.
       return null;
     }
-  });
+  }).finally(done);
 }
 
 export async function deleteEncryptedNativeSnapshot(scope: string, userId: number): Promise<void> {
   const owner = normalizedUserId(userId);
   if (!owner || Platform.OS === 'web') return;
   await withSnapshotOperation(scope, owner, async () => {
+    forgetCachedPlaintext(snapshotCacheKey(owner, scope));
     const file = snapshotFile(scope, owner);
     if (file.exists) file.delete();
     const pending = pendingSnapshotFile(scope, owner);
@@ -298,6 +399,9 @@ export async function clearEncryptedNativeSnapshots(userId: number): Promise<voi
       }
     }
     encryptionKeyRequests.delete(owner);
+    for (const key of [...plaintextCache.keys()]) {
+      if (key.startsWith(`${owner}:`)) forgetCachedPlaintext(key);
+    }
     for (const key of snapshotWriteRequests.keys()) {
       if (key.startsWith(`${owner}:`)) snapshotWriteRequests.delete(key);
     }

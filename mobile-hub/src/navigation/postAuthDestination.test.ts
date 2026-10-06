@@ -13,6 +13,10 @@ describe('postAuthDestination', () => {
     });
   });
 
+  it('opens the chats on launch when they are the user home route', () => {
+    expect(postAuthDestination('android', '/(shell)/chat')).toEqual({ pathname: '/(shell)/chat' });
+  });
+
   it('keeps the Expo web fallback used by browser-only prototype tests', () => {
     expect(postAuthDestination('web', '/(shell)/dashboard')).toBe('/(shell)/dashboard');
   });

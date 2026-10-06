@@ -26,6 +26,7 @@ import { HUB_WEB_ORIGIN } from '../../api/config';
 import { formatApiError } from '../../api/formatError';
 import { recordDiagnosticEvent } from '../../diagnostics/diagnostics';
 import { markChatSend } from '../../diagnostics/chatSendTiming';
+import { noteThreadMounted } from '../../diagnostics/uiTiming';
 import type {
   ChatAiBot,
   ChatAttachment,
@@ -66,6 +67,9 @@ import {
   subscribeNativeChatConversationRead,
 } from '../../chat/chatActiveConversation';
 import { nextChatThreadBackAction } from '../../chat/chatGestures';
+import { noteThreadMessageCount } from '../../diagnostics/uiTiming';
+import { useRenderTiming } from '../../diagnostics/perfProbes';
+import { consumeIncomingShare } from '../../share/incomingShare';
 import { dismissConversationNotifications } from '../../notifications/conversationNotifications';
 import { findUnreadMentionMessageId } from '../../chat/chatMentions';
 import { detectChatBodyFormat } from '../../chat/chatMarkdown';
@@ -84,7 +88,7 @@ import {
 import {
   applyTypingParticipant,
   formatPresenceSubtitle,
-  formatTypingLine,
+  formatTypingStatus,
   parsePresenceEnvelope,
   parseTypingEnvelope,
 } from '../../chat/chatTyping';
@@ -235,6 +239,7 @@ export function NativeChatThreadScreen({
   conversationId: string;
   messageId?: string;
 }) {
+  useRenderTiming('thread');
   const chatTokens = useChatTokens();
   const styles = useMemo(() => createStyles(chatTokens), [chatTokens]);
   const { user, hasPermission, offlineMode } = useAuth();
@@ -260,6 +265,9 @@ export function NativeChatThreadScreen({
   const currentSendScopeRef = useRef(sendScope);
   useLayoutEffect(() => { currentSendScopeRef.current = sendScope; }, [sendScope]);
   const isCurrentSendScope = useCallback(() => mountedRef.current && canCompose && currentSendScopeRef.current === sendScope, [canCompose, sendScope]);
+  // Completes the tap→mount leg of the conversation-open trace armed by the
+  // inbox/outbox row press; a no-op when the screen was reached another way.
+  useEffect(() => { noteThreadMounted(); }, [conversationId]);
   const serverPinKnownRef = useRef(false);
   const listRef = useRef<FlatList<ChatMessage>>(null);
 
@@ -492,6 +500,10 @@ export function NativeChatThreadScreen({
   }, [conversationId, offlineMode, user?.id]);
   markReadRef.current = markRead;
   messagesRef.current = messages;
+  useEffect(() => {
+    noteThreadMessageCount(messages.length);
+    return () => noteThreadMessageCount(0);
+  }, [messages.length]);
 
   // M4: a queued realtime message can arrive while the app is backgrounded.
   // When it returns to the foreground at the bottom of the thread, retry the
@@ -708,8 +720,21 @@ export function NativeChatThreadScreen({
     retryPendingMessage,
     pickAndSendAttachment,
     sendAttachmentDraft,
+    openSharedFiles,
     attachmentDraftClientMessageIdRef,
   } = send;
+
+  // Files/text shared into this very chat from another app (Android share sheet): applied
+  // once, after the composer draft is restored so it cannot overwrite them.
+  const sharedAppliedRef = useRef(false);
+  useEffect(() => {
+    if (sharedAppliedRef.current || !draftHydrated) return;
+    sharedAppliedRef.current = true;
+    const share = consumeIncomingShare('chat', conversationId);
+    if (!share) return;
+    if (share.text.trim() && !text.trim()) setText(share.text);
+    if (share.copiedFiles?.length) openSharedFiles(share.copiedFiles);
+  }, [conversationId, draftHydrated, openSharedFiles, setText, text]);
 
 
   const searchState = useThreadSearch({
@@ -978,7 +1003,7 @@ export function NativeChatThreadScreen({
   );
   const threadMedia = useMemo(() => collectThreadMedia(messages), [messages]);
   const viewerMediaItems = mediaViewerItems ?? threadMedia;
-  const typingLine = formatTypingLine(typingParticipants);
+  const typingLine = formatTypingStatus(typingParticipants, conversation?.kind);
   const aiStatusLine = aiRunStatus
     ? (aiRunStatus.statusText || (aiRunStatus.botTitle ? `${aiRunStatus.botTitle}…` : ''))
     : '';

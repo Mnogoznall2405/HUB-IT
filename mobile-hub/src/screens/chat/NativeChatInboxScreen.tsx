@@ -27,6 +27,7 @@ import {
   DEFAULT_CHAT_FOLDER_KEY,
   buildFolderUnreadCounts,
   filterConversationsByFolder,
+  resolveFolderSwipeTarget,
 } from '../../chat/chatFolders';
 import {
   countAiUnread,
@@ -52,6 +53,7 @@ import { ChatFolderTabs } from '../../components/chat/ChatFolderTabs';
 import { ChatWorkspaceTabs } from '../../components/chat/ChatWorkspaceTabs';
 import { ChatConversationSkeleton } from '../../components/chat/ChatListSkeleton';
 import { FolderSwipeHost } from '../../components/chat/FolderSwipeHost';
+import { ChatConversationRow } from '../../components/chat/ChatConversationRow';
 import { NewChatSheet } from '../../components/chat/NewChatSheet';
 import { HubConnectionInline } from '../../components/layout/HubConnectionHeader';
 import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
@@ -59,13 +61,19 @@ import { type ChatTokens, useChatTokens } from '../../theme/chatTokens';
 import { useInboxData } from './useInboxData';
 import { useInboxFolders } from './useInboxFolders';
 import { useInboxActions } from './useInboxActions';
+import { useRenderTiming } from '../../diagnostics/perfProbes';
 
 type InboxListRow =
   | { key: string; type: 'header'; title: string }
   | { key: string; type: 'conversation'; item: ChatConversationSummary }
   | { key: string; type: 'message'; item: ChatGlobalMessageSearchHit };
 
+// Rows drawn for a neighbouring folder while swiping: about one screenful.
+const FOLDER_PREVIEW_ROWS = 12;
+const noop = () => undefined;
+
 export function NativeChatInboxScreen({ requestedWorkspace }: { requestedWorkspace?: ChatWorkspaceKey } = {}) {
+  useRenderTiming('inbox');
   const chatTokens = useChatTokens();
   const styles = useMemo(() => createStyles(chatTokens), [chatTokens]);
   const { user, offlineMode } = useAuth();
@@ -298,6 +306,38 @@ export function NativeChatInboxScreen({ requestedWorkspace }: { requestedWorkspa
 
   const listContentStyle = useMemo(() => ({ paddingBottom: bottomInset }), [bottomInset]);
 
+  // Folder pager: which folders lie beside the active one, and what they look like
+  // while a swipe is in progress (only the first screenful, drawn on demand).
+  const prevFolderKey = useMemo(
+    () => resolveFolderSwipeTarget(activeFolderKey, 'prev', customFolders),
+    [activeFolderKey, customFolders],
+  );
+  const nextFolderKey = useMemo(
+    () => resolveFolderSwipeTarget(activeFolderKey, 'next', customFolders),
+    [activeFolderKey, customFolders],
+  );
+  const renderNeighborFolder = useCallback((side: 'prev' | 'next') => {
+    const key = side === 'prev' ? prevFolderKey : nextFolderKey;
+    if (!key) return null;
+    const rows = filterConversationsByFolder(items, key, conversationIdsByFolder)
+      .sort((left, right) => {
+        const pinned = Number(Boolean(right.is_pinned)) - Number(Boolean(left.is_pinned));
+        if (pinned) return pinned;
+        return new Date(right.last_message_at || 0).getTime() - new Date(left.last_message_at || 0).getTime();
+      })
+      .slice(0, FOLDER_PREVIEW_ROWS);
+    if (!rows.length) return <Text style={styles.empty}>По заданным условиям диалогов нет</Text>;
+    return rows.map((item) => (
+      <ChatConversationRow
+        key={item.id}
+        item={item}
+        onPress={noop}
+        typingText={typingByConversation[item.id] || undefined}
+        draftText={draftPreviews.get(item.id) || undefined}
+      />
+    ));
+  }, [conversationIdsByFolder, draftPreviews, items, nextFolderKey, prevFolderKey, styles, typingByConversation]);
+
   const renderInboxRow = useCallback(({ item }: ListRenderItemInfo<InboxListRow>) => {
     if (item.type === 'header') {
       return <Text style={styles.sectionTitle}>{item.title}</Text>;
@@ -435,8 +475,12 @@ export function NativeChatInboxScreen({ requestedWorkspace }: { requestedWorkspa
         </View>
       ) : (
         <FolderSwipeHost
-          enabled={workspace === 'chats'}
+          enabled={workspace === 'chats' && !search.trim()}
           capture
+          folderKey={activeFolderKey}
+          hasPrev={Boolean(prevFolderKey)}
+          hasNext={Boolean(nextFolderKey)}
+          renderNeighbor={renderNeighborFolder}
           onSwipeFolder={swipeFolder}
           onSwipeEngage={setFolderSwipeActive}
         >
@@ -548,7 +592,7 @@ export function NativeChatInboxScreen({ requestedWorkspace }: { requestedWorkspa
           try {
             const conversation = await chatApi.createAiConversation();
             setNewChatOpen(false);
-            goConversation(conversation.id);
+            goConversation(conversation.id, undefined, 'create');
           } catch (cause) {
             Alert.alert('Не удалось открыть AI-диалог', formatApiError(cause));
           }
@@ -557,7 +601,7 @@ export function NativeChatInboxScreen({ requestedWorkspace }: { requestedWorkspa
           try {
             const conversation = await chatApi.createDirectConversation(userId);
             setNewChatOpen(false);
-            goConversation(conversation.id);
+            goConversation(conversation.id, undefined, 'create');
           } catch (cause) {
             Alert.alert('Не удалось создать диалог', formatApiError(cause));
           }
@@ -567,7 +611,7 @@ export function NativeChatInboxScreen({ requestedWorkspace }: { requestedWorkspa
           try {
             const conversation = await chatApi.createGroupConversation(title, memberIds);
             setNewChatOpen(false);
-            goConversation(conversation.id);
+            goConversation(conversation.id, undefined, 'create');
           } catch (cause) {
             Alert.alert('Не удалось создать группу', formatApiError(cause));
           }
@@ -576,7 +620,7 @@ export function NativeChatInboxScreen({ requestedWorkspace }: { requestedWorkspa
           try {
             const conversation = await chatApi.openAiBot(botId);
             setNewChatOpen(false);
-            goConversation(conversation.id);
+            goConversation(conversation.id, undefined, 'create');
           } catch (cause) {
             Alert.alert('Не удалось открыть AI-диалог', formatApiError(cause));
           }

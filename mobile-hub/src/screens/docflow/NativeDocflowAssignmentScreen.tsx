@@ -31,6 +31,7 @@ import {
   AccountSectionCard,
 } from '../account/AccountChrome';
 import { goBackOrReplace } from '../account/accountBack';
+import { FadeInRow } from '../../components/ui/LoadingSkeleton';
 
 type CreateAttempt = { signature: string; key: string };
 
@@ -354,7 +355,7 @@ export function NativeDocflowAssignmentScreen() {
               </Pressable>
             </View>
             {documentHint ? <Text style={[styles.hint, { color: tokens.textSecondary }]}>{documentHint}</Text> : null}
-            <View accessibilityRole="radiogroup" style={styles.options}>{documents.map((item) => <DocumentOption key={`${item.document_type}-${item.ref}`} item={item} selected={selectedDocument?.ref === item.ref} tokens={tokens} onPress={() => { setSelectedDocument(item); setError(''); }} />)}</View>
+            <View accessibilityRole="radiogroup" style={styles.options}>{documents.map((item, index) => <FadeInRow key={`${item.document_type}-${item.ref}`} index={index}><DocumentOption item={item} selected={selectedDocument?.ref === item.ref} tokens={tokens} onPress={() => { setSelectedDocument(item); setError(''); }} /></FadeInRow>)}</View>
           </AccountSectionCard>
 
           <AccountSectionCard tokens={tokens} title="Исполнитель" description="Выберите одного исполнителя поручения.">

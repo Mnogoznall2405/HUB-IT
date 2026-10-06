@@ -20,6 +20,7 @@ import { ReleaseHealthTracker } from '../src/diagnostics/ReleaseHealthTracker';
 import { IncomingShareGate } from '../src/share/IncomingShareGate';
 import { AppPrivacyShield } from '../src/privacy/AppPrivacyShield';
 import { AndroidSystemUi } from '../src/lifecycle/AndroidSystemUi';
+import { ScreenSheetHost } from '../src/components/chat/ScreenSheet';
 
 export default function RootLayout() {
   return (
@@ -50,6 +51,7 @@ function ThemedRoot() {
         <StatusBar style={dark ? 'light' : 'dark'} />
         <AndroidSystemUi navigationBarStyle={dark ? 'light' : 'dark'} />
         <ReleaseHealthTracker />
+        <ScreenSheetHost>
         <DiagnosticsErrorBoundary>
           <AppLifecycle />
           <AppPrivacyShield />
@@ -60,6 +62,7 @@ function ThemedRoot() {
             }}
           />
         </DiagnosticsErrorBoundary>
+        </ScreenSheetHost>
         <AppLockGate />
         <MobileUpdateGate />
         <IncomingShareGate />

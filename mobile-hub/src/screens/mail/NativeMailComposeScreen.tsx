@@ -33,7 +33,7 @@ import { listMailboxes, type MailMailbox } from '../../api/mailMailboxesApi';
 import { formatApiError } from '../../api/formatError';
 import { useAuth } from '../../auth/AuthContext';
 import { useAndroidBackHandler } from '../../chat/useAndroidBackHandler';
-import { pickMailAttachments } from '../../mail/nativeMailFiles';
+import { pickMailAttachments, validateMailUploadFiles } from '../../mail/nativeMailFiles';
 import type { NativeMailComposeMode } from '../../mail/nativeMailFeature';
 import {
   buildNativeMailContactSuggestions,
@@ -283,6 +283,16 @@ export function NativeMailComposeScreen() {
     if (!share) return;
     setSubject(share.subject.slice(0, 500));
     setBody(share.text);
+    if (share.copiedFiles?.length) {
+      try {
+        // Same limits as the attachment picker (10 files, 15 MB each, 25 MB total).
+        setFiles(validateMailUploadFiles(share.copiedFiles.map((file) => ({
+          uri: file.uri, name: file.name, mimeType: file.mimeType, size: file.size,
+        }))));
+      } catch (cause) {
+        Alert.alert('Вложения не добавлены', cause instanceof Error ? cause.message : 'Не удалось добавить файлы к письму.');
+      }
+    }
   }, [mode]);
 
   useEffect(() => {

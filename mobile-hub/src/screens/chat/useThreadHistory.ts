@@ -19,6 +19,7 @@ import {
   type NativeChatThreadSnapshot,
 } from '../../chat/nativeChatThreadHistory';
 import type { createNativeChatOutbox } from '../../chat/nativeChatOutbox';
+import { noteThreadCacheReady, noteThreadLiveReady } from '../../diagnostics/uiTiming';
 import type { ChatListAnchorReason } from '../../chat/chatListAnchor';
 import type { PendingAttachmentUpload } from './NativeChatThreadScreen';
 
@@ -213,6 +214,7 @@ export function useThreadHistory({
         loadedThreadScopeRef.current = JSON.stringify([scopeUserId, scopeConversationId]);
         setThreadHydrated(true);
         setLoading(false);
+        noteThreadCacheReady();
       }
       try {
         const [queued, uploads] = await Promise.all([outbox.read(), outbox.readUploads()]);
@@ -234,6 +236,7 @@ export function useThreadHistory({
         if (!hadCachedSnapshot && isCurrentLoad()) {
           setHistoryUnavailableOffline(true);
         }
+        noteThreadLiveReady();
         return;
       }
 
@@ -257,6 +260,7 @@ export function useThreadHistory({
       loadedThreadScopeRef.current = JSON.stringify([scopeUserId, scopeConversationId]);
       setThreadHydrated(true);
       setLoading(false);
+      noteThreadLiveReady();
       const rawPinnedMessageId = 'pinned_message_id' in page
         ? (page as { pinned_message_id?: string | null }).pinned_message_id
         : undefined;

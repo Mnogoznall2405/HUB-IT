@@ -8,6 +8,7 @@ import { createNativeChatOutbox, readNativeChatOutbox, subscribeNativeChatOutbox
 import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { useChatTokens } from '../../theme/chatTokens';
 import { inspectNativeChatDraftFiles } from '../../chat/nativeChatDraftFiles';
+import { noteThreadOpenTap } from '../../diagnostics/uiTiming';
 
 type Row = NativeChatOutboxEntry & { busy: boolean };
 function deliveryLabel(row: Row) {
@@ -158,7 +159,7 @@ export function NativeChatOutboxScreen() {
         contentContainerStyle={{ padding: 12, paddingBottom: bottom + 16 }}
         ListEmptyComponent={!error ? <Text style={[styles.notice, { color: tokens.textPrimary }]}>Нет сообщений, ожидающих отправки</Text> : null}
         renderItem={({ item }) => <View style={[styles.card, { backgroundColor: tokens.panelBg }]}>
-          <Pressable accessibilityRole="button" accessibilityLabel={`Открыть диалог: ${item.title || 'Диалог'}`} style={styles.open} onPress={() => router.push({ pathname: '/(shell)/chat/[conversationId]', params: { conversationId: item.message.conversation_id } })}>
+          <Pressable accessibilityRole="button" accessibilityLabel={`Открыть диалог: ${item.title || 'Диалог'}`} style={styles.open} onPress={() => { noteThreadOpenTap('other'); router.push({ pathname: '/(shell)/chat/[conversationId]', params: { conversationId: item.message.conversation_id } }); }}>
             <Text style={[styles.rowTitle, { color: tokens.textPrimary }]}>{item.title || 'Диалог'}</Text>
             <Text numberOfLines={3} style={{ color: tokens.textPrimary }}>{item.message.body_text || 'Вложение без подписи'}</Text>
             <Text accessibilityLiveRegion="polite" style={{ color: tokens.textSecondary }}>{deliveryLabel(item)}{item.upload ? ` · Файлов: ${item.upload.files.length}` : ''}</Text>

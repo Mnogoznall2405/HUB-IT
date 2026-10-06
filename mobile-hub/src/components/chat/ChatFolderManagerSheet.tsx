@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import type { ChatCustomFolder } from '../../chat/chatFolders';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
-import { ChatBottomSheet } from './ChatBottomSheet';
+import { ScreenSheet } from './ScreenSheet';
 
 export function ChatFolderManagerSheet({
   visible,
@@ -38,11 +38,10 @@ export function ChatFolderManagerSheet({
   };
 
   return (
-    <ChatBottomSheet
+    <ScreenSheet
       visible={visible}
       onClose={prompt ? closePrompt : onClose}
       dismissAccessibilityLabel="Закрыть управление папками"
-      avoidKeyboard
       sheetStyle={styles.sheet}
     >
           {prompt ? (
@@ -123,7 +122,7 @@ export function ChatFolderManagerSheet({
               </ScrollView>
             </>
           )}
-    </ChatBottomSheet>
+    </ScreenSheet>
   );
 }
 

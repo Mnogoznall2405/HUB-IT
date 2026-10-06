@@ -5,6 +5,7 @@ import type { ChatSticker, ChatStickerPack } from '../../api/types';
 import { filterEmojiGroups } from '../../chat/chatEmoji';
 import { buildEmojiPickerRows, type EmojiPickerRow } from '../../chat/chatPickerRows';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
+import { useUiOpenTiming } from '../../diagnostics/uiOpenTiming';
 import { ChatInlineSheet } from './ChatInlineSheet';
 import { ChatStickerPickerContent } from './ChatStickerPickerContent';
 
@@ -45,6 +46,7 @@ export function ChatEmojiPickerSheet({
   onRemoveStickerPack?: (pack: ChatStickerPack) => void;
 }) {
   const { chatTokens, styles } = useChatStyles(createStyles);
+  useUiOpenTiming('emoji-panel', visible);
   const [emojiQuery, setEmojiQuery] = useState('');
   const keyboard = useKeyboardState();
   const { height: windowHeight } = useWindowDimensions();

@@ -1,5 +1,6 @@
 import type { ComponentProps } from 'react';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
+import { NATIVE_CHAT_ENABLED } from '../chat/nativeChatFeature';
 
 export type NavItem = {
   name: string;
@@ -34,6 +35,8 @@ export function filterNavItems(
 export function firstNavRoute(items: NavItem[]): string {
   const first = items[0];
   if (!first) return '/(shell)/dashboard';
+  // The app opens on the chats (like a messenger) whenever the user can read them.
+  if (NATIVE_CHAT_ENABLED && items.some((item) => item.name === 'chat')) return '/(shell)/chat';
   if (first.name === 'chat') return '/(shell)/chat';
   if (first.name === 'dashboard') return '/(shell)/dashboard';
   return '/(shell)/dashboard';

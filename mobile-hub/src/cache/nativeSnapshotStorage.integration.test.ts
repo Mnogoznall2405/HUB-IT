@@ -10,6 +10,9 @@ let mockRoot: string;
 let mockEmptyRead: 'pending' | 'aes' | null = null;
 let mockBackupDeleteFailure = false;
 let mockBeforeMove: (() => Promise<void>) | null = null;
+// Opt-in: real devices report lastModified, which enables the in-memory plaintext cache.
+let mockReportLastModified = false;
+let mockTextReads = 0;
 
 jest.mock('expo-file-system', () => {
   const disk = jest.requireActual('node:fs') as typeof fs;
@@ -26,8 +29,10 @@ jest.mock('expo-file-system', () => {
   class File extends Directory {
     get name() { return paths.basename(this.uri); }
     get size() { return this.exists ? disk.statSync(this.uri).size : 0; }
+    get lastModified() { return mockReportLastModified && this.exists ? disk.statSync(this.uri).mtimeMs : null; }
     write(value: string) { disk.writeFileSync(this.uri, value, 'utf8'); }
     async text() {
+      mockTextReads += 1;
       if (mockEmptyRead && this.uri.endsWith(`.${mockEmptyRead}`)) {
         mockEmptyRead = null;
         return '';
@@ -109,6 +114,8 @@ beforeEach(() => {
   mockEmptyRead = null;
   mockBackupDeleteFailure = false;
   mockBeforeMove = null;
+  mockReportLastModified = false;
+  mockTextReads = 0;
 });
 afterEach(() => {
   const target = path.resolve(mockRoot);
@@ -272,5 +279,41 @@ it('reads encrypted disk data using the persisted key after JS modules restart, 
   const restartedCoverage = require('../offline/nativeOfflineCoverage') as typeof import('../offline/nativeOfflineCoverage');
   expect((await restartedCoverage.readNativeOfflineCoverage(17))?.entries).toMatchObject({
     addressBook: { status: 'complete' }, dashboard: { status: 'complete' },
+  });
+});
+
+describe('decrypted snapshot cache', () => {
+  beforeEach(() => { mockReportLastModified = true; });
+
+  it('serves repeated reads from memory without decrypting the file again', async () => {
+    expect(await write('dashboard', 21, 'Данные кэша')).toBe(true);
+    mockTextReads = 0;
+    expect(await read('dashboard', 21)).toBe('Данные кэша');
+    expect(await read('dashboard', 21)).toBe('Данные кэша');
+    expect(mockTextReads).toBe(0);
+  });
+
+  it('skips re-encrypting a write whose content did not change', async () => {
+    expect(await write('dashboard', 21, 'Те же данные')).toBe(true);
+    mockTextReads = 0;
+    expect(await write('dashboard', 21, 'Те же данные')).toBe(true);
+    expect(mockTextReads).toBe(0);
+    expect(await write('dashboard', 21, 'Другие данные')).toBe(true);
+    expect(mockTextReads).toBeGreaterThan(0);
+    expect(await read('dashboard', 21)).toBe('Другие данные');
+  });
+
+  it('never serves stale text after the file was changed behind the cache', async () => {
+    expect(await write('dashboard', 21, 'Первая версия')).toBe(true);
+    const file = path.join(mockRoot, 'hubit-native-snapshots/snapshot-21-dashboard.aes');
+    const written = fs.readFileSync(file, 'utf8');
+    // Another JS context replaced the file with a different valid generation.
+    expect(await write('dashboard', 22, 'Чужая версия')).toBe(true);
+    fs.copyFileSync(path.join(mockRoot, 'hubit-native-snapshots/snapshot-22-dashboard.aes'), file);
+    fs.utimesSync(file, new Date(Date.now() + 60_000), new Date(Date.now() + 60_000));
+    expect(written).not.toBe(fs.readFileSync(file, 'utf8'));
+    // Different user key, so the foreign ciphertext cannot be decrypted: the read must
+    // reach the file (cache invalidated), not return the cached first version.
+    expect(await read('dashboard', 21)).toBeNull();
   });
 });

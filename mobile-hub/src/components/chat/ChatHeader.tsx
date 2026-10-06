@@ -81,7 +81,7 @@ export function ChatHeader({
           </View>
           {subtitle ? (
             <View style={styles.subtitleRow}>
-              <Text style={styles.subtitle} numberOfLines={1}>{subtitle}</Text>
+              <Text style={[styles.subtitle, subtitleExtra ? styles.subtitleAccent : null]} numberOfLines={1}>{subtitle}</Text>
               {subtitleExtra}
             </View>
           ) : null}
@@ -119,6 +119,7 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   title: { flexShrink: 1, fontSize: 17, fontWeight: '600', color: chatTokens.textPrimary },
   subtitleRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
-  subtitle: { fontSize: 13, lineHeight: 16, color: chatTokens.textSecondary },
+  subtitle: { flexShrink: 1, fontSize: 13, lineHeight: 16, color: chatTokens.textSecondary },
+  subtitleAccent: { color: chatTokens.accentText },
   muted: { color: chatTokens.textSecondary, fontSize: 15 },
 });

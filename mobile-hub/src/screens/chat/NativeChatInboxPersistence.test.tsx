@@ -6,6 +6,10 @@ import { subscribeNativeChatConversationRead } from '../../chat/chatActiveConver
 import { getActiveChatFolderKey } from '../../chat/chatActiveFolder';
 import { readNativeSnapshot } from '../../cache/nativeSnapshotCache';
 import { NativeChatInboxScreen } from './NativeChatInboxScreen';
+import { INBOX_SNAPSHOT_DEBOUNCE_MS } from './useInboxData';
+
+// The inbox batches its durable snapshot write (see INBOX_SNAPSHOT_DEBOUNCE_MS).
+const SNAPSHOT_WAIT = { timeout: INBOX_SNAPSHOT_DEBOUNCE_MS + 2_000 };
 
 const mockConversationRowRender = jest.fn();
 const mockFolderTabs = jest.fn();
@@ -168,7 +172,7 @@ it('persists realtime preview, unread changes and removals for offline reopening
   } } }));
   await waitFor(() => expect(writeSnapshot).toHaveBeenLastCalledWith(1, expect.objectContaining({
     items: expect.arrayContaining([expect.objectContaining({ id: 'c1', unread_count: 1, last_message_preview: 'Fresh message' })]),
-  }), expect.anything()));
+  }), expect.anything()), SNAPSHOT_WAIT);
   await act(async () => {
     jest.mocked(subscribeNativeChatConversationRead).mock.calls[0][0]('c1');
     emit('chat.conversation.removed', { payload: { conversation_id: 'c2' } });
@@ -214,7 +218,7 @@ it('coalesces a burst of realtime events into one durable update', async () => {
       body_text: `Burst ${index}`, created_at: '2026-09-14T12:00:00Z',
     } } });
   });
-  await waitFor(() => expect(writeSnapshot).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(writeSnapshot).toHaveBeenCalledTimes(1), SNAPSHOT_WAIT);
   expect(writeSnapshot.mock.calls[0][1].items[0]).toMatchObject({ unread_count: 20, last_message_preview: 'Burst 19' });
 });
 
@@ -222,7 +226,7 @@ it('restores a removed conversation only when an authoritative conversation payl
   const view = await render(<NativeChatInboxScreen />);
   await waitFor(() => expect(view.getByText('Chat two')).toBeTruthy());
   await act(async () => emit('chat.conversation.removed', { payload: { conversation_id: 'c2' } }));
-  await waitFor(() => expect(writeSnapshot.mock.calls.at(-1)?.[2]?.removedConversationIds).toContain('c2'));
+  await waitFor(() => expect(writeSnapshot.mock.calls.at(-1)?.[2]?.removedConversationIds).toContain('c2'), SNAPSHOT_WAIT);
   await act(async () => emit('chat.message.created', { payload: { message: {
     id: 'late', conversation_id: 'c2', sender_user_id: 2, conversation_seq: 2,
   } } }));

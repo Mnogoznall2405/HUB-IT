@@ -2,6 +2,7 @@ import * as Crypto from 'expo-crypto';
 import { API_V1_BASE } from '../api/config';
 import { getAuthenticatedAccessToken } from '../api/client';
 import { subscribeAccessTokenChanges } from '../auth/tokenStore';
+import { noteRealtimeEvent } from '../diagnostics/perfProbes';
 
 type SocketHandler = (payload: unknown) => void;
 
@@ -313,6 +314,7 @@ export class HubRealtimeSocketClient {
         };
         const eventType = String(envelope.type || '').trim();
         if (!eventType) return;
+        noteRealtimeEvent(eventType);
         if (eventType === 'hub.realtime.pong') return;
         if (eventType === 'hub.realtime.auth.required') {
           this.handleAuthRequired();

@@ -4,6 +4,7 @@ import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-a
 import { russianPlural } from '../../utils/russianPlural';
 import type { ChatConversationSummary, ChatMessage } from '../../api/types';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
+import { useUiOpenTiming } from '../../diagnostics/uiOpenTiming';
 import { ChatInlineSheet } from './ChatInlineSheet';
 
 export function ForwardMessageSheet({
@@ -29,6 +30,7 @@ export function ForwardMessageSheet({
   const [query, setQuery] = useState('');
   const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
   const visible = Boolean(message);
+  useUiOpenTiming('forward-sheet', visible);
   useEffect(() => { if (!visible) setQuery(''); }, [visible]);
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase();

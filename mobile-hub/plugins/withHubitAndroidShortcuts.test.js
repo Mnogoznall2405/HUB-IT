@@ -66,7 +66,16 @@ it('adds the shortcuts metadata to MainActivity exactly once', () => {
     },
   }]);
   const filters = manifest.manifest.application[0].activity[0]['intent-filter'];
-  expect(filters.filter((filter) => (
-    filter.action?.some((action) => action.$?.['android:name'] === 'android.intent.action.SEND')
-  ))).toHaveLength(1);
+  const shareFilters = filters.filter((filter) => (
+    filter.action?.some((action) => /android\.intent\.action\.SEND/.test(action.$?.['android:name']))
+  ));
+  // Idempotent: applying the plugin twice must not duplicate the filters.
+  expect(shareFilters.map((filter) => [
+    filter.action[0].$['android:name'],
+    filter.data[0].$['android:mimeType'],
+  ])).toEqual([
+    ['android.intent.action.SEND', 'text/plain'],
+    ['android.intent.action.SEND', '*/*'],
+    ['android.intent.action.SEND_MULTIPLE', '*/*'],
+  ]);
 });

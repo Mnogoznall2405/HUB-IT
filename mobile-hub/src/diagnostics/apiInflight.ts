@@ -1,6 +1,7 @@
 // In-flight axios request counter for the send-priority check (plan S11).
 // Numbers only — never URLs, params, headers or payloads.
 import type { ChatTimingStats } from './chatSendTiming';
+import { noteScreenLoadActivity } from './screenSettle';
 
 const MAX_INFLIGHT_SAMPLES = 120;
 
@@ -22,11 +23,13 @@ export function noteApiRequestStart(): void {
   inFlight += 1;
   startedTotal += 1;
   if (inFlight > maxObserved) maxObserved = inFlight;
+  noteScreenLoadActivity();
 }
 
 export function noteApiRequestEnd(): void {
   if (inFlight > 0) inFlight -= 1;
   completedTotal += 1;
+  noteScreenLoadActivity();
 }
 
 // Samples the background request pressure a chat send has to compete with:

@@ -44,6 +44,7 @@ import {
 } from '../../chat/chatAttachmentPanel';
 import type { NativePickedFile } from '../../files/nativeFilePicker';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
+import { useUiOpenTiming } from '../../diagnostics/uiOpenTiming';
 
 const COLLAPSED_HEIGHT = 340;
 const EXPAND_MARGIN_TOP = 96;
@@ -88,6 +89,7 @@ export function ChatAttachmentPanel({
 }) {
   const { styles, chatTokens } = useChatStyles(createStyles);
   const reduceMotion = useReducedMotion();
+  useUiOpenTiming('attach-panel', visible);
   const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
   const keyboardState = useKeyboardState();
   const { height: windowHeight } = useWindowDimensions();

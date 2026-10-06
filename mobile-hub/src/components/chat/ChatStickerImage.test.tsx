@@ -1,4 +1,5 @@
 import { render, waitFor } from '@testing-library/react-native';
+import { Component, type ReactNode } from 'react';
 import { gzipSync, strToU8 } from 'fflate';
 import { downloadTrustedChatMedia } from '../../files/nativeAttachmentDownloads';
 import { stickerFromChatAttachment } from '../../chat/chatStickers';
@@ -151,5 +152,70 @@ describe('ChatStickerImage', () => {
     const view = await render(<ChatStickerImage sticker={sticker} autoPlay />);
 
     await waitFor(() => expect(view.getByTestId('chat-sticker-video')).toBeTruthy());
+  });
+
+  it('shows the static preview instead of crashing the screen when the video player throws', async () => {
+    mockedDownload.mockResolvedValue({ uri: 'file:///cache/broken.webm' } as never);
+    // React retries a failed render once, so the failure must be persistent.
+    mockUseVideoPlayer.mockImplementation(() => { throw new Error('ExoPlayer limit reached'); });
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const view = await render(
+      <ChatStickerImage
+        sticker={{ id: 'sticker-broken', emoji: '🙂', mime_type: 'video/webm', file_url: '/f', preview_url: '/p' }}
+        label="Сломанный стикер"
+        autoPlay
+      />,
+    );
+    await waitFor(() => expect(mockUseVideoPlayer).toHaveBeenCalled());
+    expect(view.queryByTestId('chat-sticker-video')).toBeNull();
+    expect(view.getAllByLabelText('Сломанный стикер').length).toBeGreaterThan(0);
+    consoleError.mockRestore();
+    mockUseVideoPlayer.mockImplementation((source, setup) => {
+      setup?.(mockVideoPlayer);
+      return mockVideoPlayer;
+    });
+  });
+
+  it('does not fail the screen when the released player throws while the sticker unmounts', async () => {
+    mockedDownload.mockResolvedValue({ uri: 'file:///cache/sticker.webm' } as never);
+    const onScreenError = jest.fn();
+    class ScreenBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+      state = { failed: false };
+      static getDerivedStateFromError() { return { failed: true }; }
+      componentDidCatch(error: unknown) { onScreenError(error); }
+      render() { return this.state.failed ? null : this.props.children; }
+    }
+    const sticker = {
+      id: 'sticker-6',
+      mime_type: 'video/webm',
+      file_url: '/api/v1/chat/stickers/sticker-6/file',
+      preview_url: '/api/v1/chat/stickers/sticker-6/preview',
+    };
+    const view = await render(<ScreenBoundary><ChatStickerImage sticker={sticker} autoPlay /></ScreenBoundary>);
+    await waitFor(() => expect(view.getByTestId('chat-sticker-video')).toBeTruthy());
+    // The real useVideoPlayer releases the player before our cleanup runs.
+    mockVideoPlayer.pause.mockImplementation(() => { throw new Error('released'); });
+    jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      await view.rerender(<ScreenBoundary>{null}</ScreenBoundary>);
+      expect(onScreenError).not.toHaveBeenCalled();
+    } finally {
+      mockVideoPlayer.pause.mockReset();
+      jest.restoreAllMocks();
+    }
+  });
+
+  it('keeps at most four live video players and draws the rest as static previews', async () => {
+    mockedDownload.mockResolvedValue({ uri: 'file:///cache/s.webm' } as never);
+    const stickers = Array.from({ length: 7 }, (_, index) => ({
+      id: `s-${index}`, emoji: '🙂', mime_type: 'video/webm', file_url: `/f${index}`, preview_url: `/p${index}`,
+    }));
+    const view = await render(
+      <>{stickers.map((sticker) => <ChatStickerImage key={sticker.id} sticker={sticker} autoPlay />)}</>,
+    );
+    await waitFor(() => expect(view.getAllByTestId('chat-sticker-video')).toHaveLength(4));
+    view.unmount();
+    const again = await render(<ChatStickerImage sticker={stickers[0]} autoPlay />);
+    await waitFor(() => expect(again.getByTestId('chat-sticker-video')).toBeTruthy());
   });
 });

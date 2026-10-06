@@ -30,6 +30,7 @@ import {
   readNativeCollectionSnapshot,
   writeNativeCollectionSnapshot,
 } from '../../cache/nativeSnapshotCache';
+import { FadeInRow, SkeletonCards } from '../../components/ui/LoadingSkeleton';
 import { NativeDocflowTaskCard } from '../../components/docflow/NativeDocflowTaskCard';
 import { HubTextField } from '../../components/ui/HubTextField';
 import { NativeSegmentedControl } from '../../components/ui/NativeFilterControls';
@@ -386,12 +387,14 @@ export function NativeDocflowInboxScreen() {
     } as never);
   }, []);
 
-  const renderTask = useCallback(({ item }: ListRenderItemInfo<DocflowTaskSummary>) => (
-    <NativeDocflowTaskCard
-      task={item}
-      tokens={tokens}
-      onPress={openTask}
-    />
+  const renderTask = useCallback(({ item, index }: ListRenderItemInfo<DocflowTaskSummary>) => (
+    <FadeInRow index={index}>
+      <NativeDocflowTaskCard
+        task={item}
+        tokens={tokens}
+        onPress={openTask}
+      />
+    </FadeInRow>
   ), [openTask, tokens]);
 
   if (!canRead) {
@@ -480,7 +483,7 @@ export function NativeDocflowInboxScreen() {
             contentContainerStyle={tasks.length ? [styles.list, { paddingBottom: navInset }] : [styles.emptyList, { paddingBottom: navInset }]}
             renderItem={renderTask}
             ListEmptyComponent={loadingTasks ? (
-              <View style={styles.empty}><ActivityIndicator color={tokens.primary} /><Text style={[styles.emptyText, { color: tokens.textSecondary }]}>Первое подключение к 1С может занять до минуты…</Text></View>
+              <View style={styles.empty}><SkeletonCards tokens={tokens} testID="native-docflow-skeleton" /><Text style={[styles.emptyText, { color: tokens.textSecondary }]}>Первое подключение к 1С может занять до минуты…</Text></View>
             ) : (
               <View style={styles.empty}>
                 <MaterialCommunityIcons name="file-check-outline" size={42} color={tokens.iconMuted} />

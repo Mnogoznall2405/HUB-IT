@@ -15,6 +15,7 @@ import * as nativeFilePicker from '../../files/nativeFilePicker';
 import * as nativeSnapshotCache from '../../cache/nativeSnapshotCache';
 import * as nativeChatInboxSnapshot from '../../chat/nativeChatInboxSnapshot';
 import { NativeChatInboxScreen } from './NativeChatInboxScreen';
+import { UNREAD_FOLDERS_RELOAD_DEBOUNCE_MS } from './useInboxData';
 import { NativeChatThreadWithDelivery as NativeChatThreadScreen } from '../../test/NativeChatWithDelivery';
 
 const mockSocketHandlers = new Map<string, Set<(payload: unknown) => void>>();
@@ -374,6 +375,7 @@ describe('native Chat screens', () => {
   });
 
   it('reloads folder badges when a chat.unread.summary event arrives (M2)', async () => {
+    const debounceWait = { timeout: UNREAD_FOLDERS_RELOAD_DEBOUNCE_MS + 2_000 };
     const view = await render(<NativeChatInboxScreen />);
     await waitFor(() => expect(view.getByText('Мария Иванова')).toBeTruthy());
     expect(mockedChatApi.listChatFolders).toHaveBeenCalledTimes(1);
@@ -381,10 +383,10 @@ describe('native Chat screens', () => {
     await act(async () => {
       emitSocket('chat.unread.summary', { payload: { total_unread: 5 } });
     });
-    // The subscription debounces a folders reload (~800 ms) instead of zeroing badges.
+    // The subscription debounces a folders reload instead of zeroing badges.
     await waitFor(
       () => expect(mockedChatApi.listChatFolders).toHaveBeenCalledTimes(2),
-      { timeout: 3000 },
+      debounceWait,
     );
     // A burst inside the debounce window still resolves to a single reload.
     await act(async () => {
@@ -393,9 +395,9 @@ describe('native Chat screens', () => {
     });
     await waitFor(
       () => expect(mockedChatApi.listChatFolders).toHaveBeenCalledTimes(3),
-      { timeout: 3000 },
+      debounceWait,
     );
-  });
+  }, 20_000);
 
   it('persists every loaded conversation page for the next offline start', async () => {
     mockedChatApi.getConversationPage
