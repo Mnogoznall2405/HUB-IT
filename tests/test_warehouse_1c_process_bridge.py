@@ -34,6 +34,12 @@ def bridge_test_dispatcher(operation: str, payload: dict):
         time.sleep(delay)
     if payload.get("fail"):
         raise RuntimeError("read dispatcher failed")
+    if payload.get("die"):
+        os._exit(3)
+    marker = payload.get("die_once_marker")
+    if marker and not Path(marker).exists():
+        Path(marker).write_text("died", encoding="utf-8")
+        os._exit(3)
     return {"operation": operation, "payload": payload}
 
 
@@ -116,6 +122,30 @@ def test_process_bridge_timeout_terminates_worker_and_manual_restart_recovers():
         assert bridge.call("health", {"after_restart": True}, timeout=10)["payload"] == {
             "after_restart": True
         }
+    finally:
+        bridge.shutdown()
+
+
+def test_process_bridge_repeats_read_once_after_worker_dies_on_its_own(tmp_path):
+    bridge = _bridge()
+    try:
+        marker = tmp_path / "died-once"
+        result = bridge.call("health", {"die_once_marker": str(marker)}, timeout=30)
+
+        assert result["payload"] == {"die_once_marker": str(marker)}
+        assert marker.exists()
+        assert bridge.get_status()["restarts"] >= 1
+    finally:
+        bridge.shutdown()
+
+
+def test_process_bridge_reports_exit_code_when_worker_keeps_dying():
+    bridge = _bridge()
+    try:
+        with pytest.raises(Warehouse1CProcessBridgeUnavailable, match="код выхода 0x00000003"):
+            bridge.call("health", {"die": True}, timeout=30)
+
+        assert bridge.get_status()["restarts"] >= 2
     finally:
         bridge.shutdown()
 

@@ -69,6 +69,10 @@ class Warehouse1CProcessBridgeUnavailable(Warehouse1CProcessBridgeError):
     """The worker is unavailable or its circuit breaker is open."""
 
 
+class _Warehouse1CProcessBridgeWorkerLost(Warehouse1CProcessBridgeUnavailable):
+    """The worker died by itself while a read was pending (repeated once by ``call``)."""
+
+
 class Warehouse1CProcessBridgeTimeout(Warehouse1CProcessBridgeError):
     """A read call timed out and the worker was replaced.
 
@@ -190,6 +194,39 @@ def _co_initialize() -> Any | None:
         return None
 
 
+def _preload_system_cpp_runtime() -> None:
+    """Pin the system C++ runtime before 1C's older bundled copy claims the name.
+
+    ``comcntr.dll`` loads ``MSVCP140.dll`` from the 1C ``bin`` directory
+    (14.44).  Python extensions imported by the dispatcher (``_psycopg``, ...)
+    bind to that already-loaded older copy and crash the worker with an access
+    violation (0xC0000005 in MSVCP140.dll).  A same-named module that is
+    already loaded wins, so loading System32's copy first fixes it for every
+    later consumer; the C++ runtime is backward compatible for 1C itself.
+    """
+
+    if os.name != "nt":
+        return
+    import ctypes
+
+    system_dir = Path(os.environ.get("SystemRoot") or r"C:\Windows") / "System32"
+    for name in ("msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll"):
+        path = system_dir / name
+        if not path.is_file():
+            continue
+        try:
+            ctypes.WinDLL(str(path))
+        except OSError:
+            pass
+
+
+def _worker_exit_message(process: Any) -> str:
+    code = getattr(process, "exitcode", None)
+    if not isinstance(code, int):
+        return "Worker 1С неожиданно завершился"
+    return f"Worker 1С неожиданно завершился (код выхода 0x{code & 0xFFFFFFFF:08X})"
+
+
 def _start_process_without_console(process: Any) -> None:
     """Start a Windows spawn worker through pythonw and restore global state."""
 
@@ -224,6 +261,7 @@ def _worker_main(
 ) -> None:
     """Child process entry point; never executes a non-allowlisted request."""
 
+    _preload_system_cpp_runtime()
     pythoncom = _co_initialize()
     dispatcher: Warehouse1CReadDispatcher | None = None
     try:
@@ -397,6 +435,18 @@ class Warehouse1CProcessBridge:
         if timeout_seconds <= 0:
             raise Warehouse1CProcessBridgeConfigurationError("Timeout 1С bridge должен быть положительным")
 
+        # A worker that died on its own (not on timeout) is replaced and the
+        # idempotent read is repeated once within the original deadline.
+        deadline = time.monotonic() + timeout_seconds
+        for attempt in (0, 1):
+            try:
+                return self._call_once(normalized_operation, normalized_payload, deadline)
+            except _Warehouse1CProcessBridgeWorkerLost:
+                if attempt or deadline - time.monotonic() < 1:
+                    raise
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    def _call_once(self, normalized_operation: str, normalized_payload: dict[str, Any], deadline: float) -> Any:
         if not self._capacity_slots.acquire(blocking=False):
             with self._lock:
                 self._rejected += 1
@@ -431,7 +481,6 @@ class Warehouse1CProcessBridge:
                     self._last_error = "Очередь 1С bridge заполнена"
                     raise Warehouse1CProcessBridgeBusy("Очередь read-запросов к 1С заполнена") from exc
 
-            deadline = time.monotonic() + timeout_seconds
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -447,10 +496,10 @@ class Warehouse1CProcessBridge:
                 with self._lock:
                     if not self._process_is_alive_locked():
                         self._pending.pop(request_id, None)
-                        error = self._startup_error or "Worker 1С неожиданно завершился"
+                        error = self._startup_error or _worker_exit_message(self._process)
                         self._record_failure_locked(error)
-                        self._restart_locked("Worker 1С завершился")
-                        raise Warehouse1CProcessBridgeUnavailable(error)
+                        self._restart_locked("Worker 1С завершился", worker_lost=True)
+                        raise _Warehouse1CProcessBridgeWorkerLost(error)
 
             response = pending.response or {
                 "ok": False,
@@ -464,6 +513,8 @@ class Warehouse1CProcessBridge:
             error = str(response.get("error") or "Ошибка read-операции 1С")[:500]
             with self._lock:
                 self._record_failure_locked(error)
+            if response.get("worker_lost"):
+                raise _Warehouse1CProcessBridgeWorkerLost(error)
             raise Warehouse1CProcessBridgeRemoteError(error)
         finally:
             self._capacity_slots.release()
@@ -589,16 +640,18 @@ class Warehouse1CProcessBridge:
         if self._consecutive_failures >= self._failure_threshold:
             self._circuit_open_until = time.monotonic() + self._cooldown_seconds
 
-    def _fail_pending_locked(self, error: str) -> None:
+    def _fail_pending_locked(self, error: str, *, worker_lost: bool = False) -> None:
         for pending in self._pending.values():
-            pending.response = {"ok": False, "error": str(error)[:500]}
+            pending.response = {"ok": False, "error": str(error)[:500], "worker_lost": worker_lost}
             pending.event.set()
         self._pending.clear()
 
-    def _restart_locked(self, reason: str) -> None:
+    def _restart_locked(self, reason: str, *, worker_lost: bool = False) -> None:
         self._restarts += 1
         self._last_error = str(reason)[:500]
-        self._fail_pending_locked("Worker 1С был перезапущен; результат чтения неизвестен")
+        self._fail_pending_locked(
+            "Worker 1С был перезапущен; результат чтения неизвестен", worker_lost=worker_lost
+        )
         self._stop_process_locked(grace_seconds=0)
 
     def _stop_process_locked(self, *, grace_seconds: float) -> None:
