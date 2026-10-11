@@ -92,6 +92,7 @@ export default function useTasksPageController() {
   const canUseControllerTab = canReviewTasks;
 
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const taskOpenTriggerRef = useRef(null);
@@ -354,6 +355,7 @@ export default function useTasksPageController() {
     canCreateTasks,
     isMobile,
     setError,
+    setNotice,
     loadTasks: list.loadTasks,
     loadTaskMeta: list.loadTaskMeta,
     loadTaskUserDirectories: list.loadTaskUserDirectories,
@@ -800,6 +802,8 @@ export default function useTasksPageController() {
     loading: list.loading,
     error,
     setError,
+    notice,
+    setNotice,
     pageMode: filters.pageMode,
     setPageMode: handleSetPageMode,
     detailsOpen: details.detailsOpen,

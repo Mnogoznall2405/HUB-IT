@@ -36,3 +36,4 @@ export {
   createTaskUserAutocompleteOptionRenderer,
   createTaskUserAutocompleteTagsRenderer,
 } from './taskUserAutocompleteRenderers';
+export { default as TaskAssignmentModeToggle } from './TaskAssignmentModeToggle';

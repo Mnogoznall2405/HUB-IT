@@ -48,6 +48,7 @@ export const createInitialTaskDraft = (projectId = '') => ({
   title: '',
   description: '',
   assignee_user_ids: [],
+  assignment_mode: 'shared',
   observer_user_ids: [],
   controller_user_id: '',
   project_id: String(projectId || ''),

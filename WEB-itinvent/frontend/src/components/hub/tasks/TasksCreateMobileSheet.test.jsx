@@ -156,4 +156,45 @@ describe('TasksCreateMobileSheet', () => {
     expect(setCreateData).toHaveBeenCalled();
     expect(updatedCreateData).toMatchObject({ project_id: 'project-2', object_id: '' });
   });
+
+  it('hides the assignment mode toggle when fewer than two assignees are selected', () => {
+    renderSheet({
+      sheet: 'assignees',
+      bodyProps: {
+        ...baseBodyProps,
+        createData: { ...baseBodyProps.createData, assignee_user_ids: ['user-1'] },
+      },
+    });
+
+    const sheet = screen.getByTestId('create-mobile-sheet');
+    expect(within(sheet).queryByTestId('create-assignment-mode-mobile-root')).not.toBeInTheDocument();
+  });
+
+  it('switches the assignment mode to separate when two or more assignees are selected', () => {
+    let updatedCreateData = null;
+    const createData = {
+      ...baseBodyProps.createData,
+      assignee_user_ids: ['user-1', 'user-2'],
+      assignment_mode: 'shared',
+    };
+    const setCreateData = vi.fn((updater) => {
+      updatedCreateData = typeof updater === 'function' ? updater(createData) : updater;
+    });
+
+    renderSheet({
+      sheet: 'assignees',
+      bodyProps: {
+        ...baseBodyProps,
+        createData,
+        setCreateData,
+      },
+    });
+
+    const sheet = screen.getByTestId('create-mobile-sheet');
+    const separateButton = within(sheet).getByTestId('create-assignment-mode-mobile-separate');
+    fireEvent.click(separateButton);
+
+    expect(setCreateData).toHaveBeenCalledTimes(1);
+    expect(updatedCreateData).toMatchObject({ assignment_mode: 'separate', assignee_user_ids: ['user-1', 'user-2'] });
+  });
 });

@@ -21,6 +21,7 @@ import {
   getTaskUserLabel,
 } from '../../../pages/tasks/taskUserUtils';
 import EmailDeadlineRemindFields from './EmailDeadlineRemindFields';
+import TaskAssignmentModeToggle from './TaskAssignmentModeToggle';
 
 export function TaskDueFields({
   dueLabel = 'Без срока',
@@ -104,10 +105,14 @@ export function TaskPeopleFields({
   renderTaskUserTags,
   assigneeAutocompleteProps,
   taskUserAutocompleteSlotProps,
+  assignmentMode,
+  onChangeAssignmentMode,
+  showAssignmentMode = false,
 }) {
   const theme = useTheme();
 
   return (
+    <>
     <Stack direction={{ xs: 'column', sm: 'row' }} spacing={{ xs: 0.45, sm: 1.4 }} alignItems={{ xs: 'stretch', sm: 'center' }}>
       <Typography sx={{ width: { sm: 120 }, flexShrink: 0, color: ui.subtleText, fontSize: '0.86rem', fontWeight: 700 }}>
         Исполнители
@@ -175,6 +180,19 @@ export function TaskPeopleFields({
         />
       )}
     </Stack>
+      {showAssignmentMode ? (
+        <Box sx={{ pl: { xs: 0, sm: '136px' }, mt: 0.6 }}>
+          <TaskAssignmentModeToggle
+            value={assignmentMode}
+            onChange={onChangeAssignmentMode}
+            assigneeCount={selectedAssignees.length}
+            ui={ui}
+            compact
+            testIdPrefix="create-assignment-mode"
+          />
+        </Box>
+      ) : null}
+    </>
   );
 }
 

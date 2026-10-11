@@ -382,6 +382,9 @@ export default function TasksCreateDialog({
                     dueAt={createData.due_at}
                     dueAnchorRef={createDueAnchorRef}
                     onOpenDuePicker={onOpenDuePicker}
+                    showAssignmentMode={!isEditing}
+                    assignmentMode={createData.assignment_mode || 'shared'}
+                    onChangeAssignmentMode={(nextMode) => setCreateData((prev) => ({ ...prev, assignment_mode: nextMode }))}
                     emailRemindMode={createData.email_deadline_remind_mode}
                     emailRemindHours={createData.email_deadline_remind_hours}
                     emailRemindDefaultHours={taskEmailDeadlineDefaultHours}

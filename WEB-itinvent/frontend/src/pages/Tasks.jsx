@@ -3,6 +3,7 @@ import {
   Box,
   IconButton,
   LinearProgress,
+  Snackbar,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import MainLayout from '../components/layout/MainLayout';
@@ -46,6 +47,26 @@ function TasksPageContent() {
               {list.error}
             </Alert>
           ) : null}
+          <Snackbar
+            open={Boolean(list.notice)}
+            autoHideDuration={4000}
+            onClose={(_, reason) => {
+              if (reason === 'clickaway') return;
+              list.setNotice('');
+            }}
+            anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+            sx={{ mt: { xs: 1, md: 2 } }}
+          >
+            <Alert
+              data-testid="tasks-create-notice"
+              severity="success"
+              variant="filled"
+              onClose={() => list.setNotice('')}
+              sx={{ borderRadius: '12px', alignItems: 'center' }}
+            >
+              {list.notice}
+            </Alert>
+          </Snackbar>
 
           <Box
             aria-hidden={detail.detailsOpen ? 'true' : undefined}

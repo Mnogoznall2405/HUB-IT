@@ -37,6 +37,7 @@ import {
 } from '../../../pages/tasks/taskCreateMobileSheet';
 import MobileCreateDescriptionEditor from './MobileCreateDescriptionEditor';
 import MobileCreateUserPicker from './MobileCreateUserPicker';
+import TaskAssignmentModeToggle from './TaskAssignmentModeToggle';
 import { TaskProjectFields } from './TaskCreateFormSections';
 
 function TasksCreateMobileSheetBody({
@@ -108,18 +109,28 @@ function TasksCreateMobileSheetBody({
 
     if (sheet === 'assignees') {
       return (
-        <MobileCreateUserPicker
-          key="create-assignees-mobile-picker"
-          selectedIds={createData.assignee_user_ids}
-          onChange={handleChangeCreateAssigneeIds}
-          onClear={handleClearCreateAssignees}
-          onDone={handleCloseCreateMobileSheet}
-          onSearchUsers={searchCreateAssignees}
-          resolveUsers={resolveCreateAssignees}
-          searchAriaLabel="Поиск исполнителей"
-          ui={ui}
-          theme={theme}
-        />
+        <Stack spacing={0.75} sx={{ height: '100%', minHeight: 0 }}>
+          <TaskAssignmentModeToggle
+            value={createData.assignment_mode || 'shared'}
+            onChange={(nextMode) => setCreateData((prev) => ({ ...prev, assignment_mode: nextMode }))}
+            assigneeCount={(createData.assignee_user_ids || []).length}
+            ui={ui}
+            compact
+            testIdPrefix="create-assignment-mode-mobile"
+          />
+          <MobileCreateUserPicker
+            key="create-assignees-mobile-picker"
+            selectedIds={createData.assignee_user_ids}
+            onChange={handleChangeCreateAssigneeIds}
+            onClear={handleClearCreateAssignees}
+            onDone={handleCloseCreateMobileSheet}
+            onSearchUsers={searchCreateAssignees}
+            resolveUsers={resolveCreateAssignees}
+            searchAriaLabel="Поиск исполнителей"
+            ui={ui}
+            theme={theme}
+          />
+        </Stack>
       );
     }
 

@@ -22,9 +22,20 @@ import {
   formatHubTaskError,
 } from '../taskUserUtils';
 
+function formatCreatedTasksNotice(count) {
+  const n = Number(count) || 0;
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  let noun = 'задач';
+  if (mod10 === 1 && mod100 !== 11) noun = 'задача';
+  else if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) noun = 'задачи';
+  return `Создано ${n} ${noun}`;
+}
+
 export default function useTaskCreateForm({
   isMobile,
   setError,
+  setNotice,
   loadTasks,
   loadTaskMeta,
   loadTaskUserDirectories,
@@ -221,6 +232,8 @@ export default function useTaskCreateForm({
     setCreateData((prev) => ({
       ...prev,
       assignee_user_ids: normalizedIds,
+      // Режим имеет смысл только при 2+ исполнителях; при меньшем числе сбрасываем на «одна задача».
+      assignment_mode: normalizedIds.length >= 2 ? prev.assignment_mode : 'shared',
     }));
     if (normalizedIds.length) {
       void resolveAssigneesByIds(normalizedIds);
@@ -228,7 +241,7 @@ export default function useTaskCreateForm({
   }, [resolveAssigneesByIds]);
 
   const handleClearCreateAssignees = useCallback(() => {
-    setCreateData((prev) => ({ ...prev, assignee_user_ids: [] }));
+    setCreateData((prev) => ({ ...prev, assignee_user_ids: [], assignment_mode: 'shared' }));
   }, []);
 
   const handleChangeCreateControllerId = useCallback((nextIds) => {
@@ -394,8 +407,11 @@ export default function useTaskCreateForm({
         observer_user_ids: (Array.isArray(createData.observer_user_ids) ? createData.observer_user_ids : [])
           .map(Number)
           .filter((value) => Number.isInteger(value) && value > 0),
+        ...(assigneeIds.length >= 2 ? { assignment_mode: createData.assignment_mode === 'separate' ? 'separate' : 'shared' } : {}),
       });
       const createdTasks = getCreatedTaskItems(createResponse);
+      const failedAssignees = Array.isArray(createResponse?.failed) ? createResponse.failed : [];
+      const isPartial = createResponse?.partial === true || failedAssignees.length > 0;
       const uploadFailures = [];
       if (filesToUpload.length > 0 && createdTasks.length === 0) {
         uploadFailures.push('API не вернул id задачи');
@@ -415,6 +431,34 @@ export default function useTaskCreateForm({
             }
           }
         }
+      }
+      if (isPartial) {
+        // Частичный результат: диалог и форма остаются. Оставляем только тех исполнителей,
+        // для которых задача не создана, чтобы повторная отправка не дублировала уже созданные.
+        const failedIds = failedAssignees.map((item) => String(item?.assignee_user_id ?? ''));
+        const remainingIds = assigneeIds.filter((id) => failedIds.includes(String(id)));
+        setCreateData((prev) => ({
+          ...prev,
+          assignee_user_ids: remainingIds,
+          assignment_mode: remainingIds.length >= 2 ? prev.assignment_mode : 'shared',
+        }));
+        const failedNames = failedAssignees.map((item) => {
+          const id = String(item?.assignee_user_id ?? '');
+          const user = getAssigneeById(id);
+          return user ? getTaskUserLabel(user) : id;
+        });
+        const totalRequested = assigneeIds.length;
+        const uploadSuffix = uploadFailures.length > 0
+          ? ` Часть файлов не загрузилась: ${uploadFailures.slice(0, 3).join(', ')}${uploadFailures.length > 3 ? ` и ещё ${uploadFailures.length - 3}` : ''}.`
+          : '';
+        // Сообщение ставим после loadTasks: перезагрузка списка может сбрасывать error.
+        await loadTasks();
+        window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
+        setError(`Создано ${createdTasks.length} из ${totalRequested} задач. Не удалось создать для: ${failedNames.join(', ')}. Исполнители оставлены в форме — повторите отправку.${uploadSuffix}`);
+        return;
+      }
+      if (createdTasks.length >= 2) {
+        setNotice?.(formatCreatedTasksNotice(createdTasks.length));
       }
       setCreateOpen(false);
       setCreateDuePickerOpen(false);

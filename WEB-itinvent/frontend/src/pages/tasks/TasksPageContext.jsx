@@ -23,7 +23,7 @@ export function TasksPageProvider({ controller, children }) {
       'handleSingleAssigneeAutocompleteChange', 'getAssigneeAutocompleteInputValue',
     ]),
     list: pick(controller, [
-      'loading', 'error', 'setError', 'visibleTaskItems', 'taskItems', 'taskListSections',
+      'loading', 'error', 'setError', 'notice', 'setNotice', 'visibleTaskItems', 'taskItems', 'taskListSections',
       'activeTaskProjects', 'deadlineBuckets', 'calendarPayload', 'shiftCalendarMonth',
       'setCalendarMonth', 'ganttPayload', 'columnData', 'mobileBoardItems', 'isTaskDataMode',
       'focusCounts', 'renderTaskCard', 'loadTasks', 'loadMoreTasks', 'hasMoreTasks', 'tasksTotal', 'listTruncated',

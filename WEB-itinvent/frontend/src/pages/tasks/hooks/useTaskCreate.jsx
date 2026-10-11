@@ -15,6 +15,7 @@ export default function useTaskCreate({
   canCreateTasks,
   isMobile,
   setError,
+  setNotice,
   loadTasks,
   loadTaskMeta,
   loadTaskUserDirectories,
@@ -82,6 +83,7 @@ export default function useTaskCreate({
   const createForm = useTaskCreateForm({
     isMobile,
     setError,
+    setNotice,
     loadTasks,
     loadTaskMeta,
     loadTaskUserDirectories,

@@ -1069,6 +1069,137 @@ describe('Tasks page detail workspace', () => {
     installMatchMedia({ mobile: true });
 
     render(
+  it('sends assignment_mode separate when several assignees get individual tasks', async () => {
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Новая задача' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText(/Что нужно сделать/i), {
+      target: { value: 'Проверить два доступа' },
+    });
+    await selectAutocompleteOption('Исполнители', 'Испол', 'Исполнитель И.И.', dialog);
+    expect(within(dialog).queryByTestId('create-assignment-mode-group')).not.toBeInTheDocument();
+
+    await selectAutocompleteOption('Исполнители', 'Иванов', 'Иванов И.И.', dialog);
+    fireEvent.click(within(dialog).getByTestId('create-assignment-mode-separate'));
+    expect(within(dialog).getByText('Каждый получит свою задачу: 2 задач, статусы независимы')).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Создать задачу' }));
+
+    await waitFor(() => {
+      expect(hubTasksAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Проверить два доступа',
+        assignee_user_ids: [1, 4],
+        assignment_mode: 'separate',
+      }));
+    });
+  });
+
+  it('omits assignment_mode for a single assignee', async () => {
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Новая задача' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText(/Что нужно сделать/i), {
+      target: { value: 'Одиночная задача' },
+    });
+    await selectAutocompleteOption('Исполнители', 'Испол', 'Исполнитель И.И.', dialog);
+    expect(within(dialog).queryByTestId('create-assignment-mode-group')).not.toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Создать задачу' }));
+
+    await waitFor(() => {
+      expect(hubTasksAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Одиночная задача',
+        assignee_user_ids: [1],
+      }));
+    });
+    const payload = hubTasksAPI.createTask.mock.calls.at(-1)[0];
+    expect(payload).not.toHaveProperty('assignment_mode');
+  });
+
+  it('shows a success notice and closes the dialog when several separate tasks are created', async () => {
+    hubTasksAPI.createTask.mockResolvedValueOnce({
+      items: [{ id: 'task-1' }, { id: 'task-2' }],
+      created: 2,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Новая задача' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText(/Что нужно сделать/i), {
+      target: { value: 'Проверить два доступа' },
+    });
+    await selectAutocompleteOption('Исполнители', 'Испол', 'Исполнитель И.И.', dialog);
+    await selectAutocompleteOption('Исполнители', 'Иванов', 'Иванов И.И.', dialog);
+    fireEvent.click(within(dialog).getByTestId('create-assignment-mode-separate'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Создать задачу' }));
+
+    expect(await screen.findByText('Создано 2 задачи')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+  });
+
+  it('keeps the dialog open with only the failed assignee after a partial separate create', async () => {
+    hubTasksAPI.createTask
+      .mockResolvedValueOnce({
+        items: [{ id: 'task-1' }],
+        created: 1,
+        failed: [{ assignee_user_id: 4, detail: 'Нет доступа' }],
+        partial: true,
+      })
+      .mockResolvedValueOnce({ items: [{ id: 'task-2' }], created: 1 });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Новая задача' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText(/Что нужно сделать/i), {
+      target: { value: 'Проверить два доступа' },
+    });
+    await selectAutocompleteOption('Исполнители', 'Испол', 'Исполнитель И.И.', dialog);
+    await selectAutocompleteOption('Исполнители', 'Иванов', 'Иванов И.И.', dialog);
+    fireEvent.click(within(dialog).getByTestId('create-assignment-mode-separate'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Создать задачу' }));
+
+    expect(await screen.findByText(/Создано 1 из 2 задач\. Не удалось создать для: Иванов И\.И\./)).toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Создать задачу' }));
+    await waitFor(() => {
+      expect(hubTasksAPI.createTask).toHaveBeenCalledTimes(2);
+    });
+    const retryPayload = hubTasksAPI.createTask.mock.calls[1][0];
+    expect(retryPayload.assignee_user_ids).toEqual([4]);
+    expect(retryPayload).not.toHaveProperty('assignment_mode');
+  });
+
       <MemoryRouter initialEntries={['/tasks?task_mode=list']}>
         <Routes>
           <Route path="/tasks" element={<Tasks />} />
