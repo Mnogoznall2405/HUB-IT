@@ -1599,30 +1599,104 @@ async def create_task(
         if due_at_value and "email_deadline_remind_hours" in payload:
             email_deadline_remind_hours = _normalize_email_deadline_remind_hours(payload.get("email_deadline_remind_hours"))
 
-        created_task = await run_in_threadpool(
-            hub_service.create_task,
-            title=_normalize_text(payload.get("title")),
+        # assignment_mode: "separate" -> отдельная задача каждому исполнителю (только при 2+);
+        # любое другое значение или отсутствие -> одна общая задача (прежнее поведение).
+        assignment_mode = _normalize_text(payload.get("assignment_mode")).lower()
+        separate_assignments = assignment_mode == "separate" and len(assignee_ids) > 1
+        title_value = _normalize_text(payload.get("title"))
+        project_id_value = _normalize_text(payload.get("project_id")) or None
+        object_id_value = _normalize_text(payload.get("object_id")) or None
+        department_id_value = _normalize_text(payload.get("department_id")) or None
+        actor = _actor_dict(current_user)
+
+        if separate_assignments:
+            # Все проверки до первой вставки: при ошибке у любого исполнителя не создаётся ни одной задачи.
+            await run_in_threadpool(
+                hub_service.precheck_task_creation_batch,
+                title=title_value,
+                assignee_user_ids=assignee_ids,
+                controller_user_id=controller_user_id,
+                project_id=project_id_value,
+                object_id=object_id_value,
+                department_id=department_id_value,
+                actor=actor,
+            )
+
+        common_task_kwargs = dict(
+            title=title_value,
             description=_normalize_text(payload.get("description")),
-            assignee_user_id=assignee_ids[0],
-            assignee_user_ids=assignee_ids,
             controller_user_id=controller_user_id,
             due_at=due_at_value,
-            project_id=_normalize_text(payload.get("project_id")) or None,
-            object_id=_normalize_text(payload.get("object_id")) or None,
+            project_id=project_id_value,
+            object_id=object_id_value,
             protocol_date=_normalize_text(payload.get("protocol_date")) or None,
             priority=_normalize_text(payload.get("priority"), "normal"),
             checklist_items=payload.get("checklist_items") if isinstance(payload.get("checklist_items"), list) else [],
-            department_id=_normalize_text(payload.get("department_id")) or None,
+            department_id=department_id_value,
             visibility_scope=_normalize_text(payload.get("visibility_scope")) or None,
             email_deadline_remind_hours=email_deadline_remind_hours,
             observer_user_ids=observer_ids,
-            actor=_actor_dict(current_user),
+            actor=actor,
         )
-        await _safe_provision_task_discussion(
-            task=created_task,
-            actor_user_id=int(current_user.id),
-        )
-        created_items = [created_task]
+        if separate_assignments:
+            # Каждая задача коммитится отдельно: сбой одного исполнителя не отменяет уже созданные,
+            # остальных пробуем дальше. Если создана хотя бы одна задача, отдаём partial-ответ,
+            # чтобы клиент не повторял весь запрос и не получил дубли.
+            created_items = []
+            failed_items: list[dict] = []
+            first_error: Exception | None = None
+            for assignee_id in assignee_ids:
+                try:
+                    created_task = await run_in_threadpool(
+                        hub_service.create_task,
+                        **common_task_kwargs,
+                        assignee_user_id=assignee_id,
+                        assignee_user_ids=[assignee_id],
+                    )
+                except Exception as exc:  # ValueError/PermissionError/прочее обрабатываются ниже
+                    if first_error is None:
+                        first_error = exc
+                    if isinstance(exc, (ValueError, PermissionError)):
+                        detail = str(exc).strip()[:200] or "Задача не создана"
+                    else:
+                        detail = "Внутренняя ошибка при создании задачи"
+                    logger.exception(
+                        "hub.task.separate_create_failed assignee_user_id=%s title=%r",
+                        assignee_id,
+                        title_value[:120],
+                    )
+                    failed_items.append({"assignee_user_id": int(assignee_id), "detail": detail})
+                    continue
+                await _safe_provision_task_discussion(
+                    task=created_task,
+                    actor_user_id=int(current_user.id),
+                )
+                created_items.append(created_task)
+            if not created_items and first_error is not None:
+                raise first_error
+            if failed_items:
+                return {
+                    "items": transfer_act_reminder_service.enrich_tasks(created_items),
+                    "created": len(created_items),
+                    "failed": failed_items,
+                    "partial": True,
+                }
+            return {
+                "items": transfer_act_reminder_service.enrich_tasks(created_items),
+                "created": len(created_items),
+            }
+        else:
+            created_task = await run_in_threadpool(
+                hub_service.create_task,
+                **common_task_kwargs,
+                assignee_user_id=assignee_ids[0],
+                assignee_user_ids=assignee_ids,
+            )
+            await _safe_provision_task_discussion(
+                task=created_task,
+                actor_user_id=int(current_user.id),
+            )
+            created_items = [created_task]
         return {
             "items": transfer_act_reminder_service.enrich_tasks(created_items),
             "created": len(created_items),

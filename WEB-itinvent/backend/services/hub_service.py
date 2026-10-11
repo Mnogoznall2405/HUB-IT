@@ -6720,6 +6720,53 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         *,
         title: str,
         description: str,
+    def precheck_task_creation_batch(
+        self,
+        *,
+        title: str,
+        assignee_user_ids: list[int],
+        controller_user_id: int,
+        project_id: Optional[str] = None,
+        object_id: Optional[str] = None,
+        department_id: Optional[str] = None,
+        actor: dict[str, Any],
+    ) -> None:
+        """Проверяет общие поля и всех исполнителей до первой вставки задач.
+
+        Бросает ValueError (400) или PermissionError (403); при успехе ничего не пишет.
+        Используется режимом «отдельная задача каждому», чтобы не создать часть задач.
+        """
+        title_text = _normalize_text(title)
+        if len(title_text) < 3:
+            raise ValueError("Task title must contain at least 3 characters")
+        assignees = self._resolve_active_task_assignees(assignee_user_ids)
+        normalized_department_id = _normalize_text(department_id)
+        if normalized_department_id and not department_service.get_department(normalized_department_id):
+            raise ValueError("Department is not available")
+        controller_id = self._as_int(controller_user_id)
+        if controller_id > 0:
+            controller = user_service.get_by_id(controller_id)
+            if not controller or not bool(controller.get("is_active", True)):
+                raise ValueError("Controller user is not available")
+            if not (self._user_can_review_tasks(controller) or (normalized_department_id and user_is_department_manager(controller, normalized_department_id))):
+                raise ValueError("Controller must have tasks.review permission or be department manager")
+        if normalized_department_id:
+            for target_assignee in assignees:
+                if not can_create_task_for_department(
+                    actor,
+                    department_id=normalized_department_id,
+                    assignee=target_assignee,
+                ):
+                    raise PermissionError("Task cannot be assigned in the selected department")
+        with self._db_conn(write=False) as conn:
+            validated_project_id, _ = self._validate_task_project_object(
+                conn,
+                project_id=project_id,
+                object_id=object_id,
+            )
+        if not validated_project_id:
+            raise ValueError("project_id is required")
+
         assignee_user_id: int,
         controller_user_id: int,
         due_at: Optional[str],
