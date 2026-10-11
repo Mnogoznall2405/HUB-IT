@@ -1045,6 +1045,10 @@ describe('Tasks page detail workspace', () => {
     await selectAutocompleteOption('Исполнители', 'Испол', 'Исполнитель И.И.', dialog);
 
     fireEvent.click(within(dialog).getByText('В приоритете'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Высокий' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('menuitem', { name: 'Высокий' })).not.toBeInTheDocument();
+    });
     fireEvent.click(within(dialog).getByText('Чек-листы'));
     fireEvent.change(within(dialog).getByPlaceholderText('Пункт 1'), {
       target: { value: 'Проверить доступ' },
@@ -1065,10 +1069,6 @@ describe('Tasks page detail workspace', () => {
     });
   });
 
-  it('sends observer_user_ids from the quick task dialog', async () => {
-    installMatchMedia({ mobile: true });
-
-    render(
   it('sends assignment_mode separate when several assignees get individual tasks', async () => {
     render(
       <MemoryRouter initialEntries={['/tasks']}>
@@ -1200,6 +1200,10 @@ describe('Tasks page detail workspace', () => {
     expect(retryPayload).not.toHaveProperty('assignment_mode');
   });
 
+  it('sends observer_user_ids from the quick task dialog', async () => {
+    installMatchMedia({ mobile: true });
+
+    render(
       <MemoryRouter initialEntries={['/tasks?task_mode=list']}>
         <Routes>
           <Route path="/tasks" element={<Tasks />} />

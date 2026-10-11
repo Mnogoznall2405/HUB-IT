@@ -1,5 +1,7 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import hubTasksAPI from '../../../api/hubTasks';
+import hubTaskFilesAPI from '../../../api/hubTaskFiles';
+import { getFileIdentity } from '../taskApiHelpers';
 import { formatCreateDueLabel } from '../taskViewModes';
 import {
   fromApiEmailDeadlineRemindHours,
@@ -61,6 +63,7 @@ export default function useTaskEditForm({
   const [editSaving, setEditSaving] = useState(false);
   const [editLoading, setEditLoading] = useState(false);
   const [editDueCustomOpen, setEditDueCustomOpen] = useState(false);
+  const [editFiles, setEditFiles] = useState([]);
   const [editData, setEditData] = useState({
     id: '',
     title: '',
@@ -81,6 +84,11 @@ export default function useTaskEditForm({
 
   const editDescriptionRef = useRef('');
   const editLoadSeqRef = useRef(0);
+
+  // Выбранные файлы живут только в открытом диалоге: после закрытия (любым способом) очищаем.
+  useEffect(() => {
+    if (!editOpen) setEditFiles([]);
+  }, [editOpen]);
 
   const editProjectObjects = useMemo(() => (
     activeTaskObjects.filter((item) => item?.is_active !== false && String(item?.project_id || '') === String(editData.project_id || ''))
@@ -194,6 +202,7 @@ export default function useTaskEditForm({
       email_deadline_remind_hours: 24,
     });
     editDescriptionRef.current = '';
+    setEditFiles([]);
     setEditDueCustomOpen(false);
     setEditOpen(true);
     setEditLoading(true);
@@ -216,6 +225,27 @@ export default function useTaskEditForm({
         }
       });
   }, [applyTaskToEditForm, setEditOpen, setError]);
+
+  const handleAddEditFiles = useCallback((fileList) => {
+    const nextFiles = Array.from(fileList || []).filter(Boolean);
+    if (nextFiles.length === 0) return;
+    setEditFiles((prev) => {
+      const seen = new Set(prev.map(getFileIdentity));
+      const merged = [...prev];
+      nextFiles.forEach((file) => {
+        const identity = getFileIdentity(file);
+        if (!seen.has(identity)) {
+          seen.add(identity);
+          merged.push(file);
+        }
+      });
+      return merged;
+    });
+  }, []);
+
+  const handleRemoveEditFile = useCallback((index) => {
+    setEditFiles((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
+  }, []);
 
   const handleEditObserversChange = useCallback((_, value) => {
     setEditData((prev) => ({
@@ -258,7 +288,6 @@ export default function useTaskEditForm({
         department_id: String(editData.department_id || '').trim() || null,
         visibility_scope: String(editData.visibility_scope || 'private').trim() || 'private',
       });
-      setEditOpen(false);
       resetTaskUserSearchInputs();
       if (typeof applyTaskUpdate === 'function') {
         applyTaskUpdate(taskId, updatedTask || { id: taskId });
@@ -266,6 +295,30 @@ export default function useTaskEditForm({
         await refreshTasksAndDetails(taskId);
       }
       window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
+
+      // Поля уже сохранены: ошибка загрузки файла не отменяет сохранение.
+      const failedFileNames = [];
+      const pendingFiles = [];
+      let uploadedCount = 0;
+      for (const file of editFiles.filter(Boolean)) {
+        try {
+          await hubTaskFilesAPI.uploadTaskAttachment({ taskId, file });
+          uploadedCount += 1;
+        } catch {
+          failedFileNames.push(file?.name || 'file');
+          pendingFiles.push(file);
+        }
+      }
+      setEditFiles(pendingFiles);
+      if (uploadedCount > 0) {
+        await refreshTasksAndDetails(taskId);
+      }
+      if (failedFileNames.length > 0) {
+        // Диалог остаётся открытым: неудачные файлы видны и повторная отправка загрузит только их.
+        setError(`Изменения сохранены, но часть файлов не загрузилась: ${failedFileNames.join(', ')}`);
+        return;
+      }
+      setEditOpen(false);
     } catch (err) {
       setError(err?.response?.data?.detail || err?.message || 'Ошибка сохранения задачи');
     } finally {
@@ -280,6 +333,9 @@ export default function useTaskEditForm({
     editLoading,
     editData,
     setEditData,
+    editFiles,
+    handleAddEditFiles,
+    handleRemoveEditFile,
     editDueCustomOpen,
     setEditDueCustomOpen,
     editDescriptionRef,

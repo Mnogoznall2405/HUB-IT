@@ -219,6 +219,9 @@ export default function TasksDialogsLayer() {
             ui={ui.ui}
             editData={create.editData}
             setEditData={create.setEditData}
+            editFiles={create.editFiles}
+            onAddEditFiles={create.handleAddEditFiles}
+            onRemoveEditFile={create.handleRemoveEditFile}
             editSaving={create.editSaving}
             editLoading={create.editLoading}
             onSave={create.handleSaveEdit}

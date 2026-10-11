@@ -16,6 +16,7 @@ import {
   Grid,
   IconButton,
   InputLabel,
+  Menu,
   MenuItem,
   Select,
   Stack,
@@ -97,6 +98,9 @@ export default function TasksCreateDialog({
   onRemoveChecklistItem,
   onAddCreateFiles,
   onRemoveCreateFile,
+  editFiles = [],
+  onAddEditFiles,
+  onRemoveEditFile,
   taskUsersLoading = false,
   taskUsersLoadError = '',
   taskEmailDeadlineDefaultHours = 24,
@@ -120,6 +124,11 @@ export default function TasksCreateDialog({
 }) {
   const theme = useTheme();
   const isEditing = mode === 'edit';
+  // В edit файлы доступны только если родитель передал обработчики (TaskActionDialogs их не передаёт).
+  const filesSupported = !isEditing || typeof onAddEditFiles === 'function';
+  const dialogFiles = isEditing ? editFiles : createFiles;
+  const onAddDialogFiles = isEditing ? onAddEditFiles : onAddCreateFiles;
+  const onRemoveDialogFile = isEditing ? onRemoveEditFile : onRemoveCreateFile;
   const [editOptionalSections, setEditOptionalSections] = useState({});
   const [editDuePickerOpen, setEditDuePickerOpen] = useState(false);
   const editDueAnchorRef = useRef(null);
@@ -202,11 +211,9 @@ export default function TasksCreateDialog({
     ? (ids) => setCreateData((previous) => ({ ...previous, observer_user_ids: ids }))
     : onChangeObserverIds;
   const usesMobileSheets = isMobile && !isEditing;
+  const [priorityMenuAnchor, setPriorityMenuAnchor] = useState(null);
   const onOpenOptionalSection = isEditing
     ? (key) => setEditOptionalSections((previous) => {
-      if (key === 'priority') {
-        return { ...previous, advanced: true, schedule: true };
-      }
       if (key === 'advanced') {
         const nextAdvanced = !previous.advanced;
         return {
@@ -228,11 +235,11 @@ export default function TasksCreateDialog({
     setEditDuePickerOpen(false);
   }, [editData?.id, isEditing, open]);
 
-  const visibleCreateOptionalSectionOptions = usesMobileSheets
-    ? createOptionalSectionOptions
-    : createOptionalSectionOptions.filter((option) => option.key !== 'observers');
+  const visibleCreateOptionalSectionOptions = createOptionalSectionOptions;
   const supportedOptionalSectionOptions = isEditing
-    ? visibleCreateOptionalSectionOptions.filter((option) => !['files', 'checklist'].includes(option.key))
+    ? visibleCreateOptionalSectionOptions.filter((option) => (
+      option.key !== 'checklist' && (option.key !== 'files' || filesSupported)
+    ))
     : visibleCreateOptionalSectionOptions;
 
   return (
@@ -375,6 +382,9 @@ export default function TasksCreateDialog({
                     renderTaskUserTags={renderTaskUserTags}
                     assigneeAutocompleteProps={assigneeAutocompleteProps}
                     taskUserAutocompleteSlotProps={taskUserAutocompleteSlotProps}
+                    showAssignmentMode={!isEditing}
+                    assignmentMode={createData.assignment_mode || 'shared'}
+                    onChangeAssignmentMode={(nextMode) => setCreateData((prev) => ({ ...prev, assignment_mode: nextMode }))}
                   />
 
                   <TaskDueFields
@@ -382,9 +392,6 @@ export default function TasksCreateDialog({
                     dueAt={createData.due_at}
                     dueAnchorRef={createDueAnchorRef}
                     onOpenDuePicker={onOpenDuePicker}
-                    showAssignmentMode={!isEditing}
-                    assignmentMode={createData.assignment_mode || 'shared'}
-                    onChangeAssignmentMode={(nextMode) => setCreateData((prev) => ({ ...prev, assignment_mode: nextMode }))}
                     emailRemindMode={createData.email_deadline_remind_mode}
                     emailRemindHours={createData.email_deadline_remind_hours}
                     emailRemindDefaultHours={taskEmailDeadlineDefaultHours}
@@ -424,8 +431,8 @@ export default function TasksCreateDialog({
                     let label = option.label;
                     if (option.key === 'priority' && createData.priority !== 'normal') {
                       label = priorityMeta(createData.priority).label;
-                    } else if (option.key === 'files' && createFiles.length > 0) {
-                      label = `${option.label}: ${createFiles.length}`;
+                    } else if (option.key === 'files' && dialogFiles.length > 0) {
+                      label = `${option.label}: ${dialogFiles.length}`;
                     } else if (option.key === 'checklist') {
                       const count = normalizeChecklistItems(createChecklistItems).length;
                       if (count > 0) label = `Чек-лист: ${count}`;
@@ -446,7 +453,13 @@ export default function TasksCreateDialog({
                         color={selected ? 'primary' : 'default'}
                         variant={selected ? 'filled' : 'outlined'}
                         label={label}
-                        onClick={() => onOpenOptionalSection(option.key)}
+                        onClick={(event) => {
+                          if (option.key === 'priority' && !usesMobileSheets) {
+                            setPriorityMenuAnchor(event.currentTarget);
+                            return;
+                          }
+                          onOpenOptionalSection(option.key);
+                        }}
                         sx={{
                           fontWeight: 800,
                           borderRadius: '8px',
@@ -467,8 +480,27 @@ export default function TasksCreateDialog({
                   {String(createData.due_at || '').trim() ? (
                     <Chip size="small" variant="outlined" color="primary" label={createEmailRemindSummary} />
                   ) : null}
-                  {createFiles.length > 0 ? <Chip size="small" variant="outlined" icon={<AttachFileIcon />} label={`Файлы: ${createFiles.length}`} /> : null}
+                  {dialogFiles.length > 0 ? <Chip size="small" variant="outlined" icon={<AttachFileIcon />} label={`Файлы: ${dialogFiles.length}`} /> : null}
                 </Stack>
+
+                <Menu
+                  anchorEl={priorityMenuAnchor}
+                  open={Boolean(priorityMenuAnchor)}
+                  onClose={() => setPriorityMenuAnchor(null)}
+                >
+                  {priorityOptions.map((item) => (
+                    <MenuItem
+                      key={item.value}
+                      selected={createData.priority === item.value}
+                      onClick={() => {
+                        setCreateData((prev) => ({ ...prev, priority: item.value }));
+                        setPriorityMenuAnchor(null);
+                      }}
+                    >
+                      {item.label}
+                    </MenuItem>
+                  ))}
+                </Menu>
               </Box>
 
               <Collapse in={Boolean((!isMobile || isEditing) && (createOptionalSections.controller || createOptionalSections.advanced))} unmountOnExit>
@@ -502,7 +534,7 @@ export default function TasksCreateDialog({
                 </Box>
               </Collapse>
 
-              <Collapse in={Boolean(!isMobile || isEditing)} unmountOnExit>
+              <Collapse in={Boolean((!isMobile || isEditing) && (createOptionalSections.observers || selectedCreateObservers.length > 0))} unmountOnExit>
                 <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: { xs: 1, sm: 1.2 }, borderRadius: '12px', mt: 1 }) }}>
                   <Autocomplete
                     fullWidth
@@ -592,26 +624,32 @@ export default function TasksCreateDialog({
                       disabled={createSaving}
                       sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', alignSelf: { xs: 'stretch', sm: 'center' } }}
                     >
-                      {createFiles.length > 0 ? 'Добавить файлы' : 'Выбрать файлы'}
+                      {dialogFiles.length > 0 ? 'Добавить файлы' : 'Выбрать файлы'}
                       <input
                         type="file"
                         hidden
                         multiple
                         onChange={(event) => {
-                          onAddCreateFiles(event.target.files);
+                          onAddDialogFiles?.(event.target.files);
                           event.target.value = '';
                         }}
                       />
                     </Button>
                   </Stack>
 
-                  {createFiles.length === 0 ? (
+                  {!isEditing && dialogFiles.length === 0 ? (
                     <Typography variant="body2" sx={{ color: ui.mutedText, mt: 1 }}>
                       Файлы можно выбрать до постановки задачи. После создания они прикрепятся автоматически.
                     </Typography>
-                  ) : (
+                  ) : null}
+                  {isEditing ? (
+                    <Typography variant="body2" sx={{ color: ui.mutedText, mt: 1 }}>
+                      Файлы будут добавлены к задаче после сохранения
+                    </Typography>
+                  ) : null}
+                  {dialogFiles.length > 0 ? (
                     <Stack spacing={0.7} sx={{ mt: 1 }}>
-                      {createFiles.map((file, index) => (
+                      {dialogFiles.map((file, index) => (
                         <Box
                           key={`${getFileIdentity(file)}:${index}`}
                           sx={{
@@ -643,7 +681,7 @@ export default function TasksCreateDialog({
                               <IconButton
                                 size="small"
                                 aria-label={`Убрать файл ${file?.name || index + 1}`}
-                                onClick={() => onRemoveCreateFile(index)}
+                                onClick={() => onRemoveDialogFile?.(index)}
                                 disabled={createSaving}
                               >
                                 <DeleteOutlineIcon fontSize="small" />
@@ -653,7 +691,7 @@ export default function TasksCreateDialog({
                         </Box>
                       ))}
                     </Stack>
-                  )}
+                  ) : null}
                 </Box>
               </Collapse>
 
