@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import os
+import weakref
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -204,6 +205,17 @@ def log_chat_pool_budget(*, processes: int | None = None) -> dict:
     return snap
 
 
+# Read engines whose connections already default to read-only + statement_timeout.
+_READ_ENGINES_WITH_SESSION_DEFAULTS: "weakref.WeakSet" = weakref.WeakSet()
+
+
+def _read_connection_options() -> str:
+    from backend.chat.write_path_limits import CHAT_READ_STATEMENT_TIMEOUT_MS
+
+    timeout_ms = max(100, int(CHAT_READ_STATEMENT_TIMEOUT_MS))
+    return f"-c default_transaction_read_only=on -c statement_timeout={timeout_ms}"
+
+
 def _build_engine(database_url: str, *, pool_class: str = "write"):
     engine_kwargs = {
         "pool_pre_ping": True,
@@ -242,16 +254,25 @@ def _build_engine(database_url: str, *, pool_class: str = "write"):
         ).strip()
         or app_name_default,
     }
+    if pool_class == "read":
+        # Every read transaction used to open with `SET TRANSACTION READ ONLY` and
+        # `SET LOCAL statement_timeout`: two network round trips to a remote PostgreSQL per
+        # request. As connection-level defaults they cost nothing per transaction.
+        engine_kwargs["connect_args"]["options"] = _read_connection_options()
     engine = create_engine(database_url, **engine_kwargs)
     attach_slow_sql_logging(engine, source=f"chat-{pool_class}")
     _attach_chat_pool_audit_listeners(engine, pool_class=pool_class)
+    result = engine
     if _should_use_legacy_public_chat_schema(engine):
-        return engine.execution_options(
+        result = engine.execution_options(
             schema_translate_map={
                 CHAT_SCHEMA: None,
             }
         )
-    return engine
+    if pool_class == "read":
+        _READ_ENGINES_WITH_SESSION_DEFAULTS.add(result)
+        _READ_ENGINES_WITH_SESSION_DEFAULTS.add(engine)
+    return result
 
 
 def get_chat_engine(database_url: str | None = None):
@@ -371,7 +392,11 @@ def chat_read_session(database_url: str | None = None) -> Session:
     session = get_chat_read_session_factory(database_url)()
     try:
         bind = session.get_bind()
-        if bind is not None and getattr(bind.dialect, "name", "") == "postgresql":
+        if (
+            bind is not None
+            and getattr(bind.dialect, "name", "") == "postgresql"
+            and bind not in _READ_ENGINES_WITH_SESSION_DEFAULTS
+        ):
             # SET does not accept bound params reliably; timeout is an int from env.
             timeout_ms = max(100, int(CHAT_READ_STATEMENT_TIMEOUT_MS))
             try:

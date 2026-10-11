@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from backend.appdb.db import app_session, initialize_app_schema, is_app_database_configured
 from backend.appdb.models import AppAuthRuntimeItem
 from backend.config import config
+from backend.services.auth_short_cache import AllowCache
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ class AuthRuntimeStoreService:
 
     def __init__(self, *, database_url: str | None = None) -> None:
         self._lock = threading.RLock()
+        self._jti_not_revoked = AllowCache()
         self._memory: dict[str, tuple[float | None, str]] = {}
         self._redis_client = None  # Kept for old tests/monkeypatches; Redis is no longer used.
         self._database_url = str(database_url or "").strip() or None
@@ -409,13 +411,20 @@ class AuthRuntimeStoreService:
         normalized = str(jti or "").strip()
         if not normalized:
             return
+        self._jti_not_revoked.forget(normalized)
         self.set_text("revoked_jti", normalized, "1", ttl_seconds=max(1, int(ttl_seconds or 1)))
 
     def is_jti_revoked(self, jti: str | None) -> bool:
         normalized = str(jti or "").strip()
         if not normalized:
             return False
-        return self.get_text("revoked_jti", normalized) is not None
+        # Hot path of every authenticated request: only "not revoked" is remembered, briefly.
+        if self._jti_not_revoked.is_allowed(normalized):
+            return False
+        revoked = self.get_text("revoked_jti", normalized) is not None
+        if not revoked:
+            self._jti_not_revoked.remember(normalized)
+        return revoked
 
     def save_refresh_token(self, jti: str, payload: dict[str, Any], ttl_seconds: int) -> None:
         self.set_json("refresh", jti, payload, ttl_seconds=max(1, int(ttl_seconds or 1)))
@@ -444,6 +453,7 @@ class AuthRuntimeStoreService:
             "access_token", "refresh_token", "access_ttl_seconds",
             "refresh_ttl_seconds", "user", "session_id",
         )}
+        self._jti_not_revoked.forget(str(old_jti or "").strip())
         entries = [
             ("refresh", replacement["_refresh_jti"], json.dumps(replacement["_refresh_state"]),
              int(replacement["refresh_ttl_seconds"])),

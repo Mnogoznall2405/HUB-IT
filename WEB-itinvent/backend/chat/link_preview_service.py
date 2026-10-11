@@ -6,6 +6,8 @@ import ipaddress
 import logging
 import re
 import socket
+import threading
+import time
 import urllib.request
 from urllib.parse import urlsplit
 
@@ -96,10 +98,58 @@ def assert_public_http_url(raw_url: str) -> None:
             raise HTTPException(status_code=400, detail="URL host is not allowed")
 
 
+# Every client asked again on each app start / thread open, and an unreachable site cost a full
+# 5 s fetch each time (83 slow requests in the logs). Results — including failures — are kept.
+_PREVIEW_OK_TTL_SEC = 3600.0
+_PREVIEW_FAILURE_TTL_SEC = 600.0
+_PREVIEW_CACHE_MAX = 512
+_PREVIEW_FETCH_TIMEOUT_SEC = 3
+_preview_cache: dict[str, tuple[float, dict | None, tuple[int, str] | None]] = {}
+_preview_cache_lock = threading.Lock()
+
+
+def _cache_lookup(url: str) -> tuple[bool, dict | None, tuple[int, str] | None]:
+    with _preview_cache_lock:
+        entry = _preview_cache.get(url)
+        if entry is None:
+            return False, None, None
+        if entry[0] <= time.monotonic():
+            _preview_cache.pop(url, None)
+            return False, None, None
+        return True, entry[1], entry[2]
+
+
+def _cache_store(url: str, ttl: float, result: dict | None, failure: tuple[int, str] | None) -> None:
+    with _preview_cache_lock:
+        if len(_preview_cache) >= _PREVIEW_CACHE_MAX:
+            now = time.monotonic()
+            for key in [k for k, v in _preview_cache.items() if v[0] <= now]:
+                _preview_cache.pop(key, None)
+            if len(_preview_cache) >= _PREVIEW_CACHE_MAX:
+                _preview_cache.clear()
+        _preview_cache[url] = (time.monotonic() + ttl, result, failure)
+
+
 def fetch_link_preview(url: str) -> dict:
     normalized = str(url or "").strip()
     if not normalized.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="Invalid URL")
+    hit, cached_result, cached_failure = _cache_lookup(normalized)
+    if hit:
+        if cached_failure is not None:
+            raise HTTPException(status_code=cached_failure[0], detail=cached_failure[1])
+        return dict(cached_result or {})
+    try:
+        result = _fetch_link_preview_uncached(normalized)
+    except HTTPException as exc:
+        if exc.status_code in (400, 422):
+            _cache_store(normalized, _PREVIEW_FAILURE_TTL_SEC, None, (exc.status_code, str(exc.detail)))
+        raise
+    _cache_store(normalized, _PREVIEW_OK_TTL_SEC, result, None)
+    return dict(result)
+
+
+def _fetch_link_preview_uncached(normalized: str) -> dict:
     assert_public_http_url(normalized)
     try:
         req = urllib.request.Request(
@@ -110,7 +160,7 @@ def fetch_link_preview(url: str) -> dict:
                 "Accept-Language": "ru,en;q=0.9",
             },
         )
-        with _LINK_PREVIEW_OPENER.open(req, timeout=5) as resp:
+        with _LINK_PREVIEW_OPENER.open(req, timeout=_PREVIEW_FETCH_TIMEOUT_SEC) as resp:
             content_type = resp.headers.get("Content-Type", "")
             if "text/html" not in content_type:
                 return {

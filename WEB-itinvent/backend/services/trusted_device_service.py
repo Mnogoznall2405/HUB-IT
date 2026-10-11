@@ -13,6 +13,7 @@ from sqlalchemy import select
 from backend.appdb.db import app_session, initialize_app_schema, is_app_database_configured
 from backend.appdb.models import AppTrustedDevice
 from backend.config import config
+from backend.services.auth_short_cache import AllowCache
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,8 @@ class TrustedDeviceService:
     def __init__(self, *, database_url: str | None = None) -> None:
         self._database_url = str(database_url or "").strip() or None
         self._use_app_db = bool(self._database_url) or is_app_database_configured()
+        # Per-request validity check (see auth_short_cache): valid devices only, a few seconds.
+        self._device_valid = AllowCache()
         if self._use_app_db:
             initialize_app_schema(self._database_url)
 
@@ -168,6 +171,7 @@ class TrustedDeviceService:
             row.is_active = False
             row.revoked_at = _utc_now()
             self._audit("revoke", user_id=int(user_id), device_id=normalized, reason="user_request")
+            self._device_valid.clear()
             return self._row_to_dict(row)
 
     def revoke_all_user_devices(self, user_id: int) -> int:
@@ -184,6 +188,7 @@ class TrustedDeviceService:
                 row.revoked_at = _utc_now()
                 self._audit("revoke", user_id=int(user_id), device_id=str(row.id or ""), reason="bulk_revoke")
                 updated += 1
+        self._device_valid.clear()
         return updated
 
     def mark_device_used(self, device_id: str) -> None:
@@ -286,8 +291,14 @@ class TrustedDeviceService:
         device_id = normalized.split(":", 1)[1].strip()
         if not device_id:
             return False
+        cache_key = (int(user_id), device_id)
+        if self._device_valid.is_allowed(cache_key):
+            return True
         device = self.get_device(device_id)
-        return bool(device and int(device.get("user_id", 0)) == int(user_id) and device.get("is_active"))
+        valid = bool(device and int(device.get("user_id", 0)) == int(user_id) and device.get("is_active"))
+        if valid:
+            self._device_valid.remember(cache_key)
+        return valid
 
     def build_registration_options(
         self,

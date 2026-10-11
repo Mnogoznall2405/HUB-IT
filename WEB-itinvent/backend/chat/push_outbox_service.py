@@ -506,7 +506,11 @@ class ChatPushOutboxService:
                 else:
                     result["requeued"] += 1
         await self._emit_heartbeat_if_due()
-        logger.info(
+        # An idle poll runs every ~2 s: at INFO it grew the worker log to >100 MB. Polls that did
+        # something stay at INFO; idle ones go to DEBUG (the heartbeat above still reports health).
+        idle = not (result["claimed"] or result["recovered"])
+        logger.log(
+            logging.DEBUG if idle else logging.INFO,
             "chat.push_outbox.poll claimed=%s sent=%s no_subscriptions=%s requeued=%s failed=%s recovered=%s duration_ms=%.1f push_enabled=%s",
             result["claimed"],
             result["sent"],
