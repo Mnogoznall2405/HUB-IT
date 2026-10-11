@@ -57,6 +57,51 @@ _EVENT_LOOP_LAG_WARN_MS = max(
     float(str(os.getenv("CHAT_EVENT_LOOP_LAG_WARN_MS", "1000") or "1000").strip() or "1000"),
 )
 _EVENT_LOOP_LAG_WINDOW = max(30, int(str(os.getenv("CHAT_EVENT_LOOP_LAG_WINDOW", "120") or "120").strip() or "120"))
+# When the loop does not tick for this long, every thread's stack is dumped to stderr (PM2 error
+# log) by faulthandler's C-level watchdog, which keeps working while Python code is blocked.
+# It shows where a multi-minute freeze sits. 0 disables it.
+try:
+    _EVENT_LOOP_STALL_TRACEBACK_SEC = float(
+        str(os.getenv("CHAT_EVENT_LOOP_STALL_TRACEBACK_SEC", "8") or "8").strip() or "8"
+    )
+except ValueError:
+    _EVENT_LOOP_STALL_TRACEBACK_SEC = 8.0
+_stall_traceback_owner: object | None = None
+
+
+def _arm_stall_traceback(owner: object) -> None:
+    """(Re)arms the process-wide stall dump; only the first lag monitor of the process owns the timer."""
+    global _stall_traceback_owner
+    timeout = _EVENT_LOOP_STALL_TRACEBACK_SEC
+    if timeout <= 0:
+        return
+    if _stall_traceback_owner is None:
+        _stall_traceback_owner = owner
+    if _stall_traceback_owner is not owner:
+        return
+    try:
+        import faulthandler
+        import sys
+
+        faulthandler.dump_traceback_later(
+            max(2.0 * _EVENT_LOOP_LAG_INTERVAL_SEC, timeout), repeat=False, file=sys.stderr, exit=False
+        )
+    except Exception:
+        # stderr without a file descriptor (tests, embedded runs): the dump is a diagnostic only.
+        pass
+
+
+def _disarm_stall_traceback(owner: object) -> None:
+    global _stall_traceback_owner
+    if _stall_traceback_owner is not owner:
+        return
+    _stall_traceback_owner = None
+    try:
+        import faulthandler
+
+        faulthandler.cancel_dump_traceback_later()
+    except Exception:
+        pass
 
 
 class EventLoopLagMonitor:
@@ -85,21 +130,33 @@ class EventLoopLagMonitor:
     async def _run(self) -> None:
         interval = _EVENT_LOOP_LAG_INTERVAL_SEC
         expected = asyncio.get_running_loop().time() + interval
-        while True:
-            try:
-                await asyncio.sleep(interval)
-            except asyncio.CancelledError:
-                return
-            now = asyncio.get_running_loop().time()
-            lag_ms = max(0.0, (now - expected) * 1000.0)
-            expected = now + interval
-            with self._lock:
-                self._samples.append(lag_ms)
-            if lag_ms >= _EVENT_LOOP_LAG_WARN_MS:
-                wall = time.monotonic()
-                if wall - self._last_warn_at >= 30:
-                    self._last_warn_at = wall
-                    logger.warning("chat event-loop lag %.0f ms", lag_ms)
+        try:
+            while True:
+                _arm_stall_traceback(self)
+                try:
+                    await asyncio.sleep(interval)
+                except asyncio.CancelledError:
+                    return
+                now = asyncio.get_running_loop().time()
+                lag_ms = max(0.0, (now - expected) * 1000.0)
+                expected = now + interval
+                with self._lock:
+                    self._samples.append(lag_ms)
+                if lag_ms >= _EVENT_LOOP_LAG_WARN_MS:
+                    wall = time.monotonic()
+                    if wall - self._last_warn_at >= 30:
+                        self._last_warn_at = wall
+                        stalled = (
+                            _EVENT_LOOP_STALL_TRACEBACK_SEC > 0
+                            and lag_ms >= _EVENT_LOOP_STALL_TRACEBACK_SEC * 1000.0
+                        )
+                        logger.warning(
+                            "chat event-loop lag %.0f ms%s",
+                            lag_ms,
+                            " (thread stacks of the stall are in stderr, see 'Thread 0x' above)" if stalled else "",
+                        )
+        finally:
+            _disarm_stall_traceback(self)
 
     def metrics(self) -> dict[str, float]:
         with self._lock:

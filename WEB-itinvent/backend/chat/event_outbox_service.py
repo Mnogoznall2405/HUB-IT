@@ -94,6 +94,11 @@ class ChatEventOutboxService:
         self._last_heartbeat_at: float = 0.0
         self._last_avg_job_ms: float = 0.0
         self._poll_lock: asyncio.Lock | None = None
+        # Wake-up for an idle dispatcher: an enqueue in this process must not wait for the
+        # (backed-off) poll interval. Set from any thread via call_soon_threadsafe.
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._wake: asyncio.Event | None = None
+        self._last_maintenance_mono: float = float("-inf")
 
     def _ensure_poll_lock(self) -> asyncio.Lock:
         if self._poll_lock is None:
@@ -107,6 +112,17 @@ class ChatEventOutboxService:
     @property
     def poll_interval_ms(self) -> int:
         return _clamp_env_int("CHAT_EVENT_OUTBOX_POLL_INTERVAL_MS", 250, 50, 10_000)
+
+    @property
+    def idle_max_interval_ms(self) -> int:
+        # An empty poll costs three transactions on a remote PostgreSQL, so an idle dispatcher
+        # backs off up to this value; any claimed job or local enqueue resets it to the base interval.
+        return _clamp_env_int("CHAT_EVENT_OUTBOX_IDLE_MAX_MS", 1000, self.poll_interval_ms, 10_000)
+
+    @property
+    def maintenance_interval_sec(self) -> int:
+        # recover_stale_jobs / repair_missing_delivery_state_outbox: timeouts there are 120 s / 300 s.
+        return _clamp_env_int("CHAT_EVENT_OUTBOX_MAINTENANCE_SEC", 5, 1, 300)
 
     @property
     def batch_size(self) -> int:
@@ -136,6 +152,8 @@ class ChatEventOutboxService:
         if self._task and not self._task.done():
             return
         self._stop_event = asyncio.Event()
+        self._loop = asyncio.get_running_loop()
+        self._wake = asyncio.Event()
         self._task = asyncio.create_task(self._run_loop(), name="chat-event-outbox-dispatcher")
 
     async def stop(self) -> None:
@@ -149,21 +167,56 @@ class ChatEventOutboxService:
                 pass
         self._task = None
         self._stop_event = None
+        self._loop = None
+        self._wake = None
+
+    def _notify_wake(self) -> None:
+        """Wake an idle dispatcher of this process; safe from worker threads, no-op when not started."""
+        loop = self._loop
+        wake = self._wake
+        if loop is None or wake is None:
+            return
+        try:
+            loop.call_soon_threadsafe(wake.set)
+        except RuntimeError:
+            # The loop is already closed (shutdown): nothing to wake.
+            pass
+
+    async def _wait_for_wake_or_stop(self, timeout_sec: float) -> bool:
+        """Sleeps until the timeout, a local enqueue or stop. Returns True when stop was requested."""
+        stop_event = self._stop_event
+        wake = self._wake
+        assert stop_event is not None and wake is not None
+        waiters = [asyncio.ensure_future(stop_event.wait()), asyncio.ensure_future(wake.wait())]
+        try:
+            await asyncio.wait(waiters, timeout=max(0.05, timeout_sec), return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiter in waiters:
+                if not waiter.done():
+                    waiter.cancel()
+        return stop_event.is_set()
 
     async def _run_loop(self) -> None:
+        base_interval_ms = self.poll_interval_ms
+        interval_ms = base_interval_ms
         while True:
+            assert self._wake is not None
+            # Clear before the poll: an enqueue that lands during it makes the next wait return at once.
+            self._wake.clear()
+            result: dict[str, int] = {}
             try:
-                await self.poll_once()
+                result = await self.poll_once()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("chat.event_outbox.poll iteration failed")
-            try:
-                assert self._stop_event is not None
-                await asyncio.wait_for(self._stop_event.wait(), timeout=max(0.05, self.poll_interval_ms / 1000.0))
+            busy = int(result.get("claimed", 0) or 0) > 0 or int(result.get("recovered", 0) or 0) > 0
+            if busy:
+                interval_ms = base_interval_ms
+            else:
+                interval_ms = min(self.idle_max_interval_ms, max(base_interval_ms, interval_ms * 2))
+            if await self._wait_for_wake_or_stop(interval_ms / 1000.0):
                 return
-            except asyncio.TimeoutError:
-                continue
 
     def _retry_delay_sec(self, attempt_count: int) -> int:
         exponent = max(0, int(attempt_count) - 1)
@@ -278,6 +331,8 @@ class ChatEventOutboxService:
                 else:
                     session.add(ChatEventOutbox(**values))
                     inserted += 1
+        if inserted:
+            self._notify_wake()
         return inserted
 
     def repair_missing_delivery_state_outbox(
@@ -584,9 +639,15 @@ class ChatEventOutboxService:
                 "skipped_busy": 1,
             }
         async with lock:
-            recovered = await asyncio.to_thread(self.recover_stale_jobs)
-            repaired = await asyncio.to_thread(self.repair_missing_delivery_state_outbox)
-            recovered = int(recovered or 0) + int(repaired or 0)
+            recovered = 0
+            now_mono = time.monotonic()
+            # Housekeeping is two more transactions per poll; its own timeouts are 120 s / 300 s,
+            # so it runs every few seconds (the first poll always does) instead of on every cycle.
+            if (now_mono - self._last_maintenance_mono) >= float(self.maintenance_interval_sec):
+                self._last_maintenance_mono = now_mono
+                recovered_stale = await asyncio.to_thread(self.recover_stale_jobs)
+                repaired = await asyncio.to_thread(self.repair_missing_delivery_state_outbox)
+                recovered = int(recovered_stale or 0) + int(repaired or 0)
             jobs = await asyncio.to_thread(self.claim_jobs)
             batch_started_at = time.perf_counter()
             delivered = 0
