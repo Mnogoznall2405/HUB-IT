@@ -20,9 +20,13 @@ vi.mock('./qrModel', () => ({
   buildEquipmentQrDataUrl: vi.fn(async () => 'data:image/png;base64,qr'),
 }));
 
-vi.mock('./equipmentQrLabel', () => ({
-  buildConsumableQrLabelDataUrl: vi.fn(async () => 'data:image/png;base64,label'),
-}));
+vi.mock('./equipmentQrLabel', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    buildConsumableQrLabelDataUrl: vi.fn(async () => 'data:image/png;base64,label'),
+  };
+});
 
 vi.mock('./EquipmentQrPrintPortal', () => ({
   waitForEquipmentQrPrintImages: vi.fn(async () => true),
