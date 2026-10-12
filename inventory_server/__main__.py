@@ -45,7 +45,7 @@ def main() -> None:
         host=config.host,
         port=config.port,
         reload=False,
-        loop="asyncio",
+        loop="inventory_server.uvicorn_loops:windows_selector_loop_factory",
     )
 
 
