@@ -1,4 +1,5 @@
 import { act, renderHook, waitFor } from '@testing-library/react-native';
+import { AppState } from 'react-native';
 import * as chatApi from '../../api/chatApi';
 import type { ChatConversationSummary } from '../../api/types';
 import { chatSocket, type ChatSocketStatus } from '../../chat/chatSocket';
@@ -150,5 +151,70 @@ describe('CHAT-INBOX-07: silent merge drops server-deleted rows', () => {
       await view.result.current.load('silent');
     });
     expect(view.result.current.items.map((item) => item.id)).toEqual(['c1', 'c2']);
+  });
+});
+
+// S11: the inbox fallback poll runs only while the socket is down, the inbox is
+// focused and the app is foregrounded. A reconnect still runs one gap reload.
+describe('S11: inbox fallback poll', () => {
+  const appStateHandlers = new Set<(state: string) => void>();
+
+  beforeEach(() => {
+    appStateHandlers.clear();
+    jest.spyOn(AppState, 'addEventListener').mockImplementation(((type: string, handler: (state: string) => void) => {
+      if (type === 'change') appStateHandlers.add(handler);
+      return { remove: () => appStateHandlers.delete(handler) };
+    }) as typeof AppState.addEventListener);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    jest.useRealTimers();
+  });
+
+  it('polls only while disconnected and foregrounded, and runs one gap reload on reconnect', async () => {
+    const { view } = await setup();
+    await waitFor(() => expect(view.result.current.loading).toBe(false));
+    jest.useFakeTimers();
+    try {
+      await act(async () => emitStatus('connected'));
+      api.getConversationPage.mockClear();
+
+      await act(async () => {
+        jest.advanceTimersByTime(60_000);
+      });
+      expect(api.getConversationPage).not.toHaveBeenCalled();
+
+      await act(async () => emitStatus('reconnecting'));
+      expect(api.getConversationPage).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        jest.advanceTimersByTime(20_000);
+      });
+      expect(api.getConversationPage).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        appStateHandlers.forEach((handler) => handler('background'));
+      });
+      api.getConversationPage.mockClear();
+      await act(async () => {
+        jest.advanceTimersByTime(60_000);
+      });
+      expect(api.getConversationPage).not.toHaveBeenCalled();
+
+      await act(async () => {
+        appStateHandlers.forEach((handler) => handler('active'));
+      });
+      expect(api.getConversationPage).toHaveBeenCalledTimes(1);
+
+      api.getConversationPage.mockClear();
+      await act(async () => emitStatus('connected'));
+      expect(api.getConversationPage).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        jest.advanceTimersByTime(60_000);
+      });
+      expect(api.getConversationPage).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

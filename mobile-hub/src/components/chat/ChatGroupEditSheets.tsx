@@ -5,8 +5,9 @@ import { initialWindowMetrics, SafeAreaInsetsContext } from 'react-native-safe-a
 import type { ChatUserSummary } from '../../api/types';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
-import { ChatBottomSheet } from './ChatBottomSheet';
 import { ChatKeyboardAvoidingHost } from './ChatKeyboardAvoidingHost';
+import { ScreenSheet } from './ScreenSheet';
+import { useSheetDeviceLog } from './sheetDeviceLog';
 
 export function ChatRenameSheet({
   visible,
@@ -34,12 +35,21 @@ export function ChatRenameSheet({
   useEffect(() => {
     if (visible) setTitle(initialTitle);
   }, [initialTitle, visible]);
+  const markClose = useSheetDeviceLog('group_edit', visible);
   const close = () => {
     setTitle(initialTitle);
     onClose();
   };
   return (
-    <Modal visible={visible} animationType={reduceMotion ? 'none' : 'fade'} transparent onRequestClose={close}>
+    <Modal
+      visible={visible}
+      animationType={reduceMotion ? 'none' : 'fade'}
+      transparent
+      onRequestClose={() => {
+        markClose('back');
+        close();
+      }}
+    >
       <ChatKeyboardAvoidingHost style={[styles.centerBackdrop, {
         paddingTop: Math.max(24, insets?.top || 0),
         paddingBottom: Math.max(24, insets?.bottom || 0),
@@ -58,7 +68,13 @@ export function ChatRenameSheet({
             accessibilityLabel={inputLabel}
           />
           <View style={styles.actions}>
-            <Action label="Отмена" onPress={close} />
+            <Action
+              label="Отмена"
+              onPress={() => {
+                markClose('button');
+                close();
+              }}
+            />
             <Action
               label="Сохранить"
               onPress={() => onSave(title.trim())}
@@ -99,6 +115,7 @@ export function ChatMemberPickerSheet({
       return !normalized || `${user.full_name || ''} ${user.username}`.toLowerCase().includes(normalized);
     });
   }, [excluded, query, users]);
+  const markClose = useSheetDeviceLog('group_edit', visible);
   const close = () => {
     setQuery('');
     setSelected([]);
@@ -106,11 +123,11 @@ export function ChatMemberPickerSheet({
   };
 
   return (
-    <ChatBottomSheet
+    <ScreenSheet
       visible={visible}
       onClose={close}
+      onDismissReason={markClose}
       dismissAccessibilityLabel="Закрыть выбор участников"
-      avoidKeyboard
       sheetStyle={styles.sheet}
     >
           <Text style={styles.title}>Добавить участников</Text>
@@ -152,7 +169,13 @@ export function ChatMemberPickerSheet({
             {!filtered.length ? <Text style={styles.empty}>Доступных пользователей нет</Text> : null}
           </ScrollView>
           <View style={styles.actions}>
-            <Action label="Отмена" onPress={close} />
+            <Action
+              label="Отмена"
+              onPress={() => {
+                markClose('button');
+                close();
+              }}
+            />
             <Action
               label={`Добавить${selected.length ? ` (${selected.length})` : ''}`}
               onPress={() => onAdd(selected)}
@@ -160,7 +183,7 @@ export function ChatMemberPickerSheet({
               primary
             />
           </View>
-    </ChatBottomSheet>
+    </ScreenSheet>
   );
 }
 

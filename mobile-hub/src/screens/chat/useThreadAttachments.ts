@@ -1,3 +1,4 @@
+import { logChatDevice } from '../../diagnostics/chatDeviceLog';
 import { useCallback, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import * as chatApi from '../../api/chatApi';
 import type { ChatAttachment, ChatMessage } from '../../api/types';
@@ -210,11 +211,13 @@ export function useThreadAttachments({
       isImageChatAttachment(entry.attachment) === imageKind
     ));
     setMediaViewerItems(mergeChatMediaItems(seedItems, localItems, [nextItem]));
+    logChatDevice('media_open', { image: imageKind });
     setMediaViewer(nextItem);
     if (!offlineMode) void loadMoreMediaManifest(true);
   }, [accumulatedMessagesRef, loadMoreMediaManifest, messagesRef, offlineMode]);
 
   const closeMediaViewer = useCallback(() => {
+    logChatDevice('media_close');
     mediaManifestGenerationRef.current += 1;
     mediaManifestLoadingRef.current = false;
     mediaManifestHasMoreRef.current = false;

@@ -3,6 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-
 import type { ChatCustomFolder } from '../../chat/chatFolders';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
 import { ScreenSheet } from './ScreenSheet';
+import { useSheetDeviceLog } from './sheetDeviceLog';
 
 export function ChatFolderManagerSheet({
   visible,
@@ -24,6 +25,7 @@ export function ChatFolderManagerSheet({
   const { chatTokens, styles } = useChatStyles(createStyles);
   const [prompt, setPrompt] = useState<{ mode: 'create' } | { mode: 'rename'; folder: ChatCustomFolder } | null>(null);
   const [name, setName] = useState('');
+  const markClose = useSheetDeviceLog('folders', visible);
 
   useEffect(() => {
     if (!visible) {
@@ -41,6 +43,8 @@ export function ChatFolderManagerSheet({
     <ScreenSheet
       visible={visible}
       onClose={prompt ? closePrompt : onClose}
+      // Back/backdrop/drag inside the rename prompt only close the prompt, not the sheet.
+      onDismissReason={(reason) => { if (!prompt) markClose(reason); }}
       dismissAccessibilityLabel="Закрыть управление папками"
       sheetStyle={styles.sheet}
     >

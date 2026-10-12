@@ -1,5 +1,4 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
-import { Alert } from 'react-native';
 import { router } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import * as api from '../../api/chatApi';
@@ -152,16 +151,13 @@ it('retries file uploads with their stored client id', async () => {
 
 it('confirms local removal and does not send while offline', async () => {
   await seed(); mockOffline = true;
-  const alert = jest.spyOn(Alert, 'alert');
-  try {
-    const view = await render(<NativeChatOutboxScreen />);
-    await fireEvent.press(await view.findByLabelText('Повторить отправку'));
-    expect(api.sendTextMessage).not.toHaveBeenCalled();
-    await fireEvent.press(view.getByLabelText('Убрать сообщение из очереди'));
-    expect(view.getByText('Ожидающий текст')).toBeTruthy();
-    await act(async () => { alert.mock.calls[0][2]?.[1].onPress?.(); });
-    await waitFor(() => expect(view.getByText('Нет сообщений, ожидающих отправки')).toBeTruthy());
-  } finally { alert.mockRestore(); }
+  const view = await render(<NativeChatOutboxScreen />);
+  await fireEvent.press(await view.findByLabelText('Повторить отправку'));
+  expect(api.sendTextMessage).not.toHaveBeenCalled();
+  await fireEvent.press(view.getByLabelText('Убрать сообщение из очереди'));
+  expect(view.getByText('Ожидающий текст')).toBeTruthy();
+  await fireEvent.press(view.getByLabelText('Убрать'));
+  await waitFor(() => expect(view.getByText('Нет сообщений, ожидающих отправки')).toBeTruthy());
 });
 
 it('distinguishes a read error from an empty queue and supports refresh', async () => {
@@ -183,34 +179,26 @@ it('does not expose the queue without chat permission', async () => {
 
 it('ignores an old removal confirmation after switching users', async () => {
   await seed();
-  const alert = jest.spyOn(Alert, 'alert');
-  try {
-    const view = await render(<NativeChatOutboxScreen />);
-    await fireEvent.press(await view.findByLabelText('Убрать сообщение из очереди'));
-    const confirm = alert.mock.calls[0][2]?.[1].onPress;
-    mockUserId = 8;
-    await view.rerender(<NativeChatOutboxScreen />);
-    await act(async () => { confirm?.(); });
-    // The new user's first read purges the rows of the previous account.
-    expect(await createNativeChatOutbox(7, 'a').read()).toHaveLength(0);
-    expect(view.queryByText('Ожидающий текст')).toBeNull();
-  } finally { alert.mockRestore(); }
+  const view = await render(<NativeChatOutboxScreen />);
+  await fireEvent.press(await view.findByLabelText('Убрать сообщение из очереди'));
+  mockUserId = 8;
+  await view.rerender(<NativeChatOutboxScreen />);
+  await fireEvent.press(view.getByLabelText('Убрать'));
+  // The new user's first read purges the rows of the previous account.
+  expect(await createNativeChatOutbox(7, 'a').read()).toHaveLength(0);
+  expect(view.queryByText('Ожидающий текст')).toBeNull();
 });
 
 it('ignores a confirmation from a previous permission scope even when access returns', async () => {
   await seed();
-  const alert = jest.spyOn(Alert, 'alert');
-  try {
-    const view = await render(<NativeChatOutboxScreen />);
-    await fireEvent.press(await view.findByLabelText('Убрать сообщение из очереди'));
-    const confirm = alert.mock.calls[0][2]?.[1].onPress;
-    mockAllowed = false;
-    await view.rerender(<NativeChatOutboxScreen />);
-    mockAllowed = true;
-    await view.rerender(<NativeChatOutboxScreen />);
-    await view.findByText('Ожидающий текст');
-    await act(async () => { confirm?.(); });
-    expect(await createNativeChatOutbox(7, 'a').read()).toHaveLength(1);
-    expect(view.getByText('Ожидающий текст')).toBeTruthy();
-  } finally { alert.mockRestore(); }
+  const view = await render(<NativeChatOutboxScreen />);
+  await fireEvent.press(await view.findByLabelText('Убрать сообщение из очереди'));
+  mockAllowed = false;
+  await view.rerender(<NativeChatOutboxScreen />);
+  mockAllowed = true;
+  await view.rerender(<NativeChatOutboxScreen />);
+  await view.findByText('Ожидающий текст');
+  await fireEvent.press(view.getByLabelText('Убрать'));
+  expect(await createNativeChatOutbox(7, 'a').read()).toHaveLength(1);
+  expect(view.getByText('Ожидающий текст')).toBeTruthy();
 });

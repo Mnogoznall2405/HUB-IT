@@ -1,5 +1,4 @@
 import React from 'react';
-import { Alert } from 'react-native';
 import type { ChatAttachment, ChatConversationSummary, ChatMessage } from '../../api/types';
 import type { ChatMenuAnchor } from '../../chat/chatMessageMenuLayout';
 import { isAiConversation, resolveAiBotForConversation } from '../../chat/chatAiWorkspace';
@@ -19,6 +18,7 @@ import { ChatMemberPickerSheet, ChatRenameSheet } from '../../components/chat/Ch
 import { ChatTaskShareSheet } from '../../components/chat/ChatTaskShareSheet';
 import { ChatEmojiPickerSheet } from '../../components/chat/ChatEmojiPickerSheet';
 import { ChatImageEditorSheet } from '../../components/chat/ChatImageEditorSheet';
+import { confirmChatAction } from '../../components/chat/ChatConfirmDialog';
 import type { ChatAiBot } from '../../api/types';
 import type { useThreadSheets } from './useThreadSheets';
 import type { useThreadComposerState } from './useThreadComposerState';
@@ -488,14 +488,15 @@ export function ChatThreadOverlays({
           // Closing the album editor drops the whole album (and its edits) —
           // ask first when there is more than one photo.
           if (albumDraft && attachmentDraftFiles.length > 1) {
-            Alert.alert(
-              'Отменить отправку?',
-              `Выбранные фото (${attachmentDraftFiles.length}) и правки будут сброшены.`,
-              [
-                { text: 'Продолжить', style: 'cancel' },
-                { text: 'Отменить', style: 'destructive', onPress: discard },
-              ],
-            );
+            void confirmChatAction({
+              title: 'Отменить отправку?',
+              message: `Выбранные фото (${attachmentDraftFiles.length}) и правки будут сброшены.`,
+              confirmText: 'Отменить',
+              cancelText: 'Продолжить',
+              destructive: true,
+            }).then((confirmed) => {
+              if (confirmed) discard();
+            });
             return;
           }
           if (albumDraft) discard();

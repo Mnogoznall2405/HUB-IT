@@ -88,3 +88,27 @@ it('runs at most one drain at a time: a concurrent call returns without a second
   expect(firstTransport).toHaveBeenCalledTimes(1);
   expect(await readNativeChatOutbox(userId)).toEqual([]);
 });
+
+it('drains a transient retry past the old five-attempt cap once its backoff is due', async () => {
+  const nowSpy = jest.spyOn(Date, 'now');
+  let clock = 1_000_000;
+  nowSpy.mockImplementation(() => clock);
+  try {
+    const queue = createNativeChatOutbox(userId, 'chat-x');
+    await queue.queue(pending);
+    const busy = async () => {
+      throw Object.assign(new Error('server busy'), { isAxiosError: true, response: { status: 503, headers: {}, data: {} } });
+    };
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await queue.deliverQueued('m1', busy, () => true, async () => true).catch(() => undefined);
+      clock = (await readNativeChatOutbox(userId))[0].delivery!.notBefore;
+    }
+  } finally {
+    nowSpy.mockRestore();
+  }
+  expect((await readNativeChatOutbox(userId))[0].delivery).toMatchObject({ state: 'retry', attempts: 6 });
+  const transport = jest.fn(async () => saved);
+  await drainNativeChatOutboxInBackground(userId, drainOptions(transport));
+  expect(transport).toHaveBeenCalledTimes(1);
+  expect(await readNativeChatOutbox(userId)).toEqual([]);
+});

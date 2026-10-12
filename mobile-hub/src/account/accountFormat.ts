@@ -12,6 +12,7 @@ export const DEFAULT_NOTIFICATION_CHANNELS = {
   chat_group: true,
   chat_task: true,
   chat_ai: true,
+  chat_sound: true,
 } as const;
 
 export type NotificationChannels = {
@@ -25,6 +26,8 @@ export type NotificationChannels = {
   chat_group: boolean;
   chat_task: boolean;
   chat_ai: boolean;
+  /** Sound for new chat messages; a preference of its own, not a channel toggle. */
+  chat_sound: boolean;
 };
 
 export type MailboxAuthMode = 'stored_credentials' | 'primary_credentials' | 'primary_session';
@@ -183,6 +186,7 @@ export function normalizeNotificationChannels(value: unknown = {}): Notification
     chat_group: Boolean(source.chat_group ?? legacyChatEnabled),
     chat_task: Boolean(source.chat_task ?? legacyChatEnabled),
     chat_ai: Boolean(source.chat_ai ?? legacyChatEnabled),
+    chat_sound: Boolean(source.chat_sound ?? DEFAULT_NOTIFICATION_CHANNELS.chat_sound),
   };
 }
 

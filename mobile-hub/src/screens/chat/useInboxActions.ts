@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
-import { Alert } from 'react-native';
 import { router } from 'expo-router';
 import * as chatApi from '../../api/chatApi';
 import type {
@@ -14,10 +13,11 @@ import { isAiConversation, type ChatWorkspaceKey } from '../../chat/chatAiWorksp
 import { nextInboxRowSettings } from '../../chat/chatGestures';
 import { filterConversationsByLocalQuery } from '../../chat/nativeChatLocalSearch';
 import { showNativeToast } from '../../components/nativeToast';
+import { confirmChatAction } from '../../components/chat/ChatConfirmDialog';
 
 /** Inbox row/sheet actions: search, workspace sheets, AI dialogs, new chat,
  * conversation settings and navigation. Non-blocking errors go to toasts (S7);
- * Alert stays for destructive confirmations. */
+ * Destructive confirmations use confirmChatAction. */
 export function useInboxActions({
   userId,
   offlineMode,
@@ -126,63 +126,54 @@ export function useInboxActions({
   }, [items, mergeSearchResults, search, workspace]);
 
   const resetAiContext = useCallback((item: ChatConversationSummary) => {
-    Alert.alert(
-      'Сбросить контекст?',
-      'Старые сообщения останутся видимыми, но помощник перестанет учитывать их в новых ответах.',
-      [
-        { text: 'Отмена', style: 'cancel' },
-        {
-          text: 'Сбросить',
-          onPress: () => {
-            void (async () => {
-              setAiBusy(true);
-              try {
-                await chatApi.resetAiConversationContext(item.id);
-                if (mountedRef.current) {
-                  showNativeToast('Контекст сброшен', 'Новые ответы не будут учитывать предыдущую историю.');
-                }
-              } catch (cause) {
-                if (mountedRef.current) {
-                  showNativeToast('Не удалось сбросить контекст', formatApiError(cause, 'Повторите попытку'));
-                }
-              } finally {
-                if (mountedRef.current) setAiBusy(false);
-              }
-            })();
-          },
-        },
-      ],
-    );
+    void confirmChatAction({
+      title: 'Сбросить контекст?',
+      message: 'Старые сообщения останутся видимыми, но помощник перестанет учитывать их в новых ответах.',
+      confirmText: 'Сбросить',
+      destructive: true,
+    }).then((confirmed) => {
+      if (!confirmed) return;
+      void (async () => {
+        setAiBusy(true);
+        try {
+          await chatApi.resetAiConversationContext(item.id);
+          if (mountedRef.current) {
+            showNativeToast('Контекст сброшен', 'Новые ответы не будут учитывать предыдущую историю.');
+          }
+        } catch (cause) {
+          if (mountedRef.current) {
+            showNativeToast('Не удалось сбросить контекст', formatApiError(cause, 'Повторите попытку'));
+          }
+        } finally {
+          if (mountedRef.current) setAiBusy(false);
+        }
+      })();
+    });
   }, [mountedRef]);
 
   const deleteAiConversation = useCallback((item: ChatConversationSummary) => {
-    Alert.alert(
-      'Удалить AI-чат?',
-      'Диалог будет удалён без возможности восстановления.',
-      [
-        { text: 'Отмена', style: 'cancel' },
-        {
-          text: 'Удалить',
-          style: 'destructive',
-          onPress: () => {
-            void (async () => {
-              setAiBusy(true);
-              try {
-                await chatApi.deleteAiConversation(item.id);
-                if (!mountedRef.current) return;
-                setItems((current) => current.filter((row) => row.id !== item.id));
-              } catch (cause) {
-                if (mountedRef.current) {
-                  showNativeToast('Не удалось удалить чат', formatApiError(cause, 'Повторите попытку'));
-                }
-              } finally {
-                if (mountedRef.current) setAiBusy(false);
-              }
-            })();
-          },
-        },
-      ],
-    );
+    void confirmChatAction({
+      title: 'Удалить AI-чат?',
+      message: 'Диалог будет удалён без возможности восстановления.',
+      confirmText: 'Удалить',
+      destructive: true,
+    }).then((confirmed) => {
+      if (!confirmed) return;
+      void (async () => {
+        setAiBusy(true);
+        try {
+          await chatApi.deleteAiConversation(item.id);
+          if (!mountedRef.current) return;
+          setItems((current) => current.filter((row) => row.id !== item.id));
+        } catch (cause) {
+          if (mountedRef.current) {
+            showNativeToast('Не удалось удалить чат', formatApiError(cause, 'Повторите попытку'));
+          }
+        } finally {
+          if (mountedRef.current) setAiBusy(false);
+        }
+      })();
+    });
   }, [mountedRef, setItems]);
 
   const renameAiConversation = useCallback(async (nextTitle: string) => {

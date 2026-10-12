@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
-import { Alert } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import * as chatApi from '../../api/chatApi';
 import type { ChatMessage } from '../../api/types';
 import { showNativeToast } from '../../components/nativeToast';
+import { confirmChatAction } from '../../components/chat/ChatConfirmDialog';
 import { mergeMessages } from '../../chat/chatState';
 import {
   canDeleteSelectedMessages,
@@ -98,37 +98,32 @@ export function useThreadSelection({
     const confirmLabel = deletable.length === 1
       ? 'Удалить сообщение?'
       : `Удалить ${deletable.length} сообщений?`;
-    Alert.alert(
-      confirmLabel,
-      'Текст и вложения будут скрыты у всех участников диалога.',
-      [
-        { text: 'Отмена', style: 'cancel' },
-        {
-          text: 'Удалить',
-          style: 'destructive',
-          onPress: () => {
-            // allSettled: a single failed delete must not hide the ones the
-            // server already removed — merge successes, report only failures.
-            void Promise.allSettled(deletable.map((message) => chatApi.deleteMessage(conversationId, message.id)))
-              .then((results) => {
-                if (!mountedRef.current) return;
-                const deleted = results
-                  .filter((result): result is PromiseFulfilledResult<ChatMessage> => result.status === 'fulfilled')
-                  .map((result) => result.value);
-                if (deleted.length) {
-                  setMessages((current) => mergeMessages(current, deleted, userId));
-                }
-                const failed = results.length - deleted.length;
-                if (failed) {
-                  showNativeToast('Не все сообщения удалены', `Не удалось удалить: ${failed}. Повторите попытку.`);
-                } else {
-                  clearSelection();
-                }
-              });
-          },
-        },
-      ],
-    );
+    void confirmChatAction({
+      title: confirmLabel,
+      message: 'Текст и вложения будут скрыты у всех участников диалога.',
+      confirmText: 'Удалить',
+      destructive: true,
+    }).then((confirmed) => {
+      if (!confirmed) return;
+      // allSettled: a single failed delete must not hide the ones the
+      // server already removed — merge successes, report only failures.
+      void Promise.allSettled(deletable.map((message) => chatApi.deleteMessage(conversationId, message.id)))
+        .then((results) => {
+          if (!mountedRef.current) return;
+          const deleted = results
+            .filter((result): result is PromiseFulfilledResult<ChatMessage> => result.status === 'fulfilled')
+            .map((result) => result.value);
+          if (deleted.length) {
+            setMessages((current) => mergeMessages(current, deleted, userId));
+          }
+          const failed = results.length - deleted.length;
+          if (failed) {
+            showNativeToast('Не все сообщения удалены', `Не удалось удалить: ${failed}. Повторите попытку.`);
+          } else {
+            clearSelection();
+          }
+        });
+    });
   }, [clearSelection, conversationId, conversationKind, mountedRef, selectedMessages, setMessages, userId]);
 
   return {

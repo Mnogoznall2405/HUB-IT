@@ -8,6 +8,13 @@ import { getChatSendTimingSummary, resetChatSendTiming, type ChatSendTimingSumma
 import { getApiInflightSummary, resetApiInflight, type ApiInflightSummary } from './apiInflight';
 import { getUiTimingSummary, resetUiTiming, type UiTimingSummary } from './uiTiming';
 import {
+  getChatDeviceLogSnapshot,
+  readChatDeviceLog,
+  resetChatDeviceLog,
+  flushChatDeviceLog,
+  type ChatDeviceLogEntry,
+} from './chatDeviceLog';
+import {
   getAndroidProcessHealthSnapshot,
   normalizeAndroidProcessHealth,
   type AndroidProcessHealthSnapshot,
@@ -63,7 +70,7 @@ export type DiagnosticEvent = {
 };
 
 export type DiagnosticReport = {
-  schemaVersion: 6;
+  schemaVersion: 7;
   generatedAt: string;
   app: {
     version: string;
@@ -78,6 +85,7 @@ export type DiagnosticReport = {
   chatSendTiming: ChatSendTimingSummary;
   uiTiming: UiTimingSummary;
   apiInflight: ApiInflightSummary;
+  chatDeviceLog: ChatDeviceLogEntry[];
 };
 
 let releaseHealthMutation = Promise.resolve();
@@ -255,6 +263,7 @@ export async function clearDiagnosticEvents(): Promise<void> {
   resetChatSendTiming();
   resetUiTiming();
   resetApiInflight();
+  await resetChatDeviceLog();
   await Promise.all([
     SecureStore.deleteItemAsync(STORAGE_KEY),
     SecureStore.deleteItemAsync(RELEASE_HEALTH_STORAGE_KEY),
@@ -269,9 +278,10 @@ export function buildDiagnosticReport(
   chatSendTiming = getChatSendTimingSummary(),
   uiTiming = getUiTimingSummary(),
   apiInflight = getApiInflightSummary(),
+  chatDeviceLog: ChatDeviceLogEntry[] = getChatDeviceLogSnapshot(),
 ): DiagnosticReport {
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     generatedAt,
     app: {
       version: String(Application.nativeApplicationVersion || 'unknown'),
@@ -286,22 +296,29 @@ export function buildDiagnosticReport(
     chatSendTiming,
     uiTiming,
     apiInflight,
+    chatDeviceLog,
   };
 }
 
 export async function shareDiagnosticReport(): Promise<void> {
   await diagnosticMutation;
   if (!(await Sharing.isAvailableAsync())) throw new Error('Системное меню «Поделиться» недоступно');
-  const [events, releaseHealth, androidProcessHealth] = await Promise.all([
+  await flushChatDeviceLog();
+  const [events, releaseHealth, androidProcessHealth, chatDeviceLog] = await Promise.all([
     readEvents(),
     getReleaseHealthSnapshot(),
     getAndroidProcessHealthSnapshot(),
+    readChatDeviceLog(),
   ]);
   const report = buildDiagnosticReport(
     events,
     new Date().toISOString(),
     releaseHealth,
     androidProcessHealth,
+    undefined,
+    undefined,
+    undefined,
+    chatDeviceLog,
   );
   const file = new File(Paths.cache, `hubit-diagnostics-${Date.now()}.json`);
   try {

@@ -4,7 +4,8 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-
 import { Button } from 'react-native-paper';
 import type { ChatUserSummary } from '../../api/types';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
-import { ChatBottomSheet } from './ChatBottomSheet';
+import { ScreenSheet } from './ScreenSheet';
+import { type SheetCloseReason, useSheetDeviceLog } from './sheetDeviceLog';
 
 type AiBot = { id: string; name: string };
 
@@ -40,6 +41,7 @@ export function NewChatSheet({
   const [remoteUsers, setRemoteUsers] = useState<ChatUserSummary[] | null>(null);
   const [searchingUsers, setSearchingUsers] = useState(false);
   const [userSearchError, setUserSearchError] = useState('');
+  const markClose = useSheetDeviceLog('new_chat', visible);
 
   useEffect(() => {
     if (visible) return;
@@ -112,6 +114,13 @@ export function NewChatSheet({
     onClose();
   };
 
+  // A refused close (busy) must not leave a mark for the next close to report.
+  const closeBy = (reason: SheetCloseReason) => {
+    if (busy) return;
+    markClose(reason);
+    reset();
+  };
+
   const runCreate = async (action: () => void | Promise<void>) => {
     if (busy) return;
     setBusy(true);
@@ -123,11 +132,11 @@ export function NewChatSheet({
   };
 
   return (
-    <ChatBottomSheet
+    <ScreenSheet
       visible={visible}
       onClose={reset}
+      onDismissReason={(reason) => { if (!busy) markClose(reason); }}
       dismissAccessibilityLabel="Закрыть создание диалога"
-      avoidKeyboard
       sheetStyle={styles.card}
     >
         <View accessibilityViewIsModal>
@@ -170,7 +179,7 @@ export function NewChatSheet({
                 ) : null}
               </ScrollView>
               {busy ? <Text accessibilityLiveRegion="polite" style={styles.busy}>Открываем диалог…</Text> : null}
-              <Button disabled={busy} onPress={reset}>Закрыть</Button>
+              <Button disabled={busy} onPress={() => closeBy('button')}>Закрыть</Button>
             </>
           ) : (
             <>
@@ -270,11 +279,11 @@ export function NewChatSheet({
           {busy && mode === 'direct' ? (
             <Text accessibilityLiveRegion="polite" style={styles.busy}>Создаём диалог…</Text>
           ) : null}
-          <Button disabled={busy} onPress={reset}>Закрыть</Button>
+          <Button disabled={busy} onPress={() => closeBy('button')}>Закрыть</Button>
             </>
           )}
         </View>
-    </ChatBottomSheet>
+    </ScreenSheet>
   );
 }
 

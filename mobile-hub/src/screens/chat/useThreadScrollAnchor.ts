@@ -1,3 +1,4 @@
+import { logChatDevice } from '../../diagnostics/chatDeviceLog';
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import type { FlatList, NativeScrollEvent, NativeSyntheticEvent, ViewToken } from 'react-native';
 import * as chatApi from '../../api/chatApi';
@@ -252,6 +253,7 @@ export function useThreadScrollAnchor({
   }, [focusMessageById, returnAnchorId]);
 
   const jumpToBottom = useCallback(async () => {
+    logChatDevice('jump_bottom', { detached: hasNewer });
     setReturnAnchorId(null);
     if (offlineMode) {
       const local = mergeMessages(accumulatedMessagesRef.current, messages, userId);

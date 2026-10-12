@@ -31,6 +31,28 @@ export function pendingReplyNotificationId(item: Pick<PendingChatReply, 'id'>): 
   return `hubit-reply:${item.id.slice(-40)}`;
 }
 
+const ORIGIN_CHANNEL_IDS: ReadonlySet<string> = new Set([
+  HUBIT_NOTIFICATION_CHANNELS.chat,
+  HUBIT_NOTIFICATION_CHANNELS.chatAi,
+]);
+
+// The backend stamps data.channelId on every push. Feedback for an AI-chat reply
+// must stay on hubit_chat_ai, so the user's channel settings apply to it. The
+// source notification is still presented until its feedback replaces it; the
+// feedback writes the same channelId into its own data, so later updates agree.
+async function originChannelId(sourceIdentifier: string): Promise<string> {
+  let channelId = null as string | null;
+  if (sourceIdentifier) {
+    await settleNotificationOperation(async () => {
+      const presented = await Notifications.getPresentedNotificationsAsync();
+      const match = presented.find((item) => item.request.identifier === sourceIdentifier);
+      const data = match?.request.content.data as Record<string, unknown> | undefined;
+      channelId = String(data?.channelId || '').trim();
+    });
+  }
+  return channelId && ORIGIN_CHANNEL_IDS.has(channelId) ? channelId : HUBIT_NOTIFICATION_CHANNELS.chat;
+}
+
 async function replaceFeedback(
   item: PendingChatReply,
   title: string,
@@ -41,6 +63,7 @@ async function replaceFeedback(
   const fallbackIdentifier = pendingReplyNotificationId(item);
   const sourceIdentifier = String(item.notificationId || '').trim();
   const feedbackIdentifier = sourceIdentifier || fallbackIdentifier;
+  const channelId = await originChannelId(sourceIdentifier);
   const presented = await settleNotificationOperation(() => Notifications.scheduleNotificationAsync({
     // Android closes RemoteInput only when the app updates the same notification
     // tag/id that received the reply. A separate identifier leaves some OEM
@@ -54,10 +77,11 @@ async function replaceFeedback(
       data: {
         route: item.route,
         channel: 'chat',
+        channelId,
         pending_action_id: item.id,
       },
     },
-    trigger: { channelId: HUBIT_NOTIFICATION_CHANNELS.chat },
+    trigger: { channelId },
   }));
   if (fallbackIdentifier !== feedbackIdentifier) {
     void settleNotificationOperation(

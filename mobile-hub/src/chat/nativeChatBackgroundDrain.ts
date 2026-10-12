@@ -13,7 +13,6 @@ import {
   type NativeChatTransport,
 } from './nativeChatDeliveryTransport';
 import {
-  NATIVE_CHAT_MAX_DELIVERY_ATTEMPTS,
   readNativeChatOutbox,
   type NativeChatOutboxEntry,
 } from './nativeChatOutbox';
@@ -29,7 +28,6 @@ function hasDeliverableWork(rows: Array<NativeChatOutboxEntry & { busy?: boolean
     if (!delivery || delivery.state === 'confirmed' || delivery.state === 'cancelled'
       || delivery.state === 'paused') return false;
     if (row.busy) return true;
-    if (delivery.attempts >= NATIVE_CHAT_MAX_DELIVERY_ATTEMPTS) return false;
     return delivery.state !== 'retry' || (delivery.notBefore || 0) <= Date.now();
   });
 }

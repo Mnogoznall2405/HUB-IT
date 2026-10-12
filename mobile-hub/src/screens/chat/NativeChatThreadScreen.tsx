@@ -127,6 +127,7 @@ import { useThreadBack } from './useThreadBack';
 import { useThreadRender } from './useThreadRender';
 import { ChatThreadOverlays } from './ChatThreadOverlays';
 import { NativeToastHost, showNativeToast } from '../../components/nativeToast';
+import { ChatConfirmHost } from '../../components/chat/ChatConfirmDialog';
 import { useUnsavedFormGuard } from '../../navigation/useUnsavedFormGuard';
 import { getPinnedChatMessageId, setPinnedChatMessageId } from '../../chat/chatPinnedMessages';
 import {
@@ -1314,6 +1315,7 @@ export function NativeChatThreadScreen({
       </View>
       </ChatInteractiveBackGesture>
       <NativeToastHost />
+      <ChatConfirmHost />
     </SafeAreaView>
   );
 }

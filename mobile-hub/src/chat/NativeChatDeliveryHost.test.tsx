@@ -5,13 +5,13 @@ import { createNativeChatDeliveryRunner } from './nativeChatDeliveryRunner';
 import { setNativeChatDeliveryBlocked } from './nativeChatDeliveryGate';
 
 let mockUserId = 7, mockOffline = false, mockSessionGeneration = 1;
-const mockSocketListeners = new Set<() => void>();
+const mockSocketListeners = new Set<(status?: string) => void>();
 jest.mock('../auth/AuthContext', () => ({ useAuth: () => ({
   user: { id: mockUserId }, offlineMode: mockOffline, hasPermission: () => true,
 }) }));
 jest.mock('../auth/tokenStore', () => ({ ...jest.requireActual('../auth/tokenStore'), getSessionGeneration: () => mockSessionGeneration }));
 jest.mock('./nativeChatDeliveryRunner', () => ({ createNativeChatDeliveryRunner: jest.fn() }));
-jest.mock('./chatSocket', () => ({ chatSocket: { on: (_name: string, callback: () => void) => {
+jest.mock('./chatSocket', () => ({ chatSocket: { on: (_name: string, callback: (status?: string) => void) => {
   mockSocketListeners.add(callback); return () => mockSocketListeners.delete(callback);
 } } }));
 
@@ -88,4 +88,28 @@ it('invalidates old session callbacks after account replacement', async () => {
   expect(appListeners.size).toBe(1);
   expect(mockSocketListeners.size).toBe(1);
   await view.unmount();
+});
+
+it('wakes the runner with the reason that ended the backoff: foreground, socket, network', async () => {
+  const view = await render(<NativeChatDeliveryHost />);
+  await settle();
+  const first = createRunner.mock.results[0].value;
+  await act(async () => { appListeners.forEach((listener) => listener('active')); });
+  expect(first.wake).toHaveBeenLastCalledWith('foreground');
+  await act(async () => { mockSocketListeners.forEach((listener) => listener('connected')); });
+  expect(first.wake).toHaveBeenLastCalledWith('socket');
+  await act(async () => { mockSocketListeners.forEach((listener) => listener('reconnecting')); });
+  expect(first.wake).toHaveBeenLastCalledWith(undefined);
+
+  // Connectivity coming back: the offline edit tears the runner down, the
+  // restored edit recreates it and releases the backoffs as a network wake.
+  mockOffline = true;
+  await view.rerender(<NativeChatDeliveryHost />);
+  await settle();
+  expect(first.dispose).toHaveBeenCalled();
+  mockOffline = false;
+  await view.rerender(<NativeChatDeliveryHost />);
+  await settle();
+  const restored = createRunner.mock.results[createRunner.mock.results.length - 1].value;
+  expect(restored.wake).toHaveBeenCalledWith('network');
 });

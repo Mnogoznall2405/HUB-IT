@@ -17,6 +17,9 @@ import {
   parseTypingEnvelope,
 } from '../../chat/chatTyping';
 import { chatMessageMotionKey, type ChatMessageEnterKind } from '../../components/chat/ChatMessageEnterMotion';
+import { useChatAppActive } from '../../chat/useChatAppActive';
+import { logChatSocketState } from '../../chat/chatDeviceEvents';
+import { logChatDevice } from '../../diagnostics/chatDeviceLog';
 
 /** chatSocket subscriptions for the open thread: status, created/updated/deleted,
  * reactions, typing, presence, plus the 15s HTTP fallback while disconnected. */
@@ -112,6 +115,7 @@ export function useThreadRealtime({
 
     const offStatus = chatSocket.on('status', (next) => {
       const nextStatus = next as ChatSocketStatus;
+      logChatSocketState(nextStatus);
       setStatus(nextStatus);
       if (nextStatus !== 'connected') return;
       if (connectedOnceRef.current) void syncLatestMessages();
@@ -279,15 +283,24 @@ export function useThreadRealtime({
 
   // Focus-scoped: pushed-over thread screens stay mounted — without this gate
   // every stacked screen would keep its own 15s poller while disconnected.
+  // S11: the poll also pauses while the app is backgrounded or inactive; on
+  // return the effect restarts and syncs immediately.
+  const appActive = useChatAppActive();
   useFocusEffect(useCallback(() => {
-    if (offlineMode || !shouldUseChatHttpFallback(status)) return undefined;
+    if (offlineMode || !appActive || !shouldUseChatHttpFallback(status)) return undefined;
     const syncIfActive = () => {
       if (getActiveNativeChatConversationId() === conversationId) void syncLatestMessages();
     };
     syncIfActive();
     const timer = setInterval(syncIfActive, 15_000);
     return () => clearInterval(timer);
-  }, [conversationId, offlineMode, status, syncLatestMessages]));
+  }, [appActive, conversationId, offlineMode, status, syncLatestMessages]));
+
+  // Device log: how long this conversation stayed open (keyed on the id only).
+  useEffect(() => {
+    const openedAt = Date.now();
+    return () => { logChatDevice('thread_close', { ms: Date.now() - openedAt }); };
+  }, [conversationId]);
 
   return { status, typingParticipants, aiRunStatus };
 }

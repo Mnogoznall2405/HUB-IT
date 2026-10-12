@@ -7,6 +7,8 @@ import * as legacy from './nativeChatOutboxLegacy';
 import { CHAT_OUTBOX_STORAGE_KEY, enqueueNativeChatStorage,
   getNativeChatOutboxRowsCache, setNativeChatOutboxRowsCache } from './nativeChatStorageQueue';
 import { deleteUnreferencedChatFiles } from './nativeChatDraftFiles';
+import { logChatDevice } from '../diagnostics/chatDeviceLog';
+import { classifyDeliveryFailure, retryDelayMs } from './nativeChatRetryPolicy';
 export type { NativeChatQueuedUpload, NativeChatOutboxCommand } from './nativeChatOutboxLegacy';
 export type NativeChatDeliveryState = 'queued' | 'retry' | 'sending' | 'paused' | 'cancelled' | 'confirmed';
 export type NativeChatDelivery = {
@@ -23,8 +25,10 @@ export type NativeChatDeliveryHelpers = {
 };
 type Projection = ChatMessage & { local_queue_state?: NativeChatDeliveryState };
 export type NativeChatDeliveryEvent = { userId: number; message: ChatMessage; loaded?: number; total?: number | null };
-export const NATIVE_CHAT_MAX_DELIVERY_ATTEMPTS = 5;
-export const NATIVE_CHAT_DELIVERY_RETRY_MS = [2000, 5000, 15000, 30000] as const;
+// R-S4: transient failures retry without an attempt cap while the row stays in
+// the outbox; permanent failures park the row as paused. `attempts` only feeds
+// the backoff ladder and diagnostics.
+type RetryDecision = { state: 'retry' | 'paused'; attempts: number; delayMs: number; reason: string; suspended: boolean };
 const events = new Set<(event: NativeChatDeliveryEvent) => void>();
 const changes = new Set<() => void>();
 let generation = 0;
@@ -51,8 +55,7 @@ function project(entry: Entry, busy = false): ChatMessage {
   const state = entry.delivery.state;
   return { ...entry.message,
     local_status: state === 'cancelled' ? 'cancelled' : busy ? 'sending' : 'failed',
-    local_queue_state: state === 'sending' && !busy
-      ? (entry.delivery!.attempts >= NATIVE_CHAT_MAX_DELIVERY_ATTEMPTS ? 'paused' : 'queued') : state,
+    local_queue_state: state === 'sending' && !busy ? 'queued' : state,
   } as Projection;
 }
 export function nativeChatOutboxMessage(entry: Entry) {
@@ -138,11 +141,6 @@ async function writeStored(rows: Entry[]) {
   notify();
 }
 function noWork() { return Object.assign(new Error('Нет доступной операции доставки'), { code: 'HUBIT_NO_DELIVERY' }); }
-function transient(error: unknown) {
-  const e = error as { code?: string; isAxiosError?: boolean; response?: { status?: number } } | null;
-  return [408,429,500,502,503,504].includes(e?.response?.status || 0) || e?.code === 'HUBIT_OFFLINE_READ_ONLY'
-    || (!e?.response && (e?.isAxiosError === true || ['ERR_NETWORK','ECONNABORTED','ETIMEDOUT'].includes(e?.code || '')));
-}
 export function createNativeChatOutbox(userId: number, conversationId: string, getTitle?: () => string) {
   const old = legacy.createNativeChatOutbox(userId, conversationId, getTitle);
   const lease = generation;
@@ -220,6 +218,7 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
         if (!canProceed() || jobs.has(key(id)) || preparations.has(key(id))) throw noWork();
         return row.delivery?.confirmed ? row : { ...row, delivery: { version: 1, state: 'queued', attempts: 0, notBefore: 0 } };
       });
+      logChatDevice('outbox_wake', { reason: 'manual' });
     },
     cancelDelivery: async (id: string) => {
       current(); cancelled.add(key(id)); controllers.get(key(id))?.abort();
@@ -244,6 +243,7 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
       const rows = await readNativeChatOutbox(userId); current();
       if (jobs.has(key(id)) || preparations.has(key(id)) || rows.find((row) => match(row, id))?.delivery?.confirmed) throw noWork();
       cancelled.add(key(id));
+      logChatDevice('outbox_wake', { reason: 'manual' });
       try { await old.discard(id); }
       finally { cancelled.delete(key(id)); }
     },
@@ -310,7 +310,7 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
           const ack = d.confirmed || acknowledgements.get(operationKey);
           if (ack) return { ...row, delivery: { ...d, state: 'confirmed' as const, confirmed: ack } };
           if (!canSend() || controller.signal.aborted || cancelled.has(operationKey)
-            || !['queued','retry','sending'].includes(d.state) || d.attempts >= NATIVE_CHAT_MAX_DELIVERY_ATTEMPTS || d.notBefore > Date.now()) throw noWork();
+            || !['queued','retry','sending'].includes(d.state) || d.notBefore > Date.now()) throw noWork();
           const fifoNow = Date.now();
           if (rows.slice(0,index).some((before) => {
             if (before.userId !== userId || before.message.conversation_id !== conversationId || !before.delivery) return false;
@@ -319,13 +319,13 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
             // cancelled, far-future retry and exhausted rows step aside so a
             // stuck message never stalls the rest of the dialog.
             if (beforeState === 'cancelled' || beforeState === 'paused') return false;
-            if ((before.delivery.attempts || 0) >= NATIVE_CHAT_MAX_DELIVERY_ATTEMPTS) return false;
             return beforeState !== 'retry' || (before.delivery.notBefore || 0) <= fifoNow;
           })) throw noWork();
           const next: Entry = { ...row, delivery: { ...d, state: 'sending', attempts: d.attempts + 1 } };
           await writeStored(rows.map((item,i) => i === index ? next : item)); return next;
         });
         let saved = claimed.delivery!.confirmed;
+        const sendStartedAt = Date.now();
         if (!saved) {
           current(); if (!canSend() || controller.signal.aborted || cancelled.has(operationKey)) throw noWork();
           markChatSend(id, 'http_start');
@@ -351,6 +351,7 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
           }
           acknowledgements.set(operationKey, saved);
           markChatSend(id, 'http_ack');
+          logChatDevice('outbox_sent', { attempts: claimed.delivery!.attempts, ms: Date.now() - sendStartedAt });
         }
         // Flip the UI as soon as the server ACKs: the in-memory acknowledgement
         // already covers future projections, the confirmed write can follow.
@@ -381,20 +382,29 @@ export function createNativeChatOutbox(userId: number, conversationId: string, g
       })().catch(async (error: unknown) => {
         settleChatSend(id);
         if (claimed && generation === lease && !claimed.delivery?.confirmed && !acknowledgements.has(operationKey)) {
-          await update(id, (row) => {
+          let decision = null as RetryDecision | null;
+          const written = await update(id, (row) => {
             if (row.delivery?.confirmed) return row;
             const isCancelled = cancelled.has(operationKey) || row.delivery?.state === 'cancelled';
-            const suspended = !isCancelled && (signal?.aborted
-              || (error as {code?: string})?.code === 'HUBIT_NO_DELIVERY');
+            const code = (error as {code?: string})?.code;
+            const suspended = !isCancelled && (signal?.aborted || code === 'HUBIT_NO_DELIVERY');
             const attempts = Math.max(0, (row.delivery?.attempts || 0) - (suspended ? 1 : 0));
-            const retry = !isCancelled && attempts < NATIVE_CHAT_MAX_DELIVERY_ATTEMPTS
-              && (controller.signal.aborted || (error as {code?: string})?.code === 'HUBIT_NO_DELIVERY' || transient(error));
+            const failure = classifyDeliveryFailure(error);
+            const retry = !isCancelled && (controller.signal.aborted || code === 'HUBIT_NO_DELIVERY' || failure.transient);
+            const delayMs = retry && !suspended ? retryDelayMs(attempts, Math.random, failure.retryAfterMs) : 0;
+            const state = isCancelled ? 'cancelled' as const : retry ? 'retry' as const : 'paused' as const;
+            if (!isCancelled) decision = { state: retry ? 'retry' : 'paused', attempts, delayMs, reason: failure.reason, suspended };
             const response = (error as {response?: {status?: number;data?: {detail?: unknown}}})?.response;
-            return { ...row, delivery: { version: 1, state: isCancelled ? 'cancelled' : retry ? 'retry' : 'paused', attempts,
-              notBefore: retry && !suspended ? Date.now() + NATIVE_CHAT_DELIVERY_RETRY_MS[Math.min(Math.max(attempts-1,0),3)] : 0,
+            return { ...row, delivery: { version: 1, state, attempts,
+              notBefore: retry && !suspended ? Date.now() + delayMs : 0,
               ...(response?.status === 404 && response.data?.detail === 'Quoted message not found' ? {replyMissing:true} : {}),
             } };
-          }).catch(() => undefined);
+          }).then(() => true, () => false);
+          // Journal only real transitions: suspension is not a failure and a cancelled row is not given up.
+          if (written && decision && !decision.suspended) {
+            if (decision.state === 'retry') logChatDevice('outbox_retry', { attempt: decision.attempts, delayMs: decision.delayMs, reason: decision.reason });
+            else logChatDevice('outbox_give_up', { reason: decision.reason });
+          }
         }
         throw error;
       }).finally(() => {
@@ -412,6 +422,24 @@ export function getNativeChatOutboxRuntimeState() {
     cancelled: cancelled.size,
     acknowledgements: acknowledgements.size,
   };
+}
+/**
+ * Makes every transient backoff of this user's queue due now (foreground,
+ * network or socket wake). Paused and cancelled rows and attempt counters are
+ * untouched. Returns how many rows were released.
+ */
+export function resetNativeChatRetryBackoff(userId: number): Promise<number> {
+  return enqueueNativeChatStorage(async () => {
+    const rows = await readStored(userId);
+    let released = 0;
+    const next = rows.map((row) => {
+      if (row.userId !== userId || row.delivery?.state !== 'retry' || !(row.delivery.notBefore > 0)) return row;
+      released += 1;
+      return { ...row, delivery: { ...row.delivery, notBefore: 0 } };
+    });
+    if (released) await writeStored(next);
+    return released;
+  });
 }
 export function clearNativeChatOutbox() {
   generation += 1;

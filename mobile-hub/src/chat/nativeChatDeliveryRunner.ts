@@ -2,11 +2,13 @@ import {
   createNativeChatOutbox,
   getNativeChatOutboxGeneration,
   readNativeChatOutbox,
+  resetNativeChatRetryBackoff,
   subscribeNativeChatOutbox,
-  NATIVE_CHAT_MAX_DELIVERY_ATTEMPTS,
   type NativeChatDeliveryHelpers,
   type NativeChatOutboxEntry,
 } from './nativeChatOutbox';
+import type { NativeChatWakeReason } from './nativeChatRetryPolicy';
+import { logChatDevice } from '../diagnostics/chatDeviceLog';
 import type { ChatMessage } from '../api/types';
 
 // Confirm-commit retries and read failures get bounded growing backoffs: a
@@ -37,7 +39,6 @@ export function releaseNativeChatDeliveryDrain(token: symbol): void {
   liveRunnerWakes.forEach((wake) => { try { wake(); } catch { /* Observers only. */ } });
 }
 export function isNativeChatDeliveryDrainActive(): boolean { return drainOwner !== null; }
-
 /** Session-owned delivery, independent of the currently open dialog. */
 export function createNativeChatDeliveryRunner(options: {
   userId: number;
@@ -108,7 +109,6 @@ export function createNativeChatDeliveryRunner(options: {
         // notBefore, attempts exhausted, cancelled) must not hold the FIFO
         // position against other live messages of the same dialog.
         const canAttemptNow = unconfirmed && state !== 'paused'
-          && row.delivery!.attempts < NATIVE_CHAT_MAX_DELIVERY_ATTEMPTS
           && (state !== 'retry' || (row.delivery!.notBefore || 0) <= Date.now());
         if (canAttemptNow || row.busy) {
           if (blockedDialogs.has(dialog)) continue;
@@ -119,7 +119,6 @@ export function createNativeChatDeliveryRunner(options: {
         if (jobs.has(rowKey)) continue;
         if (row.busy) { nextDelay = Math.min(nextDelay ?? 1000, 1000); continue; }
         if (state === 'confirmed' && (confirmFailures.get(rowKey) || 0) >= CONFIRM_COMMIT_MAX_ATTEMPTS) continue;
-        if (state !== 'confirmed' && row.delivery!.attempts >= NATIVE_CHAT_MAX_DELIVERY_ATTEMPTS) continue;
         // Transport failures already have a durable retry deadline. Failures
         // before claiming a row have none, so bound their local storage retry.
         const deadline = Math.max(state === 'confirmed' ? 0 : row.delivery!.notBefore,
@@ -176,10 +175,15 @@ export function createNativeChatDeliveryRunner(options: {
     }
   };
   const unsubscribe = subscribeNativeChatOutbox(() => wake());
-  const wakeExternal = () => {
+  const wakeExternal = (reason?: NativeChatWakeReason) => {
     readFailures = 0;
     confirmFailures.clear();
-    wake();
+    if (!reason) { wake(); return; }
+    // An explicit reason (foreground, network, socket) cuts short every transient
+    // backoff of the queue: the rows become due now, then the pump runs.
+    logChatDevice('outbox_wake', { reason });
+    if (!current()) return;
+    void resetNativeChatRetryBackoff(options.userId).catch(() => 0).finally(() => wake());
   };
   liveRunnerWakes.add(wakeExternal);
   wake();

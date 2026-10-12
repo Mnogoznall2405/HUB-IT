@@ -8,6 +8,10 @@ import { type ChatTokens, useChatTokens } from '../../theme/chatTokens';
 import { formatShortTime } from '../../utils/formatTime';
 import { PresenceAvatar } from './PresenceAvatar';
 
+// Backend field from chat_serialization (viewer-scoped); not yet in the shared
+// ChatConversationSummary type, so it is read locally here.
+type MentionAwareConversationSummary = ChatConversationSummary & { unread_mention_count?: number };
+
 export const ChatConversationRow = React.memo(function ChatConversationRow({
   item,
   active,
@@ -31,6 +35,12 @@ export const ChatConversationRow = React.memo(function ChatConversationRow({
   const basePreview = stripChatMarkdownPreview(item.last_message_preview) || item.last_message_preview || 'Нет сообщений';
   const preview = typingText || (draftText ? `Черновик: ${draftText}` : basePreview);
   const unread = Number(item.unread_count || 0);
+  // The server counts unread mentions per viewer (unread_mention_count in the
+  // conversation summary). The "@" mark shows only while unread messages remain:
+  // a local read clears unread_count immediately, the mention count follows later.
+  const mentions = unread > 0
+    ? Math.max(0, Number((item as MentionAwareConversationSummary).unread_mention_count || 0))
+    : 0;
   const time = formatShortTime(item.last_message_at);
   const kindLabel = shouldShowConversationKindChip(item.kind) ? conversationKindLabel(item.kind) : '';
 
@@ -46,7 +56,7 @@ export const ChatConversationRow = React.memo(function ChatConversationRow({
       onAccessibilityAction={(event) => {
         if (event.nativeEvent.actionName === 'longpress') onLongPress?.();
       }}
-      accessibilityLabel={`${title}${kindLabel ? `. ${kindLabel}` : ''}. ${preview}${unread ? `. Непрочитанных: ${unread}` : ''}`}
+      accessibilityLabel={`${title}${kindLabel ? `. ${kindLabel}` : ''}. ${preview}${unread ? `. Непрочитанных: ${unread}` : ''}${mentions ? `. Упоминаний: ${mentions}` : ''}`}
       accessibilityState={{ selected: Boolean(active) }}
     >
       <PresenceAvatar label={title} avatarUrl={item.avatar_url} size={52} />
@@ -76,6 +86,11 @@ export const ChatConversationRow = React.memo(function ChatConversationRow({
           >
             {preview}
           </Text>
+          {mentions > 0 ? (
+            <View style={styles.mentionBadge} testID="chat-row-mention">
+              <Text style={styles.mentionText}>@</Text>
+            </View>
+          ) : null}
           {unread > 0 ? (
             <View style={styles.badge}>
               <Text style={styles.badgeText}>{unread > 99 ? '99+' : unread}</Text>
@@ -144,4 +159,14 @@ const createStyles = (chatTokens: ChatTokens) => StyleSheet.create({
     paddingHorizontal: 6,
   },
   badgeText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  mentionBadge: {
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: chatTokens.sidebarSearchBg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  mentionText: { color: chatTokens.accentText, fontSize: 13, fontWeight: '800' },
 });

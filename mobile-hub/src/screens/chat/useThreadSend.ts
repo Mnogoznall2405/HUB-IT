@@ -6,6 +6,7 @@ import type { ChatMessage, HubUser } from '../../api/types';
 import { formatApiError } from '../../api/formatError';
 import { recordDiagnosticEvent } from '../../diagnostics/diagnostics';
 import { markChatSend } from '../../diagnostics/chatSendTiming';
+import { logChatDevice } from '../../diagnostics/chatDeviceLog';
 import { mergeMessages, toggleReactionOptimistic } from '../../chat/chatState';
 import type { ChatListAnchorReason } from '../../chat/chatListAnchor';
 import { createChatClientMessageId } from '../../chat/chatModels';
@@ -19,6 +20,7 @@ import {
 import { chatMessageMotionKey, type ChatMessageEnterKind } from '../../components/chat/ChatMessageEnterMotion';
 import type { ChatAttachmentTransfer } from '../../components/chat/ChatDocumentAttachment';
 import { showNativeToast } from '../../components/nativeToast';
+import { confirmChatAction } from '../../components/chat/ChatConfirmDialog';
 import {
   NativeFilePermissionError,
   openAppPermissionSettings,
@@ -101,7 +103,9 @@ export function useThreadSend({
   ): Promise<void> => {
     const trimmed = body.trim();
     if (!trimmed || !isCurrentSendScope()) return;
+    const sendStartedAt = Date.now();
     markChatSend(clientMessageId, 'tap_send');
+    logChatDevice('send_tap');
     stopOutgoingTyping();
     const pendingId = `pending:${clientMessageId}`;
     const pending: ChatMessage = {
@@ -139,10 +143,16 @@ export function useThreadSend({
     knownMessageIdsRef.current.add(pendingId);
     try {
       const queued = await outbox.queue(pending);
+      const queueState = getNativeChatQueueState(queued.message);
+      logChatDevice('send_result', {
+        outcome: queueState === 'cancelled' ? 'cancelled' : 'queued',
+        ms: Date.now() - sendStartedAt,
+      });
       if (!isCurrentSendScope()) return;
-      if (getNativeChatQueueState(queued.message) !== 'cancelled') onPersisted?.();
+      if (queueState !== 'cancelled') onPersisted?.();
       setMessages((current) => mergeMessages(current, queued.message, user?.id));
     } catch (cause) {
+      logChatDevice('send_result', { outcome: 'queue_failed', ms: Date.now() - sendStartedAt });
       if (!isCurrentSendScope()) return;
       setMessages((current) => current.map((message) => (
         message.id === pendingId ? { ...message, local_status: 'failed' } : message
@@ -180,49 +190,46 @@ export function useThreadSend({
   }, [isCurrentSendScope, canWrite, conversationId, user?.id]);
 
   const requestDelete = useCallback((message: ChatMessage) => {
-    Alert.alert(
-      'Удалить сообщение?',
-      'Текст и вложения будут скрыты у всех участников диалога.',
-      [
-        { text: 'Отмена', style: 'cancel' },
-        {
-          text: 'Удалить',
-          style: 'destructive',
-          onPress: () => {
-            if (!isCurrentSendScope()) return;
-            void chatApi.deleteMessage(conversationId, message.id)
-              .then((deleted) => {
-                if (isCurrentSendScope()) {
-                  setMessages((current) => mergeMessages(current, deleted, user?.id));
-                }
-              })
-              .catch((cause) => {
-                if (isCurrentSendScope()) {
-                  Alert.alert('Не удалось удалить сообщение', formatApiError(cause, 'Повторите попытку'));
-                }
-              });
-          },
-        },
-      ],
-    );
+    void confirmChatAction({
+      title: 'Удалить сообщение?',
+      message: 'Текст и вложения будут скрыты у всех участников диалога.',
+      confirmText: 'Удалить',
+      destructive: true,
+    }).then((confirmed) => {
+      if (!confirmed || !isCurrentSendScope()) return;
+      void chatApi.deleteMessage(conversationId, message.id)
+        .then((deleted) => {
+          if (isCurrentSendScope()) {
+            setMessages((current) => mergeMessages(current, deleted, user?.id));
+          }
+        })
+        .catch((cause) => {
+          if (isCurrentSendScope()) {
+            Alert.alert('Не удалось удалить сообщение', formatApiError(cause, 'Повторите попытку'));
+          }
+        });
+    });
   }, [isCurrentSendScope, conversationId, user?.id]);
 
   const discardPendingMessage = useCallback((message: ChatMessage) => {
     const id = message.client_message_id;
     if (!id || !message.local_status || message.local_status === 'sending') return;
-    Alert.alert('Убрать сообщение из очереди?', 'Повторная отправка будет недоступна. Если сервер уже получил сообщение, оно останется в переписке.', [
-      { text: 'Оставить', style: 'cancel' },
-      { text: 'Убрать', style: 'destructive', onPress: () => {
-        if (!mountedRef.current || uploadControllersRef.current.has(id)) return;
-        void outbox.discard(id).then(() => {
-          if (!mountedRef.current) return;
-          pendingAttachmentUploadsRef.current.delete(id);
-          setMessages((current) => current.filter((item) => !(item.client_message_id === id && item.local_status)));
-        }).catch(() => {
-          if (mountedRef.current) Alert.alert('Не удалось убрать сообщение', 'Дождитесь завершения отправки или повторите действие.');
-        });
-      } },
-    ]);
+    void confirmChatAction({
+      title: 'Убрать сообщение из очереди?',
+      message: 'Повторная отправка будет недоступна. Если сервер уже получил сообщение, оно останется в переписке.',
+      confirmText: 'Убрать',
+      cancelText: 'Оставить',
+      destructive: true,
+    }).then((confirmed) => {
+      if (!confirmed || !mountedRef.current || uploadControllersRef.current.has(id)) return;
+      void outbox.discard(id).then(() => {
+        if (!mountedRef.current) return;
+        pendingAttachmentUploadsRef.current.delete(id);
+        setMessages((current) => current.filter((item) => !(item.client_message_id === id && item.local_status)));
+      }).catch(() => {
+        if (mountedRef.current) Alert.alert('Не удалось убрать сообщение', 'Дождитесь завершения отправки или повторите действие.');
+      });
+    });
   }, [mountedRef, outbox, pendingAttachmentUploadsRef, uploadControllersRef]);
 
   const sendMessage = useCallback(async () => {

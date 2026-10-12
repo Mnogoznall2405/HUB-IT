@@ -677,21 +677,18 @@ describe('native Chat screens', () => {
       id: 'pending:remove-me', client_message_id: 'remove-me', conversation_id: 'conversation-1',
       sender_user_id: 1, body_text: 'Убрать локальное сообщение',
     }, mockedChatApi.sendTextMessage)).rejects.toThrow();
-    const alert = jest.spyOn(Alert, 'alert');
-    try {
-      const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
-      await fireEvent.press(await view.findByLabelText('Не отправлено, нажмите, чтобы повторить'));
-      await fireEvent.press(await view.findByLabelText('Удалить'));
-      expect(view.getByText('Убрать локальное сообщение')).toBeTruthy();
-      const prompt = alert.mock.calls.find(([title]) => title === 'Убрать сообщение из очереди?');
-      await act(async () => { prompt?.[2]?.[1].onPress?.(); });
-      await waitFor(() => expect(view.queryByText('Убрать локальное сообщение')).toBeNull());
-      await view.unmount();
-      const restored = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
-      await waitFor(() => expect(restored.getByText('Первое сообщение')).toBeTruthy());
-      expect(restored.queryByText('Убрать локальное сообщение')).toBeNull();
-      await restored.unmount();
-    } finally { alert.mockRestore(); }
+    const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await fireEvent.press(await view.findByLabelText('Не отправлено, нажмите, чтобы повторить'));
+    await fireEvent.press(await view.findByLabelText('Удалить'));
+    expect(view.getByText('Убрать локальное сообщение')).toBeTruthy();
+    expect(view.getByText('Убрать сообщение из очереди?')).toBeTruthy();
+    await fireEvent.press(view.getByLabelText('Убрать'));
+    await waitFor(() => expect(view.queryByText('Убрать локальное сообщение')).toBeNull());
+    await view.unmount();
+    const restored = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
+    await waitFor(() => expect(restored.getByText('Первое сообщение')).toBeTruthy());
+    expect(restored.queryByText('Убрать локальное сообщение')).toBeNull();
+    await restored.unmount();
   });
 
   it('keeps typed text and explains the draft quota failure', async () => {
@@ -1548,15 +1545,15 @@ describe('native Chat screens', () => {
       viewer_last_read_message_id: null,
       viewer_last_read_at: null,
     });
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
     const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
 
     await waitFor(() => expect(view.getByText('Удаляемый текст')).toBeTruthy());
     await openMessageActions(view, 'Удаляемый текст', 'Удалить');
     await fireEvent.press(view.getByLabelText('Удалить'));
 
-    const destructive = alert.mock.calls[0]?.[2]?.find((button) => button.style === 'destructive');
-    await act(async () => destructive?.onPress?.());
+    expect(view.getByText('Удалить сообщение?')).toBeTruthy();
+    expect(mockedChatApi.deleteMessage).not.toHaveBeenCalled();
+    await fireEvent.press(view.getByLabelText('Удалить'));
     await waitFor(() => expect(mockedChatApi.deleteMessage).toHaveBeenCalledWith(
       'conversation-1',
       'message-own',
@@ -1956,18 +1953,16 @@ describe('native Chat screens', () => {
       { uri: 'file:///one.png', name: 'one.png', mimeType: 'image/png', size: 123, source: 'gallery' as const },
       { uri: 'file:///two.jpg', name: 'two.jpg', mimeType: 'image/jpeg', size: 456, source: 'gallery' as const },
     ]);
-    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
     const view = await render(<NativeChatThreadScreen conversationId="conversation-1" />);
     await fireEvent.press(view.getByLabelText('Добавить вложение'));
     await fireEvent.press(view.getByLabelText('Галерея'));
     await waitFor(() => expect(view.getByLabelText('Фото 2 из 2')).toBeTruthy());
     await fireEvent.press(view.getByLabelText('Отменить фото'));
 
-    expect(alert).toHaveBeenCalledWith('Отменить отправку?', expect.stringContaining('(2)'), expect.any(Array));
+    expect(view.getByText('Отменить отправку?')).toBeTruthy();
+    expect(view.getByText(/Выбранные фото \(2\)/)).toBeTruthy();
     expect(view.getByLabelText('Фото 2 из 2')).toBeTruthy();
-    const discard = (alert.mock.calls[0][2] as Array<{ text: string; onPress?: () => void }>)
-      .find((button) => button.text === 'Отменить');
-    await act(async () => { discard?.onPress?.(); });
+    await fireEvent.press(view.getByTestId('chat-confirm-accept'));
     await waitFor(() => expect(view.queryByLabelText('Фото 2 из 2')).toBeNull());
   });
 

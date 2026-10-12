@@ -1,4 +1,5 @@
 import { act, renderHook } from '@testing-library/react-native';
+import { AppState } from 'react-native';
 import { useRef, useState } from 'react';
 import type { ChatConversationSummary, ChatMessage } from '../../api/types';
 import type { ChatMessageEnterKind } from '../../components/chat/ChatMessageEnterMotion';
@@ -25,6 +26,14 @@ jest.mock('../../chat/chatSocket', () => ({
     sendTyping: jest.fn(),
     watchPresence: jest.fn(),
   },
+}));
+
+// The poll only syncs while this conversation is the active one; the id is
+// switchable per test, everything else in the module stays real.
+const mockActiveConversation = { id: '' };
+jest.mock('../../chat/chatActiveConversation', () => ({
+  ...jest.requireActual('../../chat/chatActiveConversation'),
+  getActiveNativeChatConversationId: () => mockActiveConversation.id,
 }));
 
 // Effect dependencies must keep a stable identity across renders, exactly like
@@ -233,4 +242,72 @@ it('expires the typing indicator after the envelope expires_in_ms (T16)', async 
   } finally {
     jest.useRealTimers();
   }
+});
+
+// S11: the 15s fallback poll runs only while the socket needs it and the app is
+// in the foreground. A reconnect still triggers exactly one gap sync.
+describe('S11: thread fallback poll', () => {
+  const appStateHandlers = new Set<(state: string) => void>();
+
+  beforeEach(() => {
+    mockActiveConversation.id = 'conversation-1';
+    appStateHandlers.clear();
+    jest.spyOn(AppState, 'addEventListener').mockImplementation(((type: string, handler: (state: string) => void) => {
+      if (type === 'change') appStateHandlers.add(handler);
+      return { remove: () => appStateHandlers.delete(handler) };
+    }) as typeof AppState.addEventListener);
+    syncLatestMessages.mockClear();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    jest.useRealTimers();
+  });
+
+  it('stays quiet while connected, polls while reconnecting, pauses in background and catches up on reconnect', async () => {
+    jest.useFakeTimers();
+    const view = await renderHook((props: HarnessProps) => useHarness(props), {
+      initialProps: { conversationId: 'conversation-1' },
+    });
+    syncLatestMessages.mockClear();
+
+    await act(async () => {
+      jest.advanceTimersByTime(60_000);
+    });
+    expect(syncLatestMessages).not.toHaveBeenCalled();
+
+    await act(async () => {
+      emitSocket('status', 'reconnecting');
+    });
+    expect(syncLatestMessages).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      jest.advanceTimersByTime(15_000);
+    });
+    expect(syncLatestMessages).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      appStateHandlers.forEach((handler) => handler('background'));
+    });
+    syncLatestMessages.mockClear();
+    await act(async () => {
+      jest.advanceTimersByTime(60_000);
+    });
+    expect(syncLatestMessages).not.toHaveBeenCalled();
+
+    await act(async () => {
+      appStateHandlers.forEach((handler) => handler('active'));
+    });
+    expect(syncLatestMessages).toHaveBeenCalledTimes(1);
+
+    syncLatestMessages.mockClear();
+    await act(async () => {
+      emitSocket('status', 'connected');
+    });
+    expect(syncLatestMessages).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      jest.advanceTimersByTime(60_000);
+    });
+    expect(syncLatestMessages).toHaveBeenCalledTimes(1);
+    expect(view.result.current.realtime.status).toBe('connected');
+  });
 });

@@ -372,3 +372,51 @@ it('idles while a background drain owns the delivery token and resumes on releas
     releaseNativeChatDeliveryDrain(token!);
   }
 });
+
+const waitUntil = async (check: () => boolean, ms = 1000) => {
+  const until = Date.now() + ms;
+  while (!check() && Date.now() < until) await new Promise((resolve) => { setTimeout(resolve, 10); });
+  return check();
+};
+const transientFailure = () => Object.assign(new Error('Service unavailable'), {
+  isAxiosError: true, response: { status: 503, headers: {}, data: {} },
+});
+
+it('a socket wake releases a transient backoff at once instead of waiting out notBefore', async () => {
+  await createNativeChatOutbox(userId, 'chat-x').queue(pending);
+  await createNativeChatOutbox(userId, 'chat-x').deliverQueued('m1', async () => { throw transientFailure(); },
+    () => true, async () => true).catch(() => undefined);
+  const [failed] = await readNativeChatOutbox(userId);
+  expect(failed.delivery).toMatchObject({ state: 'retry' });
+  expect(failed.delivery!.notBefore).toBeGreaterThan(Date.now() + 500);
+
+  const transport = jest.fn(async () => saved);
+  const runner = createNativeChatDeliveryRunner({ userId, canDeliver: () => true, transport, persistConfirmed: async () => true });
+  try {
+    await new Promise((resolve) => { setTimeout(resolve, 100); });
+    expect(transport).not.toHaveBeenCalled();
+    runner.wake('socket');
+    expect(await waitUntil(() => transport.mock.calls.length > 0)).toBe(true);
+  } finally {
+    runner.dispose();
+  }
+});
+
+it('lets a later message move while an earlier one waits out its transient backoff', async () => {
+  await createNativeChatOutbox(userId, 'chat-x').queue(pending);
+  const second: ChatMessage = { ...pending, id: 'pending:m2', client_message_id: 'm2' };
+  await createNativeChatOutbox(userId, 'chat-x').queue(second);
+  await createNativeChatOutbox(userId, 'chat-x').deliverQueued('m1', async () => { throw transientFailure(); },
+    () => true, async () => true).catch(() => undefined);
+
+  const transport = jest.fn(async (row: { message: ChatMessage }) => ({
+    ...row.message, id: `server-${row.message.client_message_id}`, local_status: undefined,
+  }) as ChatMessage);
+  const runner = createNativeChatDeliveryRunner({ userId, canDeliver: () => true, transport, persistConfirmed: async () => true });
+  try {
+    expect(await waitUntil(() => transport.mock.calls.length > 0)).toBe(true);
+    expect(transport.mock.calls.map((call) => call[0].message.client_message_id)).toEqual(['m2']);
+  } finally {
+    runner.dispose();
+  }
+});

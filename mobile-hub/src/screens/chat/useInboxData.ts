@@ -18,6 +18,9 @@ import {
   writeNativeChatInboxSnapshot,
 } from '../../chat/nativeChatInboxSnapshot';
 import { getActiveChatFolderKey } from '../../chat/chatActiveFolder';
+import { useChatAppActive } from '../../chat/useChatAppActive';
+import { logChatSocketState } from '../../chat/chatDeviceEvents';
+import { logChatDevice } from '../../diagnostics/chatDeviceLog';
 import { trackWork } from '../../diagnostics/perfProbes';
 import { noteInboxCacheReady, noteInboxLiveReady, noteInboxLoadStart } from '../../diagnostics/uiTiming';
 import { listNativeChatDraftPreviews } from '../../chat/chatDrafts';
@@ -97,9 +100,18 @@ export function useInboxData({
   const itemsRef = useRef(items);
   itemsRef.current = items;
   const remoteSearchItemsRef = useRef<ChatConversationSummary[]>([]);
+  const appActive = useChatAppActive();
+  // Focus gate for the fallback poll: the inbox stays mounted under freezeOnBlur
+  // tabs, and returning to focus already reloads in the focus effect below.
+  const [inboxFocused, setInboxFocused] = useState(false);
+  useFocusEffect(useCallback(() => {
+    setInboxFocused(true);
+    return () => setInboxFocused(false);
+  }, []));
 
   const load = useCallback(async (mode: 'initial' | 'refresh' | 'silent' = 'initial') => {
     if (ownerRef.current !== userId) return;
+    const startedAt = Date.now();
     if (loadScopeRef.current?.owner !== userId) {
       loadScopeRef.current = { owner: userId };
       loadStartingRef.current = false;
@@ -193,6 +205,7 @@ export function useInboxData({
         setHydratedOwner(userId);
         setError('');
         lastLiveLoadAtRef.current = Date.now();
+        if (mode === 'initial') logChatDevice('inbox_open', { ms: Date.now() - startedAt, count: page.items.length });
         if (userId) void writeNativeChatInboxSnapshot(userId, page);
       } catch (cause) {
         if (isCurrent() && mode !== 'silent') {
@@ -258,6 +271,7 @@ export function useInboxData({
 
     const offStatus = chatSocket.on('status', (next) => {
       const nextStatus = next as ChatSocketStatus;
+      logChatSocketState(nextStatus);
       const enteredConnected = nextStatus === 'connected' && socketStatusRef.current !== 'connected';
       socketStatusRef.current = nextStatus;
       setStatus(nextStatus);
@@ -388,8 +402,13 @@ export function useInboxData({
     };
   }, [load, loadFolders, ownerRef, userId]);
 
+  // S11: the 20s fallback poll runs only while the socket needs it, the inbox
+  // is focused and the app is in the foreground. Connected sockets, background
+  // and blurred tabs never poll; the reconnect gap fetch lives in the status
+  // handler above and is unaffected.
+  const fallbackPollActive = inboxFocused && appActive && shouldUseChatHttpFallback(status);
   useEffect(() => {
-    if (!shouldUseChatHttpFallback(status)) return undefined;
+    if (!fallbackPollActive) return undefined;
     void load('silent');
     void loadFolders();
     const timer = setInterval(() => {
@@ -397,7 +416,7 @@ export function useInboxData({
       void loadFolders();
     }, 20_000);
     return () => clearInterval(timer);
-  }, [load, loadFolders, status]);
+  }, [fallbackPollActive, load, loadFolders, status]);
 
   const refreshDrafts = useCallback(async () => {
     if (ownerRef.current !== userId || userId <= 0) return;

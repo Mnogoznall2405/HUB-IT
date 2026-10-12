@@ -379,3 +379,34 @@ describe('ChatSocketClient lifecycle', () => {
     client.disconnect();
   });
 });
+
+// Regression: a resume that found no access token used to switch reconnect off
+// for good, so every later foreground resume stayed 'disconnected' and no chat
+// updates arrived until the screen was remounted.
+describe('ChatSocketClient resume after a missing token', () => {
+  it('reconnects on the next foreground resume once a token is available again', async () => {
+    jest.useFakeTimers();
+    const tokenSpy = jest.spyOn(clientApi, 'getAuthenticatedAccessToken')
+      .mockResolvedValueOnce('first-access')
+      .mockResolvedValueOnce('');
+    const client = new ChatSocketClient();
+    try {
+      await client.connect();
+      MockWebSocket.instances[0].open();
+      client.suspend();
+      await client.resume();
+      expect(client.getStatus()).toBe('offline');
+
+      tokenSpy.mockResolvedValue('second-access');
+      client.suspend();
+      await client.resume();
+      expect(client.getStatus()).not.toBe('disconnected');
+      const last = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+      expect(last.options?.headers?.Authorization).toBe('Bearer second-access');
+      client.disconnect();
+    } finally {
+      tokenSpy.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+});

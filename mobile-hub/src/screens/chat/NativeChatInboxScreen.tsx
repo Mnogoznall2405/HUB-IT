@@ -4,7 +4,6 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
-  KeyboardAvoidingView,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -22,7 +21,6 @@ import type {
   ChatGlobalMessageSearchHit,
 } from '../../api/types';
 import { useAuth } from '../../auth/AuthContext';
-import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
 import {
   DEFAULT_CHAT_FOLDER_KEY,
   buildFolderUnreadCounts,
@@ -54,6 +52,8 @@ import { ChatWorkspaceTabs } from '../../components/chat/ChatWorkspaceTabs';
 import { ChatConversationSkeleton } from '../../components/chat/ChatListSkeleton';
 import { FolderSwipeHost } from '../../components/chat/FolderSwipeHost';
 import { ChatConversationRow } from '../../components/chat/ChatConversationRow';
+import { ChatKeyboardAvoiding } from '../../components/chat/ChatKeyboardAvoidingHost';
+import { ChatConfirmHost } from '../../components/chat/ChatConfirmDialog';
 import { NewChatSheet } from '../../components/chat/NewChatSheet';
 import { HubConnectionInline } from '../../components/layout/HubConnectionHeader';
 import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
@@ -395,7 +395,7 @@ export function NativeChatInboxScreen({ requestedWorkspace }: { requestedWorkspa
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-      <KeyboardAvoidingView style={styles.keyboard} {...chatKeyboardAvoidingProps()}>
+      <ChatKeyboardAvoiding style={styles.keyboard}>
       <View style={styles.header}>
         <IconButton
           icon="arrow-left"
@@ -626,7 +626,8 @@ export function NativeChatInboxScreen({ requestedWorkspace }: { requestedWorkspa
           }
         }}
       />
-      </KeyboardAvoidingView>
+      </ChatKeyboardAvoiding>
+      <ChatConfirmHost />
     </SafeAreaView>
   );
 }

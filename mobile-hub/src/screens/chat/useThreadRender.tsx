@@ -1,3 +1,4 @@
+import { logChatDevice } from '../../diagnostics/chatDeviceLog';
 import React, { memo, useCallback, useEffect, useMemo, useRef, useSyncExternalStore, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import { Text, View, type ListRenderItemInfo, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
 import type { ChatAttachment, ChatConversationSummary, ChatMessage, ChatUserSummary } from '../../api/types';
@@ -157,6 +158,7 @@ const ThreadMessageRow = memo(function ThreadMessageRow({
     : () => {
       void hapticSelection();
       setActionAnchor(null);
+      logChatDevice('msg_actions_open');
       setActionMessage(item);
     };
   const motionKey = chatMessageMotionKey(item);

@@ -44,7 +44,7 @@ describe('privacy-safe diagnostics', () => {
     ], '2026-08-22T11:00:00.000Z');
 
     expect(report).toMatchObject({
-      schemaVersion: 6,
+      schemaVersion: 7,
       generatedAt: '2026-08-22T11:00:00.000Z',
       privacy: 'no-user-content-no-credentials',
       app: { version: '1.1.4', build: '6' },

@@ -6,6 +6,7 @@ import type { ChatConversationSummary, ChatMessage } from '../../api/types';
 import { type ChatTokens, useChatStyles } from '../../theme/chatTokens';
 import { useUiOpenTiming } from '../../diagnostics/uiOpenTiming';
 import { ChatInlineSheet } from './ChatInlineSheet';
+import { useSheetDeviceLog } from './sheetDeviceLog';
 
 export function ForwardMessageSheet({
   message,
@@ -31,6 +32,7 @@ export function ForwardMessageSheet({
   const insets = useContext(SafeAreaInsetsContext) ?? initialWindowMetrics?.insets;
   const visible = Boolean(message);
   useUiOpenTiming('forward-sheet', visible);
+  const markClose = useSheetDeviceLog('forward', visible);
   useEffect(() => { if (!visible) setQuery(''); }, [visible]);
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -43,7 +45,11 @@ export function ForwardMessageSheet({
     // screen bottom on some Android builds, hiding the list tail and «Отмена».
     <ChatInlineSheet
       visible={Boolean(message)}
-      onClose={() => { if (!busy) onClose(); }}
+      onClose={() => {
+        if (busy) return;
+        markClose('gesture');
+        onClose();
+      }}
       dismissAccessibilityLabel="Закрыть пересылку"
       sheetStyle={[styles.sheet, {
         paddingBottom: Math.max(20, insets?.bottom || 0),
@@ -91,7 +97,10 @@ export function ForwardMessageSheet({
             {!filtered.length ? <Text style={styles.empty}>Диалоги не найдены</Text> : null}
           </ScrollView>
           <Pressable
-            onPress={onClose}
+            onPress={() => {
+              markClose('button');
+              onClose();
+            }}
             style={({ pressed }) => [styles.cancel, pressed && styles.pressed]}
             accessibilityRole="button"
             accessibilityLabel="Отмена"

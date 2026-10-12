@@ -5,9 +5,10 @@ jest.mock('expo-crypto', () => ({ ...jest.requireActual('expo-crypto'), randomUU
 import * as api from '../api/chatApi';
 import type { ChatMessage } from '../api/types';
 import { clearNativeChatOutbox, createNativeChatOutbox, getNativeChatOutboxRuntimeState,
-  getNativeChatQueueState, readNativeChatOutbox, subscribeNativeChatOutbox } from './nativeChatOutbox';
+  getNativeChatQueueState, readNativeChatOutbox, resetNativeChatRetryBackoff, subscribeNativeChatOutbox } from './nativeChatOutbox';
 import { resetNativeChatOutboxRowsCache } from './nativeChatStorageQueue';
 import { getChatSendTimingSummary, markChatSend, resetChatSendTiming } from '../diagnostics/chatSendTiming';
+import { getChatDeviceLogSnapshot, resetChatDeviceLog } from '../diagnostics/chatDeviceLog';
 
 jest.mock('../api/chatApi', () => ({ sendTextMessage: jest.fn() }));
 const send = jest.mocked(api.sendTextMessage);
@@ -541,4 +542,79 @@ it('clears cancelled bookkeeping after discards, including a failed one', async 
   await expect(session.send(second, send)).rejects.toThrow();
   await session.discard('two');
   expect(getNativeChatOutboxRuntimeState().cancelled).toBe(0);
+});
+
+describe('transient delivery retries (R-S4)', () => {
+  let clock = 1_000_000;
+  let nowSpy: jest.SpyInstance<number, []>;
+  const httpError = (status: number, headers: Record<string, string> = {}, detail?: string) => Object.assign(
+    new Error(`HTTP ${status}`), { isAxiosError: true, response: { status, headers, data: detail ? { detail } : {} } });
+  const deliverOnce = (queue: ReturnType<typeof createNativeChatOutbox>, transport: (row: { message: ChatMessage }) => Promise<ChatMessage>) =>
+    queue.deliverQueued('one', transport, () => true, async () => true);
+  const deliveryOf = async () => (await readNativeChatOutbox(7)).find((row) => row.message.client_message_id === 'one')?.delivery;
+
+  beforeEach(async () => {
+    clock = 1_000_000;
+    nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => clock);
+    await resetChatDeviceLog();
+  });
+  afterEach(async () => {
+    nowSpy.mockRestore();
+    await resetChatDeviceLog();
+  });
+
+  it('keeps a 503 retrying past the old five-attempt cap and sends the same client id until acknowledged', async () => {
+    const queue = createNativeChatOutbox(7, 'chat-a');
+    await queue.queue(message);
+    const ids: string[] = [];
+    const failing = async (row: { message: ChatMessage }) => { ids.push(row.message.client_message_id!); throw httpError(503); };
+    for (let attempt = 1; attempt <= 8; attempt += 1) {
+      await expect(deliverOnce(queue, failing)).rejects.toThrow('HTTP 503');
+      const delivery = await deliveryOf();
+      expect(delivery).toMatchObject({ state: 'retry', attempts: attempt });
+      // Capped backoff: the ladder tops out at 30 s, plus at most 20 % jitter.
+      expect(delivery!.notBefore - clock).toBeLessThanOrEqual(36_000);
+      clock = delivery!.notBefore;
+    }
+    await expect(deliverOnce(queue, async (row) => ({ ...row.message, id: 'server-one', local_status: undefined }) as ChatMessage))
+      .resolves.toMatchObject({ id: 'server-one' });
+    expect(ids).toEqual(Array(8).fill('one'));
+    expect(getChatDeviceLogSnapshot().filter((entry) => entry.e === 'outbox_retry')).toHaveLength(8);
+    expect(getChatDeviceLogSnapshot()).toContainEqual(expect.objectContaining({ e: 'outbox_sent', f: { attempts: 9, ms: 0 } }));
+  });
+
+  it('honours Retry-After on 429 as the next attempt time', async () => {
+    const queue = createNativeChatOutbox(7, 'chat-a');
+    await queue.queue(message);
+    await expect(deliverOnce(queue, async () => { throw httpError(429, { 'retry-after': '120' }); })).rejects.toThrow();
+    expect((await deliveryOf())!.notBefore - clock).toBe(120_000);
+  });
+
+  it('parks a permanent 4xx as paused without retrying and journals only the reason token', async () => {
+    const queue = createNativeChatOutbox(7, 'chat-a');
+    await queue.queue(message);
+    await expect(deliverOnce(queue, async () => { throw httpError(413); })).rejects.toThrow();
+    expect(await deliveryOf()).toMatchObject({ state: 'paused', attempts: 1, notBefore: 0 });
+    const entries = getChatDeviceLogSnapshot();
+    expect(entries).toContainEqual({ t: expect.any(String), s: expect.any(String), e: 'outbox_give_up', f: { reason: 'http_4xx' } });
+    expect(JSON.stringify(entries)).not.toContain('Привет');
+  });
+});
+
+it('releases only the transient backoffs of this user and leaves paused rows parked', async () => {
+  const failure = (status: number) => async () => {
+    throw Object.assign(new Error(`HTTP ${status}`), { isAxiosError: true, response: { status, headers: {}, data: {} } });
+  };
+  const queue = createNativeChatOutbox(7, 'chat-a');
+  await queue.queue(message);
+  await queue.deliverQueued('one', failure(503), () => true, async () => true).catch(() => undefined);
+  await queue.queue({ ...message, id: 'pending:two', client_message_id: 'two' });
+  await queue.deliverQueued('two', failure(413), () => true, async () => true).catch(() => undefined);
+  expect((await readNativeChatOutbox(7)).map((row) => row.delivery?.state)).toEqual(['retry', 'paused']);
+
+  expect(await resetNativeChatRetryBackoff(7)).toBe(1);
+  const rows = await readNativeChatOutbox(7);
+  expect(rows.find((row) => row.message.client_message_id === 'one')!.delivery).toMatchObject({ state: 'retry', notBefore: 0 });
+  expect(rows.find((row) => row.message.client_message_id === 'two')!.delivery).toMatchObject({ state: 'paused' });
+  expect(await resetNativeChatRetryBackoff(7)).toBe(0);
 });

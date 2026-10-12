@@ -20,6 +20,7 @@ import { mergeMessages } from '../../chat/chatState';
 import { getRecentStickerIds, rememberRecentSticker } from '../../chat/chatStickers';
 import type { createNativeChatOutbox, NativeChatOutboxCommand } from '../../chat/nativeChatOutbox';
 import { showNativeToast } from '../../components/nativeToast';
+import { confirmChatAction } from '../../components/chat/ChatConfirmDialog';
 import type { useThreadComposerState } from './useThreadComposerState';
 
 type Composer = ReturnType<typeof useThreadComposerState>;
@@ -139,66 +140,57 @@ export function useThreadSheets({
   }, [conversation, conversationBusy, conversationId, mountedRef, setConversation, setTitle]);
 
   const resetAiContext = useCallback(() => {
-    Alert.alert(
-      'Сбросить контекст?',
-      'Старые сообщения останутся видимыми, но помощник перестанет учитывать их в новых ответах.',
-      [
-        { text: 'Отмена', style: 'cancel' },
-        {
-          text: 'Сбросить',
-          onPress: () => {
-            void (async () => {
-              setConversationBusy(true);
-              try {
-                await chatApi.resetAiConversationContext(conversationId);
-                if (mountedRef.current) {
-                  setInfoVisible(false);
-                  Alert.alert('Контекст сброшен', 'Новые ответы не будут учитывать предыдущую историю.');
-                }
-              } catch (cause) {
-                if (mountedRef.current) {
-                  Alert.alert('Не удалось сбросить контекст', formatApiError(cause, 'Повторите попытку'));
-                }
-              } finally {
-                if (mountedRef.current) setConversationBusy(false);
-              }
-            })();
-          },
-        },
-      ],
-    );
+    void confirmChatAction({
+      title: 'Сбросить контекст?',
+      message: 'Старые сообщения останутся видимыми, но помощник перестанет учитывать их в новых ответах.',
+      confirmText: 'Сбросить',
+      destructive: true,
+    }).then((confirmed) => {
+      if (!confirmed) return;
+      void (async () => {
+        setConversationBusy(true);
+        try {
+          await chatApi.resetAiConversationContext(conversationId);
+          if (mountedRef.current) {
+            setInfoVisible(false);
+            Alert.alert('Контекст сброшен', 'Новые ответы не будут учитывать предыдущую историю.');
+          }
+        } catch (cause) {
+          if (mountedRef.current) {
+            Alert.alert('Не удалось сбросить контекст', formatApiError(cause, 'Повторите попытку'));
+          }
+        } finally {
+          if (mountedRef.current) setConversationBusy(false);
+        }
+      })();
+    });
   }, [conversationId, mountedRef]);
 
   const deleteAiConversation = useCallback(() => {
-    Alert.alert(
-      'Удалить AI-чат?',
-      'Диалог будет удалён без возможности восстановления.',
-      [
-        { text: 'Отмена', style: 'cancel' },
-        {
-          text: 'Удалить',
-          style: 'destructive',
-          onPress: () => {
-            void (async () => {
-              setConversationBusy(true);
-              try {
-                await chatApi.deleteAiConversation(conversationId);
-                if (mountedRef.current) {
-                  setInfoVisible(false);
-                  router.back();
-                }
-              } catch (cause) {
-                if (mountedRef.current) {
-                  Alert.alert('Не удалось удалить чат', formatApiError(cause, 'Повторите попытку'));
-                }
-              } finally {
-                if (mountedRef.current) setConversationBusy(false);
-              }
-            })();
-          },
-        },
-      ],
-    );
+    void confirmChatAction({
+      title: 'Удалить AI-чат?',
+      message: 'Диалог будет удалён без возможности восстановления.',
+      confirmText: 'Удалить',
+      destructive: true,
+    }).then((confirmed) => {
+      if (!confirmed) return;
+      void (async () => {
+        setConversationBusy(true);
+        try {
+          await chatApi.deleteAiConversation(conversationId);
+          if (mountedRef.current) {
+            setInfoVisible(false);
+            router.back();
+          }
+        } catch (cause) {
+          if (mountedRef.current) {
+            Alert.alert('Не удалось удалить чат', formatApiError(cause, 'Повторите попытку'));
+          }
+        } finally {
+          if (mountedRef.current) setConversationBusy(false);
+        }
+      })();
+    });
   }, [conversationId, mountedRef]);
 
   const openMemberPicker = useCallback(async () => {
@@ -295,25 +287,24 @@ export function useThreadSheets({
   }, [conversation?.viewer_member_role, updateMember]);
 
   const requestLeaveGroup = useCallback(() => {
-    Alert.alert('Покинуть группу?', 'Вы перестанете получать новые сообщения этой группы.', [
-      { text: 'Отмена', style: 'cancel' },
-      {
-        text: 'Покинуть',
-        style: 'destructive',
-        onPress: () => {
-          setConversationBusy(true);
-          void chatApi.leaveGroup(conversationId).then(() => {
-            if (!mountedRef.current) return;
-            setInfoVisible(false);
-            router.replace('/chat');
-          }).catch((cause) => {
-            if (mountedRef.current) Alert.alert('Не удалось покинуть группу', formatApiError(cause, 'Повторите попытку'));
-          }).finally(() => {
-            if (mountedRef.current) setConversationBusy(false);
-          });
-        },
-      },
-    ]);
+    void confirmChatAction({
+      title: 'Покинуть группу?',
+      message: 'Вы перестанете получать новые сообщения этой группы.',
+      confirmText: 'Покинуть',
+      destructive: true,
+    }).then((confirmed) => {
+      if (!confirmed) return;
+      setConversationBusy(true);
+      void chatApi.leaveGroup(conversationId).then(() => {
+        if (!mountedRef.current) return;
+        setInfoVisible(false);
+        router.replace('/chat');
+      }).catch((cause) => {
+        if (mountedRef.current) Alert.alert('Не удалось покинуть группу', formatApiError(cause, 'Повторите попытку'));
+      }).finally(() => {
+        if (mountedRef.current) setConversationBusy(false);
+      });
+    });
   }, [conversationId, mountedRef]);
 
   const openTask = useCallback((taskId: string) => {
@@ -462,29 +453,24 @@ export function useThreadSheets({
   }, [mountedRef]);
 
   const removeStickerPack = useCallback((pack: ChatStickerPack) => {
-    Alert.alert(
-      'Удалить набор?',
-      `Набор «${pack.title}» будет убран из вашего списка.`,
-      [
-        { text: 'Отмена', style: 'cancel' },
-        {
-          text: 'Удалить',
-          style: 'destructive',
-          onPress: () => {
-            void chatApi.removeStickerPack(pack.id)
-              .then(() => chatApi.getStickerPacks())
-              .then((packs) => {
-                if (mountedRef.current) setStickerPacks(packs);
-              })
-              .catch((cause) => {
-                if (mountedRef.current) {
-                  Alert.alert('Не удалось удалить набор', formatApiError(cause, 'Повторите попытку'));
-                }
-              });
-          },
-        },
-      ],
-    );
+    void confirmChatAction({
+      title: 'Удалить набор?',
+      message: `Набор «${pack.title}» будет убран из вашего списка.`,
+      confirmText: 'Удалить',
+      destructive: true,
+    }).then((confirmed) => {
+      if (!confirmed) return;
+      void chatApi.removeStickerPack(pack.id)
+        .then(() => chatApi.getStickerPacks())
+        .then((packs) => {
+          if (mountedRef.current) setStickerPacks(packs);
+        })
+        .catch((cause) => {
+          if (mountedRef.current) {
+            Alert.alert('Не удалось удалить набор', formatApiError(cause, 'Повторите попытку'));
+          }
+        });
+    });
   }, [mountedRef]);
 
   const sendSticker = useCallback(async (sticker: ChatSticker) => {

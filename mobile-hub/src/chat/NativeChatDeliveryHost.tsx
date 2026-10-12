@@ -7,6 +7,7 @@ import { recordDiagnosticEvent } from '../diagnostics/diagnostics';
 import { chatSocket } from './chatSocket';
 import { NATIVE_CHAT_ENABLED } from './nativeChatFeature';
 import { createNativeChatDeliveryRunner } from './nativeChatDeliveryRunner';
+import type { NativeChatWakeReason } from './nativeChatRetryPolicy';
 import {
   createNativeChatDeliveryTransport, createNativeChatPersistConfirmed,
 } from './nativeChatDeliveryTransport';
@@ -20,7 +21,12 @@ export function NativeChatDeliveryHost() {
   const allowed = NATIVE_CHAT_ENABLED && hasPermission('chat.read') && hasPermission('chat.write');
   const access = useRef({ userId, allowed, offlineMode });
   useLayoutEffect(() => { access.current = { userId, allowed, offlineMode }; }, [userId, allowed, offlineMode]);
+  // The effect re-runs on every offline-mode change; a true -> false edge is the
+  // connectivity coming back and releases transient backoffs at once.
+  const wasOffline = useRef(offlineMode);
   useEffect(() => {
+    const networkRestored = wasOffline.current && !offlineMode;
+    wasOffline.current = offlineMode;
     if (!userId || !allowed) return;
     const sessionGeneration = getSessionGeneration();
     const historyGeneration = getNativeChatThreadHistoryGeneration();
@@ -34,22 +40,23 @@ export function NativeChatDeliveryHost() {
     // real suspend: unmount, session/generation change, offline mode or gate.
     const canDeliver = () => ownsSession() && !access.current.offlineMode
       && !isNativeOfflineReadOnly() && !isNativeChatDeliveryBlocked();
-    const reconcile = () => {
+    const reconcile = (reason?: NativeChatWakeReason) => {
       if (!canDeliver()) { runner?.dispose(); runner = null; return; }
-      if (runner) { runner.wake(); return; }
+      if (runner) { runner.wake(reason); return; }
       runner = createNativeChatDeliveryRunner({
         userId, canDeliver,
         transport: createNativeChatDeliveryTransport(canDeliver),
         persistConfirmed: createNativeChatPersistConfirmed({ ownsSession, userId, historyGeneration }),
         onError: () => { void recordDiagnosticEvent('native_file_error'); },
       });
+      if (reason) runner.wake(reason);
     };
-    const offGate = subscribeNativeChatDeliveryGate(reconcile);
-    const appState = AppState.addEventListener('change', (state) => { if (state === 'active') reconcile(); });
-    const offSocket = chatSocket.on('status', () => reconcile());
+    const offGate = subscribeNativeChatDeliveryGate(() => reconcile());
+    const appState = AppState.addEventListener('change', (state) => { if (state === 'active') reconcile('foreground'); });
+    const offSocket = chatSocket.on('status', (status) => reconcile(status === 'connected' ? 'socket' : undefined));
     // Parent offline-policy effects can settle after child effects. Recheck once,
     // without keeping a polling loop alive when there is no eligible session.
-    const initial = setTimeout(reconcile, 0);
+    const initial = setTimeout(() => reconcile(networkRestored ? 'network' : undefined), 0);
     return () => {
       active = false; clearTimeout(initial); runner?.dispose();
       appState.remove(); offGate(); offSocket();

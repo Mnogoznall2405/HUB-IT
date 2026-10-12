@@ -1,5 +1,5 @@
 import {
-  createContext, memo, useContext, useEffect, useId, useMemo, useState, type ReactNode,
+  createContext, memo, useCallback, useContext, useEffect, useId, useMemo, useState, type ReactNode,
 } from 'react';
 import {
   BackHandler, Keyboard, Pressable, StyleSheet, useWindowDimensions, View,
@@ -47,9 +47,13 @@ export function ScreenSheetHost({ children }: { children: ReactNode }) {
   );
 }
 
+export type ScreenSheetDismissReason = 'backdrop' | 'back' | 'gesture';
+
 type ScreenSheetProps = {
   visible: boolean;
   onClose: () => void;
+  /** Reports how the user dismissed the sheet, right before onClose (device diagnostics). */
+  onDismissReason?: (reason: ScreenSheetDismissReason) => void;
   children: ReactNode;
   dismissAccessibilityLabel?: string;
   sheetStyle?: StyleProp<ViewStyle>;
@@ -76,6 +80,7 @@ export function ScreenSheet(props: ScreenSheetProps) {
 
 const ScreenSheetBody = memo(function ScreenSheetBody({
   onClose,
+  onDismissReason,
   children,
   dismissAccessibilityLabel = 'Закрыть',
   sheetStyle,
@@ -89,13 +94,18 @@ const ScreenSheetBody = memo(function ScreenSheetBody({
   const keyboardState = useKeyboardState();
   const { height: windowHeight } = useWindowDimensions();
 
+  const dismiss = useCallback((reason: ScreenSheetDismissReason) => {
+    onDismissReason?.(reason);
+    onClose();
+  }, [onClose, onDismissReason]);
+
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-      onClose();
+      dismiss('back');
       return true;
     });
     return () => subscription.remove();
-  }, [onClose]);
+  }, [dismiss]);
 
   const gesture = useMemo(() => Gesture.Pan()
     .enabled(!reduceMotion)
@@ -103,8 +113,8 @@ const ScreenSheetBody = memo(function ScreenSheetBody({
     .failOffsetX([-12, 12])
     .onEnd((event) => {
       'worklet';
-      if (shouldDismissSheet(event.translationY, event.velocityY)) runOnJS(onClose)();
-    }), [onClose, reduceMotion]);
+      if (shouldDismissSheet(event.translationY, event.velocityY)) runOnJS(dismiss)('gesture');
+    }), [dismiss, reduceMotion]);
 
   // An open keyboard covers the nav bar: the inset would only leave a dead strip.
   const insetBottom = keyboardState.isVisible ? 0 : Math.max(0, insets?.bottom || 0);
@@ -125,7 +135,7 @@ const ScreenSheetBody = memo(function ScreenSheetBody({
       <Pressable
         testID={backdropTestID}
         style={[StyleSheet.absoluteFill, styles.backdrop]}
-        onPress={() => { Keyboard.dismiss(); onClose(); }}
+        onPress={() => { Keyboard.dismiss(); dismiss('backdrop'); }}
         accessibilityRole="button"
         accessibilityLabel={dismissAccessibilityLabel}
       />

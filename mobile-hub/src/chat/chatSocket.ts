@@ -362,8 +362,10 @@ export class ChatSocketClient {
   async resume(): Promise<void> {
     if (!this.suspended) return;
     this.suspended = false;
-    if (this.reconnectEnabled) await this.connect();
-    else this.emitStatus('disconnected');
+    // disconnect() clears `suspended`, so a suspended socket was never closed
+    // explicitly. connect() re-arms reconnect even when an earlier attempt
+    // stopped it because no access token was available.
+    await this.connect();
   }
 
   disconnect(options: { reconnect?: boolean; clearSubscriptions?: boolean } = {}) {

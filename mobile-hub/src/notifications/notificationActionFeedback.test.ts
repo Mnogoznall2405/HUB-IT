@@ -14,6 +14,47 @@ const reply: PendingChatReply = {
   attempts: 0,
 };
 
+describe('notification action feedback channel', () => {
+  const presentedWith = (channelId: unknown) => Object.assign(Notifications, {
+    getPresentedNotificationsAsync: jest.fn(async () => [{
+      request: { identifier: reply.notificationId, content: { data: { channelId } }, trigger: null },
+    }]),
+  });
+  afterEach(() => {
+    delete (Notifications as { getPresentedNotificationsAsync?: unknown }).getPresentedNotificationsAsync;
+  });
+
+  it('posts the feedback on hubit_chat_ai when the source AI-chat push carries that channel', async () => {
+    presentedWith('hubit_chat_ai');
+
+    await showReplySending(reply);
+
+    expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(expect.objectContaining({
+      identifier: reply.notificationId,
+      content: expect.objectContaining({ data: expect.objectContaining({ channelId: 'hubit_chat_ai' }) }),
+      trigger: { channelId: 'hubit_chat_ai' },
+    }));
+  });
+
+  it('falls back to hubit_chat when the source is no longer presented', async () => {
+    await showReplySending(reply);
+
+    expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(expect.objectContaining({
+      trigger: { channelId: 'hubit_chat' },
+    }));
+  });
+
+  it('ignores an unknown channel from the push data', async () => {
+    presentedWith('some_other_channel');
+
+    await showReplySending(reply);
+
+    expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(expect.objectContaining({
+      trigger: { channelId: 'hubit_chat' },
+    }));
+  });
+});
+
 describe('notification action feedback', () => {
   it('updates the source notification identifier so Android closes RemoteInput', async () => {
     await showReplySending(reply);

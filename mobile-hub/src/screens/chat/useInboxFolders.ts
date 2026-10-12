@@ -18,6 +18,7 @@ import {
 } from '../../chat/chatFolders';
 import { readNativeSnapshot, writeNativeSnapshot } from '../../cache/nativeSnapshotCache';
 import { showNativeToast } from '../../components/nativeToast';
+import { confirmChatAction } from '../../components/chat/ChatConfirmDialog';
 import type { ChatWorkspaceKey } from '../../chat/chatAiWorkspace';
 
 /** Inbox folder state: server folder list, membership map, manager/assign
@@ -171,31 +172,26 @@ export function useInboxFolders({
 
   const deleteFolder = useCallback((folderId: string) => {
     const folder = customFolders.find((item) => item.id === folderId);
-    Alert.alert(
-      'Удалить папку?',
-      folder ? `Папка «${folder.name}» будет удалена. Диалоги останутся на месте.` : 'Папка будет удалена.',
-      [
-        { text: 'Отмена', style: 'cancel' },
-        {
-          text: 'Удалить',
-          style: 'destructive',
-          onPress: () => {
-            void (async () => {
-              setFolderBusy(true);
-              try {
-                await chatApi.deleteChatFolder(folderId);
-                if (activeFolderKey === folderId) changeFolder(DEFAULT_CHAT_FOLDER_KEY);
-                await loadFolders();
-              } catch (cause) {
-                showNativeToast('Не удалось удалить папку', formatApiError(cause, 'Повторите попытку'));
-              } finally {
-                if (mountedRef.current) setFolderBusy(false);
-              }
-            })();
-          },
-        },
-      ],
-    );
+    void confirmChatAction({
+      title: 'Удалить папку?',
+      message: folder ? `Папка «${folder.name}» будет удалена. Диалоги останутся на месте.` : 'Папка будет удалена.',
+      confirmText: 'Удалить',
+      destructive: true,
+    }).then((confirmed) => {
+      if (!confirmed) return;
+      void (async () => {
+        setFolderBusy(true);
+        try {
+          await chatApi.deleteChatFolder(folderId);
+          if (activeFolderKey === folderId) changeFolder(DEFAULT_CHAT_FOLDER_KEY);
+          await loadFolders();
+        } catch (cause) {
+          showNativeToast('Не удалось удалить папку', formatApiError(cause, 'Повторите попытку'));
+        } finally {
+          if (mountedRef.current) setFolderBusy(false);
+        }
+      })();
+    });
   }, [activeFolderKey, changeFolder, customFolders, loadFolders, mountedRef]);
 
   const toggleFolderMembership = useCallback(async (folderId: string, included: boolean) => {

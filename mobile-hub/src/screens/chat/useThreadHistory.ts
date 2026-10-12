@@ -20,6 +20,7 @@ import {
 } from '../../chat/nativeChatThreadHistory';
 import type { createNativeChatOutbox } from '../../chat/nativeChatOutbox';
 import { noteThreadCacheReady, noteThreadLiveReady } from '../../diagnostics/uiTiming';
+import { logChatDevice } from '../../diagnostics/chatDeviceLog';
 import type { ChatListAnchorReason } from '../../chat/chatListAnchor';
 import type { PendingAttachmentUpload } from './NativeChatThreadScreen';
 
@@ -135,6 +136,7 @@ export function useThreadHistory({
 
   const loadInitial = useCallback(async () => {
     const generation = ++loadGenerationRef.current;
+    const openedAt = Date.now();
     historyNavigationRef.current += 1;
     loadingOlderRef.current = false;
     loadingNewerRef.current = false;
@@ -261,6 +263,7 @@ export function useThreadHistory({
       setThreadHydrated(true);
       setLoading(false);
       noteThreadLiveReady();
+      logChatDevice('thread_open', { ms: Date.now() - openedAt });
       const rawPinnedMessageId = 'pinned_message_id' in page
         ? (page as { pinned_message_id?: string | null }).pinned_message_id
         : undefined;

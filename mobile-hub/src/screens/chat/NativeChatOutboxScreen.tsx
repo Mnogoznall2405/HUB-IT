@@ -7,6 +7,7 @@ import { useAuth } from '../../auth/AuthContext';
 import { createNativeChatOutbox, readNativeChatOutbox, subscribeNativeChatOutbox, type NativeChatOutboxEntry } from '../../chat/nativeChatOutbox';
 import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInset';
 import { useChatTokens } from '../../theme/chatTokens';
+import { ChatConfirmHost, confirmChatAction } from '../../components/chat/ChatConfirmDialog';
 import { inspectNativeChatDraftFiles } from '../../chat/nativeChatDraftFiles';
 import { noteThreadOpenTap } from '../../diagnostics/uiTiming';
 
@@ -129,12 +130,15 @@ export function NativeChatOutboxScreen() {
 
   const discard = (row: Row) => {
     const confirmationScope = scope.current;
-    Alert.alert('Убрать сообщение из очереди?', 'Если сервер уже получил сообщение, оно останется в переписке.', [
-    { text: 'Оставить', style: 'cancel' },
-    { text: 'Убрать', style: 'destructive', onPress: () => {
-      if (scope.current === confirmationScope) void run(row, true);
-    } },
-    ]);
+    void confirmChatAction({
+      title: 'Убрать сообщение из очереди?',
+      message: 'Если сервер уже получил сообщение, оно останется в переписке.',
+      confirmText: 'Убрать',
+      cancelText: 'Оставить',
+      destructive: true,
+    }).then((confirmed) => {
+      if (confirmed && scope.current === confirmationScope) void run(row, true);
+    });
   };
   return <SafeAreaView edges={['top', 'left', 'right']} style={[styles.screen, { backgroundColor: tokens.threadBg }]}>
     <View style={[styles.header, { backgroundColor: tokens.threadTopbarBg }]}>
@@ -177,6 +181,7 @@ export function NativeChatOutboxScreen() {
         </View>}
       />}
     </>}
+    <ChatConfirmHost />
   </SafeAreaView>;
 }
 
