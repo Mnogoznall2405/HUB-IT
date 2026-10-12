@@ -489,6 +489,83 @@ function Test-SandboxControlRuntime {
     }
 }
 
+function Test-LiveKitRuntime {
+    # Звонки чата опциональны (CALLS_ENABLED=false по умолчанию): отсутствие процесса — только 'warn', никогда 'fail'.
+    param($Snapshot)
+
+    if ((@($Snapshot).Count -eq 0) -and $script:Pm2SnapshotError) {
+        return [pscustomobject]@{
+            Name    = 'livekit'
+            Status  = 'warn'
+            Details = "PM2 snapshot unavailable: $script:Pm2SnapshotError"
+        }
+    }
+
+    $livekit = $Snapshot | Where-Object { $_.Name -eq 'itinvent-livekit' } | Select-Object -First 1
+    if (-not $livekit) {
+        return [pscustomobject]@{
+            Name    = 'livekit'
+            Status  = 'warn'
+            Details = 'itinvent-livekit not in PM2 (chat calls not deployed or disabled; see CHAT_CALLS_LIVEKIT.md)'
+        }
+    }
+    if ($livekit.Status -ne 'online') {
+        return [pscustomobject]@{
+            Name    = 'livekit'
+            Status  = 'warn'
+            Details = "PM2 status=$($livekit.Status) pid=$($livekit.PID) restarts=$($livekit.Restarts)"
+        }
+    }
+
+    $listeners = Get-PortListenerPids -ListenPort 7880
+    if ($listeners.Count -eq 0) {
+        return [pscustomobject]@{
+            Name    = 'livekit'
+            Status  = 'warn'
+            Details = "PM2 online pid=$($livekit.PID) but port 7880 has no listener"
+        }
+    }
+
+    return [pscustomobject]@{
+        Name    = 'livekit'
+        Status  = 'ok'
+        Details = "online pid=$($livekit.PID), signal port 7880 held by PID $($listeners -join ', ')"
+    }
+}
+
+function Test-OneCBridgeRuntime {
+    # The 1C bridge worker is a pythonw.exe child of itinvent-backend; its crashes are invisible to PM2.
+    # Check APPCRASH events of pythonw.exe in the Windows Application log and the worker presence.
+    # Warn-only, never 'fail'.
+    param($Snapshot, [int]$LookbackHours = 24)
+
+    $backend = $Snapshot | Where-Object { $_.Name -eq 'itinvent-backend' -and $_.Status -eq 'online' } | Select-Object -First 1
+    if (-not $backend) {
+        return [pscustomobject]@{ Name = '1c-bridge'; Status = 'warn'; Details = 'itinvent-backend is not online; bridge not checked' }
+    }
+
+    $crashes = @(
+        Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000; StartTime = (Get-Date).AddHours(-$LookbackHours) } -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -match 'pythonw\.exe' }
+    )
+    $worker = @(Get-CimInstance Win32_Process -Filter "Name = 'pythonw.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.ParentProcessId -eq [int]$backend.PID })
+
+    if ($crashes.Count -gt 0) {
+        $last = ($crashes | Sort-Object TimeCreated -Descending | Select-Object -First 1).TimeCreated
+        return [pscustomobject]@{
+            Name    = '1c-bridge'
+            Status  = 'warn'
+            Details = "pythonw.exe APPCRASH x$($crashes.Count) in last ${LookbackHours}h (latest $last); worker pid=$(@($worker.ProcessId) -join ',')"
+        }
+    }
+    if ($worker.Count -eq 0) {
+        return [pscustomobject]@{ Name = '1c-bridge'; Status = 'warn'; Details = 'no pythonw.exe worker under itinvent-backend (lazy start or crashed)' }
+    }
+
+    return [pscustomobject]@{ Name = '1c-bridge'; Status = 'ok'; Details = "worker pid=$(@($worker.ProcessId) -join ','), no pythonw.exe crashes in last ${LookbackHours}h" }
+}
+
 function Get-ScanPythonProcesses {
     $rows = @(Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.exe'" -ErrorAction SilentlyContinue)
     $api = @()
@@ -654,6 +731,12 @@ if ($sandboxControlRow -and $sandboxControlRow.Status -ne 'ok') {
     Write-Host 'Sandbox control is not healthy: OpenCode jobs stall after enqueue.' -ForegroundColor Red
     Write-Host 'Run: powershell -File scripts\pm2\restart-ai-agents.ps1' -ForegroundColor Yellow
 }
+
+Write-Host 'LiveKit (chat calls) checks, warn-only:' -ForegroundColor Cyan
+@(Test-LiveKitRuntime -Snapshot $snapshot) | Format-Table Name, Status, Details -AutoSize
+
+Write-Host '1C bridge checks, warn-only:' -ForegroundColor Cyan
+@(Test-OneCBridgeRuntime -Snapshot $snapshot) | Format-Table Name, Status, Details -AutoSize
 
 Write-Host 'Scan runtime checks:' -ForegroundColor Cyan
 $scanRuntimeRows = @(

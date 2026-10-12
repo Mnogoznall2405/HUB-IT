@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = 'C:\Project\Image_scan'
 . (Join-Path $projectRoot 'scripts\pm2\chat-runtime-mode.ps1')
 $resolvedChatMode = Get-ChatRuntimeMode -ProjectRoot $projectRoot -Override $ChatMode
-$processNames = @('itinvent-backend') + (Get-ChatProcessNames -Mode $resolvedChatMode) + @('itinvent-preview-worker', 'itinvent-mail-notification-worker', 'itinvent-chat-push-worker', 'itinvent-ai-chat-worker', 'itinvent-my-files-worker', 'itinvent-hub-notifications-retention-worker', 'itinvent-inventory', 'itinvent-scan', 'itinvent-scan-worker', 'itinvent-bot')
+$processNames = @('itinvent-backend') + (Get-ChatProcessNames -Mode $resolvedChatMode) + @('itinvent-preview-worker', 'itinvent-mail-notification-worker', 'itinvent-chat-push-worker', 'itinvent-ai-chat-worker', 'itinvent-my-files-worker', 'itinvent-hub-notifications-retention-worker', 'itinvent-inventory', 'itinvent-scan', 'itinvent-scan-worker', 'itinvent-bot', 'itinvent-livekit')
 
 if ($WhatIf) {
     Write-Host "[WhatIf] chat mode: $resolvedChatMode" -ForegroundColor Cyan

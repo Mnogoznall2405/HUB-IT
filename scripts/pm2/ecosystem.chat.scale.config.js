@@ -33,8 +33,12 @@ function buildChatNode(name, port, nodeId) {
       CHAT_PROCESS_COUNT: '2',
       ANYIO_THREAD_TOKENS: '64',
 
-      APP_DB_POOL_SIZE: '2',
-      APP_DB_MAX_OVERFLOW: '0',
+      // Every authenticated request reads the auth tables (revoked tokens, trusted device,
+      // session). A pool of 2 was fully checked out during DB latency spikes and every
+      // request queued behind it (observed 2026-10-06). Give auth a separate
+      // 10+5 envelope; the two nodes add 18 connections to the former 5+1 profile.
+      APP_DB_POOL_SIZE: '10',
+      APP_DB_MAX_OVERFLOW: '5',
       APP_DB_POOL_TIMEOUT: '30',
       APP_DB_APPLICATION_NAME: `${name}-auth`,
 

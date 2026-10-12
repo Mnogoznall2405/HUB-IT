@@ -1,9 +1,8 @@
 /*
- * Source of truth for the PostgreSQL connection envelope in dual-chat mode.
- * It deliberately excludes the legacy single `itinvent-chat` process.
+ * Connection envelope for processes with explicit APP/CHAT pool caps.
+ * Other applications are counted by the live server-wide check, not guessed.
  */
-const backend = require('./ecosystem.backend.config.js');
-const chatScale = require('./ecosystem.chat.scale.config.js');
+const ecosystem = require('./ecosystem.all.config.js');
 
 function asNonNegativeInt(value, fallback = 0) {
   const parsed = Number.parseInt(String(value ?? fallback), 10);
@@ -61,12 +60,7 @@ function processBudget(app) {
 }
 
 function buildBudget() {
-  const backendApps = backend.apps.filter((app) => ![
-    'itinvent-chat',
-    'itinvent-preview-worker',
-    'itinvent-chat-push-worker',
-  ].includes(app.name));
-  const selected = [...backendApps, ...chatScale.apps];
+  const selected = ecosystem.apps.filter(app => Object.prototype.hasOwnProperty.call(app.env || {}, 'APP_DB_POOL_SIZE'));
   const processes = selected.map(processBudget);
   const names = new Set(processes.flatMap((item) => item.application_names));
   // PostgreSQL realtime keeps these three long-lived connections per Chat API node.

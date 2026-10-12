@@ -5,7 +5,9 @@ param(
     [int]$ChatReadyTimeoutSec = 240,
     # Time given to started processes to reach "online" before the final check.
     [int]$SettleSeconds = 30,
-    [switch]$NoChatStaging
+    [switch]$NoChatStaging,
+    [string]$ProjectRoot = 'C:\Project\Image_scan',
+    [switch]$SkipOperationLock
 )
 
 # Boot autostart for HUB-IT PM2 processes. Idempotent: safe to rerun at any
@@ -14,11 +16,11 @@ param(
 #   2. start every app of ecosystem.all.config.js that is still missing
 #      (covers a stale or missing dump.pm2);
 #   3. staged start of heavy workers after chat nodes are ready;
-#   4. pm2 save when every expected app is online, otherwise exit 1.
+#   4. verify readiness and effective environment before pm2 save, otherwise exit 1.
 
 $ErrorActionPreference = 'Stop'
 
-$projectRoot = 'C:\Project\Image_scan'
+. (Join-Path $projectRoot 'scripts\pm2\runtime-operations.ps1')
 $logFile = Join-Path $projectRoot 'scripts\pm2\_boot_resurrect.log'
 $prevLogFile = Join-Path $projectRoot 'scripts\pm2\_boot_resurrect.prev.log'
 $ecosystemAll = Join-Path $projectRoot 'scripts\pm2\ecosystem.all.config.js'
@@ -88,16 +90,7 @@ function Resolve-Pm2Command {
 # terminating NativeCommandError under Windows PowerShell 5.1.
 function Invoke-Pm2 {
     param([string[]]$Arguments)
-    $prevErrorActionPreference = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        $out = & $script:pm2Cmd @Arguments 2>&1 | Out-String
-        return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $out }
-    } catch {
-        return [pscustomobject]@{ ExitCode = 1; Output = $_.Exception.Message }
-    } finally {
-        $ErrorActionPreference = $prevErrorActionPreference
-    }
+    return Invoke-HubitPm2 -Pm2Command $script:pm2Cmd -Arguments $Arguments
 }
 
 # Returns $null when the PM2 state could not be read, so callers never mistake
@@ -110,40 +103,13 @@ function Get-Pm2Snapshot {
         return $null
     }
 
-    # A PM2+ banner or HOME warning may precede the JSON array.
-    $jsonStart = $jlistRaw.IndexOf('[')
-    $jsonEnd = $jlistRaw.LastIndexOf(']')
-    if ($jsonStart -lt 0 -or $jsonEnd -le $jsonStart) {
-        $preview = ($jlistRaw -replace '\s+', ' ').Trim()
-        Write-BootLog ("jlist without JSON (len={0}): {1}" -f $jlistRaw.Length, $preview.Substring(0, [Math]::Min(300, $preview.Length)))
-        return $null
-    }
-
-    # ConvertFrom-Json in Windows PowerShell 5.1 fails on pm2_env keys that
-    # differ only by case (username/USERNAME); JavaScriptSerializer does not.
     try {
-        Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
-        $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-        $serializer.MaxJsonLength = [int]::MaxValue
-        $rows = @($serializer.DeserializeObject($jlistRaw.Substring($jsonStart, $jsonEnd - $jsonStart + 1)))
+        if ($result.ExitCode -ne 0) { throw 'PM2 client failed or timed out.' }
+        return ,(Convert-HubitPm2Snapshot -Json $jlistRaw)
     } catch {
-        Write-BootLog "jlist JSON parse failed: $($_.Exception.Message)"
+        Write-BootLog 'jlist failed or unreadable; refusing mutations'
         return $null
     }
-
-    # Unary comma: an empty list must reach the caller as @(), not $null.
-    return , @(
-        $rows | ForEach-Object {
-            if (-not $_) { return }
-            $pm2Env = $_['pm2_env']
-            [pscustomobject]@{
-                Name     = $_['name']
-                Status   = if ($pm2Env) { $pm2Env['status'] } else { $null }
-                PID      = $_['pid']
-                Restarts = if ($pm2Env) { $pm2Env['restart_time'] } else { $null }
-            }
-        }
-    )
 }
 
 function Get-Pm2SnapshotWithRetry {
@@ -168,7 +134,7 @@ function Get-ExpectedAppNames {
         $jsCode = 'for (const a of (require(process.argv[1]).apps || [])) console.log(a.name)'
         $raw = & node -e $jsCode $ecosystemAll 2>&1 | Out-String
         if ($LASTEXITCODE -ne 0) {
-            Write-BootLog "cannot read ecosystem apps: $($raw.Trim())"
+            Write-BootLog 'cannot read ecosystem apps'
             return @()
         }
         return @($raw -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
@@ -179,15 +145,23 @@ function Get-ExpectedAppNames {
 
 function Start-MissingApps {
     param([string[]]$ExpectedNames, [object[]]$Snapshot)
-    $present = @($Snapshot | ForEach-Object { $_.Name })
+    $present = @($Snapshot | Where-Object { $_.Status -eq 'online' } | ForEach-Object { $_.Name })
     $missing = @($ExpectedNames | Where-Object { $present -notcontains $_ })
     foreach ($name in $missing) {
-        $result = Invoke-Pm2 -Arguments @('start', $ecosystemAll, '--only', $name)
+        $result = Invoke-Pm2 -Arguments @('start', $ecosystemAll, '--only', $name, '--update-env')
         Write-BootLog "start missing $name from ecosystem.all: exit=$($result.ExitCode)"
+        if ($result.ExitCode -ne 0) { throw "Cannot start $name." }
     }
     return $missing.Count
 }
 
+$operationMutex = New-Object System.Threading.Mutex($false, 'Global\HUB-IT-PM2-Operations')
+$operationLocked = $false
+if (-not $SkipOperationLock) {
+    $operationLocked = $operationMutex.WaitOne(0)
+    if (-not $operationLocked) { $operationMutex.Dispose(); exit 1 }
+}
+try {
 if (Test-Path $logFile) {
     Copy-Item -Path $logFile -Destination $prevLogFile -Force -ErrorAction SilentlyContinue
     Clear-Content -Path $logFile
@@ -195,6 +169,7 @@ if (Test-Path $logFile) {
 Write-BootLog "pm2-boot-resurrect start (user=$env:USERNAME, delay=${DelaySeconds}s)"
 
 try {
+    Initialize-HubitRuntime -ProjectRoot $projectRoot
     Add-LocalNodeToPath
     $script:pm2Cmd = Resolve-Pm2Command
     Write-BootLog "pm2 resolved: $pm2Cmd"
@@ -207,9 +182,6 @@ try {
             $pm2UserHome = Split-Path (Split-Path (Split-Path (Split-Path $pm2Cmd)))
         }
         $env:PM2_HOME = Join-Path $pm2UserHome '.pm2'
-    }
-    if (-not $env:HOMEPATH -and -not $env:HOME) {
-        $env:HOME = Split-Path $env:PM2_HOME
     }
     Write-BootLog "PM2_HOME: $env:PM2_HOME (dump exists=$(Test-Path (Join-Path $env:PM2_HOME 'dump.pm2')))"
 } catch {
@@ -230,6 +202,7 @@ Write-BootLog "chat mode: $resolvedChatMode"
 
 $expectedNames = @(Get-ExpectedAppNames)
 Write-BootLog "expected apps ($($expectedNames.Count)): $($expectedNames -join ', ')"
+if ($expectedNames.Count -eq 0) { throw 'Empty expected app list; refusing successful boot.' }
 
 $snapshotBefore = Get-Pm2SnapshotWithRetry
 if ($null -eq $snapshotBefore) {
@@ -239,17 +212,18 @@ if ($null -eq $snapshotBefore) {
 
 $resurrected = $false
 $onlineBefore = @($snapshotBefore | Where-Object { $_.Status -eq 'online' })
+$coldStart = $onlineBefore.Count -eq 0
 if ($onlineBefore.Count -gt 0) {
     Write-BootLog "skip resurrect: $($onlineBefore.Count) process(es) already online"
 } else {
     Write-BootLog 'running pm2 resurrect...'
     $result = Invoke-Pm2 -Arguments @('resurrect')
     Write-BootLog "resurrect exit=$($result.ExitCode)"
-    Write-BootLog $result.Output.Trim()
     $resurrected = $true
 }
 
 $afterResurrect = Get-Pm2SnapshotWithRetry
+if ($null -eq $afterResurrect) { throw 'Cannot inspect restored processes.' }
 if ($null -ne $afterResurrect -and $expectedNames.Count -gt 0) {
     $startedMissing = Start-MissingApps -ExpectedNames $expectedNames -Snapshot $afterResurrect
     if ($startedMissing -gt 0) {
@@ -257,7 +231,22 @@ if ($null -ne $afterResurrect -and $expectedNames.Count -gt 0) {
     }
 }
 
-if ($resurrected -and $resolvedChatMode -eq 'dual' -and -not $NoChatStaging) {
+$policy = Get-HubitExpectedApps -ProjectRoot $projectRoot
+$policySnapshot = Get-Pm2SnapshotWithRetry
+if ($null -eq $policySnapshot) { throw 'Cannot inspect runtime configuration.' }
+$drift = Get-HubitConfigDrift -Expected $policy -Snapshot $policySnapshot
+foreach ($item in $drift) {
+    Write-BootLog "config drift: $($item.Name), keys=$($item.Keys -join ',')"
+    if ($item.Name -match '^itinvent-chat-[ab]$') {
+        $repair = Invoke-HubitCommand -Executable 'powershell.exe' -Arguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $projectRoot 'scripts\pm2\restart-chat-scale.ps1'), '-NodeName', $item.Name, '-SkipSharedWorkers', '-SkipSave', '-SkipOperationLock', '-ReadyTimeoutSec', "$ChatReadyTimeoutSec") -TimeoutSeconds ($ChatReadyTimeoutSec + 90)
+        if ($repair.ExitCode -ne 0) { throw "Config reconciliation failed: $($item.Name)." }
+    } else {
+        # Do not silently restart unrelated production processes on config drift.
+        throw "Configuration drift in $($item.Name); apply its existing restart runbook."
+    }
+}
+
+if ($coldStart -and $resurrected -and $resolvedChatMode -eq 'dual' -and -not $NoChatStaging) {
     # Workers that compete for DB connections and CPU during cold start. Chat
     # nodes and the main backend start first; the ARR farm needs chat ready
     # as early as possible to stop the 502.4 handshake storm.
@@ -288,12 +277,22 @@ if ($resurrected -and $resolvedChatMode -eq 'dual' -and -not $NoChatStaging) {
         if (-not $chatReady) { Start-Sleep -Seconds 5 }
     }
     Write-BootLog "chat nodes ready=$chatReady after staged wait (timeout=${ChatReadyTimeoutSec}s)"
+    if (-not $chatReady) { throw 'Chat readiness failed; deferred workers remain stopped.' }
 
     foreach ($name in ($deferredWorkers | Where-Object { $presentNames -contains $_ })) {
         Write-BootLog "staging: starting $name"
         Invoke-Pm2 -Arguments @('restart', $name) | Out-Null
     }
 }
+
+$targets = Get-HubitHealthTargets -ChatMode $resolvedChatMode
+$deadline = [datetime]::UtcNow.AddSeconds($ChatReadyTimeoutSec)
+do {
+    $failedHealth = Get-HubitFailedTargets -Targets $targets
+    if ($failedHealth.Count -eq 0) { break }
+    if ([datetime]::UtcNow -ge $deadline) { throw "Readiness failed: $($failedHealth -join ', ')." }
+    Start-Sleep -Seconds 5
+} while ($true)
 
 if ($SettleSeconds -gt 0) {
     Start-Sleep -Seconds $SettleSeconds
@@ -304,6 +303,8 @@ if ($null -eq $snapshot) {
     Write-BootLog 'final PM2 state unreadable'
     exit 1
 }
+$finalDrift = Get-HubitConfigDrift -Expected $policy -Snapshot $snapshot
+if ($finalDrift.Count -gt 0) { throw 'Final environment differs from ecosystem; refusing save.' }
 foreach ($row in ($snapshot | Sort-Object Name)) {
     Write-BootLog ("{0,-46} {1,-10} pid={2} restarts={3}" -f $row.Name, $row.Status, $row.PID, $row.Restarts)
 }
@@ -320,4 +321,12 @@ if ($onlineNames.Count -eq 0 -or $notOnline.Count -gt 0) {
 # Keep dump.pm2 in sync with ecosystem.all so the next boot restores the same set.
 $saveResult = Invoke-Pm2 -Arguments @('save')
 Write-BootLog "pm2 save exit=$($saveResult.ExitCode)"
+if ($saveResult.ExitCode -ne 0) { throw 'Cannot save verified PM2 state.' }
 exit 0
+} catch {
+    Write-BootLog "FAILED: $($_.Exception.Message)"
+    exit 1
+} finally {
+    if ($operationLocked) { $operationMutex.ReleaseMutex() }
+    $operationMutex.Dispose()
+}

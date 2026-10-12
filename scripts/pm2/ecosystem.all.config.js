@@ -4,6 +4,7 @@ const backend = require('./ecosystem.backend.config');
 const inventory = require('./ecosystem.inventory.config');
 const scan = require('./ecosystem.scan.config');
 const voice = require('./ecosystem.voice.config');
+const livekit = require('./ecosystem.livekit.config');
 const bot = require('./ecosystem.bot.config');
 const chatScale = require('./ecosystem.chat.scale.config');
 
@@ -45,6 +46,7 @@ module.exports = {
     ...(inventory.apps || []),
     ...(scan.apps || []),
     ...(voice.apps || []),
+    ...(livekit.apps || []),
     ...(bot.apps || []),
   ],
 };

@@ -80,6 +80,7 @@ powershell -File scripts\pm2\register-pm2-autostart.ps1 -Mode Enable
 - `register-pm2-autostart.ps1 -Mode Enable` также отключает устаревшую SYSTEM-задачу `HUB-IT PM2 resurrect` (`resurrect-if-empty.ps1`): она конкурирует за `\\.\pipe\rpc.sock` и стартовала бы процессы от SYSTEM.
 - Отключение без удаления: `register-pm2-autostart.ps1 -Mode Disable`; полный откат — `-Mode Remove`.
 - Post-check после реальной перезагрузки: `pm2 list`, `scripts\pm2\_boot_resurrect.log`, `health-check.ps1`.
+- **Сторож `HUB-IT PM2 Watchdog`** (`pm2-watchdog.ps1`, регистрация — `register-pm2-watchdog.ps1 -Mode Enable|Disable|Remove|Status`): каждые 3 мин (S4U, `-Hidden`, окно консоли не появляется) проверяет `pm2 jlist`; если ни один процесс не online (демон убит или поднялся пустым, например при обновлении приложения, из чьей сессии его запускали), вызывает `pm2-boot-resurrect.ps1 -DelaySeconds 0`. Первые 10 мин после загрузки не вмешивается, при нечитаемом `jlist` ничего не делает. Лог — `scripts\pm2\_watchdog.log`. Рестарты PM2 запускать не из терминала Claude/IDE, а через планировщик, иначе демон привязан к этой сессии.
 - Ограничение S4U: процессы не смогут обращаться к сетевым ресурсам под учётными данными пользователя (UNC-шары, интегрированная Windows-аутентификация). Текущие сервисы используют явные UID/PWD — подходит. Если понадобятся такие ресурсы — пересоздать задачу с хранением пароля (`schtasks /create /ru ... /rp ...`).
 
 Chat production baseline — **dual node** (`itinvent-chat-a` на `8002` +
@@ -240,6 +241,13 @@ pm2 restart itinvent-bot
 pm2 logs itinvent-bot --lines 100
 ```
 
+LiveKit (звонки чата, опционально):
+
+- `scripts/pm2/ecosystem.livekit.config.js` описывает процесс `itinvent-livekit` (`tools/livekit/livekit-server.exe --config scripts/livekit/livekit.yaml`) и подключён в `ecosystem.all.config.js`. Процесс включается в ecosystem только если на хосте есть и бинарник, и боевой `scripts/livekit/livekit.yaml` (gitignored, создаётся из `livekit.example.yaml` с реальным ключом/секретом) — иначе `start-all.ps1` и `pm2-boot-resurrect.ps1` его не ждут.
+- Отдельный старт: `pm2 start scripts\pm2\ecosystem.livekit.config.js`, затем `pm2 save`; откат: `pm2 delete itinvent-livekit; pm2 save`.
+- `health-check.ps1` проверяет процесс и порт `7880` мягко (`warn`, не `fail`): звонки выключены по умолчанию. `pm2-boot-resurrect.ps1` не менялся — процесс лёгкий и не входит в staged-список тяжёлых воркеров.
+- Полный порядок (файрвол, IIS `/livekit`, `.env`, откат и post-check) — [CHAT_CALLS_LIVEKIT.md](../../documentation/technical/CHAT_CALLS_LIVEKIT.md#развёртывание). Выполнять только по явному разрешению.
+
 Для `VITE_*` переменных:
 
 ```powershell
@@ -311,6 +319,17 @@ DROP INDEX CONCURRENTLY IF EXISTS app.idx_hub_notifications_entity;
 ```
 
 затем повторно `alembic upgrade head`. Backend без валидного обязательного индекса не поднимать.
+
+## Защита автозапуска и восстановление после зависания (2026-10-07)
+
+- Ecosystem, окружение работающих процессов и `dump.pm2` проверяются на совпадение APP/CHAT pool-настроек. Boot применяет расхождения чат-узлов через rolling restart; расхождения остальных процессов требуют их штатной процедуры. `pm2 save` выполняется после readiness и проверки окружения. Нечитаемый PM2, пустой список приложений и неготовые API завершаются с кодом 1.
+- При `APP_SCHEMA_DEV_AUTO_CREATE=0` PostgreSQL Chat, как и APP, только проверяет схему при старте даже с `APP_ENV=development`. В production проверка выполняется до любых legacy/public create-хелперов. SQLite/dev-fixtures и явные миграции сохраняют своё поведение.
+- `pm2-watchdog.ps1 -CheckOnly` выполняет read-only проверку online/readiness/config. Задача проверяет раз в минуту; восстановление после 3 последовательных отказов, не чаще раза в 10 минут и максимум 2 раза за час на процесс. Boot/watchdog/rolling restart используют общий mutex. Backend recovery по штатному runbook также перезапускает Scan.
+- Осиротевшие процессы. Если демон PM2 умер, не завершив детей (12.10.2026), их воркеры держат порты и singleton-локи, а копии нового демона падают в crash-loop. `pm2-watchdog.ps1` находит такие процессы: командная строка совпадает с `script`+`args` приложения из ecosystem, PID не принадлежит PM2, родитель мёртв (или PID родителя переиспользован). Каждое обнаружение пишется как `orphan detected` в `_watchdog.log`, список виден в `-CheckOnly` (`Orphans`). Остановка включена по умолчанию (с 12.10.2026): процесс снимается через `taskkill /T /F` (запись `orphan stopped`), если он виден дольше `-OrphanMinAgeMinutes` (6), PM2 держит запись об этом приложении и online-процессов не ноль; не больше одного за запуск. Режим «только отчёт»: переключатель `-ReportOnlyOrphans` или `HUBIT_WATCHDOG_STOP_ORPHANS=0`.
+- Перед ремонтом сохраняется ограниченный снимок HTTP, pool/event-loop метрик, SQL-сессий/блокировок без текста запросов и диска: `output/pm2-incidents/*.json`. Ручной снимок: `python scripts/pm2/capture-runtime-diagnostics.py --output output/pm2-incidents/manual.json`. Это не заменяет метрики ESXi CPU Ready/datastore или Python stack trace в момент зависания.
+- `restart-chat-scale.ps1 -NodeName itinvent-chat-a -SkipSharedWorkers` ремонтирует один узел. Узел возвращается в ARR только после readiness; при отказе остаётся отключённым. После исправления повторить ту же процедуру. Не включать неготовый узел вручную.
+- APP/auth каждого dual chat-узла: `10 + 5`; chat write `6 + 1`, read `5`, realtime до `3`. Максимум двух узлов 60 соединений. Общий budget checker считает явные APP/CHAT-профили из действующего ecosystem и текущие подключения всех БД сервера; дополнительные контуры учитываются по текущему использованию. Полного максимума всех необъявленных пулов он не гарантирует.
+- Session policy: dry-run `python scripts/pm2/postgres-session-policy.py`. Применение после согласования: `--apply --backup output/pm2-incidents/session-policy-before.json`; откат `--restore output/pm2-incidents/session-policy-before.json`. Меняются только defaults текущей роли в конкретной БД: TCP keepalive `60/15/4`, `idle_in_transaction_session_timeout=300000` (5 минут). Политика действует на новые подключения; обычные idle-соединения не закрываются. Существующие соединения получают её после переподключения/ротации пула. Для старых TCP-сессий политика не применяется задним числом. Незавершённая транзакция, простаивающая 5 минут, будет отменена; не держать внешние вызовы внутри транзакций.
 
 ## Hub notifications retention worker
 

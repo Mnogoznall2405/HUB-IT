@@ -1,7 +1,7 @@
 param(
     [ValidateSet('Status', 'Enable', 'Disable', 'Remove')]
     [string]$Mode = 'Status',
-    [int]$IntervalMinutes = 3
+    [int]$IntervalMinutes = 1
 )
 
 $ErrorActionPreference = 'Stop'
