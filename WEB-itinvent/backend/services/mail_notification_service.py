@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -41,6 +42,10 @@ class MailNotificationService:
         self._snapshots: dict[int, MailNotificationSnapshot] = {}
         self._failures: dict[int, int] = {}
         self._circuit_open_until: dict[int, float] = {}
+        # (user_id, mailbox_id) -> (resume_at_monotonic, credential fingerprint)
+        self._auth_suspensions: dict[tuple[int, str], tuple[float, str]] = {}
+        self._auth_suspensions_lock = threading.Lock()
+        self._candidate_cursor = 0
         self._last_poll_duration_ms = 0.0
         self._last_error_count = 0
 
@@ -99,6 +104,20 @@ class MailNotificationService:
             return 60
 
     @property
+    def auth_failure_cooldown_sec(self) -> int:
+        """How long a mailbox rejected with invalid credentials is left alone.
+
+        A changed saved password ends the suspension earlier.
+        """
+        try:
+            return max(
+                60,
+                min(86400, int(str(os.getenv("MAIL_NOTIFICATION_AUTH_FAILURE_COOLDOWN_SEC", "21600")))),
+            )
+        except Exception:
+            return 21600
+
+    @property
     def background_enabled(self) -> bool:
         return str(os.getenv("MAIL_NOTIFICATION_BACKGROUND_ENABLED", "1") or "").strip().lower() in {
             "1",
@@ -120,6 +139,7 @@ class MailNotificationService:
             "user_timeout_sec": self.user_timeout_sec,
             "candidate_timeout_sec": self.candidate_timeout_sec,
             "open_circuits": sum(1 for value in self._circuit_open_until.values() if value > time.monotonic()),
+            "auth_suspended_mailboxes": len(self._auth_suspensions),
             "last_poll_duration_ms": round(self._last_poll_duration_ms, 1),
             "last_error_count": self._last_error_count,
         }
@@ -175,7 +195,7 @@ class MailNotificationService:
             if int(item.get("user_id", 0) or 0) > 0
         }
         active_user_ids.update(self._active_push_subscription_user_ids())
-        users = []
+        eligible = []
         for user in user_service.list_users():
             user_id = int(user.get("id", 0) or 0)
             if user_id <= 0 or user_id not in active_user_ids:
@@ -191,6 +211,18 @@ class MailNotificationService:
                 continue
             if not notification_preferences_service.is_enabled(user_id=user_id, channel="mail"):
                 continue
+            eligible.append(user)
+
+        # Walk the eligible users from a rotating cursor: when more users qualify
+        # than batch_size, every cycle serves the next slice instead of always
+        # the same first ones. Under the cap the order is unchanged.
+        users: list[dict] = []
+        total = len(eligible)
+        start = self._candidate_cursor % total if total else 0
+        consumed = 0
+        for user in eligible[start:] + eligible[:start]:
+            consumed += 1
+            user_id = int(user.get("id", 0) or 0)
             try:
                 mailbox_items = mail_service.list_user_mailboxes(user_id=user_id, include_inactive=False)
             except Exception:
@@ -204,11 +236,26 @@ class MailNotificationService:
                     user_id,
                     active_session_ids=active_session_ids,
                 )
-                if not session_context:
+                # Saved or primary credentials let the worker read the mailbox
+                # without a live session; only AD-session mailboxes need one.
+                if not session_context and not any(
+                    bool(item.get("mail_is_configured"))
+                    and str(item.get("mail_auth_mode") or "").strip().lower() != "ad_auto"
+                    for item in mailbox_items
+                ):
                     continue
             users.append({"user": user, "session_context": session_context})
             if len(users) >= self.batch_size:
                 break
+        self._candidate_cursor = (start + consumed) % total if total else 0
+        if consumed < total:
+            logger.info(
+                "Mail notification candidates truncated by batch_size=%s: served=%s eligible=%s next_offset=%s",
+                self.batch_size,
+                len(users),
+                total,
+                self._candidate_cursor,
+            )
         return users
 
     def _active_push_subscription_user_ids(self) -> set[int]:
@@ -259,18 +306,69 @@ class MailNotificationService:
             )
         )
 
+    def _suspended_mailbox_ids(self, user_id: int) -> set[str]:
+        """Mailboxes of the user still suspended after an invalid-credentials reply."""
+        now = time.monotonic()
+        with self._auth_suspensions_lock:
+            pending = [
+                (key, value) for key, value in self._auth_suspensions.items() if key[0] == int(user_id)
+            ]
+        active: set[str] = set()
+        for (uid, mailbox_id), (resume_at, fingerprint) in pending:
+            keep = resume_at > now
+            if keep:
+                try:
+                    keep = (
+                        mail_service.mailbox_credential_fingerprint(user_id=uid, mailbox_id=mailbox_id)
+                        == fingerprint
+                    )
+                except Exception:
+                    logger.debug("Mail credential fingerprint check failed", exc_info=True)
+            if keep:
+                active.add(mailbox_id)
+                continue
+            with self._auth_suspensions_lock:
+                self._auth_suspensions.pop((uid, mailbox_id), None)
+            logger.info("Mail notification resumed for user_id=%s mailbox_id=%s", uid, mailbox_id)
+        return active
+
+    def _suspend_mailboxes(self, user_id: int, mailbox_ids: list[str]) -> None:
+        resume_at = time.monotonic() + self.auth_failure_cooldown_sec
+        for mailbox_id in mailbox_ids:
+            try:
+                fingerprint = mail_service.mailbox_credential_fingerprint(
+                    user_id=int(user_id), mailbox_id=mailbox_id
+                )
+            except Exception:
+                fingerprint = ""
+            with self._auth_suspensions_lock:
+                self._auth_suspensions[(int(user_id), mailbox_id)] = (resume_at, fingerprint)
+            logger.warning(
+                "Mail notification suspended: invalid credentials user_id=%s mailbox_id=%s cooldown_sec=%s",
+                int(user_id),
+                mailbox_id,
+                self.auth_failure_cooldown_sec,
+            )
+
     def _list_notification_feed_sync(self, *, user_id: int, session_id: str | None) -> dict:
+        skipped = self._suspended_mailbox_ids(user_id)
+        auth_failed: list[str] = []
         token = push_request_session_id(session_id)
         try:
             # Arrival detection must not depend on read state: Outlook or the
             # HUB preview can mark a message read before the next poll.
-            return mail_service.list_notification_feed(
+            feed = mail_service.list_notification_feed(
                 user_id=user_id,
                 limit=5,
                 unread_only=False,
+                skip_mailbox_ids=skipped or None,
+                auth_failed_mailbox_ids=auth_failed,
             )
         finally:
             pop_request_session_id(token)
+        if auth_failed:
+            self._suspend_mailboxes(user_id, auth_failed)
+        return feed
 
     def _send_notification_sync(self, **kwargs):
         return app_push_service.enqueue_notification(**kwargs)

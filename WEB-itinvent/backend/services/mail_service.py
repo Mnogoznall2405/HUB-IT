@@ -4,12 +4,14 @@ Mail service for Exchange (EWS/NTLM) inbox access, sending and IT request templa
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
 import os
 import re
 import sqlite3
 import time
 import warnings
+from collections.abc import Collection
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import date, datetime, timezone
@@ -1968,6 +1970,27 @@ class MailService:
             return "MAIL_AUTH_INVALID"
         return None
 
+    def mailbox_credential_fingerprint(self, *, user_id: int, mailbox_id: str) -> str:
+        """Opaque digest that changes whenever the mailbox's saved credentials change.
+
+        Lets a background poller notice that a rejected password was updated and
+        stop treating the mailbox as suspended. Returns "" for an unknown mailbox.
+        """
+        normalized_id = _normalize_text(mailbox_id)
+        rows = self._list_user_mailboxes_rows(user_id=int(user_id), include_inactive=True)
+        row = next((item for item in rows if _normalize_text(item.get("id")) == normalized_id), None)
+        if not row:
+            return ""
+        auth_mode = _normalize_text(row.get("auth_mode"))
+        parts = [auth_mode, _normalize_text(row.get("mailbox_login")), _normalize_text(row.get("mailbox_password_enc"))]
+        if auth_mode == "primary_credentials":
+            primary = primary_mailbox_row(rows, allow_inactive=True) or {}
+            parts += [
+                _normalize_text(primary.get("mailbox_login")),
+                _normalize_text(primary.get("mailbox_password_enc")),
+            ]
+        return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:32]
+
     def invalidate_saved_password(self, *, user_id: int, mailbox_id: str | None = None) -> None:
         normalized_mailbox_id = _normalize_text(mailbox_id)
         try:
@@ -3920,12 +3943,14 @@ class MailService:
         user_id: int,
         current_mailbox_id: str | None = None,
         current_inbox_unread: int | None = None,
+        skip_mailbox_ids: Collection[str] | None = None,
     ) -> int:
         total = 0
         current_id = _normalize_text(current_mailbox_id)
+        skipped = {_normalize_text(item) for item in (skip_mailbox_ids or ())}
         for row in self._list_user_mailboxes_rows(user_id=int(user_id), include_inactive=False):
             row_id = _normalize_text(row.get("id"))
-            if not row_id:
+            if not row_id or row_id in skipped:
                 continue
             if current_id and row_id == current_id and current_inbox_unread is not None:
                 total += max(0, int(current_inbox_unread))
@@ -3942,21 +3967,39 @@ class MailService:
         user_id: int,
         limit: int = 20,
         unread_only: bool = True,
+        skip_mailbox_ids: Collection[str] | None = None,
+        auth_failed_mailbox_ids: list[str] | None = None,
     ) -> dict[str, Any]:
+        """Aggregate recent inbox items across the user's active mailboxes.
+
+        ``skip_mailbox_ids`` lets a background poller leave out mailboxes whose
+        credentials are known to be rejected, so Exchange is not hit with a bad
+        password again. ``auth_failed_mailbox_ids`` is an out-list that receives
+        mailboxes rejected with MAIL_AUTH_INVALID during this call. A call with
+        skipped mailboxes bypasses the shared cache in both directions: its
+        payload is incomplete and must not be served to other readers.
+        """
         safe_limit = max(1, min(50, int(limit or 20)))
-        cached = self._cache_get(
-            user_id=int(user_id),
-            bucket="notification_feed",
-            extra=f"{safe_limit}:{int(bool(unread_only))}",
-            mailbox_scope="aggregate",
+        skipped = {_normalize_text(item) for item in (skip_mailbox_ids or ()) if _normalize_text(item)}
+        use_cache = not skipped
+        cached = (
+            self._cache_get(
+                user_id=int(user_id),
+                bucket="notification_feed",
+                extra=f"{safe_limit}:{int(bool(unread_only))}",
+                mailbox_scope="aggregate",
+            )
+            if use_cache
+            else None
         )
         if cached is not None:
             return cached
         user = user_service.get_by_id(int(user_id))
         items: list[dict[str, Any]] = []
+        blocked = set(skipped)
         for row in self._list_user_mailboxes_rows(user_id=int(user_id), include_inactive=False):
             row_id = _normalize_text(row.get("id"))
-            if not row_id:
+            if not row_id or row_id in skipped:
                 continue
             try:
                 listing = self.list_messages(
@@ -3968,7 +4011,16 @@ class MailService:
                     limit=safe_limit,
                     offset=0,
                 )
-            except Exception:
+            except Exception as exc:
+                resolved_code = (
+                    self.classify_mail_error_code(str(exc))
+                    or self.classify_mail_error_code(getattr(exc, "__cause__", None))
+                    or str(getattr(exc, "code", "") or "").strip()
+                )
+                if resolved_code == "MAIL_AUTH_INVALID":
+                    blocked.add(row_id)
+                    if auth_failed_mailbox_ids is not None:
+                        auth_failed_mailbox_ids.append(row_id)
                 continue
             mailbox_entry = self._serialize_mailbox_entry(
                 user=user or {},
@@ -3996,9 +4048,15 @@ class MailService:
         items = items[:safe_limit]
         payload = {
             "items": items,
-            "total_unread": self.get_unread_count(user_id=int(user_id)),
+            "total_unread": (
+                self._aggregate_unread_count(user_id=int(user_id), skip_mailbox_ids=blocked)
+                if blocked
+                else self.get_unread_count(user_id=int(user_id))
+            ),
             "limit": safe_limit,
         }
+        if not use_cache:
+            return payload
         return self._cache_set(
             user_id=int(user_id),
             bucket="notification_feed",

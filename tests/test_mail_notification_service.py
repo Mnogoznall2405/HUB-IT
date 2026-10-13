@@ -394,7 +394,12 @@ def test_worker_notification_feed_includes_read_messages(monkeypatch):
         "total_unread": 0,
         "items": [],
     }
-    assert calls == [{"user_id": 38, "limit": 5, "unread_only": False}]
+    assert len(calls) == 1
+    assert {k: calls[0][k] for k in ("user_id", "limit", "unread_only")} == {
+        "user_id": 38,
+        "limit": 5,
+        "unread_only": False,
+    }
 
 
 @pytest.mark.asyncio
@@ -479,3 +484,156 @@ async def test_poll_once_limits_concurrency_and_isolates_user_failures(monkeypat
     assert send_calls == []
     assert "error_count=1" in caplog.text
     assert thread_calls.count("_feed_sync") == 5
+
+
+def _ldap_user(user_id: int) -> dict:
+    return {
+        "id": user_id,
+        "role": "viewer",
+        "is_active": True,
+        "use_custom_permissions": False,
+        "custom_permissions": [],
+        "auth_source": "ldap",
+    }
+
+
+def _patch_candidate_sources(monkeypatch, *, users, mailboxes_by_user, contexts_by_user=None):
+    contexts = contexts_by_user or {}
+    monkeypatch.setattr(
+        notification_module.session_service,
+        "list_sessions",
+        lambda active_only=True: [{"session_id": f"sess-{u['id']}", "user_id": u["id"]} for u in users],
+    )
+    monkeypatch.setattr(notification_module.user_service, "list_users", lambda: users)
+    monkeypatch.setattr(
+        notification_module.authorization_service, "has_permission", lambda *_a, **_k: True
+    )
+    monkeypatch.setattr(
+        notification_module.notification_preferences_service, "is_enabled", lambda **_k: True
+    )
+    monkeypatch.setattr(
+        notification_module.mail_service,
+        "list_user_mailboxes",
+        lambda *, user_id, include_inactive=False: mailboxes_by_user[user_id],
+    )
+    monkeypatch.setattr(
+        notification_module.session_auth_context_service,
+        "get_latest_active_context_for_user",
+        lambda user_id, active_session_ids=None: contexts.get(user_id),
+    )
+    monkeypatch.setattr(
+        notification_module.MailNotificationService,
+        "_active_push_subscription_user_ids",
+        lambda self: set(),
+    )
+
+
+def test_ldap_user_with_saved_password_is_polled_without_session_context(monkeypatch):
+    saved = [{"mail_is_configured": True, "mail_auth_mode": "manual"}]
+    ad_session_only = [{"mail_is_configured": True, "mail_auth_mode": "ad_auto"}]
+    _patch_candidate_sources(
+        monkeypatch,
+        users=[_ldap_user(1), _ldap_user(2), _ldap_user(3)],
+        mailboxes_by_user={1: saved, 2: ad_session_only, 3: ad_session_only},
+        contexts_by_user={3: {"session_id": "sess-3"}},
+    )
+
+    candidates = notification_module.MailNotificationService()._iter_candidate_users()
+
+    by_user = {item["user"]["id"]: item["session_context"] for item in candidates}
+    assert by_user == {1: None, 3: {"session_id": "sess-3"}}
+
+
+def test_candidates_rotate_so_every_user_is_served_when_over_batch_size(monkeypatch):
+    saved = [{"mail_is_configured": True, "mail_auth_mode": "manual"}]
+    users = [_ldap_user(i) for i in range(1, 6)]
+    _patch_candidate_sources(
+        monkeypatch, users=users, mailboxes_by_user={u["id"]: saved for u in users}
+    )
+    monkeypatch.setenv("MAIL_NOTIFICATION_BATCH_SIZE", "2")
+    service = notification_module.MailNotificationService()
+
+    served = [
+        [item["user"]["id"] for item in service._iter_candidate_users()] for _ in range(4)
+    ]
+
+    assert served == [[1, 2], [3, 4], [5, 1], [2, 3]]
+
+
+def test_rejected_mailbox_is_suspended_until_cooldown_or_credentials_change(monkeypatch):
+    service = notification_module.MailNotificationService()
+    calls: list[dict] = []
+    fingerprint = {"value": "old"}
+
+    def _list_feed(*, user_id, limit, unread_only, skip_mailbox_ids=None, auth_failed_mailbox_ids=None):
+        calls.append({"skip": set(skip_mailbox_ids or ())})
+        if "stale" not in (skip_mailbox_ids or ()):
+            auth_failed_mailbox_ids.append("stale")
+        return {"items": [], "total_unread": 0}
+
+    monkeypatch.setattr(notification_module.mail_service, "list_notification_feed", _list_feed)
+    monkeypatch.setattr(
+        notification_module.mail_service,
+        "mailbox_credential_fingerprint",
+        lambda *, user_id, mailbox_id: fingerprint["value"],
+    )
+    monkeypatch.setenv("MAIL_NOTIFICATION_AUTH_FAILURE_COOLDOWN_SEC", "3600")
+
+    service._list_notification_feed_sync(user_id=7, session_id=None)
+    service._list_notification_feed_sync(user_id=7, session_id=None)
+    assert [c["skip"] for c in calls] == [set(), {"stale"}]
+
+    # The user saved a new password: the mailbox is tried again.
+    fingerprint["value"] = "new"
+    service._list_notification_feed_sync(user_id=7, session_id=None)
+    assert calls[-1]["skip"] == set()
+    assert (7, "stale") in service._auth_suspensions  # rejected again with the new one
+
+    # Cooldown elapsed: tried again even with unchanged credentials.
+    resume_at, saved_fingerprint = service._auth_suspensions[(7, "stale")]
+    service._auth_suspensions[(7, "stale")] = (0.0, saved_fingerprint)
+    service._list_notification_feed_sync(user_id=7, session_id=None)
+    assert calls[-1]["skip"] == set()
+
+
+def test_notification_feed_does_not_touch_skipped_mailboxes_and_reports_auth_failures(monkeypatch):
+    mail_module = importlib.import_module("backend.services.mail_service")
+    listed: list[str] = []
+    unread_args: list[set] = []
+
+    def _list_messages(*, mailbox_id, **_kwargs):
+        listed.append(mailbox_id)
+        if mailbox_id == "bad":
+            raise mail_module.MailServiceError("Invalid credentials", code="MAIL_AUTH_INVALID")
+        return {"items": [{"id": "m1", "received_at": "2026-10-13T10:00:00Z"}]}
+
+    fake = SimpleNamespace(
+        _cache_get=lambda **_k: None,
+        _cache_set=lambda **_k: pytest.fail("incomplete payload must not be cached"),
+        _list_user_mailboxes_rows=lambda **_k: [{"id": "ok"}, {"id": "bad"}, {"id": "skipped"}],
+        list_messages=_list_messages,
+        _serialize_mailbox_entry=lambda **_k: {"label": "L", "mailbox_email": "e@x"},
+        classify_mail_error_code=mail_module.MailService.classify_mail_error_code,
+        _aggregate_unread_count=lambda *, user_id, skip_mailbox_ids: unread_args.append(
+            set(skip_mailbox_ids)
+        )
+        or 4,
+        get_unread_count=lambda **_k: pytest.fail("aggregate must honour skipped mailboxes"),
+    )
+    monkeypatch.setattr(mail_module.user_service, "get_by_id", lambda _uid: {})
+    failed: list[str] = []
+
+    payload = mail_module.MailService.list_notification_feed(
+        fake,
+        user_id=5,
+        limit=5,
+        unread_only=False,
+        skip_mailbox_ids={"skipped"},
+        auth_failed_mailbox_ids=failed,
+    )
+
+    assert listed == ["ok", "bad"]
+    assert failed == ["bad"]
+    assert unread_args == [{"skipped", "bad"}]
+    assert payload["total_unread"] == 4
+    assert [item["mailbox_id"] for item in payload["items"]] == ["ok"]
