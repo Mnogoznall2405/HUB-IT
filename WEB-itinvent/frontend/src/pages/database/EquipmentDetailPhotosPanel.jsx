@@ -30,6 +30,7 @@ import { LoadingSpinner } from '../../components/common';
 import { equipmentPhotosAPI } from '../../api/equipmentPhotos';
 import { normalizeDbId } from './databaseRecordModel';
 import { rotateImageFile } from './photoRotate';
+import ZoomableImage from './ZoomableImage';
 import { MAX_REJECT_REASON, rememberRejectReason } from './photoRejectReasons';
 import RejectReasonChips from './RejectReasonChips';
 
@@ -373,7 +374,7 @@ const PhotoPreviewDialog = memo(function PhotoPreviewDialog({
     rev,
   });
   // Фото занимает весь доступный экран: тёмный фон, изображение вписано (contain),
-  // кнопка проверки — отдельной строкой под ним.
+  // колесо/щипок/«+» приближают до 16×, перетаскивание двигает; кнопка проверки — под ним.
   return (
     <Dialog
       open={Boolean(photo)}
@@ -420,11 +421,10 @@ const PhotoPreviewDialog = memo(function PhotoPreviewDialog({
       >
         <Box sx={{ flex: '1 1 0', minHeight: 0, width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           {url ? (
-            <Box
-              component="img"
+            <ZoomableImage
               src={url}
               alt={photo?.file_name || 'Фото оборудования'}
-              sx={{ width: '100%', height: '100%', objectFit: 'contain' }}
+              resetKey={`${photo?.file_no}:${rev}`}
             />
           ) : (
             <LoadingSpinner message="Загрузка фото..." />

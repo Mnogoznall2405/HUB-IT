@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { equipmentSearchAPI } from '../../api/equipmentSearch';
 import { warehouse1cAPI } from '../../api/warehouse1c';
@@ -39,6 +39,10 @@ export default function useEmployeeEquipmentData({
   const [movementsDateFrom, setMovementsDateFrom] = useState('');
   const [movementsDateTo, setMovementsDateTo] = useState('');
   const [warehouseLoaded, setWarehouseLoaded] = useState(false);
+  // Ambiguous match: balances of every candidate warehouse, loaded on expand.
+  const [candidateBalances, setCandidateBalances] = useState({});
+  const candidateSessionRef = useRef(0);
+  const candidateRequestedRef = useRef(new Set());
   const [employmentStatus, setEmploymentStatus] = useState('');
   const [employmentLabel, setEmploymentLabel] = useState('');
 
@@ -60,6 +64,9 @@ export default function useEmployeeEquipmentData({
     setMovementsDateFrom('');
     setMovementsDateTo('');
     setWarehouseLoaded(false);
+    candidateSessionRef.current += 1;
+    candidateRequestedRef.current = new Set();
+    setCandidateBalances({});
     setEmploymentStatus('');
     setEmploymentLabel('');
   }, []);
@@ -189,43 +196,6 @@ export default function useEmployeeEquipmentData({
     };
   }, [open, ownerNo, employeeName, warehouseRef, canViewWarehouse1C, allowCrossDatabase, resetView, resetWarehouseState]);
 
-  const loadWarehouseData = useCallback(async (nextWarehouseRef = '') => {
-    if (!canViewWarehouse1C || (!employeeName && !nextWarehouseRef)) return;
-
-    setWarehouseLoading(true);
-    setWarehouseBalancesLoading(true);
-    setWarehouseError('');
-    try {
-      const data = await warehouse1cAPI.getEmployeeWarehouse({
-        employeeName,
-        warehouseRef: nextWarehouseRef,
-        loadBalances: true,
-      });
-      setWarehouseStatus(data?.status || '');
-      setWarehouseInfo(data?.warehouse || null);
-      setWarehouseCandidates(Array.isArray(data?.candidates) ? data.candidates : []);
-      setWarehouseBalances(Array.isArray(data?.balances) ? data.balances : []);
-      setWarehouseBalancesMeta(data?.balances_meta || null);
-      if (data?.employment_status || data?.employment_label) {
-        setEmploymentStatus(data.employment_status || '');
-        setEmploymentLabel(data.employment_label || '');
-      }
-      setWarehouseLoaded(true);
-    } catch (err) {
-      console.error('Failed to load employee warehouse from 1C:', err);
-      setWarehouseError(resolveWarehouseErrorMessage(err, 'Не удалось получить данные склада из 1С.'));
-      setWarehouseStatus('');
-      setWarehouseInfo(null);
-      setWarehouseCandidates([]);
-      setWarehouseBalances([]);
-      setWarehouseBalancesMeta(null);
-      setWarehouseLoaded(true);
-    } finally {
-      setWarehouseLoading(false);
-      setWarehouseBalancesLoading(false);
-    }
-  }, [canViewWarehouse1C, employeeName]);
-
   const loadWarehouseMovements = useCallback(async (cursor = '', dateFrom, dateTo) => {
     const ref = warehouseInfo?.ref;
     if (!canViewWarehouse1C || !ref) return;
@@ -277,13 +247,42 @@ export default function useEmployeeEquipmentData({
     }
   }, [warehouseTab, warehouseInfo?.ref, movementsLoaded, movementsLoading, loadWarehouseMovements]);
 
-  const handleSelectCandidate = useCallback((candidateRef) => {
-    setMovementsLoaded(false);
-    setWarehouseMovements([]);
-    setWarehouseMovementsMeta(null);
-    setWarehouseTab('balances');
-    void loadWarehouseData(candidateRef);
-  }, [loadWarehouseData]);
+  const loadCandidateBalances = useCallback((candidateRef) => {
+    const ref = String(candidateRef || '');
+    if (!canViewWarehouse1C || !ref) return;
+    // Loaded or in flight: expanding again must not refetch; a failure retries.
+    if (candidateRequestedRef.current.has(ref)) return;
+    candidateRequestedRef.current.add(ref);
+    const session = candidateSessionRef.current;
+    setCandidateBalances((prev) => ({ ...prev, [ref]: { loading: true, error: '', rows: [], meta: null } }));
+    warehouse1cAPI.getEmployeeWarehouse({ employeeName, warehouseRef: ref, loadBalances: true })
+      .then((data) => {
+        if (candidateSessionRef.current !== session) return;
+        setCandidateBalances((prev) => ({
+          ...prev,
+          [ref]: {
+            loading: false,
+            error: '',
+            rows: Array.isArray(data?.balances) ? data.balances : [],
+            meta: data?.balances_meta || null,
+          },
+        }));
+      })
+      .catch((err) => {
+        if (candidateSessionRef.current !== session) return;
+        console.error('Failed to load candidate warehouse balances from 1C:', err);
+        candidateRequestedRef.current.delete(ref);
+        setCandidateBalances((prev) => ({
+          ...prev,
+          [ref]: {
+            loading: false,
+            error: resolveWarehouseErrorMessage(err, 'Не удалось получить остатки склада из 1С.'),
+            rows: [],
+            meta: null,
+          },
+        }));
+      });
+  }, [canViewWarehouse1C, employeeName]);
 
   return {
     hubItems,
@@ -310,7 +309,8 @@ export default function useEmployeeEquipmentData({
     warehouseLoaded,
     employmentStatus,
     employmentLabel,
-    handleSelectCandidate,
+    candidateBalances,
+    loadCandidateBalances,
     handleMovementsDatesChange,
     handleLoadMoreMovements,
   };

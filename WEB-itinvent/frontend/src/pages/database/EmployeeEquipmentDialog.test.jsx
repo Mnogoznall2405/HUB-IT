@@ -503,6 +503,47 @@ describe('EmployeeEquipmentDialog', () => {
     });
   });
 
+  it('expands each of several matched warehouses in place and loads only that warehouse', async () => {
+    getEmployeeEquipment.mockResolvedValue({ equipment: [] });
+    getEmployeeWarehouse.mockImplementation(async ({ warehouseRef, loadBalances }) => {
+      if (!warehouseRef) {
+        return {
+          status: 'ambiguous',
+          warehouse: null,
+          candidates: [
+            { ref: 'wh-a', name: 'Иванова Е.Ю. (офис)' },
+            { ref: 'wh-b', name: 'Иванова Е.Ю. (выезд)' },
+          ],
+          balances: [],
+        };
+      }
+      return {
+        status: 'matched',
+        warehouse: { ref: warehouseRef },
+        balances: loadBalances
+          ? [{ nomenclature_ref: 'n1', nomenclature_code: '10', nomenclature_name: 'Кабель HDMI', qty_balance: 3 }]
+          : [],
+        balances_meta: { status: 'ok' },
+      };
+    });
+
+    renderDialog(false, true);
+
+    const office = await screen.findByRole('button', { name: /Иванова Е\.Ю\. \(офис\)/ });
+    expect(screen.queryByText('Кабель HDMI')).not.toBeInTheDocument();
+    expect(getEmployeeWarehouse).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(office);
+    expect(await screen.findByText('Кабель HDMI')).toBeInTheDocument();
+    expect(getEmployeeWarehouse).toHaveBeenLastCalledWith(
+      expect.objectContaining({ warehouseRef: 'wh-a', loadBalances: true }),
+    );
+    expect(getEmployeeWarehouse).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(office);
+    await waitFor(() => expect(screen.queryByText('Кабель HDMI')).not.toBeInTheDocument());
+  });
+
   it('shows warehouse movements grouped by document in the Перемещения tab', async () => {
     getEmployeeEquipment.mockResolvedValue({
       equipment: [{ INV_NO: 'INV-1', MODEL_NAME: 'ThinkPad', PART_NO: '10' }],

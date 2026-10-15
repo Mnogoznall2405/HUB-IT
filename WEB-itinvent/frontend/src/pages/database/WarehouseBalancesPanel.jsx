@@ -5,9 +5,6 @@ import {
   Button,
   Chip,
   IconButton,
-  List,
-  ListItemButton,
-  ListItemText,
   Paper,
   Stack,
   Table,
@@ -31,6 +28,7 @@ import EmploymentStatusChip from '../../components/EmploymentStatusChip';
 import { COLUMN_HEADER_MIN_HEIGHT, WH_SORT_GETTERS, sortRowsBy } from './employeeCompareFormat';
 import { CompareQtyNote } from './HubEquipmentList';
 import WarehouseMovementsList from './WarehouseMovementsList';
+import WarehouseCandidateAccordions from './WarehouseCandidateAccordions';
 
 export function WarehouseBalanceMobileRow({ row, warehouse, onOpenBalanceRow, onOpenInWarehouse1C, compareMaps = null }) {
   const clickable = Boolean(onOpenBalanceRow && row?.nomenclature_ref);
@@ -125,7 +123,8 @@ export function Warehouse1CBalancesPanel({
   onMovementsDatesChange,
   onLoadMoreMovements,
   onOpenMovement,
-  onSelectCandidate,
+  candidateBalances = {},
+  onLoadCandidateBalances,
   onOpenWarehousePage,
   onOpenBalanceRow,
   onOpenInWarehouse1C,
@@ -272,35 +271,15 @@ export function Warehouse1CBalancesPanel({
       ) : null}
 
       {!loading && !error && status === 'ambiguous' ? (
-        <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-            Найдено несколько похожих складов — выберите нужный:
-          </Typography>
-          <List dense disablePadding>
-            {candidates.map((candidate) => (
-              <ListItemButton
-                key={candidate.ref}
-                onClick={() => onSelectCandidate(candidate.ref)}
-                sx={{ borderRadius: 1, mb: 0.5 }}
-              >
-                <ListItemText
-                  primary={candidate.name}
-                  secondary={(
-                    <Button
-                      size="small"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onOpenWarehousePage?.(candidate);
-                      }}
-                    >
-                      Открыть этот склад в Складе 1С
-                    </Button>
-                  )}
-                />
-              </ListItemButton>
-            ))}
-          </List>
-        </Box>
+        <WarehouseCandidateAccordions
+          candidates={candidates}
+          balancesByRef={candidateBalances}
+          filterText={filterText}
+          onLoadBalances={onLoadCandidateBalances}
+          onOpenWarehousePage={onOpenWarehousePage}
+          onOpenBalanceRow={onOpenBalanceRow}
+          onOpenInWarehouse1C={onOpenInWarehouse1C}
+        />
       ) : null}
 
       {!loading && !balancesLoading && !error && balances.length > 0 ? (

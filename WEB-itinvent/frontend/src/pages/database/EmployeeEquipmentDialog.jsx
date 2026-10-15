@@ -134,7 +134,8 @@ export default function EmployeeEquipmentDialog({
     warehouseLoaded,
     employmentStatus,
     employmentLabel,
-    handleSelectCandidate,
+    candidateBalances,
+    loadCandidateBalances,
     handleMovementsDatesChange,
     handleLoadMoreMovements,
   } = useEmployeeEquipmentData({
@@ -573,7 +574,8 @@ export default function EmployeeEquipmentDialog({
                 onMovementsDatesChange={handleMovementsDatesChange}
                 onLoadMoreMovements={handleLoadMoreMovements}
                 onOpenMovement={movementDetail.openMovement}
-                onSelectCandidate={handleSelectCandidate}
+                candidateBalances={candidateBalances}
+                onLoadCandidateBalances={loadCandidateBalances}
                 onOpenWarehousePage={handleOpenWarehousePage}
                 onOpenBalanceRow={handleOpenBalanceRow}
                 onOpenInWarehouse1C={handleOpenBalanceInWarehouse1C}
