@@ -6,7 +6,7 @@ import type {
 } from '../api/databaseApi';
 
 export type DatabaseViewMode = 'equipment' | 'consumables' | 'acts';
-export type EquipmentDetailTab = 'general' | 'works' | 'acts' | 'history';
+export type EquipmentDetailTab = 'general' | 'works' | 'acts' | 'photos' | 'history';
 
 const PRINTER_MFU_KEYWORDS = [
   'принтер', 'мфу', 'плоттер', 'плотер', 'printer', 'plotter', 'mfp', 'mfc',

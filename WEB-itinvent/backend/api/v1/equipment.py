@@ -1,7 +1,8 @@
 ﻿"""
 Equipment API endpoints - search, retrieve and update equipment information.
 """
-from typing import Optional, Any, List
+from typing import Optional, Any, List, Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException, Response, status, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
@@ -13,6 +14,7 @@ import re
 import threading
 
 from backend.api.deps import (
+    ensure_user_permission,
     get_current_active_user,
     get_current_admin_user,
     get_request_scoped_database_id,
@@ -20,16 +22,20 @@ from backend.api.deps import (
     require_permission,
 )
 from backend.database import queries
+from backend.database import equipment_photos
 from backend.database.connection import get_db
 from backend.database.equipment_db import get_equipment_data_version, invalidate_equipment_cache
 from backend.models.auth import User
 from backend.services.authorization_service import (
     PERM_DATABASE_DELETE,
+    PERM_DATABASE_PHOTO_VERIFY,
     PERM_DATABASE_READ,
     PERM_DATABASE_WRITE,
 )
 from backend.models.equipment import (
     EquipmentSearchResponse,
+    EquipmentPhotoRejectRequest,
+    EquipmentPhotoRotateRequest,
     EmployeeSearchResponse,
     EquipmentListResponse,
     Branch,
@@ -64,6 +70,16 @@ from backend.models.equipment import (
     EquipmentCurrentActsRequest,
     EquipmentCurrentActsResponse,
     EquipmentCurrentActItem,
+    EquipmentPhotoItem,
+    EquipmentPhotoListResponse,
+    EquipmentPhotoOcrRunRequest,
+    EquipmentPhotoOcrRunResponse,
+    EquipmentPhotoOcrSummary,
+    EquipmentPhotoReviewResponse,
+    EquipmentPhotoReviewSummary,
+    EquipmentQualityIssuesResponse,
+    EquipmentQualitySummary,
+    EquipmentPhotoUploadResponse,
 )
 from backend.services.transfer_service import (
     get_act_records,
@@ -80,6 +96,11 @@ from backend.services.equipment_transfer_execution_service import (
     execute_equipment_location_transfer,
 )
 from backend.services.equipment_recent_cards_service import equipment_recent_cards_service
+from backend.services import equipment_photo_check_service
+from backend.services import equipment_photo_notification_service
+from backend.services import equipment_photo_ocr_service
+from backend.services import equipment_photo_review_service
+from backend.services import equipment_quality_service
 from backend.services.equipment_recent_acts_service import equipment_recent_acts_service
 from backend.services import transfer_act_job_service
 from backend.services.transfer_act_reminder_service import transfer_act_reminder_service
@@ -1040,6 +1061,213 @@ async def get_equipment_by_inv_nos(
     }
 
 
+@router.get("/photos/review", response_model=EquipmentPhotoReviewResponse)
+async def list_photo_review(
+    status_filter: Literal["rejected", "unchecked"] = Query("rejected", alias="status"),
+    since_days: int = Query(equipment_photo_review_service.DEFAULT_SINCE_DAYS, ge=1, le=365),
+    limit: int = Query(equipment_photo_review_service.DEFAULT_LIMIT, ge=1, le=equipment_photo_review_service.MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    q: str = Query("", max_length=100),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_PHOTO_VERIFY)),
+):
+    """Queue of rejected / not yet checked photos of the current database."""
+    try:
+        payload = await run_in_threadpool(
+            lambda: equipment_photo_review_service.list_review(
+                db_id=db_id,
+                status=status_filter,
+                since_days=since_days,
+                limit=limit,
+                offset=offset,
+                query=q,
+                user_id=current_user.id,
+                aliases=_photo_user_aliases(current_user),
+                get_db_fn=queries.get_db,
+            )
+        )
+    except equipment_photo_review_service.PhotoReviewUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Очередь проверки фото временно недоступна",
+        )
+    return EquipmentPhotoReviewResponse(**payload)
+
+
+@router.get("/photos/review/summary", response_model=EquipmentPhotoReviewSummary)
+async def get_photo_review_summary(
+    since_days: int = Query(equipment_photo_review_service.DEFAULT_SINCE_DAYS, ge=1, le=365),
+    refresh: bool = Query(False, description="Bypass the 60 s summary cache (after own actions)"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_PHOTO_VERIFY)),
+):
+    """Counters for the review-queue badge."""
+    try:
+        payload = await run_in_threadpool(
+            lambda: equipment_photo_review_service.review_summary(
+                db_id=db_id,
+                since_days=since_days,
+                user_id=current_user.id,
+                aliases=_photo_user_aliases(current_user),
+                refresh=refresh,
+                get_db_fn=queries.get_db,
+            )
+        )
+    except equipment_photo_review_service.PhotoReviewUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Очередь проверки фото временно недоступна",
+        )
+    return EquipmentPhotoReviewSummary(**payload)
+
+
+@router.get("/photos/ocr/summary", response_model=EquipmentPhotoOcrSummary)
+async def get_photo_ocr_summary(
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
+):
+    """Coverage of the serial-number recognition on photos (current database)."""
+    payload = await run_in_threadpool(
+        lambda: equipment_photo_ocr_service.summary(db_id=db_id, get_db_fn=queries.get_db)
+    )
+    return EquipmentPhotoOcrSummary(**payload)
+
+
+@router.post("/photos/ocr/run", response_model=EquipmentPhotoOcrRunResponse)
+async def run_photo_ocr(
+    payload: EquipmentPhotoOcrRunRequest,
+    background_tasks: BackgroundTasks,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_admin_user),
+):
+    """Start recognising the next batch of photos in the background (administrator, paid)."""
+    try:
+        await run_in_threadpool(equipment_photo_ocr_service.ensure_ready)
+    except equipment_photo_ocr_service.PhotoOcrDisabledError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Распознавание фото выключено или не настроен провайдер",
+        )
+    except equipment_photo_ocr_service.PhotoOcrUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Хранилище распознавания фото недоступно (миграция не применена)",
+        )
+    if equipment_photo_ocr_service.run_state().get("running"):
+        return EquipmentPhotoOcrRunResponse(started=False, reason="already_running")
+    background_tasks.add_task(
+        equipment_photo_ocr_service.run_batch_safe,
+        db_id=db_id,
+        limit=payload.limit,
+        get_db_fn=queries.get_db,
+    )
+    return EquipmentPhotoOcrRunResponse(started=True)
+
+
+def _quality_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Панель качества данных временно недоступна",
+    )
+
+
+@router.get("/quality/summary", response_model=EquipmentQualitySummary)
+async def get_quality_summary(
+    refresh: bool = Query(False, description="Bypass the 5 min cache"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
+):
+    """Per-rule counters of the data-quality panel (current database, read-only)."""
+    try:
+        payload = await run_in_threadpool(
+            lambda: equipment_quality_service.quality_summary(
+                db_id=db_id, refresh=refresh, get_db_fn=queries.get_db
+            )
+        )
+    except equipment_quality_service.QualityUnavailableError:
+        raise _quality_unavailable()
+    return EquipmentQualitySummary(**payload)
+
+
+@router.get("/quality/issues", response_model=EquipmentQualityIssuesResponse)
+async def list_quality_issues(
+    rule: str = Query(..., max_length=40),
+    limit: int = Query(equipment_quality_service.DEFAULT_LIMIT, ge=1, le=equipment_quality_service.MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+    q: str = Query("", max_length=100),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
+):
+    """Items that break one data-quality rule."""
+    try:
+        payload = await run_in_threadpool(
+            lambda: equipment_quality_service.list_issues(
+                db_id=db_id, rule=rule, limit=limit, offset=offset, query=q, get_db_fn=queries.get_db
+            )
+        )
+    except equipment_quality_service.UnknownRuleError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Неизвестное правило качества")
+    except equipment_quality_service.QualityUnavailableError:
+        raise _quality_unavailable()
+    return EquipmentQualityIssuesResponse(**payload)
+
+
+_QUALITY_CSV_COLUMNS = (
+    ("inv_no", "Инв. №"),
+    ("type_name", "Тип"),
+    ("model_name", "Модель"),
+    ("serial_no", "Серийный номер"),
+    ("employee_name", "Сотрудник"),
+    ("branch_name", "Филиал"),
+    ("location_name", "Расположение"),
+    ("note", "Примечание"),
+)
+
+
+def _csv_safe(value: Any) -> str:
+    """Spreadsheet formula injection guard for text coming from the inventory."""
+    text = str(value or "")
+    return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
+
+
+@router.get("/quality/issues/export")
+async def export_quality_issues(
+    rule: str = Query(..., max_length=40),
+    q: str = Query("", max_length=100),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
+):
+    """CSV (UTF-8 with BOM, ';' separated) of all rows of one rule, capped at EXPORT_LIMIT."""
+    import csv
+    import io
+
+    try:
+        payload = await run_in_threadpool(
+            lambda: equipment_quality_service.list_issues(
+                db_id=db_id,
+                rule=rule,
+                limit=equipment_quality_service.EXPORT_LIMIT,
+                offset=0,
+                query=q,
+                get_db_fn=queries.get_db,
+            )
+        )
+    except equipment_quality_service.UnknownRuleError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Неизвестное правило качества")
+    except equipment_quality_service.QualityUnavailableError:
+        raise _quality_unavailable()
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, delimiter=";")
+    writer.writerow([title for _key, title in _QUALITY_CSV_COLUMNS])
+    for row in payload["items"]:
+        writer.writerow([_csv_safe(row.get(key)) for key, _title in _QUALITY_CSV_COLUMNS])
+    return Response(
+        content="﻿" + buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="quality-{rule}.csv"'},
+    )
+
+
 @router.post("/current-acts", response_model=EquipmentCurrentActsResponse)
 async def get_equipment_current_acts(
     payload: EquipmentCurrentActsRequest,
@@ -1063,18 +1291,41 @@ async def get_equipment_current_acts(
         db_id,
         get_db_fn=queries.get_db,
     )
+    # Photo flag rides on the same lazy batch; failures are independent, so a
+    # broken act lookup does not hide photos and vice versa.
+    photo_counts = await run_in_threadpool(
+        equipment_photos.lookup_equipment_photo_counts,
+        item_ids,
+        db_id,
+        get_db_fn=queries.get_db,
+    )
 
-    if acts_by_item_id is None:
-        # Lookup failed — mark everything as unknown, never as "missing".
-        return EquipmentCurrentActsResponse(
-            items=[
-                EquipmentCurrentActItem(item_id=item_id, available=None)
-                for item_id in item_ids
-            ]
-        )
+    # "Проверено" mark lives in PostgreSQL: its own failure domain (None = unknown).
+    mark_counts = await run_in_threadpool(
+        equipment_photo_check_service.lookup_mark_counts,
+        item_ids,
+        db_id,
+        get_db_fn=queries.get_db,
+    )
 
     items = []
     for item_id in item_ids:
+        # Lookup failed — mark as unknown (None), never as "missing".
+        photo_count = None if photo_counts is None else photo_counts.get(item_id, 0)
+        marks = None if mark_counts is None else (mark_counts.get(item_id) or {})
+        photo_verified_count = None if marks is None else int(marks.get("verified", 0))
+        photo_rejected_count = None if marks is None else int(marks.get("rejected", 0))
+        if acts_by_item_id is None:
+            items.append(
+                EquipmentCurrentActItem(
+                    item_id=item_id,
+                    available=None,
+                    photo_count=photo_count,
+                    photo_verified_count=photo_verified_count,
+                    photo_rejected_count=photo_rejected_count,
+                )
+            )
+            continue
         act = acts_by_item_id.get(item_id)
         items.append(
             EquipmentCurrentActItem(
@@ -1083,6 +1334,9 @@ async def get_equipment_current_acts(
                 doc_no=act.get("doc_no") if act else None,
                 doc_number=act.get("doc_number") if act else None,
                 doc_date=act.get("doc_date") if act else None,
+                photo_count=photo_count,
+                photo_verified_count=photo_verified_count,
+                photo_rejected_count=photo_rejected_count,
             )
         )
     return EquipmentCurrentActsResponse(items=items)
@@ -2980,6 +3234,468 @@ async def download_transfer_act(
         else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
     return FileResponse(path=file_path, filename=file_name, media_type=media_type)
+
+
+@router.get("/{item_id}/photos", response_model=EquipmentPhotoListResponse)
+async def list_equipment_photos(
+    item_id: int,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    List photos attached to an equipment card (FILES FILE_TYPE=0).
+    """
+    try:
+        photos = await run_in_threadpool(
+            equipment_photos.list_equipment_photos, item_id, db_id
+        )
+    except equipment_photos.EquipmentNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Equipment not found",
+        )
+    except equipment_photos.PhotoValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    states = await run_in_threadpool(
+        equipment_photo_check_service.list_states, db_id=db_id, item_id=item_id
+    )
+    aliases = _photo_user_aliases(current_user)
+    verify_permitted = _user_has_permission(current_user, PERM_DATABASE_PHOTO_VERIFY)
+    is_admin = getattr(current_user, "role", "") == "admin"
+    reject_supported = await run_in_threadpool(equipment_photo_check_service.reject_supported)
+    ocr = await run_in_threadpool(
+        lambda: equipment_photo_ocr_service.describe_item_photos(
+            db_id=db_id, item_id=item_id, photos=photos, get_db_fn=queries.get_db
+        )
+    )
+    result_photos = []
+    for photo in photos:
+        state = (states or {}).get(photo["file_no"])
+        photo_ocr = ocr["photos"].get(photo["file_no"]) or {}
+        verified = equipment_photo_check_service.is_verified(state, photo["created_at"])
+        rejected = equipment_photo_check_service.is_rejected(state, photo["created_at"])
+        own = equipment_photo_check_service.is_own_photo(
+            state=state,
+            created_at=photo["created_at"],
+            created_by=photo["created_by"],
+            user_id=current_user.id,
+            aliases=aliases,
+        )
+        result_photos.append(
+            EquipmentPhotoItem(
+                **photo,
+                verified=verified,
+                verified_by=(state or {}).get("verified_by_name", "") if verified else "",
+                verified_at=(state or {}).get("verified_at") if verified else None,
+                can_verify=verify_permitted and states is not None and not verified and not own,
+                can_unverify=bool(
+                    verify_permitted
+                    and (verified or rejected)
+                    and (
+                        is_admin
+                        or (state or {}).get("rejected_by_user_id" if rejected else "verified_by_user_id")
+                        == current_user.id
+                    )
+                ),
+                rejected=rejected,
+                rejected_by=(state or {}).get("rejected_by_name", "") if rejected else "",
+                rejected_at=(state or {}).get("rejected_at") if rejected else None,
+                reject_reason=(state or {}).get("reject_reason", "") if rejected else "",
+                can_reject=bool(
+                    verify_permitted and reject_supported and states is not None and not rejected and not own
+                ),
+                is_own=own,
+                ocr_verdict=photo_ocr.get("verdict", ""),
+                ocr_serials=photo_ocr.get("serials", []),
+            )
+        )
+    return EquipmentPhotoListResponse(
+        item_id=item_id,
+        photos=result_photos,
+        verification_available=states is not None,
+        verify_permitted=verify_permitted,
+        serial_confirmed_by_photo=ocr["confirmed"],
+        ocr_available=ocr["available"],
+    )
+
+
+@router.get("/{item_id}/photos/{file_no}/content")
+async def get_equipment_photo_content(
+    item_id: int,
+    file_no: int,
+    thumb: bool = Query(False, description="Return FILE_SMALL_IMAGE_DATA preview"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    _: User = Depends(get_current_active_user),
+):
+    """
+    Serve photo bytes for an equipment card (inline image).
+    """
+    payload = await run_in_threadpool(
+        equipment_photos.get_equipment_photo, file_no, db_id, item_id=item_id, thumb=thumb
+    )
+    if not payload or payload.get("data") is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Фото не найдено",
+        )
+
+    file_bytes = payload["data"]
+    content_type = _infer_mime_from_bytes(file_bytes) or "application/octet-stream"
+    file_name = str(payload.get("file_name") or f"photo_{file_no}.bin")
+    ascii_name = _ascii_safe_filename(file_name)
+    encoded_name = urllib.parse.quote(file_name, safe="")
+    headers = {
+        "Content-Disposition": f"inline; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}",
+        "Cache-Control": "private, max-age=60",
+    }
+    return StreamingResponse(iter([file_bytes]), media_type=content_type, headers=headers)
+
+
+def _user_has_permission(user: User, permission: str) -> bool:
+    """Non-raising twin of ensure_user_permission (admin role always passes)."""
+    try:
+        ensure_user_permission(user, permission)
+    except HTTPException:
+        return False
+    return True
+
+
+def _photo_user_aliases(user: User) -> list[str]:
+    """Names FILES.CREATE_USER may carry for this user (full name or login)."""
+    return [
+        value
+        for value in (getattr(user, "full_name", None), getattr(user, "username", None))
+        if str(value or "").strip()
+    ]
+
+
+@router.post("/{item_id}/photos/{file_no}/verify", response_model=EquipmentPhotoItem)
+async def verify_equipment_photo(
+    item_id: int,
+    file_no: int,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_PHOTO_VERIFY)),
+):
+    """
+    Mark a photo as verified. The user who uploaded the photo cannot verify it.
+    """
+    try:
+        state = await run_in_threadpool(
+            equipment_photo_check_service.verify_photo,
+            db_id=db_id,
+            item_id=item_id,
+            file_no=file_no,
+            user_id=current_user.id,
+            user_name=getattr(current_user, "full_name", None) or getattr(current_user, "username", "") or "",
+            aliases=_photo_user_aliases(current_user),
+            get_db_fn=queries.get_db,
+        )
+    except equipment_photo_check_service.OwnPhotoVerificationError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Нельзя подтвердить фото, которое загрузили вы",
+        )
+    except equipment_photo_check_service.PhotoNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Фото не найдено")
+    except equipment_photo_check_service.PhotoCheckUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Отметка проверки ещё не включена",
+        )
+    return EquipmentPhotoItem(
+        file_no=file_no,
+        verified=True,
+        verified_by=state.get("verified_by_name") or "",
+        verified_at=state.get("verified_at"),
+        can_verify=False,
+    )
+
+
+@router.post("/{item_id}/photos/{file_no}/reject", response_model=EquipmentPhotoItem)
+async def reject_equipment_photo(
+    item_id: int,
+    file_no: int,
+    payload: EquipmentPhotoRejectRequest,
+    background_tasks: BackgroundTasks,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_PHOTO_VERIFY)),
+):
+    """
+    Reject a photo with a mandatory reason. The user who uploaded the photo cannot reject it.
+    The uploader is notified after the response (best effort).
+    """
+    try:
+        state = await run_in_threadpool(
+            equipment_photo_check_service.reject_photo,
+            db_id=db_id,
+            item_id=item_id,
+            file_no=file_no,
+            user_id=current_user.id,
+            user_name=getattr(current_user, "full_name", None) or getattr(current_user, "username", "") or "",
+            aliases=_photo_user_aliases(current_user),
+            reason=payload.reason,
+            get_db_fn=queries.get_db,
+        )
+    except equipment_photo_check_service.RejectReasonRequiredError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Укажите причину, почему фото не принято",
+        )
+    except equipment_photo_check_service.OwnPhotoVerificationError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Нельзя проверять фото, которое загрузили вы",
+        )
+    except equipment_photo_check_service.PhotoNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Фото не найдено")
+    except equipment_photo_check_service.PhotoCheckUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Отметка проверки ещё не включена",
+        )
+    background_tasks.add_task(
+        equipment_photo_notification_service.notify_photo_rejected,
+        db_id=db_id,
+        item_id=item_id,
+        file_no=file_no,
+        state=state,
+        created_by=state.get("file_created_by") or "",
+        rejector_user_id=current_user.id,
+    )
+    return EquipmentPhotoItem(
+        file_no=file_no,
+        rejected=True,
+        rejected_by=state.get("rejected_by_name") or "",
+        rejected_at=state.get("rejected_at"),
+        reject_reason=state.get("reject_reason") or "",
+        can_verify=True,
+        can_reject=False,
+        can_unverify=True,
+    )
+
+
+@router.patch("/{item_id}/photos/{file_no}/reject", response_model=EquipmentPhotoItem)
+async def update_equipment_photo_reject_reason(
+    item_id: int,
+    file_no: int,
+    payload: EquipmentPhotoRejectRequest,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_PHOTO_VERIFY)),
+):
+    """
+    Edit the reason of an existing rejection (the one who rejected it or an administrator).
+    """
+    try:
+        state = await run_in_threadpool(
+            equipment_photo_check_service.update_reject_reason,
+            db_id=db_id,
+            item_id=item_id,
+            file_no=file_no,
+            user_id=current_user.id,
+            is_admin=getattr(current_user, "role", "") == "admin",
+            reason=payload.reason,
+            get_db_fn=queries.get_db,
+        )
+    except equipment_photo_check_service.RejectReasonRequiredError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Укажите причину, почему фото не принято",
+        )
+    except equipment_photo_check_service.VerificationNotAllowedError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Менять причину может отклонивший или администратор",
+        )
+    except equipment_photo_check_service.PhotoNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Отклонённое фото не найдено")
+    except equipment_photo_check_service.PhotoCheckUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Отметка проверки ещё не включена",
+        )
+    return EquipmentPhotoItem(
+        file_no=file_no,
+        rejected=True,
+        rejected_by=state.get("rejected_by_name") or "",
+        rejected_at=state.get("rejected_at"),
+        reject_reason=state.get("reject_reason") or "",
+        can_verify=True,
+        can_reject=False,
+        can_unverify=True,
+    )
+
+
+@router.delete("/{item_id}/photos/{file_no}/verify", response_model=dict)
+async def unverify_equipment_photo(
+    item_id: int,
+    file_no: int,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_PHOTO_VERIFY)),
+):
+    """
+    Withdraw a photo verification (the verifier or an administrator).
+    """
+    try:
+        changed = await run_in_threadpool(
+            equipment_photo_check_service.unverify_photo,
+            db_id=db_id,
+            item_id=item_id,
+            file_no=file_no,
+            user_id=current_user.id,
+            is_admin=getattr(current_user, "role", "") == "admin",
+        )
+    except equipment_photo_check_service.VerificationNotAllowedError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Снять отметку может проверивший или администратор",
+        )
+    except equipment_photo_check_service.PhotoCheckUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Отметка проверки ещё не включена",
+        )
+    return {"ok": True, "changed": bool(changed)}
+
+
+@router.post("/{item_id}/photos/{file_no}/rotate", response_model=dict)
+async def rotate_equipment_photo(
+    item_id: int,
+    file_no: int,
+    payload: EquipmentPhotoRotateRequest,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
+):
+    """
+    Rotate a photo in place (clockwise). Allowed to whoever may upload photos or check them.
+    """
+    if not (
+        _user_has_permission(current_user, PERM_DATABASE_WRITE)
+        or _user_has_permission(current_user, PERM_DATABASE_PHOTO_VERIFY)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Нет права поворачивать фото",
+        )
+    try:
+        result = await run_in_threadpool(
+            equipment_photos.rotate_equipment_photo,
+            item_id=item_id,
+            file_no=file_no,
+            degrees=payload.degrees,
+            db_id=db_id,
+        )
+    except equipment_photos.PhotoValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Фото не найдено")
+    return {"ok": True, **result}
+
+
+@router.post("/{item_id}/photos", response_model=EquipmentPhotoUploadResponse)
+async def upload_equipment_photo(
+    item_id: int,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    description: Optional[str] = Query(None, description="Optional photo description"),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """
+    Upload a photo into FILES for an equipment card (FILE_TYPE=0).
+    """
+    file_bytes = await file.read()
+    try:
+        result = await run_in_threadpool(
+            equipment_photos.insert_equipment_photo,
+            item_id=item_id,
+            file_name=file.filename or "",
+            file_bytes=file_bytes,
+            created_by=getattr(current_user, "full_name", None)
+            or getattr(current_user, "username", "")
+            or "",
+            description=description or "",
+            mime_type=file.content_type,
+            db_id=db_id,
+        )
+    except equipment_photos.EquipmentNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Equipment not found",
+        )
+    except equipment_photos.PhotoValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    # Provenance for the "uploader cannot verify" rule; never fails the upload.
+    try:
+        meta = await run_in_threadpool(
+            equipment_photos.get_equipment_photo_meta,
+            result["item_id"],
+            result["file_no"],
+            db_id,
+            get_db_fn=queries.get_db,
+        )
+        if meta is not None:
+            await run_in_threadpool(
+                equipment_photo_check_service.record_upload,
+                db_id=db_id,
+                item_id=result["item_id"],
+                file_no=result["file_no"],
+                file_created_at=meta["created_at"],
+                user_id=current_user.id,
+                user_name=getattr(current_user, "full_name", None)
+                or getattr(current_user, "username", "")
+                or "",
+            )
+    except Exception:
+        logger.warning("Failed to record equipment photo provenance", exc_info=True)
+    # Serial recognition runs after the response (no-op while the feature flag is off).
+    background_tasks.add_task(
+        equipment_photo_ocr_service.analyze_photo_safe,
+        db_id=db_id,
+        item_id=result["item_id"],
+        file_no=result["file_no"],
+        get_db_fn=queries.get_db,
+    )
+    return EquipmentPhotoUploadResponse(
+        file_no=result["file_no"],
+        item_id=result["item_id"],
+        file_name=file.filename or "",
+    )
+
+
+@router.delete("/{item_id}/photos/{file_no}", response_model=dict)
+async def delete_equipment_photo(
+    item_id: int,
+    file_no: int,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    _: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """
+    Delete a photo from an equipment card.
+    """
+    removed = await run_in_threadpool(
+        equipment_photos.delete_equipment_photo,
+        item_id=item_id,
+        file_no=file_no,
+        db_id=db_id,
+    )
+    if not removed:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Фото не найдено",
+        )
+    await run_in_threadpool(
+        equipment_photo_check_service.delete_photo_check,
+        db_id=db_id,
+        item_id=item_id,
+        file_no=file_no,
+    )
+    await run_in_threadpool(
+        equipment_photo_ocr_service.delete_photo_ocr,
+        db_id=db_id,
+        item_id=item_id,
+        file_no=file_no,
+    )
+    return {"ok": True}
 
 
 # IMPORTANT: This catch-all route must be LAST to avoid intercepting other routes

@@ -11,8 +11,20 @@ import { buildLocationKey } from './databaseListModel';
 
 const locationNameCollator = new Intl.Collator('ru', { numeric: true, sensitivity: 'base' });
 
+// «с фото X из Y» — Y считается только по строкам с известным photo_count,
+// пока данные о фото догружаются, неизвестные не выдаём за «без фото».
+const formatPhotoStats = (stats, isMobile) => {
+  if (!stats) return '';
+  const known = stats.withPhoto + stats.withoutPhoto;
+  if (known <= 0) return '';
+  return isMobile
+    ? ` · 📷 ${stats.withPhoto}/${known}`
+    : ` · с фото ${stats.withPhoto} из ${known}`;
+};
+
 const DatabaseDataSections = memo(function DatabaseDataSections({
   displayData,
+  photoStats = null,
   expandedBranches,
   expandedLocations,
   expandedCards,
@@ -189,6 +201,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
           </Box>
           <Typography variant="body2" color="text.secondary" sx={{ fontSize: isMobile ? '0.75rem' : undefined }}>
             ({branchTotal.toLocaleString()})
+            {formatPhotoStats(photoStats?.byBranch?.get(branchName), isMobile)}
           </Typography>
         </Box>
 
@@ -223,6 +236,14 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
                         {locationName}
                       </Typography>
                     </Box>
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{ whiteSpace: 'nowrap', fontSize: isMobile ? '0.7rem' : undefined }}
+                    >
+                      {locationItems.length.toLocaleString()}
+                      {formatPhotoStats(photoStats?.byLocation?.get(locationKey), isMobile)}
+                    </Typography>
                   </Box>
                   <Collapse in={isLocationExpanded} timeout="auto" unmountOnExit>
                     <Box sx={{ p: isMobile ? 0 : 1, borderTop: '1px solid ' + theme.palette.divider }}>

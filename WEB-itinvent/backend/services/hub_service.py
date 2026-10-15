@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from threading import Lock, RLock
 from typing import Any, Callable, Optional
@@ -3898,7 +3898,9 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             channel = "tasks" if normalized_entity_type == "task" else ("announcements" if normalized_entity_type == "announcement" else "system")
             if notification_preferences_service.is_enabled(user_id=int(recipient_user_id), channel=channel):
                 route = "/"
-                if channel == "tasks":
+                if normalized_entity_type == "equipment_photo":
+                    route = self._equipment_photo_route(entity_id)
+                elif channel == "tasks":
                     route = "/tasks"
                 elif channel == "announcements":
                     announcement_entity, _, comment_entity = _normalize_text(entity_id).partition("#")
@@ -3933,6 +3935,54 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                             exc_info=True,
                         )
         return notification_id
+
+    @staticmethod
+    def _equipment_photo_route(entity_id: str) -> str:
+        """entity_id is ``<db_id>:<inv_no>:<file_no>``; the card opens on the photos tab."""
+        head, _, rest = _normalize_text(entity_id).partition(":")
+        inv_no, _, _file_no = rest.rpartition(":")
+        if not inv_no:
+            return "/database"
+        query = {"inv_no": inv_no, "tab": "photos"}
+        if head:
+            query["db_id"] = head
+        return f"/database?{urlencode(query)}"
+
+    def create_user_notification(
+        self,
+        *,
+        recipient_user_id: int,
+        event_type: str,
+        title: str,
+        body: str = "",
+        entity_type: str = "",
+        entity_id: str = "",
+        dedupe_same_day: bool = False,
+    ) -> Optional[str]:
+        """One notification (with push) for a non-hub subsystem; returns its id or None when skipped."""
+        recipient = self._as_int(recipient_user_id)
+        if recipient <= 0:
+            return None
+        if dedupe_same_day:
+            today = _utc_now_iso()[:10]
+            with self._db_conn() as conn:
+                if self._notification_exists(
+                    conn,
+                    recipient_user_id=recipient,
+                    event_type=event_type,
+                    entity_type=entity_type,
+                    entity_id=entity_id,
+                    created_on_date=today,
+                ):
+                    return None
+        return self._create_notification(
+            recipient_user_id=recipient,
+            event_type=event_type,
+            title=title,
+            body=body,
+            entity_type=entity_type,
+            entity_id=entity_id,
+        )
 
     @staticmethod
     def _register_notification_realtime_after_commit(conn: Any, notification: dict[str, Any]) -> bool:
@@ -6715,11 +6765,6 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             item["file_size"] = self._as_int(item.get("file_size"))
             return item
 
-    def create_task(
-        self,
-        *,
-        title: str,
-        description: str,
     def precheck_task_creation_batch(
         self,
         *,
@@ -6767,6 +6812,11 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         if not validated_project_id:
             raise ValueError("project_id is required")
 
+    def create_task(
+        self,
+        *,
+        title: str,
+        description: str,
         assignee_user_id: int,
         controller_user_id: int,
         due_at: Optional[str],

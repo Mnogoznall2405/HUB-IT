@@ -1,4 +1,4 @@
-import { useMemo, lazy, Suspense } from 'react';
+import { useCallback, useEffect, useMemo, useState, lazy, Suspense } from 'react';
 import MainLayout from '../../components/layout/MainLayout';
 import PageShell from '../../components/layout/PageShell';
 import { LoadingSpinner } from '../../components/common';
@@ -11,11 +11,16 @@ import DatabaseMobileHeader from './DatabaseMobileHeader';
 import DatabasePageHeader from './DatabasePageHeader';
 import DatabaseScopeContent from './DatabaseScopeContent';
 import DatabaseListSection from './DatabaseListSection';
+import ListFilterBar from './ListFilterBar';
+import useEquipmentPhotoReviewSummary from './useEquipmentPhotoReviewSummary';
+import { normalizeDbId } from './databaseRecordModel';
 import { MOBILE_BAR_GAP, MOBILE_BAR_HEIGHT } from './databaseMobileLayout';
 import { formatDetailDate as formatDate } from './detailModel';
 import { buildDialogsLayerProps } from './dialogsLayerProps';
 
 const DatabaseEmployeeSearchFallback = lazy(() => import('./DatabaseEmployeeSearchFallback'));
+const EquipmentPhotoReviewDialog = lazy(() => import('./EquipmentPhotoReviewDialog'));
+const EquipmentQualityDialog = lazy(() => import('./EquipmentQualityDialog'));
 
 
 // Presentational layer: receives the composed view-model and renders JSX.
@@ -133,6 +138,14 @@ export default function DatabasePageView({ vm }) {
     detailSuccess,
     detailTab,
     displayData,
+    loadMoreNow,
+    photoFilter,
+    listFilterActive,
+    photoStats,
+    setPhotoFilter,
+    actFilter,
+    actStats,
+    setActFilter,
     editConsumableQtyError,
     editConsumableQtyLoading,
     editConsumableQtyModal,
@@ -361,7 +374,69 @@ export default function DatabasePageView({ vm }) {
     uploadActReminderLoading,
     uploadActStep,
     workConsumablesLoading,
+    canPhotoVerify,
+    handleOpenEquipmentFromPhotoReview,
   } = vm;
+
+  const [photoReviewOpen, setPhotoReviewOpen] = useState(false);
+  const photoReviewDbId = normalizeDbId(
+    typeof window !== 'undefined' ? window.localStorage.getItem('selected_database') : '',
+  );
+  const photoReviewEnabled = Boolean(canPhotoVerify) && !isConsumablesMode;
+  const { summary: photoReviewSummary, refresh: refreshPhotoReviewSummary } = useEquipmentPhotoReviewSummary({
+    enabled: photoReviewEnabled,
+    dbId: photoReviewDbId,
+  });
+
+  // Карточка, открытая из списка («Качество данных», очередь проверки фото), ложится поверх него:
+  // список остаётся открытым со своим фильтром, поиском и прокруткой, «Назад» возвращает к нему.
+  const [openedFromList, setOpenedFromList] = useState(false);
+  const [listReloadToken, setListReloadToken] = useState(0);
+
+  const [qualityOpen, setQualityOpen] = useState(false);
+  const handleOpenQuality = useCallback(() => setQualityOpen(true), []);
+  const handleCloseQuality = useCallback(() => setQualityOpen(false), []);
+  const handleOpenEquipmentFromQuality = useCallback((invNo, options) => {
+    setOpenedFromList(true);
+    handleOpenEquipmentFromPhotoReview?.(invNo, options);
+  }, [handleOpenEquipmentFromPhotoReview]);
+
+  const handleOpenPhotoReview = useCallback(() => setPhotoReviewOpen(true), []);
+  const handleClosePhotoReview = useCallback(() => {
+    setPhotoReviewOpen(false);
+    void refreshPhotoReviewSummary({ force: true });
+  }, [refreshPhotoReviewSummary]);
+  const handleOpenEquipmentFromReview = useCallback((invNo) => {
+    setOpenedFromList(true);
+    handleOpenEquipmentFromPhotoReview?.(invNo);
+  }, [handleOpenEquipmentFromPhotoReview]);
+
+  const handleBackToList = useCallback(() => {
+    setOpenedFromList(false);
+    vm.handleDetailClose?.();
+    setListReloadToken((token) => token + 1);
+  }, [vm.handleDetailClose]);
+
+  // Карточку закрыли иным путём (удаление и т. п.): список обновляем, режим «поверх списка» снимаем.
+  const detailIsOpen = Boolean(detailModal?.open);
+  useEffect(() => {
+    if (!detailIsOpen && openedFromList) {
+      setOpenedFromList(false);
+      setListReloadToken((token) => token + 1);
+    }
+  }, [detailIsOpen, openedFromList]);
+
+  const dialogsLayerProps = buildDialogsLayerProps(
+    openedFromList
+      ? {
+        ...vm,
+        detailOpenedFromEmployee: true,
+        handleBackToEmployeeEquipment: handleBackToList,
+        handleCloseEquipmentDetail: handleBackToList,
+      }
+      : vm,
+    { isMobile, theme, ui },
+  );
 
   const dbTransferItems = useMemo(
     () => (Array.isArray(selectedItems) ? selectedItems : [])
@@ -379,6 +454,7 @@ export default function DatabasePageView({ vm }) {
     return (
       <DatabaseDataSections
         displayData={displayData}
+        photoStats={photoStats}
         expandedBranches={expandedBranches}
         expandedLocations={expandedLocations}
         expandedCards={expandedCards}
@@ -427,6 +503,7 @@ export default function DatabasePageView({ vm }) {
     isMobile,
     detailActOpeningDocNo,
     mobileSelectionMode,
+    photoStats,
     openEditConsumableQtyModal,
     openDeleteConsumableModal,
     selectedItemsSet,
@@ -567,7 +644,24 @@ export default function DatabasePageView({ vm }) {
           onOpenBattery={handleOpenBatteryForSelection}
           onOpenComponent={handleOpenComponentForSelection}
         >
+          {!isConsumablesMode && !employeeFallback.active && (
+            <ListFilterBar
+              photoValue={photoFilter}
+              onPhotoChange={setPhotoFilter}
+              photoStats={photoStats}
+              actValue={actFilter}
+              onActChange={setActFilter}
+              actStats={actStats}
+              isMobile={isMobile}
+              onOpenReview={photoReviewEnabled ? handleOpenPhotoReview : null}
+              reviewSummary={photoReviewSummary}
+              onOpenQuality={handleOpenQuality}
+            />
+          )}
           <DatabaseListSection
+            photoFilterActive={listFilterActive}
+            canLoadMoreManually={canAutoLoadMoreEquipment}
+            onLoadMore={loadMoreNow}
             dataMode={dataMode}
             modeLoading={modeLoading}
             dataSections={dataSections}
@@ -588,7 +682,33 @@ export default function DatabasePageView({ vm }) {
         </DatabaseScopeContent>
         </EmployeeCompareProvider>
 
-        <DatabaseDialogsLayer {...buildDialogsLayerProps(vm, { isMobile, theme, ui })} />
+        <DatabaseDialogsLayer {...dialogsLayerProps} />
+
+        {qualityOpen ? (
+          <Suspense fallback={null}>
+            <EquipmentQualityDialog
+              open
+              dbId={photoReviewDbId}
+              isAdmin={isAdmin}
+              reloadToken={listReloadToken}
+              onClose={handleCloseQuality}
+              onOpenEquipment={handleOpenEquipmentFromQuality}
+            />
+          </Suspense>
+        ) : null}
+
+        {photoReviewEnabled && photoReviewOpen ? (
+          <Suspense fallback={null}>
+            <EquipmentPhotoReviewDialog
+              open
+              dbId={photoReviewDbId}
+              reloadToken={listReloadToken}
+              onClose={handleClosePhotoReview}
+              onOpenEquipment={handleOpenEquipmentFromReview}
+              onChanged={() => { void refreshPhotoReviewSummary({ force: true }); }}
+            />
+          </Suspense>
+        ) : null}
 
         <DatabaseAdSyncDialog
           open={adSyncOpen}

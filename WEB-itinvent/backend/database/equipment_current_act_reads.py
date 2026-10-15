@@ -281,6 +281,32 @@ def enrich_equipment_current_acts(
             item_ids.append(item_id)
 
     acts_by_item_id = lookup_current_acts(item_ids, db_id, get_db_fn=get_db_fn)
+
+    # Photo flag for the same rows; independent of the act lookup, None = unknown.
+    from backend.database.equipment_photos import lookup_equipment_photo_counts
+
+    photo_counts = lookup_equipment_photo_counts(item_ids, db_id, get_db_fn=get_db_fn)
+    for row in enriched:
+        item_id = _item_id(row)
+        if photo_counts is None or item_id is None:
+            row["photo_count"] = None
+        else:
+            row["photo_count"] = photo_counts.get(item_id, 0)
+
+    # "Проверено" mark: separate failure domain (PostgreSQL store), None = unknown.
+    from backend.services.equipment_photo_check_service import lookup_mark_counts
+
+    mark_counts = lookup_mark_counts(item_ids, db_id, get_db_fn=get_db_fn)
+    for row in enriched:
+        item_id = _item_id(row)
+        if mark_counts is None or item_id is None:
+            row["photo_verified_count"] = None
+            row["photo_rejected_count"] = None
+        else:
+            marks = mark_counts.get(item_id) or {}
+            row["photo_verified_count"] = int(marks.get("verified", 0))
+            row["photo_rejected_count"] = int(marks.get("rejected", 0))
+
     if acts_by_item_id is None:
         return enriched
 

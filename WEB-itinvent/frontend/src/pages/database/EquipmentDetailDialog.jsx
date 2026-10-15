@@ -29,6 +29,7 @@ import { LoadingSpinner, StatusChip } from '../../components/common';
 import { readFirst, toIdOrNull, toNumberOrNull } from './databaseRecordModel';
 import EquipmentDetailActsPanel from './EquipmentDetailActsPanel';
 import EquipmentDetailHistoryPanel from './EquipmentDetailHistoryPanel';
+import EquipmentDetailPhotosPanel from './EquipmentDetailPhotosPanel';
 import EquipmentDetailWarehouse1CTab from './EquipmentDetailWarehouse1CTab';
 import EmployeeNameLink from './EmployeeNameLink';
 import LocationAutocompleteField from './LocationAutocompleteField';
@@ -438,6 +439,9 @@ const EquipmentDetailDialog = memo(function EquipmentDetailDialog({
   onOpenQr,
   onOpenActFields,
   onOpenActFile,
+  onPhotoCountChange = null,
+  onScanNextPhoto = null,
+  photoQueue = null,
   formatDate,
   formatHistoryValue,
   formatHistoryTransition,
@@ -471,6 +475,16 @@ const EquipmentDetailDialog = memo(function EquipmentDetailDialog({
           onOpenFields={onOpenActFields}
           onOpenFile={onOpenActFile}
           formatDate={formatDate}
+        />
+      </Box>
+      <Box sx={{ display: tab === 'photos' ? 'block' : 'none' }}>
+        <EquipmentDetailPhotosPanel
+          itemId={toNumberOrNull(readFirst(data, ['ID', 'id'], null))}
+          active={open && tab === 'photos'}
+          canWrite={canWrite && !editMode}
+          onCountChange={onPhotoCountChange}
+          onScanNext={onScanNextPhoto}
+          queue={photoQueue}
         />
       </Box>
       <Box sx={{ display: tab === 'history' ? 'block' : 'none' }}>
@@ -568,6 +582,7 @@ const EquipmentDetailDialog = memo(function EquipmentDetailDialog({
               >
                 <Tab label="Общее" value="general" />
                 <Tab label="Текущий акт" value="acts" disabled={editMode} />
+                <Tab label="Фото" value="photos" disabled={editMode} />
                 <Tab label="История перемещений" value="history" disabled={editMode} />
                 {canViewWarehouse1C ? (
                   <Tab label="1С" value="warehouse1c" disabled={editMode} />

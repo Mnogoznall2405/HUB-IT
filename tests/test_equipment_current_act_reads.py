@@ -38,7 +38,10 @@ def test_enrich_equipment_current_acts_maps_latest_downloadable_act_in_one_batch
     assert result[0]["current_act_doc_date"] == "2026-09-04T08:30:00"
     assert result[1]["current_act_available"] is False
     assert result[1]["current_act_doc_no"] is None
-    assert len(db.calls) == 1
+    # One set-based act query for the whole batch, then one photo-count query.
+    assert len(db.calls) == 2
+    assert "from files f" in " ".join(db.calls[1][0].lower().split())
+    assert result[0]["photo_count"] == 0
     sql, params = db.calls[0]
     normalized_sql = " ".join(sql.lower().split())
     assert "row_number() over" in normalized_sql

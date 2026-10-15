@@ -666,6 +666,67 @@ class AppEquipmentRecentAct(AppBase):
     last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
+class AppEquipmentPhotoCheck(AppBase):
+    """Provenance + verification of one equipment photo (FILES row, FILE_TYPE=0).
+
+    FILES lives in the legacy SQL Server database, so the check is stored here,
+    keyed by (db_id, item_id, file_no). ``file_created_at`` is the FILES.CREATE_DATE
+    seen when the row was written: FILE_NO is a MAX+1 counter and can be reused
+    after a delete, so a row only counts while the fingerprint still matches.
+    """
+
+    __tablename__ = "equipment_photo_checks"
+    __table_args__ = _table_args(
+        UniqueConstraint("db_id", "item_id", "file_no", name="uq_app_equipment_photo_checks_db_item_file"),
+        Index("ix_app_equipment_photo_checks_db_item", "db_id", "item_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    db_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    item_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    file_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    file_created_at: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    uploaded_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    uploaded_by_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    verified_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    verified_by_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rejected_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rejected_by_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reject_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppEquipmentPhotoOcr(AppBase):
+    """Serial-number candidates read from one equipment photo by the vision model.
+
+    Keyed like ``equipment_photo_checks``: ``file_created_at`` is the FILES.CREATE_DATE seen
+    at analysis time, so a reused FILE_NO never inherits the result of a deleted photo.
+    The verdict against ITEMS.SERIAL_NO is computed on read, never stored.
+    """
+
+    __tablename__ = "equipment_photo_ocr"
+    __table_args__ = _table_args(
+        UniqueConstraint("db_id", "item_id", "file_no", name="uq_app_equipment_photo_ocr_db_item_file"),
+        Index("ix_app_equipment_photo_ocr_db_item", "db_id", "item_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    db_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    item_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    file_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    file_created_at: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    photo_type: Mapped[str] = mapped_column(String(16), nullable=False, default="general")
+    serials_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    model: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    analyzed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class AppPasswordVaultEntry(AppBase):
     __tablename__ = "password_vault_entries"
     __table_args__ = _table_args(

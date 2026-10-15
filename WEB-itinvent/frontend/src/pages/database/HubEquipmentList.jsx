@@ -25,6 +25,7 @@ import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import HistoryIcon from '@mui/icons-material/History';
 import EquipmentCurrentActIndicator from './EquipmentCurrentActIndicator';
+import EquipmentPhotoIndicator from './EquipmentPhotoIndicator';
 import { hubItemDatabaseMeta } from './employeeCompareFormat';
 
 export function CompareQtyNote({ breakdown }) {
@@ -430,6 +431,11 @@ export function HubEquipmentTable({
                 <TableCell>{readFirst(item, ['PART_NO', 'part_no'], '-')}</TableCell>
                 <TableCell align="center" onClick={(event) => event.stopPropagation()}>
                   <Stack direction="row" spacing={0.25} justifyContent="center" alignItems="center">
+                    <EquipmentPhotoIndicator
+                      item={item}
+                      size={16}
+                      onOpen={canOpen ? () => onOpenInvNo(invNo, { ...openMeta, initialTab: 'photos' }) : null}
+                    />
                     <EquipmentCurrentActIndicator
                       item={item}
                       onOpenAct={onOpenCurrentAct}

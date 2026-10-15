@@ -141,6 +141,8 @@ flowchart LR
 
 **Префиксы API** (`/api/v1/…`): `auth`, `equipment`, `database`, `json`, `settings`, `networks`, `discovery`, `inventory`, `kb`, `mfu`, `hub`, `departments`, `ad-users`, `mail`, `vcs`, `ai-bots`, `tickets`, `address-book`, `chat` (если включён).
 
+**Фото оборудования, проверка и качество данных:** фото лежат в SQL Server `FILES`; отметки «проверено/отклонено» и автор загрузки — `equipment_photo_check_service.py` (`app.equipment_photo_checks`), очередь проверки — `equipment_photo_review_service.py`, уведомление загрузившему — `equipment_photo_notification_service.py`, панель качества данных — `equipment_quality_service.py`. Серийники с фото через LLM — `equipment_photo_ocr_service.py` (`app.equipment_photo_ocr`, миграция `20261015_0136`, флаг `EQUIPMENT_PHOTO_OCR_ENABLED`, по умолчанию выключен, платный; вердикт считается при чтении по текущему `ITEMS.SERIAL_NO`). Маршруты — `api/v1/equipment.py` (`/photos/*`, `/quality/*`), UI — `pages/database/EquipmentDetailPhotosPanel.jsx`, `EquipmentPhotoReviewDialog.jsx`, `EquipmentQualityDialog.jsx`.
+
 OpenAPI в dev: `http://localhost:8001/docs`
 
 ### Chat runtime

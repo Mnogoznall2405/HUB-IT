@@ -133,6 +133,158 @@ export const buildEquipmentIndex = (groupedData) => {
 
 export const getVisibleBranchNames = (displayData) => Object.keys(displayData || {});
 
+export const PHOTO_FILTER_ALL = 'all';
+export const PHOTO_FILTER_WITHOUT = 'without';
+export const PHOTO_FILTER_WITH = 'with';
+export const PHOTO_FILTER_REJECTED = 'rejected';
+export const PHOTO_FILTER_UNCHECKED = 'unchecked';
+
+const readCount = (raw) => {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const count = Number(raw);
+  return Number.isFinite(count) ? count : null;
+};
+
+// photo_count arrives lazily (current-acts batch): null = not known yet, which
+// must never be treated as "no photo".
+export const readPhotoCount = (item) => readCount(item?.photo_count ?? item?.PHOTO_COUNT);
+
+const readVerifiedCount = (item) => readCount(item?.photo_verified_count ?? item?.PHOTO_VERIFIED_COUNT);
+const readRejectedCount = (item) => readCount(item?.photo_rejected_count ?? item?.PHOTO_REJECTED_COUNT);
+
+// Отклонённое фото — красная отметка. «Не проверено»: фото есть, но ни проверенных,
+// ни отклонённых; пока счётчики не пришли (null) строка не попадает ни в одну группу.
+const isRejectedPhoto = (item) => (readRejectedCount(item) || 0) > 0;
+const isUncheckedPhoto = (item) => {
+  const count = readPhotoCount(item);
+  const verified = readVerifiedCount(item);
+  const rejected = readRejectedCount(item);
+  if (!count || count <= 0 || verified === null || rejected === null) return false;
+  return verified === 0 && rejected === 0;
+};
+
+export const filterGroupedByPhoto = (groupedData, mode) => {
+  if (
+    mode !== PHOTO_FILTER_WITHOUT
+    && mode !== PHOTO_FILTER_WITH
+    && mode !== PHOTO_FILTER_REJECTED
+    && mode !== PHOTO_FILTER_UNCHECKED
+  ) return groupedData;
+  const matches = (item) => {
+    if (mode === PHOTO_FILTER_REJECTED) return isRejectedPhoto(item);
+    if (mode === PHOTO_FILTER_UNCHECKED) return isUncheckedPhoto(item);
+    const count = readPhotoCount(item);
+    if (count === null) return false;
+    return mode === PHOTO_FILTER_WITHOUT ? count === 0 : count > 0;
+  };
+
+  const filtered = {};
+  Object.entries(groupedData || {}).forEach(([branchName, locations]) => {
+    const nextLocations = {};
+    Object.entries(locations || {}).forEach(([locationName, items]) => {
+      const kept = (items || []).filter(matches);
+      if (kept.length) nextLocations[locationName] = kept;
+    });
+    if (Object.keys(nextLocations).length) filtered[branchName] = nextLocations;
+  });
+  return filtered;
+};
+
+const emptyPhotoStats = () => ({
+  total: 0, withPhoto: 0, withoutPhoto: 0, unknown: 0, rejected: 0, unchecked: 0,
+});
+
+const addToPhotoStats = (stats, item) => {
+  const count = readPhotoCount(item);
+  stats.total += 1;
+  if (isRejectedPhoto(item)) stats.rejected += 1;
+  if (isUncheckedPhoto(item)) stats.unchecked += 1;
+  if (count === null) stats.unknown += 1;
+  else if (count > 0) stats.withPhoto += 1;
+  else stats.withoutPhoto += 1;
+};
+
+// Counts are taken from the UNFILTERED rows: with "Без фото" on, the same
+// stats would otherwise always read "с фото 0".
+export const buildPhotoStats = (groupedData) => {
+  const overall = emptyPhotoStats();
+  const byBranch = new Map();
+  const byLocation = new Map();
+  Object.entries(groupedData || {}).forEach(([branchName, locations]) => {
+    const branchStats = emptyPhotoStats();
+    Object.entries(locations || {}).forEach(([locationName, items]) => {
+      const locationStats = emptyPhotoStats();
+      (items || []).forEach((item) => {
+        addToPhotoStats(locationStats, item);
+        addToPhotoStats(branchStats, item);
+        addToPhotoStats(overall, item);
+      });
+      byLocation.set(buildLocationKey(branchName, locationName), locationStats);
+    });
+    byBranch.set(branchName, branchStats);
+  });
+  return { overall, byBranch, byLocation };
+};
+
+// Confirmed "no photo" rows in visible list order — the batch photo worklist.
+export const collectItemsWithoutPhoto = (groupedData) => {
+  const result = [];
+  Object.entries(groupedData || {}).forEach(([, locations]) => {
+    Object.keys(locations || {})
+      .sort((a, b) => textCollator.compare(String(a || ''), String(b || '')))
+      .forEach((locationName) => {
+        (locations[locationName] || []).forEach((item) => {
+          if (readPhotoCount(item) === 0) result.push(item);
+        });
+      });
+  });
+  return result;
+};
+
+export const ACT_FILTER_ALL = 'all';
+export const ACT_FILTER_WITH = 'with';
+export const ACT_FILTER_WITHOUT = 'without';
+
+// current_act_available: true/false once the lazy batch answered, null/undefined
+// while unknown — unknown rows never match either act filter.
+export const readActAvailable = (item) => {
+  const raw = item?.current_act_available ?? item?.CURRENT_ACT_AVAILABLE;
+  if (raw === true || raw === 1 || raw === '1' || raw === 'true') return true;
+  if (raw === false || raw === 0 || raw === '0' || raw === 'false') return false;
+  return null;
+};
+
+export const filterGroupedByAct = (groupedData, mode) => {
+  if (mode !== ACT_FILTER_WITH && mode !== ACT_FILTER_WITHOUT) return groupedData;
+  const wanted = mode === ACT_FILTER_WITH;
+  const filtered = {};
+  Object.entries(groupedData || {}).forEach(([branchName, locations]) => {
+    const nextLocations = {};
+    Object.entries(locations || {}).forEach(([locationName, items]) => {
+      const kept = (items || []).filter((item) => readActAvailable(item) === wanted);
+      if (kept.length) nextLocations[locationName] = kept;
+    });
+    if (Object.keys(nextLocations).length) filtered[branchName] = nextLocations;
+  });
+  return filtered;
+};
+
+export const buildActStats = (groupedData) => {
+  const stats = { total: 0, withAct: 0, withoutAct: 0, unknown: 0 };
+  Object.values(groupedData || {}).forEach((locations) => {
+    Object.values(locations || {}).forEach((items) => {
+      (items || []).forEach((item) => {
+        const available = readActAvailable(item);
+        stats.total += 1;
+        if (available === null) stats.unknown += 1;
+        else if (available) stats.withAct += 1;
+        else stats.withoutAct += 1;
+      });
+    });
+  });
+  return stats;
+};
+
 export const buildLocationKey = (branchName, locationName) => `${branchName}::${locationName}`;
 
 export const getVisibleLocationKeys = (displayData, branchNames = getVisibleBranchNames(displayData)) => {

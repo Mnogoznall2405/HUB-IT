@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Box,
   Checkbox,
   IconButton,
   Paper,
@@ -10,10 +11,12 @@ import {
   TableHead,
   TableRow,
   TableSortLabel,
+  Tooltip,
   Typography,
 } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
+import PhotoCameraOutlinedIcon from '@mui/icons-material/PhotoCameraOutlined';
 import QrCode2Icon from '@mui/icons-material/QrCode2';
 import { ActionMenu, StatusChip } from '../../components/common';
 import EmployeeNameLink from './EmployeeNameLink';
@@ -27,14 +30,15 @@ import { readQty } from './databaseRecordModel';
 import { toItemId } from './detailModel';
 import { sortEquipmentItems } from './databaseListModel';
 import EquipmentCurrentActIndicator from './EquipmentCurrentActIndicator';
+import EquipmentPhotoIndicator from './EquipmentPhotoIndicator';
 import { EmployeeCompareBadge, useEmployeeCompare } from './employeeCompareContext';
 
 const TABLE_VIRTUALIZE_THRESHOLD = 40;
 const TABLE_MAX_HEIGHT = 520;
 const TABLE_WIDTHS = {
   consumables: { inv: 140, type: 140, model: 200, qty: 120, actions: 140 },
-  equipment: { select: 56, inv: 120, serial: 110, partNo: 130, type: 120, model: 170, employee: 220, compare: 64, act: 56, status: 110, actions: 56 },
-  equipmentMobile: { inv: 130, employee: 210, compare: 56, act: 56, status: 110, actions: 56 },
+  equipment: { select: 56, inv: 120, serial: 110, partNo: 130, type: 120, model: 170, employee: 220, compare: 64, act: 56, photo: 40, status: 110, actions: 56 },
+  equipmentMobile: { inv: 130, employee: 210, compare: 56, act: 56, photo: 40, status: 110, actions: 56 },
 };
 
 const EquipmentRow = memo(function EquipmentRow({
@@ -236,6 +240,17 @@ const EquipmentRow = memo(function EquipmentRow({
           openingDocNo={openingCurrentActDocNo}
         />
       </TableCell>
+      <TableCell
+        align="center"
+        sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.photo : TABLE_WIDTHS.equipment.photo }}
+      >
+        <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+          <EquipmentPhotoIndicator
+            item={item}
+            onOpen={onAction ? () => onAction('photos', item) : null}
+          />
+        </Box>
+      </TableCell>
       <TableCell sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.status : TABLE_WIDTHS.equipment.status }}>
         <StatusChip
           status={item.DESCR || item.status_name || item.status}
@@ -308,7 +323,7 @@ const EquipmentTable = memo(function EquipmentTable({
   const visibleItems = useVirtualization ? sortedItems.slice(startIndex, endIndex) : sortedItems;
   const topSpacerHeight = useVirtualization ? startIndex * rowHeight : 0;
   const bottomSpacerHeight = useVirtualization ? Math.max(0, (sortedItems.length - endIndex) * rowHeight) : 0;
-  const colSpan = isConsumablesMode ? 5 : (isMobile ? 6 : (allowSelection ? 10 : 9));
+  const colSpan = isConsumablesMode ? 5 : (isMobile ? 7 : (allowSelection ? 11 : 10));
   const tableMinWidth = isConsumablesMode
     ? (TABLE_WIDTHS.consumables.inv
       + TABLE_WIDTHS.consumables.type
@@ -320,6 +335,7 @@ const EquipmentTable = memo(function EquipmentTable({
         + TABLE_WIDTHS.equipmentMobile.employee
         + TABLE_WIDTHS.equipmentMobile.compare
         + TABLE_WIDTHS.equipmentMobile.act
+        + TABLE_WIDTHS.equipmentMobile.photo
         + TABLE_WIDTHS.equipmentMobile.status
         + TABLE_WIDTHS.equipmentMobile.actions)
       : ((allowSelection ? TABLE_WIDTHS.equipment.select : 0)
@@ -331,6 +347,7 @@ const EquipmentTable = memo(function EquipmentTable({
         + TABLE_WIDTHS.equipment.employee
         + TABLE_WIDTHS.equipment.compare
         + TABLE_WIDTHS.equipment.act
+        + TABLE_WIDTHS.equipment.photo
         + TABLE_WIDTHS.equipment.status
         + TABLE_WIDTHS.equipment.actions);
 
@@ -496,6 +513,14 @@ const EquipmentTable = memo(function EquipmentTable({
                   sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.act : TABLE_WIDTHS.equipment.act }}
                 >
                   Акт
+                </TableCell>
+                <TableCell
+                  align="center"
+                  sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.photo : TABLE_WIDTHS.equipment.photo }}
+                >
+                  <Tooltip title="Есть фото" arrow>
+                    <PhotoCameraOutlinedIcon sx={{ fontSize: 18, verticalAlign: 'middle' }} aria-label="Фото" />
+                  </Tooltip>
                 </TableCell>
                 <TableCell sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.status : TABLE_WIDTHS.equipment.status }}>
                   <TableSortLabel

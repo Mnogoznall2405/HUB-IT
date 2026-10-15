@@ -77,6 +77,11 @@ describe('windowsNotifications helper', () => {
       entity_id: 'conv-3',
       message_id: 'msg-9',
     })).toBe('/chat?conversation=conv-3&message=msg-9');
+    expect(getHubNotificationNavigateTo({
+      entity_type: 'equipment_photo',
+      entity_id: 'main:INV-501:42',
+    })).toBe('/database?inv_no=INV-501&tab=photos&db_id=main');
+    expect(getHubNotificationActionLabel({ entity_type: 'equipment_photo' })).toBe('Открыть фото');
     expect(getHubNotificationNavigateTo({ entity_type: 'other', entity_id: 'x' })).toBe('/dashboard');
     expect(getHubNotificationActionLabel({ entity_type: 'task' })).toBe('Открыть задачу');
     expect(getHubNotificationActionLabel({ entity_type: 'announcement' })).toBe('Открыть публикацию');

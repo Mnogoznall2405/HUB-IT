@@ -109,6 +109,7 @@ const permissionGroups = [
       { value: 'database.write', label: 'База: изменения' },
       { value: 'database.delete', label: 'База: удаление расходников' },
       { value: 'database.ad_sync', label: 'База: синхронизация сотрудников из AD' },
+      { value: 'database.photo_verify', label: 'База: проверка фото оборудования' },
       { value: 'mfu.read', label: 'МФУ: просмотр' },
       { value: 'computers.read', label: 'Компьютеры: просмотр' },
       { value: 'computers.read_all', label: 'Компьютеры: просмотр всех БД' },

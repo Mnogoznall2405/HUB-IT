@@ -23,6 +23,8 @@ WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
 if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
+from backend.database import equipment_photos  # noqa: E402
+
 
 class FakeDB:
     def __init__(self, responses=None, exc: Exception | None = None):
@@ -275,6 +277,11 @@ def test_current_acts_endpoint_batches_visible_rows(monkeypatch):
         }
 
     monkeypatch.setattr(equipment_current_act_reads, "lookup_current_acts", fake_lookup)
+    monkeypatch.setattr(
+        equipment_photos,
+        "lookup_equipment_photo_counts",
+        lambda item_ids, db_id=None, *, get_db_fn=None: {11: 3},
+    )
     app, _equipment_api = _equipment_app(monkeypatch)
     client = TestClient(app)
 
@@ -290,7 +297,9 @@ def test_current_acts_endpoint_batches_visible_rows(monkeypatch):
     by_id = {item["item_id"]: item for item in payload["items"]}
     assert by_id[11]["available"] is True
     assert by_id[11]["doc_no"] == 77
+    assert by_id[11]["photo_count"] == 3
     assert by_id[12]["available"] is False
+    assert by_id[12]["photo_count"] == 0
 
 
 def test_current_acts_endpoint_marks_lookup_failure_unknown(monkeypatch):
@@ -303,11 +312,44 @@ def test_current_acts_endpoint_marks_lookup_failure_unknown(monkeypatch):
         "lookup_current_acts",
         lambda item_ids, db_id=None, *, get_db_fn=None: None,
     )
+    monkeypatch.setattr(
+        equipment_photos,
+        "lookup_equipment_photo_counts",
+        lambda item_ids, db_id=None, *, get_db_fn=None: {5: 2},
+    )
     app, _equipment_api = _equipment_app(monkeypatch)
     client = TestClient(app)
 
     payload = client.post("/equipment/current-acts", json={"item_ids": [5]}).json()
+    # A failed act lookup must not hide photos found by the independent lookup.
     assert payload["items"] == [{"item_id": 5, "available": None,
-                                 "doc_no": None, "doc_number": None, "doc_date": None}]
+                                 "doc_no": None, "doc_number": None, "doc_date": None,
+                                 "photo_count": 2, "photo_verified_count": 0,
+                                 "photo_rejected_count": 0}]
     # Empty request is a cheap no-op.
     assert client.post("/equipment/current-acts", json={"item_ids": []}).json() == {"items": []}
+
+
+def test_current_acts_endpoint_marks_photo_lookup_failure_unknown(monkeypatch):
+    """A failed photo lookup reports photo_count=None and keeps act info."""
+    from fastapi.testclient import TestClient
+    from backend.database import equipment_current_act_reads
+
+    monkeypatch.setattr(
+        equipment_current_act_reads,
+        "lookup_current_acts",
+        lambda item_ids, db_id=None, *, get_db_fn=None: {
+            5: {"item_id": 5, "doc_no": 9, "doc_number": "Акт 9", "doc_date": None},
+        },
+    )
+    monkeypatch.setattr(
+        equipment_photos,
+        "lookup_equipment_photo_counts",
+        lambda item_ids, db_id=None, *, get_db_fn=None: None,
+    )
+    app, _equipment_api = _equipment_app(monkeypatch)
+    client = TestClient(app)
+
+    item = client.post("/equipment/current-acts", json={"item_ids": [5]}).json()["items"][0]
+    assert item["available"] is True
+    assert item["photo_count"] is None

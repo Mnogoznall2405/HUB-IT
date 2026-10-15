@@ -19,6 +19,7 @@ import { DATA_MODE_EQUIPMENT, getEquipmentRowActions, toInvNo } from './equipmen
 import { readFirst } from './databaseRecordModel';
 import EmployeeNameLink from './EmployeeNameLink';
 import EquipmentCurrentActIndicator from './EquipmentCurrentActIndicator';
+import EquipmentPhotoIndicator from './EquipmentPhotoIndicator';
 import { EmployeeCompareBadge, useEmployeeCompare } from './employeeCompareContext';
 
 const getEquipmentCardActionMeta = (action) => {
@@ -302,6 +303,8 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
             </Box>
           ) : null}
         </Box>
+
+        <EquipmentPhotoIndicator item={item} onOpen={onAction ? () => onAction('photos', item) : null} />
 
         <EquipmentCurrentActIndicator
           item={item}

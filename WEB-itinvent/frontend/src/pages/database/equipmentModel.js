@@ -206,13 +206,26 @@ export const mergeCurrentActsIntoGrouped = (groupedData, actsByItemId) => {
         const act = itemId == null ? undefined : actsByItemId[itemId] ?? actsByItemId[String(itemId)];
         if (!act) return item;
         changed = true;
-        return {
+        const merged = {
           ...item,
           current_act_available: act.available,
           current_act_doc_no: act.doc_no ?? null,
           current_act_doc_number: act.doc_number ?? null,
           current_act_doc_date: act.doc_date ?? null,
         };
+        // Photo flag rides on the same lazy batch; absent field keeps the row's
+        // value (e.g. a count patched after a photo upload).
+        if (Object.prototype.hasOwnProperty.call(act, 'photo_count')) {
+          merged.photo_count = act.photo_count;
+        }
+        // null = отметка проверки недоступна: не затираем уже известное значение.
+        if (act.photo_verified_count !== null && act.photo_verified_count !== undefined) {
+          merged.photo_verified_count = act.photo_verified_count;
+        }
+        if (act.photo_rejected_count !== null && act.photo_rejected_count !== undefined) {
+          merged.photo_rejected_count = act.photo_rejected_count;
+        }
+        return merged;
       });
       nextLocations[locationName] = changed ? nextItems : items;
     });

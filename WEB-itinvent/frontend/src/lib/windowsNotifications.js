@@ -204,11 +204,25 @@ export function getHubNotificationNavigateTo(item) {
     }
     return `/chat?${query.toString()}`;
   }
+  if (entityType === 'equipment_photo' && entityId) {
+    // entity_id = <db_id>:<inv_no>:<file_no>; карточка открывается на вкладке «Фото».
+    const first = entityId.indexOf(':');
+    const last = entityId.lastIndexOf(':');
+    const dbId = first > 0 ? entityId.slice(0, first) : '';
+    const invNo = last > first ? entityId.slice(first + 1, last) : '';
+    if (invNo) {
+      const query = new URLSearchParams({ inv_no: invNo, tab: 'photos' });
+      if (dbId) query.set('db_id', dbId);
+      return `/database?${query.toString()}`;
+    }
+    return '/database';
+  }
   return '/dashboard';
 }
 
 export function getHubNotificationActionLabel(item) {
   const entityType = String(item?.entity_type || '').trim().toLowerCase();
+  if (entityType === 'equipment_photo') return 'Открыть фото';
   if (entityType === 'task') return 'Открыть задачу';
   if (entityType === 'announcement') return 'Открыть публикацию';
   if (entityType === 'chat') return 'Открыть чат';

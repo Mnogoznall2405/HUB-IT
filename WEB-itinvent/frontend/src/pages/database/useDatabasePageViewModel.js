@@ -305,12 +305,28 @@ export function useDatabasePageViewModel() {
     dialogs.openDetailView(snapshot || invNo, { invNo, loading: !snapshot });
   }, [list.findEquipmentByInvNo, dialogs.openDetailView, list.touchRecentCard]);
 
+  const canPhotoVerify = hasPermission('database.photo_verify');
+
+  // Из очереди проверки фото: карточка открывается сразу на вкладке «Фото».
+  const handleOpenEquipmentFromPhotoReview = useCallback((invNoOrId, options = {}) => {
+    const invNo = String(invNoOrId || '').trim();
+    if (!invNo) return;
+    const snapshot = list.findEquipmentByInvNo?.(invNo) || null;
+    dialogs.openDetailView(snapshot || invNo, {
+      invNo,
+      loading: !snapshot,
+      initialTab: String(options?.initialTab || '').trim() || 'photos',
+    });
+  }, [list.findEquipmentByInvNo, dialogs.openDetailView]);
+
   return {
     ...list,
     ...dialogs,
     ...employee,
     ...adSync,
     ...dbTransfer,
+    canPhotoVerify,
+    handleOpenEquipmentFromPhotoReview,
     canDatabaseWrite,
     canDatabaseDelete,
     canAdSync,

@@ -155,6 +155,7 @@ export function useDatabaseDialogController({
     getLocationsCached,
     getModelsCached,
     setAllEquipment,
+    setFilteredData,
     onRecentActivity: handleDetailRecentActivity,
   });
   const {

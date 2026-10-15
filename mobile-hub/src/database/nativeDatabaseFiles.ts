@@ -58,6 +58,57 @@ export async function downloadEquipmentAct(
   }
 }
 
+function photoCacheExtension(fileName?: string): string {
+  const normalized = String(fileName || '').trim().toLowerCase();
+  const match = normalized.match(/\.(jpe?g|png|gif|webp|bmp)$/);
+  return match ? match[0] : '.jpg';
+}
+
+// После поворота на сервере кэшированные файлы фото (полное и миниатюра) устарели.
+export function invalidateEquipmentPhotoCache(itemId: number, fileNo: number): void {
+  const marker = `-photo-${itemId}-${fileNo}`;
+  try {
+    for (const entry of databaseCacheDirectory().list()) {
+      const name = String(entry.name || '');
+      if (name.includes(`${marker}.`) || name.includes(`${marker}-thumb.`)) entry.delete();
+    }
+  } catch {
+    // Кэш — только оптимизация: не удалось почистить, повторное скачивание перезапишет файл.
+  }
+}
+
+export async function downloadEquipmentPhoto(
+  itemId: number,
+  fileNo: number,
+  options: { thumb?: boolean; fileName?: string; databaseId?: string; rev?: number } = {},
+): Promise<File> {
+  if (Platform.OS !== 'android' && Platform.OS !== 'ios') {
+    throw new Error('Нативное скачивание доступно только в приложении');
+  }
+  if (!Number.isInteger(itemId) || itemId <= 0 || !Number.isInteger(fileNo) || fileNo <= 0) {
+    throw new Error('Некорректный идентификатор фото');
+  }
+  const thumb = Boolean(options.thumb);
+  const sourceUrl = `${API_V1_BASE}/equipment/${encodeURIComponent(String(itemId))}/photos/${encodeURIComponent(String(fileNo))}/content${thumb ? '?thumb=1' : ''}${options.rev && options.rev > 0 ? `${thumb ? '&' : '?'}v=${options.rev}` : ''}`;
+  const destination = await databaseCacheFile(
+    `photo-${itemId}-${fileNo}${thumb ? '-thumb' : ''}${photoCacheExtension(options.fileName)}`,
+  );
+  if (destination.exists && destination.size > 0) return destination;
+  if (destination.exists) destination.delete();
+
+  try {
+    return await downloadAuthenticatedFile(sourceUrl, destination, {
+      idempotent: true,
+      headers: {
+        ...(options.databaseId ? { 'X-Database-ID': String(options.databaseId).trim() } : {}),
+      },
+    });
+  } catch (error) {
+    if (destination.exists) destination.delete();
+    throw error;
+  }
+}
+
 export async function downloadGeneratedTransferAct(
   actId: string,
   options: { fileName?: string; fileType?: 'pdf' | 'docx'; databaseId?: string } = {},

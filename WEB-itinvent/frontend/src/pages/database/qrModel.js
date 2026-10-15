@@ -42,7 +42,7 @@ const parseEquipmentLink = (value) => {
   if (databaseId.length > 100) return null;
 
   const requestedTab = String(parsed.searchParams.get('tab') || '').trim();
-  const tab = ['general', 'acts', 'history', 'warehouse1c'].includes(requestedTab)
+  const tab = ['general', 'acts', 'history', 'warehouse1c', 'photos'].includes(requestedTab)
     ? requestedTab
     : 'general';
 
@@ -132,7 +132,7 @@ export const parseDatabaseQrPayload = (value) => {
       if (!invNo || invNo.length > 200) return null;
 
       const requestedTab = String(parsed.searchParams.get('tab') || '').trim();
-      const tab = ['general', 'acts', 'history', 'warehouse1c'].includes(requestedTab)
+      const tab = ['general', 'acts', 'history', 'warehouse1c', 'photos'].includes(requestedTab)
         ? requestedTab
         : 'general';
       return { kind: 'equipment', itemId: '', invNo, databaseId, tab };

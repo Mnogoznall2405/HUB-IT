@@ -1216,3 +1216,215 @@ export async function recordEquipmentWork({
   });
   return { qty_new };
 }
+
+export type EquipmentPhoto = {
+  file_no: number;
+  file_name: string;
+  description: string;
+  size_mb: number;
+  has_thumb: boolean;
+  created_at: string;
+  created_by: string;
+  // «Проверено»: ставит не загрузивший фото; сервер отдаёт готовые права.
+  verified?: boolean;
+  verified_by?: string;
+  verified_at?: string | null;
+  can_verify?: boolean;
+  can_unverify?: boolean;
+  // «Отклонено»: причина обязательна и видна всем.
+  rejected?: boolean;
+  rejected_by?: string;
+  rejected_at?: string | null;
+  reject_reason?: string;
+  can_reject?: boolean;
+  // Фото загрузил текущий пользователь: проверять его нельзя.
+  is_own?: boolean;
+  // false, пока на сервере нет таблицы отметок (миграция не применена).
+  verification_available?: boolean;
+  // У пользователя есть отдельное право database.photo_verify.
+  verify_permitted?: boolean;
+};
+
+export type EquipmentPhotoFile = {
+  uri: string;
+  name: string;
+  mimeType: string;
+};
+
+export async function listEquipmentPhotos(itemId: number, databaseId?: string): Promise<EquipmentPhoto[]> {
+  const normalized = asNumber(itemId);
+  if (!normalized || normalized <= 0) throw new Error('Некорректный идентификатор оборудования');
+  const { data } = await apiClient.get(
+    `/equipment/${encodeURIComponent(String(normalized))}/photos`,
+    databaseHeaders(databaseId),
+  );
+  const rows = Array.isArray(asRecord(data).photos) ? asRecord(data).photos as unknown[] : [];
+  const verificationAvailable = asBoolean(asRecord(data).verification_available);
+  const verifyPermitted = asBoolean(asRecord(data).verify_permitted);
+  return rows.flatMap((value) => {
+    const row = asRecord(value);
+    const fileNo = asNumber(row.file_no);
+    if (!fileNo || fileNo <= 0) return [];
+    return [{
+      file_no: fileNo,
+      file_name: asText(row.file_name),
+      description: asText(row.description),
+      size_mb: asNumber(row.size_mb) ?? 0,
+      has_thumb: asBoolean(row.has_thumb),
+      created_at: asText(row.created_at),
+      created_by: asText(row.created_by),
+      verified: asBoolean(row.verified),
+      verified_by: asText(row.verified_by),
+      verified_at: asText(row.verified_at) || null,
+      can_verify: asBoolean(row.can_verify),
+      can_unverify: asBoolean(row.can_unverify),
+      rejected: asBoolean(row.rejected),
+      rejected_by: asText(row.rejected_by),
+      rejected_at: asText(row.rejected_at) || null,
+      reject_reason: asText(row.reject_reason),
+      can_reject: asBoolean(row.can_reject),
+      is_own: asBoolean(row.is_own),
+      verification_available: verificationAvailable,
+      verify_permitted: verifyPermitted,
+    }];
+  });
+}
+
+export type EquipmentPhotoVerification = {
+  verified: boolean;
+  verified_by: string;
+  verified_at: string | null;
+};
+
+function photoVerifyUrl(itemId: number, fileNo: number): string {
+  const normalizedItem = asNumber(itemId);
+  const normalizedFile = asNumber(fileNo);
+  if (!normalizedItem || normalizedItem <= 0 || !normalizedFile || normalizedFile <= 0) {
+    throw new Error('Некорректный идентификатор фото');
+  }
+  return `/equipment/${encodeURIComponent(String(normalizedItem))}/photos/${encodeURIComponent(String(normalizedFile))}/verify`;
+}
+
+// Подтвердить фото может любой пользователь с правом записи, кроме загрузившего (403 с сервера).
+export async function verifyEquipmentPhoto(
+  itemId: number,
+  fileNo: number,
+  databaseId?: string,
+): Promise<EquipmentPhotoVerification> {
+  const { data } = await apiClient.post(photoVerifyUrl(itemId, fileNo), null, databaseHeaders(databaseId));
+  const row = asRecord(data);
+  return {
+    verified: asBoolean(row.verified),
+    verified_by: asText(row.verified_by),
+    verified_at: asText(row.verified_at) || null,
+  };
+}
+
+export type EquipmentPhotoRejection = {
+  rejected: boolean;
+  rejected_by: string;
+  rejected_at: string | null;
+  reject_reason: string;
+};
+
+// Отклонить может проверяющий (не загрузивший); причина обязательна.
+export async function rejectEquipmentPhoto(
+  itemId: number,
+  fileNo: number,
+  reason: string,
+  databaseId?: string,
+): Promise<EquipmentPhotoRejection> {
+  const { data } = await apiClient.post(
+    photoVerifyUrl(itemId, fileNo).replace(/\/verify$/, '/reject'),
+    { reason },
+    databaseHeaders(databaseId),
+  );
+  const row = asRecord(data);
+  return {
+    rejected: asBoolean(row.rejected),
+    rejected_by: asText(row.rejected_by),
+    rejected_at: asText(row.rejected_at) || null,
+    reject_reason: asText(row.reject_reason),
+  };
+}
+
+// Правка текста причины у уже отклонённого фото (отклонивший или админ).
+export async function updateEquipmentPhotoRejectReason(
+  itemId: number,
+  fileNo: number,
+  reason: string,
+  databaseId?: string,
+): Promise<EquipmentPhotoRejection> {
+  const { data } = await apiClient.patch(
+    photoVerifyUrl(itemId, fileNo).replace(/\/verify$/, '/reject'),
+    { reason },
+    databaseHeaders(databaseId),
+  );
+  const row = asRecord(data);
+  return {
+    rejected: asBoolean(row.rejected),
+    rejected_by: asText(row.rejected_by),
+    rejected_at: asText(row.rejected_at) || null,
+    reject_reason: asText(row.reject_reason),
+  };
+}
+
+// Поворот сохранённого фото на сервере (виден везде); degrees: 90, 180 или 270 по часовой.
+export async function rotateEquipmentPhoto(
+  itemId: number,
+  fileNo: number,
+  degrees: number,
+  databaseId?: string,
+): Promise<void> {
+  await apiClient.post(
+    photoVerifyUrl(itemId, fileNo).replace(/\/verify$/, '/rotate'),
+    { degrees },
+    databaseHeaders(databaseId),
+  );
+}
+
+export async function unverifyEquipmentPhoto(
+  itemId: number,
+  fileNo: number,
+  databaseId?: string,
+): Promise<void> {
+  await apiClient.delete(photoVerifyUrl(itemId, fileNo), databaseHeaders(databaseId));
+}
+
+export async function uploadEquipmentPhoto(
+  itemId: number,
+  file: EquipmentPhotoFile,
+  databaseId?: string,
+): Promise<number> {
+  const normalized = asNumber(itemId);
+  if (!normalized || normalized <= 0) throw new Error('Некорректный идентификатор оборудования');
+  const formData = new FormData();
+  formData.append('file', {
+    uri: file.uri,
+    name: asText(file.name) || 'photo.jpg',
+    type: asText(file.mimeType) || 'image/jpeg',
+  } as unknown as Blob);
+  const scoped = databaseHeaders(databaseId);
+  const { data } = await apiClient.post(
+    `/equipment/${encodeURIComponent(String(normalized))}/photos`,
+    formData,
+    { headers: { ...scoped?.headers } },
+  );
+  return asNumber(asRecord(data).file_no) ?? 0;
+}
+
+export async function deleteEquipmentPhoto(
+  itemId: number,
+  fileNo: number,
+  databaseId?: string,
+): Promise<void> {
+  const normalizedItem = asNumber(itemId);
+  const normalizedFile = asNumber(fileNo);
+  if (!normalizedItem || normalizedItem <= 0 || !normalizedFile || normalizedFile <= 0) {
+    throw new Error('Некорректный идентификатор фото');
+  }
+  await apiClient.delete(
+    `/equipment/${encodeURIComponent(String(normalizedItem))}/photos/${encodeURIComponent(String(normalizedFile))}`,
+    databaseHeaders(databaseId),
+  );
+}

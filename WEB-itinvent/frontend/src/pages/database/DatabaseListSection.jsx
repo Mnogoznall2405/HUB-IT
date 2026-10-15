@@ -1,4 +1,4 @@
-import { Box, CircularProgress, Typography } from '@mui/material';
+import { Box, Button, CircularProgress, Typography } from '@mui/material';
 
 import { countGroupedItems } from './databaseListModel';
 
@@ -22,6 +22,9 @@ export default function DatabaseListSection({
   serverTotal,
   nextEquipmentPage,
   equipmentPagesTotal,
+  photoFilterActive = false,
+  canLoadMoreManually = false,
+  onLoadMore = null,
 }) {
   return (
     <Box
@@ -44,17 +47,31 @@ export default function DatabaseListSection({
         <>
           {dataSections || (
             employeeFallbackActive ? null :
-            !selectedBranch ? (
+            (!selectedBranch && !photoFilterActive) ? (
               <Box sx={{ textAlign: 'center', py: 8 }}>
                 <Typography color="text.secondary">Выберите филиал</Typography>
               </Box>
             ) : (
               <Box sx={{ textAlign: 'center', py: 8 }}>
-                <Typography color="text.secondary">Нет данных</Typography>
+                <Typography color="text.secondary">
+                  {photoFilterActive ? 'Среди загруженных строк нет подходящей техники' : 'Нет данных'}
+                </Typography>
               </Box>
             )
           )}
-          {canAutoLoadMoreEquipment && (
+          {photoFilterActive && canLoadMoreManually && onLoadMore && (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={onLoadMore}
+                disabled={isServerSearchActive ? searchLoadingMore : loadingMoreEquipment}
+              >
+                Загрузить ещё
+              </Button>
+            </Box>
+          )}
+          {canAutoLoadMoreEquipment && !photoFilterActive && (
             <Box
               ref={loadMoreSentinelRef}
               data-testid="equipment-load-more-sentinel"

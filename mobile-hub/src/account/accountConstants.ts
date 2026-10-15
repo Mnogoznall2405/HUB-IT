@@ -65,6 +65,7 @@ export const SETTINGS_PERMISSION_GROUPS: PermissionGroup[] = [
       { value: 'database.read', label: 'База: просмотр' },
       { value: 'database.write', label: 'База: изменения' },
       { value: 'database.delete', label: 'База: удаление расходников' },
+      { value: 'database.photo_verify', label: 'База: проверка фото оборудования' },
       { value: 'mfu.read', label: 'МФУ: просмотр' },
       { value: 'computers.read', label: 'Компьютеры: просмотр' },
       { value: 'computers.read_all', label: 'Компьютеры: просмотр всех БД' },

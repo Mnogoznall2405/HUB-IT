@@ -28,6 +28,11 @@ describe('native notification center model', () => {
       .resolves.toBe('/dashboard');
     await expect(hubNotificationPortalPath({ id: '5', entity_type: 'docflow', entity_id: 'task-1' }))
       .resolves.toBe('/docflow?task=task-1');
+    await expect(hubNotificationPortalPath({
+      id: '6',
+      entity_type: 'equipment_photo',
+      entity_id: 'main:INV-501:42',
+    })).resolves.toBe('/database?inv_no=INV-501&tab=photos&db_id=main');
   });
 
   it('routes AI chat notifications into the ИИ workspace from the payload kind', async () => {

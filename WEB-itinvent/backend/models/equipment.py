@@ -43,6 +43,18 @@ class EquipmentBase(BaseModel):
     current_act_doc_no: Optional[int] = Field(None, description="Current act DOC_NO")
     current_act_doc_number: Optional[str] = Field(None, description="Current act display number")
     current_act_doc_date: Optional[datetime] = Field(None, description="Current act document date")
+    photo_count: Optional[int] = Field(
+        None,
+        description="Photos attached to the card; None when unknown (lookup failed or not requested)",
+    )
+    photo_verified_count: Optional[int] = Field(
+        None,
+        description="Verified photos of the card; None when unknown (check store unavailable)",
+    )
+    photo_rejected_count: Optional[int] = Field(
+        None,
+        description="Rejected photos of the card; None when unknown (check store unavailable)",
+    )
 
 
 class EmployeeSummary(BaseModel):
@@ -140,6 +152,18 @@ class EquipmentCurrentActItem(BaseModel):
     doc_no: Optional[Any] = None
     doc_number: Optional[Any] = None
     doc_date: Optional[Any] = None
+    photo_count: Optional[int] = Field(
+        None,
+        description="Photos attached to the card; None when the photo lookup failed (unknown)",
+    )
+    photo_verified_count: Optional[int] = Field(
+        None,
+        description="Verified photos of the card; None when the check lookup failed (unknown)",
+    )
+    photo_rejected_count: Optional[int] = Field(
+        None,
+        description="Rejected photos of the card; None when the check lookup failed (unknown)",
+    )
 
 
 class EquipmentCurrentActsResponse(BaseModel):
@@ -572,3 +596,186 @@ class UploadedActEmailSendResponse(BaseModel):
     recipients: List[UploadedActEmailRecipientStatus] = Field(
         default_factory=list, description="Per-recipient statuses"
     )
+
+
+class EquipmentPhotoItem(BaseModel):
+    """Photo metadata for one FILES row attached to an equipment card."""
+    file_no: int = Field(..., description="FILES.FILE_NO")
+    file_name: str = Field("", description="Original file name")
+    description: str = Field("", description="Photo description (FILE_DESCR)")
+    size_mb: float = Field(0.0, description="File size in megabytes")
+    has_thumb: bool = Field(False, description="Whether FILE_SMALL_IMAGE_DATA exists")
+    created_at: str = Field("", description="Upload timestamp")
+    created_by: str = Field("", description="Uploader display name")
+    verified: bool = Field(False, description="Photo was checked by someone other than the uploader")
+    verified_by: str = Field("", description="Who verified the photo")
+    verified_at: Optional[str] = Field(None, description="When the photo was verified (ISO)")
+    can_verify: bool = Field(
+        False, description="The current user may verify it (not verified yet and not their own upload)"
+    )
+    can_unverify: bool = Field(
+        False, description="The current user may withdraw the mark (the one who set it or an administrator)"
+    )
+    rejected: bool = Field(False, description="Photo was rejected by someone other than the uploader")
+    rejected_by: str = Field("", description="Who rejected the photo")
+    rejected_at: Optional[str] = Field(None, description="When the photo was rejected (ISO)")
+    reject_reason: str = Field("", description="Why the photo was rejected")
+    can_reject: bool = Field(
+        False, description="The current user may reject it (not rejected yet and not their own upload)"
+    )
+    is_own: bool = Field(False, description="The current user uploaded this photo")
+    ocr_verdict: str = Field(
+        "",
+        description="Serial read from the photo vs the item serial: match | similar | mismatch | "
+        "label_no_serial | unreadable | no_label | '' (not analysed)",
+    )
+    ocr_serials: List[str] = Field(default_factory=list, description="Serial candidates read from the photo")
+
+
+class EquipmentPhotoOcrRun(BaseModel):
+    """State of the (background) photo recognition batch."""
+    running: bool = False
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    planned: int = 0
+    done: int = 0
+    errors: int = 0
+    tokens_in: int = 0
+    tokens_out: int = 0
+
+
+class EquipmentPhotoOcrSummary(BaseModel):
+    enabled: bool = False
+    configured: bool = False
+    store_available: bool = False
+    model: str = ""
+    photos_total: Optional[int] = None
+    analyzed: int = 0
+    pending: Optional[int] = None
+    items_confirmed: int = 0
+    items_similar: int = 0
+    items_mismatch: int = 0
+    run: EquipmentPhotoOcrRun = Field(default_factory=EquipmentPhotoOcrRun)
+
+
+class EquipmentPhotoOcrRunRequest(BaseModel):
+    limit: int = Field(100, ge=1, le=1000, description="How many photos to recognise in this run")
+
+
+class EquipmentPhotoOcrRunResponse(BaseModel):
+    started: bool
+    reason: str = ""
+
+
+class EquipmentPhotoRejectRequest(BaseModel):
+    """Reason is mandatory: the uploader has to know what to fix."""
+    reason: str = Field(..., min_length=1, max_length=500, description="Why the photo is not accepted")
+
+
+class EquipmentPhotoRotateRequest(BaseModel):
+    """Clockwise rotation; 270 is a quarter turn counter-clockwise."""
+    degrees: int = Field(..., description="90, 180 or 270 (clockwise)")
+
+
+class EquipmentPhotoListResponse(BaseModel):
+    """List of photos attached to an equipment card."""
+    item_id: int = Field(..., description="ITEMS.ID")
+    photos: List[EquipmentPhotoItem] = Field(default_factory=list)
+    verification_available: bool = Field(
+        False, description="False until the photo check table exists (migration not applied)"
+    )
+    verify_permitted: bool = Field(
+        False, description="The current user holds database.photo_verify"
+    )
+    serial_confirmed_by_photo: bool = Field(
+        False, description="A label photo of the item reads exactly as the recorded serial"
+    )
+    ocr_available: bool = Field(False, description="Photo recognition results exist / can be read")
+
+
+class EquipmentPhotoReviewItem(BaseModel):
+    """One row of the photo review queue (a rejected or not yet checked photo)."""
+    status: str = Field(..., description="rejected | unchecked")
+    item_id: int
+    file_no: int
+    inv_no: str = ""
+    model_name: str = ""
+    serial_no: str = ""
+    employee_name: str = ""
+    branch_name: str = ""
+    location_name: str = ""
+    created_at: str = ""
+    created_by: str = ""
+    uploaded_by_name: str = ""
+    rejected_by: str = ""
+    rejected_at: Optional[str] = None
+    reject_reason: str = ""
+    is_own: bool = False
+    uploaded_by_me: bool = False
+
+
+class EquipmentPhotoReviewResponse(BaseModel):
+    status: str
+    items: List[EquipmentPhotoReviewItem] = Field(default_factory=list)
+    total: int = 0
+    offset: int = 0
+    limit: int = 0
+    reject_supported: bool = True
+    scan_capped: bool = False
+    since_days: int = 30
+
+
+class EquipmentPhotoReviewSummary(BaseModel):
+    rejected: int = 0
+    unchecked: int = 0
+    mine_rejected: int = 0
+    reject_supported: bool = True
+    scan_capped: bool = False
+    since_days: int = 30
+
+
+class EquipmentQualityRule(BaseModel):
+    """One data-quality rule tile; count/pct are null when the rule could not be computed."""
+    rule: str
+    title: str
+    description: str = ""
+    severity: str = "warning"
+    count: Optional[int] = None
+    total: int = 0
+    pct: Optional[float] = None
+    status: str = "ok"
+
+
+class EquipmentQualitySummary(BaseModel):
+    rules: List[EquipmentQualityRule] = Field(default_factory=list)
+    total: int = 0
+    as_of: str = ""
+    cached: bool = False
+
+
+class EquipmentQualityIssue(BaseModel):
+    item_id: int
+    inv_no: str = ""
+    serial_no: str = ""
+    type_name: str = ""
+    model_name: str = ""
+    employee_name: str = ""
+    branch_name: str = ""
+    location_name: str = ""
+    note: str = ""
+
+
+class EquipmentQualityIssuesResponse(BaseModel):
+    rule: str
+    items: List[EquipmentQualityIssue] = Field(default_factory=list)
+    total: int = 0
+    offset: int = 0
+    limit: int = 0
+    status: str = "ok"
+
+
+class EquipmentPhotoUploadResponse(BaseModel):
+    """Result of a photo upload into FILES."""
+    file_no: int = Field(..., description="Created FILES.FILE_NO")
+    item_id: int = Field(..., description="ITEMS.ID")
+    file_name: str = Field("", description="Stored file name")

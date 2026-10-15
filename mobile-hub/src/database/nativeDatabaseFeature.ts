@@ -56,8 +56,8 @@ export function nativeDatabaseDestinationFromPortalPath(path: string): NativeDat
     };
   }
   const tabValue = firstParam(parsed.searchParams, ['tab']);
-  if (tabValue && !['general', 'works', 'acts', 'history'].includes(tabValue)) return null;
-  const tab: EquipmentDetailTab | undefined = ['general', 'works', 'acts', 'history'].includes(tabValue)
+  if (tabValue && !['general', 'works', 'acts', 'photos', 'history'].includes(tabValue)) return null;
+  const tab: EquipmentDetailTab | undefined = ['general', 'works', 'acts', 'photos', 'history'].includes(tabValue)
     ? tabValue as EquipmentDetailTab
     : undefined;
   if (invNo) {

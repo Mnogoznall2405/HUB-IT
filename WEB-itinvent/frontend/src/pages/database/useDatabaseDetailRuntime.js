@@ -16,7 +16,7 @@ import {
   buildLocationOptions,
   getSelectedOwnerOption,
 } from './databaseOptionModel';
-import { toInvNo, upsertItemInGrouped } from './equipmentModel';
+import { toInvNo, updateItemFieldsInGrouped, upsertItemInGrouped } from './equipmentModel';
 import { buildEquipmentQrDataUrl, buildEquipmentQrLink } from './qrModel';
 import {
   ACT_DOC_NO_ERROR,
@@ -63,6 +63,7 @@ export function useDatabaseDetailRuntime({
   getLocationsCached,
   getModelsCached,
   setAllEquipment,
+  setFilteredData,
   onRecentActivity,
 } = {}) {
   const [detailModal, setDetailModal] = useState({ open: false, data: null, loading: false, invNo: null });
@@ -595,6 +596,33 @@ export function useDatabaseDetailRuntime({
     }
   }, [detailModal?.invNo, openActFile]);
 
+  // Photos tab reports the real count after load/upload/delete: patch the list
+  // row in place so the "has photo" mark stays right without a refetch.
+  // verifiedCount: null/undefined — отметка «проверено» недоступна, строку не трогаем.
+  const handlePhotoCountChange = useCallback((count, verifiedCount, rejectedCount) => {
+    const invNo = String(detailModal?.invNo || '').trim();
+    const nextCount = Number(count);
+    if (!invNo || !Number.isFinite(nextCount)) return;
+    const nextVerified = verifiedCount === null || verifiedCount === undefined
+      ? null
+      : Number(verifiedCount);
+    const current = findEquipmentByInvNo?.(invNo);
+    const verifiedKnown = nextVerified !== null && Number.isFinite(nextVerified);
+    const nextRejected = rejectedCount === null || rejectedCount === undefined ? null : Number(rejectedCount);
+    const rejectedKnown = nextRejected !== null && Number.isFinite(nextRejected);
+    if (
+      current
+      && Number(current.photo_count) === nextCount
+      && (!verifiedKnown || Number(current.photo_verified_count) === nextVerified)
+      && (!rejectedKnown || Number(current.photo_rejected_count) === nextRejected)
+    ) return;
+    const patch = { photo_count: nextCount };
+    if (verifiedKnown) patch.photo_verified_count = nextVerified;
+    if (rejectedKnown) patch.photo_rejected_count = nextRejected;
+    setAllEquipment?.((prev) => updateItemFieldsInGrouped(prev, invNo, patch));
+    setFilteredData?.((prev) => (prev == null ? prev : updateItemFieldsInGrouped(prev, invNo, patch)));
+  }, [detailModal?.invNo, findEquipmentByInvNo, setAllEquipment, setFilteredData]);
+
   const handleOpenActFields = useCallback((act) => {
     setDetailActSelected(act || null);
     setDetailActFieldsOpen(true);
@@ -680,6 +708,7 @@ export function useDatabaseDetailRuntime({
     handleDetailSave,
     handleDetailEditKeyDown,
     handleOpenEquipmentActFile,
+    handlePhotoCountChange,
     handleOpenActFields,
     handleCloseActFields,
   };

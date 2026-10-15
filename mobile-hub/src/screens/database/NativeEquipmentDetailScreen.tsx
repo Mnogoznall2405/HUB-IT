@@ -44,6 +44,7 @@ import { NativeCopyableField, copyIconHitSlop, copyNativeFieldValue } from '../.
 import { NativeEquipmentActCard } from '../../components/database/NativeEquipmentActCard';
 import { NativeEquipmentActions, type NativeEquipmentActionsHandle } from '../../components/database/NativeEquipmentActions';
 import { NativeEquipmentOptionPicker, type NativeEquipmentPickerOption } from '../../components/database/NativeEquipmentOptionPicker';
+import { NativeEquipmentPhotosSection } from '../../components/database/NativeEquipmentPhotosSection';
 import { NativeEquipmentDescriptionField, NativeEquipmentSection } from '../../components/database/NativeEquipmentSection';
 import { NativeEquipmentWorkHistoryCard } from '../../components/database/NativeEquipmentWorkHistoryCard';
 import { NativeToastHost } from '../../components/nativeToast';
@@ -88,7 +89,7 @@ function first(value: string | string[] | undefined): string {
 }
 
 function asDetailTab(value: string): EquipmentDetailTab {
-  return value === 'works' || value === 'acts' || value === 'history' ? value : 'general';
+  return value === 'works' || value === 'acts' || value === 'photos' || value === 'history' ? value : 'general';
 }
 
 function statusToneColor(tone: EquipmentStatusTone, tokens: ReturnType<typeof useFluentTokens>): string {
@@ -156,6 +157,7 @@ function EquipmentDetailContent() {
   const [ownerOptions, setOwnerOptions] = useState<EquipmentOwnerOption[]>([]);
   const [employeeCompareOpen, setEmployeeCompareOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [photosReloadKey, setPhotosReloadKey] = useState(0);
   const actionsRef = useRef<NativeEquipmentActionsHandle>(null);
 
   const applyCachedDetail = useCallback((snapshot: NativeEquipmentDetailSnapshot) => {
@@ -275,7 +277,7 @@ function EquipmentDetailContent() {
   }, [loadEquipment]);
 
   const loadTab = useCallback(async (target: EquipmentDetailTab, force = false, silent = false) => {
-    if (!invNo || target === 'general' || (target === 'works' && !equipment) || (!force && loadedTabs.has(target))) return;
+    if (!invNo || target === 'general' || target === 'photos' || (target === 'works' && !equipment) || (!force && loadedTabs.has(target))) return;
     const lease = requestRef.current;
     const tabLease = (tabRequests.current.get(target) || 0) + 1;
     tabRequests.current.set(target, tabLease);
@@ -386,7 +388,8 @@ function EquipmentDetailContent() {
 
   const refresh = useCallback(async () => {
     await loadEquipment(true);
-    if (tab !== 'general') await loadTab(tab, true);
+    if (tab === 'photos') setPhotosReloadKey((value) => value + 1);
+    else if (tab !== 'general') await loadTab(tab, true);
   }, [loadEquipment, loadTab, tab]);
 
   const openActFile = useCallback(async (act: EquipmentAct) => {
@@ -731,7 +734,7 @@ function EquipmentDetailContent() {
           </View>
 
           <View style={[styles.tabs, { backgroundColor: tokens.panelInset }]} accessibilityRole="tablist">
-            {(['general', 'works', 'acts', 'history'] as const).map((value) => {
+            {(['general', 'works', 'acts', 'photos', 'history'] as const).map((value) => {
               const selected = tab === value;
               const label = value === 'general'
                 ? 'Карточка'
@@ -739,7 +742,9 @@ function EquipmentDetailContent() {
                   ? 'Работы'
                   : value === 'acts'
                     ? `Акты${loadedTabs.has('acts') ? ` ${acts.length}` : ''}`
-                    : `История${loadedTabs.has('history') ? ` ${history.length}` : ''}`;
+                    : value === 'photos'
+                      ? 'Фото'
+                      : `История${loadedTabs.has('history') ? ` ${history.length}` : ''}`;
               return (
                 <Pressable
                   key={value}
@@ -924,6 +929,20 @@ function EquipmentDetailContent() {
                     onDeleted={goBack}
                   />
                 </View>
+              ) : null}
+              {!tabLoading && tab === 'photos' ? (
+                Number(equipment.id) > 0 ? (
+                  <NativeEquipmentPhotosSection
+                    itemId={Number(equipment.id)}
+                    databaseId={databaseId}
+                    canWrite={canWrite}
+                    offline={offlineMode}
+                    tokens={tokens}
+                    reloadKey={photosReloadKey}
+                  />
+                ) : (
+                  <EmptyTab tokens={tokens} label="Идентификатор оборудования недоступен — фотографии не загружены." onRetry={() => { void loadEquipment(true); }} />
+                )
               ) : null}
               {!tabLoading && tab === 'history' ? (
                 history.length ? history.map((row, index) => (

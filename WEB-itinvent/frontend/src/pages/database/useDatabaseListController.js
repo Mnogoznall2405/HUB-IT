@@ -11,8 +11,15 @@ import {
 } from './equipmentModel';
 import { normalizeDbId } from './databaseRecordModel';
 import {
+  ACT_FILTER_ALL,
+  PHOTO_FILTER_ALL,
+  buildActStats,
   buildEquipmentIndex,
+  buildPhotoStats,
+  collectItemsWithoutPhoto,
   countGroupedItems,
+  filterGroupedByAct,
+  filterGroupedByPhoto,
   getVisibleBranchNames,
 } from './databaseListModel';
 import {
@@ -304,7 +311,33 @@ export function useDatabaseListController({
     };
   }, [applyPersistedBranchForDatabase, branches, dbName]);
 
-  const displayData = filteredData !== null ? filteredData : equipment;
+  // «Без фото» / «С фото»: клиентский фильтр поверх уже загруженных строк.
+  // Только режим оборудования — у расходников photo_count нет вовсе.
+  const [photoFilter, setPhotoFilter] = useState(PHOTO_FILTER_ALL);
+  const [actFilter, setActFilter] = useState(ACT_FILTER_ALL);
+  const photoFilterActive = !isConsumablesMode && photoFilter !== PHOTO_FILTER_ALL;
+  const actFilterActive = !isConsumablesMode && actFilter !== ACT_FILTER_ALL;
+  const listFilterActive = photoFilterActive || actFilterActive;
+  const baseDisplayData = filteredData !== null ? filteredData : equipment;
+  const displayData = useMemo(() => {
+    let next = baseDisplayData;
+    if (photoFilterActive) next = filterGroupedByPhoto(next, photoFilter);
+    if (actFilterActive) next = filterGroupedByAct(next, actFilter);
+    return next;
+  }, [actFilter, actFilterActive, baseDisplayData, photoFilter, photoFilterActive]);
+  // Статистика и очередь берутся из НЕфильтрованных данных.
+  const photoStats = useMemo(
+    () => (isConsumablesMode ? null : buildPhotoStats(baseDisplayData)),
+    [baseDisplayData, isConsumablesMode],
+  );
+  const actStats = useMemo(
+    () => (isConsumablesMode ? null : buildActStats(baseDisplayData)),
+    [baseDisplayData, isConsumablesMode],
+  );
+  const photoWorklist = useMemo(
+    () => (isConsumablesMode ? [] : collectItemsWithoutPhoto(baseDisplayData)),
+    [baseDisplayData, isConsumablesMode],
+  );
   const hubSearchEmpty = Boolean(
     filteredData !== null
     && Object.keys(filteredData || {}).length === 0,
@@ -315,8 +348,10 @@ export function useDatabaseListController({
   const canAutoLoadMoreEquipment = isServerSearchActive
     ? searchHasMore
     : Boolean(nextEquipmentPage) && !modeLoading;
+  // С включённым фильтром список короткий и «сторож» всегда виден — автоподгрузка
+  // перетянула бы все страницы (каждая — тяжёлый запрос). Догружаем вручную.
   const equipmentLoadMoreSentinelRef = useDatabaseEquipmentInfiniteScroll({
-    enabled: canAutoLoadMoreEquipment,
+    enabled: canAutoLoadMoreEquipment && !listFilterActive,
     hasMore: isServerSearchActive ? searchHasMore : Boolean(nextEquipmentPage),
     loading: isServerSearchActive ? searchLoadingMore : loadingMoreEquipment,
     nextPage: isServerSearchActive ? null : nextEquipmentPage,
@@ -326,6 +361,9 @@ export function useDatabaseListController({
       ? loadMoreSearchResults
       : () => equipmentData.loadMoreEquipmentPages({ maxPages: 1 }),
   });
+  const loadMoreNow = isServerSearchActive
+    ? loadMoreSearchResults
+    : () => equipmentData.loadMoreEquipmentPages({ maxPages: 1 });
   const visibleBranchNames = useMemo(() => getVisibleBranchNames(displayData), [displayData]);
 
   // Create index Map for O(1) search instead of O(n)
@@ -559,6 +597,16 @@ export function useDatabaseListController({
     isConsumablesMode,
     isActsScope,
     displayData,
+    photoFilter,
+    setPhotoFilter,
+    photoFilterActive,
+    photoStats,
+    actFilter,
+    setActFilter,
+    actStats,
+    listFilterActive,
+    photoWorklist,
+    loadMoreNow,
     hubSearchEmpty,
     isServerSearchActive,
     canAutoLoadMoreEquipment,
