@@ -12,6 +12,7 @@ import {
 const QR_READER_ELEMENT_ID = 'qr-reader';
 const QR_INVALID_INV_MESSAGE = 'Не удалось распознать инвентарный номер в QR-коде.';
 const CAMERA_PROMPT_TIMEOUT_MS = 20000;
+const SAME_CODE_DELAY_MS = 1500;
 
 const noop = () => {};
 
@@ -50,7 +51,7 @@ const requestCameraAccess = async () => {
   }
 };
 
-const buildQrLookupErrorMessage = (error, invNo) => {
+export const buildQrLookupErrorMessage = (error, invNo) => {
   const statusCode = Number(error?.response?.status || 0);
   const apiDetail = error?.response?.data?.detail;
 
@@ -65,7 +66,7 @@ const buildQrLookupErrorMessage = (error, invNo) => {
   return `Не удалось открыть оборудование с инв. № "${invNo}".`;
 };
 
-const buildConsumableLookupErrorMessage = (error, itemId) => {
+export const buildConsumableLookupErrorMessage = (error, itemId) => {
   const statusCode = Number(error?.response?.status || 0);
   const apiDetail = error?.response?.data?.detail;
 
@@ -86,22 +87,39 @@ export const useDatabaseQrScanner = ({
   notifyDatabaseError = noop,
   scannerElementId = QR_READER_ELEMENT_ID,
   autoStart = true,
+  // Pairing mode: scanner stays open and emits raw payloads via onPayload —
+  // the caller resolves records and decides when the pair is complete.
+  continuous = false,
+  onPayload = null,
 } = {}) => {
   const qrScannerRef = useRef(null);
   const qrScanProcessingRef = useRef(false);
+  // Refs keep the latest values readable inside the camera callback without
+  // restarting the Html5Qrcode effect on every state change.
+  const continuousRef = useRef(continuous);
+  continuousRef.current = continuous;
+  const onPayloadRef = useRef(onPayload);
+  onPayloadRef.current = onPayload;
+  const lastScanRef = useRef({ data: '', at: 0 });
   const [qrScannerOpen, setQrScannerOpen] = useState(false);
   const [qrScannerResult, setQrScannerResult] = useState('');
   const [qrScannerError, setQrScannerError] = useState('');
   const [qrScannerLoading, setQrScannerLoading] = useState(false);
   const [qrScannerReady, setQrScannerReady] = useState(false);
   const [scannerRestartToken, setScannerRestartToken] = useState(0);
+  // Фонарик есть не у каждой камеры/браузера: кнопка появляется, только если он поддержан.
+  const [qrScannerTorchSupported, setQrScannerTorchSupported] = useState(false);
+  const [qrScannerTorchOn, setQrScannerTorchOn] = useState(false);
 
   const resetScannerState = useCallback(() => {
     qrScanProcessingRef.current = false;
+    lastScanRef.current = { data: '', at: 0 };
     setQrScannerResult('');
     setQrScannerError('');
     setQrScannerLoading(false);
     setQrScannerReady(false);
+    setQrScannerTorchSupported(false);
+    setQrScannerTorchOn(false);
   }, []);
 
   const openQrScanner = useCallback(() => {
@@ -120,6 +138,18 @@ export const useDatabaseQrScanner = ({
     setScannerRestartToken((token) => token + 1);
   }, [resetScannerState]);
 
+  const toggleQrScannerTorch = useCallback(async () => {
+    try {
+      const torch = qrScannerRef.current?.getRunningTrackCameraCapabilities?.()?.torchFeature?.();
+      if (!torch?.isSupported?.()) return;
+      const next = !torch.value();
+      await torch.apply(next);
+      setQrScannerTorchOn(next);
+    } catch {
+      // Камера отказала включить свет — кнопка просто остаётся в прежнем состоянии.
+    }
+  }, []);
+
   const handleQrScanSuccess = useCallback(async (decodedText) => {
     if (qrScanProcessingRef.current) return;
     qrScanProcessingRef.current = true;
@@ -131,6 +161,25 @@ export const useDatabaseQrScanner = ({
     if (!payload) {
       qrScanProcessingRef.current = false;
       setQrScannerError(QR_INVALID_INV_MESSAGE);
+      return;
+    }
+    // Короткая вибрация: на телефоне видно, что код считан, даже не глядя на экран.
+    try { navigator.vibrate?.(40); } catch { /* вибрация не везде доступна */ }
+
+    if (continuousRef.current) {
+      const now = Date.now();
+      const last = lastScanRef.current;
+      if (last.data === scannedText && now - last.at < SAME_CODE_DELAY_MS) {
+        qrScanProcessingRef.current = false;
+        return;
+      }
+      lastScanRef.current = { data: scannedText, at: now };
+      setQrScannerResult(scannedText);
+      Promise.resolve(onPayloadRef.current?.(payload))
+        .catch(() => undefined)
+        .finally(() => {
+          qrScanProcessingRef.current = false;
+        });
       return;
     }
 
@@ -253,6 +302,11 @@ export const useDatabaseQrScanner = ({
 
         setQrScannerLoading(false);
         setQrScannerReady(true);
+        try {
+          setQrScannerTorchSupported(Boolean(scanner.getRunningTrackCameraCapabilities?.()?.torchFeature?.()?.isSupported?.()));
+        } catch {
+          setQrScannerTorchSupported(false);
+        }
       } catch (err) {
         console.error('[QR Scanner] Ошибка:', err);
         if (isMounted) {
@@ -288,6 +342,9 @@ export const useDatabaseQrScanner = ({
     openQrScanner,
     closeQrScanner,
     retryQrScanner,
+    qrScannerTorchSupported,
+    qrScannerTorchOn,
+    toggleQrScannerTorch,
     handleQrScanSuccess,
     handleQrScanError,
   };

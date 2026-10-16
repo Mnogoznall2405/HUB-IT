@@ -188,6 +188,9 @@ export function buildDialogsLayerProps(vm, { isMobile, theme, ui }) {
     qrScannerReady,
     qrScannerError,
     qrScannerResult,
+    qrScannerTorchSupported,
+    qrScannerTorchOn,
+    toggleQrScannerTorch,
     detailQrOpen,
     detailQrUrlLoading,
     detailQrUrl,
@@ -543,6 +546,10 @@ export function buildDialogsLayerProps(vm, { isMobile, theme, ui }) {
         ready: qrScannerReady,
         error: qrScannerError,
         result: qrScannerResult,
+        torch: qrScannerTorchSupported ? {
+          on: Boolean(qrScannerTorchOn),
+          onToggle: toggleQrScannerTorch,
+        } : null,
         pair: canDatabaseWrite ? {
           active: Boolean(qrPairMode),
           consumable: qrPair?.consumable || null,
