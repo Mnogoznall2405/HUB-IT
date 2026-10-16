@@ -22,6 +22,7 @@ import {
   verifyEquipmentPhoto,
   type EquipmentPhoto,
 } from '../../api/databaseApi';
+import { isPermanentFailure } from '../../database/resumablePhotoUpload';
 import { formatApiError } from '../../api/formatError';
 import { downloadEquipmentPhoto, invalidateEquipmentPhotoCache } from '../../database/nativeDatabaseFiles';
 import { asJpegName, rotateLocalPhoto } from '../../database/photoRotate';
@@ -319,6 +320,8 @@ export const NativeEquipmentPhotosSection = memo(function NativeEquipmentPhotosS
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [uploading, setUploading] = useState(false);
+  // Снимки, которые не ушли из-за связи: повтор продолжает загрузку с места обрыва.
+  const [retryImages, setRetryImages] = useState<NativePickedFile[]>([]);
   const [deletingNo, setDeletingNo] = useState<number | null>(null);
   const [verifyingNo, setVerifyingNo] = useState<number | null>(null);
   const [preview, setPreview] = useState<EquipmentPhoto | null>(null);
@@ -356,13 +359,23 @@ export const NativeEquipmentPhotosSection = memo(function NativeEquipmentPhotosS
   const sendImages = useCallback(async (images: NativePickedFile[]) => {
     setUploading(true);
     setError('');
+    setRetryImages([]);
+    let index = 0;
     try {
-      for (const file of images) {
-        await uploadEquipmentPhoto(itemId, file, databaseId);
+      for (; index < images.length; index += 1) {
+        await uploadEquipmentPhoto(itemId, images[index], databaseId);
       }
       await load(true);
     } catch (cause) {
-      setError(formatApiError(cause, 'Не удалось загрузить фотографию.'));
+      const rest = images.slice(index);
+      // Отказ сервера (не тот файл, нет прав) повтором не лечится; обрыв связи — лечится.
+      if (rest.length && !isPermanentFailure(cause)) {
+        setRetryImages(rest);
+        setError(`Связь прервалась: не загружено фото — ${rest.length}. Уже отправленное сохранено, повтор продолжит с места обрыва.`);
+      } else {
+        setError(formatApiError(cause, 'Не удалось загрузить фотографию.'));
+      }
+      if (index > 0) await load(true).catch(() => undefined);
     } finally {
       setUploading(false);
     }
@@ -573,6 +586,16 @@ export const NativeEquipmentPhotosSection = memo(function NativeEquipmentPhotosS
         </Text>
       ) : null}
       {error ? <Text accessibilityRole="alert" style={[styles.error, { color: tokens.error }]}>{error}</Text> : null}
+      {retryImages.length > 0 && !uploading ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Повторить загрузку фото"
+          onPress={() => { void sendImages(retryImages); }}
+          style={({ pressed }) => [styles.addButton, { alignSelf: 'flex-start', backgroundColor: tokens.primary, opacity: pressed ? 0.85 : 1 }]}
+        >
+          <Text style={styles.addButtonText}>{`Повторить загрузку (${retryImages.length})`}</Text>
+        </Pressable>
+      ) : null}
       {offline ? (
         <Text style={[styles.hint, { color: tokens.textSecondary }]}>Фотографии доступны только при подключении к сети.</Text>
       ) : loading ? (

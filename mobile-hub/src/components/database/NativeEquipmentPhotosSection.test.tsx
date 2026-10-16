@@ -131,6 +131,31 @@ describe('NativeEquipmentPhotosSection', () => {
     expect(mockedList).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps the shots that did not go through on a dropped link and resumes them on retry', async () => {
+    mockedPick.mockResolvedValue([
+      { uri: 'file:///picked/one.jpg', name: 'one.jpg', mimeType: 'image/jpeg', size: 1024, source: 'gallery' },
+      { uri: 'file:///picked/two.jpg', name: 'two.jpg', mimeType: 'image/jpeg', size: 1024, source: 'gallery' },
+    ]);
+    mockedUpload
+      .mockResolvedValueOnce(98)
+      .mockRejectedValueOnce(new Error('Network Error'))
+      .mockResolvedValueOnce(99);
+    const view = await render(<NativeEquipmentPhotosSection itemId={7} databaseId="main" canWrite tokens={tokens} />);
+    await waitFor(() => expect(view.getByText('Фотографий: 2')).toBeTruthy());
+
+    await act(async () => { fireEvent.press(view.getByTestId('native-equipment-photos-add')); });
+    await act(async () => { fireEvent.press(view.getByTestId('native-equipment-photo-source-gallery')); });
+
+    // The first shot is saved; only the second one is offered again.
+    await waitFor(() => expect(view.getByLabelText('Повторить загрузку фото')).toBeTruthy());
+    expect(view.getByText(/Повторить загрузку \(1\)/)).toBeTruthy();
+
+    await act(async () => { fireEvent.press(view.getByLabelText('Повторить загрузку фото')); });
+    await waitFor(() => expect(mockedUpload).toHaveBeenCalledTimes(3));
+    expect(mockedUpload).toHaveBeenLastCalledWith(7, expect.objectContaining({ uri: 'file:///picked/two.jpg' }), 'main');
+    await waitFor(() => expect(view.queryByLabelText('Повторить загрузку фото')).toBeNull());
+  });
+
   it('rejects an oversized picked file before upload', async () => {
     mockedPick.mockResolvedValue([{
       uri: 'file:///picked/huge.jpg',

@@ -30,6 +30,7 @@ import { LoadingSpinner } from '../../components/common';
 import { equipmentPhotosAPI } from '../../api/equipmentPhotos';
 import { normalizeDbId } from './databaseRecordModel';
 import { rotateImageFile } from './photoRotate';
+import { isPermanentFailure } from '../../lib/resumablePhotoUpload';
 import ZoomableImage from './ZoomableImage';
 import { MAX_REJECT_REASON, rememberRejectReason } from './photoRejectReasons';
 import RejectReasonChips from './RejectReasonChips';
@@ -454,6 +455,8 @@ const EquipmentDetailPhotosPanel = memo(function EquipmentDetailPhotosPanel({
   const [error, setError] = useState('');
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(null);
+  // Файлы, которые не ушли из-за связи: повтор продолжает загрузку с места обрыва.
+  const [retryFiles, setRetryFiles] = useState([]);
   const [deletingNo, setDeletingNo] = useState(null);
   const [previewPhoto, setPreviewPhoto] = useState(null);
   const [deleteCandidate, setDeleteCandidate] = useState(null);
@@ -589,9 +592,11 @@ const EquipmentDetailPhotosPanel = memo(function EquipmentDetailPhotosPanel({
 
     setUploading(true);
     setError('');
+    setRetryFiles([]);
     setUploadProgress({ done: 0, total: accepted.length });
     let failed = 0;
     let lastError = null;
+    const unsent = [];
     // Последовательно: сервер берёт FILE_NO как MAX+1 под блокировкой таблицы.
     for (let index = 0; index < accepted.length; index += 1) {
       try {
@@ -599,6 +604,8 @@ const EquipmentDetailPhotosPanel = memo(function EquipmentDetailPhotosPanel({
       } catch (err) {
         failed += 1;
         lastError = err;
+        // Отказ сервера (не тот файл, нет прав) повтором не лечится; обрыв связи — лечится.
+        if (!isPermanentFailure(err)) unsent.push(accepted[index]);
       }
       setUploadProgress({ done: index + 1, total: accepted.length });
     }
@@ -612,6 +619,7 @@ const EquipmentDetailPhotosPanel = memo(function EquipmentDetailPhotosPanel({
 
     if (failed > 0) {
       const reason = await readApiError(lastError, UPLOAD_ERROR);
+      setRetryFiles(unsent);
       setError(accepted.length > 1
         ? `Не загружено ${failed} из ${accepted.length}. ${reason}`
         : reason);
@@ -807,6 +815,15 @@ const EquipmentDetailPhotosPanel = memo(function EquipmentDetailPhotosPanel({
                   : 'Загрузка...')
                 : 'Добавить фото'}
             </Button>
+            {retryFiles.length > 0 && !uploading ? (
+              <Button
+                variant="contained"
+                size="small"
+                onClick={() => uploadFiles(retryFiles)}
+              >
+                {`Повторить загрузку (${retryFiles.length})`}
+              </Button>
+            ) : null}
             {onScanNext ? (
               <Button
                 variant="outlined"

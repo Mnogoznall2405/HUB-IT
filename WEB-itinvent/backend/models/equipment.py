@@ -779,3 +779,25 @@ class EquipmentPhotoUploadResponse(BaseModel):
     file_no: int = Field(..., description="Created FILES.FILE_NO")
     item_id: int = Field(..., description="ITEMS.ID")
     file_name: str = Field("", description="Stored file name")
+
+
+class EquipmentPhotoUploadSessionCreate(BaseModel):
+    """Open (or re-open) a resumable photo upload."""
+    client_id: str = Field(..., min_length=8, max_length=128, description="Client-generated idempotency key")
+    file_name: str = Field("", max_length=255)
+    size: int = Field(..., gt=0, description="File size in bytes")
+    mime_type: Optional[str] = Field(None, max_length=100)
+    description: str = Field("", max_length=255)
+    sha256: Optional[str] = Field(None, description="Optional SHA-256 of the whole file (hex)")
+
+
+class EquipmentPhotoUploadSessionState(BaseModel):
+    """State of a resumable photo upload: what the server already has."""
+    upload_id: str
+    status: Literal["uploading", "complete"]
+    item_id: int
+    size: int
+    chunk_size: int
+    total_chunks: int
+    received: List[int] = Field(default_factory=list)
+    file_no: Optional[int] = None

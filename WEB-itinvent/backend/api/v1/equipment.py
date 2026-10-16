@@ -4,7 +4,7 @@ Equipment API endpoints - search, retrieve and update equipment information.
 from typing import Optional, Any, List, Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException, Response, status, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, Query, HTTPException, Response, status, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel, Field
@@ -80,6 +80,8 @@ from backend.models.equipment import (
     EquipmentQualityIssuesResponse,
     EquipmentQualitySummary,
     EquipmentPhotoUploadResponse,
+    EquipmentPhotoUploadSessionCreate,
+    EquipmentPhotoUploadSessionState,
 )
 from backend.services.transfer_service import (
     get_act_records,
@@ -97,6 +99,7 @@ from backend.services.equipment_transfer_execution_service import (
 )
 from backend.services.equipment_recent_cards_service import equipment_recent_cards_service
 from backend.services import equipment_photo_check_service
+from backend.services import equipment_photo_upload_service
 from backend.services import equipment_photo_notification_service
 from backend.services import equipment_photo_ocr_service
 from backend.services import equipment_photo_review_service
@@ -3591,6 +3594,46 @@ async def rotate_equipment_photo(
     return {"ok": True, **result}
 
 
+async def _after_photo_inserted(
+    result: dict,
+    db_id: Optional[str],
+    current_user: User,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """Provenance record + deferred serial OCR shared by every photo upload path."""
+    # Provenance for the "uploader cannot verify" rule; never fails the upload.
+    try:
+        meta = await run_in_threadpool(
+            equipment_photos.get_equipment_photo_meta,
+            result["item_id"],
+            result["file_no"],
+            db_id,
+            get_db_fn=queries.get_db,
+        )
+        if meta is not None:
+            await run_in_threadpool(
+                equipment_photo_check_service.record_upload,
+                db_id=db_id,
+                item_id=result["item_id"],
+                file_no=result["file_no"],
+                file_created_at=meta["created_at"],
+                user_id=current_user.id,
+                user_name=getattr(current_user, "full_name", None)
+                or getattr(current_user, "username", "")
+                or "",
+            )
+    except Exception:
+        logger.warning("Failed to record equipment photo provenance", exc_info=True)
+    # Serial recognition runs after the response (no-op while the feature flag is off).
+    background_tasks.add_task(
+        equipment_photo_ocr_service.analyze_photo_safe,
+        db_id=db_id,
+        item_id=result["item_id"],
+        file_no=result["file_no"],
+        get_db_fn=queries.get_db,
+    )
+
+
 @router.post("/{item_id}/photos", response_model=EquipmentPhotoUploadResponse)
 async def upload_equipment_photo(
     item_id: int,
@@ -3624,42 +3667,147 @@ async def upload_equipment_photo(
         )
     except equipment_photos.PhotoValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-    # Provenance for the "uploader cannot verify" rule; never fails the upload.
-    try:
-        meta = await run_in_threadpool(
-            equipment_photos.get_equipment_photo_meta,
-            result["item_id"],
-            result["file_no"],
-            db_id,
-            get_db_fn=queries.get_db,
-        )
-        if meta is not None:
-            await run_in_threadpool(
-                equipment_photo_check_service.record_upload,
-                db_id=db_id,
-                item_id=result["item_id"],
-                file_no=result["file_no"],
-                file_created_at=meta["created_at"],
-                user_id=current_user.id,
-                user_name=getattr(current_user, "full_name", None)
-                or getattr(current_user, "username", "")
-                or "",
-            )
-    except Exception:
-        logger.warning("Failed to record equipment photo provenance", exc_info=True)
-    # Serial recognition runs after the response (no-op while the feature flag is off).
-    background_tasks.add_task(
-        equipment_photo_ocr_service.analyze_photo_safe,
-        db_id=db_id,
-        item_id=result["item_id"],
-        file_no=result["file_no"],
-        get_db_fn=queries.get_db,
-    )
+    await _after_photo_inserted(result, db_id, current_user, background_tasks)
     return EquipmentPhotoUploadResponse(
         file_no=result["file_no"],
         item_id=result["item_id"],
         file_name=file.filename or "",
     )
+
+
+def _raise_photo_upload_error(exc: Exception) -> None:
+    if isinstance(exc, equipment_photo_upload_service.UploadSessionError):
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+    if isinstance(exc, equipment_photos.EquipmentNotFoundError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipment not found")
+    if isinstance(exc, equipment_photos.PhotoValidationError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    raise exc
+
+
+@router.post("/{item_id}/photo-uploads", response_model=EquipmentPhotoUploadSessionState)
+async def create_equipment_photo_upload(
+    item_id: int,
+    payload: EquipmentPhotoUploadSessionCreate,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """Open a resumable photo upload; repeating the same client_id returns the same session."""
+    try:
+        ci_type = await run_in_threadpool(
+            equipment_photos.resolve_equipment_ci_type, item_id, db_id, get_db_fn=queries.get_db
+        )
+        if ci_type is None:
+            raise equipment_photos.EquipmentNotFoundError("equipment not found")
+        return await run_in_threadpool(
+            equipment_photo_upload_service.create_session,
+            user_id=int(current_user.id),
+            db_id=db_id,
+            item_id=item_id,
+            client_id=payload.client_id,
+            file_name=payload.file_name,
+            size=payload.size,
+            mime_type=payload.mime_type,
+            description=payload.description,
+            sha256=payload.sha256,
+        )
+    except Exception as exc:
+        _raise_photo_upload_error(exc)
+
+
+@router.get("/photo-uploads/{upload_id}", response_model=EquipmentPhotoUploadSessionState)
+async def get_equipment_photo_upload(
+    upload_id: str,
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """Which chunks the server already has (used to resume after a dropped connection)."""
+    try:
+        return await run_in_threadpool(
+            equipment_photo_upload_service.get_state, upload_id, int(current_user.id)
+        )
+    except Exception as exc:
+        _raise_photo_upload_error(exc)
+
+
+@router.put("/photo-uploads/{upload_id}/chunks/{chunk_index}", response_model=EquipmentPhotoUploadSessionState)
+async def put_equipment_photo_upload_chunk(
+    upload_id: str,
+    chunk_index: int,
+    payload: bytes = Body(default=b"", media_type="application/octet-stream"),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """Store one chunk; re-sending a chunk is safe."""
+    try:
+        return await run_in_threadpool(
+            equipment_photo_upload_service.put_chunk,
+            upload_id,
+            int(current_user.id),
+            int(chunk_index),
+            bytes(payload or b""),
+        )
+    except Exception as exc:
+        _raise_photo_upload_error(exc)
+
+
+@router.post("/photo-uploads/{upload_id}/complete", response_model=EquipmentPhotoUploadResponse)
+async def complete_equipment_photo_upload(
+    upload_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """Insert the photo once; completing an already completed upload returns the same FILE_NO."""
+    user_name = (
+        getattr(current_user, "full_name", None) or getattr(current_user, "username", "") or ""
+    )
+    try:
+        manifest = await run_in_threadpool(
+            equipment_photo_upload_service.get_manifest, upload_id, int(current_user.id)
+        )
+        # The database chosen when the session was opened wins over any later header.
+        db_id = manifest.get("db_id")
+
+        def _commit(session: dict, data: bytes) -> dict:
+            inserted = equipment_photos.insert_equipment_photo(
+                item_id=session["item_id"],
+                file_name=session.get("file_name") or "",
+                file_bytes=data,
+                created_by=user_name,
+                description=session.get("description") or "",
+                mime_type=session.get("mime_type"),
+                db_id=db_id,
+            )
+            return {
+                "file_no": inserted["file_no"],
+                "item_id": inserted["item_id"],
+                "file_name": session.get("file_name") or "",
+            }
+
+        result, created = await run_in_threadpool(
+            equipment_photo_upload_service.complete,
+            upload_id,
+            int(current_user.id),
+            commit=_commit,
+        )
+    except Exception as exc:
+        _raise_photo_upload_error(exc)
+    if created:
+        await _after_photo_inserted(result, db_id, current_user, background_tasks)
+    return EquipmentPhotoUploadResponse(**result)
+
+
+@router.delete("/photo-uploads/{upload_id}", response_model=dict)
+async def abort_equipment_photo_upload(
+    upload_id: str,
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """Drop an unfinished upload and its chunks."""
+    try:
+        await run_in_threadpool(
+            equipment_photo_upload_service.abort, upload_id, int(current_user.id)
+        )
+    except Exception as exc:
+        _raise_photo_upload_error(exc)
+    return {"ok": True}
 
 
 @router.delete("/{item_id}/photos/{file_no}", response_model=dict)

@@ -1,4 +1,5 @@
 import apiClient from './client';
+import { LegacyUploadRequired, uploadPhotoResumable } from '../lib/resumablePhotoUpload';
 
 export const equipmentPhotosAPI = {
   list: async (itemId, params = {}) => {
@@ -18,7 +19,14 @@ export const equipmentPhotosAPI = {
     return response;
   },
 
-  upload: async (itemId, file, { description = '', params = {} } = {}) => {
+  // Фото уходит кусками с докачкой (см. lib/resumablePhotoUpload); сервер без докачки
+  // (старая версия) получает файл целиком, как раньше.
+  upload: async (itemId, file, { description = '', params = {}, onProgress, signal } = {}) => {
+    try {
+      return await uploadPhotoResumable(itemId, file, { dbId: params?.db_id, description, onProgress, signal });
+    } catch (error) {
+      if (!(error instanceof LegacyUploadRequired)) throw error;
+    }
     const formData = new FormData();
     formData.append('file', file);
     const response = await apiClient.post(

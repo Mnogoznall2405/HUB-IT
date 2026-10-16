@@ -1,7 +1,14 @@
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import type { EquipmentPhotoFile, EquipmentRecord } from '../api/databaseApi';
 import type { InventoryQrPayload } from './nativeDatabaseModel';
+import { loadPendingPhotos, persistPendingPhoto, removePendingPhoto } from './pendingPhotoStore';
 import { useNativeScanPhotoSession } from './useNativeScanPhotoSession';
+
+jest.mock('./pendingPhotoStore', () => ({
+  loadPendingPhotos: jest.fn(async () => []),
+  persistPendingPhoto: jest.fn(async () => null),
+  removePendingPhoto: jest.fn(async () => undefined),
+}));
 
 const record = (invNo: string, id: number | null): EquipmentRecord => ({
   id,
@@ -35,6 +42,11 @@ function setup(overrides: {
 }
 
 describe('useNativeScanPhotoSession', () => {
+  beforeEach(() => {
+    (persistPendingPhoto as jest.Mock).mockClear();
+    (removePendingPhoto as jest.Mock).mockClear();
+  });
+
   it('uploads a burst sequentially to the scanned item and counts it per item', async () => {
     const order: string[] = [];
     let release: (() => void) | null = null;
@@ -136,5 +148,45 @@ describe('useNativeScanPhotoSession', () => {
     await act(async () => { outcome = await offline.result.current.selectTarget(qr('A')); });
     expect(outcome).toEqual({ kind: 'offline' });
     expect(offline.result.current.enqueue(shot('x.jpg'))).toBe(false);
+  });
+  it('keeps a disk copy of every shot until it reaches the server', async () => {
+    let release: (() => void) | null = null;
+    const upload = jest.fn(async () => { await new Promise<void>((resolve) => { release = resolve; }); return 1; });
+    const { hook } = setup({ upload });
+    const { result } = await hook;
+
+    await act(async () => { await result.current.selectTarget(qr('A')); });
+    await act(async () => { result.current.enqueue(shot('a1.jpg')); });
+    expect(persistPendingPhoto).toHaveBeenCalledWith(expect.objectContaining({ itemId: 101, invNo: 'A' }));
+    expect(removePendingPhoto).not.toHaveBeenCalled();
+
+    await act(async () => { release?.(); });
+    await waitFor(() => expect(removePendingPhoto).toHaveBeenCalledTimes(1));
+  });
+
+  it('after an app restart uploads the shots that never left the device and then forgets them', async () => {
+    (loadPendingPhotos as jest.Mock).mockResolvedValueOnce([
+      { id: 'ph-1', itemId: 101, databaseId: 'main', invNo: 'A', file: shot('lost.jpg') },
+    ]);
+    const { upload, hook } = setup();
+    const { result } = await hook;
+
+    await waitFor(() => expect(upload).toHaveBeenCalledWith(101, expect.objectContaining({ name: 'lost.jpg' }), 'main'));
+    await waitFor(() => expect(removePendingPhoto).toHaveBeenCalledWith('ph-1'));
+    expect(result.current.totalPending).toBe(0);
+  });
+
+  it('drops the disk copy of a failed shot only when the user discards it', async () => {
+    const upload = jest.fn(async () => { throw new Error('Network Error'); });
+    const { hook } = setup({ upload });
+    const { result } = await hook;
+
+    await act(async () => { await result.current.selectTarget(qr('A')); });
+    await act(async () => { result.current.enqueue(shot('a1.jpg')); });
+    await waitFor(() => expect(result.current.failedCount).toBe(1));
+    expect(removePendingPhoto).not.toHaveBeenCalled();
+
+    await act(async () => { result.current.discardFailed(); });
+    await waitFor(() => expect(removePendingPhoto).toHaveBeenCalledTimes(1));
   });
 });

@@ -1,4 +1,5 @@
 import apiClient from './client';
+import { LegacyUploadRequired, uploadPhotoResumable } from '../database/resumablePhotoUpload';
 import type { DatabaseOption } from '../account/accountFormat';
 
 export type CurrentDatabase = DatabaseOption & {
@@ -1391,7 +1392,24 @@ export async function unverifyEquipmentPhoto(
   await apiClient.delete(photoVerifyUrl(itemId, fileNo), databaseHeaders(databaseId));
 }
 
+// Фото уходит кусками с докачкой (см. resumablePhotoUpload); если сервер ещё не умеет
+// докачку, отправляем файл целиком старым способом.
 export async function uploadEquipmentPhoto(
+  itemId: number,
+  file: EquipmentPhotoFile,
+  databaseId?: string,
+): Promise<number> {
+  const normalized = asNumber(itemId);
+  if (!normalized || normalized <= 0) throw new Error('Некорректный идентификатор оборудования');
+  try {
+    return await uploadPhotoResumable(normalized, file, databaseId);
+  } catch (error) {
+    if (!(error instanceof LegacyUploadRequired)) throw error;
+    return uploadEquipmentPhotoWhole(normalized, file, databaseId);
+  }
+}
+
+async function uploadEquipmentPhotoWhole(
   itemId: number,
   file: EquipmentPhotoFile,
   databaseId?: string,

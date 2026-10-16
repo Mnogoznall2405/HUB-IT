@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { EquipmentPhotoFile, EquipmentRecord } from '../api/databaseApi';
 import type { InventoryQrPayload } from './nativeDatabaseModel';
+import { loadPendingPhotos, persistPendingPhoto, removePendingPhoto } from './pendingPhotoStore';
 
 export type ScanPhotoTarget = {
   invNo: string;
@@ -19,6 +20,8 @@ export type ScanPhotoJob = {
   file: EquipmentPhotoFile;
   status: ScanPhotoJobStatus;
   error: string;
+  /** Запись в дисковой очереди: снимок переживёт закрытие приложения. */
+  pendingId?: string;
 };
 
 export type ScanPhotoSelectResult =
@@ -60,6 +63,7 @@ export function useNativeScanPhotoSession({
   const mountedRef = useRef(true);
   const resolveRef = useRef(resolveEquipment);
   const uploadRef = useRef(uploadPhoto);
+  const persistRef = useRef<Map<string, Promise<unknown>>>(new Map());
 
   useEffect(() => { resolveRef.current = resolveEquipment; }, [resolveEquipment]);
   useEffect(() => { uploadRef.current = uploadPhoto; }, [uploadPhoto]);
@@ -73,6 +77,14 @@ export function useNativeScanPhotoSession({
     if (mountedRef.current) setJobs(next);
   }, []);
 
+  // Снимок дошёл до сервера (или отброшен): копию на диске можно удалить.
+  const forgetPending = useCallback((pendingId?: string) => {
+    if (!pendingId) return;
+    const writing = persistRef.current.get(pendingId) || Promise.resolve();
+    persistRef.current.delete(pendingId);
+    void writing.then(() => removePendingPhoto(pendingId));
+  }, []);
+
   const pump = useCallback(async () => {
     if (pumpingRef.current) return;
     pumpingRef.current = true;
@@ -84,6 +96,7 @@ export function useNativeScanPhotoSession({
         try {
           await uploadRef.current(job.itemId, job.file, job.databaseId || undefined);
           commitJobs(jobsRef.current.filter((entry) => entry.id !== job.id));
+          forgetPending(job.pendingId);
           if (mountedRef.current) {
             const key = normalizeInvNo(job.invNo);
             setDoneByInvNo((current) => ({ ...current, [key]: (current[key] || 0) + 1 }));
@@ -98,7 +111,7 @@ export function useNativeScanPhotoSession({
     } finally {
       pumpingRef.current = false;
     }
-  }, [commitJobs]);
+  }, [commitJobs, forgetPending]);
 
   const start = useCallback(() => { setActive(true); }, []);
 
@@ -149,6 +162,14 @@ export function useNativeScanPhotoSession({
     const current = forTarget || targetRef.current;
     if (!current) return false;
     idRef.current += 1;
+    const pendingId = `ph-${Date.now().toString(36)}-${idRef.current}-${Math.random().toString(36).slice(2, 8)}`;
+    persistRef.current.set(pendingId, persistPendingPhoto({
+      id: pendingId,
+      itemId: current.itemId,
+      databaseId: current.databaseId,
+      invNo: current.invNo,
+      file,
+    }));
     commitJobs([
       ...jobsRef.current,
       {
@@ -159,10 +180,37 @@ export function useNativeScanPhotoSession({
         file,
         status: 'queued',
         error: '',
+        pendingId,
       },
     ]);
     void pump();
     return true;
+  }, [commitJobs, pump]);
+
+  // После перезапуска приложения догружаем снимки, которые не успели уйти.
+  useEffect(() => {
+    let cancelled = false;
+    void loadPendingPhotos().then((entries) => {
+      if (cancelled || !mountedRef.current || !entries.length) return;
+      const known = new Set(jobsRef.current.map((job) => job.pendingId));
+      const restored = entries.filter((entry) => !known.has(entry.id)).map((entry): ScanPhotoJob => {
+        idRef.current += 1;
+        return {
+          id: idRef.current,
+          invNo: entry.invNo,
+          itemId: entry.itemId,
+          databaseId: entry.databaseId,
+          file: entry.file,
+          status: 'queued',
+          error: '',
+          pendingId: entry.id,
+        };
+      });
+      if (!restored.length) return;
+      commitJobs([...jobsRef.current, ...restored]);
+      void pump();
+    });
+    return () => { cancelled = true; };
   }, [commitJobs, pump]);
 
   const retryFailed = useCallback(() => {
@@ -174,8 +222,9 @@ export function useNativeScanPhotoSession({
   }, [commitJobs, pump]);
 
   const discardFailed = useCallback(() => {
+    jobsRef.current.filter((entry) => entry.status === 'failed').forEach((entry) => forgetPending(entry.pendingId));
     commitJobs(jobsRef.current.filter((entry) => entry.status !== 'failed'));
-  }, [commitJobs]);
+  }, [commitJobs, forgetPending]);
 
   const targetKey = target ? normalizeInvNo(target.invNo) : '';
   const forTarget = jobs.filter((job) => normalizeInvNo(job.invNo) === targetKey);

@@ -130,6 +130,25 @@ describe('EquipmentDetailPhotosPanel', () => {
     expect(await screen.findByText('Фотографий: 1')).toBeTruthy();
   });
 
+  it('keeps a file that did not go through on a dropped link and resumes it on retry', async () => {
+    listPhotos.mockResolvedValue({ item_id: 10, photos: [] });
+    uploadPhoto
+      .mockRejectedValueOnce(Object.assign(new Error('Network Error'), { isAxiosError: true }))
+      .mockResolvedValueOnce({ file_no: 44, item_id: 10, file_name: 'photo_2.jpg' });
+    const { container } = render(<EquipmentDetailPhotosPanel itemId={10} active canWrite />);
+    await screen.findByText(/Фотографий пока нет/);
+
+    const file = new File(['img'], 'photo_2.jpg', { type: 'image/jpeg' });
+    fireEvent.change(container.querySelector('input[type="file"]'), { target: { files: [file] } });
+
+    const retry = await screen.findByRole('button', { name: 'Повторить загрузку (1)' });
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(uploadPhoto).toHaveBeenCalledTimes(2));
+    expect(uploadPhoto).toHaveBeenLastCalledWith(10, file, { params: {} });
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Повторить загрузку/ })).toBeNull());
+  });
+
   it('uploads a camera shot straight away and offers the next QR scan', async () => {
     uploadPhoto.mockResolvedValue({ file_no: 43, item_id: 10, file_name: 'shot.jpg' });
     const onScanNext = vi.fn();
