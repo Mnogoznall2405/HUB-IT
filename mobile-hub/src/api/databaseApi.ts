@@ -1250,6 +1250,8 @@ export type EquipmentPhotoFile = {
   uri: string;
   name: string;
   mimeType: string;
+  /** Стабильный ключ загрузки: повтор того же снимка (в т.ч. из копии на диске) не создаёт дубль. */
+  uploadKey?: string;
 };
 
 export async function listEquipmentPhotos(itemId: number, databaseId?: string): Promise<EquipmentPhoto[]> {

@@ -12,7 +12,7 @@ import { localFileSize, preparePhotoForUpload, type PreparedPhoto } from './phot
 // идентификатор загрузки выводится из самого файла, поэтому повтор (в том числе после
 // перезапуска приложения) отправляет только недостающее и не создаёт дубль фото.
 
-export type ResumableUploadFile = { uri: string; name: string; mimeType: string };
+export type ResumableUploadFile = { uri: string; name: string; mimeType: string; uploadKey?: string };
 
 export type ResumableUploadDeps = {
   prepare: (file: ResumableUploadFile) => Promise<PreparedPhoto>;
@@ -100,7 +100,9 @@ export async function uploadPhotoResumable(
   const deps = { ...defaultDeps, ...overrides };
   const { signal, onProgress } = options;
 
-  const cacheKey = `${itemId}|${file.uri}`;
+  // Ключ не зависит от пути к файлу: копия снимка на диске после перезапуска — тот же снимок.
+  const fileKey = file.uploadKey || file.uri;
+  const cacheKey = `${itemId}|${fileKey}`;
   let prepared = preparedCache.get(cacheKey);
   if (!prepared) {
     prepared = await deps.prepare(file);
@@ -109,7 +111,7 @@ export async function uploadPhotoResumable(
   const size = prepared.size || localFileSize(prepared.uri);
   if (!size) throw new PermanentUploadError('Файл фотографии пуст или недоступен');
 
-  const baseId = await deps.makeClientId(`${itemId}|${databaseId || ''}|${file.uri}|${size}`);
+  const baseId = await deps.makeClientId(`${itemId}|${databaseId || ''}|${fileKey}`);
   let state: PhotoUploadState | null = null;
   // Идентификатор занят файлом другого содержимого (409): берём следующую ревизию.
   for (let revision = 0; revision < 4 && !state; revision += 1) {

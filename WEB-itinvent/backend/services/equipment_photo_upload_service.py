@@ -163,6 +163,10 @@ def create_session(
     directory = _session_dir(upload_id)
     manifest = _read_json(directory / _MANIFEST)
     if manifest is not None:
+        # A finished upload is reported as finished whatever size the client sends now:
+        # a re-compressed copy of the same file must not turn into a second photo.
+        if (directory / _RESULT).exists():
+            return _state(directory, manifest)
         if int(manifest["size"]) != size:
             raise UploadConflictError("client_id is already used for a different file")
         return _state(directory, manifest)
@@ -286,6 +290,13 @@ def complete(
         return result, True
     finally:
         _release_complete_lock(directory)
+
+
+def discard_completed(upload_id: str, user_id: int) -> None:
+    """Forget a finished upload whose photo no longer exists, so the same file can be sent again."""
+    directory, _ = _load_owned(upload_id, user_id)
+    if (directory / _RESULT).exists():
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 def abort(upload_id: str, user_id: int) -> None:

@@ -34,6 +34,7 @@ function setup(overrides: {
   const resolve = overrides.resolve || jest.fn(async (invNo: string) => record(invNo, invNo === 'A' ? 101 : 202));
   const hook = renderHook(() => useNativeScanPhotoSession({
     databaseId: 'main',
+    userId: 15,
     offlineMode: overrides.offlineMode ?? false,
     resolveEquipment: resolve,
     uploadPhoto: upload,
@@ -166,14 +167,33 @@ describe('useNativeScanPhotoSession', () => {
 
   it('after an app restart uploads the shots that never left the device and then forgets them', async () => {
     (loadPendingPhotos as jest.Mock).mockResolvedValueOnce([
-      { id: 'ph-1', itemId: 101, databaseId: 'main', invNo: 'A', file: shot('lost.jpg') },
+      { id: 'ph-1', userId: 15, itemId: 101, databaseId: 'main', invNo: 'A', file: shot('lost.jpg') },
     ]);
     const { upload, hook } = setup();
     const { result } = await hook;
 
-    await waitFor(() => expect(upload).toHaveBeenCalledWith(101, expect.objectContaining({ name: 'lost.jpg' }), 'main'));
+    // Ключ загрузки — id записи на диске, а не путь к копии: повтор после перезапуска не создаст дубль.
+    await waitFor(() => expect(upload).toHaveBeenCalledWith(101, expect.objectContaining({ name: 'lost.jpg', uploadKey: 'ph-1' }), 'main'));
     await waitFor(() => expect(removePendingPhoto).toHaveBeenCalledWith('ph-1'));
     expect(result.current.totalPending).toBe(0);
+  });
+
+  it('asks the store only for the signed-in user and does not restore without one', async () => {
+    const { upload, hook } = setup();
+    await hook;
+    await waitFor(() => expect(loadPendingPhotos).toHaveBeenCalledWith(15));
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it('gives a shot the same upload key as its disk copy', async () => {
+    const { upload, hook } = setup();
+    const { result } = await hook;
+
+    await act(async () => { await result.current.selectTarget(qr('A')); });
+    await act(async () => { result.current.enqueue(shot('a1.jpg')); });
+    await waitFor(() => expect(upload).toHaveBeenCalled());
+    const pendingId = (persistPendingPhoto as jest.Mock).mock.calls.at(-1)[0].id;
+    expect(upload).toHaveBeenCalledWith(101, expect.objectContaining({ uploadKey: pendingId }), 'main');
   });
 
   it('drops the disk copy of a failed shot only when the user discards it', async () => {

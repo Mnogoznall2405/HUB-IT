@@ -10,6 +10,8 @@ const INDEX_FILE_NAME = 'queue.json';
 
 export type PendingPhoto = {
   id: string;
+  /** Владелец снимка: чужие снимки не загружаются под другой учётной записью. */
+  userId: number;
   itemId: number;
   databaseId: string;
   invNo: string;
@@ -86,8 +88,25 @@ export function removePendingPhoto(id: string): Promise<void> {
   });
 }
 
-export function loadPendingPhotos(): Promise<PendingPhoto[]> {
-  return serialized(() => readIndex().filter((entry) => new File(entry.file.uri).exists));
+// Возвращает снимки этого пользователя; чужие (оставшиеся после выхода другой учётной записи) удаляются.
+export function loadPendingPhotos(userId: number): Promise<PendingPhoto[]> {
+  ensureClearListener();
+  return serialized(() => {
+    const entries = readIndex();
+    const own = entries.filter((entry) => Number(entry.userId) === Number(userId) && Number(userId) > 0);
+    if (own.length !== entries.length) {
+      try {
+        entries.filter((entry) => !own.includes(entry)).forEach((entry) => {
+          const copy = new File(entry.file.uri);
+          if (copy.exists) copy.delete();
+        });
+        writeIndex(own);
+      } catch {
+        // Не удалось почистить — снимки всё равно не будут загружены чужим пользователем.
+      }
+    }
+    return own.filter((entry) => new File(entry.file.uri).exists);
+  });
 }
 
 export function clearPendingPhotos(): Promise<void> {

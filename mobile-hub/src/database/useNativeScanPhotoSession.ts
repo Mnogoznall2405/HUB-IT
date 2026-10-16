@@ -41,11 +41,13 @@ const normalizeInvNo = (value: string) => String(value || '').trim().toLocaleUpp
 // следующую технику. Очередь переживает смену цели и закрытие сканера.
 export function useNativeScanPhotoSession({
   databaseId,
+  userId,
   offlineMode,
   resolveEquipment,
   uploadPhoto,
 }: {
   databaseId: string;
+  userId: number;
   offlineMode: boolean;
   resolveEquipment: (invNo: string, databaseId: string) => Promise<EquipmentRecord | null>;
   uploadPhoto: (itemId: number, file: EquipmentPhotoFile, databaseId?: string) => Promise<unknown>;
@@ -165,6 +167,7 @@ export function useNativeScanPhotoSession({
     const pendingId = `ph-${Date.now().toString(36)}-${idRef.current}-${Math.random().toString(36).slice(2, 8)}`;
     persistRef.current.set(pendingId, persistPendingPhoto({
       id: pendingId,
+      userId,
       itemId: current.itemId,
       databaseId: current.databaseId,
       invNo: current.invNo,
@@ -177,7 +180,8 @@ export function useNativeScanPhotoSession({
         invNo: current.invNo,
         itemId: current.itemId,
         databaseId: current.databaseId,
-        file,
+        // Ключ тот же, что у копии на диске: после перезапуска повтор не создаст второе фото.
+        file: { ...file, uploadKey: pendingId },
         status: 'queued',
         error: '',
         pendingId,
@@ -185,12 +189,13 @@ export function useNativeScanPhotoSession({
     ]);
     void pump();
     return true;
-  }, [commitJobs, pump]);
+  }, [commitJobs, pump, userId]);
 
   // После перезапуска приложения догружаем снимки, которые не успели уйти.
   useEffect(() => {
     let cancelled = false;
-    void loadPendingPhotos().then((entries) => {
+    if (!(userId > 0)) return undefined;
+    void loadPendingPhotos(userId).then((entries) => {
       if (cancelled || !mountedRef.current || !entries.length) return;
       const known = new Set(jobsRef.current.map((job) => job.pendingId));
       const restored = entries.filter((entry) => !known.has(entry.id)).map((entry): ScanPhotoJob => {
@@ -200,7 +205,7 @@ export function useNativeScanPhotoSession({
           invNo: entry.invNo,
           itemId: entry.itemId,
           databaseId: entry.databaseId,
-          file: entry.file,
+          file: { ...entry.file, uploadKey: entry.id },
           status: 'queued',
           error: '',
           pendingId: entry.id,
@@ -211,7 +216,7 @@ export function useNativeScanPhotoSession({
       void pump();
     });
     return () => { cancelled = true; };
-  }, [commitJobs, pump]);
+  }, [commitJobs, pump, userId]);
 
   const retryFailed = useCallback(() => {
     if (!jobsRef.current.some((entry) => entry.status === 'failed')) return;

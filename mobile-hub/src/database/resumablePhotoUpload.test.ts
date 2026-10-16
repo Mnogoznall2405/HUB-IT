@@ -114,6 +114,23 @@ describe('uploadPhotoResumable', () => {
     expect(server.sentChunks).toEqual([]);
   });
 
+  it('treats the disk copy of a shot as the same upload after an app restart', async () => {
+    const server = fakeServer();
+    const ids: string[] = [];
+    const deps = {
+      ...server.deps,
+      // The real id is a hash of the seed; echoing the seed shows what the id is built from.
+      makeClientId: async (seed: string) => { ids.push(seed); return `id-${ids.length}-xxxxxxxx`; },
+    };
+    // First run: camera cache path. After the restart the same shot lives at another path.
+    await uploadPhotoResumable(7, { ...photo(), uploadKey: 'ph-1' }, 'main', {}, deps);
+    await uploadPhotoResumable(7, { uri: 'file:///documents/copy.jpg', name: 'a.jpg', mimeType: 'image/jpeg', uploadKey: 'ph-1' }, 'main', {}, deps);
+
+    expect(ids[0]).toBe(ids[1]);
+    expect(ids[0]).not.toContain('photo-');
+    expect(ids[0]).not.toContain('copy.jpg');
+  });
+
   it('reports a finished upload without sending anything again', async () => {
     const server = fakeServer();
     const file = photo();

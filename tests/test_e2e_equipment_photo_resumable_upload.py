@@ -34,17 +34,24 @@ BASE = "/api/v1/equipment"
 def ctx(monkeypatch, tmp_path):
     monkeypatch.setenv("EQUIPMENT_PHOTO_UPLOAD_DIR", str(tmp_path / "uploads"))
     inserted = []
+    stored = set()  # FILE_NO values that currently exist in FILES
     gate = SimpleNamespace(wait=None)
 
     def fake_insert(**kwargs):
         if gate.wait is not None:
             gate.wait.wait(5)
         inserted.append(kwargs)
+        stored.add(100 + len(inserted))
         return {"file_no": 100 + len(inserted), "ci_type": 1, "item_id": kwargs["item_id"]}
 
     monkeypatch.setattr(equipment.equipment_photos, "resolve_equipment_ci_type", lambda *a, **k: 1)
     monkeypatch.setattr(equipment.equipment_photos, "insert_equipment_photo", fake_insert)
-    monkeypatch.setattr(equipment.equipment_photos, "get_equipment_photo_meta", lambda *a, **k: None)
+    monkeypatch.setattr(
+        equipment.equipment_photos,
+        "get_equipment_photo_meta",
+        lambda item_id, file_no, *a, **k: {"created_at": None} if file_no in stored else None,
+    )
+    monkeypatch.setattr(equipment.equipment_photo_check_service, "record_upload", lambda **kwargs: None)
 
     async def no_ocr(**kwargs):
         return None
@@ -57,7 +64,7 @@ def ctx(monkeypatch, tmp_path):
     app.dependency_overrides[deps.get_current_active_user] = lambda: user
     app.dependency_overrides[equipment.get_request_scoped_database_id] = lambda: "main"
     client = TestClient(app, base_url="https://testserver")
-    yield SimpleNamespace(client=client, app=app, inserted=inserted, gate=gate, user=user)
+    yield SimpleNamespace(client=client, app=app, inserted=inserted, stored=stored, gate=gate, user=user)
     client.close()
 
 
@@ -209,3 +216,32 @@ def test_expired_uploads_are_cleaned_only_when_asked(ctx):
     assert uploads.cleanup_expired(dry_run=False)["removed"] == 1
     assert ctx.client.get(f"{BASE}/photo-uploads/{stale}").status_code == 404
     assert ctx.client.get(f"{BASE}/photo-uploads/{fresh}").status_code == 200
+
+
+def test_resending_a_file_whose_photo_was_deleted_creates_a_new_photo(ctx):
+    upload_id = open_session(ctx).json()["upload_id"]
+    for index in range(3):
+        put_chunk(ctx, upload_id, index)
+    assert ctx.client.post(f"{BASE}/photo-uploads/{upload_id}/complete").json()["file_no"] == 101
+
+    # The photo is deleted from the card; the user picks the very same file again.
+    ctx.stored.discard(101)
+    reopened = open_session(ctx).json()
+    assert reopened["status"] == "uploading" and reopened["received"] == []
+    for index in range(3):
+        put_chunk(ctx, reopened["upload_id"], index)
+    assert ctx.client.post(f"{BASE}/photo-uploads/{reopened['upload_id']}/complete").json()["file_no"] == 102
+    assert len(ctx.inserted) == 2
+
+
+def test_finished_upload_stays_finished_when_the_client_resends_a_different_size(ctx):
+    upload_id = open_session(ctx).json()["upload_id"]
+    for index in range(3):
+        put_chunk(ctx, upload_id, index)
+    ctx.client.post(f"{BASE}/photo-uploads/{upload_id}/complete")
+
+    # A re-compressed copy of the same file has another size: still the same finished photo.
+    again = open_session(ctx, data=PHOTO[:600_000])
+    assert again.status_code == 200
+    assert again.json()["status"] == "complete" and again.json()["file_no"] == 101
+    assert len(ctx.inserted) == 1

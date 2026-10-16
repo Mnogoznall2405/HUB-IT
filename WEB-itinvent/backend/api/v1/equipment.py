@@ -3699,8 +3699,7 @@ async def create_equipment_photo_upload(
         )
         if ci_type is None:
             raise equipment_photos.EquipmentNotFoundError("equipment not found")
-        return await run_in_threadpool(
-            equipment_photo_upload_service.create_session,
+        session_args = dict(
             user_id=int(current_user.id),
             db_id=db_id,
             item_id=item_id,
@@ -3711,6 +3710,26 @@ async def create_equipment_photo_upload(
             description=payload.description,
             sha256=payload.sha256,
         )
+        state = await run_in_threadpool(equipment_photo_upload_service.create_session, **session_args)
+        if state["status"] == "complete":
+            # The photo of a finished upload may have been deleted since: sending the same
+            # file again must create a new photo instead of reporting the old one as done.
+            try:
+                meta = await run_in_threadpool(
+                    equipment_photos.get_equipment_photo_meta,
+                    item_id,
+                    state["file_no"],
+                    db_id,
+                    get_db_fn=queries.get_db,
+                )
+            except Exception:
+                meta = True  # cannot tell: keep the safe answer (no duplicate)
+            if meta is None:
+                await run_in_threadpool(
+                    equipment_photo_upload_service.discard_completed, state["upload_id"], int(current_user.id)
+                )
+                state = await run_in_threadpool(equipment_photo_upload_service.create_session, **session_args)
+        return state
     except Exception as exc:
         _raise_photo_upload_error(exc)
 
