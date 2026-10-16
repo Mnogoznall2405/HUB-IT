@@ -22,13 +22,13 @@ import {
 import { alpha, useTheme } from '@mui/material/styles';
 import CloseIcon from '@mui/icons-material/Close';
 import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
-import FolderSharedOutlinedIcon from '@mui/icons-material/FolderSharedOutlined';
 import GridViewOutlinedIcon from '@mui/icons-material/GridViewOutlined';
 import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
 import SearchOutlinedIcon from '@mui/icons-material/SearchOutlined';
 import ViewListOutlinedIcon from '@mui/icons-material/ViewListOutlined';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import FolderPathBreadcrumb from '../components/groupsAccess/FolderPathBreadcrumb';
 import GroupsAccessFolderList from '../components/groupsAccess/GroupsAccessFolderList';
 import GroupsAccessMatrixTable from '../components/groupsAccess/GroupsAccessMatrixTable';
@@ -942,48 +942,65 @@ const GroupsAccess = () => {
     </Stack>
   );
 
-  return (
-    <MainLayout>
-      <PageShell
-        title="Доступ к папкам"
-        subtitle="Матрица доступа по AD security groups (SPb / Tyumen)"
-        icon={<FolderSharedOutlinedIcon />}
-        fullHeight
-        actions={(
-          <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
-            <Chip
-              size="small"
-              variant="outlined"
-              label={`Обновлено: ${formatDateTime(status?.last_sync_at)}`}
-            />
-            <Chip
-              size="small"
-              label={`${summaryGroupCount} групп · ${summaryUserCount} учёток`}
-              variant="outlined"
-            />
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={exporting ? <CircularProgress size={16} /> : <DownloadOutlinedIcon />}
-              onClick={handleExportExcel}
-              disabled={exporting || loadingDataset}
-            >
-              Excel
-            </Button>
-            {isAdmin ? (
-              <Button
-                size="small"
-                variant="outlined"
-                startIcon={refreshing ? <CircularProgress size={16} /> : <RefreshOutlinedIcon />}
-                onClick={handleRefresh}
-                disabled={refreshing}
-              >
-                Обновить
-              </Button>
-            ) : null}
-          </Stack>
-        )}
+  const branchTabsNode = (
+    <Tabs
+      value={branchTab}
+      onChange={(_event, value) => {
+        setBranchTab(value);
+        setSelectedGroupDn('');
+        setGroupDetail(null);
+        setMemberQuery('');
+      }}
+      variant={isMobile ? 'fullWidth' : 'standard'}
+      sx={{ minHeight: 40, width: { xs: '100%', lg: 'auto' } }}
+    >
+      {BRANCH_TABS.map((tab) => (
+        <Tab key={tab.value} value={tab.value} label={tab.label} sx={{ minHeight: 40 }} />
+      ))}
+    </Tabs>
+  );
+
+  const headerActionsNode = (
+    <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
+      <Chip
+        size="small"
+        variant="outlined"
+        label={`Обновлено: ${formatDateTime(status?.last_sync_at)}`}
+      />
+      <Chip
+        size="small"
+        label={`${summaryGroupCount} групп · ${summaryUserCount} учёток`}
+        variant="outlined"
+      />
+      <Button
+        size="small"
+        variant="outlined"
+        startIcon={exporting ? <CircularProgress size={16} /> : <DownloadOutlinedIcon />}
+        onClick={handleExportExcel}
+        disabled={exporting || loadingDataset}
       >
+        Excel
+      </Button>
+      {isAdmin ? (
+        <Button
+          size="small"
+          variant="outlined"
+          startIcon={refreshing ? <CircularProgress size={16} /> : <RefreshOutlinedIcon />}
+          onClick={handleRefresh}
+          disabled={refreshing}
+        >
+          Обновить
+        </Button>
+      ) : null}
+    </Stack>
+  );
+
+  return (
+    <MainLayout headerMode="integrated">
+      <PageShell fullHeight>
+        {isMobile ? null : (
+          <PageTopBar title="Доступ к папкам" tabs={branchTabsNode} actions={headerActionsNode} />
+        )}
         <Stack spacing={1.5} sx={{ height: '100%', minHeight: 0 }}>
           <Paper variant="outlined" sx={{ px: { xs: 1, sm: 1.5 }, py: 1, ...getOfficePanelSx(ui) }}>
             <Stack spacing={1}>
@@ -991,23 +1008,9 @@ const GroupsAccess = () => {
                 direction={{ xs: 'column', lg: 'row' }}
                 spacing={1}
                 alignItems={{ xs: 'stretch', lg: 'center' }}
-                justifyContent="space-between"
+                justifyContent={isMobile ? 'space-between' : 'flex-end'}
               >
-                <Tabs
-                  value={branchTab}
-                  onChange={(_event, value) => {
-                    setBranchTab(value);
-                    setSelectedGroupDn('');
-                    setGroupDetail(null);
-                    setMemberQuery('');
-                  }}
-                  variant={isMobile ? 'fullWidth' : 'standard'}
-                  sx={{ minHeight: 40, width: { xs: '100%', lg: 'auto' } }}
-                >
-                  {BRANCH_TABS.map((tab) => (
-                    <Tab key={tab.value} value={tab.value} label={tab.label} sx={{ minHeight: 40 }} />
-                  ))}
-                </Tabs>
+                {isMobile ? branchTabsNode : null}
 
                 <ToggleButtonGroup
                   size="small"

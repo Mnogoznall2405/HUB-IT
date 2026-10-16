@@ -23,6 +23,7 @@ import {
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import useMediaQuery from '@mui/material/useMediaQuery';
+import PageTopBar from '../components/layout/PageTopBar';
 import DynamicFeedRoundedIcon from '@mui/icons-material/DynamicFeedRounded';
 import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
@@ -665,13 +666,49 @@ export default function Feed() {
   };
 
   return (
-    <MainLayout>
+    <MainLayout headerMode="integrated">
       <PageShell
         sx={{
           px: { xs: 0, sm: 1.5 },
           pb: mobile ? 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 16px)' : 3,
         }}
       >
+        {mobile ? null : (
+          <Box
+            sx={{
+              position: 'sticky',
+              top: 0,
+              zIndex: 3,
+              width: '100%',
+              maxWidth: deepLinkedPostId ? 640 : 1020,
+              mx: 'auto',
+              mb: 1.25,
+              bgcolor: 'background.default',
+            }}
+          >
+            <PageTopBar sx={{ mb: 0 }}>
+              {deepLinkedPostId ? (
+                <IconButton
+                  aria-label="Вернуться в ленту"
+                  size="small"
+                  onClick={closePost}
+                  sx={{ width: 36, height: 36, flexShrink: 0 }}
+                >
+                  <ArrowBackRoundedIcon fontSize="small" />
+                </IconButton>
+              ) : null}
+              <Typography
+                id="feed-page-title"
+                component="h1"
+                tabIndex={-1}
+                sx={{ fontSize: '1.22rem', lineHeight: 1.2, fontWeight: 800, letterSpacing: '-0.015em', minWidth: 0 }}
+              >
+                {deepLinkedPostId ? 'Публикация' : 'Лента'}
+              </Typography>
+              {refreshing ? <CircularProgress aria-label="Обновление ленты" size={18} /> : null}
+            </PageTopBar>
+          </Box>
+        )}
         <Box
           sx={{
             width: '100%',
@@ -693,6 +730,7 @@ export default function Feed() {
               minWidth: 0,
             }}
           >
+            {mobile ? (
             <Paper
               component="header"
               elevation={0}
@@ -733,6 +771,7 @@ export default function Feed() {
                 {refreshing ? <CircularProgress aria-label="Обновление ленты" size={18} /> : null}
               </Stack>
             </Paper>
+            ) : null}
 
             {deepLinkedPostId ? (
               <>

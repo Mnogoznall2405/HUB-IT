@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Box, Button, Stack, Typography } from '@mui/material';
+import { Alert, Button, Stack } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import BusinessIcon from '@mui/icons-material/Business';
-import ConfirmationNumberIcon from '@mui/icons-material/ConfirmationNumber';
 import PersonAddIcon from '@mui/icons-material/PersonAdd';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import TicketEmployeeCard from '../components/tickets/TicketEmployeeCard';
 import TicketObjectManager from '../components/tickets/TicketObjectManager';
 import TicketRequestCard from '../components/tickets/TicketRequestCard';
@@ -54,33 +54,25 @@ export default function Tickets() {
   };
 
   return (
-    <MainLayout>
+    <MainLayout headerMode="integrated">
       <PageShell>
         <Stack spacing={2}>
-          <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1}>
-            <Box>
-              <Stack direction="row" spacing={1} alignItems="center">
-                <ConfirmationNumberIcon color="primary" />
-                <Typography variant="h4" sx={{ fontWeight: 700 }}>Билеты</Typography>
-              </Stack>
-              <Typography color="text.secondary">Список заявок, сотрудники и справочник объектов</Typography>
-            </Box>
-            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" justifyContent={{ xs: 'stretch', md: 'flex-end' }}>
-              {canWrite ? (
-                <>
-                  <Button startIcon={<AddIcon />} variant="contained" onClick={() => setCreateOpen(true)}>
-                    Создать заявку
-                  </Button>
-                  <Button startIcon={<PersonAddIcon />} variant="outlined" onClick={() => setEmployeeOpen(true)}>
-                    Сотрудники
-                  </Button>
-                  <Button startIcon={<BusinessIcon />} variant="outlined" onClick={() => setObjectsOpen(true)}>
-                    Справочник объектов
-                  </Button>
-                </>
-              ) : null}
-            </Stack>
-          </Stack>
+          <PageTopBar
+            title="Билеты"
+            actions={canWrite ? (
+              <>
+                <Button size="small" startIcon={<AddIcon />} variant="contained" onClick={() => setCreateOpen(true)}>
+                  Создать заявку
+                </Button>
+                <Button size="small" startIcon={<PersonAddIcon />} variant="outlined" onClick={() => setEmployeeOpen(true)}>
+                  Сотрудники
+                </Button>
+                <Button size="small" startIcon={<BusinessIcon />} variant="outlined" onClick={() => setObjectsOpen(true)}>
+                  Справочник объектов
+                </Button>
+              </>
+            ) : null}
+          />
 
           {error ? <Alert severity="error">{error}</Alert> : null}
 

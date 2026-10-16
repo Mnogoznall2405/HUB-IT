@@ -24,6 +24,7 @@ import { Link as RouterLink } from 'react-router-dom';
 import MainLayout from '../components/layout/MainLayout';
 import MobileShellPageHeader from '../components/layout/MobileShellPageHeader';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import { useAuth } from '../contexts/AuthContext';
 import { getVisibleNavigationItems } from '../components/layout/navigationConfig';
 import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
@@ -255,11 +256,13 @@ export default function Help() {
   const openTopic = visibleTopics.find((topic) => topic.id === openTopicId) || null;
 
   return (
-    <MainLayout>
+    <MainLayout headerMode="integrated">
       <PageShell sx={{ gap: { xs: 1, sm: 1.5 }, pb: { xs: 1, sm: 1.5 } }}>
         {isMobile ? (
           <MobileShellPageHeader title="Справка и база знаний" sx={{ mb: 0, flexShrink: 0, minHeight: 40 }} />
-        ) : null}
+        ) : (
+          <PageTopBar title="Справка" sx={{ mb: 0, flexShrink: 0 }} />
+        )}
 
         <Stack spacing={{ xs: 1, sm: 1.5 }} sx={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
           <Paper

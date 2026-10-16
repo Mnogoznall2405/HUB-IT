@@ -25,6 +25,7 @@ function TasksPageContent() {
 
   return (
     <MainLayout
+      headerMode="integrated"
       mobileBottomNavMode={ui.isMobile && (detail.detailsOpen || create.createOpen) ? 'hidden' : 'auto'}
       contentMode={ui.isMobile ? 'edge-to-edge-mobile' : 'default'}
     >

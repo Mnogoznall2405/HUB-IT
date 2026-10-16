@@ -35,6 +35,7 @@ import StarOutlineOutlinedIcon from '@mui/icons-material/StarOutlineOutlined';
 import UploadFileOutlinedIcon from '@mui/icons-material/UploadFileOutlined';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import { departmentsAPI } from '../api/departments';
 import { kbAPI } from '../api/kb';
 import { useAuth } from '../contexts/AuthContext';
@@ -1363,31 +1364,42 @@ function KnowledgeBase() {
   const activeArticle = tab === 'templates' ? selectedTemplate : selectedArticle;
 
   return (
-    <MainLayout>
+    <MainLayout headerMode="integrated">
       <PageShell fullHeight>
         <Stack spacing={2} sx={{ height: '100%', minHeight: 0 }}>
-          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ xs: 'flex-start', md: 'center' }}>
-            <Box>
-              <Typography variant="h4">База знаний</Typography>
-              <Typography variant="body2" color="text.secondary">
-                Встроенный раздел для инструкций, шаблонов документов, карточек сервисов и ленты изменений.
-              </Typography>
-            </Box>
-            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-              <Button variant="outlined" href="/help">
-                ← К справке
-              </Button>
-              <Button variant={tab === 'articles' ? 'contained' : 'outlined'} onClick={handleOpenInstructions}>
-                Инструкции
-              </Button>
-              <Button variant="outlined" startIcon={<RefreshOutlinedIcon />} onClick={() => void refreshAll()}>
-                Обновить
-              </Button>
-              <Button variant="contained" startIcon={<OpenInNewIcon />} onClick={handleOpenWiki}>
-                Открыть Wiki
-              </Button>
-            </Stack>
-          </Stack>
+          <PageTopBar
+            title="База знаний"
+            sx={{ mb: 0, flexShrink: 0 }}
+            tabs={(
+              <Tabs
+                value={tab}
+                onChange={(_, value) => setTab(value)}
+                variant="scrollable"
+                scrollButtons="auto"
+                sx={{ minHeight: 36, minWidth: 0, flex: '0 1 auto', maxWidth: '100%', '& .MuiTab-root': { minHeight: 36, py: 0 } }}
+              >
+                {KB_TABS.map((item) => (
+                  <Tab key={item.value} value={item.value} label={item.label} />
+                ))}
+              </Tabs>
+            )}
+            actions={(
+              <>
+                <Button size="small" variant="outlined" href="/help">
+                  ← К справке
+                </Button>
+                <Button size="small" variant={tab === 'articles' ? 'contained' : 'outlined'} onClick={handleOpenInstructions}>
+                  Инструкции
+                </Button>
+                <Button size="small" variant="outlined" startIcon={<RefreshOutlinedIcon />} onClick={() => void refreshAll()}>
+                  Обновить
+                </Button>
+                <Button size="small" variant="contained" startIcon={<OpenInNewIcon />} onClick={handleOpenWiki}>
+                  Открыть Wiki
+                </Button>
+              </>
+            )}
+          />
 
           <Stack direction={{ xs: 'column', lg: 'row' }} spacing={1}>
             <Alert severity="info" sx={{ flex: 1 }}>
@@ -1401,13 +1413,6 @@ function KnowledgeBase() {
           </Stack>
 
           <Paper variant="outlined" sx={{ ...getOfficePanelSx(ui, { p: 0.6, display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }) }}>
-            <Tabs value={tab} onChange={(_, value) => setTab(value)} variant="scrollable" scrollButtons="auto">
-              {KB_TABS.map((item) => (
-                <Tab key={item.value} value={item.value} label={item.label} />
-              ))}
-            </Tabs>
-            <Divider />
-
             <Box sx={{ p: 1.5, flex: 1, minHeight: 0, overflow: 'auto' }}>
               {referenceLoading ? (
                 <Stack alignItems="center" justifyContent="center" sx={{ py: 8 }}>

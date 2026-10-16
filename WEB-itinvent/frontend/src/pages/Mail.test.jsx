@@ -132,7 +132,6 @@ vi.mock('../components/layout/MainLayout', () => ({
     headerMode = 'default',
     contentMode = 'default',
     mobileBottomNavMode = 'auto',
-    headerInlineContent = null,
   }) => (
     <div
       data-testid="layout"
@@ -140,7 +139,6 @@ vi.mock('../components/layout/MainLayout', () => ({
       data-content-mode={contentMode}
       data-mobile-bottom-nav-mode={mobileBottomNavMode}
     >
-      {headerInlineContent}
       {children}
     </div>
   ),

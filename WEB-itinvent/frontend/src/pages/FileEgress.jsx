@@ -31,6 +31,7 @@ import CloseIcon from '@mui/icons-material/Close';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import { fsEgressAPI } from '../api/fsEgress';
 
 const CHANNEL_LABELS = {
@@ -1809,7 +1810,7 @@ export default function FileEgress() {
   };
 
   return (
-    <MainLayout>
+    <MainLayout headerMode="integrated">
       <Dialog open={reportHtml !== null} onClose={() => setReportHtml(null)} maxWidth="lg" fullWidth>
         <DialogContent>
           <Button onClick={() => setReportHtml(null)}>Закрыть отчёт</Button>
@@ -1819,24 +1820,34 @@ export default function FileEgress() {
       </Dialog>
       <PageShell fullHeight sx={{ p: { xs: 1.25, md: 1.75 }, minHeight: 0 }}>
         <Stack spacing={1.25} sx={{ height: '100%', minHeight: 0, overflow: 'hidden' }}>
-          <Stack
-            direction="row"
-            justifyContent="space-between"
-            alignItems="center"
-            flexWrap="wrap"
-            gap={1}
-            sx={{ flexShrink: 0 }}
-          >
-            <Box sx={{ minWidth: 0 }}>
-              <Typography variant="h5" sx={{ lineHeight: 1.2 }}>DLP</Typography>
-              <Typography variant="body2" color="text.secondary" noWrap>
-                Хост → «Файлы», «Telegram», «MAX» или «Браузер». Права: Scan Center (`scan.read`).
-              </Typography>
-            </Box>
-            <Button startIcon={<RefreshIcon />} onClick={load} variant="outlined" sx={{ flexShrink: 0 }}>
-              Обновить
-            </Button>
-          </Stack>
+          <PageTopBar
+            title="DLP"
+            sx={{ mb: 0, flexShrink: 0 }}
+            tabs={selectedHost ? (
+              <Tabs
+                value={hostTab}
+                onChange={(_, value) => setHostTab(value)}
+                variant="scrollable"
+                scrollButtons="auto"
+                sx={{
+                  minHeight: 36,
+                  minWidth: 0,
+                  maxWidth: '100%',
+                  '& .MuiTab-root': { minHeight: 36, textTransform: 'none' },
+                }}
+              >
+                <Tab value="files" label={`Файлы (${hostFileCount})`} />
+                <Tab value="telegram" label={`Telegram (${hostChats.length})`} />
+                <Tab value="max" label={`MAX (${hostMaxChats.length})`} />
+                <Tab value="browser" label={`Браузер (${hostBrowserVisits.length})`} />
+              </Tabs>
+            ) : null}
+            actions={(
+              <Button size="small" startIcon={<RefreshIcon />} onClick={load} variant="outlined" sx={{ flexShrink: 0 }}>
+                Обновить
+              </Button>
+            )}
+          />
 
           {error ? <Alert severity="error" sx={{ flexShrink: 0 }}>{error}</Alert> : null}
 
@@ -1920,22 +1931,6 @@ export default function FileEgress() {
                   Актуальный отчёт
                 </Button>
               </Stack>
-
-              <Paper variant="outlined" sx={{ px: 1, flexShrink: 0 }}>
-                <Tabs
-                  value={hostTab}
-                  onChange={(_, value) => setHostTab(value)}
-                  sx={{
-                    minHeight: 40,
-                    '& .MuiTab-root': { minHeight: 40, textTransform: 'none' },
-                  }}
-                >
-                  <Tab value="files" label={`Файлы (${hostFileCount})`} />
-                  <Tab value="telegram" label={`Telegram (${hostChats.length})`} />
-                  <Tab value="max" label={`MAX (${hostMaxChats.length})`} />
-                  <Tab value="browser" label={`Браузер (${hostBrowserVisits.length})`} />
-                </Tabs>
-              </Paper>
 
               <Box sx={{ flex: 1, minHeight: 0, overflow: hostTab === 'files' || hostTab === 'browser' ? 'auto' : 'hidden' }}>
                 {hostTab === 'files' ? (

@@ -37,6 +37,7 @@ import SearchOutlinedIcon from '@mui/icons-material/SearchOutlined';
 import { useSearchParams } from 'react-router-dom';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import PasswordAuditAccordion from '../components/passwords/PasswordAuditAccordion';
 import PasswordEntryDetail from '../components/passwords/PasswordEntryDetail';
 import PasswordEntryList from '../components/passwords/PasswordEntryList';
@@ -811,7 +812,7 @@ function Passwords() {
   const formIsValid = normalizeText(form.group) && normalizeText(form.login) && (formMode === 'edit' || form.password);
 
   return (
-    <MainLayout>
+    <MainLayout headerMode="integrated">
       <PageShell
         fullHeight={!isMobile}
         sx={{
@@ -820,17 +821,73 @@ function Passwords() {
         }}
         data-testid="passwords-page"
       >
-        <Paper
-          elevation={0}
-          sx={{
-            flexShrink: 0,
-            p: 1.25,
-            border: `1px solid ${alpha(theme.palette.divider, 0.9)}`,
-            bgcolor: 'background.paper',
-          }}
-        >
-          <PasswordSectionTabs value={activeSection} onChange={handleSectionChange} />
-        </Paper>
+        {isMobile ? (
+          <Paper
+            elevation={0}
+            sx={{
+              flexShrink: 0,
+              p: 1.25,
+              border: `1px solid ${alpha(theme.palette.divider, 0.9)}`,
+              bgcolor: 'background.paper',
+            }}
+          >
+            <PasswordSectionTabs value={activeSection} onChange={handleSectionChange} />
+          </Paper>
+        ) : (
+          <PageTopBar
+            title="Пароли"
+            tabs={<PasswordSectionTabs value={activeSection} onChange={handleSectionChange} />}
+            sx={{ mb: 0, flexShrink: 0 }}
+            actions={activeSection === 'ad-expiry' ? null : (
+              <>
+                <Tooltip title="Обновить">
+                  <span>
+                    <IconButton onClick={loadEntries} disabled={loading} aria-label="Обновить пароли" size="small">
+                      <RefreshOutlinedIcon fontSize="small" />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+                {canWrite ? (
+                  <Button variant="contained" size="small" startIcon={<AddOutlinedIcon />} onClick={openCreateDialog}>
+                    Новая запись
+                  </Button>
+                ) : null}
+              </>
+            )}
+          >
+            {activeSection === 'ad-expiry' ? null : (
+              <>
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="Поиск по логину или описанию"
+                  placeholder="Нажмите / для фокуса. Теги — точным фильтром справа"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  inputRef={searchInputRef}
+                  sx={{ maxWidth: 520 }}
+                  InputProps={{
+                    startAdornment: (
+                      <InputAdornment position="start">
+                        <SearchOutlinedIcon fontSize="small" />
+                      </InputAdornment>
+                    ),
+                  }}
+                  inputProps={{
+                    'data-testid': 'password-search-input',
+                    autoComplete: 'off',
+                    spellCheck: false,
+                  }}
+                />
+                <FormControlLabel
+                  control={<Switch checked={includeArchived} onChange={(event) => setIncludeArchived(event.target.checked)} />}
+                  label="Архив"
+                  sx={{ flexShrink: 0, mr: 0 }}
+                />
+              </>
+            )}
+          </PageTopBar>
+        )}
 
         {activeSection === 'ad-expiry' ? (
           <PasswordAdExpiryView />
@@ -867,56 +924,6 @@ function Passwords() {
               requiresSetup={!user?.is_2fa_enabled}
               compact
             />
-
-            <Paper
-              elevation={0}
-              sx={{
-                flexShrink: 0,
-                border: `1px solid ${theme.palette.divider}`,
-                p: 1.25,
-              }}
-            >
-              <Stack direction="row" spacing={1} alignItems="center">
-                <TextField
-                  fullWidth
-                  size="small"
-                  label="Поиск по логину или описанию"
-                  placeholder="Нажмите / для фокуса. Теги — точным фильтром справа"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  inputRef={searchInputRef}
-                  InputProps={{
-                    startAdornment: (
-                      <InputAdornment position="start">
-                        <SearchOutlinedIcon fontSize="small" />
-                      </InputAdornment>
-                    ),
-                  }}
-                  inputProps={{
-                    'data-testid': 'password-search-input',
-                    autoComplete: 'off',
-                    spellCheck: false,
-                  }}
-                />
-                <FormControlLabel
-                  control={<Switch checked={includeArchived} onChange={(event) => setIncludeArchived(event.target.checked)} />}
-                  label="Архив"
-                  sx={{ flexShrink: 0, mr: 0 }}
-                />
-                <Tooltip title="Обновить">
-                  <span>
-                    <IconButton onClick={loadEntries} disabled={loading} aria-label="Обновить пароли" size="small">
-                      <RefreshOutlinedIcon fontSize="small" />
-                    </IconButton>
-                  </span>
-                </Tooltip>
-                {canWrite ? (
-                  <Button variant="contained" size="small" startIcon={<AddOutlinedIcon />} onClick={openCreateDialog}>
-                    Новая запись
-                  </Button>
-                ) : null}
-              </Stack>
-            </Paper>
           </>
         )}
 

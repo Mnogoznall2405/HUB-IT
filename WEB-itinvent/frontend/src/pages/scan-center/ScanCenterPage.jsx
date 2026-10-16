@@ -520,7 +520,7 @@ function ScanCenterPage() {
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const incidentWorkAreaHeight = isMobile
     ? 'min(70dvh, 640px)'
-    : 'calc(100dvh - var(--app-shell-top-offset, var(--app-shell-header-offset)) - 360px)';
+    : 'calc(100dvh - var(--app-shell-top-offset, 0px) - 360px)';
   const { hasPermission } = useAuth();
   const canScanRead = hasPermission('scan.read');
   const canScanAck = hasPermission('scan.ack');
@@ -1945,10 +1945,11 @@ function ScanCenterPage() {
   };
 
   return (
-    <MainLayout showDatabaseSelector>
-      <PageShell sx={{ width: '100%', pb: isMobile ? 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 8px)' : 2, minHeight: isMobile ? undefined : 'calc(100dvh - var(--app-shell-top-offset, var(--app-shell-header-offset)) - 32px)' }}>
+    <MainLayout showDatabaseSelector headerMode="integrated">
+      <PageShell sx={{ width: '100%', pb: isMobile ? 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 8px)' : 2, minHeight: isMobile ? undefined : 'calc(100dvh - var(--app-shell-top-offset, 0px) - 32px)' }}>
         {isMobile ? <MobileShellPageHeader title="Scan Center" showDatabaseSelector /> : null}
         <ScanCenterHeader
+          integrated={!isMobile}
           dashboard={dashboard}
           taskNotice={taskNotice}
           autoRefreshPaused={autoRefreshPaused}

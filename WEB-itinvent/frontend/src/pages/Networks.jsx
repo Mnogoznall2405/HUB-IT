@@ -52,6 +52,7 @@ import LockIcon from '@mui/icons-material/Lock';
 import LockOpenIcon from '@mui/icons-material/LockOpen';
 import MainLayout from '../components/layout/MainLayout';
 import MobileShellPageHeader from '../components/layout/MobileShellPageHeader';
+import PageTopBar from '../components/layout/PageTopBar';
 import PageShell from '../components/layout/PageShell';
 import InteractiveMapCanvas from '../components/networks/InteractiveMapCanvas';
 import BranchList from '../components/networks/BranchList';
@@ -2596,7 +2597,7 @@ function Networks() {
   const mapsPageScroll = tab === 'maps';
 
   return (
-    <MainLayout showDatabaseSelector>
+    <MainLayout showDatabaseSelector headerMode="integrated">
       <PageShell
         fullHeight={!isMobile && !mapsPageScroll}
         sx={isMobile
@@ -2607,22 +2608,20 @@ function Networks() {
       >
         {isMobile ? <MobileShellPageHeader title="Сети" showDatabaseSelector /> : null}
         {!isMobile && (
-          <Stack direction="row" justifyContent="space-between" spacing={1.5} sx={{ mb: 2, flexShrink: 0 }}>
-            <Box>
-              <Typography variant="h4">Сети</Typography>
-              <Typography variant="body2" color="text.secondary">Филиалы, оборудование и карты сети</Typography>
-            </Box>
-            {canEdit && (
-              <Stack direction="row" spacing={1}>
+          <PageTopBar
+            title="Сети"
+            sx={{ flexShrink: 0 }}
+            actions={canEdit ? (
+              <>
                 {!branchIdNum && (
-                  <Button variant="contained" onClick={() => { setCreateBranchDefaultSiteCode(''); setCreateBranchOpen(true); }}>
+                  <Button size="small" variant="contained" onClick={() => { setCreateBranchDefaultSiteCode(''); setCreateBranchOpen(true); }}>
                     Создать филиал
                   </Button>
                 )}
-                {branchIdNum && <Button variant="contained" onClick={openMapDialogCreate}>Добавить карту</Button>}
-              </Stack>
-            )}
-          </Stack>
+                {branchIdNum && <Button size="small" variant="contained" onClick={openMapDialogCreate}>Добавить карту</Button>}
+              </>
+            ) : null}
+          />
         )}
         {isMobile && canEdit && !branchIdNum && (
           <Box sx={{ mb: 1 }}>

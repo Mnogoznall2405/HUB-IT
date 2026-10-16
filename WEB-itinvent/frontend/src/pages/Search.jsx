@@ -21,6 +21,7 @@ import {
 import { useTheme } from '@mui/material/styles';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import { equipmentAPI } from '../api/client';
 import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
 
@@ -77,12 +78,10 @@ function Search() {
   };
 
   return (
-    <MainLayout>
+    <MainLayout headerMode="integrated">
       <PageShell>
         <Box>
-          <Typography variant="h4" gutterBottom>
-            Поиск оборудования
-          </Typography>
+          <PageTopBar title="Поиск оборудования" />
 
           <Paper variant="outlined" sx={{ ...getOfficePanelSx(ui, { p: 0.5 }) }}>
             <Tabs value={tabValue} onChange={handleTabChange}>

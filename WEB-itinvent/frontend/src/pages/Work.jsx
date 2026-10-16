@@ -1,15 +1,14 @@
 import { Box, Typography } from '@mui/material';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 
 function Work() {
   return (
-    <MainLayout>
+    <MainLayout headerMode="integrated">
       <PageShell>
         <Box>
-          <Typography variant="h4" gutterBottom>
-            Учёт работ
-          </Typography>
+          <PageTopBar title="Учёт работ" />
           <Typography variant="body1" color="text.secondary">
             Страница в разработке.
           </Typography>

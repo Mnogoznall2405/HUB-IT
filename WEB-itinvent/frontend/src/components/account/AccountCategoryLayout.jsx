@@ -5,6 +5,7 @@ import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import { useNavigate } from 'react-router-dom';
 import MainLayout from '../layout/MainLayout';
 import PageShell from '../layout/PageShell';
+import PageTopBar from '../layout/PageTopBar';
 import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
 
 function CategoryButton({ category, selected, onClick }) {
@@ -62,17 +63,19 @@ export default function AccountCategoryLayout({
   const ui = buildOfficeUiTokens(theme);
   const navigate = useNavigate();
   const isDesktop = useMediaQuery(theme.breakpoints.up('md'));
+  const isPhone = useMediaQuery(theme.breakpoints.down('sm'));
   const activeCategory = categories.find((item) => item.key === activeKey) || null;
   const showCategoryIndex = !isDesktop && !activeCategory;
 
   return (
-    <MainLayout>
+    <MainLayout headerMode="integrated">
       <PageShell
         sx={{
           minHeight: 0,
           pb: { xs: 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 10px)', md: 2 },
         }}
       >
+        {isPhone ? null : <PageTopBar title={title} sx={{ maxWidth: 1180, mx: 'auto', width: '100%' }} />}
         <Stack spacing={1.25} sx={{ maxWidth: 1180, mx: 'auto', width: '100%' }}>
           <Paper
             sx={{

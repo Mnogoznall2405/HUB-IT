@@ -133,6 +133,7 @@ export default function ChatSidebarDesktopHeader({
   const { collapsed, setCollapsed } = useChatSidebarSizing();
   const shell = useMainLayoutShell();
   const shellActions = shell.headerMode === 'hidden';
+  const menuAction = shellActions && !shell.sidebarPinned;
   const expand = () => setCollapsed?.(false);
   const action = (title, onClick, icon, disabled = false) => (
     <SidebarActionButton title={title} onClick={onClick} disabled={disabled} ui={ui}>{icon}</SidebarActionButton>
@@ -141,7 +142,7 @@ export default function ChatSidebarDesktopHeader({
   if (collapsed) {
     return (
       <div data-testid="chat-sidebar-desktop-header" className="grid grid-cols-2 justify-items-center py-2">
-        {shellActions ? action('Открыть главное меню', shell.openDrawer, <MenuRoundedIcon fontSize="small" />) : null}
+        {menuAction ? action('Открыть главное меню', shell.openDrawer, <MenuRoundedIcon fontSize="small" />) : null}
         {action('Разделы и папки чатов', expand, <FolderOutlinedIcon fontSize="small" />)}
         {showAiSection ? (
           <CollapsedWorkspaceTabs
@@ -165,7 +166,7 @@ export default function ChatSidebarDesktopHeader({
     <div data-testid="chat-sidebar-desktop-header" className="mb-1.5 min-w-0">
       {/* Д2: ряд «☰ + поиск-пилюля» как в Telegram Web A */}
       <div className="flex min-w-0 items-center gap-1">
-        {shellActions ? action('Открыть главное меню', shell.openDrawer, <MenuRoundedIcon fontSize="small" />) : null}
+        {menuAction ? action('Открыть главное меню', shell.openDrawer, <MenuRoundedIcon fontSize="small" />) : null}
         {search ? (
           <div
             className="flex min-w-0 flex-1 items-center rounded-full border px-3 transition duration-150"

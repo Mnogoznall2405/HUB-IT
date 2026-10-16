@@ -34,6 +34,7 @@ import MemoryIcon from '@mui/icons-material/Memory';
 import MainLayout from '../components/layout/MainLayout';
 import MobileShellPageHeader from '../components/layout/MobileShellPageHeader';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import { jsonAPI } from '../api/json_client';
 import { useNotification } from '../contexts/NotificationContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -394,10 +395,66 @@ function Statistics() {
           ? 'Статистика замены батарей ИБП'
           : 'Статистика комплектующих ПК';
 
+  const renderTabs = (tabsSx) => (
+    <Tabs value={tab} onChange={(_, nextValue) => setTab(nextValue)} sx={tabsSx}>
+      <Tab value="pc" label="Чистка ПК" />
+      {canViewMfu && <Tab value="mfu" label="МФУ" />}
+      <Tab value="battery" label="Батареи" />
+      <Tab value="pc_components" label="Комплектующие ПК" />
+    </Tabs>
+  );
+
   return (
-    <MainLayout showDatabaseSelector>
+    <MainLayout showDatabaseSelector headerMode="integrated">
       <PageShell>
         {isMobile ? <MobileShellPageHeader title="Статистика" showDatabaseSelector /> : null}
+        {!isMobile ? (
+          <>
+            <PageTopBar
+              title="Статистика"
+              tabs={renderTabs({ minHeight: 36, '& .MuiTab-root': { minHeight: 36, py: 0 } })}
+              actions={(
+                <Button
+                  size="small"
+                  variant="contained"
+                  startIcon={<DownloadIcon />}
+                  onClick={handleExportExcel}
+                  disabled={loading || exporting}
+                >
+                  {exporting ? 'Экспорт...' : 'Экспорт Excel'}
+                </Button>
+              )}
+              sx={{ mb: 0.5 }}
+            >
+              <FormControl size="small" sx={{ minWidth: 150 }}>
+                <InputLabel id="stats-period-label">Период</InputLabel>
+                <Select
+                  labelId="stats-period-label"
+                  label="Период"
+                  value={periodDays}
+                  onChange={(event) => setPeriodDays(Number(event.target.value))}
+                >
+                  {PERIOD_OPTIONS.map((option) => (
+                    <MenuItem key={option.value} value={option.value}>
+                      {option.label}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <TextField
+                size="small"
+                label={tab === 'pc' ? 'Фильтр по филиалу' : 'Фильтр по филиалу/локации'}
+                value={searchText}
+                onChange={(event) => setSearchText(event.target.value)}
+                sx={{ minWidth: 200 }}
+              />
+            </PageTopBar>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+              {titleText} · Период: {currentStats.start_date || '-'} - {currentStats.end_date || '-'}
+            </Typography>
+          </>
+        ) : null}
+        {isMobile ? (
         <Stack
           direction={{ xs: 'column', md: 'row' }}
           spacing={2}
@@ -452,13 +509,9 @@ function Statistics() {
             </Button>
           </Stack>
         </Stack>
+        ) : null}
 
-        <Tabs value={tab} onChange={(_, nextValue) => setTab(nextValue)} sx={{ mb: 2 }}>
-          <Tab value="pc" label="Чистка ПК" />
-          {canViewMfu && <Tab value="mfu" label="МФУ" />}
-          <Tab value="battery" label="Батареи" />
-          <Tab value="pc_components" label="Комплектующие ПК" />
-        </Tabs>
+        {isMobile ? renderTabs({ mb: 2 }) : null}
 
         {loading && <LinearProgress sx={{ mb: 2 }} />}
 

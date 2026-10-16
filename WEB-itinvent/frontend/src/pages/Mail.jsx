@@ -24,6 +24,7 @@ import MailOutlineIcon from '@mui/icons-material/MailOutline';
 import { useLocation, useNavigate } from 'react-router-dom';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import { mailAPI } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
@@ -2674,7 +2675,7 @@ function Mail() {
     <MainLayout
       contentMode={isMobile ? 'edge-to-edge-mobile' : 'edge-to-edge'}
       mobileBottomNavMode={isMobileFullscreenPreview ? 'hidden' : 'auto'}
-      headerInlineContent={!isMobile ? mailToolbar : null}
+      headerMode="integrated"
     >
       <PageShell
         fullHeight={!isMobile}
@@ -2697,6 +2698,11 @@ function Mail() {
           '--mail-radius-lg': ui.radiusLg,
         }}
       >
+        {!isMobile ? (
+          <PageTopBar title="Почта" sx={{ px: 1.5, pt: 0.75, mb: 0.5, flexShrink: 0 }}>
+            {mailToolbar}
+          </PageTopBar>
+        ) : null}
         {showPageChrome && error ? <Alert severity="error" onClose={() => setError('')} sx={{ borderRadius: ui.radiusMd, mb: 1 }}>{error}</Alert> : null}
         {showPageChrome && showSaveMailForAllDevicesBanner ? (
           <Alert

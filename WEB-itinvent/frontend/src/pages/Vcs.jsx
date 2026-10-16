@@ -43,6 +43,7 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import { vcsAPI } from '../api/vcs';
 import { buildOfficeUiTokens } from '../theme/officeUiTokens';
 import {
@@ -377,8 +378,9 @@ const Vcs = () => {
 
     if (!canReadVcs) {
         return (
-            <MainLayout title="ВКС терминалы">
+            <MainLayout headerMode="integrated">
                 <PageShell sx={{ p: 3 }}>
+                    <PageTopBar title="Терминалы ВКС" />
                     <Alert severity="error">У вас нет прав для просмотра терминалов ВКС.</Alert>
                 </PageShell>
             </MainLayout>
@@ -386,95 +388,60 @@ const Vcs = () => {
     }
 
     return (
-        <MainLayout title="ВКС терминалы">
+        <MainLayout headerMode="integrated">
             <PageShell sx={{ p: { xs: 2, md: 4 }, maxWidth: 1400, mx: 'auto', flexGrow: 1 }}>
-                <Box sx={{ display: 'flex', flexDirection: { xs: 'column', md: 'row' }, gap: 2, justifyContent: 'space-between', alignItems: { xs: 'stretch', md: 'center' }, mb: 4 }}>
-                    <Box>
-                        <Typography
-                            variant="h4"
-                            component="h1"
-                            gutterBottom
-                            fontWeight="700"
-                            sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}
-                        >
-                            <VncIcon fontSize="large" color="primary" />
-                            Терминалы ВКС
-                        </Typography>
-                        <Typography variant="body1" color="text.secondary">
-                            Управление компьютерами видеоконференцсвязи и прямое подключение по VNC
-                        </Typography>
-                    </Box>
-
-                    <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-                        <Button
-                            variant="outlined"
-                            color="info"
-                            startIcon={<DownloadIcon />}
-                            onClick={() => vcsAPI.downloadVncRegFile()}
-                            sx={{
-                                borderRadius: 2,
-                                px: 2,
-                                py: 1,
-                                textTransform: 'none',
-                                fontWeight: 600,
-                            }}
-                        >
-                            Установить VNC протокол
-                        </Button>
-                        {canManageVcs && (
+                <PageTopBar
+                    title="Терминалы ВКС"
+                    actions={(
+                        <>
                             <Button
+                                size="small"
                                 variant="outlined"
-                                color="secondary"
-                                onClick={handleOpenConfigDialog}
-                                sx={{
-                                    borderRadius: 2,
-                                    px: 2,
-                                    py: 1,
-                                    textTransform: 'none',
-                                    fontWeight: 600,
-                                }}
+                                color="info"
+                                startIcon={<DownloadIcon />}
+                                onClick={() => vcsAPI.downloadVncRegFile()}
+                                sx={{ textTransform: 'none', fontWeight: 600 }}
                             >
-                                Настройки VNC
+                                Установить VNC протокол
                             </Button>
-                        )}
-                        {canManageVcs && (
-                            <Button
-                                variant="outlined"
-                                onClick={handleOpenInfoDialog}
-                                startIcon={<EditIcon />}
-                                sx={{
-                                    borderRadius: 2,
-                                    px: 2,
-                                    py: 1,
-                                    textTransform: 'none',
-                                    fontWeight: 600,
-                                }}
-                            >
-                                Ред. справочник
-                            </Button>
-                        )}
-                        {canManageVcs && (
-                            <Button
-                                variant="contained"
-                                color="primary"
-                                startIcon={<AddIcon />}
-                                onClick={() => handleOpenDialog()}
-                                sx={{
-                                    borderRadius: 2,
-                                    px: 2,
-                                    py: 1,
-                                    textTransform: 'none',
-                                    fontWeight: 600,
-                                    boxShadow: theme.palette.mode === 'dark'
-                                        ? 'none'
-                                        : 'none',
-                                }}
-                            >
-                                Добавить терминал
-                            </Button>
-                        )}
-                    </Box>
-                </Box>
+                            {canManageVcs && (
+                                <Button
+                                    size="small"
+                                    variant="outlined"
+                                    color="secondary"
+                                    onClick={handleOpenConfigDialog}
+                                    sx={{ textTransform: 'none', fontWeight: 600 }}
+                                >
+                                    Настройки VNC
+                                </Button>
+                            )}
+                            {canManageVcs && (
+                                <Button
+                                    size="small"
+                                    variant="outlined"
+                                    onClick={handleOpenInfoDialog}
+                                    startIcon={<EditIcon />}
+                                    sx={{ textTransform: 'none', fontWeight: 600 }}
+                                >
+                                    Ред. справочник
+                                </Button>
+                            )}
+                            {canManageVcs && (
+                                <Button
+                                    size="small"
+                                    variant="contained"
+                                    color="primary"
+                                    startIcon={<AddIcon />}
+                                    onClick={() => handleOpenDialog()}
+                                    sx={{ textTransform: 'none', fontWeight: 600, boxShadow: 'none' }}
+                                >
+                                    Добавить терминал
+                                </Button>
+                            )}
+                        </>
+                    )}
+                    sx={{ mb: 3 }}
+                />
 
                 {error && (
                     <Alert severity="error" sx={{ mb: 4, borderRadius: 2 }}>{error}</Alert>

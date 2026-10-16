@@ -42,6 +42,7 @@ import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 import AssignmentTurnedInOutlinedIcon from '@mui/icons-material/AssignmentTurnedInOutlined';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import { hubAPI } from '../api/client';
 import { chatNotificationsAPI } from '../api/chatNotifications';
 import { mailNotificationsAPI } from '../api/mailNotifications';
@@ -1327,8 +1328,9 @@ export default function Dashboard() {
   const hasSecondarySections = secondarySectionKeys.length > 0;
 
   return (
-    <MainLayout>
+    <MainLayout headerMode="integrated">
       <PageShell sx={{ pb: isMobile ? 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 8px)' : undefined }}>
+        {isMobile ? null : <PageTopBar title="Главная" sx={{ maxWidth: 1320, mx: 'auto', width: '100%' }} />}
         <Stack spacing={{ xs: 1, sm: 1.25 }} sx={{ maxWidth: 1320, mx: 'auto', width: '100%' }}>
           <Paper
             data-testid="dashboard-today-header"

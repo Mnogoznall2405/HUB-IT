@@ -40,6 +40,7 @@ import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import { warehouse1cItRequestsAPI } from '../api/warehouse1cItRequests';
 
 const AUTO_REFRESH_MS = 5 * 60 * 1000;
@@ -952,7 +953,7 @@ export default function ItPurchaseRequests() {
   const showMobileDetail = !isWide && Boolean(requestRef);
 
   return (
-    <MainLayout pageTitle="Заявки на МПЗ">
+    <MainLayout pageTitle="Заявки на МПЗ" headerMode="integrated">
       <PageShell
         fullHeight
         sx={{
@@ -964,43 +965,44 @@ export default function ItPurchaseRequests() {
         }}
       >
         {!showMobileDetail ? (
-          <Box component="header">
-            <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1.5}>
-              <Box>
-                <Typography component="h1" variant="h4" fontWeight={850}>Заявки на МПЗ</Typography>
-                <Typography color="text.secondary">ИТ-заявки и их движение по документам 1С</Typography>
-              </Box>
-              <Stack direction="row" alignItems="center" spacing={1}>
-                <Typography variant="caption" color="text.secondary" role="status" aria-live="polite">
-                  {asOf ? `Обновлено ${formatDate(asOf, true)}` : 'Данные ещё не загружены'}
-                </Typography>
-                <Tooltip title="Обновить список и открытую заявку">
-                  <span>
-                    <IconButton
-                      aria-label="Обновить список и открытую заявку"
-                      onClick={() => void refreshAll({ forceRefresh: true })}
-                      disabled={refreshing || loading}
-                      sx={{ minWidth: 44, minHeight: 44 }}
-                    >
-                      <RefreshRoundedIcon />
-                    </IconButton>
-                  </span>
-                </Tooltip>
-              </Stack>
-            </Stack>
-
-            <Tabs
-              value={view}
-              onChange={(_, value) => setView(value)}
-              aria-label="Состояние заявок"
-              variant="scrollable"
-              allowScrollButtonsMobile
-              sx={{ mt: 1.5, minHeight: 44, '& .MuiTab-root': { minHeight: 44 } }}
-            >
-              <Tab value="active" label="Активные" />
-              <Tab value="history" label="История" />
-              <Tab value="all" label="Все" />
-            </Tabs>
+          <Box>
+            <PageTopBar
+              title="Заявки на МПЗ"
+              tabs={(
+                <Tabs
+                  value={view}
+                  onChange={(_, value) => setView(value)}
+                  aria-label="Состояние заявок"
+                  variant="scrollable"
+                  allowScrollButtonsMobile
+                  sx={{ minHeight: 44, minWidth: 0, '& .MuiTab-root': { minHeight: 44 } }}
+                >
+                  <Tab value="active" label="Активные" />
+                  <Tab value="history" label="История" />
+                  <Tab value="all" label="Все" />
+                </Tabs>
+              )}
+              actions={(
+                <>
+                  <Typography variant="caption" color="text.secondary" role="status" aria-live="polite">
+                    {asOf ? `Обновлено ${formatDate(asOf, true)}` : 'Данные ещё не загружены'}
+                  </Typography>
+                  <Tooltip title="Обновить список и открытую заявку">
+                    <span>
+                      <IconButton
+                        size="small"
+                        aria-label="Обновить список и открытую заявку"
+                        onClick={() => void refreshAll({ forceRefresh: true })}
+                        disabled={refreshing || loading}
+                        sx={{ width: 36, height: 36 }}
+                      >
+                        <RefreshRoundedIcon fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                </>
+              )}
+            />
 
             <Paper
               component="section"

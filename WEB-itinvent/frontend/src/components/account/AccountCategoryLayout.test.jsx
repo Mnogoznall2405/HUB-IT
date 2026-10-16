@@ -27,7 +27,7 @@ const categories = [
 
 function installMatchMedia(desktop) {
   window.matchMedia = vi.fn().mockImplementation((query) => ({
-    matches: desktop && query.includes('min-width:900px'),
+    matches: desktop ? query.includes('min-width:900px') : query.includes('max-width:599.95px'),
     media: query,
     onchange: null,
     addEventListener: () => {},

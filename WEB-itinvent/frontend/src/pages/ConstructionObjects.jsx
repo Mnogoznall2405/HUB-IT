@@ -36,6 +36,7 @@ import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import ConstructionObjectSettingsDialog from '../components/construction/ConstructionObjectSettingsDialog';
 import ConstructionPersonLink from '../components/construction/ConstructionPersonLink';
 import { OBJECT_TEAM_ROLES } from '../components/construction/constructionShared';
@@ -497,44 +498,42 @@ export default function ConstructionObjects() {
   ), [windowFrom]);
 
   return (
-    <MainLayout pageTitle="Объекты строительства">
+    <MainLayout headerMode="integrated" pageTitle="Объекты строительства">
       <PageShell sx={{ minWidth: 0, p: { xs: 1, sm: 2, lg: 2.5 }, '& .MuiButton-root': { textTransform: 'none', fontWeight: 600 }, '& input': { fontSize: { xs: 16, sm: 14 } } }}>
         <Stack spacing={{ xs: 1.5, sm: 2 }}>
-          <Stack component="header" direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1.5}>
-            <Box sx={{ minWidth: 0 }}>
-              <Typography component="h1" variant="h4" fontWeight={900} sx={{ overflowWrap: 'anywhere' }}>
-                Объекты строительства
-              </Typography>
-              <Typography color="text.secondary">
-              Команды, направления, ход работ и снабжение объектов
-              </Typography>
-            </Box>
-            <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ xs: 'stretch', sm: 'center' }} spacing={1}>
-              <Typography variant="caption" color="text.secondary" role="status" aria-live="polite">
-                {asOf ? `Обновлено ${formatDate(asOf, true)} · ${shownPeriod}` : 'Данные ещё не загружены'}
-              </Typography>
-              <Button
-                variant="outlined"
-                startIcon={<RefreshRoundedIcon />}
-                onClick={() => void loadObjects({ silent: true, forceRefresh: true })}
-                disabled={loading || refreshing}
-                sx={{ minHeight: 44, flexShrink: 0 }}
-              >
-                Обновить
-              </Button>
-              {canWrite ? (
+          <PageTopBar
+            title="Объекты строительства"
+            sx={{ mb: 0 }}
+            actions={(
+              <>
+                <Typography variant="caption" color="text.secondary" role="status" aria-live="polite" sx={{ display: { xs: 'none', md: 'block' } }}>
+                  {asOf ? `Обновлено ${formatDate(asOf, true)} · ${shownPeriod}` : 'Данные ещё не загружены'}
+                </Typography>
                 <Button
-                  variant="contained"
-                  startIcon={<AddRoundedIcon />}
-                  onClick={() => setSettingsItem(null)}
-                  disabled={!managementAvailable}
-                  sx={{ minHeight: 44, flexShrink: 0 }}
+                  size="small"
+                  variant="outlined"
+                  startIcon={<RefreshRoundedIcon />}
+                  onClick={() => void loadObjects({ silent: true, forceRefresh: true })}
+                  disabled={loading || refreshing}
+                  sx={{ flexShrink: 0 }}
                 >
-                  Создать объект
+                  Обновить
                 </Button>
-              ) : null}
-            </Stack>
-          </Stack>
+                {canWrite ? (
+                  <Button
+                    size="small"
+                    variant="contained"
+                    startIcon={<AddRoundedIcon />}
+                    onClick={() => setSettingsItem(null)}
+                    disabled={!managementAvailable}
+                    sx={{ flexShrink: 0 }}
+                  >
+                    Создать объект
+                  </Button>
+                ) : null}
+              </>
+            )}
+          />
 
           <Paper
             component="section"

@@ -1,15 +1,14 @@
 import { Box, Typography } from '@mui/material';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 
 function Transfer() {
   return (
-    <MainLayout>
+    <MainLayout headerMode="integrated">
       <PageShell>
         <Box>
-          <Typography variant="h4" gutterBottom>
-            Перемещение оборудования
-          </Typography>
+          <PageTopBar title="Перемещение оборудования" />
           <Typography variant="body1" color="text.secondary">
             Страница в разработке.
           </Typography>

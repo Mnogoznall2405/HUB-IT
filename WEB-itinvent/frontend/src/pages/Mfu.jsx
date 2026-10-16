@@ -39,6 +39,7 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import MainLayout from '../components/layout/MainLayout';
 import MobileShellPageHeader from '../components/layout/MobileShellPageHeader';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import { mfuAPI, equipmentAPI } from '../api/client';
 import jsonAPI from '../api/json_client';
 import { useAuth } from '../contexts/AuthContext';
@@ -962,26 +963,41 @@ function Mfu() {
   const snmpDetailHelper = `ошибки: ${snmpError}, неизвестно: ${snmpUnknown}`;
 
   return (
-    <MainLayout showDatabaseSelector>
+    <MainLayout showDatabaseSelector headerMode="integrated">
       <PageShell sx={{ width: '100%', pb: isMobile ? 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 8px)' : 2 }}>
         {isMobile ? <MobileShellPageHeader title="МФУ" showDatabaseSelector /> : null}
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <PrintIcon color="primary" />
-            <Typography variant="h5" sx={{ fontWeight: 700 }}>МФУ, принтеры и плоттеры</Typography>
-            <Chip size="small" variant="outlined" label={`БД: ${payload.db_id || '-'}`} />
+        {isMobile ? (
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <PrintIcon color="primary" />
+              <Typography variant="h5" sx={{ fontWeight: 700 }}>МФУ, принтеры и плоттеры</Typography>
+              <Chip size="small" variant="outlined" label={`БД: ${payload.db_id || '-'}`} />
+            </Box>
+            <Tooltip title="Обновить">
+              <span>
+                <IconButton onClick={() => reload()} disabled={loading} color="primary">
+                  <RefreshIcon />
+                </IconButton>
+              </span>
+            </Tooltip>
           </Box>
-          <Tooltip title="Обновить">
-            <span>
-              <IconButton onClick={() => reload()} disabled={loading} color="primary">
-                <RefreshIcon />
-              </IconButton>
-            </span>
-          </Tooltip>
-        </Box>
+        ) : (
+          <PageTopBar
+            title="МФУ, принтеры и плоттеры"
+            actions={(
+              <Tooltip title="Обновить">
+                <span>
+                  <IconButton size="small" onClick={() => reload()} disabled={loading} color="primary" aria-label="Обновить">
+                    <RefreshIcon fontSize="small" />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            )}
+          />
+        )}
 
         {payload.generated_at ? (
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5, mt: -1 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5, mt: isMobile ? -1 : 0 }}>
             Обновлено: {formatDateTime(payload.generated_at)}
           </Typography>
         ) : null}

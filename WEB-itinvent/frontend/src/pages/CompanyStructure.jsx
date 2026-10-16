@@ -29,6 +29,7 @@ import SearchIcon from '@mui/icons-material/Search';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import { companyStructureAPI } from '../api/companyStructure';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
@@ -87,6 +88,7 @@ const CompanyStructure = () => {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  const isPhone = useMediaQuery(theme.breakpoints.down('sm'));
   const { hasPermission } = useAuth();
   const { notifySuccess, notifyApiError } = useNotification();
   const canWrite = hasPermission('company_structure.write');
@@ -302,47 +304,159 @@ const CompanyStructure = () => {
     }
   };
 
+  const modeToggleNode = canWrite ? (
+    <ToggleButtonGroup
+      exclusive
+      size="small"
+      value={mode}
+      onChange={(_, nextMode) => nextMode && setMode(nextMode)}
+      aria-label="Режим страницы"
+    >
+      <ToggleButton value="explore" sx={viewToggleSx}>
+        <VisibilityOutlinedIcon fontSize="small" sx={{ mr: 0.75 }} />
+        Сотрудник
+      </ToggleButton>
+      <ToggleButton value="admin" sx={viewToggleSx}>
+        <EditOutlinedIcon fontSize="small" sx={{ mr: 0.75 }} />
+        Администратор
+      </ToggleButton>
+    </ToggleButtonGroup>
+  ) : null;
+
+  const refreshButtonNode = (
+    <Button
+      aria-label="Обновить структуру"
+      startIcon={<RefreshIcon />}
+      onClick={() => void loadTree()}
+      disabled={loading}
+      sx={{ minWidth: { xs: 40, sm: 'auto' } }}
+    >
+      <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>Обновить</Box>
+    </Button>
+  );
+
+  const searchNode = (
+    <Autocomplete
+      size="small"
+      options={searchOptions}
+      inputValue={searchQuery}
+      loading={searchLoading}
+      filterOptions={(options) => options}
+      getOptionLabel={(option) => (typeof option === 'string' ? option : option?.title || '')}
+      isOptionEqualToValue={(option, value) => option.kind === value.kind && option.title === value.title}
+      onInputChange={(_, value) => setSearchQuery(value)}
+      onChange={handleSearchChoice}
+      noOptionsText={searchQuery.trim().length < 2 ? 'Введите минимум 2 символа' : 'Ничего не найдено'}
+      sx={{ minWidth: 0, width: '100%', maxWidth: { xs: 'none', sm: 480 }, flex: { lg: '1 1 420px' } }}
+      renderInput={(params) => (
+        <TextField
+          {...params}
+          placeholder="Найти сотрудника или подразделение"
+          inputProps={{ ...params.inputProps, 'aria-label': 'Поиск по структуре компании' }}
+          InputProps={{
+            ...params.InputProps,
+            startAdornment: (
+              <>
+                <InputAdornment position="start"><SearchIcon color="action" /></InputAdornment>
+                {params.InputProps.startAdornment}
+              </>
+            ),
+          }}
+        />
+      )}
+      renderOption={(props, option) => (
+        <li {...props} key={`${option.kind}-${option.title}-${option.node_id || ''}`}>
+          <ListItemText
+            primary={option.title}
+            secondary={[
+              option.kind === 'person' ? option.subtitle : 'Подразделение',
+              option.department_location,
+              option.path?.map((part) => part.title).join(' / '),
+            ].filter(Boolean).join(' · ')}
+          />
+        </li>
+      )}
+    />
+  );
+
+  const blockTabsNode = blocks.length ? (
+    <Box sx={{ width: { xs: '100%', lg: 'auto' }, minWidth: 0, maxWidth: { lg: '42vw' }, overflow: 'hidden' }}>
+      <Tabs
+        value={activeBlockId}
+        onChange={changeBlock}
+        variant="scrollable"
+        scrollButtons="auto"
+        aria-label="Блок компании"
+        sx={{
+          minHeight: 40,
+          '& .MuiTab-root': { minHeight: 40, px: 1.5, py: 0.5 },
+        }}
+      >
+        {blocks.map((block) => (
+          <Tab key={block.id} value={String(block.id)} label={nodeCardTitle(block)} />
+        ))}
+      </Tabs>
+    </Box>
+  ) : null;
+
+  const explorerViewToggleNode = (
+    <ToggleButtonGroup
+      exclusive
+      size="small"
+      value={isMobile ? 'focus' : explorerView}
+      onChange={(_, value) => changeExplorerView(value)}
+      aria-label="Вид структуры"
+      sx={{ flexShrink: 0, alignSelf: { xs: 'stretch', lg: 'center' } }}
+    >
+      <ToggleButton value="focus" sx={{ ...viewToggleSx, minHeight: 40, flex: { xs: 1, lg: 'initial' } }}>
+        <CorporateFareOutlinedIcon fontSize="small" sx={{ mr: 0.75 }} />
+        Фокус
+      </ToggleButton>
+      {!isMobile ? (
+        <ToggleButton value="overview" sx={{ ...viewToggleSx, minHeight: 40, flex: { xs: 1, lg: 'initial' } }}>
+          <AccountTreeOutlinedIcon fontSize="small" sx={{ mr: 0.75 }} />
+          Обзор
+        </ToggleButton>
+      ) : null}
+    </ToggleButtonGroup>
+  );
+
+  const exploreControlsVisible = !loading && mode === 'explore';
+
   return (
-    <MainLayout>
+    <MainLayout headerMode="integrated">
       <PageShell sx={{ pb: isMobile ? 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 12px)' : 2 }}>
         <Stack spacing={1.25}>
-          <Stack
-            direction={{ xs: 'column', sm: 'row' }}
-            spacing={1}
-            alignItems={{ xs: 'stretch', sm: 'center' }}
-            justifyContent="space-between"
-          >
-            <Typography variant="h6" fontWeight={750}>Структура компании</Typography>
-            <Stack direction="row" spacing={1} alignItems="center">
-              {canWrite ? (
-                <ToggleButtonGroup
-                  exclusive
-                  size="small"
-                  value={mode}
-                  onChange={(_, nextMode) => nextMode && setMode(nextMode)}
-                  aria-label="Режим страницы"
-                >
-                  <ToggleButton value="explore" sx={viewToggleSx}>
-                    <VisibilityOutlinedIcon fontSize="small" sx={{ mr: 0.75 }} />
-                    Сотрудник
-                  </ToggleButton>
-                  <ToggleButton value="admin" sx={viewToggleSx}>
-                    <EditOutlinedIcon fontSize="small" sx={{ mr: 0.75 }} />
-                    Администратор
-                  </ToggleButton>
-                </ToggleButtonGroup>
-              ) : null}
-              <Button
-                aria-label="Обновить структуру"
-                startIcon={<RefreshIcon />}
-                onClick={() => void loadTree()}
-                disabled={loading}
-                sx={{ minWidth: { xs: 40, sm: 'auto' } }}
-              >
-                <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>Обновить</Box>
-              </Button>
+          {isPhone ? (
+            <Stack
+              direction={{ xs: 'column', sm: 'row' }}
+              spacing={1}
+              alignItems={{ xs: 'stretch', sm: 'center' }}
+              justifyContent="space-between"
+            >
+              <Typography variant="h6" fontWeight={750}>Структура компании</Typography>
+              <Stack direction="row" spacing={1} alignItems="center">
+                {modeToggleNode}
+                {refreshButtonNode}
+              </Stack>
             </Stack>
-          </Stack>
+          ) : (
+            <PageTopBar
+              title="Структура компании"
+              testId="company-structure-toolbar"
+              sx={{ mb: 0 }}
+              tabs={exploreControlsVisible ? blockTabsNode : null}
+              actions={(
+                <>
+                  {exploreControlsVisible ? explorerViewToggleNode : null}
+                  {modeToggleNode}
+                  {refreshButtonNode}
+                </>
+              )}
+            >
+              {exploreControlsVisible ? searchNode : null}
+            </PageTopBar>
+          )}
 
           {error ? <Alert severity="error">{error}</Alert> : null}
           {loading ? (
@@ -354,101 +468,27 @@ const CompanyStructure = () => {
 
           {!loading && mode === 'explore' ? (
             <>
-              <Paper
-                data-testid="company-structure-toolbar"
-                sx={{
-                  ...getOfficePanelSx(ui),
-                  p: 1,
-                  borderRadius: 2.5,
-                  background: theme.palette.background.paper,
-                }}
-              >
-                <Stack
-                  direction={{ xs: 'column', lg: 'row' }}
-                  spacing={1}
-                  alignItems={{ xs: 'stretch', lg: 'center' }}
+              {isPhone ? (
+                <Paper
+                  data-testid="company-structure-toolbar"
+                  sx={{
+                    ...getOfficePanelSx(ui),
+                    p: 1,
+                    borderRadius: 2.5,
+                    background: theme.palette.background.paper,
+                  }}
                 >
-                  <Autocomplete
-                    size="small"
-                    options={searchOptions}
-                    inputValue={searchQuery}
-                    loading={searchLoading}
-                    filterOptions={(options) => options}
-                    getOptionLabel={(option) => (typeof option === 'string' ? option : option?.title || '')}
-                    isOptionEqualToValue={(option, value) => option.kind === value.kind && option.title === value.title}
-                    onInputChange={(_, value) => setSearchQuery(value)}
-                    onChange={handleSearchChoice}
-                    noOptionsText={searchQuery.trim().length < 2 ? 'Введите минимум 2 символа' : 'Ничего не найдено'}
-                    sx={{ minWidth: 0, width: '100%', flex: { lg: '1 1 420px' } }}
-                    renderInput={(params) => (
-                      <TextField
-                        {...params}
-                        placeholder="Найти сотрудника или подразделение"
-                        inputProps={{ ...params.inputProps, 'aria-label': 'Поиск по структуре компании' }}
-                        InputProps={{
-                          ...params.InputProps,
-                          startAdornment: (
-                            <>
-                              <InputAdornment position="start"><SearchIcon color="action" /></InputAdornment>
-                              {params.InputProps.startAdornment}
-                            </>
-                          ),
-                        }}
-                      />
-                    )}
-                    renderOption={(props, option) => (
-                      <li {...props} key={`${option.kind}-${option.title}-${option.node_id || ''}`}>
-                        <ListItemText
-                          primary={option.title}
-                          secondary={[
-                            option.kind === 'person' ? option.subtitle : 'Подразделение',
-                            option.department_location,
-                            option.path?.map((part) => part.title).join(' / '),
-                          ].filter(Boolean).join(' · ')}
-                        />
-                      </li>
-                    )}
-                  />
-                  {blocks.length ? (
-                    <Box sx={{ width: { xs: '100%', lg: 'auto' }, minWidth: 0, maxWidth: { lg: '42vw' }, overflow: 'hidden' }}>
-                      <Tabs
-                        value={activeBlockId}
-                        onChange={changeBlock}
-                        variant="scrollable"
-                        scrollButtons="auto"
-                        aria-label="Блок компании"
-                        sx={{
-                          minHeight: 40,
-                          '& .MuiTab-root': { minHeight: 40, px: 1.5, py: 0.5 },
-                        }}
-                      >
-                        {blocks.map((block) => (
-                          <Tab key={block.id} value={String(block.id)} label={nodeCardTitle(block)} />
-                        ))}
-                      </Tabs>
-                    </Box>
-                  ) : null}
-                  <ToggleButtonGroup
-                    exclusive
-                    size="small"
-                    value={isMobile ? 'focus' : explorerView}
-                    onChange={(_, value) => changeExplorerView(value)}
-                    aria-label="Вид структуры"
-                    sx={{ flexShrink: 0, alignSelf: { xs: 'stretch', lg: 'center' } }}
+                  <Stack
+                    direction={{ xs: 'column', lg: 'row' }}
+                    spacing={1}
+                    alignItems={{ xs: 'stretch', lg: 'center' }}
                   >
-                    <ToggleButton value="focus" sx={{ ...viewToggleSx, minHeight: 40, flex: { xs: 1, lg: 'initial' } }}>
-                      <CorporateFareOutlinedIcon fontSize="small" sx={{ mr: 0.75 }} />
-                      Фокус
-                    </ToggleButton>
-                    {!isMobile ? (
-                      <ToggleButton value="overview" sx={{ ...viewToggleSx, minHeight: 40, flex: { xs: 1, lg: 'initial' } }}>
-                        <AccountTreeOutlinedIcon fontSize="small" sx={{ mr: 0.75 }} />
-                        Обзор
-                      </ToggleButton>
-                    ) : null}
-                  </ToggleButtonGroup>
-                </Stack>
-              </Paper>
+                    {searchNode}
+                    {blockTabsNode}
+                    {explorerViewToggleNode}
+                  </Stack>
+                </Paper>
+              ) : null}
 
               <Box component="section" data-testid="company-structure-stage" sx={{ minHeight: 0, pt: 0.5 }}>
                 {selectedNode ? (

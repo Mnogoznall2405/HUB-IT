@@ -55,6 +55,7 @@ import useMediaQuery from '@mui/material/useMediaQuery';
 import MainLayout from '../components/layout/MainLayout';
 import MobileShellPageHeader from '../components/layout/MobileShellPageHeader';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import MailAttachmentPreviewDialog from '../components/mail/MailAttachmentPreviewDialog';
 import {
   createEmptyAttachmentPreview,
@@ -1749,43 +1750,53 @@ function Warehouse1C() {
     return `Найдено движений: ${movements.length}${totalLabel}${asOf}`;
   }, [movementsSearched, movements.length, movementsMeta]);
 
+  const backButtons = (returnContext || (cameFromBalances && tab === 'movements')) ? (
+    <>
+      {returnContext ? (
+        <Button
+          size="small"
+          variant="outlined"
+          startIcon={<ArrowBackIcon />}
+          onClick={handleReturnBack}
+        >
+          {returnContext.returnLabel}
+        </Button>
+      ) : null}
+      {cameFromBalances && tab === 'movements' ? (
+        <Button
+          size="small"
+          variant="text"
+          startIcon={<ArrowBackIcon />}
+          onClick={handleBackToBalances}
+        >
+          Назад к остаткам
+        </Button>
+      ) : null}
+    </>
+  ) : null;
+
   return (
-    <MainLayout showDatabaseSelector>
+    <MainLayout showDatabaseSelector headerMode="integrated">
       {isMobile ? <MobileShellPageHeader title="Склад 1С" showDatabaseSelector /> : null}
       <PageShell>
-        <Stack
-          direction={{ xs: 'column', sm: 'row' }}
-          alignItems={{ xs: 'stretch', sm: 'center' }}
-          justifyContent="space-between"
-          spacing={1}
-          sx={{ mb: 2 }}
-        >
-          <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap>
-            {returnContext ? (
-              <Button
-                size="small"
-                variant="outlined"
-                startIcon={<ArrowBackIcon />}
-                onClick={handleReturnBack}
-              >
-                {returnContext.returnLabel}
-              </Button>
-            ) : null}
-            {cameFromBalances && tab === 'movements' ? (
-              <Button
-                size="small"
-                variant="text"
-                startIcon={<ArrowBackIcon />}
-                onClick={handleBackToBalances}
-              >
-                Назад к остаткам
-              </Button>
-            ) : null}
-            <Typography variant="h5" sx={{ fontWeight: 600 }}>
-              Склад 1С
-            </Typography>
+        {isMobile ? (
+          <Stack
+            direction={{ xs: 'column', sm: 'row' }}
+            alignItems={{ xs: 'stretch', sm: 'center' }}
+            justifyContent="space-between"
+            spacing={1}
+            sx={{ mb: 2 }}
+          >
+            <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap>
+              {backButtons}
+              <Typography variant="h5" sx={{ fontWeight: 600 }}>
+                Склад 1С
+              </Typography>
+            </Stack>
           </Stack>
-        </Stack>
+        ) : (
+          <PageTopBar title="Склад 1С" actions={backButtons} />
+        )}
 
         <CatalogStatusCard
           status={catalogStatus}

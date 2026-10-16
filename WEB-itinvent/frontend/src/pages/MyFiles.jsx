@@ -60,6 +60,7 @@ import FileActionsContextMenu, {
   isFileActionsKeyboardShortcut,
 } from '../components/fileActions/FileActionsContextMenu';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import {
   formatMyFilesRetentionLabel,
   myFilesAPI,
@@ -240,6 +241,15 @@ export default function MyFiles() {
     )));
   }, []);
 
+  const handleFolderShareChanged = useCallback((folderId, isShared) => {
+    const id = String(folderId || '');
+    const patch = (prev) => prev.map((entryItem) => (
+      String(entryItem.id) === id ? { ...entryItem, is_shared: Boolean(isShared) } : entryItem
+    ));
+    setFolders(patch);
+    setAllFolders(patch);
+  }, []);
+
   const collectFolderSubtreeIds = useCallback((rootId) => {
     const ids = new Set([String(rootId)]);
     let grew = true;
@@ -301,7 +311,7 @@ export default function MyFiles() {
     revokeShare: handleRevokeShare,
     shareFolder: handleFolderShare,
     revokeFolderShare: handleRevokeFolderShare,
-  } = useMyFilesShares({ onFileShareChanged: handleFileShareChanged, notifySuccess, notifyWarning, notifyApiError });
+  } = useMyFilesShares({ onFileShareChanged: handleFileShareChanged, onFolderShareChanged: handleFolderShareChanged, notifySuccess, notifyWarning, notifyApiError });
 
   const navigateToFolder = useCallback((folderId) => {
     const next = folderId ? { folder: folderId } : {};
@@ -1091,8 +1101,9 @@ export default function MyFiles() {
     : 0;
 
   return (
-    <MainLayout showDatabaseSelector={false}>
+    <MainLayout showDatabaseSelector={false} headerMode="integrated">
       <PageShell>
+        <PageTopBar title="Мои файлы" />
         <Box
           sx={{
             display: 'flex',

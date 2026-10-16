@@ -39,6 +39,7 @@ import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import TuneRoundedIcon from '@mui/icons-material/TuneRounded';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import {
   ConstructionRequestCard,
   ConstructionRequestDetail,
@@ -222,6 +223,7 @@ function readListParams(searchParams) {
 export default function ConstructionDirectionDetail() {
   const theme = useTheme();
   const isWide = useMediaQuery(theme.breakpoints.up('lg'));
+  const isPhone = useMediaQuery(theme.breakpoints.down('sm'), { defaultMatches: false });
   const navigate = useNavigate();
   const { objectId = '', groupRef = '', requestRef = '' } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -549,8 +551,72 @@ export default function ConstructionDirectionDetail() {
     setSearchParams(next, { replace: true });
   };
 
+  const handleTabChange = (_, value) => {
+    const next = new URLSearchParams(searchParams);
+    if (value === 'overview') next.delete('tab');
+    else next.set('tab', value);
+    if (value !== 'requests' && requestRef) {
+      const query = next.toString();
+      navigate(`${basePath}${query ? `?${query}` : ''}`);
+    } else {
+      setSearchParams(next, { replace: true });
+    }
+  };
+
+  const refreshDirectionButton = (
+    <Tooltip title="Обновить">
+      <span>
+        <IconButton
+          size="small"
+          aria-label="Обновить направление"
+          onClick={() => void refreshAll({ forceRefresh: true })}
+          disabled={listLoading || refreshing || overviewLoading || directionLoading}
+          sx={{ width: 36, height: 36 }}
+        >
+          <RefreshRoundedIcon fontSize="small" />
+        </IconButton>
+      </span>
+    </Tooltip>
+  );
+
+  const directionTopBar = (
+    <PageTopBar
+      testId="construction-direction-top-bar"
+      sx={{ flexShrink: 0, mb: 0 }}
+      title={directionLoading && !direction ? <Skeleton width={220} height={30} component="span" sx={{ display: 'inline-block' }} /> : directionName}
+      tabs={showMobileDetail ? null : (
+        <Tabs
+          value={activeTab}
+          onChange={handleTabChange}
+          aria-label="Разделы направления"
+          variant="scrollable"
+          allowScrollButtonsMobile
+          sx={{ minWidth: 0, maxWidth: '100%', minHeight: 36, '& .MuiTab-root': { minHeight: 36, py: 0.5, px: 1.5 } }}
+        >
+          {DIRECTION_PAGE_TABS.map(([value, label]) => <Tab key={value} value={value} label={label} />)}
+        </Tabs>
+      )}
+      actions={(
+        <>
+          {showMobileDetail ? null : refreshDirectionButton}
+          <Tooltip title="К объекту">
+            <IconButton
+              component={RouterLink}
+              to={constructionObjectPath(objectId)}
+              size="small"
+              aria-label="К объекту"
+              sx={{ width: 36, height: 36 }}
+            >
+              <ArrowBackRoundedIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        </>
+      )}
+    />
+  );
+
   return (
-    <MainLayout pageTitle={pageTitle}>
+    <MainLayout headerMode="integrated" pageTitle={pageTitle}>
       <PageShell
         fullHeight
         sx={{
@@ -563,7 +629,14 @@ export default function ConstructionDirectionDetail() {
         }}
       >
         <Stack spacing={0.75} sx={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-          {!showMobileDetail ? (
+          {!isPhone ? directionTopBar : null}
+          {!isPhone && !showMobileDetail ? (
+            <Breadcrumbs aria-label="Путь к направлению" sx={{ flexShrink: 0, fontSize: 12, '& .MuiBreadcrumbs-ol': { rowGap: 0.25 }, '& .MuiBreadcrumbs-li': { minWidth: 0 } }}>
+              <Link component={RouterLink} to="/construction" color="inherit" underline="hover" sx={{ overflowWrap: 'anywhere' }}>Объекты строительства</Link>
+              <Link component={RouterLink} to={constructionObjectPath(objectId)} color="inherit" underline="hover" sx={{ overflowWrap: 'anywhere' }}>{objectName}</Link>
+            </Breadcrumbs>
+          ) : null}
+          {isPhone && !showMobileDetail ? (
             <Box component="header" sx={{ flexShrink: 0 }}>
               <Stack direction="row" alignItems="center" spacing={1} sx={{ minWidth: 0 }}>
                 <Tooltip title="К объекту">
@@ -602,17 +675,7 @@ export default function ConstructionDirectionDetail() {
               </Stack>
               <Tabs
                 value={activeTab}
-                onChange={(_, value) => {
-                  const next = new URLSearchParams(searchParams);
-                  if (value === 'overview') next.delete('tab');
-                  else next.set('tab', value);
-                  if (value !== 'requests' && requestRef) {
-                    const query = next.toString();
-                    navigate(`${basePath}${query ? `?${query}` : ''}`);
-                  } else {
-                    setSearchParams(next, { replace: true });
-                  }
-                }}
+                onChange={handleTabChange}
                 aria-label="Разделы направления"
                 variant="scrollable"
                 allowScrollButtonsMobile

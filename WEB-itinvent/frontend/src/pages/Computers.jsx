@@ -34,6 +34,7 @@ import {
 } from '@mui/icons-material';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import { equipmentAPI } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { Link as RouterLink, useSearchParams } from 'react-router-dom';
@@ -1473,11 +1474,13 @@ function Computers() {
   }, []);
 
   return (
-    <MainLayout title="Компьютеры (Агенты)">
+    <MainLayout headerMode="integrated">
       <PageShell sx={{ width: '100%', pb: 2 }}>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-          <Typography variant="h5" sx={{ fontWeight: 700 }}>Дашборд компьютеров</Typography>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <PageTopBar
+          title="Дашборд компьютеров"
+          sx={{ mb: 2 }}
+          actions={(
+          <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 1, ml: 'auto' }}>
             {canViewAllComputers && (
               <FormControlLabel
                 sx={{ m: 0 }}
@@ -1502,13 +1505,14 @@ function Computers() {
             ) : null}
             <Tooltip title="Обновить данные">
               <span>
-                <IconButton aria-label="Обновить данные" onClick={handleManualRefresh} disabled={loading} color="primary">
+                <IconButton aria-label="Обновить данные" size="small" onClick={handleManualRefresh} disabled={loading} color="primary">
                   <RefreshIcon />
                 </IconButton>
               </span>
             </Tooltip>
           </Box>
-        </Box>
+          )}
+        />
 
         {!loading && unseenChangedPcs.length > 0 && (
           <Alert severity="warning" icon={<WarningAmberIcon fontSize="inherit" />} sx={{ mb: 2 }}>

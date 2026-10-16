@@ -28,6 +28,7 @@ import SearchIcon from '@mui/icons-material/Search';
 import SyncIcon from '@mui/icons-material/Sync';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import { adUsersAPI } from '../api/adUsers';
 import { openAdPasswordPortal } from '../components/passwords/adPasswordPortal';
 import { useAuth } from '../contexts/AuthContext';
@@ -330,43 +331,59 @@ const AdUsers = ({ embedded = false }) => {
     }
   }, [importLogins]);
 
+  const headerActions = (
+    <>
+      <Button
+        size={embedded ? undefined : 'small'}
+        variant="outlined"
+        color="primary"
+        startIcon={<RefreshIcon />}
+        onClick={() => void fetchInitialData()}
+        disabled={loading || bulkImporting || fullSyncing}
+      >
+        Обновить
+      </Button>
+      {isAdmin ? (
+        <Button
+          size={embedded ? undefined : 'small'}
+          variant="contained"
+          color="primary"
+          startIcon={fullSyncing ? <CircularProgress size={18} color="inherit" /> : <SyncIcon />}
+          onClick={() => void handleFullSync()}
+          disabled={loading || bulkImporting || fullSyncing}
+        >
+          {fullSyncing ? 'Синхронизация...' : 'Синхронизировать всех'}
+        </Button>
+      ) : null}
+      <Button
+        size={embedded ? undefined : 'small'}
+        variant="contained"
+        color="secondary"
+        startIcon={<OpenInNewIcon />}
+        onClick={openPasswordPortal}
+      >
+        Портал смены пароля
+      </Button>
+    </>
+  );
+
   const content = (
     <>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, gap: 2, flexWrap: 'wrap' }}>
-          <Typography variant="h4" component="h1" gutterBottom={false}>
-            Пользователи AD
-          </Typography>
-          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-            <Button
-              variant="outlined"
-              color="primary"
-              startIcon={<RefreshIcon />}
-              onClick={() => void fetchInitialData()}
-              disabled={loading || bulkImporting || fullSyncing}
-            >
-              Обновить
-            </Button>
-            {isAdmin ? (
-              <Button
-                variant="contained"
-                color="primary"
-                startIcon={fullSyncing ? <CircularProgress size={18} color="inherit" /> : <SyncIcon />}
-                onClick={() => void handleFullSync()}
-                disabled={loading || bulkImporting || fullSyncing}
-              >
-                {fullSyncing ? 'Синхронизация...' : 'Синхронизировать всех'}
-              </Button>
-            ) : null}
-            <Button
-              variant="contained"
-              color="secondary"
-              startIcon={<OpenInNewIcon />}
-              onClick={openPasswordPortal}
-            >
-              Портал смены пароля
-            </Button>
+        {embedded ? (
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, gap: 2, flexWrap: 'wrap' }}>
+            <Typography variant="h4" component="h1" gutterBottom={false}>
+              Пользователи AD
+            </Typography>
+            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+              {headerActions}
+            </Box>
           </Box>
-        </Box>
+        ) : (
+          <PageTopBar
+            title="Пользователи AD"
+            actions={<Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>{headerActions}</Box>}
+          />
+        )}
 
         <Alert severity="info" sx={{ mb: 2 }}>
           Импорт создаёт web-пользователей из AD по логину sAMAccountName. В список попадают только учётки сотрудников (ФИО из 2–5 слов, без svc/admin/1c и mailbox). Полная синхронизация добавляет новых, обновляет ldap-пользователей и отключает пропавших из AD (кроме admin).
@@ -634,7 +651,7 @@ const AdUsers = ({ embedded = false }) => {
   );
   if (embedded) return content;
   return (
-    <MainLayout>
+    <MainLayout headerMode="integrated">
       <PageShell>{content}</PageShell>
     </MainLayout>
   );

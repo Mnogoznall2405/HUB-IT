@@ -6,6 +6,8 @@ export const MainLayoutShellContext = createContext({
   openDrawer: () => {},
   closeDrawer: () => {},
   toggleDrawer: () => {},
+  sidebarPinned: false,
+  toggleSidebarPinned: () => {},
   openNotifications: () => {},
   notificationsBadgeValue: 0,
   showNotificationsButton: false,

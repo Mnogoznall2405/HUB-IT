@@ -34,6 +34,8 @@ import {
 import { alpha, useTheme } from '@mui/material/styles';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import MenuIcon from '@mui/icons-material/Menu';
+import PushPinIcon from '@mui/icons-material/PushPin';
+import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
 import NotificationsIcon from '@mui/icons-material/Notifications';
 import NotificationsNoneIcon from '@mui/icons-material/NotificationsNone';
 import AssignmentIcon from '@mui/icons-material/Assignment';
@@ -189,6 +191,7 @@ const HUB_POLL_INTERVAL_MS = 20_000;
 const HUB_REALTIME_RECONCILE_INTERVAL_MS = 120_000;
 const PWA_BADGE_POLL_INTERVAL_MS = 60_000;
 const SIDEBAR_COLLAPSED_KEY = 'sidebar_collapsed';
+const SIDEBAR_PINNED_KEY = 'sidebar_pinned';
 const SIDEBAR_IT_EXPANDED_KEY = 'sidebar_it_expanded';
 const SIDEBAR_TOOLS_EXPANDED_KEY = 'sidebar_tools_expanded';
 const MAIL_LOCAL_DEDUPE_WINDOW_MS = 30_000;
@@ -216,6 +219,13 @@ function MainLayout({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     const saved = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
     return saved === 'true';
+  });
+  const [sidebarPinned, setSidebarPinned] = useState(() => {
+    try {
+      return localStorage.getItem(SIDEBAR_PINNED_KEY) === 'true';
+    } catch {
+      return false;
+    }
   });
   const [sidebarToolsExpanded, setSidebarToolsExpanded] = useState(() => (
     localStorage.getItem(SIDEBAR_TOOLS_EXPANDED_KEY) !== 'false'
@@ -357,7 +367,8 @@ function MainLayout({
   const isMailRoute = location.pathname.startsWith('/mail');
   const isDocflowRoute = location.pathname.startsWith('/docflow');
   const isDlpRoute = location.pathname.startsWith('/dlp') || location.pathname.startsWith('/file-egress');
-  const isFixedHeightRoute = isChatRoute || isMailRoute || isDocflowRoute || isDlpRoute;
+  const isAddressBookRoute = location.pathname.startsWith('/address-book');
+  const isFixedHeightRoute = isChatRoute || isMailRoute || isDocflowRoute || isDlpRoute || isAddressBookRoute;
   const isMobileChatRoute = isPhone && isChatRoute;
   const isDesktopChatRoute = !isPhone && isChatRoute;
   // Д2-5 (раздел 29, п. 5): на странице чата меню портала — узкая полоса иконок
@@ -365,13 +376,17 @@ function MainLayout({
   // на 600–900 px показывались полное меню 215 px и AppBar).
   const integratedChatHeader = isDesktopChatRoute
     && taskDiscussionRouteParams.get('task_layout') !== 'split';
+  const integratedPageHeader = !isPhone && headerMode === 'integrated';
   // Полная навигация открывается поверх по кнопке ☰ в шапке списка чатов.
-  const chatPortalRail = integratedChatHeader;
-  const effectiveSidebarCollapsed = sidebarCollapsed || chatPortalRail;
+  // Закреплённое меню: полная навигация всегда на экране, в том числе на страницах
+  // со встроенной шапкой (там без закрепления — узкая полоса и меню поверх по ☰).
+  const pinnedSidebar = !isPhone && sidebarPinned;
+  const chatPortalRail = (integratedChatHeader || integratedPageHeader) && !pinnedSidebar;
+  const effectiveSidebarCollapsed = pinnedSidebar ? false : (sidebarCollapsed || chatPortalRail);
   const isEdgeToEdgeMobileContent = isPhone && contentMode === 'edge-to-edge-mobile';
   const isEdgeToEdgeContent = contentMode === 'edge-to-edge' || isEdgeToEdgeMobileContent;
   const notificationsOnlyHeader = headerMode === 'notifications-only';
-  const hiddenHeader = headerMode === 'hidden' || isPhone || integratedChatHeader;
+  const hiddenHeader = headerMode === 'hidden' || isPhone || integratedChatHeader || integratedPageHeader;
   const minimalHeader = isPhone && headerMode === 'minimal';
   const unreadHubNotificationCount = useMemo(
     () => (
@@ -1017,6 +1032,19 @@ useEffect(() => {
     window.removeEventListener(TOAST_ACTION_EXECUTE_EVENT, handleToastActionExecute);
   };
 }, [navigate]);
+
+  const toggleSidebarPinned = useCallback(() => {
+    setSidebarPinned((current) => {
+      const next = !current;
+      try {
+        localStorage.setItem(SIDEBAR_PINNED_KEY, String(next));
+      } catch {
+        // Storage can be unavailable (private mode); the pin then lasts for the session only.
+      }
+      return next;
+    });
+    setDrawerOpen(false);
+  }, []);
 
   const toggleSidebar = () => {
     const newState = !sidebarCollapsed;
@@ -2082,6 +2110,31 @@ useEffect(() => {
         <Toolbar sx={{ minHeight: 'var(--app-shell-header-offset) !important', flexShrink: 0 }} />
       )}
 
+      {instanceKey === 'mobile' ? null : (
+        <Box
+          sx={{
+            display: 'flex',
+            justifyContent: compact ? 'center' : 'flex-end',
+            px: compact ? 0.75 : 'var(--app-density-sidebar-list-px)',
+            pt: 0.25,
+            flexShrink: 0,
+          }}
+        >
+          <Tooltip title={pinnedSidebar ? 'Открепить меню' : 'Закрепить меню'} placement="right">
+            <IconButton
+              size="small"
+              aria-label={pinnedSidebar ? 'Открепить меню' : 'Закрепить меню'}
+              aria-pressed={pinnedSidebar}
+              data-testid={`main-layout-sidebar-pin-${instanceKey}`}
+              onClick={toggleSidebarPinned}
+              sx={{ color: pinnedSidebar ? 'primary.main' : ui.iconPrimary }}
+            >
+              {pinnedSidebar ? <PushPinIcon fontSize="small" /> : <PushPinOutlinedIcon fontSize="small" />}
+            </IconButton>
+          </Tooltip>
+        </Box>
+      )}
+
       <Box
         className="hub-sidebar-scroll"
         sx={{ flex: 1, minHeight: 0, overflowY: 'auto', px: compact ? 0.75 : 'var(--app-density-sidebar-list-px)' }}
@@ -2222,11 +2275,13 @@ useEffect(() => {
   );
 
   const shellValue = useMemo(() => ({
-    headerMode: integratedChatHeader ? 'hidden' : headerMode,
+    headerMode: integratedChatHeader || integratedPageHeader ? 'hidden' : headerMode,
     drawerOpen,
     openDrawer: () => setDrawerOpen(true),
     closeDrawer: () => setDrawerOpen(false),
     toggleDrawer: () => setDrawerOpen((current) => !current),
+    sidebarPinned: pinnedSidebar,
+    toggleSidebarPinned,
     openNotifications: handleOpenNotifications,
     notificationsBadgeValue,
     showNotificationsButton,
@@ -2248,9 +2303,12 @@ useEffect(() => {
     handleOpenNotifications,
     headerMode,
     integratedChatHeader,
+    integratedPageHeader,
     notificationsBadgeValue,
+    pinnedSidebar,
     showDatabaseSelector,
     showNotificationsButton,
+    toggleSidebarPinned,
   ]);
   const shouldReserveMobileSafeArea = (
     isPhone
@@ -2489,7 +2547,7 @@ useEffect(() => {
             >
               {notificationsOnlyHeader ? (
                 <>
-                  {!isPhone ? (
+                  {!isPhone && !pinnedSidebar ? (
                     <IconButton
                       edge="start"
                       aria-label="Открыть главное меню"
@@ -2532,7 +2590,7 @@ useEffect(() => {
                 </>
               ) : (
                 <>
-                  {!isPhone ? (
+                  {!isPhone && !pinnedSidebar ? (
                     <IconButton
                       edge="start"
                       aria-label={sidebarCollapsed ? 'Развернуть боковое меню' : 'Свернуть боковое меню'}
@@ -2763,7 +2821,7 @@ useEffect(() => {
             ModalProps={{ keepMounted: true }}
             sx={{
               display: { xs: 'block', sm: 'none' },
-              '& .MuiDrawer-paper': { boxSizing: 'border-box', width: DRAWER_WIDTH_CSS_VAR, bgcolor: ui.navBg, borderRightColor: ui.borderSoft },
+              '& .MuiDrawer-paper': { '--dialog-safe-top': '0px', boxSizing: 'border-box', width: DRAWER_WIDTH_CSS_VAR, bgcolor: ui.navBg, borderRightColor: ui.borderSoft },
             }}
           >
             {renderDrawerContent({ compact: false, instanceKey: 'mobile' })}
@@ -2774,6 +2832,7 @@ useEffect(() => {
             sx={{
               display: { xs: 'none', sm: 'block' },
               '& .MuiDrawer-paper': {
+                '--dialog-safe-top': '0px',
                 boxSizing: 'border-box',
                 width: effectiveSidebarCollapsed ? DRAWER_RAIL_WIDTH : DRAWER_WIDTH_CSS_VAR,
                 overflowX: 'hidden',
@@ -2797,6 +2856,7 @@ useEffect(() => {
             onClose={() => setDrawerOpen(false)}
             sx={{
               '& .MuiDrawer-paper': {
+                '--dialog-safe-top': '0px',
                 boxSizing: 'border-box',
                 width: DRAWER_WIDTH_CSS_VAR,
                 bgcolor: ui.navBg,

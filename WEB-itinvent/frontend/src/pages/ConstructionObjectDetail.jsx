@@ -19,12 +19,12 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
-import ApartmentRoundedIcon from '@mui/icons-material/ApartmentRounded';
 import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import PageTopBar from '../components/layout/PageTopBar';
 import ConstructionObjectSettingsDialog from '../components/construction/ConstructionObjectSettingsDialog';
 import { ConstructionDirectionCards } from '../components/construction/ConstructionDirectionCards';
 import { ConstructionTeamStructure } from '../components/construction/ConstructionTeamPanels';
@@ -196,7 +196,7 @@ export default function ConstructionObjectDetail() {
   const groups = object?.groups || [];
 
   return (
-    <MainLayout pageTitle={objectName}>
+    <MainLayout headerMode="integrated" pageTitle={objectName}>
       <PageShell
         fullHeight
         sx={{
@@ -208,60 +208,27 @@ export default function ConstructionObjectDetail() {
         }}
       >
         <Stack spacing={{ xs: 1, sm: 1.25 }} sx={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-          <Box component="header" sx={{ flexShrink: 0 }}>
-            <Stack
-              data-testid="construction-object-header-row"
-              direction="row"
-              alignItems="center"
-              useFlexGap
-              flexWrap="wrap"
-              spacing={{ xs: 0.75, sm: 1 }}
-              sx={{ minWidth: 0 }}
-            >
-              <Tooltip title="К объектам">
-                <IconButton
-                  component={RouterLink}
-                  to="/construction"
-                  aria-label="К объектам"
-                  sx={{ width: 44, height: 44, flexShrink: 0 }}
-                >
-                  <ArrowBackRoundedIcon />
-                </IconButton>
-              </Tooltip>
-              <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
-                <Box
-                  aria-hidden="true"
-                  sx={{
-                    width: 38,
-                    height: 38,
-                    borderRadius: 2.5,
-                    display: 'grid',
-                    placeItems: 'center',
-                    bgcolor: 'primary.main',
-                    color: 'primary.contrastText',
-                    flexShrink: 0,
-                    '& .MuiSvgIcon-root': { fontSize: 21 },
-                  }}
-                >
-                  <ApartmentRoundedIcon />
-                </Box>
-                <Box sx={{ minWidth: 0, flex: 1 }}>
-                  <Stack direction="row" alignItems="center" useFlexGap flexWrap="wrap" spacing={0.65}>
-                    {objectLoading && !object ? <Skeleton width={190} height={30} /> : (
-                      <Typography component="h1" variant="h5" fontWeight={900} sx={{ lineHeight: 1.1, overflowWrap: 'anywhere' }}>
-                        {objectName}
-                      </Typography>
-                    )}
-                    {object?.managed ? (
-                      <Chip size="small" color="success" label="Карточка HUB" sx={{ height: 22 }} />
-                    ) : null}
-                  </Stack>
-                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
-                    Объединённый объект и направления 1С
-                  </Typography>
-                </Box>
-              </Stack>
-              <Stack direction="row" alignItems="center" justifyContent="flex-end" spacing={0.5} sx={{ flexShrink: 0, width: { xs: '100%', sm: 'auto' } }}>
+          <PageTopBar
+            testId="construction-object-header-row"
+            sx={{ flexShrink: 0, mb: 0 }}
+            title={objectLoading && !object ? <Skeleton width={190} height={30} component="span" sx={{ display: 'inline-block' }} /> : objectName}
+            tabs={(
+              <Tabs
+                value={activeTab}
+                onChange={(_, value) => setSearchParams(value === 'directions' ? {} : { tab: value }, { replace: true })}
+                aria-label="Разделы объекта"
+                variant="scrollable"
+                allowScrollButtonsMobile
+                sx={{ minWidth: 0, maxWidth: '100%', minHeight: 40, '& .MuiTab-root': { minHeight: 40, py: 0.5 } }}
+              >
+                {OBJECT_PAGE_TABS.map(([value, label]) => <Tab key={value} value={value} label={label} />)}
+              </Tabs>
+            )}
+            actions={(
+              <>
+                {object?.managed ? (
+                  <Chip size="small" color="success" label="Карточка HUB" sx={{ height: 22 }} />
+                ) : null}
                 <Typography
                   variant="caption"
                   color="text.secondary"
@@ -274,39 +241,42 @@ export default function ConstructionObjectDetail() {
                 {canWrite && object ? (
                   <Tooltip title={object.managed ? 'Настройки объекта' : 'Вести отдельно'}>
                     <IconButton
+                      size="small"
                       aria-label={object.managed ? 'Настройки объекта' : 'Вести отдельно'}
                       onClick={() => setSettingsOpen(true)}
-                      sx={{ width: 44, height: 44 }}
+                      sx={{ width: 36, height: 36 }}
                     >
-                      <EditOutlinedIcon />
+                      <EditOutlinedIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
                 ) : null}
                 <Tooltip title="Обновить">
                   <span>
                     <IconButton
+                      size="small"
                       aria-label="Обновить"
                       onClick={() => void refreshAll({ forceRefresh: true })}
                       disabled={objectLoading || statsLoading || refreshing}
-                      sx={{ width: 44, height: 44 }}
+                      sx={{ width: 36, height: 36 }}
                     >
-                      <RefreshRoundedIcon />
+                      <RefreshRoundedIcon fontSize="small" />
                     </IconButton>
                   </span>
                 </Tooltip>
-              </Stack>
-            </Stack>
-            <Tabs
-              value={activeTab}
-              onChange={(_, value) => setSearchParams(value === 'directions' ? {} : { tab: value }, { replace: true })}
-              aria-label="Разделы объекта"
-              variant="scrollable"
-              allowScrollButtonsMobile
-              sx={{ mt: 0.5, minHeight: 44, '& .MuiTab-root': { minHeight: 44, py: 0.75 } }}
-            >
-              {OBJECT_PAGE_TABS.map(([value, label]) => <Tab key={value} value={value} label={label} />)}
-            </Tabs>
-          </Box>
+                <Tooltip title="К объектам">
+                  <IconButton
+                    component={RouterLink}
+                    to="/construction"
+                    size="small"
+                    aria-label="К объектам"
+                    sx={{ width: 36, height: 36 }}
+                  >
+                    <ArrowBackRoundedIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              </>
+            )}
+          />
 
           {objectError ? <Alert severity="warning" action={<Button disabled={objectLoading} onClick={() => void loadObject()}>Повторить</Button>}>{objectError}</Alert> : null}
           {statsError && activeTab === 'directions' ? (

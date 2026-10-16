@@ -42,6 +42,7 @@ import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined';
 import MainLayout from '../components/layout/MainLayout';
 import MobileShellPageHeader from '../components/layout/MobileShellPageHeader';
+import PageTopBar from '../components/layout/PageTopBar';
 import PageShell from '../components/layout/PageShell';
 import { useAuth } from '../contexts/AuthContext';
 import { docflowAPI } from '../api/docflow';
@@ -333,7 +334,7 @@ function CredentialDialog({ open, profile, mobile, onClose, onSaved }) {
       fullWidth
       maxWidth="sm"
       fullScreen={mobile}
-      PaperProps={{ sx: { borderRadius: mobile ? 0 : 3, overscrollBehavior: 'contain' } }}
+      PaperProps={{ sx: { '--dialog-safe-top': '0px', borderRadius: mobile ? 0 : 3, overscrollBehavior: 'contain' } }}
     >
       <Box
         component="form"
@@ -570,7 +571,7 @@ function DisconnectDialog({ open, mobile, working, onClose, onConfirm }) {
       fullWidth
       maxWidth="xs"
       fullScreen={mobile}
-      PaperProps={{ sx: { borderRadius: mobile ? 0 : 3, overscrollBehavior: 'contain' } }}
+      PaperProps={{ sx: { '--dialog-safe-top': '0px', borderRadius: mobile ? 0 : 3, overscrollBehavior: 'contain' } }}
     >
       <DialogTitle sx={{ px: { xs: 2, sm: 3 }, pt: { xs: 'calc(env(safe-area-inset-top, 0px) + 28px)', sm: 3 } }}>
         Отключить 1С?
@@ -855,6 +856,7 @@ function AssignmentDialog({ open, mobile, capability, onClose, onCreated }) {
       fullScreen={mobile}
       PaperProps={{
         sx: {
+          '--dialog-safe-top': '0px',
           borderRadius: mobile ? 0 : 3,
           overscrollBehavior: 'contain',
           minHeight: mobile ? '100dvh' : undefined,
@@ -1810,7 +1812,7 @@ export default function Docflow() {
   const hasActiveSearch = Boolean(String(searchDraft || search || '').trim());
 
   return (
-    <MainLayout>
+    <MainLayout headerMode="integrated">
       <PageShell fullHeight sx={{ gap: { xs: 1, sm: 1.5 }, pb: { xs: 1, sm: 1.5 } }}>
         {isMobile ? (
           <MobileShellPageHeader
@@ -1819,17 +1821,9 @@ export default function Docflow() {
           />
         ) : null}
         <Stack spacing={{ xs: 1, sm: 1.5 }} sx={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-          <Stack
-            direction={{ sm: 'row' }}
-            spacing={1.5}
-            justifyContent="space-between"
-            alignItems="center"
-            sx={{ display: { xs: 'none', sm: 'flex' }, flexShrink: 0 }}
-          >
-            <Box>
-              <Typography variant="h5" fontWeight={800}>Документооборот</Typography>
-            </Box>
-          </Stack>
+          {isMobile ? null : (
+            <PageTopBar title="Документооборот" sx={{ mb: 0, flexShrink: 0 }} />
+          )}
 
           {profileError ? (
             <Alert severity="error" sx={{ flexShrink: 0 }} action={<Button color="inherit" size="small" onClick={() => void loadProfile()}>Повторить</Button>}>

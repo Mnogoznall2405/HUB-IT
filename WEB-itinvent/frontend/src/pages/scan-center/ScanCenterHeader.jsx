@@ -19,6 +19,7 @@ import {
   Refresh as RefreshIcon,
   ShieldOutlined as ShieldOutlinedIcon,
 } from '@mui/icons-material';
+import PageTopBar from '../../components/layout/PageTopBar';
 
 function getHealthState(totals) {
   const incidents = Number(totals.incidents_new || 0);
@@ -44,9 +45,70 @@ export default function ScanCenterHeader({
   onRefresh,
   onBranchChange,
   onOpenAgents,
+  integrated = false,
 }) {
   const totals = dashboard?.totals || {};
   const health = getHealthState(totals);
+
+  if (integrated) {
+    // Desktop: the portal AppBar is hidden (MainLayout headerMode="integrated"); the title,
+    // branch filter and actions live in one top row, status goes into a slim line below.
+    return (
+      <>
+        <PageTopBar
+          title="Контроль документов"
+          actions={(
+            <>
+              <Button type="button" size="small" variant="contained" startIcon={<PlayArrowOutlinedIcon />} onClick={onOpenAgents}>
+                Запустить скан
+              </Button>
+              <Tooltip title="Обновить данные сейчас">
+                <span>
+                  <Button
+                    type="button"
+                    size="small"
+                    variant="outlined"
+                    startIcon={refreshing ? <CircularProgress size={16} /> : <RefreshIcon />}
+                    onClick={onRefresh}
+                    disabled={refreshing}
+                  >
+                    Обновить
+                  </Button>
+                </span>
+              </Tooltip>
+            </>
+          )}
+        >
+          <Autocomplete
+            size="small"
+            options={branchOptions}
+            loading={branchOptionsLoading}
+            value={branchOptions.includes(branchFilter) ? branchFilter : null}
+            onChange={(_, nextValue) => onBranchChange(nextValue || '')}
+            clearOnEscape
+            noOptionsText="Филиалы не найдены"
+            loadingText="Загрузка филиалов…"
+            sx={{ width: 270, maxWidth: '100%', minWidth: 0 }}
+            renderInput={(params) => <TextField {...params} label="Филиал" placeholder="Все филиалы" />}
+          />
+        </PageTopBar>
+        <Stack spacing={1} sx={{ mb: 2 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, flexWrap: 'wrap' }}>
+            <Chip size="small" color={health.color} label={health.label} sx={{ flexShrink: 0 }} />
+            <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>
+              OCR: страницы 1–3 · текст PDF: страницы 1–10 · {dashboard?.analysis_version || 'текущая версия правил'}
+            </Typography>
+            <FormControlLabel
+              sx={{ m: 0, ml: 'auto' }}
+              control={<Switch size="small" checked={!autoRefreshPaused} onChange={(event) => onAutoRefreshChange(event.target.checked)} />}
+              label={<Typography variant="caption">{autoRefreshPaused ? 'Автообновление выключено' : 'Автообновление каждые 30 секунд'}</Typography>}
+            />
+          </Box>
+          {taskNotice ? <Alert severity={taskNotice.severity} onClose={onDismissNotice}>{taskNotice.text}</Alert> : null}
+        </Stack>
+      </>
+    );
+  }
 
   return (
     <Stack spacing={1.25} sx={{ mb: 2 }}>

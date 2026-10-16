@@ -8,9 +8,12 @@ import {
   Divider,
   Stack,
   Typography,
+  useMediaQuery,
 } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
 import MainLayout from '../../components/layout/MainLayout';
 import PageShell from '../../components/layout/PageShell';
+import PageTopBar from '../../components/layout/PageTopBar';
 import AccountCategoryLayout from '../../components/account/AccountCategoryLayout';
 import DesktopInstallerDownload from '../../components/desktop/DesktopInstallerDownload';
 import MobileInstallerDownload from '../../components/mobile/MobileInstallerDownload';
@@ -19,6 +22,7 @@ import { isNativeShellRuntime } from '../../lib/platform';
 import About from '../About';
 import AdUsers from '../AdUsers';
 import { AiBotsAdminSection } from './admin/AiBotsAdminSection';
+import { ChatGroupsAdminSection } from './admin/ChatGroupsAdminSection';
 import DepartmentsTab from './admin/DepartmentsTab';
 import MyFilesAdminTab from './admin/MyFilesAdminTab';
 import SessionsTab from './admin/SessionsTab';
@@ -40,6 +44,8 @@ import SectionCard from './shared/SectionCard';
 
 function AccountWorkspace({ area = 'settings' }) {
   const data = useAccountSectionData(area);
+  const theme = useTheme();
+  const isPhone = useMediaQuery(theme.breakpoints.down('sm'));
   const nativeShell = isNativeShellRuntime();
   const mobileApp = isMobileAppWebViewRuntime();
 
@@ -87,7 +93,7 @@ function AccountWorkspace({ area = 'settings' }) {
   let page;
   if (area === 'profile') {
     page = (
-      <MainLayout>
+      <MainLayout headerMode="integrated">
         <PageShell
           ref={data.pageRef}
           sx={{
@@ -98,6 +104,7 @@ function AccountWorkspace({ area = 'settings' }) {
             pb: { xs: 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 10px)', md: 2 },
           }}
         >
+          {isPhone ? null : <PageTopBar title="Профиль" />}
           <Stack spacing={1.1}>
             {blockingErrorNode}
             <ProfileTab user={data.user} dbOptions={data.dbOptions} canAccessMail={data.canAccessMail} />
@@ -141,6 +148,8 @@ function AccountWorkspace({ area = 'settings' }) {
           dbOptions={data.dbOptions}
         />
       );
+    } else if (data.activeSection === 'chat-groups' && data.isAdmin) {
+      adminContent = <ChatGroupsAdminSection />;
     } else if (data.activeSection === 'my-files' && data.canReadMyFilesAudit) {
       adminContent = <MyFilesAdminTab canManageUsers={data.canManageUsers} />;
     } else if (data.activeSection === 'sessions' && data.canManageSessions) {
