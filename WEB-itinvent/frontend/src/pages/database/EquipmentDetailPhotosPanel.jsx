@@ -8,16 +8,19 @@ import {
   DialogContent,
   DialogTitle,
   IconButton,
+  LinearProgress,
   Paper,
   TextField,
   Typography,
 } from '@mui/material';
 import AddPhotoAlternateIcon from '@mui/icons-material/AddPhotoAlternate';
+import BurstModeIcon from '@mui/icons-material/BurstMode';
 import CloseIcon from '@mui/icons-material/Close';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import ImageOutlinedIcon from '@mui/icons-material/ImageOutlined';
 import PhotoCameraIcon from '@mui/icons-material/PhotoCamera';
 import QrCodeScannerIcon from '@mui/icons-material/QrCodeScanner';
+import ReplayIcon from '@mui/icons-material/Replay';
 import RotateLeftIcon from '@mui/icons-material/RotateLeft';
 import RotateRightIcon from '@mui/icons-material/RotateRight';
 import SkipNextIcon from '@mui/icons-material/SkipNext';
@@ -30,7 +33,9 @@ import { LoadingSpinner } from '../../components/common';
 import { equipmentPhotosAPI } from '../../api/equipmentPhotos';
 import { normalizeDbId } from './databaseRecordModel';
 import { rotateImageFile } from './photoRotate';
-import { isPermanentFailure } from '../../lib/resumablePhotoUpload';
+import { STATUS as UPLOAD_STATUS } from '../../lib/photoUploadQueue';
+import QuickCameraDialog, { canUseLiveCamera } from './QuickCameraDialog';
+import { usePhotoUploadQueue } from './usePhotoUploadQueue';
 import ZoomableImage from './ZoomableImage';
 import { MAX_REJECT_REASON, rememberRejectReason } from './photoRejectReasons';
 import RejectReasonChips from './RejectReasonChips';
@@ -250,6 +255,76 @@ const PhotoVerifyFooter = memo(function PhotoVerifyFooter({
   );
 });
 
+const pendingStatusText = (job) => {
+  if (job.status === UPLOAD_STATUS.UPLOADING) {
+    return job.progress > 0 ? `Отправка ${Math.round(job.progress * 100)}%` : 'Отправка…';
+  }
+  if (job.status === UPLOAD_STATUS.WAITING) return 'Нет связи — повторим сами';
+  if (job.status === UPLOAD_STATUS.FAILED) return job.error || 'Не загружено';
+  return 'В очереди';
+};
+
+// Снимок, который ещё едет на сервер: виден сразу, пока докачивается по плохой связи.
+const PendingUploadCard = memo(function PendingUploadCard({ job, onRetry, onRemove }) {
+  const [url, setUrl] = useState('');
+  useEffect(() => {
+    const objectUrl = job.blob ? (window.URL?.createObjectURL?.(job.blob) || '') : '';
+    setUrl(objectUrl);
+    return () => { if (objectUrl) window.URL?.revokeObjectURL?.(objectUrl); };
+  }, [job.blob]);
+  const stuck = job.status === UPLOAD_STATUS.FAILED || job.status === UPLOAD_STATUS.WAITING;
+  const uploading = job.status === UPLOAD_STATUS.UPLOADING;
+
+  return (
+    <Paper
+      variant="outlined"
+      data-testid="photo-pending-card"
+      sx={{ position: 'relative', overflow: 'hidden', borderRadius: 1.5, borderColor: job.status === UPLOAD_STATUS.FAILED ? 'error.main' : undefined }}
+    >
+      <Box sx={{ position: 'relative', width: '100%', aspectRatio: '1 / 1', bgcolor: 'action.hover' }}>
+        {url ? (
+          <Box
+            component="img"
+            src={url}
+            alt={job.fileName}
+            sx={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: uploading ? 0.85 : 0.6 }}
+          />
+        ) : null}
+        <IconButton
+          aria-label={`Убрать из очереди ${job.fileName}`}
+          size="small"
+          disabled={uploading}
+          onClick={() => onRemove(job.id)}
+          sx={{ position: 'absolute', top: 4, right: 4, bgcolor: 'rgba(0,0,0,0.45)', color: 'common.white', '&:hover': { bgcolor: 'rgba(0,0,0,0.65)' } }}
+        >
+          <CloseIcon fontSize="small" />
+        </IconButton>
+      </Box>
+      {uploading ? (
+        <LinearProgress
+          variant={job.progress > 0 ? 'determinate' : 'indeterminate'}
+          value={Math.round(job.progress * 100)}
+        />
+      ) : null}
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, px: 0.75, py: 0.5 }}>
+        <Typography
+          variant="caption"
+          role="status"
+          color={job.status === UPLOAD_STATUS.FAILED ? 'error' : 'text.secondary'}
+          sx={{ flex: 1, minWidth: 0, lineHeight: 1.3, wordBreak: 'break-word' }}
+        >
+          {pendingStatusText(job)}
+        </Typography>
+        {stuck ? (
+          <IconButton size="small" aria-label={`Повторить загрузку ${job.fileName}`} onClick={() => onRetry(job.id)}>
+            <ReplayIcon fontSize="small" />
+          </IconButton>
+        ) : null}
+      </Box>
+    </Paper>
+  );
+});
+
 const PhotoCard = memo(function PhotoCard({
   photo, itemId, dbId, canWrite, deleting, verificationAvailable, verifyPermitted, verifying,
   rev, canRotate, rotating, onRotate,
@@ -453,10 +528,7 @@ const EquipmentDetailPhotosPanel = memo(function EquipmentDetailPhotosPanel({
   const [photos, setPhotos] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(null);
-  // Файлы, которые не ушли из-за связи: повтор продолжает загрузку с места обрыва.
-  const [retryFiles, setRetryFiles] = useState([]);
+  const [seriesOpen, setSeriesOpen] = useState(false);
   const [deletingNo, setDeletingNo] = useState(null);
   const [previewPhoto, setPreviewPhoto] = useState(null);
   const [deleteCandidate, setDeleteCandidate] = useState(null);
@@ -508,11 +580,13 @@ const EquipmentDetailPhotosPanel = memo(function EquipmentDetailPhotosPanel({
     return () => { if (objectUrl) window.URL?.revokeObjectURL?.(objectUrl); };
   }, [capture?.file]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async ({ silent = false } = {}) => {
     if (!itemId) return;
     const requestedItemId = itemId;
-    setLoading(true);
-    setError('');
+    if (!silent) {
+      setLoading(true);
+      setError('');
+    }
     try {
       const payload = await equipmentPhotosAPI.list(itemId, dbId ? { db_id: dbId } : {});
       if (latestItemRef.current !== requestedItemId) return;
@@ -526,9 +600,17 @@ const EquipmentDetailPhotosPanel = memo(function EquipmentDetailPhotosPanel({
       if (latestItemRef.current !== requestedItemId) return;
       setError(await readApiError(err, LIST_ERROR));
     } finally {
-      if (latestItemRef.current === requestedItemId) setLoading(false);
+      if (latestItemRef.current === requestedItemId && !silent) setLoading(false);
     }
   }, [itemId, dbId, onCountChange]);
+
+  // Фото из очереди доехало: список обновляется без мигания спиннера.
+  const uploadQueue = usePhotoUploadQueue({
+    itemId,
+    dbId,
+    onUploaded: () => { void load({ silent: true }); },
+  });
+  const queueJobs = uploadQueue.jobs;
 
   useEffect(() => {
     if (!active || !itemId) return;
@@ -580,6 +662,8 @@ const EquipmentDetailPhotosPanel = memo(function EquipmentDetailPhotosPanel({
     await uploadFiles([file]);
   };
 
+  // Снимки уходят в фоновую очередь и сразу освобождают экран: можно снимать следующее
+  // или переходить к другой технике, пока предыдущие докачиваются.
   const uploadFiles = async (files) => {
     if (!files.length) return;
 
@@ -589,42 +673,11 @@ const EquipmentDetailPhotosPanel = memo(function EquipmentDetailPhotosPanel({
       setError('Файл больше 15 МБ — уменьшите размер или выберите другое фото.');
       return;
     }
-
-    setUploading(true);
-    setError('');
-    setRetryFiles([]);
-    setUploadProgress({ done: 0, total: accepted.length });
-    let failed = 0;
-    let lastError = null;
-    const unsent = [];
-    // Последовательно: сервер берёт FILE_NO как MAX+1 под блокировкой таблицы.
-    for (let index = 0; index < accepted.length; index += 1) {
-      try {
-        await equipmentPhotosAPI.upload(itemId, accepted[index], { params: dbId ? { db_id: dbId } : {} });
-      } catch (err) {
-        failed += 1;
-        lastError = err;
-        // Отказ сервера (не тот файл, нет прав) повтором не лечится; обрыв связи — лечится.
-        if (!isPermanentFailure(err)) unsent.push(accepted[index]);
-      }
-      setUploadProgress({ done: index + 1, total: accepted.length });
-    }
-
+    setError(oversized > 0 ? `Пропущено файлов больше 15 МБ: ${oversized}.` : '');
     try {
-      await load();
-    } finally {
-      setUploading(false);
-      setUploadProgress(null);
-    }
-
-    if (failed > 0) {
-      const reason = await readApiError(lastError, UPLOAD_ERROR);
-      setRetryFiles(unsent);
-      setError(accepted.length > 1
-        ? `Не загружено ${failed} из ${accepted.length}. ${reason}`
-        : reason);
-    } else if (oversized > 0) {
-      setError(`Пропущено файлов больше 15 МБ: ${oversized}.`);
+      await uploadQueue.enqueue(accepted);
+    } catch (err) {
+      setError(await readApiError(err, UPLOAD_ERROR));
     }
   };
 
@@ -798,30 +851,33 @@ const EquipmentDetailPhotosPanel = memo(function EquipmentDetailPhotosPanel({
               size="small"
               startIcon={<PhotoCameraIcon />}
               onClick={() => cameraInputRef.current?.click()}
-              disabled={uploading || loading || !itemId}
+              disabled={loading || !itemId}
             >
               Сделать фото
             </Button>
+            {canUseLiveCamera() ? (
+              <Button
+                variant="contained"
+                size="small"
+                startIcon={<BurstModeIcon />}
+                onClick={() => setSeriesOpen(true)}
+                disabled={loading || !itemId}
+              >
+                Серия
+              </Button>
+            ) : null}
             <Button
               variant="outlined"
               size="small"
               startIcon={<AddPhotoAlternateIcon />}
               onClick={handlePickFile}
-              disabled={uploading || loading || !itemId}
+              disabled={loading || !itemId}
             >
-              {uploading
-                ? (uploadProgress && uploadProgress.total > 1
-                  ? `Загрузка ${Math.min(uploadProgress.done + 1, uploadProgress.total)} из ${uploadProgress.total}...`
-                  : 'Загрузка...')
-                : 'Добавить фото'}
+              Добавить фото
             </Button>
-            {retryFiles.length > 0 && !uploading ? (
-              <Button
-                variant="contained"
-                size="small"
-                onClick={() => uploadFiles(retryFiles)}
-              >
-                {`Повторить загрузку (${retryFiles.length})`}
+            {uploadQueue.stuck > 0 ? (
+              <Button variant="contained" size="small" onClick={uploadQueue.retryAll}>
+                {`Повторить загрузку (${uploadQueue.stuck})`}
               </Button>
             ) : null}
             {onScanNext ? (
@@ -830,7 +886,6 @@ const EquipmentDetailPhotosPanel = memo(function EquipmentDetailPhotosPanel({
                 size="small"
                 startIcon={<QrCodeScannerIcon />}
                 onClick={onScanNext}
-                disabled={uploading}
               >
                 Следующий QR
               </Button>
@@ -841,7 +896,7 @@ const EquipmentDetailPhotosPanel = memo(function EquipmentDetailPhotosPanel({
                 size="small"
                 startIcon={<SkipNextIcon />}
                 onClick={queue.onNext}
-                disabled={uploading || !queue.remaining}
+                disabled={!queue.remaining}
               >
                 {`Следующая без фото${queue.remaining ? ` (${queue.remaining})` : ''}`}
               </Button>
@@ -856,9 +911,15 @@ const EquipmentDetailPhotosPanel = memo(function EquipmentDetailPhotosPanel({
         </Typography>
       ) : null}
 
+      {uploadQueue.elsewhere > 0 ? (
+        <Typography variant="caption" color="text.secondary" data-testid="photo-queue-elsewhere">
+          {`Ещё отправляется фото по другой технике: ${uploadQueue.elsewhere}`}
+        </Typography>
+      ) : null}
+
       {loading ? (
         <LoadingSpinner message="Загрузка фотографий..." />
-      ) : photos.length === 0 ? (
+      ) : photos.length === 0 && queueJobs.length === 0 ? (
         <Paper variant="outlined" sx={{ p: 3, textAlign: 'center' }}>
           <ImageOutlinedIcon sx={{ fontSize: 40, color: 'text.disabled', mb: 0.5 }} />
           <Typography variant="body2" color="text.secondary">
@@ -882,6 +943,14 @@ const EquipmentDetailPhotosPanel = memo(function EquipmentDetailPhotosPanel({
             gap: 1,
           }}
         >
+          {queueJobs.map((job) => (
+            <PendingUploadCard
+              key={job.id}
+              job={job}
+              onRetry={uploadQueue.retry}
+              onRemove={uploadQueue.remove}
+            />
+          ))}
           {photos.map((photo) => (
             <PhotoCard
               key={photo.file_no}
@@ -908,6 +977,12 @@ const EquipmentDetailPhotosPanel = memo(function EquipmentDetailPhotosPanel({
         </Box>
         </>
       )}
+
+      <QuickCameraDialog
+        open={seriesOpen}
+        onClose={() => setSeriesOpen(false)}
+        onShot={(file) => uploadFiles([file])}
+      />
 
       <PhotoPreviewDialog
         photo={previewLive}

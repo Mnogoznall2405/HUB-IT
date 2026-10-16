@@ -21,9 +21,14 @@ export const equipmentPhotosAPI = {
 
   // Фото уходит кусками с докачкой (см. lib/resumablePhotoUpload); сервер без докачки
   // (старая версия) получает файл целиком, как раньше.
-  upload: async (itemId, file, { description = '', params = {}, onProgress, signal } = {}) => {
+  upload: async (itemId, file, { description = '', params = {}, onProgress, signal, shrink } = {}) => {
     try {
-      return await uploadPhotoResumable(itemId, file, { dbId: params?.db_id, description, onProgress, signal });
+      return await uploadPhotoResumable(
+        itemId,
+        file,
+        { dbId: params?.db_id, description, onProgress, signal },
+        shrink ? { shrink } : {},
+      );
     } catch (error) {
       if (!(error instanceof LegacyUploadRequired)) throw error;
     }

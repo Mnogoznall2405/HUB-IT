@@ -35,6 +35,7 @@ vi.mock('../../api/equipmentPhotos', () => ({
 vi.mock('./photoRotate', () => ({ rotateImageFile: rotateFile }));
 
 import EquipmentDetailPhotosPanel from './EquipmentDetailPhotosPanel';
+import { resetPhotoUploadQueue } from '../../lib/photoUploadQueue';
 
 const PHOTO = {
   file_no: 42,
@@ -48,6 +49,7 @@ const PHOTO = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetPhotoUploadQueue();
   window.URL.createObjectURL = vi.fn(() => 'blob:mock-url');
   window.URL.revokeObjectURL = vi.fn();
   fetchContent.mockResolvedValue({ data: new Blob(['x'], { type: 'image/jpeg' }) });
@@ -126,8 +128,29 @@ describe('EquipmentDetailPhotosPanel', () => {
     const file = new File(['img'], 'photo_1.jpg', { type: 'image/jpeg' });
     fireEvent.change(input, { target: { files: [file] } });
 
-    await waitFor(() => expect(uploadPhoto).toHaveBeenCalledWith(10, file, { params: {} }));
+    await waitFor(() => expect(uploadPhoto).toHaveBeenCalledWith(10, file, expect.objectContaining({ params: {} })));
     expect(await screen.findByText('Фотографий: 1')).toBeTruthy();
+    expect(screen.queryByTestId('photo-pending-card')).toBeNull();
+  });
+
+  it('shows a shot at once while it uploads and lets the user move on to the next item', async () => {
+    let finish;
+    uploadPhoto.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const { container, rerender } = render(<EquipmentDetailPhotosPanel itemId={10} active canWrite />);
+    await screen.findByText(/Фотографий пока нет/);
+
+    const file = new File(['img'], 'photo_3.jpg', { type: 'image/jpeg' });
+    fireEvent.change(container.querySelector('input[type="file"]'), { target: { files: [file] } });
+    // Снимок виден сразу, кнопки не заблокированы — можно снимать следующее.
+    expect(await screen.findByTestId('photo-pending-card')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Сделать фото' })).not.toBeDisabled();
+
+    rerender(<EquipmentDetailPhotosPanel itemId={11} active canWrite />);
+    expect(await screen.findByTestId('photo-queue-elsewhere')).toHaveTextContent('1');
+    expect(screen.queryByTestId('photo-pending-card')).toBeNull();
+
+    finish({ file_no: 45, item_id: 10, file_name: 'photo_3.jpg' });
+    await waitFor(() => expect(screen.queryByTestId('photo-queue-elsewhere')).toBeNull());
   });
 
   it('keeps a file that did not go through on a dropped link and resumes it on retry', async () => {
@@ -141,11 +164,12 @@ describe('EquipmentDetailPhotosPanel', () => {
     const file = new File(['img'], 'photo_2.jpg', { type: 'image/jpeg' });
     fireEvent.change(container.querySelector('input[type="file"]'), { target: { files: [file] } });
 
+    expect(await screen.findByText('Нет связи — повторим сами')).toBeTruthy();
     const retry = await screen.findByRole('button', { name: 'Повторить загрузку (1)' });
     fireEvent.click(retry);
 
     await waitFor(() => expect(uploadPhoto).toHaveBeenCalledTimes(2));
-    expect(uploadPhoto).toHaveBeenLastCalledWith(10, file, { params: {} });
+    expect(uploadPhoto).toHaveBeenLastCalledWith(10, file, expect.objectContaining({ params: {} }));
     await waitFor(() => expect(screen.queryByRole('button', { name: /Повторить загрузку/ })).toBeNull());
   });
 
@@ -172,7 +196,7 @@ describe('EquipmentDetailPhotosPanel', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Проверьте снимок' });
     expect(uploadPhoto).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Загрузить' }));
-    await waitFor(() => expect(uploadPhoto).toHaveBeenCalledWith(10, shot, { params: {} }));
+    await waitFor(() => expect(uploadPhoto).toHaveBeenCalledWith(10, shot, expect.objectContaining({ params: {} })));
     expect(rotateFile).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Проверьте снимок' })).toBeNull());
 
@@ -180,13 +204,13 @@ describe('EquipmentDetailPhotosPanel', () => {
     expect(onScanNext).toHaveBeenCalledTimes(1);
   });
 
-  it('uploads several selected files in order and reports the ones that failed', async () => {
+  it('uploads several selected files in order and keeps the refused one with its reason', async () => {
     listPhotos
       .mockResolvedValueOnce({ item_id: 10, photos: [] })
-      .mockResolvedValueOnce({ item_id: 10, photos: [PHOTO] });
+      .mockResolvedValue({ item_id: 10, photos: [PHOTO] });
     uploadPhoto
       .mockResolvedValueOnce({ file_no: 1 })
-      .mockRejectedValueOnce(new Error('disk full'))
+      .mockRejectedValueOnce({ response: { status: 400, data: { detail: 'Файл не принят' } } })
       .mockResolvedValueOnce({ file_no: 3 });
     const { container } = render(<EquipmentDetailPhotosPanel itemId={10} active canWrite />);
     await screen.findByText(/Фотографий пока нет/);
@@ -198,9 +222,52 @@ describe('EquipmentDetailPhotosPanel', () => {
 
     await waitFor(() => expect(uploadPhoto).toHaveBeenCalledTimes(3));
     expect(uploadPhoto.mock.calls.map((call) => call[1].name)).toEqual(['a.jpg', 'b.jpg', 'c.jpg']);
-    expect(await screen.findByText(/Не загружено 1 из 3/)).toBeTruthy();
-    // Список перечитывается один раз по окончании пачки.
-    expect(listPhotos).toHaveBeenCalledTimes(2);
+    // Отказ сервера повтором не лечится: фото остаётся в очереди с причиной, остальные доехали.
+    expect(await screen.findByText('Файл не принят')).toBeTruthy();
+    expect(screen.getAllByTestId('photo-pending-card')).toHaveLength(1);
+    expect(await screen.findByText('Фотографий: 1')).toBeTruthy();
+  });
+
+  it('takes a series of shots with the live camera and queues each one at once', async () => {
+    const stop = vi.fn();
+    const getUserMedia = vi.fn().mockResolvedValue({ getTracks: () => [{ stop }] });
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } });
+    const videoWidth = vi.spyOn(HTMLVideoElement.prototype, 'videoWidth', 'get').mockReturnValue(4000);
+    const videoHeight = vi.spyOn(HTMLVideoElement.prototype, 'videoHeight', 'get').mockReturnValue(3000);
+    const context = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn() });
+    const toBlob = vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function toBlobMock(callback) {
+      callback(new Blob([`frame-${this.width}x${this.height}`], { type: 'image/jpeg' }));
+    });
+    uploadPhoto.mockResolvedValue({ file_no: 50 });
+    try {
+      render(<EquipmentDetailPhotosPanel itemId={10} active canWrite />);
+      await screen.findByText(/Фотографий пока нет/);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Серия' }));
+      const shutter = await screen.findByRole('button', { name: 'Сделать снимок' });
+      await waitFor(() => expect(shutter).not.toBeDisabled());
+      fireEvent.click(shutter);
+      await waitFor(() => expect(uploadPhoto).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(shutter).not.toBeDisabled());
+      fireEvent.click(shutter);
+      await waitFor(() => expect(uploadPhoto).toHaveBeenCalledTimes(2));
+
+      expect(await screen.findByText('Снято: 2')).toBeTruthy();
+      // Кадр режется до 2560 px по длинной стороне и уходит без подтверждения.
+      const [, sent] = uploadPhoto.mock.calls[0];
+      expect(sent.type).toBe('image/jpeg');
+      const content = await new Promise((resolve) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.readAsText(sent); });
+      expect(content).toBe('frame-2560x1920');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Готово' }));
+      await waitFor(() => expect(stop).toHaveBeenCalled());
+    } finally {
+      videoWidth.mockRestore();
+      videoHeight.mockRestore();
+      context.mockRestore();
+      toBlob.mockRestore();
+      delete navigator.mediaDevices;
+    }
   });
 
   it('rejects files over the size limit without calling the API', async () => {
@@ -438,7 +505,7 @@ describe('EquipmentDetailPhotosPanel', () => {
 
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Загрузить' })).not.toBeDisabled());
     fireEvent.click(within(dialog).getByRole('button', { name: 'Загрузить' }));
-    await waitFor(() => expect(uploadPhoto).toHaveBeenCalledWith(10, turned, { params: {} }));
+    await waitFor(() => expect(uploadPhoto).toHaveBeenCalledWith(10, turned, expect.objectContaining({ params: {} })));
   });
 
   it('discards a camera shot on cancel without uploading', async () => {
