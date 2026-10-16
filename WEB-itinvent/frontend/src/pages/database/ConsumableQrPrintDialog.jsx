@@ -7,6 +7,11 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControl,
+  FormControlLabel,
+  FormLabel,
+  Radio,
+  RadioGroup,
   TextField,
   Typography,
 } from '@mui/material';
@@ -22,8 +27,9 @@ const itemKey = (item, index) => {
 
 const GRID_INPUT_MAX = 10;
 
-// Batch print of consumable QR labels: pick cards, pick the sticker-sheet
-// grid (default 6×6 on A4), send to the shared print portal.
+// Batch print of consumable QR labels: pick cards and the same formats as for
+// equipment (56 × 50 / 28 × 25 mm roll or A4 sheet; the sheet grid defaults to
+// 6×6), send to the shared print portal.
 function ConsumableQrPrintDialog({
   open,
   items = [],
@@ -33,6 +39,7 @@ function ConsumableQrPrintDialog({
   onPrint,
 }) {
   const [selectedKeys, setSelectedKeys] = useState(() => new Set());
+  const [format, setFormat] = useState('label');
   const [columnsInput, setColumnsInput] = useState(String(CONSUMABLE_QR_PRINT_GRID.columns));
   const [rowsInput, setRowsInput] = useState(String(CONSUMABLE_QR_PRINT_GRID.rows));
 
@@ -43,6 +50,7 @@ function ConsumableQrPrintDialog({
 
   useEffect(() => {
     if (!open) return;
+    setFormat('label');
     setSelectedKeys(new Set(rows.map((row) => row.key)));
     setColumnsInput(String(CONSUMABLE_QR_PRINT_GRID.columns));
     setRowsInput(String(CONSUMABLE_QR_PRINT_GRID.rows));
@@ -66,7 +74,7 @@ function ConsumableQrPrintDialog({
   const handlePrint = () => {
     const selected = rows.filter((row) => selectedKeys.has(row.key)).map((row) => row.item);
     if (!selected.length) return;
-    onPrint?.(selected, { columns: columnsInput, rows: rowsInput });
+    onPrint?.(selected, { format, columns: columnsInput, rows: rowsInput });
   };
 
   return (
@@ -100,25 +108,48 @@ function ConsumableQrPrintDialog({
           <Typography variant="body2" color="text.secondary" sx={{ flex: 1 }}>
             Выбрано: {selectedKeys.size} из {rows.length}
           </Typography>
-          <TextField
-            label="Колонок"
-            type="number"
-            size="small"
-            value={columnsInput}
-            onChange={(event) => setColumnsInput(event.target.value)}
-            inputProps={{ min: 1, max: GRID_INPUT_MAX, step: 1 }}
-            sx={{ width: 96 }}
-          />
-          <TextField
-            label="Строк"
-            type="number"
-            size="small"
-            value={rowsInput}
-            onChange={(event) => setRowsInput(event.target.value)}
-            inputProps={{ min: 1, max: GRID_INPUT_MAX, step: 1 }}
-            sx={{ width: 96 }}
-          />
         </Box>
+
+        <FormControl sx={{ mb: 1 }}>
+          <FormLabel id="consumable-qr-print-format">Формат печати</FormLabel>
+          <RadioGroup
+            aria-labelledby="consumable-qr-print-format"
+            value={format}
+            onChange={(event) => setFormat(event.target.value)}
+          >
+            <FormControlLabel value="label" control={<Radio />} label="Этикетка 56 × 50 мм" />
+            <FormControlLabel value="label_small" control={<Radio />} label="Малая этикетка 28 × 25 мм" />
+            <FormControlLabel value="a4" control={<Radio />} label="Лист A4" />
+          </RadioGroup>
+        </FormControl>
+        {format === 'a4' ? (
+          <Box sx={{ display: 'flex', gap: 1, mb: 1 }}>
+            <TextField
+              label="Колонок"
+              type="number"
+              size="small"
+              value={columnsInput}
+              onChange={(event) => setColumnsInput(event.target.value)}
+              inputProps={{ min: 1, max: GRID_INPUT_MAX, step: 1 }}
+              sx={{ width: 96 }}
+            />
+            <TextField
+              label="Строк"
+              type="number"
+              size="small"
+              value={rowsInput}
+              onChange={(event) => setRowsInput(event.target.value)}
+              inputProps={{ min: 1, max: GRID_INPUT_MAX, step: 1 }}
+              sx={{ width: 96 }}
+            />
+          </Box>
+        ) : (
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            {format === 'label_small'
+              ? 'По одной этикетке 28 × 25 мм на страницу. В окне печати выберите размер бумаги 28 × 25 мм и масштаб 100%.'
+              : 'По одной этикетке на страницу для принтера этикеток.'}
+          </Typography>
+        )}
 
         <Box sx={{ maxHeight: isMobile ? 'none' : 420, overflowY: 'auto' }}>
           {rows.map(({ item, key }) => {

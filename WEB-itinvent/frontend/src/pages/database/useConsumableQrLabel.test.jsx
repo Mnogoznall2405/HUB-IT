@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { buildConsumableQrLabelDataUrl } from './equipmentQrLabel';
 import { waitForEquipmentQrPrintImages } from './EquipmentQrPrintPortal';
 import {
   normalizeConsumableQrPrintGrid,
@@ -50,7 +51,13 @@ describe('useConsumableQrLabel', () => {
     act(() => { result.current.openConsumableQr(item); });
     await waitFor(() => expect(result.current.consumableQrUrl).toBe('data:image/png;base64,qr'));
 
-    await act(async () => { await result.current.printConsumableQr(); });
+    act(() => { result.current.openConsumableQrPrintSingle(); });
+    expect(result.current.consumableQrBatchOpen).toBe(true);
+    expect(result.current.consumableQrBatchItems).toEqual([item]);
+
+    await act(async () => {
+      await result.current.printConsumableQrBatch(result.current.consumableQrBatchItems, { format: 'label' });
+    });
     await waitFor(() => expect(window.print).toHaveBeenCalledTimes(1));
 
     expect(result.current.consumableQrPrintLabels).toHaveLength(1);
@@ -70,7 +77,7 @@ describe('useConsumableQrLabel', () => {
     expect(result.current.consumableQrBatchOpen).toBe(true);
 
     await act(async () => {
-      await result.current.printConsumableQrBatch([item, second], { columns: 6, rows: 6 });
+      await result.current.printConsumableQrBatch([item, second], { format: 'a4', columns: 6, rows: 6 });
     });
     await waitFor(() => expect(window.print).toHaveBeenCalledTimes(1));
 
@@ -84,6 +91,28 @@ describe('useConsumableQrLabel', () => {
     await act(async () => {
       window.dispatchEvent(new Event('afterprint'));
     });
+  });
+
+  it('prints roll formats at the equipment label size without a sheet grid', async () => {
+    const { result } = renderLabelHook();
+
+    await act(async () => {
+      await result.current.printConsumableQrBatch([item], { format: 'label' });
+    });
+    await waitFor(() => expect(window.print).toHaveBeenCalledTimes(1));
+    expect(result.current.consumableQrPrintGrid).toBeNull();
+    expect(result.current.consumableQrPrintLabelSize).toEqual({ cellWidthMm: 56, cellHeightMm: 50 });
+    expect(buildConsumableQrLabelDataUrl).toHaveBeenLastCalledWith(expect.objectContaining({ format: 'label' }));
+    await act(async () => { window.dispatchEvent(new Event('afterprint')); });
+
+    await act(async () => {
+      await result.current.printConsumableQrBatch([item], { format: 'label_small' });
+    });
+    await waitFor(() => expect(window.print).toHaveBeenCalledTimes(2));
+    expect(result.current.consumableQrPrintGrid).toBeNull();
+    expect(result.current.consumableQrPrintLabelSize).toEqual({ cellWidthMm: 28, cellHeightMm: 25 });
+    expect(buildConsumableQrLabelDataUrl).toHaveBeenLastCalledWith(expect.objectContaining({ format: 'label_small' }));
+    await act(async () => { window.dispatchEvent(new Event('afterprint')); });
   });
 
   it('normalizes the sheet grid and clamps out-of-range values', () => {

@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { readFirst } from './databaseRecordModel';
-import { buildConsumableQrLabelDataUrl } from './equipmentQrLabel';
+import {
+  buildConsumableQrLabelDataUrl,
+  EQUIPMENT_QR_LABEL_HEIGHT_MM,
+  EQUIPMENT_QR_LABEL_WIDTH_MM,
+} from './equipmentQrLabel';
+import { EQUIPMENT_QR_SMALL_LABEL_SIZE } from './equipmentQrPrintFormats';
 import { buildConsumableQrLink, buildEquipmentQrDataUrl } from './qrModel';
 import { openPrintDialog } from './useEquipmentQrBatchPrint';
 import { waitForEquipmentQrPrintImages } from './EquipmentQrPrintPortal';
@@ -13,6 +18,16 @@ export const CONSUMABLE_QR_PRINT_GRID = { columns: 6, rows: 6 };
 const A4_USABLE_WIDTH_MM = 200;
 const A4_USABLE_HEIGHT_MM = 287;
 const GRID_LIMIT = 10;
+
+const ROLL_LABEL_SIZE = {
+  cellWidthMm: EQUIPMENT_QR_LABEL_WIDTH_MM,
+  cellHeightMm: EQUIPMENT_QR_LABEL_HEIGHT_MM,
+};
+
+// Те же форматы, что у оборудования: рулонные 56 × 50 и 28 × 25 мм либо лист A4.
+export const normalizeConsumableQrPrintFormat = (format) => (
+  format === 'a4' || format === 'label_small' ? format : 'label'
+);
 
 const clampGridValue = (value, fallback) => {
   const parsed = Math.trunc(Number(value));
@@ -38,7 +53,9 @@ export function useConsumableQrLabel({ databaseId = '' } = {}) {
   const [consumableQrUrl, setConsumableQrUrl] = useState('');
   const [consumableQrUrlLoading, setConsumableQrUrlLoading] = useState(false);
   const [consumableQrPrintLabels, setConsumableQrPrintLabels] = useState([]);
-  const [consumableQrPrintGrid, setConsumableQrPrintGrid] = useState(() => normalizeConsumableQrPrintGrid());
+  const [consumableQrPrintGrid, setConsumableQrPrintGrid] = useState(null);
+  const [consumableQrPrintLabelSize, setConsumableQrPrintLabelSize] = useState(null);
+  const [consumableQrBatchItems, setConsumableQrBatchItems] = useState(null);
   const [consumableQrPrinting, setConsumableQrPrinting] = useState(false);
   const [consumableQrBatchOpen, setConsumableQrBatchOpen] = useState(false);
 
@@ -62,36 +79,31 @@ export function useConsumableQrLabel({ databaseId = '' } = {}) {
     setConsumableQrModal(createClosedModal());
   }, []);
 
-  const printConsumableQr = useCallback(async () => {
+  // Печать одной этикетки из окна QR: тот же диалог выбора формата, что у пакета.
+  const openConsumableQrPrintSingle = useCallback(() => {
     const item = consumableQrModal.item;
-    if (!item || !consumableQrUrl || consumableQrPrinting) return;
-    setConsumableQrPrinting(true);
-    try {
-      const dataUrl = await buildConsumableQrLabelDataUrl({ consumable: item, qrDataUrl: consumableQrUrl });
-      if (!dataUrl) throw new Error('empty label');
-      const invNo = String(readFirst(item, ['INV_NO', 'inv_no'], '') || readFirst(item, ['ID', 'id'], '') || 'consumable');
-      setConsumableQrPrintGrid(normalizeConsumableQrPrintGrid());
-      setConsumableQrPrintLabels([{ invNo, dataUrl }]);
-    } catch (error) {
-      console.error('Error preparing consumable QR label for print:', error);
-      setConsumableQrPrinting(false);
-    }
-  }, [consumableQrModal.item, consumableQrPrinting, consumableQrUrl]);
+    if (!item || consumableQrPrinting) return;
+    setConsumableQrBatchItems([item]);
+    setConsumableQrBatchOpen(true);
+  }, [consumableQrModal.item, consumableQrPrinting]);
 
   const openConsumableQrPrintBatch = useCallback(() => {
     if (consumableQrPrinting) return;
+    setConsumableQrBatchItems(null);
     setConsumableQrBatchOpen(true);
   }, [consumableQrPrinting]);
 
   const closeConsumableQrPrintBatch = useCallback(() => {
     if (consumableQrPrinting) return;
     setConsumableQrBatchOpen(false);
+    setConsumableQrBatchItems(null);
   }, [consumableQrPrinting]);
 
-  const printConsumableQrBatch = useCallback(async (items, grid) => {
+  const printConsumableQrBatch = useCallback(async (items, options = {}) => {
     const list = (Array.isArray(items) ? items : [])
       .filter((item) => item && typeof item === 'object');
     if (!list.length || consumableQrPrinting) return;
+    const format = normalizeConsumableQrPrintFormat(options?.format);
     setConsumableQrPrinting(true);
     try {
       const labels = [];
@@ -100,7 +112,7 @@ export function useConsumableQrLabel({ databaseId = '' } = {}) {
         if (!link) continue;
         const qrDataUrl = await buildEquipmentQrDataUrl(link);
         if (!qrDataUrl) continue;
-        const dataUrl = await buildConsumableQrLabelDataUrl({ consumable: item, qrDataUrl });
+        const dataUrl = await buildConsumableQrLabelDataUrl({ consumable: item, qrDataUrl, format });
         if (!dataUrl) continue;
         const invNo = String(
           readFirst(item, ['INV_NO', 'inv_no'], '')
@@ -113,9 +125,13 @@ export function useConsumableQrLabel({ databaseId = '' } = {}) {
         setConsumableQrPrinting(false);
         return;
       }
-      setConsumableQrPrintGrid(normalizeConsumableQrPrintGrid(grid));
+      setConsumableQrPrintGrid(format === 'a4' ? normalizeConsumableQrPrintGrid(options) : null);
+      setConsumableQrPrintLabelSize(
+        format === 'label_small' ? EQUIPMENT_QR_SMALL_LABEL_SIZE : (format === 'label' ? ROLL_LABEL_SIZE : null)
+      );
       setConsumableQrPrintLabels(labels);
       setConsumableQrBatchOpen(false);
+      setConsumableQrBatchItems(null);
     } catch (error) {
       console.error('Error preparing consumable QR batch for print:', error);
       setConsumableQrPrinting(false);
@@ -183,11 +199,13 @@ export function useConsumableQrLabel({ databaseId = '' } = {}) {
     consumableQrFileName,
     consumableQrPrintLabels,
     consumableQrPrintGrid,
+    consumableQrPrintLabelSize,
+    consumableQrBatchItems,
     consumableQrPrinting,
     consumableQrBatchOpen,
     openConsumableQr,
     closeConsumableQr,
-    printConsumableQr,
+    openConsumableQrPrintSingle,
     openConsumableQrPrintBatch,
     closeConsumableQrPrintBatch,
     printConsumableQrBatch,

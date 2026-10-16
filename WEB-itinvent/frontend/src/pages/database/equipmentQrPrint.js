@@ -11,6 +11,7 @@ export async function buildEquipmentQrPrintBatch({
   databaseId = '',
   origin = typeof window !== 'undefined' ? window.location.origin : '',
   skippedInvNos = [],
+  compact = false,
 } = {}) {
   const results = [];
   for (const item of items || []) {
@@ -28,7 +29,7 @@ export async function buildEquipmentQrPrintBatch({
 
     try {
       const qrDataUrl = await buildEquipmentQrDataUrl(link);
-      const labelDataUrl = await buildEquipmentQrLabelDataUrl({ equipment: item, qrDataUrl });
+      const labelDataUrl = await buildEquipmentQrLabelDataUrl({ equipment: item, qrDataUrl, compact });
       results.push(labelDataUrl
         ? { label: { invNo, dataUrl: labelDataUrl } }
         : { skippedInvNo: invNo });

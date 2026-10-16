@@ -1,6 +1,15 @@
 import { APP_BRAND_NAME } from '../../lib/appBranding';
 import { readFirst } from './databaseRecordModel';
 
+export const EQUIPMENT_QR_LABEL_WIDTH_MM = 56;
+export const EQUIPMENT_QR_LABEL_HEIGHT_MM = 50;
+export const EQUIPMENT_QR_CODE_SIZE_MM = 42;
+// Малая этикетка: ровно вдвое меньше по каждой стороне (для мелкой техники).
+export const EQUIPMENT_QR_SMALL_LABEL_WIDTH_MM = 28;
+export const EQUIPMENT_QR_SMALL_LABEL_HEIGHT_MM = 25;
+const SMALL_LABEL_QR_SIZE_PX = 740;
+const SMALL_LABEL_QR_TOP_PX = 195;
+
 const normalizeValue = (value, fallback = '') => {
   const normalized = String(value ?? '').trim();
   return normalized && normalized !== '-' ? normalized : fallback;
@@ -13,6 +22,7 @@ const readValue = (equipment, keys, fallback = '') => (
 export const buildEquipmentQrLabelContent = (equipment = {}) => ({
   brandName: APP_BRAND_NAME,
   invNo: readValue(equipment, ['INV_NO', 'inv_no'], 'Не указан'),
+  modelName: readValue(equipment, ['MODEL_NAME', 'model_name'], 'Не указана'),
   serialNo: readValue(equipment, ['SERIAL_NO', 'serial_no'], 'Не указан'),
 });
 
@@ -50,6 +60,9 @@ export const buildQrLabelDataUrl = async ({
   bottomCaption = 'Серийный номер',
   bottomValue = '',
   qrOnly = false,
+  canvasWidth = 1000,
+  compact = false,
+  roll = false,
 } = {}) => {
   const normalizedQrDataUrl = normalizeValue(qrDataUrl);
   if (!normalizedQrDataUrl || typeof document === 'undefined' || typeof Image === 'undefined') {
@@ -58,7 +71,7 @@ export const buildQrLabelDataUrl = async ({
 
   const qrImage = await loadImage(normalizedQrDataUrl);
   let logoImage = null;
-  if (!qrOnly) {
+  if (!qrOnly && logoUrl) {
     try {
       logoImage = await loadImage(logoUrl);
     } catch {
@@ -67,7 +80,7 @@ export const buildQrLabelDataUrl = async ({
   }
 
   const canvas = document.createElement('canvas');
-  canvas.width = 1000;
+  canvas.width = canvasWidth;
   canvas.height = 1000;
   const context = canvas.getContext('2d');
   if (!context) return '';
@@ -78,6 +91,27 @@ export const buildQrLabelDataUrl = async ({
   if (qrOnly) {
     context.imageSmoothingEnabled = false;
     const qrBottomText = normalizeValue(bottomValue);
+    if (roll) {
+      // Рулонная этикетка (56 × 50 или 28 × 25 мм): QR по центру, модель под ним.
+      const rollCenterX = canvas.width / 2;
+      const rollTextWidth = canvas.width - 80;
+      if (!qrBottomText) {
+        context.drawImage(qrImage, rollCenterX - 460, 40, 920, 920);
+        return canvas.toDataURL('image/png');
+      }
+      const rollQrSize = compact ? 780 : 800;
+      context.drawImage(qrImage, rollCenterX - rollQrSize / 2, 20, rollQrSize, rollQrSize);
+      context.fillStyle = '#000000';
+      context.textAlign = 'center';
+      const rollLine = setFittedTextFont(context, qrBottomText, {
+        maxWidth: rollTextWidth,
+        maxFontSize: compact ? 130 : 96,
+        minFontSize: compact ? 60 : 36,
+      });
+      context.fillText(rollLine, rollCenterX, compact ? 965 : 955, rollTextWidth);
+      context.textAlign = 'left';
+      return canvas.toDataURL('image/png');
+    }
     if (!qrBottomText) {
       context.drawImage(qrImage, 40, 40, 920, 920);
       return canvas.toDataURL('image/png');
@@ -95,10 +129,72 @@ export const buildQrLabelDataUrl = async ({
     return canvas.toDataURL('image/png');
   }
 
-  const logoSize = 76;
-  const logoGap = 22;
+  if (compact) {
+    // Малая этикетка: без бренда и подписей, модель в 1-2 строки крупнее,
+    // QR почти во всю высоту, серийный номер под ним.
+    const compactCenterX = canvas.width / 2;
+    const compactTextWidth = canvas.width - 80;
+    context.fillStyle = '#000000';
+    context.textAlign = 'center';
+    const modelText = normalizeValue(topValue, '—');
+    const oneLine = setFittedTextFont(context, modelText, {
+      maxWidth: compactTextWidth,
+      maxFontSize: 84,
+      minFontSize: 56,
+    });
+    if (context.measureText(oneLine).width <= compactTextWidth) {
+      context.fillText(oneLine, compactCenterX, 130, compactTextWidth);
+    } else {
+      const words = modelText.split(/\s+/);
+      let splitAt = Math.ceil(words.length / 2);
+      let best = Infinity;
+      for (let index = 1; index < words.length; index += 1) {
+        const diff = Math.abs(words.slice(0, index).join(' ').length - words.slice(index).join(' ').length);
+        if (diff < best) {
+          best = diff;
+          splitAt = index;
+        }
+      }
+      const lines = words.length > 1
+        ? [words.slice(0, splitAt).join(' '), words.slice(splitAt).join(' ')]
+        : [modelText];
+      const lineBaselines = lines.length > 1 ? [88, 172] : [130];
+      // Один шрифт на обе строки: самый крупный, при котором влезает длиннейшая.
+      let lineSize = 70;
+      while (lineSize > 36) {
+        context.font = `800 ${lineSize}px "Segoe UI", Arial, sans-serif`;
+        if (lines.every((line) => context.measureText(line).width <= compactTextWidth)) break;
+        lineSize -= 2;
+      }
+      context.font = `800 ${lineSize}px "Segoe UI", Arial, sans-serif`;
+      lines.forEach((line, lineIndex) => {
+        context.fillText(line, compactCenterX, lineBaselines[lineIndex], compactTextWidth);
+      });
+    }
+    context.imageSmoothingEnabled = false;
+    context.drawImage(
+      qrImage,
+      compactCenterX - SMALL_LABEL_QR_SIZE_PX / 2,
+      SMALL_LABEL_QR_TOP_PX,
+      SMALL_LABEL_QR_SIZE_PX,
+      SMALL_LABEL_QR_SIZE_PX,
+    );
+    const serialText = setFittedTextFont(context, bottomValue, {
+      maxWidth: compactTextWidth,
+      maxFontSize: 60,
+      minFontSize: 36,
+    });
+    context.fillText(serialText, compactCenterX, 985, compactTextWidth);
+    context.textAlign = 'left';
+    return canvas.toDataURL('image/png');
+  }
+
+  const logoSize = 62;
+  const logoGap = 14;
+  const centerX = canvas.width / 2;
+  const textWidth = canvas.width - 120;
   context.fillStyle = '#000000';
-  context.font = '800 56px "Segoe UI", Arial, sans-serif';
+  context.font = '800 62px "Segoe UI", Arial, sans-serif';
   context.textAlign = 'left';
   const brandWidth = context.measureText(brandName).width;
   const brandGroupWidth = brandWidth + (logoImage ? logoSize + logoGap : 0);
@@ -106,44 +202,40 @@ export const buildQrLabelDataUrl = async ({
   if (logoImage) {
     context.save();
     context.filter = 'brightness(0)';
-    context.drawImage(logoImage, brandGroupX, 32, logoSize, logoSize);
+    context.drawImage(logoImage, brandGroupX, 4, logoSize, logoSize);
     context.restore();
   }
   context.fillText(
     brandName,
     brandGroupX + (logoImage ? logoSize + logoGap : 0),
-    91,
+    61,
   );
 
   context.textAlign = 'center';
-  context.font = '600 24px "Segoe UI", Arial, sans-serif';
-  context.fillText(topCaption, 500, 135);
+  context.font = '600 18px "Segoe UI", Arial, sans-serif';
+  if (topCaption) context.fillText(topCaption, centerX, 86);
   const topText = setFittedTextFont(context, topValue, {
-    maxWidth: 880,
-    maxFontSize: 62,
-    minFontSize: 30,
+    maxWidth: textWidth,
+    maxFontSize: 60,
+    minFontSize: 24,
   });
-  context.fillText(topText, 500, 195, 880);
+  context.fillText(topText, centerX, 118, textWidth);
 
   context.imageSmoothingEnabled = false;
-  context.drawImage(qrImage, 200, 220, 600, 600);
+  const qrSize = EQUIPMENT_QR_CODE_SIZE_MM * canvas.height / EQUIPMENT_QR_LABEL_HEIGHT_MM;
+  context.drawImage(qrImage, centerX - qrSize / 2, 125, qrSize, qrSize);
 
   context.fillStyle = '#000000';
   context.textAlign = 'center';
-  context.font = '600 24px "Segoe UI", Arial, sans-serif';
-  context.fillText(bottomCaption, 500, 862);
+  context.font = '600 18px "Segoe UI", Arial, sans-serif';
+  if (bottomCaption) context.fillText(bottomCaption, centerX, 938);
   const bottomText = setFittedTextFont(context, bottomValue, {
-    maxWidth: 880,
-    maxFontSize: 54,
+    maxWidth: textWidth,
+    maxFontSize: 40,
     minFontSize: 24,
   });
   // Canvas keeps the complete value and only condenses horizontally as a last resort.
-  context.fillText(bottomText, 500, 936, 880);
-
-  // A 0.15 mm inner frame keeps every 50x50 mm label identical and marks the cut line.
-  context.strokeStyle = '#000000';
-  context.lineWidth = 3;
-  context.strokeRect(1.5, 1.5, 997, 997);
+  context.fillText(bottomText, centerX, 985, textWidth);
   context.textAlign = 'left';
 
   return canvas.toDataURL('image/png');
@@ -152,17 +244,19 @@ export const buildQrLabelDataUrl = async ({
 export const buildEquipmentQrLabelDataUrl = async ({
   equipment,
   qrDataUrl,
-  logoUrl = '/favicon.png',
+  compact = false,
 } = {}) => {
   const content = buildEquipmentQrLabelContent(equipment);
   return buildQrLabelDataUrl({
     qrDataUrl,
-    logoUrl,
+    logoUrl: '',
     brandName: content.brandName,
-    topCaption: 'Инв. №',
-    topValue: content.invNo,
-    bottomCaption: 'Серийный номер',
+    topCaption: '',
+    topValue: content.modelName,
+    bottomCaption: '',
     bottomValue: content.serialNo,
+    canvasWidth: 1000 * EQUIPMENT_QR_LABEL_WIDTH_MM / EQUIPMENT_QR_LABEL_HEIGHT_MM,
+    compact,
   });
 };
 
@@ -176,9 +270,18 @@ export const buildConsumableQrLabelContent = (consumable = {}) => ({
 
 // Consumable label = QR + model caption on the sticker: no frame, no brand —
 // the model line distinguishes identical-looking QRs across shelves.
-export const buildConsumableQrLabelDataUrl = async ({ consumable, qrDataUrl } = {}) =>
-  buildQrLabelDataUrl({
+// `format`: 'label' (56 × 50 мм) и 'label_small' (28 × 25 мм) — те же размеры, что у
+// оборудования; иначе квадратная этикетка для ячейки сетки на листе A4.
+export const buildConsumableQrLabelDataUrl = async ({ consumable, qrDataUrl, format = 'a4' } = {}) => {
+  const roll = format === 'label' || format === 'label_small';
+  return buildQrLabelDataUrl({
     qrDataUrl,
     qrOnly: true,
     bottomValue: readValue(consumable || {}, ['MODEL_NAME', 'model_name'], ''),
+    ...(roll ? {
+      roll: true,
+      compact: format === 'label_small',
+      canvasWidth: 1000 * EQUIPMENT_QR_LABEL_WIDTH_MM / EQUIPMENT_QR_LABEL_HEIGHT_MM,
+    } : {}),
   });
+};

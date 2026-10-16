@@ -5,6 +5,8 @@ import EquipmentQrPrintPortal from './EquipmentQrPrintPortal';
 import {
   buildConsumableQrLabelContent,
   buildConsumableQrLabelDataUrl,
+  EQUIPMENT_QR_LABEL_WIDTH_MM,
+  EQUIPMENT_QR_LABEL_HEIGHT_MM,
 } from './equipmentQrLabel';
 
 const UploadActDialog = lazy(() => import('./UploadActDialog'));
@@ -12,6 +14,7 @@ const ActionDialog = lazy(() => import('./ActionDialog'));
 const DetailQrDialog = lazy(() => import('./DetailQrDialog'));
 const ConsumableQrResultDialog = lazy(() => import('./ConsumableQrResultDialog'));
 const ConsumableQrPrintDialog = lazy(() => import('./ConsumableQrPrintDialog'));
+const EquipmentQrPrintDialog = lazy(() => import('./EquipmentQrPrintDialog'));
 const CartridgeCompatibilityDialog = lazy(() => import('./CartridgeCompatibilityDialog'));
 const EquipmentQrPrintFeedback = lazy(() => import('./EquipmentQrPrintFeedback'));
 const DeleteEquipmentDialog = lazy(() => import('./DeleteEquipmentDialog'));
@@ -60,9 +63,10 @@ export default function DatabaseDialogsLayer({
     [consumableQr?.item]
   );
   const qrPrintLabels = useMemo(
-    () => [...(qrBatchPrint?.labels || []), ...(consumableQr?.printLabels || [])],
+    () => ((consumableQr?.printLabels || []).length ? consumableQr.printLabels : (qrBatchPrint?.labels || [])),
     [consumableQr?.printLabels, qrBatchPrint?.labels]
   );
+  const consumableLabelsActive = (consumableQr?.printLabels || []).length > 0;
   const buildConsumableLabel = useCallback(
     (qrDataUrl) => buildConsumableQrLabelDataUrl({ consumable: consumableQr?.item, qrDataUrl }),
     [consumableQr?.item]
@@ -139,7 +143,7 @@ export default function DatabaseDialogsLayer({
             warehouseRef={employeeDialog.state.warehouseRef}
             stackAboveParent={employeeDialog.state.stackAboveParent}
             canViewWarehouse1C={canViewWarehouse1C}
-            allowCrossDatabase={isAdmin}
+            allowCrossDatabase={false}
             {...employeeDialog.props}
           />
         </Suspense>
@@ -182,6 +186,8 @@ export default function DatabaseDialogsLayer({
             open={detailQr.open}
             isMobile={isMobile}
             equipment={detail.modal.data}
+            onPrint={() => qrBatchPrint.openEquipmentPrintOptions(detail.modal.data)}
+            printLoading={qrBatchPrint.printing}
             {...detailQr.props}
           />
         </Suspense>
@@ -234,9 +240,21 @@ export default function DatabaseDialogsLayer({
         </Suspense>
       )}
 
+      {qrBatchPrint.printDialog?.open && (
+        <Suspense fallback={null}>
+          <EquipmentQrPrintDialog isMobile={isMobile} {...qrBatchPrint.printDialog} />
+        </Suspense>
+      )}
+
       <EquipmentQrPrintPortal
         labels={qrPrintLabels}
-        {...((consumableQr?.printLabels || []).length && consumableQr?.printGrid ? consumableQr.printGrid : {})}
+        rollLabels={consumableLabelsActive ? !consumableQr.printGrid : !qrBatchPrint.printGrid}
+        {...(consumableLabelsActive
+          ? (consumableQr.printGrid || consumableQr.printLabelSize || {})
+          : qrBatchPrint.printGrid || qrBatchPrint.printLabelSize || {
+            cellWidthMm: EQUIPMENT_QR_LABEL_WIDTH_MM,
+            cellHeightMm: EQUIPMENT_QR_LABEL_HEIGHT_MM,
+          })}
       />
       {qrBatchPrint.feedback && (
         <Suspense fallback={null}>
