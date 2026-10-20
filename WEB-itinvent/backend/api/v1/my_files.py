@@ -1,6 +1,7 @@
 """Personal file storage API."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from urllib.parse import quote
 
@@ -69,6 +70,8 @@ from backend.services.my_files_service import (
 from backend.utils.request_network import build_request_network_context
 
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 _DOWNLOAD_SECURITY_HEADERS = {
@@ -116,6 +119,8 @@ def _service_error_to_http(exc: Exception) -> HTTPException:
         return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     if isinstance(exc, MyFilesCapacityError):
         return HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc), headers={"Retry-After": "30"})
+    # Unmapped failures (storage/SMB errors, locks, client aborts) used to become a bare 500 with no trace.
+    logger.error("my_files.request_failed error_type=%s", type(exc).__name__, exc_info=exc)
     return HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="My files request failed")
 
 

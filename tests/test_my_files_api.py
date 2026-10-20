@@ -889,3 +889,28 @@ def test_download_grant_token_allows_bounded_retries(monkeypatch, tmp_path):
 
     assert [response.status_code for response in responses] == [200, 200, 200, 200, 429]
     assert responses[-1].headers.get("retry-after")
+
+
+def test_unexpected_chunk_write_failure_is_a_500_and_leaves_a_traceback_in_the_log(monkeypatch, tmp_path, caplog):
+    fake_service = FakeMyFilesService(tmp_path)
+
+    def failing_append(**_kwargs):
+        raise OSError("smb share went away")
+
+    monkeypatch.setattr(fake_service, "append_upload_chunk", failing_append)
+    monkeypatch.setattr(my_files_api, "my_files_service", fake_service)
+    client = _client(fake_service)
+    client.post("/my-files/upload-sessions", json={"file_name": "large.bin", "file_size": 5, "retention_days": 1})
+
+    with caplog.at_level("ERROR", logger=my_files_api.logger.name):
+        response = client.put(
+            "/my-files/upload-sessions/reserved-file/chunks",
+            params={"offset": 0},
+            content=b"12345",
+            headers={"content-type": "application/octet-stream"},
+        )
+
+    assert response.status_code == 500
+    record = next(item for item in caplog.records if "my_files.request_failed" in item.getMessage())
+    assert "OSError" in record.getMessage()
+    assert record.exc_info and "smb share went away" in str(record.exc_info[1])
