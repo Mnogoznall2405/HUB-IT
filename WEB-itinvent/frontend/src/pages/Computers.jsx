@@ -944,7 +944,8 @@ function Computers() {
     try {
       if (showFullLoader) setLoading(true);
       if (showRefreshOverlay) setRefreshing(true);
-      if (append) setLoadingMore(true);
+      // A replacement load invalidates any older append request and its spinner.
+      setLoadingMore(append);
       const requestOptions = {
         ...searchFilterParams,
         sortBy: 'hostname',

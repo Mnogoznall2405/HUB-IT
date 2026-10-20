@@ -9,7 +9,6 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  Divider,
   IconButton,
   Stack,
   Tab,
@@ -23,7 +22,9 @@ import { readFirst } from './databaseRecordModel';
 import { useEquipmentActFilePreview } from './useEquipmentActFilePreview';
 import { useMovementDetail } from './warehouse1cMovementDetail';
 import {
+  areBalanceQuantitiesValid,
   buildCompareMaps,
+  buildEmployeeCompareSummary,
   isBalancesMetaIncomplete,
   normalizeCompareKey,
   resolve1cRowStatus,
@@ -36,7 +37,6 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import DownloadIcon from '@mui/icons-material/Download';
 import EmployeeNameLink from './EmployeeNameLink';
 import {
-  COLUMN_HEADER_MIN_HEIGHT,
   HUB_SORT_GETTERS,
   WH_SORT_GETTERS,
   filterHubItemsByText,
@@ -49,10 +49,12 @@ import Warehouse1CBalancesPanel from './WarehouseBalancesPanel';
 import EmployeeCompareFilters from './EmployeeCompareFilters';
 import EmployeeEquipmentSubDialogs from './EmployeeEquipmentSubDialogs';
 import useEmployeeEquipmentData from './useEmployeeEquipmentData';
+import EmployeeHistoryPanel from './EmployeeHistoryPanel';
 import useEmployeeWarehouseNavigation from './useEmployeeWarehouseNavigation';
 import useEmployeeEquipmentExport from './useEmployeeEquipmentExport';
 import useDiscrepanciesCopy from './useDiscrepanciesCopy';
 import useMissingWarehouseTaskText from './useMissingWarehouseTaskText';
+import { comparisonPanelSx, comparisonTabsSx } from './employeeComparisonStyles';
 
 export default function EmployeeEquipmentDialog({
   open,
@@ -66,12 +68,15 @@ export default function EmployeeEquipmentDialog({
   onClose,
   onOpenInvNo = null,
   buildWarehouseReturnContext = null,
+  onComparisonChange = null,
 }) {
   const navigate = useNavigate();
   const theme = useTheme();
   const isNarrowMobile = useMediaQuery(theme.breakpoints.down('sm'), { defaultMatches: false });
   const isTouchMobile = useMediaQuery('(hover: none) and (pointer: coarse)', { defaultMatches: false });
   const isMobile = isNarrowMobile || isTouchMobile;
+  const narrowWorkspace = useMediaQuery('(max-width: 1099px)', { defaultMatches: false });
+  const singlePanel = isMobile || narrowWorkspace;
   const {
     preview: currentActPreview,
     openingDocNo: openingCurrentActDocNo,
@@ -80,6 +85,8 @@ export default function EmployeeEquipmentDialog({
   } = useEquipmentActFilePreview();
 
   const [mobilePanel, setMobilePanel] = useState('hub');
+  const [employeeTab, setEmployeeTab] = useState('equipment');
+  useEffect(() => { setEmployeeTab('equipment'); }, [open, ownerNo, warehouseRef]);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [hubMatchOpen, setHubMatchOpen] = useState(false);
   const [hubMatchRow, setHubMatchRow] = useState(null);
@@ -195,15 +202,55 @@ export default function EmployeeEquipmentDialog({
     || (Boolean(statusFilter) && canViewWarehouse1C);
   const comparisonComplete = Boolean(
     canViewWarehouse1C
+    && !hubLoading
+    && !hubError
+    && !hubWarning
     && warehouseLoaded
+    && !warehouseLoading
+    && !warehouseError
     && warehouseStatus === 'matched'
     && !warehouseBalancesLoading
     && !isBalancesMetaIncomplete(warehouseBalancesMeta)
+    && areBalanceQuantitiesValid(warehouseBalances)
   );
   const compareMaps = useMemo(
     () => (comparisonComplete ? buildCompareMaps({ hubItems, balances: warehouseBalances }) : null),
     [comparisonComplete, hubItems, warehouseBalances],
   );
+
+  useEffect(() => {
+    if (!open || allowCrossDatabase || typeof onComparisonChange !== 'function') return;
+    const owner = Number(ownerNo);
+    if (!Number.isInteger(owner) || owner <= 0) return;
+    if (!comparisonComplete) {
+      onComparisonChange({ ownerNo: owner, summary: null });
+      return;
+    }
+    const metaAsOf = warehouseBalancesMeta?.as_of ?? warehouseBalancesMeta?.asOf;
+    const asOf = Number.isFinite(Date.parse(metaAsOf)) ? metaAsOf : new Date().toISOString();
+    onComparisonChange({
+      ownerNo: owner,
+      summary: buildEmployeeCompareSummary({
+        ownerNo: owner,
+        employeeName,
+        warehouse: warehouseInfo,
+        hubItems,
+        balances: warehouseBalances,
+        asOf,
+      }),
+    });
+  }, [
+    open,
+    allowCrossDatabase,
+    onComparisonChange,
+    ownerNo,
+    employeeName,
+    comparisonComplete,
+    warehouseBalancesMeta,
+    warehouseInfo,
+    hubItems,
+    warehouseBalances,
+  ]);
   const statusFilterActive = Boolean(statusFilter) && comparisonComplete;
   const equipmentTypes = useMemo(() => {
     const seen = new Map();
@@ -387,8 +434,8 @@ export default function EmployeeEquipmentDialog({
     <Dialog
       open={open}
       onClose={onClose}
-      maxWidth="lg"
-      fullWidth
+      maxWidth={false}
+      aria-labelledby="employee-equipment-title"
       fullScreen={isMobile}
       scroll="paper"
       disableEnforceFocus={disableEnforceFocus}
@@ -398,25 +445,43 @@ export default function EmployeeEquipmentDialog({
       } : undefined}
       PaperProps={{
         sx: {
-          height: isMobile ? '100%' : 'min(90vh, 920px)',
-          maxHeight: isMobile ? '100%' : '90vh',
+          width: isMobile ? '100%' : 'min(96vw, 1600px)',
+          maxWidth: isMobile ? '100%' : '96vw',
+          m: isMobile ? 0 : 2,
+          height: isMobile ? '100%' : 'min(94dvh, 1050px)',
+          maxHeight: isMobile ? '100%' : '94dvh',
           display: 'flex',
           flexDirection: 'column',
+          overflow: 'hidden',
         },
       }}
     >
       <DialogTitle
+        id="employee-equipment-header"
+        component="div"
         sx={{
+          px: 2,
+          py: 1,
           pr: 6,
           flexShrink: 0,
-          pt: isMobile ? 'calc(env(safe-area-inset-top) + 12px)' : undefined,
+          pt: 1,
         }}
       >
-        Оборудование сотрудника
+        <Typography id="employee-equipment-title" component="h2" sx={{ fontSize: 17, fontWeight: 600, lineHeight: '24px' }}>
+          Оборудование сотрудника
+        </Typography>
+        <Stack direction="row" useFlexGap flexWrap="wrap" spacing={0.75} sx={{ fontSize: 12, color: 'text.secondary', lineHeight: '20px' }}>
+          <EmployeeNameLink name={employeeName} sx={{ fontSize: 'inherit', lineHeight: 'inherit', color: 'text.primary' }} />
+          <Typography component="span" sx={{ fontSize: 'inherit', lineHeight: 'inherit' }}>
+            · {employeeTab === 'history'
+              ? 'История ITinvent: текущая база'
+              : allowCrossDatabase ? 'Оборудование Хаба: все базы' : 'Оборудование Хаба: текущая база'}
+          </Typography>
+        </Stack>
         <IconButton
           aria-label="Закрыть"
           onClick={onClose}
-          sx={{ position: 'absolute', right: 8, top: isMobile ? 'calc(env(safe-area-inset-top) + 4px)' : 8 }}
+          sx={{ position: 'absolute', right: 8, top: isMobile ? 4 : 8 }}
         >
           <CloseIcon />
         </IconButton>
@@ -424,6 +489,9 @@ export default function EmployeeEquipmentDialog({
       <DialogContent
         dividers
         sx={{
+          px: isMobile ? 1.5 : 2,
+          py: 0,
+          pb: 1.5,
           display: 'flex',
           flexDirection: 'column',
           flex: 1,
@@ -431,10 +499,17 @@ export default function EmployeeEquipmentDialog({
           overflow: 'hidden',
         }}
       >
-        <Typography variant="h6" sx={{ mb: 1.5, flexShrink: 0 }}>
-          <EmployeeNameLink name={employeeName} />
-        </Typography>
-
+        <Tabs value={employeeTab} onChange={(_event, tab) => setEmployeeTab(tab)}
+          aria-label="Данные сотрудника" variant="scrollable" scrollButtons="auto"
+          sx={{ ...comparisonTabsSx, mb: 1, borderBottom: 1, borderColor: 'divider' }}>
+          <Tab value="equipment" label="Оборудование" />
+          <Tab value="history" label="История перемещений" id="employee-history-tab" aria-controls="employee-history-panel" />
+        </Tabs>
+        <Box sx={{ display: employeeTab === 'history' ? 'flex' : 'none', flex: 1, minHeight: 0 }}>
+          {open && <EmployeeHistoryPanel ownerNo={ownerNo} active={employeeTab === 'history'}
+            isMobile={isMobile} onOpenInvNo={onOpenInvNo ? handleOpenInvNo : null} />}
+        </Box>
+        <Box sx={{ display: employeeTab === 'equipment' ? 'flex' : 'none', flexDirection: 'column', flex: 1, minHeight: 0 }}>
         <EmployeeCompareFilters
           isMobile={isMobile}
           filtersOpen={filtersOpen}
@@ -456,16 +531,15 @@ export default function EmployeeEquipmentDialog({
           onToggleGroupByType={() => setGroupByType((prev) => !prev)}
         />
 
-        {isMobile && canViewWarehouse1C ? (
+        {singlePanel && canViewWarehouse1C ? (
           <Tabs
             value={mobilePanel}
             onChange={(_event, value) => setMobilePanel(value)}
             variant="fullWidth"
+            aria-label="Источник оборудования"
             sx={{
-              flexShrink: 0,
-              minHeight: 44,
+              ...comparisonTabsSx,
               mb: 1,
-              '& .MuiTab-root': { minHeight: 44, textTransform: 'none', fontWeight: 600 },
             }}
           >
             <Tab value="hub" label="В Хабе" />
@@ -473,28 +547,20 @@ export default function EmployeeEquipmentDialog({
           </Tabs>
         ) : null}
 
-        <Stack
-          direction={{ xs: 'column', md: 'row' }}
-          spacing={2}
-          alignItems="stretch"
-          divider={canViewWarehouse1C && !isMobile ? <Divider flexItem orientation="vertical" /> : null}
-          sx={{ flex: 1, minHeight: 0, overflow: 'hidden' }}
+        <Box
+          sx={{ display: 'grid', gridTemplateColumns: canViewWarehouse1C && !singlePanel ? 'minmax(0, 48fr) minmax(0, 52fr)' : 'minmax(0, 1fr)',
+            flex: 1, minHeight: 0, minWidth: 0, overflow: 'hidden' }}
         >
-          {isMobile && mobilePanel !== 'hub' ? null : (
+          {singlePanel && canViewWarehouse1C && mobilePanel !== 'hub' ? null : (
           <Box
-            sx={{
-              flex: 1,
-              minWidth: 0,
-              minHeight: 0,
-              display: 'flex',
-              flexDirection: 'column',
-              overflow: 'hidden',
-            }}
+            data-testid="employee-hub-panel"
+            sx={{ ...comparisonPanelSx, pr: canViewWarehouse1C && !singlePanel ? 1.5 : 0 }}
           >
             <Stack
               direction="row"
-              alignItems="flex-start"
-              sx={{ minHeight: COLUMN_HEADER_MIN_HEIGHT, mb: 1, pt: 0.5, flexShrink: 0 }}
+              alignItems="center"
+              justifyContent="space-between"
+              sx={{ height: 36, flexShrink: 0 }}
             >
               <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
                 В Хабе
@@ -505,6 +571,7 @@ export default function EmployeeEquipmentDialog({
                 ) : null}
               </Typography>
             </Stack>
+            {canViewWarehouse1C && !singlePanel ? <Box sx={{ height: 32, flexShrink: 0 }} /> : null}
             {hubWarning ? (
               <Alert severity="warning" sx={{ mb: 1 }}>{hubWarning}</Alert>
             ) : null}
@@ -529,16 +596,11 @@ export default function EmployeeEquipmentDialog({
           </Box>
           )}
 
-          {canViewWarehouse1C && (!isMobile || mobilePanel === 'warehouse') ? (
+          {canViewWarehouse1C && (!singlePanel || mobilePanel === 'warehouse') ? (
             <Box
-              sx={{
-                flex: 1,
-                minWidth: 0,
-                minHeight: 0,
-                display: 'flex',
-                flexDirection: 'column',
-                overflow: 'hidden',
-              }}
+              data-testid="employee-warehouse-panel"
+              sx={{ ...comparisonPanelSx, pl: singlePanel ? 0 : 1.5,
+                borderLeft: singlePanel ? 0 : 1, borderColor: 'divider' }}
             >
               <Warehouse1CBalancesPanel
                 visible
@@ -582,21 +644,27 @@ export default function EmployeeEquipmentDialog({
               />
             </Box>
           ) : null}
-        </Stack>
+        </Box>
+        </Box>
       </DialogContent>
-      {exportError ? (
+      {employeeTab === 'equipment' && exportError ? (
         <Alert severity="error" sx={{ mx: 2, mb: 0 }}>{exportError}</Alert>
       ) : null}
       <DialogActions
         sx={{
           flexShrink: 0,
+          px: 2,
+          py: 0.75,
+          minHeight: 48,
+          boxSizing: 'border-box',
           justifyContent: 'space-between',
           flexWrap: 'wrap',
           gap: 1,
+          '& .MuiButton-root': { minHeight: 34, fontSize: 12, px: 1.25 },
           pb: isMobile ? 'calc(env(safe-area-inset-bottom) + 8px)' : undefined,
         }}
       >
-        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ display: employeeTab === 'equipment' ? 'flex' : 'none' }}>
           <Button
             variant="outlined"
             startIcon={exporting ? <CircularProgress size={16} color="inherit" /> : <DownloadIcon />}
@@ -604,7 +672,7 @@ export default function EmployeeEquipmentDialog({
             disabled={exportDisabled}
             aria-label="Выгрузить в Excel"
           >
-            {exporting ? 'Готовлю…' : 'Выгрузить в Excel'}
+            {exporting ? 'Готовлю…' : isMobile ? 'Excel' : 'Выгрузить в Excel'}
           </Button>
           {canViewWarehouse1C ? (
             <Button
@@ -612,17 +680,21 @@ export default function EmployeeEquipmentDialog({
               startIcon={copiedDiscrepancies ? undefined : <ContentCopyIcon />}
               onClick={handleCopyDiscrepancies}
               disabled={!comparisonComplete || copiedDiscrepancies}
+              aria-label={copiedDiscrepancies ? 'Скопировано' : 'Скопировать расхождения'}
+              title="Скопировать расхождения"
             >
-              {copiedDiscrepancies ? 'Скопировано' : 'Скопировать расхождения'}
+              {copiedDiscrepancies ? 'Скопировано' : isMobile ? null : 'Скопировать расхождения'}
             </Button>
           ) : null}
           {canViewWarehouse1C ? (
             <Button
               variant="text"
               onClick={() => setInventoryTaskOpen(true)}
+              aria-label="Задача на инвентаризацию"
+              title="Задача на инвентаризацию"
               disabled={!comparisonComplete && !(warehouseLoaded && warehouseStatus !== 'matched' && Array.isArray(hubItems) && hubItems.length)}
             >
-              Задача на инвентаризацию
+              {isMobile ? 'Задача' : 'Задача на инвентаризацию'}
             </Button>
           ) : null}
         </Stack>

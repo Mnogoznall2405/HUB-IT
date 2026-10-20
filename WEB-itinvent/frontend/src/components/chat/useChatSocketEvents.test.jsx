@@ -520,6 +520,47 @@ describe('useChatSocketEvents', () => {
     expect(loadMessages).not.toHaveBeenCalled();
   });
 
+  it('pulls newer messages into the open thread when a group change adds a system message', () => {
+    const loadMessages = vi.fn();
+    render(
+      <Harness
+        activeConversationId="conv-group"
+        buildActiveThreadPollLoadOptions={() => ({ silent: true, afterMessageId: 'm-5', reason: 'poll:active-thread:newer' })}
+        loadMessages={loadMessages}
+      />,
+    );
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CHAT_SOCKET_CONVERSATION_UPDATED_EVENT, {
+        detail: {
+          conversation_id: 'conv-group',
+          payload: { reason: 'member_added', conversation: { id: 'conv-group', kind: 'group', title: 'Группа' } },
+        },
+      }));
+    });
+
+    expect(loadMessages).toHaveBeenCalledWith(
+      'conv-group',
+      expect.objectContaining({ afterMessageId: 'm-5', reason: 'socket:conversation_updated:newer' }),
+    );
+  });
+
+  it('keeps the thread untouched for a pin change in the open group', () => {
+    const loadMessages = vi.fn();
+    render(<Harness activeConversationId="conv-group" loadMessages={loadMessages} />);
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CHAT_SOCKET_CONVERSATION_UPDATED_EVENT, {
+        detail: {
+          conversation_id: 'conv-group',
+          payload: { reason: 'pinned_message', conversation: { id: 'conv-group', kind: 'group' } },
+        },
+      }));
+    });
+
+    expect(loadMessages).not.toHaveBeenCalled();
+  });
+
   it('refreshes server folder unread counts on chat.unread.summary (debounced)', () => {
     vi.useFakeTimers();
     try {

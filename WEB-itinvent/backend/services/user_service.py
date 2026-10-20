@@ -19,6 +19,7 @@ from threading import Lock
 import ldap3
 
 from sqlalchemy import delete, func, or_, select, text
+from sqlalchemy.exc import IntegrityError
 
 from backend.appdb.db import (
     apply_postgres_local_timeouts,
@@ -190,25 +191,55 @@ class UserService:
                 self._cache_identity(user)
             return list(users)
 
-    def _save_users(self, users: list[dict]) -> None:
+    def _save_users(
+        self,
+        users: list[dict],
+        *,
+        only_ids: set[int] | None = None,
+        create_ids: set[int] | None = None,
+        deleted_ids: set[int] | None = None,
+    ) -> None:
+        """Persist user changes.
+
+        In the app database the list is a (possibly stale, cached for up to a minute) snapshot, so rows are
+        never inferred as deleted from its absence: only ``deleted_ids`` are removed. With ``only_ids`` just
+        those users are written, so a stale snapshot cannot revert other users' concurrent changes. A missing row
+        is inserted only if it is in ``create_ids`` (or when no ``only_ids`` restriction is given, e.g. bootstrap);
+        an update never resurrects a user deleted in the meantime.
+        """
         if self._use_app_database:
-            with app_session(self._database_url) as session:
-                existing_rows = session.scalars(select(AppUser)).all()
-                existing_by_id = {int(row.id): row for row in existing_rows}
-                incoming_ids: set[int] = set()
-                for payload in users:
-                    user_id = int(payload.get("id", 0))
-                    if user_id <= 0:
-                        continue
-                    incoming_ids.add(user_id)
-                    row = existing_by_id.get(user_id)
-                    if row is None:
-                        row = AppUser(id=user_id)
-                        session.add(row)
-                    self._apply_user_payload(row, payload)
-                for user_id, row in existing_by_id.items():
-                    if user_id not in incoming_ids:
-                        session.delete(row)
+            wanted = None if only_ids is None else {int(item) for item in only_ids}
+            creatable = None if create_ids is None else {int(item) for item in create_ids}
+            removed = {int(item) for item in (deleted_ids or ())}
+            try:
+                with app_session(self._database_url) as session:
+                    query = select(AppUser)
+                    if wanted is not None:
+                        query = query.where(AppUser.id.in_(wanted | removed))
+                    existing_by_id = {int(row.id): row for row in session.scalars(query).all()}
+                    for payload in users:
+                        user_id = int(payload.get("id", 0))
+                        if user_id <= 0 or user_id in removed:
+                            continue
+                        if wanted is not None and user_id not in wanted:
+                            continue
+                        row = existing_by_id.get(user_id)
+                        if creatable is not None and user_id in creatable and row is not None:
+                            # The id was taken after this snapshot was read: never overwrite another user.
+                            raise IntegrityError("insert user", {"id": user_id}, ValueError("user id already exists"))
+                        if row is None:
+                            if wanted is not None and (creatable is None or user_id not in creatable):
+                                continue
+                            row = AppUser(id=user_id)
+                            session.add(row)
+                        self._apply_user_payload(row, payload)
+                    for user_id in removed:
+                        row = existing_by_id.get(user_id)
+                        if row is not None:
+                            session.delete(row)
+            except IntegrityError as exc:
+                self._invalidate_users_cache()
+                raise ValueError("Пользователь с таким идентификатором или логином уже существует; повторите операцию") from exc
             self._invalidate_users_cache()
             return
         self.store.save_json(self.FILE_NAME, users)
@@ -1226,7 +1257,7 @@ class UserService:
         }
         
         users.append(created)
-        self._save_users(users)
+        self._save_users(users, only_ids={next_id}, create_ids={next_id})
         if created.get("telegram_id"):
             from .user_db_selection_service import user_db_selection_service
             user_db_selection_service.set_assigned_database(created.get("telegram_id"), created.get("assigned_database"))
@@ -1271,7 +1302,7 @@ class UserService:
         if completed_user is None:
             return None
         if changed:
-            self._save_users(users)
+            self._save_users(users, only_ids={normalized_user_id})
         return self._sanitize_user(completed_user)
 
     def update_user(
@@ -1370,7 +1401,7 @@ class UserService:
             break
         if not updated_user:
             return None
-        self._save_users(users)
+        self._save_users(users, only_ids={int(user_id)})
         from .user_db_selection_service import user_db_selection_service
         if previous_telegram_id not in (None, 0):
             if int(previous_telegram_id) != int(updated_user.get("telegram_id") or 0):
@@ -1430,7 +1461,7 @@ class UserService:
             changed = True
             break
         if changed:
-            self._save_users(users)
+            self._save_users(users, only_ids={int(user_id)})
         return changed
 
     def delete_user(self, user_id: int) -> bool:
@@ -1442,7 +1473,7 @@ class UserService:
         users = [u for u in users if int(u.get("id", 0)) != user_id]
         
         if len(users) < initial_count:
-            self._save_users(users)
+            self._save_users(users, only_ids=set(), deleted_ids={int(user_id)})
             if self._use_app_database:
                 self._delete_task_delegate_links_for_user_in_app_db(user_id)
                 return True

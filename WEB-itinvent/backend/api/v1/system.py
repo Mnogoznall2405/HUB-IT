@@ -3,6 +3,7 @@ System observability endpoints.
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 from typing import Literal
 
@@ -11,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from backend.api.deps import get_current_admin_user
 from backend.models.auth import User
 from backend.services.request_metrics_service import request_metrics_service
+from backend.utils.request_network import build_request_network_context
 
 
 router = APIRouter()
@@ -21,10 +23,21 @@ def _env_flag(name: str, default: str = "0") -> bool:
 
 
 def _is_loopback_client(request: Request) -> bool:
-    host = ""
-    if request.client is not None:
-        host = str(request.client.host or "").strip().lower()
-    return host in {"127.0.0.1", "::1", "localhost", "testclient"}
+    """True only for a genuinely local caller.
+
+    Behind IIS every request reaches the backend from 127.0.0.1, so the raw socket peer proves nothing:
+    the real client is resolved through the trusted-proxy chain (same rule as the 2FA zone check).
+    """
+    context = build_request_network_context(request)
+    candidate = context.client_ip
+    if not candidate and request.client is not None:
+        candidate = str(request.client.host or "").strip().lower()
+    if candidate == "testclient":
+        return True
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return False
 
 
 def _ensure_local_metrics_access(request: Request) -> None:

@@ -1,8 +1,10 @@
 import React from 'react';
+import { Alert } from 'react-native';
 import type { ChatAttachment, ChatConversationSummary, ChatMessage } from '../../api/types';
 import type { ChatMenuAnchor } from '../../chat/chatMessageMenuLayout';
 import { isAiConversation, resolveAiBotForConversation } from '../../chat/chatAiWorkspace';
 import { mediaItemFromConversationAttachment, type ChatMediaItem } from '../../chat/chatMedia';
+import { groupFilesBlockReason } from '../../chat/chatModels';
 import { resolveChatMessageIsOwn } from '../../chat/chatState';
 import { getNativeChatQueueState } from '../../chat/nativeChatOutbox';
 import { MessageActionsSheet } from '../../components/chat/MessageActionsSheet';
@@ -191,6 +193,15 @@ export function ChatThreadOverlays({
   const albumDraft = editorFileInDraft
     && attachmentDraftFiles.every((item) => item.mimeType.startsWith('image/'));
   const { startSelection } = selection;
+  // A group may forbid files for plain members; refuse before the picker instead of after the upload.
+  const filesBlockReason = groupFilesBlockReason(conversation);
+  const pickAttachment = (source: 'camera' | 'gallery' | 'document') => {
+    if (filesBlockReason) {
+      Alert.alert('Файлы недоступны', filesBlockReason);
+      return;
+    }
+    void pickAndSendAttachment(source);
+  };
 
   return (
     <>
@@ -274,9 +285,9 @@ export function ChatThreadOverlays({
           // Same object identity: the editor result replaces this draft entry.
           setImageEditorFile(files[editIndex] ?? null);
         }}
-        onOpenCamera={() => void pickAndSendAttachment('camera')}
-        onOpenGallery={() => void pickAndSendAttachment('gallery')}
-        onOpenDocument={() => void pickAndSendAttachment('document')}
+        onOpenCamera={() => pickAttachment('camera')}
+        onOpenGallery={() => pickAttachment('gallery')}
+        onOpenDocument={() => pickAttachment('document')}
         onOpenTask={openTaskPicker}
         onOpenStickers={() => void openStickerPicker()}
         onSendLocation={() => {

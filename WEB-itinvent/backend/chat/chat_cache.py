@@ -45,7 +45,7 @@ class ChatCache:
             chat_read_cache_redis.set(key, value, ttl)
         return value
 
-    def _invalidate_user_cache(self, *, user_id: int, bucket: str | None = None, extra_prefix: str = "") -> None:
+    def _invalidate_user_cache(self, *, user_id: int, bucket: str | None = None, extra_prefix: str = "", hard: bool = False) -> None:
         user_prefix = f"{int(user_id)}::"
         bucket_prefix = f"{user_prefix}{_normalize_text(bucket)}::" if bucket else user_prefix
         normalized_extra_prefix = _normalize_text(extra_prefix)
@@ -65,7 +65,7 @@ class ChatCache:
                     if not extra.startswith(normalized_extra_prefix):
                         continue
                 key_bucket = key.split("::", 2)[1] if "::" in key else ""
-                if key_bucket in soft_buckets:
+                if key_bucket in soft_buckets and not hard:
                     payload = self._service._runtime_cache.get(key)
                     if payload is not None:
                         old_expires, value = payload
@@ -126,6 +126,7 @@ class ChatCache:
         conversation_id: str,
         user_ids: list[int] | set[int] | tuple[int, ...],
         hard_drop_unread: bool = False,
+        hard: bool = False,
     ) -> None:
         normalized_conversation_id = _normalize_text(conversation_id)
         target_user_ids = {int(item) for item in list(user_ids or []) if int(item) > 0}
@@ -174,6 +175,9 @@ class ChatCache:
                     self._service._runtime_cache.pop(key, None)
                     continue
                 if key_bucket in soft_buckets:
+                    if hard:
+                        self._service._runtime_cache.pop(key, None)
+                        continue
                     payload = self._service._runtime_cache.get(key)
                     if payload is None:
                         continue

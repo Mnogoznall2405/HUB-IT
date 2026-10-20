@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import type { EquipmentPhotoFile, EquipmentRecord } from '../api/databaseApi';
 import type { InventoryQrPayload } from './nativeDatabaseModel';
+import { logChatDevice } from '../diagnostics/chatDeviceLog';
 import { loadPendingPhotos, persistPendingPhoto, removePendingPhoto } from './pendingPhotoStore';
 
 export type ScanPhotoTarget = {
@@ -20,6 +22,8 @@ export type ScanPhotoJob = {
   file: EquipmentPhotoFile;
   status: ScanPhotoJobStatus;
   error: string;
+  /** Сервер отказал по существу (4xx): повтор без правки ничего не изменит. */
+  permanent?: boolean;
   /** Запись в дисковой очереди: снимок переживёт закрытие приложения. */
   pendingId?: string;
 };
@@ -95,8 +99,10 @@ export function useNativeScanPhotoSession({
         const job = jobsRef.current.find((entry) => entry.status === 'queued');
         if (!job) return;
         commitJobs(jobsRef.current.map((entry) => (entry.id === job.id ? { ...entry, status: 'uploading' } : entry)));
+        const startedAt = Date.now();
         try {
           await uploadRef.current(job.itemId, job.file, job.databaseId || undefined);
+          logChatDevice('photo_upload_ok', { ms: Date.now() - startedAt });
           commitJobs(jobsRef.current.filter((entry) => entry.id !== job.id));
           forgetPending(job.pendingId);
           if (mountedRef.current) {
@@ -105,8 +111,12 @@ export function useNativeScanPhotoSession({
           }
         } catch (cause) {
           const message = cause instanceof Error && cause.message ? cause.message : 'Не удалось загрузить фото';
+          const status = Number((cause as { response?: { status?: unknown } })?.response?.status || 0);
+          const code = String((cause as { code?: unknown })?.code || 'none').replace(/[^a-zA-Z0-9_.:+-]/g, '').slice(0, 32);
+          logChatDevice('photo_upload_fail', { ms: Date.now() - startedAt, http: status, code: code || 'none' });
+          const permanent = status >= 400 && status < 500 && ![408, 409, 429].includes(status);
           commitJobs(jobsRef.current.map((entry) => (
-            entry.id === job.id ? { ...entry, status: 'failed', error: message } : entry
+            entry.id === job.id ? { ...entry, status: 'failed', error: message, permanent } : entry
           )));
         }
       }
@@ -221,10 +231,41 @@ export function useNativeScanPhotoSession({
   const retryFailed = useCallback(() => {
     if (!jobsRef.current.some((entry) => entry.status === 'failed')) return;
     commitJobs(jobsRef.current.map((entry) => (
-      entry.status === 'failed' ? { ...entry, status: 'queued', error: '' } : entry
+      entry.status === 'failed' ? { ...entry, status: 'queued', error: '', permanent: false } : entry
     )));
     void pump();
   }, [commitJobs, pump]);
+
+  // Автоповтор: только то, что упало из-за связи. Отказ сервера (4xx) повторять без
+  // участия человека бессмысленно — такие снимки ждут кнопки «Повторить».
+  const retryRecoverable = useCallback((reason: string) => {
+    const recoverable = jobsRef.current.filter((entry) => entry.status === 'failed' && !entry.permanent);
+    if (!recoverable.length) return;
+    logChatDevice('photo_auto_retry', { n: recoverable.length, why: reason });
+    commitJobs(jobsRef.current.map((entry) => (
+      entry.status === 'failed' && !entry.permanent ? { ...entry, status: 'queued', error: '' } : entry
+    )));
+    void pump();
+  }, [commitJobs, pump]);
+
+  // Связь вернулась: снимки, упавшие из-за обрыва, уходят сами, без кнопки «Повторить».
+  const wasOfflineRef = useRef(offlineMode);
+  const offlineModeRef = useRef(offlineMode);
+  offlineModeRef.current = offlineMode;
+  useEffect(() => {
+    const wasOffline = wasOfflineRef.current;
+    wasOfflineRef.current = offlineMode;
+    if (!wasOffline || offlineMode) return;
+    retryRecoverable('online');
+  }, [offlineMode, retryRecoverable]);
+
+  // Возврат в приложение: упавшее на зависшем соединении (офлайн не включался) тоже уходит.
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && !offlineModeRef.current) retryRecoverable('foreground');
+    });
+    return () => subscription.remove();
+  }, [retryRecoverable]);
 
   const discardFailed = useCallback(() => {
     jobsRef.current.filter((entry) => entry.status === 'failed').forEach((entry) => forgetPending(entry.pendingId));

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import conftest
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,7 +24,7 @@ def quota_service(tmp_path, monkeypatch):
     db_module._engines.clear()
     db_module._session_factories.clear()
     db_module._initialized_schema_urls.clear()
-    initialize_app_schema(database_url)
+    conftest.copy_app_schema_for_url(database_url)
     return MailboxQuotaService()
 
 

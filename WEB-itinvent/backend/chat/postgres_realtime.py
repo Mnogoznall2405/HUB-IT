@@ -114,6 +114,14 @@ class ChatRealtimePostgresBus:
         self._relay_caught_up = False
         self._relay_current_batch_size = 0
         self._relay_last_batch_size = 0
+        # Consecutive handler failures per relay row; a row that keeps failing is skipped (poison row).
+        self._relay_failure_counts: dict[int, int] = {}
+        self._relay_skipped_poison_total = 0
+        try:
+            _max_attempts = int(str(os.getenv("CHAT_POSTGRES_RELAY_MAX_ATTEMPTS", "3") or "3").strip() or "3")
+        except ValueError:
+            _max_attempts = 3
+        self._relay_max_attempts = max(1, min(20, _max_attempts))
         self._relay_db_dispatch_lag_ms_samples: list[float] = []
         self._relay_db_dispatch_lag_ms_latest = 0.0
         self._schema = "public"
@@ -1026,8 +1034,26 @@ class ChatRealtimePostgresBus:
                 break
             outcome = outcomes[event_id]
             if outcome is not None:
-                first_error = outcome
-                break
+                attempts = self._relay_failure_counts.get(event_id, 0) + 1
+                if attempts < self._relay_max_attempts:
+                    if len(self._relay_failure_counts) > 1000:
+                        self._relay_failure_counts.clear()
+                    self._relay_failure_counts[event_id] = attempts
+                    first_error = outcome
+                    break
+                # A row whose handler keeps failing would otherwise block every later event of
+                # this node forever (the listener reconnects and re-reads the same row).
+                self._relay_failure_counts.pop(event_id, None)
+                self._relay_skipped_poison_total += 1
+                logger.error(
+                    "chat.realtime.postgres relay row id=%s skipped after %s failed deliveries error=%s",
+                    event_id,
+                    attempts,
+                    type(outcome).__name__,
+                )
+                self._cursor = event_id
+                continue
+            self._relay_failure_counts.pop(event_id, None)
             self._cursor = event_id
         if first_error is not None:
             raise first_error
@@ -1148,48 +1174,12 @@ class ChatRealtimePostgresBus:
         )
         schema_row = schema_cursor.fetchone()
         self._schema = str(schema_row[0] or "public").strip() or "public"
-        from backend.config import config
-
-        if config.app.is_production:
-            self._validate_relay_schema_sync(conn)
-            return
-        table = self._qualified_relay_table()
-        conn.execute(
-            sql.SQL(
-                "CREATE TABLE IF NOT EXISTS {} ("
-                "id BIGSERIAL PRIMARY KEY, "
-                "origin_node_id VARCHAR(128) NOT NULL, "
-                "payload_json TEXT NOT NULL, "
-                "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), "
-                "expires_at TIMESTAMPTZ NOT NULL)"
-            ).format(table)
-        )
-        conn.execute(
-            sql.SQL(
-                "CREATE TABLE IF NOT EXISTS {} ("
-                "node_id VARCHAR(128) NOT NULL, "
-                "connection_id VARCHAR(64) NOT NULL, "
-                "user_id INTEGER NOT NULL, "
-                "touched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), "
-                "expires_at TIMESTAMPTZ NOT NULL, "
-                "PRIMARY KEY (node_id, connection_id))"
-            ).format(self._qualified_presence_table())
-        )
-        conn.execute(
-            sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} (user_id, expires_at)").format(
-                sql.Identifier("ix_chat_realtime_presence_user_expires"),
-                self._qualified_presence_table(),
-            )
-        )
-        conn.execute(
-            sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} (expires_at)").format(
-                sql.Identifier(f"ix_{self._relay_table}_expires_at"),
-                table,
-            )
-        )
+        # Runtime never creates tables or indexes (AGENTS.md: schema changes only via Alembic):
+        # every environment validates the migration-owned relay and presence tables.
+        self._validate_relay_schema_sync(conn)
 
     def _validate_relay_schema_sync(self, conn) -> None:
-        """Production connections validate Alembic-owned tables without DDL."""
+        """Validate the Alembic-owned relay/presence tables (all environments, no DDL)."""
         expected = {
             self._relay_table: {"id", "origin_node_id", "payload_json", "created_at", "expires_at"},
             "chat_realtime_presence": {"node_id", "connection_id", "user_id", "touched_at", "expires_at"},

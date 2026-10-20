@@ -4,12 +4,14 @@ Per-user UI/database settings storage.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from backend.appdb.db import app_session, initialize_app_schema, is_app_database_configured
 from backend.appdb.models import AppUserSetting
@@ -71,6 +73,7 @@ class SettingsService:
         self._use_app_database = bool(self._database_url) or is_app_database_configured()
         self.store = None if self._use_app_database else get_local_store(data_dir=self.file_path.parent)
         self._settings_cache: dict[str, tuple[float, dict]] = {}
+        self._update_lock = threading.RLock()
         if self._use_app_database:
             initialize_app_schema(self._database_url)
         self._ensure_file()
@@ -229,6 +232,42 @@ class SettingsService:
         data = self.store.load_json(self.FILE_NAME, default_content={})
         return data if isinstance(data, dict) else {}
 
+    def _apply_payload_to_row(self, row: AppUserSetting, payload: dict) -> None:
+        row.pinned_database = (str(payload.get("pinned_database") or "").strip() or None)
+        row.theme_mode = str(payload.get("theme_mode") or "system")
+        row.font_family = str(payload.get("font_family") or "Aptos")
+        row.font_scale = float(payload.get("font_scale") or 1.0)
+        dashboard_sections = self._normalize_dashboard_sections(
+            payload.get("dashboard_sections"),
+            payload.get("dashboard_mobile_sections"),
+        )
+        row.dashboard_mobile_sections_json = json.dumps(dashboard_sections)
+        row.mobile_bottom_nav_items_json = json.dumps(
+            self._normalize_mobile_bottom_nav_items(payload.get("mobile_bottom_nav_items"))
+        )
+        row.database_branch_filters_json = json.dumps(
+            self._normalize_database_branch_filters(payload.get("database_branch_filters"))
+        )
+        row.updated_at = datetime.now(timezone.utc)
+
+    def _save_one(self, user_id: int, payload: dict) -> None:
+        """Upsert one user's row only (app DB); never touches other users' rows."""
+        for attempt in range(2):
+            try:
+                with app_session(self._database_url) as session:
+                    row = session.get(AppUserSetting, int(user_id))
+                    if row is None:
+                        row = AppUserSetting(user_id=int(user_id))
+                        session.add(row)
+                    self._apply_payload_to_row(row, payload)
+                break
+            except IntegrityError:
+                # Another process inserted the same row between get() and
+                # commit; retry once so it becomes an update.
+                if attempt:
+                    raise
+        self._settings_cache.clear()
+
     def _save_all(self, data: dict[str, dict]) -> None:
         if self._use_app_database:
             with app_session(self._database_url) as session:
@@ -245,22 +284,7 @@ class SettingsService:
                     if row is None:
                         row = AppUserSetting(user_id=user_id)
                         session.add(row)
-                    row.pinned_database = (str(payload.get("pinned_database") or "").strip() or None)
-                    row.theme_mode = str(payload.get("theme_mode") or "system")
-                    row.font_family = str(payload.get("font_family") or "Aptos")
-                    row.font_scale = float(payload.get("font_scale") or 1.0)
-                    dashboard_sections = self._normalize_dashboard_sections(
-                        payload.get("dashboard_sections"),
-                        payload.get("dashboard_mobile_sections"),
-                    )
-                    row.dashboard_mobile_sections_json = json.dumps(dashboard_sections)
-                    row.mobile_bottom_nav_items_json = json.dumps(
-                        self._normalize_mobile_bottom_nav_items(payload.get("mobile_bottom_nav_items"))
-                    )
-                    row.database_branch_filters_json = json.dumps(
-                        self._normalize_database_branch_filters(payload.get("database_branch_filters"))
-                    )
-                    row.updated_at = datetime.now(timezone.utc)
+                    self._apply_payload_to_row(row, payload)
                 for user_id, row in existing_by_user_id.items():
                     if user_id not in incoming_ids:
                         session.delete(row)
@@ -333,8 +357,15 @@ class SettingsService:
         return settings
 
     def update_user_settings(self, user_id: int, patch: dict) -> dict:
-        data = self._load_all()
+        # Serialize the read-modify-write cycle inside this process (the JSON
+        # store rewrites one document for all users).
+        with self._update_lock:
+            return self._update_user_settings_locked(user_id, patch)
+
+    def _update_user_settings_locked(self, user_id: int, patch: dict) -> dict:
         key = str(int(user_id))
+        # Do not build the update on a stale per-process cache entry.
+        self._settings_cache.pop(key, None)
         current = self.get_user_settings(user_id)
 
         if "pinned_database" in patch:
@@ -368,6 +399,12 @@ class SettingsService:
                 patch.get("database_branch_filters"),
             )
 
+        if self._use_app_database:
+            # Touch only this user's row: a full-table snapshot write would
+            # delete rows created by another process after the snapshot.
+            self._save_one(int(user_id), current)
+            return current
+        data = self._load_all()
         data[key] = current
         self._save_all(data)
         return current

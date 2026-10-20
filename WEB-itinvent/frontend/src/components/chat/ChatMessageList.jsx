@@ -186,7 +186,7 @@ const formatAiRunStageCount = (count) => {
 // AI9: статус выполнения живёт внутри ленты под сообщениями — текущий этап с
 // «печатающими» точками, набираемый partial_text, а после завершения —
 // свёрнутая строка «Выполнено N шагов». Заменяет верхнюю плашку у шапки.
-function AiRunFeedStatus({ aiStatus, theme, ui, compactMobile, onRetry, onStop }) {
+function AiRunFeedStatus({ aiStatus, messages = [], theme, ui, compactMobile, onRetry, onStop }) {
   const status = String(aiStatus?.status || '').trim();
   const [stepsOpen, setStepsOpen] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -203,7 +203,7 @@ function AiRunFeedStatus({ aiStatus, theme, ui, compactMobile, onRetry, onStop }
       receivedAt: Date.now(),
       ageMs: Number.isFinite(serverNowMs) ? Math.max(0, serverNowMs - updatedMs) : 0,
     };
-  }, [aiStatus]);
+  }, [aiStatus?.run_id, aiStatus?.updated_at]);
   useEffect(() => {
     if (!runActive) return undefined;
     const timerId = window.setInterval(() => setNowMs(Date.now()), AI_RUN_FEED_STALE_TICK_MS);
@@ -221,14 +221,26 @@ function AiRunFeedStatus({ aiStatus, theme, ui, compactMobile, onRetry, onStop }
     }
   };
 
-  const completedStages = Array.isArray(aiStatus?.completed_stages) ? aiStatus.completed_stages : [];
+  const completedStages = (Array.isArray(aiStatus?.completed_stages) ? aiStatus.completed_stages : [])
+    .filter((stage) => !runActive || stage !== aiStatus?.stage);
   const runStale = runActive
     && progressAge !== null
     && (progressAge.ageMs + (nowMs - progressAge.receivedAt)) > AI_RUN_STALE_AFTER_MS;
   const partialText = String(aiStatus?.partial_text || '').trim();
+  const resultVisible = messages.some((message) => !message.is_deleted && !message.is_own && (
+    (aiStatus?.result_message_id && message.id === aiStatus.result_message_id)
+    || (aiStatus?.run_id && message.client_message_id === `ai-run:${aiStatus.run_id}`)
+  ));
+  // The old server preview is a complete generated answer. Hide that copy once
+  // persisted; new servers correlate the result by ID rather than by body text.
+  const previewPersisted = partialText && messages.some((message) => !message.is_own
+    && !message.is_deleted && String(message.body || '').trim() === partialText
+    && (!aiStatus?.updated_at || Date.parse(message.created_at || '') >= Date.parse(aiStatus.updated_at)));
+  if (runActive && (resultVisible || previewPersisted)
+    && ['generating_answer', 'result_ready'].includes(String(aiStatus?.stage || ''))) return null;
   const stageText = String(aiStatus?.status_text || '').trim()
     || AI_STAGE_LABELS[String(aiStatus?.stage || '').trim()]
-    || (status === 'queued' ? 'Ставлю задачу в очередь' : 'Думаю…');
+    || (status === 'queued' ? 'Ставлю задачу в очередь' : 'Обрабатываю запрос');
   const accent = ui.accentText || theme.palette.primary.main;
 
   if (status === 'completed') {
@@ -258,7 +270,7 @@ function AiRunFeedStatus({ aiStatus, theme, ui, compactMobile, onRetry, onStop }
               <Stack key={stage} direction="row" spacing={0.6} alignItems="center">
                 <CheckRoundedIcon sx={{ fontSize: 13, color: ui.successText || theme.palette.success.main }} />
                 <Typography sx={{ fontSize: 12, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
-                  {AI_STAGE_LABELS[stage] || 'Выполнен разрешённый шаг'}
+                  {AI_STAGE_LABELS[stage] || 'Обработка запроса'}
                 </Typography>
               </Stack>
             ))}
@@ -365,13 +377,13 @@ function AiRunFeedStatus({ aiStatus, theme, ui, compactMobile, onRetry, onStop }
                 <Stack key={stage} direction="row" spacing={0.6} alignItems="center">
                   <CheckRoundedIcon sx={{ fontSize: 12, color: ui.successText || theme.palette.success.main }} />
                   <Typography sx={{ fontSize: 11.5, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
-                    {AI_STAGE_LABELS[stage] || 'Выполнен разрешённый шаг'}
+                    {AI_STAGE_LABELS[stage] || 'Обработка запроса'}
                   </Typography>
                 </Stack>
               ))}
             </Stack>
           ) : null}
-          {partialText ? (
+          {partialText && !resultVisible && !previewPersisted ? (
             <Typography
               data-testid="ai-partial-response"
               sx={{
@@ -646,6 +658,7 @@ const ChatMessageList = memo(function ChatMessageList({
               <Box sx={{ mt: 2, width: '100%', maxWidth: 460 }}>
                 <AiRunFeedStatus
                   aiStatus={aiStatus}
+                  messages={normalizedMessages}
                   theme={theme}
                   ui={ui}
                   compactMobile={compactMobile}
@@ -757,6 +770,7 @@ const ChatMessageList = memo(function ChatMessageList({
           {String(activeConversation?.kind || '').trim() === 'ai' ? (
             <AiRunFeedStatus
               aiStatus={aiStatus}
+              messages={normalizedMessages}
               theme={theme}
               ui={ui}
               compactMobile={compactMobile}

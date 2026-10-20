@@ -69,6 +69,18 @@ if ($apk.Length -le 0 -or $apk.Length -gt 250MB) {
     throw "Mobile APK size is outside the 250 MiB preview limit: $($apk.Length)"
 }
 
+function Get-FileSha256([string]$Path) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $bytes = $sha.ComputeHash($stream)
+    } finally {
+        $stream.Dispose()
+        $sha.Dispose()
+    }
+    return ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+}
+
 function Find-AndroidBuildTool([string]$Name) {
     $roots = @()
     if ($env:HUBIT_ANDROID_SDK_ROOT) { $roots += $env:HUBIT_ANDROID_SDK_ROOT }
@@ -143,7 +155,7 @@ if ($AllowSignerRotation -and -not $ExpectedSignerSHA256) {
 $channel = 'preview'
 $apkName = "HUB-IT-Mobile-Preview-$Version.apk"
 $relativePath = "mobile/$channel/$Version/$apkName"
-$sha256 = (Get-FileHash -LiteralPath $resolvedApkPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$sha256 = Get-FileSha256 $resolvedApkPath
 $auditPath = Join-Path $apk.DirectoryName ($apk.BaseName + '.audit.json')
 if (-not (Test-Path -LiteralPath $auditPath -PathType Leaf)) {
     throw "APK build audit is required before publication: $auditPath"
@@ -278,7 +290,7 @@ New-Item -ItemType Directory -Path $stagingDirectory -Force | Out-Null
 try {
     $stagedApk = Join-Path $stagingDirectory $apkName
     Copy-Item -LiteralPath $resolvedApkPath -Destination $stagedApk
-    $stagedSha256 = (Get-FileHash -LiteralPath $stagedApk -Algorithm SHA256).Hash.ToLowerInvariant()
+    $stagedSha256 = Get-FileSha256 $stagedApk
     if ($stagedSha256 -ne $sha256) {
         throw 'Staged APK hash does not match the source APK.'
     }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { equipmentAPI } from '../../api/client';
 import jsonAPI from '../../api/json_client';
@@ -15,8 +15,9 @@ import {
   upsertItemInGrouped,
 } from './equipmentModel';
 import { normalizeDbId } from './databaseRecordModel';
+import { isCartridgeLikeConsumable } from './consumableModel';
 import { normalizeActionTargets } from './databaseListModel';
-import { executeMaintenanceAction, getActionErrorMessage } from './actionExecution';
+import { createMaintenanceOperationSeed, executeMaintenanceAction, getActionErrorMessage } from './actionExecution';
 import { useDatabaseAddWorkflows } from './useDatabaseAddWorkflows';
 import { useDatabaseConsumableQty } from './useDatabaseConsumableQty';
 import { useConsumableCard } from './useConsumableCard';
@@ -24,7 +25,11 @@ import { useConsumableQrLabel } from './useConsumableQrLabel';
 import { useDatabaseDeleteEquipment } from './useDatabaseDeleteEquipment';
 import { useDatabaseConsumableDelete } from './useDatabaseConsumableDelete';
 import { useDatabaseDetailRuntime } from './useDatabaseDetailRuntime';
-import { useDatabaseQrScanner } from './useDatabaseQrScanner';
+import {
+  buildConsumableLookupErrorMessage,
+  buildQrLookupErrorMessage,
+  useDatabaseQrScanner,
+} from './useDatabaseQrScanner';
 import useEquipmentQrBatchPrint from './useEquipmentQrBatchPrint';
 import { useDatabaseTransferAction } from './useDatabaseTransferAction';
 import { useDatabaseUploadActWorkflow } from './useDatabaseUploadActWorkflow';
@@ -33,13 +38,16 @@ import {
   resolveSingleActionTarget as resolveActionTarget,
 } from './actionModel';
 
+const QR_PHOTO_MODE_STORAGE_KEY = 'database_qr_photo_mode';
+
 // Dialog-scope controller: upload-act workflow, equipment detail runtime,
 // add/edit/delete dialogs, QR scanner/batch print, transfer + maintenance
 // action modal and the action confirm pipeline. Consumed by the page composer.
 export function useDatabaseDialogController({
   canDatabaseWrite,
   canDatabaseDelete,
-  isAdmin,
+  canDeleteEquipment,
+  canDeleteEquipmentWithHistory,
   dbName,
   currentDb,
   location,
@@ -78,8 +86,12 @@ export function useDatabaseDialogController({
   refreshRecentActs,
   handleDetailRecentActivity,
   handleTransferJobDone,
+  photoWorklist = [],
 }) {
   const [actionModal, setActionModal] = useState({ open: false, type: null, invNo: null, componentKind: null });
+  // Стабильный seed operation_id на сессию диалога — повторная отправка после
+  // сбоя возобновляет ту же durable-операцию, а не списывает расходник снова.
+  const maintenanceOperationSeedRef = useRef('');
 
   // Action form state
   const [actionLoading, setActionLoading] = useState(false);
@@ -157,6 +169,7 @@ export function useDatabaseDialogController({
     setAllEquipment,
     setFilteredData,
     onRecentActivity: handleDetailRecentActivity,
+    onDataVersion: notifyDataVersion,
   });
   const {
     detailModal,
@@ -256,14 +269,200 @@ export function useDatabaseDialogController({
     notifyDatabaseSuccess,
   });
 
+  // Пара «расходник ↔ МФУ»: сканер в pair-режиме не закрывается после первого
+  // кода — onPayload заполняет слоты, после второго открывается карточка
+  // расходника с уже выбранной МФУ.
+  const [qrPairMode, setQrPairMode] = useState(false);
+  const [qrPair, setQrPair] = useState({ consumable: null, printer: null, busy: false });
+  const pairPayloadRef = useRef(null);
+  // Ref-зеркала: lookup длится дольше кадра, и за это время режим могли
+  // отменить — post-await решения читаем актуальное состояние, не замыкание.
+  const qrPairModeRef = useRef(false);
+  const qrPairRef = useRef(qrPair);
+  const setQrPairTracked = useCallback((next) => {
+    qrPairRef.current = typeof next === 'function' ? next(qrPairRef.current) : next;
+    setQrPair(qrPairRef.current);
+  }, []);
+
+  // Режим «скан → фото»: после распознавания QR карточка сразу открывается на
+  // вкладке фото, чтобы снимок делался одним тапом. Запоминается на устройстве.
+  const [qrPhotoMode, setQrPhotoModeState] = useState(() => {
+    try {
+      return localStorage.getItem(QR_PHOTO_MODE_STORAGE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const qrPhotoModeRef = useRef(qrPhotoMode);
+  qrPhotoModeRef.current = qrPhotoMode;
+  const setQrPhotoMode = useCallback((enabled) => {
+    const next = Boolean(enabled);
+    qrPhotoModeRef.current = next;
+    setQrPhotoModeState(next);
+    try {
+      localStorage.setItem(QR_PHOTO_MODE_STORAGE_KEY, next ? '1' : '0');
+    } catch {
+      // Режим просто не переживёт перезагрузку.
+    }
+  }, []);
+
+  const handleQrEquipmentFoundForMode = useCallback((found, invNo) => {
+    if (qrPhotoModeRef.current && canDatabaseWrite) {
+      openDetailView(found || invNo, { invNo, loading: false, initialTab: 'photos' });
+      return;
+    }
+    handleQrEquipmentFound(found, invNo);
+  }, [canDatabaseWrite, handleQrEquipmentFound, openDetailView]);
+
   const qrScanner = useDatabaseQrScanner({
-    onEquipmentFound: handleQrEquipmentFound,
+    continuous: qrPairMode,
+    onPayload: (payload) => pairPayloadRef.current?.(payload),
+    onEquipmentFound: handleQrEquipmentFoundForMode,
     onConsumableFound: consumableCard.openConsumableCard,
     notifyDatabaseError,
   });
 
+  const qrPairReset = useCallback(() => {
+    qrPairModeRef.current = false;
+    qrPairRef.current = { consumable: null, printer: null, busy: false };
+    setQrPairMode(false);
+    setQrPair(qrPairRef.current);
+  }, []);
+
+  const completeQrPair = useCallback((consumable, printer) => {
+    qrScanner.closeQrScanner();
+    qrPairReset();
+    consumableCard.completeConsumablePair(consumable, printer);
+  }, [consumableCard.completeConsumablePair, qrPairReset, qrScanner]);
+
+  // Завершение — эффектом по факту двух слотов, а не внутри handlePairPayload:
+  // в замыкании второго запроса слот первого мог бы остаться невидимым.
+  useEffect(() => {
+    if (!qrPairMode || !qrPair.consumable || !qrPair.printer) return;
+    completeQrPair(qrPair.consumable, qrPair.printer);
+  }, [completeQrPair, qrPair, qrPairMode]);
+
+  const handlePairPayload = useCallback(async (payload) => {
+    if (!qrPairModeRef.current) return;
+    const current = qrPairRef.current;
+    if (payload.kind === 'consumable') {
+      if (current.consumable) {
+        notifyDatabaseInfo?.('Расходник уже выбран — сканируйте QR МФУ.');
+        return;
+      }
+      setQrPairTracked((prev) => ({ ...prev, busy: true }));
+      try {
+        const item = await equipmentAPI.getConsumableById(payload.itemId);
+        // Пока шёл запрос, режим могли отменить — не воскрешаем пару.
+        if (!qrPairModeRef.current) return;
+        if (!item) throw new Error('not_found');
+        if (!isCartridgeLikeConsumable(item)) {
+          setQrPairTracked((prev) => ({ ...prev, busy: false }));
+          const label = String(item?.MODEL_NAME || item?.model_name || item?.TYPE_NAME || item?.type_name || 'Позиция').trim();
+          notifyDatabaseInfo?.(`«${label}» списывается без привязки к МФУ — сканируйте QR картриджа.`);
+          return;
+        }
+        const printerReady = Boolean(qrPairRef.current.printer);
+        setQrPairTracked((prev) => ({ ...prev, consumable: item, busy: false }));
+        if (!printerReady) notifyDatabaseInfo?.('Расходник выбран — теперь сканируйте QR МФУ.');
+      } catch (error) {
+        if (!qrPairModeRef.current) return;
+        setQrPairTracked((prev) => ({ ...prev, busy: false }));
+        notifyDatabaseError?.(buildConsumableLookupErrorMessage(error, payload.itemId));
+      }
+      return;
+    }
+    if (current.printer) {
+      notifyDatabaseInfo?.('МФУ уже выбрана — сканируйте QR расходника.');
+      return;
+    }
+    setQrPairTracked((prev) => ({ ...prev, busy: true }));
+    try {
+      const row = await equipmentAPI.getByInvNo(payload.invNo);
+      if (!qrPairModeRef.current) return;
+      if (!row) throw new Error('not_found');
+      if (!getItemCapabilityFlags(row).isPrinterOrMfu) {
+        setQrPairTracked((prev) => ({ ...prev, busy: false }));
+        const model = String(row?.MODEL_NAME || row?.model_name || payload.invNo).trim();
+        notifyDatabaseError?.(`«${model}» — не МФУ/принтер. Сканируйте QR целевой МФУ.`);
+        return;
+      }
+      const consumableReady = Boolean(qrPairRef.current.consumable);
+      setQrPairTracked((prev) => ({ ...prev, printer: row, busy: false }));
+      if (!consumableReady) notifyDatabaseInfo?.('МФУ выбрана — теперь сканируйте QR расходника.');
+    } catch (error) {
+      if (!qrPairModeRef.current) return;
+      setQrPairTracked((prev) => ({ ...prev, busy: false }));
+      notifyDatabaseError?.(buildQrLookupErrorMessage(error, payload.invNo));
+    }
+  }, [notifyDatabaseError, notifyDatabaseInfo, setQrPairTracked]);
+
+  pairPayloadRef.current = handlePairPayload;
+
+  const startQrPairScan = useCallback(({ consumable = null, printer = null } = {}) => {
+    qrPairModeRef.current = true;
+    qrPairRef.current = { consumable, printer, busy: false };
+    setQrPair(qrPairRef.current);
+    setQrPairMode(true);
+    qrScanner.openQrScanner();
+  }, [qrScanner]);
+
+  const startQrPairForConsumableCard = useCallback(() => {
+    startQrPairScan({ consumable: consumableCard.consumableCardModal?.item || null });
+  }, [consumableCard.consumableCardModal?.item, startQrPairScan]);
+
+  const consumeConsumableQrForDetail = useCallback(() => {
+    const row = detailModal?.data;
+    if (!row || !getItemCapabilityFlags(row).isPrinterOrMfu) return;
+    startQrPairScan({ printer: row });
+  }, [detailModal?.data, startQrPairScan]);
+
+  const handleQrScannerOpenWithPairReset = useCallback(() => {
+    qrPairReset();
+    qrScanner.openQrScanner();
+  }, [qrPairReset, qrScanner]);
+
+  const handleQrScannerCloseWithPairReset = useCallback(() => {
+    qrPairReset();
+    qrScanner.closeQrScanner();
+  }, [qrPairReset, qrScanner]);
+
+  // Из вкладки фото: закрыть карточку и сразу сканировать следующую технику.
+  const scanNextForPhoto = useCallback(() => {
+    handleDetailClose();
+    handleQrScannerOpenWithPairReset();
+  }, [handleDetailClose, handleQrScannerOpenWithPairReset]);
+
+  // Очередь «Следующая без фото». Пропущенные в этой сессии карточки запоминаем,
+  // иначе «следующая» вернула бы только что оставленную технику.
+  const photoQueueVisitedRef = useRef(new Set());
+  const photoQueueCurrentInvNo = detailModal?.open ? String(detailModal?.invNo || '') : '';
+  useEffect(() => {
+    if (!photoQueueCurrentInvNo) photoQueueVisitedRef.current = new Set();
+  }, [photoQueueCurrentInvNo]);
+  const [photoQueueVisitedVersion, setPhotoQueueVisitedVersion] = useState(0);
+  const photoQueueCandidates = useMemo(() => {
+    void photoQueueVisitedVersion;
+    return (photoWorklist || []).filter((item) => {
+      const invNo = toInvNo(item);
+      return invNo && invNo !== photoQueueCurrentInvNo && !photoQueueVisitedRef.current.has(invNo);
+    });
+  }, [photoQueueCurrentInvNo, photoQueueVisitedVersion, photoWorklist]);
+  const openNextWithoutPhoto = useCallback(() => {
+    const next = photoQueueCandidates[0];
+    if (!next) return;
+    if (photoQueueCurrentInvNo) photoQueueVisitedRef.current.add(photoQueueCurrentInvNo);
+    setPhotoQueueVisitedVersion((value) => value + 1);
+    const invNo = toInvNo(next);
+    openDetailView(next, { invNo, loading: false, initialTab: 'photos' });
+  }, [openDetailView, photoQueueCandidates, photoQueueCurrentInvNo]);
+  const photoQueue = useMemo(() => (
+    isConsumablesMode ? null : { remaining: photoQueueCandidates.length, onNext: openNextWithoutPhoto }
+  ), [isConsumablesMode, openNextWithoutPhoto, photoQueueCandidates.length]);
+
   const deleteEquipment = useDatabaseDeleteEquipment({
-    isAdmin,
+    canDeleteEquipment,
+    canDeleteEquipmentWithHistory,
     setAllEquipment,
     setFilteredData,
     setSelectedItems,
@@ -294,6 +493,7 @@ export function useDatabaseDialogController({
 
   const closeActionModal = useCallback(({ clearSelection = false } = {}) => {
     setActionModal({ open: false, type: null, invNo: null, componentKind: null });
+    maintenanceOperationSeedRef.current = '';
     if (clearSelection) {
       setSelectedItems([]);
     }
@@ -305,13 +505,17 @@ export function useDatabaseDialogController({
 
   const handleAction = useCallback((actionType, itemOrInvNo) => {
     if (dataMode === DATA_MODE_CONSUMABLES) return;
-    if (actionType !== 'view' && !canDatabaseWrite) return;
-    if (actionType === 'delete' && !isAdmin) return;
+    if (actionType !== 'view' && actionType !== 'photos' && actionType !== 'delete' && !canDatabaseWrite) return;
+    if (actionType === 'delete' && !canDeleteEquipment) return;
     const invNo = toInvNo(itemOrInvNo);
-    if (actionType === 'view') {
+    if (actionType === 'view' || actionType === 'photos') {
       const item = (itemOrInvNo && typeof itemOrInvNo === 'object') ? itemOrInvNo : findEquipmentByInvNo(invNo);
       void touchRecentCard({ invNo, actionType: 'view', snapshot: item });
-      openDetailView(item || invNo, { invNo, loading: !item });
+      openDetailView(item || invNo, {
+        invNo,
+        loading: !item,
+        ...(actionType === 'photos' ? { initialTab: 'photos' } : {}),
+      });
     } else if (actionType === 'delete') {
       const item = (itemOrInvNo && typeof itemOrInvNo === 'object') ? itemOrInvNo : findEquipmentByInvNo(invNo);
       openDeleteEquipmentDialog({ invNo, item });
@@ -342,7 +546,7 @@ export function useDatabaseDialogController({
     canDatabaseWrite,
     dataMode,
     findEquipmentByInvNo,
-    isAdmin,
+    canDeleteEquipment,
     openDeleteEquipmentDialog,
     openDetailView,
     resetTransferState,
@@ -369,6 +573,9 @@ export function useDatabaseDialogController({
         return;
       }
 
+      if (!maintenanceOperationSeedRef.current) {
+        maintenanceOperationSeedRef.current = createMaintenanceOperationSeed();
+      }
       const maintenanceResult = await executeMaintenanceAction({
         actionType: actionModal.type,
         selectedItems,
@@ -382,6 +589,7 @@ export function useDatabaseDialogController({
         getItemBranch,
         equipmentAPI,
         jsonAPI,
+        operationSeed: maintenanceOperationSeedRef.current,
       });
 
       if (maintenanceResult?.error) {
@@ -469,8 +677,18 @@ export function useDatabaseDialogController({
     ...consumableCard,
     ...consumableDelete,
     ...qrScanner,
-    handleQrScannerOpen: qrScanner.openQrScanner,
-    handleQrScannerClose: qrScanner.closeQrScanner,
+    handleQrScannerOpen: handleQrScannerOpenWithPairReset,
+    handleQrScannerClose: handleQrScannerCloseWithPairReset,
+    qrPairMode,
+    qrPair,
+    startQrPairScan,
+    cancelQrPairScan: qrPairReset,
+    startQrPairForConsumableCard,
+    consumeConsumableQrForDetail,
+    qrPhotoMode,
+    setQrPhotoMode,
+    scanNextForPhoto,
+    photoQueue,
     ...deleteEquipment,
     ...maintenance,
     qrBatchPrint,

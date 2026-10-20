@@ -139,6 +139,7 @@ class AuthSecurityService:
         client_device_id: str | None = None,
         twofa_policy: str | None = None,
         twofa_required_for_current_request: bool | None = None,
+        enrollment_required: bool = False,
     ) -> dict[str, Any]:
         challenge_id = uuid.uuid4().hex
         methods, trusted_devices_available = self._login_methods(user)
@@ -160,6 +161,8 @@ class AuthSecurityService:
             "client_device_id": normalize_client_device_id(client_device_id),
             "twofa_policy": effective_policy,
             "twofa_required_for_current_request": bool(twofa_required_for_current_request),
+            # Only a challenge issued to a user without 2FA may be used to enroll TOTP.
+            "enrollment_required": bool(enrollment_required),
             "available_second_factors": methods,
             "trusted_devices_available": trusted_devices_available,
         }
@@ -260,6 +263,7 @@ class AuthSecurityService:
                 client_device_id=client_device_id,
                 twofa_policy=effective_policy,
                 twofa_required_for_current_request=twofa_required_for_current_request,
+                enrollment_required=not bool(user.get("is_2fa_enabled", False)),
             )
             if not bool(user.get("is_2fa_enabled", False)):
                 return {
@@ -317,11 +321,21 @@ class AuthSecurityService:
             device_id=None,
         )
 
+    @staticmethod
+    def _ensure_totp_enrollment_allowed(challenge: dict[str, Any], user: dict) -> None:
+        # Enrollment replaces the TOTP secret and backup codes and yields a full session,
+        # so it is only valid for a "2fa_setup_required" challenge of a user without 2FA.
+        if bool(user.get("is_2fa_enabled", False)):
+            raise AuthSecurityError("2FA уже включён")
+        if not bool(challenge.get("enrollment_required", False)):
+            raise AuthSecurityError("Настройка 2FA для этой сессии входа недоступна. Войдите снова")
+
     def start_totp_enrollment(self, challenge_id: str) -> dict[str, Any]:
         challenge = self.get_login_challenge(challenge_id)
         user = user_service.get_by_id(int(challenge.get("user_id") or 0))
         if not user:
             raise AuthSecurityError("Пользователь не найден")
+        self._ensure_totp_enrollment_allowed(challenge, user)
         # Apple Passwords matches 2FA setup to the saved login by domain + username.
         # Use the username typed at login, not email, so apple-otpauth finds the entry.
         account_name = str(
@@ -402,6 +416,7 @@ class AuthSecurityService:
         user = user_service.get_by_id(int(challenge.get("user_id") or 0))
         if not user:
             raise AuthSecurityError("Пользователь не найден")
+        self._ensure_totp_enrollment_allowed(challenge, user)
         encrypted_secret = str(challenge.get("pending_totp_secret_enc") or "").strip()
         if not encrypted_secret:
             raise AuthSecurityError("Сначала начните настройку 2FA")

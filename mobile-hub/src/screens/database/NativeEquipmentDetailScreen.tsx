@@ -31,12 +31,13 @@ import {
 } from '../../api/databaseApi';
 import { formatApiError } from '../../api/formatError';
 import { useAuth } from '../../auth/AuthContext';
+import { getSessionGeneration } from '../../auth/tokenStore';
 import {
   readNativeEntitySnapshot,
   readNativeSnapshot,
   writeNativeEntitySnapshot,
 } from '../../cache/nativeSnapshotCache';
-import { readNativeEquipmentCatalogSnapshot } from '../../cache/nativeEquipmentCatalogSnapshot';
+import { findNativeEquipmentCatalogItem } from '../../cache/nativeEquipmentCatalogSnapshot';
 import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
 import { openExternalUrl } from '../../addressBook/messengerLinks';
 import { NativeActionSheetDivider, NativeActionSheetItem, NativeEquipmentActionBar } from '../../components/database/NativeEquipmentActionBar';
@@ -63,6 +64,7 @@ import {
   historyDate,
   historyDescription,
   historyTitle,
+  isPrinterLikeEquipment,
   validateEquipmentDraft,
   type EquipmentDetailTab,
   type EquipmentStatusTone,
@@ -70,6 +72,7 @@ import {
 import { nativeEquipmentDestination } from '../../database/nativeDatabaseFeature';
 import {
   nativeEquipmentSnapshotKey,
+  updateNativeEquipmentDetailSnapshot,
   type NativeDatabaseBootstrapSnapshot,
   type NativeEquipmentDetailSnapshot,
 } from '../../database/nativeDatabaseSnapshot';
@@ -120,6 +123,13 @@ function EquipmentDetailContent() {
   const allowed = hasPermission('database.read');
   const requestRef = useRef(0);
   const tabRequests = useRef(new Map<EquipmentDetailTab, number>());
+  const appliedDetailSnapshotRef = useRef('');
+  const detailWriteChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  const queueDetailSnapshotWrite = useCallback((task: () => Promise<void>) => {
+    const next = detailWriteChainRef.current.then(task, task);
+    detailWriteChainRef.current = next;
+    return next;
+  }, []);
   const canWrite = hasPermission('database.write');
   const canViewWarehouse1C = hasPermission('warehouse_1c.read');
   const canDeleteEquipment = String(user?.role || '').trim().toLowerCase() === 'admin';
@@ -136,6 +146,7 @@ function EquipmentDetailContent() {
   const [refreshing, setRefreshing] = useState(false);
   const [tabLoading, setTabLoading] = useState(false);
   const [loadedTabs, setLoadedTabs] = useState<Set<EquipmentDetailTab>>(new Set());
+  const [invalidatedTabs, setInvalidatedTabs] = useState<Set<'acts' | 'history'>>(new Set());
   const [worksSummaryFailed, setWorksSummaryFailed] = useState(false);
   const [busyAct, setBusyAct] = useState<number | null>(null);
   const [error, setError] = useState('');
@@ -169,6 +180,7 @@ function EquipmentDetailContent() {
     setWorkHistory(snapshot.workHistory || []);
     setUnavailableWorkKinds(snapshot.unavailableWorkKinds || []);
     setLoadedTabs(new Set(snapshot.loadedTabs || []));
+    setInvalidatedTabs(new Set(snapshot.invalidatedTabs || []));
   }, []);
 
   const ensureDatabase = useCallback(async (): Promise<string> => {
@@ -206,16 +218,13 @@ function EquipmentDetailContent() {
       if (!current()) return;
       if (snapshot) {
         cached = snapshot.data;
+        appliedDetailSnapshotRef.current = `${nativeEquipmentSnapshotKey(cachedDatabaseId, invNo)}@${snapshot.savedAt}`;
         applyCachedDetail(snapshot.data);
         setLoading(false);
       }
       if (!cached) {
-        const catalog = await readNativeEquipmentCatalogSnapshot(userId, cachedDatabaseId);
+        const catalogItem = await findNativeEquipmentCatalogItem(userId, cachedDatabaseId, invNo);
         if (!current()) return;
-        const normalizedInvNo = invNo.trim().toLocaleUpperCase('ru-RU');
-        const catalogItem = catalog?.data.equipment.find(
-          (item) => item.inv_no.trim().toLocaleUpperCase('ru-RU') === normalizedInvNo,
-        );
         if (catalogItem) {
           cached = {
             databaseId: cachedDatabaseId,
@@ -247,20 +256,31 @@ function EquipmentDetailContent() {
       setEquipment(result);
       void touchRecentEquipmentCard(invNo, result, 'view', activeDatabaseId).catch(() => undefined);
       if (userId) {
-        await writeNativeEntitySnapshot<NativeEquipmentDetailSnapshot>(
-          'database-item-details',
-          userId,
-          nativeEquipmentSnapshotKey(activeDatabaseId, invNo),
-          {
-            databaseId: activeDatabaseId,
-            equipment: result,
-            acts: cached?.acts || [],
-            history: cached?.history || [],
-            workHistory: cached?.workHistory || [],
-            unavailableWorkKinds: cached?.unavailableWorkKinds || [],
-            loadedTabs: cached?.loadedTabs || [],
-          },
-        ).catch(() => undefined);
+        const snapshotKey = nativeEquipmentSnapshotKey(activeDatabaseId, invNo);
+        await queueDetailSnapshotWrite(async () => {
+          const latest = (await readNativeEntitySnapshot<NativeEquipmentDetailSnapshot>(
+            'database-item-details',
+            userId,
+            snapshotKey,
+          ))?.data;
+          if (!current()) return;
+          const preserved = latest || cached;
+          await writeNativeEntitySnapshot<NativeEquipmentDetailSnapshot>(
+            'database-item-details',
+            userId,
+            snapshotKey,
+            {
+              databaseId: activeDatabaseId,
+              equipment: result,
+              acts: preserved?.acts || [],
+              history: preserved?.history || [],
+              workHistory: preserved?.workHistory || [],
+              unavailableWorkKinds: preserved?.unavailableWorkKinds || [],
+              loadedTabs: preserved?.loadedTabs || [],
+              invalidatedTabs: preserved?.invalidatedTabs,
+            },
+          ).catch(() => undefined);
+        });
       }
     } catch (cause) {
       if (!current()) return;
@@ -269,7 +289,7 @@ function EquipmentDetailContent() {
     } finally {
       if (current()) { setLoading(false); setRefreshing(false); }
     }
-  }, [allowed, applyCachedDetail, ensureDatabase, invNo, offlineMode, requestedDatabaseId, user?.id]);
+  }, [allowed, applyCachedDetail, ensureDatabase, invNo, offlineMode, queueDetailSnapshotWrite, requestedDatabaseId, user?.id]);
 
   useEffect(() => {
     void loadEquipment();
@@ -277,7 +297,8 @@ function EquipmentDetailContent() {
   }, [loadEquipment]);
 
   const loadTab = useCallback(async (target: EquipmentDetailTab, force = false, silent = false) => {
-    if (!invNo || target === 'general' || target === 'photos' || (target === 'works' && !equipment) || (!force && loadedTabs.has(target))) return;
+    if (!invNo || target === 'general' || target === 'photos' || (target === 'works' && !equipment)
+      || (!force && loadedTabs.has(target) && !invalidatedTabs.has(target as 'acts' | 'history'))) return;
     const lease = requestRef.current;
     const tabLease = (tabRequests.current.get(target) || 0) + 1;
     tabRequests.current.set(target, tabLease);
@@ -299,9 +320,21 @@ function EquipmentDetailContent() {
       if (snapshot) {
         cached = snapshot.data;
         if (snapshot.data.loadedTabs.includes(target as 'works' | 'acts' | 'history')) {
-          applyCachedDetail(snapshot.data);
+          const applyKey = `${snapshotKey}@${snapshot.savedAt}`;
+          if (appliedDetailSnapshotRef.current !== applyKey) {
+            appliedDetailSnapshotRef.current = applyKey;
+            applyCachedDetail(snapshot.data);
+          }
           if (!silent) setTabLoading(false);
-          if (offlineMode || (silent && !force)) return;
+          const dirty = (snapshot.data.invalidatedTabs || []).includes(target as 'acts' | 'history')
+            || invalidatedTabs.has(target as 'acts' | 'history');
+          if (offlineMode) {
+            if (dirty && !silent) {
+              setTabError('Показаны сохранённые данные — вкладка обновится при подключении к сети.');
+            }
+            return;
+          }
+          if (silent && !force) return;
         }
       }
     }
@@ -342,32 +375,44 @@ function EquipmentDetailContent() {
       }
       setLoadedTabs((current) => new Set(current).add(target));
       if (target === 'works') setWorksSummaryFailed(false);
-      if (userId && equipment) {
-        const latest = (await readNativeEntitySnapshot<NativeEquipmentDetailSnapshot>(
-          'database-item-details',
-          userId,
-          snapshotKey,
-        ))?.data;
-        if (!current()) return;
-        void writeNativeEntitySnapshot<NativeEquipmentDetailSnapshot>(
-          'database-item-details',
-          userId,
-          snapshotKey,
-          {
-            databaseId,
-            equipment: equipmentRef.current ?? latest?.equipment ?? equipment,
-            acts: target === 'acts' ? nextActs : (latest?.acts ?? nextActs),
-            history: target === 'history' ? nextHistory : (latest?.history ?? nextHistory),
-            workHistory: target === 'works' ? nextWorkHistory : (latest?.workHistory ?? nextWorkHistory),
-            unavailableWorkKinds: target === 'works' ? nextUnavailable : (latest?.unavailableWorkKinds ?? nextUnavailable),
-            loadedTabs: [...new Set([
-              ...(latest?.loadedTabs || cached?.loadedTabs || [...loadedTabs].filter(
-                (value): value is 'works' | 'acts' | 'history' => value !== 'general',
-              )),
-              target as 'works' | 'acts' | 'history',
-            ])],
-          },
-        );
+      setInvalidatedTabs((current) => {
+        const next = new Set(current);
+        next.delete(target as 'acts' | 'history');
+        return next;
+      });
+      if (userId) {
+        await queueDetailSnapshotWrite(async () => {
+          const latest = (await readNativeEntitySnapshot<NativeEquipmentDetailSnapshot>(
+            'database-item-details',
+            userId,
+            snapshotKey,
+          ))?.data;
+          if (!current()) return;
+          const baseEquipment = equipmentRef.current ?? latest?.equipment ?? equipment;
+          if (!baseEquipment) return;
+          const remainingInvalidated = new Set(latest ? (latest.invalidatedTabs || []) : [...invalidatedTabs]);
+          remainingInvalidated.delete(target as 'acts' | 'history');
+          await writeNativeEntitySnapshot<NativeEquipmentDetailSnapshot>(
+            'database-item-details',
+            userId,
+            snapshotKey,
+            {
+              databaseId,
+              equipment: baseEquipment,
+              acts: target === 'acts' ? nextActs : (latest?.acts ?? nextActs),
+              history: target === 'history' ? nextHistory : (latest?.history ?? nextHistory),
+              workHistory: target === 'works' ? nextWorkHistory : (latest?.workHistory ?? nextWorkHistory),
+              unavailableWorkKinds: target === 'works' ? nextUnavailable : (latest?.unavailableWorkKinds ?? nextUnavailable),
+              loadedTabs: [...new Set([
+                ...(latest?.loadedTabs || cached?.loadedTabs || [...loadedTabs].filter(
+                  (value): value is 'works' | 'acts' | 'history' => value !== 'general',
+                )),
+                target as 'works' | 'acts' | 'history',
+              ])],
+              ...(remainingInvalidated.size ? { invalidatedTabs: [...remainingInvalidated] } : {}),
+            },
+          ).catch(() => undefined);
+        });
       }
     } catch (cause) {
       if (!current()) return;
@@ -376,9 +421,21 @@ function EquipmentDetailContent() {
     } finally {
       if (current() && !silent) setTabLoading(false);
     }
-  }, [acts, applyCachedDetail, databaseId, equipment, history, invNo, loadedTabs, offlineMode, requestedDatabaseId, unavailableWorkKinds, user?.id, workHistory]);
+  }, [acts, applyCachedDetail, databaseId, equipment, history, invNo, invalidatedTabs, loadedTabs, offlineMode, queueDetailSnapshotWrite, requestedDatabaseId, unavailableWorkKinds, user?.id, workHistory]);
 
-  useEffect(() => { void loadTab(tab); }, [loadTab, tab]);
+  const lastTabLoadKeyRef = useRef('');
+  const resolvedTabDatabaseId = databaseId || requestedDatabaseId;
+  useEffect(() => {
+    if (tab === 'general') {
+      lastTabLoadKeyRef.current = '';
+      return;
+    }
+    if (!resolvedTabDatabaseId || (tab === 'works' && !equipment)) return;
+    const loadKey = `${tab}@${resolvedTabDatabaseId}@${offlineMode ? 'offline' : 'online'}`;
+    if (lastTabLoadKeyRef.current === loadKey) return;
+    lastTabLoadKeyRef.current = loadKey;
+    void loadTab(tab);
+  }, [loadTab, tab, resolvedTabDatabaseId, offlineMode, equipment]);
 
   // Silent background prefetch for the "Обслуживание" summary on the card tab.
   useEffect(() => {
@@ -435,6 +492,15 @@ function EquipmentDetailContent() {
     setMenuOpen(false);
     actionsRef.current?.open('delete');
   }, []);
+
+  const consumeConsumableForEquipment = useCallback(() => {
+    if (!equipment) return;
+    setMenuOpen(false);
+    router.push({
+      pathname: '/(shell)/database',
+      params: { pairMfu: equipment.inv_no, databaseId: databaseId || requestedDatabaseId },
+    } as never);
+  }, [databaseId, equipment, requestedDatabaseId]);
 
   const openEditor = useCallback(() => {
     if (!equipment || !canWrite || offlineMode) return;
@@ -968,8 +1034,27 @@ function EquipmentDetailContent() {
             surface="general"
             triggers="none"
             tokens={tokens}
-            onChanged={async (kind) => {
+            onChanged={async (kind, _result, context) => {
+              const dirtyTabs: Array<'acts' | 'history'> = kind === 'owner'
+                ? ['acts', 'history']
+                : kind === 'location' ? ['history'] : kind === 'act-only' ? ['acts'] : [];
+              const userId = Number(user?.id || 0);
+              const targetDatabaseId = context?.databaseId || databaseId || requestedDatabaseId;
+              const detailLease = requestRef.current;
+              const detailSession = getSessionGeneration();
+              if (dirtyTabs.length && userId && invNo && targetDatabaseId) {
+                setInvalidatedTabs((current) => new Set([...current, ...dirtyTabs]));
+                await updateNativeEquipmentDetailSnapshot(userId, targetDatabaseId, invNo, {
+                  invalidatedTabs: dirtyTabs,
+                  isCurrent: () => requestRef.current === detailLease
+                    && getSessionGeneration() === detailSession
+                    && Number(user?.id || 0) === userId,
+                }).catch(() => undefined);
+              }
               await loadEquipment(true);
+              if (tab === 'acts' || tab === 'history') {
+                if (dirtyTabs.includes(tab)) await loadTab(tab, true);
+              }
               if (equipmentWorkKinds(equipment).includes(kind as EquipmentWorkKind)) {
                 await loadTab('works', true, tab !== 'works');
               }
@@ -1129,6 +1214,18 @@ function EquipmentDetailContent() {
             <ScrollView contentContainerStyle={styles.menuSheetContent}>
               <NativeActionSheetItem testID="native-equipment-copy-all" icon="content-copy" label="Скопировать всё" onPress={copyAllCard} tokens={tokens} />
               <NativeActionSheetItem testID="native-equipment-share" icon="share-variant-outline" label="Поделиться" onPress={shareCard} tokens={tokens} />
+              {canWrite && !offlineMode && equipment && isPrinterLikeEquipment(equipment) ? (
+                <>
+                  <NativeActionSheetDivider tokens={tokens} />
+                  <NativeActionSheetItem
+                    testID="native-equipment-consume-consumable"
+                    icon="qrcode-scan"
+                    label="Списать расходник по QR"
+                    onPress={consumeConsumableForEquipment}
+                    tokens={tokens}
+                  />
+                </>
+              ) : null}
               {canDeleteEquipment ? <NativeActionSheetDivider tokens={tokens} /> : null}
               {canDeleteEquipment ? (
                 <NativeActionSheetItem

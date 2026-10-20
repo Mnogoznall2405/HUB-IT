@@ -4,7 +4,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import axios from 'axios';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -31,6 +31,7 @@ import {
   listConsumables,
   listEquipment,
   getEquipment,
+  getEquipmentByInvNos,
   recordEquipmentWork,
   searchEquipment,
   searchEquipmentActs,
@@ -38,9 +39,11 @@ import {
   touchRecentEquipmentAct,
   touchRecentEquipmentCard,
   updateConsumableQuantity,
+  uploadEquipmentPhoto,
   type ConsumableRecord,
   type CurrentDatabase,
   type EquipmentAct,
+  type EquipmentBatch,
   type EquipmentRecord,
   type RecentEquipmentCard,
   type RecentEquipmentAct,
@@ -50,12 +53,16 @@ import { formatApiError } from '../../api/formatError';
 import { useAuth } from '../../auth/AuthContext';
 import {
   readNativeCollectionSnapshot,
+  readNativeEntitySnapshot,
   readNativeSnapshot,
   writeNativeCollectionSnapshot,
   writeNativeEntitySnapshot,
   writeNativeSnapshot,
 } from '../../cache/nativeSnapshotCache';
-import { readNativeEquipmentCatalogSnapshot } from '../../cache/nativeEquipmentCatalogSnapshot';
+import {
+  findNativeEquipmentCatalogItem,
+  readNativeEquipmentCatalogSnapshot,
+} from '../../cache/nativeEquipmentCatalogSnapshot';
 import { chatKeyboardAvoidingProps } from '../../chat/chatKeyboard';
 import { NativeEquipmentActCard } from '../../components/database/NativeEquipmentActCard';
 import { NativeDatabaseActUploadModal } from '../../components/database/NativeDatabaseActUploadModal';
@@ -63,20 +70,47 @@ import { NativeDatabaseCreateModal } from '../../components/database/NativeDatab
 import { NativeDatabaseQrScannerModal } from '../../components/database/NativeDatabaseQrScannerModal';
 import { NativeDatabasePickerSheet } from '../../components/database/NativeDatabasePickerSheet';
 import { NativeScanBatchPanel } from '../../components/database/NativeScanBatchPanel';
+import { NativeConsumablePairPanel } from '../../components/database/NativeConsumablePairPanel';
 import { NativeConsumableRow } from '../../components/database/NativeConsumableRow';
-import { NativeEquipmentActions } from '../../components/database/NativeEquipmentActions';
+import {
+  NativeEquipmentActions,
+  type NativeEquipmentActionKind,
+  type NativeEquipmentTransferContext,
+} from '../../components/database/NativeEquipmentActions';
 import { NativeEquipmentRow } from '../../components/database/NativeEquipmentRow';
 import { openNativeFile } from '../../files/nativeAttachmentDownloads';
 import { downloadEquipmentAct } from '../../database/nativeDatabaseFiles';
 import { nativeEquipmentDestination } from '../../database/nativeDatabaseFeature';
 import { equipmentTitle, filterConsumables, isCartridgeLikeConsumable, isPrinterLikeEquipment, parseInventoryQrPayload, type DatabaseViewMode, type InventoryQrPayload } from '../../database/nativeDatabaseModel';
 import { useNativeScanBatch } from '../../database/useNativeScanBatch';
+import { rotateLocalPhoto } from '../../database/photoRotate';
+import { logChatDevice } from '../../diagnostics/chatDeviceLog';
+import { NativeFilePermissionError, pickNativeAttachment } from '../../files/nativeFilePicker';
+import { shareDiagnosticReport } from '../../diagnostics/diagnostics';
+import {
+  clearCameraLaunch,
+  readScanCaptureMode,
+  saveCameraLaunch,
+  takeCameraLaunch,
+  writeScanCaptureMode,
+} from '../../database/scanPhotoPrefs';
+import {
+  getBatteryOptimizationState,
+  openBatteryOptimizationSettings,
+  type BatteryOptimizationState,
+} from '../../network/batteryOptimization';
+import * as ImagePicker from 'expo-image-picker';
+import { useNativeScanPhotoSession, type ScanPhotoTarget } from '../../database/useNativeScanPhotoSession';
+import { NativeScanPhotoPanel } from '../../components/database/NativeScanPhotoPanel';
+import type { CameraView } from 'expo-camera';
 import { NativeToastHost, showNativeToast } from '../../components/nativeToast';
 import {
   filterNativeActs,
   filterNativeEquipment,
+  mergeNativeEquipmentRecord,
   nativeDatabaseListSignature,
   nativeEquipmentSnapshotKey,
+  updateNativeEquipmentDetailSnapshot,
   type NativeDatabaseBootstrapSnapshot,
   type NativeEquipmentDetailSnapshot,
   type NativeDatabaseListSnapshot,
@@ -85,6 +119,16 @@ import { useNativeBottomNavInset } from '../../navigation/useNativeBottomNavInse
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
 import { AccountScreenScaffold, AccountSectionCard } from '../account/AccountChrome';
+
+type PairScanState = {
+  active: boolean;
+  consumable: ConsumableRecord | null;
+  mfu: EquipmentRecord | null;
+  busy: boolean;
+  databaseId: string;
+};
+
+const EMPTY_PAIR_SCAN: PairScanState = { active: false, consumable: null, mfu: null, busy: false, databaseId: '' };
 
 const SEARCH_DEBOUNCE_MS = 500;
 const SEARCH_LIMIT = 50;
@@ -146,6 +190,27 @@ function useDebouncedValue(value: string): string {
   return debounced;
 }
 
+type TransferChangeQueue = {
+  userId: number;
+  databaseId: string;
+  refreshInvNos: Set<string>;
+  dirtyInvNos: Set<string>;
+  invalidatedTabs: Set<'acts' | 'history'>;
+};
+
+function normalizedInvKey(value: unknown): string {
+  return String(value || '').trim().toLocaleUpperCase('ru-RU');
+}
+
+function equipmentRowsEqual(a: EquipmentRecord, b: EquipmentRecord): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)] as Array<keyof EquipmentRecord>);
+  for (const key of keys) {
+    if (key === 'raw') continue;
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
 export function NativeDatabaseScreen() {
   const { width, fontScale } = useWindowDimensions();
   const stackModeTabs = (width - 32) / Math.max(fontScale, 1) < 300;
@@ -155,8 +220,9 @@ export function NativeDatabaseScreen() {
     consumable?: string | string[];
     databaseId?: string | string[];
     scan?: string | string[];
+    pairMfu?: string | string[];
   }>();
-  const { user, hasPermission, offlineMode } = useAuth();
+  const { user, hasPermission, offlineMode, serverCheck, checkServerNow } = useAuth();
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
   const emptyListInset = useNativeBottomNavInset();
@@ -205,6 +271,17 @@ export function NativeDatabaseScreen() {
   const scanCardMfuSearchSeq = useRef(0);
   const debouncedMfuQuery = useDebouncedValue(scanCardMfuQuery);
   const [scanCardDbId, setScanCardDbId] = useState('');
+  // Пара «расходник ↔ МФУ»: сканер в этом режиме собирает оба QR в любом
+  // порядке и открывает карточку расходника уже с выбранной МФУ.
+  const [pairScan, setPairScan] = useState<PairScanState>(EMPTY_PAIR_SCAN);
+  // Зеркало состояния пары: запрос по QR длится дольше кадра, и за это время
+  // режим могут отменить — актуальное значение читаем из ref, не из замыкания.
+  const pairScanRef = useRef<PairScanState>(pairScan);
+  const setPairScanTracked = useCallback((next: SetStateAction<PairScanState>) => {
+    pairScanRef.current = typeof next === 'function' ? next(pairScanRef.current) : next;
+    setPairScan(pairScanRef.current);
+  }, []);
+  const [pairScanExpanded, setPairScanExpanded] = useState(true);
   const [scanBatchExpanded, setScanBatchExpanded] = useState(true);
   const [scanBatchOpen, setScanBatchOpen] = useState(false);
   const [scanDupHighlight, setScanDupHighlight] = useState('');
@@ -212,9 +289,36 @@ export function NativeDatabaseScreen() {
   const [quantityDatabaseId, setQuantityDatabaseId] = useState('');
   const requestRef = useRef(0);
   const equipmentPageRef = useRef(1);
+  const equipmentRowsRef = useRef<EquipmentRecord[]>([]);
+  const totalRef = useRef(0);
   const busyActRef = useRef<number | null>(null);
+  const mountedRef = useRef(true);
+  const qrScopeRef = useRef({ userId: 0, databaseId: '' });
+  const viewScopeRef = useRef({ userId: 0, databaseId: '', mode: 'equipment' as DatabaseViewMode, query: '' });
+  const bulkChangesRef = useRef<TransferChangeQueue | null>(null);
+  const scanChangesRef = useRef<TransferChangeQueue | null>(null);
+  const reconcileSeqRef = useRef(0);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; reconcileSeqRef.current += 1; };
+  }, []);
+  useEffect(() => {
+    qrScopeRef.current = { userId: Number(user?.id || 0), databaseId: currentDatabase?.id || '' };
+  }, [user?.id, currentDatabase?.id]);
   const debouncedQuery = useDebouncedValue(query.trim());
   const contentQuery = mode === 'consumables' ? '' : debouncedQuery;
+  useEffect(() => {
+    viewScopeRef.current = {
+      userId: Number(user?.id || 0),
+      databaseId: currentDatabase?.id || '',
+      mode,
+      query: contentQuery,
+    };
+  }, [user?.id, currentDatabase?.id, mode, contentQuery]);
+  useEffect(() => {
+    equipmentRowsRef.current = equipment;
+    totalRef.current = total;
+  }, [equipment, total]);
   const visibleConsumables = useMemo(
     () => filterConsumables(consumables, debouncedQuery),
     [consumables, debouncedQuery],
@@ -594,6 +698,47 @@ export function NativeDatabaseScreen() {
     });
   }, [deepConsumable, deepDatabaseId, openConsumableFromQr]);
 
+  // Дип-линк «Списать расходник» из карточки МФУ: открывает сканер в режиме
+  // пары с уже выбранной МФУ — остаётся отсканировать QR расходника.
+  const deepPairMfu = first(params.pairMfu);
+  const deepPairMfuRef = useRef(false);
+  useEffect(() => {
+    if (!deepPairMfu) {
+      deepPairMfuRef.current = false;
+      return;
+    }
+    if (deepPairMfuRef.current || !allowed) return;
+    deepPairMfuRef.current = true;
+    router.setParams({ pairMfu: undefined });
+    if (!canWrite || offlineMode) {
+      setError('Списание расходника доступно только онлайн и с правом записи.');
+      return;
+    }
+    const targetDatabaseId = deepDatabaseId || currentDatabase?.id || '';
+    setPairScanTracked({ active: true, consumable: null, mfu: null, busy: true, databaseId: targetDatabaseId });
+    setPairScanExpanded(true);
+    setQrScannerOpen(true);
+    void getEquipment(deepPairMfu, targetDatabaseId || undefined)
+      .then((record) => {
+        if (!mountedRef.current) return;
+        if (!record || !isPrinterLikeEquipment(record)) {
+          setPairScanTracked(EMPTY_PAIR_SCAN);
+          setQrScannerOpen(false);
+          setError(record
+            ? `${record.model_name || 'Позиция'} (инв. ${deepPairMfu}) — не МФУ/принтер, списание расходника недоступно.`
+            : `МФУ с инв. № ${deepPairMfu} не найдена в этой базе.`);
+          return;
+        }
+        setPairScanTracked({ active: true, consumable: null, mfu: record, busy: false, databaseId: targetDatabaseId });
+      })
+      .catch((cause) => {
+        if (!mountedRef.current) return;
+        setPairScanTracked(EMPTY_PAIR_SCAN);
+        setQrScannerOpen(false);
+        setError(formatApiError(cause, `Не удалось открыть МФУ с инв. № ${deepPairMfu}.`));
+      });
+  }, [allowed, canWrite, currentDatabase?.id, deepDatabaseId, deepPairMfu, offlineMode, setPairScanTracked]);
+
   // Reset the MFU picker whenever the scan card closes or a new one opens.
   useEffect(() => {
     if (scanCard) return;
@@ -705,6 +850,22 @@ export function NativeDatabaseScreen() {
   const findCachedEquipment = useCallback(async (invNo: string, targetDatabaseId: string): Promise<EquipmentRecord | null> => {
     const normalizedInvNo = invNo.trim().toLocaleUpperCase('ru-RU');
     const userId = Number(user?.id || 0);
+    if (userId && targetDatabaseId) {
+      const detail = await readNativeEntitySnapshot<NativeEquipmentDetailSnapshot>(
+        'database-item-details',
+        userId,
+        nativeEquipmentSnapshotKey(targetDatabaseId, invNo),
+      );
+      const stored = detail?.data;
+      if (
+        stored
+        && stored.databaseId === targetDatabaseId
+        && stored.equipment
+        && stored.equipment.inv_no.trim().toLocaleUpperCase('ru-RU') === normalizedInvNo
+      ) {
+        return stored.equipment;
+      }
+    }
     let cachedEquipment = targetDatabaseId === currentDatabase?.id
       ? equipment.find((item) => item.inv_no.trim().toLocaleUpperCase('ru-RU') === normalizedInvNo)
       : undefined;
@@ -718,10 +879,7 @@ export function NativeDatabaseScreen() {
         (item) => item.inv_no.trim().toLocaleUpperCase('ru-RU') === normalizedInvNo,
       );
       if (!cachedEquipment) {
-        const catalog = await readNativeEquipmentCatalogSnapshot(userId, targetDatabaseId);
-        cachedEquipment = catalog?.data.equipment.find(
-          (item) => item.inv_no.trim().toLocaleUpperCase('ru-RU') === normalizedInvNo,
-        );
+        cachedEquipment = await findNativeEquipmentCatalogItem(userId, targetDatabaseId, invNo) ?? undefined;
       }
     }
     return cachedEquipment ?? null;
@@ -736,25 +894,46 @@ export function NativeDatabaseScreen() {
     }
     const targetDatabaseId = payload.databaseId || currentDatabase?.id || '';
     const userId = Number(user?.id || 0);
+    const scopeIsCurrent = () => mountedRef.current
+      && qrScopeRef.current.userId === userId
+      && qrScopeRef.current.databaseId === (currentDatabase?.id || '');
     if (offlineMode && userId && targetDatabaseId) {
-      const cachedEquipment = await findCachedEquipment(payload.inventoryNumber, targetDatabaseId);
-      if (cachedEquipment) {
-        await writeNativeEntitySnapshot<NativeEquipmentDetailSnapshot>(
-          'database-item-details',
-          userId,
-          nativeEquipmentSnapshotKey(targetDatabaseId, payload.inventoryNumber),
-          {
-            databaseId: targetDatabaseId,
-            equipment: cachedEquipment,
-            acts: [],
-            history: [],
-            workHistory: [],
-            unavailableWorkKinds: [],
-            loadedTabs: [],
-          },
-        );
+      const existing = await readNativeEntitySnapshot<NativeEquipmentDetailSnapshot>(
+        'database-item-details',
+        userId,
+        nativeEquipmentSnapshotKey(targetDatabaseId, payload.inventoryNumber),
+      );
+      if (!scopeIsCurrent()) return;
+      const stored = existing?.data;
+      const storedMatches = Boolean(
+        stored
+        && stored.databaseId === targetDatabaseId
+        && stored.equipment
+        && stored.equipment.inv_no.trim().toLocaleUpperCase('ru-RU')
+          === payload.inventoryNumber.trim().toLocaleUpperCase('ru-RU'),
+      );
+      if (!storedMatches) {
+        const cachedEquipment = await findCachedEquipment(payload.inventoryNumber, targetDatabaseId);
+        if (!scopeIsCurrent()) return;
+        if (cachedEquipment) {
+          await writeNativeEntitySnapshot<NativeEquipmentDetailSnapshot>(
+            'database-item-details',
+            userId,
+            nativeEquipmentSnapshotKey(targetDatabaseId, payload.inventoryNumber),
+            {
+              databaseId: targetDatabaseId,
+              equipment: cachedEquipment,
+              acts: [],
+              history: [],
+              workHistory: [],
+              unavailableWorkKinds: [],
+              loadedTabs: [],
+            },
+          );
+        }
       }
     }
+    if (!scopeIsCurrent()) return;
     router.push(nativeEquipmentDestination(
       payload.inventoryNumber,
       'general',
@@ -776,6 +955,133 @@ export function NativeDatabaseScreen() {
     return findCachedEquipment(invNo, targetDatabaseId);
   }, [currentDatabase?.id, findCachedEquipment, offlineMode]);
 
+  const presentConsumableCard = useCallback((item: ConsumableRecord, targetDatabaseId: string, mfu: EquipmentRecord | null = null) => {
+    setScanCard(item);
+    setScanCardDbId(targetDatabaseId);
+    setScanCardMfu(mfu);
+    setScanCardPrinters(null);
+    setScanCardMfuSuggested([]);
+    setScanCardMfuQuery('');
+    setScanCardMfuResults(null);
+    setScanCardMfuSearching(false);
+    if (isCartridgeLikeConsumable(item) && item.model_name) {
+      void listCompatiblePrinterModels(item.model_name, targetDatabaseId || undefined)
+        .then(setScanCardPrinters)
+        .catch(() => setScanCardPrinters([]));
+    }
+  }, []);
+
+  const finishPairScan = useCallback((consumable: ConsumableRecord, mfu: EquipmentRecord, targetDatabaseId: string) => {
+    setPairScanTracked(EMPTY_PAIR_SCAN);
+    setQrScannerOpen(false);
+    // Пара начата из открытой карточки — просто подставляем МФУ в неё.
+    if (scanCard && scanCard.id === consumable.id) {
+      setScanCardMfu(mfu);
+      return;
+    }
+    presentConsumableCard(consumable, targetDatabaseId, mfu);
+  }, [presentConsumableCard, scanCard, setPairScanTracked]);
+
+  // Завершение пары — эффектом, а не внутри handlePairScan: два разных QR
+  // могут резолвиться почти одновременно, и замыкание второго не увидело бы
+  // слот, только что заполненный первым.
+  useEffect(() => {
+    if (!pairScan.active || !pairScan.consumable || !pairScan.mfu) return;
+    finishPairScan(pairScan.consumable, pairScan.mfu, pairScan.databaseId);
+  }, [finishPairScan, pairScan]);
+
+  const handlePairScan = useCallback(async (payload: InventoryQrPayload) => {
+    if (!pairScanRef.current.active) return;
+    const { consumable, mfu, databaseId: pairDatabaseId } = pairScanRef.current;
+    // Пара собирается по одной базе — QR с чужим db_id отклоняем, как в batch-режиме.
+    if (pairDatabaseId && payload.databaseId && payload.databaseId !== pairDatabaseId) {
+      const name = databases.find((item) => item.id === payload.databaseId)?.name || payload.databaseId;
+      showNativeToast(`QR из другой базы: ${name}. Пара собирается по одной базе`);
+      return;
+    }
+    const targetDatabaseId = payload.databaseId || pairDatabaseId || scanCardDbId || currentDatabase?.id || '';
+    if (payload.kind === 'consumable') {
+      if (consumable) {
+        showNativeToast('Расходник уже выбран — сканируйте QR МФУ');
+        return;
+      }
+      if (!payload.itemId) {
+        showNativeToast('QR расходника не содержит ID позиции');
+        return;
+      }
+      setPairScanTracked((prev) => ({ ...prev, busy: true }));
+      try {
+        const item = await getConsumableById(payload.itemId, targetDatabaseId || undefined);
+        // Пока шёл запрос, режим могли отменить — не воскрешаем пару.
+        if (!mountedRef.current || !pairScanRef.current.active) return;
+        if (!item) {
+          setPairScanTracked((prev) => ({ ...prev, busy: false }));
+          showNativeToast('Расходник не найден в этой базе');
+          return;
+        }
+        if (!isCartridgeLikeConsumable(item)) {
+          setPairScanTracked((prev) => ({ ...prev, busy: false }));
+          showNativeToast(`${item.model_name || item.type_name || 'Позиция'} — списывается без привязки к МФУ`);
+          return;
+        }
+        const mfuAlreadySet = Boolean(pairScanRef.current.mfu);
+        setPairScanTracked((prev) => ({ ...prev, consumable: item, busy: false, databaseId: targetDatabaseId }));
+        if (!mfuAlreadySet) {
+          try { await Haptics.selectionAsync(); } catch { /* Haptics are optional feedback. */ }
+          showNativeToast('Расходник выбран — теперь сканируйте QR МФУ');
+        }
+      } catch (cause) {
+        if (!mountedRef.current || !pairScanRef.current.active) return;
+        setPairScanTracked((prev) => ({ ...prev, busy: false }));
+        showNativeToast(formatApiError(cause, 'Не удалось открыть расходник по QR.'));
+      }
+      return;
+    }
+    if (mfu) {
+      showNativeToast('МФУ уже выбрана — сканируйте QR расходника');
+      return;
+    }
+    setPairScanTracked((prev) => ({ ...prev, busy: true }));
+    try {
+      const record = await resolveEquipmentForScan(payload.inventoryNumber, targetDatabaseId);
+      if (!mountedRef.current || !pairScanRef.current.active) return;
+      if (!record) {
+        setPairScanTracked((prev) => ({ ...prev, busy: false }));
+        showNativeToast('Оборудование не найдено в этой базе');
+        return;
+      }
+      if (!isPrinterLikeEquipment(record)) {
+        setPairScanTracked((prev) => ({ ...prev, busy: false }));
+        showNativeToast(`${record.model_name || 'Позиция'} — не МФУ/принтер`);
+        return;
+      }
+      const consumableAlreadySet = Boolean(pairScanRef.current.consumable);
+      setPairScanTracked((prev) => ({ ...prev, mfu: record, busy: false, databaseId: targetDatabaseId }));
+      if (!consumableAlreadySet) {
+        try { await Haptics.selectionAsync(); } catch { /* Haptics are optional feedback. */ }
+        showNativeToast('МФУ выбрана — теперь сканируйте QR расходника');
+      }
+    } catch (cause) {
+      if (!mountedRef.current || !pairScanRef.current.active) return;
+      setPairScanTracked((prev) => ({ ...prev, busy: false }));
+      showNativeToast(formatApiError(cause, 'Не удалось открыть оборудование по QR.'));
+    }
+  }, [currentDatabase?.id, databases, resolveEquipmentForScan, scanCardDbId, setPairScanTracked]);
+
+  // Закрытие сканера сбрасывает незавершённую пару. Переход open→closed
+  // определяем по qrScannerWasOpenRef — иначе сброс сработал бы на маунте и
+  // стёр бы пару, установленную дип-линком pairMfu в этом же рендере.
+  useEffect(() => {
+    if (!qrScannerOpen && qrScannerWasOpenRef.current) setPairScanTracked(EMPTY_PAIR_SCAN);
+  }, [qrScannerOpen, setPairScanTracked]);
+
+  const openMfuScannerForCard = useCallback(() => {
+    if (!scanCard || offlineMode || !canWrite) return;
+    setPairScanTracked({ active: true, consumable: scanCard, mfu: null, busy: false, databaseId: scanCardDbId });
+    setPairScanExpanded(true);
+    setQrScannerOpen(true);
+  }, [canWrite, offlineMode, scanCard, scanCardDbId, setPairScanTracked]);
+
   const {
     items: scanBatchItems,
     readyItems: scanBatchReadyItems,
@@ -789,6 +1095,75 @@ export function NativeDatabaseScreen() {
     offlineMode,
     resolveEquipment: resolveEquipmentForScan,
   });
+
+  // «Быстрые фото»: QR выбирает технику, затвор снимает кадр той же камерой,
+  // отправка идёт фоновой очередью.
+  const scanCameraRef = useRef<CameraView | null>(null);
+  const [scanPhotoCapturing, setScanPhotoCapturing] = useState(false);
+  // Кадр ждёт подтверждения, пока его не повернули/приняли/переснимут.
+  const [scanPhotoPreviewOn, setScanPhotoPreviewOn] = useState(true);
+  // «Обычная» камера телефона даёт тот же кадр, что виден в видоискателе; камера
+  // сканера снимает с неё же, но в другом масштабе. По умолчанию — обычная.
+  const [scanCaptureMode, setScanCaptureMode] = useState<'system' | 'scanner'>('system');
+  // Пока открыта системная камера, камера сканера отпущена: иначе Android её не отдаст.
+  const [scanCameraPaused, setScanCameraPaused] = useState(false);
+  const [scanLinkChecking, setScanLinkChecking] = useState(false);
+  const [batteryState, setBatteryState] = useState<BatteryOptimizationState>('unknown');
+  const [scanPendingShot, setScanPendingShot] = useState<{ uri: string; target: ScanPhotoTarget; busy: boolean } | null>(null);
+  const scanPhoto = useNativeScanPhotoSession({
+    databaseId: currentDatabase?.id || '',
+    userId: Number(user?.id || 0),
+    offlineMode,
+    resolveEquipment: resolveEquipmentForScan,
+    uploadPhoto: uploadEquipmentPhoto,
+  });
+  const { stop: scanPhotoStop } = scanPhoto;
+  const scanPhotoEnqueueRef = useRef(scanPhoto.enqueue);
+  scanPhotoEnqueueRef.current = scanPhoto.enqueue;
+
+  // Выбранный способ съёмки переживает перезапуск приложения.
+  useEffect(() => {
+    let cancelled = false;
+    void readScanCaptureMode().then((mode) => { if (!cancelled) setScanCaptureMode(mode); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Android мог выгрузить приложение, пока была открыта системная камера: снимок
+  // забираем после перезапуска и ставим в очередь к той технике, для которой он снимался.
+  const sessionUserId = Number(user?.id || 0);
+  useEffect(() => {
+    if (!(sessionUserId > 0)) return undefined;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const pending = await ImagePicker.getPendingResultAsync();
+        const asset = pending && 'assets' in pending && !pending.canceled ? pending.assets?.[0] : null;
+        const launch = await takeCameraLaunch(sessionUserId);
+        if (cancelled || !asset?.uri || !launch) return;
+        logChatDevice('scan_photo_restored', { mode: 'system' });
+        scanPhotoEnqueueRef.current(
+          { uri: asset.uri, name: asset.fileName || `scan-${Date.now()}.jpg`, mimeType: asset.mimeType || 'image/jpeg' },
+          launch.target,
+        );
+        showNativeToast(`Снимок восстановлен: инв. № ${launch.target.invNo}`);
+      } catch {
+        // Восстановление необязательно: без него потеряется только снимок убитой съёмки.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sessionUserId]);
+
+  // Подсказка про батарею нужна только при проблемах со связью: состояние читаем, пока открыт сканер.
+  useEffect(() => {
+    if (!qrScannerOpen) return;
+    void getBatteryOptimizationState().then(setBatteryState);
+  }, [qrScannerOpen]);
+  useEffect(() => {
+    if (!qrScannerOpen) scanPhotoStop();
+  }, [qrScannerOpen, scanPhotoStop]);
+  useEffect(() => {
+    if (!scanPhoto.active) setScanPendingShot(null);
+  }, [scanPhoto.active]);
 
   // Ш5-8: каждое открытие сканера (кнопка QR, ярлык scan=1) начинается с пустого
   // списка. Сброс — при переходе closed→open, до первого считанного кода.
@@ -804,7 +1179,137 @@ export function NativeDatabaseScreen() {
     qrScannerWasOpenRef.current = qrScannerOpen;
   }, [qrScannerOpen, scanBatchClear]);
 
+  const handlePhotoScan = useCallback(async (payload: InventoryQrPayload) => {
+    const result = await scanPhoto.selectTarget(payload);
+    if (!mountedRef.current) return;
+    if (result.kind === 'selected') {
+      try { await Haptics.selectionAsync(); } catch { /* Haptics are optional feedback. */ }
+      return;
+    }
+    if (result.kind === 'consumable') showNativeToast('В режиме фото сканируйте QR техники');
+    else if (result.kind === 'offline') showNativeToast('Фото грузятся только онлайн');
+    else if (result.kind === 'missing') showNativeToast(`Техника с инв. № ${result.invNo} не найдена`);
+    else if (result.kind === 'error') showNativeToast('Нет связи с сервером — отсканируйте ещё раз');
+  }, [scanPhoto]);
+
+  const handleScanPhotoCapture = useCallback(async () => {
+    const camera = scanCameraRef.current;
+    const targetAtShot = scanPhoto.target;
+    if (!camera || !targetAtShot || scanPhotoCapturing) return;
+    setScanPhotoCapturing(true);
+    try {
+      const shot = await camera.takePictureAsync({ quality: 0.8 });
+      if (!shot?.uri) return;
+      logChatDevice('scan_photo_shot', { mode: 'scanner', w: shot.width, h: shot.height });
+      try { await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); } catch { /* Haptics are optional feedback. */ }
+      if (scanPhotoPreviewOn) {
+        setScanPendingShot({ uri: shot.uri, target: targetAtShot, busy: false });
+      } else {
+        scanPhoto.enqueue({ uri: shot.uri, name: `scan-${Date.now()}.jpg`, mimeType: 'image/jpeg' }, targetAtShot);
+      }
+    } catch {
+      logChatDevice('scan_photo_fail', { mode: 'scanner' });
+      showNativeToast('Не удалось сделать снимок');
+    } finally {
+      if (mountedRef.current) setScanPhotoCapturing(false);
+    }
+  }, [scanPhoto, scanPhotoCapturing, scanPhotoPreviewOn]);
+
+  // Снимок штатной камерой телефона: правильный кадр и зум. Дальше — тот же путь,
+  // что у снимка со сканера (проверка кадра → очередь отправки).
+  const handleScanSystemCapture = useCallback(async () => {
+    const targetAtShot = scanPhoto.target;
+    if (!targetAtShot || scanPhotoCapturing) return;
+    setScanPhotoCapturing(true);
+    setScanCameraPaused(true);
+    await saveCameraLaunch(sessionUserId, targetAtShot);
+    try {
+      const file = await pickNativeAttachment('camera');
+      await clearCameraLaunch();
+      if (!file) {
+        logChatDevice('scan_photo_cancel', { mode: 'system' });
+        return;
+      }
+      logChatDevice('scan_photo_shot', { mode: 'system', kb: Math.round(file.size / 1024) });
+      try { await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); } catch { /* Haptics are optional feedback. */ }
+      if (!mountedRef.current) return;
+      if (scanPhotoPreviewOn) {
+        setScanPendingShot({ uri: file.uri, target: targetAtShot, busy: false });
+      } else {
+        scanPhoto.enqueue({ uri: file.uri, name: file.name || `scan-${Date.now()}.jpg`, mimeType: file.mimeType || 'image/jpeg' }, targetAtShot);
+      }
+    } catch (error) {
+      logChatDevice('scan_photo_fail', { mode: 'system' });
+      showNativeToast(error instanceof NativeFilePermissionError
+        ? 'Разрешите приложению доступ к камере'
+        : 'Не удалось сделать снимок');
+    } finally {
+      if (mountedRef.current) {
+        setScanCameraPaused(false);
+        setScanPhotoCapturing(false);
+      }
+    }
+  }, [scanPhoto, scanPhotoCapturing, scanPhotoPreviewOn, sessionUserId]);
+
+  const handleToggleScanCaptureMode = useCallback(() => {
+    const next = scanCaptureMode === 'system' ? 'scanner' : 'system';
+    setScanCaptureMode(next);
+    void writeScanCaptureMode(next);
+  }, [scanCaptureMode]);
+
+  const handleCheckScanLink = useCallback(async () => {
+    if (scanLinkChecking) return;
+    setScanLinkChecking(true);
+    try {
+      const ok = await checkServerNow();
+      if (mountedRef.current) showNativeToast(ok ? 'Сервер отвечает' : 'Сервер не отвечает — проверьте Wi-Fi');
+    } finally {
+      if (mountedRef.current) setScanLinkChecking(false);
+    }
+  }, [checkServerNow, scanLinkChecking]);
+
+  const handleSendScanDiagnostics = useCallback(async () => {
+    try {
+      await shareDiagnosticReport();
+    } catch {
+      if (mountedRef.current) showNativeToast('Не удалось подготовить диагностику');
+    }
+  }, []);
+
+  const handleScanBatterySettings = useCallback(async () => {
+    const opened = await openBatteryOptimizationSettings();
+    if (!opened && mountedRef.current) showNativeToast('Откройте Настройки → Батарея → HUB-IT → Без ограничений');
+  }, []);
+
+  const handleScanShotRotate = useCallback(async (degrees: number) => {
+    const shot = scanPendingShot;
+    if (!shot || shot.busy) return;
+    setScanPendingShot({ ...shot, busy: true });
+    try {
+      const turned = await rotateLocalPhoto(shot.uri, degrees);
+      if (mountedRef.current) setScanPendingShot({ ...shot, uri: turned.uri, busy: false });
+    } catch {
+      showNativeToast('Не удалось повернуть кадр');
+      if (mountedRef.current) setScanPendingShot({ ...shot, busy: false });
+    }
+  }, [scanPendingShot]);
+
+  const handleScanShotAccept = useCallback(() => {
+    const shot = scanPendingShot;
+    if (!shot || shot.busy) return;
+    scanPhoto.enqueue({ uri: shot.uri, name: `scan-${Date.now()}.jpg`, mimeType: 'image/jpeg' }, shot.target);
+    setScanPendingShot(null);
+  }, [scanPendingShot, scanPhoto]);
+
   const handleScannerScan = useCallback(async (payload: InventoryQrPayload) => {
+    if (scanPhoto.active) {
+      await handlePhotoScan(payload);
+      return;
+    }
+    if (pairScan.active) {
+      await handlePairScan(payload);
+      return;
+    }
     if (consumablePromptOpenRef.current) return;
     if (!canWrite) {
       await openEquipmentFromQr(payload);
@@ -833,6 +1338,7 @@ export function NativeDatabaseScreen() {
       return;
     }
     const result = await scanBatchAdd(payload);
+    if (result.kind === 'cancelled' || !mountedRef.current) return;
     if (result.kind === 'added') {
       try { await Haptics.selectionAsync(); } catch { /* Haptics are optional feedback. */ }
       setScanBatchExpanded(true);
@@ -853,13 +1359,26 @@ export function NativeDatabaseScreen() {
     }
     if (result.kind === 'limit') showNativeToast('Не больше 100 за раз');
     if (result.kind === 'error') showNativeToast('Нет связи с сервером — отсканируйте ещё раз');
-  }, [canWrite, databases, openConsumableFromQr, openEquipmentFromQr, scanBatchAdd, scanBatchClear, scanBatchItems.length]);
+  }, [canWrite, databases, handlePairScan, handlePhotoScan, openConsumableFromQr, openEquipmentFromQr, pairScan.active, scanBatchAdd, scanBatchClear, scanBatchItems.length, scanPhoto.active]);
 
   const requestScannerClose = useCallback(() => {
     const closeAndReset = () => {
       setQrScannerOpen(false);
       scanBatchClear();
     };
+    // В очереди «Быстрых фото» уже отправляемые кадры дойдут и в фоне; предупреждаем
+    // только о тех, что не ушли и иначе пропадут.
+    if (canWrite && scanPhoto.totalFailed > 0) {
+      Alert.alert(
+        `Не загружено фото: ${scanPhoto.totalFailed}. Закрыть и отбросить?`,
+        undefined,
+        [
+          { text: 'Отмена', style: 'cancel' },
+          { text: 'Закрыть', onPress: () => { scanPhoto.discardFailed(); closeAndReset(); } },
+        ],
+      );
+      return;
+    }
     if (canWrite && scanBatchItems.length >= 2) {
       Alert.alert(
         `Список из ${scanBatchItems.length} позиций сбросится. Закрыть?`,
@@ -872,7 +1391,7 @@ export function NativeDatabaseScreen() {
       return;
     }
     closeAndReset();
-  }, [canWrite, scanBatchClear, scanBatchItems.length]);
+  }, [canWrite, scanBatchClear, scanBatchItems.length, scanPhoto]);
 
   const requestScanBatchDiscard = useCallback(() => {
     const discard = () => {
@@ -893,14 +1412,208 @@ export function NativeDatabaseScreen() {
     discard();
   }, [scanBatchClear, scanBatchItems.length]);
 
-  const handleScanBatchClosed = useCallback((result: TransferResult | null) => {
-    if (!result) return;
-    if (result.failed_count) scanBatchKeepOnly(result.retry_inv_nos);
-    else {
-      scanBatchClear();
-      setScanBatchOpen(false);
+  const recordTransferChange = useCallback((
+    queueRef: { current: TransferChangeQueue | null },
+    kind: NativeEquipmentActionKind,
+    result?: TransferResult,
+    context?: NativeEquipmentTransferContext,
+  ) => {
+    if (kind !== 'owner' && kind !== 'location' && kind !== 'act-only') return;
+    if (!result || !((result.success_count || 0) > 0 || result.acts.length > 0)) return;
+    const userId = Number(user?.id || 0);
+    const databaseId = context?.databaseId || currentDatabase?.id || '';
+    if (!userId || !databaseId) return;
+    let queue = queueRef.current;
+    if (!queue || queue.userId !== userId || queue.databaseId !== databaseId) {
+      queue = { userId, databaseId, refreshInvNos: new Set(), dirtyInvNos: new Set(), invalidatedTabs: new Set() };
+      queueRef.current = queue;
     }
-  }, [scanBatchClear, scanBatchKeepOnly]);
+    for (const invNo of context?.invNos || []) {
+      const normalized = String(invNo || '').trim();
+      if (normalized) queue.dirtyInvNos.add(normalized);
+    }
+    if (kind === 'act-only') {
+      queue.invalidatedTabs.add('acts');
+      return;
+    }
+    queue.invalidatedTabs.add('history');
+    if (kind === 'owner') queue.invalidatedTabs.add('acts');
+    if ((result.success_count || 0) > 0) {
+      for (const invNo of context?.invNos || []) {
+        const normalized = String(invNo || '').trim();
+        if (normalized) queue.refreshInvNos.add(normalized);
+      }
+    }
+  }, [currentDatabase?.id, user?.id]);
+
+  const persistReconciledEquipment = useCallback((
+    userId: number,
+    databaseId: string,
+    query: string,
+    rows: EquipmentRecord[],
+    nextTotal: number,
+    page: number,
+    pages: number,
+  ) => {
+    if (!userId) return;
+    const signature = nativeDatabaseListSignature(databaseId, 'equipment', query);
+    void writeNativeCollectionSnapshot<NativeDatabaseListSnapshot>('database-inbox', userId, signature, {
+      signature,
+      databaseId,
+      mode: 'equipment',
+      query,
+      equipment: rows,
+      consumables: [],
+      acts: [],
+      total: nextTotal,
+      page,
+      pages,
+    });
+  }, []);
+
+  const flushTransferChanges = useCallback((queue: TransferChangeQueue | null) => {
+    if (!queue || (!queue.refreshInvNos.size && !queue.dirtyInvNos.size)) return;
+    const seq = ++reconcileSeqRef.current;
+    const refreshInvNos = [...queue.refreshInvNos];
+    const dirtyInvNos = [...queue.dirtyInvNos];
+    const dirtyTabs = [...queue.invalidatedTabs];
+    const flushScope = { ...viewScopeRef.current };
+    const affectsView = flushScope.userId === queue.userId
+      && flushScope.databaseId === queue.databaseId
+      && flushScope.mode === 'equipment';
+    const viewLease = affectsView ? ++requestRef.current : -1;
+    if (affectsView) {
+      setLoading(false);
+      setRefreshing(false);
+      setLoadingMore(false);
+    }
+    const userAlive = () => mountedRef.current
+      && reconcileSeqRef.current === seq
+      && qrScopeRef.current.userId === queue.userId;
+    const viewAlive = () => affectsView
+      && userAlive()
+      && requestRef.current === viewLease
+      && viewScopeRef.current.userId === flushScope.userId
+      && viewScopeRef.current.databaseId === flushScope.databaseId
+      && viewScopeRef.current.mode === flushScope.mode
+      && viewScopeRef.current.query === flushScope.query;
+    void (async () => {
+      let batch: EquipmentBatch | null = null;
+      let batchFailed = false;
+      if (refreshInvNos.length) {
+        try {
+          batch = await getEquipmentByInvNos(refreshInvNos, queue.databaseId);
+        } catch {
+          batchFailed = true;
+        }
+        if (!userAlive()) return;
+      }
+      const requested = new Set(refreshInvNos.map(normalizedInvKey));
+      const freshRows = new Map(
+        (batch?.equipment || [])
+          .filter((row) => requested.has(normalizedInvKey(row.inv_no)))
+          .map((row) => [normalizedInvKey(row.inv_no), row]),
+      );
+      const missing = new Set(
+        (batch?.not_found || [])
+          .map(normalizedInvKey)
+          .filter((inv) => requested.has(inv)),
+      );
+      await Promise.all(dirtyInvNos.map(async (invNo) => {
+        try {
+          await updateNativeEquipmentDetailSnapshot(queue.userId, queue.databaseId, invNo, {
+            equipment: freshRows.get(normalizedInvKey(invNo)),
+            invalidatedTabs: dirtyTabs,
+            isCurrent: userAlive,
+          });
+        } catch {}
+      }));
+      if (!refreshInvNos.length) return;
+      if (!viewAlive()) return;
+      if (batchFailed || !batch) {
+        setNotice('Перемещение завершено, но не удалось обновить карточки. Обновите список.');
+        return;
+      }
+      try {
+        if (flushScope.query.length >= 2) {
+          const windowPages = Math.max(1, equipmentPageRef.current);
+          const rows: EquipmentRecord[] = [];
+          let lastPage = 0;
+          let lastTotal = 0;
+          let lastPages = 0;
+          for (let page = 1; page <= windowPages; page += 1) {
+            if (!viewAlive()) return;
+            const result = await searchEquipment(flushScope.query, page, SEARCH_LIMIT, queue.databaseId);
+            if (!viewAlive()) return;
+            lastPage = page;
+            lastTotal = result.total;
+            lastPages = result.pages;
+            for (const row of result.equipment) {
+              if (!rows.some((seen) => seen.inv_no === row.inv_no)) rows.push(row);
+            }
+            if (page >= result.pages) break;
+          }
+          if (!viewAlive()) return;
+          const oldByInv = new Map(equipmentRowsRef.current.map((row) => [normalizedInvKey(row.inv_no), row]));
+          const next = rows.map((row) => {
+            const old = oldByInv.get(normalizedInvKey(row.inv_no));
+            return old && equipmentRowsEqual(old, row) ? old : row;
+          });
+          setEquipment(next);
+          equipmentRowsRef.current = next;
+          equipmentPageRef.current = lastPage;
+          setHasMoreEquipment(lastPage < lastPages);
+          setTotal(lastTotal);
+          totalRef.current = lastTotal;
+          persistReconciledEquipment(queue.userId, queue.databaseId, flushScope.query, next, lastTotal, lastPage, lastPages);
+          return;
+        }
+        const previous = equipmentRowsRef.current;
+        let removed = 0;
+        const next: EquipmentRecord[] = [];
+        for (const item of previous) {
+          const key = normalizedInvKey(item.inv_no);
+          if (missing.has(key)) {
+            removed += 1;
+            continue;
+          }
+          const fresh = freshRows.get(key);
+          next.push(fresh ? mergeNativeEquipmentRecord(item, fresh) : item);
+        }
+        const nextTotal = Math.max(0, totalRef.current - removed);
+        setEquipment(next);
+        equipmentRowsRef.current = next;
+        if (removed) {
+          setTotal(nextTotal);
+          totalRef.current = nextTotal;
+        }
+        persistReconciledEquipment(
+          queue.userId,
+          queue.databaseId,
+          flushScope.query,
+          next,
+          nextTotal,
+          equipmentPageRef.current,
+          Math.max(equipmentPageRef.current, Math.ceil(nextTotal / SEARCH_LIMIT)),
+        );
+      } catch {
+        if (viewAlive()) setNotice('Перемещение завершено, но не удалось обновить карточки. Обновите список.');
+      }
+    })();
+  }, [persistReconciledEquipment]);
+
+  const handleScanBatchClosed = useCallback((result: TransferResult | null) => {
+    const queue = scanChangesRef.current;
+    scanChangesRef.current = null;
+    if (result) {
+      if (result.failed_count) scanBatchKeepOnly(result.retry_inv_nos);
+      else {
+        scanBatchClear();
+        setScanBatchOpen(false);
+      }
+    }
+    flushTransferChanges(queue);
+  }, [flushTransferChanges, scanBatchClear, scanBatchKeepOnly]);
 
   useEffect(() => () => {
     if (scanDupTimerRef.current) clearTimeout(scanDupTimerRef.current);
@@ -1297,13 +2010,15 @@ export function NativeDatabaseScreen() {
               surface="general"
               tokens={tokens}
               testIDPrefix="native-database-bulk"
-              onChanged={() => undefined}
+              onChanged={(kind, result, context) => recordTransferChange(bulkChangesRef, kind, result, context)}
               onClosed={(result) => {
+                const queue = bulkChangesRef.current;
+                bulkChangesRef.current = null;
                 if (result && !result.failed_count) {
                   setSelectedInvNos(new Set());
                   setSelectionRequested(false);
                 }
-                void loadContent(true);
+                flushTransferChanges(queue);
               }}
               onDeleted={() => undefined}
             />
@@ -1439,15 +2154,27 @@ export function NativeDatabaseScreen() {
                       </View>
                     ) : (
                       <>
-                        <TextInput
-                          accessibilityLabel="Поиск МФУ"
-                          editable={!scanCardBusy}
-                          onChangeText={setScanCardMfuQuery}
-                          placeholder="Модель, инв. №, серийник или локация"
-                          placeholderTextColor={tokens.textTertiary}
-                          style={[styles.scanCardMfuInput, { backgroundColor: tokens.pageBg, borderColor: tokens.border, color: tokens.textPrimary }]}
-                          value={scanCardMfuQuery}
-                        />
+                        <View style={styles.scanCardMfuInputRow}>
+                          <TextInput
+                            accessibilityLabel="Поиск МФУ"
+                            editable={!scanCardBusy}
+                            onChangeText={setScanCardMfuQuery}
+                            placeholder="Модель, инв. №, серийник или локация"
+                            placeholderTextColor={tokens.textTertiary}
+                            style={[styles.scanCardMfuInput, styles.scanCardMfuInputFlex, { backgroundColor: tokens.pageBg, borderColor: tokens.border, color: tokens.textPrimary }]}
+                            value={scanCardMfuQuery}
+                          />
+                          <Pressable
+                            testID="native-scan-mfu-qr"
+                            accessibilityRole="button"
+                            accessibilityLabel="Сканировать QR МФУ"
+                            disabled={scanCardBusy || offlineMode}
+                            onPress={openMfuScannerForCard}
+                            style={[styles.scanCardMfuScan, { borderColor: tokens.border, backgroundColor: tokens.panelInset }]}
+                          >
+                            <MaterialCommunityIcons name="qrcode-scan" size={20} color={accentColor} />
+                          </Pressable>
+                        </View>
                         {scanCardMfuSearching ? <ActivityIndicator color={accentColor} size="small" style={{ alignSelf: 'flex-start', marginTop: 4 }} /> : null}
                         {(() => {
                           const freeSearchActive = Boolean(debouncedMfuQuery.trim());
@@ -1615,7 +2342,7 @@ export function NativeDatabaseScreen() {
                 surface="general"
                 tokens={tokens}
                 testIDPrefix="native-database-scan-batch"
-                onChanged={() => { void loadContent(true); }}
+                onChanged={(kind, result, context) => recordTransferChange(scanChangesRef, kind, result, context)}
                 onClosed={handleScanBatchClosed}
                 onDeleted={() => undefined}
               />
@@ -1627,26 +2354,108 @@ export function NativeDatabaseScreen() {
         visible={qrScannerOpen}
         tokens={tokens}
         continuous={canWrite}
+        cameraRef={scanCameraRef}
+        cameraPaused={scanCameraPaused}
+        fitPhotoFrame={scanPhoto.active && scanCaptureMode === 'scanner'}
         overlay={canWrite ? (
-          <NativeScanBatchPanel
-            tokens={tokens}
-            items={scanBatchItems}
-            expanded={scanBatchExpanded}
-            highlightInvNo={scanDupHighlight}
-            offline={offlineMode}
-            onToggleExpanded={() => setScanBatchExpanded((value) => !value)}
-            onOpen={(item) => {
-              if (scanBatchItems.length === 1) scanBatchClear();
-              void openEquipmentFromQr({ inventoryNumber: item.invNo, databaseId: item.databaseId });
-            }}
-            onCollapse={() => setScanBatchExpanded(false)}
-            onRemove={scanBatchRemove}
-            onActions={() => {
-              if (offlineMode || !scanBatchReadyItems.length) return;
-              setQrScannerOpen(false);
-              setScanBatchOpen(true);
-            }}
-          />
+          scanPhoto.active ? (
+            <NativeScanPhotoPanel
+              tokens={tokens}
+              title={scanPhoto.target?.title || ''}
+              invNo={scanPhoto.target?.invNo || ''}
+              uploaded={scanPhoto.uploadedCount}
+              pending={scanPhoto.pendingCount}
+              failed={scanPhoto.failedCount}
+              capturing={scanPhotoCapturing || Boolean(scanPendingShot)}
+              preview={scanPendingShot ? { uri: scanPendingShot.uri, busy: scanPendingShot.busy } : null}
+              previewEnabled={scanPhotoPreviewOn}
+              onTogglePreview={() => setScanPhotoPreviewOn((current) => !current)}
+              onPreviewRotate={(degrees) => { void handleScanShotRotate(degrees); }}
+              onPreviewAccept={handleScanShotAccept}
+              onPreviewRetake={() => setScanPendingShot(null)}
+              onCapture={() => {
+                if (scanCaptureMode === 'system') void handleScanSystemCapture();
+                else void handleScanPhotoCapture();
+              }}
+              captureMode={scanCaptureMode}
+              onToggleCaptureMode={handleToggleScanCaptureMode}
+              link={{
+                offline: offlineMode,
+                check: serverCheck,
+                checking: scanLinkChecking,
+                batteryRestricted: batteryState === 'restricted',
+              }}
+              onCheckLink={() => { void handleCheckScanLink(); }}
+              onSendDiagnostics={() => { void handleSendScanDiagnostics(); }}
+              onBatterySettings={() => { void handleScanBatterySettings(); }}
+              onRetry={scanPhoto.retryFailed}
+              onDiscardFailed={scanPhoto.discardFailed}
+              onExit={scanPhoto.stop}
+            />
+          ) : pairScan.active ? (
+            <NativeConsumablePairPanel
+              tokens={tokens}
+              consumable={pairScan.consumable}
+              mfu={pairScan.mfu}
+              busy={pairScan.busy}
+              expanded={pairScanExpanded}
+              onToggleExpanded={() => setPairScanExpanded((value) => !value)}
+              onCancel={() => setPairScanTracked(EMPTY_PAIR_SCAN)}
+            />
+          ) : (
+            <View>
+              {offlineMode ? null : (
+                <Pressable
+                  testID="native-scan-photo-mode-start"
+                  accessibilityRole="button"
+                  accessibilityLabel="Режим быстрых фото по QR"
+                  onPress={() => {
+                    scanBatchClear();
+                    scanPhoto.start();
+                  }}
+                  style={[styles.pairModeButton, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderStrong }]}
+                >
+                  <MaterialCommunityIcons name="camera-burst" size={18} color={accentColor} />
+                  <Text style={[styles.pairModeButtonText, { color: tokens.textPrimary }]}>Быстрые фото по QR</Text>
+                </Pressable>
+              )}
+              {offlineMode ? null : (
+                <Pressable
+                  testID="native-pair-mode-start"
+                  accessibilityRole="button"
+                  accessibilityLabel="Режим списания расходника в МФУ"
+                  onPress={() => {
+                    scanBatchClear();
+                    setPairScanExpanded(true);
+                    setPairScanTracked({ active: true, consumable: null, mfu: null, busy: false, databaseId: currentDatabase?.id || '' });
+                  }}
+                  style={[styles.pairModeButton, { backgroundColor: tokens.panelSolid, borderColor: tokens.borderStrong }]}
+                >
+                  <MaterialCommunityIcons name="swap-horizontal" size={18} color={accentColor} />
+                  <Text style={[styles.pairModeButtonText, { color: tokens.textPrimary }]}>Списание расходника в МФУ</Text>
+                </Pressable>
+              )}
+              <NativeScanBatchPanel
+                tokens={tokens}
+                items={scanBatchItems}
+                expanded={scanBatchExpanded}
+                highlightInvNo={scanDupHighlight}
+                offline={offlineMode}
+                onToggleExpanded={() => setScanBatchExpanded((value) => !value)}
+                onOpen={(item) => {
+                  if (scanBatchItems.length === 1) scanBatchClear();
+                  void openEquipmentFromQr({ inventoryNumber: item.invNo, databaseId: item.databaseId });
+                }}
+                onCollapse={() => setScanBatchExpanded(false)}
+                onRemove={scanBatchRemove}
+                onActions={() => {
+                  if (offlineMode || !scanBatchReadyItems.length) return;
+                  setQrScannerOpen(false);
+                  setScanBatchOpen(true);
+                }}
+              />
+            </View>
+          )
         ) : null}
         onClose={requestScannerClose}
         onScanned={handleScannerScan}
@@ -1722,6 +2531,11 @@ const styles = StyleSheet.create({
   scanCardCompatTitle: { fontSize: 11, lineHeight: 15, fontWeight: '700' },
   scanCardMfu: { marginTop: 10, gap: 6 },
   scanCardMfuInput: { minHeight: 44, borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, fontSize: 14 },
+  scanCardMfuInputRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  scanCardMfuInputFlex: { flex: 1, minWidth: 0 },
+  scanCardMfuScan: { width: 46, height: 46, borderRadius: 10, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  pairModeButton: { minHeight: 46, marginHorizontal: 12, marginBottom: 8, borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  pairModeButtonText: { fontSize: 13, fontWeight: '800' },
   scanCardMfuList: { maxHeight: 190, flexGrow: 0 },
   scanCardMfuRow: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, marginBottom: 6 },
   scanCardMfuSelected: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1.5, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8 },

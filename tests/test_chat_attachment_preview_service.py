@@ -1,4 +1,5 @@
 from __future__ import annotations
+import conftest
 
 import asyncio
 import importlib
@@ -33,6 +34,7 @@ def preview_env(temp_dir, monkeypatch):
     monkeypatch.setenv("MAIL_OFFICE_PREVIEW_ENABLED", "1")
     monkeypatch.setenv("MAIL_OFFICE_PREVIEW_MAX_BYTES", str(25 * 1024 * 1024))
     db_path = Path(temp_dir) / "chat-preview.sqlite3"
+    conftest.copy_chat_schema_for_url(f"sqlite:///{db_path}")
     raw_engine = create_engine(f"sqlite:///{db_path}", future=True)
 
     @event.listens_for(raw_engine, "connect")
@@ -42,7 +44,6 @@ def preview_env(temp_dir, monkeypatch):
         cursor.close()
 
     engine = raw_engine.execution_options(schema_translate_map={models.CHAT_SCHEMA: None})
-    models.Base.metadata.create_all(engine)
     session_maker = sessionmaker(bind=engine, expire_on_commit=False, future=True)
 
     @contextmanager

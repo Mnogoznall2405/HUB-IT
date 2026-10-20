@@ -18,7 +18,8 @@ import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
 import PhotoCameraOutlinedIcon from '@mui/icons-material/PhotoCameraOutlined';
 import QrCode2Icon from '@mui/icons-material/QrCode2';
-import { ActionMenu, StatusChip } from '../../components/common';
+import { StatusChip } from '../../components/common';
+import { useRowActionMenu } from '../../components/common/RowActionMenu';
 import EmployeeNameLink from './EmployeeNameLink';
 import {
   DATA_MODE_CONSUMABLES,
@@ -32,14 +33,41 @@ import { sortEquipmentItems } from './databaseListModel';
 import EquipmentCurrentActIndicator from './EquipmentCurrentActIndicator';
 import EquipmentPhotoIndicator from './EquipmentPhotoIndicator';
 import { EmployeeCompareBadge, useEmployeeCompare } from './employeeCompareContext';
+import { getOneCMark, useOneCMarks } from './oneCMarksContext';
 
 const TABLE_VIRTUALIZE_THRESHOLD = 40;
-const TABLE_MAX_HEIGHT = 520;
+// Single-line rows: the virtualizer's spacer math relies on this exact height,
+// so every row (equipment and consumables) is pinned to it.
+const ROW_HEIGHT = 44;
+const TABLE_MAX_HEIGHT = ROW_HEIGHT * 12 + 48;
 const TABLE_WIDTHS = {
-  consumables: { inv: 140, type: 140, model: 200, qty: 120, actions: 140 },
-  equipment: { select: 56, inv: 120, serial: 110, partNo: 130, type: 120, model: 170, employee: 220, compare: 64, act: 56, photo: 40, status: 110, actions: 56 },
-  equipmentMobile: { inv: 130, employee: 210, compare: 56, act: 56, photo: 40, status: 110, actions: 56 },
+  consumables: { inv: 130, type: 140, model: 220, qty: 110, actions: 120 },
+  // Двухстрочные ячейки: «серийный/парт-номер», «тип/модель», «сотрудник/отдел».
+  equipment: { select: 40, inv: 84, serial: 120, typeModel: 170, employee: 210, compare: 52, act: 36, photo: 36, status: 90 },
+  equipmentMobile: { inv: 110, employee: 200, compare: 56, act: 40, photo: 40, status: 100 },
 };
+
+const compactRowSx = (theme, isMobile) => ({
+  height: ROW_HEIGHT,
+  '& .MuiTableCell-root': {
+    borderBottom: '1px solid ' + theme.palette.divider,
+    py: 0,
+    px: isMobile ? 0.8 : 1,
+    height: ROW_HEIGHT,
+    boxSizing: 'border-box',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  // Ячейки с чекбоксом/кнопкой действий: контент шире её 40 px при px:1 —
+  // overflow:hidden + ellipsis рисовал «…» рядом с чекбоксом.
+  '& .MuiTableCell-paddingCheckbox': {
+    px: 0,
+    overflow: 'visible',
+    textOverflow: 'clip',
+    textAlign: 'center',
+  },
+});
 
 const EquipmentRow = memo(function EquipmentRow({
   item,
@@ -48,6 +76,8 @@ const EquipmentRow = memo(function EquipmentRow({
   theme,
   onSelect,
   onAction,
+  onRowClick = null,
+  onRowKeyDown = null,
   onOpenEmployee = null,
   onOpenCurrentAct = null,
   openingCurrentActDocNo = '',
@@ -58,7 +88,7 @@ const EquipmentRow = memo(function EquipmentRow({
   dataMode = DATA_MODE_EQUIPMENT,
   canWrite = true,
   canDelete = false,
-  isAdmin = false,
+  canDeleteEquipment = false,
 }) {
   const invNo = String(item.INV_NO || item.inv_no || '');
   const itemId = toItemId(item);
@@ -66,38 +96,28 @@ const EquipmentRow = memo(function EquipmentRow({
   const employeeName = String(item.OWNER_DISPLAY_NAME || item.employee_name || '-');
   const employeeOwnerNo = item.EMPL_NO ?? item.empl_no ?? item.OWNER_NO ?? item.owner_no ?? null;
   const compareSummary = useEmployeeCompare(employeeOwnerNo);
+  const oneCMarks = useOneCMarks();
+  const oneCMarked = Boolean(getOneCMark(oneCMarks, invNo));
+  const canMarkOneC = Boolean(oneCMarks?.canMark);
   const employeeDept = String(item.OWNER_DEPT || item.employee_dept || '').trim();
   const modelName = String(item.MODEL_NAME || item.model_name || '-');
   const typeName = String(item.TYPE_NAME || item.type_name || '-');
   const qtyValue = readQty(item, 1);
 
   const actions = useMemo(
-    () => getEquipmentRowActions({ item, dataMode, canWrite, isAdmin }),
-    [item, dataMode, canWrite, isAdmin]
+    () => getEquipmentRowActions({ item, dataMode, canWrite, canDeleteEquipment, canMarkOneC, oneCMarked }),
+    [item, dataMode, canWrite, canDeleteEquipment, canMarkOneC, oneCMarked]
   );
 
   if (isConsumablesMode) {
     return (
-      <TableRow
-        hover
-        sx={{
-          '& .MuiTableCell-root': {
-            borderBottom: '1px solid ' + theme.palette.divider,
-            py: isMobile ? 0.7 : 0.9,
-            px: isMobile ? 1 : 1.25,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          },
-        }}
-      >
+      <TableRow hover sx={compactRowSx(theme, isMobile)}>
         <TableCell sx={{ width: TABLE_WIDTHS.consumables.inv }}>
-          <Typography variant="body2" sx={{ fontWeight: 600, lineHeight: 1.2 }} noWrap>
-            {invNo || '-'}
-          </Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.1 }} noWrap>
-            ID: {itemId || '-'}
-          </Typography>
+          <Tooltip title={`ID: ${itemId || '-'}`} placement="top-start">
+            <Typography variant="body2" sx={{ fontWeight: 600, lineHeight: 1.2 }} noWrap>
+              {invNo || '-'}
+            </Typography>
+          </Tooltip>
         </TableCell>
         <TableCell sx={{ width: TABLE_WIDTHS.consumables.type }}>
           <Typography variant="body2" sx={{ lineHeight: 1.2 }} noWrap>
@@ -151,15 +171,14 @@ const EquipmentRow = memo(function EquipmentRow({
   return (
     <TableRow
       hover
+      tabIndex={0}
+      aria-haspopup="menu"
+      onClick={onRowClick ? (event) => onRowClick(event, item, actions) : undefined}
+      onKeyDown={onRowKeyDown ? (event) => onRowKeyDown(event, item, actions) : undefined}
       sx={{
-        '& .MuiTableCell-root': {
-          borderBottom: '1px solid ' + theme.palette.divider,
-          py: isMobile ? 0.6 : 0.8,
-          px: isMobile ? 0.8 : 1,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-        },
+        ...compactRowSx(theme, isMobile),
+        cursor: 'pointer',
+        '&:focus-visible': { outline: `2px solid ${theme.palette.primary.main}`, outlineOffset: -2 },
       }}
     >
       {!isMobile && allowSelection && (
@@ -169,57 +188,58 @@ const EquipmentRow = memo(function EquipmentRow({
             onChange={() => onSelect(invNo)}
             onClick={(e) => e.stopPropagation()}
             size="small"
+            sx={{ p: 0.5 }}
           />
         </TableCell>
       )}
       <TableCell sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.inv : TABLE_WIDTHS.equipment.inv }}>
-        <Typography variant="body2" sx={{ fontWeight: 600, lineHeight: 1.2 }} noWrap>
-          {invNo || '-'}
-        </Typography>
-        <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.1 }} noWrap>
-          ID: {itemId || '-'}
-        </Typography>
+        <Tooltip title={`ID: ${itemId || '-'}`} placement="top-start">
+          <Typography variant="body2" sx={{ fontWeight: 600, lineHeight: 1.2 }} noWrap>
+            {invNo || '-'}
+          </Typography>
+        </Tooltip>
       </TableCell>
       {!isMobile && (
         <TableCell sx={{ width: TABLE_WIDTHS.equipment.serial }}>
-          <Typography variant="body2" noWrap>
+          <Typography variant="body2" noWrap sx={{ lineHeight: 1.25 }}>
             {String(item.SERIAL_NO || item.serial_no || item.HW_SERIAL_NO || item.hw_serial_no || '-')}
           </Typography>
-        </TableCell>
-      )}
-      {!isMobile && (
-        <TableCell sx={{ width: TABLE_WIDTHS.equipment.partNo }}>
-          <Typography variant="body2" noWrap>
+          <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block', lineHeight: 1.25 }}>
             {String(item.PART_NO || item.part_no || '-')}
           </Typography>
         </TableCell>
       )}
       {!isMobile && (
-        <TableCell sx={{ width: TABLE_WIDTHS.equipment.type }}>
-          <Typography variant="body2" noWrap>
-            {String(item.TYPE_NAME || item.type_name || '-')}
+        <TableCell sx={{ width: TABLE_WIDTHS.equipment.typeModel }}>
+          <Typography variant="body2" noWrap title={modelName} sx={{ fontWeight: 600, lineHeight: 1.25 }}>
+            {modelName}
           </Typography>
-        </TableCell>
-      )}
-      {!isMobile && (
-        <TableCell sx={{ width: TABLE_WIDTHS.equipment.model }}>
-          <Typography variant="body2" noWrap>
-            {String(item.MODEL_NAME || item.model_name || '-')}
+          <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block', lineHeight: 1.25 }}>
+            {typeName}
           </Typography>
         </TableCell>
       )}
       <TableCell sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.employee : TABLE_WIDTHS.equipment.employee }}>
-        <EmployeeNameLink
-          name={employeeName}
-          ownerNo={employeeOwnerNo}
-          onOpenEmployee={onOpenEmployee}
-          variant="body2"
-          noWrap
-          sx={{ lineHeight: 1.2, display: 'block' }}
-        />
-        <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.1 }} noWrap>
-          {`Отдел: ${employeeDept || '-'}`}
-        </Typography>
+        <Box title={employeeDept ? `Отдел: ${employeeDept}` : undefined} sx={{ minWidth: 0 }}>
+          <EmployeeNameLink
+            name={employeeName}
+            ownerNo={employeeOwnerNo}
+            onOpenEmployee={onOpenEmployee}
+            variant="body2"
+            noWrap
+            sx={{ lineHeight: 1.25, display: 'block', maxWidth: '100%' }}
+          />
+          {employeeDept ? (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              noWrap
+              sx={{ display: 'block', lineHeight: 1.25 }}
+            >
+              {employeeDept}
+            </Typography>
+          ) : null}
+        </Box>
       </TableCell>
       <TableCell
         align="center"
@@ -228,6 +248,7 @@ const EquipmentRow = memo(function EquipmentRow({
         <EmployeeCompareBadge
           summary={compareSummary}
           partNo={item.PART_NO || item.part_no || ''}
+          invNo={invNo}
         />
       </TableCell>
       <TableCell
@@ -257,14 +278,6 @@ const EquipmentRow = memo(function EquipmentRow({
           size="small"
         />
       </TableCell>
-      <TableCell padding="checkbox" sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.actions : TABLE_WIDTHS.equipment.actions, minWidth: isMobile ? TABLE_WIDTHS.equipmentMobile.actions : TABLE_WIDTHS.equipment.actions }} align="right">
-        <ActionMenu
-          onAction={onAction}
-          actions={actions}
-          item={item}
-          label={'Actions for ' + invNo}
-        />
-      </TableCell>
     </TableRow>
   );
 });
@@ -291,12 +304,13 @@ const EquipmentTable = memo(function EquipmentTable({
   dataMode = DATA_MODE_EQUIPMENT,
   canWrite = true,
   canDelete = false,
-  isAdmin = false,
+  canDeleteEquipment = false,
 }) {
   const [scrollTop, setScrollTop] = useState(0);
   const pendingScrollTopRef = useRef(0);
   const scrollRafRef = useRef(0);
   const isConsumablesMode = dataMode === DATA_MODE_CONSUMABLES;
+  const { openRowMenu, openRowMenuFromKeyboard, rowMenu } = useRowActionMenu(onAction);
 
   const sortedItems = useMemo(
     () => sortEquipmentItems(items, tableSort),
@@ -304,7 +318,7 @@ const EquipmentTable = memo(function EquipmentTable({
   );
 
   const useVirtualization = sortedItems.length >= TABLE_VIRTUALIZE_THRESHOLD;
-  const rowHeight = isMobile ? 44 : 52;
+  const rowHeight = ROW_HEIGHT;
   const viewportHeight = useVirtualization
     ? Math.min(TABLE_MAX_HEIGHT, Math.max(rowHeight * 6, rowHeight * Math.min(14, sortedItems.length)))
     : undefined;
@@ -323,7 +337,7 @@ const EquipmentTable = memo(function EquipmentTable({
   const visibleItems = useVirtualization ? sortedItems.slice(startIndex, endIndex) : sortedItems;
   const topSpacerHeight = useVirtualization ? startIndex * rowHeight : 0;
   const bottomSpacerHeight = useVirtualization ? Math.max(0, (sortedItems.length - endIndex) * rowHeight) : 0;
-  const colSpan = isConsumablesMode ? 5 : (isMobile ? 7 : (allowSelection ? 11 : 10));
+  const colSpan = isConsumablesMode ? 5 : (isMobile ? 6 : (allowSelection ? 9 : 8));
   const tableMinWidth = isConsumablesMode
     ? (TABLE_WIDTHS.consumables.inv
       + TABLE_WIDTHS.consumables.type
@@ -336,20 +350,16 @@ const EquipmentTable = memo(function EquipmentTable({
         + TABLE_WIDTHS.equipmentMobile.compare
         + TABLE_WIDTHS.equipmentMobile.act
         + TABLE_WIDTHS.equipmentMobile.photo
-        + TABLE_WIDTHS.equipmentMobile.status
-        + TABLE_WIDTHS.equipmentMobile.actions)
+        + TABLE_WIDTHS.equipmentMobile.status)
       : ((allowSelection ? TABLE_WIDTHS.equipment.select : 0)
         + TABLE_WIDTHS.equipment.inv
         + TABLE_WIDTHS.equipment.serial
-        + TABLE_WIDTHS.equipment.partNo
-        + TABLE_WIDTHS.equipment.type
-        + TABLE_WIDTHS.equipment.model
+        + TABLE_WIDTHS.equipment.typeModel
         + TABLE_WIDTHS.equipment.employee
         + TABLE_WIDTHS.equipment.compare
         + TABLE_WIDTHS.equipment.act
         + TABLE_WIDTHS.equipment.photo
-        + TABLE_WIDTHS.equipment.status
-        + TABLE_WIDTHS.equipment.actions);
+        + TABLE_WIDTHS.equipment.status);
 
   // rAF-throttle: scroll events fire per tick, but the table only needs one
   // state update per frame — keeps virtualization from re-rendering per event.
@@ -368,6 +378,7 @@ const EquipmentTable = memo(function EquipmentTable({
   }, []);
 
   return (
+    <>
     <TableContainer
       component={Paper}
       variant="outlined"
@@ -383,8 +394,15 @@ const EquipmentTable = memo(function EquipmentTable({
       }}
     >
       <Table
-        size={isMobile ? 'small' : 'medium'}
-        sx={{ minWidth: tableMinWidth, width: '100%', tableLayout: 'fixed' }}
+        size="small"
+        // Шапка остаётся видимой при прокрутке виртуализированного списка (≥40 строк).
+        stickyHeader
+        sx={{
+          minWidth: tableMinWidth,
+          width: '100%',
+          tableLayout: 'fixed',
+          '& .MuiTableCell-head': { py: 0.5, whiteSpace: 'nowrap', fontWeight: 600 },
+        }}
       >
         <TableHead>
           <TableRow>
@@ -451,46 +469,44 @@ const EquipmentTable = memo(function EquipmentTable({
                 </TableCell>
                 {!isMobile && (
                   <TableCell sx={{ width: TABLE_WIDTHS.equipment.serial }}>
-                    <TableSortLabel
-                      active={tableSort.field === 'serial'}
-                      direction={tableSort.field === 'serial' ? tableSort.direction : 'asc'}
-                      onClick={() => onTableSort('serial')}
-                    >
-                      Серийный
-                    </TableSortLabel>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+                      <TableSortLabel
+                        active={tableSort.field === 'serial'}
+                        direction={tableSort.field === 'serial' ? tableSort.direction : 'asc'}
+                        onClick={() => onTableSort('serial')}
+                      >
+                        Серийный
+                      </TableSortLabel>
+                      <TableSortLabel
+                        active={tableSort.field === 'partNo'}
+                        direction={tableSort.field === 'partNo' ? tableSort.direction : 'asc'}
+                        onClick={() => onTableSort('partNo')}
+                        sx={{ fontWeight: 400, fontSize: '0.75rem' }}
+                      >
+                        Part Number
+                      </TableSortLabel>
+                    </Box>
                   </TableCell>
                 )}
                 {!isMobile && (
-                  <TableCell sx={{ width: TABLE_WIDTHS.equipment.partNo }}>
-                    <TableSortLabel
-                      active={tableSort.field === 'partNo'}
-                      direction={tableSort.field === 'partNo' ? tableSort.direction : 'asc'}
-                      onClick={() => onTableSort('partNo')}
-                    >
-                      Part Number
-                    </TableSortLabel>
-                  </TableCell>
-                )}
-                {!isMobile && (
-                  <TableCell sx={{ width: TABLE_WIDTHS.equipment.type }}>
-                    <TableSortLabel
-                      active={tableSort.field === 'type'}
-                      direction={tableSort.field === 'type' ? tableSort.direction : 'asc'}
-                      onClick={() => onTableSort('type')}
-                    >
-                      Тип
-                    </TableSortLabel>
-                  </TableCell>
-                )}
-                {!isMobile && (
-                  <TableCell sx={{ width: TABLE_WIDTHS.equipment.model }}>
-                    <TableSortLabel
-                      active={tableSort.field === 'model'}
-                      direction={tableSort.field === 'model' ? tableSort.direction : 'asc'}
-                      onClick={() => onTableSort('model')}
-                    >
-                      Модель
-                    </TableSortLabel>
+                  <TableCell sx={{ width: TABLE_WIDTHS.equipment.typeModel }}>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+                      <TableSortLabel
+                        active={tableSort.field === 'model'}
+                        direction={tableSort.field === 'model' ? tableSort.direction : 'asc'}
+                        onClick={() => onTableSort('model')}
+                      >
+                        Модель
+                      </TableSortLabel>
+                      <TableSortLabel
+                        active={tableSort.field === 'type'}
+                        direction={tableSort.field === 'type' ? tableSort.direction : 'asc'}
+                        onClick={() => onTableSort('type')}
+                        sx={{ fontWeight: 400, fontSize: '0.75rem' }}
+                      >
+                        Тип
+                      </TableSortLabel>
+                    </Box>
                   </TableCell>
                 )}
                 <TableCell sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.employee : TABLE_WIDTHS.equipment.employee }}>
@@ -531,7 +547,6 @@ const EquipmentTable = memo(function EquipmentTable({
                     Статус
                   </TableSortLabel>
                 </TableCell>
-                <TableCell padding="checkbox" sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.actions : TABLE_WIDTHS.equipment.actions, minWidth: isMobile ? TABLE_WIDTHS.equipmentMobile.actions : TABLE_WIDTHS.equipment.actions }} />
               </>
             )}
           </TableRow>
@@ -555,6 +570,8 @@ const EquipmentTable = memo(function EquipmentTable({
                 theme={theme}
                 onSelect={onSelect}
                 onAction={onAction}
+                onRowClick={openRowMenu}
+                onRowKeyDown={openRowMenuFromKeyboard}
                 onOpenEmployee={onOpenEmployee}
                 onOpenCurrentAct={onOpenCurrentAct}
                 openingCurrentActDocNo={openingCurrentActDocNo}
@@ -565,7 +582,7 @@ const EquipmentTable = memo(function EquipmentTable({
                 dataMode={dataMode}
                 canWrite={canWrite}
                 canDelete={canDelete}
-                isAdmin={isAdmin}
+                canDeleteEquipment={canDeleteEquipment}
               />
             );
           })}
@@ -578,6 +595,8 @@ const EquipmentTable = memo(function EquipmentTable({
         </TableBody>
       </Table>
     </TableContainer>
+    {isConsumablesMode ? null : rowMenu}
+    </>
   );
 });
 

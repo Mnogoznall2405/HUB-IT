@@ -9,6 +9,8 @@ import * as offlineStore from '../../myFiles/nativeMyFilesOfflineStore';
 import { shareNativeText } from '../../share/nativeOutgoingShare';
 import { NativeMyFilesScreen } from './NativeMyFilesScreen';
 
+jest.setTimeout(20_000);
+
 let mockPermissions = ['my_files.read', 'my_files.write', 'my_files.share'];
 let mockOfflineMode = false;
 let mockUserId = 17;

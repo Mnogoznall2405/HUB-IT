@@ -28,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.config import config
-from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, fs_egress, kb, mfu, hub, mail, mailbox_quota, ad_users, vcs, ai_bots, departments, tickets, address_book, warehouse_1c, construction, docflow, system, passwords, my_files, debug_client_log, groups_access, company_structure, desktop_presence
+from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, fs_egress, kb, mfu, hub, mail, mailbox_quota, ad_users, vcs, ai_bots, departments, tickets, address_book, warehouse_1c, construction, docflow, system, passwords, my_files, debug_client_log, groups_access, company_structure, desktop_presence, itinvent_references
 from backend.api.v1.auth import handle_safari_password_beacon_form
 from backend.runtime_role import chat_routes_enabled, get_runtime_role, heavy_api_routes_enabled
 from backend.services.ad_sync_service import background_ad_sync_loop
@@ -42,6 +42,8 @@ from backend.services.auth_runtime_store_service import auth_runtime_store_servi
 from backend.services.app_push_outbox_service import app_push_outbox_service
 from backend.services.mail_notification_service import mail_notification_service
 from backend.services.mfu_monitor_service import mfu_runtime_monitor
+from backend.api.v1 import monitoring
+from backend.services.network_monitor_service import network_monitor_service
 from backend.services.my_files_service import my_files_worker
 from backend.services.task_due_notification_worker import (
     background_enabled as task_due_notification_background_enabled,
@@ -202,6 +204,7 @@ async def lifespan(app: FastAPI):
         announcement_publish_task = asyncio.create_task(background_announcement_publish_loop())
     if MFU_RUNTIME_MONITOR_ENABLED:
         await mfu_runtime_monitor.start()
+    await network_monitor_service.start()
     if MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED:
         await mail_notification_service.start()
     print(f"Starting {config.app.app_name} v{config.app.version}")
@@ -326,7 +329,10 @@ async def lifespan(app: FastAPI):
                             process="main",
                         )
 
-            asyncio.create_task(_chat_event_loop_lag_probe(), name="chat-event-loop-lag-probe")
+            # Keep a strong reference: the loop holds tasks weakly, so an unreferenced probe can be collected.
+            _lag_probe_task = asyncio.create_task(_chat_event_loop_lag_probe(), name="chat-event-loop-lag-probe")
+            _BACKGROUND_TASKS.add(_lag_probe_task)
+            _lag_probe_task.add_done_callback(_BACKGROUND_TASKS.discard)
             print(
                 "Chat module:"
                 f" enabled={chat_status.enabled}"
@@ -372,6 +378,7 @@ async def lifespan(app: FastAPI):
     await my_files_worker.stop()
     if MFU_RUNTIME_MONITOR_ENABLED:
         await mfu_runtime_monitor.stop()
+    await network_monitor_service.stop()
     if hub_realtime_started:
         try:
             from backend.realtime.hub import hub_realtime_publisher
@@ -432,6 +439,9 @@ async def lifespan(app: FastAPI):
     except Exception:
         logging.getLogger(__name__).exception("Docflow 1C process bridge shutdown failed")
 
+
+# Strong references to fire-and-forget background tasks (asyncio keeps only weak ones).
+_BACKGROUND_TASKS: set = set()
 
 # Create FastAPI app
 app = FastAPI(
@@ -572,6 +582,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Authentication"])
 app.include_router(equipment.router, prefix="/api/v1/equipment", tags=["Equipment"])
 app.include_router(database.router, prefix="/api/v1/database", tags=["Database Management"])
+app.include_router(itinvent_references.router, prefix="/api/v1/itinvent-references", tags=["ITINVENT References"])
 app.include_router(json_operations.router, prefix="/api/v1/json", tags=["JSON Operations"])
 app.include_router(settings.router, prefix="/api/v1/settings", tags=["User Settings"])
 app.include_router(desktop_presence.router, prefix="/api/v1/desktop-presence", tags=["Desktop Presence"])
@@ -581,6 +592,7 @@ app.include_router(inventory.router, prefix="/api/v1/inventory", tags=["Inventor
 app.include_router(fs_egress.router, prefix="/api/v1/inventory", tags=["File Egress"])
 app.include_router(kb.router, prefix="/api/v1/kb", tags=["Knowledge Base"])
 app.include_router(mfu.router, prefix="/api/v1/mfu", tags=["MFU"])
+app.include_router(monitoring.router, prefix="/api/v1/monitoring", tags=["Monitoring"])
 app.include_router(hub.router, prefix="/api/v1/hub", tags=["Hub"])
 app.include_router(departments.router, prefix="/api/v1/departments", tags=["Departments"])
 app.include_router(ad_users.router, prefix="/api/v1/ad-users", tags=["AD Users"])

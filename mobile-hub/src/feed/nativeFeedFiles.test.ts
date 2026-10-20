@@ -1,14 +1,9 @@
-import { FEED_FILE_MAX_BYTES } from './nativeFeedFiles';
 import { buildFeedAttachmentUrl, buildFeedCommentAttachmentUrl } from '../api/feedApi';
 
 jest.mock('../api/config', () => ({
   API_V1_BASE: 'https://hubit.zsgp.ru/api/v1',
   HUB_WEB_ORIGIN: 'https://hubit.zsgp.ru',
 }));
-
-it('keeps the native feed limit aligned with the backend contract', () => {
-  expect(FEED_FILE_MAX_BYTES).toBe(20 * 1024 * 1024);
-});
 
 it('builds encoded publication and comment attachment urls', () => {
   expect(buildFeedAttachmentUrl('post/1', 'file 2')).toBe(

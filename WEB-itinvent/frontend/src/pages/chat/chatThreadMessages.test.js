@@ -22,6 +22,13 @@ const baseMessage = (overrides = {}) => ({
 });
 
 describe('chatThreadMessages', () => {
+  it('does not let stale history restore pending after action confirmation', () => {
+    const confirmed = baseMessage({ action_card: { id: 'a', status: 'confirmed', updated_at: '2026-10-20T05:01:00Z' } });
+    const pending = baseMessage({ action_card: { id: 'a', status: 'pending', updated_at: '2026-10-20T05:00:00Z' } });
+    expect(reconcileThreadMessages([confirmed], [pending])[0].action_card.status).toBe('confirmed');
+    expect(reconcileThreadMessages([confirmed], [{ ...pending, is_deleted: true }])[0].action_card).toBeNull();
+    expect(reconcileThreadMessages([pending], [confirmed])[0].action_card.status).toBe('confirmed');
+  });
   describe('resolveActiveThreadRenderState', () => {
     it('does not expose messages from the previously hydrated conversation', () => {
       const staleMessages = Array.from({ length: 500 }, (_, index) => baseMessage({

@@ -91,6 +91,13 @@ const rememberDetail = (cache, key, value) => {
 };
 
 
+// Polling of an unconfirmed 1C command: 3 s, then 10 s, then 30 s; stops after 30 checks (~7 min).
+const DOCFLOW_COMMAND_POLL_STEPS_MS = [3000, 10000, 30000];
+const DOCFLOW_COMMAND_POLL_MAX_ATTEMPTS = 30;
+const docflowCommandPollDelay = (attempts) => (
+  DOCFLOW_COMMAND_POLL_STEPS_MS[Math.min(Math.floor(attempts / 10), DOCFLOW_COMMAND_POLL_STEPS_MS.length - 1)]
+);
+
 const SCOPE_OPTIONS = [
   { value: 'inbox', label: 'Согласование' },
   { value: 'completed', label: 'Завершённые' },
@@ -1210,7 +1217,11 @@ export default function Docflow() {
   const selectedTaskRef = useRef('');
   const detailCache = useRef(new Map());
   const detailInFlight = useRef(new Map());
+  // Generation per task ref + global epoch: a superseded or invalidated detail read must not write cache/state.
+  const detailGeneration = useRef(new Map());
+  const detailEpoch = useRef(0);
   const commandCheckInFlight = useRef(false);
+  const commandPollRef = useRef({ id: '', attempts: 0 });
   const previewSequence = useRef(0);
   const previewObjectUrl = useRef('');
   tasksLengthRef.current = tasks.length;
@@ -1321,6 +1332,16 @@ export default function Docflow() {
     return promise;
   }, [credentialsRevision, profile?.configured, profile?.login, scope, search]);
 
+  const invalidateTaskDetail = useCallback((taskRef) => {
+    detailGeneration.current.set(taskRef, (detailGeneration.current.get(taskRef) || 0) + 1);
+    detailInFlight.current.delete(taskRef);
+  }, []);
+
+  const invalidateAllTaskDetails = useCallback(() => {
+    detailEpoch.current += 1;
+    detailInFlight.current.clear();
+  }, []);
+
   const loadTaskDetail = useCallback((task, { force = false } = {}) => {
     const taskRef = String(task?.ref || '').trim();
     if (!taskRef) return Promise.resolve(null);
@@ -1336,7 +1357,14 @@ export default function Docflow() {
       return Promise.resolve(cached);
     }
     const existing = detailInFlight.current.get(taskRef);
-    if (existing) return existing;
+    // A forced reload must not reuse a read that started before the change that triggered it.
+    if (existing && !force) return existing;
+    const generation = (detailGeneration.current.get(taskRef) || 0) + 1;
+    detailGeneration.current.set(taskRef, generation);
+    const epoch = detailEpoch.current;
+    const isCurrent = () => (
+      detailGeneration.current.get(taskRef) === generation && detailEpoch.current === epoch
+    );
     if (selectedTaskRef.current === taskRef) {
       setTaskDetailLoading(true);
       setTaskFilesLoading(true);
@@ -1346,13 +1374,14 @@ export default function Docflow() {
     promise = (async () => {
       try {
         const core = await docflowAPI.getTask(taskRef, { includeRelated: false });
-        if (selectedTaskRef.current === taskRef) {
+        if (isCurrent() && selectedTaskRef.current === taskRef) {
           setSelectedTask(core);
           setTaskDetailError(null);
           setTaskDetailLoading(false);
         }
         try {
           const detail = await docflowAPI.getTask(taskRef, { includeRelated: true });
+          if (!isCurrent()) return detailCache.current.get(taskRef) || detail;
           rememberDetail(detailCache.current, taskRef, detail);
           if (selectedTaskRef.current === taskRef) {
             setSelectedTask(detail);
@@ -1367,6 +1396,7 @@ export default function Docflow() {
           }
           return detail;
         } catch (enrichError) {
+          if (!isCurrent()) return detailCache.current.get(taskRef) || core;
           rememberDetail(detailCache.current, taskRef, core);
           if (selectedTaskRef.current === taskRef) {
             setFileActionError(resolveDocflowError(
@@ -1377,13 +1407,14 @@ export default function Docflow() {
           return core;
         }
       } catch (error) {
-        if (selectedTaskRef.current === taskRef) {
+        if (isCurrent() && selectedTaskRef.current === taskRef) {
           setTaskDetailError(resolveDocflowError(error, 'Не удалось загрузить подробную карточку задания.'));
         }
         return null;
       } finally {
         if (detailInFlight.current.get(taskRef) === promise) detailInFlight.current.delete(taskRef);
-        if (selectedTaskRef.current === taskRef) {
+        // A newer read owns the spinners; clear them only when this read is current or nothing else is loading.
+        if (selectedTaskRef.current === taskRef && (isCurrent() || !detailInFlight.current.has(taskRef))) {
           setTaskDetailLoading(false);
           setTaskFilesLoading(false);
         }
@@ -1460,7 +1491,7 @@ export default function Docflow() {
         taskAction.idempotencyKey,
       );
       if (result?.status === 'applied' || result?.status === 'already_applied') {
-        detailInFlight.current.delete(taskRef);
+        invalidateTaskDetail(taskRef);
         const optimisticTask = buildCompletedTaskSnapshot(result.task || selectedTask, taskRef);
         rememberDetail(detailCache.current, taskRef, optimisticTask);
         if (selectedTaskRef.current === taskRef) setSelectedTask(optimisticTask);
@@ -1482,19 +1513,10 @@ export default function Docflow() {
         } catch {
           // Keep optimistic completed state if force refresh fails.
         }
-        // #region agent log
-        fetch('http://127.0.0.1:7785/ingest/0b41f4b9-4bc6-4338-b7ef-ba558019ce59',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b3272c'},body:JSON.stringify({sessionId:'b3272c',runId:'history-policy',hypothesisId:'H-HIST',location:'Docflow.jsx:applySelectedTaskAction',message:'after_action_refresh_policy',data:{scope,heavy:isHeavyDocflowTasksScope(scope),taskRef:taskRef.slice(0,80)},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         setActionProgressLabel('');
       } else {
         setTaskAction(null);
         setCommandState(result);
-        // 202/state_unknown: immediately re-check once the spinner is free (finally clears working).
-        if (result?.status === 'state_unknown' || result?.status === 'pending') {
-          // #region agent log
-          fetch('http://127.0.0.1:7785/ingest/0b41f4b9-4bc6-4338-b7ef-ba558019ce59',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b3272c'},body:JSON.stringify({sessionId:'b3272c',runId:'measure-202-check',hypothesisId:'H-TIME',location:'Docflow.jsx:applySelectedTaskAction',message:'schedule_immediate_202_check',data:{status:result?.status,commandId:String(result?.command_id||'').slice(0,40)},timestamp:Date.now()})}).catch(()=>{});
-          // #endregion
-        }
       }
     } catch (error) {
       const resolved = resolveDocflowError(error, 'Не удалось выполнить действие в 1С.');
@@ -1516,7 +1538,7 @@ export default function Docflow() {
     } finally {
       setTaskActionWorking(false);
     }
-  }, [loadTaskDetail, profile?.login, scope, search, selectedTask, taskAction]);
+  }, [invalidateTaskDetail, loadTaskDetail, profile?.login, scope, search, selectedTask, taskAction]);
 
   const checkTaskCommand = useCallback(async (requestedCommandId) => {
     const commandId = String(requestedCommandId || '').trim();
@@ -1531,7 +1553,7 @@ export default function Docflow() {
       if (result?.status === 'applied' || result?.status === 'already_applied') {
         const taskRef = String(result.task?.ref || selectedTaskRef.current || '').trim();
         if (taskRef) {
-          detailInFlight.current.delete(taskRef);
+          invalidateTaskDetail(taskRef);
           const optimisticTask = buildCompletedTaskSnapshot(
             result.task || detailCache.current.get(taskRef),
             taskRef,
@@ -1557,9 +1579,6 @@ export default function Docflow() {
           setCommandState(null);
           setTaskActionNotice({ severity: 'success', message: '1С подтвердила выполнение задания.' });
         }
-        // #region agent log
-        fetch('http://127.0.0.1:7785/ingest/0b41f4b9-4bc6-4338-b7ef-ba558019ce59',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b3272c'},body:JSON.stringify({sessionId:'b3272c',runId:'history-policy',hypothesisId:'H-HIST',location:'Docflow.jsx:checkTaskCommand',message:'after_command_refresh_policy',data:{scope,heavy:isHeavyDocflowTasksScope(scope)},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         setActionProgressLabel('');
       } else if (result?.status === 'rejected' && result?.error_code === 'DOCFLOW_ACTION_NOT_APPLIED') {
         const nextTask = result.task;
@@ -1581,27 +1600,43 @@ export default function Docflow() {
       commandCheckInFlight.current = false;
       setTaskActionWorking(false);
     }
-  }, [loadTaskDetail, profile?.login, scope, search]);
+  }, [invalidateTaskDetail, loadTaskDetail, profile?.login, scope, search]);
 
   useEffect(() => {
     const status = String(commandState?.status || '');
     const commandId = String(commandState?.command_id || '').trim();
     if (!commandId || (status !== 'state_unknown' && status !== 'pending')) return undefined;
-    // #region agent log
-    fetch('http://127.0.0.1:7785/ingest/0b41f4b9-4bc6-4338-b7ef-ba558019ce59',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b3272c'},body:JSON.stringify({sessionId:'b3272c',runId:'stuck-approve',hypothesisId:'H5',location:'Docflow.jsx:autoPollCommand',message:'start_auto_poll',data:{status,commandId:commandId.slice(0,40)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
+    if (commandPollRef.current.id !== commandId) commandPollRef.current = { id: commandId, attempts: 0 };
+    if (commandPollRef.current.attempts >= DOCFLOW_COMMAND_POLL_MAX_ATTEMPTS) return undefined;
     let cancelled = false;
-    const tick = () => {
-      if (cancelled || commandCheckInFlight.current) return;
-      void checkTaskCommand(commandId);
+    let timer = 0;
+    const schedule = (delayMs) => {
+      timer = window.setTimeout(tick, delayMs);
     };
-    // Give the original request time to settle, then poll at a stable cadence.
-    const timer = window.setInterval(tick, 3000);
-    const first = window.setTimeout(tick, 750);
+    function tick() {
+      if (cancelled) return;
+      if (commandCheckInFlight.current) {
+        schedule(DOCFLOW_COMMAND_POLL_STEPS_MS[0]);
+        return;
+      }
+      const attempts = commandPollRef.current.attempts;
+      if (attempts >= DOCFLOW_COMMAND_POLL_MAX_ATTEMPTS) {
+        setTaskActionNotice({
+          severity: 'warning',
+          message: '1С долго не подтверждает действие. Автопроверка остановлена — нажмите «Проверить» позже.',
+        });
+        return;
+      }
+      commandPollRef.current.attempts = attempts + 1;
+      void checkTaskCommand(commandId).finally(() => {
+        if (!cancelled) schedule(docflowCommandPollDelay(commandPollRef.current.attempts));
+      });
+    }
+    // Give the original request time to settle, then poll with a growing delay.
+    schedule(750);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
-      window.clearTimeout(first);
+      window.clearTimeout(timer);
     };
   }, [checkTaskCommand, commandState?.command_id, commandState?.status]);
 
@@ -1744,14 +1779,8 @@ export default function Docflow() {
       if (document.visibilityState !== 'visible') return;
       // Inbox must stay fresh; completed/all are on-demand and expensive in 1С.
       if (isHeavyDocflowTasksScope(scope)) {
-        // #region agent log
-        fetch('http://127.0.0.1:7785/ingest/0b41f4b9-4bc6-4338-b7ef-ba558019ce59',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b3272c'},body:JSON.stringify({sessionId:'b3272c',runId:'history-policy',hypothesisId:'H-HIST',location:'Docflow.jsx:visibility',message:'skip_heavy_scope_refresh',data:{scope},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         return;
       }
-      // #region agent log
-      fetch('http://127.0.0.1:7785/ingest/0b41f4b9-4bc6-4338-b7ef-ba558019ce59',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b3272c'},body:JSON.stringify({sessionId:'b3272c',runId:'history-policy',hypothesisId:'H-HIST',location:'Docflow.jsx:visibility',message:'refresh_inbox_on_visible',data:{scope},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       void loadTasks({ force: true });
     };
     document.addEventListener('visibilitychange', onVisibility);
@@ -1793,7 +1822,7 @@ export default function Docflow() {
       closeTask();
       closeAttachmentPreview();
       detailCache.current.clear();
-      detailInFlight.current.clear();
+      invalidateAllTaskDetails();
       loadedRequestKey.current = '';
       setProfile({ configured: false, login: null, status: 'not_configured' });
       setDisconnectOpen(false);
@@ -2266,7 +2295,7 @@ export default function Docflow() {
           clearAllDocflowTasksCache();
           setProfile(nextProfile);
           detailCache.current.clear();
-          detailInFlight.current.clear();
+          invalidateAllTaskDetails();
           loadedRequestKey.current = '';
           setCredentialsRevision((value) => value + 1);
           setDialogOpen(false);

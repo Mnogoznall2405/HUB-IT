@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 
 import useChatMessageActionsController from './useChatMessageActionsController';
+import { chatAPI } from '../../api/client';
+
+vi.mock('../../api/client', () => ({ chatAPI: { confirmAiAction: vi.fn(), cancelAiAction: vi.fn() } }));
 
 const menuActionsMock = {
   clearSelectedMessages: vi.fn(),
@@ -109,5 +112,28 @@ describe('useChatMessageActionsController', () => {
     });
 
     expect(result.current.forwardTargets.map((item) => item.id)).toEqual(['c2']);
+  });
+
+  it('sends a confirmation for one AI action card only once while it is in flight', async () => {
+    let resolveConfirm;
+    chatAPI.confirmAiAction.mockImplementation(() => new Promise((resolve) => { resolveConfirm = resolve; }));
+    const { result } = renderHook(() => useChatMessageActionsController(baseArgs));
+    const card = { id: 'action-1' };
+
+    let first;
+    await act(async () => {
+      first = result.current.confirmAiAction(card, { id: 'm1' });
+      await result.current.confirmAiAction(card, { id: 'm1' });
+    });
+    expect(chatAPI.confirmAiAction).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveConfirm({ id: 'action-1', status: 'confirmed' });
+      await first;
+    });
+    // Once the first call settled, a new confirmation of the same card is allowed again.
+    chatAPI.confirmAiAction.mockResolvedValue({ id: 'action-1', status: 'confirmed' });
+    await act(async () => { await result.current.confirmAiAction(card, { id: 'm1' }); });
+    expect(chatAPI.confirmAiAction).toHaveBeenCalledTimes(2);
   });
 });

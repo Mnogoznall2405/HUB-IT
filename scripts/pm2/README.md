@@ -122,7 +122,7 @@ AI chat worker:
 
 ```powershell
 pm2 start scripts\pm2\ecosystem.backend.config.js --only itinvent-ai-chat-worker
-pm2 restart itinvent-ai-chat-worker
+powershell -File scripts\pm2\restart-ai-agents.ps1 -ChatWorkerOnly
 pm2 logs itinvent-ai-chat-worker --lines 100
 powershell -File scripts\pm2\health-check.ps1
 ```
@@ -132,6 +132,7 @@ Notes for AI runtime:
 - `itinvent-ai-chat-worker` now claims runs atomically, so accidental duplicate workers must not process the same run twice;
 - recommended starting point is one `itinvent-ai-chat-worker` process with `AI_CHAT_WORKER_CONCURRENCY=2`;
 - restart `itinvent-ai-chat-worker` after OpenRouter or AI-bot config changes;
+- `restart-ai-agents.ps1 -ChatWorkerOnly` restarts only the normal AI worker, verifies that its old PID exited, and leaves sandbox control running; without this switch the script restarts both AI processes;
 - `health-check.ps1` includes the worker in the PM2 snapshot and should stay green together with `itinvent-backend`;
 - `itinvent-ai-chat-worker` is not a websocket owner; browser realtime is published only by `itinvent-backend` through `chat_event_outbox`.
 
@@ -224,20 +225,19 @@ pm2 logs itinvent-chat-b --lines 100
 ```
 
 ```powershell
+# первый старт; рестарт — pm2 stop + clear-pm2-orphans.ps1 + pm2 start (отдельного restart-скрипта нет)
 pm2 start scripts\pm2\ecosystem.inventory.config.js --only itinvent-inventory
-pm2 restart itinvent-inventory
 pm2 logs itinvent-inventory --lines 100
 ```
 
 ```powershell
-pm2 start scripts\pm2\ecosystem.scan.config.js --only itinvent-scan
-pm2 restart itinvent-scan
+powershell -File scripts\pm2\restart-scan.ps1   # stop + чистка сирот + start; голый pm2 restart не использовать
 pm2 logs itinvent-scan --lines 100
 ```
 
 ```powershell
+# первый старт; рестарт — pm2 stop itinvent-bot + clear-pm2-orphans.ps1 + pm2 start (отдельного restart-скрипта нет)
 pm2 start scripts\pm2\ecosystem.bot.config.js --only itinvent-bot
-pm2 restart itinvent-bot
 pm2 logs itinvent-bot --lines 100
 ```
 
@@ -283,7 +283,7 @@ schema_migration_check stage=schema_migration_check scope=<app|chat> status=<beh
 4. Проверить `SELECT version_num FROM system.alembic_version;` и наличие объектов новых миграций.
 5. Перезапустить процессы штатными скриптами (`restart-backend.ps1`, `restart-chat.ps1`); в логах не должно быть `schema_migration_check`.
 
-Откат: `python -m alembic -c backend/alembic.ini downgrade <предыдущая версия>` — только после проверки, что `downgrade` миграции безопасен для данных. Миграция `20261002_0125` создаёт `chat_scheduled_messages`, если её нет (версия `0124` могла быть записана без таблицы); её `downgrade` ничего не удаляет.
+Откат: `python -m alembic -c backend/alembic.ini downgrade <предыдущая версия>` — только после проверки, что `downgrade` миграции безопасен для данных. Миграция `20261002_0125` создаёт `chat_scheduled_messages`, если её нет (версия `0124` могла быть записана без таблицы); её `downgrade` ничего не удаляет. Миграция `20261020_0139` создаёт, если их нет, восемь таблиц app-схемы (`employee_absences`, `ai_bots`, `ai_bot_conversations`, `ai_bot_runs`, `ai_pending_actions`, `ai_kb_documents`, `ai_kb_chunks`, `transfer_act_jobs`) и недостающие индексы; существующие таблицы и данные не трогает, `downgrade` — намеренно no-op. Миграция `20261020_0140` добавляет недостающие в боевой БД индексы (`chat_members`, `chat_messages`, `ai_bots`) и unique на `chat_message_reactions`/`ai_user_memories` (unique — только если нет дубликатов). `APP_SCHEMA_DEV_AUTO_CREATE` по умолчанию `0`: без явной `1` старт не выполняет DDL.
 
 ## Hub notifications index (`20260804_0078`)
 

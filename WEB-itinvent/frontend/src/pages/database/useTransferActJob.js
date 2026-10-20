@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 
 import { equipmentAPI } from '../../api/client';
+import { fileNameFromContentDisposition } from '../../lib/documentPreviewKind';
 import { normalizeActionTargets } from './databaseListModel';
 import {
   TRANSFER_OPERATION_ACT_ONLY,
@@ -138,7 +139,8 @@ export function useTransferActJob({
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = act.file_name || `transfer_act_${act.act_id}.pdf`;
+      link.download = fileNameFromContentDisposition(response.headers?.['content-disposition'])
+        || (act.file_name || `transfer_act_${act.act_id}.pdf`).replace(/\.docx$/i, '.pdf');
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -185,7 +187,7 @@ export function useTransferActJob({
             setActionError?.('');
           }
 
-          if (options.refreshEquipment && status === 'done') {
+          if (options.refreshEquipment && (status === 'done' || Number(result?.success_count || 0) > 0)) {
             const targetInvNos = Array.isArray(options.targetInvNos) ? options.targetInvNos : [];
             if (
               Number(result?.success_count || 0) > 0 &&
@@ -328,8 +330,11 @@ export function useTransferActJob({
       return null;
     }
 
+    const documentFailedAfterMove = transferResult?.job_status === 'failed'
+      && Number(transferResult?.success_count || 0) > 0
+      && Number(transferResult?.failed_count || 0) === 0;
     const response = await equipmentAPI.transfer(
-      withTransferOperationId(payload, forceNewOperation || Boolean(transferResult))
+      withTransferOperationId(payload, forceNewOperation || (Boolean(transferResult) && !documentFailedAfterMove))
     );
     setTransferResult(response);
     if (isTransferJobPending(response)) {
@@ -344,7 +349,7 @@ export function useTransferActJob({
     setSelectedItems?.([]);
 
     if (response?.job_id) {
-      setActionError?.('');
+      setActionError?.(response.job_status === 'failed' ? (response.job_error || JOB_FAILED_ERROR) : '');
       return response;
     }
     if (

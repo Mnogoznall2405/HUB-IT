@@ -1,4 +1,4 @@
-import { Box, Button, Chip, Paper, Stack, Typography } from '@mui/material';
+import { Avatar, Box, Button, Chip, Paper, Stack, Typography } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import MailAttachmentCard from './MailAttachmentCard';
 import MailHtmlBody from './MailHtmlBody';
@@ -117,23 +117,20 @@ export default function MailConversationReader({
                 ) : null}
                 <Stack direction="row" justifyContent={mine ? 'flex-end' : 'flex-start'} alignItems="flex-end" spacing={0.7}>
                   {!mine ? (
-                    <Box
+                    <Avatar
+                      src={item?.sender_person?.avatar_url || undefined}
                       sx={{
                         width: 24,
                         height: 24,
-                        borderRadius: '50%',
                         bgcolor: typeof getAvatarColor === 'function' ? getAvatarColor(senderLine) : 'primary.main',
                         color: 'common.white',
                         fontSize: ui?.fontSizeFine,
                         fontWeight: 700,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
                         flexShrink: 0,
                       }}
                     >
                       {typeof getInitials === 'function' ? getInitials(senderLine) : '?'}
-                    </Box>
+                    </Avatar>
                   ) : null}
                   <Paper
                     variant="outlined"

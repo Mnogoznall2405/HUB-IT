@@ -28,8 +28,15 @@ def _has_table(schema: str | None, table_name: str) -> bool:
     return sa.inspect(op.get_bind()).has_table(table_name, schema=schema)
 
 
+def _chat_tables_present() -> bool:
+    """Skip only when the database has no chat tables at all, never by ``itinvent_scope``."""
+    bind = op.get_bind()
+    schema = "chat" if bind.dialect.name == "postgresql" else None
+    return bool(sa.inspect(bind).has_table("chat_conversations", schema=schema))
+
+
 def upgrade() -> None:
-    if _scope() == "app":
+    if not _chat_tables_present():
         return
     schema = _schema()
     table_name = "chat_attachment_previews"
@@ -77,7 +84,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    if _scope() == "app":
+    if not _chat_tables_present():
         return
     schema = _schema()
     table_name = "chat_attachment_previews"

@@ -10,6 +10,7 @@ from threading import RLock
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.concurrency import run_in_threadpool
 
 from backend.api.deps import get_current_database_id, require_permission
 from backend.database.equipment_db import get_all_equipment_flat, get_equipment_grouped
@@ -362,7 +363,7 @@ async def get_mfu_devices(
         ]
     )
 
-    events_index = _build_mfu_events_index(db_id=db_id, period_days=period_days)
+    events_index = await run_in_threadpool(_build_mfu_events_index, db_id=db_id, period_days=period_days)
 
     grouped: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
     totals = {

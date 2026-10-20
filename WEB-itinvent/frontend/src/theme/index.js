@@ -298,6 +298,13 @@ const theme = createTheme({
             },
           },
         },
+        // iOS PWA (viewport-fit=cover + black-translucent): Р±РµР· РѕС‚СЃС‚СѓРїР° С€Р°РїРєР°
+        // РїРѕР»РЅРѕСЌРєСЂР°РЅРЅРѕРіРѕ РґРёР°Р»РѕРіР° СѓРµР·Р¶Р°РµС‚ РїРѕРґ СЃС‚Р°С‚СѓСЃ-Р±Р°СЂ. Р”РёР°Р»РѕРіРё СЃ СЃРѕР±СЃС‚РІРµРЅРЅРѕР№
+        // РѕР±СЂР°Р±РѕС‚РєРѕР№ РІС‹СЃС‚Р°РІР»СЏСЋС‚ '--dialog-safe-top': '0px' РІ PaperProps.sx.
+        paperFullScreen: {
+          boxSizing: 'border-box',
+          paddingTop: 'var(--dialog-safe-top, env(safe-area-inset-top, 0px))',
+        },
       },
     },
     // AppBar
@@ -313,6 +320,15 @@ const theme = createTheme({
       styleOverrides: {
         paper: {
           backgroundImage: 'none',
+        },
+        // Р‘РѕРєРѕРІС‹Рµ РїР°РЅРµР»Рё РЅР° РІСЃСЋ РІС‹СЃРѕС‚Сѓ С‚РѕР¶Рµ РЅРµ РґРѕР»Р¶РЅС‹ СѓС…РѕРґРёС‚СЊ РїРѕРґ СЃС‚Р°С‚СѓСЃ-Р±Р°СЂ iOS PWA.
+        paperAnchorLeft: {
+          boxSizing: 'border-box',
+          paddingTop: 'var(--dialog-safe-top, env(safe-area-inset-top, 0px))',
+        },
+        paperAnchorRight: {
+          boxSizing: 'border-box',
+          paddingTop: 'var(--dialog-safe-top, env(safe-area-inset-top, 0px))',
         },
       },
     },

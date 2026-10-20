@@ -7,18 +7,10 @@ import {
   sortBalancesByNomenclature,
   sortBalancesByWarehouse,
   summarizeHubBalanceMatches,
-  UNBOUNDED_MOVEMENT_PERIOD,
 } from './warehouse1cShared';
 
 describe('warehouse1cShared sorting/filter', () => {
-  it('does not hide older movements behind a default period', () => {
-    expect(UNBOUNDED_MOVEMENT_PERIOD).toEqual({
-      dateFrom: '',
-      dateTo: '',
-    });
-  });
-
-  it('sorts nomenclature alphabetically in Russian', () => {
+    it('sorts nomenclature alphabetically in Russian', () => {
     const sorted = sortBalancesByNomenclature([
       { nomenclature_name: 'Кабель', nomenclature_code: '2' },
       { nomenclature_name: 'Адаптер', nomenclature_code: '1' },

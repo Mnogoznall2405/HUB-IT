@@ -1533,6 +1533,8 @@ class AddressBookService:
             inn = normalize_text(personal.get("inn"))
             if inn:
                 public_item["inn"] = inn
+        from backend.services.employee_photo_service import employee_photo_url
+        public_item["photo_url"] = employee_photo_url(employee_code)
         return public_item
 
     def _matches_query(

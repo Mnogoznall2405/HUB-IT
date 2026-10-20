@@ -295,6 +295,7 @@ def coerce_mail_recipients(value) -> list[str]:
 
 
 class MailDraftArgs(BaseModel):
+    replace_action_id: Optional[str] = Field(default=None, max_length=64)
     to: list[str] = Field(..., min_length=1, max_length=50)
     cc: list[str] = Field(default_factory=list, max_length=50)
     bcc: list[str] = Field(default_factory=list, max_length=50)
@@ -450,6 +451,7 @@ class ContactsResolveTool(AiTool):
             ok=True,
             database_id=None,
             data={"items": rows, "count": len(rows), "returned_count": len(rows), "limit": args.limit, "truncated": False},
+            sources=[{"system": source} for source in sorted({row.get("source") or "exchange_contacts" for row in rows})],
         )
 
 
@@ -567,6 +569,7 @@ class MailSendDraftTool(AiTool):
     tool_id = OFFICE_TOOL_ACTION_MAIL_SEND_DRAFT
     description = (
         "Create a confirmation-card draft for sending a new email. Does not send mail before user confirmation. "
+        "For a correction pass replace_action_id from the active draft context. "
         "Args: to (list of e-mail addresses, at least one), cc and bcc (lists of e-mail addresses, omit or [] if none), "
         "subject, body. Put every addressee in to; people the user asks to copy go in cc. Use e-mail addresses only: "
         "resolve names with office.mail.contacts.resolve first."

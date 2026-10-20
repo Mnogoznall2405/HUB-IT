@@ -39,6 +39,7 @@ from backend.chat.chat_constants import (
     CHAT_MAX_MESSAGE_BODY_LENGTH,
     CHAT_MAX_TOTAL_FILE_BYTES,
 )
+from backend.chat.chat_group_permissions import enforce_files_allowed
 from backend.chat.chat_formatting import _iso, _probe_image_dimensions, _probe_video_dimensions, _safe_file_name, _utc_now
 from backend.chat.upload_session_transfer import plan_upload_session_chunk
 from backend.chat.utils import normalize_text as _normalize_text
@@ -108,6 +109,8 @@ class ChatUploadOrchestrator:
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
+            # Refuse before any bytes are transferred.
+            enforce_files_allowed(session, conversation, int(current_user_id))
             normalized_conversation_id = conversation.id
             reply_to_message = self._service._resolve_reply_message(
                 session=session,
@@ -332,6 +335,8 @@ class ChatUploadOrchestrator:
                     conversation_id=conversation_id,
                     current_user_id=int(current_user_id),
                 )
+                # Refuse before the files are written to disk.
+                enforce_files_allowed(session, conversation, int(current_user_id))
                 normalized_conversation_id = conversation.id
             prepared = self._service._prepare_uploads(
                 list(uploads or []),

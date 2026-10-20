@@ -410,10 +410,13 @@ function getSubscriptionApplicationServerKey(subscription) {
   }
 }
 
-async function getCurrentPushSubscription() {
+async function getCurrentPushSubscription({ waitForReady = true } = {}) {
   if (!isPushSupported()) return { registration: null, subscription: null };
   try {
-    const registration = await navigator.serviceWorker.ready;
+    const registration = waitForReady
+      ? await navigator.serviceWorker.ready
+      : await navigator.serviceWorker.getRegistration?.();
+    if (!registration?.pushManager) return { registration: registration || null, subscription: null };
     const subscription = await registration.pushManager.getSubscription();
     return { registration, subscription };
   } catch {
@@ -651,7 +654,7 @@ export function createChatSystemNotification({
 }
 
 export async function disableChatPushSubscription({ removeServer = true } = {}) {
-  const { registration, subscription } = await getCurrentPushSubscription();
+  const { registration, subscription } = await getCurrentPushSubscription({ waitForReady: false });
   const endpoint = String(subscription?.endpoint || runtimeState.lastEndpoint || '').trim();
 
   if (removeServer && endpoint) {

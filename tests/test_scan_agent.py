@@ -719,7 +719,9 @@ def test_force_rescan_reports_cleaned_event_for_previous_match(monkeypatch, temp
 
 
 def test_run_scan_once_drains_outbox_once_after_failed_ingest(monkeypatch, temp_dir):
-    agent = scan_agent.ScanAgent(_make_config())
+    config = _make_config()
+    config["outbox_drain_batch"] = 7
+    agent = scan_agent.ScanAgent(config)
     agent.pattern_defs = _make_pattern_defs("classified")
     root = Path(temp_dir) / "Users" / "tester" / "Documents"
     root.mkdir(parents=True, exist_ok=True)
@@ -747,7 +749,7 @@ def test_run_scan_once_drains_outbox_once_after_failed_ingest(monkeypatch, temp_
     assert summary["jobs_total"] == 2
     assert len(outbox_payloads) == 2
     assert prune_calls == ["prune"]
-    assert drain_calls == [10]
+    assert drain_calls == [7]
 
 
 def test_failed_outbox_persistence_is_reported_as_incomplete(monkeypatch, temp_dir):

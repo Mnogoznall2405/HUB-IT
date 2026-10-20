@@ -27,7 +27,10 @@ from .audio_processor import (
     AudioChunker,
     resolve_cpu_threads,
 )
+from .speaker_utils import wav_duration_seconds
 from .diarization import (
+    DiarizationChunkError,
+    DiarizationSegments,
     apply_pipeline_tuning,
     build_speaker_index,
     run_diarization,
@@ -265,6 +268,24 @@ class TranscriptionProcessor:
             return engine
         return STT_API_MODELS.get(engine, engine)
 
+    def _stt_glossary_hint(self) -> str:
+        """Подсказка распознаванию речи: до ~30 имён/объектов/подрядчиков из словаря (кэшируется на запуск)."""
+        cached = getattr(self, '_stt_hint_cache', None)
+        if cached is not None:
+            return cached
+        hint = ''
+        try:
+            from config import GLOSSARY_PATH, GLOSSARY_PROMPT
+            if GLOSSARY_PROMPT:
+                from .glossary import load_terms, hot_terms
+                words = hot_terms(load_terms(GLOSSARY_PATH), '', limit=30)
+                if words:
+                    hint = 'Термины и названия: ' + ', '.join(words)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"⚠️ Подсказка словаря для STT пропущена: {e}")
+        self._stt_hint_cache = hint
+        return hint
+
     def _call_stt_api(self, mp3_path: Path, model_id: str, language: str) -> Optional[Dict]:
         """Один вызов OpenRouter /audio/transcriptions с ретраями."""
         data = base64.b64encode(mp3_path.read_bytes()).decode()
@@ -275,6 +296,9 @@ class TranscriptionProcessor:
         }
         if language:
             body['language'] = language
+        hint = self._stt_glossary_hint()
+        if hint:
+            body['prompt'] = hint
         headers = {'Authorization': f'Bearer {OPENROUTER_KEY}', 'Content-Type': 'application/json'}
         last_err = None
         for attempt in range(3):
@@ -283,6 +307,11 @@ class TranscriptionProcessor:
                 j = r.json()
                 if 'error' in j:
                     last_err = j['error']
+                    # провайдер не принимает подсказку — повторяем без неё (распознавание важнее подсказки)
+                    if 'prompt' in body:
+                        body.pop('prompt', None)
+                        self._stt_hint_cache = ''
+                        continue
                     # verbose_json не поддержан — откатываемся на json
                     if 'verbose_json' in str(last_err):
                         body['response_format'] = 'json'
@@ -457,6 +486,31 @@ class TranscriptionProcessor:
         logger.info(f"✅ STT API: {len(all_segments)} сегментов, {len(all_words)} слов, cost=${total_cost:.4f}")
         return result
 
+    def _transcribe_gigaam(self, audio_file: str, turns: List[Dict]) -> Dict:
+        """Локальный GigaAM-v3 по репликам диаризации (внешний процесс: у него своё окружение transformers)."""
+        import json
+        import subprocess
+        import sys
+        from config import GIGAAM_PYTHON, GIGAAM_MODEL_DIR
+        worker = Path(__file__).resolve().parent.parent / "gigaam_worker.py"
+        src = TEMP_DIR / f"_giga_turns_{int(time.time())}.json"
+        out = TEMP_DIR / f"_giga_out_{int(time.time())}.json"
+        src.write_text(json.dumps([{'start': float(t['start']), 'end': float(t['end']), 'speaker': str(t['speaker'])}
+                                   for t in turns], ensure_ascii=False), encoding='utf-8')
+        try:
+            logger.info(f"🇷🇺 GigaAM: {len(turns)} реплик диаризации")
+            proc = subprocess.run([GIGAAM_PYTHON, str(worker), str(audio_file), str(src), str(out), GIGAAM_MODEL_DIR],
+                                  capture_output=True, text=True, encoding='utf-8', errors='replace')
+            if proc.returncode != 0 or not out.exists():
+                raise RuntimeError(f"GigaAM завершился с кодом {proc.returncode}: {(proc.stderr or '')[-400:]}")
+            rows = json.loads(out.read_text(encoding='utf-8'))
+        finally:
+            for path in (src, out):
+                path.unlink(missing_ok=True)
+        segments = [{'start': r['start'], 'end': r['end'], 'text': r['text'], 'speaker': r['speaker']} for r in rows]
+        logger.info(f"✅ GigaAM: {len(segments)} сегментов")
+        return {'segments': segments, 'alignment': False, 'stt_engine': 'gigaam', 'stt_cost': 0.0}
+
     def process_audio_chunks(self, audio_file: str, language: str = None) -> List[Dict]:
         """Обрабатывает аудио по интеллектуальным чанкам с progress tracking."""
         try:
@@ -613,6 +667,14 @@ class TranscriptionProcessor:
             
             if not self.diarize_model:
                 logger.warning("⚠️ Модель диаризации недоступна")
+                chunk_seconds = getattr(self.config, 'diarization_chunk_seconds', 0)
+                if chunk_seconds:
+                    # Короткая запись и раньше шла без диаризации; ошибка нужна только там,
+                    # где диаризация идёт чанками (или длительность определить не удалось).
+                    seconds = wav_duration_seconds(audio_file)
+                    limit = max(chunk_seconds, getattr(self.config, 'diarization_chunk_threshold_seconds', 1800))
+                    if seconds is None or seconds > limit:
+                        raise DiarizationChunkError('Не удалось загрузить модель чанковой диаризации')
                 return None
             
             # Загружаем аудио
@@ -626,6 +688,8 @@ class TranscriptionProcessor:
                 min_speakers=self.config.diarization_min_speakers,
                 max_speakers=self.config.diarization_max_speakers,
                 exclusive=bool(getattr(self.config, 'diarization_exclusive', False)),
+                config=self.config,
+                audio_file=audio_file,
             )
 
             diarize_segments = self._normalize_diarization_segments(diarize_segments)
@@ -637,6 +701,9 @@ class TranscriptionProcessor:
             logger.info(f"✅ Диаризация завершена: найдено {len(set(seg.get('speaker', 'UNKNOWN') for seg in diarize_segments))} спикеров")
             return diarize_segments
             
+        except DiarizationChunkError:
+            cleanup_memory()
+            raise
         except Exception as e:
             logger.error(f"❌ Ошибка диаризации: {e}")
             cleanup_memory()
@@ -646,6 +713,8 @@ class TranscriptionProcessor:
         """Приводит результат диаризации WhisperX к списку словарей."""
         if diarization_result is None:
             return []
+        if isinstance(diarization_result, DiarizationSegments):
+            return diarization_result
 
         if hasattr(diarization_result, "to_dict"):
             diarization_result = diarization_result.to_dict("records")
@@ -726,7 +795,7 @@ class TranscriptionProcessor:
         """Находит наиболее подходящего спикера для сегмента."""
         return speaker_for_segment(diarization_index, start_time, end_time)
 
-    @retry_on_failure(max_retries=2, delay=1.0)
+    @retry_on_failure(max_retries=2, delay=1.0, fatal=(DiarizationChunkError,))
     def transcribe_audio(self, audio_file: str, language: str = None,
                          diarization_audio_file: Optional[str] = None) -> Dict:
         """Основной метод транскрипции аудио с поддержкой диаризации.
@@ -746,7 +815,13 @@ class TranscriptionProcessor:
             
             stt_engine = (getattr(self.config, 'stt_engine', None) or STT_ENGINE or 'whisper')
             diarize_segments = None
-            if stt_engine != 'whisper':
+            if stt_engine == 'gigaam':
+                # GigaAM работает по репликам диаризации: сначала диаризация, затем распознавание
+                diarize_segments = self.perform_diarization(diar_audio) if self.config.enable_diarization else None
+                if not diarize_segments:
+                    raise RuntimeError("GigaAM требует диаризацию (enable_diarization)")
+                result = self._transcribe_gigaam(audio_file, list(diarize_segments))
+            elif stt_engine != 'whisper':
                 if self.config.enable_diarization:
                     # Параллельно: API-STT идёт по сети, диаризация — на GPU.
                     # Экономия ~10 мин на часовой записи
@@ -794,7 +869,9 @@ class TranscriptionProcessor:
                 result['diarization'] = diarize_segments is not None
                 # Сырые реплики нужны профилям голосов: из них видно наложения речи
                 if diarize_segments:
-                    result['diarize_segments'] = diarize_segments
+                    result['diarize_segments'] = getattr(diarize_segments, 'overlap_segments', diarize_segments)
+                if isinstance(diarize_segments, DiarizationSegments):
+                    result['diarization_details'] = diarize_segments.metadata
                 result['speakers_count'] = len(set(seg.get('speaker', 'UNKNOWN') for seg in result.get('segments', []))) if diarize_segments else 0
                 result['language'] = language
             
@@ -803,7 +880,10 @@ class TranscriptionProcessor:
                 logger.info(f"🎭 Обнаружено спикеров: {result['speakers_count']}")
             
             return result
-            
+
+        except DiarizationChunkError:
+            cleanup_memory()
+            raise
         except Exception as e:
             logger.error(f"❌ Ошибка транскрипции: {e}")
             cleanup_memory()

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { chatAPI } from '../../api/client';
+import { classifyMailSendError, MAIL_SEND_OUTCOME, MAIL_SEND_MAYBE_SENT_MESSAGE } from '../../components/mail/mailSendOutcome';
 import { CHAT_SOCKET_AI_SANDBOX_UPDATED_EVENT } from '../../lib/chatSocket';
 import { buildSandboxPermissionCard } from '../../components/chat/sandboxPermissionCard';
 import { useConfirmDialog } from '../../components/feedback/ConfirmDialogProvider';
@@ -14,6 +15,7 @@ export default function useChatMessageActionsController({
   activeConversationIdRef,
   buildPinnedMessagePayload,
   conversationKind,
+  viewerMemberRole,
   conversations,
   focusComposer,
   loadChatDialogsModule,
@@ -29,6 +31,7 @@ export default function useChatMessageActionsController({
   openConversation,
   patchThreadMessage,
   persistPinnedMessage,
+  pinnedMessageMutationRef,
   pinnedMessage,
   promoteConversationToTop,
   queueAutoScroll,
@@ -46,6 +49,8 @@ export default function useChatMessageActionsController({
 }) {
   const { confirm: confirmDialog } = useConfirmDialog();
   const [mailActionEditor, setMailActionEditor] = useState(null);
+  const latestMessagesRef = useRef(messages);
+  latestMessagesRef.current = messages;
   const [forwardOpen, setForwardOpen] = useState(false);
   const [forwardConversationQuery, setForwardConversationQuery] = useState('');
   const [forwardingConversationId, setForwardingConversationId] = useState('');
@@ -75,9 +80,37 @@ export default function useChatMessageActionsController({
     return () => window.removeEventListener(CHAT_SOCKET_AI_SANDBOX_UPDATED_EVENT, handleSandboxPermissionUpdate);
   }, [activeConversationId, patchThreadMessage]);
 
+  const confirmingAiActionIdsRef = useRef(new Set());
+  const reconcileMailConfirmationError = useCallback(async (card, message, error) => {
+    if (!String(card?.action_type || '').startsWith('office.mail.')
+      || classifyMailSendError(error) !== MAIL_SEND_OUTCOME.MAYBE_SENT) return false;
+    setMailActionEditor((current) => current?.actionCard?.id === card.id ? null : current);
+    const conversationId = String(message?.conversation_id || card.conversation_id || '').trim();
+    try {
+      if (conversationId && message?.id && typeof chatAPI.hydrateThreadMessages === 'function') {
+        const data = await chatAPI.hydrateThreadMessages(conversationId, [message.id]);
+        const fresh = data?.items?.find((item) => item.message_id === message.id)?.action_card;
+        if (fresh?.id === card.id) {
+          patchAiActionCard(message.id, fresh);
+          if (fresh.status !== 'confirmed') notifyApiError(new Error(fresh.error_text || 'Подтверждение не завершено. Проверьте состояние карточки.'));
+          return true;
+        }
+      }
+    } catch { /* Keep the outcome unknown until an authoritative read succeeds. */ }
+    const latest = latestMessagesRef.current?.find((item) => item.id === message?.id)?.action_card;
+    if (latest?.id === card.id && latest.status === 'confirmed') return true;
+    if (!latest || latest.id === card.id) {
+      patchAiActionCard(message?.id, { ...card, status: 'failed',
+        result: { ...(card.result || {}), send_outcome: 'unknown' }, error_text: MAIL_SEND_MAYBE_SENT_MESSAGE });
+    }
+    notifyApiError(new Error(MAIL_SEND_MAYBE_SENT_MESSAGE));
+    return true;
+  }, [notifyApiError, patchAiActionCard]);
   const confirmAiAction = useCallback(async (actionCard, message, payloadOverrides = undefined) => {
     const actionId = String(actionCard?.id || '').trim();
-    if (!actionId) return;
+    // A repeated call for the same card (double click, re-render race) must not send twice.
+    if (!actionId || confirmingAiActionIdsRef.current.has(actionId)) return;
+    confirmingAiActionIdsRef.current.add(actionId);
     try {
       const updated = await chatAPI.confirmAiAction(actionId, payloadOverrides);
       patchAiActionCard(message?.id, updated);
@@ -87,9 +120,12 @@ export default function useChatMessageActionsController({
         notifyApiError(new Error(updated?.error_text || 'Ошибка выполнения.'), 'Действие не выполнено.');
       }
     } catch (error) {
+      if (await reconcileMailConfirmationError(actionCard, message, error)) return;
       notifyApiError(error, 'Не удалось подтвердить действие ITinvent.');
+    } finally {
+      confirmingAiActionIdsRef.current.delete(actionId);
     }
-  }, [notifyApiError, patchAiActionCard]);
+  }, [notifyApiError, patchAiActionCard, reconcileMailConfirmationError]);
 
   const editAiAction = useCallback((actionCard, message) => {
     if (!String(actionCard?.action_type || '').startsWith('office.mail.')) return;
@@ -111,14 +147,29 @@ export default function useChatMessageActionsController({
     const actionCard = mailActionEditor?.actionCard;
     const message = mailActionEditor?.message;
     const actionId = String(actionCard?.id || '').trim();
-    if (!actionId) return;
-    const updated = await chatAPI.confirmAiAction(actionId, payloadOverrides);
-    patchAiActionCard(message?.id, updated);
-    if (String(updated?.status || '').trim() !== 'confirmed') {
-      throw new Error(updated?.error_text || 'Письмо не отправлено.');
+    if (!actionId || confirmingAiActionIdsRef.current.has(actionId)) return;
+    confirmingAiActionIdsRef.current.add(actionId);
+    let confirmationReceived = false;
+    try {
+      const updated = await chatAPI.confirmAiAction(actionId, payloadOverrides);
+      confirmationReceived = Boolean(updated?.status);
+      patchAiActionCard(message?.id, updated);
+      if (updated?.result?.send_outcome === 'unknown') {
+        setMailActionEditor((current) => current?.actionCard?.id === actionId ? null : current);
+        notifyApiError(new Error(updated.error_text || MAIL_SEND_MAYBE_SENT_MESSAGE));
+        return;
+      }
+      if (String(updated?.status || '').trim() !== 'confirmed') {
+        throw new Error(updated?.error_text || 'Письмо не отправлено.');
+      }
+      setMailActionEditor(null);
+    } catch (error) {
+      if (!confirmationReceived && await reconcileMailConfirmationError(actionCard, message, error)) return;
+      throw error;
+    } finally {
+      confirmingAiActionIdsRef.current.delete(actionId);
     }
-    setMailActionEditor(null);
-  }, [mailActionEditor, patchAiActionCard]);
+  }, [mailActionEditor, patchAiActionCard, notifyApiError, reconcileMailConfirmationError]);
 
   const cancelAiAction = useCallback(async (actionCard, message) => {
     const actionId = String(actionCard?.id || '').trim();
@@ -159,6 +210,7 @@ export default function useChatMessageActionsController({
     openMessageReads,
     openTaskFromChat,
     persistPinnedMessage,
+    pinnedMessageMutationRef,
     pinnedMessage,
     setComposerMenuAnchor,
     setMessageMenuAnchor,
@@ -198,6 +250,7 @@ export default function useChatMessageActionsController({
     activeConversationIdRef,
     clearSelectedMessages,
     conversationKind,
+    viewerMemberRole,
     focusComposer,
     loadChatDialogsModule,
     mergeMessageIntoThread,
@@ -209,6 +262,7 @@ export default function useChatMessageActionsController({
     setForwardConversationQuery,
     setForwardMessages,
     setForwardOpen,
+    setEditingMessage,
     setMessageMenuAnchor,
     setMessageMenuMessage,
     setReplyMessage,

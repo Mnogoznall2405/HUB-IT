@@ -28,7 +28,7 @@ const createStateSetter = (initialValue) => {
 };
 
 const createProps = (overrides = {}) => ({
-  isAdmin: true,
+  canDeleteEquipment: true,
   setAllEquipment: vi.fn(),
   setFilteredData: vi.fn(),
   setSelectedItems: vi.fn(),
@@ -47,7 +47,7 @@ describe('useDatabaseDeleteEquipment', () => {
   });
 
   it('opens only for admins with a valid inventory number', () => {
-    const blocked = renderHook(() => useDatabaseDeleteEquipment(createProps({ isAdmin: false })));
+    const blocked = renderHook(() => useDatabaseDeleteEquipment(createProps({ canDeleteEquipment: false })));
 
     act(() => {
       blocked.result.current.openDeleteEquipmentDialog({ invNo: '1001' });
@@ -122,5 +122,49 @@ describe('useDatabaseDeleteEquipment', () => {
     expect(result.current.deleteTarget).toEqual({ invNo: '1001', item: null });
     expect(result.current.deleteError).toBe('delete failed');
     expect(result.current.deleteLoading).toBe(false);
+  });
+
+  it('on acts/history conflict offers deletion with history and performs it only with the extra right', async () => {
+    equipmentAPI.deleteByInvNo.mockRejectedValueOnce({
+      response: {
+        status: 409,
+        data: { detail: 'Equipment is linked to acts or history and cannot be deleted (acts=1, history=3)' },
+      },
+    });
+    const props = createProps({ canDeleteEquipmentWithHistory: true });
+    const { result } = renderHook(() => useDatabaseDeleteEquipment(props));
+
+    act(() => {
+      result.current.openDeleteEquipmentDialog({ invNo: '1001' });
+    });
+    await act(async () => {
+      await result.current.confirmDeleteEquipment();
+    });
+
+    expect(result.current.deleteBlocked).toEqual({ acts: 1, history: 3 });
+    expect(result.current.deleteError).toBe('');
+    expect(result.current.deleteTarget).not.toBeNull();
+
+    await act(async () => {
+      await result.current.confirmDeleteEquipmentWithHistory();
+    });
+
+    expect(equipmentAPI.deleteByInvNo).toHaveBeenLastCalledWith('1001', { withHistory: true });
+    expect(props.notifyDatabaseSuccess).toHaveBeenCalledWith('Оборудование 1001 удалено вместе с актами и историей.');
+    expect(result.current.deleteTarget).toBeNull();
+    expect(result.current.deleteBlocked).toBeNull();
+  });
+
+  it('never sends a history delete without the dedicated right', async () => {
+    const { result } = renderHook(() => useDatabaseDeleteEquipment(createProps()));
+
+    act(() => {
+      result.current.openDeleteEquipmentDialog({ invNo: '1001' });
+    });
+    await act(async () => {
+      await result.current.confirmDeleteEquipmentWithHistory();
+    });
+
+    expect(equipmentAPI.deleteByInvNo).not.toHaveBeenCalled();
   });
 });

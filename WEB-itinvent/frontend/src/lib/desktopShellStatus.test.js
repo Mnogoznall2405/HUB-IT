@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDesktopShellStatus, EMPTY_DESKTOP_SHELL_STATUS } from './desktopShellStatus';
+import { buildDesktopShellStatus } from './desktopShellStatus';
 
 describe('desktopShellStatus', () => {
   it('builds the strict shell status without summing category counters', () => {
@@ -38,14 +38,4 @@ describe('desktopShellStatus', () => {
     });
   });
 
-  it('provides an anonymous zero state for logout', () => {
-    expect(EMPTY_DESKTOP_SHELL_STATUS).toEqual({
-      authenticated: false,
-      online: false,
-      unread_total: 0,
-      chat_unread: 0,
-      mail_unread: 0,
-      tasks_attention: 0,
-    });
   });
-});

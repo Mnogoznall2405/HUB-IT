@@ -166,42 +166,49 @@ describe('executeMaintenanceAction', () => {
       selectedWorkConsumable: defaultConsumable,
       cartridgeModel: 'fallback model',
       effectiveDbName: 'main-db',
+      operationSeed: 'seed-1',
       ...context,
     });
 
     expect(result).toEqual({ shouldRefreshEquipment: true });
     expect(context.loadDetailedItemsByInvNos).toHaveBeenCalledWith(['PRN-1']);
+    // One durable request carries both the consume and the works record.
     expect(context.equipmentAPI.consumeConsumable).toHaveBeenCalledWith({
       item_id: 501,
       qty: 1,
       reason: 'cartridge',
-    });
-    expect(context.jsonAPI.addCartridgeReplacement).toHaveBeenCalledWith(expect.objectContaining({
-      printer_model: 'HP LaserJet 400',
-      cartridge_color: DEFAULT_CARTRIDGE_COLOR,
-      component_type: 'cartridge',
-      component_color: DEFAULT_CARTRIDGE_COLOR,
-      cartridge_model: 'CE505A',
-      detection_source: 'sql-consumables',
-      serial_number: 'SN-PRN-1',
-      employee: 'Ivan Petrov',
-      branch: 'HQ',
-      location: 'Room 101',
-      inv_no: 'PRN-1',
-      db_name: 'main-db',
-      equipment_id: 101,
-      current_description: 'Office printer',
-      hw_serial_no: 'HW-PRN-1',
-      model_name: 'HP LaserJet 400',
-      manufacturer: 'HP',
-      additional_data: {
-        consumable_item_id: 501,
-        consumable_inv_no: 'CRT-501',
-        consumable_model: 'CE505A',
-        consumable_branch: 'HQ',
-        consumable_location: 'Storage',
+      operation_id: 'seed-1-cartridge-PRN-1-501',
+      work: {
+        kind: 'cartridge',
+        payload: expect.objectContaining({
+          printer_model: 'HP LaserJet 400',
+          cartridge_color: DEFAULT_CARTRIDGE_COLOR,
+          component_type: 'cartridge',
+          component_color: DEFAULT_CARTRIDGE_COLOR,
+          cartridge_model: 'CE505A',
+          detection_source: 'sql-consumables',
+          serial_number: 'SN-PRN-1',
+          employee: 'Ivan Petrov',
+          branch: 'HQ',
+          location: 'Room 101',
+          inv_no: 'PRN-1',
+          db_name: 'main-db',
+          equipment_id: 101,
+          current_description: 'Office printer',
+          hw_serial_no: 'HW-PRN-1',
+          model_name: 'HP LaserJet 400',
+          manufacturer: 'HP',
+          additional_data: {
+            consumable_item_id: 501,
+            consumable_inv_no: 'CRT-501',
+            consumable_model: 'CE505A',
+            consumable_branch: 'HQ',
+            consumable_location: 'Storage',
+          },
+        }),
       },
-    }));
+    });
+    expect(context.jsonAPI.addCartridgeReplacement).not.toHaveBeenCalled();
   });
 
   it('returns a component validation error for mixed target capabilities', async () => {

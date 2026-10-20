@@ -2497,3 +2497,61 @@ def test_taxonomy_support_routes_send_private_cache_control(task_env):
     assignees = client.get("/hub/users/assignees")
     assert assignees.status_code == 200, assignees.text
     assert "Cache-Control" not in assignees.headers
+
+
+def test_non_participant_cannot_mutate_task_through_any_endpoint(task_env):
+    """Audit 01-B13: the routes only demand tasks.read; object-level checks live in hub_service."""
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(1)
+    task = _create_task(client, title="Outsider Boundary")
+    task_id = task["id"]
+
+    set_user(4)
+    denied = {
+        "delete": client.delete(f"/hub/tasks/{task_id}"),
+        "start": client.post(f"/hub/tasks/{task_id}/start"),
+        "submit": client.post(
+            f"/hub/tasks/{task_id}/submit",
+            data={"comment": "x"},
+            files={"file": ("r.txt", b"r", "text/plain")},
+        ),
+        "attachments": client.post(
+            f"/hub/tasks/{task_id}/attachments", files={"file": ("a.txt", b"a", "text/plain")}
+        ),
+        "review": client.post(f"/hub/tasks/{task_id}/review", json={"decision": "approve", "comment": "x"}),
+        "complete": client.post(f"/hub/tasks/{task_id}/complete", json={"comment": "x"}),
+    }
+    assert {name: r.status_code for name, r in denied.items()} == {name: 403 for name in denied}, {
+        name: r.text for name, r in denied.items() if r.status_code != 403
+    }
+
+    set_user(1)
+    still_there = client.get(f"/hub/tasks/{task_id}")
+    assert still_there.status_code == 200
+    assert still_there.json()["status"] == task["status"]
+
+    # Reopen only makes sense for a finished task; an outsider must be refused there too.
+    finished = _create_task(client, title="Outsider Reopen")
+    set_user(2)
+    _submit_task(client, finished["id"])
+    set_user(3)
+    _approve_task(client, finished["id"])
+    set_user(4)
+    reopen = client.post(f"/hub/tasks/{finished['id']}/reopen", json={"comment": "x"})
+    assert reopen.status_code == 403, reopen.text
+    set_user(1)
+    assert client.get(f"/hub/tasks/{finished['id']}").json()["status"] == "done"
+
+
+@pytest.mark.parametrize(
+    "bad_fields",
+    [{"assignee_user_ids": [], "assignee_user_id": [2]}, {"assignee_user_ids": [], "assignee_user_id": {}}, {"controller_user_id": [3]}],
+)
+def test_create_task_with_wrongly_typed_ids_is_a_400_not_a_500(task_env, bad_fields):
+    """Audit 01-B12: TypeError from int([..]) used to escape the handler as a 500."""
+    client = task_env["client"]
+    body = {"title": "Bad ids", "assignee_user_ids": [2], "controller_user_id": 3, **bad_fields}
+    response = client.post("/hub/tasks", json=body)
+    assert response.status_code == 400, response.text

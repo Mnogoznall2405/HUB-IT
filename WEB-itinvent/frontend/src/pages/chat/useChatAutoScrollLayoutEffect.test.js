@@ -31,9 +31,3 @@ describe('useChatAutoScrollLayoutEffect helpers', () => {
   });
 });
 
-describe('useChatAutoScrollLayoutEffect', () => {
-  it('exports a default hook function', async () => {
-    const module = await import('./useChatAutoScrollLayoutEffect');
-    expect(typeof module.default).toBe('function');
-  });
-});

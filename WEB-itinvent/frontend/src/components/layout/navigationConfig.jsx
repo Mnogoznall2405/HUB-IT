@@ -1,6 +1,7 @@
 import StorageIcon from '@mui/icons-material/Storage';
 import BarChartIcon from '@mui/icons-material/BarChart';
 import LanIcon from '@mui/icons-material/Lan';
+import MonitorHeartOutlinedIcon from '@mui/icons-material/MonitorHeartOutlined';
 import ComputerIcon from '@mui/icons-material/Computer';
 import PrintIcon from '@mui/icons-material/Print';
 import ShieldIcon from '@mui/icons-material/Policy';
@@ -53,6 +54,7 @@ export const navigationItems = [
   { path: '/my-files', label: 'Мой диск', shortLabel: 'Диск', icon: <FolderOpenOutlinedIcon />, permission: 'my_files.read', group: 'tools' },
   { path: '/database', label: INVENTORY_SECTION_LABEL, shortLabel: 'Учёт', icon: <StorageIcon />, permission: 'database.read', group: 'tools' },
   { path: '/networks', label: 'Сети', shortLabel: 'Сети', icon: <LanIcon />, permission: 'networks.read', group: 'tools' },
+  { path: '/monitoring', label: 'Мониторинг', shortLabel: 'Мониторинг', icon: <MonitorHeartOutlinedIcon />, permission: 'monitoring.read', group: 'tools' },
   { path: '/vcs', label: 'ВКС терминалы', shortLabel: 'ВКС', icon: <VideocamIcon />, permission: 'vcs.read', group: 'tools' },
   { path: '/mfu', label: 'МФУ', shortLabel: 'МФУ', icon: <PrintIcon />, permission: 'mfu.read', group: 'tools' },
   { path: '/computers', label: 'Компьютеры', shortLabel: 'ПК', icon: <ComputerIcon />, permission: 'computers.read', group: 'tools' },

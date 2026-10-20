@@ -38,8 +38,7 @@ internal static class Program
                 return 4;
             }
 
-            using var certificate = DesktopUpdateTrust.LoadCertificate();
-            if (!DesktopUpdateManifestVerifier.VerifySignature(manifest, certificate))
+            if (!DesktopUpdateManifestVerifier.VerifySignature(manifest))
             {
                 Console.Error.WriteLine("Manifest signature is invalid or uses an untrusted key id.");
                 return 5;

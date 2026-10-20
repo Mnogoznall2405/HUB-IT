@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -20,6 +19,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from dotenv import dotenv_values
 
 from backend.services.task_email_service import task_email_service
+from backend.services.mail_attachment_preview_service import resolve_soffice_path, _run_soffice_convert
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,23 @@ BOT_ENV_VALUES = dotenv_values(str(BOT_ENV_PATH)) if BOT_ENV_PATH.exists() else 
 
 _ACT_STORE: dict[str, dict[str, Any]] = {}
 _PDF_CONVERT_LOCK = threading.Lock()
+
+
+class TransferActGenerationError(RuntimeError):
+    """The document is unavailable; this does not undo an inventory move."""
+
+
+def _is_valid_pdf(path: Path) -> bool:
+    try:
+        from pypdf import PdfReader
+
+        with path.open("rb") as stream:
+            if stream.read(5) != b"%PDF-":
+                return False
+            stream.seek(0)
+            return len(PdfReader(stream, strict=True).pages) > 0
+    except Exception:
+        return False
 
 
 def _read_env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -193,7 +210,7 @@ def _build_docx_act(
         docx_name = f"transfer_act_{_safe_filename(normalized_act_id)}_{safe_old}.docx"
         docx_path = DEFAULT_ACTS_DIR / docx_name
         pdf_path = docx_path.with_suffix(".pdf")
-        if pdf_path.is_file():
+        if _is_valid_pdf(pdf_path):
             return pdf_path, "pdf"
         if docx_path.is_file():
             return docx_path, "docx"
@@ -268,58 +285,49 @@ def _build_docx_act(
 
 
 def _try_convert_to_pdf(docx_path: Path) -> tuple[Path, str]:
+    """Publish a validated PDF atomically, keeping DOCX available for recovery."""
     pdf_path = docx_path.with_suffix(".pdf")
-    if pdf_path.is_file():
-        return pdf_path, "pdf"
-    try:
-        from docx2pdf import convert  # type: ignore
-    except ImportError:
-        return docx_path, "docx"
-    except Exception:
-        return docx_path, "docx"
-
-    timeout_sec = max(5, int(_read_env("TRANSFER_ACT_PDF_TIMEOUT_SEC", "45") or "45"))
     started = time.monotonic()
     try:
-        code = (
-            "import sys\n"
-            "from docx2pdf import convert\n"
-            "convert(sys.argv[1], sys.argv[2])\n"
-        )
+        timeout_sec = max(5, int(_read_env("TRANSFER_ACT_PDF_TIMEOUT_SEC", "45") or "45"))
         with _PDF_CONVERT_LOCK:
-            completed = subprocess.run(
-                [sys.executable, "-c", code, str(docx_path), str(pdf_path)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=timeout_sec,
-                check=False,
-                text=True,
-            )
-        elapsed = time.monotonic() - started
-        if completed.returncode != 0:
-            logger.warning(
-                "DOCX->PDF conversion failed rc=%s elapsed=%.2fs stderr=%s",
-                completed.returncode,
-                elapsed,
-                (completed.stderr or "").strip()[:500],
-            )
-            return docx_path, "docx"
-        logger.info("DOCX->PDF conversion completed elapsed=%.2fs path=%s", elapsed, pdf_path)
+            if _is_valid_pdf(pdf_path):
+                return pdf_path, "pdf"
+            # The existing converter uses a private LibreOffice profile. A
+            # temporary output cannot be mistaken for a completed act on retry.
+            with tempfile.TemporaryDirectory(
+                prefix=".act-pdf-", dir=docx_path.parent, ignore_cleanup_errors=True,
+            ) as temp_dir:
+                generated = _run_soffice_convert(
+                    soffice=resolve_soffice_path(),
+                    source_path=docx_path.resolve(),
+                    output_dir=Path(temp_dir),
+                    timeout_sec=timeout_sec,
+                )
+                if not _is_valid_pdf(generated):
+                    raise TransferActGenerationError("Конвертер не создал корректный PDF акта.")
+                os.replace(generated, pdf_path)
+        logger.info("Transfer act PDF completed elapsed=%.2fs", time.monotonic() - started)
     except subprocess.TimeoutExpired:
-        logger.warning("DOCX->PDF conversion timeout after %ss path=%s", timeout_sec, docx_path)
-        return docx_path, "docx"
+        logger.warning("Transfer act PDF timeout after %ss", timeout_sec)
+        raise TransferActGenerationError("Не удалось создать PDF акта: превышено время ожидания.") from None
     except Exception as exc:
-        logger.warning("DOCX->PDF conversion failed: %s", exc)
-        return docx_path, "docx"
+        logger.exception("Transfer act PDF failed elapsed=%.2fs", time.monotonic() - started)
+        raise TransferActGenerationError("Не удалось создать PDF акта.") from exc
+    return pdf_path, "pdf"
 
-    if pdf_path.exists():
-        try:
-            docx_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        return pdf_path, "pdf"
 
-    return docx_path, "docx"
+def prepare_act_download(record: dict[str, Any]) -> dict[str, Any]:
+    """Recover legacy DOCX downloads without executing another transfer."""
+    source = Path(str(record.get("file_path") or ""))
+    if source.suffix.lower() == ".pdf" and _is_valid_pdf(source):
+        return record
+    if source.suffix.lower() == ".pdf":
+        source = source.with_suffix(".docx")
+    pdf_path, file_type = _try_convert_to_pdf(source)
+    prepared = {**record, "file_path": str(pdf_path), "file_name": pdf_path.name, "file_type": file_type}
+    register_act_records([prepared])
+    return prepared
 
 
 def get_act_record(act_id: str) -> Optional[dict[str, Any]]:
@@ -392,8 +400,8 @@ def generate_transfer_acts(
             if file_type == "docx":
                 file_path, file_type = _try_convert_to_pdf(file_path)
         except Exception as exc:
-            logger.error("Failed to generate act for %s: %s", old_employee, exc)
-            continue
+            logger.exception("Failed to generate transfer act")
+            raise TransferActGenerationError("Не удалось создать PDF акта.") from exc
 
         record = {
             "act_id": act_id,
@@ -502,8 +510,8 @@ def generate_transfer_acts_without_move(
             if file_type == "docx":
                 file_path, file_type = _try_convert_to_pdf(file_path)
         except Exception as exc:
-            logger.error("Failed to generate act without move for %s: %s", holder, exc)
-            continue
+            logger.exception("Failed to generate act without move")
+            raise TransferActGenerationError("Не удалось создать PDF акта.") from exc
 
         record = {
             "act_id": act_id,

@@ -7,12 +7,14 @@ lock on ``version``) -> RTTM export for DER evaluation of diarization variants.
 """
 from __future__ import annotations
 
+import bisect
 import json
 import logging
 import math
 import re
 import shutil
 import uuid
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -46,6 +48,11 @@ VARIANT_NAME_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 MAX_ENROLL_SPANS = 300
 ACTION_DRAFT, ACTION_VARIANT, ACTION_ENROLL = "draft", "variant", "enroll"
 ACTION_CALIBRATE = "calibrate"
+ACTION_FACES_SCAN, ACTION_FACES_ENROLL = "faces_scan", "faces_enroll"
+FACES_DIR = "faces"
+FACE_SCAN_STEP = 6.0
+FACE_VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".wmv", ".flv"}
+FACES_SHOWN_PER_CLUSTER = 24
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +358,120 @@ def enroll_spans(segments: List[Dict[str, Any]], label: str, limit: int = MAX_EN
     return sorted(spans[:limit])
 
 
+def face_cluster_voices(faces: List[Dict[str, Any]], face_ids: List[int], segments: List[Dict[str, Any]],
+                        speakers: Dict[str, Dict[str, Any]], limit: int = 3) -> List[Dict[str, Any]]:
+    """Кто звучал в моменты, когда это лицо было в кадре: [{label, name, share}] — подсказка, лицо не обязано быть говорящим."""
+    spans = sorted(
+        (float(s["start"]), float(s["end"]), str(s.get("speaker") or ""))
+        for s in segments or [] if s.get("speaker") and float(s["end"]) > float(s["start"])
+    )
+    starts = [sp[0] for sp in spans]
+    counts: Counter = Counter()
+    for face_id in face_ids:
+        moment = float(faces[face_id]["t"])
+        index = bisect.bisect_right(starts, moment) - 1
+        if index >= 0 and spans[index][1] >= moment:
+            counts[spans[index][2]] += 1
+    total = sum(counts.values())
+    return [
+        {"label": label, "name": str((speakers.get(label) or {}).get("name") or ""), "share": round(n / total, 2)}
+        for label, n in counts.most_common(limit)
+    ]
+
+
+def faces_view(data: Dict[str, Any], segments: List[Dict[str, Any]], speakers: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Кластеры лиц для страницы подписи: до FACES_SHOWN_PER_CLUSTER превью на человека + кто звучал рядом."""
+    faces = data.get("faces") or []
+    clusters = []
+    for cluster in data.get("clusters") or []:
+        ids = [int(i) for i in cluster.get("faces") or [] if 0 <= int(i) < len(faces)]
+        if not ids:
+            continue
+        stride = max(1, len(ids) // FACES_SHOWN_PER_CLUSTER)
+        clusters.append({
+            "id": int(cluster["id"]),
+            "count": len(ids),
+            "shown": ids[::stride][:FACES_SHOWN_PER_CLUSTER],
+            "first_t": float(faces[ids[0]].get("t") or 0.0),
+            "voices": face_cluster_voices(faces, ids, segments, speakers),
+        })
+    return clusters
+
+
+def clean_face_assign(raw: Any, data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Подписи кластеров из браузера -> то, что принимает face_enroll.py apply (только известные кластеры и лица)."""
+    members = {int(c["id"]): {int(i) for i in c.get("faces") or []} for c in data.get("clusters") or []}
+    cleaned: Dict[str, Dict[str, Any]] = {}
+    for key, choice in (raw.items() if isinstance(raw, dict) else []):
+        try:
+            cluster_id = int(key)
+        except (TypeError, ValueError):
+            continue
+        if cluster_id not in members or not isinstance(choice, dict):
+            continue
+        name = " ".join(str(choice.get("name") or "").split())[:MAX_NAME_LEN]
+        excluded = sorted(
+            {int(i) for i in choice.get("excluded") or [] if isinstance(i, (int, float)) and int(i) in members[cluster_id]}
+        )
+        if name or choice.get("delete"):
+            cleaned[str(cluster_id)] = {"name": name, "delete": bool(choice.get("delete")), "excluded": excluded}
+    return cleaned
+
+
+def faces_dir(project_id: str) -> Optional[Path]:
+    pdir = project_dir(project_id)
+    return pdir / FACES_DIR if pdir else None
+
+
+def load_faces(project_id: str) -> Optional[Dict[str, Any]]:
+    folder = faces_dir(project_id)
+    path = folder / "faces.json" if folder else None
+    if not path or not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("faces"), list) or not isinstance(data.get("clusters"), list):
+        return None
+    return data
+
+
+def face_roster_names() -> List[str]:
+    """Кто уже есть в эталонах лиц (только имена, векторы наружу не отдаём)."""
+    path = pipeline.vv_root() / "data" / "face_roster.json"
+    try:
+        people = json.loads(path.read_text(encoding="utf-8")).get("people") or {}
+    except (OSError, ValueError, AttributeError):
+        return []
+    return sorted(str(name) for name in people)
+
+
+def auto_enroll_items(
+    previous_speakers: Optional[Dict[str, Any]],
+    speakers: Dict[str, Any],
+    segments: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Кого записать в эталоны автоматически после сохранения разметки (режим «слить»).
+
+    Только метки, которым имя назначено или изменено ЭТИМ сохранением: каждое следующее сохранение той же
+    разметки иначе дописывало бы в эталон новый сэмпл с теми же репликами (дубли).
+    """
+    def name_of(source: Optional[Dict[str, Any]], label: str) -> str:
+        info = (source or {}).get(label) or {}
+        return pipeline.sanitize_base((info.get("name") if isinstance(info, dict) else info) or "")
+
+    items = []
+    for label in sorted(speakers or {}):
+        name = name_of(speakers, label)
+        if not name or not SPEAKER_LABEL_RE.match(label) or name == name_of(previous_speakers, label):
+            continue
+        spans = enroll_spans(segments, label)
+        if spans:
+            items.append({"label": label, "name": name, "spans": spans, "replace": False, "mode": "merge"})
+    return items
+
+
 def compute_metrics(project: Dict[str, Any], collar: float) -> Dict[str, Any]:
     reference = project.get("segments") or []
     hypotheses = [("auto", "Черновик: сырой звук", project.get("auto_segments") or [])]
@@ -482,6 +603,7 @@ def save_project(
         speakers = validate_speakers(payload.speakers)
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+    previous_speakers = project.get("speakers")
     saved = label_store.save_labeling(
         project_id,
         expected_version=payload.version,
@@ -495,7 +617,22 @@ def save_project(
             status.HTTP_409_CONFLICT,
             "Разметку уже изменили (другая вкладка или пользователь) — перезагрузите её",
         )
+    if getattr(config, "auto_enroll", False):
+        _auto_enroll(saved, previous_speakers, segments, speakers, web_actor(user))
     return _project_view(saved, full=True)
+
+
+def _auto_enroll(project: Dict[str, Any], previous_speakers, segments, speakers, actor: str) -> None:
+    """VOICE_AUTO_ENROLL: поставить в очередь запись новых имён в эталоны. Сбой не мешает сохранению."""
+    try:
+        aux = _job_brief(project.get("aux_job_id"))
+        if aux and aux.get("status") in store.ACTIVE_STATUSES:
+            return  # занято другой вспомогательной задачей — эталоны запишутся при ручном «Записать голоса»
+        items = auto_enroll_items(previous_speakers, speakers, segments)
+        if items:
+            _enqueue_aux_job(project, actor, {"action": ACTION_ENROLL, "enroll": items, "with_text": False})
+    except Exception:  # noqa: BLE001 - автоматизация не должна ронять сохранение разметки
+        logging.getLogger("voice-server").exception("auto-enroll failed")
 
 
 @router.post("/projects/{project_id}/retry", status_code=status.HTTP_201_CREATED)
@@ -665,9 +802,13 @@ def project_metrics(
     return compute_metrics(_project_or_404(project_id), collar)
 
 
+ENROLL_MODES = ("skip", "merge", "replace")
+
+
 class EnrollRequest(BaseModel):
     labels: List[str] = Field(default_factory=list, max_length=MAX_SPEAKERS)
     replace: bool = False
+    mode: Optional[str] = None
 
 
 @router.post("/projects/{project_id}/enroll", status_code=status.HTTP_201_CREATED)
@@ -682,6 +823,9 @@ def enroll_voices(
     speakers = project.get("speakers") or {}
     segments = project.get("segments") or []
     labels = [str(l).strip() for l in payload.labels or []] or sorted(speakers)
+    mode = str(payload.mode or ("replace" if payload.replace else "skip"))
+    if mode not in ENROLL_MODES:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"Unknown enroll mode: {mode}")
     items = []
     for label in dict.fromkeys(labels):
         name = pipeline.sanitize_base((speakers.get(label) or {}).get("name") or "")
@@ -689,7 +833,7 @@ def enroll_voices(
             continue
         spans = enroll_spans(segments, label)
         if spans:
-            items.append({"label": label, "name": name, "spans": spans, "replace": bool(payload.replace)})
+            items.append({"label": label, "name": name, "spans": spans, "replace": mode == "replace", "mode": mode})
     if not items:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -817,3 +961,100 @@ def overall_calibration(
         "embedding_modes": sorted(m for m in modes if m),
         "suggestion": labeling_metrics.suggest_id_thresholds(items),
     }
+
+
+# ---------------------------------------------------------------------------
+# Faces: gallery of the recording's faces -> signed by the human -> face_roster.json (biometrics: thumbs are purged)
+# ---------------------------------------------------------------------------
+
+def _media_is_video(project: Dict[str, Any]) -> bool:
+    return Path(str(project.get("media_path") or "")).suffix.lower() in FACE_VIDEO_EXTENSIONS
+
+
+@router.get("/projects/{project_id}/faces")
+def project_faces(
+    project_id: str,
+    user: Dict[str, Any] = Depends(require_web_permission(PERM_MANAGE)),
+) -> Dict[str, Any]:
+    project = _project_or_404(project_id)
+    data = load_faces(project_id)
+    speakers = project.get("speakers") or {}
+    people = {str((info or {}).get("name") or "").strip() for info in speakers.values()} | set(face_roster_names())
+    return {
+        "is_video": _media_is_video(project),
+        "available": bool(data),
+        "faces_total": len((data or {}).get("faces") or []),
+        "clusters": faces_view(data, project.get("segments") or [], speakers) if data else [],
+        "people": sorted(name for name in people if name),
+    }
+
+
+@router.post("/projects/{project_id}/faces/scan", status_code=status.HTTP_201_CREATED)
+def scan_faces(
+    project_id: str,
+    user: Dict[str, Any] = Depends(require_web_permission(PERM_MANAGE)),
+) -> Dict[str, Any]:
+    """GPU job: find faces on the video around speech and group them into people (previous scan is replaced)."""
+    project = _project_or_404(project_id)
+    _require_ready_without_aux(project)
+    if not _media_is_video(project):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Это не видеозапись — лиц нет")
+    _enqueue_aux_job(project, web_actor(user), {"action": ACTION_FACES_SCAN, "with_text": False})
+    return _project_view(label_store.get_project(project_id) or project, full=True)
+
+
+@router.get("/projects/{project_id}/faces/thumbs/{face_id}")
+def face_thumb(
+    project_id: str,
+    face_id: int,
+    user: Dict[str, Any] = Depends(require_web_permission(PERM_MANAGE)),
+) -> FileResponse:
+    _project_or_404(project_id)
+    folder = faces_dir(project_id)
+    path = pipeline._inside(folder, folder / "thumbs" / f"{int(face_id)}.jpg") if folder and face_id >= 0 else None
+    if not path or not path.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Face not found")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+class FacesEnrollRequest(BaseModel):
+    assign: Dict[str, Dict[str, Any]] = Field(default_factory=dict, max_length=500)
+    purge: bool = True
+
+
+@router.post("/projects/{project_id}/faces/enroll", status_code=status.HTTP_201_CREATED)
+def enroll_faces(
+    project_id: str,
+    payload: FacesEnrollRequest,
+    user: Dict[str, Any] = Depends(require_web_permission(PERM_MANAGE)),
+) -> Dict[str, Any]:
+    """Save signed clusters into face_roster.json; by default the thumbnails and vectors are deleted afterwards."""
+    project = _project_or_404(project_id)
+    _require_ready_without_aux(project)
+    data = load_faces(project_id)
+    if not data:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Лица ещё не найдены — запустите поиск лиц")
+    assign = clean_face_assign(payload.assign, data)
+    if not any(choice["name"] and not choice["delete"] for choice in assign.values()):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Нет подписанных людей")
+    _enqueue_aux_job(
+        project, web_actor(user),
+        {"action": ACTION_FACES_ENROLL, "faces_assign": assign, "faces_purge": bool(payload.purge), "with_text": False},
+    )
+    return _project_view(label_store.get_project(project_id) or project, full=True)
+
+
+@router.delete("/projects/{project_id}/faces")
+def purge_faces(
+    project_id: str,
+    user: Dict[str, Any] = Depends(require_web_permission(PERM_MANAGE)),
+) -> Dict[str, Any]:
+    """Delete thumbnails and face vectors of this recording (biometrics are not kept longer than needed)."""
+    project = _project_or_404(project_id)
+    aux = _job_brief(project.get("aux_job_id"))
+    if aux and aux.get("status") in store.ACTIVE_STATUSES:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Уже выполняется другая операция по этой разметке")
+    folder = faces_dir(project_id)
+    if folder:
+        shutil.rmtree(folder, ignore_errors=True)
+    return {"purged": True}

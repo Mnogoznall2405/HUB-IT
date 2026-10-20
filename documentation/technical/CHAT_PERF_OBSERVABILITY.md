@@ -2,6 +2,8 @@
 
 ## Источники метрик
 
+Дополнительная поэтапная JSONL-трассировка через `backend.chat.send_audit` включается явно флагом `CHAT_AUDIT_ENABLED` (по умолчанию выключена; существующий механизм profile flags также учитывается). Если проверить флаг невозможно, запись не начинается. Это диагностический канал в дополнение к обычным route metrics; временный cache-hit writer из `SessionService` удалён.
+
 | Источник | Что смотреть |
 |----------|--------------|
 | `GET /api/v1/chat/health` | `route_metrics`, `read_cache_metrics`, pool/outbox/realtime |

@@ -9,6 +9,20 @@ import { normalizeActionTargets, runInBatches } from './databaseListModel';
 
 const NO_TARGET_ERROR = 'Не выбрано оборудование для операции';
 
+// Один seed на сессию диалога: повторное нажатие «Подтвердить» после сбоя
+// переиспользует operation_id и возобновляет durable-операцию на сервере
+// вместо повторного списания расходника.
+export const createMaintenanceOperationSeed = () =>
+  `mnt${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+export const buildMaintenanceOperationId = (seed, kind, invNo, consumableId, componentType = '') => {
+  const parts = [seed, kind, invNo, consumableId, componentType]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean)
+    .join('-');
+  return parts.slice(0, 64);
+};
+
 export const getActionErrorMessage = (error) => {
   let errorMessage = error?.message || 'Ошибка выполнения операции';
   const errorData = error?.response?.data;
@@ -133,6 +147,7 @@ export const executeMaintenanceAction = async ({
   getItemBranch,
   equipmentAPI,
   jsonAPI,
+  operationSeed = '',
 }) => {
   const targetInvNos = normalizeActionTargets(selectedItems, fallbackInvNo);
   if (targetInvNos.length === 0) {
@@ -161,27 +176,34 @@ export const executeMaintenanceAction = async ({
       equipmentAPI,
       getItemBranch,
       worker: async ({ invNo, item, fields }) => {
-        await equipmentAPI.consumeConsumable({
+        // Одна durable-операция: списание + запись работы атомарны на сервере,
+        // повтор с тем же operation_id возобновляет с checkpoint.
+        return equipmentAPI.consumeConsumable({
           item_id: selectedWorkConsumable.id,
           qty: 1,
           reason: 'cartridge',
-        });
-
-        return jsonAPI.addCartridgeReplacement({
-          printer_model: item?.MODEL_NAME || item?.model_name || 'Unknown',
-          cartridge_color: DEFAULT_CARTRIDGE_COLOR,
-          component_type: 'cartridge',
-          component_color: DEFAULT_CARTRIDGE_COLOR,
-          cartridge_model: selectedWorkConsumable.model_name || cartridgeModel || undefined,
-          detection_source: 'sql-consumables',
-          printer_is_color: undefined,
-          ...getCommonHistoryPayload({ item, invNo, fields, effectiveDbName }),
-          additional_data: {
-            consumable_item_id: selectedWorkConsumable.id,
-            consumable_inv_no: selectedWorkConsumable.inv_no || '',
-            consumable_model: selectedWorkConsumable.model_name || '',
-            consumable_branch: selectedWorkConsumable.branch_name || '',
-            consumable_location: selectedWorkConsumable.location_name || '',
+          operation_id: buildMaintenanceOperationId(
+            operationSeed, 'cartridge', invNo, selectedWorkConsumable.id
+          ),
+          work: {
+            kind: 'cartridge',
+            payload: {
+              printer_model: item?.MODEL_NAME || item?.model_name || 'Unknown',
+              cartridge_color: DEFAULT_CARTRIDGE_COLOR,
+              component_type: 'cartridge',
+              component_color: DEFAULT_CARTRIDGE_COLOR,
+              cartridge_model: selectedWorkConsumable.model_name || cartridgeModel || undefined,
+              detection_source: 'sql-consumables',
+              printer_is_color: undefined,
+              ...getCommonHistoryPayload({ item, invNo, fields, effectiveDbName }),
+              additional_data: {
+                consumable_item_id: selectedWorkConsumable.id,
+                consumable_inv_no: selectedWorkConsumable.inv_no || '',
+                consumable_model: selectedWorkConsumable.model_name || '',
+                consumable_branch: selectedWorkConsumable.branch_name || '',
+                consumable_location: selectedWorkConsumable.location_name || '',
+              },
+            },
           },
         });
       },
@@ -255,25 +277,32 @@ export const executeMaintenanceAction = async ({
           throw new Error('Не удалось определить модель компонента из выбранного расходника');
         }
 
-        await equipmentAPI.consumeConsumable({
+        // Одна durable-операция: повтор с тем же operation_id не списывает
+        // расходник повторно — сервер возобновляет с checkpoint «consumed».
+        return equipmentAPI.consumeConsumable({
           item_id: selectedWorkConsumable.id,
           qty: 1,
           reason: 'component',
-        });
-
-        return jsonAPI.addComponentReplacement({
-          ...getCommonHistoryPayload({ item, invNo, fields, effectiveDbName }),
-          component_type: componentType,
-          component_name: componentName,
-          component_model: resolvedComponentModel,
-          equipment_kind: componentKind,
-          detection_source: 'sql-consumables',
-          additional_data: {
-            consumable_item_id: selectedWorkConsumable.id,
-            consumable_inv_no: selectedWorkConsumable.inv_no || '',
-            consumable_model: selectedWorkConsumable.model_name || '',
-            consumable_branch: selectedWorkConsumable.branch_name || '',
-            consumable_location: selectedWorkConsumable.location_name || '',
+          operation_id: buildMaintenanceOperationId(
+            operationSeed, 'component', invNo, selectedWorkConsumable.id, componentType
+          ),
+          work: {
+            kind: 'component',
+            payload: {
+              ...getCommonHistoryPayload({ item, invNo, fields, effectiveDbName }),
+              component_type: componentType,
+              component_name: componentName,
+              component_model: resolvedComponentModel,
+              equipment_kind: componentKind,
+              detection_source: 'sql-consumables',
+              additional_data: {
+                consumable_item_id: selectedWorkConsumable.id,
+                consumable_inv_no: selectedWorkConsumable.inv_no || '',
+                consumable_model: selectedWorkConsumable.model_name || '',
+                consumable_branch: selectedWorkConsumable.branch_name || '',
+                consumable_location: selectedWorkConsumable.location_name || '',
+              },
+            },
           },
         });
       },

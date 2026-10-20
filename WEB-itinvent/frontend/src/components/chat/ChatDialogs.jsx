@@ -218,9 +218,12 @@ export default function ChatDialogs({
   onAddGroupMembers,
   onRemoveGroupParticipant,
   onUpdateGroupMemberRole,
+  onSetGroupMemberRestriction,
   onTransferGroupOwnership,
   onLeaveGroup,
   onUpdateGroupProfile,
+  onUploadGroupAvatar,
+  onRemoveGroupAvatar,
   onOpenTask,
   searchOpen,
   onCloseSearch,
@@ -1183,9 +1186,12 @@ export default function ChatDialogs({
             onAddGroupMembers={onAddGroupMembers}
             onRemoveGroupMember={onRemoveGroupParticipant}
             onUpdateGroupMemberRole={onUpdateGroupMemberRole}
+            onSetGroupMemberRestriction={onSetGroupMemberRestriction}
             onTransferGroupOwnership={onTransferGroupOwnership}
             onLeaveGroup={onLeaveGroup}
             onUpdateGroupProfile={onUpdateGroupProfile}
+            onUploadGroupAvatar={onUploadGroupAvatar}
+            onRemoveGroupAvatar={onRemoveGroupAvatar}
             settingsUpdating={settingsUpdating}
             onOpenAttachmentPreview={onOpenAttachmentPreview}
             onOpenTask={onOpenTask}

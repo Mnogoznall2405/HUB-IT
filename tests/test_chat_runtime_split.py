@@ -193,16 +193,15 @@ def test_postgres_scale_restart_is_rolling_and_cannot_activate_cluster():
     assert "CHAT_REALTIME_TRANSPORT') -ne 'postgres'" in source
     assert "CHAT_REALTIME_REQUIRED') -ne '1'" in source
     assert "Refusing to activate scale mode from a restart script" in source
-    assert "describe $requiredName" in source
-    assert "ConvertFrom-Json" not in source
+    assert "@('describe',$requiredName)" in source  # refuses when chat-a/b are not registered in PM2
     assert source.index("Name = 'itinvent-chat-a'") < source.index("Name = 'itinvent-chat-b'")
     assert "127.0.0.1:8002/health/ready" in source
     assert "127.0.0.1:8004/health/ready" in source
     assert "Stop-ChatNodeForRestart" in source
     assert "taskkill /PID $listenerPid /T /F" in source
     assert "realtime_subscriber_ready -eq $true" in source
-    assert "pid 'itinvent-chat-preview-worker'" in source
-    assert "delete 'itinvent-chat-preview-worker'" in source
+    assert "@('pid','itinvent-chat-preview-worker')" in source
+    assert "@('delete','itinvent-chat-preview-worker')" in source
     assert source.count("'itinvent-preview-worker'") == 1
     assert source.count("'itinvent-chat-push-worker'") == 1
 

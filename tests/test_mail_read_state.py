@@ -112,12 +112,15 @@ def _build_mail_user():
     )
 
 
-def test_mail_service_production_postgres_verifies_migrated_schema(monkeypatch):
+@pytest.mark.parametrize("environment", ["production", "development"])
+def test_mail_service_production_postgres_verifies_migrated_schema(monkeypatch, environment):
     inspector = _FakeInspector(
         columns_by_table=_complete_mail_columns(),
         indexes_by_table=_complete_mail_indexes(),
     )
     init_calls = _configure_production_mail_schema_guard(monkeypatch, inspector)
+    monkeypatch.setattr(mail_module.config.app, "environment", environment)
+    monkeypatch.setenv("APP_SCHEMA_DEV_AUTO_CREATE", "0")
 
     service = mail_module.MailService(database_url="postgresql://mail-prod")
 
@@ -125,7 +128,8 @@ def test_mail_service_production_postgres_verifies_migrated_schema(monkeypatch):
     assert init_calls == ["postgresql://mail-prod"]
 
 
-def test_mail_service_production_postgres_rejects_incomplete_schema(monkeypatch):
+@pytest.mark.parametrize("environment", ["production", "development"])
+def test_mail_service_production_postgres_rejects_incomplete_schema(monkeypatch, environment):
     columns_by_table = _complete_mail_columns()
     columns_by_table["mail_it_templates"].remove("required_fields_json")
     inspector = _FakeInspector(
@@ -133,6 +137,8 @@ def test_mail_service_production_postgres_rejects_incomplete_schema(monkeypatch)
         indexes_by_table=_complete_mail_indexes(),
     )
     _configure_production_mail_schema_guard(monkeypatch, inspector)
+    monkeypatch.setattr(mail_module.config.app, "environment", environment)
+    monkeypatch.setenv("APP_SCHEMA_DEV_AUTO_CREATE", "0")
 
     with pytest.raises(mail_module.MailSchemaConfigurationError, match="mail_it_templates.required_fields_json"):
         mail_module.MailService(database_url="postgresql://mail-prod")

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   Alert,
@@ -329,11 +329,14 @@ function PreviewPanel({ payload, token }) {
   const [previewRefreshKey, setPreviewRefreshKey] = useState(0);
   const [excelWorkbook, setExcelWorkbook] = useState(null);
   const [excelLoading, setExcelLoading] = useState(false);
+  const excelLoadedTokenRef = useRef('');
 
   useEffect(() => {
     if (!payload?.preview_available || fullPreviewOpen || !isDeferredDocumentPreview || sourceKind !== 'excel') {
       return undefined;
     }
+    // The workbook for this link is already parsed: closing the full preview must not download it again.
+    if (excelLoadedTokenRef.current === token) return undefined;
 
     let cancelled = false;
     setExcelLoading(true);
@@ -346,7 +349,10 @@ function PreviewPanel({ payload, token }) {
       })
       .then((blob) => parseExcelWorkbookFromBlob(blob))
       .then((workbook) => {
-        if (!cancelled) setExcelWorkbook(workbook);
+        if (!cancelled) {
+          excelLoadedTokenRef.current = token;
+          setExcelWorkbook(workbook);
+        }
       })
       .catch(() => {
         if (!cancelled) setExcelWorkbook(null);

@@ -258,73 +258,87 @@ export default function useTasksPageController() {
     visibleTaskItems: list.visibleTaskItems,
   });
 
+  const realtimeDetailsRef = useRef(details);
+  realtimeDetailsRef.current = details;
+
   useEffect(() => {
+    let active = true;
+    let draining = false;
     let refreshTimer = null;
-    let refreshSelectedTask = false;
-    let selectedTaskDeleted = false;
+    const refreshDetailIds = new Set();
+    const deletedDetailIds = new Set();
     let needsFullListReload = false;
-    const patchTaskIds = new Set();
+    const patchTaskIds = new Map();
+    const latestTaskChanges = new Map();
 
     const isListCompositionEvent = (op) => op === 'created' || op === 'deleted';
 
+    const flush = async () => {
+      refreshTimer = null;
+      draining = true;
+      try {
+        while (active && (needsFullListReload || patchTaskIds.size)) {
+          const selectedTaskId = String(realtimeDetailsRef.current.selectedTaskId || '').trim();
+          const refreshSelectedTask = refreshDetailIds.has(selectedTaskId);
+          const selectedTaskDeleted = deletedDetailIds.has(selectedTaskId);
+          refreshDetailIds.clear();
+          deletedDetailIds.clear();
+          if (needsFullListReload) {
+            needsFullListReload = false;
+            patchTaskIds.clear();
+            latestTaskChanges.clear();
+            await list.reloadTasks();
+          } else {
+            const batch = [...patchTaskIds.entries()].slice(0, 10);
+            batch.forEach(([id]) => patchTaskIds.delete(id));
+            await Promise.all(batch.map(async ([id, change]) => {
+              const isCurrent = () => active && latestTaskChanges.get(id) === change;
+              try {
+                const task = await hubTasksAPI.getTask(id);
+                if (isCurrent()) list.patchTaskItem(id, stripTaskDetailOnlyKeys(task || {}));
+              } catch {
+                if (isCurrent()) setError('Не удалось обновить часть задач. Обновите список, чтобы получить актуальные данные.');
+              } finally {
+                if (isCurrent()) latestTaskChanges.delete(id);
+              }
+            }));
+          }
+          if (active && selectedTaskId && selectedTaskId === String(realtimeDetailsRef.current.selectedTaskId || '').trim()) {
+            if (selectedTaskDeleted) realtimeDetailsRef.current.closeTaskDetails();
+            else if (refreshSelectedTask) void realtimeDetailsRef.current.loadTaskDetails(selectedTaskId);
+          }
+        }
+      } finally {
+        draining = false;
+      }
+    };
+
     const scheduleRefresh = ({ taskId = '', operation = '', forceSnapshot = false } = {}) => {
       const normalizedTaskId = String(taskId || '').trim();
-      const selectedTaskId = String(details.selectedTaskId || '').trim();
+      const selectedTaskId = String(realtimeDetailsRef.current.selectedTaskId || '').trim();
       const normalizedOperation = String(operation || '').trim().toLowerCase();
       if (normalizedOperation === 'deleted' && normalizedTaskId && normalizedTaskId === selectedTaskId) {
-        selectedTaskDeleted = true;
+        deletedDetailIds.add(normalizedTaskId);
       }
-      if (forceSnapshot || (normalizedOperation && isListCompositionEvent(normalizedOperation))) {
+      if (forceSnapshot || isListCompositionEvent(normalizedOperation) || !normalizedTaskId) {
         needsFullListReload = true;
+        // A new snapshot supersedes pending and in-flight item reads.
+        patchTaskIds.clear();
+        latestTaskChanges.clear();
       } else if (normalizedTaskId) {
-        patchTaskIds.add(normalizedTaskId);
-      } else if (normalizedOperation) {
-        needsFullListReload = true;
-      } else {
-        // Unknown payload shape (no task id): conservatively refresh the whole list.
-        needsFullListReload = true;
+        const change = {};
+        patchTaskIds.set(normalizedTaskId, change);
+        latestTaskChanges.set(normalizedTaskId, change);
       }
       if (
         normalizedTaskId
         && normalizedTaskId === selectedTaskId
         && !isListCompositionEvent(normalizedOperation)
       ) {
-        refreshSelectedTask = Boolean(selectedTaskId);
+        refreshDetailIds.add(normalizedTaskId);
       }
-      if (refreshTimer) return;
-      refreshTimer = window.setTimeout(() => {
-        refreshTimer = null;
-        if (needsFullListReload) {
-          void list.reloadTasks();
-          if (selectedTaskDeleted) {
-            details.closeTaskDetails();
-          } else if (refreshSelectedTask && selectedTaskId) {
-            void details.loadTaskDetails(selectedTaskId);
-          }
-        } else {
-          const taskIds = [...patchTaskIds];
-          patchTaskIds.clear();
-          if (refreshSelectedTask && selectedTaskId) {
-            void details.loadTaskDetails(selectedTaskId);
-          }
-          void Promise.all(
-            taskIds.slice(0, 10).map((id) => (async () => {
-              try {
-                const task = await hubTasksAPI.getTask(id);
-                list.patchTaskItem(id, stripTaskDetailOnlyKeys(task || {}));
-              } catch {
-                // patched item stays stale until the next full reload
-              }
-            })()),
-          );
-        }
-        if (needsFullListReload && patchTaskIds.size) {
-          patchTaskIds.clear();
-        }
-        needsFullListReload = false;
-        refreshSelectedTask = false;
-        selectedTaskDeleted = false;
-      }, 75);
+      if (refreshTimer || draining) return;
+      refreshTimer = window.setTimeout(() => { void flush(); }, 75);
     };
 
     const handleTaskChanged = (event) => {
@@ -339,16 +353,16 @@ export default function useTasksPageController() {
     window.addEventListener(HUB_REALTIME_TASK_EVENT, handleTaskChanged);
     window.addEventListener(HUB_REALTIME_CONNECTED_EVENT, handleConnected);
     return () => {
+      active = false;
       if (refreshTimer) window.clearTimeout(refreshTimer);
       window.removeEventListener(HUB_REALTIME_TASK_EVENT, handleTaskChanged);
       window.removeEventListener(HUB_REALTIME_CONNECTED_EVENT, handleConnected);
     };
   }, [
-    details.closeTaskDetails,
-    details.loadTaskDetails,
-    details.selectedTaskId,
     list.patchTaskItem,
     list.reloadTasks,
+    setError,
+    user?.id,
   ]);
 
   const create = useTaskCreate({

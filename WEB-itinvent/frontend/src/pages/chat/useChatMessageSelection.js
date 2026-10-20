@@ -4,6 +4,7 @@ import { canDeleteChatMessage, getMessagePreview } from '../../components/chat/c
 
 export default function useChatMessageSelection({
   conversationKind,
+  viewerMemberRole,
   messages,
   selectedMessageIds,
 }) {
@@ -31,8 +32,8 @@ export default function useChatMessageSelection({
 
   const canDeleteSelectedMessages = useMemo(
     () => selectedMessages.length > 0
-      && selectedMessages.every((message) => canDeleteChatMessage(message, { conversationKind })),
-    [conversationKind, selectedMessages],
+      && selectedMessages.every((message) => canDeleteChatMessage(message, { conversationKind, viewerMemberRole })),
+    [conversationKind, selectedMessages, viewerMemberRole],
   );
 
   return {

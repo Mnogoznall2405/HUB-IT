@@ -569,6 +569,85 @@ def test_relay_does_not_advance_cursor_when_handler_fails():
     assert bus._cursor == 4
 
 
+def _poison_manager(poison_numbers, fail_times=None):
+    class _Poison:
+        def __init__(self):
+            self.delivered: list[int] = []
+            self.calls: dict[int, int] = {}
+
+        async def handle_distributed_event(self, payload):
+            number = int(payload["payload"]["event_number"])
+            self.calls[number] = self.calls.get(number, 0) + 1
+            if number in poison_numbers and (fail_times is None or self.calls[number] <= fail_times):
+                raise RuntimeError("deterministic handler failure")
+            self.delivered.append(number)
+
+    return _Poison()
+
+
+def _relay_row(event_id, conversation_id):
+    return (
+        event_id,
+        "node-b",
+        json.dumps({"conversation_id": conversation_id, "payload": {"event_number": event_id}}),
+    )
+
+
+def test_relay_skips_a_row_whose_handler_keeps_failing_instead_of_blocking_the_node():
+    manager = _poison_manager({5})
+    bus = _bus(manager)
+    bus._cursor = 4
+    rows = [_relay_row(5, "conversation-a"), _relay_row(6, "conversation-b")]
+
+    for _attempt in range(2):
+        with pytest.raises(RuntimeError, match="deterministic handler failure"):
+            asyncio.run(bus._deliver_rows(rows))
+        assert bus._cursor == 4
+
+    asyncio.run(bus._deliver_rows(rows))
+
+    assert bus._cursor == 6
+    assert 5 not in manager.delivered
+    assert manager.delivered.count(6) == 3
+    assert bus._relay_skipped_poison_total == 1
+
+
+def test_relay_delivers_later_events_of_the_same_conversation_after_skipping_a_poison_row():
+    manager = _poison_manager({5})
+    bus = _bus(manager)
+    bus._cursor = 4
+    rows = [_relay_row(5, "conversation-a"), _relay_row(6, "conversation-a")]
+
+    for _attempt in range(2):
+        with pytest.raises(RuntimeError):
+            asyncio.run(bus._deliver_rows(rows))
+    asyncio.run(bus._deliver_rows(rows))
+    # The failed lane stops at the poison row; the next drain starts right after it.
+    assert bus._cursor == 5
+    assert manager.delivered == []
+
+    asyncio.run(bus._deliver_rows([_relay_row(6, "conversation-a")]))
+    assert bus._cursor == 6
+    assert manager.delivered == [6]
+
+
+def test_relay_transient_handler_failure_is_retried_and_never_skipped():
+    manager = _poison_manager({5}, fail_times=2)
+    bus = _bus(manager)
+    bus._cursor = 4
+    rows = [_relay_row(5, "conversation-a")]
+
+    for _attempt in range(2):
+        with pytest.raises(RuntimeError):
+            asyncio.run(bus._deliver_rows(rows))
+    asyncio.run(bus._deliver_rows(rows))
+
+    assert manager.delivered == [5]
+    assert bus._cursor == 5
+    assert bus._relay_skipped_poison_total == 0
+    assert bus._relay_failure_counts == {}
+
+
 def test_relay_parallelizes_independent_conversations_but_preserves_each_order():
     class _TrackingManager:
         def __init__(self):
@@ -1163,11 +1242,12 @@ def test_presence_write_does_not_wait_for_relay_publisher_lock(monkeypatch):
     assert seen_connections == [presence_conn]
 
 
+@pytest.mark.parametrize("environment", ["production", "development"])
 @pytest.mark.parametrize("schema", ["chat", "public"])
-def test_production_relay_schema_check_does_not_execute_ddl(monkeypatch, schema):
+def test_relay_schema_check_does_not_execute_ddl(monkeypatch, schema, environment):
     from backend.config import config
 
-    monkeypatch.setattr(config.app, "environment", "production")
+    monkeypatch.setattr(config.app, "environment", environment)
     bus = _bus()
     queries = []
 
@@ -1191,10 +1271,11 @@ def test_production_relay_schema_check_does_not_execute_ddl(monkeypatch, schema)
     assert queries and all(query.startswith("SELECT") for query in queries)
 
 
-def test_production_relay_missing_schema_fails_with_migration_instruction(monkeypatch):
+@pytest.mark.parametrize("environment", ["production", "development"])
+def test_relay_missing_schema_fails_with_migration_instruction(monkeypatch, environment):
     from backend.config import config
 
-    monkeypatch.setattr(config.app, "environment", "production")
+    monkeypatch.setattr(config.app, "environment", environment)
     class Connection:
         def execute(self, query, params=None):
             assert str(query).startswith("SELECT")

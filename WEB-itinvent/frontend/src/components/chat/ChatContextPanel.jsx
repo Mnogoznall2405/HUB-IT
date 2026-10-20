@@ -59,6 +59,9 @@ import MailOutlineRoundedIcon from '@mui/icons-material/MailOutlineRounded';
 import ChatBrokenMediaThumb from './ChatBrokenMediaThumb';
 import ChatRightPanelHeader from './ChatRightPanelHeader';
 import { chatAPI } from '../../api/client';
+import ChatGroupActivityDialog from './ChatGroupActivityDialog';
+import ChatGroupRestrictDialog from './ChatGroupRestrictDialog';
+import ChatGroupSlowModeDialog, { describeSlowMode } from './ChatGroupSlowModeDialog';
 import { findAddressBookEntryForChatUser, pickAddressBookWorkplace } from '../../lib/addressBookChat';
 import { CHAT_FEATURE_ENABLED } from '../../lib/chatFeature';
 import { ConversationAvatar, PresenceAvatar } from './ChatCommon';
@@ -85,6 +88,7 @@ const getFileExtension = (fileName) => {
   return normalized.split('.').pop()?.toUpperCase() || '';
 };
 
+const GROUP_AVATAR_MAX_BYTES = 5 * 1024 * 1024;
 const PANEL_WIDTH = 360;
 const COLLAPSED_WIDTH = 72;
 const ATTACHMENT_PAGE_SIZE = 12;
@@ -686,9 +690,48 @@ function MobileProfileInfoRow({ icon, label, value, trailing = null, onClick = n
   );
 }
 
-function ConversationNotificationsToggle({ muted, disabled, onChange }) {
+const MUTE_DURATION_OPTIONS = [
+  { key: '1h', label: 'На 1 час', hours: 1 },
+  { key: '8h', label: 'На 8 часов', hours: 8 },
+  { key: '1d', label: 'На 1 день', hours: 24 },
+  { key: '7d', label: 'На 7 дней', hours: 24 * 7 },
+  { key: 'forever', label: 'Навсегда', hours: 0 },
+];
+
+const formatMutedUntil = (mutedUntil) => {
+  const parsed = Date.parse(String(mutedUntil || ''));
+  if (!Number.isFinite(parsed) || parsed <= Date.now()) return '';
+  return new Date(parsed).toLocaleString('ru-RU', {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+function ConversationNotificationsToggle({ muted, mutedUntil, disabled, onChange }) {
   const enabled = !muted;
   const toggleDisabled = Boolean(disabled) || typeof onChange !== 'function';
+  const [durationAnchor, setDurationAnchor] = useState(null);
+  const mutedUntilLabel = muted ? formatMutedUntil(mutedUntil) : '';
+
+  const handleSwitch = (event, checked) => {
+    if (checked) {
+      onChange?.({ is_muted: false });
+      return;
+    }
+    // Turning notifications off asks for how long, like Telegram.
+    setDurationAnchor(event.currentTarget);
+  };
+
+  const handlePickDuration = (option) => {
+    setDurationAnchor(null);
+    if (option.hours <= 0) {
+      onChange?.({ is_muted: true });
+      return;
+    }
+    onChange?.({ muted_until: new Date(Date.now() + option.hours * 3600 * 1000).toISOString() });
+  };
 
   return (
     <Box
@@ -722,7 +765,7 @@ function ConversationNotificationsToggle({ muted, disabled, onChange }) {
         control={(
           <Switch
             checked={enabled}
-            onChange={(_, checked) => onChange?.({ is_muted: !checked })}
+            onChange={handleSwitch}
             inputProps={{ 'aria-label': 'Уведомления для этого чата' }}
           />
         )}
@@ -746,7 +789,9 @@ function ConversationNotificationsToggle({ muted, disabled, onChange }) {
                 lineHeight: 1.2,
               }}
             >
-              {enabled ? 'Включены' : 'Выключены, кроме личных упоминаний'}
+              {enabled
+                ? 'Включены'
+                : (mutedUntilLabel ? `Выключены до ${mutedUntilLabel}` : 'Выключены, кроме личных упоминаний')}
             </Typography>
           </Box>
         )}
@@ -766,6 +811,18 @@ function ConversationNotificationsToggle({ muted, disabled, onChange }) {
           },
         }}
       />
+      <Menu
+        anchorEl={durationAnchor}
+        open={Boolean(durationAnchor)}
+        onClose={() => setDurationAnchor(null)}
+        MenuListProps={{ 'data-testid': 'chat-mute-duration-menu' }}
+      >
+        {MUTE_DURATION_OPTIONS.map((option) => (
+          <MenuItem key={option.key} onClick={() => handlePickDuration(option)}>
+            {option.label}
+          </MenuItem>
+        ))}
+      </Menu>
     </Box>
   );
 }
@@ -1562,9 +1619,12 @@ export default function ChatContextPanel({
   onAddGroupMembers,
   onRemoveGroupMember,
   onUpdateGroupMemberRole,
+  onSetGroupMemberRestriction,
   onTransferGroupOwnership,
   onLeaveGroup,
   onUpdateGroupProfile,
+  onUploadGroupAvatar,
+  onRemoveGroupAvatar,
   settingsUpdating,
   onOpenAttachmentPreview,
   onOpenTask,
@@ -1590,8 +1650,14 @@ export default function ChatContextPanel({
   const [memberActionAnchorEl, setMemberActionAnchorEl] = useState(null);
   const [memberActionTarget, setMemberActionTarget] = useState(null);
   const [groupActionBusy, setGroupActionBusy] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [slowModeOpen, setSlowModeOpen] = useState(false);
+  const [restrictTarget, setRestrictTarget] = useState(null);
   const { confirm: confirmDialog, prompt: promptDialog } = useConfirmDialog();
-  const notifyApiError = useOptionalNotification()?.notifyApiError;
+  const notifications = useOptionalNotification();
+  const notifyApiError = notifications?.notifyApiError;
+  const notifyWarning = notifications?.notifyWarning;
+  const notifySuccess = notifications?.notifySuccess;
   const mobileTabTouchStartRef = useRef(null);
   const conversationId = String(activeConversation?.id || '').trim();
   const isDirect = activeConversation?.kind === 'direct';
@@ -1960,6 +2026,118 @@ export default function ChatContextPanel({
     void runGroupAction(() => onUpdateGroupProfile?.({ title: normalizedTitle }));
   }, [activeConversation?.title, canManageOwners, onUpdateGroupProfile, promptDialog, runGroupAction]);
 
+  const avatarInputRef = useRef(null);
+  const handleChangeAvatar = useCallback(() => {
+    if (!canManageOwners) return;
+    setInfoMenuAnchorEl(null);
+    avatarInputRef.current?.click();
+  }, [canManageOwners]);
+
+  const handleAvatarFileChange = useCallback((event) => {
+    const file = event.target.files?.[0] || null;
+    event.target.value = '';
+    if (!file) return;
+    if (file.type && !file.type.startsWith('image/')) {
+      notifyWarning?.('Выберите изображение: JPG, PNG или WebP.');
+      return;
+    }
+    if (Number(file.size || 0) > GROUP_AVATAR_MAX_BYTES) {
+      notifyWarning?.('Фото группы не должно быть больше 5 МБ.');
+      return;
+    }
+    void runGroupAction(() => onUploadGroupAvatar?.(file));
+  }, [notifyWarning, onUploadGroupAvatar, runGroupAction]);
+
+  const handleRemoveAvatar = useCallback(() => {
+    if (!canManageOwners) return;
+    setInfoMenuAnchorEl(null);
+    void runGroupAction(() => onRemoveGroupAvatar?.());
+  }, [canManageOwners, onRemoveGroupAvatar, runGroupAction]);
+
+  const handleEditDescription = useCallback(async () => {
+    if (!canManageMembers) return;
+    setInfoMenuAnchorEl(null);
+    const nextDescription = await promptDialog({
+      title: 'Описание группы',
+      label: 'Описание (пусто — убрать)',
+      initialValue: String(activeConversation?.description || '').trim(),
+      confirmLabel: 'Сохранить',
+      allowEmpty: true,
+    });
+    if (nextDescription === null || nextDescription === undefined) return;
+    const normalizedDescription = String(nextDescription).trim();
+    if (normalizedDescription === String(activeConversation?.description || '').trim()) return;
+    void runGroupAction(() => onUpdateGroupProfile?.({ description: normalizedDescription }));
+  }, [activeConversation?.description, canManageMembers, onUpdateGroupProfile, promptDialog, runGroupAction]);
+
+  const postingManagersOnly = String(activeConversation?.posting_policy || '').trim() === 'managers';
+  const groupClosed = String(activeConversation?.posting_policy || '').trim() === 'closed';
+  const handleCreateInviteLink = useCallback(async () => {
+    if (!canManageMembers) return;
+    setInfoMenuAnchorEl(null);
+    const confirmed = await confirmDialog({
+      title: 'Создать ссылку-приглашение?',
+      message: 'Прежняя ссылка перестанет работать. Новая действует 7 дней и подходит только сотрудникам портала.',
+      confirmLabel: 'Создать',
+    });
+    if (!confirmed) return;
+    void runGroupAction(async () => {
+      const result = await chatAPI.createGroupInvite(conversationId);
+      const link = `${window.location.origin}/chat?join=${encodeURIComponent(result?.token || '')}`;
+      try {
+        await navigator.clipboard.writeText(link);
+        notifySuccess?.('Ссылка скопирована. Она действует 7 дней.');
+      } catch {
+        // No clipboard access: show the link so it can be copied by hand.
+        await promptDialog({
+          title: 'Ссылка-приглашение',
+          label: 'Скопируйте ссылку',
+          initialValue: link,
+          confirmLabel: 'Готово',
+        });
+      }
+    });
+  }, [canManageMembers, confirmDialog, conversationId, notifySuccess, promptDialog, runGroupAction]);
+
+  const handleToggleGroupClosed = useCallback(async () => {
+    if (!canManageOwners) return;
+    setInfoMenuAnchorEl(null);
+    if (!groupClosed) {
+      const confirmed = await confirmDialog({
+        title: 'Закрыть группу для сообщений?',
+        message: 'Никто, включая вас, не сможет писать. Группу можно открыть снова.',
+        confirmLabel: 'Закрыть',
+        destructive: true,
+      });
+      if (!confirmed) return;
+    }
+    void runGroupAction(() => onUpdateGroupProfile?.({ posting_policy: groupClosed ? 'all' : 'closed' }));
+  }, [canManageOwners, confirmDialog, groupClosed, onUpdateGroupProfile, runGroupAction]);
+  const slowModeSeconds = Number(activeConversation?.slow_mode_seconds || 0);
+  const handleSubmitSlowMode = useCallback((seconds) => {
+    if (!canManageOwners) return;
+    setSlowModeOpen(false);
+    void runGroupAction(() => onUpdateGroupProfile?.({ slow_mode_seconds: Number(seconds) }));
+  }, [canManageOwners, onUpdateGroupProfile, runGroupAction]);
+  const handleSubmitRestriction = useCallback((durationSeconds) => {
+    const targetUserId = Number(restrictTarget?.user?.id || 0);
+    setRestrictTarget(null);
+    if (targetUserId <= 0) return;
+    void runGroupAction(() => onSetGroupMemberRestriction?.(targetUserId, { restricted: true, durationSeconds }));
+  }, [onSetGroupMemberRestriction, restrictTarget, runGroupAction]);
+  // Absent means allowed (older servers, or the permissions table is not migrated yet).
+  const membersSendFiles = activeConversation?.members_send_files !== false;
+  const handleToggleMembersFiles = useCallback(() => {
+    if (!canManageOwners) return;
+    setInfoMenuAnchorEl(null);
+    void runGroupAction(() => onUpdateGroupProfile?.({ members_send_files: !membersSendFiles }));
+  }, [canManageOwners, membersSendFiles, onUpdateGroupProfile, runGroupAction]);
+  const handleTogglePostingPolicy = useCallback(() => {
+    if (!canManageOwners) return;
+    setInfoMenuAnchorEl(null);
+    void runGroupAction(() => onUpdateGroupProfile?.({ posting_policy: postingManagersOnly ? 'all' : 'managers' }));
+  }, [canManageOwners, onUpdateGroupProfile, postingManagersOnly, runGroupAction]);
+
   const handleLeaveGroup = useCallback(async () => {
     if (!isGroup || currentMemberRole === 'owner') return;
     setInfoMenuAnchorEl(null);
@@ -2215,6 +2393,9 @@ export default function ChatContextPanel({
     && memberActionUserId !== currentUserId
     && memberActionRole !== 'owner'
     && (currentMemberRole === 'owner' || memberActionRole === 'member');
+  // Same hierarchy as removal: the owner restricts anyone but himself, a moderator only plain members.
+  const canRestrictSelectedMember = canRemoveSelectedMember && typeof onSetGroupMemberRestriction === 'function';
+  const selectedMemberRestricted = Boolean(memberActionTarget?.is_restricted);
   const subjectCorporateEmail = String(subject?.corporate_email || '').trim();
   const subjectCorporatePhone = String(subject?.corporate_phone || '').trim();
   const subjectOfficeAddress = normalizeOfficeValue(subject?.office_address) || normalizeOfficeValue(peerWorkplace?.office_address);
@@ -2285,6 +2466,43 @@ export default function ChatContextPanel({
           Передать ownership
         </MenuItem>
       ) : null}
+      {canTransferSelectedOwnership ? (
+        <MenuItem
+          disabled={groupActionBusy}
+          onClick={async () => {
+            const targetUserId = memberActionUserId;
+            closeMemberActionMenu();
+            const confirmed = await confirmDialog({
+              title: `Передать владение и выйти из «${String(activeConversation?.title || 'группы').trim()}»?`,
+              message: 'Выбранный участник станет владельцем, вы перестанете получать новые сообщения.',
+              confirmLabel: 'Передать и выйти',
+              destructive: true,
+            });
+            if (!confirmed) return;
+            void runGroupAction(() => onLeaveGroup?.({ successorUserId: targetUserId }));
+          }}
+        >
+          Передать владение и выйти
+        </MenuItem>
+      ) : null}
+      {canRestrictSelectedMember ? (
+        <MenuItem
+          disabled={groupActionBusy}
+          data-testid={selectedMemberRestricted ? 'chat-member-lift-restriction' : 'chat-member-restrict'}
+          onClick={() => {
+            const target = memberActionTarget;
+            const targetUserId = memberActionUserId;
+            closeMemberActionMenu();
+            if (selectedMemberRestricted) {
+              void runGroupAction(() => onSetGroupMemberRestriction?.(targetUserId, { restricted: false }));
+              return;
+            }
+            setRestrictTarget(target);
+          }}
+        >
+          {selectedMemberRestricted ? 'Снять ограничение' : 'Ограничить отправку'}
+        </MenuItem>
+      ) : null}
       {canRemoveSelectedMember ? (
         <MenuItem
           disabled={groupActionBusy}
@@ -2304,7 +2522,7 @@ export default function ChatContextPanel({
           Исключить из группы
         </MenuItem>
       ) : null}
-      {!canPromoteSelectedMember && !canDemoteSelectedMember && !canTransferSelectedOwnership && !canRemoveSelectedMember ? (
+      {!canPromoteSelectedMember && !canDemoteSelectedMember && !canTransferSelectedOwnership && !canRemoveSelectedMember && !canRestrictSelectedMember ? (
         <MenuItem disabled>Нет доступных действий</MenuItem>
       ) : null}
     </Menu>
@@ -2440,6 +2658,22 @@ export default function ChatContextPanel({
                 ? 'Сохраняйте ссылки, файлы и напоминания для себя'
                 : (conversationHeaderSubtitle || (isDirect && subject?.presence?.is_online ? 'в сети' : 'был(а) недавно'))}
             </Typography>
+          {isGroup && String(activeConversation?.description || '').trim() ? (
+            <Typography
+              data-testid="chat-group-description"
+              sx={{
+                mt: 1,
+                px: 1,
+                fontSize: '0.95rem',
+                lineHeight: 1.35,
+                textAlign: 'center',
+                whiteSpace: 'pre-wrap',
+                color: 'var(--chat-sheet-panel-muted)',
+              }}
+            >
+              {activeConversation.description}
+            </Typography>
+          ) : null}
           </Box>
 
           <Box sx={{ pb: 1.2 }}>
@@ -2531,6 +2765,7 @@ export default function ChatContextPanel({
 
             <ConversationNotificationsToggle
               muted={activeConversation?.is_muted}
+              mutedUntil={activeConversation?.muted_until}
               disabled={settingsUpdating}
               onChange={onUpdateConversationSettings}
             />
@@ -2701,6 +2936,25 @@ export default function ChatContextPanel({
                                   {GROUP_ROLE_LABELS[role]}
                                 </Box>
                               ) : null}
+                              {member?.is_restricted ? (
+                                <Box
+                                  component="span"
+                                  data-testid="chat-member-restricted"
+                                  title="Не может писать в группе"
+                                  sx={{
+                                    px: 0.7,
+                                    py: 0.15,
+                                    borderRadius: 999,
+                                    border: '1px solid currentColor',
+                                    color: 'var(--chat-sheet-warning, #d64b4b)',
+                                    fontSize: '0.66rem',
+                                    fontWeight: 800,
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  ограничен
+                                </Box>
+                              ) : null}
                             </Stack>
                             <Typography sx={{ mt: 0.1, color: 'var(--chat-sheet-panel-soft)', fontSize: '0.83rem' }} noWrap>
                               {getPersonContextLine(person)}
@@ -2782,6 +3036,61 @@ export default function ChatContextPanel({
               Переименовать группу
             </MenuItem>
           ) : null}
+          {canManageOwners ? (
+            <MenuItem onClick={handleChangeAvatar}>
+              Сменить фото группы
+            </MenuItem>
+          ) : null}
+          {isGroup && canManageMembers ? (
+            <MenuItem onClick={handleEditDescription}>
+              Изменить описание
+            </MenuItem>
+          ) : null}
+          {isGroup && canManageOwners && !groupClosed ? (
+            <MenuItem onClick={handleTogglePostingPolicy}>
+              {postingManagersOnly ? 'Разрешить писать всем' : 'Писать могут только админы'}
+            </MenuItem>
+          ) : null}
+          {isGroup && canManageOwners && !groupClosed ? (
+            <MenuItem
+              onClick={() => {
+                setInfoMenuAnchorEl(null);
+                setSlowModeOpen(true);
+              }}
+            >
+              {slowModeSeconds > 0 ? `Медленный режим: ${describeSlowMode(slowModeSeconds)}` : 'Медленный режим'}
+            </MenuItem>
+          ) : null}
+          {isGroup && canManageMembers ? (
+            <MenuItem onClick={handleCreateInviteLink}>
+              Ссылка-приглашение
+            </MenuItem>
+          ) : null}
+          {isGroup && canManageMembers ? (
+            <MenuItem
+              onClick={() => {
+                setInfoMenuAnchorEl(null);
+                setActivityOpen(true);
+              }}
+            >
+              Журнал действий
+            </MenuItem>
+          ) : null}
+          {isGroup && canManageOwners && !groupClosed ? (
+            <MenuItem onClick={handleToggleMembersFiles}>
+              {membersSendFiles ? 'Запретить файлы участникам' : 'Разрешить файлы участникам'}
+            </MenuItem>
+          ) : null}
+          {isGroup && canManageOwners ? (
+            <MenuItem onClick={handleToggleGroupClosed}>
+              {groupClosed ? 'Открыть группу' : 'Закрыть группу'}
+            </MenuItem>
+          ) : null}
+          {canManageOwners && activeConversation?.avatar_url ? (
+            <MenuItem onClick={handleRemoveAvatar}>
+              Удалить фото группы
+            </MenuItem>
+          ) : null}
           {isGroup && currentMemberRole !== 'owner' ? (
             <MenuItem onClick={handleLeaveGroup} sx={{ color: 'var(--chat-sheet-warning, #d64b4b) !important' }}>
               Покинуть беседу
@@ -2789,6 +3098,39 @@ export default function ChatContextPanel({
           ) : null}
         </Menu>
         {memberActionsMenu}
+        {isGroup && canManageMembers ? (
+          <ChatGroupActivityDialog
+            open={activityOpen}
+            conversationId={activeConversation?.id}
+            onClose={() => setActivityOpen(false)}
+          />
+        ) : null}
+        {isGroup && canManageOwners ? (
+          <ChatGroupSlowModeDialog
+            open={slowModeOpen}
+            currentSeconds={slowModeSeconds}
+            busy={groupActionBusy}
+            onClose={() => setSlowModeOpen(false)}
+            onSubmit={handleSubmitSlowMode}
+          />
+        ) : null}
+        {isGroup && canManageMembers ? (
+          <ChatGroupRestrictDialog
+            open={Boolean(restrictTarget)}
+            memberName={String(restrictTarget?.user?.full_name || restrictTarget?.user?.username || '').trim()}
+            busy={groupActionBusy}
+            onClose={() => setRestrictTarget(null)}
+            onSubmit={handleSubmitRestriction}
+          />
+        ) : null}
+        <input
+          ref={avatarInputRef}
+          type="file"
+          accept="image/*"
+          hidden
+          data-testid="group-avatar-input"
+          onChange={handleAvatarFileChange}
+        />
       </Box>
     );
   }
@@ -2870,6 +3212,22 @@ export default function ChatContextPanel({
               ? 'Участники синхронизируются с карточкой задачи'
               : (conversationHeaderSubtitle || (isGroup ? `${assetCounts.member} участников` : (isDirect && subject?.presence?.is_online ? 'в сети' : 'был(а) недавно')))}
         </Typography>
+          {isGroup && String(activeConversation?.description || '').trim() ? (
+            <Typography
+              data-testid="chat-group-description"
+              sx={{
+                mt: 1,
+                px: 1,
+                fontSize: '0.95rem',
+                lineHeight: 1.35,
+                textAlign: 'center',
+                whiteSpace: 'pre-wrap',
+                color: 'var(--chat-sheet-panel-muted)',
+              }}
+            >
+              {activeConversation.description}
+            </Typography>
+          ) : null}
         {isTask && taskId ? (
           <Button
             size="small"
@@ -2891,6 +3249,96 @@ export default function ChatContextPanel({
                 sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
               >
                 Переименовать
+              </Button>
+            ) : null}
+            {canManageOwners ? (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={handleChangeAvatar}
+                disabled={groupActionBusy}
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                Фото
+              </Button>
+            ) : null}
+            {canManageMembers ? (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={handleEditDescription}
+                disabled={groupActionBusy}
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                Описание
+              </Button>
+            ) : null}
+            {canManageMembers ? (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={handleCreateInviteLink}
+                disabled={groupActionBusy}
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                Ссылка
+              </Button>
+            ) : null}
+            {canManageMembers ? (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={() => setActivityOpen(true)}
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                Журнал
+              </Button>
+            ) : null}
+            {canManageOwners && !groupClosed ? (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={handleTogglePostingPolicy}
+                disabled={groupActionBusy}
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                {postingManagersOnly ? 'Писать всем' : 'Только админы'}
+              </Button>
+            ) : null}
+            {canManageOwners && !groupClosed ? (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={() => setSlowModeOpen(true)}
+                disabled={groupActionBusy}
+                data-testid="chat-group-slow-mode-button"
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                {slowModeSeconds > 0 ? `Медленно: ${describeSlowMode(slowModeSeconds)}` : 'Медленный режим'}
+              </Button>
+            ) : null}
+            {canManageOwners && !groupClosed ? (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={handleToggleMembersFiles}
+                disabled={groupActionBusy}
+                data-testid="chat-group-files-button"
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                {membersSendFiles ? 'Запретить файлы' : 'Разрешить файлы'}
+              </Button>
+            ) : null}
+            {canManageOwners ? (
+              <Button
+                size="small"
+                variant="outlined"
+                color={groupClosed ? 'primary' : 'error'}
+                onClick={handleToggleGroupClosed}
+                disabled={groupActionBusy}
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                {groupClosed ? 'Открыть группу' : 'Закрыть группу'}
               </Button>
             ) : null}
             {canManageMembers ? (
@@ -3005,6 +3453,7 @@ export default function ChatContextPanel({
 
         <ConversationNotificationsToggle
           muted={activeConversation?.is_muted}
+          mutedUntil={activeConversation?.muted_until}
           disabled={settingsUpdating}
           onChange={onUpdateConversationSettings}
         />
@@ -3170,6 +3619,25 @@ export default function ChatContextPanel({
                                   {GROUP_ROLE_LABELS[role]}
                                 </Box>
                               ) : null}
+                              {member?.is_restricted ? (
+                                <Box
+                                  component="span"
+                                  data-testid="chat-member-restricted"
+                                  title="Не может писать в группе"
+                                  sx={{
+                                    px: 0.7,
+                                    py: 0.15,
+                                    borderRadius: 999,
+                                    border: '1px solid currentColor',
+                                    color: 'var(--chat-sheet-warning, #d64b4b)',
+                                    fontSize: '0.66rem',
+                                    fontWeight: 800,
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  ограничен
+                                </Box>
+                              ) : null}
                             </Stack>
                             <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', fontSize: '0.75rem' }} noWrap>
                               {getPersonContextLine(person)}
@@ -3305,6 +3773,31 @@ export default function ChatContextPanel({
         </DialogActions>
       </Dialog>
 
+      {isGroup && canManageMembers ? (
+        <ChatGroupActivityDialog
+          open={activityOpen}
+          conversationId={activeConversation?.id}
+          onClose={() => setActivityOpen(false)}
+        />
+      ) : null}
+      {isGroup && canManageMembers ? (
+        <ChatGroupRestrictDialog
+          open={Boolean(restrictTarget)}
+          memberName={String(restrictTarget?.user?.full_name || restrictTarget?.user?.username || '').trim()}
+          busy={groupActionBusy}
+          onClose={() => setRestrictTarget(null)}
+          onSubmit={handleSubmitRestriction}
+        />
+      ) : null}
+      {isGroup && canManageOwners ? (
+        <ChatGroupSlowModeDialog
+          open={slowModeOpen}
+          currentSeconds={slowModeSeconds}
+          busy={groupActionBusy}
+          onClose={() => setSlowModeOpen(false)}
+          onSubmit={handleSubmitSlowMode}
+        />
+      ) : null}
       {/* Диалог добавления участников */}
       <Dialog
         open={addMembersOpen}
@@ -3461,6 +3954,14 @@ export default function ChatContextPanel({
       </Dialog>
 
       {memberActionsMenu}
+      <input
+        ref={avatarInputRef}
+        type="file"
+        accept="image/*"
+        hidden
+        data-testid="group-avatar-input"
+        onChange={handleAvatarFileChange}
+      />
     </Box>
   );
 }

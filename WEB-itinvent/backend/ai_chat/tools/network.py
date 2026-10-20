@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from ipaddress import IPv4Address
 import math
 import re
 import socket
@@ -919,6 +920,11 @@ class NetworkWolDraftArgs(BaseModel):
         description="Broadcast IP address for the WOL magic packet (default 255.255.255.255).",
     )
 
+    @field_validator("broadcast_ip")
+    @classmethod
+    def validate_broadcast_ip(cls, value: str) -> str:
+        return str(IPv4Address(value.strip()))
+
 
 def _normalize_mac(mac: str) -> str:
     """Normalize MAC address to colon-separated uppercase format."""
@@ -1084,10 +1090,10 @@ class NetworkWolDraftTool(AiTool):
         }
 
         try:
-            from backend.ai_chat.action_cards import create_pending_action
+            from backend.ai_chat.action_cards import ACTION_NETWORK_WOL, create_pending_action
 
             card = create_pending_action(
-                action_type="network.wol",
+                action_type=ACTION_NETWORK_WOL,
                 conversation_id=context.conversation_id,
                 run_id=context.run_id,
                 requester_user_id=int(context.user_id),
@@ -1095,6 +1101,7 @@ class NetworkWolDraftTool(AiTool):
                 payload=payload,
                 preview={
                     "title": "Wake-on-LAN",
+                    "summary": f"Отправить WOL-пакет: MAC {mac}, адрес {broadcast_ip}:9",
                     "description": f"Отправить WOL magic packet на устройство",
                     "mac_address": mac,
                     "broadcast_ip": broadcast_ip,

@@ -1,10 +1,33 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { Image } from 'expo-image';
-import { memo } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { FluentTokens } from '../../theme/fluentTokens';
 
 const SHUTTER_GREEN = '#2e7d32';
+
+export type ScanPhotoLinkStatus = {
+  /** Android или приложение считает, что связи нет (записи не отправляются). */
+  offline: boolean;
+  /** Итог последней проверки сервера: когда, ответил ли. */
+  check: { at: number; ok: boolean } | null;
+  checking: boolean;
+  /** Приложению мешает экономия батареи, а связь пропадала. */
+  batteryRestricted: boolean;
+};
+
+function formatAge(at: number, now: number): string {
+  const seconds = Math.max(0, Math.round((now - at) / 1000));
+  if (seconds < 60) return `${seconds} с назад`;
+  return `${Math.round(seconds / 60)} мин назад`;
+}
+
+function linkLine(link: ScanPhotoLinkStatus, now: number): { text: string; bad: boolean } {
+  const age = link.check ? ` · ${formatAge(link.check.at, now)}` : '';
+  if (link.offline) return { text: `Нет связи с сервером${age}`, bad: true };
+  if (link.check && !link.check.ok) return { text: `Сервер не ответил${age}`, bad: true };
+  return { text: link.check ? `Сервер на связи${age}` : 'Сервер на связи', bad: false };
+}
 
 // Панель режима «Быстрые фото» поверх сканера: цель (техника из QR), счётчики
 // и затвор. Следующий QR переключает цель, очередь отправки идёт фоном.
@@ -26,6 +49,12 @@ export const NativeScanPhotoPanel = memo(function NativeScanPhotoPanel({
   onPreviewRotate,
   onPreviewAccept,
   onPreviewRetake,
+  captureMode = 'scanner',
+  onToggleCaptureMode,
+  link,
+  onCheckLink,
+  onSendDiagnostics,
+  onBatterySettings,
 }: {
   tokens: FluentTokens;
   title: string;
@@ -45,8 +74,24 @@ export const NativeScanPhotoPanel = memo(function NativeScanPhotoPanel({
   onPreviewRotate?: (degrees: number) => void;
   onPreviewAccept?: () => void;
   onPreviewRetake?: () => void;
+  // «system» — обычная камера телефона, «scanner» — снимок камерой сканера QR.
+  captureMode?: 'system' | 'scanner';
+  onToggleCaptureMode?: () => void;
+  // Состояние связи с сервером и действия, если фото не уходят.
+  link?: ScanPhotoLinkStatus;
+  onCheckLink?: () => void;
+  onSendDiagnostics?: () => void;
+  onBatterySettings?: () => void;
 }) {
   const hasTarget = Boolean(invNo);
+  // Возраст проверки обновляется сам, пока панель на экране.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!link?.check) return undefined;
+    const timer = setInterval(() => setNow(Date.now()), 5_000);
+    return () => clearInterval(timer);
+  }, [link?.check]);
+  const linkText = link ? linkLine(link, now) : null;
   if (preview) {
     return (
       <View
@@ -185,6 +230,68 @@ export const NativeScanPhotoPanel = memo(function NativeScanPhotoPanel({
           <MaterialCommunityIcons name="camera" size={30} color="#fff" />
         </Pressable>
       </View>
+      {link && linkText ? (
+        <View style={styles.linkRow} testID="native-scan-photo-link">
+          <View style={[styles.linkDot, { backgroundColor: linkText.bad ? tokens.error : SHUTTER_GREEN }]} />
+          <Text
+            testID="native-scan-photo-link-text"
+            numberOfLines={1}
+            style={[styles.counterSmall, styles.linkText, { color: linkText.bad ? tokens.error : tokens.textSecondary }]}
+          >
+            {linkText.text}
+          </Text>
+          {onCheckLink ? (
+            <Pressable
+              testID="native-scan-photo-check-link"
+              accessibilityRole="button"
+              accessibilityLabel="Проверить связь с сервером"
+              disabled={link.checking}
+              onPress={onCheckLink}
+              hitSlop={8}
+            >
+              <Text style={[styles.link, { color: tokens.primary }]}>{link.checking ? 'Проверяем…' : 'Проверить связь'}</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+      {link && link.batteryRestricted && (link.offline || (link.check && !link.check.ok)) && onBatterySettings ? (
+        <Pressable
+          testID="native-scan-photo-battery"
+          accessibilityRole="button"
+          accessibilityLabel="Разрешить приложению работать в фоне"
+          onPress={onBatterySettings}
+          hitSlop={8}
+        >
+          <Text style={[styles.link, { color: tokens.primary }]}>
+            Связь пропадает в фоне — разрешить HUB-IT работать без ограничений батареи
+          </Text>
+        </Pressable>
+      ) : null}
+      {onSendDiagnostics ? (
+        <Pressable
+          testID="native-scan-photo-diagnostics"
+          accessibilityRole="button"
+          accessibilityLabel="Отправить диагностику"
+          onPress={onSendDiagnostics}
+          hitSlop={8}
+        >
+          <Text style={[styles.link, { color: tokens.textSecondary }]}>Отправить диагностику</Text>
+        </Pressable>
+      ) : null}
+      {onToggleCaptureMode ? (
+        <Pressable
+          testID="native-scan-photo-mode-toggle"
+          accessibilityRole="switch"
+          accessibilityLabel="Снимать обычной камерой телефона"
+          accessibilityState={{ checked: captureMode === 'system' }}
+          onPress={onToggleCaptureMode}
+          hitSlop={8}
+        >
+          <Text style={[styles.link, { color: tokens.textSecondary }]}>
+            {captureMode === 'system' ? 'Снимок: обычная камера телефона' : 'Снимок: камера сканера QR'}
+          </Text>
+        </Pressable>
+      ) : null}
       {onTogglePreview ? (
         <Pressable
           testID="native-scan-photo-preview-toggle"
@@ -218,6 +325,9 @@ const styles = StyleSheet.create({
   pendingRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   failedRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 10 },
   link: { fontSize: 12, fontWeight: '800', textDecorationLine: 'underline' },
+  linkRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  linkDot: { width: 8, height: 8, borderRadius: 4 },
+  linkText: { flex: 1, minWidth: 0 },
   previewFrame: { height: 180, borderRadius: 12, overflow: 'hidden', backgroundColor: '#000' },
   previewImage: { width: '100%', height: '100%' },
   previewActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },

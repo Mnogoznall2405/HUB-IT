@@ -14,6 +14,7 @@ from backend.database.connection import get_database_config, set_user_database, 
 from backend.models.auth import User
 from backend.services.authorization_service import (
     PERM_DATABASE_DELETE,
+    PERM_DATABASE_DELETE_EQUIPMENT,
     PERM_DATABASE_READ,
     PERM_DATABASE_WRITE,
 )
@@ -28,6 +29,7 @@ _DATABASE_ACCESS_PERMISSIONS = (
     PERM_DATABASE_READ,
     PERM_DATABASE_WRITE,
     PERM_DATABASE_DELETE,
+    PERM_DATABASE_DELETE_EQUIPMENT,
 )
 
 router = APIRouter(
@@ -270,7 +272,7 @@ async def switch_database(
     # remains only a fast compatibility cache for older call sites.
     user_id = current_user.id
     username = current_user.username
-    settings_service.update_user_settings(user_id, {"pinned_database": requested_db})
+    await run_in_threadpool(settings_service.update_user_settings, user_id, {"pinned_database": requested_db})
     set_user_database(user_id, requested_db, username)
     logger.info(f"Set database {requested_db} for user id={user_id}, username={username}")
 

@@ -223,6 +223,7 @@ _NETWORK_REQUIRED_COLUMNS = {
         "sheet_name",
         "mgmt_ip",
         "notes",
+        "monitoring_only",
         "created_at",
         "updated_at",
     },
@@ -735,6 +736,7 @@ class NetworkService:
                     sheet_name TEXT,
                     mgmt_ip TEXT,
                     notes TEXT,
+                    monitoring_only INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     UNIQUE(branch_id, device_code),
@@ -895,6 +897,7 @@ class NetworkService:
             self._ensure_column(conn, "network_sockets", "fio_resolved_at", "TEXT")
             self._ensure_column(conn, "network_socket_profiles", "is_uniform", "INTEGER NOT NULL DEFAULT 1")
             self._ensure_column(conn, "network_branches", "default_site_code", "TEXT")
+            self._ensure_column(conn, "network_devices", "monitoring_only", "INTEGER NOT NULL DEFAULT 0")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_network_map_points_socket ON network_map_points(socket_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_network_panels_branch ON network_panels(branch_id)")
             if hasattr(conn, "sync_identity_sequences"):
@@ -2622,9 +2625,9 @@ class NetworkService:
                 """
                 SELECT b.*,
                     m.db_id,
-                    (SELECT COUNT(*) FROM network_devices d WHERE d.branch_id=b.id) devices_count,
-                    (SELECT COUNT(*) FROM network_ports p JOIN network_devices d ON d.id=p.device_id WHERE d.branch_id=b.id) ports_count,
-                    (SELECT COUNT(*) FROM network_ports p JOIN network_devices d ON d.id=p.device_id WHERE d.branch_id=b.id AND p.is_occupied=1) occupied_ports,
+                    (SELECT COUNT(*) FROM network_devices d WHERE d.branch_id=b.id AND d.monitoring_only=0) devices_count,
+                    (SELECT COUNT(*) FROM network_ports p JOIN network_devices d ON d.id=p.device_id WHERE d.branch_id=b.id AND d.monitoring_only=0) ports_count,
+                    (SELECT COUNT(*) FROM network_ports p JOIN network_devices d ON d.id=p.device_id WHERE d.branch_id=b.id AND d.monitoring_only=0 AND p.is_occupied=1) occupied_ports,
                     (SELECT COUNT(*) FROM network_sockets s WHERE s.branch_id=b.id) sockets_count,
                     (SELECT COUNT(*) FROM network_maps m2 WHERE m2.branch_id=b.id) maps_count,
                     (SELECT COUNT(*) FROM network_map_points mp WHERE mp.branch_id=b.id) map_points_count
@@ -2645,9 +2648,9 @@ class NetworkService:
                     """
                     SELECT b.*,
                         m.db_id,
-                        (SELECT COUNT(*) FROM network_devices d WHERE d.branch_id=b.id) devices_count,
-                        (SELECT COUNT(*) FROM network_ports p JOIN network_devices d ON d.id=p.device_id WHERE d.branch_id=b.id) ports_count,
-                        (SELECT COUNT(*) FROM network_ports p JOIN network_devices d ON d.id=p.device_id WHERE d.branch_id=b.id AND p.is_occupied=1) occupied_ports,
+                        (SELECT COUNT(*) FROM network_devices d WHERE d.branch_id=b.id AND d.monitoring_only=0) devices_count,
+                        (SELECT COUNT(*) FROM network_ports p JOIN network_devices d ON d.id=p.device_id WHERE d.branch_id=b.id AND d.monitoring_only=0) ports_count,
+                        (SELECT COUNT(*) FROM network_ports p JOIN network_devices d ON d.id=p.device_id WHERE d.branch_id=b.id AND d.monitoring_only=0 AND p.is_occupied=1) occupied_ports,
                         (SELECT COUNT(*) FROM network_sockets s WHERE s.branch_id=b.id) sockets_count,
                         (SELECT COUNT(*) FROM network_maps m2 WHERE m2.branch_id=b.id) maps_count,
                         (SELECT COUNT(*) FROM network_map_points mp WHERE mp.branch_id=b.id) map_points_count
@@ -2712,9 +2715,9 @@ class NetworkService:
             metrics = conn.execute(
                 """
                 SELECT
-                    (SELECT COUNT(*) FROM network_devices WHERE branch_id=?) devices_count,
-                    (SELECT COUNT(*) FROM network_ports p JOIN network_devices d ON d.id=p.device_id WHERE d.branch_id=?) ports_count,
-                    (SELECT COUNT(*) FROM network_ports p JOIN network_devices d ON d.id=p.device_id WHERE d.branch_id=? AND p.is_occupied=1) occupied_ports,
+                    (SELECT COUNT(*) FROM network_devices WHERE branch_id=? AND monitoring_only=0) devices_count,
+                    (SELECT COUNT(*) FROM network_ports p JOIN network_devices d ON d.id=p.device_id WHERE d.branch_id=? AND d.monitoring_only=0) ports_count,
+                    (SELECT COUNT(*) FROM network_ports p JOIN network_devices d ON d.id=p.device_id WHERE d.branch_id=? AND d.monitoring_only=0 AND p.is_occupied=1) occupied_ports,
                     (SELECT COUNT(*) FROM network_sockets WHERE branch_id=?) sockets_count,
                     (SELECT COUNT(*) FROM network_maps WHERE branch_id=?) maps_count,
                     (SELECT COUNT(*) FROM network_map_points WHERE branch_id=?) map_points_count
@@ -2724,8 +2727,8 @@ class NetworkService:
             sites = conn.execute(
                 """
                 SELECT s.*,
-                    (SELECT COUNT(*) FROM network_devices d WHERE d.site_id=s.id) devices_count,
-                    (SELECT COUNT(*) FROM network_ports p JOIN network_devices d ON d.id=p.device_id WHERE d.site_id=s.id) ports_count
+                    (SELECT COUNT(*) FROM network_devices d WHERE d.site_id=s.id AND d.monitoring_only=0) devices_count,
+                    (SELECT COUNT(*) FROM network_ports p JOIN network_devices d ON d.id=p.device_id WHERE d.site_id=s.id AND d.monitoring_only=0) ports_count
                 FROM network_sites s
                 WHERE s.branch_id=?
                 ORDER BY s.sort_order, LOWER(s.name)
@@ -2743,7 +2746,7 @@ class NetworkService:
                     (SELECT COUNT(*) FROM network_ports p WHERE p.device_id=d.id AND p.is_occupied=1) occupied_ports
                 FROM network_devices d
                 LEFT JOIN network_sites s ON s.id=d.site_id
-                WHERE d.branch_id=?
+                WHERE d.branch_id=? AND d.monitoring_only=0
                 ORDER BY COALESCE(s.sort_order,9999), LOWER(d.device_code)
                 """,
                 (int(branch_id),),
@@ -2751,7 +2754,7 @@ class NetworkService:
             return [self._d(r) for r in rows if r is not None]
 
     def list_ports(self, device_id: int, *, search: str = "", vlan: str = "", occupied: Optional[bool] = None, location: str = "") -> list[dict[str, Any]]:
-        where = ["p.device_id=?"]
+        where = ["p.device_id=?", "d.monitoring_only=0"]
         params: list[Any] = [int(device_id)]
         if _s(search):
             where.append(
@@ -2783,6 +2786,7 @@ class NetworkService:
                 s.fio,
                 s.fio_source_db
             FROM network_ports p
+            JOIN network_devices d ON d.id=p.device_id
             LEFT JOIN network_sockets s ON s.port_id=p.id
             WHERE {' AND '.join(where)}
             ORDER BY LOWER(p.port_name)
@@ -2801,7 +2805,7 @@ class NetworkService:
         location: str = "",
         limit: int = 5000,
     ) -> list[dict[str, Any]]:
-        where = ["d.branch_id=?"]
+        where = ["d.branch_id=?", "d.monitoring_only=0"]
         params: list[Any] = [int(branch_id)]
         if _s(search):
             where.append(

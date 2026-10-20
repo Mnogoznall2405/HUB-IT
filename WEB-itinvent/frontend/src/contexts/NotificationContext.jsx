@@ -14,6 +14,7 @@ import {
   normalizeNotificationItem,
   normalizeNotificationText,
 } from '../lib/notificationUtils';
+import { getBrowserAccount, BROWSER_ACCOUNT_EVENT } from '../lib/browserAccountSession';
 
 const NotificationContext = createContext(null);
 
@@ -36,13 +37,13 @@ function safeParseArray(raw) {
 }
 
 function loadToastHistory() {
-  if (typeof window === 'undefined') return [];
+  if (!getBrowserAccount()) return [];
   return safeParseArray(window.localStorage.getItem(TOAST_HISTORY_KEY))
     .map(normalizeNotificationItem);
 }
 
 function loadSeenHubIds() {
-  if (typeof window === 'undefined') return [];
+  if (!getBrowserAccount()) return [];
   return safeParseArray(window.localStorage.getItem(HUB_SEEN_KEY))
     .map((value) => String(value || '').trim())
     .filter(Boolean);
@@ -169,14 +170,35 @@ export function NotificationProvider({ children }) {
   const [activeToasts, setActiveToasts] = useState([]);
   const [seenHubNotificationIds, setSeenHubNotificationIds] = useState(() => loadSeenHubIds());
   const chatSerialQueueRef = useRef([]);
+  const accountKeyRef = useRef(getBrowserAccount());
+  const accountEpochRef = useRef(0);
+  const [accountEpoch, setAccountEpoch] = useState(0);
 
   useEffect(() => {
+    const onAccountChanged = (event) => {
+      const key = event.detail?.key || '';
+      if (!event.detail?.reset && accountKeyRef.current === key) return;
+      accountKeyRef.current = key;
+      accountEpochRef.current += 1;
+      setAccountEpoch(accountEpochRef.current);
+      chatSerialQueueRef.current = [];
+      setActiveToasts([]);
+      setToastHistory([]);
+      setSeenHubNotificationIds([]);
+    };
+    window.addEventListener(BROWSER_ACCOUNT_EVENT, onAccountChanged);
+    return () => window.removeEventListener(BROWSER_ACCOUNT_EVENT, onAccountChanged);
+  }, []);
+
+  useEffect(() => {
+    if (accountEpoch !== accountEpochRef.current || !accountKeyRef.current || accountKeyRef.current !== getBrowserAccount()) return;
     persistToastHistory(toastHistory);
-  }, [toastHistory]);
+  }, [toastHistory, accountEpoch]);
 
   useEffect(() => {
+    if (accountEpoch !== accountEpochRef.current || !accountKeyRef.current || accountKeyRef.current !== getBrowserAccount()) return;
     persistSeenHubIds(seenHubNotificationIds);
-  }, [seenHubNotificationIds]);
+  }, [seenHubNotificationIds, accountEpoch]);
 
   useEffect(() => {
     const nextExpiry = activeToasts.reduce((min, item) => (
@@ -269,6 +291,7 @@ export function NotificationProvider({ children }) {
   }, []);
 
   const pushToast = useCallback((severity, message, options = {}) => {
+    if (accountEpoch !== accountEpochRef.current) return null;
     const isChatSerialToast = String(options.source || '').trim() === 'chat';
     const next = buildToastPayload(severity, message, {
       ...options,
@@ -344,7 +367,7 @@ export function NotificationProvider({ children }) {
     });
 
     return next.id;
-  }, []);
+  }, [accountEpoch]);
 
   const notifySuccess = useCallback((message, options = {}) => (
     pushToast('success', message, options)
@@ -375,10 +398,12 @@ export function NotificationProvider({ children }) {
   }, [pushToast]);
 
   const clearToastHistory = useCallback(() => {
+    if (accountEpoch !== accountEpochRef.current) return;
     setToastHistory([]);
-  }, []);
+  }, [accountEpoch]);
 
   const markHubNotificationsSeen = useCallback((ids) => {
+    if (accountEpoch !== accountEpochRef.current) return;
     const values = (Array.isArray(ids) ? ids : [ids])
       .map((value) => String(value || '').trim())
       .filter(Boolean);
@@ -388,7 +413,7 @@ export function NotificationProvider({ children }) {
       const next = [...new Set([...prev, ...values])];
       return next.slice(-MAX_SEEN_IDS);
     });
-  }, []);
+  }, [accountEpoch]);
 
   const hasSeenHubNotification = useCallback((id) => {
     const normalized = String(id || '').trim();

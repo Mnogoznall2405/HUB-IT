@@ -9,6 +9,8 @@ import { findAddressBookEntryForChatUser } from '../../lib/addressBookChat';
 const chatApiMock = vi.hoisted(() => ({
   getConversationAssetsSummary: vi.fn(),
   getConversationAttachments: vi.fn(),
+  createGroupInvite: vi.fn(),
+  getGroupActivity: vi.fn(),
 }));
 
 vi.mock('../../api/client', async (importOriginal) => {
@@ -196,7 +198,127 @@ describe('ChatContextPanel', () => {
 
     expect(toggle).toHaveProperty('checked', initiallyChecked);
     fireEvent.click(toggle);
+    if (initiallyChecked) {
+      // Turning notifications off asks for a duration first; «Навсегда» keeps the old payload.
+      expect(onUpdateConversationSettings).not.toHaveBeenCalled();
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Навсегда' }));
+    }
     expect(onUpdateConversationSettings).toHaveBeenCalledWith(expectedUpdate);
+  });
+
+  it('lets the owner close and reopen a group for messages', async () => {
+    const onUpdateGroupProfile = vi.fn().mockResolvedValue({});
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const ownerGroup = {
+      ...groupConversation,
+      members: groupConversation.members.map((member, index) => (
+        index === 0 ? { ...member, member_role: 'owner' } : member
+      )),
+    };
+    const { unmount } = renderWithTheme(buildProps({
+      activeConversation: ownerGroup,
+      currentUser: { id: 1 },
+      onUpdateGroupProfile,
+    }));
+    await waitFor(() => expect(chatApiMock.getConversationAssetsSummary).toHaveBeenCalled());
+
+    // The panel renders its actions as buttons (desktop) or in the «Ещё» menu (compact layout).
+    const clickGroupAction = async (name) => {
+      const direct = screen.queryByRole('button', { name });
+      if (direct) {
+        fireEvent.click(direct);
+        return;
+      }
+      fireEvent.click(screen.getAllByRole('button', { name: 'Ещё' })[0]);
+      fireEvent.click(await screen.findByRole('menuitem', { name }));
+    };
+
+    await clickGroupAction('Закрыть группу');
+    await waitFor(() => expect(onUpdateGroupProfile).toHaveBeenCalledWith({ posting_policy: 'closed' }));
+    unmount();
+
+    renderWithTheme(buildProps({
+      activeConversation: { ...ownerGroup, posting_policy: 'closed' },
+      currentUser: { id: 1 },
+      onUpdateGroupProfile,
+    }));
+    await waitFor(() => expect(chatApiMock.getConversationAssetsSummary).toHaveBeenCalled());
+    // A closed group offers reopening instead of the managers-only toggle.
+    expect(screen.queryByRole('button', { name: /Только админы|Писать всем/ })).not.toBeInTheDocument();
+    await clickGroupAction('Открыть группу');
+    await waitFor(() => expect(onUpdateGroupProfile).toHaveBeenLastCalledWith({ posting_policy: 'all' }));
+  });
+
+  it('creates an invite link for a manager and copies it', async () => {
+    chatApiMock.createGroupInvite.mockResolvedValue({ token: 'secret-token', expires_at: '2026-10-20T00:00:00Z' });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const ownerGroup = {
+      ...groupConversation,
+      members: groupConversation.members.map((member, index) => (
+        index === 0 ? { ...member, member_role: 'owner' } : member
+      )),
+    };
+    renderWithTheme(buildProps({ activeConversation: ownerGroup, currentUser: { id: 1 } }));
+    await waitFor(() => expect(chatApiMock.getConversationAssetsSummary).toHaveBeenCalled());
+
+    const direct = screen.queryByRole('button', { name: 'Ссылка' });
+    if (direct) {
+      fireEvent.click(direct);
+    } else {
+      fireEvent.click(screen.getAllByRole('button', { name: 'Ещё' })[0]);
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Ссылка-приглашение' }));
+    }
+
+    await waitFor(() => expect(chatApiMock.createGroupInvite).toHaveBeenCalledWith('conv-1'));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.stringContaining('/chat?join=secret-token')));
+  });
+
+  it('shows the action journal to a group manager', async () => {
+    chatApiMock.getGroupActivity.mockResolvedValue({
+      items: [{
+        id: 'a1', action: 'role_changed', actor_user_id: 1, actor_name: 'Alice Owner',
+        target_user_id: 2, target_name: 'Bob Member', details: { role: 'moderator' },
+        created_at: '2026-10-13T08:00:00Z',
+      }],
+    });
+    const ownerGroup = {
+      ...groupConversation,
+      members: groupConversation.members.map((member, index) => (
+        index === 0 ? { ...member, member_role: 'owner' } : member
+      )),
+    };
+    renderWithTheme(buildProps({ activeConversation: ownerGroup, currentUser: { id: 1 } }));
+    await waitFor(() => expect(chatApiMock.getConversationAssetsSummary).toHaveBeenCalled());
+
+    const direct = screen.queryByRole('button', { name: 'Журнал' });
+    if (direct) {
+      fireEvent.click(direct);
+    } else {
+      fireEvent.click(screen.getAllByRole('button', { name: 'Ещё' })[0]);
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Журнал действий' }));
+    }
+
+    await waitFor(() => expect(chatApiMock.getGroupActivity).toHaveBeenCalledWith('conv-1'));
+    expect(await screen.findByText(/изменил\(а\) роль: Bob Member \(модератор\)/)).toBeInTheDocument();
+  });
+
+  it('mutes a chat for a chosen time with muted_until', async () => {
+    const onUpdateConversationSettings = vi.fn();
+    renderWithTheme(buildProps({ activeConversation: groupConversation, onUpdateConversationSettings }));
+    await waitFor(() => expect(chatApiMock.getConversationAssetsSummary).toHaveBeenCalled());
+
+    const before = Date.now();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Уведомления для этого чата' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'На 8 часов' }));
+
+    expect(onUpdateConversationSettings).toHaveBeenCalledTimes(1);
+    const payload = onUpdateConversationSettings.mock.calls[0][0];
+    expect(payload).not.toHaveProperty('is_muted');
+    const deadline = Date.parse(payload.muted_until);
+    expect(deadline - before).toBeGreaterThanOrEqual(8 * 3600 * 1000 - 1000);
+    expect(deadline - before).toBeLessThan(8 * 3600 * 1000 + 60000);
   });
 
   it('loads media browser data and opens image preview', async () => {

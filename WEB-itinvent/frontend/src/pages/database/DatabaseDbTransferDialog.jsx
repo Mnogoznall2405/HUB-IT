@@ -64,6 +64,7 @@ const DatabaseDbTransferDialog = memo(function DatabaseDbTransferDialog({
   const [comment, setComment] = useState('');
   const [emailTo, setEmailTo] = useState('');
   const [emailStatus, setEmailStatus] = useState('');
+  const [downloadError, setDownloadError] = useState('');
   const ownerSeqRef = useRef(0);
   const assigneeSeqRef = useRef(0);
 
@@ -94,6 +95,7 @@ const DatabaseDbTransferDialog = memo(function DatabaseDbTransferDialog({
     setComment('');
     setEmailTo('');
     setEmailStatus('');
+    setDownloadError('');
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Target-DB dictionaries reload when the destination database changes.
@@ -169,7 +171,10 @@ const DatabaseDbTransferDialog = memo(function DatabaseDbTransferDialog({
 
   const handleDownloadAct = useCallback(async (act) => {
     try {
-      const response = await equipmentTransferActsAPI.downloadTransferAct(act.act_id);
+      setDownloadError('');
+      const response = act.file_no
+        ? await equipmentDbTransferAPI.downloadAct(act.db_id, act.file_no)
+        : await equipmentTransferActsAPI.downloadTransferAct(act.act_id);
       const blob = new Blob([response.data], {
         type: response.headers?.['content-type'] || 'application/octet-stream',
       });
@@ -182,7 +187,7 @@ const DatabaseDbTransferDialog = memo(function DatabaseDbTransferDialog({
       link.remove();
       URL.revokeObjectURL(url);
     } catch (e) {
-      console.error('Error downloading transfer act:', e);
+      setDownloadError('Не удалось скачать PDF акта. Повторите скачивание.');
     }
   }, []);
 
@@ -191,11 +196,15 @@ const DatabaseDbTransferDialog = memo(function DatabaseDbTransferDialog({
     if (!actIds.length || !emailTo.trim()) return;
     setEmailStatus('sending');
     try {
-      await equipmentTransferActsAPI.sendTransferActsEmail({
-        act_ids: actIds,
-        mode: 'manual',
-        manual_email: emailTo.trim(),
-      });
+      if ((result?.acts || []).every((act) => act.file_no)) {
+        for (const act of result.acts) {
+          await equipmentDbTransferAPI.emailAct(act.db_id, act.file_no, emailTo.trim());
+        }
+      } else {
+        await equipmentTransferActsAPI.sendTransferActsEmail({
+          act_ids: actIds, mode: 'manual', manual_email: emailTo.trim(),
+        });
+      }
       setEmailStatus('sent');
     } catch (e) {
       console.error('Error sending transfer acts:', e);
@@ -372,6 +381,15 @@ const DatabaseDbTransferDialog = memo(function DatabaseDbTransferDialog({
               Перенос завершён: {result?.summary?.ok ?? 0} из {result?.summary?.total ?? itemRows.length}.
               {result?.act_doc_no ? ` Акт оприходования № ${result.act_doc_no} в базе ${result.target_db}.` : ''}
             </Alert>
+
+            {result?.verification && (
+              <Typography variant="body2">
+                Перенесено документов: {result.verification.documents}; исходных файлов: {result.verification.original_files}.
+                {' '}Содержимое вложений проверено. Новых PDF актов: {result.verification.generated_files}.
+              </Typography>
+            )}
+            {result?.replayed && <Alert severity="info">Показан сохранённый результат предыдущего запроса.</Alert>}
+            {downloadError && <Alert severity="error">{downloadError}</Alert>}
 
             {resultItems.map((item) => (
               <Box key={item.inv_no ?? item.old_item_id} sx={{ display: 'flex', gap: 1, alignItems: 'baseline' }}>

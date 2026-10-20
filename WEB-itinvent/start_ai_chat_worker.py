@@ -72,6 +72,7 @@ async def main() -> None:
     watchdog_dry_run = _env_flag("AI_RUN_WATCHDOG_DRY_RUN", False)
     watchdog_interval_sec = _env_float("AI_RUN_WATCHDOG_INTERVAL_SEC", 300.0, 30.0, 86400.0)
     last_watchdog_at = 0.0
+    last_result_repair_at = 0.0
     # AG: provider balance warning is opt-in too (a network call to the provider on a schedule).
     balance_check_enabled = _env_flag("AI_BALANCE_CHECK_ENABLED", False)
     balance_check_interval_sec = _env_float("AI_BALANCE_CHECK_INTERVAL_SEC", 1800.0, 60.0, 86400.0)
@@ -83,6 +84,14 @@ async def main() -> None:
     digest_task: asyncio.Task | None = None
     logger.info("AI chat worker started: batch_size=%s concurrency=%s", batch_size, concurrency)
     while True:
+        if last_result_repair_at == 0.0 or time.monotonic() - last_result_repair_at >= 60.0:
+            last_result_repair_at = time.monotonic()
+            try:
+                repaired = await asyncio.to_thread(ai_chat_service.repair_result_deliveries)
+                if repaired:
+                    logger.info("AI result delivery repaired: count=%s", repaired)
+            except Exception:
+                logger.exception("AI result delivery repair cycle failed")
         if balance_check_enabled and (last_balance_check_at == 0.0 or (time.monotonic() - last_balance_check_at) >= balance_check_interval_sec):
             last_balance_check_at = time.monotonic()
             try:

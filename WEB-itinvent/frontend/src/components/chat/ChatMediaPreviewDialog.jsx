@@ -309,6 +309,7 @@ export default function ChatMediaPreviewDialog({
       }}
       PaperProps={{
         sx: {
+          '--dialog-safe-top': '0px',
           m: 0,
           width: '100%',
           maxWidth: '100%',

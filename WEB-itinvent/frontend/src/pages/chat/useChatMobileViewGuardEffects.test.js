@@ -5,7 +5,6 @@ import {
   shouldResetMobileViewAfterFailedBootstrap,
   shouldResetMobileViewWithoutConversation,
 } from './useChatMobileViewGuardEffects';
-import useChatMobileViewGuardEffects from './useChatMobileViewGuardEffects';
 
 describe('useChatMobileViewGuardEffects helpers', () => {
   it('shouldResetMobileViewWithoutConversation detects orphan thread view', () => {
@@ -76,21 +75,3 @@ describe('useChatMobileViewGuardEffects helpers', () => {
   });
 });
 
-describe('useChatMobileViewGuardEffects', () => {
-  it('mounts without throwing on desktop', async () => {
-    const { renderHook } = await import('@testing-library/react');
-    const { unmount } = renderHook(() => useChatMobileViewGuardEffects({
-      activeConversation: null,
-      activeConversationId: '',
-      conversationBootstrapComplete: false,
-      infoOpen: false,
-      isMobile: false,
-      messagesLoading: false,
-      mobileView: 'inbox',
-      resolvedMobileView: 'inbox',
-      setInfoOpen: vi.fn(),
-      setMobileView: vi.fn(),
-    }));
-    unmount();
-  });
-});

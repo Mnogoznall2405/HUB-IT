@@ -11,8 +11,11 @@ Properties tested:
   defaults to created_at.
 """
 from __future__ import annotations
+import conftest
 
+import os
 import sys
+import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -57,7 +60,12 @@ def _make_service():
     """
     import backend.services.tickets_service as ts_module
 
-    url = "sqlite:///:memory:"
+    db_fd, db_name = tempfile.mkstemp(suffix=".db", prefix="tickets_prop_pagination_")
+    os.close(db_fd)
+    db_path = Path(db_name)
+    url = f"sqlite:///{db_path.as_posix()}"
+
+    conftest.copy_app_metadata_schema(db_path)
 
     engine = create_engine(
         url,
@@ -69,8 +77,6 @@ def _make_service():
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=OFF")
         cursor.close()
-
-    AppBase.metadata.create_all(engine, checkfirst=True)
 
     SessionLocal = sessionmaker(bind=engine)
 
@@ -125,6 +131,11 @@ def _make_service():
 
     def cleanup():
         ts_module.app_session = original_app_session
+        engine.dispose()
+        try:
+            db_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     return svc, cleanup
 

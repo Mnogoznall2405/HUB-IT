@@ -1,6 +1,31 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildAiSidebarRows } from './chatAiModel';
+import { buildAiSidebarRows, buildAiStatusDisplayModel, mergeAiStatusPayload } from './chatAiModel';
+
+describe('AI run event ordering', () => {
+  it('does not describe a saved result as still generating in the thread header', () => {
+    const model = buildAiStatusDisplayModel({ status: 'running', stage: 'generating_answer',
+      status_text: 'Формирую ответ.', result_message_id: 'saved-answer' });
+    expect(model.primaryText).toBe('Ответ готов. Завершаю обработку.');
+    expect(model.showSpinner).toBe(false);
+  });
+  it('completes only the previous stage and resets history for a new run', () => {
+    let state = mergeAiStatusPayload({}, { conversation_id: 'c', run_id: 'r1', status: 'running', stage: 'checking_office', updated_at: '2026-10-20T05:00:01Z' });
+    expect(state.c.completed_stages || []).toEqual([]);
+    state = mergeAiStatusPayload(state, { conversation_id: 'c', run_id: 'r1', status: 'running', stage: 'generating_answer', updated_at: '2026-10-20T05:00:02Z' });
+    expect(state.c.completed_stages).toEqual(['checking_office']);
+    state = mergeAiStatusPayload(state, { conversation_id: 'c', run_id: 'r2', status: 'running', stage: 'analyzing_request', updated_at: '2026-10-20T05:01:00Z' });
+    expect(state.c.completed_stages).toEqual([]);
+    expect(mergeAiStatusPayload(state, { conversation_id: 'c', run_id: 'r1', status: 'completed', updated_at: '2026-10-20T05:00:59Z' })).toBe(state);
+  });
+
+  it('rejects stale events and never regresses a terminal run to running', () => {
+    const state = { c: { run_id: 'r', status: 'completed', updated_at: '2026-10-20T05:00:03Z', result_message_id: 'answer' } };
+    for (const updated_at of ['2026-10-20T05:00:01Z', '2026-10-20T05:00:04Z']) {
+      expect(mergeAiStatusPayload(state, { conversation_id: 'c', run_id: 'r', status: 'running', updated_at })).toBe(state);
+    }
+  });
+});
 
 describe('buildAiSidebarRows assistant identity', () => {
   it('labels bot conversations with the bot title and generic conversations as personal AI', () => {

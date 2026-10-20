@@ -228,3 +228,476 @@ def register_recurring(entries: List[Dict], embedding, base: str, label: str, th
         occ.append({"base": base, "label": label})
         del occ[:-max_occurrences]
     return entry
+
+
+class DiarizationChunkError(RuntimeError):
+    pass
+
+
+class DiarizationSegments(list):
+    def __init__(self, segments, overlap_segments=None, metadata=None):
+        super().__init__(segments)
+        self.overlap_segments = list(segments if overlap_segments is None else overlap_segments)
+        self.metadata = metadata or {}
+
+
+REFERENCE_SAMPLES_LIMIT = 10
+
+
+def reference_sample_files(directory):
+    """Сэмплы эталона голоса в естественном порядке (Name, Name_2 … Name_10).
+
+    Сверх лимита остаются первый (исходный) и самые новые: слитый в эталон сэмпл
+    должен попадать в эмбеддинг, а не отсекаться по алфавиту.
+    """
+    import re
+    from pathlib import Path
+
+    def natural(path):
+        return [int(part) if part.isdigit() else part for part in re.split(r'(\d+)', path.name.lower())]
+
+    directory = Path(directory)
+    files = sorted(directory.glob('*.wav'), key=natural) + sorted(directory.glob('*.mp3'), key=natural)
+    if len(files) > REFERENCE_SAMPLES_LIMIT:
+        files = files[:1] + files[-(REFERENCE_SAMPLES_LIMIT - 1):]
+    return files
+
+
+def wav_duration_seconds(path):
+    """Длительность WAV по заголовку; None, если файл не читается как WAV."""
+    import wave
+
+    try:
+        with wave.open(str(path), 'rb') as handle:
+            rate = handle.getframerate()
+            return handle.getnframes() / rate if rate else None
+    except (OSError, EOFError, wave.Error):
+        return None
+
+
+def diarization_windows(num_samples, sample_rate, chunk_seconds, overlap_seconds):
+    import math
+
+    if (sample_rate <= 0 or num_samples < 0 or not math.isfinite(chunk_seconds)
+            or not math.isfinite(overlap_seconds) or chunk_seconds <= 0
+            or not 0 <= overlap_seconds < chunk_seconds):
+        raise ValueError('Некорректная длина или перекрытие окон диаризации')
+    size, overlap = round(chunk_seconds * sample_rate), round(overlap_seconds * sample_rate)
+    if size <= overlap:
+        raise ValueError('Окно диаризации должно быть длиннее перекрытия')
+    start = 0
+    while start < num_samples:
+        end = min(num_samples, start + size)
+        keep_start = start + overlap // 2 if start else 0
+        keep_end = end - (overlap - overlap // 2) if end < num_samples else end
+        yield start, end, keep_start, keep_end
+        if end == num_samples:
+            break
+        start += size - overlap
+
+
+def _valid_embedding(vector):
+    import numpy as np
+
+    if vector is None:
+        return None
+    arr = np.asarray(vector, dtype=np.float64).ravel()
+    norm = float(np.linalg.norm(arr))
+    return arr / norm if arr.size and np.isfinite(arr).all() and norm > 0 else None
+
+
+def _union_duration(turns):
+    end, duration = float('-inf'), 0.0
+    for turn in sorted(turns, key=lambda t: t['start']):
+        duration += max(0.0, turn['end'] - max(end, turn['start']))
+        end = max(end, turn['end'])
+    return duration
+
+
+class SpeakerChunkRegistry:
+    def __init__(self, similarity=0.80, margin=0.08, min_speech=6.0):
+        import math
+
+        if (not all(math.isfinite(v) for v in (similarity, margin, min_speech))
+                or not 0 < similarity <= 1 or not 0 <= margin <= 1 or min_speech <= 0):
+            raise ValueError('Некорректные пороги сшивки голосов')
+        self.similarity, self.margin, self.min_speech = similarity, margin, min_speech
+        self.entries, self.decisions = {}, []
+        self.quarantined = []
+        self.previous, self.previous_end = [], 0.0
+        self.dimension = None
+        # Пары меток, звучавших в одном окне: pyannote разделил их, значит это разные люди.
+        self.distinct = set()
+
+    def _is_rival(self, best, other):
+        """Конкурент лучшего прототипа — другой человек, а не дубль того же голоса.
+
+        Дубль — прототип, который никогда не звучал в одном окне с лучшим и не
+        «заметно другой» голос (похожесть на лучший не ниже similarity − margin):
+        иначе у человека с двумя прототипами каждое окно без якоря плодило бы новую метку.
+        Если же вектор окна лежит между двумя заметно разными голосами — это честная
+        неоднозначность, метка новая.
+        """
+        if frozenset((best, other)) in self.distinct:
+            return True
+        return self._score(self.entries[other]['embedding'], self.entries[best]) < self.similarity - self.margin
+
+    def _anchors(self, turns, offset, end):
+        stop = min(end, self.previous_end)
+        if stop <= offset:
+            return {}
+        current = [dict(t, start=t['start'] + offset, end=t['end'] + offset) for t in turns]
+        points = sorted({offset, stop} | {
+            min(stop, max(offset, value))
+            for t in self.previous + current for value in (t['start'], t['end'])
+        })
+        local_total, global_total, weights = {}, {}, {}
+        for start, finish in zip(points, points[1:]):
+            mid, duration = (start + finish) / 2, finish - start
+            old = {t['speaker'] for t in self.previous if t['start'] <= mid < t['end']}
+            new = {t['speaker'] for t in current if t['start'] <= mid < t['end']}
+            if len(old) == 1:
+                name = next(iter(old))
+                global_total[name] = global_total.get(name, 0) + duration
+            if len(new) == 1:
+                name = next(iter(new))
+                local_total[name] = local_total.get(name, 0) + duration
+            if len(old) == len(new) == 1:
+                pair = next(iter(new)), next(iter(old))
+                weights[pair] = weights.get(pair, 0) + duration
+        anchors = {}
+        for (local, global_label), duration in weights.items():
+            purity = min(duration / local_total[local], duration / global_total[global_label])
+            if duration >= 2.0 and purity >= .85:
+                anchors[local] = (global_label, purity)
+        return anchors
+
+    def _score(self, vector, entry):
+        if vector is None or entry['embedding'] is None:
+            return -1.0
+        return min(cosine_similarity(vector, entry['embedding']), cosine_similarity(vector, entry['seed']))
+
+    def assign(self, turns, embeddings, offset, window_end):
+        import numpy as np
+
+        labels = sorted({t['speaker'] for t in turns}, key=lambda label: (
+            min(t['start'] for t in turns if t['speaker'] == label), label,
+        ))
+        anchors = self._anchors(turns, offset, window_end)
+        proposals, profiles = {}, {}
+        for label in labels:
+            raw_vector = _valid_embedding(embeddings.get(label))
+            if raw_vector is not None:
+                if self.dimension is not None and len(raw_vector) != self.dimension:
+                    raise DiarizationChunkError('Несовместимая размерность эмбеддингов диаризации')
+                self.dimension = len(raw_vector)
+            duration = _union_duration(solo_segments(turns, label, turns))
+            vector = raw_vector if duration >= self.min_speech else None
+            profiles[label] = vector, duration, raw_vector
+            candidate, score, reason = None, -1.0, 'insufficient_clean_speech' if vector is None else 'new_voice'
+            if label in anchors:
+                candidate, purity = anchors[label]
+                entry = self.entries[candidate]
+                if vector is not None and entry['embedding'] is not None and self._score(vector, entry) < self.similarity - .10:
+                    candidate, reason = None, 'boundary_conflict'
+                else:
+                    score, reason = 1 + purity, 'boundary'
+            elif vector is not None:
+                scores = sorted(((self._score(vector, entry), key) for key, entry in self.entries.items()), reverse=True)
+                if scores and scores[0][0] >= self.similarity:
+                    best_key = scores[0][1]
+                    rivals = [key for score, key in scores[1:] if scores[0][0] - score < self.margin
+                              and self._is_rival(best_key, key)]
+                    if rivals:
+                        reason = 'ambiguous'
+                    else:
+                        score, candidate = scores[0]
+                        reason = 'embedding'
+            proposals[label] = [candidate, score, reason]
+        claims = {}
+        for label, (candidate, score, _) in proposals.items():
+            if candidate is not None:
+                claims.setdefault(candidate, []).append((score, label))
+        for competitors in claims.values():
+            competitors.sort(reverse=True)
+            if len(competitors) < 2:
+                continue
+            winner = competitors[0][1] if competitors[0][0] - competitors[1][0] >= self.margin else None
+            for _, label in competitors:
+                if label != winner:
+                    proposals[label] = [None, -1.0, 'collision']
+        mapping = {}
+        for label in labels:
+            candidate, score, reason = proposals[label]
+            vector, duration, raw_vector = profiles[label]
+            if reason == 'boundary_conflict':
+                vector = None
+            weight = min(duration, 30.0) if vector is not None else 0.0
+            if candidate is None:
+                candidate = f'SPEAKER_{len(self.entries):02d}'
+                self.entries[candidate] = {'embedding': vector, 'seed': vector, 'weight': weight}
+                if vector is None and raw_vector is not None:
+                    # Островок: вектор локального кластера может быть загрязнён
+                    # границей окна — в матчинг не берём, но храним для абсорбции
+                    self.quarantined.append({'speaker': candidate, 'vector': raw_vector})
+            else:
+                entry = self.entries[candidate]
+                if vector is not None and (entry['embedding'] is None or self._score(vector, entry) >= self.similarity):
+                    old_weight = min(entry['weight'], 120.0)
+                    entry['embedding'] = l2_normalize(vector * weight + (entry['embedding'] * old_weight if old_weight else 0))
+                    entry['seed'] = vector if entry['seed'] is None else entry['seed']
+                    entry['weight'] = old_weight + weight
+            mapping[label] = candidate
+            self.decisions.append({'offset': offset, 'local': label, 'speaker': candidate,
+                                   'reason': reason, 'similarity': round(min(score, 1.0), 4)})
+        present = sorted(set(mapping.values()))
+        self.distinct.update(frozenset((a, b)) for i, a in enumerate(present) for b in present[i + 1:])
+        self.previous = [dict(t, speaker=mapping[t['speaker']], start=t['start'] + offset,
+                              end=t['end'] + offset) for t in turns]
+        self.previous_end = window_end
+        return mapping
+
+    def absorb_islands(self):
+        """Сливает островки в прототипы при достаточном совпадении вектора.
+
+        Островок — голос, не получивший надёжного матча внутри окна (конфликт
+        на границе, мало чистой речи). Его карантинный вектор в матчинге окон
+        не участвовал; здесь применяется тот же порог similarity + margin, но
+        сам островок исключён из кандидатов (иначе цепочки якорных слияний
+        «поглощают» сами себя), а цели разрешаются транзитивно.
+        """
+        absorbed = {}
+        for item in self.quarantined:
+            scores = sorted(
+                ((self._score(item['vector'], entry), key)
+                 for key, entry in self.entries.items()
+                 if (entry['embedding'] is not None and key != item['speaker']
+                     and key not in absorbed)),
+                reverse=True,
+            )
+            if (scores and scores[0][0] >= self.similarity
+                    and (len(scores) == 1 or scores[0][0] - scores[1][0] >= self.margin)):
+                absorbed[item['speaker']] = scores[0][1]
+                self.decisions.append({'offset': None, 'local': item['speaker'],
+                                       'speaker': scores[0][1], 'reason': 'absorbed',
+                                       'similarity': round(scores[0][0], 4)})
+        resolved = {}
+        for island, target in absorbed.items():
+            seen = set()
+            while target in absorbed and target not in seen:
+                seen.add(target)
+                target = absorbed[target]
+            if target != island:
+                resolved[island] = target
+        return resolved
+
+    def merge_duplicates(self, speech, overlap, vectors=None):
+        """Склеивает метки одного человека, разорванные между окнами.
+
+        Дубль — пара голосов, чьи прототипы не «заметно разные» (косинус не ниже
+        similarity − margin), которые ни разу не звучали в одном окне и почти не
+        перекрываются по времени (человек не говорит поверх себя). Группы
+        сравниваются по общему центру, поэтому цепочка A~B, B~C при A≁C не склеится.
+        ``speech`` — {метка: секунд речи}, ``overlap(a, b)`` — секунд одновременной речи.
+        ``vectors`` — {метка: вектор}, пересчитанный по чистым репликам всей записи: он
+        надёжнее оконных прототипов (у малоговорящих те шумят) и, если задан, заменяет их.
+        Возвращает {метка: оставшаяся метка}; остаётся метка с большей речью.
+        """
+        if vectors is not None:
+            vectors = {key: _valid_embedding(vector) for key, vector in vectors.items()}
+        # Метки, помеченные на ручную проверку (ambiguous/boundary_conflict), не склеиваем:
+        # это была бы та самая принудительная склейка, которой избегает матчинг окон.
+        flagged = {d['speaker'] for d in self.decisions if d['reason'] in ('ambiguous', 'boundary_conflict')}
+        if vectors is None:
+            vectors = {key: entry['embedding'] for key, entry in self.entries.items()}
+        groups = {key: {key} for key, vector in vectors.items()
+                  if vector is not None and speech.get(key, 0) > 0 and key not in flagged}
+        centers = {key: vectors[key] for key in groups}
+        weights = {key: speech[key] for key in groups}
+        threshold = self.similarity - self.margin
+        while True:
+            best = None
+            for a in sorted(groups):
+                for b in sorted(groups):
+                    if b <= a:
+                        continue
+                    sim = cosine_similarity(centers[a], centers[b])
+                    if sim < threshold or (best is not None and sim <= best[0]):
+                        continue
+                    if any(frozenset((x, y)) in self.distinct for x in groups[a] for y in groups[b]):
+                        continue
+                    shared = sum(overlap(x, y) for x in groups[a] for y in groups[b])
+                    if shared > 0.05 * min(weights[a], weights[b]):
+                        continue
+                    best = (sim, a, b)
+            if best is None:
+                break
+            sim, a, b = best
+            keeper, other = (a, b) if (weights[a], b) >= (weights[b], a) else (b, a)
+            centers[keeper] = l2_normalize(centers[keeper] * weights[keeper] + centers[other] * weights[other])
+            weights[keeper] += weights.pop(other)
+            groups[keeper] |= groups.pop(other)
+            del centers[other]
+            self.decisions.append({'offset': None, 'local': other, 'speaker': keeper,
+                                   'reason': 'merged', 'similarity': round(sim, 4)})
+        return {member: keeper for keeper, members in groups.items() for member in members if member != keeper}
+
+
+def _validate_chunk_payload(payload, duration):
+    import math
+
+    if not isinstance(payload, dict) or not isinstance(payload.get('embeddings'), dict):
+        raise DiarizationChunkError('Модель не вернула эмбеддинги спикеров окна')
+    result = {'embeddings': {str(label): (vector.tolist() if vector is not None else None)
+                            for label, value in payload['embeddings'].items()
+                            for vector in [_valid_embedding(value)]}}
+    for key in ('segments', 'overlap_segments'):
+        if not isinstance(payload.get(key), list):
+            raise DiarizationChunkError('Модель не вернула разметку окна')
+        result[key] = []
+        for turn in payload[key]:
+            start, end, label = float(turn['start']), float(turn['end']), str(turn['speaker'])
+            if not math.isfinite(start) or not math.isfinite(end) or end <= start or not label:
+                raise DiarizationChunkError('Некорректная реплика окна диаризации')
+            start, end = max(0.0, start), min(duration, end)
+            if end > start:
+                result[key].append({'start': start, 'end': end, 'speaker': label})
+    regular = {t['speaker'] for t in result['overlap_segments']}
+    if any(t['speaker'] not in regular for t in result['segments']):
+        raise DiarizationChunkError('Обычная разметка окна не содержит спикеров exclusive-разметки')
+    return result
+
+
+def _intervals_overlap(first, second):
+    """Секунд пересечения двух отсортированных списков непересекающихся интервалов."""
+    i = j = 0
+    total = 0.0
+    while i < len(first) and j < len(second):
+        total += max(0.0, min(first[i][1], second[j][1]) - max(first[i][0], second[j][0]))
+        if first[i][1] <= second[j][1]:
+            i += 1
+        else:
+            j += 1
+    return total
+
+
+def _merge_diarization_turns(turns):
+    by_speaker = {}
+    for turn in sorted(turns, key=lambda t: (t['speaker'], t['start'], t['end'])):
+        group = by_speaker.setdefault(turn['speaker'], [])
+        if group and turn['start'] <= group[-1]['end'] + 1e-6:
+            group[-1]['end'] = max(group[-1]['end'], turn['end'])
+        else:
+            group.append(dict(turn))
+    return sorted((t for group in by_speaker.values() for t in group), key=lambda t: (t['start'], t['end'], t['speaker']))
+
+
+def run_chunked_diarization(audio, diarize_window, *, sample_rate=16000, chunk_seconds=900,
+                            overlap_seconds=30, local_max_speakers=20, similarity=.80, margin=.08,
+                            min_speech=6.0, cache_prefix=None, cache_identity=None, progress=None,
+                            label_embedder=None):
+    import hashlib
+    import json
+    import time
+    from pathlib import Path
+    import numpy as np
+
+    audio = np.asarray(audio)
+    if audio.ndim != 1 or local_max_speakers < 1:
+        raise ValueError('Нужен моно-звук и положительный предел спикеров окна')
+    windows = list(diarization_windows(len(audio), sample_rate, chunk_seconds, overlap_seconds))
+    registry = SpeakerChunkRegistry(similarity, margin, min_speech)
+    selected, ordinary, details = [], [], []
+    policy = {'version': 1, 'sample_rate': sample_rate, 'chunk_seconds': chunk_seconds,
+              'overlap_seconds': overlap_seconds, 'local_max_speakers': local_max_speakers,
+              'similarity': similarity, 'margin': margin, 'min_speech': min_speech,
+              'identity': cache_identity}
+    key = None
+    if cache_prefix is not None:
+        policy['audio_hash'] = hashlib.sha256(np.ascontiguousarray(audio)).hexdigest()
+        key = hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest()
+    for idx, (start, end, keep_start, keep_end) in enumerate(windows):
+        began, cached, payload = time.perf_counter(), False, None
+        path = Path(f'{cache_prefix}_{idx:04d}.json') if cache_prefix is not None else None
+        if path is not None and path.exists():
+            try:
+                data = json.loads(path.read_text(encoding='utf-8'))
+                if data.get('key') == key and data.get('samples') == [start, end]:
+                    payload = _validate_chunk_payload(data['payload'], (end - start) / sample_rate)
+                    cached = True
+            except (OSError, ValueError, KeyError, TypeError, DiarizationChunkError):
+                payload = None
+        try:
+            if payload is None:
+                payload = _validate_chunk_payload(diarize_window(
+                    audio[start:end], num_speakers=None, min_speakers=1, max_speakers=local_max_speakers,
+                ), (end - start) / sample_rate)
+                if path is not None:
+                    pending = path.with_suffix('.json.part')
+                    pending.write_text(json.dumps({'key': key, 'samples': [start, end], 'payload': payload},
+                                                  allow_nan=False), encoding='utf-8')
+                    pending.replace(path)
+            mapping = registry.assign(payload['overlap_segments'], payload['embeddings'],
+                                      start / sample_rate, end / sample_rate)
+            for source, target in ((payload['segments'], selected), (payload['overlap_segments'], ordinary)):
+                for turn in source:
+                    left = max(keep_start / sample_rate, start / sample_rate + turn['start'])
+                    right = min(keep_end / sample_rate, start / sample_rate + turn['end'])
+                    if right > left:
+                        target.append({'start': left, 'end': right, 'speaker': mapping[turn['speaker']]})
+        except Exception as exc:
+            raise DiarizationChunkError(f'Ошибка диаризации окна {idx + 1}/{len(windows)}: {exc}') from exc
+        details.append({'index': idx, 'start': start / sample_rate, 'end': end / sample_rate,
+                        'cached': cached, 'seconds': round(time.perf_counter() - began, 3),
+                        'saturated': len(mapping) >= local_max_speakers})
+        if progress is not None:
+            progress(idx + 1, len(windows), details[-1])
+    absorbed = registry.absorb_islands()
+    if absorbed:
+        for source in (selected, ordinary):
+            for turn in source:
+                turn['speaker'] = absorbed.get(turn['speaker'], turn['speaker'])
+    ordinary = _merge_diarization_turns(ordinary)
+    spans = {}
+    for turn in ordinary:
+        spans.setdefault(turn['speaker'], []).append((turn['start'], turn['end']))
+    speech = {label: sum(end - start for start, end in items) for label, items in spans.items()}
+    final_vectors, vectors_source = None, 'prototype'
+    if label_embedder is not None:
+        try:
+            final_vectors = label_embedder(_merge_diarization_turns(selected), ordinary)
+            vectors_source = 'final'
+        except Exception:  # пересчёт — улучшение слияния, не повод ронять диаризацию
+            final_vectors = None
+    merged = registry.merge_duplicates(speech, lambda a, b: _intervals_overlap(spans.get(a, []), spans.get(b, [])),
+                                       vectors=final_vectors)
+    if merged:
+        for source in (selected, ordinary):
+            for turn in source:
+                turn['speaker'] = merged.get(turn['speaker'], turn['speaker'])
+    used = {t['speaker'] for t in ordinary} | {t['speaker'] for t in selected}
+    return DiarizationSegments(_merge_diarization_turns(selected), _merge_diarization_turns(ordinary), {
+        'mode': 'chunked', 'speakers_count': len(used), 'windows': details,
+        'decisions': registry.decisions, 'absorbed': absorbed, 'merged': merged,
+        'merge_vectors': vectors_source,
+        'review_speakers': sorted(
+            {d['speaker'] for d in registry.decisions
+             if d['reason'] in ('boundary_conflict', 'ambiguous')} - set(absorbed) - set(merged)),
+    })
+
+
+def diarization_cache_policy(config):
+    import hashlib
+    import json
+
+    size = getattr(config, 'diarization_chunk_seconds', 0)
+    if not size:
+        return None
+    names = ('diarization_num_speakers', 'diarization_min_speakers', 'diarization_max_speakers',
+             'diarization_clustering_threshold', 'diarization_min_duration_off', 'diarization_audio',
+             'diarization_exclusive', 'diarization_overlap_assign', 'speaker_embeddings_improved',
+             'diarization_chunk_seconds', 'diarization_chunk_threshold_seconds',
+             'diarization_chunk_overlap_seconds', 'diarization_chunk_max_speakers',
+             'diarization_stitch_similarity', 'diarization_stitch_margin', 'diarization_stitch_min_speech')
+    payload = {'version': 1, **{name: getattr(config, name, None) for name in names}}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()

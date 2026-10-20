@@ -14,6 +14,7 @@ from backend.chat.utils import normalize_text as _normalize_text
 CHAT_EVENT_SCOPE_INBOX = "inbox"
 CHAT_EVENT_SCOPE_CONVERSATION = "conversation"
 CHAT_EVENT_SCOPE_BOTH = "both"
+CHAT_MESSAGE_METADATA_EVENT = "chat.message.metadata.refresh"
 
 
 
@@ -168,6 +169,7 @@ async def build_message_created_event_jobs(
     conversation_id: str,
     message_id: str,
     member_user_ids: list[int] | None = None,
+    include_metadata: bool = True,
 ) -> list[ChatRealtimeEventJob]:
     normalized_conversation_id = _normalize_text(conversation_id)
     normalized_message_id = _normalize_text(message_id)
@@ -183,6 +185,25 @@ async def build_message_created_event_jobs(
         message_id=normalized_message_id,
         user_ids=member_ids,
     )
+    message_jobs = _message_created_jobs(
+        conversation_id=normalized_conversation_id, message_id=normalized_message_id,
+        member_ids=member_ids, messages_by_user=messages_by_user,
+    )
+    if not include_metadata:
+        return message_jobs
+    return [*message_jobs, *await build_message_metadata_event_jobs(
+        conversation_id=normalized_conversation_id, message_id=normalized_message_id, member_user_ids=member_ids,
+    )]
+
+
+async def build_message_metadata_event_jobs(
+    *, conversation_id: str, message_id: str, member_user_ids: list[int] | None = None,
+) -> list[ChatRealtimeEventJob]:
+    normalized_conversation_id = _normalize_text(conversation_id)
+    normalized_message_id = _normalize_text(message_id)
+    member_ids = await _resolve_member_ids(conversation_id=normalized_conversation_id, member_user_ids=member_user_ids)
+    if not normalized_conversation_id or not normalized_message_id or not member_ids:
+        return []
     conversation_updates_by_user, unread_summaries_by_user = await asyncio.gather(
         _get_conversation_updates_for_users(
             conversation_id=normalized_conversation_id,
@@ -191,21 +212,13 @@ async def build_message_created_event_jobs(
         ),
         _get_unread_summaries(member_ids),
     )
-    return [
-        *_message_created_jobs(
-            conversation_id=normalized_conversation_id,
-            message_id=normalized_message_id,
-            member_ids=member_ids,
-            messages_by_user=messages_by_user,
-        ),
-        *_inbox_meta_jobs(
-            conversation_id=normalized_conversation_id,
-            message_id=normalized_message_id,
-            member_ids=member_ids,
-            conversation_updates_by_user=conversation_updates_by_user,
-            unread_summaries_by_user=unread_summaries_by_user,
-        ),
-    ]
+    return _inbox_meta_jobs(
+        conversation_id=normalized_conversation_id,
+        message_id=normalized_message_id,
+        member_ids=member_ids,
+        conversation_updates_by_user=conversation_updates_by_user,
+        unread_summaries_by_user=unread_summaries_by_user,
+    )
 
 
 async def publish_event_job(job: ChatRealtimeEventJob | dict[str, Any]) -> None:
@@ -355,9 +368,10 @@ async def publish_message_created_fast_after_send(
         distribute=False,
     )
     room_ms = (time.perf_counter() - room_started_at) * 1000.0
-    # Sidebar-only users need inbox. Peers already in the conversation room get the
-    # room broadcast — skip duplicate inbox enqueue for them (cuts fan-out under load).
-    room_subscriber_ids = chat_realtime.conversation_room_user_ids(
+    # Sidebar-only users need inbox. Peers whose every connection is in the conversation
+    # room get the room broadcast — skip duplicate inbox enqueue for them (cuts fan-out
+    # under load). A user with another connection outside the room still gets inbox.
+    room_subscriber_ids = chat_realtime.conversation_room_only_user_ids(
         conversation_id=normalized_conversation_id
     )
     inbox_targets = [
@@ -379,7 +393,6 @@ async def publish_message_created_fast_after_send(
         )
         inbox_ms = (time.perf_counter() - inbox_started_at) * 1000.0
     publish_ms = (time.perf_counter() - started_at) * 1000.0
-    # #region agent log
     try:
         from backend.chat.send_audit import audit_send_trace
 
@@ -397,7 +410,6 @@ async def publish_message_created_fast_after_send(
         )
     except Exception:
         pass
-    # #endregion
     return {
         "member_count": len(member_ids),
         "message_jobs": 1 if (room_connections or inbox_published) else 0,

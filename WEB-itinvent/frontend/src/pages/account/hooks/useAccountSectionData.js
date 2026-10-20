@@ -71,6 +71,7 @@ export function useAccountSectionData(area = 'settings') {
   const canManageSessions = isAdmin || hasPermission('settings.sessions.manage');
   const canManageAiBots = isAdmin || hasPermission('settings.ai.manage');
   const canManageDepartments = isAdmin || hasPermission('departments.manage');
+  const canManageReferences = isAdmin || hasPermission('database.references.manage');
   const canAccessMail = hasPermission('mail.access');
   const canReadMyFilesAudit = isAdmin || hasPermission('my_files.stats.read');
   const adminSections = useMemo(
@@ -151,11 +152,23 @@ export function useAccountSectionData(area = 'settings') {
   const [passwordGroupsSaving, setPasswordGroupsSaving] = useState(false);
   const linkTrustedDeviceModeRef = useRef({ platformOnly: false });
 
+  // PreferencesContext hands out a new object on every refresh (e.g. auth-changed) even when nothing changed on the
+  // server. Re-seeding the drafts only when the stored values differ keeps unsaved edits from being reverted.
+  const syncedPreferencesKeyRef = useRef(null);
   useEffect(() => {
-    setThemeMode(preferences.theme_mode || 'system');
-    setFontFamily(preferences.font_family || 'Aptos');
-    setFontScale(Number(preferences.font_scale || 1));
-    setMobileBottomNavItems(normalizeMobileBottomNavItems(preferences.mobile_bottom_nav_items));
+    const synced = {
+      themeMode: preferences.theme_mode || 'system',
+      fontFamily: preferences.font_family || 'Aptos',
+      fontScale: Number(preferences.font_scale || 1),
+      mobileBottomNavItems: normalizeMobileBottomNavItems(preferences.mobile_bottom_nav_items),
+    };
+    const syncedKey = JSON.stringify(synced);
+    if (syncedPreferencesKeyRef.current === syncedKey) return;
+    syncedPreferencesKeyRef.current = syncedKey;
+    setThemeMode(synced.themeMode);
+    setFontFamily(synced.fontFamily);
+    setFontScale(synced.fontScale);
+    setMobileBottomNavItems(synced.mobileBottomNavItems);
   }, [preferences]);
 
   const availableNavigationItems = useMemo(
@@ -934,6 +947,7 @@ export function useAccountSectionData(area = 'settings') {
     canManageSessions,
     canManageAiBots,
     canManageDepartments,
+    canManageReferences,
     canReadMyFilesAudit,
     canAccessMail,
     adminSections,

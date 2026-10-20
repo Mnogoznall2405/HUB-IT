@@ -732,6 +732,20 @@ if ($sandboxControlRow -and $sandboxControlRow.Status -ne 'ok') {
     Write-Host 'Run: powershell -File scripts\pm2\restart-ai-agents.ps1' -ForegroundColor Yellow
 }
 
+Write-Host 'Auxiliary workers, warn-only:' -ForegroundColor Cyan
+$auxiliaryRows = foreach ($auxName in @(
+        'itinvent-chat-push-outbox-retention-worker',
+        'itinvent-scan-system-metrics-retention-worker',
+        'itinvent-voice',
+        'itinvent-voice-worker',
+        'itinvent-voice-archiver'
+    )) {
+    $row = Get-Pm2ProcessStatus -Snapshot $snapshot -Name $auxName
+    if ($row.Status -eq 'fail') { $row.Status = 'warn' }
+    $row
+}
+@($auxiliaryRows) | Format-Table Name, Status, Details -AutoSize
+
 Write-Host 'LiveKit (chat calls) checks, warn-only:' -ForegroundColor Cyan
 @(Test-LiveKitRuntime -Snapshot $snapshot) | Format-Table Name, Status, Details -AutoSize
 

@@ -7,7 +7,8 @@ const MAX_BUFFERED_BYTES = 2 * 1024 * 1024;
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000];
 const RECONNECT_JITTER_RATIO = 0.25;
 const STABLE_CONNECTION_MS = 5_000;
-const NON_RECONNECTABLE_CLOSE_CODES = new Set([1008, 4000, 4400, 4403, 4404]);
+// The server uses 1008 for rate limits; retry it with the normal backoff.
+const NON_RECONNECTABLE_CLOSE_CODES = new Set([4000, 4400, 4403, 4404]);
 const AUTH_TOKEN_REFRESHED_EVENT = 'auth-token-refreshed';
 const browserWindow = typeof globalThis.window === 'undefined' ? null : globalThis.window;
 

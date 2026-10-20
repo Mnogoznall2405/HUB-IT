@@ -108,7 +108,6 @@ class ChatConversationReadStore:
                     query=None,
                     items_count=len(refreshed_items),
                 )
-                # #region agent log
                 try:
                     from backend.chat.send_audit import audit_send_trace
 
@@ -122,11 +121,8 @@ class ChatConversationReadStore:
                     )
                 except Exception:
                     pass
-                # #endregion
                 return refreshed_payload
-        # #region agent log
         _list_started = time.perf_counter()
-        # #endregion
         with chat_session() as session:
             my_member = aliased(ChatMember)
             conv_state = aliased(ChatConversationUserState)
@@ -376,6 +372,34 @@ class ChatConversationReadStore:
                 )
                 items.append(summary)
 
+            group_ids = [
+                conversation.id
+                for conversation in conversations
+                if _normalize_text(getattr(conversation, "kind", None)) == "group"
+            ]
+            if group_ids:
+                from backend.chat.chat_group_limits import load_slow_modes_many
+                from backend.chat.chat_group_permissions import load_members_send_files_many
+                from backend.chat.chat_group_restrictions import format_until, load_viewer_restrictions_many
+                from backend.chat.chat_group_settings import load_group_posting_policies
+
+                policies = load_group_posting_policies(session, group_ids)
+                slow_modes = load_slow_modes_many(session, group_ids)
+                files_flags = load_members_send_files_many(session, group_ids)
+                restricted = load_viewer_restrictions_many(session, group_ids, int(current_user_id))
+                for item in items:
+                    item_id = _normalize_text(item.get("id"))
+                    policy = policies.get(item_id)
+                    if policy is not None:
+                        item["posting_policy"] = policy
+                    if item_id in slow_modes:
+                        item["slow_mode_seconds"] = slow_modes[item_id]
+                    if item_id in files_flags:
+                        item["members_send_files"] = files_flags[item_id]
+                    if item_id in restricted:
+                        item["viewer_restricted"] = True
+                        item["viewer_restricted_until"] = format_until(restricted[item_id])
+
             next_cursor = None
             if has_more and conversations:
                 last_conversation = conversations[-1]
@@ -406,7 +430,6 @@ class ChatConversationReadStore:
                 query=search or None,
                 items_count=len(items),
             )
-            # #region agent log
             try:
                 from backend.chat.send_audit import audit_send_trace
 
@@ -421,7 +444,6 @@ class ChatConversationReadStore:
                 )
             except Exception:
                 pass
-            # #endregion
             return result_payload
 
     def get_conversation_summary(
@@ -439,11 +461,27 @@ class ChatConversationReadStore:
                 conversation_id=normalized_conversation_id,
                 current_user_id=int(current_user_id),
             )
-            return self._service._build_conversation_summary_payload(
+            summary = self._service._build_conversation_summary_payload(
                 session=session,
                 conversation=conversation,
                 current_user_id=int(current_user_id),
             )
+            if _normalize_text(getattr(conversation, "kind", None)) == "group":
+                from backend.chat.chat_group_limits import load_slow_mode_seconds
+                from backend.chat.chat_group_permissions import load_members_send_files
+                from backend.chat.chat_group_restrictions import format_until, load_viewer_restrictions_many
+                from backend.chat.chat_group_settings import load_group_posting_policies
+
+                policy = load_group_posting_policies(session, [conversation.id]).get(conversation.id)
+                if policy is not None:
+                    summary["posting_policy"] = policy
+                summary["slow_mode_seconds"] = load_slow_mode_seconds(session, conversation.id)
+                summary["members_send_files"] = load_members_send_files(session, conversation.id)
+                own = load_viewer_restrictions_many(session, [conversation.id], int(current_user_id))
+                if conversation.id in own:
+                    summary["viewer_restricted"] = True
+                    summary["viewer_restricted_until"] = format_until(own[conversation.id])
+            return summary
 
     def get_unread_summary(self, *, current_user_id: int) -> dict:
         cached = self._service._cache_get(user_id=int(current_user_id), bucket="unread_summary")
@@ -658,7 +696,7 @@ class ChatConversationReadStore:
                 presence_map=presence_map,
                 user_ids=member_ids,
             )
-            return {
+            payloads = {
                 int(user_id): self._service._serialize_conversation(
                     session=session,
                     conversation=conversation,
@@ -675,6 +713,30 @@ class ChatConversationReadStore:
                 )
                 for user_id in allowed_user_ids
             }
+            if _normalize_text(getattr(conversation, "kind", None)) == "group":
+                # The live update must carry the group rules too, otherwise an open client keeps
+                # the old posting policy / slow mode / its own restriction until it reloads.
+                from backend.chat.chat_group_limits import load_slow_mode_seconds
+                from backend.chat.chat_group_permissions import load_members_send_files
+                from backend.chat.chat_group_restrictions import format_until, load_restrictions
+                from backend.chat.chat_group_settings import load_group_posting_policies
+
+                policy = load_group_posting_policies(session, [conversation.id]).get(conversation.id)
+                slow_mode_seconds = load_slow_mode_seconds(session, conversation.id)
+                members_send_files = load_members_send_files(session, conversation.id)
+                restrictions = load_restrictions(session, conversation.id)
+                for user_id, payload in payloads.items():
+                    if policy is not None:
+                        payload["posting_policy"] = policy
+                    payload["slow_mode_seconds"] = slow_mode_seconds
+                    payload["members_send_files"] = members_send_files
+                    # Explicit False: clients merge updates into the cached detail, so an omitted
+                    # field would keep a lifted restriction on screen.
+                    payload["viewer_restricted"] = user_id in restrictions
+                    payload["viewer_restricted_until"] = (
+                        format_until(restrictions[user_id]) if user_id in restrictions else None
+                    )
+            return payloads
 
 
     def get_conversation_assets_summary(

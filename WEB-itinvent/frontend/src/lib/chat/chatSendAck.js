@@ -23,6 +23,18 @@ function preferDeliveryStatus(existingStatus, incomingStatus) {
   return rightRank >= leftRank ? right : left;
 }
 
+// An old history/hydration response must not roll an action back after confirmation.
+export function mergeThreadActionCard(existing, incoming, { lean = false, deleted = false } = {}) {
+  if (deleted) return null;
+  if (incoming === undefined || (lean && incoming === null)) return existing;
+  if (existing?.id && existing.id === incoming?.id) {
+    const previousTime = Date.parse(existing.updated_at || '');
+    const nextTime = Date.parse(incoming.updated_at || '');
+    if (Number.isFinite(previousTime) && (!Number.isFinite(nextTime) || nextTime < previousTime)) return existing;
+  }
+  return incoming;
+}
+
 /**
  * Merge server ACK / message.created / message.updated into a local thread row.
  * Lean ACK must not wipe optimistic sender, reply preview or a newer delivery status.
@@ -48,6 +60,9 @@ export function mergeIncomingThreadMessage(existingMessage, incomingMessage) {
     ...existingMessage,
     ...incomingMessage,
   };
+  merged.action_card = mergeThreadActionCard(existingMessage.action_card, incomingMessage.action_card, {
+    lean, deleted: Boolean(incomingMessage.is_deleted),
+  });
 
   const existingSender = existingMessage.sender && typeof existingMessage.sender === 'object'
     ? existingMessage.sender

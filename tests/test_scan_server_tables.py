@@ -979,8 +979,10 @@ def test_dashboard_reports_server_pdf_job_queue(temp_dir):
     assert dashboard["performance"]["focused_effective_dpi_min"] == 400.0
 
 
-def test_scan_task_progress_tracks_linked_jobs_until_all_ocr_finishes(temp_dir):
+def test_scan_task_progress_tracks_linked_jobs_until_all_ocr_finishes(temp_dir, monkeypatch):
     store = _make_store(temp_dir)
+    clock = [100.0]
+    monkeypatch.setattr(scan_database.time, "monotonic", lambda: clock[0])
     task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
     store.report_task_result(
         agent_id="agent-1",
@@ -1001,6 +1003,7 @@ def test_scan_task_progress_tracks_linked_jobs_until_all_ocr_finishes(temp_dir):
         error_text="",
     )
 
+    clock[0] += store._reconcile_debounce_sec + 0.1
     first_job = store.queue_job(
         {
             "agent_id": "agent-1",
@@ -1018,6 +1021,7 @@ def test_scan_task_progress_tracks_linked_jobs_until_all_ocr_finishes(temp_dir):
             "scan_task_id": task["id"],
         }
     )
+    clock[0] += store._reconcile_debounce_sec + 0.1
     second_job = store.queue_job(
         {
             "agent_id": "agent-1",
@@ -1608,8 +1612,10 @@ def test_deduped_previous_job_does_not_complete_new_force_scan_task(temp_dir):
     assert task_result["jobs_done_with_incident"] == 0
 
 
-def test_local_scan_waits_for_ingest_complete_before_finishing_linked_jobs(temp_dir):
+def test_local_scan_waits_for_ingest_complete_before_finishing_linked_jobs(temp_dir, monkeypatch):
     store = _make_store(temp_dir)
+    clock = [100.0]
+    monkeypatch.setattr(scan_database.time, "monotonic", lambda: clock[0])
     task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
     store.report_task_result(
         agent_id="agent-1",
@@ -1642,6 +1648,7 @@ def test_local_scan_waits_for_ingest_complete_before_finishing_linked_jobs(temp_
         )
         conn.commit()
 
+    clock[0] += store._reconcile_debounce_sec + 0.1
     queued = store.queue_job(
         {
             "agent_id": "agent-1",
@@ -2319,8 +2326,9 @@ def test_sqlite_write_retry_handles_database_locked(temp_dir, monkeypatch):
     assert calls == 3
 
 
-def test_reconcile_job_pdf_spool_fails_pending_pdf_jobs_without_payload(temp_dir):
+def test_reconcile_job_pdf_spool_fails_pending_pdf_jobs_without_payload(temp_dir, monkeypatch):
     store = _make_store(temp_dir)
+    monkeypatch.setattr(scan_database.time, "monotonic", lambda: 100.0)
     task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
     store.report_task_result(
         agent_id="agent-1",

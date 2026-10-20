@@ -132,6 +132,72 @@ def test_user_service_bounds_legacy_search_response_for_large_directory(temp_dir
     assert page["has_more"] is True
 
 
+def test_user_service_stale_snapshot_does_not_delete_or_revert_users_changed_by_another_process(temp_dir):
+    url = _sqlite_url(temp_dir)
+    first = UserService(file_path=Path(temp_dir) / "web_users_a.json", database_url=url)
+    second = UserService(file_path=Path(temp_dir) / "web_users_b.json", database_url=url)
+    target = first.create_user(username="stale-target", password="secret123", role="viewer")
+    other = first.create_user(username="stale-other", password="secret123", role="viewer")
+    # `first` now holds a cached snapshot (up to a minute old) without the user created below.
+    first._load_users()
+
+    second._invalidate_users_cache()
+    second.create_user(username="created-elsewhere", password="secret123", role="viewer")
+    second.update_user(int(other["id"]), is_active=False)
+
+    first.update_user(int(target["id"]), full_name="Renamed")
+
+    usernames = {item["username"] for item in second.list_users()}
+    assert "created-elsewhere" in usernames
+    assert second.get_by_id(int(other["id"]))["is_active"] is False
+    assert second.get_by_id(int(target["id"]))["full_name"] == "Renamed"
+
+
+def test_user_service_update_from_stale_snapshot_does_not_resurrect_a_deleted_user(temp_dir):
+    url = _sqlite_url(temp_dir)
+    first = UserService(file_path=Path(temp_dir) / "web_users_a.json", database_url=url)
+    second = UserService(file_path=Path(temp_dir) / "web_users_b.json", database_url=url)
+    doomed = first.create_user(username="doomed", password="secret123", role="viewer")
+    first._load_users()
+
+    second._invalidate_users_cache()
+    assert second.delete_user(int(doomed["id"])) is True
+    first.update_user(int(doomed["id"]), full_name="Late edit")
+
+    assert second.get_by_id(int(doomed["id"])) is None
+
+
+def test_user_service_delete_removes_only_the_requested_user(temp_dir):
+    url = _sqlite_url(temp_dir)
+    first = UserService(file_path=Path(temp_dir) / "web_users_a.json", database_url=url)
+    second = UserService(file_path=Path(temp_dir) / "web_users_b.json", database_url=url)
+    gone = first.create_user(username="to-delete", password="secret123", role="viewer")
+    first._load_users()
+    second._invalidate_users_cache()
+    second.create_user(username="kept-elsewhere", password="secret123", role="viewer")
+
+    assert first.delete_user(int(gone["id"])) is True
+
+    usernames = {item["username"] for item in second.list_users()}
+    assert "to-delete" not in usernames
+    assert "kept-elsewhere" in usernames
+
+
+def test_user_service_concurrent_create_with_same_id_is_rejected_not_overwritten(temp_dir):
+    url = _sqlite_url(temp_dir)
+    first = UserService(file_path=Path(temp_dir) / "web_users_a.json", database_url=url)
+    second = UserService(file_path=Path(temp_dir) / "web_users_b.json", database_url=url)
+    first._load_users()
+    second._load_users()
+    winner = second.create_user(username="first-writer", password="secret123", role="viewer")
+
+    # `first` still computes the same next id from its stale cache.
+    with pytest.raises(ValueError):
+        first.create_user(username="second-writer", password="secret123", role="viewer")
+
+    assert second.get_by_id(int(winner["id"]))["username"] == "first-writer"
+
+
 def test_session_service_works_with_app_db_backend(temp_dir):
     service = SessionService(file_path=Path(temp_dir) / "web_sessions.json", database_url=_sqlite_url(temp_dir))
 
@@ -237,6 +303,32 @@ def test_settings_and_db_selection_work_with_app_db_backend(temp_dir):
         "/database",
     ]
     assert selection_service.get_assigned_database(123456) == "ITINVENT"
+
+
+def test_settings_update_does_not_delete_row_created_by_another_process(temp_dir, monkeypatch):
+    from backend.appdb.db import app_session
+    from backend.appdb.models import AppUserSetting
+
+    database_url = _sqlite_url(temp_dir)
+    service = SettingsService(file_path=Path(temp_dir) / "web_user_settings.json", database_url=database_url)
+    service.update_user_settings(1, {"theme_mode": "dark"})
+
+    original_load_one = service._load_one
+
+    def load_one_then_other_process_inserts(user_id):
+        result = original_load_one(user_id)
+        with app_session(database_url) as session:  # another process commits meanwhile
+            if session.get(AppUserSetting, 2) is None:
+                session.add(AppUserSetting(user_id=2, theme_mode="light"))
+        return result
+
+    monkeypatch.setattr(service, "_load_one", load_one_then_other_process_inserts)
+    service.update_user_settings(1, {"font_family": "Inter"})
+
+    with app_session(database_url) as session:
+        assert session.get(AppUserSetting, 2) is not None
+        assert session.get(AppUserSetting, 1).font_family == "Inter"
+        assert session.get(AppUserSetting, 1).theme_mode == "dark"
 
 
 def test_settings_mobile_bottom_nav_items_work_with_json_fallback(temp_dir, monkeypatch):

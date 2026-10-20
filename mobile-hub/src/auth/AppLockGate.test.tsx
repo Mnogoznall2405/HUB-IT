@@ -52,6 +52,7 @@ jest.mock('../native/haptics', () => ({
 }));
 
 import { AppLockGate } from './AppLockGate';
+import { beginExternalActivity } from './externalActivity';
 
 describe('AppLockGate lifecycle', () => {
   beforeEach(() => {
@@ -100,5 +101,34 @@ describe('AppLockGate lifecycle', () => {
     mockAuthState.appLockPendingUnlock = false;
     await view.rerender(<AppLockGate />);
     expect(view.queryByTestId('app-lock-scroll')).toBeNull();
+  });
+
+  it('does not lock after the system camera sent the app to the background, but still locks after a real background', async () => {
+    const originalState = Object.getOwnPropertyDescriptor(AppState, 'currentState');
+    Object.defineProperty(AppState, 'currentState', { configurable: true, value: 'active' });
+    let stateListener: ((state: AppStateStatus) => void) | undefined;
+    jest.spyOn(AppState, 'addEventListener').mockImplementation((_, listener) => {
+      stateListener = listener;
+      return { remove: jest.fn() };
+    });
+
+    const view = await render(<AppLockGate />);
+    await waitFor(() => expect(stateListener).toBeDefined());
+
+    const endCamera = beginExternalActivity();
+    await act(async () => { stateListener?.('background'); });
+    endCamera();
+    await act(async () => { stateListener?.('active'); await Promise.resolve(); });
+    expect(view.queryByTestId('app-lock-scroll')).toBeNull();
+    expect(mockUnlock).not.toHaveBeenCalled();
+
+    await act(async () => { stateListener?.('background'); });
+    await act(async () => { stateListener?.('active'); await Promise.resolve(); });
+    // The lock appears and asks for the fingerprint right away.
+    await waitFor(() => expect(mockUnlock).toHaveBeenCalled());
+
+    await view.unmount();
+    jest.restoreAllMocks();
+    if (originalState) Object.defineProperty(AppState, 'currentState', originalState);
   });
 });

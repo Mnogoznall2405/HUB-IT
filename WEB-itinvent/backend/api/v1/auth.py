@@ -12,7 +12,6 @@ import secrets
 import urllib.parse
 import uuid
 
-import json
 import time
 from pathlib import Path
 
@@ -87,6 +86,7 @@ from backend.database.connection import set_user_database
 from backend.services.auth_session_metrics import note as note_auth_session_metric
 from backend.utils.client_geo import resolve_client_geo
 from backend.utils.request_network import build_request_network_context, resolve_twofa_policy
+from backend.utils.upload_limits import read_upload_limited
 
 
 router = APIRouter()
@@ -765,46 +765,7 @@ async def handle_safari_password_beacon_form(request: Request) -> HTMLResponse:
             status_code=403,
             headers={"Cache-Control": "no-store"},
         )
-    # #region agent log
-    try:
-        log_path = Path(__file__).resolve().parents[3] / "debug-891634.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({
-                "sessionId": "891634",
-                "location": "auth.py:handle_safari_password_beacon_form",
-                "message": "beacon validated",
-                "hypothesisId": "H6",
-                "data": {
-                    "usernameLength": len(username),
-                    "hasChallenge": bool(challenge_id),
-                    "path": str(request.url.path or ""),
-                },
-                "timestamp": int(time.time() * 1000),
-            }, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-    # #endregion
     continue_path = f"/login?resume_challenge={urllib.parse.quote(challenge_id, safe='')}"
-    # #region agent log
-    try:
-        log_path = Path(__file__).resolve().parents[3] / "debug-891634.log"
-        with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({
-                "sessionId": "891634",
-                "location": "auth.py:handle_safari_password_beacon_form",
-                "message": "password save redirect",
-                "hypothesisId": "H14",
-                "data": {
-                    "continuePath": continue_path,
-                    "usernameLength": len(username),
-                    "statusCode": 303,
-                },
-                "timestamp": int(time.time() * 1000),
-            }, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-    # #endregion
     return RedirectResponse(
         url=continue_path,
         status_code=303,
@@ -1124,17 +1085,17 @@ async def logout(
 
     token_data = decode_access_token(token or "")
     if token_data and token_data.session_id:
-        session_service.close_session(token_data.session_id)
-        session_auth_context_service.delete_session_context(token_data.session_id)
-    _revoke_token_if_present(token)
+        await run_in_threadpool(session_service.close_session, token_data.session_id)
+        await run_in_threadpool(session_auth_context_service.delete_session_context, token_data.session_id)
+    await run_in_threadpool(_revoke_token_if_present, token)
     refresh_token_value = str(refresh_token_cookie or "").strip()
     if not refresh_token_value and payload is not None:
         refresh_token_value = str(payload.refresh_token or "").strip()
-    _revoke_token_if_present(refresh_token_value or None)
+    await run_in_threadpool(_revoke_token_if_present, refresh_token_value or None)
     if refresh_token_value:
         refresh_data = decode_access_token(refresh_token_value, expected_token_type="refresh")
         if refresh_data and refresh_data.jti:
-            auth_runtime_store_service.consume_refresh_token(refresh_data.jti)
+            await run_in_threadpool(auth_runtime_store_service.consume_refresh_token, refresh_data.jti)
     if _is_mobile_auth_client(request):
         client_device_id = normalize_client_device_id(request.headers.get(_CLIENT_DEVICE_HEADER_NAME))
         if client_device_id:
@@ -1156,7 +1117,7 @@ async def get_current_user_info(
     """
     Get current authenticated user information.
     """
-    return _build_current_user_payload(current_user, request)
+    return await run_in_threadpool(_build_current_user_payload, current_user, request)
 
 
 @router.post("/me/about-onboarding/complete", response_model=User)
@@ -1167,7 +1128,7 @@ async def complete_about_onboarding(
     completed = await run_in_threadpool(user_service.complete_about_onboarding, int(current_user.id))
     if completed is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    return _build_current_user_payload(current_user, request)
+    return await run_in_threadpool(_build_current_user_payload, current_user, request)
 
 
 @router.post("/change-password")
@@ -1178,18 +1139,18 @@ async def change_password(
     """
     Change current user's password.
     """
-    changed = user_service.change_password(current_user.id, request.old_password, request.new_password)
+    changed = await run_in_threadpool(user_service.change_password, current_user.id, request.old_password, request.new_password)
     if not changed:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Incorrect old password",
         )
-    closed_sessions = session_service.close_user_sessions(int(current_user.id))
-    revoked_devices = trusted_device_service.revoke_all_user_devices(int(current_user.id))
-    revoked_biometric_credentials = mobile_biometric_session_service.revoke_all_user_credentials(int(current_user.id))
-    for item in session_service.list_sessions(active_only=False):
+    closed_sessions = await run_in_threadpool(session_service.close_user_sessions, int(current_user.id))
+    revoked_devices = await run_in_threadpool(trusted_device_service.revoke_all_user_devices, int(current_user.id))
+    revoked_biometric_credentials = await run_in_threadpool(mobile_biometric_session_service.revoke_all_user_credentials, int(current_user.id))
+    for item in (await run_in_threadpool(session_service.list_sessions, active_only=False)):
         if int(item.get("user_id", 0) or 0) == int(current_user.id):
-            session_auth_context_service.delete_session_context(item.get("session_id"))
+            await run_in_threadpool(session_auth_context_service.delete_session_context, item.get("session_id"))
     return {
         "message": "Password changed successfully",
         "closed_sessions": closed_sessions,
@@ -1806,7 +1767,7 @@ async def get_current_session_status(
     """Diagnostics for the current cookie session (idle/absolute/refresh windows)."""
     from backend.config import session_policy_snapshot
 
-    diagnostics = session_service.build_session_diagnostics(session_id) or {}
+    diagnostics = (await run_in_threadpool(session_service.build_session_diagnostics, session_id)) or {}
     network_context = build_request_network_context(request)
     return {
         "user_id": int(current_user.id),
@@ -1832,7 +1793,7 @@ async def regenerate_backup_codes(
 ):
     try:
         return BackupCodesResponse(
-            backup_codes=auth_security_service.regenerate_backup_codes(int(current_user.id))
+            backup_codes=(await run_in_threadpool(auth_security_service.regenerate_backup_codes, int(current_user.id)))
         )
     except AuthSecurityError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1846,7 +1807,7 @@ async def trusted_device_register_options(
     session_id: Optional[str] = Depends(get_current_session_id),
 ):
     network_context = build_request_network_context(request)
-    _enforce_rate_limit(
+    await run_in_threadpool(_enforce_rate_limit,
         namespace="auth_trusted_device_register_options",
         key=f"{int(current_user.id)}:{str(session_id or network_context.client_ip or '')}",
         limit=5,
@@ -1856,18 +1817,15 @@ async def trusted_device_register_options(
     rp_id = str(config.security.webauthn_rp_id or "").strip()
     if not rp_id:
         raise HTTPException(status_code=503, detail="WebAuthn is not configured")
-    options = trusted_device_service.build_registration_options(
-        user_id=int(current_user.id),
+    options = await run_in_threadpool(trusted_device_service.build_registration_options, user_id=int(current_user.id),
         username=current_user.username,
         display_name=current_user.full_name or current_user.username,
         rp_id=rp_id,
         rp_name=str(config.security.webauthn_rp_name or "HUB-IT").strip() or "HUB-IT",
-        exclude_devices=trusted_device_service.list_devices(int(current_user.id), active_only=True),
-        platform_only=bool(payload.platform_only),
-    )
+        exclude_devices=(await run_in_threadpool(trusted_device_service.list_devices, int(current_user.id), active_only=True)),
+        platform_only=bool(payload.platform_only))
     challenge_id = uuid.uuid4().hex
-    auth_runtime_store_service.save_webauthn_challenge(
-        challenge_id,
+    await run_in_threadpool(auth_runtime_store_service.save_webauthn_challenge, challenge_id,
         {
             "purpose": "register",
             "user_id": int(current_user.id),
@@ -1878,8 +1836,7 @@ async def trusted_device_register_options(
             "label": str(payload.label or "").strip() or None,
             "platform_only": bool(payload.platform_only),
         },
-        ttl_seconds=max(60, int(config.security.twofa_challenge_ttl_sec or 600)),
-    )
+        ttl_seconds=max(60, int(config.security.twofa_challenge_ttl_sec or 600)))
     return {"challenge_id": challenge_id, "public_key": options}
 
 
@@ -1889,28 +1846,25 @@ async def trusted_device_register_verify(
     request: Request,
     current_user: User = Depends(get_current_active_user),
 ):
-    _enforce_rate_limit(
+    await run_in_threadpool(_enforce_rate_limit,
         namespace="auth_trusted_device_register_verify",
         key=f"{int(current_user.id)}:{str(payload.challenge_id or '')}",
         limit=5,
         window_seconds=60,
         request=request,
     )
-    challenge = auth_runtime_store_service.pop_webauthn_challenge(payload.challenge_id)
+    challenge = await run_in_threadpool(auth_runtime_store_service.pop_webauthn_challenge, payload.challenge_id)
     if not isinstance(challenge, dict) or challenge.get("purpose") != "register":
         raise HTTPException(status_code=400, detail="WebAuthn registration challenge expired")
     if int(challenge.get("user_id") or 0) != int(current_user.id):
         raise HTTPException(status_code=403, detail="Challenge does not belong to current user")
     try:
-        verification = trusted_device_service.verify_registration_response(
-            credential=payload.credential,
+        verification = await run_in_threadpool(trusted_device_service.verify_registration_response, credential=payload.credential,
             expected_challenge=str(challenge.get("challenge") or ""),
             expected_origin=str(challenge.get("expected_origin") or ""),
             expected_rp_id=str(challenge.get("expected_rp_id") or ""),
-            require_user_verification=True,
-        )
-        created = trusted_device_service.register_device(
-            user_id=int(current_user.id),
+            require_user_verification=True)
+        created = await run_in_threadpool(trusted_device_service.register_device, user_id=int(current_user.id),
             label=str(payload.label or challenge.get("label") or "").strip() or "Доверенное устройство",
             credential_id=str(verification.get("credential_id") or ""),
             public_key_b64=str(verification.get("public_key_b64") or ""),
@@ -1919,41 +1873,35 @@ async def trusted_device_register_verify(
             aaguid=verification.get("aaguid"),
             rp_id=str(challenge.get("expected_rp_id") or ""),
             origin=str(challenge.get("expected_origin") or ""),
-            is_discoverable=True,
-        )
+            is_discoverable=True)
     except TrustedDeviceServiceError as exc:
-        trusted_device_service.audit_event(
-            "auth_fail",
+        await run_in_threadpool(trusted_device_service.audit_event, "auth_fail",
             user_id=int(current_user.id),
-            reason="registration_verify",
-        )
+            reason="registration_verify")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return TrustedDeviceInfo(**created, is_current_device=False)
 
 
 @router.post("/trusted-devices/auth/options")
 async def trusted_device_auth_options(payload: TrustedDeviceAuthOptionsRequest, request: Request):
-    _enforce_rate_limit(
+    await run_in_threadpool(_enforce_rate_limit,
         namespace="auth_trusted_device_options",
         key=str(payload.login_challenge_id or ""),
         limit=5,
         window_seconds=60,
         request=request,
     )
-    challenge = auth_security_service.get_login_challenge(payload.login_challenge_id)
-    devices = trusted_device_service.list_devices(int(challenge.get("user_id") or 0), active_only=True)
+    challenge = await run_in_threadpool(auth_security_service.get_login_challenge, payload.login_challenge_id)
+    devices = await run_in_threadpool(trusted_device_service.list_devices, int(challenge.get("user_id") or 0), active_only=True)
     if not devices:
         raise HTTPException(status_code=400, detail="У пользователя нет доверенных устройств")
     rp_id = str(config.security.webauthn_rp_id or "").strip()
     if not rp_id:
         raise HTTPException(status_code=503, detail="WebAuthn is not configured")
-    options = trusted_device_service.build_authentication_options(
-        rp_id=rp_id,
-        devices=devices,
-    )
+    options = await run_in_threadpool(trusted_device_service.build_authentication_options, rp_id=rp_id,
+        devices=devices)
     challenge_id = uuid.uuid4().hex
-    auth_runtime_store_service.save_webauthn_challenge(
-        challenge_id,
+    await run_in_threadpool(auth_runtime_store_service.save_webauthn_challenge, challenge_id,
         {
             "purpose": "authenticate",
             "user_id": int(challenge.get("user_id") or 0),
@@ -1962,60 +1910,49 @@ async def trusted_device_auth_options(payload: TrustedDeviceAuthOptionsRequest, 
             "expected_rp_id": rp_id,
             "challenge": options["challenge"],
         },
-        ttl_seconds=max(60, int(config.security.twofa_challenge_ttl_sec or 600)),
-    )
+        ttl_seconds=max(60, int(config.security.twofa_challenge_ttl_sec or 600)))
     return {"challenge_id": challenge_id, "public_key": options}
 
 
 @router.post("/trusted-devices/auth/verify", response_model=LoginResponse)
 async def trusted_device_auth_verify(payload: TrustedDeviceAuthVerifyRequest, request: Request, response: Response):
     client_device_id = _resolve_client_device_id(request)
-    _enforce_rate_limit(
+    await run_in_threadpool(_enforce_rate_limit,
         namespace="auth_trusted_device_verify",
         key=str(payload.login_challenge_id or ""),
         limit=5,
         window_seconds=60,
         request=request,
     )
-    challenge = auth_runtime_store_service.pop_webauthn_challenge(payload.challenge_id)
+    challenge = await run_in_threadpool(auth_runtime_store_service.pop_webauthn_challenge, payload.challenge_id)
     if not isinstance(challenge, dict) or challenge.get("purpose") != "authenticate":
         raise HTTPException(status_code=400, detail="WebAuthn authentication challenge expired")
     if str(challenge.get("login_challenge_id") or "") != str(payload.login_challenge_id):
         raise HTTPException(status_code=400, detail="Challenge does not match login flow")
-    device = trusted_device_service.find_device_by_credential(
-        str((payload.credential or {}).get("id") or ""),
-        user_id=int(challenge.get("user_id") or 0),
-    )
+    device = await run_in_threadpool(trusted_device_service.find_device_by_credential, str((payload.credential or {}).get("id") or ""),
+        user_id=int(challenge.get("user_id") or 0))
     if not device:
-        auth_security_service.delete_login_challenge(payload.login_challenge_id)
-        trusted_device_service.audit_event(
-            "auth_fail",
+        await run_in_threadpool(auth_security_service.delete_login_challenge, payload.login_challenge_id)
+        await run_in_threadpool(trusted_device_service.audit_event, "auth_fail",
             user_id=int(challenge.get("user_id") or 0),
-            reason="trusted_device_not_found",
-        )
+            reason="trusted_device_not_found")
         raise HTTPException(status_code=400, detail="Trusted device not found")
     try:
-        verification = trusted_device_service.verify_authentication_response(
-            credential=payload.credential,
+        verification = await run_in_threadpool(trusted_device_service.verify_authentication_response, credential=payload.credential,
             expected_challenge=str(challenge.get("challenge") or ""),
             expected_origin=str(challenge.get("expected_origin") or ""),
             expected_rp_id=str(challenge.get("expected_rp_id") or ""),
+            device=device)
+        await run_in_threadpool(trusted_device_service.update_sign_count, str(device.get("id") or ""), int(verification.get("new_sign_count") or 0))
+        result = await run_in_threadpool(auth_security_service.finalize_trusted_device_login, payload.login_challenge_id,
             device=device,
-        )
-        trusted_device_service.update_sign_count(str(device.get("id") or ""), int(verification.get("new_sign_count") or 0))
-        result = auth_security_service.finalize_trusted_device_login(
-            payload.login_challenge_id,
-            device=device,
-            client_device_id=client_device_id,
-        )
+            client_device_id=client_device_id)
     except (TrustedDeviceServiceError, AuthSecurityError) as exc:
-        auth_security_service.delete_login_challenge(payload.login_challenge_id)
-        trusted_device_service.audit_event(
-            "auth_fail",
+        await run_in_threadpool(auth_security_service.delete_login_challenge, payload.login_challenge_id)
+        await run_in_threadpool(trusted_device_service.audit_event, "auth_fail",
             user_id=int(challenge.get("user_id") or 0),
             device_id=str(device.get("id") or ""),
-            reason="trusted_device_verify",
-        )
+            reason="trusted_device_verify")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await run_in_threadpool(_apply_default_database, result["user"])
     return _build_login_response(
@@ -2047,7 +1984,7 @@ async def list_trusted_devices(
         token = str(access_token_cookie).strip() or None
     token_data = decode_access_token(token or "", expected_token_type="access")
     current_device_id = str(token_data.device_id or "") if token_data else ""
-    devices = trusted_device_service.list_devices(int(current_user.id), active_only=False)
+    devices = await run_in_threadpool(trusted_device_service.list_devices, int(current_user.id), active_only=False)
     return [
         TrustedDeviceInfo(
             **item,
@@ -2062,7 +1999,7 @@ async def revoke_trusted_device(
     device_id: str,
     current_user: User = Depends(get_current_active_user),
 ):
-    device = trusted_device_service.revoke_device(user_id=int(current_user.id), device_id=device_id)
+    device = await run_in_threadpool(trusted_device_service.revoke_device, user_id=int(current_user.id), device_id=device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Trusted device not found")
     return {"success": True, "device_id": device_id}
@@ -2074,7 +2011,7 @@ async def admin_reset_twofa(
     _: User = Depends(get_current_admin_user),
 ):
     try:
-        return auth_security_service.reset_user_twofa(user_id=int(user_id))
+        return await run_in_threadpool(auth_security_service.reset_user_twofa, user_id=int(user_id))
     except AuthSecurityError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -2088,7 +2025,7 @@ async def reset_own_twofa(
     refresh_token_cookie: Optional[str] = Cookie(None, alias=config.app.auth_refresh_cookie_name),
 ):
     try:
-        result = auth_security_service.reset_user_twofa(user_id=int(current_user.id))
+        result = await run_in_threadpool(auth_security_service.reset_user_twofa, user_id=int(current_user.id))
     except AuthSecurityError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -2097,12 +2034,12 @@ async def reset_own_twofa(
         token = credentials.credentials
     elif access_token_cookie:
         token = str(access_token_cookie).strip() or None
-    _revoke_token_if_present(token)
-    _revoke_token_if_present(refresh_token_cookie)
+    await run_in_threadpool(_revoke_token_if_present, token)
+    await run_in_threadpool(_revoke_token_if_present, refresh_token_cookie)
     if refresh_token_cookie:
         refresh_data = decode_access_token(refresh_token_cookie, expected_token_type="refresh")
         if refresh_data and refresh_data.jti:
-            auth_runtime_store_service.consume_refresh_token(refresh_data.jti)
+            await run_in_threadpool(auth_runtime_store_service.consume_refresh_token, refresh_data.jti)
     _clear_auth_cookies(response)
     return result
 
@@ -2112,7 +2049,8 @@ async def get_sessions(
     _: User = Depends(require_permission(PERM_SETTINGS_SESSIONS_MANAGE)),
 ):
     """List web sessions available for admin session management."""
-    return [_session_info_from_row(item) for item in session_service.list_sessions(active_only=True)]
+    sessions = await run_in_threadpool(session_service.list_sessions, active_only=True)
+    return [_session_info_from_row(item) for item in sessions]
 
 
 @router.delete("/sessions/{session_id}")
@@ -2121,10 +2059,10 @@ async def terminate_session(
     _: User = Depends(require_permission(PERM_SETTINGS_SESSIONS_MANAGE)),
 ):
     """Terminate a session by id."""
-    closed = session_service.close_session_by_id(session_id)
+    closed = await run_in_threadpool(session_service.close_session_by_id, session_id)
     if not closed:
         raise HTTPException(status_code=404, detail="Session not found")
-    session_auth_context_service.delete_session_context(session_id)
+    await run_in_threadpool(session_auth_context_service.delete_session_context, session_id)
     return {"success": True, "session_id": session_id}
 
 
@@ -2133,9 +2071,9 @@ async def cleanup_sessions(
     _: User = Depends(require_permission(PERM_SETTINGS_SESSIONS_MANAGE)),
 ):
     """Deactivate expired sessions and purge stale history."""
-    result = session_service.cleanup_sessions(force=True)
-    active_sessions = session_service.list_sessions(active_only=True)
-    session_auth_context_service.prune_active_sessions([
+    result = await run_in_threadpool(session_service.cleanup_sessions, force=True)
+    active_sessions = await run_in_threadpool(session_service.list_sessions, active_only=True)
+    await run_in_threadpool(session_auth_context_service.prune_active_sessions, [
         str(item.get("session_id") or "").strip()
         for item in active_sessions
     ])
@@ -2152,9 +2090,9 @@ async def normalize_session_limit(
     The default is intentionally a dry-run. Existing sessions are not changed
     until an administrator explicitly sends ``{"apply": true}``.
     """
-    result = session_service.normalize_active_session_limits(apply=bool(payload.apply))
+    result = await run_in_threadpool(session_service.normalize_active_session_limits, apply=bool(payload.apply))
     for closed_session_id in result.pop("_closed_session_ids", []) or []:
-        session_auth_context_service.delete_session_context(str(closed_session_id))
+        await run_in_threadpool(session_auth_context_service.delete_session_context, str(closed_session_id))
     return result
 
 
@@ -2163,9 +2101,9 @@ async def purge_inactive_sessions(
     _: User = Depends(require_permission(PERM_SETTINGS_SESSIONS_MANAGE)),
 ):
     """Delete every inactive or expired session record."""
-    result = session_service.purge_inactive_sessions()
-    active_sessions = session_service.list_sessions(active_only=True)
-    session_auth_context_service.prune_active_sessions([
+    result = await run_in_threadpool(session_service.purge_inactive_sessions)
+    active_sessions = await run_in_threadpool(session_service.list_sessions, active_only=True)
+    await run_in_threadpool(session_auth_context_service.prune_active_sessions, [
         str(item.get("session_id") or "").strip()
         for item in active_sessions
     ])
@@ -2249,8 +2187,7 @@ async def create_user(
     """Create a web user."""
     try:
         assigned_database = _validate_assigned_database_or_raise(payload.assigned_database)
-        created = user_service.create_user(
-            username=payload.username,
+        created = await run_in_threadpool(user_service.create_user, username=payload.username,
             password=payload.password,
             role=payload.role,
             email=payload.email,
@@ -2267,8 +2204,7 @@ async def create_user(
             mailbox_login=payload.mailbox_login,
             mailbox_password=payload.mailbox_password,
             mail_signature_html=payload.mail_signature_html,
-            my_files_quota_bytes=payload.my_files_quota_bytes,
-        )
+            my_files_quota_bytes=payload.my_files_quota_bytes)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return User(**created)
@@ -2288,10 +2224,8 @@ async def update_user(
     if "assigned_database" in payload_data:
         payload_data["assigned_database"] = _validate_assigned_database_or_raise(payload_data.get("assigned_database"))
     try:
-        updated = user_service.update_user(
-            user_id,
-            **payload_data,
-        )
+        updated = await run_in_threadpool(user_service.update_user, user_id,
+            **payload_data)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not updated:
@@ -2299,7 +2233,7 @@ async def update_user(
     if payload_data.get("is_active") is False:
         await run_in_threadpool(_close_sessions_and_contexts, int(user_id))
     if payload_data.get("password") is not None or payload_data.get("is_active") is False:
-        mobile_biometric_session_service.revoke_all_user_credentials(int(user_id))
+        await run_in_threadpool(mobile_biometric_session_service.revoke_all_user_credentials, int(user_id))
     return User(**updated)
 
 
@@ -2312,8 +2246,8 @@ async def delete_user(
     if str(user_id) == str(current_user.id):
         raise HTTPException(status_code=400, detail="Cannot delete your own account.")
 
-    mobile_biometric_session_service.revoke_all_user_credentials(int(user_id))
-    deleted = user_service.delete_user(user_id)
+    await run_in_threadpool(mobile_biometric_session_service.revoke_all_user_credentials, int(user_id))
+    deleted = await run_in_threadpool(user_service.delete_user, user_id)
     if not deleted:
         if user_id == 1:
              raise HTTPException(status_code=403, detail="Cannot delete the default admin account.")
@@ -2422,9 +2356,11 @@ async def upload_my_avatar(
     if not content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Only image files are accepted")
 
-    raw = await file.read()
-    if len(raw) > 2 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Image must be smaller than 2 MB")
+    raw = await read_upload_limited(
+        file,
+        2 * 1024 * 1024,
+        too_large=lambda: HTTPException(status_code=400, detail="Image must be smaller than 2 MB"),
+    )
 
     def _process_and_save() -> str:
         avatars_dir = _get_avatars_dir()
@@ -2451,13 +2387,13 @@ async def upload_my_avatar(
     logger.info("[avatar] upload done for user_id=%s url=%s", current_user.id, saved_url)
     try:
         from backend.chat.service import chat_service
-        chat_service._invalidate_user_cache(user_id=0, bucket="users_map")
-        chat_service.invalidate_bucket_for_all_users(bucket="conversation_detail")
-        chat_service.invalidate_bucket_for_all_users(bucket="conversations")
+        await run_in_threadpool(chat_service._invalidate_user_cache, user_id=0, bucket="users_map")
+        await run_in_threadpool(chat_service.invalidate_bucket_for_all_users, bucket="conversation_detail")
+        await run_in_threadpool(chat_service.invalidate_bucket_for_all_users, bucket="conversations")
         logger.info("[avatar] chat caches invalidated")
     except Exception as e:
         logger.warning("[avatar] cache invalidate failed: %s", e)
-    payload = _build_current_user_payload(current_user, request)
+    payload = await run_in_threadpool(_build_current_user_payload, current_user, request)
     logger.info("[avatar] payload avatar_url=%s", getattr(payload, 'avatar_url', 'N/A'))
     return payload
 
@@ -2481,32 +2417,13 @@ async def delete_my_avatar(
     logger.info("[avatar] deleted for user_id=%s", current_user.id)
     try:
         from backend.chat.service import chat_service
-        chat_service._invalidate_user_cache(user_id=0, bucket="users_map")
-        chat_service.invalidate_bucket_for_all_users(bucket="conversation_detail")
-        chat_service.invalidate_bucket_for_all_users(bucket="conversations")
+        await run_in_threadpool(chat_service._invalidate_user_cache, user_id=0, bucket="users_map")
+        await run_in_threadpool(chat_service.invalidate_bucket_for_all_users, bucket="conversation_detail")
+        await run_in_threadpool(chat_service.invalidate_bucket_for_all_users, bucket="conversations")
         logger.info("[avatar] chat caches invalidated")
     except Exception as e:
         logger.warning("[avatar] cache invalidate failed: %s", e)
-    return _build_current_user_payload(current_user, request)
-
-
-@router.get("/me/avatar/debug")
-async def debug_my_avatar(
-    current_user: User = Depends(get_current_active_user),
-):
-    """Debug: show avatar_url from DB directly."""
-    import os
-    raw = user_service.get_by_id(int(current_user.id))
-    avatars_dir = _get_avatars_dir()
-    file_path = avatars_dir / f"{int(current_user.id)}.jpg"
-    return {
-        "user_id": current_user.id,
-        "current_user_avatar_url": current_user.avatar_url,
-        "db_avatar_url": (raw or {}).get("avatar_url"),
-        "file_exists": file_path.exists(),
-        "file_size": file_path.stat().st_size if file_path.exists() else None,
-        "avatars_dir": str(avatars_dir),
-    }
+    return await run_in_threadpool(_build_current_user_payload, current_user, request)
 
 
 @router.get("/avatars/{filename}")

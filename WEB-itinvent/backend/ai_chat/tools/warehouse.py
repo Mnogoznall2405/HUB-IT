@@ -137,10 +137,16 @@ class BalancesSearchTool(AiTool):
 
     def execute(self, *, context: AiToolExecutionContext, args: BalancesSearchArgs) -> AiToolResult:
         try:
-            payload = run_coroutine(_warehouse_service().get_balances(text=args.query, limit=200))
+            payload = run_coroutine(_warehouse_service().get_balances(text=args.query, limit=200, include_meta=True))
         except Exception as exc:
             logger.warning("ai warehouse.balances failed: %s", type(exc).__name__)
             return AiToolResult(tool_id=self.tool_id, ok=False, error=_warehouse_error(exc))
+        payload_dict = payload if isinstance(payload, dict) else {}
+        source_truncated = bool(
+            payload_dict.get("truncated")
+            or payload_dict.get("has_more")
+            or _normalize_text(payload_dict.get("status")).lower() == "incomplete"
+        )
         rows = payload.get("items") if isinstance(payload, dict) else payload
         items = []
         for row in list(rows or []):
@@ -158,15 +164,24 @@ class BalancesSearchTool(AiTool):
                 }
             )
         items.sort(key=lambda item: (-(float(item.get("qty") or 0)), item.get("warehouse") or ""))
+        returned_qty = round(sum(float(item.get("qty") or 0) for item in items), 3)
         return AiToolResult(
             tool_id=self.tool_id,
             ok=True,
             data={
                 "query": args.query,
-                "total": len(items),
-                "total_qty": round(sum(float(item.get("qty") or 0) for item in items), 3),
+                "total": None if source_truncated else len(items),
+                "total_qty": None if source_truncated else returned_qty,
                 "count": min(len(items), args.limit),
-                "truncated": len(items) > args.limit,
+                "returned": len(items),
+                "returned_qty": returned_qty,
+                "truncated": bool(source_truncated or len(items) > args.limit),
+                "has_more": bool(source_truncated),
+                "incomplete_reason": (
+                    (_normalize_text(payload_dict.get("incomplete_reason")) or "limit_cap")
+                    if source_truncated
+                    else None
+                ),
                 "items": items[: args.limit],
             },
         )
@@ -236,6 +251,8 @@ class ItRequestGetTool(AiTool):
             )
         summary = _request_summary(detail)
         summary["positions"] = positions
+        summary["positions_returned"] = len(positions)
+        summary["positions_truncated"] = len(detail.get("positions") or []) > 30
         return AiToolResult(tool_id=self.tool_id, ok=True, data=summary)
 
 
@@ -273,7 +290,17 @@ class MyItRequestsTool(AiTool):
         for item in items:
             # Other people of the purchase chain are not needed for "where is my request".
             item.pop("responsible", None)
-        return AiToolResult(tool_id=self.tool_id, ok=True, data={"count": len(items), "items": items[:15]})
+        has_more = bool((payload or {}).get("next_cursor"))
+        return AiToolResult(
+            tool_id=self.tool_id,
+            ok=True,
+            data={
+                "count": min(len(items), 15),
+                "items": items[:15],
+                "truncated": len(items) > 15 or has_more,
+                "has_more": has_more,
+            },
+        )
 
 
 for tool in [BalancesSearchTool(), ItRequestsSearchTool(), ItRequestGetTool(), MyItRequestsTool()]:

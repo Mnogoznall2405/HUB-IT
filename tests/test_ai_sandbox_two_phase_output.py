@@ -1,4 +1,5 @@
 from __future__ import annotations
+import conftest
 
 import hashlib
 import importlib
@@ -43,7 +44,7 @@ from backend.ai_sandbox.models import (  # noqa: E402
     AppAiSandboxTransferGrant,
 )
 from backend.ai_sandbox.transfer import SandboxJobManifest, SandboxTransferError  # noqa: E402
-from backend.appdb.models import AppAiBot, AppAiBotConversation, AppAiPendingAction  # noqa: E402
+from backend.appdb.models import AppAiBot, AppAiBotConversation, AppAiPendingAction, AppUser  # noqa: E402
 
 
 PINNED_TEST_IMAGE = "registry.internal/hub/opencode@sha256:" + ("9" * 64)
@@ -302,12 +303,23 @@ def _configure_app_database(tmp_path: Path, monkeypatch) -> tuple[str, object]:
     appdb_db._engines.clear()
     appdb_db._session_factories.clear()
     appdb_db._initialized_schema_urls.clear()
-    appdb_db.initialize_app_schema(database_url)
+    conftest.copy_app_schema_for_url(database_url)
     return database_url, appdb_db
 
 
 def _seed_result_job(*, database_url: str, appdb_db, now: datetime) -> None:
     with appdb_db.app_session(database_url) as db:
+        db.add(
+            AppUser(
+                id=161,
+                username="sandbox-user",
+                full_name="Sandbox User",
+                role="admin",
+                is_active=True,
+                created_at=now,
+                updated_at=now,
+            )
+        )
         db.add(
             AppAiBot(
                 id="bot-two-phase",

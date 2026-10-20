@@ -163,7 +163,47 @@ class ChatSerialization:
             members=members,
             users_by_id=users_by_id,
         )
+        if _normalize_text(getattr(conversation, "kind", None)) == "group":
+            from backend.chat.chat_group_settings import load_group_settings
+
+            summary_payload.update(load_group_settings(session, conversation.id))
+            from backend.chat.chat_group_limits import load_slow_mode_seconds
+
+            summary_payload["slow_mode_seconds"] = load_slow_mode_seconds(session, conversation.id)
+            from backend.chat.chat_group_permissions import load_members_send_files
+
+            summary_payload["members_send_files"] = load_members_send_files(session, conversation.id)
+            self._annotate_restrictions(session, summary_payload, conversation.id, int(current_user_id))
         return summary_payload
+
+    @staticmethod
+    def _annotate_restrictions(session, payload: dict, conversation_id: str, viewer_id: int) -> None:
+        """The viewer's own restriction for everybody; who else is restricted only for managers."""
+        from backend.chat.chat_constants import CHAT_GROUP_MANAGER_ROLES
+        from backend.chat.chat_group_restrictions import format_until, load_restrictions
+
+        restrictions = load_restrictions(session, conversation_id)
+        if not restrictions:
+            return
+        if viewer_id in restrictions:
+            payload["viewer_restricted"] = True
+            payload["viewer_restricted_until"] = format_until(restrictions[viewer_id])
+        members = payload.get("members") or []
+        viewer_role = next(
+            (
+                _normalize_text(item.get("member_role")).lower()
+                for item in members
+                if int((item.get("user") or {}).get("id") or 0) == viewer_id
+            ),
+            "",
+        )
+        if viewer_role not in CHAT_GROUP_MANAGER_ROLES:
+            return
+        for item in members:
+            member_id = int((item.get("user") or {}).get("id") or 0)
+            if member_id in restrictions:
+                item["is_restricted"] = True
+                item["restricted_until"] = format_until(restrictions[member_id])
 
     def _serialize_conversation_members(
         self,

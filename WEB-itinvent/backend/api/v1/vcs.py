@@ -2,11 +2,13 @@ import json
 import logging
 import re
 import secrets
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
 from pydantic import BaseModel, constr
 from sqlalchemy import select
@@ -30,6 +32,8 @@ VCS_CONFIG_APP_KEY = "vcs_config"
 VCS_INFO_APP_KEY = "vcs_info"
 VCS_LAUNCH_TOKEN_NAMESPACE = "vcs_launch"
 VCS_LAUNCH_TOKEN_TTL_SECONDS = 60
+# JSON mode only: serializes read-modify-write of the whole list between request threads.
+_JSON_STORE_LOCK = threading.Lock()
 
 
 def _to_iso_utc(value) -> str:
@@ -131,6 +135,89 @@ def _save_all_computers(data: List[dict]) -> bool:
         return True
     store = get_local_store()
     return store.save_json(VCS_STORE_KEY, data)
+
+def _computer_row_to_dict(row: AppVcsComputer) -> dict:
+    return {
+        "id": str(row.id),
+        "name": str(row.name),
+        "ip_address": str(row.ip_address),
+        "location": str(row.location or ""),
+        "created_at": _to_iso_utc(row.created_at),
+        "updated_at": _to_iso_utc(row.updated_at),
+    }
+
+
+def _create_computer(new_comp: dict) -> bool:
+    """Insert one computer; in app-DB mode never touches other rows."""
+    if is_app_database_configured():
+        initialize_app_schema()
+        with app_session() as session:
+            session.add(
+                AppVcsComputer(
+                    id=str(new_comp["id"]),
+                    name=str(new_comp.get("name") or ""),
+                    ip_address=str(new_comp.get("ip_address") or ""),
+                    location=str(new_comp.get("location") or "").strip() or None,
+                    created_at=datetime.fromisoformat(str(new_comp["created_at"]).replace("Z", "+00:00")),
+                    updated_at=datetime.fromisoformat(str(new_comp["updated_at"]).replace("Z", "+00:00")),
+                )
+            )
+        return True
+    with _JSON_STORE_LOCK:
+        computers = _get_all_computers()
+        computers.append(new_comp)
+        return _save_all_computers(computers)
+
+
+def _update_computer(computer_id: str, changes: dict) -> Optional[dict]:
+    """Apply only the given fields to one computer; None when it does not exist."""
+    updated_at = datetime.now(timezone.utc)
+    if is_app_database_configured():
+        initialize_app_schema()
+        with app_session() as session:
+            row = session.get(AppVcsComputer, computer_id)
+            if row is None:
+                return None
+            if "name" in changes:
+                row.name = changes["name"]
+            if "ip_address" in changes:
+                row.ip_address = changes["ip_address"]
+            if "location" in changes:
+                row.location = changes["location"] or None
+            row.updated_at = updated_at
+            session.flush()
+            return _computer_row_to_dict(row)
+    with _JSON_STORE_LOCK:
+        computers = _get_all_computers()
+        for item in computers:
+            if item.get("id") == computer_id:
+                item.update(changes)
+                item["updated_at"] = updated_at.isoformat()
+                if not _save_all_computers(computers):
+                    raise HTTPException(status_code=500, detail="Failed to save data")
+                return item
+    return None
+
+
+def _delete_computer(computer_id: str) -> bool:
+    """Delete one computer; False when it does not exist."""
+    if is_app_database_configured():
+        initialize_app_schema()
+        with app_session() as session:
+            row = session.get(AppVcsComputer, computer_id)
+            if row is None:
+                return False
+            session.delete(row)
+        return True
+    with _JSON_STORE_LOCK:
+        computers = _get_all_computers()
+        filtered = [c for c in computers if c.get("id") != computer_id]
+        if len(filtered) == len(computers):
+            return False
+        if not _save_all_computers(filtered):
+            raise HTTPException(status_code=500, detail="Failed to save data")
+        return True
+
 
 def _get_vcs_config() -> dict:
     if is_app_database_configured():
@@ -301,7 +388,7 @@ async def get_vcs_computers(
     current_user=Depends(require_permission(PERM_VCS_READ))
 ):
     """Get list of all VCS terminal computers"""
-    computers = _get_all_computers()
+    computers = await run_in_threadpool(_get_all_computers)
     return computers
 
 @router.post("/computers", response_model=VcsComputer)
@@ -310,8 +397,6 @@ async def create_vcs_computer(
     current_user=Depends(require_permission(PERM_VCS_MANAGE))
 ):
     """Add a new VCS terminal computer"""
-    computers = _get_all_computers()
-    
     now = datetime.now(timezone.utc).isoformat()
     new_comp = {
         "id": str(uuid.uuid4()),
@@ -322,10 +407,9 @@ async def create_vcs_computer(
         "updated_at": now
     }
     
-    computers.append(new_comp)
-    if not _save_all_computers(computers):
+    if not await run_in_threadpool(_create_computer, new_comp):
         raise HTTPException(status_code=500, detail="Failed to save data")
-        
+
     return new_comp
 
 @router.put("/computers/{computer_id}", response_model=VcsComputer)
@@ -335,24 +419,18 @@ async def update_vcs_computer(
     current_user=Depends(require_permission(PERM_VCS_MANAGE))
 ):
     """Update an existing VCS terminal computer"""
-    computers = _get_all_computers()
-    
-    for i, c in enumerate(computers):
-        if c.get("id") == computer_id:
-            if update_data.name is not None:
-                c["name"] = update_data.name.strip()
-            if update_data.ip_address is not None:
-                c["ip_address"] = update_data.ip_address.strip()
-            if update_data.location is not None:
-                c["location"] = update_data.location.strip()
-                
-            c["updated_at"] = datetime.now(timezone.utc).isoformat()
-            
-            if not _save_all_computers(computers):
-                raise HTTPException(status_code=500, detail="Failed to save data")
-            return c
-            
-    raise HTTPException(status_code=404, detail="Computer not found")
+    changes: dict = {}
+    if update_data.name is not None:
+        changes["name"] = update_data.name.strip()
+    if update_data.ip_address is not None:
+        changes["ip_address"] = update_data.ip_address.strip()
+    if update_data.location is not None:
+        changes["location"] = update_data.location.strip()
+
+    updated = await run_in_threadpool(_update_computer, computer_id, changes)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Computer not found")
+    return updated
 
 @router.delete("/computers/{computer_id}")
 async def delete_vcs_computer(
@@ -360,16 +438,8 @@ async def delete_vcs_computer(
     current_user=Depends(require_permission(PERM_VCS_MANAGE))
 ):
     """Delete a VCS terminal computer"""
-    computers = _get_all_computers()
-    
-    filtered_computers = [c for c in computers if c.get("id") != computer_id]
-    
-    if len(filtered_computers) == len(computers):
+    if not await run_in_threadpool(_delete_computer, computer_id):
         raise HTTPException(status_code=404, detail="Computer not found")
-        
-    if not _save_all_computers(filtered_computers):
-        raise HTTPException(status_code=500, detail="Failed to save data")
-        
     return {"success": True}
 
 @router.get("/config", response_model=VcsConfig)
@@ -377,7 +447,7 @@ async def get_vcs_config(
     current_user=Depends(require_permission(PERM_VCS_READ))
 ):
     """Get global VCS configuration status without exposing the stored password."""
-    return VcsConfig(password_hex="", password_configured=_has_vcs_password())
+    return VcsConfig(password_hex="", password_configured=await run_in_threadpool(_has_vcs_password))
 
 @router.put("/config", response_model=VcsConfig)
 async def update_vcs_config(
@@ -397,9 +467,9 @@ async def update_vcs_config(
             raise HTTPException(status_code=500, detail="Encryption failed")
             
     # Save
-    config_data = _get_vcs_config()
+    config_data = await run_in_threadpool(_get_vcs_config)
     config_data["password_hex_encrypted"] = encrypted_hex
-    if not _save_vcs_config(config_data):
+    if not await run_in_threadpool(_save_vcs_config, config_data):
         raise HTTPException(status_code=500, detail="Failed to save config data")
         
     return VcsConfig(password_hex="", password_configured=bool(encrypted_hex))
@@ -410,11 +480,12 @@ async def create_vcs_launch_token(
     current_user=Depends(require_permission(PERM_VCS_READ))
 ):
     """Create a short-lived one-time token for launching a VCS terminal."""
-    computer = _find_vcs_computer(computer_id)
+    computer = await run_in_threadpool(_find_vcs_computer, computer_id)
     if computer is None:
         raise HTTPException(status_code=404, detail="Computer not found")
     token = secrets.token_urlsafe(32)
-    auth_runtime_store_service.set_json(
+    await run_in_threadpool(
+        auth_runtime_store_service.set_json,
         VCS_LAUNCH_TOKEN_NAMESPACE,
         token,
         {"computer_id": str(computer_id or "").strip()},
@@ -425,10 +496,10 @@ async def create_vcs_launch_token(
 @router.get("/launch/{token}.vnc")
 async def redeem_vcs_launch_token(token: str):
     """Redeem a one-time launch token for a generated VNC options file."""
-    payload = auth_runtime_store_service.pop_json(VCS_LAUNCH_TOKEN_NAMESPACE, str(token or "").strip())
+    payload = await run_in_threadpool(auth_runtime_store_service.pop_json, VCS_LAUNCH_TOKEN_NAMESPACE, str(token or "").strip())
     if not isinstance(payload, dict):
         raise HTTPException(status_code=404, detail="Launch token expired")
-    computer = _find_vcs_computer(str(payload.get("computer_id") or ""))
+    computer = await run_in_threadpool(_find_vcs_computer, str(payload.get("computer_id") or ""))
     if computer is None:
         raise HTTPException(status_code=404, detail="Computer not found")
     filename = _safe_vnc_filename(str(computer.get("name") or computer.get("ip_address") or "vnc"))
@@ -443,7 +514,7 @@ async def get_vcs_info(
     current_user=Depends(require_permission(PERM_VCS_READ))
 ):
     """Get global VCS info (markdown content)"""
-    info_data = _get_vcs_info()
+    info_data = await run_in_threadpool(_get_vcs_info)
     content = str(info_data.get("content", "") or "")
     if not _user_can_manage_vcs(current_user):
         content = _redact_vcs_info_content(content)
@@ -455,10 +526,10 @@ async def update_vcs_info(
     current_user=Depends(require_permission(PERM_VCS_MANAGE))
 ):
     """Update global VCS info (markdown content)"""
-    info_data = _get_vcs_info()
+    info_data = await run_in_threadpool(_get_vcs_info)
     info_data["content"] = info_update.content
     
-    if not _save_vcs_info(info_data):
+    if not await run_in_threadpool(_save_vcs_info, info_data):
         raise HTTPException(status_code=500, detail="Failed to save VCS info")
         
     return VcsInfo(content=info_update.content)

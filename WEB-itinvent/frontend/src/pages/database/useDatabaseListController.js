@@ -34,6 +34,7 @@ import {
 } from './databaseOptionModel';
 import { useDatabaseSearch } from './useDatabaseSearch';
 import { useDatabaseActSearch } from './useDatabaseActSearch';
+import { useDatabaseEmployeeSearch } from './useDatabaseEmployeeSearch';
 import { useDatabaseListNavigation } from './useDatabaseListNavigation';
 import { useDatabaseRecentCards } from './useDatabaseRecentCards';
 import { useDatabaseRecentActs } from './useDatabaseRecentActs';
@@ -195,6 +196,13 @@ export function useDatabaseListController({
     enabled: !isConsumablesMode,
   });
   const { resetActSearch, runActSearchNow } = actSearch;
+  const employeeSearchState = useDatabaseEmployeeSearch({
+    searchQuery,
+    databaseId: currentDb?.id || dbName,
+    enabled: databaseReady && !isConsumablesMode && searchScope === SEARCH_SCOPE_EQUIPMENT
+      && (!searchField || searchField === 'employee'),
+  });
+  const { runEmployeeSearchNow } = employeeSearchState;
 
   const workspaceIdentity = useDatabaseWorkspaceIdentity({
     setSearchQuery,
@@ -342,8 +350,13 @@ export function useDatabaseListController({
     filteredData !== null
     && Object.keys(filteredData || {}).length === 0,
   );
+  // Type-only listing (no text term) is still a server search — its pages must
+  // go through loadMoreSearchResults, not the unfiltered list loader.
+  const hasSearchTypeScope = searchTypeNo != null && searchTypeNo !== '';
   const isServerSearchActive = Boolean(
-    appliedSearchQuery && !isConsumablesMode && searchScope === SEARCH_SCOPE_EQUIPMENT
+    (appliedSearchQuery || hasSearchTypeScope)
+    && !isConsumablesMode
+    && searchScope === SEARCH_SCOPE_EQUIPMENT
   );
   const canAutoLoadMoreEquipment = isServerSearchActive
     ? searchHasMore
@@ -486,6 +499,9 @@ export function useDatabaseListController({
   }, [touchRecentAct]);
 
   const handleCombinedSearchKeyDown = useCallback((event) => {
+    if (!isConsumablesMode && searchScope === SEARCH_SCOPE_EQUIPMENT && event.key === 'Enter') {
+      runEmployeeSearchNow();
+    }
     if (!isConsumablesMode && searchScope === SEARCH_SCOPE_ACTS) {
       if (event.key !== 'Enter') return;
       event.preventDefault();
@@ -493,12 +509,12 @@ export function useDatabaseListController({
       return;
     }
     handleSearchKeyDown(event);
-  }, [handleSearchKeyDown, isConsumablesMode, runActSearchNow, searchQuery, searchScope]);
+  }, [handleSearchKeyDown, isConsumablesMode, runActSearchNow, runEmployeeSearchNow, searchQuery, searchScope]);
 
   const handleSearchScopeChange = useCallback((nextScope) => {
     const normalizedScope = nextScope === SEARCH_SCOPE_ACTS ? SEARCH_SCOPE_ACTS : SEARCH_SCOPE_EQUIPMENT;
     setSearchScope(normalizedScope);
-    if (normalizedScope === SEARCH_SCOPE_ACTS) {
+    if (normalizedScope !== SEARCH_SCOPE_EQUIPMENT) {
       setFilteredData(null);
       setSelectedItems([]);
       setMobileSelectionMode(false);
@@ -565,6 +581,7 @@ export function useDatabaseListController({
     ...equipmentData,
     ...search,
     ...actSearch,
+    ...employeeSearchState,
     ...workspaceIdentity,
     ...recentCards,
     ...recentActs,

@@ -15,6 +15,7 @@ After uploading MAX_ATTACHMENTS_PER_REQUEST (10) files, the next upload raises
 TicketsValidationError with a message about the limit.
 """
 from __future__ import annotations
+import conftest
 
 import sys
 import uuid as uuid_mod
@@ -115,7 +116,7 @@ def _create_service(temp_dir: str, monkeypatch) -> TicketsService:
         cursor.execute("PRAGMA foreign_keys=OFF")
         cursor.close()
 
-    AppBase.metadata.create_all(engine, checkfirst=True)
+    conftest.copy_app_metadata_schema_for_url(url)
 
     SessionLocal = sessionmaker(bind=engine)
 

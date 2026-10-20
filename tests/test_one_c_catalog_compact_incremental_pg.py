@@ -80,7 +80,7 @@ def _resolve_dsn() -> str | None:
         chosen = REQUIRED_DB
     for key in ("APP_DATABASE_URL", "CHAT_DATABASE_URL"):
         value = (os.getenv(key) or file_env.get(key) or "").strip()
-        if value:
+        if value.startswith(("postgresql", "postgres")):
             return _with_db(value, chosen)
     return None
 

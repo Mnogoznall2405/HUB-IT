@@ -265,3 +265,25 @@ Post-check `verify-published-apk.mjs`: manifest/APK HTTP 200, schema v2, вер�
 Не проверено на устройстве: полный smoke 1.1.62 — отправка/очередь после kill, focus-поллер на возврате в скрытый тред, жесты папки/строки, видео/GIF error-стейты, черновики с вложениями.
 
 ВАЖНО: свайп «Прочитано» требует backend с `last_message_id` в сериализации диалогов (`WEB-itinvent/backend/chat/chat_serialization.py` изменён в рабочем дереве, но не задеплоен) — без выкладки backend действие корректно бездействует.
+
+### 05.10 — публикация preview 1.1.65 (67)
+
+Диагностический релиз: при сбое отрисовки сохраняются экран, тип ошибки и цепочка компонентов (без пользовательских данных) для поиска причины «Не удалось отобразить экран».
+
+Сборка Gradle прошла успешно, но послесборочный audit упал на `Get-FileHash` (командлет недоступен в сессии сборки). Расчёт SHA-256 переведён на .NET `System.Security.Cryptography.SHA256` в `mobile-hub/scripts/build-apk.ps1` и `scripts/mobile/publish-apk.ps1`; audit для готового APK сгенерирован той же логикой (aapt/apksigner, проверка ABI и v2-подписи).
+
+APK 70 818 185 байт (67,5 МиБ), ARM64/ARMv7, SHA-256 `e8913a6e4a40fa153459d257b6d22067632e73814e78024f500022ad2454c0cd`, подпись debug-preview `fac61745…` (`-AllowDebugPreviewSigner`).
+
+Post-check `verify-published-apk.mjs`: manifest/APK HTTP 200, schema v2, версия 1.1.65 (67), size/hash/signer совпадают, `verified: true`. APK: https://hubit.zsgp.ru/desktop-updates/mobile/preview/1.1.65/HUB-IT-Mobile-Preview-1.1.65.apk . Предыдущий manifest 1.1.64 сохранён в `.manifest-history/`; rollback — `manage-apk-feed.ps1 -Action RestoreManifest`. Каталог 1.1.64 остался в feed.
+
+Не проверено на устройстве: установка/обновление и smoke 1.1.65.
+
+### 06.10 — публикация preview 1.1.66 (68)
+
+Диагностический релиз для разбора лагов чата: добавлен `src/diagnostics/uiTiming.ts` — замеры открытия диалога (тап → маунт экрана → готовность данных, с пометкой источника «кэш/сеть»), готовности списка чатов и пробник пауз JS-потока (пороги ≥150/500/1500 мс, максимум, только foreground). Инструментация покрывает inbox/outbox/поиск/создание диалога и историю треда; отчёт диагностики включает `uiTiming` (schema 5→6), экран Настройки → Приложение → Диагностика показывает новые строки. Только числа и enum'ы — без id диалогов, имён и текста.
+
+Проверки: `jest --findRelatedTests` — 201 сьют / 1821 тест зелёные; `npx tsc --noEmit` чист. Полная сборка `build-apk.ps1 -Local -AllowDebugSigning` с prebuild — 23 мин: APK 70 826 125 байт (67,5 МиБ), ARM64/ARMv7, SHA-256 `cfd235427f38938c7fa60959e4f09d564cad84fdd96e7fd90f31bea1fd0dcda5`, подпись debug-preview `fac61745…` (`-AllowDebugPreviewSigner`).
+
+Post-check `verify-published-apk.mjs`: manifest/APK HTTP 200, schema v2, версия 1.1.66 (68), size/hash/signer совпадают, `verified: true`. APK: https://hubit.zsgp.ru/desktop-updates/mobile/preview/1.1.66/HUB-IT-Mobile-Preview-1.1.66.apk . Предыдущий manifest 1.1.65 сохранён в `.manifest-history/`; rollback — `manage-apk-feed.ps1 -Action RestoreManifest`. Каталог 1.1.65 остался в feed.
+
+Не проверено на устройстве: установка/обновление и smoke 1.1.66 — в т.ч. воспроизведение лагов чата и сбор `uiTiming` из диагностического отчёта.

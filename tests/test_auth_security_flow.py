@@ -536,6 +536,7 @@ def test_login_returns_authenticated_for_internal_network_without_twofa(monkeypa
 
 
 def test_login_mode_returns_internal_password_only(monkeypatch):
+    monkeypatch.setattr(auth.adfs_sso_service, "is_configured", lambda: False)  # do not depend on the host's .env
     monkeypatch.setattr(
         auth,
         "build_request_network_context",
@@ -565,6 +566,7 @@ def test_login_mode_returns_internal_password_only(monkeypatch):
 
 
 def test_login_mode_returns_internal_passkey_when_internal_allowed(monkeypatch):
+    monkeypatch.setattr(auth.adfs_sso_service, "is_configured", lambda: False)  # do not depend on the host's .env
     monkeypatch.setattr(
         auth,
         "build_request_network_context",
@@ -993,6 +995,7 @@ def test_start_totp_enrollment_uses_request_username_for_otpauth_account(monkeyp
         "username": "ivanov",
         "request_username": "ivanov",
         "role": "viewer",
+        "enrollment_required": True,
     }
     saved = {}
 
@@ -1927,3 +1930,111 @@ def config_cookie_name():
 
 def refresh_cookie_name():
     return auth.config.app.auth_refresh_cookie_name
+
+
+def _install_fake_user_store(monkeypatch, users: dict) -> dict:
+    """Dict-backed user store; records every write so tests can prove none happened."""
+    calls = {"update_user": [], "replace_backup_codes": []}
+
+    def _update_user(user_id, **fields):
+        calls["update_user"].append((user_id, dict(fields)))
+        users[int(user_id)].update(fields)
+        return dict(users[int(user_id)])
+
+    monkeypatch.setattr(auth_security_module.user_service, "get_by_id", lambda uid: dict(users[int(uid)]) if int(uid) in users else None)
+    monkeypatch.setattr(auth_security_module.user_service, "update_user", _update_user)
+    monkeypatch.setattr(
+        auth_security_module.auth_security_service,
+        "_replace_backup_codes",
+        lambda user_id, codes: calls["replace_backup_codes"].append(user_id),
+    )
+    monkeypatch.setattr(auth_security_module.trusted_device_service, "count_active_devices", lambda user_id: 0)
+    monkeypatch.setattr(auth_security_module, "resolve_twofa_policy", lambda: "all")
+    return calls
+
+
+def _start_password_stage_login(user: dict) -> dict:
+    return auth_security_module.auth_security_service.start_login(
+        user=user,
+        password="password-of-victim",
+        request_username=user["username"],
+        ip_address="95.24.10.1",
+        user_agent="pytest",
+        network_zone="external",
+    )
+
+
+def test_user_with_2fa_cannot_replace_totp_secret_via_password_stage_challenge(monkeypatch):
+    """Password-only attacker: /enable-2fa + /verify-2fa on a 2fa_required challenge
+    must not swap the victim's TOTP secret nor return a session."""
+    victim = _sample_public_user(is_2fa_enabled=True, totp_secret_enc="enc:victim-secret")
+    users = {7: victim}
+    calls = _install_fake_user_store(monkeypatch, users)
+    monkeypatch.setattr(auth, "_enforce_rate_limit", lambda **kwargs: None)
+    monkeypatch.setattr(auth_security_module.twofa_service, "encrypt_secret", lambda secret: f"enc:{secret}")
+    monkeypatch.setattr(auth_security_module.twofa_service, "decrypt_secret", lambda secret: secret.removeprefix("enc:"))
+    monkeypatch.setattr(auth_security_module.twofa_service, "verify_totp", lambda **kwargs: True)
+
+    login = _start_password_stage_login(victim)
+    assert login["status"] == "2fa_required"
+    challenge_id = login["login_challenge_id"]
+
+    app = FastAPI()
+    app.include_router(auth.router, prefix="/auth")
+    client = TestClient(app, raise_server_exceptions=False)
+
+    try:
+        enable = client.post("/auth/enable-2fa", json={"login_challenge_id": challenge_id})
+        assert enable.status_code == 400, enable.text
+
+        # Even if the challenge already carried an attacker-chosen pending secret,
+        # finalization must refuse (and any TOTP code is accepted by the stub above).
+        stored = auth.auth_runtime_store_service.get_login_challenge(challenge_id)
+        assert stored is not None
+        stored["pending_totp_secret_enc"] = "enc:attacker-secret"
+        auth.auth_runtime_store_service.save_login_challenge(challenge_id, stored, ttl_seconds=60)
+        verify = client.post("/auth/verify-2fa", json={"login_challenge_id": challenge_id, "totp_code": "123456"})
+        assert verify.status_code == 400, verify.text
+        assert "access_token" not in verify.text
+        assert not client.cookies
+
+        assert users[7]["totp_secret_enc"] == "enc:victim-secret"
+        assert calls["update_user"] == []
+        assert calls["replace_backup_codes"] == []
+    finally:
+        auth.auth_runtime_store_service.delete_login_challenge(challenge_id)
+
+
+def test_user_without_2fa_can_still_enroll_via_setup_challenge(monkeypatch):
+    user = _sample_public_user(is_2fa_enabled=False, totp_secret_enc=None)
+    users = {7: user}
+    calls = _install_fake_user_store(monkeypatch, users)
+    monkeypatch.setattr(auth_security_module.twofa_service, "encrypt_secret", lambda secret: f"enc:{secret}")
+    monkeypatch.setattr(auth_security_module.twofa_service, "decrypt_secret", lambda secret: secret.removeprefix("enc:"))
+    monkeypatch.setattr(auth_security_module.twofa_service, "verify_totp", lambda **kwargs: True)
+    monkeypatch.setattr(
+        auth_security_module.twofa_service,
+        "build_provisioning",
+        lambda **kwargs: SimpleNamespace(secret="NEWSECRET", otpauth_uri="otpauth://totp/x?secret=NEWSECRET", qr_svg=None),
+    )
+    monkeypatch.setattr(
+        auth_security_module.auth_security_service,
+        "_complete_login",
+        lambda **kwargs: {"status": "authenticated", "session_id": "s1"},
+    )
+
+    login = _start_password_stage_login(user)
+    assert login["status"] == "2fa_setup_required"
+    challenge_id = login["login_challenge_id"]
+
+    try:
+        service = auth_security_module.auth_security_service
+        assert service.start_totp_enrollment(challenge_id)["manual_entry_key"] == "NEWSECRET"
+        result = service.finalize_totp_enrollment(challenge_id, totp_code="123456")
+    finally:
+        auth.auth_runtime_store_service.delete_login_challenge(challenge_id)
+
+    assert result["status"] == "authenticated"
+    assert result["backup_codes"]
+    assert users[7]["is_2fa_enabled"] is True
+    assert users[7]["totp_secret_enc"] == "enc:NEWSECRET"

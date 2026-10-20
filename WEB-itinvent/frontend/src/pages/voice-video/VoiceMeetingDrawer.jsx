@@ -1,4 +1,6 @@
-import React, { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  startTransition, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState,
+} from 'react';
 import { VariableSizeList } from 'react-window';
 import AutoSizer from 'react-virtualized-auto-sizer';
 import {
@@ -42,6 +44,9 @@ import {
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import { useNavigate } from 'react-router-dom';
+import MenuIcon from '@mui/icons-material/Menu';
+import { useMainLayoutShell } from '../../components/layout/MainLayoutShellContext';
+import ShellNotificationsButton from '../../components/layout/ShellNotificationsButton';
 import ArrowBackOutlinedIcon from '@mui/icons-material/ArrowBackOutlined';
 import AssignmentOutlinedIcon from '@mui/icons-material/AssignmentOutlined';
 import CloseOutlinedIcon from '@mui/icons-material/CloseOutlined';
@@ -114,6 +119,9 @@ const denseFieldSx = {
 };
 const denseAutocompleteSx = { minWidth: 180, flex: '1 1 200px', maxWidth: '100%' };
 // P4-2: четыре вкладки панели помещаются без скролл-стрелок (fullWidth).
+const ASSIGN_TICKS_KEY = 'voiceMeeting.assignTicks';
+// Засечки поручений ближе этой доли шкалы (в %) сливаются в одну группу.
+const TICK_GROUP_PCT = 1.5;
 const compactPanelTabSx = { minWidth: 0, minHeight: 44, px: 0.5, fontSize: '0.72rem' };
 // T40: бейдж счётчика у вкладки (маленькая плашка справа от подписи,
 // а не сокращение «Поруч.»); подпись не переносится на вторую строку.
@@ -122,10 +130,19 @@ const tabCountSx = {
   bgcolor: 'action.selected', fontSize: '0.68rem', lineHeight: '16px',
   fontWeight: 700, textAlign: 'center', flexShrink: 0,
 };
-const tabLabel = (text, count) => (
+// tone="warning" — бейдж-предупреждение (например, «2 без имени» у
+// «Участников»), чтобы число не путалось с общим количеством.
+const tabLabel = (text, count, tone) => (
   <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', minWidth: 0, maxWidth: '100%' }}>
     <Box component="span" sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{text}</Box>
-    {count != null && count > 0 && <Box component="span" sx={tabCountSx}>{count}</Box>}
+    {count != null && count > 0 && (
+      <Box
+        component="span"
+        sx={tone === 'warning' ? { ...tabCountSx, bgcolor: 'warning.main', color: 'warning.contrastText' } : tabCountSx}
+      >
+        {count}
+      </Box>
+    )}
   </Box>
 );
 const tabLabelNarrow = (icon, count) => (
@@ -597,10 +614,39 @@ const TranscriptViewport = React.memo(function TranscriptViewport({
 // Карточка встречи: всплывающее окно (variant="dialog") или отдельная страница
 // внутри раздела (variant="page") — содержимое одно и то же.
 function MeetingShell({ variant, open, onClose, onKeyDown, isMobile, children }) {
+  // На ≥sm карточка тянется ровно до низа окна: высота считается от её
+  // фактического верхнего края и нижнего отступа <main>, а не по
+  // жёсткой формуле (в браузере и HUB Desktop шапки разной высоты).
+  const shellRef = useRef(null);
+  const [fitHeight, setFitHeight] = useState(null);
+  useLayoutEffect(() => {
+    if (variant !== 'page' || !open) return undefined;
+    const measure = () => {
+      const el = shellRef.current;
+      if (!el) return;
+      const top = el.getBoundingClientRect().top + (window.scrollY || 0);
+      const main = el.closest('main');
+      const padBottom = main ? (parseFloat(window.getComputedStyle(main).paddingBottom) || 0) : 0;
+      setFitHeight(Math.max(480, Math.floor(window.innerHeight - top - padBottom)));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    // Шапка/баннеры над карточкой меняют высоту уже после монтирования
+    // (смена режима шапки портала, баннер уведомлений) — перемеряем.
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    ro?.observe(document.body);
+    const mainEl = shellRef.current?.closest('main');
+    if (mainEl) ro?.observe(mainEl);
+    return () => {
+      window.removeEventListener('resize', measure);
+      ro?.disconnect();
+    };
+  }, [variant, open]);
   if (variant === 'page') {
     if (!open) return null;
     return (
       <Box
+        ref={shellRef}
         role="region"
         aria-label="Карточка встречи"
         onKeyDown={onKeyDown}
@@ -610,12 +656,14 @@ function MeetingShell({ variant, open, onClose, onKeyDown, isMobile, children })
           position: 'relative',
           // Высота экрана за вычетом шапки приложения: плеер, текст и панели
           // прокручиваются внутри, страница целиком — нет.
-          height: { xs: 'calc(100dvh - 128px)', sm: 'calc(100dvh - 96px)' },
+          height: { xs: 'calc(100dvh - 128px)', sm: fitHeight ? `${fitHeight}px` : '100dvh' },
           minHeight: 480,
           bgcolor: 'background.paper',
-          border: '1px solid',
+          // ≥sm: карточка вровень с краями области контента (шапка портала
+          // заменена шапкой карточки) — без рамки и скруглений.
+          border: { xs: '1px solid', sm: 0 },
           borderColor: 'divider',
-          borderRadius: { xs: 0, sm: 2 },
+          borderRadius: 0,
           mx: { xs: -2, sm: 0 },
           overflow: 'hidden',
           '@media (pointer: coarse)': {
@@ -662,6 +710,7 @@ function VoiceMeetingDrawer({
   variant = 'dialog',
 }) {
   const isPage = variant === 'page';
+  const shell = useMainLayoutShell();
   const theme = useTheme();
   const navigate = useNavigate();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
@@ -687,6 +736,12 @@ function VoiceMeetingDrawer({
   const [topics, setTopics] = useState([]);
   // T42: состояния блоков — loading/ready/error, у ошибки своё «Повторить».
   const [topicsStatus, setTopicsStatus] = useState('idle');
+  // Фильтр тем по направлению из «На что ушло время»: { label, starts }.
+  const [topicDomain, setTopicDomain] = useState(null);
+  // Засечки поручений на шкале — можно скрыть (выбор помнится в браузере).
+  const [showAssignTicks, setShowAssignTicks] = useState(() => {
+    try { return window.localStorage.getItem(ASSIGN_TICKS_KEY) !== '0'; } catch { return true; }
+  });
   const [assignStatus, setAssignStatus] = useState('idle');
   const [metaTags, setMetaTags] = useState([]);
   const [metaProject, setMetaProject] = useState('');
@@ -829,6 +884,7 @@ function VoiceMeetingDrawer({
     setTranscriptBusy(false);
     setTopics([]);
     setTopicsStatus('idle');
+    setTopicDomain(null);
     setAssignStatus('idle');
     setAssignmentItems(null);
     setMetaTags(meeting?.web_meta?.tags || []);
@@ -1231,6 +1287,12 @@ function VoiceMeetingDrawer({
     }
     seekAndShow(Number(target));
   }, [topics, mediaPartOffset, mediaTime, seekAndShow]);
+  const toggleAssignTicks = React.useCallback(() => {
+    setShowAssignTicks((v) => {
+      try { window.localStorage.setItem(ASSIGN_TICKS_KEY, v ? '0' : '1'); } catch { /* приватный режим */ }
+      return !v;
+    });
+  }, []);
   const setRate = React.useCallback((value) => {
     const rate = Number(value) || 1;
     setMediaRate(rate);
@@ -1359,6 +1421,124 @@ function VoiceMeetingDrawer({
   // T55: свободная перемотка — клик/перетаскивание ведут в точку шкалы,
   // отрезки тем указатель не перехватывают (переход к теме — из панели
   // «Темы», кнопок «Предыдущая/Следующая» и по Enter на отрезке).
+  // Засечки поручений: соседние ближе TICK_GROUP_PCT % шкалы сливаются в
+  // одну группу (клик — к первому поручению группы, подсказка — список).
+  const assignTickGroups = useMemo(() => {
+    if (!(timelineDuration > 0)) return [];
+    const marks = (assignmentItems || [])
+      .map((a) => ({ a, sec: timecodeToSec(a.time) }))
+      .filter((m) => m.sec != null)
+      .sort((x, y) => x.sec - y.sec);
+    const groups = [];
+    marks.forEach(({ a, sec }) => {
+      const last = groups[groups.length - 1];
+      if (last && ((sec - last.sec) / timelineDuration) * 100 < TICK_GROUP_PCT) last.items.push(a);
+      else groups.push({ sec, items: [a] });
+    });
+    return groups;
+  }, [assignmentItems, timelineDuration]);
+  const topicInDomain = React.useCallback((t) => (
+    !topicDomain || topicDomain.starts.some((st) => Math.abs(Number(st) - Number(t.start)) < 1)
+  ), [topicDomain]);
+
+  // Неподвижный слой шкалы (отрезки тем и засечки поручений) мемоизирован
+  // отдельно: тик плеера (4 раза/с) двигает только заливку и бегунок, а не
+  // перерисовывает десятки отрезков и засечек.
+  const timelineStatic = useMemo(() => (timelineDuration > 0 ? (
+    <>
+        {/* Визуальная шкала не перехватывает указатель — клик/драг идут в трек.
+            Полоса тонкая (6 px), при наведении утолщается; засечки поручений
+            — над ней, поэтому не закрывают темы и бегунок. */}
+        <Box
+          className="tl-track"
+          sx={{
+            position: 'absolute', left: 0, right: 0, bottom: 3,
+            height: 6, borderRadius: 1, bgcolor: 'action.hover', overflow: 'hidden',
+            pointerEvents: 'none', transition: 'height 120ms',
+          }}
+        >
+          {topics.map((t, i) => {
+            const l = Math.min(100, Math.max(0, (Number(t.start) / timelineDuration) * 100));
+            const r = Math.min(100, Math.max(l, (Number(t.end ?? t.start) / timelineDuration) * 100));
+            const isActive = activeTopic === t;
+            const inDomain = topicInDomain(t);
+            // T53: соседние темы отличаются и чередованием заливки, и
+            // контрастным разделителем (≥3:1 в обеих темах). Активная тема —
+            // ярче остальных; при фильтре по направлению прочие приглушены.
+            const sepColor = theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.45)';
+            let opacity = i % 2 ? 0.28 : 0.42;
+            if (topicDomain) opacity = inDomain ? 0.8 : 0.08;
+            if (isActive) opacity = 0.95;
+            return (
+              <Box
+                key={i}
+                role="button"
+                tabIndex={0}
+                data-active-topic={isActive ? 'true' : undefined}
+                aria-label={`Тема «${t.title}» · ${fmtTime(t.start)}–${fmtTime(t.end ?? t.start)}`}
+                title={`${t.title} (${fmtTime(t.start)}–${fmtTime(t.end ?? t.start)})`}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); seekAndShow(Number(t.start)); }
+                }}
+                sx={{
+                  position: 'absolute', left: `${l}%`, width: `${Math.max(0.6, r - l)}%`,
+                  top: 0, bottom: 0, bgcolor: topicDomain && inDomain ? 'warning.main' : 'primary.main', opacity,
+                  borderLeft: i > 0 ? '1px solid' : 'none',
+                  borderColor: sepColor,
+                  '&:focus-visible': { outline: '2px solid', outlineColor: 'secondary.dark', opacity: 1 },
+                }}
+              />
+            );
+          })}
+        </Box>
+        {showAssignTicks && assignTickGroups.map((g) => {
+          const l = Math.min(100, Math.max(0, (g.sec / timelineDuration) * 100));
+          const single = g.items.length === 1;
+          const first = g.items[0];
+          const label = single
+            ? `Поручение №${first.num} · ${fmtClock(first.time)} · ${String(first.task || '').slice(0, 80)}`
+            : `Поручения ${g.items.map((a) => `№${a.num}`).join(', ')} · с ${fmtClock(first.time)}`;
+          const hint = single
+            ? label
+            : g.items.map((a) => `№${a.num} · ${fmtClock(a.time)} · ${String(a.task || '').slice(0, 60)}`).join('\n');
+          return (
+            <Box
+              key={first.num}
+              component="span"
+              role="button"
+              tabIndex={0}
+              data-assign-tick={g.items.length}
+              aria-label={label}
+              title={hint}
+              onClick={(e) => { e.stopPropagation(); seekAndShow(g.sec); }}
+              onPointerDown={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); seekAndShow(g.sec); }
+              }}
+              sx={{
+                // Зона нажатия 10 px, видимая засечка — 2–3 px над полосой.
+                position: 'absolute', left: `${l}%`, top: 0, height: 8,
+                width: 10, ml: '-5px', zIndex: 1, cursor: 'pointer',
+                display: 'flex', justifyContent: 'center',
+                '&::before': {
+                  content: '""', display: 'block', borderRadius: 1,
+                  width: single ? 2 : 3, height: single ? 6 : 8,
+                  // Одиночные — полупрозрачные, группы — плотнее: «гребёнка»
+                  // не спорит по яркости с полосой тем и бегунком.
+                  bgcolor: alpha(theme.palette.warning.main, single ? 0.45 : 0.8),
+                },
+                '&:hover::before': { bgcolor: 'warning.light', width: 4 },
+                '&:focus-visible': { outline: '2px solid', outlineColor: 'secondary.dark' },
+              }}
+            />
+          );
+        })}
+    </>
+  ) : null), [
+    timelineDuration, topics, assignTickGroups, theme, seekAndShow, activeTopic,
+    topicDomain, topicInDomain, showAssignTicks,
+  ]);
+
   const timelineBar = useMemo(() => {
     if (!(timelineDuration > 0)) return null;
     const fracFromEvent = (e) => {
@@ -1381,8 +1561,11 @@ function VoiceMeetingDrawer({
         aria-valuenow={Math.round(shownTime)}
         aria-valuetext={`${fmtTime(shownTime)} из ${fmtTime(timelineDuration)}`}
         sx={{
-          position: 'relative', height: isMobile ? 24 : 18, flex: 1,
+          position: 'relative', height: isMobile ? 26 : 20, flex: 1,
           cursor: 'pointer', touchAction: 'none', userSelect: 'none',
+          '&:hover .tl-track, &:focus-visible .tl-track': { height: 10 },
+          // Засечки поручений тихие, пока указатель не над шкалой.
+          '&:hover [data-assign-tick]::before': { bgcolor: 'warning.main' },
         }}
         onClick={(e) => seekAndShow(fracFromEvent(e) * timelineDuration)}
         onKeyDown={(e) => {
@@ -1413,39 +1596,17 @@ function VoiceMeetingDrawer({
         onPointerCancel={() => setTimelineScrub(null)}
         onPointerLeave={() => setTimelineScrub((prev) => (prev?.dragging ? prev : null))}
       >
-        {/* Визуальная шкала не перехватывает указатель — клик/драг идут в трек. */}
-        <Box sx={{
-          position: 'absolute', left: 0, right: 0, top: '50%', mt: '-7px',
-          height: 14, borderRadius: 1, bgcolor: 'action.hover', overflow: 'hidden',
-          pointerEvents: 'none',
-        }}>
-          {topics.map((t, i) => {
-            const l = Math.min(100, Math.max(0, (Number(t.start) / timelineDuration) * 100));
-            const r = Math.min(100, Math.max(l, (Number(t.end ?? t.start) / timelineDuration) * 100));
-            // T53: соседние темы отличаются и чередованием заливки, и
-            // контрастным разделителем (≥3:1 в обеих темах).
-            const sepColor = theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.45)';
-            return (
-              <Box
-                key={i}
-                role="button"
-                tabIndex={0}
-                aria-label={`Тема «${t.title}» · ${fmtTime(t.start)}–${fmtTime(t.end ?? t.start)}`}
-                title={`${t.title} (${fmtTime(t.start)}–${fmtTime(t.end ?? t.start)})`}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); seekAndShow(Number(t.start)); }
-                }}
-                sx={{
-                  position: 'absolute', left: `${l}%`, width: `${Math.max(0.6, r - l)}%`,
-                  top: 0, bottom: 0, bgcolor: i % 2 ? 'primary.light' : 'primary.main', opacity: 0.4,
-                  borderLeft: i > 0 ? '2px solid' : 'none',
-                  borderColor: sepColor,
-                  '&:focus-visible': { outline: '2px solid', outlineColor: 'secondary.dark', opacity: 0.7 },
-                }}
-              />
-            );
-          })}
-          {/* T55: заливка прогресса до текущей позиции (или точки драга). */}
+        {timelineStatic}
+        {/* T55: заливка прогресса до текущей позиции (или точки драга) —
+            отдельный слой поверх тем той же геометрии. */}
+        <Box
+          className="tl-track"
+          sx={{
+            position: 'absolute', left: 0, right: 0, bottom: 3,
+            height: 6, borderRadius: 1, overflow: 'hidden',
+            pointerEvents: 'none', transition: 'height 120ms',
+          }}
+        >
           <Box
             data-testid="timeline-progress"
             sx={{
@@ -1454,38 +1615,12 @@ function VoiceMeetingDrawer({
             }}
           />
         </Box>
-        {(assignmentItems || []).map((a) => {
-          const sec = timecodeToSec(a.time);
-          if (sec == null) return null;
-          const l = Math.min(100, Math.max(0, (sec / timelineDuration) * 100));
-          return (
-            <Box
-              key={a.num}
-              component="span"
-              role="button"
-              tabIndex={0}
-              aria-label={`Поручение №${a.num} · ${fmtClock(a.time)} · ${String(a.task || '').slice(0, 80)}`}
-              title={`Поручение №${a.num} · ${fmtClock(a.time)} · ${String(a.task || '').slice(0, 80)}`}
-              onClick={(e) => { e.stopPropagation(); seekAndShow(sec); }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); seekAndShow(sec); }
-              }}
-              sx={{
-                position: 'absolute', left: `${l}%`, top: '50%',
-                width: 8, height: 8, ml: '-4px', mt: '-4px',
-                borderRadius: '50%', bgcolor: 'warning.dark', zIndex: 1,
-                border: '1px solid', borderColor: 'common.white',
-                '&:focus-visible': { outline: '2px solid', outlineColor: 'secondary.dark' },
-              }}
-            />
-          );
-        })}
-        {/* T55: бегунок текущей позиции. */}
+        {/* T55: бегунок текущей позиции — по центру полосы. */}
         <Box
           data-testid="timeline-thumb"
           sx={{
-            position: 'absolute', left: `${shownPct}%`, top: '50%',
-            width: 12, height: 12, transform: 'translate(-50%, -50%)',
+            position: 'absolute', left: `${shownPct}%`, bottom: 0,
+            width: 12, height: 12, transform: 'translateX(-50%)',
             borderRadius: '50%', bgcolor: 'secondary.main', zIndex: 2,
             border: '2px solid', borderColor: 'background.paper', boxShadow: 1,
             pointerEvents: 'none',
@@ -1511,8 +1646,8 @@ function VoiceMeetingDrawer({
       </Box>
     );
   }, [
-    primaryMediaSrc, timelineDuration, globalPosition, topics, assignmentItems,
-    theme, seekAndShow, timelineScrub, isMobile,
+    timelineDuration, globalPosition, topics, timelineStatic,
+    seekAndShow, timelineScrub, isMobile,
   ]);
 
   // T37: «Сейчас играет» — тема по текущей позиции под шкалой;
@@ -1535,10 +1670,10 @@ function VoiceMeetingDrawer({
         minWidth: 0, flexShrink: 1, overflow: 'hidden',
       }}
     >
-      <Typography variant="caption" color="text.secondary" noWrap component="span">
+      <Typography variant="caption" color="text.secondary" noWrap component="span" title={activeTopic?.title}>
         {activeTopic
-          ? `Сейчас играет: тема ${topics.indexOf(activeTopic) + 1} из ${topics.length} — ${activeTopic.title}`
-          : `Сейчас играет: ${fmtTime(globalPosition)}`}
+          ? `Тема ${topics.indexOf(activeTopic) + 1}/${topics.length} · ${activeTopic.title}`
+          : 'Вне тем'}
       </Typography>
     </Button>
   ) : null), [topics, activeTopic, globalPosition, goToPanel]);
@@ -1584,6 +1719,9 @@ function VoiceMeetingDrawer({
           background: '#000',
         }}
       />
+      {/* На телефоне шкала — своей строкой во всю ширину: рядом с временем
+          и названием темы ей оставалось несколько десятков пикселей. */}
+      {isMobile && <Box sx={{ display: 'flex', pt: 0.75, px: 0.5 }}>{timelineBar}</Box>}
       <Stack data-player-row direction="row" spacing={0.5} alignItems="center" sx={{ py: 0.25 }}>
         <IconButton size="small" aria-label={mediaPlaying ? 'Пауза' : 'Играть'} onClick={toggleMediaPlay}>
           {mediaPlaying ? <PauseOutlinedIcon fontSize="small" /> : <PlayArrowOutlinedIcon fontSize="small" />}
@@ -1594,10 +1732,12 @@ function VoiceMeetingDrawer({
         >
           {fmtTime(globalPosition)} / {fmtTime(timelineDuration)}
         </Typography>
-        {timelineBar}
+        {!isMobile && timelineBar}
         {/* P5-3: на <sm «Сейчас играет» — в строке плеера с многоточием,
             отдельной строки под шкалой нет. */}
-        {isMobile && nowPlayingLine}
+        {isMobile && nowPlayingLine && (
+          <Box sx={{ flex: 1, minWidth: 0, display: 'flex', alignSelf: 'stretch' }}>{nowPlayingLine}</Box>
+        )}
       </Stack>
       <Stack direction="row" spacing={0.5} alignItems="center" sx={{ pb: 0.5 }}>
         <Tooltip title="Предыдущая тема">
@@ -1640,7 +1780,11 @@ function VoiceMeetingDrawer({
             </IconButton>
           </span>
         </Tooltip>
-        <Box sx={{ flex: 1 }} />
+        {/* Десктоп: «Сейчас играет» — в свободной середине строки кнопок,
+            отдельной строки под плеером больше нет. */}
+        <Box sx={{ flex: 1, minWidth: 0, display: 'flex', justifyContent: 'center' }}>
+          {!isMobile && nowPlayingLine}
+        </Box>
         {/* На телефоне скорость и режимы видео — в меню «⋮»: с touch-кнопками
             44px полная строка не помещается в 360–414px. */}
         {isMobile ? (
@@ -1667,6 +1811,11 @@ function VoiceMeetingDrawer({
                   {`Скорость ×${v}`}
                 </MenuItem>
               ))}
+              {(assignmentItems || []).length > 0 && (
+                <MenuItem onClick={() => { toggleAssignTicks(); setPlayerMenuAnchor(null); }}>
+                  {showAssignTicks ? 'Скрыть поручения на шкале' : 'Показать поручения на шкале'}
+                </MenuItem>
+              )}
               {!mediaIsAudio && (
                 <MenuItem
                   onClick={() => { setPlayerCompact((v) => !v); setPlayerMenuAnchor(null); }}
@@ -1704,6 +1853,19 @@ function VoiceMeetingDrawer({
                 <MenuItem key={v} value={v}>{`×${v}`}</MenuItem>
               ))}
             </TextField>
+            {(assignmentItems || []).length > 0 && (
+              <Tooltip title={showAssignTicks ? 'Скрыть поручения на шкале' : 'Показать поручения на шкале'}>
+                <IconButton
+                  size="small"
+                  aria-label="Поручения на шкале"
+                  aria-pressed={showAssignTicks}
+                  color={showAssignTicks ? 'warning' : 'default'}
+                  onClick={toggleAssignTicks}
+                >
+                  <AssignmentOutlinedIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            )}
             {!mediaIsAudio && (
               <Tooltip title={playerCompact ? 'Показать видео' : 'Свернуть видео'}>
                 <IconButton
@@ -1743,7 +1905,6 @@ function VoiceMeetingDrawer({
           </>
         )}
       </Stack>
-      {!isMobile && nowPlayingLine}
       {mediaParts.length > 1 && (
         <Typography variant="caption" color="text.secondary">
           Объединённая запись из {mediaParts.length} частей — при переходе по таймкоду подставляется нужная часть.
@@ -1759,26 +1920,30 @@ function VoiceMeetingDrawer({
           Запись удалена, доступен текст
         </Typography>
         {timelineBar}
-        {isMobile && nowPlayingLine}
+        {nowPlayingLine && (
+          <Box sx={{ maxWidth: '45%', minWidth: 0, display: 'flex' }}>{nowPlayingLine}</Box>
+        )}
       </Stack>
-      {!isMobile && nowPlayingLine}
     </Box>
   ) : null)), [
     primaryMediaSrc, meeting?.has_media, isMobile, isNarrow, mediaIsAudio,
     playerCompact, playerBig, mediaPlaying, mediaRate, playerMenuAnchor,
     globalPosition, timelineDuration, timelineBar, nowPlayingLine,
     topics.length, mediaParts.length, toggleMediaPlay, stepMedia,
-    seekTopicEdge, setRate,
+    seekTopicEdge, setRate, assignmentItems, showAssignTicks, toggleAssignTicks,
   ]);
 
-  // T30: темы — список с полными названиями, диапазоном и длительностью.
-  // T42: скелетон при загрузке, ошибка с «Повторить», понятное пустое состояние.
   // T46: тяжёлые панели — мемоизированные элементы; тик плеера их не трогает
-  // (topicsPanel — по границам тем, assignmentsPanel — раз в секунду).
+  // (topicsPanel — по границам тем и шагу прогресса, assignmentsPanel — раз в секунду).
   const openPanel = React.useCallback((tab) => {
     if (isMobile) setMobileTab(tab === 'speakers' || tab === 'files' ? 'more' : tab);
     else setPanelTab(tab);
   }, [isMobile]);
+
+  const selectTopicDomain = React.useCallback((label, starts) => {
+    setTopicDomain({ label, starts });
+    openPanel('topics');
+  }, [openPanel]);
 
   const titleInfo = useMemo(() => parseMeetingTitle(base), [base]);
   const protocolDoc = useMemo(() => (
@@ -1801,66 +1966,170 @@ function VoiceMeetingDrawer({
       unresolvedCount={unresolved.length}
       onSeek={seekMedia}
       onOpenTab={openPanel}
+      onDomainSelect={selectTopicDomain}
     />
   ) : null;
 
+  // Прогресс внутри активной темы — шагом 5%, чтобы тик плеера не
+  // перерисовывал список тем 4 раза в секунду (T46).
+  const activeTopicPct = activeTopic
+    ? Math.min(100, Math.floor((Math.max(0, globalPosition - Number(activeTopic.start))
+      / Math.max(1, Number(activeTopic.end ?? activeTopic.start) - Number(activeTopic.start))) * 20) * 5)
+    : 0;
+  const topicsListRef = useRef(null);
+  const scrollToActiveTopic = React.useCallback((behavior = 'smooth') => {
+    const el = topicsListRef.current?.querySelector?.('[data-topic-active="true"]');
+    el?.scrollIntoView?.({ block: 'center', behavior });
+  }, []);
+  const topicsVisible = isMobile ? mobileTab === 'topics' : panelTab === 'topics';
+  // Открыли вкладку «Темы» — список сразу показывает текущую тему.
+  useEffect(() => {
+    if (!topicsVisible) return undefined;
+    const raf = requestAnimationFrame(() => scrollToActiveTopic('auto'));
+    return () => cancelAnimationFrame(raf);
+  }, [topicsVisible, topicDomain, scrollToActiveTopic]);
+  const shownTopics = useMemo(() => topics.filter(topicInDomain), [topics, topicInDomain]);
+
+  // T30: темы — компактные строки: время начала (кликабельное, ▶), название
+  // до 2 строк, длительность; у активной — полоска прогресса.
+  // T42: скелетон при загрузке, ошибка с «Повторить», понятное пустое состояние.
   const topicsPanel = useMemo(() => (
-    <Stack spacing={0.75}>
-      {(topicsStatus === 'idle' || topicsStatus === 'loading') && topics.length === 0 && (
-        [0, 1, 2].map((i) => <Skeleton key={i} data-skeleton variant="rounded" height={48} />)
-      )}
-      {topicsStatus === 'error' && (
-        <Alert severity="error" action={<Button size="small" onClick={retryTopics}>Повторить</Button>}>
-          Не удалось загрузить темы
-        </Alert>
-      )}
-      {topicsStatus === 'ready' && topics.length === 0 && (
-        <Alert severity="info">Темы не выделены для этой записи.</Alert>
-      )}
-      {topics.map((t, i) => {
-        const isActiveTopic = activeTopic === t;
-        const dur = Math.max(0, Number(t.end ?? t.start) - Number(t.start));
-        return (
-          <Paper
-            key={i}
-            variant="outlined"
-            role="button"
-            tabIndex={0}
-            aria-current={isActiveTopic ? 'true' : undefined}
-            aria-label={`Перейти к теме «${t.title}», ${fmtTime(t.start)}`}
-            onClick={() => seekAndShow(t.start)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); seekAndShow(t.start); }
-            }}
-            sx={{
-              px: 1, py: 0.75, cursor: 'pointer',
-              borderLeft: '3px solid',
-              borderColor: isActiveTopic ? 'primary.main' : 'divider',
-              bgcolor: isActiveTopic ? 'action.selected' : 'background.paper',
-            }}
+    <Box ref={topicsListRef}>
+      {topics.length > 0 && (
+        <Stack
+          direction="row"
+          alignItems="center"
+          spacing={1}
+          data-toolbar="topics"
+          sx={{
+            position: 'sticky', top: isMobile ? -4 : -12, zIndex: 1,
+            mx: isMobile ? -2 : -1.5, px: isMobile ? 2 : 1.5, py: 0.75, mb: 0.5,
+            bgcolor: 'background.paper', borderBottom: '1px solid', borderColor: 'divider',
+          }}
+        >
+          {topicDomain ? (
+            <Chip
+              size="small"
+              color="warning"
+              label={`${topicDomain.label} · ${shownTopics.length} ${plural(shownTopics.length, ['тема', 'темы', 'тем'])}`}
+              onDelete={() => setTopicDomain(null)}
+              aria-label={`Фильтр по направлению: ${topicDomain.label}`}
+              sx={{ minWidth: 0, maxWidth: '65%' }}
+            />
+          ) : (
+            <Typography variant="caption" color="text.secondary">
+              {`${topics.length} ${plural(topics.length, ['тема', 'темы', 'тем'])}`}
+            </Typography>
+          )}
+          <Box sx={{ flex: 1 }} />
+          <Button
+            size="small"
+            startIcon={<GpsFixedOutlinedIcon fontSize="small" />}
+            disabled={!activeTopic || !shownTopics.includes(activeTopic)}
+            onClick={() => scrollToActiveTopic()}
+            sx={{ textTransform: 'none', whiteSpace: 'nowrap', flexShrink: 0 }}
           >
-            <Typography
-              variant="body2"
+            К текущей теме
+          </Button>
+        </Stack>
+      )}
+      <Stack spacing={0.25}>
+        {(topicsStatus === 'idle' || topicsStatus === 'loading') && topics.length === 0 && (
+          [0, 1, 2].map((i) => <Skeleton key={i} data-skeleton variant="rounded" height={48} />)
+        )}
+        {topicsStatus === 'error' && (
+          <Alert severity="error" action={<Button size="small" onClick={retryTopics}>Повторить</Button>}>
+            Не удалось загрузить темы
+          </Alert>
+        )}
+        {topicsStatus === 'ready' && topics.length === 0 && (
+          <Alert severity="info">Темы не выделены для этой записи.</Alert>
+        )}
+        {shownTopics.map((t) => {
+          const i = topics.indexOf(t);
+          const isActiveTopic = activeTopic === t;
+          const dur = Math.max(0, Number(t.end ?? t.start) - Number(t.start));
+          return (
+            <Box
+              key={i}
+              role="button"
+              tabIndex={0}
+              data-topic-active={isActiveTopic ? 'true' : undefined}
+              aria-current={isActiveTopic ? 'true' : undefined}
+              aria-label={`Перейти к теме «${t.title}», ${fmtTime(t.start)}`}
+              title={`${t.title}\n${fmtTime(t.start)}–${fmtTime(t.end ?? t.start)}`}
+              onClick={() => seekAndShow(t.start)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); seekAndShow(t.start); }
+              }}
               sx={{
-                fontSize: '0.8125rem', lineHeight: 1.3,
-                display: '-webkit-box', WebkitBoxOrient: 'vertical',
-                WebkitLineClamp: 2, overflow: 'hidden',
+                display: 'flex', alignItems: 'flex-start', gap: 1,
+                px: 1, py: 0.75, cursor: 'pointer', borderRadius: 1,
+                borderLeft: '3px solid',
+                borderColor: isActiveTopic ? 'primary.main' : 'transparent',
+                bgcolor: isActiveTopic ? 'action.selected' : 'transparent',
+                '&:hover': { bgcolor: isActiveTopic ? 'action.selected' : 'action.hover' },
+                '&:hover .topic-play': { opacity: 1 },
+                '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main' },
               }}
             >
-              {t.title}
-            </Typography>
-            <Typography
-              variant="caption"
-              color={isActiveTopic ? 'primary' : 'text.secondary'}
-              sx={{ fontFamily: 'monospace', fontVariantNumeric: 'tabular-nums' }}
-            >
-              {`${fmtTime(t.start)}–${fmtTime(t.end ?? t.start)}${dur > 0 ? ` · ${fmtTime(dur)}` : ''}`}
-            </Typography>
-          </Paper>
-        );
-      })}
-    </Stack>
-  ), [topicsStatus, topics, activeTopic, seekAndShow, retryTopics]);
+              <Stack
+                direction="row"
+                alignItems="center"
+                spacing={0.25}
+                sx={{ width: 68, flexShrink: 0, pt: '1px', color: isActiveTopic ? 'primary.main' : 'text.secondary' }}
+              >
+                <PlayArrowOutlinedIcon
+                  className="topic-play"
+                  sx={{ fontSize: 14, opacity: isActiveTopic ? 1 : 0.45 }}
+                />
+                <Typography
+                  variant="caption"
+                  component="span"
+                  sx={{ fontFamily: 'monospace', fontVariantNumeric: 'tabular-nums', fontWeight: isActiveTopic ? 700 : 400 }}
+                >
+                  {fmtTime(t.start)}
+                </Typography>
+              </Stack>
+              <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography
+                  variant="body2"
+                  sx={{
+                    fontSize: '0.8125rem', lineHeight: 1.3,
+                    fontWeight: isActiveTopic ? 600 : 400,
+                    display: '-webkit-box', WebkitBoxOrient: 'vertical',
+                    WebkitLineClamp: 2, overflow: 'hidden',
+                  }}
+                >
+                  {t.title}
+                </Typography>
+                {isActiveTopic && dur > 0 && (
+                  <LinearProgress
+                    variant="determinate"
+                    value={activeTopicPct}
+                    aria-hidden
+                    sx={{ height: 2, mt: 0.5, borderRadius: 1 }}
+                  />
+                )}
+              </Box>
+              {dur > 0 && (
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ fontFamily: 'monospace', fontVariantNumeric: 'tabular-nums', flexShrink: 0, pt: '1px' }}
+                >
+                  {fmtTime(dur)}
+                </Typography>
+              )}
+            </Box>
+          );
+        })}
+      </Stack>
+    </Box>
+  ), [
+    topicsStatus, topics, shownTopics, activeTopic, activeTopicPct, topicDomain,
+    isMobile, seekAndShow, retryTopics, scrollToActiveTopic,
+  ]);
 
   const currentSecRounded = primaryMediaSrc ? Math.round(globalPosition) : null;
   const assignmentsPanel = useMemo(() => (assignStatus === 'error' ? (
@@ -1930,6 +2199,20 @@ function VoiceMeetingDrawer({
     else if (e.key === 'ArrowUp') { e.preventDefault(); gotoMatch(-1); }
   }, [gotoMatch]);
 
+  // T33: «К текущему месту» — вернуть слежение и прокрутить к активной реплике.
+  const canReturnToCurrent = !followSegment && activeSegmentIndex >= 0;
+  const returnToCurrent = React.useCallback(() => {
+    setFollowSegment(true);
+    if (activeSegmentIndex < 0) return;
+    segListRef.current?.scrollToItem?.(activeSegmentIndex, 'center');
+    pendingSegRef.current = { start: filteredSegments[activeSegmentIndex]?.start, behavior: 'smooth' };
+  }, [activeSegmentIndex, filteredSegments]);
+  const replicaCount = transcriptData && !transcriptData.error
+    ? (filteredSegments.length === (transcriptData.segments || []).length
+      ? String(transcriptData.total)
+      : `${filteredSegments.length}/${transcriptData.total}`)
+    : '';
+
   // T46: панель транскрипта мемоизирована — тики плеера (mediaTime 4/с)
   // и действия правой колонки её не пересчитывают; список внутри —
   // TranscriptViewport (re-mount только при смене данных).
@@ -1950,6 +2233,18 @@ function VoiceMeetingDrawer({
             sx={{ flex: 1, minWidth: 120 }}
             InputProps={{
               startAdornment: <SearchOutlinedIcon fontSize="small" sx={{ mr: 1, color: 'text.secondary' }} />,
+              // Счётчик реплик — внутри поля справа (десктоп), не отдельным текстом.
+              endAdornment: !isMobile ? (
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  data-testid="transcript-count"
+                  title="Реплик в тексте"
+                  sx={{ whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums', ml: 1 }}
+                >
+                  {replicaCount}
+                </Typography>
+              ) : undefined,
             }}
           />
           {isNarrow ? (
@@ -1985,53 +2280,108 @@ function VoiceMeetingDrawer({
                   </MenuItem>
                 ))}
               </Menu>
-              <IconButton
-                size="small"
-                aria-label={`Следить за записью — реплик: ${filteredSegments.length} из ${transcriptData.total}`}
-                aria-pressed={followSegment}
-                color={followSegment ? 'primary' : 'default'}
-                onClick={() => setFollowSegment((v) => !v)}
-                sx={{ flexShrink: 0 }}
-              >
-                {followSegment ? <GpsFixedOutlinedIcon fontSize="small" /> : <GpsNotFixedOutlinedIcon fontSize="small" />}
-              </IconButton>
+              {canReturnToCurrent ? (
+                <IconButton
+                  size="small"
+                  aria-label="К текущему месту"
+                  color="primary"
+                  onClick={returnToCurrent}
+                  sx={{ flexShrink: 0 }}
+                >
+                  <GpsNotFixedOutlinedIcon fontSize="small" />
+                </IconButton>
+              ) : (
+                <IconButton
+                  size="small"
+                  aria-label={`Следить за записью — реплик: ${filteredSegments.length} из ${transcriptData.total}`}
+                  aria-pressed={followSegment}
+                  color={followSegment ? 'primary' : 'default'}
+                  onClick={() => setFollowSegment((v) => !v)}
+                  sx={{ flexShrink: 0 }}
+                >
+                  {followSegment ? <GpsFixedOutlinedIcon fontSize="small" /> : <GpsNotFixedOutlinedIcon fontSize="small" />}
+                </IconButton>
+              )}
             </>
           ) : (
             <>
+              {/* Участник — select без «плавающей» подписи: той же высоты,
+                  что и поиск; пустое значение — «Все участники». */}
               <TextField
                 select
                 size="small"
-                label="Участник"
                 value={transcriptSpeaker}
                 onChange={(e) => setTranscriptSpeaker(e.target.value)}
-                sx={{ width: isMobile ? 104 : 116, flexShrink: 0 }}
+                SelectProps={{
+                  displayEmpty: true,
+                  renderValue: (v) => v || 'Все участники',
+                  SelectDisplayProps: { 'aria-label': 'Участник', title: transcriptSpeaker || 'Все участники' },
+                }}
+                InputProps={{
+                  startAdornment: <FilterListOutlinedIcon fontSize="small" sx={{ mr: 0.5, color: 'text.secondary' }} />,
+                }}
+                sx={{
+                  width: isMobile ? 132 : 180, flexShrink: 0,
+                  '& .MuiSelect-select': { overflow: 'hidden', textOverflow: 'ellipsis', fontSize: '0.8125rem' },
+                }}
               >
-                <MenuItem value="">Все</MenuItem>
+                <MenuItem value="">Все участники</MenuItem>
                 {transcriptSpeakers.map((name) => (
                   <MenuItem key={name} value={name}>{name}</MenuItem>
                 ))}
               </TextField>
-              {/* T33: переключатель follow-скролла; на мобильной счётчик встроен
-                  в подпись чипа, на десктопе выводится отдельным текстом справа. */}
-              <Chip
-                size="small"
-                clickable
-                label={isMobile
-                  ? `Следить · ${filteredSegments.length === (transcriptData.segments || []).length ? transcriptData.total : `${filteredSegments.length}/${transcriptData.total}`}`
-                  : 'Следить за записью'}
-                aria-label={isMobile ? `Следить за записью — реплик: ${filteredSegments.length} из ${transcriptData.total}` : undefined}
-                aria-pressed={followSegment}
-                color={followSegment ? 'primary' : 'default'}
-                variant={followSegment ? 'filled' : 'outlined'}
-                onClick={() => setFollowSegment((v) => !v)}
-                sx={{ flexShrink: 0 }}
-              />
-              {!isMobile && (
-                <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0, whiteSpace: 'nowrap' }}>
-                  Реплик: {filteredSegments.length === (transcriptData.segments || []).length
-                    ? transcriptData.total
-                    : `${filteredSegments.length} из ${transcriptData.total}`}
-                </Typography>
+              {/* T33: слежение за записью. Когда оно выключено ручной прокруткой
+                  или переходом, на его месте — заметная кнопка «К текущему месту». */}
+              {canReturnToCurrent && isMobile ? (
+                // Телефон: полная подпись не помещается рядом с поиском — иконка
+                // на заливке основного цвета, имя — в aria-label.
+                <IconButton
+                  size="small"
+                  aria-label="К текущему месту"
+                  onClick={returnToCurrent}
+                  sx={{
+                    flexShrink: 0, bgcolor: 'primary.main', color: 'primary.contrastText',
+                    '&:hover': { bgcolor: 'primary.dark' },
+                  }}
+                >
+                  <GpsFixedOutlinedIcon fontSize="small" />
+                </IconButton>
+              ) : canReturnToCurrent ? (
+                <Button
+                  size="small"
+                  variant="contained"
+                  disableElevation
+                  startIcon={<GpsFixedOutlinedIcon fontSize="small" />}
+                  onClick={returnToCurrent}
+                  sx={{ flexShrink: 0, whiteSpace: 'nowrap', textTransform: 'none' }}
+                >
+                  К текущему месту
+                </Button>
+              ) : isMobile ? (
+                <Chip
+                  size="small"
+                  clickable
+                  label={`Следить · ${replicaCount}`}
+                  aria-label={`Следить за записью — реплик: ${filteredSegments.length} из ${transcriptData.total}`}
+                  aria-pressed={followSegment}
+                  color={followSegment ? 'primary' : 'default'}
+                  variant={followSegment ? 'filled' : 'outlined'}
+                  onClick={() => setFollowSegment((v) => !v)}
+                  sx={{ flexShrink: 0 }}
+                />
+              ) : (
+                <Tooltip title={followSegment ? 'Текст следует за записью — нажмите, чтобы выключить' : 'Текст не следует за записью — нажмите, чтобы включить'}>
+                  <IconButton
+                    size="small"
+                    aria-label="Следить за записью"
+                    aria-pressed={followSegment}
+                    color={followSegment ? 'primary' : 'default'}
+                    onClick={() => setFollowSegment((v) => !v)}
+                    sx={{ flexShrink: 0 }}
+                  >
+                    {followSegment ? <GpsFixedOutlinedIcon fontSize="small" /> : <GpsNotFixedOutlinedIcon fontSize="small" />}
+                  </IconButton>
+                </Tooltip>
               )}
             </>
           )}
@@ -2098,6 +2448,7 @@ function VoiceMeetingDrawer({
     transcriptSpeakers, filteredSegments, followSegment, isMobile, isNarrow,
     speakerMenuAnchor, searchMatchesOnly, matchStarts, matchCursor, navNotice,
     deferredQuery, segItemData, onSearchKeyDown, gotoMatch, retryTranscript,
+    canReturnToCurrent, returnToCurrent, replicaCount,
   ]);
 
   const filesPanel = useMemo(() => (
@@ -2375,7 +2726,22 @@ function VoiceMeetingDrawer({
       onKeyDown={handleDrawerKeyDown}
       isMobile={isMobile}
     >
-      <Box sx={{ px: { xs: 1.5, sm: 2 }, py: isMobile ? 1 : 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
+      {/* Шапка на десктопе — одна строка (название · мета), чтобы плееру и
+          тексту оставалось больше высоты; на телефоне — две строки. */}
+      <Box sx={{ px: { xs: 1.5, sm: 2 }, py: isMobile ? 1 : 0.5, display: 'flex', alignItems: 'center', gap: 1 }}>
+        {isPage && !isMobile && shell.headerMode === 'hidden' && !shell.sidebarPinned && (
+          <Tooltip title="Открыть главное меню">
+            <IconButton
+              size="small"
+              aria-label="Открыть главное меню"
+              aria-expanded={shell.drawerOpen}
+              onClick={shell.openDrawer}
+              sx={{ flexShrink: 0 }}
+            >
+              <MenuIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        )}
         {isPage && (
           <Tooltip title="К списку протоколов">
             <IconButton onClick={closeDrawer} aria-label="К списку протоколов" sx={{ flexShrink: 0 }}>
@@ -2383,12 +2749,16 @@ function VoiceMeetingDrawer({
             </IconButton>
           </Tooltip>
         )}
-        <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Box sx={{
+          flex: 1, minWidth: 0,
+          ...(isMobile ? {} : { display: 'flex', alignItems: 'baseline', gap: 1.5 }),
+        }}>
           <DialogTitle
             title={displayName(base)}
             sx={{
               p: 0,
               minWidth: 0,
+              flexShrink: 1,
               // T36: у названия не должно быть подложки — выглядит как поле ввода.
               background: 'transparent',
               fontSize: isMobile ? '1rem' : '1.2rem',
@@ -2412,7 +2782,7 @@ function VoiceMeetingDrawer({
             color="text.secondary"
             noWrap
             data-meta="meeting"
-            sx={{ display: 'block', mt: 0.25 }}
+            sx={{ display: 'block', mt: isMobile ? 0.25 : 0, minWidth: 0, flexShrink: 2 }}
             title={base}
           >
             {[
@@ -2452,15 +2822,11 @@ function VoiceMeetingDrawer({
             </Button>
           )}
           {!isMobile && base && (
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<ShareOutlinedIcon />}
-              onClick={openShareDialog}
-              sx={{ whiteSpace: 'nowrap' }}
-            >
-              Поделиться
-            </Button>
+            <Tooltip title="Поделиться">
+              <IconButton size="small" aria-label="Поделиться" onClick={openShareDialog}>
+                <ShareOutlinedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
           )}
           <IconButton
             size="small"
@@ -2511,6 +2877,7 @@ function VoiceMeetingDrawer({
           {!isPage && (
             <IconButton onClick={closeDrawer} size="small" aria-label="Закрыть"><CloseOutlinedIcon /></IconButton>
           )}
+          {isPage && !isMobile && shell.headerMode === 'hidden' && <ShellNotificationsButton size="small" />}
         </Stack>
       </Box>
       <Divider />
@@ -2712,8 +3079,9 @@ function VoiceMeetingDrawer({
                   />
                   <Tab
                     value="speakers"
-                    label={tabLabel('Участники', unresolved.length)}
+                    label={tabLabel('Участники', unresolved.length, 'warning')}
                     aria-label={unresolved.length ? `Участники (${unresolved.length})` : 'Участники'}
+                    title={unresolved.length ? `Без имени: ${unresolved.length} из ${participantsTotal}` : undefined}
                     sx={compactPanelTabSx}
                   />
                   <Tab
@@ -2733,21 +3101,6 @@ function VoiceMeetingDrawer({
                 </Box>
               </Box>
             </Box>
-          )}
-          {/* T33: follow-режим выключается ручной прокруткой; кнопка возвращает к активной реплике. */}
-          {!followSegment && activeSegmentIndex >= 0 && (
-            <Chip
-              size="small"
-              clickable
-              color="primary"
-              label="К текущему месту"
-              onClick={() => {
-                setFollowSegment(true);
-                segListRef.current?.scrollToItem?.(activeSegmentIndex, 'center');
-                pendingSegRef.current = { start: filteredSegments[activeSegmentIndex]?.start, behavior: 'smooth' };
-              }}
-              sx={{ position: 'absolute', bottom: 12, right: 16, zIndex: 3 }}
-            />
           )}
         </Box>
       )}

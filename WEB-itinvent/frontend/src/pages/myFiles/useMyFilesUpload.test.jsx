@@ -58,6 +58,7 @@ const renderUpload = (overrides = {}) => renderHook(() => useMyFilesUpload({
 describe('useMyFilesUpload', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.setItem('user', JSON.stringify({ id: 7, username: 'upload-test' }));
     mockLoadData.mockResolvedValue(undefined);
     mockUploadFile.mockResolvedValue({ id: 'up-1' });
   });

@@ -9,6 +9,7 @@
 3) Fallback на старую логику поиска по серийному номеру.
 """
 
+import asyncio
 import logging
 import os
 
@@ -23,6 +24,34 @@ from bot.utils.decorators import handle_errors, require_user_access
 from bot.utils.formatters import format_equipment_info
 
 logger = logging.getLogger(__name__)
+
+
+def _lookup_equipment_sync(
+    user_id: int, search_inv_no: str | None, search_serial_no: str | None
+) -> tuple[bool, dict, str]:
+    """Blocking SQL Server lookup (connect, query, close) on one worker thread, off the bot's event loop."""
+    db = database_manager.create_database_connection(user_id)
+    if not db:
+        return False, {}, ""
+    equipment = {}
+    search_hint = ""
+    try:
+        # 1) Поиск по INV_NO из QR.
+        if search_inv_no:
+            search_hint = f"инвентарным номером <b>{search_inv_no}</b>"
+            logger.info("[SEARCH] try_inv_lookup user_id=%s inv_no=%s", user_id, search_inv_no)
+            equipment = db.find_by_inventory_number(search_inv_no)
+            logger.info("[SEARCH] inv_lookup_result user_id=%s found=%s", user_id, bool(equipment))
+
+        # 2) Если по INV_NO не нашли — пробуем по SERIAL_NO.
+        if not equipment and search_serial_no:
+            search_hint = f"серийным номером <b>{search_serial_no}</b>"
+            logger.info("[SEARCH] try_serial_lookup user_id=%s serial=%s", user_id, search_serial_no)
+            equipment = db.find_by_serial_number(search_serial_no)
+            logger.info("[SEARCH] serial_lookup_result user_id=%s found=%s", user_id, bool(equipment))
+    finally:
+        db.close_connection()
+    return True, equipment, search_hint
 
 
 @require_user_access
@@ -215,28 +244,13 @@ async def find_by_serial_input(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     try:
-        db = database_manager.create_database_connection(user_id)
-        if not db:
+        connected, equipment, search_hint = await asyncio.to_thread(
+            _lookup_equipment_sync, user_id, search_inv_no, search_serial_no
+        )
+        if not connected:
             logger.error("[SEARCH] db_connection_failed user_id=%s", user_id)
             await update.message.reply_text("❌ Ошибка подключения к базе данных.")
             return ConversationHandler.END
-
-        equipment = {}
-        search_hint = ""
-
-        # 1) Поиск по INV_NO из QR.
-        if search_inv_no:
-            search_hint = f"инвентарным номером <b>{search_inv_no}</b>"
-            logger.info("[SEARCH] try_inv_lookup user_id=%s inv_no=%s", user_id, search_inv_no)
-            equipment = db.find_by_inventory_number(search_inv_no)
-            logger.info("[SEARCH] inv_lookup_result user_id=%s found=%s", user_id, bool(equipment))
-
-        # 2) Если по INV_NO не нашли — пробуем по SERIAL_NO.
-        if not equipment and search_serial_no:
-            search_hint = f"серийным номером <b>{search_serial_no}</b>"
-            logger.info("[SEARCH] try_serial_lookup user_id=%s serial=%s", user_id, search_serial_no)
-            equipment = db.find_by_serial_number(search_serial_no)
-            logger.info("[SEARCH] serial_lookup_result user_id=%s found=%s", user_id, bool(equipment))
 
         if equipment:
             logger.info(
@@ -287,7 +301,6 @@ async def find_by_serial_input(update: Update, context: ContextTypes.DEFAULT_TYP
                 reply_markup=keyboard,
             )
 
-        db.close_connection()
         logger.info("[SEARCH] end user_id=%s", user_id)
 
     except Exception as e:

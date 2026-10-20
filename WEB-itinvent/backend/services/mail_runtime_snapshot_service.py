@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from backend.appdb.db import app_session, is_app_database_configured
 from backend.appdb.models import AppMailRuntimeSnapshot
@@ -452,6 +452,23 @@ class MailRuntimeSnapshotService:
                 row.updated_at = now
                 updated += 1
             return updated
+
+    def invalidate_bootstrap(self, *, user_id: int) -> int:
+        """Drop every cached bootstrap payload of the user (mailbox list, selected mailbox, first page).
+
+        Called after the set of mailboxes changes: a snapshot written earlier would otherwise keep serving the
+        old mailbox list until its background refresh finishes.
+        """
+        if not self._enabled:
+            return 0
+        with app_session(self._database_url) as session:
+            result = session.execute(
+                delete(AppMailRuntimeSnapshot).where(
+                    AppMailRuntimeSnapshot.user_id == int(user_id),
+                    AppMailRuntimeSnapshot.snapshot_type == "bootstrap",
+                )
+            )
+            return int(result.rowcount or 0)
 
     def apply_preferences(self, *, user_id: int, preferences: dict[str, Any]) -> int:
         """Write confirmed user preferences through every cached bootstrap payload."""

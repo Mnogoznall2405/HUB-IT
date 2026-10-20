@@ -33,6 +33,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
     private readonly NavigationPolicy _navigationPolicy;
     private readonly ExternalUriLauncher _externalUriLauncher;
     private readonly DesktopWebViewHost _webViewHost;
+    private readonly DesktopWebViewFullScreen _fullScreen;
     private readonly DesktopWindowController _windowController;
     private readonly DesktopWindowPlacementService _windowPlacement = new();
     private readonly DesktopWindowPlacement _initialPlacement;
@@ -85,6 +86,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         _webViewHost = new DesktopWebViewHost(
             BrowserHost,
             environmentProvider ?? throw new ArgumentNullException(nameof(environmentProvider)));
+        _fullScreen = new DesktopWebViewFullScreen(this, BrowserHost);
         _windowController = new DesktopWindowController(this);
         TaskbarItemInfo = new TaskbarItemInfo();
         _downloadFailureTimer = new DispatcherTimer(
@@ -170,7 +172,8 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         nint longParameter,
         ref bool handled)
     {
-        handled = DesktopWindowController.TryHandleWindowMessage(
+        handled = !_fullScreen.IsActive
+            && DesktopWindowController.TryHandleWindowMessage(
             windowHandle,
             message,
             longParameter);
@@ -260,6 +263,8 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         core.ServerCertificateErrorDetected += Core_ServerCertificateErrorDetected;
         core.ProcessFailed += Core_ProcessFailed;
         core.DownloadStarting += Core_DownloadStarting;
+        core.PermissionRequested += Core_PermissionRequested;
+        _fullScreen.Attach(core);
 
         _desktopBridge = new DesktopBridgeHost(
             core,
@@ -282,6 +287,11 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         _desktopBridge.OpenCurrentInBrowserRequested += DesktopBridge_OpenCurrentInBrowserRequested;
         _desktopBridge.MailComposeWindowRequested += DesktopBridge_MailComposeWindowRequested;
         ApplyWebViewMemoryUsageTarget(core);
+    }
+
+    private void Core_PermissionRequested(object? sender, CoreWebView2PermissionRequestedEventArgs e)
+    {
+        DesktopPermissionPolicy.Apply(_navigationPolicy, e);
     }
 
     private void Core_NavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)

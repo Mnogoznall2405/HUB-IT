@@ -61,8 +61,8 @@ export const voiceLabelingAPI = {
     return response.data;
   },
 
-  enrollVoices: async (id, { labels = [], replace = false } = {}) => {
-    const response = await apiClient.post(`${projectPath(id)}/enroll`, { labels, replace });
+  enrollVoices: async (id, { labels = [], mode = 'skip', replace = false } = {}) => {
+    const response = await apiClient.post(`${projectPath(id)}/enroll`, { labels, mode, replace });
     return response.data;
   },
 
@@ -80,6 +80,28 @@ export const voiceLabelingAPI = {
     const response = await apiClient.get('/voice/labeling/calibration');
     return response.data;
   },
+
+  getFaces: async (id) => {
+    const response = await apiClient.get(`${projectPath(id)}/faces`);
+    return response.data;
+  },
+
+  scanFaces: async (id) => {
+    const response = await apiClient.post(`${projectPath(id)}/faces/scan`);
+    return response.data;
+  },
+
+  enrollFaces: async (id, { assign = {}, purge = true } = {}) => {
+    const response = await apiClient.post(`${projectPath(id)}/faces/enroll`, { assign, purge });
+    return response.data;
+  },
+
+  purgeFaces: async (id) => {
+    const response = await apiClient.delete(`${projectPath(id)}/faces`);
+    return response.data;
+  },
+
+  faceThumbUrl: (id, faceId) => `/api/v1${projectPath(id)}/faces/thumbs/${faceId}`,
 
   mediaUrl: (id) => `/api/v1${projectPath(id)}/media`,
 

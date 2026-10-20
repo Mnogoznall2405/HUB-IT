@@ -37,7 +37,7 @@ class AiToolRegistry:
             if _normalize_text(item)
         }
         tools = list(self._tools.values())
-        if allowed_ids:
+        if tool_ids is not None:
             tools = [tool for tool in tools if tool.tool_id in allowed_ids]
         return [tool.to_prompt_spec() for tool in tools]
 

@@ -125,7 +125,8 @@ const shouldDebugChatRequests = () => {
     if (typeof window === 'undefined') return false;
     const pathname = String(window.location?.pathname || '').trim();
     if (!pathname.startsWith('/chat')) return false;
-    return window.localStorage.getItem(CHAT_REQUEST_DEBUG_STORAGE_KEY) !== '0';
+    // Opt-in only: localStorage['chat:request-debug'] = '1'. Request URLs may carry search strings.
+    return window.localStorage.getItem(CHAT_REQUEST_DEBUG_STORAGE_KEY) === '1';
   } catch {
     return false;
   }
@@ -256,7 +257,9 @@ function reportAuthSessionTelemetry({ event, detail, path } = {}) {
         suppressAuthRequired: true,
         timeout: 3000,
       },
-    );
+    ).catch(() => {
+      // Best-effort beacon: a failed send must not surface as an unhandled rejection.
+    });
   } catch {
     // Best-effort beacon; never block logout path.
   }
@@ -775,6 +778,14 @@ export const chatAPI = {
     return chatGroupsAPI.updateGroupMemberRole;
   },
 
+  get restrictGroupMember() {
+    return chatGroupsAPI.restrictGroupMember;
+  },
+
+  get liftGroupMemberRestriction() {
+    return chatGroupsAPI.liftGroupMemberRestriction;
+  },
+
   get transferGroupOwnership() {
     return chatGroupsAPI.transferGroupOwnership;
   },
@@ -783,12 +794,36 @@ export const chatAPI = {
     return chatGroupsAPI.leaveGroup;
   },
 
+  get getGroupActivity() {
+    return chatGroupsAPI.getGroupActivity;
+  },
+
+  get createGroupInvite() {
+    return chatGroupsAPI.createGroupInvite;
+  },
+
+  get revokeGroupInvites() {
+    return chatGroupsAPI.revokeGroupInvites;
+  },
+
+  get previewGroupInvite() {
+    return chatGroupsAPI.previewGroupInvite;
+  },
+
+  get joinGroupByInvite() {
+    return chatGroupsAPI.joinGroupByInvite;
+  },
+
   get updateGroupProfile() {
     return chatGroupsAPI.updateGroupProfile;
   },
 
   get uploadGroupAvatar() {
     return chatGroupsAPI.uploadGroupAvatar;
+  },
+
+  get deleteGroupAvatar() {
+    return chatGroupsAPI.deleteGroupAvatar;
   },
 
   get deleteChatMessage() {

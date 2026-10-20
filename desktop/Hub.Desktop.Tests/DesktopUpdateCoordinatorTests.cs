@@ -143,7 +143,7 @@ public sealed class DesktopUpdateCoordinatorTests
             ["Новый экран обновлений"],
             new DesktopUpdateSignature(
                 DesktopUpdateManifestVerifier.SignatureAlgorithm,
-                DesktopUpdateTrust.KeyId,
+                DesktopUpdateTrust.TlsKeyId,
                 "signature"));
         return new DesktopUpdatePackage(manifest, "setup.exe", "manifest.json", null);
     }

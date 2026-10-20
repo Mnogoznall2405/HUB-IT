@@ -29,6 +29,7 @@ import binascii
 from bisect import insort
 import gc
 import logging
+import math
 import os
 import re
 import threading
@@ -48,6 +49,12 @@ from backend.services.one_c_catalog_search import (
 from backend.services.warehouse_1c_scope import (
     Warehouse1CAllScopeConfigurationError,
     select_hub_db_configs_for_scope,
+)
+from backend.services.warehouse_1c_process_bridge import (
+    Warehouse1CProcessBridgeBusy,
+    Warehouse1CProcessBridgeError,
+    Warehouse1CProcessBridgeUnavailable,
+    Warehouse1CProcessBridgeValidationError,
 )
 
 
@@ -179,14 +186,31 @@ PROCESS_BRIDGE_OPERATIONS = (
     "warehouse_movements",
 )
 _PROCESS_BRIDGE_DISABLED = object()
+WAREHOUSE_1C_FAILURE_CODES = frozenset({
+    "queue_full", "queue_timeout", "unavailable", "worker_lost", "timeout", "circuit_open",
+    "worker_startup_failed", "bridge_stopped", "bridge_not_ready", "remote_error", "configuration_error",
+    "query_failed", "invalid_quantity",
+})
 
 
-class Warehouse1CValidationError(ValueError):
+class Warehouse1CValidationError(Warehouse1CProcessBridgeValidationError):
     """Raised for bad/insufficient filters — mapped to HTTP 400/422."""
 
 
 class Warehouse1CQueryError(RuntimeError):
     """Raised for 1C connection/query failures — mapped to HTTP 502."""
+
+    reason_code = "query_failed"
+
+    def __init__(self, *args, reason_code: str | None = None):
+        super().__init__(*args)
+        self.reason_code = reason_code if reason_code in WAREHOUSE_1C_FAILURE_CODES else type(self).reason_code
+
+
+class Warehouse1CUnavailableError(Warehouse1CQueryError):
+    """A bounded queue or an open circuit temporarily prevents a read."""
+
+    reason_code = "unavailable"
 
 
 class Warehouse1CCatalogUnavailableError(RuntimeError):
@@ -465,22 +489,60 @@ def _name_part_initial_letters(tokens: list[str]) -> list[str]:
     return letters
 
 
-def _name_parts_match_prefix(expected: list[str], candidate: list[str]) -> bool:
+# Названия складов в 1С ограничены по длине, поэтому последнее слово ФИО
+# часто обрезано («Викторови» вместо «Викторович»).
+_TRUNCATED_NAME_MIN_LEN = 4
+# Склад объекта: «<объект> <ФИО>». Фамилия ищется в хвосте названия, не дальше
+# чем «фамилия + 3 слова», а оценка ниже личного склада (80+).
+_OBJECT_TAIL_MAX_TOKENS = 4
+_OBJECT_TAIL_SCORE_CAP = 70
+
+
+def _is_abbreviated_name(short: str, full: str) -> bool:
+    # «Вик.» вместо «Виктор»: сокращение из 2-3 букв строже, чем просто инициал.
+    return 2 <= len(short) <= 3 and len(short) < len(full) and full.startswith(short)
+
+
+def _is_truncated_name(truncated: str, full: str) -> bool:
+    return (
+        len(truncated) >= _TRUNCATED_NAME_MIN_LEN
+        and len(truncated) < len(full)
+        and full.startswith(truncated)
+    )
+
+
+def _name_parts_match_prefix(
+    expected: list[str],
+    candidate: list[str],
+    *,
+    truncated_last_candidate: bool = False,
+) -> bool:
     if not expected or len(candidate) < len(expected):
         return False
-    for expected_part, candidate_part in zip(expected, candidate):
+    last_index = len(candidate) - 1
+    for index, (expected_part, candidate_part) in enumerate(zip(expected, candidate)):
         if expected_part == candidate_part:
+            continue
+        if (
+            truncated_last_candidate
+            and index == last_index
+            and _is_truncated_name(candidate_part, expected_part)
+        ):
             continue
         if _is_initial_token(candidate_part) and candidate_part == expected_part[0]:
             continue
         if _is_initial_token(expected_part) and expected_part == candidate_part[0]:
             continue
+        if _is_abbreviated_name(candidate_part, expected_part) or _is_abbreviated_name(
+            expected_part, candidate_part
+        ):
+            continue
         return False
     return True
 
 
-def fio_person_match_score(employee_name: str, warehouse_name: str) -> int:
-    """Higher is better; 0 means no match."""
+def _fio_person_match_score_direct(employee_name: str, warehouse_name: str) -> int:
+    """Higher is better; 0 means no match. Surname must open the warehouse name."""
     employee_key = normalize_match_key(employee_name)
     warehouse_key = normalize_match_key(warehouse_name)
     if not employee_key or not warehouse_key:
@@ -505,7 +567,9 @@ def fio_person_match_score(employee_name: str, warehouse_name: str) -> int:
     warehouse_only_initials = all(_is_initial_token(token) for token in warehouse_given)
     employee_only_initials = all(_is_initial_token(token) for token in employee_given)
 
-    if _name_parts_match_prefix(employee_given, warehouse_given):
+    if _name_parts_match_prefix(
+        employee_given, warehouse_given, truncated_last_candidate=True
+    ):
         return 80
     if _name_parts_match_prefix(warehouse_given, employee_given):
         return 80
@@ -533,6 +597,35 @@ def fio_person_match_score(employee_name: str, warehouse_name: str) -> int:
     ):
         return 50
     return 0
+
+
+def _fio_object_tail_match_score(employee_name: str, warehouse_name: str) -> int:
+    """Склад объекта «<объект> <ФИО>»: сравнить ФИО с хвостом названия."""
+    employee_tokens = person_name_tokens(employee_name)
+    warehouse_tokens = person_name_tokens(warehouse_name)
+    if len(employee_tokens) < 2 or len(warehouse_tokens) < 3:
+        return 0
+    surname = employee_tokens[0]
+    best = 0
+    for index in range(1, len(warehouse_tokens)):
+        tail = warehouse_tokens[index:]
+        if warehouse_tokens[index] != surname or not 2 <= len(tail) <= _OBJECT_TAIL_MAX_TOKENS:
+            continue
+        best = max(best, _fio_person_match_score_direct(employee_name, " ".join(tail)))
+    return min(best, _OBJECT_TAIL_SCORE_CAP) if best > 0 else 0
+
+
+def fio_person_match_score(employee_name: str, warehouse_name: str) -> int:
+    """Higher is better; 0 means no match.
+
+    Личный склад («Иванов И.И.») оценивается выше склада объекта
+    («АРКТИКА - 4 КОС (п. Тикси) Иванов И.И.»), поэтому при наличии обоих
+    личный выигрывает, а несколько объектных остаются кандидатами.
+    """
+    direct = _fio_person_match_score_direct(employee_name, warehouse_name)
+    if direct > 0:
+        return direct
+    return _fio_object_tail_match_score(employee_name, warehouse_name)
 
 
 def tokenize_hub_text(text: str) -> list[str]:
@@ -882,6 +975,7 @@ class Warehouse1CService:
             else bool(enable_process_bridge)
         )
         self._process_bridge: Any | None = None
+        self._catalog_process_bridge: Any | None = None
         self._process_bridge_error = ""
         if self._process_bridge_enabled:
             try:
@@ -897,26 +991,38 @@ class Warehouse1CService:
                     if raw_operations
                     else PROCESS_BRIDGE_OPERATIONS
                 )
-                self._process_bridge = Warehouse1CProcessBridge(
-                    dispatcher_path,
-                    allowed_operations=operations,
-                    queue_limit=env_positive_int("WAREHOUSE_1C_BRIDGE_QUEUE_LIMIT", MAX_QUEUED_1C_CALLS, 0),
-                    failure_threshold=env_positive_int(
+                bridge_options = {
+                    "failure_threshold": env_positive_int(
                         "WAREHOUSE_1C_BRIDGE_FAILURE_THRESHOLD",
                         COM_CIRCUIT_BREAKER_FAILURES,
                         1,
                     ),
-                    cooldown_seconds=env_positive_int(
+                    "cooldown_seconds": env_positive_int(
                         "WAREHOUSE_1C_BRIDGE_COOLDOWN_SECONDS",
                         COM_CIRCUIT_BREAKER_COOLDOWN_SECONDS,
                         1,
                     ),
-                    maximum_message_bytes=env_positive_int(
+                    "maximum_message_bytes": env_positive_int(
                         "WAREHOUSE_1C_BRIDGE_MAX_MESSAGE_BYTES",
                         8 * 1024 * 1024,
                         1024,
                     ),
+                }
+                self._process_bridge = Warehouse1CProcessBridge(
+                    dispatcher_path,
+                    allowed_operations=[op for op in operations if op != "catalog_sync"],
+                    queue_limit=env_positive_int("WAREHOUSE_1C_BRIDGE_QUEUE_LIMIT", MAX_QUEUED_1C_CALLS, 0),
+                    queue_wait_seconds=env_positive_int("WAREHOUSE_1C_BRIDGE_QUEUE_WAIT_SECONDS", 15, 0),
+                    **bridge_options,
                 )
+                if "catalog_sync" in operations:
+                    self._catalog_process_bridge = Warehouse1CProcessBridge(
+                        dispatcher_path,
+                        allowed_operations={"catalog_sync"},
+                        queue_limit=0,
+                        process_name="warehouse1c-catalog-bridge",
+                        **bridge_options,
+                    )
             except Exception as exc:
                 self._process_bridge_error = str(exc)[:500]
                 logger.exception("Warehouse 1C process bridge configuration failed")
@@ -1064,9 +1170,11 @@ class Warehouse1CService:
             return _PROCESS_BRIDGE_DISABLED
         if self._process_bridge is None:
             detail = self._process_bridge_error or "не настроен"
-            raise Warehouse1CQueryError(f"Process bridge 1С недоступен: {detail}")
+            raise Warehouse1CQueryError(f"Process bridge 1С недоступен: {detail}", reason_code="configuration_error")
         try:
             return await asyncio.to_thread(self._run_process_bridge_sync, operation, payload, timeout=timeout)
+        except (Warehouse1CValidationError, Warehouse1CQueryError):
+            raise
         except Exception as exc:
             # A bridge timeout/restart is an unknown result.  Never fall back
             # to in-process COM, otherwise the feature flag would silently
@@ -1095,18 +1203,27 @@ class Warehouse1CService:
     ) -> Any:
         if not self._process_bridge_enabled:
             return _PROCESS_BRIDGE_DISABLED
-        if self._process_bridge is None:
+        bridge = self._catalog_process_bridge if operation == "catalog_sync" else self._process_bridge
+        if bridge is None:
             detail = self._process_bridge_error or "не настроен"
-            raise Warehouse1CQueryError(f"Process bridge 1С недоступен: {detail}")
+            raise Warehouse1CQueryError(f"Process bridge 1С недоступен: {detail}", reason_code="configuration_error")
         try:
-            return self._process_bridge.call(operation, payload, timeout=timeout)
+            return bridge.call(operation, payload, timeout=timeout)
+        except Warehouse1CProcessBridgeValidationError as exc:
+            raise Warehouse1CValidationError(str(exc)) from exc
+        except (Warehouse1CProcessBridgeBusy, Warehouse1CProcessBridgeUnavailable) as exc:
+            raise Warehouse1CUnavailableError(str(exc), reason_code=exc.reason_code) from exc
+        except Warehouse1CProcessBridgeError as exc:
+            raise Warehouse1CQueryError(f"Process bridge 1С: {exc}", reason_code=exc.reason_code) from exc
         except Exception as exc:
             raise Warehouse1CQueryError(f"Process bridge 1С: {exc}") from exc
 
     def shutdown(self) -> None:
-        if self._process_bridge is not None:
+        for bridge in (self._process_bridge, self._catalog_process_bridge):
+            if bridge is None:
+                continue
             try:
-                self._process_bridge.shutdown()
+                bridge.shutdown()
             except Exception:
                 logger.exception("Warehouse 1C process bridge shutdown failed")
         self._pool.shutdown(MAX_CONCURRENT_1C_CALLS)
@@ -1343,7 +1460,11 @@ class Warehouse1CService:
         else:
             bridge = self._pool.get_status()
             bridge["mode"] = "in_process_compatibility"
-        ready = catalog.get("status") in {"ok", "stale", "incomplete"} and bridge.get("circuit_breaker") != "open"
+        ready = (
+            catalog.get("status") in {"ok", "stale", "incomplete"}
+            and bridge.get("circuit_breaker") != "open"
+            and (not self._process_bridge_enabled or bool(bridge.get("ready")))
+        )
         return {
             "ready": bool(ready),
             "mode": "read_only",
@@ -1351,6 +1472,7 @@ class Warehouse1CService:
             "catalog": catalog,
             "catalog_leader": dict(self._catalog_leader_status),
             "bridge": bridge,
+            "catalog_bridge": self._catalog_process_bridge.get_status() if self._catalog_process_bridge else None,
             "as_of": utc_now_iso(),
         }
 
@@ -1419,10 +1541,9 @@ class Warehouse1CService:
     def sync_catalog_from_1c(self) -> dict[str, Any]:
         """Blocking, synchronous full refresh of both directories. Meant to be
         invoked off the event loop (``asyncio.to_thread``/``run_in_threadpool``);
-        internally it goes through the same connection pool as interactive
-        queries (submit + block on the future), one directory at a time so it
-        only ever occupies a single pool worker, leaving the rest free to
-        serve interactive requests while the sync is running.
+        Process mode uses a dedicated catalogue child, so a full export cannot
+        occupy the interactive COM bridge. Compatibility mode shares the pool,
+        submitting one directory at a time and leaving the other worker free.
         """
         if not self._catalog_sync_lock.acquire(blocking=False):
             status = self.get_catalog_status()
@@ -1605,7 +1726,9 @@ class Warehouse1CService:
                     status["leader"] = dict(self._catalog_leader_status)
                     return status
 
-                with engine.connect() as connection:
+                # This is a session-level lease, not a data transaction. A full
+                # 1C export can exceed idle_in_transaction_session_timeout.
+                with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
                     acquired = bool(
                         connection.execute(
                             text("SELECT pg_try_advisory_lock(:lock_key)"),
@@ -2513,12 +2636,17 @@ class Warehouse1CService:
             "ambiguous_warehouses": ambiguous_warehouses,
         }
 
-    async def get_employee_compare_summary(self, db_id=None) -> dict[str, Any]:
+    async def get_employee_compare_summary(self, db_id=None, *, refresh: bool = False) -> dict[str, Any]:
         """Cached wrapper — the build costs one batched 1C call (~5-10 s)."""
         cache_key = str(db_id or "default").casefold() or "default"
+        observed_entry = self._employee_compare_cache.get(cache_key)
         async with self._employee_compare_lock:
             entry = self._employee_compare_cache.get(cache_key)
-            if entry and (time.monotonic() - entry["at"]) < EMPLOYEE_COMPARE_SUMMARY_TTL_SECONDS:
+            if (
+                entry
+                and (time.monotonic() - entry["at"]) < EMPLOYEE_COMPARE_SUMMARY_TTL_SECONDS
+                and (not refresh or entry is not observed_entry)
+            ):
                 return dict(entry["payload"])
             payload = await self._build_employee_compare_summary(db_id)
             self._employee_compare_cache[cache_key] = {
@@ -2625,17 +2753,33 @@ class Warehouse1CService:
             }
 
         qty_by_warehouse: dict[str, dict[str, float]] = {}
+        names_by_warehouse: dict[str, dict[str, str]] = {}
+        invalid_quantity = False
         for row in balance_payload.get("items") or []:
             ref = normalize_1c_ref(row.get("warehouse_ref"))
             code = db_queries._normalize_hub_part_no_text(row.get("nomenclature_code"))
             if not ref or not code:
                 continue
             try:
-                qty = float(row.get("qty_balance") or 0)
-            except (TypeError, ValueError):
-                qty = 0.0
+                raw_qty = row.get("qty_balance")
+                if raw_qty is None or isinstance(raw_qty, bool):
+                    raise ValueError("Missing or boolean balance quantity")
+                qty = float(raw_qty)
+            except (TypeError, ValueError, OverflowError):
+                invalid_quantity = True
+                continue
+            if not math.isfinite(qty) or qty < 0:
+                invalid_quantity = True
+                continue
             bucket = qty_by_warehouse.setdefault(ref, {})
-            bucket[code] = bucket.get(code, 0.0) + qty
+            aggregated_qty = bucket.get(code, 0.0) + qty
+            if not math.isfinite(aggregated_qty):
+                invalid_quantity = True
+                continue
+            bucket[code] = aggregated_qty
+            name = normalize_text(row.get("nomenclature_name"))
+            if name:
+                names_by_warehouse.setdefault(ref, {})[code] = name
 
         items: list[dict[str, Any]] = []
         for owner_row in owner_rows:
@@ -2645,6 +2789,7 @@ class Warehouse1CService:
             qty_map = qty_by_warehouse.get(warehouse["ref"], {}) if warehouse else {}
             match_cnt = diff = only_hub = only_1c = 0
             part_status: dict[str, str] = {}
+            part_quantities: dict[str, dict[str, Any]] = {}
             for key in set(counts_map) | set(qty_map):
                 hub_qty = counts_map.get(key)
                 qty_1c = qty_map.get(key)
@@ -2661,6 +2806,10 @@ class Warehouse1CService:
                     part_status[key] = "match" if abs(qty_1c - hub_qty) <= 1e-6 else "diff"
                 elif hub_qty is not None:
                     part_status[key] = "only_hub"
+                else:
+                    part_status[key] = "only_1c"
+                # Include already-computed 1C-only codes for assistant reports.
+                part_quantities[key] = {"hub_count": hub_qty if hub_qty is not None else 0, "qty_1c": qty_1c}
             if warehouse is None:
                 status = "ambiguous" if owner_row["ambiguous"] else "no_warehouse"
             elif not counts_map and not only_1c:
@@ -2682,6 +2831,8 @@ class Warehouse1CService:
                 "warehouse_name": warehouse["name"] if warehouse else "",
                 "status": status,
                 "part_status": part_status,
+                "part_quantities": part_quantities,
+                "part_names": names_by_warehouse.get(warehouse["ref"], {}) if warehouse else {},
                 "counts": {
                     "match": match_cnt,
                     "diff": diff,
@@ -2703,6 +2854,7 @@ class Warehouse1CService:
         balances_status = normalize_text(balance_payload.get("status")).lower() or "unknown"
         incomplete = bool(
             balances_status != "ok"
+            or invalid_quantity
             or balances_truncated
             or catalog_meta.get("truncated")
         )
@@ -2710,6 +2862,7 @@ class Warehouse1CService:
             for item in items:
                 item["status"] = "unknown"
                 item["part_status"] = {}
+                item["part_quantities"] = {}
                 counts = item.get("counts") or {}
                 for key in ("match", "diff", "only_hub", "only_1c"):
                     counts[key] = 0
@@ -2724,6 +2877,7 @@ class Warehouse1CService:
                 "owners_count": len(items),
                 "as_of": balance_payload.get("as_of") or utc_now_iso(),
                 "source": balance_payload.get("source") or "live_1c",
+                **({"reason_code": "invalid_quantity"} if invalid_quantity else {}),
             },
         }
 
@@ -3122,6 +3276,8 @@ class Warehouse1CService:
         limit: int | None = None,
         include_meta: bool = False,
     ) -> list[dict[str, Any]] | dict[str, Any]:
+        if not (normalize_1c_ref(nomenclature_ref) or normalize_1c_ref(warehouse_ref) or search_text_tokens(text)):
+            raise Warehouse1CValidationError("Укажите номенклатуру, склад или текст поиска перед запросом остатков")
         normalized_limit = clamp_limit(limit, BALANCES_DEFAULT_LIMIT, BALANCES_MAX_LIMIT)
         bridged = await self._run_process_bridge(
             "balances",
@@ -3434,6 +3590,11 @@ class Warehouse1CService:
         owner_link_method_by_warehouse: dict[str, str] = {}
         hub_count_by_warehouse: dict[str, int] = {}
         owner_count_by_warehouse: dict[str, dict[int, int]] = {}
+        # Per-warehouse set of HUB DBs that contributed resolved owners, and
+        # the set of DBs whose count query failed.  A warehouse with any
+        # failed contributor must not report hub_count=0 as a fact.
+        warehouse_owner_dbs: dict[str, set[str]] = {}
+        count_failed_db_ids: set[str] = set()
 
         for cfg in db_configs:
             one_db_id = str(cfg.get("id") or "").strip() or None
@@ -3514,6 +3675,7 @@ class Warehouse1CService:
                 if not resolved:
                     continue
                 warehouse_owners_for_db[cache_key] = resolved
+                warehouse_owner_dbs.setdefault(cache_key, set()).add(str(one_db_id or "default"))
                 owner_link_method_by_warehouse[cache_key] = mapping_method
                 # Prefer current-DB owner for the employee link; if several — first for now,
                 # later re-pick by who actually has matching equipment.
@@ -3537,6 +3699,7 @@ class Warehouse1CService:
                 )
             except Exception as exc:
                 logger.warning("count_equipment_by_owners_hub_query failed for db=%s: %s", one_db_id, exc)
+                count_failed_db_ids.add(str(one_db_id or "default"))
                 continue
 
             for cache_key, resolved in warehouse_owners_for_db.items():
@@ -3591,8 +3754,13 @@ class Warehouse1CService:
                     or owner.get("employee_dept")
                     or ""
                 ).strip()
-                # Matched person → always show a number (0 if no PART_NO hits).
-                hub_count = int(hub_count_by_warehouse.get(cache_key, 0))
+                # Matched person → always show a number (0 if no PART_NO hits),
+                # unless a contributing HUB database failed its count — an
+                # unverifiable count must not be presented as a confirmed zero.
+                hub_count_unknown = bool(
+                    (warehouse_owner_dbs.get(cache_key) or set()) & count_failed_db_ids
+                )
+                hub_count = None if hub_count_unknown else int(hub_count_by_warehouse.get(cache_key, 0))
             elif cache_key in hub_count_by_warehouse:
                 # Matched only in a non-current DB and owner_by_warehouse missed —
                 # still expose the aggregated count.
@@ -4255,6 +4423,95 @@ class Warehouse1CService:
                 rows.append(movement)
         return rows
 
+    @staticmethod
+    def _warehouse_movements_query_text(
+        *,
+        period_start_expr: str,
+        period_end_expr: str,
+        limit: int,
+    ) -> str:
+        """Lighter warehouse-scoped variant of the movements query.
+
+        The document list collapses rows into per-registrar documents, so the
+        ТОРГ12/СчётФактура info-register joins and the balance/cost columns the
+        grouping step discards are not selected at all.  Keeping them cost two
+        extra joins over the whole register slice plus ~10 COM reads per row.
+        Turnover cost columns stay because ``_is_actual_movement`` uses them.
+        """
+        return f"""
+ВЫБРАТЬ ПЕРВЫЕ {limit}
+    ОиО.Регистратор КАК Регистратор,
+    ОиО.ПериодСекунда КАК Период,
+    ОиО.Номенклатура КАК Номенклатура,
+    ОиО.Номенклатура.Код КАК КодНоменклатуры,
+    ОиО.СерияНоменклатуры КАК Серия,
+    ОиО.КоличествоПриход КАК КоличествоПриход,
+    ОиО.КоличествоРасход КАК КоличествоРасход,
+    ОиО.СтоимостьПриход КАК СтоимостьПриход,
+    ОиО.СтоимостьРасход КАК СтоимостьРасход,
+    ОиО.СтоимостьБухПриход КАК СтоимостьБухПриход,
+    ОиО.СтоимостьБухРасход КАК СтоимостьБухРасход,
+    Перемещение.Номер КАК НомерПеремещения,
+    Перемещение.Дата КАК ДатаПеремещения,
+    Перемещение.Ссылка КАК СсылкаПеремещения,
+    Приход.Ссылка КАК СсылкаПрихода,
+    Расход.Ссылка КАК СсылкаРасхода,
+    Перемещение.СкладОтправитель КАК СкладОтправитель,
+    Перемещение.СкладПолучатель КАК СкладПолучатель
+ИЗ
+    РегистрНакопления.бит_стр_ПартииТоваровНаСкладах.ОстаткиИОбороты({period_start_expr}, {period_end_expr}, Авто, , Склад = &Склад) КАК ОиО
+        ЛЕВОЕ СОЕДИНЕНИЕ Документ.бит_стр_ПеремещениеМеждуСкладами КАК Перемещение
+        ПО ОиО.Регистратор = Перемещение.Ссылка
+        ЛЕВОЕ СОЕДИНЕНИЕ Документ.бит_стр_ПриходныйОрдер КАК Приход
+        ПО ОиО.Регистратор = Приход.Ссылка
+        ЛЕВОЕ СОЕДИНЕНИЕ Документ.бит_стр_РасходныйОрдер КАК Расход
+        ПО ОиО.Регистратор = Расход.Ссылка
+УПОРЯДОЧИТЬ ПО
+    ОиО.ПериодСекунда УБЫВ
+"""
+
+    def _row_to_movement_doc(
+        self,
+        connection: Any,
+        row: Any,
+        *,
+        period_text: str | None = None,
+    ) -> dict[str, Any]:
+        """Materialize only the fields the document grouping consumes."""
+        transfer_number = one_c_text(connection, row.НомерПеремещения)
+        registrar_ref = ref_uuid(connection, row.Регистратор)
+        supported_document_type = ""
+        if is_meaningful_1c_ref(ref_uuid(connection, row.СсылкаПеремещения)):
+            supported_document_type = "transfer"
+        elif is_meaningful_1c_ref(ref_uuid(connection, row.СсылкаПрихода)):
+            supported_document_type = "receipt"
+        elif is_meaningful_1c_ref(ref_uuid(connection, row.СсылкаРасхода)):
+            supported_document_type = "expense"
+        return {
+            "registrar_ref": registrar_ref,
+            "registrar_name": one_c_text(connection, row.Регистратор),
+            "registrar_number": transfer_number,
+            "registrar_date": one_c_datetime(connection, row.ДатаПеремещения),
+            "is_transfer": bool(transfer_number),
+            "can_open_detail": bool(supported_document_type and is_meaningful_1c_ref(registrar_ref)),
+            "registrar_document_type": supported_document_type or None,
+            "period": period_text if period_text is not None else one_c_datetime(connection, row.Период),
+            "nomenclature_ref": ref_uuid(connection, row.Номенклатура),
+            "nomenclature_code": one_c_text(connection, row.КодНоменклатуры),
+            "nomenclature_name": one_c_text(connection, row.Номенклатура),
+            "series_name": one_c_text(connection, row.Серия),
+            "qty_in": one_c_number(row.КоличествоПриход),
+            "qty_out": one_c_number(row.КоличествоРасход),
+            "cost_in": one_c_number(row.СтоимостьПриход),
+            "cost_out": one_c_number(row.СтоимостьРасход),
+            "cost_accounting_in": one_c_number(row.СтоимостьБухПриход),
+            "cost_accounting_out": one_c_number(row.СтоимостьБухРасход),
+            "transfer_from_warehouse_ref": ref_uuid(connection, row.СкладОтправитель),
+            "transfer_from_warehouse_name": one_c_text(connection, row.СкладОтправитель),
+            "transfer_to_warehouse_ref": ref_uuid(connection, row.СкладПолучатель),
+            "transfer_to_warehouse_name": one_c_text(connection, row.СкладПолучатель),
+        }
+
     def _get_warehouse_movements_sync(
         self,
         connection: Any,
@@ -4262,15 +4519,23 @@ class Warehouse1CService:
         date_from: date | None,
         date_to: date | None,
         limit: int,
-    ) -> list[dict[str, Any]]:
-        """All register movements touching one warehouse, newest first."""
+        doc_window: int,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """All register movements touching one warehouse, newest first.
+
+        Returns ``(rows, stopped_early)``.  Rows are ordered by period desc and
+        every row of one registrar shares that period, so once ``doc_window``
+        distinct documents are collected and the current row's period falls
+        below the boundary document's period, all in-window documents are
+        complete and the remaining selection can be skipped.  That avoids
+        spending ~15 COM calls on each of thousands of unneeded rows.
+        """
         warehouse_obj = self._rebuild_ref(connection, WAREHOUSE_CATALOG, warehouse_ref)
         period_start_expr = "&НачалоПериода" if date_from else ""
         period_end_expr = "&КонецПериода" if date_to else ""
 
         query = connection.NewObject("Query")
-        query.Text = self._movements_query_text(
-            condition="Склад = &Склад",
+        query.Text = self._warehouse_movements_query_text(
             period_start_expr=period_start_expr,
             period_end_expr=period_end_expr,
             limit=limit,
@@ -4284,7 +4549,29 @@ class Warehouse1CService:
                 datetime(date_to.year, date_to.month, date_to.day, 23, 59, 59),
             )
 
-        return self._select_movement_rows(connection, query)
+        selection = query.Execute().Select()
+        rows: list[dict[str, Any]] = []
+        doc_periods: dict[str, str] = {}
+        boundary_period: str | None = None
+        stopped_early = False
+        need_docs = max(1, int(doc_window or 0))
+        while selection.Next():
+            # Period is read first so a row beyond the boundary document is
+            # dropped before its ~15 field-level COM roundtrips are spent.
+            period_text = one_c_datetime(connection, selection.Период)
+            if boundary_period is not None and str(period_text or "") < boundary_period:
+                stopped_early = True
+                break
+            row = self._row_to_movement_doc(connection, selection, period_text=period_text)
+            if not self._is_actual_movement(row):
+                continue
+            reg_key = str(row.get("registrar_ref") or "") or f"row:{len(doc_periods)}"
+            if reg_key not in doc_periods:
+                doc_periods[reg_key] = str(row.get("period") or "")
+                if len(doc_periods) >= need_docs:
+                    boundary_period = doc_periods[reg_key]
+            rows.append(row)
+        return rows, stopped_early
 
     def _group_movements_to_documents(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Collapse per-nomenclature register rows into one row per registrar.
@@ -4376,21 +4663,29 @@ class Warehouse1CService:
         if bridged is not _PROCESS_BRIDGE_DISABLED:
             return bridged
         # Rows per document are unknown ahead of time; fetch a bounded window
-        # that covers the requested document page with generous headroom.
+        # that covers the requested document page with generous headroom.  The
+        # reader stops materializing rows as soon as the page is provably
+        # complete, and reports that through the trailing flag.
         fetch_limit = min(WAREHOUSE_MOVEMENTS_ROW_CAP, (offset + doc_limit) * 20 + 1)
-        rows = await self._run_pooled(
+        fetched = await self._run_pooled(
             self._get_warehouse_movements_sync,
             normalized_warehouse_ref,
             parsed_date_from,
             parsed_date_to,
             fetch_limit,
+            offset + doc_limit,
         )
+        # Test seams and alternate bridge implementations return a bare list.
+        if isinstance(fetched, tuple) and len(fetched) == 2:
+            rows, stopped_early = fetched
+        else:
+            rows, stopped_early = fetched, False
         rows = [row for row in rows if self._is_actual_movement(row)]
         documents = self._group_movements_to_documents(rows)
         page = documents[offset : offset + doc_limit]
         next_offset = offset + len(page)
         row_cap_reached = len(rows) >= fetch_limit
-        has_more = len(documents) > next_offset or row_cap_reached
+        has_more = len(documents) > next_offset or row_cap_reached or stopped_early
         return {
             "items": page,
             "returned": len(page),

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   clearSWRCache,
+  getOrFetchSWR,
   peekSWRCache,
   setSWRCache,
   trimSWRCache,
@@ -49,5 +50,38 @@ describe('swrCache memory bounds', () => {
     expect(peekSWRCache(['thread', 3])).toBeNull();
     expect(peekSWRCache(['thread', 4])?.data).toBe(4);
     expect(peekSWRCache(['thread', 19])?.data).toBe(19);
+  });
+});
+
+describe('swrCache session boundaries', () => {
+  it.each(['old-first', 'new-first'])('fences old fetches across clear (%s)', async (order) => {
+    clearSWRCache();
+    let resolveOld;
+    let resolveNew;
+    const oldFetcher = vi.fn(() => new Promise((resolve) => { resolveOld = resolve; }));
+    const newFetcher = vi.fn(() => new Promise((resolve) => { resolveNew = resolve; }));
+    const oldRequest = getOrFetchSWR('shared-key', oldFetcher);
+    await Promise.resolve();
+    clearSWRCache();
+    const newRequest = getOrFetchSWR('shared-key', newFetcher);
+    await Promise.resolve();
+
+    if (order === 'old-first') {
+      resolveOld('user-A');
+      await oldRequest;
+      expect(peekSWRCache('shared-key')).toBeNull();
+      const concurrent = getOrFetchSWR('shared-key', newFetcher);
+      await Promise.resolve();
+      expect(newFetcher).toHaveBeenCalledTimes(1);
+      resolveNew('user-B');
+      await Promise.all([newRequest, concurrent]);
+    } else {
+      resolveNew('user-B');
+      await newRequest;
+      resolveOld('user-A');
+      await oldRequest;
+    }
+    expect(peekSWRCache('shared-key').data).toBe('user-B');
+    clearSWRCache();
   });
 });

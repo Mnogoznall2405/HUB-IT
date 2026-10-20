@@ -17,6 +17,7 @@ vi.mock('../api/client', () => ({
     getAgentsActivity: vi.fn(),
     getHostsTable: vi.fn(),
     getIncidents: vi.fn(),
+    getIncidentInboxGroups: vi.fn(),
     getHostScanRuns: vi.fn(),
     getTaskObservations: vi.fn(),
     exportScanTaskIncidents: vi.fn(),
@@ -142,6 +143,7 @@ describe('ScanCenter page', () => {
     scanAPI.getAgentsActivity.mockReset();
     scanAPI.getHostsTable.mockReset();
     scanAPI.getIncidents.mockReset();
+    scanAPI.getIncidentInboxGroups.mockReset();
     scanAPI.getHostScanRuns.mockReset();
     scanAPI.getTaskObservations.mockReset();
     scanAPI.exportScanTaskIncidents.mockReset();
@@ -164,6 +166,7 @@ describe('ScanCenter page', () => {
     scanAPI.getAgentsActivity.mockResolvedValue({ items: [] });
     scanAPI.getHostsTable.mockResolvedValue({ total: 1, items: [hostRow] });
     scanAPI.getIncidents.mockResolvedValue({ total: 1, items: [incidentRow] });
+    scanAPI.getIncidentInboxGroups.mockResolvedValue({ items: [], total_hosts: 0, total_incidents: 0, has_more: false });
     scanAPI.getHostScanRuns.mockResolvedValue({
       total: 1,
       items: [{
@@ -948,6 +951,74 @@ describe('ScanCenter page', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('runs a manual refresh after a background refresh instead of silently dropping the click', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      render(<ScanCenter />);
+      await waitFor(() => expect(scanAPI.getDashboard).toHaveBeenCalled());
+      await act(async () => { await Promise.resolve(); });
+
+      let releaseBackground;
+      scanAPI.getDashboard.mockClear();
+      scanAPI.getDashboard.mockImplementationOnce(() => new Promise((resolve) => {
+        releaseBackground = () => resolve(dashboardPayload);
+      }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(AUTO_REFRESH_MS);
+      });
+      expect(scanAPI.getDashboard).toHaveBeenCalledTimes(1);
+
+      const refreshButton = screen.getAllByRole('button', { name: /Обновить/ })[0];
+      fireEvent.click(refreshButton);
+      await waitFor(() => expect(refreshButton).toBeDisabled());
+
+      await act(async () => { releaseBackground(); });
+      await waitFor(() => expect(scanAPI.getDashboard).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(refreshButton).not.toBeDisabled());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows only the newest host overview when an older request finishes last', async () => {
+    let resolveOld;
+    scanAPI.getIncidentInboxGroups
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }))
+      .mockResolvedValue({
+        items: [{ id: 'h-new', hostname: 'NEW-HOST', incidents_new: 1, incidents_total: 1 }],
+        total_hosts: 1,
+        total_incidents: 1,
+        host_offset: 0,
+        host_limit: 25,
+        has_more: false,
+      });
+    render(<ScanCenter />);
+    await openIncidentsSection();
+    fireEvent.click(await screen.findByText('Дополнительные фильтры'));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Сводка по компьютерам' }));
+    await waitFor(() => expect(scanAPI.getIncidentInboxGroups).toHaveBeenCalledTimes(1));
+    fireEvent.keyDown(await screen.findByRole('dialog'), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Сводка по компьютерам' }));
+    expect(await screen.findByText('NEW-HOST')).toBeInTheDocument();
+
+    await act(async () => {
+      resolveOld({
+        items: [{ id: 'h-old', hostname: 'OLD-HOST', incidents_new: 1, incidents_total: 1 }],
+        total_hosts: 1,
+        total_incidents: 1,
+        host_offset: 0,
+        host_limit: 25,
+        has_more: false,
+      });
+    });
+
+    expect(screen.queryByText('OLD-HOST')).toBeNull();
+    expect(screen.getByText('NEW-HOST')).toBeInTheDocument();
   });
 
   it('loads full review list with abort signal on the review tab', async () => {

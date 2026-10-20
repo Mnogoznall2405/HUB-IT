@@ -395,8 +395,12 @@ def process_file(file_path, config=None) -> int:
     return 1
 
 
-def enroll_speaker_voice(voice_path: str, speaker_name: str) -> bool:
-    """Добавляет эталонный голос в reference_voices и вычисляет эмбеддинг."""
+def enroll_speaker_voice(voice_path: str, speaker_name: str, merge: bool = False) -> bool:
+    """Добавляет эталонный голос в reference_voices и вычисляет эмбеддинг.
+
+    merge=True — дописывает сэмпл под новым именем <name>_N.wav и пересчитывает
+    эмбеддинг по всем сэмплам эталона (усреднение — см. _create_reference_embedding).
+    """
     try:
         import re as _re
         import config as app_config
@@ -414,8 +418,14 @@ def enroll_speaker_voice(voice_path: str, speaker_name: str) -> bool:
         speaker_dir = app_config.REFERENCE_VOICES_DIR / safe_dir
         speaker_dir.mkdir(parents=True, exist_ok=True)
 
-        # Конвертируем/копируем в WAV 16kHz mono — формат pyannote
+        # Конвертируем/копируем в WAV 16kHz mono — формат pyannote.
+        # В merge-режиме кладём новый файл (<name>_2.wav, ...) рядом с имеющимися.
         target_wav = speaker_dir / f"{safe_dir}.wav"
+        if merge:
+            idx = 2
+            while target_wav.exists():
+                target_wav = speaker_dir / f"{safe_dir}_{idx}.wav"
+                idx += 1
         if not target_wav.exists():
             try:
                 from pydub import AudioSegment
@@ -430,7 +440,7 @@ def enroll_speaker_voice(voice_path: str, speaker_name: str) -> bool:
                 print(f'❌ Не удалось конвертировать аудио: {e}')
                 return False
 
-        # Сразу вычисляем эмбеддинг (проверка качества + кэш для прогонов)
+        # Эмбеддинг — по всем сэмплам эталона (merge накапливает их; лимит см. ниже)
         print('🧬 Вычисляю эмбеддинг голоса (загрузка pyannote, ~30с)...')
         from modules.main_processor import ProcessingConfig
         from modules.diarization import SpeakerDiarization
@@ -438,7 +448,13 @@ def enroll_speaker_voice(voice_path: str, speaker_name: str) -> bool:
             enable_ai_analysis=False,
             speaker_embeddings_improved=getattr(app_config, 'SPEAKER_EMBEDDINGS_IMPROVED', False),
         ))
-        embedding = diar._create_reference_embedding([target_wav])
+        from modules.speaker_utils import REFERENCE_SAMPLES_LIMIT, reference_sample_files
+        audio_files = reference_sample_files(speaker_dir)
+        total_samples = len(list(speaker_dir.glob("*.wav"))) + len(list(speaker_dir.glob("*.mp3")))
+        if total_samples > REFERENCE_SAMPLES_LIMIT:
+            print(f'⚠️ В эталоне {total_samples} сэмплов — в эмбеддинг войдут {len(audio_files)} '
+                  f'(исходный и самые новые, лимит {REFERENCE_SAMPLES_LIMIT})')
+        embedding = diar._create_reference_embedding(audio_files)
         if embedding is None:
             print('❌ Не удалось создать эмбеддинг — проверьте, что на записи чистая речь')
             return False
@@ -446,7 +462,7 @@ def enroll_speaker_voice(voice_path: str, speaker_name: str) -> bool:
         pkl = speaker_dir / f"{safe_dir}_embedding.pkl"
         with open(pkl, 'wb') as f:
             pickle.dump(embedding, f)
-        print(f'✅ Эмбеддинг сохранён: {pkl.name} (dim={len(embedding)})')
+        print(f'✅ Эмбеддинг сохранён: {pkl.name} (dim={len(embedding)}, сэмплов={len(audio_files)})')
         print(f'\n🎤 Спикер "{speaker_name}" добавлен. При следующем прогоне он будет опознан автоматически.')
         print('   Можно добавить ещё сэмплы этого же голоса в папку — точность вырастет.')
         return True
@@ -532,6 +548,9 @@ def main() -> int:
                         help='Добавить голос спикера в базу reference_voices (5-30с чистой речи)')
     parser.add_argument('--speaker-name', default=None, metavar='ИМЯ',
                         help='Имя спикера для --enroll-voice (например: "Водопьянов Иван")')
+    parser.add_argument('--enroll-merge', action='store_true',
+                        help='Дописать сэмпл к существующему эталону (<name>_N.wav) и '
+                             'пересчитать эмбеддинг по всем сэмплам, вместо замены')
     parser.add_argument('--speaker-map', default=None, metavar='"SPEAKER_02=ФИО;..."',
                         help='Принудительные имена спикеров (перекрывает автоидентификацию)')
     parser.add_argument('--resume-speakers', default=None, metavar='BASE',
@@ -587,7 +606,7 @@ def main() -> int:
         return 0
 
     if args.enroll_voice:
-        return 0 if enroll_speaker_voice(args.enroll_voice, args.speaker_name) else 1
+        return 0 if enroll_speaker_voice(args.enroll_voice, args.speaker_name, merge=args.enroll_merge) else 1
 
     if args.resume_speakers:
         import config as app_config
@@ -660,6 +679,8 @@ def main() -> int:
             enable_diarization=not args.no_diarization,
             enable_demucs=not args.no_demucs,
             separator_engine=separator_engine,
+            audio_loudnorm=getattr(app_config, 'AUDIO_LOUDNORM', False),
+            dead_air_seconds=getattr(app_config, 'DEAD_AIR_SECONDS', 0),
             enable_alignment=not args.no_alignment,
             enable_ai_analysis=not args.no_ai_analysis,
             enable_speaker_identification=not args.no_speaker_identification,
@@ -684,6 +705,7 @@ def main() -> int:
             loose_similarity_threshold=getattr(app_config, 'SPEAKER_ID_LOOSE', 0.45),
             use_checkpoints=not args.fresh,
             meeting_date=args.meeting_date,
+            **app_config.diarization_chunk_options(),
         )
         if args.min_speakers:
             config_kwargs['diarization_min_speakers'] = args.min_speakers

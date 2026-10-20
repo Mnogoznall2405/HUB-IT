@@ -1,5 +1,6 @@
 """AI3 watchdog: stale queued/running runs are failed and published; sqlite only."""
 from contextlib import contextmanager
+import conftest
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -12,12 +13,11 @@ from backend.ai_chat import service as service_module
 
 @pytest.fixture
 def database(tmp_path, monkeypatch):
+    conftest.copy_app_metadata_schema(tmp_path / 'watchdog.db')
     engine = create_engine(
         f"sqlite:///{tmp_path / 'watchdog.db'}",
         execution_options={'schema_translate_map': {'app': None, 'system': None}},
     )
-    AppBase.metadata.create_all(engine, tables=[table for table in AppBase.metadata.sorted_tables
-        if table.name.startswith(('ai_',)) or table.name == 'users'])
 
     @contextmanager
     def session():
@@ -112,3 +112,79 @@ def test_watchdog_flag_defaults_off(monkeypatch):
     assert worker._env_flag('AI_RUN_WATCHDOG_ENABLED', False) is False
     monkeypatch.setenv('AI_RUN_WATCHDOG_ENABLED', '1')
     assert worker._env_flag('AI_RUN_WATCHDOG_ENABLED', False) is True
+
+
+@pytest.mark.parametrize('next_status', ['completed', 'running'])
+def test_watchdog_does_not_overwrite_completed_or_refreshed_run(database, monkeypatch, next_status):
+    """Inject progress between SELECT and UPDATE; a UI E2E cannot schedule this race."""
+    from sqlalchemy import update
+    from sqlalchemy.sql.dml import Update
+
+    session, svc, published = database
+    changed = False
+
+    @contextmanager
+    def racing_session():
+        nonlocal changed
+        with session() as db:
+            original_execute = db.execute
+            def execute(statement, *args, **kwargs):
+                nonlocal changed
+                if isinstance(statement, Update) and not changed:
+                    changed = True
+                    now = datetime.now(timezone.utc)
+                    original_execute(update(AppAiBotRun).where(AppAiBotRun.id == 'stale-queued').values(
+                        status=next_status, updated_at=now,
+                        completed_at=now if next_status == 'completed' else None,
+                    ).execution_options(synchronize_session=False))
+                return original_execute(statement, *args, **kwargs)
+            db.execute = execute
+            yield db
+
+    monkeypatch.setattr(service_module, 'app_session', racing_session)
+    result = svc.reap_stale_runs(stale_after_sec=900)
+    assert result['reaped_run_ids'] == ['stale-running']
+    with session() as db:
+        row = db.get(AppAiBotRun, 'stale-queued')
+        assert row.status == next_status
+        assert row.error_text is None
+    assert [event['run_id'] for event in published] == ['stale-running']
+
+
+@pytest.mark.parametrize('terminal_status', ['failed', 'cancelled', 'completed'])
+def test_progress_cannot_overwrite_a_concurrent_terminal_transition(database, monkeypatch, terminal_status):
+    """Inject a committed transition after the worker reads its old snapshot."""
+    from sqlalchemy import update
+    from types import SimpleNamespace
+
+    session, svc, published = database
+    changed = False
+
+    @contextmanager
+    def racing_session():
+        nonlocal changed
+        with session() as db:
+            original_get = db.get
+            def get(model, identity, *args, **kwargs):
+                nonlocal changed
+                row = original_get(model, identity, *args, **kwargs)
+                if model is AppAiBotRun and identity == 'stale-running' and not changed:
+                    changed = True
+                    db.execute(update(AppAiBotRun).where(AppAiBotRun.id == identity).values(
+                        status=terminal_status, error_text='Terminal outcome',
+                        updated_at=datetime.now(timezone.utc),
+                    ).execution_options(synchronize_session=False))
+                return row
+            db.get = get
+            yield db
+
+    monkeypatch.setattr(service_module, 'app_session', racing_session)
+    result = svc._set_run_progress(run_id='stale-running', conversation_id='conv', user_id=2,
+        bot=SimpleNamespace(id='agent', title='Assistant'), status='running', stage='generating_answer')
+    with session() as db:
+        row = db.get(AppAiBotRun, 'stale-running')
+        assert row.status == terminal_status
+        assert row.error_text == 'Terminal outcome'
+    assert result['status'] == terminal_status
+    assert changed
+    assert published == []

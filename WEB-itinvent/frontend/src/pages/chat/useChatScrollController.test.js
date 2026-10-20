@@ -187,18 +187,4 @@ describe('useChatScrollController', () => {
     expect(onSettled).toHaveBeenCalledTimes(1);
   });
 
-  it('re-exports scroll model helpers', () => {
-    const refs = buildRefs();
-    const { result } = renderHook(() => useChatScrollController({
-      ...refs,
-      setShowJumpToLatest: vi.fn(),
-      suppressThreadScrollCancel: vi.fn(),
-      traceProgrammaticThreadScroll: vi.fn(),
-      isInitialViewportGuardActive: () => false,
-    }));
-
-    expect(typeof result.current.getChatBottomInstantSettleFrames).toBe('function');
-    expect(typeof result.current.capturePrependScrollRestoreState).toBe('function');
-    expect(typeof result.current.computePrependScrollRestoreTop).toBe('function');
   });
-});

@@ -1,4 +1,4 @@
-﻿import React, { useMemo, useState } from 'react';
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Accordion,
   AccordionDetails,
@@ -47,6 +47,8 @@ const DEFAULT_SETTINGS = {
   llm_model: '',
   segmentation_model: '',
   topic_model: '',
+  trim_start: '',
+  trim_end: '',
 };
 
 const ACCEPT = '.mp3,.wav,.flac,.m4a,.aac,.ogg,.wma,.mp4,.mkv,.mov,.avi,.webm,.wmv,.flv,.m4v';
@@ -59,6 +61,33 @@ const formatUploadLimit = (bytes) => (
 const getLocalDateIso = (date = new Date()) => (
   `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 );
+
+const VIDEO_EXTS = new Set(['.mp4', '.mkv', '.mov', '.avi', '.webm', '.wmv', '.flv', '.m4v']);
+
+// Секунды → «м:сс» или «ч:мм:сс» для полей фрагмента.
+const formatClock = (totalSeconds) => {
+  const s = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = String(s % 60).padStart(2, '0');
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+};
+
+// «90», «1:30», «0:01:30» → секунды; пусто → null, мусор → NaN.
+const parseClock = (raw) => {
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  const parts = text.split(':');
+  if (parts.length > 3) return NaN;
+  let seconds = 0;
+  for (const part of parts) {
+    if (!/^\d+(\.\d+)?$/.test(part)) return NaN;
+    seconds = seconds * 60 + Number(part);
+  }
+  if (parts.length > 1 && Number(parts[parts.length - 1]) >= 60) return NaN;
+  if (parts.length > 2 && Number(parts[parts.length - 2]) >= 60) return NaN;
+  return seconds;
+};
 
 function LlmModelField({ label, value, onChange, options, defaultValue }) {
   const values = (options || []).map((o) => o.value);
@@ -126,11 +155,46 @@ function VoiceUploadDialog({ open, onClose, onUploaded, onPartiallyUploaded, opt
     [files, maxBytes],
   );
 
+  // Плеер первого выбранного файла — для отметки границ фрагмента.
+  const firstFile = files[0];
+  const [mediaUrl, setMediaUrl] = useState('');
+  const mediaRef = useRef(null);
+  useEffect(() => {
+    if (!firstFile || typeof URL.createObjectURL !== 'function') {
+      setMediaUrl('');
+      return undefined;
+    }
+    const url = URL.createObjectURL(firstFile);
+    setMediaUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [firstFile]);
+  const firstIsVideo = Boolean(
+    firstFile && VIDEO_EXTS.has(`.${firstFile.name.split('.').pop()?.toLowerCase()}`),
+  );
+  const markTrim = (key) => {
+    const t = mediaRef.current?.currentTime;
+    if (Number.isFinite(t)) set(key, formatClock(t));
+  };
+
   const todayIso = getLocalDateIso();
   const dateInFuture = Boolean(
     settings.meeting_date && /^\d{4}-\d{2}-\d{2}$/.test(settings.meeting_date)
       && settings.meeting_date > todayIso,
   );
+
+  const trimStartRaw = String(settings.trim_start || '').trim();
+  const trimEndRaw = String(settings.trim_end || '').trim();
+  const trimStart = parseClock(trimStartRaw);
+  const trimEnd = parseClock(trimEndRaw);
+  let trimHint = '';
+  if (trimStartRaw && !Number.isFinite(trimStart)) {
+    trimHint = 'Начало: формат «мм:сс» или «ч:мм:сс»';
+  } else if (trimEndRaw && !Number.isFinite(trimEnd)) {
+    trimHint = 'Конец: формат «мм:сс» или «ч:мм:сс»';
+  } else if (trimStart != null && trimEnd != null && trimEnd <= trimStart) {
+    trimHint = 'Конец фрагмента должен быть позже начала';
+  }
+  const trimError = Boolean(trimHint);
 
   const reset = () => {
     setFiles([]);
@@ -159,6 +223,14 @@ function VoiceUploadDialog({ open, onClose, onUploaded, onPartiallyUploaded, opt
       segmentation_model: settings.segmentation_model?.trim() || undefined,
       topic_model: settings.topic_model?.trim() || undefined,
     };
+    if (trimStart != null || trimEnd != null) {
+      payload.trim_start = trimStart ?? 0;
+      if (trimEnd != null) payload.trim_end = trimEnd;
+      else delete payload.trim_end;
+    } else {
+      delete payload.trim_start;
+      delete payload.trim_end;
+    }
     if (payload.stt_engine === 'whisper') delete payload.stt_engine;
     const failures = [];
     const uploadedIdx = new Set();
@@ -288,6 +360,74 @@ function VoiceUploadDialog({ open, onClose, onUploaded, onPartiallyUploaded, opt
               fullWidth
             />
           </Stack>
+          <Box>
+            {mediaUrl && (
+              firstIsVideo ? (
+                <Box
+                  component="video"
+                  ref={mediaRef}
+                  src={mediaUrl}
+                  controls
+                  preload="metadata"
+                  sx={{
+                    width: '100%', maxHeight: 240, borderRadius: 1,
+                    bgcolor: '#000', mb: 1,
+                  }}
+                />
+              ) : (
+                <Box
+                  component="audio"
+                  ref={mediaRef}
+                  src={mediaUrl}
+                  controls
+                  preload="metadata"
+                  sx={{ width: '100%', mb: 1 }}
+                />
+              )
+            )}
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+              <TextField
+                size="small"
+                label="Фрагмент: с"
+                placeholder="мм:сс"
+                value={settings.trim_start}
+                onChange={(e) => set('trim_start', e.target.value)}
+                error={Boolean(trimStartRaw && !Number.isFinite(trimStart))}
+                fullWidth
+              />
+              <TextField
+                size="small"
+                label="по"
+                placeholder="мм:сс — до конца"
+                value={settings.trim_end}
+                onChange={(e) => set('trim_end', e.target.value)}
+                error={Boolean(
+                  (trimEndRaw && !Number.isFinite(trimEnd))
+                  || (trimStart != null && trimEnd != null && trimEnd <= trimStart),
+                )}
+                fullWidth
+              />
+            </Stack>
+            {mediaUrl && (
+              <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+                <Button size="small" variant="outlined" onClick={() => markTrim('trim_start')}>
+                  С — из позиции плеера
+                </Button>
+                <Button size="small" variant="outlined" onClick={() => markTrim('trim_end')}>
+                  По — из позиции плеера
+                </Button>
+              </Stack>
+            )}
+            <Typography
+              variant="caption"
+              color={trimError ? 'error' : 'text.secondary'}
+              sx={{ mt: 0.5, display: 'block' }}
+            >
+              {trimHint || (files.length > 1
+                ? 'Плеер показывает первый файл; диапазон применяется к каждому. Видео сохраняется в карточке протокола.'
+                : 'Пусто — вся запись. Видео сохраняется в карточке протокола.')}
+            </Typography>
+          </Box>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
             {[['min_speakers', 'Участников от'], ['max_speakers', 'Участников до']].map(([key, label]) => (
               <TextField
@@ -448,7 +588,7 @@ function VoiceUploadDialog({ open, onClose, onUploaded, onPartiallyUploaded, opt
       </DialogContent>
       <DialogActions>
         <Button onClick={() => { reset(); onClose?.(); }} disabled={busy}>Отмена</Button>
-        <Button variant="contained" onClick={handleSubmit} disabled={!files.length || busy || oversized.length > 0 || dateInFuture}>
+        <Button variant="contained" onClick={handleSubmit} disabled={!files.length || busy || oversized.length > 0 || dateInFuture || trimError}>
           {busy ? 'Загружается…' : files.length > 1 ? `Отправить ${files.length} файла` : 'Отправить на обработку'}
         </Button>
       </DialogActions>

@@ -303,11 +303,20 @@ export const canEditChatMessage = (message) => {
   return Boolean(String(message?.body || '').trim());
 };
 
-export const canDeleteChatMessage = (message, { conversationKind } = {}) => {
+// В группе чужие сообщения удаляют только владелец и модераторы; сервер проверяет то же самое.
+// Если роль неизвестна (устаревший ответ), кнопку не прячем: решение останется за сервером.
+export const isChatGroupManagerRole = (role) => {
+  const normalized = String(role || '').trim();
+  return normalized === 'owner' || normalized === 'moderator';
+};
+
+export const canDeleteChatMessage = (message, { conversationKind, viewerMemberRole } = {}) => {
   if (!message?.id || message?.is_deleted || message?.isOptimistic) return false;
   if (String(message?.kind || '').trim() === 'system') return false;
   if (message?.is_own) return true;
-  return String(conversationKind || '').trim() === 'group';
+  if (String(conversationKind || '').trim() !== 'group') return false;
+  const role = String(viewerMemberRole || '').trim();
+  return !role || isChatGroupManagerRole(role);
 };
 
 export const getMessagePreview = (message) => {

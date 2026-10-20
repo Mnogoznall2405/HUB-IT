@@ -19,6 +19,9 @@ settings.load_profile("itinvent")
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "WEB-itinvent"))
 
+# The code default for APP_ENV is production (fail-safe); tests run as development unless a test says otherwise.
+os.environ.setdefault("APP_ENV", "development")
+
 # MAIL-AUDIT-026: import-time MailService() must not hit live APP_DATABASE_URL.
 # load_dotenv does not override existing keys, so this wins over the root .env.
 # Opt out with PYTEST_USE_LIVE_APP_DATABASE=1 only for explicit live-DB suites.
@@ -90,17 +93,99 @@ def prebuilt_app_db(tmp_path):
         pass
 
 
+_CHAT_SCHEMA_TEMPLATE_PATH: Path | None = None
+_APP_METADATA_TEMPLATE_PATH: Path | None = None
+
+
+def chat_schema_template_path() -> Path:
+    """Lazily build the app+chat schema template once per pytest process."""
+    global _CHAT_SCHEMA_TEMPLATE_PATH
+    if _CHAT_SCHEMA_TEMPLATE_PATH is None or not _CHAT_SCHEMA_TEMPLATE_PATH.exists():
+        import tempfile
+
+        template_dir = Path(tempfile.mkdtemp(prefix="chat-schema-template-"))
+        db_path = template_dir / "runtime.db"
+        shutil.copyfile(app_schema_template_db(), db_path)
+        url = f"sqlite:///{db_path.as_posix()}"
+        from backend.chat import db as chat_db_module
+
+        previous_enabled = getattr(chat_db_module.config.chat, "enabled", False)
+        try:
+            chat_db_module.config.chat.enabled = True
+            chat_db_module.initialize_chat_schema(url)
+            chat_db_module.get_chat_engine(url).dispose()
+        finally:
+            chat_db_module.config.chat.enabled = previous_enabled
+        _CHAT_SCHEMA_TEMPLATE_PATH = db_path
+    return _CHAT_SCHEMA_TEMPLATE_PATH
+
+
+def app_metadata_schema_template_path() -> Path:
+    """ORM-metadata (create_all) app schema template, without migration artifacts."""
+    global _APP_METADATA_TEMPLATE_PATH
+    if _APP_METADATA_TEMPLATE_PATH is None or not _APP_METADATA_TEMPLATE_PATH.exists():
+        import tempfile
+
+        from sqlalchemy import create_engine
+
+        from backend.appdb.models import AppBase
+
+        template_dir = Path(tempfile.mkdtemp(prefix="app-metadata-template-"))
+        db_path = template_dir / "app.db"
+        engine = create_engine(
+            f"sqlite:///{db_path.as_posix()}",
+            execution_options={"schema_translate_map": {"app": None, "system": None}},
+        )
+        AppBase.metadata.create_all(engine, checkfirst=True)
+        engine.dispose()
+        _APP_METADATA_TEMPLATE_PATH = db_path
+    return _APP_METADATA_TEMPLATE_PATH
+
+
+def _db_path_from_sqlite_url(database_url: str) -> Path:
+    return Path(database_url.split("///", 1)[-1])
+
+
+def copy_app_schema(db_path: Path, database_url: str) -> str:
+    """Copy the migration-built app schema and mark the url as already initialized."""
+    shutil.copyfile(app_schema_template_db(), db_path)
+    from backend.appdb import db as app_db_module
+
+    app_db_module._initialized_schema_urls.add(database_url)
+    return database_url
+
+
+def copy_app_schema_for_url(database_url: str) -> str:
+    return copy_app_schema(_db_path_from_sqlite_url(database_url), database_url)
+
+
+def copy_app_metadata_schema(db_path: Path) -> Path:
+    """Copy the ORM-metadata schema; callers keep their own engines/sessions."""
+    shutil.copyfile(app_metadata_schema_template_path(), db_path)
+    return db_path
+
+
+def copy_app_metadata_schema_for_url(database_url: str) -> Path:
+    return copy_app_metadata_schema(_db_path_from_sqlite_url(database_url))
+
+
+def copy_chat_schema(db_path: Path, database_url: str) -> str:
+    """Copy the app+chat schema template and mark the app url as initialized."""
+    shutil.copyfile(chat_schema_template_path(), db_path)
+    from backend.appdb import db as app_db_module
+
+    app_db_module._initialized_schema_urls.add(database_url)
+    return database_url
+
+
+def copy_chat_schema_for_url(database_url: str) -> str:
+    return copy_chat_schema(_db_path_from_sqlite_url(database_url), database_url)
+
+
 @pytest.fixture(scope="session")
 def chat_schema_template_db(tmp_path_factory):
     db_path = tmp_path_factory.mktemp("chat-schema-template") / "runtime.db"
-    shutil.copyfile(app_schema_template_db(), db_path)
-    url = f"sqlite:///{db_path.as_posix()}"
-    from backend.chat import db as chat_db_module
-
-    with pytest.MonkeyPatch.context() as monkeypatch:
-        monkeypatch.setattr(chat_db_module.config.chat, "enabled", True, raising=False)
-        chat_db_module.initialize_chat_schema(url)
-        chat_db_module.get_chat_engine(url).dispose()
+    shutil.copyfile(chat_schema_template_path(), db_path)
     return db_path
 
 

@@ -114,7 +114,10 @@ class ChatPresenceService:
 
     def _get_presence_map(self, *, user_ids: Optional[list[int] | set[int] | tuple[int, ...]] = None) -> dict[int, dict]:
         normalized_ids = sorted({int(item) for item in list(user_ids or []) if int(item) > 0})
-        cache_key = ",".join(str(i) for i in normalized_ids) if normalized_ids else "__all__"
+        if not normalized_ids:
+            # An empty id list means "nobody", never "everyone": do not scan all sessions or touch the cache.
+            return {}
+        cache_key = ",".join(str(i) for i in normalized_ids)
         now = _utc_now()
         with self._service._cache_lock:
             cached_entry = self._service._presence_cache.get(cache_key)
@@ -124,17 +127,9 @@ class ChatPresenceService:
                     return cached_value
                 self._service._presence_cache.pop(cache_key, None)
         result: dict[int, dict] = {}
-        normalized_user_ids = {
-            int(item)
-            for item in list(user_ids or [])
-            if int(item) > 0
-        }
+        normalized_user_ids = set(normalized_ids)
         try:
-            sessions = (
-                session_service.list_sessions_by_user_ids(normalized_user_ids, active_only=False)
-                if normalized_user_ids
-                else session_service.list_sessions(active_only=False)
-            )
+            sessions = session_service.list_sessions_by_user_ids(normalized_user_ids, active_only=False)
         except Exception:
             sessions = []
         try:

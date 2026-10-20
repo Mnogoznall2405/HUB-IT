@@ -794,6 +794,42 @@ def test_enroll_job_cuts_samples_and_enrolls(api, vv_tree, monkeypatch):
     assert {e["name"]: e.get("skipped") for e in enroll} == {"Иванов И.И": None, "Петров П.П": "exists"}
 
 
+def test_enroll_merge_mode_appends_sample(api, vv_tree, monkeypatch):
+    segs = [{"id": "s1", "start": 0, "end": 10, "speaker": "SPEAKER_00", "text": ""}]
+    speakers = {"SPEAKER_00": {"name": "Иванов И.И.", "user_id": 1}}
+    pid = _ready_project(api, vv_tree, segs, speakers)
+    out_dir = vv_tree / "labeling" / pid
+    (vv_tree / "reference_voices" / "Иванов И.И").mkdir(parents=True)  # already enrolled
+
+    resp = api.post(f"/api/v1/voice/labeling/projects/{pid}/enroll", json={"mode": "merge"})
+    assert resp.status_code == 201, resp.text
+    job = store.get_job(resp.json()["aux_job"]["id"])
+    assert job["settings"]["enroll"][0]["mode"] == "merge"
+
+    def on_run(argv):
+        if "--mode" in argv:
+            (out_dir / "samples").mkdir(exist_ok=True)
+            (out_dir / "samples" / "SPEAKER_00.wav").write_bytes(b"w")
+            return 0
+        assert "--enroll-merge" in argv
+        return 0
+
+    calls = _fake_runner(monkeypatch, vv_tree, on_run)
+    runner.run_job(job)
+    done = store.get_job(job["id"])
+    assert done["status"] == "done", done
+    enroll = api.get(f"/api/v1/voice/labeling/projects/{pid}").json()["aux_job"]["enroll"]
+    assert enroll == [{"ok": True, "label": "SPEAKER_00", "name": "Иванов И.И", "rc": 0, "mode": "merge"}]
+    assert not any("--enroll-merge" not in c and "--enroll-voice" in c for c in calls)
+
+
+def test_enroll_invalid_mode_rejected(api, vv_tree):
+    pid = _ready_project(api, vv_tree, [{"id": "s1", "start": 0, "end": 5, "speaker": "SPEAKER_00", "text": ""}],
+                         {"SPEAKER_00": {"name": "Иванов И.И."}})
+    resp = api.post(f"/api/v1/voice/labeling/projects/{pid}/enroll", json={"mode": "bogus"})
+    assert resp.status_code == 422
+
+
 def test_enroll_requires_named_speakers(api, vv_tree):
     pid = _ready_project(api, vv_tree, [{"id": "s1", "start": 0, "end": 5, "speaker": "SPEAKER_00", "text": ""}])
     resp = api.post(f"/api/v1/voice/labeling/projects/{pid}/enroll", json={"labels": ["SPEAKER_00"]})
@@ -911,3 +947,144 @@ def test_exclusive_raw_variant(api, vv_tree, monkeypatch):
     metrics = api.get(f"/api/v1/voice/labeling/projects/{pid}/metrics?collar=0").json()
     titles = {m["name"]: m["title"] for m in metrics["items"]}
     assert titles["ex_raw"] == "Сырой звук, эксклюзивная"
+
+
+def test_auto_enroll_picks_only_names_assigned_by_this_save():
+    segments = [
+        {"start": 0, "end": 10, "speaker": "SPEAKER_00"},
+        {"start": 10, "end": 14, "speaker": "SPEAKER_01"},
+        {"start": 14, "end": 20, "speaker": "SPEAKER_02"},
+    ]
+    before = {"SPEAKER_00": {"name": "Иванов Иван"}}
+    after = {
+        "SPEAKER_00": {"name": "Иванов Иван"},       # имя то же — повторное сохранение, дубль сэмпла не нужен
+        "SPEAKER_01": {"name": "Петров Пётр"},       # назначено сейчас
+        "SPEAKER_02": {"name": ""},                  # без имени — не эталон
+    }
+    items = labeling.auto_enroll_items(before, after, segments)
+    assert [(i["label"], i["name"], i["mode"]) for i in items] == [("SPEAKER_01", "Петров Пётр", "merge")]
+    assert items[0]["spans"] == [[10.0, 14.0]]
+    # смена имени у метки — тоже новое назначение; метка без реплик пропускается
+    renamed = labeling.auto_enroll_items(before, {"SPEAKER_00": {"name": "Сидоров С"}, "SPEAKER_09": {"name": "Нет Реплик"}}, segments)
+    assert [i["name"] for i in renamed] == ["Сидоров С"]
+
+
+# ---------------------------------------------------------------------------
+# Faces: gallery -> human signs -> face_roster (thumbnails are purged)
+# ---------------------------------------------------------------------------
+
+FACES_DATA = {
+    "faces": [{"id": i, "video": "m.mp4", "t": t, "size": 60} for i, t in enumerate([2.0, 4.0, 6.0, 12.0, 14.0, 40.0])],
+    "clusters": [{"id": 0, "faces": [0, 1, 2]}, {"id": 1, "faces": [3, 4, 5]}],
+}
+
+
+def test_face_helpers_hint_who_sounded_and_clean_the_assignment_from_the_browser():
+    # «Кто звучал» считается по репликам на момент кадра (границы, пауза между репликами),
+    # а подпись из браузера не должна пропустить чужой кластер, чужое лицо или пустое имя.
+    segments = [
+        {"start": 0, "end": 10, "speaker": "SPEAKER_00"},
+        {"start": 10, "end": 20, "speaker": "SPEAKER_01"},
+    ]
+    speakers = {"SPEAKER_00": {"name": "Иванов И.И."}}
+    view = labeling.faces_view(FACES_DATA, segments, speakers)
+    assert view[0]["voices"] == [{"label": "SPEAKER_00", "name": "Иванов И.И.", "share": 1.0}]
+    assert view[1]["voices"] == [{"label": "SPEAKER_01", "name": "", "share": 1.0}]  # кадр на 40 с — тишина, не считается
+    assert view[1]["first_t"] == 12.0 and view[0]["count"] == 3
+
+    cleaned = labeling.clean_face_assign({
+        "0": {"name": "  Иванов   Иван ", "excluded": [1, 5, "x"]},   # лицо 5 из другого кластера — отбрасывается
+        "1": {"name": "", "delete": True},
+        "7": {"name": "Чужой"},                                          # такого кластера нет
+        "x": {"name": "Мусор"},
+    }, FACES_DATA)
+    assert cleaned == {"0": {"name": "Иванов Иван", "delete": False, "excluded": [1]},
+                       "1": {"name": "", "delete": True, "excluded": []}}
+
+
+def _faces_project(api, vv_tree):
+    segs = [
+        {"id": "s1", "start": 0, "end": 10, "speaker": "SPEAKER_00", "text": ""},
+        {"id": "s2", "start": 10, "end": 20, "speaker": "SPEAKER_01", "text": ""},
+    ]
+    return _ready_project(api, vv_tree, segs, {"SPEAKER_00": {"name": "Иванов И.И.", "user_id": 1}})
+
+
+def test_faces_scan_sign_enroll_and_purge(api, vv_tree, monkeypatch):
+    pid = _faces_project(api, vv_tree)
+    out_dir = vv_tree / "labeling" / pid
+    faces_dir = out_dir / "faces"
+    base = f"/api/v1/voice/labeling/projects/{pid}"
+    assert api.get(f"{base}/faces").json()["available"] is False
+
+    resp = api.post(f"{base}/faces/scan")
+    assert resp.status_code == 201, resp.text
+    scan_job = store.get_job(resp.json()["aux_job"]["id"])
+    assert scan_job["settings"]["action"] == "faces_scan"
+
+    calls = []
+
+    def on_scan(argv):
+        calls.append(argv)
+        assert argv[1] == "face_cluster.py" and argv[2] == "scan"
+        turns = json.loads(Path(argv[argv.index("--segments") + 1]).read_text(encoding="utf-8"))
+        assert turns == [{"start": 0, "end": 10}, {"start": 10, "end": 20}]  # смотрим только вокруг реплик
+        (faces_dir / "thumbs").mkdir(parents=True)
+        (faces_dir / "thumbs" / "0.jpg").write_bytes(b"jpg")
+        (faces_dir / "faces.json").write_text(json.dumps(FACES_DATA), encoding="utf-8")
+        return 0
+
+    _fake_runner(monkeypatch, vv_tree, on_scan)
+    runner.run_job(scan_job)
+    assert store.get_job(scan_job["id"])["status"] == "done"
+
+    data = api.get(f"{base}/faces").json()
+    assert data["available"] and data["is_video"] and data["faces_total"] == 6
+    assert [c["count"] for c in data["clusters"]] == [3, 3]
+    assert data["people"] == ["Иванов И.И."]
+    thumb = api.get(f"{base}/faces/thumbs/0")
+    assert thumb.status_code == 200 and thumb.headers["cache-control"] == "no-store"
+    assert api.get(f"{base}/faces/thumbs/5").status_code == 404
+    assert api.get(f"{base}/faces/thumbs/-1").status_code == 404
+
+    # Без подписанного человека записывать нечего.
+    assert api.post(f"{base}/faces/enroll", json={"assign": {"1": {"name": "", "delete": True}}}).status_code == 422
+    resp = api.post(f"{base}/faces/enroll", json={"assign": {"0": {"name": "Иванов Иван Иванович", "excluded": [1, 99]}}})
+    assert resp.status_code == 201, resp.text
+    enroll_job = store.get_job(resp.json()["aux_job"]["id"])
+    assert enroll_job["settings"]["faces_assign"] == {"0": {"name": "Иванов Иван Иванович", "delete": False, "excluded": [1]}}
+
+    calls.clear()
+
+    def on_enroll(argv):
+        calls.append(argv)
+        if argv[2] == "apply":
+            assigned = json.loads(Path(argv[4]).read_text(encoding="utf-8"))
+            assert assigned["0"]["excluded"] == [1]
+            Path(argv[argv.index("--report") + 1]).write_text(json.dumps({"Иванов Иван Иванович": 2}), encoding="utf-8")
+        return 0
+
+    _fake_runner(monkeypatch, vv_tree, on_enroll)
+    runner.run_job(enroll_job)
+    assert [c[2] for c in calls] == ["apply", "purge"]  # после записи превью и векторы удаляются
+    done = store.get_job(enroll_job["id"])
+    assert done["status"] == "done"
+    assert done["result"]["enroll"] == [{"ok": True, "name": "Иванов Иван Иванович", "faces": 2}]
+
+
+def test_faces_scan_rejects_audio_and_purge_deletes_the_folder(api, vv_tree):
+    resp = api.post(
+        "/api/v1/voice/labeling/projects",
+        files={"file": ("a.mp3", b"0" * 10, "audio/mpeg")},
+        data={"settings_json": json.dumps({"with_text": False, "separator": "kim"})},
+    )
+    pid = resp.json()["id"]
+    store.update_job(resp.json()["job"]["id"], status="done")
+    label_store.apply_draft(pid, segments=[], duration=10.0, audio_path=None)
+    assert api.post(f"/api/v1/voice/labeling/projects/{pid}/faces/scan").status_code == 422
+
+    folder = vv_tree / "labeling" / pid / "faces"
+    (folder / "thumbs").mkdir(parents=True)
+    (folder / "thumbs" / "0.jpg").write_bytes(b"jpg")
+    assert api.delete(f"/api/v1/voice/labeling/projects/{pid}/faces").json() == {"purged": True}
+    assert not folder.exists()

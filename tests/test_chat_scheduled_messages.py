@@ -455,9 +455,11 @@ def test_0125_skips_a_database_without_chat_tables(tmp_path):
     assert not sa.inspect(engine).has_table("chat_scheduled_messages")
 
 
-def test_0125_is_the_only_head():
+def test_0125_is_an_ancestor_of_the_head():
     from alembic.script import ScriptDirectory
 
     build = importlib.import_module("backend.db_migrations").build_alembic_config
     script = ScriptDirectory.from_config(build("sqlite:///unused.db"))
-    assert script.get_heads() == ["20261002_0125"]
+    heads = script.get_heads()
+    assert len(heads) == 1  # no branches
+    assert "20261002_0125" in {revision.revision for revision in script.walk_revisions(base="base", head=heads[0])}

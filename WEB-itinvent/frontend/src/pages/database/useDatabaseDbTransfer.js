@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 
 import equipmentDbTransferAPI from '../../api/equipmentDbTransfer';
 
@@ -9,8 +9,11 @@ export function useDatabaseDbTransfer({ notifyDatabaseError } = {}) {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
+  const requestRef = useRef(null);
+  const runningRef = useRef(false);
 
   const openDbTransfer = useCallback(() => {
+    requestRef.current = null;
     setResult(null);
     setError('');
     setOpen(true);
@@ -32,11 +35,12 @@ export function useDatabaseDbTransfer({ notifyDatabaseError } = {}) {
     taskDueAt,
     comment,
   }) => {
-    if (running) return null;
+    if (runningRef.current) return null;
+    runningRef.current = true;
     setRunning(true);
     setError('');
     try {
-      const response = await equipmentDbTransferAPI.transferToDb({
+      const payload = {
         inv_nos: invNos,
         target_db: targetDb,
         target_owner_no: targetOwnerNo ?? null,
@@ -48,6 +52,13 @@ export function useDatabaseDbTransfer({ notifyDatabaseError } = {}) {
           : null,
         task_due_at: taskDueAt || null,
         comment: comment || null,
+      };
+      const scope = JSON.stringify(payload);
+      if (requestRef.current?.scope !== scope) {
+        requestRef.current = { scope, operationId: crypto.randomUUID() };
+      }
+      const response = await equipmentDbTransferAPI.transferToDb({
+        ...payload, operation_id: requestRef.current.operationId,
       });
       setResult(response);
       return response;
@@ -60,6 +71,7 @@ export function useDatabaseDbTransfer({ notifyDatabaseError } = {}) {
       notifyDatabaseError?.(message);
       return null;
     } finally {
+      runningRef.current = false;
       setRunning(false);
     }
   }, [running, notifyDatabaseError]);

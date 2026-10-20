@@ -48,6 +48,21 @@ _CHAT_SCHEMA_CHECK_EXCLUDED_TABLES: frozenset[str] = frozenset({
     "chat_attachment_previews",
     "chat_message_mentions",
     "chat_message_reactions",
+    # Calls are off by default (CALLS_ENABLED) and their tables arrive with the explicit release
+    # migration: a missing table must not stop the whole chat process before that migration is run.
+    "chat_calls",
+    "chat_call_participants",
+    # Group settings, the action journal and invite links also arrive with explicit release
+    # migrations (20261012_0128, 20261012_0129, 20261013_0130); the features answer 400 until then.
+    "chat_group_settings",
+    "chat_group_admin_audit",
+    "chat_group_invites",
+    # Slow mode arrives with 20261013_0131 in the same way.
+    "chat_group_limits",
+    # Member restrictions arrive with 20261013_0132 in the same way.
+    "chat_group_restrictions",
+    # Group permission flags (files) arrive with 20261013_0133 in the same way.
+    "chat_group_permissions",
 })
 
 _CHAT_REQUIRED_COLUMNS = {
@@ -439,14 +454,18 @@ def chat_session(database_url: str | None = None) -> Session:
 def initialize_chat_schema(database_url: str | None = None) -> None:
     engine = get_chat_engine(database_url)
     if engine.dialect.name == "postgresql":
+        from backend.appdb.db import _postgres_dev_schema_auto_create_enabled
+
+        # Windows runtime may retain APP_ENV=development while explicitly disabling
+        # startup DDL. Honor that guard for Chat too, before any legacy create helper.
+        if config.app.is_production or not _postgres_dev_schema_auto_create_enabled():
+            check_internal_database_revision(engine, ensure_chat_configured(database_url), scope="chat")
+            _verify_production_schema(engine)
+            return
         if _uses_legacy_public_chat_schema(engine):
             _ensure_chat_attachment_preview_table(engine)
             _ensure_chat_reactions_table(engine)
             _ensure_chat_mentions_table(engine)
-            if config.app.is_production:
-                check_internal_database_revision(engine, ensure_chat_configured(database_url), scope="chat")
-                _verify_production_schema(engine)
-                return
             Base.metadata.create_all(
                 bind=engine,
                 tables=[
@@ -462,11 +481,6 @@ def initialize_chat_schema(database_url: str | None = None) -> None:
             _ensure_chat_user_state_columns(engine)
             _ensure_chat_attachment_columns(engine)
             _ensure_chat_push_outbox_columns(engine)
-            return
-        if config.app.is_production:
-            # Production never applies migrations on startup (see check_internal_database_revision).
-            check_internal_database_revision(engine, ensure_chat_configured(database_url), scope="chat")
-            _verify_production_schema(engine)
             return
         upgrade_internal_database(ensure_chat_configured(database_url), scope="chat")
         Base.metadata.create_all(bind=engine, tables=[ChatEventOutbox.__table__])

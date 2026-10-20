@@ -63,7 +63,7 @@ export default function EmployeeCompareFilters({
         spacing={1}
         useFlexGap
         flexWrap="wrap"
-        sx={{ mb: 1.5 }}
+        sx={{ mb: 0.75, pt: 0.75, '& .MuiInputBase-root': { height: 38, fontSize: 13 }, '& .MuiInputLabel-root': { fontSize: 13 } }}
       >
         <TextField
           size="small"
@@ -109,13 +109,13 @@ export default function EmployeeCompareFilters({
         ) : null}
       </Stack>
 
-      {statusCounts || hasHubItems ? (
+      {statusCounts || hasHubItems || !isMobile ? (
         <Stack
           direction="row"
           spacing={0.75}
           useFlexGap
           flexWrap="wrap"
-          sx={{ mb: 1.5, flexShrink: 0 }}
+          sx={{ mb: 0.75, minHeight: 22, flexShrink: 0, '& .MuiChip-root': { height: 22, minHeight: 22, fontSize: 12 }, '& .MuiChip-label': { px: 1 } }}
         >
           {statusCounts ? [
             ['match', COMPARE_STATUS_LABEL.match, 'success'],
@@ -130,6 +130,7 @@ export default function EmployeeCompareFilters({
               color={color === 'default' ? undefined : color}
               variant={statusFilter === key ? 'filled' : 'outlined'}
               label={`${label}: ${statusCounts[key]}`}
+              aria-pressed={statusFilter === key}
               onClick={() => onStatusFilterChange(statusFilter === key ? '' : key)}
             />
           )) : null}
@@ -139,6 +140,7 @@ export default function EmployeeCompareFilters({
               color={noActFilter ? 'primary' : 'default'}
               variant={noActFilter ? 'filled' : 'outlined'}
               label={`Без акта: ${noActCount}`}
+              aria-pressed={noActFilter}
               onClick={onToggleNoAct}
             />
           ) : null}
@@ -148,6 +150,7 @@ export default function EmployeeCompareFilters({
               color={groupByType ? 'primary' : 'default'}
               variant={groupByType ? 'filled' : 'outlined'}
               label="По типам"
+              aria-pressed={groupByType}
               onClick={onToggleGroupByType}
             />
           ) : null}

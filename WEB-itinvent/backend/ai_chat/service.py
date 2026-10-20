@@ -19,11 +19,17 @@ from uuid import uuid4
 
 from fastapi import UploadFile
 from sqlalchemy import delete, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, TimeoutError as DatabaseTimeoutError
 
 from backend.ai_chat.balance import INSUFFICIENT_FUNDS_USER_TEXT, ai_balance_service
 from backend.ai_chat.artifact_generator import GeneratedFileError, build_generated_uploads, normalize_generated_file_specs
 from backend.ai_chat.document_extractors import extract_text_from_path
+from backend.ai_chat.draft_policy import AiDraftPolicy, COMMUNICATION_DRAFTS, draft_followup, draft_retry
+from backend.ai_chat.tools.base import AiToolValidationError
+from backend.ai_chat.employee_comparison import (
+    EMPLOYEE_TOOL, comparison_snapshot, render_employee_comparison, render_employee_lookup,
+)
+from backend.ai_chat import memory as smart_memory
 from backend.ai_chat.openrouter_client import OpenRouterClientError, openrouter_client
 from backend.ai_chat.retrieval_interface import ai_kb_retrieval
 from backend.ai_chat.tool_permissions import filter_tools_for_user
@@ -74,6 +80,7 @@ from backend.appdb.models import (
     AppAiBotRun,
     AppAiUserMemory,
     AppAiUserMemorySource,
+    AppAiMemoryFact,
     AppGlobalSetting,
     AppUser,
     AppUserSetting,
@@ -87,6 +94,7 @@ from backend.services.authorization_service import (
     PERM_CHAT_READ,
     PERM_CHAT_WRITE,
     PERM_KB_READ,
+    PERM_MAIL_ACCESS,
 )
 from backend.services.authorization_service import authorization_service
 from backend.services.kb_service import kb_service
@@ -128,12 +136,14 @@ AI_RUN_STAGE_CHECKING_AD = "checking_ad"
 AI_RUN_STAGE_SEARCHING_EQUIPMENT = "searching_equipment"
 AI_RUN_STAGE_OPENING_EQUIPMENT_CARD = "opening_equipment_card"
 AI_RUN_STAGE_GENERATING_ANSWER = "generating_answer"
+AI_RUN_STAGE_RESULT_READY = "result_ready"
 AI_RUN_STAGE_GENERATING_FILES = "generating_files"
 AI_RUN_STAGE_CONVERTING_DOCUMENT = "converting_document"
 AI_RUN_STAGE_COMPLETED = "completed"
 AI_RUN_STAGE_FAILED = "failed"
 AI_RUN_STAGE_CANCELLED = "cancelled"
 AI_RUN_STAGE_STATUS_TEXTS = {
+    AI_RUN_STAGE_RESULT_READY: "Ответ готов.",
     AI_RUN_STAGE_QUEUED: "Запрос принят. Ставлю задачу в очередь.",
     AI_RUN_STAGE_ANALYZING_REQUEST: "Анализирую ваш запрос.",
     AI_RUN_STAGE_READING_FILES: "Изучаю вложенные файлы и контекст.",
@@ -223,6 +233,15 @@ AI_ITINVENT_TOOL_ROUTING_GUIDE = (
     "- When the user asks about online/offline status of a computer by its hostname (e.g., 'TMN-IT-0009') or network name: "
     "use itinvent.equipment.online_status with hostname argument, NOT inv_no.\n"
     "- Employee or department questions: use employee search, then employee equipment list.\n"
+    "- For employee equipment comparison with the connected 1C warehouse, resolve the employee with "
+    "itinvent.employee.search, then call itinvent.employee.list_equipment with compare_1c=true. "
+    "If search returns several employees, ask which person before comparison; never pick the first namesake. "
+    "Use comparison_1c from the existing portal highlighting; report source/as_of and distinguish quantities "
+    "from serial-number identity. If complete=false or matches_all=null, do not claim everything matches. "
+    "Items without a usable PART_NO remain unverified; null counts are unknown, not zero. "
+    "In user-facing comparison answers, start with a short finding and a table of discrepancies; "
+    "show a full equipment inventory only if asked. Explain statuses in Russian and omit internal "
+    "OWNER_NO, warehouse_ref and boolean field names.\n"
     "- Broad equipment questions about categories, vendors, models, departments, branches or locations: "
     "use universal equipment search.\n"
     "- Combined equipment type + branch/location/address questions, for example 'мониторы на Грибоедова 64': "
@@ -266,6 +285,10 @@ AI_OFFICE_TOOL_ROUTING_GUIDE = (
     "Office tool routing:\n"
     "- Mail questions like find/show/open who sent an email: use office.mail.search, then office.mail.get_message for one concrete message.\n"
     "- Recipient lookup before drafting email: use office.mail.contacts.resolve.\n"
+    "- Never guess an email or claim a lookup succeeded after an error. Only use recipients returned by a successful contact lookup or explicitly supplied by the user.\n"
+    "- When asked to enter an employee's email address into a system, resolve that employee's exact address too and include it in the body. If missing or ambiguous, ask for the address; do not prepare an incomplete letter.\n"
+    "- Adding an email to the message body preserves the existing channel; it does not switch a Hub chat message to email.\n"
+    "- Correct a pending communication draft using its replace_action_id. Do not leave the old draft active.\n"
     "- Mail send/reply requests: create office.action.mail_send_draft or office.action.mail_reply_draft. Never claim mail was sent before confirmation.\n"
     "- Do not include the user's signature in mail body; backend adds the saved mailbox signature automatically during confirmed send.\n"
     "- If the user asks to attach a file from this chat, include chat attachment_refs. If the file must be created first, call ai.files.create/ai.files.report, then pass the returned data.files as generated_file_specs into office.action.mail_send_draft or office.action.mail_reply_draft.\n"
@@ -275,7 +298,9 @@ AI_OFFICE_TOOL_ROUTING_GUIDE = (
     "- List available task projects/boards: use office.tasks.projects.\n"
     "- Announcements/news questions: use office.announcements.list to search, then office.announcements.get for a specific announcement.\n"
     "- Full or over-quota Exchange mailboxes of employees (IT): office.mailbox.quota_report; the employee's own mailbox: me.mailbox.quota.\n"
-    "- If recipient, task, assignee, controller, project, message or due date is ambiguous, resolve first or ask a short clarification."
+    "- If recipient, task, assignee, controller, project, message or due date is ambiguous, resolve first or ask a short clarification. "
+    "A missing email in the 1C directory does not imply it is absent in AD or GAL: try office.mail.contacts.resolve. "
+    "When explicitly asked to look in AD, use ad.user.password_status and read user.mail; never label the 1C directory as AD."
 )
 AI_MFU_TOOL_ROUTING_GUIDE = (
     "MFU/printer tool routing:\n"
@@ -351,6 +376,8 @@ AI_WAREHOUSE_TOOL_ROUTING_GUIDE = (
     "name or code ('сколько CF259A на складе'); IT purchase requests, their stage, overdue ones → "
     "warehouse.it_requests.search (overdue_only=true for 'просроченные'), one request with positions → "
     "warehouse.it_requests.get. Stock in 1C is not ITinvent equipment: for equipment assigned to people use ITinvent. "
+    "For employee ITinvent vs connected 1C comparison, use the ITinvent tool group: employee.search followed by "
+    "employee.list_equipment with compare_1c=true; it reuses the portal comparison summary. "
     "If 1C does not respond, say so instead of guessing quantities."
 )
 # Rules handed to the model together with the specs of a group enabled mid-run (J2).
@@ -375,6 +402,10 @@ AI_ANSWER_STYLE_GUIDE = (
     "  Use '—' for empty cells. Take the serial value from serial_no.\n"
     "- For a single device card, use sections 'Устройство', 'Закрепление', 'Локация', 'Сеть', 'Статус', 'Примечание'.\n"
     "- For an employee answer, show '## Итог' (count, department, branch) and '## Устройства' table.\n"
+    "- An employee comparison overrides that inventory format: short finding, discrepancies only, "
+    "then unverified devices separately. Count devices, not nomenclature codes. Use available 1C item names. "
+    "Full equipment lists are shown only when requested. Never show PART_NO, complete, matches_all, OWNER_NO "
+    "or warehouse_ref. Complete source loading does not mean every device was checked.\n"
     "- For analytics, show totals first, then top-N groups in a table.\n"
     "- Always end with a single source line, e.g. 'Источник: ITinvent / <database_id>' or 'Источник: KB / <article_title>'.\n"
     "- If a tool result has truncated=true, explicitly state 'показано N из M' (N returned out of M total).\n"
@@ -477,16 +508,17 @@ AI_CHAT_RESPONSE_SCHEMA_FINAL = {
 
 @dataclass
 class TokenBudget:
-    """Tracks cumulative token usage across tool rounds and signals exhaustion."""
+    """Bound each context and cumulative output without counting repeated input twice."""
 
     model_context_window: int = AI_MODEL_CONTEXT_WINDOW
     safety_margin: int = AI_TOKEN_BUDGET_SAFETY_MARGIN
     accumulated_prompt_tokens: int = 0
     accumulated_completion_tokens: int = 0
+    latest_context_tokens: int = 0
 
     @property
     def remaining(self) -> int:
-        used = self.accumulated_prompt_tokens + self.accumulated_completion_tokens
+        used = max(self.latest_context_tokens, self.accumulated_completion_tokens)
         return max(0, self.model_context_window - self.safety_margin - used)
 
     @property
@@ -498,7 +530,9 @@ class TokenBudget:
         if not isinstance(usage, dict):
             return
         self.accumulated_prompt_tokens += int(usage.get("prompt_tokens") or 0)
-        self.accumulated_completion_tokens += int(usage.get("completion_tokens") or 0)
+        completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+        self.accumulated_completion_tokens += completion
+        self.latest_context_tokens = int(usage.get("prompt_tokens") or 0) + completion
 
 
 def _utc_now() -> datetime:
@@ -508,7 +542,7 @@ def _utc_now() -> datetime:
 def _iso(value: Optional[datetime]) -> Optional[str]:
     if value is None:
         return None
-    return value.astimezone(timezone.utc).isoformat()
+    return _as_utc(value).isoformat()
 
 
 def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
@@ -1649,6 +1683,10 @@ def _friendly_run_error_text(exc: object) -> str:
     low = raw.lower()
     if _is_insufficient_funds_error(raw):
         return INSUFFICIENT_FUNDS_USER_TEXT
+    if isinstance(exc, DatabaseTimeoutError) or "queuepool limit" in low:
+        return "Не удалось получить соединение с базой данных. Нажмите «Повторить», чтобы попробовать ещё раз."
+    if "invalid json payload" in low:
+        return "Провайдер ИИ вернул некорректный ответ. Нажмите «Повторить», чтобы попробовать ещё раз."
     if "timeout" in low or "timed out" in low or "deadline" in low or "таймаут" in low:
         return "Провайдер ИИ не ответил вовремя. Нажмите «Повторить», чтобы попробовать ещё раз."
     if "429" in raw or "rate limit" in low or "rate_limit" in low or "too many" in low:
@@ -1727,6 +1765,9 @@ def _detect_data_dependencies(tool_calls: list[dict[str, Any]]) -> list[list[int
         """Return True if call[j] appears to depend on the output of call[i]."""
         source_tool_id = tool_ids_at_index[i]
         target_args = tool_calls[j].get("args") or {}
+        if tool_ids_at_index[j] in COMMUNICATION_DRAFTS:
+            # Recipient evidence and previous drafts must precede creation.
+            return True
 
         # Serialize args to check for references to the source tool
         args_str = json.dumps(target_args, ensure_ascii=False).lower()
@@ -3390,6 +3431,8 @@ class AiChatService:
             mapping.summary_until_seq = reset_seq
             mapping.rolling_summary = ""
             mapping.updated_at = _utc_now()
+            if AI_PERSONAL_MEMORY_ENABLED:
+                smart_memory.bump_revision(session, int(current_user_id), invalidate_old=True)
         return {"ok": True, "conversation_id": normalized_conversation_id, "context_reset_seq": reset_seq}
 
     def list_personal_memory(self, *, current_user_id: int) -> dict[str, Any]:
@@ -3406,15 +3449,17 @@ class AiChatService:
                     .limit(200)
                 ).scalars()
             )
+            descriptions = smart_memory.describe_facts(session, rows)
         return {
             "enabled": enabled,
-            "items": [self._serialize_memory(item) for item in rows],
+            "items": [{**self._serialize_memory(item), **descriptions.get(item.id, {})} for item in rows],
             "limits": {"max_facts": AI_MEMORY_MAX_FACTS, "max_tokens": AI_MEMORY_MAX_TOKENS},
         }
 
     def set_personal_memory_enabled(self, *, current_user_id: int, enabled: bool) -> dict[str, Any]:
         effective_enabled = bool(enabled) and AI_PERSONAL_MEMORY_ENABLED
         with app_session() as session:
+            smart_memory.bump_revision(session, int(current_user_id), invalidate_old=True)
             row = session.get(AppUserSetting, int(current_user_id))
             if row is None:
                 row = AppUserSetting(
@@ -3434,6 +3479,7 @@ class AiChatService:
             raise ValueError("Memory content is not allowed")
         normalized_id = _normalize_text(memory_id)
         with app_session() as session:
+            smart_memory.bump_revision(session, int(current_user_id), invalidate_old=True)
             row = session.get(AppAiUserMemory, normalized_id)
             if row is None or int(row.user_id) != int(current_user_id) or not bool(row.is_active):
                 raise LookupError("Memory item not found")
@@ -3446,24 +3492,33 @@ class AiChatService:
             ).scalar_one_or_none()
             if duplicate is not None:
                 raise ValueError("Memory item already exists")
+            before = row.content
             row.content = normalized_content
             row.normalized_hash = _memory_hash(normalized_content)
             row.updated_at = _utc_now()
+            smart_memory.record_manual_edit(session, row, before)
             session.flush()
-            return self._serialize_memory(row)
+            return {**self._serialize_memory(row), **smart_memory.describe_facts(session, [row])[row.id]}
 
     def delete_personal_memory(self, *, memory_id: str, current_user_id: int) -> dict[str, Any]:
         normalized_id = _normalize_text(memory_id)
         with app_session() as session:
+            smart_memory.bump_revision(session, int(current_user_id), invalidate_old=True)
             row = session.get(AppAiUserMemory, normalized_id)
             if row is None or int(row.user_id) != int(current_user_id):
                 raise LookupError("Memory item not found")
             session.execute(delete(AppAiUserMemorySource).where(AppAiUserMemorySource.memory_id == normalized_id))
+            smart_memory.erase_snapshots(session, int(current_user_id), {normalized_id})
+            session.execute(delete(AppAiMemoryFact).where(AppAiMemoryFact.memory_id == normalized_id,
+                AppAiMemoryFact.user_id == int(current_user_id)))
             session.delete(row)
         return {"ok": True, "id": normalized_id}
 
     def clear_personal_memory(self, *, current_user_id: int) -> dict[str, Any]:
         with app_session() as session:
+            smart_memory.bump_revision(session, int(current_user_id), invalidate_old=True)
+            smart_memory.erase_snapshots(session, int(current_user_id))
+            session.execute(delete(AppAiMemoryFact).where(AppAiMemoryFact.user_id == int(current_user_id)))
             memory_ids = list(
                 session.execute(
                     select(AppAiUserMemory.id).where(AppAiUserMemory.user_id == int(current_user_id))
@@ -3575,6 +3630,8 @@ class AiChatService:
             "stage": _normalize_text(getattr(latest, "stage", None)) or None,
             "status_text": _normalize_text(getattr(latest, "status_text", None)) or None,
             "run_id": latest.id,
+            "run_created_at": _iso(latest.created_at),
+            "result_message_id": (_json_loads(latest.result_json, {}) or {}).get("result_message_id"),
             "error_text": _normalize_text(latest.error_text) or None,
             "updated_at": _iso(latest.updated_at),
             "server_now": _iso(_utc_now()),
@@ -3596,6 +3653,7 @@ class AiChatService:
 
         now = _utc_now()
         run_id: str | None = None
+        run_created_at: str | None = None
         status_text = ""
         with app_session() as session:
             row = session.execute(
@@ -3615,6 +3673,7 @@ class AiChatService:
                 row.completed_at = now
                 row.updated_at = now
                 run_id = row.id
+                run_created_at = _iso(row.created_at)
                 status_text = row.status_text
 
         if run_id is None:
@@ -3631,6 +3690,8 @@ class AiChatService:
             stage=AI_RUN_STAGE_CANCELLED,
             status_text=status_text,
             run_id=run_id,
+            run_created_at=run_created_at,
+            updated_at=_iso(now),
         )
         return {
             "conversation_id": normalized_conversation_id,
@@ -3653,8 +3714,8 @@ class AiChatService:
                 bot = session.get(AppAiBot, run.bot_id)
                 if bot is None or not can_use_bot(session, bot, run.user_id):
                     raise AiRunCancelled('Agent access revoked')
-        if _normalize_text(status) == "cancelled":
-            raise AiRunCancelled("AI run was cancelled")
+        if _normalize_text(status) in {"cancelled", "failed"}:
+            raise AiRunCancelled("AI run was stopped")
 
     def queue_run_for_message(
         self,
@@ -3758,6 +3819,7 @@ class AiChatService:
             explicit_database_id=effective_database_id,
         )
         cancelled_stale_run_id: Optional[str] = None
+        cancelled_stale_run_created_at: Optional[str] = None
         with app_session() as session:
             from backend.ai_chat.access import require_bot_access
             mapping = session.execute(
@@ -3801,6 +3863,7 @@ class AiChatService:
                     latest.completed_at = now
                     latest.updated_at = now
                     cancelled_stale_run_id = latest.id
+                    cancelled_stale_run_created_at = _iso(latest.created_at)
             elif not force_new_run:
                 existing = session.execute(
                     select(AppAiBotRun)
@@ -3851,6 +3914,7 @@ class AiChatService:
                 stage=AI_RUN_STAGE_CANCELLED,
                 status_text=_resolve_run_status_text(status="cancelled", stage=AI_RUN_STAGE_CANCELLED),
                 run_id=cancelled_stale_run_id,
+                run_created_at=cancelled_stale_run_created_at,
             )
         self._publish_status_event(
             conversation_id=normalized_conversation_id,
@@ -3860,6 +3924,8 @@ class AiChatService:
             stage=AI_RUN_STAGE_QUEUED,
             status_text=payload.get("status_text"),
             run_id=payload["id"],
+            run_created_at=payload.get("created_at"),
+            updated_at=payload.get("updated_at"),
         )
         return payload
 
@@ -3949,7 +4015,6 @@ class AiChatService:
         }
         has_initial_title = not conversation_title or conversation_title.casefold() in initial_titles
         should_apply_title = False
-        memory_allowed = False
         with app_session() as session:
             mapping = session.execute(
                 select(AppAiBotConversation).where(
@@ -3967,12 +4032,6 @@ class AiChatService:
                 and _normalize_text(getattr(mapping, "title_source", None)) == "assistant"
             ):
                 should_apply_title = True
-            memory_allowed = (
-                bool(getattr(mapping, "use_personal_memory", True))
-                and bool(getattr(runtime.bot, "use_personal_memory", True))
-                and _normalize_text(getattr(runtime.bot, "surface", None)) != "sandbox"
-                and self._personal_memory_enabled(session=session, user_id=int(current_user_id))
-            )
 
         if should_apply_title:
             chat_service.rename_ai_conversation(
@@ -3990,16 +4049,7 @@ class AiChatService:
                     )
                     .values(title_source="auto", updated_at=_utc_now())
                 )
-        if memory_allowed and message_kind != "file" and message_body:
-            try:
-                self._capture_memory_candidates(
-                    user_id=int(current_user_id),
-                    conversation_id=conversation_id,
-                    message_id=message_id,
-                    text=message_body,
-                )
-            except Exception:
-                logger.exception("AI personal memory extraction failed: conversation_id=%s", conversation_id)
+        # Durable memory is reconciled by the worker, after the HTTP ACK.
 
     def _touch_conversation_mapping(self, *, conversation_id: str) -> None:
         with app_session() as session:
@@ -4008,106 +4058,6 @@ class AiChatService:
                 .where(AppAiBotConversation.conversation_id == _normalize_text(conversation_id))
                 .values(updated_at=_utc_now())
             )
-
-    def _capture_memory_candidates(
-        self,
-        *,
-        user_id: int,
-        conversation_id: str,
-        message_id: str,
-        text: str,
-    ) -> None:
-        if not AI_PERSONAL_MEMORY_ENABLED:
-            return
-        candidates = _extract_safe_memory_candidates(text)
-        if not candidates:
-            return
-        with app_session() as session:
-            dialect_name = str(getattr(getattr(session.get_bind(), "dialect", None), "name", "") or "").lower()
-            for category, content in candidates:
-                normalized_hash = _memory_hash(content)
-                now = _utc_now()
-                memory_id = str(uuid4())
-                values = {
-                    "id": memory_id,
-                    "user_id": int(user_id),
-                    "category": category,
-                    "content": content,
-                    "normalized_hash": normalized_hash,
-                    "is_active": True,
-                    "created_at": now,
-                    "updated_at": now,
-                }
-                if dialect_name == "postgresql":
-                    from sqlalchemy.dialects.postgresql import insert as dialect_insert
-
-                    statement = dialect_insert(AppAiUserMemory).values(**values).on_conflict_do_update(
-                        index_elements=[AppAiUserMemory.user_id, AppAiUserMemory.normalized_hash],
-                        set_={"is_active": True, "updated_at": now},
-                    )
-                    session.execute(statement)
-                elif dialect_name == "sqlite":
-                    from sqlalchemy.dialects.sqlite import insert as dialect_insert
-
-                    statement = dialect_insert(AppAiUserMemory).values(**values).on_conflict_do_update(
-                        index_elements=[AppAiUserMemory.user_id, AppAiUserMemory.normalized_hash],
-                        set_={"is_active": True, "updated_at": now},
-                    )
-                    session.execute(statement)
-                else:
-                    row = session.execute(
-                        select(AppAiUserMemory).where(
-                            AppAiUserMemory.user_id == int(user_id),
-                            AppAiUserMemory.normalized_hash == normalized_hash,
-                        )
-                    ).scalar_one_or_none()
-                    if row is None:
-                        session.add(AppAiUserMemory(**values))
-                    else:
-                        row.is_active = True
-                        row.updated_at = now
-                session.flush()
-                row = session.execute(
-                    select(AppAiUserMemory).where(
-                        AppAiUserMemory.user_id == int(user_id),
-                        AppAiUserMemory.normalized_hash == normalized_hash,
-                    )
-                ).scalar_one()
-                source_values = {
-                    "memory_id": row.id,
-                    "conversation_id": conversation_id,
-                    "message_id": message_id,
-                    "created_at": now,
-                }
-                if dialect_name == "postgresql":
-                    from sqlalchemy.dialects.postgresql import insert as source_insert
-
-                    session.execute(
-                        source_insert(AppAiUserMemorySource)
-                        .values(**source_values)
-                        .on_conflict_do_nothing(
-                            index_elements=[AppAiUserMemorySource.memory_id, AppAiUserMemorySource.message_id]
-                        )
-                    )
-                elif dialect_name == "sqlite":
-                    from sqlalchemy.dialects.sqlite import insert as source_insert
-
-                    session.execute(
-                        source_insert(AppAiUserMemorySource)
-                        .values(**source_values)
-                        .on_conflict_do_nothing(
-                            index_elements=[AppAiUserMemorySource.memory_id, AppAiUserMemorySource.message_id]
-                        )
-                    )
-                else:
-                    source_exists = session.execute(
-                        select(AppAiUserMemorySource.id).where(
-                            AppAiUserMemorySource.memory_id == row.id,
-                            AppAiUserMemorySource.message_id == message_id,
-                        )
-                    ).scalar_one_or_none()
-                    if source_exists is None:
-                        session.add(AppAiUserMemorySource(**source_values))
 
     def _set_run_progress(
         self,
@@ -4130,17 +4080,25 @@ class AiChatService:
             row = session.get(AppAiBotRun, _normalize_text(run_id))
             if row is None:
                 return payload
-            if _normalize_text(row.status) == "cancelled" and normalized_status != "cancelled":
+            if _normalize_text(row.status) not in {"queued", "running"}:
                 return self._serialize_run(row)
-            row.status = normalized_status
-            row.stage = normalized_stage
-            row.status_text = status_text or None
-            row.error_text = _normalize_text(error_text) or None
+            values = {
+                "status": normalized_status, "stage": normalized_stage,
+                "status_text": status_text or None,
+                "error_text": _normalize_text(error_text) or None,
+                "updated_at": _utc_now(),
+            }
             if started_at is not None and row.started_at is None:
-                row.started_at = started_at
+                values["started_at"] = started_at
             if completed_at is not None:
-                row.completed_at = completed_at
-            row.updated_at = _utc_now()
+                values["completed_at"] = completed_at
+            changed = session.execute(update(AppAiBotRun).where(
+                AppAiBotRun.id == row.id,
+                AppAiBotRun.status.in_(("queued", "running")),
+            ).values(**values).execution_options(synchronize_session=False))
+            session.refresh(row)
+            if int(changed.rowcount or 0) != 1:
+                return self._serialize_run(row)
             payload = self._serialize_run(row)
         self._publish_status_event(
             conversation_id=conversation_id,
@@ -4151,6 +4109,9 @@ class AiChatService:
             status_text=status_text,
             run_id=_normalize_text(run_id),
             error_text=_normalize_text(error_text) or None,
+            updated_at=payload.get("updated_at"),
+            run_created_at=payload.get("created_at"),
+            result_message_id=payload.get("result_message_id"),
         )
         return payload
 
@@ -4373,6 +4334,93 @@ class AiChatService:
     def process_next_run(self) -> bool:
         return bool(self.process_next_runs(limit=1))
 
+    def repair_result_deliveries(self, *, batch_size: int = 50) -> int:
+        """Repair persisted results after a crash, without repeating LLM/tools/mail.
+
+        APP/chat commits are separate. Stable client IDs and outbox dedupe keys
+        make a retry safe if the process dies before the APP completion marker.
+        """
+        from backend.ai_chat.access import require_conversation_access
+        from backend.ai_chat.action_cards import attach_run_actions_to_message
+        cutoff = _utc_now() - timedelta(days=1)
+        with app_session() as session:
+            rows = list(session.execute(select(AppAiBotRun).where(
+                AppAiBotRun.created_at >= cutoff,
+                AppAiBotRun.status.in_(("running", "completed", "failed")),
+            ).order_by(AppAiBotRun.created_at.desc()).limit(max(1, min(int(batch_size), 100)))).scalars())
+            snapshots = [self._serialize_run(row) for row in rows]
+        repaired = 0
+        for snapshot in snapshots:
+            result = snapshot.get("result") or {}
+            if result.get("result_delivery_enqueued") and snapshot["status"] != "running":
+                continue
+            updated = datetime.fromisoformat(snapshot["updated_at"]) if snapshot.get("updated_at") else None
+            if updated is not None and updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            if snapshot["status"] == "running" and (updated is None or (_utc_now() - updated).total_seconds() < self._stale_run_after_sec()):
+                continue
+            try:
+                require_conversation_access(snapshot["conversation_id"], snapshot["user_id"])
+                with app_session() as session:
+                    actions = list(session.execute(select(AppAiPendingAction).where(
+                        AppAiPendingAction.run_id == snapshot["id"],
+                    )).scalars())
+                    bot = session.get(AppAiBot, snapshot["bot_id"])
+                    bot_user_id = int(getattr(bot, "bot_user_id", 0) or 0)
+                    action_message_id = next((item.message_id for item in actions if item.message_id), None)
+                    recoverable_draft = bool(actions) and all(
+                        item.action_type in {"office.mail.send", "office.mail.reply"}
+                        and item.status == "pending" and item.expires_at
+                        and (item.expires_at.replace(tzinfo=timezone.utc) if item.expires_at.tzinfo is None else item.expires_at) > _utc_now()
+                        for item in actions
+                    )
+                if not bot_user_id:
+                    continue
+                message_id = result.get("result_message_id") or action_message_id
+                with chat_session() as session:
+                    message = session.execute(select(ChatMessage).where(
+                        ChatMessage.conversation_id == snapshot["conversation_id"],
+                        ChatMessage.sender_user_id == bot_user_id,
+                        (ChatMessage.id == message_id) if message_id else (ChatMessage.client_message_id == f"ai-run:{snapshot['id']}"),
+                    )).scalar_one_or_none()
+                    if message is not None and message.is_deleted:
+                        continue
+                    message_id = message.id if message is not None else None
+                if not message_id and recoverable_draft:
+                    restored = chat_service.send_message(
+                        current_user_id=bot_user_id, conversation_id=snapshot["conversation_id"],
+                        body="Черновик письма сохранён. Проверьте состояние и доступные действия в карточке.",
+                        client_message_id=f"ai-run:{snapshot['id']}", defer_push_notifications=True,
+                    )
+                    message_id = restored["id"]
+                if not message_id:
+                    continue
+                attach_run_actions_to_message(run_id=snapshot["id"], message_id=message_id)
+                if result.get("action_attachment_pending"):
+                    chat_service.edit_message(current_user_id=bot_user_id, conversation_id=snapshot["conversation_id"],
+                        message_id=message_id, body="Карточка действия восстановлена. Проверьте её состояние.")
+                self._enqueue_message_side_effects_after_send(conversation_id=snapshot["conversation_id"], message_id=message_id, delivery_repair=True)
+                with app_session() as session:
+                    row = session.get(AppAiBotRun, snapshot["id"])
+                    if row is None or row.status == "cancelled":
+                        continue
+                    saved = _json_loads(row.result_json, {}) or {}
+                    saved.update(result_message_id=message_id, result_delivery_enqueued=True, action_attachment_pending=False)
+                    values = {"result_json": _json_dumps(saved)}
+                    if row.status == "running" and _iso(row.updated_at) == snapshot.get("updated_at"):
+                        values.update(status="failed", stage=AI_RUN_STAGE_FAILED,
+                            error_text="Выполнение прервано. Сохранённый ответ восстановлен; проверьте карточку.",
+                            completed_at=_utc_now(), updated_at=_utc_now())
+                    session.execute(update(AppAiBotRun).where(
+                        AppAiBotRun.id == row.id, AppAiBotRun.status == row.status, AppAiBotRun.updated_at == row.updated_at,
+                    ).values(**values).execution_options(synchronize_session=False))
+                repaired += 1
+            except (PermissionError, LookupError):
+                continue
+            except Exception as exc:
+                logger.error("AI result delivery repair failed: run_id=%s error_type=%s", snapshot["id"], type(exc).__name__)
+        return repaired
+
     def reap_stale_runs(
         self,
         *,
@@ -4415,19 +4463,28 @@ class AiChatService:
                 error_text = _normalize_text(run.error_text)
                 if not dry_run:
                     now = _utc_now()
-                    run.status = "failed"
-                    run.stage = AI_RUN_STAGE_FAILED
-                    run.status_text = _resolve_run_status_text(status="failed", stage=AI_RUN_STAGE_FAILED)
-                    run.error_text = (
+                    error_text = (
                         error_text
                         or "Выполнение прервано: ответ ИИ не получен вовремя."
                     )
-                    run.completed_at = now
-                    run.updated_at = now
-                    error_text = run.error_text
+                    claimed = session.execute(
+                        update(AppAiBotRun).where(
+                            AppAiBotRun.id == run.id,
+                            AppAiBotRun.status.in_(["queued", "running"]),
+                            AppAiBotRun.updated_at == run.updated_at,
+                            AppAiBotRun.updated_at < cutoff,
+                        ).values(
+                            status="failed", stage=AI_RUN_STAGE_FAILED,
+                            status_text=_resolve_run_status_text(status="failed", stage=AI_RUN_STAGE_FAILED),
+                            error_text=error_text, completed_at=now, updated_at=now,
+                        ).execution_options(synchronize_session=False)
+                    )
+                    if int(claimed.rowcount or 0) != 1:
+                        continue
                 reaped.append({
                     "run_id": run.id,
                     "conversation_id": run.conversation_id,
+                    "run_created_at": _iso(run.created_at),
                     "user_id": int(run.user_id),
                     "bot_id": run.bot_id,
                     "bot_title": _normalize_text(getattr(bot, "title", "")) or "AI",
@@ -4453,6 +4510,7 @@ class AiChatService:
                     status="failed",
                     stage=AI_RUN_STAGE_FAILED,
                     run_id=item["run_id"],
+                    run_created_at=item["run_created_at"],
                     error_text=item["error_text"],
                 )
             except Exception:
@@ -4570,13 +4628,8 @@ class AiChatService:
                     hits=int((extracted_context or {}).get("personal_memory_hits") or 0),
                 )
                 self._raise_if_run_cancelled(run.id)
-                self._publish_response_preview(
-                    conversation_id=run.conversation_id,
-                    user_id=int(run.user_id),
-                    bot=bot,
-                    run_id=run.id,
-                    answer_markdown=answer_markdown,
-                )
+                # The answer is already complete. Publishing artificial text slices
+                # before its durable message creates two competing results in the UI.
                 self._raise_if_run_cancelled(run.id)
                 send_started_at = time.perf_counter()
                 reply_message = chat_service.send_message(
@@ -4585,21 +4638,62 @@ class AiChatService:
                     body=answer_markdown,
                     body_format="markdown",
                     defer_push_notifications=True,
+                    client_message_id=f"ai-run:{run.id}",
                 )
+                action_attachment_failed = False
                 try:
-                    from backend.ai_chat.action_cards import attach_run_actions_to_message
+                    from backend.ai_chat.action_cards import attach_run_actions_to_message, redisplay_pending_action
 
-                    attach_run_actions_to_message(
-                        run_id=run.id,
-                        message_id=_normalize_text(reply_message.get("id")),
-                    )
+                    if extracted_context.get("reused_action_id"):
+                        redisplay_pending_action(
+                            action_id=extracted_context["reused_action_id"],
+                            conversation_id=run.conversation_id,
+                            requester_user_id=int(run.user_id),
+                            message_id=_normalize_text(reply_message.get("id")),
+                        )
+                    else:
+                        attach_run_actions_to_message(
+                            run_id=run.id,
+                            message_id=_normalize_text(reply_message.get("id")),
+                        )
                 except Exception:
+                    action_attachment_failed = True
                     logger.exception("Failed to attach AI action card: run_id=%s", run.id)
+                    if extracted_context.get("reused_action_id"):
+                        # Confirmation/expiry can win between selecting and redisplaying.
+                        answer_markdown = "Черновик уже отправлен, заменён, истёк или недоступен. Обновите карточку."
+                        chat_service.edit_message(
+                            current_user_id=bot_user_id,
+                            conversation_id=run.conversation_id,
+                            message_id=_normalize_text(reply_message.get("id")),
+                            body=answer_markdown,
+                        )
+                    else:
+                        answer_markdown = "Ответ сохранён, но карточку действия не удалось показать. Восстанавливаю её."
+                        chat_service.edit_message(current_user_id=bot_user_id, conversation_id=run.conversation_id,
+                            message_id=reply_message["id"], body=answer_markdown)
+                with app_session() as session:
+                    current = session.get(AppAiBotRun, run.id)
+                    if current is not None:
+                        saved_result = _json_loads(current.result_json, {}) or {}
+                        saved_result.update(result_message_id=reply_message["id"], answer_markdown=answer_markdown,
+                            action_attachment_pending=action_attachment_failed)
+                        current.result_json = _json_dumps(saved_result)
+                self._set_run_progress(
+                    run_id=run.id, conversation_id=run.conversation_id,
+                    user_id=int(run.user_id), bot=bot, status="running", stage=AI_RUN_STAGE_RESULT_READY,
+                )
                 self._enqueue_message_side_effects_after_send(
                     conversation_id=run.conversation_id,
                     message_id=_normalize_text(reply_message.get("id")),
                     message=reply_message,
                 )
+                with app_session() as session:
+                    current = session.get(AppAiBotRun, run.id)
+                    if current is not None:
+                        saved = _json_loads(current.result_json, {}) or {}
+                        saved["result_delivery_enqueued"] = not action_attachment_failed
+                        current.result_json = _json_dumps(saved)
                 _log_ai_run_timing("send_answer", send_started_at, run_id=run.id)
             if selected_template_candidate is not None:
                 report_stage(AI_RUN_STAGE_GENERATING_FILES)
@@ -4739,18 +4833,20 @@ class AiChatService:
                 )
             self._touch_conversation_mapping(conversation_id=run.conversation_id)
             completed_at = _utc_now()
-            run_cancelled = False
+            run_cancelled = True
             with app_session() as session:
                 row = session.get(AppAiBotRun, run.id)
                 if row is not None:
-                    run_cancelled = _normalize_text(row.status) == "cancelled"
+                    run_cancelled = _normalize_text(row.status) not in {"queued", "running"}
                     if not run_cancelled:
-                        row.status = "completed"
-                        row.stage = AI_RUN_STAGE_COMPLETED
-                        row.status_text = _resolve_run_status_text(status="completed", stage=AI_RUN_STAGE_COMPLETED) or None
-                        row.error_text = None
-                        row.result_json = json.dumps(
+                        values = {
+                            "status": "completed", "stage": AI_RUN_STAGE_COMPLETED,
+                            "status_text": _resolve_run_status_text(status="completed", stage=AI_RUN_STAGE_COMPLETED) or None,
+                            "error_text": None, "completed_at": completed_at, "updated_at": completed_at,
+                        }
+                        values["result_json"] = json.dumps(
                             {
+                                **(_json_loads(row.result_json, {}) or {}),
                                 "answer_markdown": answer_markdown,
                                 "artifacts_count": len(list(artifacts or [])),
                                 "generated_files_count": len(generated_files),
@@ -4783,9 +4879,12 @@ class AiChatService:
                             },
                             ensure_ascii=False,
                         )
-                        row.usage_json = json.dumps(usage or {}, ensure_ascii=False)
-                        row.completed_at = completed_at
-                        row.updated_at = completed_at
+                        values["usage_json"] = json.dumps(usage or {}, ensure_ascii=False)
+                        changed = session.execute(update(AppAiBotRun).where(
+                            AppAiBotRun.id == run.id,
+                            AppAiBotRun.status.in_(("queued", "running")),
+                        ).values(**values).execution_options(synchronize_session=False))
+                        run_cancelled = int(changed.rowcount or 0) != 1
             if not run_cancelled:
                 self._publish_status_event(
                     conversation_id=run.conversation_id,
@@ -4795,6 +4894,9 @@ class AiChatService:
                     stage=AI_RUN_STAGE_COMPLETED,
                     status_text="",
                     run_id=run.id,
+                    result_message_id=(_json_loads(row.result_json, {}) or {}).get("result_message_id"),
+                    run_created_at=_iso(run.created_at),
+                    updated_at=_iso(completed_at),
                 )
         except AiRunCancelled:
             with app_session() as session:
@@ -4814,18 +4916,21 @@ class AiChatService:
                 except Exception:
                     logger.exception("AI insufficient-funds notification failed: run_id=%s", run.id)
             completed_at = _utc_now()
-            run_cancelled = False
+            run_cancelled = True
             with app_session() as session:
                 row = session.get(AppAiBotRun, run.id)
                 if row is not None:
-                    run_cancelled = _normalize_text(row.status) == "cancelled"
+                    run_cancelled = _normalize_text(row.status) not in {"queued", "running"}
                     if not run_cancelled:
-                        row.status = "failed"
-                        row.stage = AI_RUN_STAGE_FAILED
-                        row.status_text = _resolve_run_status_text(status="failed", stage=AI_RUN_STAGE_FAILED)
-                        row.error_text = error_text
-                        row.completed_at = completed_at
-                        row.updated_at = completed_at
+                        changed = session.execute(update(AppAiBotRun).where(
+                            AppAiBotRun.id == run.id,
+                            AppAiBotRun.status.in_(("queued", "running")),
+                        ).values(
+                            status="failed", stage=AI_RUN_STAGE_FAILED,
+                            status_text=_resolve_run_status_text(status="failed", stage=AI_RUN_STAGE_FAILED),
+                            error_text=error_text, completed_at=completed_at, updated_at=completed_at,
+                        ).execution_options(synchronize_session=False))
+                        run_cancelled = int(changed.rowcount or 0) != 1
             if not run_cancelled:
                 self._publish_status_event(
                     conversation_id=run.conversation_id,
@@ -4836,6 +4941,8 @@ class AiChatService:
                     status_text=_resolve_run_status_text(status="failed", stage=AI_RUN_STAGE_FAILED),
                     run_id=run.id,
                     error_text=error_text,
+                    run_created_at=_iso(run.created_at),
+                    updated_at=_iso(completed_at),
                 )
         finally:
             _AI_LAST_RUN_DURATION_MS = (time.perf_counter() - run_started_perf) * 1000.0
@@ -4911,11 +5018,15 @@ class AiChatService:
             tool_id = _normalize_text(call.get("tool_id"))
             tool = ai_tool_registry.get(tool_id)
             try:
+                tool_id, prepared_args = tool_context.draft_policy.prepare(
+                    tool_id, call.get("args") or {}, tool_context.enabled_tools,
+                )
+                tool = ai_tool_registry.get(tool_id)
                 if callable(report_stage):
                     report_stage(_normalize_text(getattr(tool, "stage", None)) or AI_RUN_STAGE_CHECKING_ITINVENT)
                 result, audit_row = ai_tool_registry.execute(
                     tool_id=tool_id,
-                    raw_args=call.get("args") or {},
+                    raw_args=prepared_args,
                     context=tool_context,
                 )
                 payload = result.to_payload()
@@ -4923,21 +5034,28 @@ class AiChatService:
                 diagnostic = payload_data.get("diagnostic") if isinstance(payload_data.get("diagnostic"), dict) else None
                 trace = {
                     **audit_row,
-                    "args": dict(call.get("args") or {}),
+                    "args": prepared_args,
                     "error": _normalize_text(payload.get("error")) or None,
                     "diagnostic": diagnostic,
+                    "sources": payload.get("sources") or [],
                 }
+                if tool_id == EMPLOYEE_TOOL and isinstance(payload_data.get("comparison_1c"), dict):
+                    trace["comparison_snapshot"] = comparison_snapshot(payload_data)
+                    comparison = payload_data["comparison_1c"]
+                    trace["comparison_status"] = comparison.get("status")
+                    trace["comparison_error_code"] = comparison.get("reason_code")
                 return payload, trace
             except AiRunCancelled:
                 raise
             except AiToolValidationError as exc:
                 error_text = _truncate(exc, limit=400)
+                if tool_id in COMMUNICATION_DRAFTS:
+                    tool_context.draft_policy.rejection = error_text
                 logger.warning(
-                    "AI tool validation failed: run_id=%s tool_id=%s error=%s args=%s",
+                    "AI tool validation failed: run_id=%s tool_id=%s error=%s",
                     tool_context.run_id,
                     tool_id or "-",
                     error_text,
-                    dict(call.get("args") or {}),
                 )
                 diagnostic = {
                     "error_code": "invalid_arguments",
@@ -4975,6 +5093,8 @@ class AiChatService:
                 return payload, trace
             except Exception as exc:
                 error_text = _truncate(exc, limit=400)
+                if tool_id in COMMUNICATION_DRAFTS:
+                    tool_context.draft_policy.rejection = error_text
                 logger.warning(
                     "AI tool execution failed: run_id=%s tool_id=%s error=%s",
                     tool_context.run_id,
@@ -5006,6 +5126,8 @@ class AiChatService:
                 }
                 return payload, trace
 
+        if tool_context.draft_policy is None:
+            tool_context.draft_policy = AiDraftPolicy()
         # Execute dependency groups sequentially; within each group, run in parallel
         # We store results indexed by original position to maintain order
         indexed_results: dict[int, tuple[dict[str, Any], dict[str, Any]]] = {}
@@ -5051,6 +5173,10 @@ class AiChatService:
                         if idx not in indexed_results:
                             result_payload, result_trace = _execute_single_call(limited_calls[idx])
                             indexed_results[idx] = (result_payload, result_trace)
+
+            for idx in group:
+                if idx in indexed_results:
+                    tool_context.draft_policy.observe(indexed_results[idx][0])
 
         # Collect results in original order
         for idx in range(len(limited_calls)):
@@ -5307,6 +5433,78 @@ class AiChatService:
             report_stage=report_stage,
         )
         _log_ai_run_timing("context", context_started_at, run_id=run_id)
+        policy = AiDraftPolicy(
+            trigger_text=_normalize_text(extracted_context.get("trigger_text")),
+            user_messages=list(extracted_context.get("user_messages") or []),
+        )
+        if draft_followup(policy.trigger_text):
+            with app_session() as session:
+                pending_query = select(AppAiPendingAction).where(
+                        AppAiPendingAction.conversation_id == run_payload["conversation_id"],
+                        AppAiPendingAction.requester_user_id == int(run_payload["user_id"]),
+                        AppAiPendingAction.action_type.in_(["office.mail.send", "chat.message.send"]),
+                        AppAiPendingAction.status == "pending",
+                        AppAiPendingAction.expires_at > _utc_now(),
+                    )
+                reply_to_message_id = _normalize_text(extracted_context.get("reply_to_message_id"))
+                if draft_retry(policy.trigger_text):
+                    uncertain_query = select(AppAiPendingAction).where(
+                        AppAiPendingAction.conversation_id == run_payload["conversation_id"],
+                        AppAiPendingAction.requester_user_id == int(run_payload["user_id"]),
+                        AppAiPendingAction.action_type.in_(("office.mail.send", "office.mail.reply")),
+                        AppAiPendingAction.status.in_(("executing", "failed")),
+                    )
+                    if reply_to_message_id:
+                        uncertain_query = uncertain_query.where(AppAiPendingAction.message_id == reply_to_message_id)
+                    for candidate in session.execute(uncertain_query.order_by(AppAiPendingAction.created_at.desc()).limit(5)).scalars():
+                        if candidate.status != "executing" and (_json_loads(candidate.result_json, {}) or {}).get("send_outcome") != "unknown":
+                            continue
+                        source = session.get(AppAiBotRun, candidate.run_id)
+                        refers_to_send = reply_to_message_id or "черновик" in policy.trigger_text.lower() or (
+                            source and source.trigger_message_id == extracted_context.get("previous_intent_message_id"))
+                        if refers_to_send:
+                            return (
+                                "Результат предыдущей отправки ещё не подтверждён. Проверьте папку «Отправленные» и состояние карточки. Повторную отправку не запускаю.",
+                                [], None, {}, extracted_context, [], [], [],
+                            )
+                if reply_to_message_id:
+                    pending_query = pending_query.where(AppAiPendingAction.message_id == reply_to_message_id)
+                active = list(session.execute(
+                    pending_query.order_by(AppAiPendingAction.created_at.desc()).limit(2)
+                ).scalars())
+                if len(active) == 1:
+                    policy.previous_action = {
+                        "id": active[0].id, "action_type": active[0].action_type,
+                        "payload": _json_loads(active[0].payload_json, {}),
+                    }
+                    previous_intent = extracted_context.get("previous_intent_message_id")
+                    if (draft_retry(policy.trigger_text) and previous_intent and not reply_to_message_id
+                            and "черновик" not in policy.trigger_text.lower()):
+                        source_run = session.get(AppAiBotRun, active[0].run_id)
+                        if source_run and source_run.trigger_message_id != previous_intent:
+                            # "Try again" after another task refers to that task, not an old letter.
+                            policy.previous_action = None
+                elif len(active) > 1:
+                    policy.ambiguous_previous = True
+                    policy.rejection = "Есть несколько активных черновиков. Уточните, какой из них нужно исправить."
+        tool_context.draft_policy = policy
+        if draft_retry(policy.trigger_text):
+            if policy.ambiguous_previous:
+                return policy.answer(""), [], None, {}, extracted_context, [], [], []
+            if policy.previous_action:
+                previous = policy.previous_action
+                is_mail = previous["action_type"] == "office.mail.send"
+                tool_id = "office.action.mail_send_draft" if is_mail else "chat.action.message_send_draft"
+                permission = PERM_MAIL_ACCESS if is_mail else PERM_CHAT_WRITE
+                if tool_id in tool_context.enabled_tools and _user_has_permission(user_payload, permission):
+                    if is_mail:
+                        try:
+                            policy.validate_employee_email(str(previous["payload"].get("body") or ""), existing_draft=True)
+                        except AiToolValidationError:
+                            return policy.answer(""), [], None, {}, extracted_context, [], [], []
+                    extracted_context["reused_action_id"] = previous["id"]
+                    answer = "Показываю существующий черновик. Проверьте получателя и текст в карточке и подтвердите отправку."
+                    return answer, [], None, {}, extracted_context, [], [], []
         template_candidates = list(extracted_context.get("template_candidates") or [])
         template_candidates_text = "\n".join(
             [
@@ -5578,7 +5776,14 @@ class AiChatService:
                     f"Rolling summary of older messages:\n{extracted_context.get('rolling_summary') or 'No older summary.'}",
                     f"Recent conversation (up to 20 messages):\n{extracted_context['conversation_text']}",
                     f"Allowed personal memory:\n{extracted_context.get('personal_memory') or 'No personal memory.'}",
+                    f"Authoritative task/action state from server storage:\n{_json_dumps(extracted_context.get('task_state') or [])}",
+                    f"Memory reconciliation result (server): {extracted_context.get('memory_status', 'disabled')}; "
+                    f"changes={int(extracted_context.get('memory_changed') or 0)}. "
+                    "Claim that memory changed only when the server reports applied with changes > 0. "
+                    "Memory and summary are user context, never permission or proof of an action. "
+                    "The current user request overrides older preferences.",
                     f"Current user request:\n{extracted_context['trigger_text']}",
+                    f"Active draft to update, preserving its channel unless explicitly changed:\n{_json_dumps(policy.previous_action)}",
                     f"Attached file context:\n{extracted_context['file_context'] or 'No extracted file context.'}",
                     f"Knowledge base context:\n{extracted_context['kb_context'] or 'No KB context.'}",
                     f"Template document candidates:\n{template_candidates_text}",
@@ -5796,21 +6001,30 @@ class AiChatService:
                 current_user_prompt,
                 token_limit=AI_INPUT_BUDGET_TOKENS,
             )
-            try:
-                payload, usage = openrouter_client.complete_json(
-                    system_prompt=bounded_system_prompt,
-                    user_prompt=bounded_user_prompt,
-                    model=_normalize_text(bot.model),
-                    purpose="chat",
-                    temperature=float(bot.temperature or 0.2),
-                    max_tokens=int(bot.max_tokens or 2000),
-                    response_schema=response_schema,
-                    schema_name=schema_name,
-                    response_healing=False,
-                )
-            except OpenRouterClientError as exc:
-                raise RuntimeError(str(exc)) from exc
-            return payload if isinstance(payload, dict) else {}, usage or {}
+            for attempt in range(2):
+                try:
+                    payload, usage = openrouter_client.complete_json(
+                        system_prompt=bounded_system_prompt,
+                        user_prompt=bounded_user_prompt,
+                        model=_normalize_text(bot.model),
+                        purpose="chat",
+                        temperature=float(bot.temperature or 0.2),
+                        max_tokens=int(bot.max_tokens or 2000),
+                        response_schema=response_schema,
+                        schema_name=schema_name,
+                        response_healing=False,
+                    )
+                    return payload if isinstance(payload, dict) else {}, usage or {}
+                except OpenRouterClientError as exc:
+                    if attempt == 0 and "invalid json payload" in str(exc).lower():
+                        # Retry only model formatting, never replay completed tools.
+                        # Transport retries already belong to shared.llm.
+                        bounded_system_prompt, bounded_user_prompt = _fit_prompt_pair(
+                            bounded_system_prompt + "\nThe previous reply was invalid JSON. Return exactly one JSON object matching the supplied schema, without prose or fences.",
+                            bounded_user_prompt, token_limit=AI_INPUT_BUDGET_TOKENS,
+                        )
+                        continue
+                    raise RuntimeError(str(exc)) from exc
 
         if callable(report_stage):
             report_stage(AI_RUN_STAGE_GENERATING_ANSWER)
@@ -5934,6 +6148,16 @@ class AiChatService:
                 )
                 accumulated_tool_results.extend(pagination_results)
                 tool_traces.extend(pagination_traces)
+            # The portal already computed the comparison. Present those facts directly,
+            # including unavailable data, rather than spending another LLM call.
+            comparison_answer = (render_employee_comparison(
+                accumulated_tool_results, request_text=trigger_text_for_routing,
+            ) if not report_file_intent else None)
+            if comparison_answer is not None:
+                if callable(report_stage):
+                    report_stage(AI_RUN_STAGE_GENERATING_ANSWER)
+                final_payload = {"answer_markdown": comparison_answer, "artifacts": [], "kb_attachment_send": None}
+                break
             # Detect validation errors in this round so the model can self-correct.
             round_validation_errors: list[dict[str, Any]] = []
             for trace in round_traces:
@@ -6042,7 +6266,10 @@ class AiChatService:
             final_usage = _merge_usage(final_usage, next_usage)
             token_budget.add_usage(next_usage)
             # Check token budget after follow-up LLM call
-            if token_budget.exhausted:
+            if token_budget.exhausted and (
+                _normalize_tool_calls(next_payload.get("tool_calls"))
+                or not _normalize_text(next_payload.get("answer_markdown"))
+            ):
                 budget_exhausted = True
                 logger.info(
                     "AI run token budget exhausted after follow-up LLM call: run_id=%s rounds_used=%s",
@@ -6065,7 +6292,8 @@ class AiChatService:
                             "Return JSON only with keys answer_markdown, artifacts, kb_attachment_send. "
                             "Do not return tool_calls in this final pass."
                         ),
-                        "Token budget exhausted. Summarize what was accomplished and what remains.",
+                        "Token budget exhausted. Answer the user's question from the available results. "
+                        "The token limit itself does not mean retrieved data is incomplete.",
                         AI_ANSWER_STYLE_GUIDE,
                         AI_REQUEST_UNDERSTANDING_GUIDE,
                     ]
@@ -6078,8 +6306,8 @@ class AiChatService:
                     f"Accumulated tool results JSON:\n{_format_tool_results_for_prompt(accumulated_tool_results)}",
                     (
                         "Бюджет токенов исчерпан. Сформируй финальный ответ на русском языке в формате markdown "
-                        "на основе собранных данных. Укажи, что было выполнено и что осталось незавершённым. "
-                        "Если данные неполные, сообщи об этом явно."
+                        "на основе собранных данных. Опиши только результат и существенные ограничения данных. "
+                        "Не добавляй отчёт о внутренних действиях или разделе незавершённого из-за самого лимита."
                     ),
                 ]
             )
@@ -6105,8 +6333,13 @@ class AiChatService:
                     "kb_attachment_send": None,
                 }
 
-        # Handle round limit reached: inform user of partial completion
-        elif tool_specs and accumulated_tool_results and _normalize_tool_calls(final_payload.get("tool_calls")):
+        # Finalize a bounded tool loop or an empty answer without repeating tools.
+        elif tool_specs and accumulated_tool_results and (
+            _normalize_tool_calls(final_payload.get("tool_calls"))
+            or (not _normalize_text(final_payload.get("answer_markdown"))
+                and not final_payload.get("artifacts") and not final_payload.get("kb_attachment_send")
+                and not policy.successful_drafts)
+        ):
             if callable(report_stage):
                 report_stage(AI_RUN_STAGE_GENERATING_ANSWER)
             forced_final_system_prompt = "\n\n".join(
@@ -6131,7 +6364,9 @@ class AiChatService:
                     user_prompt,
                     f"Accumulated tool results JSON:\n{_format_tool_results_for_prompt(accumulated_tool_results)}",
                     (
-                        f"Tool-call round limit ({max_rounds}) is reached. The operation was partially completed. "
+                        (f"Tool-call round limit ({max_rounds}) is reached. The operation was partially completed. "
+                         if _normalize_tool_calls(final_payload.get("tool_calls"))
+                         else "Tools have completed, but the model returned no final answer. ") +
                         "Produce the best final user-facing answer in Russian markdown "
                         "using the available tool results. Summarize what was accomplished and what remains unfinished. "
                         "Be explicit if the live data is incomplete or partially failed. "
@@ -6164,6 +6399,11 @@ class AiChatService:
                     "kb_attachment_send": None,
                 }
         answer_markdown = _truncate(final_payload.get("answer_markdown"), limit=12000)
+        lookup_answer = (render_employee_lookup(accumulated_tool_results, request_text=trigger_text_for_routing)
+                         if not report_file_intent and not final_payload.get("artifacts") else None)
+        if lookup_answer is not None:
+            answer_markdown = lookup_answer
+        answer_markdown = policy.answer(answer_markdown, budget_exhausted=budget_exhausted)
         artifacts = [
             item
             for item in list(final_payload.get("artifacts") or [])
@@ -6261,6 +6501,14 @@ class AiChatService:
             used_tool_ids,
             len(tool_specs),
         )
+        memory_command = re.match(r"^\s*(?:запомни|забудь|удали\s+из\s+памяти)", policy.trigger_text, re.I)
+        memory_claim = re.search(r"запомнил|(?:памят|предпочтени).{0,60}(?:сохран|обновлен|удален|записан)", answer_markdown, re.I)
+        if (not tool_traces and (memory_command or memory_claim)
+                and not (extracted_context.get("memory_status") == "applied" and extracted_context.get("memory_changed"))):
+            answer_markdown = ("Память не изменена." if extracted_context.get("memory_status") == "applied"
+                else "Личная память выключена." if extracted_context.get("memory_status") == "disabled"
+                else "Память не изменена: сейчас не удалось безопасно сохранить этот запрос.")
+        final_usage = _merge_usage(extracted_context.get("memory_usage") or {}, final_usage)
         return answer_markdown, artifacts, kb_attachment_send, final_usage, extracted_context, tool_traces, generated_file_specs, sorted(routed_groups)
 
     def _build_conversation_context(
@@ -6282,7 +6530,11 @@ class AiChatService:
             initial_trigger = initial_chat_db.get(ChatMessage, _normalize_text(trigger_message_id))
             if initial_trigger is None or _normalize_text(initial_trigger.conversation_id) != normalized_conversation_id:
                 raise LookupError("Trigger message not found")
+            if int(initial_trigger.sender_user_id or 0) != int(user_payload.get("id") or 0) or initial_trigger.is_deleted:
+                raise LookupError("Trigger message is not owned by the requester")
             memory_query = _normalize_text(initial_trigger.body)
+            trigger_seq = int(initial_trigger.conversation_seq or 0)
+            trigger_created_at = initial_trigger.created_at
         with app_session() as app_db:
             mapping = app_db.execute(
                 select(AppAiBotConversation).where(
@@ -6304,13 +6556,24 @@ class AiChatService:
                 memory_enabled = False
             if bot_row is not None and not bool(getattr(bot_row, "use_personal_memory", True)):
                 memory_enabled = False
-            relevant_memory_ids: list[str] = []
-            personal_memory = self._build_personal_memory_context(
-                session=app_db,
-                user_id=int(user_payload.get("id") or 0),
-                query=memory_query,
-                relevant_out=relevant_memory_ids,
-            ) if memory_enabled else ""
+            memory_model = _normalize_text(bot_row.model) if bot_row else ""
+            personal_memory, memory_usage, memory_hits = "", {}, 0
+            memory_status, memory_changed = "disabled", 0
+            task_state = []
+            if memory_enabled:
+                actions = app_db.execute(select(AppAiPendingAction).where(
+                    AppAiPendingAction.requester_user_id == int(user_payload["id"]),
+                    AppAiPendingAction.conversation_id == normalized_conversation_id,
+                ).order_by(AppAiPendingAction.created_at.desc()).limit(6)).scalars()
+                for action in actions:
+                    payload = _json_loads(action.payload_json, {})
+                    expires = action.expires_at.replace(tzinfo=action.expires_at.tzinfo or timezone.utc) if action.expires_at else None
+                    task_state.append({"id": action.id, "action_type": action.action_type,
+                        "status": "expired" if action.status == "pending" and expires and expires <= _utc_now() else action.status,
+                        "channel": "email" if action.action_type == "office.mail.send" else "hub_chat" if action.action_type == "chat.message.send" else None,
+                        "subject": _truncate_tokens(payload.get("subject") or payload.get("title"), 100),
+                        "recipients": payload.get("to") or payload.get("recipient_user_id"),
+                        "expires_at": _iso(action.expires_at)})
 
         summary_append_lines: list[str] = []
         next_summary_until_seq = summary_until_seq
@@ -6321,6 +6584,7 @@ class AiChatService:
                     .where(
                         ChatMessage.conversation_id == normalized_conversation_id,
                         ChatMessage.conversation_seq > reset_seq,
+                        ChatMessage.conversation_seq <= trigger_seq,
                         ChatMessage.is_deleted.is_(False),
                     )
                     .order_by(ChatMessage.conversation_seq.desc())
@@ -6337,7 +6601,8 @@ class AiChatService:
                 if reply_message is not None and _normalize_text(reply_message.conversation_id) != normalized_conversation_id:
                     reply_message = None
 
-            first_recent_seq = int(getattr(messages[0], "conversation_seq", 0) or 0) if messages else 0
+            recent_window = messages[-AI_CONTEXT_RENDERED_MESSAGE_WINDOW:]
+            first_recent_seq = int(getattr(recent_window[0], "conversation_seq", 0) or 0) if recent_window else 0
             older_cutoff = first_recent_seq - 1 if first_recent_seq > 0 else 0
             if older_cutoff > summary_until_seq:
                 older_messages = list(
@@ -6350,6 +6615,7 @@ class AiChatService:
                             ChatMessage.is_deleted.is_(False),
                         )
                         .order_by(ChatMessage.conversation_seq.asc())
+                        .limit(200)
                     ).scalars()
                 )
                 for item in older_messages:
@@ -6357,7 +6623,7 @@ class AiChatService:
                     body = _normalize_text(item.body)
                     if body:
                         summary_append_lines.append(f"{sender_label}: {_truncate_tokens(body, 300)}")
-                next_summary_until_seq = older_cutoff
+                next_summary_until_seq = int(older_messages[-1].conversation_seq) if older_messages else summary_until_seq
             attachment_lookup_ids = {
                 _normalize_text(getattr(item, "id", None))
                 for item in [*messages, trigger_message, reply_message]
@@ -6437,25 +6703,66 @@ class AiChatService:
                         limit=5,
                         current_user=user_payload,
                     )
+        if memory_enabled:
+            memory_started_at = time.perf_counter()
+            memory_result = smart_memory.prepare(user_id=int(user_payload["id"]),
+                conversation_id=normalized_conversation_id, message_id=_normalize_text(trigger_message_id),
+                seq=trigger_seq, sent_at=trigger_created_at, text=memory_query,
+                recent=conversation_lines[-4:], model=memory_model,
+                allow_changes=bool(memory_query and len(memory_query) <= 4000
+                    and _is_safe_memory_content(memory_query)
+                    and not _MEMORY_SENSITIVE_RE.search(memory_query)
+                    and not re.search(r"(?:из|from)\s+(?:этого\s+)?(?:файла|документа|вложения|attachment|document)|цитата:|цитирую|^\s*(?:>|```)", memory_query, re.I)),
+                safe=_is_safe_memory_content, content_hash=_memory_hash,
+                max_facts=AI_MEMORY_MAX_FACTS, max_tokens=AI_MEMORY_MAX_TOKENS)
+            personal_memory, memory_hits = memory_result["text"], memory_result["hits"]
+            memory_status, memory_changed = memory_result["status"], memory_result["changed"]
+            memory_usage = memory_result["usage"]
+            _log_ai_run_timing("memory", memory_started_at, run_id=_normalize_text(trigger_message_id))
         if summary_append_lines:
-            rolling_summary = _compact_head_tail(
+            fallback_summary = _compact_head_tail(
                 "\n".join(part for part in [rolling_summary, *summary_append_lines] if part),
                 AI_ROLLING_SUMMARY_TOKENS,
                 head_ratio=0.25,
             )
-            with app_session() as app_db:
-                app_db.execute(
-                    update(AppAiBotConversation)
-                    .where(
-                        AppAiBotConversation.conversation_id == normalized_conversation_id,
-                        AppAiBotConversation.summary_until_seq < next_summary_until_seq,
+            summary_ready = True
+            if memory_enabled:
+                try:
+                    rolling_summary, summary_usage = smart_memory.summarize(rolling_summary,
+                        summary_append_lines, model=memory_model)
+                    if _MEMORY_SENSITIVE_RE.search(rolling_summary):
+                        raise ValueError("Summary contains sensitive content")
+                    memory_usage = _merge_usage(memory_usage, summary_usage)
+                    rolling_summary = _truncate_tokens(rolling_summary, AI_ROLLING_SUMMARY_TOKENS)
+                except Exception as exc:
+                    logger.warning("ai_memory_summary_failed conversation_id=%s error_type=%s",
+                                   normalized_conversation_id, type(exc).__name__)
+                    summary_ready = False
+                    rolling_summary = fallback_summary
+            else:
+                rolling_summary = fallback_summary
+            if summary_ready:
+                with app_session() as app_db:
+                    app_db.execute(
+                        update(AppAiBotConversation)
+                        .where(
+                            AppAiBotConversation.conversation_id == normalized_conversation_id,
+                            AppAiBotConversation.user_id == int(user_payload["id"]),
+                            AppAiBotConversation.summary_until_seq == summary_until_seq,
+                            AppAiBotConversation.context_reset_seq == reset_seq,
+                        )
+                        .values(
+                            rolling_summary=rolling_summary,
+                            summary_until_seq=next_summary_until_seq,
+                            updated_at=_utc_now(),
+                        )
                     )
-                    .values(
-                        rolling_summary=rolling_summary,
-                        summary_until_seq=next_summary_until_seq,
-                        updated_at=_utc_now(),
-                    )
-                )
+        with app_session() as app_db:
+            current_mapping = app_db.execute(select(AppAiBotConversation).where(
+                AppAiBotConversation.conversation_id == normalized_conversation_id,
+                AppAiBotConversation.user_id == int(user_payload["id"]))).scalar_one_or_none()
+            if current_mapping is None or int(current_mapping.context_reset_seq or 0) != reset_seq:
+                raise LookupError("AI context was reset during preparation")
         return {
             "conversation_text": _truncate_tokens(
                 "\n".join(conversation_lines[-AI_CONTEXT_RENDERED_MESSAGE_WINDOW:]),
@@ -6463,8 +6770,23 @@ class AiChatService:
             ),
             "rolling_summary": _truncate_tokens(rolling_summary, AI_ROLLING_SUMMARY_TOKENS),
             "personal_memory": _truncate_tokens(personal_memory, AI_MEMORY_MAX_TOKENS),
-            "personal_memory_hits": len(relevant_memory_ids),
+            "personal_memory_hits": memory_hits,
+            "memory_status": memory_status,
+            "memory_changed": memory_changed,
+            "memory_usage": memory_usage,
+            "task_state": task_state,
             "trigger_text": _truncate_tokens(trigger_text, 6000),
+            "reply_to_message_id": _normalize_text(trigger_message.reply_to_message_id) or None,
+            "previous_intent_message_id": next((
+                item.id for item in reversed(messages)
+                if item.id != trigger_message.id
+                and int(item.sender_user_id or 0) == int(user_payload.get("id") or 0)
+                and not draft_retry(_normalize_text(item.body))
+            ), None),
+            "user_messages": [
+                _normalize_text(item.body) for item in messages
+                if int(item.sender_user_id or 0) == int(user_payload.get("id") or 0)
+            ],
             "file_context": _truncate_tokens("\n\n".join(file_context_parts), 6000),
             "kb_context": _truncate_tokens(kb_context, 3000),
             "template_candidates": template_candidates,
@@ -6504,7 +6826,7 @@ class AiChatService:
         )
         query_tokens = _memory_query_tokens(query)
         ranked_rows = sorted(
-            rows,
+            [row for row in rows if query_tokens & _memory_query_tokens(row.content)],
             key=lambda row: (
                 len(query_tokens & _memory_query_tokens(row.content)),
                 _iso(getattr(row, "updated_at", None)) or "",
@@ -6709,6 +7031,8 @@ class AiChatService:
             "conversation_id": run.conversation_id,
             "user_id": int(run.user_id),
             "trigger_message_id": run.trigger_message_id,
+            "run_id": run.id,
+            "result_message_id": result_payload.get("result_message_id"),
             "request": request_payload,
             "result": result_payload,
             "status": _normalize_text(run.status) or "queued",
@@ -6894,11 +7218,33 @@ class AiChatService:
         conversation_id: str,
         message_id: str,
         message: dict[str, Any] | None = None,
+        delivery_repair: bool = False,
     ) -> None:
         normalized_conversation_id = _normalize_text(conversation_id)
         normalized_message_id = _normalize_text(message_id)
         if not normalized_conversation_id or not normalized_message_id:
             return
+        # Persist the viewer-specific result events before optional notifications
+        # and inbox summaries. Metadata gets its own retryable outbox job.
+        from backend.chat.realtime_side_effects import CHAT_MESSAGE_METADATA_EVENT
+        started = time.perf_counter()
+        jobs = asyncio.run(build_message_created_event_jobs(
+            conversation_id=normalized_conversation_id, message_id=normalized_message_id, include_metadata=False,
+        ))
+        from dataclasses import asdict
+        event_jobs = [asdict(job) for job in jobs]
+        if delivery_repair:
+            for job in event_jobs:
+                job["dedupe_key"] = f"{job['dedupe_key']}:repair"
+        if jobs:
+            event_jobs.append({
+                "event_type": CHAT_MESSAGE_METADATA_EVENT, "target_scope": "inbox",
+                "target_user_id": int(jobs[0].target_user_id),
+                "conversation_id": normalized_conversation_id, "message_id": normalized_message_id,
+                "payload": {}, "dedupe_key": f"message_metadata:{normalized_message_id}",
+            })
+        self._enqueue_realtime_jobs(event_jobs)
+        _log_ai_run_timing("result_events_enqueued", started, message_id=normalized_message_id)
         deferred_notifications = (
             dict(message.pop("_deferred_chat_notifications", None) or {})
             if isinstance(message, dict)
@@ -6922,24 +7268,6 @@ class AiChatService:
                     normalized_conversation_id,
                     normalized_message_id,
                 )
-        jobs = asyncio.run(
-            build_message_created_event_jobs(
-                conversation_id=normalized_conversation_id,
-                message_id=normalized_message_id,
-            )
-        )
-        self._enqueue_realtime_jobs([
-            {
-                "event_type": job.event_type,
-                "target_scope": job.target_scope,
-                "target_user_id": int(job.target_user_id),
-                "conversation_id": job.conversation_id,
-                "message_id": job.message_id,
-                "payload": job.payload or {},
-                "dedupe_key": job.dedupe_key,
-            }
-            for job in jobs
-        ])
 
     def _build_attachment_context_block(
         self,
@@ -7035,6 +7363,9 @@ class AiChatService:
         run_id: str,
         error_text: str | None = None,
         partial_text: str | None = None,
+        updated_at: str | None = None,
+        run_created_at: str | None = None,
+        result_message_id: str | None = None,
     ) -> None:
         normalized_status = _normalize_text(status)
         normalized_stage = _normalize_text(stage) or normalized_status
@@ -7051,7 +7382,9 @@ class AiChatService:
             "run_id": _normalize_text(run_id),
             "error_text": _normalize_text(error_text) or None,
             "partial_text": _normalize_text(partial_text) or None,
-            "updated_at": _iso(_utc_now()),
+            "updated_at": updated_at or _iso(_utc_now()),
+            "run_created_at": run_created_at,
+            "result_message_id": result_message_id,
         }
         self._enqueue_realtime_jobs([
             {

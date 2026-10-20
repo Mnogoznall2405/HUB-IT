@@ -1,12 +1,15 @@
 """Mailbox quota snapshot import and reporting API."""
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
+from pydantic import ValidationError
 
 from backend.api.deps import ensure_user_permission, get_current_active_user
 from backend.models.auth import User
@@ -19,6 +22,7 @@ from backend.models.mailbox_quota import (
 )
 from backend.services.authorization_service import PERM_MAIL_QUOTAS_READ
 from backend.services.mailbox_quota_service import mailbox_quota_service
+from backend.utils.upload_limits import read_json_body_limited
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -28,9 +32,8 @@ def _api_key_fingerprint(candidate: Optional[str]) -> str:
     value = str(candidate or "").strip()
     if not value:
         return "missing"
-    if len(value) <= 8:
-        return "short"
-    return f"{value[:4]}...{value[-4:]}"
+    # One-way digest: the log must never carry any part of the key itself.
+    return hashlib.sha256(value.encode("utf-8", errors="ignore")).hexdigest()[:12]
 
 
 def _configured_import_keys() -> set[str]:
@@ -49,7 +52,9 @@ def _is_valid_import_api_key(candidate: Optional[str]) -> bool:
     if not keys:
         return False
     value = str(candidate or "").strip()
-    return bool(value) and value in keys
+    if not value:
+        return False
+    return any(hmac.compare_digest(value.encode("utf-8"), key.encode("utf-8")) for key in keys)
 
 
 async def get_current_quota_reader(
@@ -61,7 +66,7 @@ async def get_current_quota_reader(
 
 @router.post("/mailbox-quota-snapshots", response_model=MailboxQuotaImportResponse)
 async def import_mailbox_quota_snapshot(
-    payload: MailboxQuotaSnapshotImport,
+    request: Request,
     x_api_key: Optional[str] = Header(None),
 ):
     if not _is_valid_import_api_key(x_api_key):
@@ -72,13 +77,18 @@ async def import_mailbox_quota_snapshot(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API Key")
 
     max_upload_mb = max(1, int(str(os.getenv("MAIL_QUOTA_MAX_UPLOAD_MB", "25") or "25")))
-    # Rough guard: reject obviously huge payloads before DB work.
+    # The key is checked first and the body is read in bounded chunks, so an unauthenticated client can no
+    # longer make the server buffer and parse an arbitrarily large JSON (audit 01-B8).
+    raw_body = await read_json_body_limited(request, max_upload_mb * 1024 * 1024)
+    try:
+        payload = MailboxQuotaSnapshotImport.model_validate(raw_body)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=exc.errors(include_url=False, include_context=False, include_input=False),
+        ) from exc
     if len(payload.rows) > 10000:
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Too many rows")
-
-    estimated_bytes = len(payload.rows) * 512
-    if estimated_bytes > max_upload_mb * 1024 * 1024:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Payload too large")
 
     try:
         return await run_in_threadpool(mailbox_quota_service.import_snapshot, payload)
@@ -86,7 +96,10 @@ async def import_mailbox_quota_snapshot(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("Mailbox quota import failed")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Mailbox quota import failed",
+        ) from exc
 
 
 @router.get("/mailbox-quota-snapshots", response_model=list[MailboxQuotaSnapshotSummary])

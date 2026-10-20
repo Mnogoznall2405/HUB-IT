@@ -28,6 +28,9 @@ class ChatMemberResponse(BaseModel):
     user: ChatUserSummary
     member_role: str = "member"
     joined_at: str
+    # Filled for the owner and moderators only: the member may not write (until the given time).
+    is_restricted: bool = False
+    restricted_until: Optional[str] = None
 
 
 ChatMessageKind = Literal["text", "task_share", "file", "system", "location", "contact", "poll"]
@@ -114,6 +117,15 @@ class ChatMessageResponse(BaseModel):
 
 
 class ChatConversationSummary(BaseModel):
+    # Group posting rule ("all" / "managers" / "closed"); clients show a plaque instead of the composer.
+    posting_policy: Optional[str] = None
+    # Group slow mode in seconds (0 / absent: off); owner and moderators are exempt.
+    slow_mode_seconds: Optional[int] = None
+    # False: plain members may not send files (owner and moderators may); absent means allowed.
+    members_send_files: Optional[bool] = None
+    # The viewer was barred from writing in this group (until the given time; None: until lifted).
+    viewer_restricted: Optional[bool] = None
+    viewer_restricted_until: Optional[str] = None
     id: str
     kind: Literal["direct", "group", "ai", "notes", "task"]
     title: str
@@ -154,6 +166,7 @@ class ChatConversationListResponse(BaseModel):
 
 class ChatConversationDetailResponse(ChatConversationSummary):
     members: list[ChatMemberResponse] = Field(default_factory=list)
+    description: Optional[str] = None
 
 
 class ChatMessageListResponse(BaseModel):
@@ -187,6 +200,7 @@ class ChatThreadHydrateItem(BaseModel):
     read_by_count: int = 0
     delivery_status: Optional[str] = None
     reactions: list[ChatReactionSummary] = Field(default_factory=list)
+    action_card: Optional[dict[str, Any]] = None
 
 
 class ChatThreadHydrateResponse(BaseModel):
@@ -317,8 +331,27 @@ class ChatOwnershipTransferRequest(BaseModel):
     owner_user_id: int = Field(..., gt=0)
 
 
+class ChatAutoOwnerRequest(BaseModel):
+    dry_run: bool = True
+    limit: int = Field(25, ge=1, le=100)
+
+
+class ChatMemberRestrictionRequest(BaseModel):
+    # None restricts until the restriction is lifted.
+    duration_seconds: Optional[Literal[3600, 86400, 604800]] = None
+
+
+class ChatLeaveGroupRequest(BaseModel):
+    # An owner must name the member who receives ownership when leaving.
+    successor_user_id: Optional[int] = Field(default=None, gt=0)
+
+
 class UpdateConversationProfileRequest(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = Field(default=None, max_length=1000)
+    posting_policy: Optional[Literal["all", "managers", "closed"]] = None
+    slow_mode_seconds: Optional[Literal[0, 10, 30, 60, 300, 900, 3600]] = None
+    members_send_files: Optional[bool] = None
 
     @field_validator("title", mode="before")
     @classmethod

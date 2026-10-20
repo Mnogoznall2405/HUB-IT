@@ -20,6 +20,7 @@ import {
 } from './lib/chatNotifications';
 import { emitAgentDebugLog } from './lib/debugClientLog';
 import ChatSocketBootstrap from './components/chat/ChatSocketBootstrap';
+import ChatCallsProvider from './components/chat/calls/ChatCallsProvider';
 import DesktopNavigationBootstrap from './components/layout/DesktopNavigationBootstrap';
 import DesktopProtocolHandoff from './components/layout/DesktopProtocolHandoff';
 import DesktopPresenceBootstrap from './components/layout/DesktopPresenceBootstrap';
@@ -48,6 +49,7 @@ import {
   loadMailRoute,
   loadMobileMenuRoute,
   loadMfuRoute,
+  loadMonitoringRoute,
   loadMyFilesRoute,
   loadNetworksRoute,
   loadKnowledgeBaseRoute,
@@ -92,6 +94,7 @@ const FileEgress = lazy(loadFileEgressRoute);
 const ScanCenter = lazy(loadScanCenterRoute);
 const VoiceVideo = lazy(loadVoiceVideoRoute);
 const Mfu = lazy(loadMfuRoute);
+const Monitoring = lazy(loadMonitoringRoute);
 const Mail = lazy(loadMailRoute);
 const MobileMenu = lazy(loadMobileMenuRoute);
 const Vcs = lazy(loadVcsRoute);
@@ -120,6 +123,7 @@ const routePermissions = [
   { path: '/database', permissions: ['database.read'] },
   { path: '/networks', permissions: ['networks.read'] },
   { path: '/mfu', permissions: ['mfu.read'] },
+  { path: '/monitoring', permissions: ['monitoring.read'] },
   { path: '/computers', permissions: ['computers.read'] },
   { path: '/scan-center', permissions: ['scan.read'] },
   { path: '/voice', permissions: ['voice.read'] },
@@ -571,6 +575,7 @@ function AuthenticatedAppShell() {
       <AppPushBootstrap />
       <ChatSocketBootstrap />
       <NativeMobileShellBridge />
+      <ChatCallsProvider>
       <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100dvh' }}>
         <RouteErrorBoundary>
           <Suspense fallback={<PageFallback />}>
@@ -629,6 +634,10 @@ function AuthenticatedAppShell() {
                 <Route
                   path="/mfu"
                   element={<PermissionRoute permission="mfu.read"><Mfu /></PermissionRoute>}
+                />
+                <Route
+                  path="/monitoring"
+                  element={<PermissionRoute permission="monitoring.read"><Monitoring /></PermissionRoute>}
                 />
                 <Route
                   path="/computers"
@@ -735,6 +744,7 @@ function AuthenticatedAppShell() {
           </Suspense>
         </RouteErrorBoundary>
       </Box>
+      </ChatCallsProvider>
     </AuthProvider>
   );
 }

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import {
   Alert,
+  Chip,
   Box,
   Button,
   ButtonBase,
@@ -74,15 +75,19 @@ function TimeLink({ start, onSeek, label }) {
       aria-label={`Перейти к ${fmtClock(start)}${label ? ` — ${label}` : ''}`}
       sx={{
         flexShrink: 0,
+        // Одинаковая ширина «0:00» и «1:10:00» — текст решений в одну колонку.
+        minWidth: 56,
+        justifyContent: 'center',
         px: 0.75,
         py: 0.25,
         borderRadius: 1,
         fontSize: 12,
         fontFamily: 'monospace',
         fontVariantNumeric: 'tabular-nums',
-        color: 'primary.main',
-        bgcolor: (t) => alpha(t.palette.primary.main, 0.08),
-        '&:hover': { bgcolor: (t) => alpha(t.palette.primary.main, 0.16) },
+        // В тёмной теме primary.main на тёмном фоне почти не читается.
+        color: (t) => (t.palette.mode === 'dark' ? t.palette.primary.light : t.palette.primary.main),
+        bgcolor: (t) => alpha(t.palette.primary.main, t.palette.mode === 'dark' ? 0.18 : 0.08),
+        '&:hover': { bgcolor: (t) => alpha(t.palette.primary.main, t.palette.mode === 'dark' ? 0.3 : 0.16) },
       }}
     >
       {fmtClock(start)}
@@ -117,20 +122,24 @@ function PointList({ items, onSeek, emptyText }) {
   );
 }
 
+// Категориальные цвета направлений: оттенки палитры темы, «Другое» — серый.
+const DOMAIN_TONES = ['primary', 'success', 'warning', 'info', 'secondary', 'error'];
+const domainColor = (i) => (i < DOMAIN_TONES.length ? `${DOMAIN_TONES[i]}.main` : 'grey.500');
+
 function Stat({ label, value, tone }) {
   return (
     <Box
       sx={{
         minWidth: 0,
         px: 1.25,
-        py: 1,
+        py: 0.75,
         borderRadius: 2,
         border: '1px solid',
         borderColor: 'divider',
         bgcolor: tone ? (t) => alpha(t.palette[tone].main, 0.06) : 'transparent',
       }}
     >
-      <Typography variant="h6" sx={{ lineHeight: 1.2, fontWeight: 700, color: tone ? `${tone}.main` : 'text.primary' }}>
+      <Typography variant="h6" sx={{ fontSize: '1.05rem', lineHeight: 1.2, fontWeight: 700, color: tone ? `${tone}.main` : 'text.primary' }}>
         {value}
       </Typography>
       <Typography variant="caption" color="text.secondary">{label}</Typography>
@@ -148,7 +157,7 @@ const markdownSx = {
 
 // «Сводка» — первая вкладка карточки встречи: итоги, решения, вопросы, поручения, участники.
 function VoiceMeetingSummary({
-  base, duration, assignmentItems, unresolvedCount = 0, onSeek, onOpenTab,
+  base, duration, assignmentItems, unresolvedCount = 0, onSeek, onOpenTab, onDomainSelect,
 }) {
   const [summary, setSummary] = useState(null);
   const [statuses, setStatuses] = useState([]);
@@ -198,6 +207,17 @@ function VoiceMeetingSummary({
     ? `${summaryText.slice(0, SUMMARY_PREVIEW_CHARS).replace(/\s+\S*$/, '')}…`
     : summaryText;
   const donePct = progress.total ? Math.round((progress.done / progress.total) * 100) : 0;
+  // «На что ушло время»: направления тем (их ставит Jev); без направлений блок не показывается
+  const domainTime = {};
+  const domainStarts = {};
+  (summary.topics || []).forEach((topic) => {
+    if (!topic.domain_label) return;
+    const length = Math.max(0, Number(topic.end || 0) - Number(topic.start || 0));
+    domainTime[topic.domain_label] = (domainTime[topic.domain_label] || 0) + length;
+    (domainStarts[topic.domain_label] = domainStarts[topic.domain_label] || []).push(Number(topic.start || 0));
+  });
+  const domainRows = Object.entries(domainTime).sort((a, b) => b[1] - a[1]);
+  const domainTotal = domainRows.reduce((sum, [, seconds]) => sum + seconds, 0);
   const nothing = !summaryText && !summary.decisions.length && !summary.open_questions.length
     && !summary.participants.length && !progress.total;
 
@@ -219,6 +239,46 @@ function VoiceMeetingSummary({
         />
         {progress.overdue > 0 && <Stat label="просрочено" value={progress.overdue} tone="error" />}
       </Box>
+
+      {domainRows.length > 0 && domainTotal > 0 && (
+        <Box data-testid="meeting-domains">
+          <SectionTitle>На что ушло время</SectionTitle>
+          {/* Доли направлений — одной цветной полосой; клик по отрезку или
+              пункту легенды открывает «Темы» только этого направления. */}
+          <Box
+            aria-hidden
+            sx={{ display: 'flex', height: 10, borderRadius: 5, overflow: 'hidden', mb: 1, gap: '2px' }}
+          >
+            {domainRows.map(([label, seconds], i) => (
+              <Box
+                key={label}
+                title={`${label} · ${Math.round((seconds / domainTotal) * 100)}%`}
+                onClick={onDomainSelect ? () => onDomainSelect(label, domainStarts[label] || []) : undefined}
+                sx={{
+                  flex: `${seconds} 0 0`, minWidth: 3, bgcolor: domainColor(i),
+                  cursor: onDomainSelect ? 'pointer' : 'default',
+                  transition: 'opacity 120ms', '&:hover': { opacity: 0.75 },
+                }}
+              />
+            ))}
+          </Box>
+          <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
+            {domainRows.map(([label, seconds], i) => (
+              <Chip
+                key={label}
+                size="small"
+                variant="outlined"
+                clickable={Boolean(onDomainSelect)}
+                onClick={onDomainSelect ? () => onDomainSelect(label, domainStarts[label] || []) : undefined}
+                title={onDomainSelect ? `Показать темы: ${label}` : undefined}
+                icon={<Box component="span" sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: domainColor(i), ml: '8px !important' }} />}
+                label={`${label} · ${Math.round((seconds / domainTotal) * 100)}%`}
+                sx={{ borderColor: 'divider' }}
+              />
+            ))}
+          </Stack>
+        </Box>
+      )}
 
       {unresolvedCount > 0 && (
         <Alert

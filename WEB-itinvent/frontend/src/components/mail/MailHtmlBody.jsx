@@ -1,10 +1,11 @@
-import { useLayoutEffect, useRef } from 'react';
+import { useLayoutEffect, useMemo, useRef } from 'react';
 import { Box } from '@mui/material';
 import {
   MAIL_HTML_SANDBOX_PERMISSIONS,
   buildMailSandboxSrcDoc,
   measureMailSandboxFrameHeight,
 } from './mailHtmlSandboxDocument';
+import { sanitizeMailHtmlFragment } from './mailHtmlContent';
 import { isMailHtmlSandboxEnabled } from './mailHtmlSandboxFlags';
 
 const EMPTY_MAIL_HTML = '<p style="color:#999">Нет содержимого</p>';
@@ -33,6 +34,12 @@ export default function MailHtmlBody({
   const iframeRef = useRef(null);
   const bodyHtml = html || EMPTY_MAIL_HTML;
   const sandboxEnabled = isMailHtmlSandboxEnabled();
+  // Without the iframe sandbox the markup lands in the page DOM, so it is sanitized here as well
+  // (callers already sanitize; this keeps the component safe on its own).
+  const inlineHtml = useMemo(
+    () => (sandboxEnabled ? '' : sanitizeMailHtmlFragment(bodyHtml)),
+    [sandboxEnabled, bodyHtml],
+  );
   const resolvedColor = color || (colorScheme === 'dark' ? '#f3f2f1' : '#242424');
   const resolvedLinkColor = linkColor || (colorScheme === 'dark' ? '#8cc8ff' : '#1976d2');
 
@@ -72,7 +79,7 @@ export default function MailHtmlBody({
       <Box
         className={className}
         sx={sx}
-        dangerouslySetInnerHTML={{ __html: bodyHtml }}
+        dangerouslySetInnerHTML={{ __html: inlineHtml }}
       />
     );
   }

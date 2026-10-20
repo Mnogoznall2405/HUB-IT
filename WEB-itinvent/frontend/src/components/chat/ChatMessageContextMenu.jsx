@@ -18,6 +18,7 @@ import { chatAPI } from '../../api/client';
 import { useConfirmDialog } from '../feedback/ConfirmDialogProvider';
 import {
   canDeleteChatMessage,
+  isChatGroupManagerRole,
   canEditChatMessage,
   formatMessageTime,
   getMessagePreview,
@@ -161,11 +162,14 @@ export default function ChatMessageContextMenu({
 
   const activeConversationKind = String(activeConversation?.kind || '').trim();
   const canCopyMessage = Boolean(String(getMessagePreview(message) || '').trim());
-  const canTogglePinMessage = Boolean(message?.id);
+  const viewerMemberRole = String(activeConversation?.viewer_member_role || '').trim();
+  // В группе закреплять могут только владелец и модераторы (сервер отвечает 403 остальным).
+  const canTogglePinMessage = Boolean(message?.id)
+    && (activeConversationKind !== 'group' || !viewerMemberRole || isChatGroupManagerRole(viewerMemberRole));
   const canForwardMessage = Boolean(message?.id);
   const canSelectMessage = Boolean(message?.id);
   const canEditMessage = canEditChatMessage(message);
-  const canDeleteMessage = canDeleteChatMessage(message, { conversationKind: activeConversationKind });
+  const canDeleteMessage = canDeleteChatMessage(message, { conversationKind: activeConversationKind, viewerMemberRole });
   // Д2-6: «Прочитали: N» остаётся внизу меню только для своих сообщений в группах.
   const readByCount = Math.max(0, Number(message?.read_by_count || 0));
   const canShowReadReceipts = activeConversationKind === 'group'

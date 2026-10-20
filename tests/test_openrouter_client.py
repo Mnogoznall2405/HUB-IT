@@ -104,6 +104,38 @@ def test_complete_json_can_disable_model_thinking(monkeypatch):
     }
 
 
+@pytest.mark.parametrize("model,open_args,expected_format", [
+    ("anthropic/claude-haiku-5.5", True, "json_object"),
+    ("anthropic/claude-haiku-5.5", False, "json_schema"),
+    ("google/gemini-3.1-flash-lite", True, "json_schema"),
+])
+def test_complete_json_preserves_dynamic_tool_arguments_for_claude(monkeypatch, model, open_args, expected_format):
+    """Provider compatibility: Claude silently closes arbitrary argument maps."""
+    from shared.llm import OpenRouterClient
+
+    calls = []
+    def provider(**kwargs):
+        calls.append(kwargs)
+        # Reproduced RouterAI/Claude response when an open argument map is compiled.
+        loses_args = model.startswith("anthropic/") and open_args and kwargs["response_format"]["type"] == "json_schema"
+        return _completion('{"tool_calls":[{"tool_id":"contacts","args":' +
+                           ('{}' if loses_args else '{"q":"Recipient"}') + '}]}')
+    client = OpenRouterClient()
+    provider_client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=provider)))
+    _patch_build_client(monkeypatch, client, provider_client)
+    arg_schema = {"type": "object", "additionalProperties": True} if open_args else {
+        "type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"], "additionalProperties": False}
+    schema = {"type": "object", "properties": {"tool_calls": {"type": "array", "items": {
+        "type": "object", "properties": {"tool_id": {"type": "string"}, "args": arg_schema},
+        "required": ["tool_id", "args"], "additionalProperties": False}}},
+        "required": ["tool_calls"], "additionalProperties": False}
+    payload, _ = client.complete_json(model=model, system_prompt="Find Recipient; return JSON with q.",
+                                     response_schema=schema, response_healing=False)
+    assert payload["tool_calls"][0]["args"] == {"q": "Recipient"}
+    assert len(calls) == 1
+    assert calls[0]["response_format"]["type"] == expected_format
+
+
 def test_complete_json_falls_back_to_json_object_when_schema_mode_is_unsupported(monkeypatch):
     from backend.ai_chat.openrouter_client import OpenRouterClient
 

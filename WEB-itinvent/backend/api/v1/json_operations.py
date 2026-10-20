@@ -10,6 +10,7 @@ that are shared with the Telegram bot.
 import logging
 from typing import Any, Dict, Optional, List
 from fastapi import APIRouter, HTTPException, Depends, Query, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from backend.models.json_operations import (
@@ -122,7 +123,7 @@ async def add_transfer(
 ):
     """Add a new equipment transfer record."""
     try:
-        record = manager.add_transfer(
+        record = await run_in_threadpool(manager.add_transfer,
             serial_number=data.serial_number,
             new_employee=data.new_employee,
             old_employee=data.old_employee,
@@ -155,7 +156,7 @@ async def get_transfers(
 ):
     """Get equipment transfer records with optional filtering."""
     try:
-        records = manager.get_transfers(
+        records = await run_in_threadpool(manager.get_transfers,
             db_name=db_name,
             branch=branch,
             employee=employee,
@@ -183,7 +184,7 @@ async def bulk_transfer(
 
     for item in data.items:
         try:
-            manager.add_transfer(
+            await run_in_threadpool(manager.add_transfer,
                 serial_number=item.get('serial_number', ''),
                 new_employee=data.new_employee,
                 old_employee=item.get('employee'),
@@ -212,7 +213,7 @@ async def get_transfer_statistics(
 ):
     """Get statistics about equipment transfers."""
     try:
-        stats = manager.get_transfer_statistics()
+        stats = await run_in_threadpool(manager.get_transfer_statistics)
         return TransferStatisticsResponse(**stats)
     except Exception as e:
         logger.error(f"Error getting transfer statistics: {e}")
@@ -229,7 +230,7 @@ async def add_cartridge_replacement(
 ):
     """Add a cartridge replacement record."""
     try:
-        record = manager.add_cartridge_replacement(
+        record = await run_in_threadpool(manager.add_cartridge_replacement,
             printer_model=data.printer_model,
             cartridge_color=data.cartridge_color,
             component_type=data.component_type,
@@ -250,7 +251,7 @@ async def add_cartridge_replacement(
             manufacturer=data.manufacturer,
             employee=data.employee,
         )
-        _touch_recent_card_safely(
+        await run_in_threadpool(_touch_recent_card_safely,
             current_user=current_user,
             db_id=data.db_name,
             inv_no=data.inv_no,
@@ -278,7 +279,7 @@ async def get_cartridge_replacements(
 ):
     """Get cartridge replacement records with optional filtering."""
     try:
-        records = manager.get_cartridge_replacements(
+        records = await run_in_threadpool(manager.get_cartridge_replacements,
             db_name=db_name,
             branch=branch,
             location=location,
@@ -304,7 +305,7 @@ async def get_cartridge_replacement_history(
 ):
     """Get cartridge replacement history for a specific equipment item."""
     try:
-        history = manager.get_cartridge_replacement_history(
+        history = await run_in_threadpool(manager.get_cartridge_replacement_history,
             serial_number=serial_number,
             hw_serial_number=hw_serial_number,
             inv_no=inv_no,
@@ -327,7 +328,7 @@ async def add_battery_replacement(
 ):
     """Add a battery replacement record."""
     try:
-        record = manager.add_battery_replacement(
+        record = await run_in_threadpool(manager.add_battery_replacement,
             serial_number=data.serial_number,
             branch=data.branch,
             location=data.location,
@@ -341,7 +342,7 @@ async def add_battery_replacement(
             manufacturer=data.manufacturer,
             employee=data.employee,
         )
-        _touch_recent_card_safely(
+        await run_in_threadpool(_touch_recent_card_safely,
             current_user=current_user,
             db_id=data.db_name,
             inv_no=data.inv_no,
@@ -369,7 +370,7 @@ async def get_battery_replacements(
 ):
     """Get battery replacement records with optional filtering."""
     try:
-        records = manager.get_battery_replacements(
+        records = await run_in_threadpool(manager.get_battery_replacements,
             db_name=db_name,
             branch=branch,
             serial_number=serial_number,
@@ -392,7 +393,7 @@ async def get_battery_replacement_history(
 ):
     """Get battery replacement history for a specific serial number."""
     try:
-        history = manager.get_battery_replacement_history(
+        history = await run_in_threadpool(manager.get_battery_replacement_history,
             serial_number=serial_number,
             hw_serial_number=hw_serial_number,
         )
@@ -412,7 +413,7 @@ async def add_component_replacement(
 ):
     """Add a component replacement record."""
     try:
-        record = manager.add_component_replacement(
+        record = await run_in_threadpool(manager.add_component_replacement,
             serial_number=data.serial_number,
             component_type=data.component_type,
             component_model=data.component_model,
@@ -430,7 +431,7 @@ async def add_component_replacement(
             component_name=data.component_name,
             equipment_kind=data.equipment_kind,
         )
-        _touch_recent_card_safely(
+        await run_in_threadpool(_touch_recent_card_safely,
             current_user=current_user,
             db_id=data.db_name,
             inv_no=data.inv_no,
@@ -459,7 +460,7 @@ async def get_component_replacements(
 ):
     """Get component replacement records with optional filtering."""
     try:
-        records = manager.get_component_replacements(
+        records = await run_in_threadpool(manager.get_component_replacements,
             db_name=db_name,
             branch=branch,
             component_type=component_type,
@@ -485,7 +486,7 @@ async def get_component_replacement_history(
 ):
     """Get component replacement history for a specific serial number and component."""
     try:
-        history = manager.get_component_replacement_history(
+        history = await run_in_threadpool(manager.get_component_replacement_history,
             serial_number=serial_number,
             hw_serial_number=hw_serial_number,
             component_type=component_type,
@@ -507,7 +508,7 @@ async def add_pc_cleaning(
 ):
     """Add a PC cleaning record."""
     try:
-        record = manager.add_pc_cleaning(
+        record = await run_in_threadpool(manager.add_pc_cleaning,
             serial_number=data.serial_number,
             employee=data.employee,
             branch=data.branch,
@@ -521,7 +522,7 @@ async def add_pc_cleaning(
             model_name=data.model_name,
             manufacturer=data.manufacturer,
         )
-        _touch_recent_card_safely(
+        await run_in_threadpool(_touch_recent_card_safely,
             current_user=current_user,
             db_id=data.db_name,
             inv_no=data.inv_no,
@@ -550,7 +551,7 @@ async def get_pc_cleanings(
 ):
     """Get PC cleaning records with optional filtering."""
     try:
-        records = manager.get_pc_cleanings(
+        records = await run_in_threadpool(manager.get_pc_cleanings,
             db_name=db_name,
             branch=branch,
             employee=employee,
@@ -576,7 +577,7 @@ async def get_pc_cleaning_statistics(
     """Get PC cleaning coverage statistics by branch."""
     try:
         resolved_db = db_name or db_id
-        stats = manager.get_pc_cleaning_statistics(
+        stats = await run_in_threadpool(manager.get_pc_cleaning_statistics,
             period_days=period_days,
             db_name=resolved_db,
         )
@@ -598,7 +599,7 @@ async def get_pc_cleaning_remaining(
     """Get uncleaned PCs for one branch in the selected period."""
     try:
         resolved_db = db_name or db_id
-        payload = manager.get_pc_cleaning_remaining(
+        payload = await run_in_threadpool(manager.get_pc_cleaning_remaining,
             period_days=period_days,
             db_name=resolved_db,
             branch=branch,
@@ -620,7 +621,7 @@ async def get_mfu_statistics(
     """Get MFU/printer/plotter maintenance statistics by branch."""
     try:
         resolved_db = db_name or db_id
-        stats = manager.get_mfu_statistics(
+        stats = await run_in_threadpool(manager.get_mfu_statistics,
             period_days=period_days,
             db_name=resolved_db,
         )
@@ -641,7 +642,7 @@ async def get_battery_statistics(
     """Get UPS battery replacement statistics from JSON records."""
     try:
         resolved_db = db_name or db_id
-        stats = manager.get_battery_statistics(
+        stats = await run_in_threadpool(manager.get_battery_statistics,
             period_days=period_days,
             db_name=resolved_db,
         )
@@ -662,7 +663,7 @@ async def get_pc_components_statistics(
     """Get PC component replacement statistics from JSON records."""
     try:
         resolved_db = db_name or db_id
-        stats = manager.get_pc_components_statistics(
+        stats = await run_in_threadpool(manager.get_pc_components_statistics,
             period_days=period_days,
             db_name=resolved_db,
         )
@@ -719,7 +720,7 @@ async def get_pc_cleaning_history(
 ):
     """Get PC cleaning history for a specific equipment item."""
     try:
-        history = manager.get_pc_cleaning_history(
+        history = await run_in_threadpool(manager.get_pc_cleaning_history,
             serial_number=serial_number,
             hw_serial_number=hw_serial_number,
             inv_no=inv_no,
@@ -746,7 +747,7 @@ async def get_all_works(
 ):
     """Get all works with optional filtering."""
     try:
-        works = manager.get_all_works(
+        works = await run_in_threadpool(manager.get_all_works,
             work_type=work_type,
             db_name=db_name,
             from_date=from_date,
@@ -780,7 +781,7 @@ async def bulk_work(
         try:
             if data.work_type == 'cartridge':
                 printer_model = item.get('model_name', item.get('printer_model', ''))
-                manager.add_cartridge_replacement(
+                await run_in_threadpool(manager.add_cartridge_replacement,
                     printer_model=printer_model,
                     cartridge_color=data.cartridge_color or '',
                     component_type=item.get('component_type', 'cartridge'),
@@ -801,7 +802,7 @@ async def bulk_work(
                     employee=item.get('employee'),
                 )
             elif data.work_type == 'battery':
-                manager.add_battery_replacement(
+                await run_in_threadpool(manager.add_battery_replacement,
                     serial_number=item.get('serial_number') or item.get('serial_no', ''),
                     branch=data.branch,
                     location=data.location,
@@ -815,7 +816,7 @@ async def bulk_work(
                     employee=item.get('employee'),
                 )
             elif data.work_type == 'component':
-                manager.add_component_replacement(
+                await run_in_threadpool(manager.add_component_replacement,
                     serial_number=item.get('serial_number') or item.get('serial_no', ''),
                     component_type=data.component_type or '',
                     component_model=data.component_model or '',
@@ -833,7 +834,7 @@ async def bulk_work(
                     equipment_kind=item.get('equipment_kind'),
                 )
             elif data.work_type == 'cleaning':
-                manager.add_pc_cleaning(
+                await run_in_threadpool(manager.add_pc_cleaning,
                     serial_number=item.get('serial_number') or item.get('serial_no', ''),
                     employee=data.employee or item.get('employee', ''),
                     branch=data.branch,
@@ -868,7 +869,7 @@ async def get_printer_compatibility(
 ):
     """Get cartridge compatibility information for a printer model."""
     try:
-        compatibility = cartridge_db.find_printer_compatibility(printer_model)
+        compatibility = await run_in_threadpool(cartridge_db.find_printer_compatibility, printer_model)
 
         if compatibility is None:
             raise HTTPException(
@@ -915,7 +916,7 @@ async def get_printers_for_cartridge(
     try:
         return CartridgePrintersResponse(
             cartridge_model=cartridge_model,
-            printer_models=cartridge_db.get_printers_for_cartridge(cartridge_model),
+            printer_models=await run_in_threadpool(cartridge_db.get_printers_for_cartridge, cartridge_model),
         )
     except Exception as e:
         logger.error(f"Error getting printers for cartridge: {e}")
@@ -930,7 +931,7 @@ async def get_cartridge_colors(
 ):
     """Get available cartridge colors for a printer model."""
     try:
-        colors = cartridge_db.get_cartridge_colors(printer_model)
+        colors = await run_in_threadpool(cartridge_db.get_cartridge_colors, printer_model)
         return CartridgeColorsResponse(printer_model=printer_model, colors=colors)
     except Exception as e:
         logger.error(f"Error getting cartridge colors: {e}")
@@ -945,7 +946,7 @@ async def get_printer_components(
 ):
     """Get available component types for a printer model."""
     try:
-        components = cartridge_db.get_printer_components(printer_model)
+        components = await run_in_threadpool(cartridge_db.get_printer_components, printer_model)
         return PrinterComponentsResponse(printer_model=printer_model, components=components)
     except Exception as e:
         logger.error(f"Error getting printer components: {e}")
@@ -960,7 +961,7 @@ async def is_color_printer(
 ):
     """Check if a printer model is color."""
     try:
-        is_color = cartridge_db.is_color_printer(printer_model)
+        is_color = await run_in_threadpool(cartridge_db.is_color_printer, printer_model)
         return {"printer_model": printer_model, "is_color": is_color}
     except Exception as e:
         logger.error(f"Error checking if printer is color: {e}")
@@ -996,7 +997,7 @@ async def list_cartridge_database(
     try:
         return [
             _cartridge_entry_response(entry['printer_model'], entry)
-            for entry in cartridge_db.list_entries()
+            for entry in await run_in_threadpool(cartridge_db.list_entries)
         ]
     except Exception as e:
         logger.error(f"Error listing cartridge database: {e}")
@@ -1012,7 +1013,8 @@ async def upsert_cartridge_database_entry(
 ):
     """Create or update one printer compatibility entry (merge-preserving)."""
     try:
-        entry = cartridge_db.upsert_entry(
+        entry = await run_in_threadpool(
+            cartridge_db.upsert_entry,
             printer_model,
             oem_cartridge=data.oem_cartridge,
             compatible_models=(
@@ -1039,7 +1041,7 @@ async def delete_cartridge_database_entry(
 ):
     """Delete one printer compatibility entry."""
     try:
-        if not cartridge_db.delete_entry(printer_model):
+        if not await run_in_threadpool(cartridge_db.delete_entry, printer_model):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No compatibility entry for printer: {printer_model}"

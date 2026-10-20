@@ -324,7 +324,19 @@ def list_reconcile_queue(
     if owner_key not in {"all", "with", "without"}:
         owner_key = "with"
 
+    safe_limit = max(1, min(int(limit or 100), 500))
+    safe_offset = max(0, int(offset or 0))
     configs = _hub_db_configs(db_id)
+    # Multi-DB merge needs every database's first (offset+limit) rows — SQL
+    # OFFSET must only be applied once, either per-DB before the merge slice
+    # (multi-DB) or inside the single query (single-DB).  Applying it twice
+    # silently emptied later pages of a single-database queue.
+    multi_db = len(configs) > 1
+    fetch_offset = 0 if multi_db else safe_offset
+    # The per-DB fetch must cover the whole requested page; a cap that is
+    # smaller than the page end silently empties deep pages.  5000 bounds the
+    # merge cost while still allowing deep pagination.
+    fetch_limit = min(5000, safe_offset + safe_limit) if multi_db else safe_limit
     items: list[dict[str, Any]] = []
     total = 0
     for cfg in configs:
@@ -333,8 +345,8 @@ def list_reconcile_queue(
         try:
             payload = db_queries.list_hub_equipment_by_part_no_status(
                 status=queue_key,
-                limit=limit,
-                offset=0 if len(configs) > 1 else offset,
+                limit=fetch_limit,
+                offset=fetch_offset,
                 q=q,
                 has_owner=owner_key,
                 db_id=one_db_id,
@@ -356,9 +368,7 @@ def list_reconcile_queue(
         )
     )
     _attach_reconcile_link_versions(items)
-    safe_limit = max(1, min(int(limit or 100), 500))
-    safe_offset = max(0, int(offset or 0))
-    page = items[safe_offset : safe_offset + safe_limit]
+    page = items[safe_offset : safe_offset + safe_limit] if multi_db else items[:safe_limit]
     return {
         "queue": queue_key,
         "items": page,
@@ -441,8 +451,9 @@ async def list_owner_mismatches(
             "incomplete" if balance_status == "ok" else balance_status
         )
     candidate_mismatches: list[dict[str, Any]] = []
+    only_in_hub: list[dict[str, Any]] = []
     hub_count_failures = 0
-    if warehouse and balances and not balances_incomplete:
+    if warehouse and not balances_incomplete:
         # 1C gives batch/series rows; compare only the deliberate aggregate
         # unit.  This removes the prior N+1 COM calls and the erroneous
         # fallback that summed unrelated warehouse owners.
@@ -458,9 +469,10 @@ async def list_owner_mismatches(
         async def _compare_one_db(cfg: dict) -> tuple:
             """Resolve warehouse owners and count HUB matches for one DB.
 
-            Returns (mismatch_rows, only_in_1c_rows, candidate_rows, failed).
-            A failed count is reported so the result status can be downgraded
-            instead of silently dropping the warehouse from comparison.
+            Returns (mismatch_rows, only_in_1c_rows, only_in_hub_rows,
+            candidate_rows, failed).  A failed count/list is reported so the
+            result status can be downgraded instead of silently dropping the
+            warehouse from comparison.
             """
             one_db_id = str(cfg.get("id") or "").strip() or None
             one_db_name = str(cfg.get("name") or one_db_id or "default")
@@ -493,21 +505,24 @@ async def list_owner_mismatches(
                     logger.warning("Unable to resolve HUB owner for warehouse=%s: %s", warehouse_name_value, exc)
                     owner_nos = []
 
-            if not owner_nos or not codes:
-                return [], [], [], False
-            try:
-                counts = await asyncio.to_thread(
-                    db_queries.count_equipment_by_owners_and_part_nos,
-                    owner_nos,
-                    codes,
-                    db_id=one_db_id,
-                )
-            except Exception as exc:
-                logger.warning("Batch HUB count failed for warehouse=%s db=%s: %s", warehouse_name_value, one_db_id, exc)
-                return [], [], [], True
+            if not owner_nos:
+                return [], [], [], [], False
+            counts: dict[tuple[int, str], int] = {}
+            if codes:
+                try:
+                    counts = await asyncio.to_thread(
+                        db_queries.count_equipment_by_owners_and_part_nos,
+                        owner_nos,
+                        codes,
+                        db_id=one_db_id,
+                    )
+                except Exception as exc:
+                    logger.warning("Batch HUB count failed for warehouse=%s db=%s: %s", warehouse_name_value, one_db_id, exc)
+                    return [], [], [], [], True
 
             mismatch_rows: list[dict[str, Any]] = []
             only_in_1c_rows: list[dict[str, Any]] = []
+            only_in_hub_rows: list[dict[str, Any]] = []
             candidate_rows: list[dict[str, Any]] = []
             for aggregate in aggregates:
                 code = str(aggregate.get("nomenclature_code") or "").strip()
@@ -538,7 +553,69 @@ async def list_owner_mismatches(
                         only_in_1c_rows.append(payload)
                 else:
                     candidate_rows.append(payload)
-            return mismatch_rows, only_in_1c_rows, candidate_rows, False
+
+            # Hub-side remainder: usable PART_NO groups held by the resolved
+            # owners that never appeared in the 1C balance snapshot.  Without
+            # this branch an item dropped from 1C was invisible to the
+            # "По человеку" reconciliation.
+            code_keys = {code.casefold() for code in codes}
+            hub_only_groups: dict[str, dict[str, Any]] = {}
+            try:
+                for owner_no in owner_nos:
+                    owner_items = await asyncio.to_thread(
+                        db_queries.get_equipment_by_owner, int(owner_no), one_db_id
+                    )
+                    for item in owner_items or []:
+                        part_no = str(item.get("PART_NO") or item.get("part_no") or "").strip()
+                        if not db_queries._is_usable_hub_part_no(part_no):
+                            continue
+                        part_key = part_no.casefold()
+                        if part_key in code_keys:
+                            continue
+                        group = hub_only_groups.get(part_key)
+                        if group is None:
+                            group = {
+                                "part_no": part_no,
+                                "model_name": str(
+                                    item.get("MODEL_NAME") or item.get("model_name") or ""
+                                ).strip(),
+                                "inv_nos": [],
+                                "hub_count": 0,
+                            }
+                            hub_only_groups[part_key] = group
+                        inv_no = str(item.get("INV_NO") or item.get("inv_no") or "").strip()
+                        if inv_no and len(group["inv_nos"]) < 50:
+                            group["inv_nos"].append(inv_no)
+                        group["hub_count"] += 1
+            except Exception as exc:
+                logger.warning(
+                    "Hub owner item listing failed for warehouse=%s db=%s: %s",
+                    warehouse_name_value, one_db_id, exc,
+                )
+                return mismatch_rows, only_in_1c_rows, [], candidate_rows, True
+
+            for group in hub_only_groups.values():
+                payload = {
+                    "nomenclature_code": group["part_no"],
+                    "nomenclature_name": group["model_name"],
+                    "qty_1c": 0.0,
+                    "qty_1c_total": 0.0,
+                    "exact_linked_count": group["hub_count"],
+                    "unlinked_candidate_count": None,
+                    "hub_count": group["hub_count"],
+                    "delta": -float(group["hub_count"]),
+                    "inv_nos": group["inv_nos"],
+                    "hub_db_id": one_db_id or "",
+                    "hub_db_name": one_db_name,
+                    "owner_link_method": mapping_method,
+                    "owner_match_score": match_score,
+                    "status": "ok" if mapping_method == "explicit" else "unknown",
+                }
+                if mapping_method == "explicit":
+                    only_in_hub_rows.append(payload)
+                else:
+                    candidate_rows.append(payload)
+            return mismatch_rows, only_in_1c_rows, only_in_hub_rows, candidate_rows, False
 
         hub_db_configs = _hub_db_configs(db_id)
         if len(hub_db_configs) > 1:
@@ -550,11 +627,12 @@ async def list_owner_mismatches(
         else:
             outcomes = [await _compare_one_db(cfg) for cfg in hub_db_configs]
 
-        for mismatch_rows, only_in_1c_rows, candidate_rows, failed in outcomes:
+        for mismatch_rows, only_in_1c_rows, only_in_hub_rows, candidate_rows, failed in outcomes:
             if failed:
                 hub_count_failures += 1
             mismatches.extend(mismatch_rows)
             only_in_1c.extend(only_in_1c_rows)
+            only_in_hub.extend(only_in_hub_rows)
             candidate_mismatches.extend(candidate_rows)
 
     warehouse_result_status = str(warehouse_payload.get("status") or "").strip().lower()
@@ -584,7 +662,7 @@ async def list_owner_mismatches(
         "hub_pending_total": int(hub_pending.get("total") or 0),
         "items": mismatches,
         "only_in_1c": only_in_1c,
-        "only_in_hub": [],
+        "only_in_hub": only_in_hub,
         "mismatched": mismatches,
         "candidate_mismatches": candidate_mismatches,
         "hub_count_failures": hub_count_failures,

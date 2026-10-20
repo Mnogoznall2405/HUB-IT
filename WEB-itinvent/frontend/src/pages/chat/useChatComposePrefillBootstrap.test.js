@@ -130,21 +130,3 @@ describe('useChatComposePrefillBootstrap helpers', () => {
   });
 });
 
-describe('useChatComposePrefillBootstrap', () => {
-  it('mounts without throwing when compose prefill route is absent', async () => {
-    const { renderHook } = await import('@testing-library/react');
-
-    const { unmount } = renderHook(() => useChatComposePrefillBootstrap({
-      focusComposer: vi.fn(),
-      loadConversations: vi.fn(),
-      locationSearch: '?conversation=c1',
-      navigate: vi.fn(),
-      notifyApiError: vi.fn(),
-      openConversation: vi.fn(),
-      resetSidebarSearch: vi.fn(),
-      shareComposeDraftRef: { current: null },
-    }));
-
-    unmount();
-  });
-});

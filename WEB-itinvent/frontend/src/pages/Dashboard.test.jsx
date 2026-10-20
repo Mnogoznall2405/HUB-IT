@@ -251,6 +251,47 @@ describe('Dashboard today page', () => {
     });
   });
 
+  it('refreshes the docflow summary when a docflow event follows another event inside one debounce window', async () => {
+    renderDashboard();
+    await screen.findByTestId('dashboard-today-header');
+    await waitFor(() => expect(mocks.getDocflowSummary).toHaveBeenCalledTimes(1));
+
+    window.dispatchEvent(new CustomEvent('hub-realtime-mail-changed'));
+    window.dispatchEvent(new CustomEvent('hub-realtime-docflow-changed'));
+
+    await waitFor(() => expect(mocks.getDocflowSummary).toHaveBeenCalledTimes(2));
+    expect(mocks.getDashboard).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not let a slow older dashboard response overwrite a newer one', async () => {
+    let resolveOld;
+    mocks.getDashboard.mockReset();
+    mocks.getDashboard
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }))
+      .mockResolvedValue({
+        announcements: { items: [], total: 0 },
+        my_tasks: { items: [{ ...tasks[0], id: 'new-1', title: 'Новая задача' }], total: 1 },
+        unread_counts: {},
+        summary: {},
+      });
+    renderDashboard();
+    await waitFor(() => expect(mocks.getDashboard).toHaveBeenCalledTimes(1));
+
+    window.dispatchEvent(new CustomEvent('hub-realtime-task-changed'));
+    expect((await screen.findAllByText('Новая задача')).length).toBeGreaterThan(0);
+
+    resolveOld({
+      announcements: { items: [], total: 0 },
+      my_tasks: { items: [{ ...tasks[0], id: 'old-1', title: 'Устаревшая задача' }], total: 1 },
+      unread_counts: {},
+      summary: {},
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.queryByText('Устаревшая задача')).toBeNull();
+    expect(screen.getAllByText('Новая задача').length).toBeGreaterThan(0);
+  });
+
   it('uses the same content model on mobile without tabs or swipe views', async () => {
     renderDashboard('/dashboard', true);
 

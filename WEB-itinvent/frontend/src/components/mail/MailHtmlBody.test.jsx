@@ -37,4 +37,15 @@ describe('MailHtmlBody', () => {
     expect(frame.getAttribute('sandbox')).not.toContain('allow-scripts');
     expect(frame.getAttribute('srcdoc') || frame.getAttribute('srcDoc') || '').toContain('Isolated letter');
   });
+
+  it('strips scripts and event handlers itself when the sandbox flag is off', () => {
+    setMailHtmlSandboxEnabled(false);
+    const { container } = renderWithTheme(
+      <MailHtmlBody html={'<p>Letter</p><img src="x" onerror="window.__mailXss = 1"><script>window.__mailXss = 2</script>'} />,
+    );
+
+    expect(screen.getByText('Letter')).toBeVisible();
+    expect(container.querySelector('script')).toBeNull();
+    expect(container.querySelector('img')?.getAttribute('onerror') ?? null).toBeNull();
+  });
 });

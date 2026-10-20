@@ -72,6 +72,22 @@ export default function useChatGroupActionsController({
     }
   }, [activeConversationIdRef, applyGroupConversationUpdate, notifyApiError]);
 
+  // `{ restricted: true, durationSeconds }` takes the member's right to write (null: until lifted);
+  // `{ restricted: false }` gives it back.
+  const handleSetGroupMemberRestriction = useCallback(async (memberUserId, { restricted, durationSeconds = null } = {}) => {
+    const conversationId = String(activeConversationIdRef.current || '').trim();
+    if (!conversationId) return null;
+    try {
+      const updated = restricted
+        ? await chatAPI.restrictGroupMember(conversationId, memberUserId, durationSeconds)
+        : await chatAPI.liftGroupMemberRestriction(conversationId, memberUserId);
+      return applyGroupConversationUpdate(updated);
+    } catch (error) {
+      notifyApiError(error, 'Не удалось изменить ограничение участника.');
+      throw error;
+    }
+  }, [activeConversationIdRef, applyGroupConversationUpdate, notifyApiError]);
+
   const handleTransferGroupOwnership = useCallback(async (ownerUserId) => {
     const conversationId = String(activeConversationIdRef.current || '').trim();
     if (!conversationId) return null;
@@ -96,11 +112,37 @@ export default function useChatGroupActionsController({
     }
   }, [activeConversationIdRef, applyGroupConversationUpdate, notifyApiError]);
 
-  const handleLeaveGroup = useCallback(async () => {
+  const handleUploadGroupAvatar = useCallback(async (file) => {
     const conversationId = String(activeConversationIdRef.current || '').trim();
     if (!conversationId) return null;
     try {
-      const payload = await chatAPI.leaveGroup(conversationId);
+      const updated = await chatAPI.uploadGroupAvatar(conversationId, file);
+      return applyGroupConversationUpdate(updated);
+    } catch (error) {
+      notifyApiError(error, 'Не удалось обновить фото группы.');
+      throw error;
+    }
+  }, [activeConversationIdRef, applyGroupConversationUpdate, notifyApiError]);
+
+  const handleRemoveGroupAvatar = useCallback(async () => {
+    const conversationId = String(activeConversationIdRef.current || '').trim();
+    if (!conversationId) return null;
+    try {
+      const updated = await chatAPI.deleteGroupAvatar(conversationId);
+      return applyGroupConversationUpdate(updated);
+    } catch (error) {
+      notifyApiError(error, 'Не удалось обновить фото группы.');
+      throw error;
+    }
+  }, [activeConversationIdRef, applyGroupConversationUpdate, notifyApiError]);
+
+  const handleLeaveGroup = useCallback(async (options = {}) => {
+    const conversationId = String(activeConversationIdRef.current || '').trim();
+    if (!conversationId) return null;
+    try {
+      const payload = options?.successorUserId
+        ? await chatAPI.leaveGroup(conversationId, { successorUserId: options.successorUserId })
+        : await chatAPI.leaveGroup(conversationId);
       setConversations((current) => current.filter((item) => String(item?.id || '').trim() !== conversationId));
       setConversationDetailsById((current) => {
         const next = { ...current };
@@ -174,6 +216,9 @@ export default function useChatGroupActionsController({
     handleRemoveGroupMember,
     handleTransferGroupOwnership,
     handleUpdateGroupMemberRole,
+    handleSetGroupMemberRestriction,
     handleUpdateGroupProfile,
+    handleUploadGroupAvatar,
+    handleRemoveGroupAvatar,
   };
 }

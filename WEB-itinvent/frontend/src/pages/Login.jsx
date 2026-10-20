@@ -11,7 +11,7 @@ import {
   getPasskeyAssertion,
   isPasskeySurfaceAvailable,
 } from '../lib/passkeyWebAuthn';
-import { emitAgentDebugLog } from '../lib/debugClientLog';
+import { emitAgentDebugLog, isAgentDebugLoggingEnabled } from '../lib/debugClientLog';
 import { getDesktopWindowsUsername, isDesktopBridgeReady } from '../lib/desktopBridge';
 import { resolvePostAuthenticationPath } from '../lib/aboutOnboarding';
 import {
@@ -720,6 +720,15 @@ function Login() {
     };
   }, [setupData?.otpauth_uri, setupData?.account_name, username]);
 
+  const resumeHandledRef = useRef(false);
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   useEffect(() => {
     if (typeof window === 'undefined') {
       return undefined;
@@ -731,15 +740,25 @@ function Login() {
       return undefined;
     }
 
-    let cancelled = false;
+    // The resume state is one-shot: it is consumed here and must survive the effect re-running
+    // (React StrictMode remount, changed callback identities) while the async setup is in flight.
+    if (resumeHandledRef.current) {
+      return undefined;
+    }
+    resumeHandledRef.current = true;
+
     let resumePayload = null;
     try {
-      const raw = sessionStorage.getItem(TOTP_RESUME_STORAGE_KEY);
+      const raw = window.sessionStorage.getItem(TOTP_RESUME_STORAGE_KEY);
       resumePayload = raw ? JSON.parse(raw) : null;
     } catch {
       resumePayload = null;
     }
-    sessionStorage.removeItem(TOTP_RESUME_STORAGE_KEY);
+    try {
+      window.sessionStorage.removeItem(TOTP_RESUME_STORAGE_KEY);
+    } catch {
+      // Storage may be blocked; the URL parameter is removed below either way.
+    }
 
     const nextUrl = new URL(window.location.href);
     nextUrl.searchParams.delete('resume_challenge');
@@ -756,7 +775,7 @@ function Login() {
       setLoading(true);
 
       if (resumeNextStep === 'totp_verify') {
-        if (cancelled) {
+        if (!isMountedRef.current) {
           return;
         }
         setLoading(false);
@@ -777,7 +796,7 @@ function Login() {
       }
 
       const setupResult = await startTwoFactorSetup(resumeChallenge);
-      if (cancelled) {
+      if (!isMountedRef.current) {
         return;
       }
       setLoading(false);
@@ -803,9 +822,7 @@ function Login() {
       setStep('totp_setup');
     })();
 
-    return () => {
-      cancelled = true;
-    };
+    return undefined;
   }, [dismissLoginNotice, reportLoginError, startTwoFactorSetup]);
 
   useEffect(() => () => {
@@ -982,21 +999,36 @@ function Login() {
   }, []);
 
   useEffect(() => {
+    // sessionStorage can be blocked or throw (private mode, disabled site data): the in-memory ref still prevents a loop.
+    const readSsoAttempted = () => {
+      try {
+        return window.sessionStorage.getItem('hubit.sso.auto_attempted') === '1';
+      } catch {
+        return false;
+      }
+    };
+    const markSsoAttempted = () => {
+      try {
+        window.sessionStorage.setItem('hubit.sso.auto_attempted', '1');
+      } catch {
+        // Ignore: the ref below is the fallback guard.
+      }
+    };
     if (new URLSearchParams(window.location.search).has('sso_error')) {
       windowsSsoAttemptedRef.current = true;
-      sessionStorage.setItem('hubit.sso.auto_attempted', '1');
+      markSsoAttempted();
     }
     if (
       loginModeLoading
       || step !== 'password'
       || !windowsSsoAutoStart
       || windowsSsoAttemptedRef.current
-      || sessionStorage.getItem('hubit.sso.auto_attempted') === '1'
+      || readSsoAttempted()
     ) {
       return;
     }
     windowsSsoAttemptedRef.current = true;
-    sessionStorage.setItem('hubit.sso.auto_attempted', '1');
+    markSsoAttempted();
     startWindowsSso();
   }, [loginModeLoading, step, windowsSsoAutoStart, startWindowsSso]);
 
@@ -1024,6 +1056,12 @@ function Login() {
   }, [showLoginNotice]);
 
   const redirectAfterAuthentication = (userPayload = authenticatedUserRef.current) => {
+    // LoginRoute re-renders and navigates the moment AuthContext.user is set —
+    // it may consume the stored return path first. If the SPA already left
+    // /login, a second window.location.assign() would stomp that navigation.
+    if (!window.location.pathname.startsWith('/login')) {
+      return;
+    }
     const destination = resolvePostAuthenticationPath(userPayload);
     if (shouldForceCanonicalHost()) {
       window.location.assign(buildCanonicalUrl(destination));
@@ -1158,6 +1196,10 @@ function Login() {
     if (typeof window === 'undefined' || step !== 'password' || loginModeLoading) {
       return;
     }
+    // The snapshot below only feeds the opt-in debug log; skip the layout reads and the full-DOM overlay walk otherwise.
+    if (!isAgentDebugLoggingEnabled()) {
+      return;
+    }
     const form = document.querySelector('[data-testid="password-auth-form"]');
     const usernameField = document.getElementById('login-username');
     const root = document.querySelector('[data-testid="login-mobile-layout"]');
@@ -1269,7 +1311,7 @@ function Login() {
     } catch (passkeyError) {
       clearPasskeyPresentationLock();
       const friendlyMessage = extractWebAuthnErrorMessage(passkeyError, 'Не удалось подтвердить вход по биометрии');
-      const overlayAudit = auditLoginPageOverlays();
+      const overlayAudit = isAgentDebugLoggingEnabled() ? auditLoginPageOverlays() : { overlays: [] };
       // #region agent log
       emitAgentDebugLog({
         location: 'Login.jsx:attemptPasskeyLogin:catch',

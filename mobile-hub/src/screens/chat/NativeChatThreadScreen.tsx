@@ -39,6 +39,7 @@ import type {
   ChatUserSummary,
 } from '../../api/types';
 import { isAiConversation, resolveAiBotForConversation } from '../../chat/chatAiWorkspace';
+import { groupMentionAllCandidate, groupPostingBlockReason } from '../../chat/chatModels';
 import { useAiAgentAccess } from '../../chat/useAiAgentAccess';
 import type { ChatMenuAnchor } from '../../chat/chatMessageMenuLayout';
 import { useAuth } from '../../auth/AuthContext';
@@ -248,7 +249,9 @@ export function NativeChatThreadScreen({
 
   const [conversation, setConversation] = useState<ChatConversationSummary | null>(null);
   const aiAccess = useAiAgentAccess(conversationId, conversation?.id === conversationId && isAiConversation(conversation), user?.id, offlineMode);
-  const canCompose = hasPermission('chat.write') && aiAccess.allowed;
+  const groupPostingBlock = conversation?.id === conversationId ? groupPostingBlockReason(conversation) : '';
+  const mentionAllCandidate = conversation?.id === conversationId ? groupMentionAllCandidate(conversation) : null;
+  const canCompose = hasPermission('chat.write') && aiAccess.allowed && !groupPostingBlock;
   const canWrite = canCompose && !offlineMode;
   const reduceMotion = useReducedMotion();
   const reduceMotionRef = useRef(reduceMotion);
@@ -1229,7 +1232,7 @@ export function NativeChatThreadScreen({
           </View> : null}
           {mentionQuery !== null && composerMode?.type !== 'edit' ? (
             <ChatMentionSuggestions
-              users={chatUsers}
+              users={mentionAllCandidate ? [mentionAllCandidate, ...chatUsers] : chatUsers}
               query={mentionQuery}
               onSelect={(selectedUser) => setText((current) => replaceTrailingMention(current, selectedUser.username))}
             />
@@ -1286,7 +1289,7 @@ export function NativeChatThreadScreen({
                 : aiAccess.loading ? 'Проверяем доступ к ИИ-агенту…'
                   : aiAccess.error ? 'Не удалось проверить доступ к ИИ-агенту. Повторим автоматически.'
                     : 'Доступ к ИИ-агенту не предоставлен или отозван. История доступна, черновик не удалён.'
-              : 'У вас нет права отправлять сообщения'}</Text>
+              : groupPostingBlock || 'У вас нет права отправлять сообщения'}</Text>
           </View>
         )}
         </KeyboardStickyView>

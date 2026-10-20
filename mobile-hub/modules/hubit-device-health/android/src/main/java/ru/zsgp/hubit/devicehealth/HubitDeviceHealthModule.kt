@@ -3,10 +3,14 @@ package ru.zsgp.hubit.devicehealth
 import android.app.ActivityManager
 import android.app.ApplicationExitInfo
 import android.content.Context
+import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
@@ -31,6 +35,38 @@ class HubitDeviceHealthModule : Module() {
 
     AsyncFunction("getConnectivityAsync") {
       connectivitySnapshot()
+    }
+
+    // true — приложение исключено из экономии батареи и не усыпляется в фоне.
+    AsyncFunction("isIgnoringBatteryOptimizationsAsync") {
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      val power = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        ?: return@AsyncFunction false
+      power.isIgnoringBatteryOptimizations(context.packageName)
+    }
+
+    // Открывает системный список «Оптимизация батареи»: разрешение не запрашивается
+    // напрямую, пользователь сам выбирает «Не ограничивать» для HUB-IT.
+    AsyncFunction("openBatteryOptimizationSettingsAsync") {
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      try {
+        context.startActivity(
+          Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+        true
+      } catch (_: Exception) {
+        try {
+          context.startActivity(
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+              .setData(Uri.parse("package:" + context.packageName))
+              .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+          )
+          true
+        } catch (_: Exception) {
+          false
+        }
+      }
     }
 
     AsyncFunction("getHistoricalProcessExitInfoAsync") {

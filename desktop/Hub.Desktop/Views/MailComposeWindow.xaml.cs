@@ -168,6 +168,7 @@ public partial class MailComposeWindow : Window, IDesktopHubWindow
         core.NavigationCompleted += Core_NavigationCompleted;
         core.NewWindowRequested += Core_NewWindowRequested;
         core.ProcessFailed += Core_ProcessFailed;
+        core.PermissionRequested += Core_PermissionRequested;
         _bridge = new DesktopBridgeHost(
             core,
             _navigationPolicy,
@@ -179,6 +180,11 @@ public partial class MailComposeWindow : Window, IDesktopHubWindow
         _bridge.MailComposeWindowCloseResult += Bridge_MailComposeWindowCloseResult;
         _bridge.MailComposeWindowSent += Bridge_MailComposeWindowSent;
         ApplyWebViewMemoryUsageTarget(core);
+    }
+
+    private void Core_PermissionRequested(object? sender, CoreWebView2PermissionRequestedEventArgs e)
+    {
+        DesktopPermissionPolicy.Apply(_navigationPolicy, e);
     }
 
     private void Core_NavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)

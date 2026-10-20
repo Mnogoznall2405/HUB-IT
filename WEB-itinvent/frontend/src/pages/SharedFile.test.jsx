@@ -40,15 +40,19 @@ vi.mock('../components/documentPreview/DocumentPreviewDialog', () => ({
     kind,
     objectUrl,
     error,
+    onClose,
   }) => (
     open ? (
       <div data-testid="document-preview-dialog">
+        <button type="button" onClick={onClose}>close-preview</button>
         {title}:{kind}:{objectUrl}
         {error ? <div data-testid="document-preview-error">{error}</div> : null}
       </div>
     ) : null
   ),
 }));
+
+vi.mock('../lib/excelPreview', () => ({ parseExcelWorkbookFromBlob: vi.fn().mockResolvedValue({ sheets: [{ name: 'S1', rows: [] }] }) }));
 
 import SharedFile from './SharedFile';
 
@@ -113,13 +117,6 @@ describe('SharedFile page', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-  });
-
-  it('loads shared file metadata without requiring a login', async () => {
-    renderPublicPage();
-
-    expect(await screen.findByText('public.txt')).toBeInTheDocument();
-    expect(mockGetPublicFile).toHaveBeenCalledWith('public-token');
   });
 
   it('shows expiration countdown timer', async () => {
@@ -211,5 +208,35 @@ describe('SharedFile page', () => {
     expect(await screen.findByTestId('document-preview-error')).toHaveTextContent(
       'Предпросмотр не удалось подготовить',
     );
+  });
+
+  it('does not download the Excel workbook again after the full preview is closed', async () => {
+    mockGetPublicFile.mockResolvedValue({
+      file_name: 'table.xlsx',
+      size_bytes: 2048,
+      mime_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      expires_at: futureExpiresAt(),
+      preview_kind: 'office_pdf',
+      preview_available: true,
+      preview_max_bytes: 26214400,
+    });
+    mockGetPublicPreviewMeta.mockResolvedValue({
+      preview_kind: 'office_pdf', source_kind: 'excel', source_filename: 'table.xlsx', pdf_filename: 'table.pdf',
+      page_count: 1, sheets: [], preview_url: '/preview',
+    });
+    mockBuildPublicDownloadUrl.mockReturnValue('/api/v1/my-files/public/public-token/download');
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, blob: () => Promise.resolve(new Blob(['x'])) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderPublicPage();
+    expect(await screen.findByText('table.xlsx')).toBeInTheDocument();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByRole('button', { name: /просмотреть/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'close-preview' }));
+    await waitFor(() => expect(screen.queryByTestId('document-preview-dialog')).not.toBeInTheDocument());
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

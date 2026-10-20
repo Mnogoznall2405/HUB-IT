@@ -20,8 +20,9 @@ class FakeUpload:
         self.content_type = content_type
         self._content = content
 
-    async def read(self):
-        return self._content
+    async def read(self, size: int = -1):
+        chunk, self._content = self._content[:size] if size >= 0 else self._content, b"" if size < 0 else self._content[size:]
+        return chunk
 
 
 @pytest.mark.asyncio

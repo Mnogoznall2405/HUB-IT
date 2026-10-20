@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -25,6 +26,15 @@ def _utc_now_iso() -> str:
 def _normalize_text(value: Any, default: str = "") -> str:
     text = str(value or "").strip()
     return text or default
+
+
+def _task_email_claim_timeout_sec() -> int:
+    """Age after which a row left in 'sending' is considered abandoned (default 15 min)."""
+    try:
+        value = int(_normalize_text(os.getenv("TASK_EMAIL_CLAIM_TIMEOUT_SEC"), "900"))
+    except (TypeError, ValueError):
+        value = 900
+    return max(60, min(86400, value))
 
 
 def _normalize_email_deadline_remind_hours(value: Any) -> int | None:
@@ -137,8 +147,39 @@ class TaskEmailOutboxMixin:
         if not task_email_service.is_enabled():
             return {"claimed": 0, "sent": 0, "failed": 0}
         safe_limit = self._coerce_limit(limit, default=20, minimum=1, maximum=100)
-        now_iso = _utc_now_iso()
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        stale_before_iso = (now - timedelta(seconds=_task_email_claim_timeout_sec())).isoformat()
+        max_attempts = task_email_service.max_attempts()
         with self._lock, self._connect() as conn:
+            # Rows stuck in 'sending' (worker died after claim) go back to the queue;
+            # the claim already counted the attempt, so exhausted rows end as 'failed'.
+            recovered_failed = self._rowcount(
+                conn.execute(
+                    f"""
+                    UPDATE {self._TASK_EMAIL_OUTBOX_TABLE}
+                    SET status = 'failed', updated_at = ?, last_error = 'Recovered stale sending claim: attempts exhausted'
+                    WHERE status = 'sending' AND updated_at < ? AND attempt_count >= ?
+                    """,
+                    (now_iso, stale_before_iso, max_attempts),
+                )
+            )
+            recovered_pending = self._rowcount(
+                conn.execute(
+                    f"""
+                    UPDATE {self._TASK_EMAIL_OUTBOX_TABLE}
+                    SET status = 'pending', available_at = ?, updated_at = ?, last_error = 'Recovered stale sending claim'
+                    WHERE status = 'sending' AND updated_at < ? AND attempt_count < ?
+                    """,
+                    (now_iso, now_iso, stale_before_iso, max_attempts),
+                )
+            )
+            if recovered_failed or recovered_pending:
+                logger.warning(
+                    "Task email outbox recovered stale claims: requeued=%s failed=%s",
+                    recovered_pending,
+                    recovered_failed,
+                )
             rows = conn.execute(
                 f"""
                 SELECT *
@@ -149,22 +190,29 @@ class TaskEmailOutboxMixin:
                 """,
                 (now_iso, safe_limit),
             ).fetchall()
-            claimed = [dict(row) for row in rows]
-            for row in claimed:
-                conn.execute(
+            claimed = []
+            for row in rows:
+                payload = dict(row)
+                # Conditional claim: a concurrent process that won the row leaves rowcount 0.
+                result = conn.execute(
                     f"""
                     UPDATE {self._TASK_EMAIL_OUTBOX_TABLE}
                     SET status = 'sending', attempt_count = attempt_count + 1, updated_at = ?
                     WHERE id = ? AND status = 'pending'
                     """,
-                    (now_iso, _normalize_text(row.get("id"))),
+                    (now_iso, _normalize_text(payload.get("id"))),
                 )
+                if self._rowcount(result) == 1:
+                    claimed.append(payload)
             conn.commit()
 
         sent = 0
         failed = 0
         for row in claimed:
             outbox_id = _normalize_text(row.get("id"))
+            if not self._touch_task_email_claim(outbox_id):
+                # Claim was recovered/taken over while earlier rows of this batch were sending.
+                continue
             try:
                 ok = task_email_service.send_task_email(
                     recipient_email=_normalize_text(row.get("recipient_email")),
@@ -182,6 +230,23 @@ class TaskEmailOutboxMixin:
                 failed += 1
                 self._mark_task_email_failed(row, str(exc))
         return {"claimed": len(claimed), "sent": sent, "failed": failed}
+
+    def _touch_task_email_claim(self, outbox_id: str) -> bool:
+        """Refresh the claim heartbeat right before sending; False if the row is no longer ours."""
+        normalized_id = _normalize_text(outbox_id)
+        if not normalized_id:
+            return False
+        with self._lock, self._connect() as conn:
+            result = conn.execute(
+                f"""
+                UPDATE {self._TASK_EMAIL_OUTBOX_TABLE}
+                SET updated_at = ?
+                WHERE id = ? AND status = 'sending'
+                """,
+                (_utc_now_iso(), normalized_id),
+            )
+            conn.commit()
+            return self._rowcount(result) == 1
 
     def _mark_task_email_sent(self, outbox_id: str) -> None:
         normalized_id = _normalize_text(outbox_id)
@@ -215,7 +280,7 @@ class TaskEmailOutboxMixin:
                 f"""
                 UPDATE {self._TASK_EMAIL_OUTBOX_TABLE}
                 SET status = ?, available_at = ?, updated_at = ?, last_error = ?
-                WHERE id = ?
+                WHERE id = ? AND status <> 'sent'
                 """,
                 (status, available_at, now_iso, _normalize_text(error)[:1000], outbox_id),
             )

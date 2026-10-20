@@ -267,7 +267,7 @@ export default function DocumentPreviewDialog({
       <DialogTitle
         sx={{
           px: { xs: 1, sm: 1.5 },
-          pt: { xs: 'calc(env(safe-area-inset-top) + 8px)', sm: 1.25 },
+          pt: { xs: 1, sm: 1.25 },
           pb: 1,
           borderBottom: '1px solid',
           borderColor: 'divider',

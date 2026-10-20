@@ -75,7 +75,7 @@ const setMatchMedia = (matches = false) => {
   });
 };
 
-const renderDialog = (allowCrossDatabase, canViewWarehouse1C = false) => render(
+const renderDialog = (allowCrossDatabase, canViewWarehouse1C = false, extraProps = {}) => render(
   <MemoryRouter>
     <EmployeeEquipmentDialog
       open
@@ -84,9 +84,23 @@ const renderDialog = (allowCrossDatabase, canViewWarehouse1C = false) => render(
       allowCrossDatabase={allowCrossDatabase}
       canViewWarehouse1C={canViewWarehouse1C}
       onClose={() => {}}
+      {...extraProps}
     />
   </MemoryRouter>,
 );
+
+const matchedWarehouse = {
+  status: 'matched',
+  warehouse: { ref: 'wh-1', name: 'Иванова Е.Ю.' },
+  balances: [],
+};
+
+const balancesPayload = (balances, meta = { status: 'ok' }) => ({
+  status: 'matched',
+  warehouse: { ref: 'wh-1', name: 'Иванова Е.Ю.' },
+  balances,
+  balances_meta: meta,
+});
 
 describe('EmployeeEquipmentDialog', () => {
   beforeEach(() => {
@@ -451,6 +465,194 @@ describe('EmployeeEquipmentDialog', () => {
     expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
     expect(screen.getByRole('button', { name: 'Скопировать расхождения' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Задача на инвентаризацию' })).toBeDisabled();
+  });
+
+  it('makes the Hub scope explicit', async () => {
+    getEmployeeWarehouse.mockResolvedValue(matchedWarehouse);
+    const currentScope = renderDialog(false, true);
+    expect(await screen.findByText(/текущая база/i)).toBeInTheDocument();
+    expect(screen.queryByText(/все базы/i)).not.toBeInTheDocument();
+    currentScope.unmount();
+
+    renderDialog(true, true);
+    expect(await screen.findByText(/все базы/i)).toBeInTheDocument();
+  });
+
+  it('never compares before the Hub equipment finishes loading', async () => {
+    let resolveHub;
+    getEmployeeEquipment.mockImplementation(() => new Promise((resolve) => {
+      resolveHub = resolve;
+    }));
+    getEmployeeWarehouse
+      .mockResolvedValueOnce(matchedWarehouse)
+      .mockResolvedValueOnce(balancesPayload([
+        { nomenclature_code: '10', nomenclature_name: 'Ноутбук', qty_balance: 1 },
+      ]));
+
+    renderDialog(false, true);
+
+    expect(await screen.findByText('Ноутбук')).toBeInTheDocument();
+    expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+    expect(screen.getByRole('button', { name: 'Скопировать расхождения' })).toBeDisabled();
+
+    await act(async () => {
+      resolveHub({ equipment: [{ INV_NO: 'INV-1', MODEL_NAME: 'ThinkPad', PART_NO: '10' }] });
+    });
+
+    await waitFor(() => {
+      expect(document.querySelectorAll('[data-compare-status="match"]').length).toBeGreaterThan(0);
+    });
+    expect(screen.getByRole('button', { name: 'Скопировать расхождения' })).not.toBeDisabled();
+  });
+
+  it('suppresses comparison and actions when the Hub lookup fails', async () => {
+    getEmployeeEquipment.mockRejectedValue(new Error('boom'));
+    getEmployeeWarehouse
+      .mockResolvedValueOnce(matchedWarehouse)
+      .mockResolvedValueOnce(balancesPayload([
+        { nomenclature_code: '10', nomenclature_name: 'Ноутбук', qty_balance: 1 },
+      ]));
+
+    renderDialog(false, true);
+
+    expect(await screen.findByText('Ноутбук')).toBeInTheDocument();
+    expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+    expect(screen.getByRole('button', { name: 'Скопировать расхождения' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Задача на инвентаризацию' })).toBeDisabled();
+  });
+
+  it('suppresses comparison when a cross-database lookup reports partial errors', async () => {
+    getEmployeeEquipment.mockResolvedValue({
+      equipment: [{ INV_NO: 'INV-1', MODEL_NAME: 'ThinkPad', PART_NO: '10' }],
+      db_errors: ['archive'],
+    });
+    getEmployeeWarehouse
+      .mockResolvedValueOnce(matchedWarehouse)
+      .mockResolvedValueOnce(balancesPayload([
+        { nomenclature_code: '10', nomenclature_name: 'Ноутбук', qty_balance: 1 },
+      ]));
+
+    renderDialog(true, true);
+
+    expect(await screen.findByText(/список может быть неполным/i)).toBeInTheDocument();
+    expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+    expect(screen.getByRole('button', { name: 'Скопировать расхождения' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Задача на инвентаризацию' })).toBeDisabled();
+  });
+
+  it('treats balances meta without a status as unavailable', async () => {
+    getEmployeeEquipment.mockResolvedValue({
+      equipment: [{ INV_NO: 'INV-1', MODEL_NAME: 'ThinkPad', PART_NO: '10' }],
+    });
+    getEmployeeWarehouse
+      .mockResolvedValueOnce(matchedWarehouse)
+      .mockResolvedValueOnce(balancesPayload(
+        [{ nomenclature_code: '10', nomenclature_name: 'Ноутбук', qty_balance: 1 }],
+        {},
+      ));
+
+    renderDialog(false, true);
+
+    expect(await screen.findByText('Ноутбук')).toBeInTheDocument();
+    expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+    expect(screen.getByRole('button', { name: 'Скопировать расхождения' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Задача на инвентаризацию' })).toBeDisabled();
+  });
+
+  it.each([
+    [{ unexpected: true }, 'object without equipment'],
+    [null, 'null'],
+  ])('suppresses comparison when the Hub response is malformed (%s)', async (response) => {
+    getEmployeeEquipment.mockResolvedValue(response);
+    getEmployeeWarehouse
+      .mockResolvedValueOnce(matchedWarehouse)
+      .mockResolvedValueOnce(balancesPayload([
+        { nomenclature_code: '10', nomenclature_name: 'Ноутбук', qty_balance: 1 },
+      ]));
+
+    renderDialog(false, true);
+
+    expect(await screen.findByText('Ноутбук')).toBeInTheDocument();
+    expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+    expect(screen.getByRole('button', { name: 'Скопировать расхождения' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Задача на инвентаризацию' })).toBeDisabled();
+  });
+
+  it.each([
+    ['', 'empty string'],
+    ['abc', 'non-numeric'],
+    [-1, 'negative'],
+    [null, 'missing'],
+    [true, 'boolean'],
+    [[1], 'array'],
+  ])('suppresses comparison for a %s qty_balance (%s)', async (qty) => {
+    getEmployeeEquipment.mockResolvedValue({
+      equipment: [{ INV_NO: 'INV-1', MODEL_NAME: 'ThinkPad', PART_NO: '10' }],
+    });
+    getEmployeeWarehouse
+      .mockResolvedValueOnce(matchedWarehouse)
+      .mockResolvedValueOnce(balancesPayload([
+        { nomenclature_code: '10', nomenclature_name: 'Ноутбук', qty_balance: qty },
+      ]));
+
+    renderDialog(false, true);
+
+    expect(await screen.findByText('Ноутбук')).toBeInTheDocument();
+    expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+    expect(screen.getByRole('button', { name: 'Скопировать расхождения' })).toBeDisabled();
+  });
+
+  it('publishes a fresh owner summary once both sources are complete', async () => {
+    const onComparisonChange = vi.fn();
+    getEmployeeEquipment.mockResolvedValue({
+      equipment: [
+        { INV_NO: '100021', MODEL_NAME: 'Philips 243V', PART_NO: 'ЦБ-00195776' },
+        { INV_NO: '100022', MODEL_NAME: 'Philips 243V', PART_NO: 'ЦБ-00195776' },
+      ],
+    });
+    getEmployeeWarehouse
+      .mockResolvedValueOnce(matchedWarehouse)
+      .mockResolvedValueOnce(balancesPayload(
+        [{ nomenclature_code: 'ЦБ-00195776', nomenclature_name: 'Монитор', qty_balance: 1 }],
+        { status: 'ok', as_of: '2026-05-27T12:00:00.000Z' },
+      ));
+
+    renderDialog(false, true, { onComparisonChange });
+
+    await waitFor(() => {
+      expect(onComparisonChange).toHaveBeenCalledWith(expect.objectContaining({
+        ownerNo: 42,
+        summary: expect.objectContaining({
+          status: 'diff',
+          part_quantities: {
+            'цб-00195776': { hub_count: 2, qty_1c: 1 },
+          },
+        }),
+      }));
+    });
+    const summary = onComparisonChange.mock.calls.at(-1)[0].summary;
+    expect(summary.as_of).toBe('2026-05-27T12:00:00.000Z');
+    expect(summary.counts.hub_items).toBe(2);
+  });
+
+  it('does not publish a current-DB summary from a cross-database dialog', async () => {
+    const onComparisonChange = vi.fn();
+    getEmployeeEquipment.mockResolvedValue({
+      equipment: [{ INV_NO: 'INV-1', MODEL_NAME: 'ThinkPad', PART_NO: '10' }],
+    });
+    getEmployeeWarehouse
+      .mockResolvedValueOnce(matchedWarehouse)
+      .mockResolvedValueOnce(balancesPayload([
+        { nomenclature_code: '10', nomenclature_name: 'Ноутбук', qty_balance: 1 },
+      ]));
+
+    renderDialog(true, true, { onComparisonChange });
+
+    expect(await screen.findByText('Ноутбук')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(document.querySelectorAll('[data-compare-status="match"]').length).toBeGreaterThan(0);
+    });
+    expect(onComparisonChange).not.toHaveBeenCalled();
   });
 
   it('exports both visible tables to Excel after they finish loading', async () => {

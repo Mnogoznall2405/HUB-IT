@@ -26,7 +26,7 @@ const renderCard = (props = {}) => render(
     onAction={() => {}}
     dataMode={DATA_MODE_EQUIPMENT}
     canWrite
-    isAdmin
+    canDeleteEquipment
     {...props}
   />
 );
@@ -91,7 +91,7 @@ describe('ModernEquipmentCard', () => {
               onAction={() => {}}
               dataMode={DATA_MODE_EQUIPMENT}
               canWrite
-              isAdmin
+              canDeleteEquipment
               expanded={expandedSet.has('1001')}
               onToggleExpand={toggleExpand}
             />

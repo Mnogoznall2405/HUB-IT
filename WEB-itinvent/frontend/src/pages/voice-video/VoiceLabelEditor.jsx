@@ -4,7 +4,6 @@ import {
   Autocomplete,
   Box,
   Button,
-  Checkbox,
   Chip,
   CircularProgress,
   Dialog,
@@ -18,6 +17,8 @@ import {
   Menu,
   MenuItem,
   Paper,
+  Radio,
+  RadioGroup,
   Stack,
   Switch,
   TextField,
@@ -36,6 +37,7 @@ import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
 import UndoOutlinedIcon from '@mui/icons-material/UndoOutlined';
 import { voiceLabelingAPI } from '../../api/voiceLabeling';
 import VoiceLabelCalibrationPanel from './VoiceLabelCalibrationPanel';
+import VoiceLabelFacesPanel from './VoiceLabelFacesPanel';
 import VoiceLabelQualityPanel from './VoiceLabelQualityPanel';
 import VoiceLabelWaveform from './VoiceLabelWaveform';
 import { hubTaskSupportAPI } from '../../api/hubTaskSupport';
@@ -263,7 +265,7 @@ function VoiceLabelEditor({ projectId, onClose }) {
   const [exportMenu, setExportMenu] = useState(null);
   const [peaks, setPeaks] = useState(null);
   const [enrollOpen, setEnrollOpen] = useState(false);
-  const [enrollReplace, setEnrollReplace] = useState(false);
+  const [enrollMode, setEnrollMode] = useState('skip');
   const [enrollBusy, setEnrollBusy] = useState(false);
   const mediaRef = useRef(null);
   const listRef = useRef(null);
@@ -386,11 +388,13 @@ function VoiceLabelEditor({ projectId, onClose }) {
   };
 
   // Autosave after a pause in editing.
+  // `saving` is a dependency so that edits made during a long save get a fresh autosave timer
+  // once the save finishes (a timer that fired mid-save is skipped by save()).
   useEffect(() => {
-    if (!dirty || conflict) return undefined;
+    if (!dirty || conflict || saving) return undefined;
     const timer = setTimeout(() => { save(); }, AUTOSAVE_MS);
     return () => clearTimeout(timer);
-  }, [dirty, conflict, segments, speakers, title, save]);
+  }, [dirty, conflict, saving, segments, speakers, title, save]);
 
   useEffect(() => {
     if (!dirty) return undefined;
@@ -806,7 +810,7 @@ function VoiceLabelEditor({ projectId, onClose }) {
                   variant="caption"
                   color={r.ok ? 'success.main' : 'error.main'}
                 >
-                  {r.name}: {r.skipped === 'exists' ? 'уже есть в эталонах' : r.ok ? 'записан' : 'не записан'}
+                  {r.name}: {r.skipped === 'exists' ? 'уже есть в эталонах' : r.ok ? (r.mode === 'merge' ? 'слит в эталон' : 'записан') : 'не записан'}
                 </Typography>
               ))}
               {enrollJob.status === 'failed' && !(enrollJob.enroll || []).length && (
@@ -830,6 +834,7 @@ function VoiceLabelEditor({ projectId, onClose }) {
           hasNamedSpeakers={savedNamedLabels.length > 0}
           onProjectUpdate={mergeAux}
         />
+        <VoiceLabelFacesPanel projectId={projectId} auxJob={project.aux_job} onProjectUpdate={mergeAux} />
         </Stack>
       </Box>
 
@@ -842,11 +847,15 @@ function VoiceLabelEditor({ projectId, onClose }) {
           {savedNamedLabels.map((label) => (
             <Typography key={label} variant="body2">• {speakers[label]?.name} ({label})</Typography>
           ))}
-          <FormControlLabel
+          <RadioGroup
             sx={{ mt: 1 }}
-            control={<Checkbox checked={enrollReplace} onChange={(e) => setEnrollReplace(e.target.checked)} />}
-            label="Заменить голоса, которые уже есть в эталонах"
-          />
+            value={enrollMode}
+            onChange={(e) => setEnrollMode(e.target.value)}
+          >
+            <FormControlLabel value="skip" control={<Radio size="small" />} label="Пропустить тех, кто уже есть в эталонах" />
+            <FormControlLabel value="merge" control={<Radio size="small" />} label="Слить: добавить сэмпл к существующему эталону (точность по разным записям)" />
+            <FormControlLabel value="replace" control={<Radio size="small" />} label="Заменить существующий эталон новым сэмплом" />
+          </RadioGroup>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setEnrollOpen(false)} disabled={enrollBusy}>Отмена</Button>
@@ -857,7 +866,7 @@ function VoiceLabelEditor({ projectId, onClose }) {
               setEnrollBusy(true);
               setSaveError('');
               try {
-                mergeAux(await voiceLabelingAPI.enrollVoices(projectId, { labels: savedNamedLabels, replace: enrollReplace }));
+                mergeAux(await voiceLabelingAPI.enrollVoices(projectId, { labels: savedNamedLabels, mode: enrollMode }));
                 setEnrollOpen(false);
               } catch (err) {
                 setSaveError(extractDetail(err, 'Не удалось записать голоса'));

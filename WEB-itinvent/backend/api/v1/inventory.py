@@ -2333,6 +2333,7 @@ def receive_inventory(
 @router.get("/changes")
 def get_inventory_changes(
     limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
 ):
     now_ts = int(time.time())
     changes = _prune_old_changes(

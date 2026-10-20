@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from backend.api.deps import (
     ensure_user_permission,
@@ -164,6 +164,31 @@ async def get_address_book_snapshot(
         _build_snapshot_response,
         current_user,
         **snapshot_kwargs,
+    )
+
+
+@router.get("/photos/{code}")
+async def get_employee_photo(
+    code: str,
+    _: User = Depends(get_current_active_user),
+):
+    """Serve an employee photo by ZUP employee_code to a signed-in user.
+
+    Browsers load it from <img>, which carries the session cookie, so no bearer header is needed. It used to be
+    open to anyone, which let a client enumerate employee codes and download every photo (audit 01-B14)."""
+    from backend.services.employee_photo_service import employee_photo_file
+    photo_path = await run_in_threadpool(employee_photo_file, code)
+    if photo_path is None:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    stat = photo_path.stat()
+    etag = f"\"{int(stat.st_mtime)}-{stat.st_size}\""
+    return FileResponse(
+        path=str(photo_path),
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "private, max-age=0, must-revalidate",
+            "ETag": etag,
+        },
     )
 
 

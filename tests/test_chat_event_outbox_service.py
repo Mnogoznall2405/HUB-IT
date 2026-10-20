@@ -203,3 +203,41 @@ def test_chat_event_outbox_dispatcher_processes_batch_with_bounded_concurrency(c
     assert result["claimed"] == 5
     assert result["delivered"] == 5
     assert max_active == 2
+
+
+def test_metadata_failure_does_not_block_message_and_is_retried_durably(chat_event_env, monkeypatch):
+    from dataclasses import asdict
+    from datetime import datetime, timezone
+    service, worker = chat_event_env["service"], chat_event_env["worker"]
+    conversation_id = chat_event_env["conversation"]["id"]
+    message = service.send_message(current_user_id=1, conversation_id=conversation_id, body="Ready result", defer_push_notifications=True)
+    jobs = asyncio.run(chat_realtime_side_effects_module.build_message_created_event_jobs(
+        conversation_id=conversation_id, message_id=message["id"], include_metadata=False))
+    worker.enqueue_events([asdict(job) for job in jobs] + [{
+        "event_type": "chat.message.metadata.refresh", "target_scope": "inbox", "target_user_id": 1,
+        "conversation_id": conversation_id, "message_id": message["id"], "payload": {},
+        "dedupe_key": f"message_metadata:{message['id']}",
+    }])
+    published = []
+    async def publish(**kwargs):
+        published.append(kwargs["event_type"])
+    monkeypatch.setattr(chat_realtime_side_effects_module.chat_realtime, "publish_inbox_event", publish)
+    original = chat_realtime_side_effects_module.build_message_metadata_event_jobs
+    async def fail(**kwargs):
+        raise RuntimeError("Temporary summary outage")
+    monkeypatch.setattr(chat_realtime_side_effects_module, "build_message_metadata_event_jobs", fail)
+    asyncio.run(worker.poll_once())
+    assert "chat.message.created" in published
+    assert "chat.message.metadata.refresh" not in published
+    with chat_db_module.chat_session() as session:
+        row = session.execute(select(chat_models_module.ChatEventOutbox).where(
+            chat_models_module.ChatEventOutbox.event_type == "chat.message.metadata.refresh")).scalar_one()
+        assert row.status == "queued"
+        assert row.attempt_count == 1
+        row.next_attempt_at = datetime.now(timezone.utc)
+    monkeypatch.setattr(chat_realtime_side_effects_module, "build_message_metadata_event_jobs", original)
+    asyncio.run(worker.poll_once())
+    asyncio.run(worker.poll_once())
+    assert "chat.conversation.updated" in published
+    assert "chat.unread.summary" in published
+    assert "chat.message.metadata.refresh" not in published

@@ -50,7 +50,7 @@ export default function ChatGroupCreateFlow({
   // Бэкенд добавляет создателя в множество участников: выбрать можно на 1 меньше.
   const selectableLimit = hasLimit ? Math.max(0, Number(maxMembers) - 1) : null;
   const limitReached = selectableLimit != null && selected.length >= selectableLimit;
-  const canProceed = selected.length >= 2 && !creating;
+  const canProceed = selected.length >= 1 && !creating;
   const isDetailsStep = step === 'details';
 
   const subtitle = hasLimit

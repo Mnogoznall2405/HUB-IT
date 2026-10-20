@@ -28,6 +28,7 @@ const contactLabelSx = {
 const contactValueBoxSx = {
   display: 'flex',
   alignItems: 'center',
+  flexWrap: 'wrap',
   gap: 0.75,
   minWidth: 0,
   flex: { md: 1 },
@@ -37,7 +38,6 @@ const contactValueSx = {
   lineHeight: 1.2,
   overflowWrap: 'anywhere',
   minWidth: 0,
-  flex: 1,
 };
 
 // Contact action icons: 44px on touch, 36px on desktop per design system targets.

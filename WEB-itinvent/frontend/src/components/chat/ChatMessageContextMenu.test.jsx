@@ -96,6 +96,24 @@ describe('ChatMessageContextMenu action list (Д2-6)', () => {
     expect(screen.getByRole('menuitem', { name: 'Удалить сообщение' })).toBeInTheDocument();
   });
 
+  it('hides pin and moderation delete from a plain group member but keeps them for moderators', () => {
+    const incoming = { id: 'msg-3', kind: 'text', body: 'incoming', is_own: false };
+    const { unmount } = renderMenu({
+      message: incoming,
+      activeConversation: { id: 'conv-1', kind: 'group', viewer_member_role: 'member' },
+    });
+    expect(screen.queryByRole('menuitem', { name: 'Закрепить' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Удалить сообщение' })).not.toBeInTheDocument();
+    unmount();
+
+    renderMenu({
+      message: incoming,
+      activeConversation: { id: 'conv-1', kind: 'group', viewer_member_role: 'moderator' },
+    });
+    expect(screen.getByRole('menuitem', { name: 'Закрепить' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Удалить сообщение' })).toBeInTheDocument();
+  });
+
   it('shows the compact footer «Прочитали: N» for own group messages and previews readers on hover', async () => {
     chatAPI.getMessageReads.mockResolvedValue({
       items: [

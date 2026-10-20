@@ -165,3 +165,86 @@ def test_vcs_launch_token_is_one_time_and_keeps_password_out_of_token_response(m
 
     replay_response = client.get(f"/vcs/launch/{token}.vnc")
     assert replay_response.status_code == 404
+
+
+def _seed(name: str, comp_id: str) -> dict:
+    return {
+        "id": comp_id,
+        "name": name,
+        "ip_address": "10.0.0.1",
+        "location": "",
+        "created_at": "2026-03-27T10:00:00+00:00",
+        "updated_at": "2026-03-27T10:00:00+00:00",
+    }
+
+
+def test_vcs_changes_do_not_wipe_rows_added_by_another_process(temp_dir, monkeypatch):
+    """Another worker added a row after this request read its snapshot (stale view)."""
+    monkeypatch.setattr("backend.appdb.db.config.app_db.database_url", _sqlite_url(temp_dir), raising=False)
+    real_get_all = vcs_module._get_all_computers
+    other = _seed("Added elsewhere", "vcs-other")
+    target = _seed("Target", "vcs-target")
+    assert vcs_module._save_all_computers([other, target]) is True
+
+    client = _vcs_client(_make_user(permissions=["vcs.read", "vcs.manage"]))
+    # The request-time snapshot does not know about the row another worker inserted.
+    monkeypatch.setattr(vcs_module, "_get_all_computers", lambda: [dict(target)])
+
+    created = client.post("/vcs/computers", json={"name": "New", "ip_address": "10.0.0.9"})
+    assert created.status_code == 200
+    assert client.put("/vcs/computers/vcs-target", json={"location": "Hall"}).status_code == 200
+
+    ids = {item["id"] for item in real_get_all()}
+    assert {"vcs-other", "vcs-target", created.json()["id"]} <= ids
+    assert next(i for i in real_get_all() if i["id"] == "vcs-target")["location"] == "Hall"
+
+    assert client.delete("/vcs/computers/vcs-target").status_code == 200
+    assert client.delete("/vcs/computers/vcs-target").status_code == 404
+    ids_after = {item["id"] for item in real_get_all()}
+    assert "vcs-other" in ids_after and created.json()["id"] in ids_after
+    assert "vcs-target" not in ids_after
+
+
+def test_vcs_json_mode_concurrent_changes_do_not_lose_rows(monkeypatch):
+    """JSON mode rewrites the whole list: parallel request threads must not overwrite each other."""
+    import threading
+    import time
+
+    class SlowStore:
+        def __init__(self):
+            self.data: list = []
+
+        def load_json(self, key, default_content=None):
+            snapshot = [dict(item) for item in self.data]
+            time.sleep(0.02)  # a widening window between "read" and "write"
+            return snapshot
+
+        def save_json(self, key, data):
+            self.data = [dict(item) for item in data]
+            return True
+
+    store = SlowStore()
+    monkeypatch.setattr(vcs_module, "is_app_database_configured", lambda: False)
+    monkeypatch.setattr(vcs_module, "get_local_store", lambda: store)
+
+    threads = [
+        threading.Thread(target=vcs_module._create_computer, args=(_seed(f"T{i}", f"vcs-{i}"),))
+        for i in range(8)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(item["id"] for item in store.data) == sorted(f"vcs-{i}" for i in range(8))
+
+    deleters = [threading.Thread(target=vcs_module._delete_computer, args=(f"vcs-{i}",)) for i in range(4)]
+    updaters = [
+        threading.Thread(target=vcs_module._update_computer, args=(f"vcs-{i}", {"location": "L"}))
+        for i in range(4, 8)
+    ]
+    for thread in deleters + updaters:
+        thread.start()
+    for thread in deleters + updaters:
+        thread.join()
+    assert sorted(item["id"] for item in store.data) == [f"vcs-{i}" for i in range(4, 8)]
+    assert all(item["location"] == "L" for item in store.data)

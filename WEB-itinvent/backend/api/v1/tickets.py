@@ -29,6 +29,7 @@ from backend.services.tickets_notification_service import tickets_notification_s
 from backend.services.tickets_service import (
     CreateRequestDTO,
     FinOpFilters,
+    MAX_ATTACHMENT_SIZE,
     Pagination,
     PagedResult,
     RequestFilters,
@@ -39,6 +40,7 @@ from backend.services.tickets_service import (
     UpdateRequestDTO,
     tickets_service,
 )
+from backend.utils.upload_limits import read_upload_limited
 
 
 router = APIRouter()
@@ -302,11 +304,9 @@ async def list_requests(
     )
     pagination = Pagination(page=page, page_size=page_size)
 
-    result = tickets_service.list_requests(
-        filters=filters,
+    result = await run_in_threadpool(tickets_service.list_requests, filters=filters,
         pagination=pagination,
-        user_permissions=list(current_user.permissions or []),
-    )
+        user_permissions=list(current_user.permissions or []))
     return _paged_payload(result)
 
 
@@ -316,7 +316,7 @@ async def get_request(
     current_user: User = Depends(require_permission(PERM_TICKETS_READ)),
 ):
     """Get a single ticket request by ID."""
-    result = tickets_service.get_request(request_id)
+    result = await run_in_threadpool(tickets_service.get_request, request_id)
     if result is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -349,7 +349,7 @@ async def create_request(
             is_urgent=body.is_urgent,
             source=body.source,
         )
-        result = tickets_service.create_request(dto)
+        result = await run_in_threadpool(tickets_service.create_request, dto)
         return result
     except TicketsValidationError as exc:
         raise HTTPException(
@@ -411,12 +411,10 @@ async def update_request(
     dto._provided_fields = provided_fields
 
     try:
-        result = tickets_service.update_request(
-            request_id=request_id,
+        result = await run_in_threadpool(tickets_service.update_request, request_id=request_id,
             data=dto,
             user_id=current_user.id,
-            change_source="manual",
-        )
+            change_source="manual")
     except TicketsValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -439,13 +437,11 @@ async def change_request_status(
 ):
     """Change the status of a ticket request with optimistic locking."""
     try:
-        result = tickets_service.change_status(
-            request_id=request_id,
+        result = await run_in_threadpool(tickets_service.change_status, request_id=request_id,
             new_status=body.new_status,
             user={"id": current_user.id, "role": current_user.role},
             expected_version=body.expected_version,
-            comment=body.comment,
-        )
+            comment=body.comment)
         return result
     except TicketsNotFoundError as exc:
         raise HTTPException(
@@ -492,12 +488,10 @@ async def add_comment(
 ):
     """Add a comment to a ticket request."""
     try:
-        result = tickets_service.add_comment(
-            request_id=request_id,
+        result = await run_in_threadpool(tickets_service.add_comment, request_id=request_id,
             text=body.text,
             comment_type=body.comment_type,
-            user_id=current_user.id,
-        )
+            user_id=current_user.id)
         return result
     except TicketsNotFoundError as exc:
         raise HTTPException(
@@ -520,7 +514,7 @@ async def get_comments(
 ):
     """Get comments for a ticket request in chronological order."""
     pagination = Pagination(page=page, page_size=page_size)
-    result = tickets_service.get_comments(request_id=request_id, pagination=pagination)
+    result = await run_in_threadpool(tickets_service.get_comments, request_id=request_id, pagination=pagination)
     return _paged_payload(result)
 
 
@@ -538,7 +532,7 @@ async def get_history(
 ):
     """Get change history for a ticket request in reverse chronological order."""
     pagination = Pagination(page=page, page_size=page_size)
-    result = tickets_service.get_history(request_id=request_id, pagination=pagination)
+    result = await run_in_threadpool(tickets_service.get_history, request_id=request_id, pagination=pagination)
     return _paged_payload(result)
 
 
@@ -555,15 +549,17 @@ async def upload_attachment(
     current_user: User = Depends(require_permission(PERM_TICKETS_WRITE)),
 ):
     """Upload an attachment for a ticket request."""
-    content = await file.read()
+    content = await read_upload_limited(
+        file,
+        MAX_ATTACHMENT_SIZE,
+        too_large=lambda: TicketsValidationError("File size exceeds maximum of 20 MB"),
+    )
     try:
-        return tickets_service.upload_attachment(
-            request_id=request_id,
+        return await run_in_threadpool(tickets_service.upload_attachment, request_id=request_id,
             file_name=file.filename or "attachment",
             file_content=content,
             file_type=file_type,
-            user_id=current_user.id,
-        )
+            user_id=current_user.id)
     except TicketsNotFoundError as exc:
         raise _not_found(exc) from exc
     except TicketsValidationError as exc:
@@ -582,7 +578,7 @@ async def list_attachments(
 ):
     """List attachments for a ticket request."""
     try:
-        return {"items": tickets_service.list_attachments(request_id)}
+        return {"items": (await run_in_threadpool(tickets_service.list_attachments, request_id))}
     except TicketsNotFoundError as exc:
         raise _not_found(exc) from exc
 
@@ -595,7 +591,7 @@ async def download_attachment(
 ):
     """Download a ticket attachment."""
     try:
-        attachments = tickets_service.list_attachments(request_id)
+        attachments = await run_in_threadpool(tickets_service.list_attachments, request_id)
     except TicketsNotFoundError as exc:
         raise _not_found(exc) from exc
 
@@ -623,7 +619,7 @@ async def delete_attachment(
 ):
     """Delete a ticket attachment."""
     try:
-        tickets_service.delete_attachment(request_id, attachment_id, current_user.id)
+        await run_in_threadpool(tickets_service.delete_attachment, request_id, attachment_id, current_user.id)
     except TicketsNotFoundError as exc:
         raise _not_found(exc) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -639,7 +635,7 @@ async def list_objects(
     include_inactive: bool = Query(False),
     current_user: User = Depends(require_permission(PERM_TICKETS_READ)),
 ):
-    return {"items": tickets_service.list_objects(include_inactive=include_inactive)}
+    return {"items": (await run_in_threadpool(tickets_service.list_objects, include_inactive=include_inactive))}
 
 
 @router.post("/objects", status_code=status.HTTP_201_CREATED)
@@ -648,7 +644,7 @@ async def create_object(
     current_user: User = Depends(require_permission(PERM_TICKETS_WRITE)),
 ):
     try:
-        return tickets_service.create_object(body.model_dump(exclude_unset=True), _user_dict(current_user))
+        return await run_in_threadpool(tickets_service.create_object, body.model_dump(exclude_unset=True), _user_dict(current_user))
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ValueError as exc:
@@ -662,7 +658,7 @@ async def update_object(
     current_user: User = Depends(require_permission(PERM_TICKETS_WRITE)),
 ):
     try:
-        return tickets_service.update_object(object_id, body.model_dump(exclude_unset=True), _user_dict(current_user))
+        return await run_in_threadpool(tickets_service.update_object, object_id, body.model_dump(exclude_unset=True), _user_dict(current_user))
     except PermissionError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ValueError as exc:
@@ -679,11 +675,9 @@ async def list_employees(
     page_size: int = Query(25, ge=1),
     current_user: User = Depends(require_permission(PERM_TICKETS_READ)),
 ):
-    result = tickets_service.list_employees(
-        search=search,
+    result = await run_in_threadpool(tickets_service.list_employees, search=search,
         status=employee_status,
-        pagination=Pagination(page=page, page_size=page_size),
-    )
+        pagination=Pagination(page=page, page_size=page_size))
     return _paged_payload(result)
 
 
@@ -710,13 +704,11 @@ async def search_zup_employees(
     address_book.personal_phone/email.read rights.
     """
     field_flags = public_field_flags(current_user)
-    return tickets_service.search_zup_employees(
-        query=q,
+    return await run_in_threadpool(tickets_service.search_zup_employees, query=q,
         limit=int(limit),
         user_permissions=list(current_user.permissions or []),
         include_personal_phones=field_flags["include_personal_phones"],
-        include_personal_emails=field_flags["include_personal_emails"],
-    )
+        include_personal_emails=field_flags["include_personal_emails"])
 
 
 @router.post("/employees/from-zup", status_code=status.HTTP_200_OK)
@@ -727,12 +719,10 @@ async def ensure_employee_from_zup(
     """Create or refresh a ticket employee from ZUP by employee_code."""
     field_flags = public_field_flags(current_user)
     try:
-        return tickets_service.ensure_employee_from_zup(
-            body.employee_code,
+        return await run_in_threadpool(tickets_service.ensure_employee_from_zup, body.employee_code,
             user_permissions=list(current_user.permissions or []),
             include_personal_phones=field_flags["include_personal_phones"],
-            include_personal_emails=field_flags["include_personal_emails"],
-        )
+            include_personal_emails=field_flags["include_personal_emails"])
     except TicketsNotFoundError as exc:
         raise _not_found(exc) from exc
     except TicketsValidationError as exc:
@@ -745,7 +735,7 @@ async def get_employee(
     current_user: User = Depends(require_permission(PERM_TICKETS_READ)),
 ):
     try:
-        return tickets_service.get_employee(employee_id, user_permissions=list(current_user.permissions or []))
+        return await run_in_threadpool(tickets_service.get_employee, employee_id, user_permissions=list(current_user.permissions or []))
     except TicketsNotFoundError as exc:
         raise _not_found(exc) from exc
 
@@ -756,10 +746,8 @@ async def create_employee(
     current_user: User = Depends(require_permission(PERM_TICKETS_WRITE)),
 ):
     try:
-        return tickets_service.create_employee(
-            body.model_dump(exclude_unset=True),
-            user_permissions=list(current_user.permissions or []),
-        )
+        return await run_in_threadpool(tickets_service.create_employee, body.model_dump(exclude_unset=True),
+            user_permissions=list(current_user.permissions or []))
     except TicketsValidationError as exc:
         raise _validation_error(exc) from exc
 
@@ -771,11 +759,9 @@ async def update_employee(
     current_user: User = Depends(require_permission(PERM_TICKETS_WRITE)),
 ):
     try:
-        return tickets_service.update_employee(
-            employee_id,
+        return await run_in_threadpool(tickets_service.update_employee, employee_id,
             body.model_dump(exclude_unset=True),
-            user_permissions=list(current_user.permissions or []),
-        )
+            user_permissions=list(current_user.permissions or []))
     except TicketsNotFoundError as exc:
         raise _not_found(exc) from exc
     except TicketsValidationError as exc:
@@ -799,13 +785,15 @@ async def upload_import_file(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Only .xlsx files are supported",
         )
-    content = await file.read()
-    if len(content) > MAX_IMPORT_UPLOAD_SIZE:
-        raise HTTPException(
+    content = await read_upload_limited(
+        file,
+        MAX_IMPORT_UPLOAD_SIZE,
+        too_large=lambda: HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail="Import file exceeds 50 MB",
-        )
-    return tickets_import_service.upload_file(file_name, content, current_user.id)
+        ),
+    )
+    return await run_in_threadpool(tickets_import_service.upload_file, file_name, content, current_user.id)
 
 
 @router.get("/import/{job_id}/preview")
@@ -814,7 +802,7 @@ async def get_import_preview(
     current_user: User = Depends(require_permission(PERM_TICKETS_WRITE)),
 ):
     try:
-        return asdict(tickets_import_service.get_preview(job_id))
+        return asdict((await run_in_threadpool(tickets_import_service.get_preview, job_id)))
     except ValueError as exc:
         detail = str(exc)
         code = status.HTTP_404_NOT_FOUND if "not found" in detail.lower() else status.HTTP_409_CONFLICT
@@ -833,7 +821,7 @@ async def execute_import(
         sheet_object_map=body.sheet_object_map,
     )
     try:
-        return asdict(tickets_import_service.execute_import(job_id, settings, current_user.id))
+        return asdict((await run_in_threadpool(tickets_import_service.execute_import, job_id, settings, current_user.id)))
     except ValueError as exc:
         detail = str(exc)
         code = status.HTTP_404_NOT_FOUND if "not found" in detail.lower() else status.HTTP_409_CONFLICT
@@ -856,15 +844,13 @@ async def get_losses_report(
     current_user: User = Depends(require_permission(PERM_TICKETS_READ)),
 ):
     try:
-        return tickets_service.get_losses_report(
-            filters={
+        return await run_in_threadpool(tickets_service.get_losses_report, filters={
                 "date_from": date_from,
                 "date_to": date_to,
                 "object_id": object_id,
                 "op_type": op_type,
             },
-            pagination=Pagination(page=page, page_size=page_size),
-        )
+            pagination=Pagination(page=page, page_size=page_size))
     except TicketsValidationError as exc:
         raise _validation_error(exc) from exc
 
@@ -878,14 +864,12 @@ async def export_losses(
     current_user: User = Depends(require_permission(PERM_TICKETS_WRITE)),
 ):
     try:
-        payload = tickets_service.export_losses_xlsx(
-            filters={
+        payload = await run_in_threadpool(tickets_service.export_losses_xlsx, filters={
                 "date_from": date_from,
                 "date_to": date_to,
                 "object_id": object_id,
                 "op_type": op_type,
-            }
-        )
+            })
     except TicketsValidationError as exc:
         raise _validation_error(exc) from exc
     return StreamingResponse(
@@ -913,10 +897,8 @@ async def export_requests(
         sort_field=sort_field,
         sort_dir=sort_dir,
     )
-    payload = tickets_service.export_requests_xlsx(
-        filters,
-        user_permissions=list(current_user.permissions or []),
-    )
+    payload = await run_in_threadpool(tickets_service.export_requests_xlsx, filters,
+        user_permissions=list(current_user.permissions or []))
     return StreamingResponse(
         iter([payload]),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -928,7 +910,7 @@ async def export_requests(
 async def get_dashboard(
     current_user: User = Depends(require_permission(PERM_TICKETS_READ)),
 ):
-    return tickets_service.get_dashboard()
+    return await run_in_threadpool(tickets_service.get_dashboard)
 
 
 @router.get("/kanban")
@@ -937,7 +919,7 @@ async def get_kanban(
     assignee_ids: Optional[str] = Query(None),
     current_user: User = Depends(require_permission(PERM_TICKETS_READ)),
 ):
-    return tickets_service.get_kanban({
+    return await run_in_threadpool(tickets_service.get_kanban, {
         "object_ids": _parse_int_list(object_ids),
         "assignee_ids": _parse_int_list(assignee_ids),
     })
@@ -949,7 +931,7 @@ async def create_financial_op(
     current_user: User = Depends(require_permission(PERM_TICKETS_WRITE)),
 ):
     try:
-        return tickets_service.create_financial_op(body.model_dump(exclude_unset=True), current_user.id)
+        return await run_in_threadpool(tickets_service.create_financial_op, body.model_dump(exclude_unset=True), current_user.id)
     except TicketsValidationError as exc:
         raise _validation_error(exc) from exc
 
@@ -970,8 +952,7 @@ async def list_financial_ops(
 ):
     from backend.services.tickets_service import _parse_date
 
-    result = tickets_service.list_financial_ops(
-        filters=FinOpFilters(
+    result = await run_in_threadpool(tickets_service.list_financial_ops, filters=FinOpFilters(
             request_id=request_id,
             employee_id=employee_id,
             object_id=object_id,
@@ -981,8 +962,7 @@ async def list_financial_ops(
             date_to=_parse_date(date_to),
             include_deleted=_parse_bool(include_deleted),
         ),
-        pagination=Pagination(page=page, page_size=page_size),
-    )
+        pagination=Pagination(page=page, page_size=page_size))
     return _paged_payload(result)
 
 
@@ -993,7 +973,7 @@ async def update_financial_op(
     current_user: User = Depends(require_permission(PERM_TICKETS_WRITE)),
 ):
     try:
-        return tickets_service.update_financial_op(op_id, body.model_dump(exclude_unset=True), current_user.id)
+        return await run_in_threadpool(tickets_service.update_financial_op, op_id, body.model_dump(exclude_unset=True), current_user.id)
     except TicketsNotFoundError as exc:
         raise _not_found(exc) from exc
     except TicketsValidationError as exc:
@@ -1006,7 +986,7 @@ async def delete_financial_op(
     current_user: User = Depends(require_permission(PERM_TICKETS_WRITE)),
 ):
     try:
-        tickets_service.delete_financial_op(op_id, current_user.id)
+        await run_in_threadpool(tickets_service.delete_financial_op, op_id, current_user.id)
     except TicketsNotFoundError as exc:
         raise _not_found(exc) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -1016,7 +996,7 @@ async def delete_financial_op(
 async def get_notification_rules(
     current_user: User = Depends(require_permission(PERM_TICKETS_WRITE)),
 ):
-    return {"items": tickets_notification_service.get_rules()}
+    return {"items": (await run_in_threadpool(tickets_notification_service.get_rules))}
 
 
 @router.patch("/notifications/rules/{rule_id}")
@@ -1027,7 +1007,7 @@ async def update_notification_rule(
 ):
     _admin_required(current_user)
     try:
-        return tickets_notification_service.update_rule(rule_id, body.model_dump(exclude_unset=True))
+        return await run_in_threadpool(tickets_notification_service.update_rule, rule_id, body.model_dump(exclude_unset=True))
     except ValueError as exc:
         raise _not_found(exc) from exc
 
@@ -1036,7 +1016,8 @@ async def update_notification_rule(
 async def get_pending_notifications(
     current_user: User = Depends(require_permission(PERM_TICKETS_READ)),
 ):
-    items = [item.to_dict() for item in tickets_notification_service.get_all_pending(_user_dict(current_user))]
+    pending = await run_in_threadpool(tickets_notification_service.get_all_pending, _user_dict(current_user))
+    items = [item.to_dict() for item in pending]
     return {"items": items}
 
 
@@ -1045,5 +1026,5 @@ async def dismiss_notification(
     notification_id: str,
     current_user: User = Depends(require_permission(PERM_TICKETS_READ)),
 ):
-    tickets_notification_service.dismiss_notification(notification_id, _user_dict(current_user))
+    await run_in_threadpool(tickets_notification_service.dismiss_notification, notification_id, _user_dict(current_user))
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import apiClient from './client';
+import { WAREHOUSE_1C_QUERY_TIMEOUT_MS } from './warehouse1c';
 import { warehouse1cItRequestsAPI } from './warehouse1cItRequests';
 
 vi.mock('./client', () => ({
@@ -40,7 +41,7 @@ describe('warehouse1cItRequestsAPI', () => {
 
     expect(apiClient.get).toHaveBeenCalledWith(
       '/warehouse-1c/it-requests/ref%2F1',
-      expect.objectContaining({ timeout: 50_000 }),
+      expect.objectContaining({ timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS }),
     );
   });
 });

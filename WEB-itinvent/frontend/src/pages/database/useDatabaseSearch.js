@@ -280,7 +280,10 @@ export function useDatabaseSearch({
   const loadMoreSearchResults = useCallback(() => {
     const page = searchNextPageRef.current;
     const query = String(searchQueryRef.current || '').trim();
-    if (!page || !query || searchLoadingMoreRef.current) return;
+    // Type-only listing is a valid server search — the text term may be empty.
+    const typeNo = searchTypeNoRef.current;
+    const hasTypeScope = typeNo != null && typeNo !== '';
+    if (!page || (!query && !hasTypeScope) || searchLoadingMoreRef.current) return;
 
     const seq = searchSeqRef.current;
     searchLoadingMoreRef.current = true;

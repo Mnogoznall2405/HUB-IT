@@ -5,20 +5,35 @@ from scripts.mobile.mobile_migration_preflight import (
     BIOMETRIC_REVISION,
     PUSH_REVISION,
     assess_migration_state,
+    collect_ancestry,
     load_migration_graph,
     offline_report,
 )
 
 
-def test_mobile_migration_graph_is_linear_and_ready_offline():
+def test_mobile_migration_graph_is_linear_and_fail_closed_offline():
     scripts, head = load_migration_graph()
 
     report = offline_report(scripts, head)
 
-    assert report["ready"] is True
-    assert report["repository_head"] == BIOMETRIC_REVISION
+    assert tuple(scripts.get_heads()) == (head,)
+    assert report["repository_head"] == head
     assert report["required_chain"] == [BASE_REVISION, PUSH_REVISION, BIOMETRIC_REVISION]
+    assert {BASE_REVISION, PUSH_REVISION, BIOMETRIC_REVISION} <= set(collect_ancestry(scripts, (head,)))
     assert report["production_connected"] is False
+    if head == BIOMETRIC_REVISION:
+        assert report["ready"] is True
+    else:
+        assert report["ready"] is False
+        assessment = assess_migration_state(
+            repository_head=head,
+            current_revisions=(BASE_REVISION,),
+            applied_revisions=frozenset({BASE_REVISION}),
+            push_table_exists=False,
+            biometric_table_exists=False,
+        )
+        assert assessment.reasons == ("repository_head_changed",)
+        assert assessment.safe_to_upgrade is False
 
 
 def test_mobile_migration_preflight_accepts_expected_clean_start():

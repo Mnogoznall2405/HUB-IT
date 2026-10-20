@@ -88,6 +88,7 @@ def chat_env(temp_dir, monkeypatch):
     )
     Path(store.data_dir).mkdir(parents=True, exist_ok=True)
 
+    monkeypatch.setenv("HUB_DATA_DIR", store.data_dir)
     monkeypatch.setattr(hub_service_module, "get_local_store", lambda: store)
     monkeypatch.setattr(hub_service_module, "is_app_database_configured", lambda: False)
     monkeypatch.setattr(hub_service_module.user_service, "list_users", lambda: list(users))
@@ -97,6 +98,7 @@ def chat_env(temp_dir, monkeypatch):
     monkeypatch.setattr(chat_service_module.user_service, "to_public_user", lambda raw: dict(raw))
 
     hub_service = hub_service_module.HubService()
+    assert hub_service.data_dir == Path(store.data_dir)
     monkeypatch.setattr(hub_service_module, "hub_service", hub_service)
     monkeypatch.setattr(chat_service_module, "hub_service", hub_service)
 

@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import logging
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -101,6 +102,39 @@ def _android_notification_tag(*, logical_channel: str, data: dict[str, str], fal
     return (_normalize_text(fallback) or logical_channel or "hubit")[:255]
 
 
+class FcmServiceError(Exception):
+    """Service-level FCM failure (OAuth token fetch, credentials): not the device token's fault."""
+
+
+def _fcm_error_codes(response_body: str) -> tuple[str, str, str]:
+    """Return (status, FcmError errorCode, message) from an FCM v1 error body."""
+    parsed = _json_loads(response_body, {})
+    error = parsed.get("error") if isinstance(parsed, dict) else None
+    if not isinstance(error, dict):
+        return "", "", ""
+    status = _normalize_text(error.get("status")).upper()
+    message = _normalize_text(error.get("message"))
+    error_code = ""
+    for detail in error.get("details") or []:
+        if isinstance(detail, dict) and _normalize_text(detail.get("errorCode")):
+            error_code = _normalize_text(detail.get("errorCode")).upper()
+            break
+    return status, error_code, message
+
+
+def _fcm_response_invalidates_token(http_code: int, response_body: str) -> bool:
+    """True only when an FCM *send* response says this specific device token is invalid."""
+    status, error_code, message = _fcm_error_codes(response_body)
+    if error_code == "UNREGISTERED" or status == "NOT_FOUND":
+        return True
+    if http_code == 404:
+        return True
+    if http_code == 400 and (status == "INVALID_ARGUMENT" or error_code == "INVALID_ARGUMENT"):
+        # INVALID_ARGUMENT can also mean a malformed payload: only the token field counts.
+        return "message.token" in response_body or "registration token" in message.lower()
+    return False
+
+
 @dataclass
 class NativePushSendResult:
     sent: int = 0
@@ -115,6 +149,7 @@ class NativePushService:
     def __init__(self) -> None:
         self._access_token: str = ""
         self._access_token_expires_at: float = 0.0
+        self._access_token_lock = threading.Lock()
 
     def _service_account(self) -> dict[str, Any] | None:
         raw_json = _normalize_text(config.fcm_push.service_account_json)
@@ -315,6 +350,10 @@ class NativePushService:
         return f"{signing_input.decode('ascii')}.{_base64url_bytes(signature)}"
 
     def _get_access_token(self, service_account: dict[str, Any]) -> str:
+        with self._access_token_lock:
+            return self._get_access_token_locked(service_account)
+
+    def _get_access_token_locked(self, service_account: dict[str, Any]) -> str:
         now = time.time()
         if self._access_token and self._access_token_expires_at > (now + 300):
             return self._access_token
@@ -354,7 +393,21 @@ class NativePushService:
         notification_count: int | None = None,
         native_channel: Optional[str] = None,
     ) -> None:
-        access_token = self._get_access_token(service_account)
+        try:
+            access_token = self._get_access_token(service_account)
+        except Exception as exc:
+            # Bad service-account key, clock skew, OAuth outage: a service-level failure.
+            # Must never be mistaken for an invalid device token (HTTPError 400/404 below).
+            reason = type(exc).__name__
+            if isinstance(exc, urllib.error.HTTPError):
+                oauth_error = ""
+                try:
+                    parsed = _json_loads(exc.read(), {})
+                    oauth_error = _normalize_text(parsed.get("error")) if isinstance(parsed, dict) else ""
+                except Exception:
+                    oauth_error = ""
+                reason = f"HTTP {int(getattr(exc, 'code', 0) or 0)} {oauth_error}".strip()
+            raise FcmServiceError(f"FCM access token unavailable: {reason}") from None
         endpoint = f"https://fcm.googleapis.com/v1/projects/{urllib.parse.quote(project_id)}/messages:send"
         string_data = _string_data(data)
         logical_channel = _normalize_text(string_data.get("channel")).lower() or "system"
@@ -502,13 +555,17 @@ class NativePushService:
                 )
                 self._mark_sent(int(token_row.id))
                 result.sent += 1
+            except FcmServiceError as exc:
+                # Service-level problem: leave every device token untouched, retry on next send.
+                logger.warning("NATIVE_PUSH_SERVICE_ERROR user_id=%s error=%s", int(recipient_user_id), exc)
+                result.failed += 1
             except urllib.error.HTTPError as exc:
                 response_body = ""
                 try:
                     response_body = exc.read().decode("utf-8", errors="replace")
                 except Exception:
                     response_body = _normalize_text(exc)
-                disabled = int(getattr(exc, "code", 0) or 0) in {400, 404}
+                disabled = _fcm_response_invalidates_token(int(getattr(exc, "code", 0) or 0), response_body)
                 self._mark_failed(int(token_row.id), disabled=disabled, error_text=response_body or _normalize_text(exc))
                 if disabled:
                     result.disabled += 1

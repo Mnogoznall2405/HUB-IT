@@ -12,6 +12,7 @@ vi.mock('./client', () => ({
 }));
 
 import {
+  WAREHOUSE_1C_QUERY_TIMEOUT_MS,
   isWarehouse1cListIncomplete,
   normalizeWarehouse1cListResponse,
   warehouse1cAPI,
@@ -75,7 +76,7 @@ describe('warehouse 1C API contracts', () => {
 
     expect(apiClientMock.get).toHaveBeenCalledWith('/warehouse-1c/nomenclature/search', {
       params: { q: 'm70', limit: 50 },
-      timeout: 50_000,
+      timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS,
     });
   });
 
@@ -91,7 +92,7 @@ describe('warehouse 1C API contracts', () => {
         limit: 200,
         include_meta: true,
       },
-      timeout: 50_000,
+      timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS,
     });
     expect(apiClientMock.get).toHaveBeenNthCalledWith(2, '/warehouse-1c/movements', {
       params: {
@@ -103,7 +104,7 @@ describe('warehouse 1C API contracts', () => {
         limit: 500,
         include_meta: true,
       },
-      timeout: 50_000,
+      timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS,
     });
   });
 
@@ -123,7 +124,7 @@ describe('warehouse 1C API contracts', () => {
         load_balances: false,
         limit: 200,
       },
-      timeout: 50_000,
+      timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS,
       signal: controller.signal,
     });
   });
@@ -133,7 +134,7 @@ describe('warehouse 1C API contracts', () => {
 
     expect(apiClientMock.get).toHaveBeenCalledWith('/warehouse-1c/dismissed-warehouses', {
       params: { limit: 1000 },
-      timeout: 50_000,
+      timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS,
     });
   });
 
@@ -148,7 +149,7 @@ describe('warehouse 1C API contracts', () => {
       nomenclature_refs: ['nom-1', 'nom-2'],
       warehouse_ref: 'warehouse-1',
       limit_per_nomenclature: 20,
-    }, { timeout: 50_000 });
+    }, { timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS });
   });
 
   it('refuses an over-limit batch locally rather than silently dropping nomenclature refs', async () => {
@@ -168,7 +169,7 @@ describe('warehouse 1C API contracts', () => {
 
     expect(status.reconcile.write_enabled).toBe(false);
     expect(apiClientMock.get).toHaveBeenCalledWith('/warehouse-1c/status', {
-      timeout: 50_000,
+      timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS,
     });
   });
 
@@ -177,7 +178,7 @@ describe('warehouse 1C API contracts', () => {
 
     expect(apiClientMock.get).toHaveBeenCalledWith('/warehouse-1c/reconcile/hub-over-1c', {
       params: { limit: 25, cursor: 'PN-1|INV-10' },
-      timeout: 50_000,
+      timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS,
     });
   });
 
@@ -205,14 +206,14 @@ describe('warehouse 1C API contracts', () => {
       expected_part_no: '',
       expected_version: 0,
       confirm: true,
-    }, { timeout: 50_000 });
+    }, { timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS });
     expect(apiClientMock.post).toHaveBeenNthCalledWith(2, '/warehouse-1c/reconcile/mark-not-in-1c', {
       inv_no: 'INV-1',
       reason: 'manual review',
       expected_part_no: 'PN-1',
       expected_version: 0,
       confirm: true,
-    }, { timeout: 50_000 });
+    }, { timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS });
   });
 
   it('keeps auto-link client calls preview-only', async () => {
@@ -221,7 +222,7 @@ describe('warehouse 1C API contracts', () => {
     expect(apiClientMock.post).toHaveBeenCalledWith('/warehouse-1c/reconcile/auto-link', {
       limit: 10,
       dry_run: true,
-    }, { timeout: 50_000 });
+    }, { timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS });
     await expect(warehouse1cAPI.autoLinkReconcile({ dryRun: false }))
       .rejects.toThrow('только как предпросмотр');
     expect(apiClientMock.post).toHaveBeenCalledTimes(1);

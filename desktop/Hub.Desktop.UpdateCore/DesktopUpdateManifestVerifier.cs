@@ -175,14 +175,18 @@ public static partial class DesktopUpdateManifestVerifier
         }
     }
 
+    /// <summary>Verifies against the embedded certificate selected by the manifest key id.</summary>
+    public static bool VerifySignature(DesktopUpdateManifest manifest)
+    {
+        using var certificate = DesktopUpdateTrust.TryLoadCertificate(manifest.Signature.KeyId);
+        return certificate is not null && VerifySignature(manifest, certificate);
+    }
+
     public static bool VerifySignature(
         DesktopUpdateManifest manifest,
         X509Certificate2 certificate)
     {
-        if (!string.Equals(
-                manifest.Signature.KeyId,
-                DesktopUpdateTrust.KeyId,
-                StringComparison.Ordinal))
+        if (!DesktopUpdateTrust.IsTrustedKeyId(manifest.Signature.KeyId))
         {
             return false;
         }

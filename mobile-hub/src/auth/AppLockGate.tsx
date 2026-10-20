@@ -27,6 +27,8 @@ import {
   type AppLockSettings,
 } from './biometricAuth';
 
+import { EXTERNAL_ACTIVITY_GRACE_MS, isExternalActivityActive } from './externalActivity';
+
 const DEFAULT_SETTINGS: AppLockSettings = { enabled: false, timeoutSeconds: 60 };
 const SCREEN_CAPTURE_KEY = 'hubit-app-lock';
 
@@ -51,6 +53,7 @@ export function AppLockGate() {
   const [credentialLost, setCredentialLost] = useState(false);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const backgroundAtRef = useRef(0);
+  const externalBackgroundAtRef = useRef(0);
   const automaticAttemptRef = useRef(false);
 
   useEffect(() => {
@@ -91,9 +94,23 @@ export function AppLockGate() {
       appStateRef.current = nextState;
       if (!user || !biometricEnabled || !settings.enabled) return;
       if (nextState === 'background' && previous !== 'background') {
-        backgroundAtRef.current = Date.now();
+        // Системная камера на секунды уводит приложение в фон: это не повод
+        // требовать отпечаток после каждого снимка. Время всё же запоминается,
+        // чтобы долгое «пребывание в камере» блокировалось как обычный фон.
+        if (isExternalActivityActive()) externalBackgroundAtRef.current = Date.now();
+        else backgroundAtRef.current = Date.now();
         void ScreenCapture.preventScreenCaptureAsync(SCREEN_CAPTURE_KEY).catch(() => undefined);
         return;
+      }
+      if (nextState === 'active' && previous !== 'active' && externalBackgroundAtRef.current > 0) {
+        const leftAt = externalBackgroundAtRef.current;
+        externalBackgroundAtRef.current = 0;
+        if (Date.now() - leftAt > EXTERNAL_ACTIVITY_GRACE_MS && backgroundAtRef.current === 0) {
+          backgroundAtRef.current = leftAt;
+        } else if (backgroundAtRef.current === 0) {
+          void ScreenCapture.allowScreenCaptureAsync(SCREEN_CAPTURE_KEY).catch(() => undefined);
+          return;
+        }
       }
       if (nextState === 'active' && previous !== 'active' && backgroundAtRef.current > 0) {
         if (shouldLockAfterBackground(backgroundAtRef.current, Date.now(), settings)) {

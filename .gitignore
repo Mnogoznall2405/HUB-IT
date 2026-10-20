@@ -152,6 +152,7 @@ voice_video/models/
 voice_video/reference_voices/
 voice_video/unassigned_speakers/
 voice_video/voice_fingerprints/
+voice_video/.trash/
 voice_video/data/
 voice_video/labeling/
 data/scan_server/*.backup_*
@@ -227,5 +228,28 @@ quick_test.py
 temp_test_*.py
 !tests/test_*.py
 !tests/**/*_test.py
+!WEB-itinvent/backend/tests/test_*.py
+!WEB-itinvent/backend/tests/**/test_*.py
 !WEB-itinvent/frontend/src/lib/
 !WEB-itinvent/frontend/src/lib/**
+
+# Local e2e stack artifacts
+WEB-itinvent/frontend/e2e/stack/.state/
+WEB-itinvent/frontend/e2e/stack/.state*/
+WEB-itinvent/frontend/test-results/
+
+# LiveKit: боевой конфиг с реальным ключом/секретом (шаблон — scripts/livekit/livekit.example.yaml)
+scripts/livekit/livekit.yaml
+
+# --- Secrets hygiene (2026-10-18): env-варианты и персональные данные не должны попадать в git ---
+.env.*
+!.env.example
+!**/.env.example
+# Файлы вида .env1/.env2
+.env[0-9]*
+# Логи бота (bot.log*) и debug-*.log уже покрыты выше (bot.log*, *.log)
+# Персональные данные (выгрузки пользователей, дубликаты порталов, локальные профили)
+/users_export_test.csv
+/portal_upload_duplicates.tsv
+/VEL/
+/Microsoft/

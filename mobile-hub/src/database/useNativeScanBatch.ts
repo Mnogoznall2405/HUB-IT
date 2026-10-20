@@ -21,6 +21,7 @@ export type ScanBatchAddResult =
   | { kind: 'limit' }
   | { kind: 'consumable' }
   | { kind: 'invalid' }
+  | { kind: 'cancelled' }
   | { kind: 'error' };
 
 type ScanBatchSnapshot = { items: ScanBatchItem[] };
@@ -48,7 +49,10 @@ export function useNativeScanBatch({
 }) {
   const [items, setItems] = useState<ScanBatchItem[]>([]);
   const itemsRef = useRef<ScanBatchItem[]>([]);
-  const pendingRef = useRef(new Map<string, string>());
+  const pendingRef = useRef(new Map<string, { databaseId: string; token: number }>());
+  const epochRef = useRef(0);
+  const requestTokenRef = useRef(0);
+  const mountedRef = useRef(false);
   const hadItemsRef = useRef(false);
   const [restored, setRestored] = useState(false);
 
@@ -57,10 +61,19 @@ export function useNativeScanBatch({
     setItems(itemsRef.current);
   }, []);
 
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      epochRef.current += 1;
+    };
+  }, []);
+
   // Ш5-8: список больше не переживает открытия — снимок только записывается
   // (пустым после clear/сброса), но не восстанавливается. Новое открытие экрана
   // и сканера всегда начинается с пустого списка.
   useEffect(() => {
+    epochRef.current += 1;
     itemsRef.current = [];
     pendingRef.current.clear();
     hadItemsRef.current = false;
@@ -87,7 +100,7 @@ export function useNativeScanBatch({
     const normalized = normalizeInvNo(invNo);
     const targetDatabaseId = String(payload.databaseId || databaseId || '').trim();
     const batchDatabaseId = itemsRef.current[0]?.databaseId
-      || pendingRef.current.values().next().value
+      || pendingRef.current.values().next().value?.databaseId
       || '';
     if (batchDatabaseId && targetDatabaseId !== batchDatabaseId) {
       return { kind: 'different-database', databaseId: targetDatabaseId };
@@ -101,14 +114,18 @@ export function useNativeScanBatch({
     if (itemsRef.current.length + pendingRef.current.size >= SCAN_BATCH_LIMIT) {
       return { kind: 'limit' };
     }
-    pendingRef.current.set(normalized, targetDatabaseId);
+    const epoch = epochRef.current;
+    const token = ++requestTokenRef.current;
+    const isCurrent = () => mountedRef.current && epochRef.current === epoch;
+    pendingRef.current.set(normalized, { databaseId: targetDatabaseId, token });
     try {
       let equipment: EquipmentRecord | null;
       try {
         equipment = await resolveRef.current(invNo, targetDatabaseId);
       } catch {
-        return { kind: 'error' };
+        return { kind: isCurrent() ? 'error' : 'cancelled' };
       }
+      if (!isCurrent()) return { kind: 'cancelled' };
       const item: ScanBatchItem = {
         invNo,
         databaseId: targetDatabaseId,
@@ -118,9 +135,10 @@ export function useNativeScanBatch({
       setBatch((current) => [item, ...current]);
       return { kind: 'added', item };
     } finally {
-      pendingRef.current.delete(normalized);
+      const pending = pendingRef.current.get(normalized);
+      if (pending?.token === token) pendingRef.current.delete(normalized);
     }
-  }, [databaseId, offlineMode, resolveEquipment, setBatch]);
+  }, [databaseId, offlineMode, setBatch]);
 
   // Ш5-2/Ш5-5: rows resolved only from offline snapshots stay 'offline-missing'
   // forever. When connectivity comes back, re-resolve them online in order.
@@ -135,16 +153,18 @@ export function useNativeScanBatch({
     offlineRef.current = offlineMode;
     if (wasOffline !== true || offlineMode) return;
     let cancelled = false;
+    const epoch = epochRef.current;
+    const stale = () => cancelled || !mountedRef.current || epochRef.current !== epoch;
     const refresh = async () => {
       for (const item of itemsRef.current.filter((entry) => entry.status !== 'ready')) {
-        if (cancelled) return;
+        if (stale()) return;
         let equipment: EquipmentRecord | null;
         try {
           equipment = await resolveRef.current(item.invNo, item.databaseId);
         } catch {
           continue;
         }
-        if (cancelled) return;
+        if (stale()) return;
         const normalized = normalizeInvNo(item.invNo);
         setBatch((current) => current.map((entry) => (
           normalizeInvNo(entry.invNo) === normalized
@@ -163,11 +183,14 @@ export function useNativeScanBatch({
   }, [setBatch]);
 
   const clear = useCallback(() => {
+    epochRef.current += 1;
     pendingRef.current.clear();
     setBatch(() => []);
   }, [setBatch]);
 
   const keepOnly = useCallback((invNos: readonly string[]) => {
+    epochRef.current += 1;
+    pendingRef.current.clear();
     const keep = new Set(invNos.map(normalizeInvNo));
     setBatch((current) => current.filter((item) => keep.has(normalizeInvNo(item.invNo))));
   }, [setBatch]);

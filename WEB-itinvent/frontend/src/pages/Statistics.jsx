@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -233,35 +233,41 @@ function Statistics() {
   const [pcComponentsStats, setPcComponentsStats] = useState(EMPTY_PC_COMPONENTS_STATS);
   const [remainingBranch, setRemainingBranch] = useState(null);
 
-  const loadPcStats = useCallback(async () => {
+  // Only the newest load may touch the data/loading/error state (tab, period or database changed meanwhile).
+  const loadRequestRef = useRef(0);
+
+  const loadPcStats = useCallback(async (isCurrent) => {
     const response = await jsonAPI.getPcCleaningStatistics({ period_days: periodDays });
-    setPcStats(response?.data || EMPTY_PC_STATS);
+    if (isCurrent()) setPcStats(response?.data || EMPTY_PC_STATS);
   }, [periodDays]);
 
-  const loadMfuStats = useCallback(async () => {
+  const loadMfuStats = useCallback(async (isCurrent) => {
     const response = await jsonAPI.getMfuStatistics({ period_days: periodDays });
-    setMfuStats(response?.data || EMPTY_MFU_STATS);
+    if (isCurrent()) setMfuStats(response?.data || EMPTY_MFU_STATS);
   }, [periodDays]);
 
-  const loadBatteryStats = useCallback(async () => {
+  const loadBatteryStats = useCallback(async (isCurrent) => {
     const response = await jsonAPI.getBatteryStatistics({ period_days: periodDays });
-    setBatteryStats(response?.data || EMPTY_BATTERY_STATS);
+    if (isCurrent()) setBatteryStats(response?.data || EMPTY_BATTERY_STATS);
   }, [periodDays]);
 
-  const loadPcComponentsStats = useCallback(async () => {
+  const loadPcComponentsStats = useCallback(async (isCurrent) => {
     const response = await jsonAPI.getPcComponentsStatistics({ period_days: periodDays });
-    setPcComponentsStats(response?.data || EMPTY_PC_COMPONENTS_STATS);
+    if (isCurrent()) setPcComponentsStats(response?.data || EMPTY_PC_COMPONENTS_STATS);
   }, [periodDays]);
 
   const loadActiveStats = useCallback(async () => {
+    const requestId = ++loadRequestRef.current;
+    const isCurrent = () => requestId === loadRequestRef.current;
     try {
       setLoading(true);
       setError('');
-      if (tab === 'pc') await loadPcStats();
-      if (tab === 'mfu' && canViewMfu) await loadMfuStats();
-      if (tab === 'battery') await loadBatteryStats();
-      if (tab === 'pc_components') await loadPcComponentsStats();
+      if (tab === 'pc') await loadPcStats(isCurrent);
+      if (tab === 'mfu' && canViewMfu) await loadMfuStats(isCurrent);
+      if (tab === 'battery') await loadBatteryStats(isCurrent);
+      if (tab === 'pc_components') await loadPcComponentsStats(isCurrent);
     } catch (requestError) {
+      if (!isCurrent()) return;
       console.error('Error loading statistics:', requestError);
       const errors = {
         pc: 'Не удалось загрузить статистику чистки ПК',
@@ -271,7 +277,7 @@ function Statistics() {
       };
       setError(errors[tab] || 'Не удалось загрузить статистику');
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [tab, canViewMfu, loadPcStats, loadMfuStats, loadBatteryStats, loadPcComponentsStats]);
 
@@ -589,7 +595,7 @@ function Statistics() {
               canWrite={hasPermission('database.write')}
               isMobile={isMobile}
               onClose={() => setRemainingBranch(null)}
-              onCleaningSaved={() => { loadPcStats().catch(() => {}); }}
+              onCleaningSaved={() => { loadPcStats(() => true).catch(() => {}); }}
               onNotifySuccess={(message) => notifySuccess(message, { source: 'statistics' })}
               onNotifyError={(requestError, fallbackMessage) => notifyApiError(requestError, fallbackMessage, { source: 'statistics' })}
             />

@@ -436,6 +436,7 @@ function Mfu() {
   const [selectedDevice, setSelectedDevice] = useState(null);
   const selectedKeyRef = useRef('');
   const inFlightRef = useRef(false);
+  const requestIdRef = useRef(0);
   const lastReloadAtRef = useRef(initialCachedPayload ? Date.now() : 0);
 
   const [workType, setWorkType] = useState('cartridge');
@@ -466,10 +467,10 @@ function Mfu() {
     localStorage.setItem('mfu_card_view', cardView === 'detailed' ? 'detailed' : 'compact');
   }, [cardView]);
 
-  const applyPayload = useCallback((nextPayload) => {
+  const applyPayload = useCallback((nextPayload, cacheKey = getMfuCacheKey()) => {
     setPayload(nextPayload);
     setError('');
-    setSWRCache(getMfuCacheKey(), nextPayload);
+    setSWRCache(cacheKey, nextPayload);
     lastReloadAtRef.current = Date.now();
 
     if (selectedKeyRef.current) {
@@ -486,6 +487,8 @@ function Mfu() {
       return;
     }
     if (inFlightRef.current) return;
+    const requestId = ++requestIdRef.current;
+    const cacheKey = getMfuCacheKey();
     inFlightRef.current = true;
     try {
       if (withLoader) setLoading(true);
@@ -494,15 +497,19 @@ function Mfu() {
         recent_limit: DASHBOARD_RECENT_LIMIT,
         limit: DASHBOARD_LIMIT,
       });
-      applyPayload(toMfuPayload(response));
+      if (requestId !== requestIdRef.current) return;
+      applyPayload(toMfuPayload(response), cacheKey);
     } catch (err) {
+      if (requestId !== requestIdRef.current) return;
       const detail = err?.response?.data?.detail;
       setError(typeof detail === 'string' ? detail : (err?.message || 'Ошибка загрузки страницы МФУ'));
     } finally {
-      if (withLoader) setLoading(false);
-      inFlightRef.current = false;
+      if (requestId === requestIdRef.current) {
+        if (withLoader) setLoading(false);
+        inFlightRef.current = false;
+      }
     }
-  }, [applyPayload]);
+  }, [applyPayload, getMfuCacheKey]);
 
   const loadMonthlyPages = useCallback(async (deviceKey, { force = false } = {}) => {
     const key = String(deviceKey || '').trim();
@@ -570,6 +577,9 @@ function Mfu() {
       }
     };
     const onDatabaseChanged = () => {
+      ++requestIdRef.current;
+      inFlightRef.current = false;
+      lastReloadAtRef.current = 0;
       setDrawerOpen(false);
       setSelectedDevice(null);
       selectedKeyRef.current = '';
@@ -594,6 +604,8 @@ function Mfu() {
     window.addEventListener('database-changed', onDatabaseChanged);
     window.addEventListener('storage', onStorage);
     return () => {
+      ++requestIdRef.current;
+      inFlightRef.current = false;
       clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('database-changed', onDatabaseChanged);

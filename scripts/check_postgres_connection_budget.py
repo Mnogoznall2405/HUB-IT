@@ -78,7 +78,6 @@ def _query_runtime_connection_counts() -> tuple[int, dict[str, int]]:
                 """
                 SELECT COALESCE(application_name, '') AS application_name, COUNT(*) AS count
                 FROM pg_stat_activity
-                WHERE datname = current_database()
                 GROUP BY COALESCE(application_name, '')
                 ORDER BY count DESC, application_name ASC
                 """

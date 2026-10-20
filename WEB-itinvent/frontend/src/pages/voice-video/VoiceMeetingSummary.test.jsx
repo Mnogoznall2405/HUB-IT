@@ -91,6 +91,28 @@ describe('VoiceMeetingSummary', () => {
     await waitFor(() => expect(screen.getByText('1 / 2')).toBeInTheDocument());
   });
 
+  it('показывает, на что ушло время по направлениям тем, и ничего не рисует без направлений', async () => {
+    voiceJobsAPI.getSummary.mockResolvedValue({
+      ...summary,
+      topics: [
+        { title: 'Аванс', start: 0, end: 600, domain: 'finance', domain_label: 'Финансы' },
+        { title: 'Песок', start: 600, end: 900, domain: 'supply', domain_label: 'Снабжение' },
+        { title: 'Финансы 2', start: 900, end: 1500, domain: 'finance', domain_label: 'Финансы' },
+        { title: 'Без метки', start: 1500, end: 3000, domain: '', domain_label: '' },
+      ],
+    });
+    render(<VoiceMeetingSummary base="m1" assignmentItems={[]} />);
+    const block = await screen.findByTestId('meeting-domains');
+    expect(within(block).getByText('Финансы · 80%')).toBeInTheDocument();    // 1200 из 1500 размеченных секунд
+    expect(within(block).getByText('Снабжение · 20%')).toBeInTheDocument();
+  });
+
+  it('блок направлений не показывается, если Jev тем не размечал', async () => {
+    render(<VoiceMeetingSummary base="m1" assignmentItems={[]} />);
+    await screen.findByText('Подписать ДС до 29.09');
+    expect(screen.queryByTestId('meeting-domains')).toBeNull();
+  });
+
   it('при ошибке даёт «Повторить», при пустой сводке — понятное сообщение', async () => {
     voiceJobsAPI.getSummary.mockRejectedValueOnce(new Error('boom'));
     render(<VoiceMeetingSummary base="m1" assignmentItems={[]} />);

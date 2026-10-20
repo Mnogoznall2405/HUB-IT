@@ -1,4 +1,5 @@
 import { Fragment, useMemo, useState } from 'react';
+import { comparisonRowSx, comparisonScrollSx, comparisonTableSx, identifierSx, twoLineTextSx } from './employeeComparisonStyles';
 import {
   Alert,
   Box,
@@ -20,7 +21,7 @@ import {
 } from '@mui/material';
 import { readFirst } from './databaseRecordModel';
 import { compareQtyBreakdown, resolveHubRowStatus } from './employeeCompareModel';
-import { formatWarehouseQty, statusRowSx } from './warehouse1cShared';
+import { formatWarehouseQty } from './warehouse1cShared';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import HistoryIcon from '@mui/icons-material/History';
@@ -144,7 +145,7 @@ export function HubEquipmentMobileRow({
           py: 0.9,
           minHeight: 52,
           cursor: canOpen ? 'pointer' : 'default',
-          ...statusRowSx(theme, rowStatus),
+          ...comparisonRowSx(theme, rowStatus),
         })}
       >
         <Box sx={{ flex: 1, minWidth: 0 }}>
@@ -293,7 +294,6 @@ export function HubEquipmentTable({
         sx={{
           flex: 1,
           minHeight: 0,
-          maxHeight: { xs: '42vh', sm: 'none' },
           overflow: 'auto',
         }}
       >
@@ -342,9 +342,15 @@ export function HubEquipmentTable({
     <TableContainer
       component={Paper}
       variant="outlined"
-      sx={{ flex: 1, minHeight: 0, overflow: 'auto' }}
+      sx={comparisonScrollSx}
     >
-      <Table size="small" stickyHeader>
+      <Table size="small" stickyHeader aria-label="Оборудование Хаба" sx={{ ...comparisonTableSx, minWidth: 520 }}>
+        <colgroup>
+          <col style={{ width: '12%' }} /><col />
+          <col style={{ width: '15%' }} /><col style={{ width: '20%' }} />
+          <col style={{ width: '16%' }} /><col style={{ width: 100 }} />
+          {showDbChip ? <col style={{ width: 80 }} /> : null}
+        </colgroup>
         <TableHead>
           <TableRow>
             {[
@@ -396,16 +402,18 @@ export function HubEquipmentTable({
                 onClick={canOpen ? () => onOpenInvNo(invNo, openMeta) : undefined}
                 sx={(theme) => ({
                   ...(canOpen ? { cursor: 'pointer' } : {}),
-                  ...statusRowSx(theme, rowStatus),
+                  ...comparisonRowSx(theme, rowStatus),
                 })}
               >
-                <TableCell>
+                <TableCell title={String(invNo)} sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {canOpen ? (
                     <Link
                       component="button"
                       type="button"
                       variant="body2"
                       underline="hover"
+                      title={String(invNo)}
+                      sx={{ ...identifierSx, maxWidth: '100%', fontSize: 'inherit' }}
                       onClick={(event) => {
                         event.stopPropagation();
                         onOpenInvNo(invNo, openMeta);
@@ -416,7 +424,9 @@ export function HubEquipmentTable({
                   ) : invNo}
                 </TableCell>
                 <TableCell>
-                  {readFirst(item, ['MODEL_NAME', 'model_name'], '-')}
+                  <Box title={String(readFirst(item, ['MODEL_NAME', 'model_name'], '-'))} sx={twoLineTextSx}>
+                    {readFirst(item, ['MODEL_NAME', 'model_name'], '-')}
+                  </Box>
                   {rowStatus === 'diff' ? (
                     <CompareQtyNote breakdown={compareQtyBreakdown(partNo, compareMaps)} />
                   ) : null}
@@ -426,9 +436,9 @@ export function HubEquipmentTable({
                     </Box>
                   ) : null}
                 </TableCell>
-                <TableCell>{readFirst(item, ['TYPE_NAME', 'type_name'], '-')}</TableCell>
-                <TableCell>{readFirst(item, ['SERIAL_NO', 'serial_no', 'HW_SERIAL_NO', 'hw_serial_no'], '-')}</TableCell>
-                <TableCell>{readFirst(item, ['PART_NO', 'part_no'], '-')}</TableCell>
+                <TableCell><Box title={String(readFirst(item, ['TYPE_NAME', 'type_name'], '-'))} sx={identifierSx}>{readFirst(item, ['TYPE_NAME', 'type_name'], '-')}</Box></TableCell>
+                <TableCell><Box title={String(readFirst(item, ['SERIAL_NO', 'serial_no', 'HW_SERIAL_NO', 'hw_serial_no'], '-'))} sx={identifierSx}>{readFirst(item, ['SERIAL_NO', 'serial_no', 'HW_SERIAL_NO', 'hw_serial_no'], '-')}</Box></TableCell>
+                <TableCell><Box title={String(readFirst(item, ['PART_NO', 'part_no'], '-'))} sx={identifierSx}>{readFirst(item, ['PART_NO', 'part_no'], '-')}</Box></TableCell>
                 <TableCell align="center" onClick={(event) => event.stopPropagation()}>
                   <Stack direction="row" spacing={0.25} justifyContent="center" alignItems="center">
                     <EquipmentPhotoIndicator

@@ -120,11 +120,21 @@ def build_request_network_context(request: Request) -> RequestNetworkContext:
     if trusted_proxy:
         forwarded = str(request.headers.get("x-forwarded-for") or "").strip()
         if forwarded:
-            for item in forwarded.split(","):
+            # The client-controlled part is the LEFT of the chain; every trusted proxy appends the
+            # peer it saw on the right. Walk from the right and stop at the first address that is not
+            # one of our own proxies, so a spoofed "X-Forwarded-For: 10.x" cannot pick the zone.
+            for item in reversed(forwarded.split(",")):
                 normalized_item = normalize_ip_value(item)
-                if normalized_item:
-                    forwarded_candidate = normalized_item
-                    break
+                if not normalized_item:
+                    continue
+                if _is_ip_in_cidrs(
+                    normalized_item,
+                    config.security.trusted_proxy_cidrs,
+                    default=["127.0.0.1/32", "::1/128"],
+                ):
+                    continue
+                forwarded_candidate = normalized_item
+                break
     proxy_visible_ip = forwarded_candidate or normalized_remote_host
     via_cloudflare = _is_ip_in_cidrs(
         proxy_visible_ip,

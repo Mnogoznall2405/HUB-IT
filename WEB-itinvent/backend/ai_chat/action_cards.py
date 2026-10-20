@@ -13,12 +13,14 @@ from sqlalchemy import select, update
 
 from backend.ai_chat.artifact_generator import GeneratedFileError, build_generated_uploads, normalize_generated_file_specs
 from backend.appdb.db import app_session
-from backend.appdb.models import AppAiPendingAction
+from backend.appdb.models import AppAiPendingAction, AppMailSendIdempotency
 from backend.database import queries
 from backend.database.equipment_db import invalidate_equipment_cache
 from backend.services.authorization_service import (
     PERM_CHAT_AI_USE,
     PERM_CHAT_WRITE,
+    PERM_AD_USERS_MANAGE,
+    PERM_NETWORKS_WRITE,
     PERM_DATABASE_WRITE,
     PERM_MAIL_ACCESS,
     PERM_TASKS_CREATE,
@@ -58,6 +60,8 @@ ACTION_WORKS_COMPONENT = "itinvent.works.component"
 ACTION_WORKS_PC_CLEANING = "itinvent.works.pc_cleaning"
 ACTION_CHAT_MESSAGE_SEND = "chat.message.send"
 ACTION_HELPDESK_REQUEST_CREATE = "helpdesk.request.create"
+ACTION_AD_UNLOCK = "ad.unlock"
+ACTION_NETWORK_WOL = "network.wol"
 ACTION_WORKS_TYPES = frozenset(
     {
         ACTION_WORKS_CARTRIDGE,
@@ -81,6 +85,12 @@ DOC_CONVERT_FORMAT_LABELS = {
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _action_timestamp(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return (value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)).isoformat()
 
 
 def _normalize_text(value: object, default: object = "") -> str:
@@ -186,11 +196,49 @@ def _action_to_card(row: AppAiPendingAction) -> dict[str, Any]:
         "preview": _json_loads(row.preview_json, {}) or {},
         "result": _json_loads(row.result_json, {}) or {},
         "error_text": _normalize_text(row.error_text) or None,
-        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        "expires_at": _action_timestamp(row.expires_at),
+        "created_at": _action_timestamp(row.created_at),
+        "updated_at": _action_timestamp(row.updated_at),
         "executed_by_user_id": row.executed_by_user_id,
     }
+
+
+def _reconcile_mail_action_results(session, rows: list[AppAiPendingAction]) -> None:
+    """Recover only ledger-proven outcomes; never call Exchange or resend here."""
+    candidates = [row for row in rows if row.action_type in {ACTION_OFFICE_MAIL_SEND, ACTION_OFFICE_MAIL_REPLY}
+                  and (row.status == ACTION_STATUS_EXECUTING or (
+                      row.status == ACTION_STATUS_FAILED and (_json_loads(row.result_json, {}) or {}).get("send_outcome") == "unknown"))]
+    if not candidates:
+        return
+    keys = {f"ai-action:{row.id}": row for row in candidates}
+    ledger_rows = list(session.execute(select(AppMailSendIdempotency).where(
+        AppMailSendIdempotency.user_id.in_({int(row.requester_user_id) for row in candidates}),
+        AppMailSendIdempotency.idempotency_key.in_(keys),
+    )).scalars())
+    by_key: dict[str, list] = {}
+    for item in ledger_rows:
+        by_key.setdefault(item.idempotency_key, []).append(item)
+    now = _utc_now()
+    for key, row in keys.items():
+        matches = [item for item in by_key.get(key, []) if int(item.user_id) == int(row.requester_user_id)]
+        ledger = matches[0] if len(matches) == 1 else None
+        result = _json_loads(ledger.response_json, {}) if ledger is not None else {}
+        values = None
+        if ledger is not None and ledger.status == "sent" and result.get("ok") is True:
+            values = {"status": ACTION_STATUS_CONFIRMED, "result_json": _json_dumps({"success": True, **result}), "error_text": None}
+        else:
+            touched = row.updated_at
+            if touched is not None and touched.tzinfo is None:
+                touched = touched.replace(tzinfo=timezone.utc)
+            if row.status == ACTION_STATUS_EXECUTING and touched is not None and (now - touched).total_seconds() >= 300:
+                text = "Результат отправки неизвестен. Проверьте папку «Отправленные»; повторная отправка заблокирована."
+                values = {"status": ACTION_STATUS_FAILED, "result_json": _json_dumps({"success": False, "send_outcome": "unknown", "message": text}), "error_text": text}
+        if values is not None:
+            session.execute(update(AppAiPendingAction).where(
+                AppAiPendingAction.id == row.id, AppAiPendingAction.status == row.status,
+                AppAiPendingAction.updated_at == row.updated_at,
+            ).values(**values, updated_at=now).execution_options(synchronize_session=False))
+            session.refresh(row)
 
 
 def _build_transfer_preview(*, payload: dict[str, Any], database_id: str, items: list[dict[str, Any]], target_owner: dict[str, Any]) -> dict[str, Any]:
@@ -863,13 +911,32 @@ def create_pending_action(
     database_id: str | None,
     payload: dict[str, Any],
     preview: dict[str, Any],
+    replace_action_id: str | None = None,
 ) -> dict[str, Any]:
     now = _utc_now()
     with app_session() as session:
         from backend.ai_chat.access import require_conversation_access
         require_conversation_access(conversation_id, requester_user_id, db=session, lock=True)
+        new_action_id = str(uuid4())
+        if replace_action_id:
+            replaced = session.execute(
+                update(AppAiPendingAction).where(
+                    AppAiPendingAction.id == replace_action_id,
+                    AppAiPendingAction.conversation_id == conversation_id,
+                    AppAiPendingAction.requester_user_id == requester_user_id,
+                    AppAiPendingAction.action_type.in_([ACTION_OFFICE_MAIL_SEND, ACTION_CHAT_MESSAGE_SEND]),
+                    AppAiPendingAction.status == ACTION_STATUS_PENDING,
+                    AppAiPendingAction.expires_at > now,
+                ).values(
+                    status=ACTION_STATUS_CANCELLED,
+                    result_json=_json_dumps({"superseded_by": new_action_id}),
+                    updated_at=now,
+                )
+            )
+            if int(replaced.rowcount or 0) != 1:
+                raise ValueError("Черновик уже отправлен, заменён, истёк или недоступен. Обновите карточку.")
         row = AppAiPendingAction(
-            id=str(uuid4()),
+            id=new_action_id,
             action_type=_normalize_text(action_type),
             status=ACTION_STATUS_PENDING,
             conversation_id=_normalize_text(conversation_id),
@@ -921,6 +988,25 @@ def get_action_card_for_message(message_id: str) -> dict[str, Any] | None:
     return cards.get(normalized_message_id)
 
 
+def redisplay_pending_action(*, action_id: str, conversation_id: str, requester_user_id: int,
+                            message_id: str) -> dict[str, Any]:
+    """Move the same pending card to the retry response, without extending its TTL."""
+    now = _utc_now()
+    with app_session() as session:
+        from backend.ai_chat.access import require_conversation_access
+        require_conversation_access(conversation_id, requester_user_id, db=session, lock=True)
+        changed = session.execute(update(AppAiPendingAction).where(
+            AppAiPendingAction.id == action_id,
+            AppAiPendingAction.conversation_id == conversation_id,
+            AppAiPendingAction.requester_user_id == int(requester_user_id),
+            AppAiPendingAction.status == ACTION_STATUS_PENDING,
+            AppAiPendingAction.expires_at > now,
+        ).values(message_id=message_id, updated_at=now))
+        if int(changed.rowcount or 0) != 1:
+            raise ValueError("Черновик уже отправлен, заменён, истёк или недоступен. Обновите карточку.")
+        return _action_to_card(session.get(AppAiPendingAction, action_id))
+
+
 def get_action_cards_for_messages(message_ids: list[str]) -> dict[str, dict[str, Any]]:
     normalized_ids = []
     seen: set[str] = set()
@@ -945,6 +1031,7 @@ def get_action_cards_for_messages(message_ids: list[str]) -> dict[str, dict[str,
             ).scalars()
         )
         cards_by_message_id: dict[str, dict[str, Any]] = {}
+        _reconcile_mail_action_results(session, rows)
         for row in rows:
             normalized_message_id = _normalize_text(row.message_id)
             if not normalized_message_id or normalized_message_id in cards_by_message_id:
@@ -1117,6 +1204,7 @@ def build_office_mail_draft(
         database_id=None,
         payload=normalized_payload,
         preview=_build_office_mail_preview_v2(action_type=action_type, payload=normalized_payload),
+        replace_action_id=_normalize_text(payload.get("replace_action_id")) or None,
     )
 
 
@@ -1516,6 +1604,7 @@ def build_chat_message_draft(
         database_id=None,
         payload=normalized_payload,
         preview=preview,
+        replace_action_id=_normalize_text(payload.get("replace_action_id")) or None,
     )
 
 
@@ -1968,8 +2057,10 @@ def _execute_office_mail(*, action_type: str, payload: dict[str, Any], current_u
         is_html=bool(payload.get("is_html", True)),
         attachments=attachments,
         reply_to_message_id=_normalize_text(payload.get("reply_to_message_id")) if action_type == ACTION_OFFICE_MAIL_REPLY else "",
+        idempotency_key=f"ai-action:{row.id}" if row is not None else "",
+        require_idempotency=row is not None,
     )
-    return {"success": bool(result.get("ok", True)), "attachment_count": len(attachments), **result}
+    return {"success": result.get("ok") is True, "attachment_count": len(attachments), **result}
 
 
 def _execute_office_task_create(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
@@ -2045,6 +2136,28 @@ def _execute_office_task_status(*, payload: dict[str, Any], current_user: Any) -
     return {"success": bool(task), "task": task, "task_id": task_id, "operation": operation}
 
 
+def _execute_ad_unlock(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
+    _require_permission(current_user, PERM_AD_USERS_MANAGE)
+    from backend.services.ad_users_service import unlock_ad_user_account
+    from backend.ai_chat.tools.ad import AdUnlockDraftArgs
+
+    args = AdUnlockDraftArgs.model_validate(payload)
+    return unlock_ad_user_account(login=args.login, object_guid=_normalize_text(payload.get("object_guid")))
+
+
+def _execute_network_wol(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
+    _require_permission(current_user, PERM_NETWORKS_WRITE)
+    from backend.ai_chat.tools.network import NetworkWolDraftArgs, _normalize_mac, _send_wol_packet
+
+    args = NetworkWolDraftArgs.model_validate(payload)
+    if not args.mac_address:
+        raise ValueError("В карточке WOL отсутствует MAC-адрес")
+    mac = _normalize_mac(args.mac_address)
+    _send_wol_packet(mac, args.broadcast_ip)
+    return {"success": True, "packet_sent": True, "mac_address": mac,
+            "broadcast_ip": args.broadcast_ip, "message": "WOL-пакет отправлен"}
+
+
 def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     normalized_action_id = _normalize_text(action_id)
     current_user_id = int(_user_attr(current_user, "id", 0) or 0)
@@ -2056,11 +2169,25 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
             raise PermissionError("Only the action initiator can confirm it")
         from backend.ai_chat.access import require_conversation_access
         require_conversation_access(row.conversation_id, current_user_id, db=session, lock=True)
+        _reconcile_mail_action_results(session, [row])
         if _set_expired_if_needed(row):
             session.flush()
             return _action_to_card(row)
         if row.status != ACTION_STATUS_PENDING:
             return _action_to_card(row)
+        claim_values = {
+            "status": ACTION_STATUS_EXECUTING,
+            "executed_by_user_id": current_user_id or None,
+            "updated_at": _utc_now(),
+        }
+        if row.action_type in {ACTION_OFFICE_MAIL_SEND, ACTION_OFFICE_MAIL_REPLY}:
+            # Freeze the exact confirmed content before contacting Exchange. A
+            # restart must never reconcile edited mail against the old draft body.
+            confirmed_payload = _apply_office_mail_overrides(_json_loads(row.payload_json, {}) or {}, payload_overrides)
+            claim_values.update(
+                payload_json=_json_dumps(confirmed_payload),
+                preview_json=_json_dumps(_build_office_mail_preview_v2(action_type=row.action_type, payload=confirmed_payload)),
+            )
         claimed = session.execute(
             update(AppAiPendingAction)
             .where(
@@ -2068,11 +2195,7 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
                 AppAiPendingAction.requester_user_id == current_user_id,
                 AppAiPendingAction.status == ACTION_STATUS_PENDING,
             )
-            .values(
-                status=ACTION_STATUS_EXECUTING,
-                executed_by_user_id=current_user_id or None,
-                updated_at=_utc_now(),
-            )
+            .values(**claim_values)
             .execution_options(synchronize_session=False)
         )
         if int(claimed.rowcount or 0) != 1:
@@ -2143,6 +2266,10 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
                 result = _execute_chat_message_send(payload=payload, current_user=current_user)
             elif row.action_type == ACTION_HELPDESK_REQUEST_CREATE:
                 result = _execute_helpdesk_request_create(payload=payload, current_user=current_user)
+            elif row.action_type == ACTION_AD_UNLOCK:
+                result = _execute_ad_unlock(payload=payload, current_user=current_user)
+            elif row.action_type == ACTION_NETWORK_WOL:
+                result = _execute_network_wol(payload=payload, current_user=current_user)
             elif row.action_type == ACTION_SANDBOX_PERMISSION:
                 _require_permission(current_user, PERM_CHAT_AI_USE)
                 permission_id = _normalize_text(payload.get("permission_id"))
@@ -2178,6 +2305,13 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
             raise
         except Exception as exc:
             result = {"success": False, "message": _normalize_text(exc) or "Action failed"}
+            if row.action_type in {ACTION_OFFICE_MAIL_SEND, ACTION_OFFICE_MAIL_REPLY}:
+                code = _normalize_text(getattr(exc, "code", ""))
+                if code in {"MAIL_SEND_TIMEOUT", "MAIL_SEND_UNKNOWN", "MAIL_SEND_IN_FLIGHT", "MAIL_SEND_FAILED"} or isinstance(exc, (TimeoutError, ConnectionError)):
+                    result.update(
+                        send_outcome="unknown", error_code=code or "MAIL_SEND_UNKNOWN",
+                        message="Не удалось подтвердить результат отправки. Письмо могло быть отправлено. Проверьте папку «Отправленные»; не отправляйте его повторно.",
+                    )
 
     with app_session() as session:
         current = session.get(AppAiPendingAction, normalized_action_id)

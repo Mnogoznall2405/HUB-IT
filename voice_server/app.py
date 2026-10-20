@@ -7,6 +7,7 @@ main backend ``/auth/me`` and ``voice.*`` permissions.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -44,7 +45,7 @@ from .auth import (
     web_actor,
 )
 from .config import config
-from . import labeling, pipeline, store
+from . import glossary, labeling, pipeline, store
 
 logger = logging.getLogger("voice-server")
 
@@ -57,6 +58,7 @@ app = FastAPI(
 )
 
 app.include_router(labeling.router)
+app.include_router(glossary.router)
 
 JOB_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
@@ -277,6 +279,56 @@ async def create_process_job(
         stored_path.unlink(missing_ok=True)
         logger.exception("Upload failed")
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Upload failed: {exc}")
+
+    if settings.get("trim_start") not in (None, "") or settings.get("trim_end") not in (None, ""):
+        duration = await asyncio.to_thread(pipeline.media_duration_sec, stored_path)
+        try:
+            trim = pipeline.normalize_trim_range(settings, duration)
+        except ValueError as exc:
+            stored_path.unlink(missing_ok=True)
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+        if trim:
+            cut_path = None
+            try:
+                suffix = await asyncio.to_thread(pipeline.trim_media_suffix, stored_path)
+                cut_name = (
+                    f"j{job_id}_{stem}_{int(round(trim[0]))}-{int(round(trim[1]))}s{suffix}"
+                )
+                cut_path = pipeline.input_dir() / cut_name
+                await asyncio.to_thread(
+                    pipeline.cut_media_range, stored_path, cut_path, trim[0], trim[1]
+                )
+            except Exception as exc:
+                if cut_path is not None:
+                    cut_path.unlink(missing_ok=True)
+                stored_path.unlink(missing_ok=True)
+                logger.exception("Media trim failed")
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    f"Не удалось вырезать фрагмент: {exc}",
+                )
+            stored_path.unlink(missing_ok=True)
+            stored_path, stored_name = cut_path, cut_name
+            size = cut_path.stat().st_size
+
+    cut_min = int(getattr(config, "cut_silence_min_duration_sec", 0) or 0)
+    if cut_min:
+        # Автовырезание тишины в длинных записях (VOICE_CUT_SILENCE_MIN_DURATION_SEC). Сбой не фатален:
+        # обрабатываем запись как есть. Карта времён сохраняется в настройках задания.
+        quiet_path = pipeline.input_dir() / f"j{job_id}_{stem}_nosilence{stored_path.suffix}"
+        try:
+            cut = await asyncio.to_thread(
+                pipeline.cut_long_silences, stored_path, quiet_path, cut_min
+            )
+        except Exception:
+            quiet_path.unlink(missing_ok=True)
+            logger.exception("Silence cut failed; processing the full recording")
+            cut = None
+        if cut:
+            stored_path.unlink(missing_ok=True)
+            stored_path, stored_name = quiet_path, quiet_path.name
+            size = quiet_path.stat().st_size
+            settings["silence_cut"] = cut
 
     job = store.create_job(
         kind="process",

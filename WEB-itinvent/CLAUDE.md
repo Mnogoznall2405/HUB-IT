@@ -78,7 +78,7 @@ npm run preview      # Preview production build
 - `authAPI` and `equipmentAPI` method collections
 
 **Pages:** [frontend/src/pages/](frontend/src/pages/)
-- `Login.jsx`, `Database.jsx`, `Search.jsx`, `Transfer.jsx`, `Work.jsx`, `Settings.jsx`
+- `Login.jsx`, `Database.jsx`, `Settings.jsx`, ... (full list: `frontend/src/pages/`, routes: `App.jsx`). `Search.jsx`, `Transfer.jsx`, `Work.jsx` exist as legacy files but have **no route** (unreferenced; dead-code removal is an owner decision, audit Q6)
 
 **Components:** [frontend/src/components/](frontend/src/components/)
 - `layout/MainLayout.jsx` - Main app layout

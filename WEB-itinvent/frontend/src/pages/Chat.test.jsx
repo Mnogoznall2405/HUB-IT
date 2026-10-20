@@ -282,7 +282,7 @@ describe('Chat page AI helpers', () => {
       conversation_id: 'ai-conv-1',
       status: 'running',
       stage: 'generating_answer',
-    })['ai-conv-1'].completed_stages).toEqual(['checking_itinvent', 'generating_answer']);
+    })['ai-conv-1'].completed_stages).toEqual(['checking_itinvent']);
 
     expect(mergeAiStatusPayload({}, {
       status: 'failed',

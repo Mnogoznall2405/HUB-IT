@@ -75,6 +75,7 @@ class AdUserPasswordStatusTool(AiTool):
     description = (
         "Find an Active Directory user by name, surname, login (sAMAccountName like kozlovskii_me) or email "
         "and return a safe password expiry status. "
+        "Also returns the corporate email in user.mail directly from AD; use when explicitly asked to find email in AD. "
         "Use for questions about when a user's password was last changed, when it expires, "
         "how many days remain before the company password rotation, or whether the password must be changed now. "
         "The query can be in Russian (Козловский Максим) or Latin (kozlovskii_me). "
@@ -103,6 +104,7 @@ class AdUserPasswordStatusTool(AiTool):
             database_id=None,
             data=data,
             error=str(payload.get("error") or "AD password status lookup failed.") if not ok else None,
+            sources=[{"system": "active_directory"}] if ok else [],
         )
 
 
@@ -311,6 +313,9 @@ class AdUnlockDraftTool(AiTool):
                 error=f"Account '{login}' not found in Active Directory.",
             )
 
+        if lockout_status != "ok":
+            return AiToolResult(tool_id=self.tool_id, ok=False, error="Не удалось проверить статус учётной записи AD.")
+
         is_locked = bool(lockout_info.get("is_locked"))
         display_name = str(lockout_info.get("display_name") or login)
         lockout_time = lockout_info.get("lockout_time")
@@ -327,18 +332,24 @@ class AdUnlockDraftTool(AiTool):
                 },
             )
 
+        canonical_login = str(lockout_info.get("login") or "").strip()
+        object_guid = str(lockout_info.get("object_guid") or "").strip()
+        if canonical_login.casefold() != login.casefold() or not object_guid:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error="Для разблокировки нужны точный логин и проверенный идентификатор объекта AD.")
+
         # Build the draft/confirmation card
         payload = {
             "login": login,
             "display_name": display_name,
             "lockout_time": lockout_time,
+            "object_guid": object_guid,
         }
 
         try:
-            from backend.ai_chat.action_cards import create_pending_action
+            from backend.ai_chat.action_cards import ACTION_AD_UNLOCK, create_pending_action
 
             card = create_pending_action(
-                action_type="ad.unlock",
+                action_type=ACTION_AD_UNLOCK,
                 conversation_id=context.conversation_id,
                 run_id=context.run_id,
                 requester_user_id=int(context.user_id),
@@ -346,6 +357,7 @@ class AdUnlockDraftTool(AiTool):
                 payload=payload,
                 preview={
                     "title": "Разблокировка учётной записи AD",
+                    "summary": f"Разблокировать учётную запись {display_name} ({login})",
                     "description": f"Разблокировать учётную запись {display_name} ({login})",
                     "login": login,
                     "display_name": display_name,

@@ -1,7 +1,11 @@
 import importlib
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -201,3 +205,330 @@ def test_ai_kb_index_includes_attachment_file_names(monkeypatch, tmp_path):
             ).all()
         ]
     assert any("Бланк_отпуска.pdf" in content for content in contents)
+
+
+@pytest.fixture
+def kb_sync_env(monkeypatch, tmp_path):
+    """Isolated app DB on a 1-connection pool; nested sessions time out fast."""
+    retrieval_module = importlib.import_module("backend.ai_chat.retrieval")
+    app_models = importlib.import_module("backend.appdb.models")
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import QueuePool
+
+    engine = create_engine(
+        f"sqlite:///{(tmp_path / 'kb_index.db').as_posix()}",
+        poolclass=QueuePool,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.1,
+        connect_args={"check_same_thread": False},
+    ).execution_options(schema_translate_map={app_models.APP_SCHEMA: None})
+    app_models.AppAiKbDocument.__table__.create(bind=engine)
+    app_models.AppAiKbChunk.__table__.create(bind=engine)
+    session_factory = sessionmaker(
+        bind=engine, autoflush=False, autocommit=False, expire_on_commit=False
+    )
+
+    @contextmanager
+    def _session(database_url=None):
+        session = session_factory()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    monkeypatch.setattr(retrieval_module, "app_session", _session)
+    monkeypatch.setattr(retrieval_module, "ensure_app_schema_initialized", lambda *a, **k: None)
+    yield SimpleNamespace(module=retrieval_module, models=app_models, engine=engine, session_ctx=_session)
+    engine.dispose()
+
+
+def _kb_article(article_id, title="Статья", updated_at="2026-10-02T00:00:00Z", attachments=None):
+    return {
+        "id": article_id,
+        "title": title,
+        "summary": f"summary {article_id}",
+        "status": "published",
+        "updated_at": updated_at,
+        "content": {},
+        "attachments": attachments or [],
+    }
+
+
+def _stub_kb(monkeypatch, module, list_articles, get_attachment=None, extract=None):
+    monkeypatch.setattr(module.kb_service, "list_articles", list_articles)
+    monkeypatch.setattr(
+        module.kb_service,
+        "resolve_effective_primary_attachment",
+        lambda article: (list(article.get("attachments") or []) or [None])[0],
+    )
+    if get_attachment is None:
+        get_attachment = lambda article_id, attachment_id, current_user=None: None
+    monkeypatch.setattr(module.kb_service, "get_attachment", get_attachment)
+    if extract is None:
+        extract = lambda *a, **k: ""
+    monkeypatch.setattr(module, "extract_text_from_path", extract)
+
+
+def _paged(rows):
+    def _list_articles(**kw):
+        offset = int(kw.get("offset") or 0)
+        limit = int(kw.get("limit") or 500)
+        return {"items": rows[offset:offset + limit], "total": len(rows)}
+
+    return _list_articles
+
+
+def _doc_ids(kb_sync_env):
+    from sqlalchemy import select
+
+    with kb_sync_env.session_ctx() as session:
+        return {
+            row.kb_article_id
+            for row in session.scalars(select(kb_sync_env.models.AppAiKbDocument)).all()
+        }
+
+
+def _chunks_for(kb_sync_env, article_id):
+    from sqlalchemy import select
+
+    with kb_sync_env.session_ctx() as session:
+        return session.scalars(
+            select(kb_sync_env.models.AppAiKbChunk).where(
+                kb_sync_env.models.AppAiKbChunk.kb_article_id == article_id
+            )
+        ).all()
+
+
+def test_sync_index_does_not_hold_db_session_during_attachment_work(kb_sync_env, monkeypatch):
+    """kb_service.get_attachment / the extractor open their own sessions; the
+    index session must not be held while they run (pool size 1 would deadlock)."""
+    module = kb_sync_env.module
+    from sqlalchemy import text
+
+    article = _kb_article("a-1", attachments=[{"id": "att-1", "file_name": "note.txt", "size": 5}])
+
+    def _get_attachment(article_id, attachment_id, current_user=None):
+        with kb_sync_env.session_ctx() as session:
+            session.execute(text("SELECT 1"))
+        return {"id": attachment_id, "file_name": "note.txt", "path": "unused"}
+
+    def _extract(*args, **kwargs):
+        with kb_sync_env.session_ctx() as session:
+            session.execute(text("SELECT 1"))
+        return "extracted body"
+
+    _stub_kb(monkeypatch, module, _paged([article]), get_attachment=_get_attachment, extract=_extract)
+
+    module.AiKbRetrievalService().sync_index()
+
+    assert _chunks_for(kb_sync_env, "a-1")
+
+
+def test_sync_index_collects_all_pages_and_keeps_501st(kb_sync_env, monkeypatch):
+    module = kb_sync_env.module
+    articles = [_kb_article(f"a-{i:03d}") for i in range(501)]
+    articles[-1]["title"] = "Уникальныйпятисотыйтайтл"
+    offsets = []
+
+    def _list_articles(**kw):
+        offset = int(kw.get("offset") or 0)
+        limit = int(kw.get("limit") or 500)
+        offsets.append(offset)
+        return {"items": articles[offset:offset + limit], "total": len(articles)}
+
+    _stub_kb(monkeypatch, module, _list_articles)
+    service = module.AiKbRetrievalService()
+    service.sync_index()
+
+    assert offsets == [0, 500]
+    assert len(_doc_ids(kb_sync_env)) == 501
+    found = service.retrieve(query="уникальныйпятисотыйтайтл")
+    assert [row["article_id"] for row in found] == ["a-500"]
+
+
+def test_sync_index_removes_docs_absent_from_full_listing(kb_sync_env, monkeypatch):
+    module = kb_sync_env.module
+    state = {"rows": [_kb_article("keep-1"), _kb_article("drop-1")]}
+    _stub_kb(monkeypatch, module, lambda **kw: _paged(state["rows"])(**kw))
+
+    service = module.AiKbRetrievalService()
+    service.sync_index()
+    assert _doc_ids(kb_sync_env) == {"keep-1", "drop-1"}
+
+    state["rows"] = state["rows"][:1]
+    service.sync_index()
+    assert _doc_ids(kb_sync_env) == {"keep-1"}
+    assert _chunks_for(kb_sync_env, "keep-1")
+    assert _chunks_for(kb_sync_env, "drop-1") == []
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "changed_total",
+        "empty_page",
+        "duplicate_ids",
+        "missing_total",
+        "none_total",
+        "negative_total",
+        "string_total",
+        "overfull_page",
+    ],
+)
+def test_sync_index_aborts_on_unstable_listing(kb_sync_env, monkeypatch, mode):
+    module = kb_sync_env.module
+    service = module.AiKbRetrievalService()
+
+    base = [_kb_article("base-1")]
+    _stub_kb(monkeypatch, module, _paged(base))
+    service.sync_index()
+    stamp = service._last_sync_monotonic
+    assert stamp > 0
+
+    if mode == "changed_total":
+        def _list_articles(**kw):
+            offset = int(kw.get("offset") or 0)
+            if offset == 0:
+                return {"items": [_kb_article("x-1")], "total": 2}
+            return {"items": [_kb_article("x-2")], "total": 3}
+    elif mode == "empty_page":
+        def _list_articles(**kw):
+            offset = int(kw.get("offset") or 0)
+            if offset == 0:
+                return {"items": [_kb_article("x-1")], "total": 2}
+            return {"items": [], "total": 2}
+    elif mode == "duplicate_ids":
+        def _list_articles(**kw):
+            return {"items": [_kb_article("dup"), _kb_article("dup")], "total": 2}
+    elif mode == "missing_total":
+        def _list_articles(**kw):
+            return {"items": []}
+    elif mode == "none_total":
+        def _list_articles(**kw):
+            return {"items": [], "total": None}
+    elif mode == "negative_total":
+        def _list_articles(**kw):
+            return {"items": [], "total": -5}
+    elif mode == "string_total":
+        def _list_articles(**kw):
+            return {"items": [_kb_article("x-1")], "total": "2"}
+    else:
+        def _list_articles(**kw):
+            return {
+                "items": [_kb_article("x-1"), _kb_article("x-2"), _kb_article("x-1")],
+                "total": 2,
+            }
+
+    monkeypatch.setattr(module.kb_service, "list_articles", _list_articles)
+    with pytest.raises(RuntimeError):
+        service.sync_index()
+
+    assert _doc_ids(kb_sync_env) == {"base-1"}
+    assert _chunks_for(kb_sync_env, "base-1")
+    assert service._last_sync_monotonic == stamp
+
+
+@pytest.mark.parametrize("failure", ["attachment", "extractor"])
+def test_sync_index_prep_failure_keeps_prior_index(kb_sync_env, monkeypatch, failure):
+    module = kb_sync_env.module
+    from sqlalchemy import select
+
+    attachments = [{"id": "att-1", "file_name": "a.txt", "size": 3}]
+    rows = [_kb_article("p-1", title="Старое", attachments=attachments)]
+    _stub_kb(
+        monkeypatch,
+        module,
+        lambda **kw: _paged(rows)(**kw),
+        get_attachment=lambda article_id, attachment_id, current_user=None: {
+            "id": attachment_id,
+            "file_name": "a.txt",
+            "path": "x",
+        },
+        extract=lambda *a, **k: "body",
+    )
+    service = module.AiKbRetrievalService()
+    service.sync_index()
+    stamp = service._last_sync_monotonic
+
+    with kb_sync_env.session_ctx() as session:
+        doc = session.scalars(select(kb_sync_env.models.AppAiKbDocument)).one()
+        hash_before = doc.content_hash
+    chunks_before = [row.content for row in _chunks_for(kb_sync_env, "p-1")]
+
+    rows[0] = _kb_article("p-1", title="Новое", updated_at="2026-10-03T00:00:00Z", attachments=attachments)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("kb io failed")
+
+    if failure == "attachment":
+        monkeypatch.setattr(module.kb_service, "get_attachment", _boom)
+    else:
+        monkeypatch.setattr(module, "extract_text_from_path", _boom)
+
+    with pytest.raises(RuntimeError, match="kb io failed"):
+        service.sync_index()
+
+    with kb_sync_env.session_ctx() as session:
+        doc = session.scalars(select(kb_sync_env.models.AppAiKbDocument)).one()
+        assert doc.title == "Старое"
+        assert doc.content_hash == hash_before
+    assert [row.content for row in _chunks_for(kb_sync_env, "p-1")] == chunks_before
+    assert service._last_sync_monotonic == stamp
+
+
+def test_sync_index_skips_extraction_for_unchanged_articles(kb_sync_env, monkeypatch):
+    module = kb_sync_env.module
+    counters = {"get_attachment": 0, "extract": 0}
+    article = _kb_article("same-1", attachments=[{"id": "att-1", "file_name": "a.txt", "size": 3}])
+
+    def _get_attachment(article_id, attachment_id, current_user=None):
+        counters["get_attachment"] += 1
+        return {"id": attachment_id, "file_name": "a.txt", "path": "x"}
+
+    def _extract(*a, **k):
+        counters["extract"] += 1
+        return "body"
+
+    _stub_kb(monkeypatch, module, _paged([article]), get_attachment=_get_attachment, extract=_extract)
+    service = module.AiKbRetrievalService()
+    service.sync_index()
+    assert counters == {"get_attachment": 1, "extract": 1}
+    chunk_count = len(_chunks_for(kb_sync_env, "same-1"))
+    assert chunk_count > 0
+
+    counters["get_attachment"] = counters["extract"] = 0
+    service.sync_index()
+    assert counters == {"get_attachment": 0, "extract": 0}
+    assert _doc_ids(kb_sync_env) == {"same-1"}
+    assert len(_chunks_for(kb_sync_env, "same-1")) == chunk_count
+
+
+def test_sync_index_reindexes_changed_article(kb_sync_env, monkeypatch):
+    module = kb_sync_env.module
+    rows = [_kb_article("chg-1", title="Первое")]
+    _stub_kb(monkeypatch, module, lambda **kw: _paged(rows)(**kw))
+
+    service = module.AiKbRetrievalService()
+    service.sync_index()
+    from sqlalchemy import select
+
+    with kb_sync_env.session_ctx() as session:
+        doc = session.scalars(select(kb_sync_env.models.AppAiKbDocument)).one()
+        hash_before = doc.content_hash
+
+    rows[0] = _kb_article("chg-1", title="Второе", updated_at="2026-10-03T00:00:00Z")
+    service.sync_index()
+
+    with kb_sync_env.session_ctx() as session:
+        doc = session.scalars(select(kb_sync_env.models.AppAiKbDocument)).one()
+        assert doc.content_hash != hash_before
+        assert doc.title == "Второе"
+    chunks = _chunks_for(kb_sync_env, "chg-1")
+    assert chunks and any("Второе" in row.content for row in chunks)
+    assert service.retrieve(query="второе")

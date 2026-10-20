@@ -293,6 +293,69 @@ describe('AuthProvider offline session', () => {
     await waitFor(() => expect(authApi.fetchMe).toHaveBeenCalledTimes(2));
   });
 
+  it('leaves a stuck «no network» state on return to the app when the "back online" event was missed', async () => {
+    jest.useFakeTimers();
+    jest.mocked(authApi.fetchMe).mockResolvedValue(cachedUser);
+    const view = await render(<AuthProvider><Probe /></AuthProvider>);
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    expect(view.getByTestId('offline-mode').props.children).toBe('online');
+
+    // Wi-Fi drops while the screen is locked (outside the recent-success grace).
+    await act(async () => { await jest.advanceTimersByTimeAsync(9_000); });
+    jest.mocked(authApi.fetchMe).mockRejectedValue(TRANSPORT_ERROR);
+    await act(async () => emitConnectivity(OFFLINE_SNAPSHOT));
+    expect(view.getByTestId('conn-offline').props.children).toBe('offline');
+
+    // Android reconnects, but the app never receives the event.
+    jest.mocked(nativeConnectivity.getNativeConnectivitySnapshot).mockResolvedValue({
+      ...WIFI_SNAPSHOT,
+      changedAtMs: 50,
+    });
+    jest.mocked(authApi.fetchMe).mockResolvedValue(cachedUser);
+    await act(async () => emitAppState('background'));
+    await act(async () => emitAppState('active'));
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+
+    expect(view.getByTestId('conn-offline').props.children).toBe('online');
+    expect(view.getByTestId('offline-mode').props.children).toBe('online');
+  });
+
+  it('probes the server on its own while only the physical layer says offline', async () => {
+    jest.useFakeTimers();
+    jest.mocked(authApi.fetchMe).mockResolvedValue(cachedUser);
+    const view = await render(<AuthProvider><Probe /></AuthProvider>);
+    await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+    await act(async () => { await jest.advanceTimersByTimeAsync(9_000); });
+    jest.mocked(authApi.fetchMe).mockRejectedValue(TRANSPORT_ERROR);
+    await act(async () => emitConnectivity(OFFLINE_SNAPSHOT));
+    expect(view.getByTestId('conn-offline').props.children).toBe('offline');
+
+    // No event, no foreground change: the periodic probe alone gets the app back.
+    jest.mocked(authApi.fetchMe).mockResolvedValue(cachedUser);
+    await act(async () => { await jest.advanceTimersByTimeAsync(2_000); });
+    expect(view.getByTestId('conn-offline').props.children).toBe('online');
+  });
+
+  it('«Проверить связь» снимает офлайн, как только сервер ответил', async () => {
+    jest.mocked(nativeConnectivity.getNativeConnectivitySnapshot).mockResolvedValue(OFFLINE_SNAPSHOT);
+    jest.mocked(authApi.fetchMe).mockRejectedValue(TRANSPORT_ERROR);
+    const view = await render(<AuthProvider><Probe /></AuthProvider>);
+    await waitFor(() => expect(view.getByText('mobile-test')).toBeTruthy());
+    expect(view.getByTestId('offline-mode').props.children).toBe('offline');
+
+    let answered = true;
+    await act(async () => { answered = await currentAuth!.checkServerNow(); });
+    expect(answered).toBe(false);
+    expect(currentAuth?.serverCheck).toEqual(expect.objectContaining({ ok: false }));
+    expect(view.getByTestId('offline-mode').props.children).toBe('offline');
+
+    jest.mocked(authApi.fetchMe).mockResolvedValue(cachedUser);
+    await act(async () => { answered = await currentAuth!.checkServerNow(); });
+    expect(answered).toBe(true);
+    expect(currentAuth?.serverCheck).toEqual(expect.objectContaining({ ok: true }));
+    expect(view.getByTestId('offline-mode').props.children).toBe('online');
+  });
+
   it('keeps retrying once a minute after the short backoff is exhausted', async () => {
     jest.useFakeTimers();
     jest.mocked(authApi.fetchMe).mockRejectedValue(TRANSPORT_ERROR);

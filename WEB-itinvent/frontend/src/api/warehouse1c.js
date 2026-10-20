@@ -1,6 +1,7 @@
 import apiClient from './client';
 
-export const WAREHOUSE_1C_QUERY_TIMEOUT_MS = 50_000;
+// Covers the deployed 90 s COM deadline plus bounded queue/HTTP overhead.
+export const WAREHOUSE_1C_QUERY_TIMEOUT_MS = 120_000;
 export const EMPTY_1C_REF = '00000000-0000-0000-0000-000000000000';
 
 export const isMeaningful1cRef = (value) => {
@@ -283,8 +284,9 @@ export const warehouse1cAPI = {
     )
   ),
 
-  getEmployeeCompareSummary: async () => {
+  getEmployeeCompareSummary: async ({ refresh = false } = {}) => {
     const { data } = await apiClient.get('/warehouse-1c/employee-compare-summary', {
+      params: refresh ? { refresh: true } : undefined,
       timeout: 120_000,
     });
     return data;

@@ -8,6 +8,7 @@ export default function useChatSelectedMessageActions({
   activeConversationIdRef,
   clearSelectedMessages,
   conversationKind,
+  viewerMemberRole,
   focusComposer,
   loadChatDialogsModule,
   mergeMessageIntoThread,
@@ -19,6 +20,7 @@ export default function useChatSelectedMessageActions({
   setForwardConversationQuery,
   setForwardMessages,
   setForwardOpen,
+  setEditingMessage,
   setMessageMenuAnchor,
   setMessageMenuMessage,
   setReplyMessage,
@@ -35,10 +37,11 @@ export default function useChatSelectedMessageActions({
     if (selectedMessages.length !== 1) return;
     const [message] = selectedMessages;
     if (!message?.id) return;
+    setEditingMessage?.(null);
     setReplyMessage(message);
     clearSelectedMessages();
     focusComposer({ forceMobile: true });
-  }, [clearSelectedMessages, focusComposer, selectedMessages, setReplyMessage]);
+  }, [clearSelectedMessages, focusComposer, selectedMessages, setEditingMessage, setReplyMessage]);
 
   const copySelectedMessages = useCallback(async () => {
     const generation = selectionGeneration.current;
@@ -89,7 +92,7 @@ export default function useChatSelectedMessageActions({
     const generation = selectionGeneration.current;
     const sourceConversationId = activeConversationIdRef?.current;
     const deletable = selectedMessages.filter((message) => (
-      canDeleteChatMessage(message, { conversationKind })
+      canDeleteChatMessage(message, { conversationKind, viewerMemberRole })
     ));
     if (deletable.length <= 0) return;
     const confirmLabel = deletable.length === 1
@@ -125,6 +128,7 @@ export default function useChatSelectedMessageActions({
     mergeMessageIntoThread,
     notifyApiError,
     selectedMessages,
+    viewerMemberRole,
   ]);
 
   return {

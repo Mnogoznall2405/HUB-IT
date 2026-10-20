@@ -5,7 +5,7 @@ import jsonAPI from '../../api/json_client';
 import { databaseAPI } from '../../api/database';
 import { readFirst, readQty, normalizeDbId, toNumberOrNull } from './databaseRecordModel';
 import { isCartridgeLikeConsumable, updateConsumableQtyInGrouped } from './consumableModel';
-import { DEFAULT_CARTRIDGE_COLOR } from './equipmentModel';
+import { DEFAULT_CARTRIDGE_COLOR, getItemCapabilityFlags } from './equipmentModel';
 import { parseDatabaseQrPayload } from './qrModel';
 import { readPrinterInvNo, useConsumableQrPrinterPicker } from './useConsumableQrPrinterPicker';
 
@@ -97,9 +97,13 @@ export function useConsumableCard({
   const [consumeQtyValue, setConsumeQtyValue] = useState('1');
   const [consumeLoading, setConsumeLoading] = useState(false);
   const [consumeError, setConsumeError] = useState('');
+  // MFU scanned before the consumable (reverse QR direction) lands here —
+  // the picker seeds selectedPrinter from it when the card opens.
+  const [presetPrinter, setPresetPrinter] = useState(null);
   const printerPicker = useConsumableQrPrinterPicker({
     open: Boolean(consumableCardModal.open),
     item: consumableCardModal.item,
+    initialPrinter: presetPrinter,
   });
 
   const openConsumableCard = useCallback((item) => {
@@ -115,7 +119,26 @@ export function useConsumableCard({
     setConsumeQtyValue('1');
     setConsumeError('');
     setConsumeLoading(false);
+    setPresetPrinter(null);
   }, []);
+
+  // A finished QR pair (consumable + MFU): if the card is already open for the
+  // same consumable just select the printer; otherwise open the card preset.
+  const completeConsumablePair = useCallback((consumable, printer) => {
+    if (!printer || typeof printer !== 'object') return;
+    if (!getItemCapabilityFlags(printer).isPrinterOrMfu) {
+      notifyDatabaseError?.('Отсканированная позиция — не МФУ/принтер.');
+      return;
+    }
+    const currentId = toNumberOrNull(readFirst(consumableCardModal.item, ['ID', 'id'], null));
+    const nextId = toNumberOrNull(readFirst(consumable, ['ID', 'id'], null));
+    if (consumableCardModal.open && currentId !== null && currentId === nextId) {
+      printerPicker.selectPrinter(printer);
+      return;
+    }
+    setPresetPrinter(printer);
+    openConsumableCard(consumable);
+  }, [consumableCardModal.item, consumableCardModal.open, notifyDatabaseError, openConsumableCard, printerPicker]);
 
   const setConsumeQtyInput = useCallback((value) => {
     setConsumeQtyValue(value);
@@ -271,6 +294,7 @@ export function useConsumableCard({
     consumeLoading,
     consumeError,
     consumableQrPrinterPicker: printerPicker,
+    completeConsumablePair,
     openConsumableCard,
     closeConsumableCard,
     setConsumeQtyInput,

@@ -962,13 +962,15 @@ class TicketsImportService:
             ).all()
 
         existing_by_key = {
-            (full_name, submitted_at): request_id
+            (full_name, self._utc_naive(submitted_at)): request_id
             for request_id, full_name, submitted_at in rows
         }
 
         duplicates: list[DuplicateMatch] = []
         for parsed in parsed_rows:
-            existing_id = existing_by_key.get((parsed.full_name, parsed.submitted_at))
+            existing_id = existing_by_key.get(
+                (parsed.full_name, self._utc_naive(parsed.submitted_at))
+            )
             if existing_id is not None:
                 duplicates.append(DuplicateMatch(
                     parsed_row=parsed,
@@ -980,6 +982,12 @@ class TicketsImportService:
     # ------------------------------------------------------------------
     # Value normalization
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _utc_naive(value: datetime | None) -> datetime | None:
+        if value is None or value.tzinfo is None:
+            return value
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
 
     @staticmethod
     def _normalize_value(value: Any, expected_type: str) -> tuple[Any, bool]:

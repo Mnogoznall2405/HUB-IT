@@ -727,6 +727,27 @@ class AppEquipmentPhotoOcr(AppBase):
     analyzed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
+class AppEquipmentOneCMark(AppBase):
+    """Manual «reconciled with 1C» mark on one ITINVENT equipment card.
+
+    Kept apart from the automatic 1C comparison (computed on read, never stored), so a
+    recalculation can neither set nor erase it. Keyed by the database id and INV_NO text.
+    """
+
+    __tablename__ = "equipment_one_c_marks"
+    __table_args__ = _table_args(
+        UniqueConstraint("db_id", "inv_no", name="uq_app_equipment_one_c_marks_db_inv"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    db_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    inv_no: Mapped[str] = mapped_column(String(64), nullable=False)
+    marked_by: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    marked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+
+
 class AppPasswordVaultEntry(AppBase):
     __tablename__ = "password_vault_entries"
     __table_args__ = _table_args(
@@ -1164,6 +1185,48 @@ class AppAiUserMemorySource(AppBase):
     memory_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     conversation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     message_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppAiMemoryState(AppBase):
+    """Serializes user memory edits, including forget versus an in-flight planner."""
+    __tablename__ = "ai_memory_state"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    write_barrier_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AppAiMemoryFact(AppBase):
+    __tablename__ = "ai_memory_facts"
+    __table_args__ = _table_args(
+        UniqueConstraint("user_id", "fact_key", name="uq_app_ai_memory_facts_user_key"),
+        schema=APP_SCHEMA,
+    )
+
+    memory_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    fact_key: Mapped[str] = mapped_column(String(96), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class AppAiMemoryEvent(AppBase):
+    """Replay ledger and source-backed changes; forgetting also erases snapshots."""
+    __tablename__ = "ai_memory_events"
+    __table_args__ = _table_args(
+        UniqueConstraint("user_id", "message_id", name="uq_app_ai_memory_events_user_message"),
+        Index("ix_app_ai_memory_events_user_conversation_seq", "user_id", "conversation_id", "conversation_seq"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    message_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    conversation_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    changes_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 

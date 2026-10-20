@@ -146,23 +146,3 @@ describe('useChatActiveConversationSurfaceEffects helpers', () => {
   });
 });
 
-describe('useChatActiveConversationSurfaceEffects', () => {
-  it('mounts without throwing when AI status is skipped', async () => {
-    const { renderHook } = await import('@testing-library/react');
-    const { unmount } = renderHook(() => useChatActiveConversationSurfaceEffects({
-      activeConversationId: '',
-      activeConversationKind: 'direct',
-      canUseAiChat: false,
-      isMobile: false,
-      messages: [],
-      persistPinnedMessage: vi.fn(),
-      pinnedMessage: null,
-      pinnedMessageStorageKey: '',
-      setAiStatusByConversation: vi.fn(),
-      setPinnedMessage: vi.fn(),
-      showContextPanel: false,
-      showTaskPanel: false,
-    }));
-    unmount();
-  });
-});

@@ -17,7 +17,7 @@ import backend.config as backend_config_module
 from backend.config import Config, ConfigurationError
 
 
-def _clear_auth_env(monkeypatch) -> None:
+def _clear_auth_env(monkeypatch, app_env: str | None = "development") -> None:
     for key in (
         "APP_ENV",
         "ENVIRONMENT",
@@ -29,6 +29,8 @@ def _clear_auth_env(monkeypatch) -> None:
         "AUTH_NEW_LOGIN_EMAIL_ENABLED",
     ):
         monkeypatch.delenv(key, raising=False)
+    if app_env is not None:
+        monkeypatch.setenv("APP_ENV", app_env)
 
 
 def test_production_rejects_placeholder_jwt_secret(monkeypatch):
@@ -38,6 +40,14 @@ def test_production_rejects_placeholder_jwt_secret(monkeypatch):
     monkeypatch.setenv("AUTH_COOKIE_SECURE", "true")
 
     with pytest.raises(ConfigurationError, match="JWT_SECRET"):
+        Config.from_env()
+
+
+def test_unset_app_env_defaults_to_production_and_rejects_default_jwt_secret(monkeypatch):
+    # A host that loses its APP_ENV must fail closed, not start as "development" with the default secret.
+    _clear_auth_env(monkeypatch, app_env=None)
+
+    with pytest.raises(ConfigurationError, match="Production APP_ENV"):
         Config.from_env()
 
 
@@ -136,7 +146,7 @@ def _user_service_module_for_test(monkeypatch):
     local_store_module = importlib.import_module("local_store")
     monkeypatch.setattr(local_store_module, "_STORE_SINGLETON", None, raising=False)
     module = importlib.import_module("backend.services.user_service")
-    return importlib.reload(module)
+    return module
 
 
 def test_user_service_rejects_default_users_in_production(temp_dir, monkeypatch):

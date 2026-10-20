@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 
 from backend.chat.db import chat_session
 from backend.chat.models import (
@@ -34,6 +34,7 @@ OUTBOX_STATUS_SENT = "sent"
 OUTBOX_STATUS_NO_SUBSCRIPTIONS = "no_subscriptions"
 OUTBOX_STATUS_FAILED = "failed"
 OUTBOX_STATUS_SUPPRESSED = "suppressed"
+OUTCOME_SUPERSEDED = "superseded"  # Worker outcome only, never a persisted status.
 
 
 def _utc_now() -> datetime:
@@ -195,11 +196,21 @@ class ChatPushOutboxService:
             )
             now = _utc_now()
             for job in stale_jobs:
-                job.status = OUTBOX_STATUS_QUEUED
-                job.next_attempt_at = now
-                job.updated_at = now
-                job.last_error = "Recovered stale processing job"
-                recovered += 1
+                exhausted = int(job.attempt_count or 0) >= self.max_attempts
+                applied = session.execute(
+                    update(ChatPushOutbox).where(
+                        ChatPushOutbox.id == job.id,
+                        ChatPushOutbox.status == OUTBOX_STATUS_PROCESSING,
+                        ChatPushOutbox.attempt_count == int(job.attempt_count or 0),
+                        ChatPushOutbox.updated_at == job.updated_at,
+                    ).values(
+                        status=OUTBOX_STATUS_FAILED if exhausted else OUTBOX_STATUS_QUEUED,
+                        next_attempt_at=now, updated_at=now,
+                        last_error=("Stale processing job exhausted attempt limit"
+                                    if exhausted else "Recovered stale processing job"),
+                    ).execution_options(synchronize_session=False)
+                )
+                recovered += int(applied.rowcount or 0)
         return recovered
 
     def claim_jobs(self, limit: int | None = None) -> list[ChatPushOutboxJob]:
@@ -220,69 +231,87 @@ class ChatPushOutboxService:
             if dialect_name == "postgresql":
                 query = query.with_for_update(skip_locked=True)
             jobs = list(session.execute(query).scalars())
+            claimed_jobs = []
             for job in jobs:
-                job.status = OUTBOX_STATUS_PROCESSING
-                job.attempt_count = int(job.attempt_count or 0) + 1
-                job.updated_at = now
-            session.flush()
-            return [self._serialize_job(job) for job in jobs]
+                claimed = session.execute(
+                    update(ChatPushOutbox).where(
+                        ChatPushOutbox.id == job.id,
+                        ChatPushOutbox.status == OUTBOX_STATUS_QUEUED,
+                        ChatPushOutbox.attempt_count == int(job.attempt_count or 0),
+                    ).values(
+                        status=OUTBOX_STATUS_PROCESSING,
+                        attempt_count=ChatPushOutbox.attempt_count + 1,
+                        updated_at=now,
+                    ).returning(ChatPushOutbox).execution_options(
+                        synchronize_session=False, populate_existing=True,
+                    )
+                ).scalar_one_or_none()
+                if claimed is not None:
+                    claimed_jobs.append(self._serialize_job(claimed))
+            return claimed_jobs
 
     def _update_job(
         self,
         *,
         job_id: int,
+        attempt_count: int,
         status: str,
         next_attempt_at: datetime | None = None,
         last_error: str | None = None,
-    ) -> None:
+    ) -> bool:
+        now = _utc_now()
         with chat_session() as session:
-            job = session.get(ChatPushOutbox, int(job_id))
-            if job is None:
-                return
-            job.status = _normalize_text(status, OUTBOX_STATUS_FAILED)
-            job.updated_at = _utc_now()
-            job.next_attempt_at = next_attempt_at or job.updated_at
-            job.last_error = _normalize_text(last_error) or None
+            return bool(session.execute(
+                update(ChatPushOutbox).where(
+                    ChatPushOutbox.id == int(job_id),
+                    ChatPushOutbox.status == OUTBOX_STATUS_PROCESSING,
+                    ChatPushOutbox.attempt_count == int(attempt_count),
+                ).values(
+                    status=_normalize_text(status, OUTBOX_STATUS_FAILED),
+                    updated_at=now, next_attempt_at=next_attempt_at or now,
+                    last_error=_normalize_text(last_error) or None,
+                )
+            ).rowcount)
 
-    def mark_sent(self, *, job_id: int, last_error: str | None = None) -> None:
-        self._update_job(
+    def mark_sent(self, *, job_id: int, attempt_count: int, last_error: str | None = None) -> bool:
+        return self._update_job(
             job_id=int(job_id),
+            attempt_count=attempt_count,
             status=OUTBOX_STATUS_SENT,
             next_attempt_at=_utc_now(),
             last_error=last_error,
         )
 
-    def mark_no_subscriptions(self, *, job_id: int, last_error: str | None = None) -> None:
-        self._update_job(
+    def mark_no_subscriptions(self, *, job_id: int, attempt_count: int, last_error: str | None = None) -> bool:
+        return self._update_job(
             job_id=int(job_id),
+            attempt_count=attempt_count,
             status=OUTBOX_STATUS_NO_SUBSCRIPTIONS,
             next_attempt_at=_utc_now(),
             last_error=last_error,
         )
 
-    def mark_retry(self, *, job_id: int, last_error: str) -> None:
-        with chat_session() as session:
-            job = session.get(ChatPushOutbox, int(job_id))
-            if job is None:
-                return
-            delay_sec = self._retry_delay_sec(int(job.attempt_count or 0))
-            next_attempt_at = _utc_now() + timedelta(seconds=delay_sec)
-            job.status = OUTBOX_STATUS_QUEUED
-            job.next_attempt_at = next_attempt_at
-            job.updated_at = _utc_now()
-            job.last_error = _normalize_text(last_error) or None
+    def mark_retry(self, *, job_id: int, attempt_count: int, last_error: str) -> bool:
+        return self._update_job(
+            job_id=int(job_id), attempt_count=attempt_count,
+            status=OUTBOX_STATUS_QUEUED,
+            next_attempt_at=_utc_now() + timedelta(seconds=self._retry_delay_sec(attempt_count)),
+            last_error=last_error,
+        )
 
-    def mark_failed(self, *, job_id: int, last_error: str) -> None:
-        self._update_job(
+    def mark_failed(self, *, job_id: int, attempt_count: int, last_error: str) -> bool:
+        return self._update_job(
             job_id=int(job_id),
+            attempt_count=attempt_count,
             status=OUTBOX_STATUS_FAILED,
             next_attempt_at=_utc_now(),
             last_error=last_error,
         )
 
-    def mark_suppressed(self, *, job_id: int, last_error: str | None = None) -> None:
-        self._update_job(
+    def mark_suppressed(self, *, job_id: int, attempt_count: int, last_error: str | None = None) -> bool:
+        return self._update_job(
             job_id=int(job_id),
+            attempt_count=attempt_count,
             status=OUTBOX_STATUS_SUPPRESSED,
             next_attempt_at=_utc_now(),
             last_error=last_error,
@@ -341,8 +370,10 @@ class ChatPushOutboxService:
             suppression_reason = self._push_suppression_reason(job)
             if suppression_reason is not None:
                 note = f"suppressed: {suppression_reason}"
-                self.mark_suppressed(job_id=job.id, last_error=note)
+                applied = self.mark_suppressed(job_id=job.id, attempt_count=job.attempt_count, last_error=note)
                 outcome = OUTBOX_STATUS_SUPPRESSED
+                if not applied:
+                    outcome = OUTCOME_SUPERSEDED
                 return outcome
             result = chat_push_service.send_chat_message_notification(
                 recipient_user_id=int(job.recipient_user_id),
@@ -355,35 +386,39 @@ class ChatPushOutboxService:
                 note = None
                 if int(result.failed or 0) > 0:
                     note = f"partial_delivery failed={int(result.failed or 0)} disabled={int(result.disabled or 0)}"
-                self.mark_sent(job_id=job.id, last_error=note)
+                applied = self.mark_sent(job_id=job.id, attempt_count=job.attempt_count, last_error=note)
                 outcome = OUTBOX_STATUS_SENT
             elif int(getattr(result, "suppressed", 0) or 0) > 0 and int(result.failed or 0) <= 0:
                 note = f"suppressed: {getattr(result, 'suppressed_reason', '') or 'policy'}"
-                self.mark_suppressed(job_id=job.id, last_error=note)
+                applied = self.mark_suppressed(job_id=job.id, attempt_count=job.attempt_count, last_error=note)
                 outcome = OUTBOX_STATUS_SUPPRESSED
             elif int(result.failed or 0) > 0:
                 note = f"delivery_failed failed={int(result.failed or 0)} disabled={int(result.disabled or 0)}"
                 if int(job.attempt_count) >= self.max_attempts:
-                    self.mark_failed(job_id=job.id, last_error=note)
+                    applied = self.mark_failed(job_id=job.id, attempt_count=job.attempt_count, last_error=note)
                     outcome = OUTBOX_STATUS_FAILED
                 else:
-                    self.mark_retry(job_id=job.id, last_error=note)
+                    applied = self.mark_retry(job_id=job.id, attempt_count=job.attempt_count, last_error=note)
                     outcome = OUTBOX_STATUS_QUEUED
             else:
                 note = "No active push subscriptions"
                 if int(result.disabled or 0) > 0:
                     note = "All push subscriptions disabled or expired"
-                self.mark_no_subscriptions(job_id=job.id, last_error=note)
+                applied = self.mark_no_subscriptions(job_id=job.id, attempt_count=job.attempt_count, last_error=note)
                 outcome = OUTBOX_STATUS_NO_SUBSCRIPTIONS
+            if not applied:
+                outcome = OUTCOME_SUPERSEDED
             return outcome
         except Exception as exc:
             note = _normalize_text(exc) or "push delivery failed"
             if int(job.attempt_count) >= self.max_attempts:
-                self.mark_failed(job_id=job.id, last_error=note)
+                applied = self.mark_failed(job_id=job.id, attempt_count=job.attempt_count, last_error=note)
                 outcome = OUTBOX_STATUS_FAILED
             else:
-                self.mark_retry(job_id=job.id, last_error=note)
+                applied = self.mark_retry(job_id=job.id, attempt_count=job.attempt_count, last_error=note)
                 outcome = OUTBOX_STATUS_QUEUED
+            if not applied:
+                outcome = OUTCOME_SUPERSEDED
             return outcome
         finally:
             logger.info(
@@ -460,6 +495,7 @@ class ChatPushOutboxService:
                 "sent": 0,
                 "no_subscriptions": 0,
                 "requeued": 0,
+                "superseded": 0,
                 "failed": 0,
                 "recovered": 0,
             }
@@ -478,6 +514,7 @@ class ChatPushOutboxService:
                 "sent": 0,
                 "no_subscriptions": 0,
                 "requeued": 0,
+                "superseded": 0,
                 "failed": 0,
                 "recovered": int(recovered),
             }
@@ -488,6 +525,7 @@ class ChatPushOutboxService:
             "sent": 0,
             "no_subscriptions": 0,
             "requeued": 0,
+            "superseded": 0,
             "failed": 0,
             "recovered": int(recovered),
         }
@@ -503,6 +541,8 @@ class ChatPushOutboxService:
                     result["no_subscriptions"] += 1
                 elif outcome == OUTBOX_STATUS_FAILED:
                     result["failed"] += 1
+                elif outcome == OUTCOME_SUPERSEDED:
+                    result["superseded"] += 1
                 else:
                     result["requeued"] += 1
         await self._emit_heartbeat_if_due()
@@ -511,13 +551,14 @@ class ChatPushOutboxService:
         idle = not (result["claimed"] or result["recovered"])
         logger.log(
             logging.DEBUG if idle else logging.INFO,
-            "chat.push_outbox.poll claimed=%s sent=%s no_subscriptions=%s requeued=%s failed=%s recovered=%s duration_ms=%.1f push_enabled=%s",
+            "chat.push_outbox.poll claimed=%s sent=%s no_subscriptions=%s requeued=%s failed=%s recovered=%s superseded=%s duration_ms=%.1f push_enabled=%s",
             result["claimed"],
             result["sent"],
             result["no_subscriptions"],
             result["requeued"],
             result["failed"],
             result["recovered"],
+            result["superseded"],
             (time.perf_counter() - started_at) * 1000.0,
             int(bool(chat_push_service.enabled)),
         )

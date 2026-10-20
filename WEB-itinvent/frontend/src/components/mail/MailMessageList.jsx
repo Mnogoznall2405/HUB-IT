@@ -222,6 +222,11 @@ function MessageRow({
     correspondent.person,
     senderLine,
   );
+  const avatarImage = correspondent.person?.avatar_url
+    || (Array.isArray(item?.participant_people)
+      ? item.participant_people.find((person) => person?.avatar_url)?.avatar_url
+      : '')
+    || '';
   const title = item.subject || '(без темы)';
   const previewLine = viewMode === 'conversations'
     ? (item.preview || '')
@@ -628,6 +633,7 @@ function MessageRow({
             ) : null}
             <Box sx={{ position: 'relative', flexShrink: 0 }}>
               <Avatar
+                src={avatarImage || undefined}
                 sx={{
                   width: compact ? 30 : 32,
                   height: compact ? 30 : 32,

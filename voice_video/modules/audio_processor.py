@@ -63,6 +63,8 @@ class ProcessingConfig:
     
     # Обработка аудио
     separator_engine: str = "kim"  # kim | melband | viperx | demucs | none — сепаратор вокала
+    dead_air_seconds: int = 0  # >0: участки записи без звука дольше N с не нормализуются (длина файла и тайм-коды те же), 0 — выкл.
+    audio_loudnorm: bool = False  # нормализация по громкости (−16 LUFS) вместо пиковой: Gemini не теряет слова на тихом звуке
     enable_demucs: bool = True  # legacy: включить разделение источников (переопределяется separator_engine)
     enable_diarization: bool = True  # включить диаризацию
     enable_ai_analysis: bool = True  # включить AI анализ
@@ -77,6 +79,13 @@ class ProcessingConfig:
     diarization_overlap_assign: bool = False  # спикер слова по наибольшему пересечению (DIARIZATION_OVERLAP_ASSIGN)
     speaker_embeddings_improved: bool = False  # лучшие реплики + нормировка (SPEAKER_EMBEDDINGS_IMPROVED)
     diarization_exclusive: bool = False  # exclusive_speaker_diarization community-1 (DIARIZATION_EXCLUSIVE)
+    diarization_chunk_seconds: float = 0
+    diarization_chunk_threshold_seconds: float = 1800
+    diarization_chunk_overlap_seconds: float = 30
+    diarization_chunk_max_speakers: int = 20
+    diarization_stitch_similarity: float = 0.80
+    diarization_stitch_margin: float = 0.08
+    diarization_stitch_min_speech: float = 6.0
     speaker_recurring: bool = False  # реестр повторяющихся неизвестных голосов (SPEAKER_RECURRING)
     speaker_recurring_similarity: float = 0.6  # косинусная похожесть для «тот же голос»
     speaker_embedding_window: str = "whole"  # размер окна для эмбеддингов
@@ -107,8 +116,9 @@ class ProcessingConfig:
     # поручений в абсолютные. None = попытаться вытащить из имени файла
     meeting_date: Optional[str] = None
 
-def retry_on_failure(max_retries: int = 3, delay: float = 1.0, exceptions: tuple = (Exception,)):
-    """Декоратор для retry механизма"""
+def retry_on_failure(max_retries: int = 3, delay: float = 1.0, exceptions: tuple = (Exception,),
+                     fatal: tuple = ()):
+    """Декоратор для retry механизма. ``fatal`` — исключения, которые повторять бессмысленно."""
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -116,6 +126,8 @@ def retry_on_failure(max_retries: int = 3, delay: float = 1.0, exceptions: tuple
             for attempt in range(max_retries + 1):
                 try:
                     return func(*args, **kwargs)
+                except fatal:
+                    raise
                 except exceptions as e:
                     last_exception = e
                     if attempt < max_retries:
@@ -421,6 +433,12 @@ class AudioProcessor:
     def apply_normalize(self, input_path: str, output_path: str) -> bool:
         """Применяет нормализацию с оптимизацией памяти."""
         logger.info("🔊 Шаг 2/2: Нормализация громкости...")
+        if getattr(self.config, 'audio_loudnorm', False):
+            from .loudness import loudnorm_file
+            if loudnorm_file(input_path, output_path):
+                logger.info("✅ Нормализация громкости (−16 LUFS) завершена.")
+                return True
+            logger.warning("⚠️ loudnorm не удался — пиковая нормализация")
         try:
             # Проверка памяти
             memory_before = monitor_memory()
@@ -462,6 +480,25 @@ class AudioProcessor:
                 logger.error("❌ Не удалось извлечь аудио")
                 return False
             
+            # Мёртвые участки (пустой экран, тишина часами): тяжёлую обработку ведём без них, тишина возвращается в конце
+            dead = []
+            dead_air_seconds = int(getattr(self.config, 'dead_air_seconds', 0) or 0)
+            if dead_air_seconds > 0:
+                try:
+                    from . import dead_air
+                    dead, total_seconds = dead_air.find(str(raw_audio_path), dead_air_seconds)
+                    if dead:
+                        skipped = sum(end - begin for begin, end in dead)
+                        active_audio_path = temp_dir / f"{base_name}_active.wav"
+                        dead_air.compact(str(raw_audio_path), str(active_audio_path), dead)
+                        raw_audio_path = active_audio_path
+                        demucs_audio_path = temp_dir / f"{base_name}_active_demucs.wav"
+                        logger.info(f"✂️ Участки без звука ≥{dead_air_seconds // 60} мин: {len(dead)} шт., {skipped // 60} мин из "
+                                    f"{int(total_seconds) // 60} — пропущены при нормализации (тайм-коды не меняются)")
+                except Exception as e:  # noqa: BLE001 - без вырезания просто обрабатываем целиком
+                    logger.warning(f"⚠️ Поиск пустых участков не удался, звук обрабатывается целиком: {e}")
+                    dead = []
+
             # Шаг 2: Сепарация вокала (если включена)
             engine = (getattr(self.config, 'separator_engine', None) or '').lower()
             if not engine:
@@ -482,7 +519,11 @@ class AudioProcessor:
             if not self.apply_normalize(str(demucs_audio_path), output_file):
                 logger.error("❌ Не удалось нормализовать аудио")
                 return False
-            
+
+            if dead:
+                dead_air.expand(output_file, dead)
+                logger.info("✅ Пустые участки возвращены тишиной — длина записи прежняя")
+
             logger.info(f"✅ Обработка аудио завершена: {Path(output_file).name}")
             return True
             

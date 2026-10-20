@@ -91,7 +91,8 @@ def audit_send_trace(
         if not audit_enabled():
             return
     except Exception:
-        pass
+        # A failed opt-in check must never enable diagnostic file writes.
+        return
     try:
         _ensure_worker()
         payload = {

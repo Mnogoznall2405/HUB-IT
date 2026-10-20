@@ -323,6 +323,7 @@ public sealed class DesktopBridgeProtocolTests
                 "equipment-qr-print",
                 "file-actions-v2",
                 "mail-compose-window",
+                "microphone-diagnostics",
                 "print",
                 "quick-routes",
                 "shell-status",

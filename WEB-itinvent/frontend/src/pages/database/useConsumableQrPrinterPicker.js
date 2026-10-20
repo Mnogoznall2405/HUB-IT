@@ -63,7 +63,7 @@ const sortByStorageProximity = (rows, consumableBranch, consumableLocation) =>
 // then those models are resolved against the real inventory so the user picks
 // a concrete unit (inv_no/serial/branch). A free search stays available for
 // models the compatibility table does not know yet.
-export function useConsumableQrPrinterPicker({ open = false, item = null } = {}) {
+export function useConsumableQrPrinterPicker({ open = false, item = null, initialPrinter = null } = {}) {
   const isCartridgeLike = useMemo(() => isCartridgeLikeConsumable(item), [item]);
   const modelName = String(readFirst(item, ['MODEL_NAME', 'model_name'], '') || '').trim();
   const consumableBranch = readRowBranch(item);
@@ -88,8 +88,8 @@ export function useConsumableQrPrinterPicker({ open = false, item = null } = {})
     setPrinterQueryState('');
     setSearchResults(null);
     setSearching(false);
-    setSelectedPrinter(null);
-  }, [open, itemKey]);
+    setSelectedPrinter(initialPrinter || null);
+  }, [open, itemKey, initialPrinter]);
 
   useEffect(() => {
     if (!open || !isCartridgeLike || !modelName) return undefined;

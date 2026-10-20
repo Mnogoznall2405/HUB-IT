@@ -47,8 +47,10 @@ export const equipmentRecordsAPI = {
     return response.data;
   },
 
-  deleteByInvNo: async (invNo) => {
-    const response = await apiClient.delete(`/equipment/${invNo}`);
+  deleteByInvNo: async (invNo, { withHistory = false } = {}) => {
+    const response = withHistory
+      ? await apiClient.delete(`/equipment/${invNo}`, { params: { with_history: true } })
+      : await apiClient.delete(`/equipment/${invNo}`);
     return response.data;
   },
 

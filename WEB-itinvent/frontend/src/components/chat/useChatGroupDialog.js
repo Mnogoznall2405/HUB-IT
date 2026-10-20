@@ -38,6 +38,7 @@ export default function useChatGroupDialog({
   loadConversationsRef,
   notifyApiError,
   notifyInfo,
+  onConversationCreated,
   openMobileThreadViewRef,
   searchDebounceMs = DEFAULT_SEARCH_DEBOUNCE_MS,
   setActiveConversationId,
@@ -227,7 +228,7 @@ export default function useChatGroupDialog({
   const createGroup = useCallback(async (avatarFile = null) => {
     const title = String(groupTitle || '').trim();
     const memberIds = normalizeGroupMemberIds(groupMemberIds);
-    if (!title || memberIds.length < 2) return;
+    if (!title || memberIds.length < 1) return;
     // Понятный отказ до отправки: лимит считается вместе с создателем группы.
     if (groupSelectableLimit != null && memberIds.length > groupSelectableLimit) {
       const maxTotal = groupSelectableLimit + 1;
@@ -239,25 +240,28 @@ export default function useChatGroupDialog({
     setCreatingConversation(true);
     try {
       const created = await chatAPI.createGroupConversation({ title, member_user_ids: memberIds });
-      if (avatarFile && created?.id) {
-        try {
-          await chatAPI.uploadGroupAvatar(created.id, avatarFile);
-        } catch {
-          // avatar upload failure is non-critical
-        }
-      }
+      const createdId = String(created?.id || '').trim();
       setComposeFlow('');
       setGroupStep('members');
       resetGroupDialogState();
+      if (createdId) {
+        // Беседа сразу попадает в список и становится активной; reconciliation ниже только догоняет список.
+        onConversationCreated?.(created);
+        setActiveConversationId(createdId);
+        if (isMobile) {
+          openMobileThreadViewRef?.current?.(createdId);
+        }
+      }
+      if (avatarFile && createdId) {
+        try {
+          await chatAPI.uploadGroupAvatar(createdId, avatarFile);
+        } catch {
+          notifyInfo?.('Беседа создана, но фото не загрузилось. Его можно добавить в «Информации» беседы.');
+        }
+      }
       const loadConversations = loadConversationsRef?.current;
-      const items = typeof loadConversations === 'function'
-        ? await loadConversations({ silent: true, force: true })
-        : [];
-      const createdId = String(created?.id || '').trim();
-      const nextConversationId = items.find((item) => item.id === createdId)?.id || createdId || '';
-      setActiveConversationId(nextConversationId);
-      if (isMobile) {
-        openMobileThreadViewRef?.current?.(nextConversationId);
+      if (typeof loadConversations === 'function') {
+        await loadConversations({ silent: true, force: true });
       }
     } catch (error) {
       notifyApiError(error, 'Не удалось создать групповой чат.');
@@ -272,6 +276,7 @@ export default function useChatGroupDialog({
     loadConversationsRef,
     notifyApiError,
     notifyInfo,
+    onConversationCreated,
     openMobileThreadViewRef,
     resetGroupDialogState,
     setActiveConversationId,
@@ -285,7 +290,7 @@ export default function useChatGroupDialog({
     creatingConversation,
     groupCreateDisabled: creatingConversation
       || !String(groupTitle || '').trim()
-      || groupMemberIds.length < 2
+      || groupMemberIds.length < 1
       || (groupSelectableLimit != null && groupMemberIds.length > groupSelectableLimit),
     groupMaxMembers,
     groupMemberIds,

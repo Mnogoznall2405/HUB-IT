@@ -10,7 +10,7 @@ export const NATIVE_DATABASE_ENABLED = resolveNativeDatabaseEnabled(process.env.
 export type NativeDatabaseDestination =
   | {
       pathname: '/(shell)/database';
-      params?: { q?: string; mode?: DatabaseViewMode; consumable?: string; databaseId?: string; scan?: string };
+      params?: { q?: string; mode?: DatabaseViewMode; consumable?: string; databaseId?: string; scan?: string; pairMfu?: string };
     }
   | {
       pathname: '/(shell)/database/[invNo]';

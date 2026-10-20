@@ -1,7 +1,7 @@
 import { NativeModal as Modal } from '../ui/NativeModal';
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode, type Ref } from 'react';
 import {
   ActivityIndicator,
   Linking,
@@ -24,6 +24,9 @@ export function NativeDatabaseQrScannerModal({
   onScanned,
   continuous = false,
   overlay,
+  cameraRef,
+  cameraPaused = false,
+  fitPhotoFrame = false,
 }: {
   visible: boolean;
   tokens: FluentTokens;
@@ -31,15 +34,24 @@ export function NativeDatabaseQrScannerModal({
   onScanned: (payload: InventoryQrPayload) => void;
   continuous?: boolean;
   overlay?: ReactNode;
+  // Нужен режиму «Быстрые фото»: кадры снимаются той же камерой, что и сканирует QR.
+  cameraRef?: Ref<CameraView>;
+  // Камера отпущена, пока поверх открыта системная камера телефона.
+  cameraPaused?: boolean;
+  // Видоискатель 3:4 целиком, как итоговый снимок: без обрезки по краям экрана.
+  fitPhotoFrame?: boolean;
 }) {
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
   const [error, setError] = useState('');
+  // Фонарик камеры сканера: в тёмных серверных QR и техника иначе не видны.
+  const [torchOn, setTorchOn] = useState(false);
   const scanTimesRef = useRef(new Map<string, number>());
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!visible) {
+      setTorchOn(false);
       setScanned(false);
       setError('');
       scanTimesRef.current.clear();
@@ -95,7 +107,20 @@ export function NativeDatabaseQrScannerModal({
             <MaterialCommunityIcons name="close" size={25} color="#fff" />
           </Pressable>
           <Text accessibilityRole="header" style={styles.title}>Сканировать инвентарный QR</Text>
-          <View style={styles.headerAction} />
+          {permission?.granted && !cameraPaused ? (
+            <Pressable
+              testID="native-database-qr-torch"
+              accessibilityRole="switch"
+              accessibilityLabel={torchOn ? 'Выключить фонарик' : 'Включить фонарик'}
+              accessibilityState={{ checked: torchOn }}
+              onPress={() => setTorchOn((value) => !value)}
+              style={styles.headerAction}
+            >
+              <MaterialCommunityIcons name={torchOn ? 'flashlight' : 'flashlight-off'} size={25} color={torchOn ? '#ffd54f' : '#fff'} />
+            </Pressable>
+          ) : (
+            <View style={styles.headerAction} />
+          )}
         </View>
 
         {!permission ? (
@@ -105,14 +130,20 @@ export function NativeDatabaseQrScannerModal({
           </View>
         ) : permission.granted ? (
           <View style={styles.cameraWrap}>
-            <CameraView
-              testID="native-database-qr-camera"
-              style={StyleSheet.absoluteFill}
-              facing="back"
-              barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-              onBarcodeScanned={!continuous && scanned ? undefined : handleBarcode}
-              onMountError={() => setError('Не удалось запустить камеру. Закройте сканер и попробуйте снова.')}
-            />
+            {cameraPaused ? null : (
+              <View style={fitPhotoFrame ? styles.photoFrame : StyleSheet.absoluteFill}>
+                <CameraView
+                  ref={cameraRef}
+                  testID="native-database-qr-camera"
+                  style={StyleSheet.absoluteFill}
+                  facing="back"
+                  enableTorch={torchOn}
+                  barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+                  onBarcodeScanned={!continuous && scanned ? undefined : handleBarcode}
+                  onMountError={() => setError('Не удалось запустить камеру. Закройте сканер и попробуйте снова.')}
+                />
+              </View>
+            )}
             <View pointerEvents="none" style={styles.overlay}>
               <View style={styles.finder} />
               <Text style={styles.help}>Наведите камеру на QR-код инвентарной карточки</Text>
@@ -167,7 +198,8 @@ const styles = StyleSheet.create({
   headerAction: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center' },
   title: { flex: 1, color: '#fff', textAlign: 'center', fontSize: 16, fontWeight: '900' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32, gap: 15 },
-  cameraWrap: { flex: 1, overflow: 'hidden' },
+  cameraWrap: { flex: 1, overflow: 'hidden', justifyContent: 'center' },
+  photoFrame: { width: '100%', aspectRatio: 3 / 4, overflow: 'hidden' },
   overlay: { position: 'absolute', inset: 0, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 28 },
   finder: { width: '78%', maxWidth: 320, aspectRatio: 1, borderWidth: 3, borderRadius: 24, borderColor: '#fff', backgroundColor: 'transparent' },
   help: { marginTop: 16, color: '#fff', textAlign: 'center', fontSize: 14, lineHeight: 21, fontWeight: '700' },

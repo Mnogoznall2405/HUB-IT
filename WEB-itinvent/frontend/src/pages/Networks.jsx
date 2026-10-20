@@ -1297,15 +1297,23 @@ function Networks() {
   };
 
   const onMapPointDrop = useCallback(async (pointIdOrIds, newX, newY) => {
+    const pointIds = Array.isArray(pointIdOrIds) ? pointIdOrIds : [pointIdOrIds];
+    // allSettled: part of a group may already be saved on the server when one point is rejected.
+    const results = await Promise.allSettled(
+      pointIds.map((id) => networksAPI.updateMapPoint(id, { x_ratio: newX, y_ratio: newY })),
+    );
+    const failed = results.filter((item) => item.status === 'rejected').length;
     try {
-      if (Array.isArray(pointIdOrIds)) {
-        await Promise.all(pointIdOrIds.map(id => networksAPI.updateMapPoint(id, { x_ratio: newX, y_ratio: newY })));
-      } else {
-        await networksAPI.updateMapPoint(pointIdOrIds, { x_ratio: newX, y_ratio: newY });
-      }
+      // Always re-read the context so the screen shows what the server actually stored.
       await refreshBranchContext();
+    } catch {
+      // The save result below is still reported.
+    }
+    if (failed === 0) {
       notifySuccess('Позиция маркера сохранена.');
-    } catch (error) {
+    } else if (failed < pointIds.length) {
+      notifyError(`Часть маркеров не перемещена (${failed} из ${pointIds.length}). Показано актуальное положение.`);
+    } else {
       notifyError('Ошибка перемещения маркера.');
     }
   }, [notifyError, notifySuccess, refreshBranchContext]);

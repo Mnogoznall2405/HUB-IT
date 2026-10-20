@@ -139,6 +139,11 @@ class ChatScheduledMessageService:
         ).first()
         if member is None:
             raise PermissionError("Вы не участник этой беседы")
+        # A closed or managers-only group refuses the send at delivery time; refuse the plan up front.
+        from backend.chat.chat_group_settings import enforce_group_posting_policy
+
+        # Slow mode is checked when the message is actually sent, not when it is planned.
+        enforce_group_posting_policy(session, conversation, int(user_id), check_slow_mode=False)
 
     def create(
         self,

@@ -19,6 +19,11 @@ from backend.services.warehouse_1c_service import (  # noqa: E402
 )
 
 
+@pytest.fixture(autouse=True)
+def _use_pooled_test_transport(monkeypatch):
+    monkeypatch.setattr(warehouse_1c_service, "_process_bridge_enabled", False)
+
+
 def _movement(
     *,
     registrar_ref,
@@ -136,6 +141,152 @@ def test_warehouse_movements_paginate_documents_with_cursor(monkeypatch):
     assert [doc["registrar_ref"] for doc in second["items"]] == ["doc-2", "doc-3"]
     assert second["items"][0]["document_type"] == "receipt"
     assert second["items"][0]["direction"] == "in"
+
+
+class _FakeRef:
+    """COM-like 1C reference object with a UUID method."""
+
+    def __init__(self, uuid, text=""):
+        self._uuid = uuid
+        self._text = text or uuid
+
+    def УникальныйИдентификатор(self):
+        return self._uuid
+
+    def __str__(self):
+        return self._text
+
+
+class _FakeRow:
+    def __init__(self, fields):
+        self._fields = fields
+
+
+class _FakeSelection:
+    def __init__(self, rows):
+        self._iterator = iter(rows)
+        self.current = None
+        self.next_calls = 0
+
+    def Next(self):
+        self.next_calls += 1
+        self.current = next(self._iterator, None)
+        return self.current is not None
+
+    def __getattr__(self, name):
+        if name in {"current", "next_calls", "_iterator"}:
+            raise AttributeError(name)
+        return getattr(self.current, "_fields", {}).get(name)
+
+
+class _FakeQuery:
+    def __init__(self, selection):
+        self._selection = selection
+        self.params = {}
+        self.Text = ""
+
+    def SetParameter(self, key, value):
+        self.params[key] = value
+
+    def Execute(self):
+        return type("Result", (), {"Select": lambda _self: self._selection})()
+
+
+class _FakeConnection:
+    def __init__(self, selection):
+        self.selection = selection
+        self.queries = []
+
+    def NewObject(self, kind):
+        assert kind == "Query"
+        query = _FakeQuery(self.selection)
+        self.queries.append(query)
+        return query
+
+    def String(self, value):
+        if value is None:
+            return ""
+        if isinstance(value, _FakeRef):
+            return value._text
+        return str(value)
+
+
+def _fake_movement_row(*, registrar_uuid, period, name="N", qty_in=0.0, qty_out=0.0):
+    return _FakeRow({
+        "Регистратор": _FakeRef(registrar_uuid, text=f"Перемещение {registrar_uuid}"),
+        "Период": period,
+        "Номенклатура": _FakeRef(f"nom-{name}", text=name),
+        "КодНоменклатуры": "10",
+        "Серия": _FakeRef(""),
+        "КоличествоПриход": qty_in,
+        "КоличествоРасход": qty_out,
+        "СтоимостьПриход": 0,
+        "СтоимостьРасход": 0,
+        "СтоимостьБухПриход": 0,
+        "СтоимостьБухРасход": 0,
+        "НомерПеремещения": registrar_uuid[-3:],
+        "ДатаПеремещения": period,
+        "СсылкаПеремещения": _FakeRef(registrar_uuid),
+        "СсылкаПрихода": _FakeRef(""),
+        "СсылкаРасхода": _FakeRef(""),
+        "СкладОтправитель": _FakeRef("wh-src", text="Склад А"),
+        "СкладПолучатель": _FakeRef("wh-dst", text="Склад Б"),
+    })
+
+
+def test_warehouse_movements_stop_iterating_once_page_is_complete(monkeypatch):
+    """The reader must not materialize rows beyond the requested doc window."""
+    from datetime import datetime
+
+    rows = []
+    # 6 documents, 2 positions each, distinct descending periods.
+    for index in range(6):
+        period = datetime(2025, 3, 20 - index, 10, 0, 0)
+        for _ in range(2):
+            rows.append(_fake_movement_row(registrar_uuid=f"doc-{index}", period=period, qty_in=1))
+
+    selection = _FakeSelection(rows)
+    connection = _FakeConnection(selection)
+    monkeypatch.setattr(
+        warehouse_1c_service, "_rebuild_ref", lambda *args, **kwargs: object()
+    )
+
+    fetched, stopped_early = warehouse_1c_service._get_warehouse_movements_sync(
+        connection, "wh-1", None, None, limit=500, doc_window=3,
+    )
+
+    assert stopped_early is True
+    assert [r["registrar_ref"] for r in fetched] == ["doc-0"] * 2 + ["doc-1"] * 2 + ["doc-2"] * 2
+    # 6 page rows + 1 row peeked for the boundary check — not all 12.
+    assert selection.next_calls == 7
+    # The light query must not carry the ТОРГ12/СчФ joins.
+    assert "ВходящиеДокументы" not in connection.queries[0].Text
+
+
+def test_warehouse_movements_no_early_stop_when_docs_fit(monkeypatch):
+    from datetime import datetime
+
+    rows = [
+        _fake_movement_row(
+            registrar_uuid=f"doc-{index}",
+            period=datetime(2025, 3, 10 - index, 10, 0, 0),
+            qty_in=1,
+        )
+        for index in range(2)
+    ]
+    selection = _FakeSelection(rows)
+    connection = _FakeConnection(selection)
+    monkeypatch.setattr(
+        warehouse_1c_service, "_rebuild_ref", lambda *args, **kwargs: object()
+    )
+
+    fetched, stopped_early = warehouse_1c_service._get_warehouse_movements_sync(
+        connection, "wh-1", None, None, limit=500, doc_window=5,
+    )
+
+    assert stopped_early is False
+    assert len(fetched) == 2
+    assert selection.next_calls == 3  # 2 rows + the terminating Next()
 
 
 def test_warehouse_movements_reject_empty_warehouse_ref():

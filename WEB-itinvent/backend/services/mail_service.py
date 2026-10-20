@@ -22,7 +22,7 @@ from urllib.parse import quote
 
 from sqlalchemy import inspect
 
-from backend.appdb.db import get_app_database_url, get_app_engine, initialize_app_schema, is_app_database_configured
+from backend.appdb.db import _postgres_dev_schema_auto_create_enabled, get_app_database_url, get_app_engine, initialize_app_schema, is_app_database_configured
 from backend.appdb.sql_compat import SqlAlchemyCompatConnection
 from backend.config import config
 from backend.db_schema import schema_name
@@ -111,6 +111,7 @@ from backend.services.mail_message_serializer import (
     person_lookup_key,
     serialize_person,
 )
+from backend.services.mail_runtime_snapshot_service import mail_runtime_snapshot_service
 from backend.services.mail_runtime_cache import (
     MailRuntimeCache,
     RuntimeCachePolicy,
@@ -731,6 +732,47 @@ class MailService:
             self._set_request_metric("cache_evicted", current_evicted + int(evicted))
         return value
 
+    def invalidate_mailbox_list_snapshots(self, *, user_id: int) -> None:
+        """Forget persisted bootstrap snapshots after the user's mailbox set changed (never fails the caller)."""
+        try:
+            mail_runtime_snapshot_service.invalidate_bootstrap(user_id=int(user_id))
+        except Exception:
+            logger.warning("mail bootstrap snapshot invalidation failed user_id=%s", user_id, exc_info=True)
+
+    def reconcile_mailbox_entries(self, *, user_id: int, entries: Any) -> Any:
+        """Rebuild the mailbox list of a cached bootstrap payload from the live mailbox rows.
+
+        Membership, label, activity and primary flag come from the database; unread counters and the
+        selected flag are carried over from the cached entries (no Exchange call). On any failure the
+        cached list is returned unchanged.
+        """
+        try:
+            user = user_service.get_by_id(int(user_id))
+            if not user:
+                return entries
+            cached = {
+                _normalize_text(item.get("id") or item.get("mailbox_id")): item
+                for item in (entries if isinstance(entries, list) else [])
+                if isinstance(item, dict)
+            }
+            rows = self._list_user_mailboxes_rows(user_id=int(user_id), include_inactive=True)
+            result: list[dict[str, Any]] = []
+            for row in rows:
+                previous = cached.get(_normalize_text(row.get("id"))) or {}
+                result.append(
+                    self._serialize_mailbox_entry(
+                        user=user,
+                        mailbox_row=row,
+                        unread_count=int(previous.get("unread_count") or 0),
+                        unread_count_state=_normalize_text(previous.get("unread_count_state"), "deferred"),
+                        selected=bool(previous.get("is_selected")),
+                    )
+                )
+            return result
+        except Exception:
+            logger.warning("mail bootstrap mailbox reconcile failed user_id=%s", user_id, exc_info=True)
+            return entries
+
     def invalidate_user_cache(self, *, user_id: int, prefixes: list[str] | tuple[str, ...] | None = None) -> None:
         self._runtime_cache.invalidate_user(user_id=int(user_id), prefixes=prefixes)
 
@@ -968,7 +1010,9 @@ class MailService:
         }
 
     def _is_production_postgres_app_db(self, engine=None) -> bool:
-        if not (self._use_app_db and self._database_url and config.app.is_production):
+        if not (self._use_app_db and self._database_url):
+            return False
+        if not config.app.is_production and _postgres_dev_schema_auto_create_enabled():
             return False
         resolved_engine = engine or get_app_engine(self._database_url)
         return str(resolved_engine.dialect.name).lower() == "postgresql"
@@ -1413,6 +1457,7 @@ class MailService:
             mailbox_password=password,
         )
         self.invalidate_user_cache(user_id=normalized_user_id)
+        self.invalidate_mailbox_list_snapshots(user_id=normalized_user_id)
         updated_user = user_service.get_by_id(normalized_user_id) or resolved_user
         row = self._resolve_mailbox_row(user_id=normalized_user_id, mailbox_id=target_id, allow_inactive=True)
         return self._serialize_mailbox_entry(user=updated_user, mailbox_row=row, unread_count=0, selected=True)
@@ -1659,6 +1704,7 @@ class MailService:
         if next_is_primary:
             self._sync_primary_mailbox_to_legacy_user(user_id=int(user_id))
         self.invalidate_user_cache(user_id=int(user_id))
+        self.invalidate_mailbox_list_snapshots(user_id=int(user_id))
         row = self._resolve_mailbox_row(user_id=int(user_id), mailbox_id=row_id, allow_inactive=True)
         return self._serialize_mailbox_entry(user=user, mailbox_row=row, unread_count=0, selected=next_is_primary)
 
@@ -1776,6 +1822,7 @@ class MailService:
         if next_is_primary:
             self._sync_primary_mailbox_to_legacy_user(user_id=int(user_id))
         self.invalidate_user_cache(user_id=int(user_id))
+        self.invalidate_mailbox_list_snapshots(user_id=int(user_id))
         row = self._resolve_mailbox_row(user_id=int(user_id), mailbox_id=mailbox_id, allow_inactive=True)
         if selected is not _UNSET and bool(selected):
             self._touch_mailbox_selected(user_id=int(user_id), mailbox_id=_normalize_text(mailbox_id))
@@ -1793,6 +1840,7 @@ class MailService:
             raise MailServiceError("Primary mailbox cannot be deleted until another mailbox is primary", status_code=409)
         self._mailbox_store.delete_row(user_id=int(user_id), mailbox_id=_normalize_text(mailbox_id))
         self.invalidate_user_cache(user_id=int(user_id))
+        self.invalidate_mailbox_list_snapshots(user_id=int(user_id))
         return {"ok": True, "mailbox_id": _normalize_text(mailbox_id)}
 
     def _maybe_cleanup_message_log(self) -> None:
@@ -4655,8 +4703,9 @@ class MailService:
         draft_id: str,
         retain_existing_attachments: list[str] | None,
         attachments: list[tuple[str, bytes]],
+        require_idempotency: bool = False,
     ) -> MailSendIdempotencyClaim | None:
-        if not mail_send_idempotency_enabled():
+        if not require_idempotency and not mail_send_idempotency_enabled():
             return None
         key = _normalize_text(idempotency_key)
         if not key:
@@ -4768,6 +4817,7 @@ class MailService:
         draft_id: str = "",
         retain_existing_attachments: list[str] | None = None,
         idempotency_key: str = "",
+        require_idempotency: bool = False,
     ) -> dict[str, Any]:
         try:
             recipient_set = build_recipient_set(to=to, cc=cc, bcc=bcc, require_to=True)
@@ -4785,6 +4835,7 @@ class MailService:
             user_id=int(user_id),
             mailbox_id=effective_mailbox_id,
             idempotency_key=idempotency_key,
+            require_idempotency=require_idempotency,
             to=recipient_set.to,
             cc=recipient_set.cc,
             bcc=recipient_set.bcc,

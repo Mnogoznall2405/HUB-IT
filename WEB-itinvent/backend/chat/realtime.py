@@ -170,6 +170,7 @@ class EventLoopLagMonitor:
             "event_loop_lag_ms_p95": round(ordered[idx], 1),
             "event_loop_lag_ms_max": round(ordered[-1], 1),
         }
+_CHAT_WS_CONNECT_LIMIT_ATTEMPTS = 5
 _CHAT_WS_MAX_CONNECTIONS_PER_USER = max(1, int(str(os.getenv("CHAT_WS_MAX_CONNECTIONS_PER_USER", "4") or "4").strip() or "4"))
 _TYPING_STARTED_THROTTLE_SEC = max(1.0, float(str(os.getenv("CHAT_TYPING_STARTED_THROTTLE_SEC", "2") or "2").strip() or "2"))
 _TYPING_STATE_TTL_SEC = max(2.0, float(str(os.getenv("CHAT_TYPING_STATE_TTL_SEC", "5") or "5").strip() or "5"))
@@ -764,22 +765,6 @@ class ChatRealtimeManager:
         await websocket.accept()
         connection_id = str(uuid4())
         normalized_user_id = int(user_id)
-        stale_connection_ids: list[str] = []
-        with self._lock:
-            if receive_user_events:
-                existing = self._user_connection_ids.setdefault(normalized_user_id, set())
-            else:
-                existing = {
-                    item.id
-                    for item in self._connections.values()
-                    if int(item.user_id) == normalized_user_id
-                    and not bool(item.receive_user_events)
-                }
-            if len(existing) >= _CHAT_WS_MAX_CONNECTIONS_PER_USER:
-                overflow = len(existing) - _CHAT_WS_MAX_CONNECTIONS_PER_USER + 1
-                stale_connection_ids = list(existing)[:overflow]
-        for stale_connection_id in stale_connection_ids:
-            await self._evict_connection(stale_connection_id, reason="connection limit exceeded")
         connection = ChatRealtimeConnection(
             id=connection_id,
             user_id=normalized_user_id,
@@ -790,23 +775,37 @@ class ChatRealtimeManager:
             last_presence_touch_at=_ts_now(),
             connected_at=_ts_now(),
         )
-        connection.sender_task = asyncio.create_task(
-            self._run_connection_sender(connection),
-            name=f"chat-ws-sender:{connection_id}",
-        )
-        with self._lock:
-            self._connections[connection_id] = connection
-            if receive_user_events:
-                existing = self._user_connection_ids.setdefault(normalized_user_id, set())
-                first_connection = len(existing) == 0
-                existing.add(connection_id)
-            else:
-                first_connection = not any(
-                    item.id != connection_id
-                    and int(item.user_id) == normalized_user_id
-                    and not bool(item.receive_user_events)
-                    for item in self._connections.values()
-                )
+        # The limit check and the registration must happen under one lock hold: eviction
+        # awaits outside the lock, so parallel connects of one user would otherwise all
+        # pass the check and exceed the limit. Re-check after every eviction round.
+        first_connection = False
+        for attempt in range(_CHAT_WS_CONNECT_LIMIT_ATTEMPTS):
+            stale_connection_ids: list[str] = []
+            with self._lock:
+                if receive_user_events:
+                    existing = self._user_connection_ids.setdefault(normalized_user_id, set())
+                else:
+                    existing = {
+                        item.id
+                        for item in self._connections.values()
+                        if int(item.user_id) == normalized_user_id
+                        and not bool(item.receive_user_events)
+                    }
+                if len(existing) >= _CHAT_WS_MAX_CONNECTIONS_PER_USER and attempt < _CHAT_WS_CONNECT_LIMIT_ATTEMPTS - 1:
+                    overflow = len(existing) - _CHAT_WS_MAX_CONNECTIONS_PER_USER + 1
+                    stale_connection_ids = list(existing)[:overflow]
+                else:
+                    self._connections[connection_id] = connection
+                    first_connection = len(existing) == 0
+                    if receive_user_events:
+                        existing.add(connection_id)
+                    connection.sender_task = asyncio.create_task(
+                        self._run_connection_sender(connection),
+                        name=f"chat-ws-sender:{connection_id}",
+                    )
+                    break
+            for stale_connection_id in stale_connection_ids:
+                await self._evict_connection(stale_connection_id, reason="connection limit exceeded")
         if track_presence:
             self._schedule_presence_record(
                 user_id=normalized_user_id,
@@ -1152,6 +1151,64 @@ class ChatRealtimeManager:
             if connection is not None:
                 connection.conversation_ids.discard(normalized_conversation_id)
 
+    def evict_users_from_conversation(
+        self,
+        *,
+        conversation_id: str,
+        user_ids: list[int] | set[int] | tuple[int, ...],
+    ) -> int:
+        """Drop the conversation room from every local connection of the given users.
+
+        A member removed from a group must stop receiving room events even if
+        the socket joined the room while still being a member.
+        """
+        normalized_conversation_id = str(conversation_id or "").strip()
+        normalized_user_ids = {int(item) for item in list(user_ids or []) if int(item) > 0}
+        if not normalized_conversation_id or not normalized_user_ids:
+            return 0
+        evicted = 0
+        with self._lock:
+            for user_id in normalized_user_ids:
+                for connection_id in list(self._user_connection_ids.get(user_id, set())):
+                    connection = self._connections.get(connection_id)
+                    if connection is not None and normalized_conversation_id in connection.conversation_ids:
+                        connection.conversation_ids.discard(normalized_conversation_id)
+                        evicted += 1
+        return evicted
+
+    async def publish_conversation_eviction(
+        self,
+        *,
+        conversation_id: str,
+        user_ids: list[int] | set[int] | tuple[int, ...],
+    ) -> int:
+        """Evict users from the room on this node and on every other node."""
+        normalized_conversation_id = str(conversation_id or "").strip()
+        normalized_user_ids = sorted({int(item) for item in list(user_ids or []) if int(item) > 0})
+        if not normalized_conversation_id or not normalized_user_ids:
+            return 0
+        evicted = self.evict_users_from_conversation(
+            conversation_id=normalized_conversation_id,
+            user_ids=normalized_user_ids,
+        )
+        if self._distribution_publish_enabled():
+            self._schedule_transport_publish(
+                {
+                    "origin_node_id": self.node_id,
+                    "distribution": "room_evict",
+                    "target_user_ids": normalized_user_ids,
+                    "watched_user_id": 0,
+                    "exclude_user_id": 0,
+                    "exclude_connection_id": "",
+                    "event_type": "chat.room.evict",
+                    "payload": {},
+                    "conversation_id": normalized_conversation_id,
+                    "request_id": None,
+                },
+                durable=False,
+            )
+        return evicted
+
     def watch_presence(self, connection_id: str, user_ids: list[int] | set[int] | tuple[int, ...]) -> list[int]:
         normalized_ids = sorted({
             int(item)
@@ -1180,6 +1237,28 @@ class ChatRealtimeManager:
                 if normalized_conversation_id in connection.conversation_ids
                 and int(connection.user_id) > 0
             }
+
+    def conversation_room_only_user_ids(self, *, conversation_id: str) -> set[int]:
+        """Users whose every local connection is subscribed to the conversation room.
+
+        Only these users are fully served by the room broadcast; a user who also has a
+        connection outside the room (second tab/device) still needs the inbox event.
+        """
+        normalized_conversation_id = str(conversation_id or "").strip()
+        if not normalized_conversation_id:
+            return set()
+        in_room: set[int] = set()
+        outside_room: set[int] = set()
+        with self._lock:
+            for connection in self._connections.values():
+                user_id = int(connection.user_id)
+                if user_id <= 0:
+                    continue
+                if normalized_conversation_id in connection.conversation_ids:
+                    in_room.add(user_id)
+                else:
+                    outside_room.add(user_id)
+        return in_room - outside_room
 
     def get_last_seen(self, user_id: int) -> Optional[datetime]:
         with self._lock:
@@ -1660,6 +1739,12 @@ class ChatRealtimeManager:
                 envelope=envelope,
                 durable=durable,
                 volatile_key=volatile_key,
+            )
+            return
+        if distribution == "room_evict":
+            self.evict_users_from_conversation(
+                conversation_id=conversation_id or "",
+                user_ids=list(event.get("target_user_ids") or []),
             )
             return
         if distribution == "presence_watch":

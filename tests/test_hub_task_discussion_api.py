@@ -1,4 +1,5 @@
 from __future__ import annotations
+import conftest
 
 import importlib
 import sys
@@ -122,7 +123,7 @@ def discussion_api_env(temp_dir, monkeypatch):
 
     monkeypatch.setattr(task_discussion_module.config.chat, "task_discussion_enabled", True, raising=False)
 
-    chat_db_module.initialize_chat_schema()
+    conftest.copy_chat_schema_for_url(f"sqlite:///{Path(temp_dir) / 'chat.sqlite3'}")
 
     app = FastAPI()
     app.include_router(hub.router, prefix="/hub")

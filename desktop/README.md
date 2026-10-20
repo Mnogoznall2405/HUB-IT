@@ -40,7 +40,9 @@ Windows desktop-shell для корпоративного портала HUB. К
 - `notification.result` возвращает результат обработки `notification.show` по ID. Web отмечает доставку только при `accepted: true`; отказ или таймаут 10 секунд освобождает ожидающий запрос без отметки о доставке. Старый host принимает прежний формат запроса, но без ответа доставка остаётся неподтверждённой;
 - системные уведомления для новых сообщений чата: Windows App SDK toast с автоматическим fallback на tray balloon;
 - одно уведомление на чат: toast чата/обсуждения задачи получает Group и Tag `chat:<conversationId>` / `task:<taskId>`, новое сообщение того же чата заменяет предыдущее и снова всплывает; при открытии чата Web отправляет `notification.clearGroup`, и host снимает уведомления этой группы из Action Center (только для Windows toast; tray balloon не очищается). Команда доступна при capability `notification-clear-group` в `desktop.capabilities`, которая объявляется только при доступных уведомлениях;
-- клик по уведомлению активирует HUB и открывает переданный внутренний маршрут чата через React Router без перезагрузки страницы.
+- клик по уведомлению активирует HUB и открывает переданный внутренний маршрут чата через React Router без перезагрузки страницы;
+- звонки: `PermissionRequested` во всех окнах (основное, второе, окно письма) разрешает микрофон и камеру только origin портала, не сохраняя решение в профиле; любые разрешения чужих origin отклоняются, остальные виды разрешений портала идут через штатный запрос WebView2. Демонстрация экрана (`getDisplayMedia`) использует штатный выбор источника WebView2;
+- capability `microphone-diagnostics`: `media.microphoneDiagnose` возвращает `media.microphoneDiagnosis` — устройства записи Core Audio, устройства по умолчанию (console/communications), переключатели конфиденциальности Windows (HKLM, HKCU, HKCU `NonPackaged`, политика `LetAppsAccessMicrophone`), согласие для `HUB.Desktop.exe` и `msedgewebview2.exe`, пробное shared-mode `IAudioClient::Initialize` устройства по умолчанию (без старта захвата, с немедленным освобождением) и сохранённые разрешения портала в профиле WebView2. Сохранённый `Deny` портала для микрофона/камеры сбрасывается на `Allow`. `media.openSettings` открывает только `ms-settings:privacy-microphone` или `ms-settings:sound`. Системного окна согласия Windows для непакетированного приложения нет — web показывает причину и кнопки настроек.
 
 ## Требования
 
@@ -160,8 +162,10 @@ powershell -ExecutionPolicy Bypass -File scripts\desktop\publish-update.ps1 `
 Скрипт собирает Setup/MSI, считает SHA-256, подписывает строгий manifest private key активного
 production TLS-сертификата из `Cert:\LocalMachine\My` и атомарно заменяет `stable/latest.json`.
 Приватный ключ не экспортируется и не попадает в репозиторий, артефакты или IIS content root.
-Закреплённый public certificate: `0A9CFEF49EB1E11819D81A351978BAFA05EF7CBE`, `key_id`
-`hubit-zsgp-ru-tls-2026-04`. Это принятое исключение объединяет риск HTTPS и updater; правила
+Доверенные ключи подписи (allowlist `DesktopUpdateTrust.TrustedKeyIds`): `hubit-zsgp-ru-tls-2026-04`
+(public certificate `0A9CFEF49EB1E11819D81A351978BAFA05EF7CBE`, принятое исключение: ключ TLS
+подписывает и manifest) и выделенный `hub-update-signing-2026-10` (до 2036 года, `-SigningKeyKind
+Dedicated`). Pin TLS leaf-сертификата убран с 0.1.48; правила
 выпуска и ротации описаны в
 [`HUB_DESKTOP_RELEASE_RUNBOOK.md`](../documentation/technical/HUB_DESKTOP_RELEASE_RUNBOOK.md) и
 [`HUB_DESKTOP_UPDATE_KEY_ROTATION.md`](../documentation/technical/HUB_DESKTOP_UPDATE_KEY_ROTATION.md).

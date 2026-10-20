@@ -818,7 +818,7 @@ const ChatComposer = memo(function ChatComposer({
         ) : null}
 
         {scheduled?.enabled && !isAiConversation ? (
-          <ScheduledMessagesBar items={scheduled.items} onOpen={() => setScheduledListOpen(true)} />
+          <ScheduledMessagesBar items={scheduled.items} error={scheduled.error} onOpen={() => setScheduledListOpen(true)} />
         ) : null}
 
         {replyMessage && !editingMessage ? (

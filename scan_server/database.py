@@ -1538,7 +1538,7 @@ class ScanStore:
                     if task_id:
                         touched_task_ids.add(task_id)
                 for task_id in touched_task_ids:
-                    self._reconcile_scan_task_progress_locked(conn, task_id, now_ts=now_ts)
+                    self._reconcile_scan_task_progress_locked(conn, task_id, now_ts=now_ts, force=True)
                 conn.commit()
             return {
                 "removed_orphan_files": removed_orphan,

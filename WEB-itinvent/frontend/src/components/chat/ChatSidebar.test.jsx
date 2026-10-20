@@ -11,7 +11,7 @@ import {
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
-import ChatSidebar, { CHAT_SIDEBAR_ROW_USES_LAYOUT_ANIMATION } from './ChatSidebar';
+import ChatSidebar from './ChatSidebar';
 import { buildChatUiTokens } from './chatUiTokens';
 
 const theme = createTheme();
@@ -163,11 +163,7 @@ describe('ChatSidebar', () => {
     expect(chatsTab.style.backgroundColor).toBe('transparent');
   });
 
-  it('keeps conversation row reorders off framer-motion layout animation', () => {
-    expect(CHAT_SIDEBAR_ROW_USES_LAYOUT_ANIMATION).toBe(false);
-  });
-
-  it('shows draft preview for conversations', () => {
+    it('shows draft preview for conversations', () => {
     renderWithTheme(buildProps());
 
     expect(screen.getByText(/Черновик: Незавершённый ответ/i)).toBeInTheDocument();

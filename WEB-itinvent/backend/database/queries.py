@@ -135,7 +135,7 @@ QUERY_SEARCH_BY_EMPLOYEE = """
     WHERE o.OWNER_DISPLAY_NAME LIKE ?
        OR o.OWNER_DEPT LIKE ?
     GROUP BY o.OWNER_NO, o.OWNER_DISPLAY_NAME, o.OWNER_DEPT
-    ORDER BY o.OWNER_DISPLAY_NAME
+    ORDER BY o.OWNER_DISPLAY_NAME, o.OWNER_NO
     OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
 """
 
@@ -433,7 +433,7 @@ def _resolve_owner_no_across_db(
         from backend.services.warehouse_1c_service import fio_person_match_score
 
         best_score = 0
-        best_owner_no: Optional[int] = None
+        best_owner_nos: set[int] = set()
         for owner in list_owners_compact(db_id=db_id) or []:
             owner_name = str(
                 owner.get("OWNER_DISPLAY_NAME")
@@ -443,14 +443,29 @@ def _resolve_owner_no_across_db(
             if not owner_name:
                 continue
             score = fio_person_match_score(owner_name, label)
+            if score < best_score:
+                continue
+            try:
+                candidate_no = int(owner.get("OWNER_NO") or owner.get("owner_no"))
+            except (TypeError, ValueError):
+                continue
+            if candidate_no <= 0:
+                continue
             if score > best_score:
                 best_score = score
-                try:
-                    best_owner_no = int(owner.get("OWNER_NO") or owner.get("owner_no"))
-                except (TypeError, ValueError):
-                    best_owner_no = None
-        if best_score >= 50 and best_owner_no and best_owner_no > 0:
-            prefer = best_owner_no
+                best_owner_nos = {candidate_no}
+            else:
+                best_owner_nos.add(candidate_no)
+        if best_score >= 50 and len(best_owner_nos) == 1:
+            prefer = next(iter(best_owner_nos))
+        elif best_score >= 50 and len(best_owner_nos) > 1:
+            # Several distinct owners tie on FIO — auto-picking the first one
+            # showed another person's equipment.  Leave unresolved so the
+            # caller reports nothing rather than wrong data.
+            logger.warning(
+                "Ambiguous owner FIO match for %r in db=%s: owner_nos=%s score=%s",
+                label, db_id, sorted(best_owner_nos), best_score,
+            )
     return prefer
 
 
@@ -3775,12 +3790,14 @@ def update_equipment_part_no_if_current(
     return affected > 0
 
 
-def delete_equipment_by_inv(inv_no: str, db_id: Optional[str] = None) -> dict:
+def delete_equipment_by_inv(inv_no: str, db_id: Optional[str] = None, force: bool = False) -> dict:
     """
     Hard-delete one equipment card from ITEMS by INV_NO.
 
     Deletion is blocked when the equipment already has related acts or
-    transfer history.
+    transfer history. With ``force=True`` the item's DOCS_LIST links and
+    CI_HISTORY rows are removed in the same transaction (act headers in DOCS
+    are kept).
     """
     normalized_inv_no = str(inv_no or "").strip()
     try:
@@ -3847,7 +3864,7 @@ def delete_equipment_by_inv(inv_no: str, db_id: Optional[str] = None) -> dict:
         )
         history_count = int((cursor.fetchone() or [0])[0] or 0)
 
-        if docs_count > 0 or history_count > 0:
+        if (docs_count > 0 or history_count > 0) and not force:
             details = []
             if docs_count > 0:
                 details.append(f"acts={docs_count}")
@@ -3863,6 +3880,12 @@ def delete_equipment_by_inv(inv_no: str, db_id: Optional[str] = None) -> dict:
                 "docs_count": docs_count,
                 "history_count": history_count,
             }
+
+        if force:
+            if docs_count > 0:
+                cursor.execute("DELETE FROM DOCS_LIST WHERE ITEM_ID = ?", (item_id,))
+            if history_count > 0:
+                cursor.execute("DELETE FROM CI_HISTORY WHERE ITEM_ID = ?", (item_id,))
 
         cursor.execute(
             """
@@ -3885,6 +3908,8 @@ def delete_equipment_by_inv(inv_no: str, db_id: Optional[str] = None) -> dict:
             "item_id": item_id,
             "inv_no": resolved_inv_no,
             "message": "Equipment deleted",
+            "docs_deleted": docs_count if force else 0,
+            "history_deleted": history_count if force else 0,
         }
 
 

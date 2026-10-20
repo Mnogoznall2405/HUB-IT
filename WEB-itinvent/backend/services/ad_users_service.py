@@ -4,8 +4,9 @@ import math
 import re
 from datetime import datetime, timezone, timedelta
 from typing import Any, List, Dict, Literal
+from uuid import UUID
 
-from ldap3 import Server, Connection, ALL, SUBTREE, LEVEL
+from ldap3 import Server, Connection, ALL, SUBTREE, LEVEL, BASE, MODIFY_REPLACE, SIMPLE, SASL, NTLM
 from ldap3.utils.conv import escape_filter_chars
 from sqlalchemy import select
 from backend.appdb.db import app_session, initialize_app_schema, is_app_database_configured
@@ -1300,6 +1301,82 @@ def list_ad_mailboxes_expiring_soon(*, days_threshold: int = 3, limit: int = 50)
     }
 
 
+def _entry_object_guid(entry: Any) -> str | None:
+    attribute = getattr(entry, "objectGUID", None)
+    raw_values = getattr(attribute, "raw_values", None) or []
+    if raw_values and isinstance(raw_values[0], bytes) and len(raw_values[0]) == 16:
+        return str(UUID(bytes_le=raw_values[0]))
+    try:
+        return str(UUID(str(getattr(attribute, "value", "") or "").strip("{}")))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def unlock_ad_user_account(*, login: str, object_guid: str) -> dict[str, Any]:
+    """Unlock only the object selected in the confirmation card, then verify it.
+
+    A GUID-bound LDAP name prevents a delete/recreate or rename between read and
+    modify from redirecting the write to a different account with the same DN.
+    """
+    normalized_login = str(login or "").strip()
+    if not normalized_login:
+        raise ValueError("Логин AD не указан")
+    try:
+        guid = str(UUID(str(object_guid or "")))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError("Карточка AD устарела: создайте новый черновик с идентификатором объекта") from exc
+    target = f"<GUID={guid}>"
+    try:
+        conn = _open_ad_connection()
+    except Exception as exc:
+        raise RuntimeError("Не удалось подключиться к Active Directory") from exc
+    if conn is None:
+        raise RuntimeError("Подключение к Active Directory недоступно")
+    try:
+        if not getattr(conn, "bound", False) or getattr(conn, "authentication", None) not in {SIMPLE, SASL, NTLM}:
+            raise RuntimeError("Для разблокировки AD требуется аутентифицированное LDAP-соединение")
+        def read_locked_value() -> int:
+            found = conn.search(
+                search_base=target,
+                search_filter="(&(objectCategory=person)(objectClass=user))",
+                search_scope=BASE,
+                attributes=["sAMAccountName", "objectGUID", "lockoutTime"],
+            )
+            entries = list(getattr(conn, "entries", []) or [])
+            if not found or (getattr(conn, "result", {}) or {}).get("result") != 0 or len(entries) != 1:
+                raise RuntimeError("Не удалось проверить учётную запись AD")
+            entry = entries[0]
+            if _entry_object_guid(entry) != guid or _entry_value(entry, "sAMAccountName").casefold() != normalized_login.casefold():
+                raise ValueError("Учётная запись AD изменилась: создайте новый черновик")
+            attribute = getattr(entry, "lockoutTime", None)
+            raw_values = getattr(attribute, "raw_values", None) or []
+            value = raw_values[0] if raw_values else getattr(attribute, "value", None)
+            try:
+                parsed = int(value)
+            except (ValueError, TypeError, OverflowError) as exc:
+                raise RuntimeError("AD не вернул проверяемый статус блокировки") from exc
+            if parsed < 0:
+                raise RuntimeError("AD вернул некорректный статус блокировки")
+            return parsed
+
+        if read_locked_value() == 0:
+            return {"success": True, "changed": False, "login": normalized_login, "message": "Учётная запись уже не заблокирована"}
+        if not conn.modify(target, {"lockoutTime": [(MODIFY_REPLACE, [0])]}) or (getattr(conn, "result", {}) or {}).get("result") != 0:
+            raise RuntimeError("AD не подтвердил разблокировку учётной записи")
+        if read_locked_value() != 0:
+            raise RuntimeError("Не удалось подтвердить снятие блокировки AD")
+        return {"success": True, "changed": True, "login": normalized_login, "message": "Блокировка учётной записи снята"}
+    except (ValueError, RuntimeError):
+        raise
+    except Exception as exc:
+        raise RuntimeError("Не удалось выполнить или проверить разблокировку AD") from exc
+    finally:
+        try:
+            conn.unbind()
+        except Exception:
+            pass
+
+
 def get_ad_user_lockout_status(query: str) -> dict[str, Any]:
     """Check AD account lockout status: lockoutTime, badPwdCount."""
     normalized_query = str(query or "").strip()
@@ -1312,7 +1389,7 @@ def get_ad_user_lockout_status(query: str) -> dict[str, Any]:
 
     attributes = [
         "sAMAccountName", "displayName", "lockoutTime", "badPwdCount",
-        "userAccountControl",
+        "userAccountControl", "objectGUID",
     ]
     try:
         conn.search(
@@ -1395,6 +1472,7 @@ def get_ad_user_lockout_status(query: str) -> dict[str, Any]:
         "lockout_time": lockout_time_dt.isoformat() if lockout_time_dt else None,
         "lockout_duration_minutes": lockout_duration_minutes,
         "bad_password_count": bad_pwd_count,
+        "object_guid": _entry_object_guid(best_entry),
     }
 
 

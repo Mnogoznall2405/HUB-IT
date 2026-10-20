@@ -11,10 +11,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import re
+import subprocess
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .config import config
 
@@ -185,7 +188,14 @@ def _safe_float(value: Any) -> Optional[float]:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    return number if number == number and number >= 0 else None  # NaN guard
+    return number if math.isfinite(number) and number >= 0 else None  # NaN/inf guard (not JSON-serialisable)
+
+
+# Направления тем (ставит Jev в voice_video/modules/protocol_guard.py) -> подпись для интерфейса
+DOMAIN_LABELS = {
+    "construction": "Стройка", "docs": "Документация", "commissioning": "ПНР", "supply": "Снабжение",
+    "finance": "Финансы", "hr": "Персонал", "legal": "Юристы/согласования", "it": "ИТ", "other": "Другое",
+}
 
 
 def meeting_summary(base_filename: str) -> Dict[str, Any]:
@@ -194,11 +204,13 @@ def meeting_summary(base_filename: str) -> Dict[str, Any]:
     Built from ``<base>_report.json`` (pipeline output); every field is optional
     and type-checked — old reports simply yield fewer sections.
     """
-    data = load_report_json(base_filename) or {}
+    data = load_report_json(base_filename)
+    data = data if isinstance(data, dict) else {}
     topics_out: List[Dict[str, Any]] = []
     decisions: List[Dict[str, Any]] = []
     questions: List[Dict[str, Any]] = []
-    for topic in data.get("topics") or []:
+    topics_raw = data.get("topics")
+    for topic in topics_raw if isinstance(topics_raw, list) else []:
         if not isinstance(topic, dict):
             continue
         title = str(topic.get("topic_title") or topic.get("topic_guess") or "").strip()[:300]
@@ -206,7 +218,11 @@ def meeting_summary(base_filename: str) -> Dict[str, Any]:
         end = _safe_float(topic.get("end_time"))
         topic_decisions = _str_list(topic.get("key_decisions"))
         topic_questions = _str_list(topic.get("open_questions"))
+        domain = str(topic.get("domain") or "").strip()
         topics_out.append({
+            "domain": domain if domain in DOMAIN_LABELS else "",
+            "domain_label": DOMAIN_LABELS.get(domain, ""),
+            "domain_confidence": _safe_float(topic.get("domain_confidence")),
             "title": title,
             "start": start,
             "end": end,
@@ -219,14 +235,16 @@ def meeting_summary(base_filename: str) -> Dict[str, Any]:
     topics_out.sort(key=lambda t: (t["start"] is None, t["start"] or 0))
 
     participants = []
-    for p in data.get("participants") or []:
+    participants_raw = data.get("participants")
+    for p in participants_raw if isinstance(participants_raw, list) else []:
         if not isinstance(p, dict) or not str(p.get("name") or "").strip():
             continue
+        segments_count = _safe_float(p.get("segments_count"))
         participants.append({
             "name": str(p["name"]).strip()[:256],
             "share": _safe_float(p.get("participation_percentage")),
             "seconds": _safe_float(p.get("total_duration_seconds")),
-            "segments": int(p.get("segments_count") or 0) if str(p.get("segments_count") or "0").isdigit() else 0,
+            "segments": int(segments_count) if segments_count is not None else 0,
         })
     participants.sort(key=lambda p: -(p["share"] or 0))
 
@@ -304,6 +322,12 @@ def meeting_assignments(base_filename: str) -> List[Dict[str, Any]]:
         if not task:
             skipped += 1
             continue
+        # Пометка сторожа «… ⚠ проверить: причина» — не часть формулировки: ключ статуса от неё не зависит
+        task, _, review = task.partition("⚠")
+        task, review = task.strip(), review.replace("проверить:", "", 1).strip(" :")
+        if not task:
+            skipped += 1
+            continue
         counter += 1
         link = _ASSIGNMENT_LINK_RE.match(time_cell)
         base_key = assignment_key(current_section, task)
@@ -319,6 +343,7 @@ def meeting_assignments(base_filename: str) -> List[Dict[str, Any]]:
                 "task": task,
                 "assignee": assignee,
                 "deadline": deadline,
+                "review": review,
             }
         )
     if skipped:
@@ -540,6 +565,242 @@ def find_source_media(base_filename: str) -> Optional[Path]:
             except OSError:
                 continue
     return None
+
+
+def _ffmpeg_dir() -> Path:
+    return vv_root() / "ffmpeg" / "bin"
+
+
+def ffmpeg_bin() -> str:
+    exe = _ffmpeg_dir() / "ffmpeg.exe"
+    return str(exe) if exe.exists() else "ffmpeg"
+
+
+def ffprobe_bin() -> str:
+    exe = _ffmpeg_dir() / "ffprobe.exe"
+    return str(exe) if exe.exists() else "ffprobe"
+
+
+def media_duration_sec(path: Path) -> Optional[float]:
+    """Container duration via ffprobe; None when it cannot be read."""
+    try:
+        proc = subprocess.run(
+            [
+                ffprobe_bin(), "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            capture_output=True, text=True, timeout=60,
+        )
+        value = float((proc.stdout or "").strip())
+        return value if math.isfinite(value) and value > 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def audio_stream_count(path: Path) -> int:
+    """Number of audio tracks (screen recorders often write several)."""
+    try:
+        proc = subprocess.run(
+            [
+                ffprobe_bin(), "-v", "error", "-select_streams", "a",
+                "-show_entries", "stream=index",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            capture_output=True, text=True, timeout=60,
+        )
+        return sum(1 for line in (proc.stdout or "").splitlines() if line.strip())
+    except (OSError, subprocess.SubprocessError):
+        return 0
+
+
+TRIM_MAX_SECONDS = 8 * 3600
+
+
+def _trim_value(settings: Dict[str, Any], key: str) -> Optional[float]:
+    raw = (settings or {}).get(key)
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{key}: not a number")
+    if not math.isfinite(value):
+        raise ValueError(f"{key}: not finite")
+    return value
+
+
+def normalize_trim_range(
+    settings: Dict[str, Any], duration: Optional[float]
+) -> Optional[Tuple[float, float]]:
+    """(start, end) seconds for the requested fragment; None = whole file.
+
+    ``trim_start``/``trim_end`` come from the upload form. End may be omitted
+    («to the end of the file», requires a known duration) and is clamped to it.
+    """
+    start = _trim_value(settings, "trim_start")
+    end = _trim_value(settings, "trim_end")
+    if start is None and end is None:
+        return None
+    start = max(0.0, start or 0.0)
+    if end is not None and end <= start:
+        raise ValueError("trim_end must be greater than trim_start")
+    if duration is not None:
+        if start >= duration:
+            raise ValueError("trim_start is beyond the media duration")
+        if end is None or end > duration:
+            end = duration
+    elif end is None:
+        raise ValueError("media duration unknown — trim_end required")
+    end = min(end, start + TRIM_MAX_SECONDS)
+    if end - start < 1.0:
+        raise ValueError("fragment is shorter than 1 second")
+    if start <= 0.0 and duration is not None and end >= duration:
+        return None
+    return (round(start, 3), round(end, 3))
+
+
+def trim_media_suffix(src: Path) -> str:
+    proc = subprocess.run(
+        [
+            ffprobe_bin(), "-v", "error", "-select_streams", "V",
+            "-show_entries", "stream=index",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(src),
+        ],
+        capture_output=True, text=True, timeout=60,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {(proc.stderr or '').strip()[:300]}")
+    return ".mp4" if (proc.stdout or "").strip() else ".wav"
+
+
+@lru_cache(maxsize=4)
+def _video_encoder(executable: str) -> str:
+    proc = subprocess.run(
+        [executable, "-hide_banner", "-encoders"],
+        capture_output=True, text=True, timeout=30,
+    )
+    encoders = {
+        parts[1] for line in (proc.stdout or "").splitlines()
+        if len(parts := line.split()) >= 2 and parts[0].startswith("V")
+    }
+    if proc.returncode == 0:
+        for encoder in ("libx264", "libopenh264"):
+            if encoder in encoders:
+                return encoder
+    raise RuntimeError("FFmpeg не поддерживает программное кодирование H.264 для сохранения видео")
+
+
+def build_trim_argv(
+    src: Path, dst: Path, start: float, end: float, audio_streams: int = 1,
+    video_encoder: str = "libopenh264",
+) -> List[str]:
+    video = dst.suffix.lower() == ".mp4"
+    argv = [
+        ffmpeg_bin(), "-y", "-hide_banner", "-loglevel", "error",
+        "-ss", f"{start:.3f}", "-i", str(src), "-t", f"{end - start:.3f}",
+    ]
+    if video:
+        argv += [
+            "-map", "0:V:0", "-c:v", video_encoder, "-threads:v", "2",
+            "-pix_fmt", "yuv420p", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+            "-movflags", "+faststart",
+        ]
+        argv += (["-preset", "veryfast", "-crf", "23"] if video_encoder == "libx264"
+                 else ["-rc_mode", "quality", "-b:v", "4M", "-qmin", "18", "-qmax", "35"])
+    else:
+        argv += ["-vn"]
+    if audio_streams > 1:
+        # Screen recorders keep mic/system on separate tracks; the default
+        # single-stream pick can land on a silent track — mix them all.
+        inputs = "".join(f"[0:a:{idx}]" for idx in range(audio_streams))
+        argv += [
+            "-filter_complex",
+            f"{inputs}amix=inputs={audio_streams}:duration=longest:normalize=0[mixed]",
+            "-map", "[mixed]",
+        ]
+    else:
+        argv += ["-map", "0:a:0"]
+    argv += ["-ac", "1", "-ar", "16000", "-c:a", "aac" if video else "pcm_s16le"]
+    if video:
+        argv += ["-b:a", "128k"]
+    argv.append(str(dst))
+    return argv
+
+
+_VOLUME_RE = re.compile(r"mean_volume:\s*(-?[\d.]+)\s*dB")
+
+
+def _mean_volume_db(path: Path) -> Optional[float]:
+    proc = subprocess.run(
+        [
+            ffmpeg_bin(), "-hide_banner", "-i", str(path), "-vn", "-sn", "-dn",
+            "-af", "volumedetect", "-f", "null", "-",
+        ],
+        capture_output=True, text=True, timeout=120,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg audio check failed: {(proc.stderr or '').strip()[:300]}")
+    match = _VOLUME_RE.search(proc.stderr or "")
+    return float(match.group(1)) if match else None
+
+
+def cut_long_silences(src: Path, dst: Path, min_duration_sec: int) -> Optional[Dict[str, Any]]:
+    """Вырезать тихие места (видео остаётся видео, без перекодирования) из записи длиннее ``min_duration_sec``.
+
+    Возвращает {original_seconds, result_seconds, removed_seconds, time_map} или None, если резать нечего
+    или запись короче порога. ``time_map`` — карта «новое время -> оригинал» (см. voice_video/cut_silence.py).
+    """
+    import importlib.util
+
+    duration = media_duration_sec(src)
+    if not duration or duration < min_duration_sec:
+        return None
+    module_path = vv_root() / "cut_silence.py"
+    spec = importlib.util.spec_from_file_location("vv_cut_silence", module_path)
+    if spec is None or spec.loader is None or not module_path.exists():
+        raise RuntimeError("cut_silence.py не найден в voice_video")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    result = module.cut_silence(src, dst)
+    if not result.get("written"):
+        dst.unlink(missing_ok=True)
+        return None
+    return {
+        "original_seconds": result["duration"], "result_seconds": result["result_seconds"],
+        "removed_seconds": result["removed_seconds"], "time_map": result["time_map"],
+    }
+
+
+def trim_timeout_sec(fragment_seconds: float, video: bool) -> float:
+    """Re-encoding a video fragment scales with its length; a fixed 10 min cap would fail long ones."""
+    if not video:
+        return 600.0
+    return float(max(600.0, min(2 * 3600.0, 2.0 * fragment_seconds)))
+
+
+def cut_media_range(src: Path, dst: Path, start: float, end: float) -> None:
+    """Write an accurate range as mono WAV or browser-playable MP4."""
+    try:
+        streams = audio_stream_count(src)
+        encoder = _video_encoder(ffmpeg_bin()) if dst.suffix.lower() == ".mp4" else "libopenh264"
+        proc = subprocess.run(
+            build_trim_argv(src, dst, start, end, audio_streams=max(1, streams), video_encoder=encoder),
+            capture_output=True, text=True, timeout=trim_timeout_sec(end - start, dst.suffix.lower() == ".mp4"),
+        )
+        ok = proc.returncode == 0 and dst.exists() and dst.stat().st_size > 1024
+        if not ok:
+            raise RuntimeError(f"ffmpeg trim failed: {(proc.stderr or '').strip()[:300]}")
+        volume = _mean_volume_db(dst)
+        if volume is not None and volume <= -70.0:
+            raise RuntimeError(
+                "фрагмент оказался без звука — проверьте диапазон или звуковую дорожку источника"
+            )
+    except Exception:
+        dst.unlink(missing_ok=True)
+        raise
 
 
 def source_media_info(base_filename: str) -> Dict[str, Any]:
@@ -922,6 +1183,7 @@ STT_ENGINES = {
     "gemini": "Gemini API (OpenRouter, ~$0.18/ч)",
     "grok": "Grok STT API (OpenRouter, ~$0.10/ч)",
     "mai": "MAI Transcribe API (OpenRouter, ~$0.10/ч)",
+    "gigaam": "GigaAM-v3 (локально, русский, бесплатно)",
 }
 WHISPER_MODELS = [
     "tiny", "base", "small", "medium", "large", "large-v2", "large-v3",

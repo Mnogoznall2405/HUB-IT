@@ -123,6 +123,7 @@ function AddressBookEntryRow({
         }}
       >
         <Avatar
+          src={item?.photo_url || undefined}
           sx={{
             width: 40,
             height: 40,

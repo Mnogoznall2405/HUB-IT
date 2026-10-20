@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -39,8 +39,23 @@ const mockApi = vi.hoisted(() => ({
   },
   warehouse1cAPI: {
     getEmployeeCompareSummary: vi.fn(),
+    getEmployeeWarehouse: vi.fn(),
+    getWarehouseMovements: vi.fn(),
+    getMissingWarehouseHints: vi.fn(),
+  },
+  equipmentPhotosAPI: {
+    list: vi.fn(),
+    upload: vi.fn(),
+    remove: vi.fn(),
+    verify: vi.fn(),
+    unverify: vi.fn(),
+    fetchContent: vi.fn(),
   },
   grantedPermissions: new Set(['database.read', 'database.write']),
+}));
+
+vi.mock('../api/equipmentPhotos', () => ({
+  equipmentPhotosAPI: mockApi.equipmentPhotosAPI,
 }));
 
 vi.mock('../api/client', () => ({
@@ -76,6 +91,9 @@ vi.mock('../api/warehouse1c', async (importOriginal) => {
     warehouse1cAPI: {
       ...actual.warehouse1cAPI,
       getEmployeeCompareSummary: mockApi.warehouse1cAPI.getEmployeeCompareSummary,
+      getEmployeeWarehouse: mockApi.warehouse1cAPI.getEmployeeWarehouse,
+      getWarehouseMovements: mockApi.warehouse1cAPI.getWarehouseMovements,
+      getMissingWarehouseHints: mockApi.warehouse1cAPI.getMissingWarehouseHints,
     },
   };
 });
@@ -161,8 +179,8 @@ async function openFirstEquipmentDetail() {
 
   fireEvent.click(await screen.findByText('HQ'));
   fireEvent.click(await screen.findByText('Office'));
-  const actionButtons = await screen.findAllByRole('button', { name: 'actions' });
-  fireEvent.click(actionButtons[0]);
+  fireEvent.click(await screen.findByRole('row', { name: /1001/ }));
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Просмотр' }));
 
   return screen.findByRole('tab', { name: 'История перемещений' });
 }
@@ -183,9 +201,21 @@ beforeEach(() => {
   mockApi.grantedPermissions.add('database.read');
   mockApi.grantedPermissions.add('database.write');
   mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockResolvedValue({
-    meta: { status: 'ok' },
+    meta: { status: 'ok', as_of: new Date().toISOString() },
     items: [],
   });
+  mockApi.warehouse1cAPI.getEmployeeWarehouse.mockResolvedValue({
+    status: 'none',
+    warehouse: null,
+    candidates: [],
+    balances: [],
+  });
+  mockApi.warehouse1cAPI.getWarehouseMovements.mockResolvedValue({
+    items: [],
+    has_more: false,
+    status: 'ok',
+  });
+  mockApi.warehouse1cAPI.getMissingWarehouseHints.mockResolvedValue({ items: [] });
   clearSWRCache();
   installMatchMedia({ mobile: false });
   installIntersectionObserverMock();
@@ -236,6 +266,8 @@ beforeEach(() => {
     requested: 1,
   });
   mockApi.equipmentAPI.getCurrentActs.mockResolvedValue({ items: [] });
+  mockApi.equipmentPhotosAPI.list.mockResolvedValue({ photos: [] });
+  mockApi.equipmentPhotosAPI.upload.mockResolvedValue({});
   mockApi.equipmentAPI.searchUniversal.mockResolvedValue({ equipment: [], total: 0, page: 1, pages: 1 });
   mockApi.equipmentAPI.getEquipmentActs.mockResolvedValue({ acts: [], total: 0 });
   mockApi.equipmentAPI.getRecentCards.mockResolvedValue({ items: [] });
@@ -390,10 +422,16 @@ describe('Database equipment row helpers', () => {
     expect(localStorage.getItem('selected_database')).toBe('archive');
   });
 
-  it('shows database selector in the main layout header', async () => {
+  it('replaces the portal header with a compact page header that carries the database selector', async () => {
     renderDatabase();
 
-    expect(await screen.findByTestId('main-layout')).toHaveAttribute('data-show-database-selector', 'true');
+    const layout = await screen.findByTestId('main-layout');
+    expect(layout).toHaveAttribute('data-header-mode', 'integrated');
+    expect(layout).toHaveAttribute('data-show-database-selector', 'false');
+    const header = await screen.findByTestId('database-desktop-header');
+    expect(within(header).getByRole('tab', { name: 'Оборудование' })).toBeInTheDocument();
+    expect(within(header).getByRole('combobox', { name: 'База данных' })).toBeInTheDocument();
+    expect(within(header).getByPlaceholderText('Поиск по инв. №, парт. №, модели, сотруднику...')).toBeInTheDocument();
   });
 
   it('shows desktop quick actions outside the mobile FAB', async () => {
@@ -457,12 +495,21 @@ describe('Database equipment row helpers', () => {
       pages: 1,
     });
 
+    // Поиск по сотруднику идёт параллельно основному поиску (для любого текста) и
+    // возвращает валидный ответ контракта EmployeeSearchResponse (employees/total/page/pages).
+    mockApi.equipmentSearchAPI.searchByEmployee.mockResolvedValue({
+      employees: [], total: 0, page: 1, pages: 0,
+    });
+
     const searchInput = screen.getByPlaceholderText('Поиск по инв. №, парт. №, модели, сотруднику...');
     fireEvent.change(searchInput, { target: { value: 'Latitude' } });
     fireEvent.keyDown(searchInput, { key: 'Enter' });
 
     await waitFor(() => expect(mockApi.equipmentAPI.searchUniversal).toHaveBeenCalledWith('Latitude', 1, 200, { typeNo: null, field: '' }));
-    expect(mockApi.equipmentSearchAPI.searchByEmployee).not.toHaveBeenCalled();
+    await waitFor(() => expect(mockApi.equipmentSearchAPI.searchByEmployee).toHaveBeenCalledWith(
+      'Latitude', 1, 50, expect.objectContaining({ databaseId: 'main' }),
+    ));
+    expect(mockApi.equipmentSearchAPI.searchByEmployee).toHaveBeenCalledTimes(1);
     expect(await screen.findByText('Latitude 7420')).toBeInTheDocument();
   });
 
@@ -474,6 +521,107 @@ describe('Database equipment row helpers', () => {
 
     expect(await screen.findByText('Part Number')).toBeInTheDocument();
     expect(screen.getByText('PN-1001')).toBeInTheDocument();
+  });
+
+  it('filters loaded rows by photo presence and shows photo stats in group headers', async () => {
+    mockApi.equipmentAPI.getCurrentActs.mockResolvedValue({
+      items: [
+        { item_id: 1, available: false, photo_count: 2 },
+        { item_id: 2, available: false, photo_count: 0 },
+      ],
+    });
+    renderDatabase();
+
+    const filterBar = await screen.findByTestId('equipment-list-filters');
+    await waitFor(() => expect(within(filterBar).getByRole('button', { name: 'Без фото (1)' })).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /HQ.*с фото 1 из 2/ })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('HQ'));
+    expect(await screen.findByText('Office')).toBeInTheDocument();
+    expect(screen.getByText('Lab')).toBeInTheDocument();
+
+    fireEvent.click(within(filterBar).getByRole('button', { name: 'Без фото (1)' }));
+    await waitFor(() => expect(screen.queryByText('Office')).not.toBeInTheDocument());
+    expect(screen.getByText('Lab')).toBeInTheDocument();
+    // Автоподгрузка на время фильтра выключена — только ручная кнопка.
+    expect(screen.queryByTestId('equipment-load-more-sentinel')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Загрузить ещё' })).toBeInTheDocument();
+
+    fireEvent.click(within(filterBar).getByRole('button', { name: 'Без фото (1)' }));
+    expect(await screen.findByText('Office')).toBeInTheDocument();
+  });
+
+  it('marks the list camera by photo checks: red for rejected, plain without marks', async () => {
+    mockApi.equipmentAPI.getCurrentActs.mockResolvedValue({
+      items: [
+        { item_id: 1, available: false, photo_count: 2, photo_verified_count: 1, photo_rejected_count: 1 },
+        { item_id: 2, available: false, photo_count: 1, photo_verified_count: 0, photo_rejected_count: 0 },
+      ],
+    });
+    renderDatabase();
+
+    fireEvent.click(await screen.findByText('HQ'));
+    fireEvent.click(await screen.findByText('Office'));
+    // Отклонённое фото важнее проверенного: камера красная.
+    expect(await screen.findByRole('button', { name: 'Открыть фото: 2, отклонено 1' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Lab'));
+    expect(await screen.findByRole('button', { name: 'Открыть фото: 1' })).toBeInTheDocument();
+  });
+
+  it('filters loaded rows by current act presence', async () => {
+    mockApi.equipmentAPI.getCurrentActs.mockResolvedValue({
+      items: [
+        { item_id: 1, available: true, doc_no: 901, doc_number: 'ACT-901', photo_count: 0 },
+        { item_id: 2, available: false, photo_count: 0 },
+      ],
+    });
+    renderDatabase();
+
+    const filterBar = await screen.findByTestId('equipment-list-filters');
+    await waitFor(() => expect(within(filterBar).getByRole('button', { name: 'Без акта (1)' })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('HQ'));
+    expect(await screen.findByText('Office')).toBeInTheDocument();
+    expect(screen.getByText('Lab')).toBeInTheDocument();
+
+    fireEvent.click(within(filterBar).getByRole('button', { name: 'Без акта (1)' }));
+    await waitFor(() => expect(screen.queryByText('Office')).not.toBeInTheDocument());
+    expect(screen.getByText('Lab')).toBeInTheDocument();
+
+    // Фильтры складываются: «без акта» + «с фото» — подходящих строк нет.
+    fireEvent.click(within(filterBar).getByRole('button', { name: /С фото/ }));
+    await waitFor(() => expect(screen.queryByText('Lab')).not.toBeInTheDocument());
+    expect(screen.getByText('Среди загруженных строк нет подходящей техники')).toBeInTheDocument();
+  });
+
+  it('keeps the photo filter off the consumables tab', async () => {
+    renderDatabase();
+    expect(await screen.findByTestId('equipment-list-filters')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Расходники' }));
+
+    await waitFor(() => expect(screen.queryByTestId('equipment-list-filters')).not.toBeInTheDocument());
+  });
+
+  it('walks the batch photo queue: next item without photos opens on the photos tab', async () => {
+    mockApi.equipmentAPI.getCurrentActs.mockResolvedValue({
+      items: [
+        { item_id: 1, available: false, photo_count: 0 },
+        { item_id: 2, available: false, photo_count: 0 },
+      ],
+    });
+    await openFirstEquipmentDetail();
+    fireEvent.click(screen.getByRole('tab', { name: 'Фото' }));
+
+    // 1001 открыта, во втором филиале/локации ещё одна без фото — страница 2 подгружена префетчем.
+    const nextButton = await screen.findByRole('button', { name: 'Следующая без фото (1)' });
+    fireEvent.click(nextButton);
+
+    await waitFor(() => expect(mockApi.equipmentPhotosAPI.list).toHaveBeenCalledWith(2, expect.anything()));
+    // Очередь пуста: пропущенная 1001 больше не предлагается.
+    const exhausted = await screen.findByRole('button', { name: 'Следующая без фото' });
+    expect(exhausted).toBeDisabled();
   });
 
   it('shows recent equipment cards under search and opens detail from the card', async () => {
@@ -561,8 +709,8 @@ describe('Database equipment row helpers', () => {
 
     fireEvent.click(await screen.findByText('HQ'));
     fireEvent.click(await screen.findByText('Office'));
-    const actionButtons = await screen.findAllByRole('button', { name: 'actions' });
-    fireEvent.click(actionButtons[0]);
+    fireEvent.click(await screen.findByRole('row', { name: /1001/ }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Просмотр' }));
 
     await waitFor(() => {
       expect(mockApi.equipmentAPI.touchRecentCard).toHaveBeenCalledWith(expect.objectContaining({
@@ -845,7 +993,7 @@ describe('Database equipment row helpers', () => {
     expect(mockApi.equipmentSearchAPI.getEmployeeEquipment).toHaveBeenCalledTimes(1);
   });
 
-  it('adds delete action only for admins in equipment mode', () => {
+  it('adds delete action only with delete permission in equipment mode', () => {
     const item = {
       INV_NO: '1001',
       TYPE_NAME: 'PC',
@@ -857,21 +1005,21 @@ describe('Database equipment row helpers', () => {
       item,
       dataMode: 'equipment',
       canWrite: true,
-      isAdmin: true,
+      canDeleteEquipment: true,
     })).toContain('delete');
 
     expect(getEquipmentRowActions({
       item,
       dataMode: 'equipment',
       canWrite: true,
-      isAdmin: false,
+      canDeleteEquipment: false,
     })).not.toContain('delete');
 
     expect(getEquipmentRowActions({
       item,
       dataMode: 'consumables',
       canWrite: true,
-      isAdmin: true,
+      canDeleteEquipment: true,
     })).toEqual([]);
   });
 
@@ -1224,5 +1372,527 @@ describe('Database equipment row helpers', () => {
       expect(mockApi.warehouse1cAPI.getEmployeeCompareSummary).toHaveBeenCalledTimes(1);
     });
     expect(mockApi.equipmentAPI.getAllEquipmentGrouped).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Database inventory 1C compare badges', () => {
+  const PHILIPS_PART_NO = 'ЦБ-00195776';
+  const PHILIPS_KEY = 'цб-00195776';
+
+  const philipsRow = (overrides = {}) => ({
+    ID: 21,
+    INV_NO: '100021',
+    SERIAL_NO: 'PH-1',
+    PART_NO: PHILIPS_PART_NO,
+    TYPE_NAME: 'Монитор',
+    MODEL_NAME: 'Philips 243V',
+    EMPL_NO: 42,
+    OWNER_DISPLAY_NAME: 'Иванов И.И.',
+    STATUS_NAME: 'В работе',
+    BRANCH_NAME: 'HQ',
+    LOCATION_NAME: 'Office',
+    ...overrides,
+  });
+
+  const philipsSummaryItem = ({ status = 'match', hubCount = 2, qty1c = 2 } = {}) => ({
+    owner_no: 42,
+    employee_name: 'Иванов И.И.',
+    warehouse_ref: 'wh-1',
+    warehouse_name: 'Иванов И.И.',
+    status,
+    part_status: { [PHILIPS_KEY]: status },
+    part_quantities: { [PHILIPS_KEY]: { hub_count: hubCount, qty_1c: qty1c } },
+    counts: {
+      match: status === 'match' ? 1 : 0,
+      diff: status === 'diff' ? 1 : 0,
+      only_hub: 0,
+      only_1c: 0,
+      no_part: 0,
+      not_in_1c: 0,
+      hub_items: 2,
+    },
+  });
+
+  const philipsSummaryResponse = (overrides = {}) => ({
+    meta: { status: 'ok', as_of: new Date().toISOString() },
+    items: [philipsSummaryItem(overrides)],
+  });
+
+  const installPhilipsScenario = ({ balancesAsOf = new Date().toISOString() } = {}) => {
+    mockApi.grantedPermissions.add('warehouse_1c.read');
+    mockApi.equipmentAPI.getAllEquipmentGrouped.mockResolvedValue({
+      grouped: {
+        HQ: {
+          Office: [
+            philipsRow({ ID: 21, INV_NO: '100021' }),
+            philipsRow({ ID: 22, INV_NO: '100022' }),
+          ],
+        },
+      },
+      total: 2,
+      pages: 1,
+    });
+    mockApi.equipmentSearchAPI.getEmployeeEquipment.mockResolvedValue({
+      equipment: [
+        { ID: 21, INV_NO: '100021', MODEL_NAME: 'Philips 243V', PART_NO: PHILIPS_PART_NO, EMPL_NO: 42 },
+        { ID: 22, INV_NO: '100022', MODEL_NAME: 'Philips 243V', PART_NO: PHILIPS_PART_NO, EMPL_NO: 42 },
+      ],
+    });
+    mockApi.warehouse1cAPI.getEmployeeWarehouse.mockImplementation(async ({ loadBalances } = {}) => (
+      loadBalances
+        ? {
+          status: 'matched',
+          warehouse: { ref: 'wh-1', name: 'Иванов И.И.' },
+          balances: [{
+            nomenclature_ref: 'nom-1',
+            nomenclature_code: PHILIPS_PART_NO,
+            nomenclature_name: 'Монитор Philips 243V',
+            qty_balance: 1,
+          }],
+          balances_meta: { status: 'ok', as_of: balancesAsOf },
+        }
+        : {
+          status: 'matched',
+          warehouse: { ref: 'wh-1', name: 'Иванов И.И.' },
+          balances: [],
+        }
+    ));
+  };
+
+  const expandPhilipsRows = async () => {
+    fireEvent.click(await screen.findByText('HQ'));
+    fireEvent.click(await screen.findByText('Office'));
+    await screen.findByText('100021');
+    await screen.findByText('100022');
+  };
+
+  const openEmployeeDialog = async () => {
+    const employeeButtons = await screen.findAllByRole('button', { name: 'Иванов И.И.' });
+    fireEvent.click(employeeButtons[0]);
+    return screen.findByRole('dialog', { name: 'Оборудование сотрудника' }, { timeout: 5000 });
+  };
+
+  const closeEmployeeDialog = async (dialog) => {
+    const closeButtons = Array.from(dialog.querySelectorAll('button'))
+      .filter((button) => button.getAttribute('aria-label') === 'Закрыть' || button.textContent.trim() === 'Закрыть');
+    fireEvent.click(closeButtons[0]);
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Оборудование сотрудника' })).not.toBeInTheDocument();
+    });
+  };
+
+  it('corrects green badges to warnings after the employee dialog shows 2-vs-1', async () => {
+    installPhilipsScenario();
+    mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockResolvedValue(philipsSummaryResponse());
+
+    renderDatabase();
+    await expandPhilipsRows();
+
+    expect(await screen.findAllByText('1С ✓')).toHaveLength(2);
+
+    const dialog = await openEmployeeDialog();
+
+    expect(mockApi.equipmentSearchAPI.getEmployeeEquipment).toHaveBeenCalledWith(42, {
+      employeeName: 'Иванов И.И.',
+      allDatabases: false,
+    });
+
+    await waitFor(() => {
+      expect(dialog.querySelectorAll('[data-compare-status="diff"]')).toHaveLength(3);
+    });
+
+    await closeEmployeeDialog(dialog);
+
+    expect(await screen.findAllByText('1С ≠')).toHaveLength(2);
+    expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+    expect(document.querySelectorAll('[data-compare-status="diff"]')).toHaveLength(2);
+
+    fireEvent.mouseOver(document.querySelector('[data-compare-status="diff"]'));
+    const tooltip = await screen.findByRole('tooltip');
+    expect(tooltip).toHaveTextContent('Хаб: 2');
+    expect(tooltip).toHaveTextContent('1С: 1');
+
+    const reopened = await openEmployeeDialog();
+    await waitFor(() => {
+      expect(reopened.querySelectorAll('[data-compare-status="diff"]')).toHaveLength(3);
+    });
+    await closeEmployeeDialog(reopened);
+    expect(await screen.findAllByText('1С ≠')).toHaveLength(2);
+    expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+  });
+
+  it('ignores a stale summary response resolved after the dialog correction', async () => {
+    installPhilipsScenario();
+    let resolveSummary;
+    mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockImplementation(
+      () => new Promise((resolve) => { resolveSummary = resolve; }),
+    );
+
+    renderDatabase();
+    await expandPhilipsRows();
+
+    const dialog = await openEmployeeDialog();
+    await waitFor(() => {
+      expect(dialog.querySelectorAll('[data-compare-status="diff"]')).toHaveLength(3);
+    });
+    await closeEmployeeDialog(dialog);
+
+    expect(await screen.findAllByText('1С ≠')).toHaveLength(2);
+
+    const staleResponse = philipsSummaryResponse();
+    staleResponse.meta.as_of = new Date(Date.now() - 30_000).toISOString();
+    await act(async () => {
+      resolveSummary(staleResponse);
+    });
+
+    expect(screen.getAllByText('1С ≠')).toHaveLength(2);
+    expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+  });
+
+  it('lets a genuinely newer batch supersede the dialog correction', async () => {
+    installPhilipsScenario({ balancesAsOf: new Date(Date.now() - 60_000).toISOString() });
+    let resolveSummary;
+    mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockImplementation(
+      () => new Promise((resolve) => { resolveSummary = resolve; }),
+    );
+
+    renderDatabase();
+    await expandPhilipsRows();
+
+    const dialog = await openEmployeeDialog();
+    await waitFor(() => {
+      expect(dialog.querySelectorAll('[data-compare-status="diff"]')).toHaveLength(3);
+    });
+    await closeEmployeeDialog(dialog);
+
+    expect(await screen.findAllByText('1С ≠')).toHaveLength(2);
+
+    const newerResponse = philipsSummaryResponse();
+    newerResponse.meta.as_of = new Date(Date.now() - 30_000).toISOString();
+    await act(async () => {
+      resolveSummary(newerResponse);
+    });
+
+    expect(await screen.findAllByText('1С ✓')).toHaveLength(2);
+    expect(screen.queryByText('1С ≠')).not.toBeInTheDocument();
+  });
+
+  it('never paints green from summary metadata without a usable timestamp', async () => {
+    installPhilipsScenario();
+    mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockResolvedValue({
+      meta: { status: 'ok' },
+      items: [philipsSummaryItem()],
+    });
+
+    renderDatabase();
+    await expandPhilipsRows();
+    await waitFor(() => {
+      expect(mockApi.warehouse1cAPI.getEmployeeCompareSummary).toHaveBeenCalled();
+    });
+    expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+    expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+
+    mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockResolvedValue({
+      meta: { status: 'ok', as_of: 'not-a-date' },
+      items: [philipsSummaryItem()],
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+
+    mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockResolvedValue({
+      meta: { status: 'ok', as_of: new Date(Date.now() + 60_000).toISOString() },
+      items: [philipsSummaryItem()],
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+    expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+  });
+
+  it('keeps badges green only while summary evidence is fresh and complete', async () => {
+    installPhilipsScenario();
+    mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockResolvedValue(
+      philipsSummaryResponse({ status: 'match', hubCount: 2, qty1c: 2 }),
+    );
+
+    renderDatabase();
+    await expandPhilipsRows();
+    expect(await screen.findAllByText('1С ✓')).toHaveLength(2);
+
+    mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockResolvedValue({
+      meta: { status: 'incomplete', balances_status: 'unknown', as_of: new Date().toISOString() },
+      items: [philipsSummaryItem()],
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+    });
+
+    mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockResolvedValue(philipsSummaryResponse());
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(await screen.findAllByText('1С ✓')).toHaveLength(2);
+  });
+
+  it('hides badges immediately when a refresh fails before the snapshot expiry', async () => {
+    installPhilipsScenario();
+    mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockResolvedValue(philipsSummaryResponse());
+
+    renderDatabase();
+    await expandPhilipsRows();
+    expect(await screen.findAllByText('1С ✓')).toHaveLength(2);
+
+    mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockRejectedValue(new Error('1C down'));
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+      expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+    });
+  });
+
+  it('clears badges when a refresh fails and never restores the stale green', async () => {
+    vi.useFakeTimers();
+    try {
+      installPhilipsScenario();
+      mockApi.warehouse1cAPI.getEmployeeCompareSummary
+        .mockImplementationOnce(async () => philipsSummaryResponse())
+        .mockRejectedValue(new Error('1C down'));
+
+      renderDatabase();
+      for (let i = 0; i < 20; i += 1) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+        if (screen.queryByText('HQ')) break;
+      }
+      fireEvent.click(screen.getByText('HQ'));
+      fireEvent.click(screen.getByText('Office'));
+      for (let i = 0; i < 20; i += 1) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+        if (screen.queryByText('100021')) break;
+      }
+      expect(document.querySelectorAll('[data-compare-status="match"]')).toHaveLength(2);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(121_000); });
+      expect(document.querySelectorAll('[data-compare-status="match"]')).toHaveLength(0);
+      expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+      expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('expires badges on the source timestamp and restores them only with fresh evidence', async () => {
+    vi.useFakeTimers();
+    try {
+      installPhilipsScenario();
+      let resolveRefresh;
+      let call = 0;
+      mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockImplementation(() => {
+        call += 1;
+        if (call === 1) {
+          return Promise.resolve({
+            meta: { status: 'ok', as_of: new Date(Date.now() - 110_000).toISOString() },
+            items: [philipsSummaryItem()],
+          });
+        }
+        return new Promise((resolve) => { resolveRefresh = resolve; });
+      });
+
+      renderDatabase();
+      for (let i = 0; i < 20; i += 1) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+        if (screen.queryByText('HQ')) break;
+      }
+      fireEvent.click(screen.getByText('HQ'));
+      fireEvent.click(screen.getByText('Office'));
+      for (let i = 0; i < 20; i += 1) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+        if (screen.queryByText('100021')) break;
+      }
+      expect(document.querySelectorAll('[data-compare-status="match"]')).toHaveLength(2);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(11_000); });
+      expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+      expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+      expect(mockApi.warehouse1cAPI.getEmployeeCompareSummary).toHaveBeenCalledWith({ refresh: true });
+
+      await act(async () => {
+        resolveRefresh(philipsSummaryResponse());
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(document.querySelectorAll('[data-compare-status="match"]')).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('forces a cache-bypassing refresh when inventory data advances during a pending summary', async () => {
+    installPhilipsScenario();
+    let resolvePageTwo;
+    mockApi.equipmentAPI.getAllEquipmentGrouped.mockImplementation(async ({ page = 1 } = {}) => {
+      if (page === 1) {
+        return {
+          grouped: {
+            HQ: {
+              Office: [
+                philipsRow({ ID: 21, INV_NO: '100021' }),
+                philipsRow({ ID: 22, INV_NO: '100022' }),
+              ],
+            },
+          },
+          total: 3,
+          pages: 2,
+          data_version: 1,
+        };
+      }
+      return new Promise((resolve) => {
+        resolvePageTwo = () => resolve({ grouped: {}, total: 3, pages: 2, data_version: 2 });
+      });
+    });
+    let resolveStale;
+    let call = 0;
+    mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockImplementation(() => {
+      call += 1;
+      if (call === 1) {
+        return new Promise((resolve) => { resolveStale = resolve; });
+      }
+      return Promise.resolve(philipsSummaryResponse({ status: 'diff', hubCount: 2, qty1c: 1 }));
+    });
+
+    renderDatabase();
+    await expandPhilipsRows();
+    await waitFor(() => {
+      expect(mockApi.warehouse1cAPI.getEmployeeCompareSummary).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(typeof resolvePageTwo).toBe('function');
+    });
+
+    await act(async () => {
+      resolvePageTwo();
+    });
+
+    await waitFor(() => {
+      expect(mockApi.warehouse1cAPI.getEmployeeCompareSummary).toHaveBeenCalledWith({ refresh: true });
+    });
+    expect(await screen.findAllByText('1С ≠')).toHaveLength(2);
+
+    const staleResponse = philipsSummaryResponse();
+    staleResponse.meta.as_of = new Date(Date.now() - 30_000).toISOString();
+    await act(async () => {
+      resolveStale(staleResponse);
+    });
+    expect(screen.getAllByText('1С ≠')).toHaveLength(2);
+    expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+  });
+
+  it('restores badges after a fresh successful refresh', async () => {
+    vi.useFakeTimers();
+    try {
+      installPhilipsScenario();
+      mockApi.warehouse1cAPI.getEmployeeCompareSummary
+        .mockImplementation(async () => philipsSummaryResponse());
+
+      renderDatabase();
+      for (let i = 0; i < 20; i += 1) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+        if (screen.queryByText('HQ')) break;
+      }
+      fireEvent.click(screen.getByText('HQ'));
+      fireEvent.click(screen.getByText('Office'));
+      for (let i = 0; i < 20; i += 1) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+        if (screen.queryByText('100021')) break;
+      }
+      expect(document.querySelectorAll('[data-compare-status="match"]')).toHaveLength(2);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(121_000); });
+      expect(document.querySelectorAll('[data-compare-status="match"]')).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ignores a summary response that resolves after the database switched', async () => {
+    installPhilipsScenario();
+    let resolveSummary;
+    let call = 0;
+    mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockImplementation(() => {
+      call += 1;
+      if (call === 1) {
+        return new Promise((resolve) => { resolveSummary = resolve; });
+      }
+      return Promise.resolve({ meta: { status: 'ok', as_of: new Date().toISOString() }, items: [] });
+    });
+
+    renderDatabase();
+    await expandPhilipsRows();
+
+    mockApi.databaseAPI.getCurrentDatabase.mockResolvedValue({ id: 'archive', name: 'Archive' });
+    await act(async () => {
+      localStorage.setItem('selected_database', 'archive');
+      window.dispatchEvent(new CustomEvent('database-changed', { detail: { databaseId: 'archive' } }));
+    });
+    await waitFor(() => {
+      expect(mockApi.warehouse1cAPI.getEmployeeCompareSummary.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+
+    await act(async () => {
+      resolveSummary(philipsSummaryResponse());
+    });
+
+    expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+    expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+  });
+
+  it('closes the employee dialog on database switch and ignores a late load', async () => {
+    installPhilipsScenario();
+    mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockResolvedValue(philipsSummaryResponse());
+    let resolveHub;
+    mockApi.equipmentSearchAPI.getEmployeeEquipment.mockImplementation(
+      () => new Promise((resolve) => { resolveHub = resolve; }),
+    );
+
+    renderDatabase();
+    await expandPhilipsRows();
+    expect(await screen.findAllByText('1С ✓')).toHaveLength(2);
+
+    await openEmployeeDialog();
+    expect(screen.getByRole('dialog', { name: 'Оборудование сотрудника' })).toBeInTheDocument();
+
+    mockApi.databaseAPI.getCurrentDatabase.mockResolvedValue({ id: 'archive', name: 'Archive' });
+    mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockResolvedValue({
+      meta: { status: 'ok', as_of: new Date().toISOString() },
+      items: [],
+    });
+    await act(async () => {
+      localStorage.setItem('selected_database', 'archive');
+      window.dispatchEvent(new CustomEvent('database-changed', { detail: { databaseId: 'archive' } }));
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Оборудование сотрудника' })).not.toBeInTheDocument();
+    });
+
+    await act(async () => {
+      resolveHub({ equipment: [] });
+    });
+
+    fireEvent.click(await screen.findByText('HQ'));
+    fireEvent.click(await screen.findByText('Office'));
+    await waitFor(() => {
+      expect(screen.getByText('100021')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+    expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
   });
 });

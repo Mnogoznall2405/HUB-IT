@@ -249,6 +249,8 @@ def test_initialize_chat_schema_uses_legacy_public_postgres_tables(monkeypatch):
     ):
         monkeypatch.setattr(chat_db_module, name, lambda current_engine: None)
     monkeypatch.setattr(chat_db_module.config.app, "environment", "development", raising=False)
+    # Startup DDL is fail-closed by default (B-02); this test covers the explicit legacy-dev opt-in.
+    monkeypatch.setenv("APP_SCHEMA_DEV_AUTO_CREATE", "1")
 
     initialize_chat_schema("postgresql://legacy-chat")
 
@@ -361,6 +363,7 @@ def test_chat_schema_template_restores_disabled_chat(tmp_path, monkeypatch):
     calls: list[str] = []
     captured: dict[str, str] = {}
     monkeypatch.setattr(tests_conftest, "app_schema_template_db", lambda: source_path)
+    monkeypatch.setattr(tests_conftest, "_CHAT_SCHEMA_TEMPLATE_PATH", None)
     monkeypatch.setattr(chat_db_module.config.chat, "enabled", False, raising=False)
 
     def fake_initialize_chat_schema(database_url=None):
@@ -377,13 +380,11 @@ def test_chat_schema_template_restores_disabled_chat(tmp_path, monkeypatch):
     monkeypatch.setattr(chat_db_module, "initialize_chat_schema", fake_initialize_chat_schema)
     monkeypatch.setattr(chat_db_module, "get_chat_engine", fake_get_chat_engine)
 
-    result = tests_conftest.chat_schema_template_db.__wrapped__(
-        SimpleNamespace(mktemp=lambda name: tmp_path)
-    )
+    result = tests_conftest.chat_schema_template_path()
 
     enabled = bool(chat_db_module.config.chat.enabled)
-    expected_url = f"sqlite:///{(tmp_path / 'runtime.db').as_posix()}"
-    assert result == tmp_path / "runtime.db"
+    expected_url = f"sqlite:///{result.as_posix()}"
+    assert result.name == "runtime.db"
     assert result.exists()
     assert not enabled
     assert captured["url"] == expected_url

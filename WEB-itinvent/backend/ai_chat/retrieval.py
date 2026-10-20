@@ -130,9 +130,113 @@ class AiKbRetrievalService:
 
     def sync_index(self, *, image_extractor=None) -> None:
         ensure_app_schema_initialized()
-        source = kb_service.list_articles(status="published", limit=500, offset=0)
-        articles = list(source.get("items") or [])
-        published_ids = {str(item.get("id") or "").strip() for item in articles if str(item.get("id") or "").strip()}
+
+        articles: list[dict[str, Any]] = []
+        expected_total: int | None = None
+        offset = 0
+        while True:
+            page = kb_service.list_articles(status="published", limit=500, offset=offset)
+            page_items = list(page.get("items") or [])
+            page_total = page.get("total")
+            if type(page_total) is not int or page_total < 0:
+                raise RuntimeError("KB article listing has invalid total")
+            if expected_total is None:
+                expected_total = page_total
+            elif page_total != expected_total:
+                raise RuntimeError(
+                    f"KB article listing changed during sync: total {expected_total} -> {page_total}"
+                )
+            articles.extend(page_items)
+            offset += len(page_items)
+            if offset > expected_total:
+                raise RuntimeError("KB article listing exceeds its total")
+            if not page_items:
+                if offset < expected_total:
+                    raise RuntimeError(
+                        f"KB article listing ended early: {offset} articles of {expected_total}"
+                    )
+                break
+            if offset >= expected_total:
+                break
+        published_ids = {
+            str(item.get("id") or "").strip() for item in articles if str(item.get("id") or "").strip()
+        }
+        if len(published_ids) != int(expected_total or 0):
+            raise RuntimeError(
+                f"KB article listing is unstable: {len(published_ids)} unique ids for total {expected_total}"
+            )
+
+        with app_session() as session:
+            existing_hashes = {
+                str(row.kb_article_id): str(row.content_hash or "")
+                for row in session.scalars(select(AppAiKbDocument)).all()
+                if str(row.kb_article_id or "").strip()
+            }
+
+        prepared: dict[str, tuple[dict[str, Any], dict[str, Any] | None, str, str]] = {}
+        for article in articles:
+            article_id = str(article.get("id") or "").strip()
+            if not article_id:
+                continue
+            primary_attachment = kb_service.resolve_effective_primary_attachment(article)
+            content_hash = hashlib.sha256(
+                json.dumps(
+                    {
+                        # Bump when the indexed text layout changes so existing chunks are rebuilt.
+                        "index_layout": _KB_INDEX_LAYOUT_VERSION,
+                        "updated_at": article.get("updated_at"),
+                        "title": article.get("title"),
+                        "summary": article.get("summary"),
+                        "article_type": article.get("article_type"),
+                        "department_id": article.get("department_id"),
+                        "visibility_scope": article.get("visibility_scope"),
+                        "primary_attachment_id": _normalize_text((primary_attachment or {}).get("id")),
+                        "content": article.get("content"),
+                        "attachments": [
+                            {
+                                "id": item.get("id"),
+                                "file_name": item.get("file_name"),
+                                "size": item.get("size"),
+                                "uploaded_at": item.get("uploaded_at"),
+                            }
+                            for item in list(article.get("attachments") or [])
+                        ],
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()
+            if existing_hashes.get(article_id) == content_hash:
+                continue
+            attachment_texts: list[str] = []
+            for attachment in list(article.get("attachments") or []):
+                attachment_id = str((attachment or {}).get("id") or "").strip()
+                if not attachment_id:
+                    continue
+                resolved = kb_service.get_attachment(article_id=article_id, attachment_id=attachment_id)
+                if not resolved:
+                    continue
+                extracted = extract_text_from_path(
+                    resolved.get("path") or "",
+                    file_name=resolved.get("file_name") or "",
+                    mime_type=resolved.get("content_type") or "",
+                    image_extractor=image_extractor,
+                )
+                if extracted:
+                    attachment_texts.append(extracted[:12000])
+            base_text = _article_to_text(article)
+            # File names are searchable too: "бланк заявления на отпуск" must find
+            # Zayavlenie_na_otpusk.docx even when the file has no extractable text.
+            attachment_names = "\n".join(
+                f"Файл: {_normalize_text((item or {}).get('file_name'))}"
+                for item in list(article.get("attachments") or [])
+                if _normalize_text((item or {}).get("file_name"))
+            )
+            attachment_blob = "\n\n".join(attachment_texts)
+            combined = "\n\n".join(
+                part for part in [base_text, attachment_names, attachment_blob] if part
+            ).strip()
+            prepared[article_id] = (article, primary_attachment, content_hash, combined)
 
         with app_session() as session:
             existing_docs = {
@@ -140,67 +244,7 @@ class AiKbRetrievalService:
                 for item in session.scalars(select(AppAiKbDocument)).all()
                 if str(item.kb_article_id or "").strip()
             }
-            for article in articles:
-                article_id = str(article.get("id") or "").strip()
-                if not article_id:
-                    continue
-                attachment_texts: list[str] = []
-                primary_attachment = kb_service.resolve_effective_primary_attachment(article)
-                for attachment in list(article.get("attachments") or []):
-                    attachment_id = str((attachment or {}).get("id") or "").strip()
-                    if not attachment_id:
-                        continue
-                    resolved = kb_service.get_attachment(article_id=article_id, attachment_id=attachment_id)
-                    if not resolved:
-                        continue
-                    extracted = extract_text_from_path(
-                        resolved.get("path") or "",
-                        file_name=resolved.get("file_name") or "",
-                        mime_type=resolved.get("content_type") or "",
-                        image_extractor=image_extractor,
-                    )
-                    if extracted:
-                        attachment_texts.append(extracted[:12000])
-                base_text = _article_to_text(article)
-                # File names are searchable too: "бланк заявления на отпуск" must find
-                # Zayavlenie_na_otpusk.docx even when the file has no extractable text.
-                attachment_names = "\n".join(
-                    f"Файл: {_normalize_text((item or {}).get('file_name'))}"
-                    for item in list(article.get("attachments") or [])
-                    if _normalize_text((item or {}).get("file_name"))
-                )
-                attachment_blob = "\n\n".join(attachment_texts)
-                combined = "\n\n".join(
-                    part for part in [base_text, attachment_names, attachment_blob] if part
-                ).strip()
-                content_hash = hashlib.sha256(
-                    json.dumps(
-                        {
-                            # Bump when the indexed text layout changes so existing chunks are rebuilt.
-                            "index_layout": _KB_INDEX_LAYOUT_VERSION,
-                            "updated_at": article.get("updated_at"),
-                            "title": article.get("title"),
-                            "summary": article.get("summary"),
-                            "article_type": article.get("article_type"),
-                            "department_id": article.get("department_id"),
-                            "visibility_scope": article.get("visibility_scope"),
-                            "primary_attachment_id": _normalize_text((primary_attachment or {}).get("id")),
-                            "content": article.get("content"),
-                            "attachments": [
-                                {
-                                    "id": item.get("id"),
-                                    "file_name": item.get("file_name"),
-                                    "size": item.get("size"),
-                                    "uploaded_at": item.get("uploaded_at"),
-                                }
-                                for item in list(article.get("attachments") or [])
-                            ],
-                        },
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    ).encode("utf-8")
-                ).hexdigest()
-
+            for article_id, (article, primary_attachment, content_hash, combined) in prepared.items():
                 doc = existing_docs.get(article_id)
                 if doc is not None and str(doc.content_hash or "") == content_hash:
                     continue

@@ -75,6 +75,10 @@ export function useDatabaseEquipmentData({
   // subsequent response means someone else mutated the data meanwhile.
   const seenDataVersionRef = useRef({});
   const [dataVersionStale, setDataVersionStale] = useState(false);
+  const [comparisonRevision, setComparisonRevision] = useState(0);
+  const bumpComparisonRevision = useCallback(() => {
+    setComparisonRevision((prev) => prev + 1);
+  }, []);
 
   // Point-refresh call sites already applied fresh rows: advance the baseline
   // silently so the next list page doesn't nag about our own mutation.
@@ -83,8 +87,11 @@ export function useDatabaseEquipmentData({
     if (!Number.isFinite(next) || next <= 0) return;
     const resolvedScope = scope ?? currentScopeRef.current();
     const seen = seenDataVersionRef.current[resolvedScope];
-    if (seen === undefined || next > seen) seenDataVersionRef.current[resolvedScope] = next;
-  }, []);
+    if (seen === undefined || next > seen) {
+      seenDataVersionRef.current[resolvedScope] = next;
+      if (seen !== undefined) bumpComparisonRevision();
+    }
+  }, [bumpComparisonRevision]);
 
   // List loads are the staleness witness: a newer version than the baseline
   // means the loaded pages predate someone else's mutation.
@@ -98,8 +105,11 @@ export function useDatabaseEquipmentData({
     } else if (seen !== undefined && next > seen) {
       setDataVersionStale(true);
     }
-    if (seen === undefined || next > seen) seenDataVersionRef.current[resolvedScope] = next;
-  }, []);
+    if (seen === undefined || next > seen) {
+      seenDataVersionRef.current[resolvedScope] = next;
+      if (seen !== undefined) bumpComparisonRevision();
+    }
+  }, [bumpComparisonRevision]);
 
   const [initialLoading, setInitialLoading] = useState(true);
   const [modeLoading, setModeLoading] = useState(false);
@@ -378,6 +388,7 @@ export function useDatabaseEquipmentData({
       setEquipmentPagesTotal(pagesFromServer);
       setNextEquipmentPage(pagesFromServer > 1 ? 2 : null);
       setInitialLoadDone(true);
+      if (force) bumpComparisonRevision();
       if (mode === DATA_MODE_EQUIPMENT) {
         loadCurrentActsForGrouped(firstGrouped, isCurrent);
       }
@@ -413,6 +424,7 @@ export function useDatabaseEquipmentData({
     prefetchPages,
     selectedBranch,
     getDbCacheScope,
+    bumpComparisonRevision,
   ]);
 
   const refreshCurrentDbData = useCallback(async ({ force = false } = {}) => {
@@ -545,6 +557,7 @@ export function useDatabaseEquipmentData({
     loadingMoreEquipment,
     initialLoadDone,
     dataVersionStale,
+    comparisonRevision,
     notifyDataVersion,
     setAllEquipment,
     setLoadedCount,

@@ -465,11 +465,26 @@ function AiResponseControls({ body, onRetry, ui, theme, compactMobile }) {
 function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirmAction, onCancelAction, onEditAction }) {
   const [busy, setBusy] = useState('');
   const [menuAnchorEl, setMenuAnchorEl] = useState(null);
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (actionCard?.status !== 'pending' || !actionCard?.expires_at) return undefined;
+    setNow(Date.now());
+    const expiresIn = Date.parse(actionCard.expires_at) - Date.now();
+    const update = () => setNow(Date.now());
+    const timer = Number.isFinite(expiresIn) && expiresIn > 0
+      ? window.setTimeout(update, Math.min(expiresIn + 10, 2 ** 31 - 1)) : null;
+    window.addEventListener('focus', update);
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      window.removeEventListener('focus', update);
+    };
+  }, [actionCard?.id, actionCard?.status, actionCard?.expires_at]);
   const card = actionCard && typeof actionCard === 'object' ? actionCard : null;
   if (!card) return null;
   const preview = card.preview && typeof card.preview === 'object' ? card.preview : {};
   const actionType = String(card.action_type || '').trim();
-  const status = String(card.status || 'pending').trim().toLowerCase();
+  const rawStatus = String(card.status || 'pending').trim().toLowerCase();
+  const status = rawStatus === 'pending' && Date.parse(card.expires_at || '') <= now ? 'expired' : rawStatus;
   const isPending = status === 'pending';
   const title = String(preview.title || 'Действие ITinvent').trim();
   const summary = String(preview.summary || '').trim();
@@ -482,6 +497,7 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
   const warnings = Array.isArray(preview.warnings) ? preview.warnings.filter(Boolean) : [];
   const effects = Array.isArray(preview.effects) ? preview.effects.filter(Boolean) : [];
   const isOfficeMail = actionType.startsWith('office.mail.');
+  const mailOutcomeUnknown = isOfficeMail && card.result?.send_outcome === 'unknown';
   const isChatMessage = actionType === 'chat.message.send';
   const isSandboxPermission = actionType === 'ai.sandbox.permission';
   const isTaskAction = actionType.includes('task') || Boolean(preview.task);
@@ -492,7 +508,16 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
     : isTaskAction
       ? 'Создать'
       : 'Подтвердить';
-  const resultUrl = String(card.result_url || preview.open_url || preview.url || '').trim();
+  let resultUrl = String(card.result_url || preview.open_url || preview.url || '').trim();
+  if ((status === 'confirmed' || mailOutcomeUnknown) && isOfficeMail) {
+    const result = card.result && typeof card.result === 'object' ? card.result : {};
+    const query = new URLSearchParams({ folder: 'sent' });
+    const messageId = String(result.message_id || '').trim();
+    const mailboxId = String(result.mailbox_id || mail?.mailbox_id || '').trim();
+    if (messageId) query.set('message', messageId);
+    if (mailboxId) query.set('mailbox_id', mailboxId);
+    resultUrl = `/mail?${query.toString()}`;
+  }
   const openResult = () => {
     if (resultUrl) {
       window.open(resultUrl, '_blank', 'noopener,noreferrer');
@@ -525,10 +550,10 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
   const docConvertFormats = (Array.isArray(preview.formats) ? preview.formats : supportedDocumentFormats)
     .map((format) => String(format || '').trim().toLowerCase())
     .filter((format) => supportedDocumentFormats.includes(format));
-  const statusLabel = {
+  const statusLabel = mailOutcomeUnknown ? 'Результат отправки неизвестен' : {
     pending: 'Ожидает подтверждения',
     executing: 'Выполняется',
-    confirmed: 'Выполнено',
+    confirmed: isOfficeMail ? 'Письмо отправлено' : 'Выполнено',
     cancelled: 'Отменено',
     expired: 'Истекло',
     failed: 'Ошибка',
@@ -614,6 +639,15 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
             {statusLabel}
           </Box>
         </Stack>
+        {isOfficeMail ? (
+          <Typography role="status" sx={{ fontSize: 13, fontWeight: 700, color: ui.textSecondary }}>
+            {isPending ? 'Черновик готов. Письмо не отправлено — проверьте его и подтвердите отправку.'
+              : status === 'executing' ? 'Отправляю письмо. Повторное подтверждение не требуется.'
+                : status === 'expired' ? 'Срок подтверждения истёк. Для отправки нужен новый черновик.'
+                  : mailOutcomeUnknown ? 'Проверьте папку «Отправленные». Не отправляйте письмо повторно.'
+                    : status === 'cancelled' ? 'Отправка отменена.' : ''}
+          </Typography>
+        ) : null}
         {databaseId ? (
           <Typography sx={{ fontSize: 12, color: ui.textSecondary }}>
             База: {databaseId}
@@ -677,9 +711,9 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
             <Typography sx={{ fontSize: 12.5, color: 'inherit' }}>
               Тема: {mail.subject || 'без темы'}
             </Typography>
-            {mail.body_preview ? (
-              <Typography sx={{ fontSize: 12.5, lineHeight: 1.3, color: ui.textSecondary, whiteSpace: 'pre-wrap' }}>
-                {mail.body_preview}
+            {mail.body || mail.body_preview ? (
+              <Typography aria-label="Текст письма" sx={{ fontSize: 12.5, lineHeight: 1.4, color: ui.textSecondary, whiteSpace: 'pre-wrap', maxHeight: 240, overflowY: 'auto', overflowWrap: 'anywhere' }}>
+                {mail.body || mail.body_preview}
               </Typography>
             ) : null}
             {Number(mail.attachment_count || 0) > 0 ? (
@@ -778,6 +812,13 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
                 >
                   {busy === 'confirm' ? 'Выполняю...' : confirmLabel}
                 </Button>
+                {isOfficeMail && typeof onEditAction === 'function' ? (
+                  <Button size="small" variant="outlined" disabled={Boolean(busy)}
+                    onClick={() => onEditAction(card, message)}
+                    sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800 }}>
+                    Изменить
+                  </Button>
+                ) : null}
                 <Button
                   size="small"
                   variant="text"
@@ -787,7 +828,7 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
                 >
                   {busy === 'cancel' ? 'Отмена...' : 'Отменить'}
                 </Button>
-                {/* AI12: вторичные действия («Изменить», «Открыть») уходят в «…». */}
+                {!isOfficeMail ? <>
                 <IconButton
                   size="small"
                   aria-label="Действия карточки"
@@ -829,6 +870,7 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
                     Открыть
                   </MenuItem>
                 </Menu>
+                </> : null}
               </>
             )}
             {!isSandboxPermission && (isReportFormatChoice || isDocConvertFormatChoice) ? (
@@ -843,7 +885,7 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
             </Button>
             ) : null}
           </Stack>
-        ) : status === 'confirmed' && !isSandboxPermission && !isAiChoice ? (
+        ) : (status === 'confirmed' || mailOutcomeUnknown) && !isSandboxPermission && !isAiChoice ? (
           <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap" sx={{ pt: 0.35 }}>
             <Button
               size="small"
@@ -851,7 +893,7 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
               onClick={openResult}
               sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800 }}
             >
-              {isOfficeMail ? 'Открыть в почте' : isTaskAction ? 'Открыть задачу' : 'Открыть'}
+              {mailOutcomeUnknown ? 'Проверить в почте' : isOfficeMail ? 'Открыть в почте' : isTaskAction ? 'Открыть задачу' : 'Открыть'}
             </Button>
           </Stack>
         ) : null}

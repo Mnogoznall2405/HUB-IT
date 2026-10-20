@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import io
 import json
 import sys
 from pathlib import Path
@@ -325,6 +326,68 @@ def test_native_mail_push_forwards_launcher_notification_count(monkeypatch):
     assert notification["tag"] == "mail:mail-9"
     assert notification["notification_count"] == 12
     assert captured["payload"]["message"]["data"]["categoryId"] == "hubit_mail_message"
+
+
+def test_native_push_oauth_failure_keeps_tokens_and_only_unregistered_token_is_disabled(tmp_path, monkeypatch):
+    # E2E through send_notification with real sqlite rows; unit-level mocks would miss the
+    # DB side effect (is_active/revoked_at) that this regression is about.
+    service, database_url = _isolated_service(tmp_path, monkeypatch)
+    monkeypatch.setattr(native_push.NativePushService, "configured", property(lambda _self: True))
+    monkeypatch.setattr(service, "_service_account", lambda: {"project_id": "hubit-test"})
+    monkeypatch.setattr(service, "_project_id", lambda _account: "hubit-test")
+    service.upsert_token(user_id=38, token="fcm-good", device_id="phone-a")
+    service.upsert_token(user_id=38, token="fcm-stale", device_id="phone-b")
+
+    def _http_error(code, payload):
+        return native_push.urllib.error.HTTPError(
+            "https://example.invalid", code, "err", {}, io.BytesIO(json.dumps(payload).encode("utf-8"))
+        )
+
+    def _states():
+        return {row.token_text: (row.is_active, row.revoked_at) for row in _tokens(database_url)}
+
+    # 1) Service-level failure: the OAuth token endpoint answers 400 invalid_grant.
+    def _token_fetch_fails(_account):
+        raise _http_error(400, {"error": "invalid_grant", "error_description": "Invalid JWT"})
+
+    monkeypatch.setattr(service, "_get_access_token", _token_fetch_fails)
+    result = service.send_notification(recipient_user_id=38, title="HUB-IT", body="Message")
+    assert (result.sent, result.disabled, result.failed) == (0, 0, 2)
+    assert _states() == {"fcm-good": (True, None), "fcm-stale": (True, None)}
+
+    # 2) FCM says one specific device token is unregistered: only that token is disabled.
+    def _urlopen(request, timeout):
+        if json.loads(request.data.decode("utf-8"))["message"]["token"] == "fcm-stale":
+            raise _http_error(
+                404,
+                {
+                    "error": {
+                        "code": 404,
+                        "status": "NOT_FOUND",
+                        "details": [{"errorCode": "UNREGISTERED"}],
+                    }
+                },
+            )
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return b"{}"
+
+        return _Response()
+
+    monkeypatch.setattr(service, "_get_access_token", lambda _account: "access-token")
+    monkeypatch.setattr(native_push.urllib.request, "urlopen", _urlopen)
+    result = service.send_notification(recipient_user_id=38, title="HUB-IT", body="Message")
+    assert (result.sent, result.disabled, result.failed) == (1, 1, 0)
+    states = _states()
+    assert states["fcm-good"] == (True, None)
+    assert states["fcm-stale"][0] is False and states["fcm-stale"][1] is not None
 
 
 def test_native_push_binds_payload_to_recipient_user(monkeypatch):

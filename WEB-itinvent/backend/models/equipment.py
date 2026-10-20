@@ -262,12 +262,25 @@ class ConsumableLookupItem(BaseModel):
     description: Optional[str] = Field(None, description="Description")
 
 
+class ConsumableWorkPayload(BaseModel):
+    """Optional works record bundled into a durable consume operation."""
+    kind: str = Field(..., description="Work kind: component or cartridge")
+    payload: Dict[str, Any] = Field(default_factory=dict, description="Works record fields")
+
+
 class ConsumableConsumeRequest(BaseModel):
     """Decrease consumable quantity by qty."""
     item_id: Optional[int] = Field(None, description="ITEMS.ID")
     inv_no: Optional[str] = Field(None, description="Inventory number")
     qty: int = Field(1, ge=1, description="Quantity to consume")
     reason: Optional[str] = Field(None, description="Operation reason")
+    operation_id: Optional[str] = Field(
+        None, max_length=64,
+        description="Idempotency key; retries with the same id resume instead of consuming twice",
+    )
+    work: Optional[ConsumableWorkPayload] = Field(
+        None, description="Optional works record written atomically with the consume",
+    )
 
 
 class ConsumableConsumeResponse(BaseModel):
@@ -278,6 +291,9 @@ class ConsumableConsumeResponse(BaseModel):
     qty_old: Optional[int] = Field(None, description="Quantity before update")
     qty_new: Optional[int] = Field(None, description="Quantity after update")
     message: str = Field(..., description="Operation message")
+    operation_id: Optional[str] = Field(None, description="Durable operation key used for retries")
+    work_status: Optional[str] = Field(None, description="none|recorded — works record state")
+    work_record: Optional[Dict[str, Any]] = Field(None, description="Written works record, if any")
 
 
 class ConsumableQtyUpdateRequest(BaseModel):
@@ -418,6 +434,7 @@ class TransferLocationRequest(BaseModel):
 
 class TransferToDbRequest(BaseModel):
     """Move equipment items to another ITINVENT database preserving history."""
+    operation_id: Optional[str] = Field(None, min_length=8, max_length=64, pattern=r"^[A-Za-z0-9.:-]+$", description="Stable retry key for the cross-database transfer")
     inv_nos: List[str] = Field(..., min_length=1, max_length=200, description="Inventory numbers in source DB")
     target_db: str = Field(..., min_length=1, max_length=100, description="Target database id")
     target_owner_no: Optional[int] = Field(None, description="Existing OWNER_NO in target DB")
@@ -571,9 +588,9 @@ class UploadedActEmailSendRequest(BaseModel):
     )
     from_employee: Optional[str] = Field(None, description="Sender employee full name from act")
     to_employee: Optional[str] = Field(None, description="Recipient employee full name from act")
-    owner_nos: List[int] = Field(default_factory=list, description="Selected OWNER_NO list")
-    subject: Optional[str] = Field(None, description="Email subject")
-    body: Optional[str] = Field(None, description="Email body")
+    owner_nos: List[int] = Field(default_factory=list, max_length=200, description="Selected OWNER_NO list")
+    subject: Optional[str] = Field(None, max_length=300, description="Email subject")
+    body: Optional[str] = Field(None, max_length=10000, description="Email body")
 
 
 class UploadedActEmailRecipientStatus(BaseModel):

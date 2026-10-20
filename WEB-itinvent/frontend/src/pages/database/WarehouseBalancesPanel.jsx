@@ -22,10 +22,11 @@ import {
 } from '@mui/material';
 import { LoadingSpinner } from '../../components/common';
 import { compareQtyBreakdown, isBalancesMetaIncomplete, normalizeCompareKey, resolve1cRowStatus, typeNameNeedles } from './employeeCompareModel';
-import { filterBalancesByText, formatWarehouseQty, NomenclatureCell, sortBalancesByNomenclature, statusRowSx } from './warehouse1cShared';
+import { filterBalancesByText, formatWarehouseQty, NomenclatureCell, sortBalancesByNomenclature } from './warehouse1cShared';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import EmploymentStatusChip from '../../components/EmploymentStatusChip';
-import { COLUMN_HEADER_MIN_HEIGHT, WH_SORT_GETTERS, sortRowsBy } from './employeeCompareFormat';
+import { WH_SORT_GETTERS, sortRowsBy } from './employeeCompareFormat';
+import { comparisonRowSx, comparisonScrollSx, comparisonTableSx, comparisonTabsSx, identifierSx, twoLineTextSx } from './employeeComparisonStyles';
 import { CompareQtyNote } from './HubEquipmentList';
 import WarehouseMovementsList from './WarehouseMovementsList';
 import WarehouseCandidateAccordions from './WarehouseCandidateAccordions';
@@ -55,11 +56,14 @@ export function WarehouseBalanceMobileRow({ row, warehouse, onOpenBalanceRow, on
         borderBottom: '1px solid',
         borderColor: 'divider',
         cursor: clickable ? 'pointer' : 'default',
-        ...statusRowSx(theme, rowStatus),
+        ...comparisonRowSx(theme, rowStatus),
       })}
     >
       <Box sx={{ flex: 1, minWidth: 0 }}>
-        <NomenclatureCell code={row.nomenclature_code} name={row.nomenclature_name} />
+        <Box title={[row.nomenclature_code, row.nomenclature_name].filter(Boolean).join(' · ')}
+          sx={{ '& .MuiTypography-body2': { ...twoLineTextSx, fontSize: 13 }, '& .MuiTypography-caption': identifierSx }}>
+          <NomenclatureCell code={row.nomenclature_code} name={row.nomenclature_name} />
+        </Box>
         {rowStatus === 'diff' ? (
           <CompareQtyNote breakdown={compareQtyBreakdown(row?.nomenclature_code, compareMaps)} />
         ) : null}
@@ -170,21 +174,21 @@ export function Warehouse1CBalancesPanel({
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%', flex: 1 }}>
-      <Box sx={{ minHeight: COLUMN_HEADER_MIN_HEIGHT, mb: 1, flexShrink: 0 }}>
+      <Box sx={{ minHeight: 36, flexShrink: 0 }}>
         <Stack
           direction="row"
           alignItems="center"
           justifyContent="space-between"
           spacing={1}
           useFlexGap
-          flexWrap="wrap"
-          sx={{ minHeight: 40 }}
+          flexWrap={isMobile ? 'wrap' : 'nowrap'}
+          sx={{ minHeight: 36, pb: isMobile ? 0.5 : 0 }}
         >
-          <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap" sx={{ minWidth: 0 }}>
-            <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+          <Stack direction="row" spacing={1} alignItems="center" useFlexGap sx={{ minWidth: 0 }}>
+            <Typography variant="subtitle2" noWrap sx={{ fontWeight: 600 }}>
               Склад 1С
             </Typography>
-            <EmploymentStatusChip status={employmentStatus} label={employmentLabel} />
+            <EmploymentStatusChip status={employmentStatus} label={employmentLabel} sx={{ height: 22, fontSize: 11, maxWidth: 170 }} />
           </Stack>
           {status === 'matched' && warehouse?.ref ? (
             <Button
@@ -192,31 +196,35 @@ export function Warehouse1CBalancesPanel({
               variant="outlined"
               startIcon={<OpenInNewIcon />}
               onClick={() => onOpenWarehousePage?.(warehouse)}
-              sx={{ flexShrink: 0 }}
+              title={warehouse.name || undefined}
+              sx={{ flexShrink: 0, minHeight: 28, fontSize: 12, py: 0.25, px: 1 }}
             >
               Открыть в Складе 1С
             </Button>
           ) : null}
         </Stack>
-        {!loading && status === 'matched' && warehouse?.name ? (
-          <Typography data-testid="employee-warehouse-name" variant="body2" sx={{ fontWeight: 600 }}>
-            {warehouse.name}
-          </Typography>
-        ) : null}
       </Box>
 
+      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ height: 32, flexShrink: 0, minWidth: 0 }}>
       {status === 'matched' ? (
         <Tabs
           value={activeTab}
           onChange={(event, value) => onTabChange?.(value)}
           variant="scrollable"
           scrollButtons={false}
-          sx={{ minHeight: 36, mb: 1, flexShrink: 0 }}
+          aria-label="Данные склада 1С"
+          sx={{ ...comparisonTabsSx, minHeight: 32, '& .MuiTab-root': { minHeight: 32, fontSize: 12, px: 1.25, py: 0.5 } }}
         >
-          <Tab value="balances" label="Остатки" sx={{ minHeight: 36, textTransform: 'none', py: 0.5 }} />
-          <Tab value="movements" label="Перемещения" sx={{ minHeight: 36, textTransform: 'none', py: 0.5 }} />
+          <Tab value="balances" label="Остатки" />
+          <Tab value="movements" label="Перемещения" />
         </Tabs>
       ) : null}
+      {!loading && status === 'matched' && warehouse?.name ? (
+        <Typography data-testid="employee-warehouse-name" title={warehouse.name} variant="caption" noWrap sx={{ color: 'text.secondary', ml: 1, minWidth: 0 }}>
+          {warehouse.name}
+        </Typography>
+      ) : null}
+      </Stack>
 
       {activeTab === 'movements' && status === 'matched' ? (
         <>
@@ -289,7 +297,6 @@ export function Warehouse1CBalancesPanel({
             sx={{
               flex: 1,
               minHeight: 0,
-              maxHeight: { xs: '42vh', sm: 'none' },
               overflow: 'auto',
             }}
           >
@@ -333,9 +340,10 @@ export function Warehouse1CBalancesPanel({
           <TableContainer
             component={Paper}
             variant="outlined"
-            sx={{ flex: 1, minHeight: 0, overflow: 'auto' }}
+            sx={comparisonScrollSx}
           >
-            <Table size="small" stickyHeader>
+            <Table size="small" stickyHeader aria-label="Остатки 1С" sx={comparisonTableSx}>
+              <colgroup><col style={{ width: 106 }} /><col /><col style={{ width: 76 }} /><col style={{ width: 38 }} /></colgroup>
               <TableHead>
                 <TableRow>
                   {[
@@ -361,7 +369,7 @@ export function Warehouse1CBalancesPanel({
                       Кол-во
                     </TableSortLabel>
                   </TableCell>
-                  <TableCell align="center" sx={{ width: 48 }} />
+                  <TableCell align="center" />
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -396,17 +404,17 @@ export function Warehouse1CBalancesPanel({
                     onClick={() => onOpenBalanceRow?.(row, warehouse)}
                     sx={(theme) => ({
                       cursor: onOpenBalanceRow ? 'pointer' : 'default',
-                      ...statusRowSx(theme, rowStatus),
+                      ...comparisonRowSx(theme, rowStatus),
                     })}
                   >
-                    <TableCell>{row.nomenclature_code || '—'}</TableCell>
+                    <TableCell><Box title={row.nomenclature_code || '—'} sx={identifierSx}>{row.nomenclature_code || '—'}</Box></TableCell>
                     <TableCell>
-                      {row.nomenclature_name || '—'}
+                      <Box title={row.nomenclature_name || '—'} sx={twoLineTextSx}>{row.nomenclature_name || '—'}</Box>
                       {rowStatus === 'diff' ? (
                         <CompareQtyNote breakdown={compareQtyBreakdown(row?.nomenclature_code, compareMaps)} />
                       ) : null}
                     </TableCell>
-                    <TableCell align="right">{formatWarehouseQty(row.qty_balance)}</TableCell>
+                    <TableCell align="right"><Box title={formatWarehouseQty(row.qty_balance)} sx={identifierSx}>{formatWarehouseQty(row.qty_balance)}</Box></TableCell>
                     <TableCell align="center" onClick={(event) => event.stopPropagation()}>
                       {onOpenInWarehouse1C && row?.nomenclature_ref ? (
                         <Tooltip title="Открыть в Складе 1С">

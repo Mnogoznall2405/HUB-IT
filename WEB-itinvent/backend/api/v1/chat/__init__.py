@@ -13,6 +13,7 @@ from backend.api.v1.chat import (
     ai,
     ai_sandbox,
     attachments,
+    calls,
     conversations,
     folders,
     health,
@@ -166,6 +167,7 @@ router.include_router(push.router)
 router.include_router(stickers.router)
 router.include_router(messages.router)
 router.include_router(scheduled.router)
+router.include_router(calls.router)
 router.include_router(ai.router)
 router.include_router(ai_sandbox.router)
 router.include_router(uploads.router)

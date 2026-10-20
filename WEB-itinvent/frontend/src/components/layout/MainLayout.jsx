@@ -361,6 +361,9 @@ function MainLayout({
   }, [activeChatConversationId]);
 
   const isChatRoute = location.pathname.startsWith('/chat');
+  // Read inside long-lived callbacks (unread polling) without re-creating them on every navigation.
+  const locationPathnameRef = useRef(location.pathname);
+  locationPathnameRef.current = location.pathname;
   const taskDiscussionRouteParams = new URLSearchParams(location.search || '');
   const isTaskDiscussionRoute = location.pathname.startsWith('/tasks')
     && taskDiscussionRouteParams.get('task_detail_view') === 'discussion';
@@ -1016,7 +1019,9 @@ function MainLayout({
     hasChatPermission,
     isChatRoute,
     isDesktopChatRoute,
+    isMobileChatRoute,
     isTaskDiscussionRoute,
+    location.pathname,
     navigate,
     user?.id,
   ]);
@@ -1256,7 +1261,7 @@ useEffect(() => {
             previousChatMessagesUnread,
             hadBaseline: hadChatUnreadBaseline,
             isVisible: isNotificationSurfaceVisible(),
-            isOnChatRoute: location.pathname.startsWith('/chat'),
+            isOnChatRoute: locationPathnameRef.current.startsWith('/chat'),
           });
           if (!hadChatUnreadBaseline) {
             chatUnreadBaselineReadyRef.current = true;

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createMemoryStore, createPhotoUploadQueue, STATUS } from './photoUploadQueue';
+import { createIndexedDbStore, createMemoryStore, createPhotoUploadQueue, STATUS } from './photoUploadQueue';
 
 // Очередь — конечный автомат поверх хранилища: поведение при обрыве, перезапуске вкладки и
 // возврате связи через интерфейс страницы не воспроизвести, поэтому проверяем её напрямую.
@@ -142,5 +142,38 @@ describe('photo upload queue', () => {
     await queue.remove(queue.getJobs()[0].id);
     expect(queue.getJobs()).toEqual([]);
     expect(await store.getAll()).toEqual([]);
+  });
+
+  it('retries opening IndexedDB after a failed open instead of failing until reload', async () => {
+    let attempts = 0;
+    const database = {
+      transaction: () => {
+        const tx = {};
+        tx.objectStore = () => ({
+          getAll: () => {
+            const request = { result: [{ id: 'job-1' }] };
+            queueMicrotask(() => tx.oncomplete?.());
+            return request;
+          },
+        });
+        return tx;
+      },
+    };
+    vi.stubGlobal('indexedDB', {
+      open: () => {
+        attempts += 1;
+        const request = { result: database, error: new Error('blocked') };
+        queueMicrotask(() => (attempts === 1 ? request.onerror?.() : request.onsuccess?.()));
+        return request;
+      },
+    });
+    try {
+      const store = createIndexedDbStore();
+      await expect(store.getAll()).rejects.toThrow();
+      await expect(store.getAll()).resolves.toEqual([{ id: 'job-1' }]);
+      expect(attempts).toBe(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

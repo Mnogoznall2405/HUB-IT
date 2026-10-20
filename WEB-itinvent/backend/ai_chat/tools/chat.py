@@ -59,6 +59,7 @@ class ChatConversationsSearchArgs(BaseModel):
 
 
 class ChatMessageSendDraftArgs(BaseModel):
+    replace_action_id: Optional[str] = Field(default=None, max_length=64)
     text: str = Field(..., min_length=1, max_length=4000)
     peer_user_id: Optional[int] = Field(default=None, gt=0)
     peer_name: Optional[str] = Field(default=None, max_length=200)

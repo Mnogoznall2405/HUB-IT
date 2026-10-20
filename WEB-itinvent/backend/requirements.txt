@@ -5,6 +5,7 @@ uvicorn[standard]
 pyodbc
 python-jose
 pydantic[email]
+python-multipart>=0.0.26
 python-dotenv>=1.2.2
 python-docx
 docx2pdf
@@ -22,6 +23,7 @@ psycopg[binary]
 pywebpush
 pyotp
 qrcode
+Pillow
 redis
 slowapi
 webauthn

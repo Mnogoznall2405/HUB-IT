@@ -12,7 +12,7 @@ import logging
 from datetime import date
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from backend.ai_chat.tools.base import AiTool, AiToolResult
 from backend.ai_chat.tools.context import (
@@ -69,7 +69,8 @@ def person_view(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 class PeopleSearchArgs(BaseModel):
-    query: Optional[str] = Field(default=None, max_length=200, description="Surname/name, position, phone or e-mail")
+    model_config = ConfigDict(extra="forbid")
+    query: Optional[str] = Field(default=None, max_length=200, validation_alias=AliasChoices("query", "q"), description="Surname/name, position, phone or e-mail")
     department: Optional[str] = Field(default=None, max_length=200, description="Exact department name to filter by")
     absent_only: bool = Field(default=False, description="Only people who are absent now (vacation, sick leave, trip)")
     limit: int = Field(default=10, ge=1, le=MAX_PEOPLE)
@@ -126,12 +127,14 @@ class PeopleSearchTool(AiTool):
             tool_id=self.tool_id,
             ok=True,
             data={
+                "source": "1c_zup_address_book",
                 "count": len(people),
                 "total": total,
                 "truncated": total > len(people),
                 "updated_at": payload.get("updated_at") or None,
                 "items": people,
             },
+            sources=[{"system": "1c_zup_address_book"}],
         )
 
 

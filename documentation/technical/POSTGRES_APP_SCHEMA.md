@@ -14,7 +14,7 @@
 
 ## Снимок БД (авто)
 
-_Обновлено: 2026-10-02 10:55 UTC_ · инстанс `10.103.0.10:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
+_Обновлено: 2026-10-07 12:16 UTC_ · инстанс `10.103.0.10:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
 
 | Схема | Таблиц | Кратко |
 |-------|--------|--------|
@@ -22,7 +22,7 @@ _Обновлено: 2026-10-02 10:55 UTC_ · инстанс `10.103.0.10:5432/h
 | **`chat`** | **4** | Мессенджер, outbox, push |
 | **`system`** | **8** | Alembic, auth runtime, MFU, session Exchange, чекпоинты |
 | **`scan`** | **10** | — |
-| **`voice`** | **4** | — |
+| **`voice`** | **6** | — |
 
 Полные колонки: [POSTGRES_APP_SCHEMA_DDL.md](./POSTGRES_APP_SCHEMA_DDL.md).
 
@@ -296,13 +296,15 @@ _Обновлено: 2026-10-02 10:55 UTC_ · инстанс `10.103.0.10:5432/h
 | `scan_task_system_metrics` | — |
 | `scan_tasks` | — |
 
-## Схема `voice` (4 таблиц)
+## Схема `voice` (6 таблиц)
 
 ### Таблицы
 
 | Таблица | Назначение |
 |---------|------------|
 | `alembic_version` | Текущая ревизия Alembic |
+| `glossary_terms` | — |
+| `label_projects` | — |
 | `share_links` | — |
 | `voice_assignment_statuses` | — |
 | `voice_jobs` | — |
@@ -373,7 +375,7 @@ chat.chat_event_outbox ── доставка событий подписчик
 
 <!-- pg-schema-docs:history:begin -->
 
-- **2026-10-02:** авто-синхронизация с `10.103.0.10:5432/hubit_chat` (`app` 154, `chat` 4, `system` 8).
+- **2026-10-07:** авто-синхронизация с `10.103.0.10:5432/hubit_chat` (`app` 154, `chat` 4, `system` 8).
 
 <!-- pg-schema-docs:history:end -->
 

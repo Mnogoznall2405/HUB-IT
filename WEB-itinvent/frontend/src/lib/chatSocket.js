@@ -26,6 +26,8 @@ export const CHAT_SOCKET_TYPING_EVENT = 'chat-ws-typing';
 export const CHAT_SOCKET_AI_RUN_UPDATED_EVENT = 'chat-ws-ai-run-updated';
 export const CHAT_SOCKET_AI_SANDBOX_UPDATED_EVENT = 'chat-ws-ai-sandbox-updated';
 export const CHAT_SOCKET_MESSAGE_REACTION_EVENT = 'chat-ws-message-reaction';
+export const CHAT_SOCKET_CALL_INVITE_EVENT = 'chat-ws-call-invite';
+export const CHAT_SOCKET_CALL_UPDATED_EVENT = 'chat-ws-call-updated';
 
 const HEARTBEAT_MS = 25_000;
 const HEARTBEAT_PROBE_TIMEOUT_MS = 5_000;
@@ -839,6 +841,14 @@ class ChatSocketClient {
     }
     if (eventType === 'chat.ai.sandbox.updated') {
       dispatchWindowEvent(CHAT_SOCKET_AI_SANDBOX_UPDATED_EVENT, envelope);
+      return;
+    }
+    if (eventType === 'chat.call.invite') {
+      dispatchWindowEvent(CHAT_SOCKET_CALL_INVITE_EVENT, envelope);
+      return;
+    }
+    if (eventType === 'chat.call.updated') {
+      dispatchWindowEvent(CHAT_SOCKET_CALL_UPDATED_EVENT, envelope);
     }
   }
 

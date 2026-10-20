@@ -1,4 +1,5 @@
 from __future__ import annotations
+import conftest
 
 import importlib
 import json
@@ -51,7 +52,7 @@ def _configure_app_database(tmp_path: Path, monkeypatch) -> tuple[str, object]:
     appdb_db._engines.clear()
     appdb_db._session_factories.clear()
     appdb_db._initialized_schema_urls.clear()
-    appdb_db.initialize_app_schema(database_url)
+    conftest.copy_app_schema_for_url(database_url)
     return database_url, appdb_db
 
 

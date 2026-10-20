@@ -46,7 +46,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
   dataMode,
   canWrite,
   canDelete = false,
-  isAdmin,
+  canDeleteEquipment,
   mobileSelectionMode,
   onMobileCardSelect,
   onToggleBranch,
@@ -80,7 +80,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
                 openingCurrentActDocNo={openingCurrentActDocNo}
                 dataMode={dataMode}
                 canWrite={canWrite}
-                isAdmin={isAdmin}
+                canDeleteEquipment={canDeleteEquipment}
                 selectionMode={mobileSelectionMode || selectedItemsSet.has(invNo)}
                 isSelected={selectedItemsSet.has(invNo)}
                 onToggleSelect={() => onMobileCardSelect(invNo)}
@@ -116,7 +116,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
         canDelete={canDelete}
         dataMode={dataMode}
         canWrite={canWrite}
-        isAdmin={isAdmin}
+        canDeleteEquipment={canDeleteEquipment}
       />
     );
   }, [
@@ -124,7 +124,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
     canDelete,
     dataMode,
     expandedCards,
-    isAdmin,
+    canDeleteEquipment,
     isAllSelected,
     isConsumablesMode,
     isMobile,
@@ -163,10 +163,11 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
     );
   }
 
-  return Object.keys(displayData).map((branchName) => {
+  return Object.keys(displayData).map((branchName, branchIndex) => {
     const locations = displayData[branchName];
     const isBranchExpanded = expandedBranches.has(branchName);
     const branchTotal = Object.values(locations).reduce((sum, items) => sum + items.length, 0);
+    const branchContentId = `database-branch-${branchIndex}-content`;
 
     return (
       <Box
@@ -179,6 +180,10 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
         }}
       >
         <Box
+          component="button"
+          type="button"
+          aria-expanded={isBranchExpanded}
+          aria-controls={branchContentId}
           onClick={() => onToggleBranch(branchName)}
           sx={{
             p: isMobile ? 0.65 : 1.2,
@@ -186,9 +191,17 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
             alignItems: 'center',
             justifyContent: 'space-between',
             cursor: 'pointer',
+            width: '100%',
+            border: 0,
+            font: 'inherit',
+            textAlign: 'left',
             backgroundColor: theme.palette.mode === 'dark' ? '#0f172a' : theme.palette.grey[100],
             '&:hover': {
               backgroundColor: theme.palette.mode === 'dark' ? '#1e293b' : theme.palette.grey[200],
+            },
+            '&:focus-visible': {
+              outline: `2px solid ${theme.palette.primary.main}`,
+              outlineOffset: -2,
             },
             color: theme.palette.mode === 'dark' ? '#ffffff' : 'inherit',
           }}
@@ -199,23 +212,28 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
               {branchName}
             </Typography>
           </Box>
-          <Typography variant="body2" color="text.secondary" sx={{ fontSize: isMobile ? '0.75rem' : undefined }}>
+          <Typography variant="body2" color="text.secondary" sx={{ fontSize: isMobile ? '0.75rem' : undefined, whiteSpace: 'nowrap' }}>
             ({branchTotal.toLocaleString()})
             {formatPhotoStats(photoStats?.byBranch?.get(branchName), isMobile)}
           </Typography>
         </Box>
 
-        <Collapse in={isBranchExpanded} timeout="auto" unmountOnExit>
+        <Collapse in={isBranchExpanded} timeout="auto" unmountOnExit id={branchContentId}>
           {Object.keys(locations)
             .sort((a, b) => locationNameCollator.compare(String(a || ''), String(b || '')))
-            .map((locationName) => {
+            .map((locationName, locationIndex) => {
               const locationKey = buildLocationKey(branchName, locationName);
               const locationItems = locations[locationName];
               const isLocationExpanded = expandedLocations.has(locationKey);
+              const locationContentId = `database-location-${branchIndex}-${locationIndex}-content`;
 
               return (
                 <Box key={locationName} sx={{ borderTop: '1px solid ' + theme.palette.divider }}>
                   <Box
+                    component="button"
+                    type="button"
+                    aria-expanded={isLocationExpanded}
+                    aria-controls={locationContentId}
                     onClick={() => onToggleLocation(branchName, locationName)}
                     sx={{
                       p: isMobile ? 0.55 : 1,
@@ -223,9 +241,17 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
                       alignItems: 'center',
                       justifyContent: 'space-between',
                       cursor: 'pointer',
+                      width: '100%',
+                      border: 0,
+                      font: 'inherit',
+                      textAlign: 'left',
                       backgroundColor: theme.palette.mode === 'dark' ? '#111827' : 'transparent',
                       '&:hover': {
                         backgroundColor: theme.palette.mode === 'dark' ? '#1f2937' : theme.palette.action.hover,
+                      },
+                      '&:focus-visible': {
+                        outline: `2px solid ${theme.palette.primary.main}`,
+                        outlineOffset: -2,
                       },
                       color: theme.palette.mode === 'dark' ? '#e5e7eb' : 'inherit',
                     }}
@@ -245,7 +271,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
                       {formatPhotoStats(photoStats?.byLocation?.get(locationKey), isMobile)}
                     </Typography>
                   </Box>
-                  <Collapse in={isLocationExpanded} timeout="auto" unmountOnExit>
+                  <Collapse in={isLocationExpanded} timeout="auto" unmountOnExit id={locationContentId}>
                     <Box sx={{ p: isMobile ? 0 : 1, borderTop: '1px solid ' + theme.palette.divider }}>
                       {renderItems(locationItems)}
                     </Box>

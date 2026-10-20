@@ -1,4 +1,5 @@
 from __future__ import annotations
+import conftest
 
 from datetime import date, timedelta
 
@@ -13,7 +14,7 @@ from backend.services.hub_service import HubService
 def absence_service(tmp_path, monkeypatch):
     database_url = f"sqlite+pysqlite:///{(tmp_path / 'absences.db').as_posix()}"
     monkeypatch.setenv("APP_DATABASE_URL", database_url)
-    initialize_app_schema(database_url, force=True)
+    conftest.copy_app_schema_for_url(database_url)
     return EmployeeAbsenceService(database_url=database_url)
 
 

@@ -2,6 +2,8 @@
 
 See [ADR-0003](../../docs/adr/0003-chat-backend-module-layout.md) for the decision record.
 
+HUB Assistant result/action delivery, mail confirmation and recovery contracts: [HUB_ASSISTANT_RESULT_RELIABILITY.md](HUB_ASSISTANT_RESULT_RELIABILITY.md).
+
 ## Layer map
 
 ```text

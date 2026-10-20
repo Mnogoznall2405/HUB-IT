@@ -39,11 +39,11 @@ async def list_department_members(
     department_id: str,
     _: User = Depends(require_any_permission((PERM_SETTINGS_READ, PERM_DEPARTMENTS_MANAGE))),
 ):
-    department = department_service.get_department(department_id)
+    department = await run_in_threadpool(department_service.get_department, department_id)
     if not department:
         raise HTTPException(status_code=404, detail="Department not found")
-    memberships = department_service.list_memberships(department_id=department_id)
-    users_by_id = user_service.get_users_map_by_ids({item["user_id"] for item in memberships})
+    memberships = await run_in_threadpool(department_service.list_memberships, department_id=department_id)
+    users_by_id = await run_in_threadpool(user_service.get_users_map_by_ids, {item["user_id"] for item in memberships})
     return {
         "department": department,
         "items": [
@@ -64,10 +64,10 @@ async def replace_department_managers(
 ):
     try:
         manager_ids = payload.get("manager_user_ids") if isinstance(payload, dict) else []
-        memberships = department_service.set_department_managers(department_id, manager_ids or [])
+        memberships = await run_in_threadpool(department_service.set_department_managers, department_id, manager_ids or [])
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    users_by_id = user_service.get_users_map_by_ids({item["user_id"] for item in memberships})
+    users_by_id = await run_in_threadpool(user_service.get_users_map_by_ids, {item["user_id"] for item in memberships})
     return {
         "items": [
             {
@@ -83,8 +83,8 @@ async def replace_department_managers(
 async def sync_departments_from_users(
     _: User = Depends(require_permission(PERM_DEPARTMENTS_MANAGE)),
 ):
-    department_service.sync_departments_from_users(user_service.list_users())
-    return {"items": department_service.list_departments(include_inactive=True)}
+    await run_in_threadpool(department_service.sync_departments_from_users, await run_in_threadpool(user_service.list_users))
+    return {"items": (await run_in_threadpool(department_service.list_departments, include_inactive=True))}
 
 
 @router.post("/sync-from-ad")
@@ -94,12 +94,10 @@ async def sync_departments_from_ad(
     from backend.services.ad_app_user_import_service import fetch_ad_import_users
 
     ad_users = fetch_ad_import_users()
-    result = department_service.sync_departments_from_names(
-        item.get("department")
-        for item in ad_users
-    )
+    result = await run_in_threadpool(department_service.sync_departments_from_names, (item.get("department")
+        for item in ad_users))
     return {
         **result,
         "total_ad_users": len(ad_users),
-        "items": department_service.list_departments(include_inactive=True),
+        "items": (await run_in_threadpool(department_service.list_departments, include_inactive=True)),
     }

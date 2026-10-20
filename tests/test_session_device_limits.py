@@ -213,3 +213,69 @@ def test_postgres_concurrent_logins_do_not_exceed_limit(monkeypatch):
         with app_session(raw_database_url) as session:
             session.execute(delete(AppSessionRecord).where(AppSessionRecord.user_id == user_id))
             session.execute(delete(AppUser).where(AppUser.id == user_id))
+
+
+def test_touch_never_resurrects_closed_session_and_close_user_skips_closed(tmp_path, monkeypatch):
+    """A logout that commits between touch's read and write must stay terminated."""
+    service = _new_app_db_service(tmp_path, monkeypatch)
+
+    def _make(session_id: str, device_id: str) -> None:
+        _create(service, session_id=session_id, device_id=device_id, ip="10.0.0.1")
+        # Make last_seen old enough to bypass the touch write throttle.
+        sessions = service._load_sessions()
+        for item in sessions:
+            if item["session_id"] == session_id:
+                item["last_seen_at"] = _utc_iso(timedelta(minutes=-10))
+        service._save_sessions(sessions)
+        service._cache_invalidate(session_id)
+
+    def _state(session_id: str) -> dict:
+        return next(item for item in service._load_sessions() if item["session_id"] == session_id)
+
+    # Normal touch still extends activity.
+    _make("session-live", "browser-live-000000000000")
+    before = _state("session-live")["last_seen_at"]
+    assert service.touch_session("session-live") is True
+    assert _state("session-live")["last_seen_at"] > before
+    assert _state("session-live")["status"] == "active"
+
+    # Logout commits in the window between touch's read and its write.
+    _make("session-race", "browser-race-000000000000")
+    original_should_write = service._should_write_touch
+
+    def _should_write_after_parallel_logout(*args, **kwargs):
+        # Called by touch_session after it read the row as active.
+        service.close_session("session-race")
+        return original_should_write(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_should_write_touch", _should_write_after_parallel_logout)
+    assert service.touch_session("session-race") is False
+    monkeypatch.setattr(service, "_should_write_touch", original_should_write)
+
+    state = _state("session-race")
+    assert state["status"] == "terminated"
+    assert state["is_active"] is False
+    assert state["closed_reason"] == "terminated"
+    assert service._cache_get_active("session-race") is not True
+    assert service.is_session_active("session-race") is False
+
+    # close_user_sessions neither rewrites nor counts already-closed sessions.
+    closed_at_before = _state("session-race")["closed_at"]
+    expired = _state("session-live")
+    expired_sessions = service._load_sessions()
+    for item in expired_sessions:
+        if item["session_id"] == "session-live":
+            item.update({"is_active": False, "status": "expired_idle", "closed_reason": "expired_idle"})
+    service._save_sessions(expired_sessions)
+    service._cache_invalidate()
+    assert expired["user_id"] == 7
+
+    assert service.close_user_sessions(7) == 0
+    assert _state("session-race")["closed_at"] == closed_at_before
+    assert _state("session-live")["status"] == "expired_idle"
+    assert _state("session-live")["closed_reason"] == "expired_idle"
+
+    _make("session-open", "browser-open-000000000000")
+    assert service.close_user_sessions(7) == 1
+    assert _state("session-open")["status"] == "terminated"
+    assert _state("session-live")["closed_reason"] == "expired_idle"

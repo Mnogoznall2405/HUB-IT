@@ -1,3 +1,6 @@
+/* global window document fetch File URL CustomEvent */
+/* eslint-disable no-control-regex */
+
 import { isPendingLifecycleEnvelopeFresh } from './desktopLifecyclePolicy';
 
 export const DESKTOP_BRIDGE_PROTOCOL_VERSION = 1;
@@ -35,6 +38,12 @@ const MAIL_COMPOSE_WINDOW_CLOSE_RESULT_MESSAGE_TYPE = 'mail.composeWindow.closeR
 const MAIL_COMPOSE_WINDOW_SENT_MESSAGE_TYPE = 'mail.composeWindow.sent';
 const MAIL_COMPOSE_WINDOW_COMPLETED_MESSAGE_TYPE = 'mail.composeWindow.completed';
 const FILE_SHARED_MESSAGE_TYPE = 'file.shared';
+const MICROPHONE_DIAGNOSE_MESSAGE_TYPE = 'media.microphoneDiagnose';
+const MICROPHONE_DIAGNOSIS_MESSAGE_TYPE = 'media.microphoneDiagnosis';
+const OPEN_MEDIA_SETTINGS_MESSAGE_TYPE = 'media.openSettings';
+const MICROPHONE_DIAGNOSIS_TIMEOUT_MS = 12000;
+const MAXIMUM_MICROPHONE_DIAGNOSIS_LENGTH = 16384;
+const DESKTOP_MEDIA_SETTINGS_KINDS = new Set(['privacy-microphone', 'sound']);
 const FILE_DROPPED_MESSAGE_TYPE = 'file.dropped';
 const SHARED_FILE_URL_PATH_PREFIX = '/__desktop_share__/';
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 1000;
@@ -76,6 +85,7 @@ let pendingPreparedDownloadRequest = null;
 let pendingVncPreflightRequest = null;
 let pendingEquipmentQrPrintRequest = null;
 let pendingMailComposeWindowRequest = null;
+let pendingMicrophoneDiagnosisRequest = null;
 let pendingDesktopSharedFiles = [];
 const mailComposeCloseListeners = new Set();
 const pendingNotificationResults = new Map();
@@ -90,6 +100,7 @@ export const DESKTOP_OPEN_COMMAND_PALETTE_EVENT = 'itinvent:desktop-open-command
 export const DESKTOP_CAPABILITIES_CHANGED_EVENT = 'itinvent:desktop-capabilities-changed';
 export const DESKTOP_EQUIPMENT_QR_PRINT_CAPABILITY = 'equipment-qr-print';
 export const DESKTOP_NOTIFICATION_CLEAR_GROUP_CAPABILITY = 'notification-clear-group';
+export const DESKTOP_MICROPHONE_DIAGNOSTICS_CAPABILITY = 'microphone-diagnostics';
 const MAXIMUM_NOTIFICATION_GROUP_LENGTH = 64;
 const NOTIFICATION_GROUP_PATTERN = /^(?:chat|task):[A-Za-z0-9._:-]{1,59}$/u;
 export const DESKTOP_MAIL_COMPOSE_COMPLETED_EVENT = 'itinvent:desktop-mail-compose-completed';
@@ -443,6 +454,30 @@ const isValidVncPreflightResultMessage = (message) => {
     && (message.status === 'available' || message.status === 'missing');
 };
 
+// Host-produced diagnosis; the content is data for the calls UI, never HTML.
+const isValidMicrophoneDiagnosisMessage = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  if (
+    keys.length !== 5
+    || message.type !== MICROPHONE_DIAGNOSIS_MESSAGE_TYPE
+    || message.version !== DESKTOP_BRIDGE_PROTOCOL_VERSION
+    || !isValidBoundedText(message.requestId, 64)
+    || !MAIL_COMPOSE_REQUEST_ID_PATTERN.test(message.requestId)
+    || !['completed', 'failed'].includes(message.status)
+  ) {
+    return false;
+  }
+  if (message.status === 'failed') return message.diagnosis === null;
+  const { diagnosis } = message;
+  return Boolean(diagnosis)
+    && typeof diagnosis === 'object'
+    && !Array.isArray(diagnosis)
+    && typeof diagnosis.reason === 'string'
+    && Array.isArray(diagnosis.devices)
+    && JSON.stringify(message).length <= MAXIMUM_MICROPHONE_DIAGNOSIS_LENGTH;
+};
+
 const dispatchDesktopNavigation = (route) => {
   if (navigationListeners.size === 0) {
     pendingNavigationRoute = route;
@@ -715,6 +750,18 @@ export function initializeDesktopBridge({ timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_
           pendingMailComposeWindowRequest = null;
           window.clearTimeout(pending.timeoutId);
           pending.resolve({ status: message.status });
+        }
+        return;
+      }
+
+      if (bridgeReady && isValidMicrophoneDiagnosisMessage(message)) {
+        const pending = pendingMicrophoneDiagnosisRequest;
+        if (pending && pending.requestId === message.requestId) {
+          pendingMicrophoneDiagnosisRequest = null;
+          window.clearTimeout(pending.timeoutId);
+          pending.resolve(message.status === 'completed'
+            ? { status: 'completed', diagnosis: message.diagnosis }
+            : { status: 'failed', diagnosis: null });
         }
         return;
       }
@@ -1192,6 +1239,62 @@ export function notifyDesktopMailComposeSent() {
     const transport = getWebViewTransport();
     if (!transport) return false;
     transport.postMessage({ type: MAIL_COMPOSE_WINDOW_SENT_MESSAGE_TYPE, version: DESKTOP_BRIDGE_PROTOCOL_VERSION });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const isDesktopMicrophoneDiagnosticsAvailable = () => (
+  isDesktopCapabilityAvailable(DESKTOP_MICROPHONE_DIAGNOSTICS_CAPABILITY)
+);
+
+// Asks the Desktop host why Windows refuses the microphone.
+// Resolves { status: 'completed' | 'failed' | 'unavailable' | 'busy' | 'timeout', diagnosis }.
+export function requestDesktopMicrophoneDiagnosis() {
+  if (!isDesktopMicrophoneDiagnosticsAvailable()) {
+    return Promise.resolve({ status: 'unavailable', diagnosis: null });
+  }
+  if (pendingMicrophoneDiagnosisRequest) {
+    return Promise.resolve({ status: 'busy', diagnosis: null });
+  }
+
+  return new Promise((resolve) => {
+    const requestId = (globalThis.crypto?.randomUUID?.() || `mic-${Date.now()}`).replace(/[^A-Za-z0-9_-]/gu, '');
+    try {
+      const transport = getWebViewTransport();
+      if (!transport) {
+        resolve({ status: 'unavailable', diagnosis: null });
+        return;
+      }
+
+      const timeoutId = window.setTimeout(() => {
+        if (pendingMicrophoneDiagnosisRequest?.requestId !== requestId) return;
+        pendingMicrophoneDiagnosisRequest = null;
+        resolve({ status: 'timeout', diagnosis: null });
+      }, MICROPHONE_DIAGNOSIS_TIMEOUT_MS);
+      pendingMicrophoneDiagnosisRequest = { requestId, resolve, timeoutId };
+      transport.postMessage({
+        type: MICROPHONE_DIAGNOSE_MESSAGE_TYPE,
+        version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+        requestId,
+      });
+    } catch {
+      const pending = pendingMicrophoneDiagnosisRequest;
+      pendingMicrophoneDiagnosisRequest = null;
+      if (pending) window.clearTimeout(pending.timeoutId);
+      resolve({ status: 'unavailable', diagnosis: null });
+    }
+  });
+}
+
+// Opens a Windows Settings page; the host accepts only these two kinds.
+export function requestDesktopOpenMediaSettings(kind) {
+  if (!isDesktopMicrophoneDiagnosticsAvailable() || !DESKTOP_MEDIA_SETTINGS_KINDS.has(kind)) return false;
+  try {
+    const transport = getWebViewTransport();
+    if (!transport) return false;
+    transport.postMessage({ type: OPEN_MEDIA_SETTINGS_MESSAGE_TYPE, version: DESKTOP_BRIDGE_PROTOCOL_VERSION, kind });
     return true;
   } catch {
     return false;

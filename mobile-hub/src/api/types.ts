@@ -102,6 +102,14 @@ export type ChatConversationSummary = {
   online_member_count?: number;
   member_count?: number;
   viewer_member_role?: string | null;
+  description?: string | null;
+  posting_policy?: string | null;
+  slow_mode_seconds?: number | null;
+  // false: plain members may not send files (owner and moderators may); absent means allowed.
+  members_send_files?: boolean | null;
+  // The viewer was barred from writing in this group (until the ISO time; null: until lifted).
+  viewer_restricted?: boolean | null;
+  viewer_restricted_until?: string | null;
   members?: ChatMember[];
   member_preview?: ChatMember[];
   direct_peer?: ChatUserSummary | null;

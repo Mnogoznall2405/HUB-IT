@@ -144,6 +144,18 @@
     <Component Id="TaskbarPinOption"
                Directory="INSTALLFOLDER"
                Guid="B8D1F3C2-5E4A-4B7C-8F3D-2A6E9C1F8B4D">
+      <File Id="TaskbarLayoutXml"
+            Source="taskbar-layout.xml" />
+      <RegistryValue Root="HKLM"
+                     Key="SOFTWARE\Policies\Microsoft\Windows\Explorer"
+                     Name="LockedStartLayout"
+                     Type="integer"
+                     Value="1" />
+      <RegistryValue Root="HKLM"
+                     Key="SOFTWARE\Policies\Microsoft\Windows\Explorer"
+                     Name="StartLayoutFile"
+                     Type="string"
+                     Value="[INSTALLFOLDER]taskbar-layout.xml" />
       <RegistryValue Root="HKLM"
                      Key="Software\HUB-IT\Desktop\InstallerOptions"
                      Name="Taskbar"
@@ -179,6 +191,7 @@
                Title="Закрепить на панели задач"
                Level="1"
                Description="Закрепить HUB на панели задач">
+        <ComponentRef Id="StartMenuShortcut" />
         <ComponentRef Id="TaskbarPinOption" />
       </Feature>
     </Feature>

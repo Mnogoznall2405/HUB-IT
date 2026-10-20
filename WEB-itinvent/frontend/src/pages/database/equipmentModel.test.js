@@ -44,20 +44,20 @@ describe('equipmentModel', () => {
     expect(getEquipmentRowActions({
       item: { TYPE_NAME: 'Printer' },
       canWrite: true,
-      isAdmin: true,
+      canDeleteEquipment: true,
     })).toEqual(['view', 'location_transfer', 'transfer', 'cartridge', 'component', 'delete']);
 
     expect(getEquipmentRowActions({
       item: { TYPE_NAME: 'UPS' },
       canWrite: true,
-      isAdmin: false,
+      canDeleteEquipment: false,
     })).toEqual(['view', 'location_transfer', 'transfer', 'battery']);
 
     expect(getEquipmentRowActions({
       item: { TYPE_NAME: 'PC' },
       dataMode: DATA_MODE_CONSUMABLES,
       canWrite: true,
-      isAdmin: true,
+      canDeleteEquipment: true,
     })).toEqual([]);
   });
 

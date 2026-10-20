@@ -16,7 +16,7 @@ public sealed class DesktopUpdateManifestVerifierTests
         using var certificate = DesktopUpdateTrust.LoadCertificate();
         using var publicKey = certificate.GetRSAPublicKey();
 
-        Assert.Equal("hubit-zsgp-ru-tls-2026-04", DesktopUpdateTrust.KeyId);
+        Assert.Equal("hubit-zsgp-ru-tls-2026-04", DesktopUpdateTrust.TlsKeyId);
         Assert.Equal(
             "0A9CFEF49EB1E11819D81A351978BAFA05EF7CBE",
             certificate.Thumbprint);
@@ -25,6 +25,51 @@ public sealed class DesktopUpdateManifestVerifierTests
         Assert.False(certificate.HasPrivateKey);
         Assert.NotNull(publicKey);
         Assert.Equal(2048, publicKey.KeySize);
+    }
+
+    [Fact]
+    public void LoadsDedicatedSigningCertificateWithoutPrivateKey()
+    {
+        using var certificate = DesktopUpdateTrust.TryLoadCertificate(DesktopUpdateTrust.SigningKeyId);
+
+        Assert.NotNull(certificate);
+        using var publicKey = certificate.GetRSAPublicKey();
+        Assert.NotNull(publicKey);
+        Assert.Equal(3072, publicKey.KeySize);
+        Assert.False(certificate.HasPrivateKey);
+        Assert.True(certificate.NotAfter.ToUniversalTime() > new DateTime(2035, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        Assert.Null(DesktopUpdateTrust.TryLoadCertificate("unknown-key-id"));
+    }
+
+    [Fact]
+    public void AcceptsSigningKeyIdAndRejectsUnknownKeyIdEvenWithValidSignature()
+    {
+        using var rsa = RSA.Create(3072);
+        var request = new CertificateRequest("CN=test", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        using var certificate = request.CreateSelfSigned(
+            DateTimeOffset.UtcNow.AddDays(-1),
+            DateTimeOffset.UtcNow.AddDays(1));
+
+        var (trustedJson, _) = CreateSignedManifest(rsa, keyId: DesktopUpdateTrust.SigningKeyId);
+        Assert.True(DesktopUpdateManifestVerifier.TryParse(trustedJson, HubBaseUri, out var trusted, out var error), error);
+        Assert.True(DesktopUpdateManifestVerifier.VerifySignature(trusted, certificate));
+
+        var (unknownJson, _) = CreateSignedManifest(rsa, keyId: "attacker-key-2026");
+        Assert.True(DesktopUpdateManifestVerifier.TryParse(unknownJson, HubBaseUri, out var unknown, out error), error);
+        Assert.False(DesktopUpdateManifestVerifier.VerifySignature(unknown, certificate));
+    }
+
+    [Fact]
+    public void ResolvesEmbeddedCertificateByKeyIdAndRejectsForeignSignatures()
+    {
+        using var foreignKey = RSA.Create(3072);
+        foreach (var keyId in DesktopUpdateTrust.TrustedKeyIds)
+        {
+            var (json, _) = CreateSignedManifest(foreignKey, keyId: keyId);
+            Assert.True(DesktopUpdateManifestVerifier.TryParse(json, HubBaseUri, out var manifest, out var error), error);
+
+            Assert.False(DesktopUpdateManifestVerifier.VerifySignature(manifest));
+        }
     }
 
     [Fact]
@@ -174,9 +219,10 @@ public sealed class DesktopUpdateManifestVerifierTests
 
     private static (byte[] Json, string PublicKey) CreateSignedManifest(
         RSA rsa,
-        Action<Dictionary<string, object>>? mutateAfterSigning = null)
+        Action<Dictionary<string, object>>? mutateAfterSigning = null,
+        string keyId = DesktopUpdateTrust.TlsKeyId)
     {
-        var manifest = CreateManifest();
+        var manifest = CreateManifest(keyId: keyId);
         var signature = Convert.ToBase64String(rsa.SignData(
             DesktopUpdateManifestVerifier.CreateCanonicalPayload(manifest),
             HashAlgorithmName.SHA256,
@@ -206,7 +252,8 @@ public sealed class DesktopUpdateManifestVerifierTests
 
     private static DesktopUpdateManifest CreateManifest(
         long sizeBytes = 123,
-        string sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") =>
+        string sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        string keyId = DesktopUpdateTrust.TlsKeyId) =>
         new(
             DesktopUpdateManifestVerifier.SchemaVersion,
             DesktopUpdateManifestVerifier.StableChannel,
@@ -221,6 +268,6 @@ public sealed class DesktopUpdateManifestVerifierTests
             ["Автоматическое обновление"],
             new DesktopUpdateSignature(
                 DesktopUpdateManifestVerifier.SignatureAlgorithm,
-                DesktopUpdateTrust.KeyId,
+                keyId,
                 "placeholder"));
 }

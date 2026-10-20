@@ -36,8 +36,18 @@ def _chat_table_schema(table_name: str) -> str | None:
     return chat_schema
 
 
+def _chat_tables_present() -> bool:
+    """Skip only when the database has no chat tables at all (logical ``chat`` schema or
+    legacy ``public``), never by ``itinvent_scope``."""
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if bind.dialect.name == "postgresql" and inspector.has_table("chat_conversations", schema="chat"):
+        return True
+    return bool(inspector.has_table("chat_conversations"))
+
+
 def upgrade() -> None:
-    if _scope() == "app":
+    if not _chat_tables_present():
         return
     schema = _chat_table_schema("chat_messages")
     if _has_table(schema, "chat_poll_votes"):
@@ -93,7 +103,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    if _scope() == "app":
+    if not _chat_tables_present():
         return
     schema = _chat_table_schema("chat_poll_votes")
     if not _has_table(schema, "chat_poll_votes"):

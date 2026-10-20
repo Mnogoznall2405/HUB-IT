@@ -2,6 +2,7 @@
 run is active (409), replaces a hung run, and parallel calls create exactly one new run.
 sqlite only; BEGIN IMMEDIATE emulates the row lock (SELECT ... FOR UPDATE) of PostgreSQL."""
 import threading
+import conftest
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -16,6 +17,7 @@ from backend.ai_chat import service as service_module
 
 @pytest.fixture
 def database(tmp_path, monkeypatch):
+    conftest.copy_app_metadata_schema(tmp_path / 'retry.db')
     engine = create_engine(
         f"sqlite:///{tmp_path / 'retry.db'}",
         execution_options={'schema_translate_map': {'app': None, 'system': None}},
@@ -32,8 +34,6 @@ def database(tmp_path, monkeypatch):
         # first one and then sees its queued run, like FOR UPDATE on the mapping row.
         connection.exec_driver_sql('BEGIN IMMEDIATE')
 
-    AppBase.metadata.create_all(engine, tables=[table for table in AppBase.metadata.sorted_tables
-        if table.name.startswith(('ai_',)) or table.name == 'users'])
 
     @contextmanager
     def session():

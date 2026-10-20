@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -76,6 +77,118 @@ class ChatConversation(Base):
     pinned_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     pinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     pinned_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class ChatGroupSettings(Base):
+    """Extra settings of a group conversation (kept apart from chat_conversations)."""
+
+    __tablename__ = "chat_group_settings"
+    __table_args__ = _table_args(schema=CHAT_SCHEMA)
+
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        primary_key=True,
+    )
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    posting_policy: Mapped[str] = mapped_column(String(16), nullable=False, default="all")
+    updated_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class ChatGroupLimits(Base):
+    """Limits of a group conversation (slow mode); a row exists only once a limit was set."""
+
+    __tablename__ = "chat_group_limits"
+    __table_args__ = _table_args(schema=CHAT_SCHEMA)
+
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        primary_key=True,
+    )
+    slow_mode_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    updated_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class ChatGroupPermissions(Base):
+    """Permission flags of a group conversation; a row exists only once a flag was changed."""
+
+    __tablename__ = "chat_group_permissions"
+    __table_args__ = _table_args(schema=CHAT_SCHEMA)
+
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        primary_key=True,
+    )
+    members_send_files: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    updated_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class ChatGroupRestriction(Base):
+    """A member barred from writing in a group; ``restricted_until`` NULL means until lifted."""
+
+    __tablename__ = "chat_group_restrictions"
+    __table_args__ = _table_args(
+        Index("ix_chat_group_restrictions_user_id", "user_id"),
+        schema=CHAT_SCHEMA,
+    )
+
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    restricted_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    restricted_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatGroupInvite(Base):
+    """Invite link of a group; only the SHA-256 of the token is stored."""
+
+    __tablename__ = "chat_group_invites"
+    __table_args__ = _table_args(
+        Index("ix_chat_group_invites_conversation_id_revoked_at", "conversation_id", "revoked_at"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    use_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class ChatGroupAdminAudit(Base):
+    """Journal of portal-admin actions on groups (no FK: the record outlives the conversation)."""
+
+    __tablename__ = "chat_group_admin_audit"
+    __table_args__ = _table_args(
+        Index("ix_chat_group_admin_audit_conversation_id_created_at", "conversation_id", "created_at"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    actor_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    details: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 class ChatMember(Base):
@@ -512,6 +625,67 @@ class ChatScheduledMessage(Base):
     error_text: Mapped[str | None] = mapped_column(String(300), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatCall(Base):
+    """A voice/video call of a conversation (LiveKit room name == ``id``). See backend/chat/calls.py.
+
+    At most one not-ended call per conversation: enforced by the partial unique index, so two parallel
+    "start call" requests cannot both succeed."""
+
+    __tablename__ = "chat_calls"
+    __table_args__ = _table_args(
+        Index(
+            "uq_chat_calls_one_open_per_conversation",
+            "conversation_id",
+            unique=True,
+            postgresql_where=text("status <> 'ended'"),
+            sqlite_where=text("status <> 'ended'"),
+        ),
+        Index("ix_chat_calls_status_started_at", "status", "started_at"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    conversation_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="direct")
+    media: Mapped[str] = mapped_column(String(8), nullable=False, default="audio")
+    # ringing -> active -> ended ; ringing -> ended
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="ringing")
+    initiator_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # completed | declined | missed | cancelled
+    end_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatCallParticipant(Base):
+    __tablename__ = "chat_call_participants"
+    __table_args__ = _table_args(
+        UniqueConstraint("call_id", "user_id", name="uq_chat_call_participants_call_user"),
+        Index("ix_chat_call_participants_user_state", "user_id", "state"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    call_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_calls"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    # invited | joined | declined | left
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="invited")
+    joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    left_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ChatEventOutbox(Base):

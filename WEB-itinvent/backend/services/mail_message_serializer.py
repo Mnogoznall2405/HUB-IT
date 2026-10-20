@@ -29,13 +29,26 @@ def _normalize_text(value: Any, default: str = "") -> str:
     return text or default
 
 
+def _resolve_person_avatar_url(email: Any) -> str | None:
+    try:
+        from backend.services.employee_photo_service import employee_photo_resolver
+        return employee_photo_resolver.url_for_email(email)
+    except Exception:
+        return None
+
+
 def serialize_person(value: Any) -> dict[str, str | None]:
     if value is None:
-        return {"name": None, "email": None, "display": None}
+        return {"name": None, "email": None, "display": None, "avatar_url": None}
     if isinstance(value, str):
         email = _normalize_text(value).lower()
         display = email or None
-        return {"name": None, "email": email or None, "display": display}
+        return {
+            "name": None,
+            "email": email or None,
+            "display": display,
+            "avatar_url": _resolve_person_avatar_url(email),
+        }
     email = _normalize_text(getattr(value, "email_address", None)).lower()
     name = _normalize_text(
         getattr(value, "name", None)
@@ -47,6 +60,7 @@ def serialize_person(value: Any) -> dict[str, str | None]:
         "name": name or None,
         "email": email or None,
         "display": display,
+        "avatar_url": _resolve_person_avatar_url(email),
     }
 
 
@@ -109,7 +123,7 @@ def draft_sender_person_fallback(
     email = _normalize_text(mailbox_email).lower()
     if not email:
         return base_person
-    return {"name": None, "email": email, "display": email}
+    return {"name": None, "email": email, "display": email, "avatar_url": _resolve_person_avatar_url(email)}
 
 
 def item_recipient_people(

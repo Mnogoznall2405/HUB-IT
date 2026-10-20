@@ -158,3 +158,94 @@ def test_non_admin_cannot_read_transfer_job_from_another_database_or_user():
         current_user=SimpleNamespace(id=16, role="operator"),
         db_id="main",
     ) is False
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+def test_worker_that_lost_lease_cannot_overwrite_reclaimed_or_done_job(monkeypatch, tmp_path, backend):
+    from concurrent.futures import ThreadPoolExecutor
+
+    if backend == "memory":
+        service = _service(monkeypatch)
+    else:
+        import conftest
+
+        service = importlib.import_module("backend.services.transfer_act_job_service")
+        appdb = importlib.import_module("backend.appdb.db")
+        cfg = importlib.import_module("backend.config")
+        url = f"sqlite:///{(tmp_path / 'transfer_jobs.db').as_posix()}"
+        monkeypatch.setattr(cfg.config.app_db, "database_url", url, raising=False)
+        monkeypatch.setattr(appdb.config.app_db, "database_url", url, raising=False)
+        appdb._engines.clear()
+        appdb._session_factories.clear()
+        appdb._initialized_schema_urls.clear()
+        conftest.copy_app_schema_for_url(url)
+    monkeypatch.setattr(service, "TRANSFER_ACT_JOB_LEASE_SECONDS", 60)
+
+    kwargs = {
+        "operation": "transfer",
+        "payload": {"inv_nos": ["1001"], "new_employee_no": 44},
+        "db_id": "main",
+        "user": SimpleNamespace(id=15, username="operator"),
+        "request_count": 1,
+        "operation_id": f"web-lease-lost-{backend}-0001",
+    }
+    job_id = service.create_job(**kwargs)["id"]
+
+    def expire_lease():
+        if backend == "memory":
+            service._memory_jobs[job_id]["updated_at"] = (
+                datetime.now(timezone.utc) - timedelta(seconds=61)
+            ).isoformat()
+        else:
+            from backend.appdb.db import app_session
+            from backend.appdb.models import AppTransferActJob
+
+            with app_session() as session:
+                session.get(AppTransferActJob, job_id).updated_at = datetime.now(timezone.utc) - timedelta(seconds=61)
+
+    # Each worker claims and finalizes on its own thread, like the API job runners.
+    with ThreadPoolExecutor(max_workers=1) as old_worker, ThreadPoolExecutor(max_workers=1) as new_worker:
+        assert old_worker.submit(service.claim_for_execution, job_id, "old worker").result() is True
+        old_token = old_worker.submit(service.execution_claim_token, job_id).result()
+        assert old_token is not None
+        # Heartbeat runs on a separate thread and must carry its owner's token.
+        assert service.touch_execution_lease(job_id, claim_token=old_token) is True
+        expire_lease()
+        assert service.create_job(**kwargs)["resumed"] is True  # lease expired -> queued
+        # Lost lease while the job is queued again: the old worker must not fail it.
+        assert old_worker.submit(service.mark_failed, job_id, "old boom").result() is False
+        assert service.get_job(job_id)["status"] == "queued"
+
+        assert new_worker.submit(service.claim_for_execution, job_id, "new worker").result() is True
+        current = service.get_job(job_id)
+        assert service.touch_execution_lease(job_id, claim_token=old_token) is False
+        assert old_worker.submit(service.checkpoint_processing_result, job_id, {"who": "old"}).result() is False
+        assert service.get_job(job_id) == current
+        assert new_worker.submit(service.checkpoint_processing_result, job_id, {"who": "new"}).result() is True
+        assert service.get_job(job_id)["result"] == {"who": "new"}
+        assert new_worker.submit(service.touch_execution_lease, job_id).result() is True
+        # Re-claimed by the second worker (processing again): old worker is still fenced off.
+        assert old_worker.submit(service.mark_failed, job_id, "old boom").result() is False
+        assert old_worker.submit(service.mark_done, job_id, {"who": "old"}).result() is False
+        current = service.get_job(job_id)
+        assert current["status"] == "processing"
+        assert current["result"] == {"who": "new"}
+
+        assert new_worker.submit(service.mark_done, job_id, {"who": "new"}, "done by new").result() is True
+        # Already done: neither a stale failure nor a stale success may change it.
+        assert old_worker.submit(service.mark_failed, job_id, "late boom").result() is False
+        assert old_worker.submit(service.mark_done, job_id, {"who": "old"}).result() is False
+        assert new_worker.submit(service.mark_failed, job_id, "double finalize").result() is False
+
+    final = service.get_job(job_id)
+    assert final["status"] == "done"
+    assert final["status_text"] == "done by new"
+    assert final["result"] == {"who": "new"}
+    assert final["error_text"] is None
+
+    # The owner's normal failure path still works on a fresh claim.
+    failed_id = service.create_job(**{**kwargs, "operation_id": f"web-lease-owner-{backend}-0002"})["id"]
+    assert service.claim_for_execution(failed_id, "owner") is True
+    assert service.mark_failed(failed_id, "real failure") is True
+    assert service.get_job(failed_id)["status"] == "failed"
+    assert service.get_job(failed_id)["error_text"] == "real failure"

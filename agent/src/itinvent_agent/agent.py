@@ -438,56 +438,16 @@ def _ensure_telegram_probe_task(now_ts: int, *, last_check_ts: int) -> int:
     return now_ts
 
 
-def _browser_probe_process_running() -> bool:
-    """True if frozen exe or pilot python launcher (browser_probe_agent) is up."""
-    names = {"itinventbrowserprobe", "itinventbrowserprobe.exe"}
-    markers = ("browser_probe_agent", "itinventbrowserprobe", "run_browser_probe_dev")
-    for proc in psutil.process_iter(["name", "cmdline"]):
-        try:
-            name = str(proc.info.get("name") or "").strip().lower()
-            if name in names:
-                return True
-            cmdline = proc.info.get("cmdline") or []
-            joined = " ".join(str(x) for x in cmdline).lower().replace("\\", "/")
-            if any(marker in joined for marker in markers):
-                return True
-        except Exception:
-            continue
-    return False
-
-
-def _ensure_browser_probe_task(now_ts: int, *, last_check_ts: int) -> int:
-    """Best-effort: if browser probe enabled and not running, kick scheduled task."""
-    if not _is_truthy(os.getenv("ITINV_BROWSER_PROBE_ENABLED", "1"), default=True):
-        return last_check_ts
-    if last_check_ts and (now_ts - last_check_ts) < 120:
-        return last_check_ts
-    if _browser_probe_process_running():
-        return now_ts
-    task_name = str(
-        os.getenv("ITINV_BROWSER_PROBE_TASK_NAME", "") or agent_installer.BROWSER_PROBE_TASK_NAME
-    ).strip() or agent_installer.BROWSER_PROBE_TASK_NAME
+def _run_browser_history_sidecar() -> None:
+    if not _is_truthy(os.getenv("ITINV_BROWSER_HISTORY_ENABLED", "0"), default=False):
+        return
     try:
-        result = subprocess.run(
-            ["schtasks.exe", "/Run", "/TN", task_name],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            creationflags=CREATE_NO_WINDOW,
-            check=False,
-        )
-        if result.returncode == 0:
-            logging.info("Started Browser probe task '%s' (was not running)", task_name)
-        else:
-            detail = (result.stderr or result.stdout or "").strip()
-            logging.debug(
-                "Browser probe task '%s' start skipped/failed: %s",
-                task_name,
-                detail,
-            )
+        from browser_probe.history_agent import run_browser_history_forever
+
+        logging.info("Starting browser history sidecar")
+        run_browser_history_forever()
     except Exception as exc:
-        logging.debug("Browser probe task watchdog error: %s", exc)
-    return now_ts
+        logging.exception("Browser history sidecar crashed: %s", exc)
 
 
 def _run_scan_sidecar(run_once: bool = False) -> None:
@@ -3702,8 +3662,10 @@ def run_loop(config: AgentConfig, run_once: bool = False) -> int:
     fs_egress_thread: Optional[threading.Thread] = None
     fs_egress_restart_attempt = 0
     next_fs_egress_restart_ts = 0
+    browser_history_thread: Optional[threading.Thread] = None
+    browser_history_restart_attempt = 0
+    next_browser_history_restart_ts = 0
     last_telegram_probe_check_ts = 0
-    last_browser_probe_check_ts = 0
     last_inventory_ok_at: Optional[int] = None
     last_error = ""
     last_status_write_ts = 0
@@ -3761,16 +3723,42 @@ def run_loop(config: AgentConfig, run_once: bool = False) -> int:
         next_fs_egress_restart_ts = now_ts + delay
         logging.warning("fs_egress failed to start, next retry in %ss", delay)
 
+    def ensure_browser_history_alive(now_ts: int) -> None:
+        nonlocal browser_history_thread, browser_history_restart_attempt, next_browser_history_restart_ts
+        if not _is_truthy(os.getenv("ITINV_BROWSER_HISTORY_ENABLED", "0"), default=False):
+            return
+        if browser_history_thread is not None and browser_history_thread.is_alive():
+            browser_history_restart_attempt = 0
+            return
+        if now_ts < next_browser_history_restart_ts:
+            return
+        if browser_history_thread is not None:
+            logging.warning("Browser history thread is not alive; restarting")
+        browser_history_thread = threading.Thread(
+            target=_run_browser_history_sidecar,
+            daemon=True,
+            name="browser-history",
+        )
+        browser_history_thread.start()
+        if browser_history_thread.is_alive():
+            logging.info("browser history thread started")
+            browser_history_restart_attempt = 0
+            next_browser_history_restart_ts = now_ts
+            return
+        delays = [10, 30, 60, 300]
+        delay = delays[min(browser_history_restart_attempt, len(delays) - 1)]
+        browser_history_restart_attempt += 1
+        next_browser_history_restart_ts = now_ts + delay
+        logging.warning("browser history failed to start, next retry in %ss", delay)
+
     next_full_snapshot_ts = 0
     while True:
         now_ts = int(time.time())
         ensure_scan_sidecar_alive(now_ts)
         ensure_fs_egress_alive(now_ts)
+        ensure_browser_history_alive(now_ts)
         last_telegram_probe_check_ts = _ensure_telegram_probe_task(
             now_ts, last_check_ts=last_telegram_probe_check_ts
-        )
-        last_browser_probe_check_ts = _ensure_browser_probe_task(
-            now_ts, last_check_ts=last_browser_probe_check_ts
         )
         include_full_snapshot = now_ts >= next_full_snapshot_ts
         report_type = "full_snapshot" if include_full_snapshot else "heartbeat"

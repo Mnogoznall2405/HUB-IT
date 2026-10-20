@@ -5,7 +5,6 @@ import {
   Button,
   Chip,
   IconButton,
-  Stack,
   Tab,
   Tabs,
   Tooltip,
@@ -18,10 +17,12 @@ import UploadFileOutlinedIcon from '@mui/icons-material/UploadFileOutlined';
 import MainLayout from '../../components/layout/MainLayout';
 import MobileShellPageHeader from '../../components/layout/MobileShellPageHeader';
 import PageShell from '../../components/layout/PageShell';
+import PageTopBar from '../../components/layout/PageTopBar';
 import { voiceJobsAPI } from '../../api/voiceJobs';
 import { voiceVoicesAPI } from '../../api/voiceVoices';
 import { useAuth } from '../../contexts/AuthContext';
 import VoiceJobsSection from './VoiceJobsSection';
+import VoiceGlossarySection from './VoiceGlossarySection';
 import VoiceLabelingSection from './VoiceLabelingSection';
 import VoiceMeetingsSection from './VoiceMeetingsSection';
 import VoiceVoicesSection from './VoiceVoicesSection';
@@ -592,20 +593,30 @@ function VoiceVideoPage() {
     />,
     <Tab key="voices" label="Голоса" sx={tabSx} />,
     ...(canManage ? [<Tab key="labeling" label="Разметка" sx={tabSx} />] : []),
+    ...(canManage ? [<Tab key="glossary" label="Словарь" sx={tabSx} />] : []),
   ];
 
   if (!canRead) {
     return (
-      <MainLayout>
+      <MainLayout headerMode={isMobile ? 'default' : 'integrated'}>
         <PageShell>
+          {isMobile ? null : <PageTopBar title="Протоколы встреч" />}
           <Alert severity="error">Недостаточно прав: требуется voice.read</Alert>
         </PageShell>
       </MainLayout>
     );
   }
 
+  // Открытая встреча на ≥sm занимает всю область: шапка портала заменяется
+  // шапкой карточки (☰, название, действия, уведомления), меню — узкой
+  // полосой, поля вокруг карточки убраны.
+  const meetingFullscreen = Boolean(selectedMeeting) && !isMobile;
+
   return (
-    <MainLayout>
+    <MainLayout
+      headerMode={isMobile ? 'default' : 'integrated'}
+      contentMode={meetingFullscreen ? 'edge-to-edge' : 'default'}
+    >
       {/* B6: заголовок на xs рисуется первой строкой внутри страницы, поэтому
           шелл-шапку скрываем на всех ширинах через sx у вызова. */}
       <MobileShellPageHeader title="Протоколы встреч" sx={{ display: 'none' }} />
@@ -691,42 +702,43 @@ function VoiceVideoPage() {
             </Tabs>
           </>
         ) : (
-          <Box sx={{ display: 'flex', flexWrap: 'nowrap', alignItems: 'center', gap: 1 }}>
-            <Tabs
-              value={tab}
-              onChange={(_e, value) => setTab(value)}
-              variant="scrollable"
-              scrollButtons="auto"
-              sx={{ flex: '1 1 auto', minWidth: 0 }}
-            >
-              {pageTabs}
-            </Tabs>
-            <Stack
-              direction="row"
-              spacing={1}
-              alignItems="center"
-              sx={{ flex: '0 0 auto', ml: 'auto' }}
-            >
-              <Button
-                size="small"
-                variant="outlined"
-                startIcon={<RefreshOutlinedIcon />}
-                onClick={() => refreshVisible({ busy: true, refreshExportCount: true })}
+          <PageTopBar
+            title="Протоколы встреч"
+            tabs={(
+              <Tabs
+                value={tab}
+                onChange={(_e, value) => setTab(value)}
+                variant="scrollable"
+                scrollButtons="auto"
+                sx={{ flex: '0 1 auto', minWidth: 0 }}
               >
-                Обновить
-              </Button>
-              {canUpload && (
+                {pageTabs}
+              </Tabs>
+            )}
+            actions={(
+              <>
                 <Button
-                  variant="contained"
-                  startIcon={<UploadFileOutlinedIcon fontSize="small" />}
-                  onClick={() => setUploadOpen(true)}
-                  sx={{ minHeight: 44, whiteSpace: 'nowrap' }}
+                  size="small"
+                  variant="outlined"
+                  startIcon={<RefreshOutlinedIcon />}
+                  onClick={() => refreshVisible({ busy: true, refreshExportCount: true })}
                 >
-                  Загрузить
+                  Обновить
                 </Button>
-              )}
-            </Stack>
-          </Box>
+                {canUpload && (
+                  <Button
+                    size="small"
+                    variant="contained"
+                    startIcon={<UploadFileOutlinedIcon fontSize="small" />}
+                    onClick={() => setUploadOpen(true)}
+                    sx={{ whiteSpace: 'nowrap' }}
+                  >
+                    Загрузить
+                  </Button>
+                )}
+              </>
+            )}
+          />
         )}
 
         {overview && !overview.voicevideo_root_exists && (
@@ -851,6 +863,7 @@ function VoiceVideoPage() {
           />
         )}
         {tab === 3 && canManage && <VoiceLabelingSection />}
+        {tab === 4 && canManage && <VoiceGlossarySection />}
         </>
         )}
       </PageShell>

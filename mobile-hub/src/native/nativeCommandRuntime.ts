@@ -16,6 +16,7 @@ import {
   shareDiagnosticReport,
 } from '../diagnostics/diagnostics';
 import { getChatSendTimingSummary } from '../diagnostics/chatSendTiming';
+import { getUiTimingSummary } from '../diagnostics/uiTiming';
 import { getAndroidProcessHealthSnapshot } from '../diagnostics/androidProcessHealth';
 import {
   clearNativeDatabaseFileCache,
@@ -149,6 +150,7 @@ async function getDiagnosticsState(user: HubUser | null) {
     eventCount,
     processHealth,
     chatSendTiming: getChatSendTimingSummary(),
+    uiTiming: getUiTimingSummary(),
     releaseHealth: {
       ...releaseHealth,
       queueDepth: {

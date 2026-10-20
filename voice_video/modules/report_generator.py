@@ -25,7 +25,8 @@ class ReportGenerator:
                            segments_with_speakers: List[Dict],
                            insights: Dict[str, Any],
                            base_filename: str,
-                           word_segments: Optional[List[Dict]] = None) -> Dict[str, str]:
+                           word_segments: Optional[List[Dict]] = None,
+                           review_speakers: Optional[List[str]] = None) -> Dict[str, str]:
         """Генерирует отчеты во всех форматах."""
         try:
             logger.info(f"📄 Генерация отчетов для {base_filename}...")
@@ -66,7 +67,8 @@ class ReportGenerator:
                 generated_files.update(docx_files)
 
                 # Генерируем отдельный файл транскрипции
-                transcript_path = self._generate_transcript_file(segments_with_speakers, base_filename, word_segments)
+                transcript_path = self._generate_transcript_file(
+                    segments_with_speakers, base_filename, word_segments, review_speakers)
                 if transcript_path:
                     generated_files['transcript'] = transcript_path
             finally:
@@ -1501,7 +1503,8 @@ class ReportGenerator:
         return cleaned.replace("**", "").replace("__", "")
 
     def _generate_transcript_file(self, segments_with_speakers: List[Dict], base_filename: str,
-                                  word_segments: Optional[List[Dict]] = None) -> Optional[str]:
+                                  word_segments: Optional[List[Dict]] = None,
+                                  review_speakers: Optional[List[str]] = None) -> Optional[str]:
         """Генерирует отдельный файл транскрипции в JSON формате."""
         try:
             output_path = self.output_dir / f"{base_filename}_transcript.json"
@@ -1516,7 +1519,10 @@ class ReportGenerator:
             }
             if word_segments:
                 transcript_data['word_segments'] = word_segments
-            
+            if review_speakers:
+                # Нужно повторному именованию (--resume-speakers): авто-ФИО для этих голосов запрещено
+                transcript_data['metadata']['review_speakers'] = sorted(set(review_speakers))
+
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(transcript_data, f, ensure_ascii=False, indent=2)
             

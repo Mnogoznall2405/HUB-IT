@@ -377,6 +377,8 @@ class AiToolExecutionContext:
     trigger_message_id: str = ""
     # Bot setting "send KB files": kb.attachments.send is refused when it is off.
     allow_kb_document_delivery: bool = False
+    # Server-owned state; never populated from model arguments.
+    draft_policy: Any = None
 
     @property
     def is_admin(self) -> bool:

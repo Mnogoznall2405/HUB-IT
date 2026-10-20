@@ -280,6 +280,7 @@ def main(argv=None) -> int:
         diarization_num_speakers=args.num_speakers or getattr(app_config, "DIARIZATION_NUM_SPEAKERS", 0) or 0,
         diarization_clustering_threshold=getattr(app_config, "DIARIZATION_CLUSTERING_THRESHOLD", None),
         diarization_min_duration_off=getattr(app_config, "DIARIZATION_MIN_DURATION_OFF", None),
+        **app_config.diarization_chunk_options(),
     )
     if args.min_speakers:
         cfg.diarization_min_speakers = args.min_speakers
@@ -321,13 +322,17 @@ def main(argv=None) -> int:
                 pass
 
 
-def _diarize(cfg, wav: Path) -> List[Dict]:
+def _diarize(cfg, wav: Path, *, overlap: bool = True) -> List[Dict]:
     from modules.audio_processor import cleanup_memory
     from modules.diarization import SpeakerDiarization
 
     turns = SpeakerDiarization(cfg).perform_diarization(str(wav))
     cleanup_memory()
-    return turns or []
+    # Черновику разметки нужны наложения (overlap=True); сравнению вариантов —
+    # собственный вывод режима, т.е. exclusive-разметка при --exclusive.
+    if overlap:
+        turns = getattr(turns, 'overlap_segments', turns)
+    return list(turns or [])
 
 
 def _run_draft(args, cfg, out_dir: Path, ensure_raw, ensure_processed, raw_wav: Path) -> int:
@@ -387,7 +392,7 @@ def _run_variant(args, cfg, out_dir: Path, ensure_raw, ensure_processed, raw_wav
         wav = raw_wav
     cfg.diarization_exclusive = bool(args.exclusive)
     print(f"👥 Этап 3: Диаризация варианта «{args.variant_name}» ({args.audio})...", flush=True)
-    turns = _diarize(cfg, wav)
+    turns = _diarize(cfg, wav, overlap=False)
     if not turns:
         print("❌ Диаризация не дала результата")
         return 1

@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -24,6 +25,8 @@ logger = logging.getLogger("voice-worker")
 
 RUN_PY = "run.py"
 LABEL_DRAFT_PY = "label_draft.py"
+FACE_CLUSTER_PY = "face_cluster.py"
+FACE_ENROLL_PY = "face_enroll.py"
 
 # run.py logs stage markers to stdout; map them to (stage key, progress %).
 _STAGE_MARKERS = [
@@ -35,7 +38,7 @@ _STAGE_MARKERS = [
     (re.compile(r"Этап 6[: ]|Базовый анализ"), ("analysis", 85)),
     (re.compile(r"Этап 7[: ]|инсайт", re.IGNORECASE), ("insights", 90)),
     (re.compile(r"Этап 8[: ]|Генерация отчетов"), ("reports", 95)),
-    (re.compile(r"Обработка завершена|✅"), ("done", 100)),
+    (re.compile(r"Обработка завершена"), ("done", 100)),
 ]
 
 # Flag -> settings key -> render rule for run.py CLI of a "process" job.
@@ -107,13 +110,16 @@ def build_resume_argv(base_filename: str, speaker_map: Dict[str, str]) -> List[s
     return argv
 
 
-def build_enroll_argv(sample_path: str, speaker_name: str) -> List[str]:
-    return [
+def build_enroll_argv(sample_path: str, speaker_name: str, merge: bool = False) -> List[str]:
+    argv = [
         config.voicevideo_python, RUN_PY,
         "--enroll-voice", sample_path,
         "--speaker-name", speaker_name,
         "--log-level", "INFO",
     ]
+    if merge:
+        argv.append("--enroll-merge")
+    return argv
 
 
 def build_label_argv(
@@ -299,6 +305,15 @@ def _cleanup_temp(base: str, log_file) -> None:
         log_file.write(f"temp cleanup: removed {removed} file(s) for {base}\n")
 
 
+def _ingest_glossary_candidates(base: str, log_file) -> None:
+    """Кандидаты в словарь компании из записи — в очередь подтверждения (сбой не влияет на задание)."""
+    from . import glossary
+
+    stats = glossary.ingest_for_meeting(base)
+    if stats and (stats["added"] or stats["repeated"]):
+        log_file.write(f"glossary: +{stats['added']} кандидатов, повторов {stats['repeated']}\n")
+
+
 def run_job(job: Dict[str, Any]) -> None:
     """Execute one claimed job row to completion."""
     job_id = job["id"]
@@ -344,6 +359,8 @@ def run_job(job: Dict[str, Any]) -> None:
                 else:
                     _finish("done")
                     notify_protocol_ready(job)
+                    if base:
+                        _ingest_glossary_candidates(base, log_file)
                     _cleanup_temp(base, log_file)
 
             elif kind == "resume":
@@ -432,6 +449,12 @@ def _run_label_job(job: Dict[str, Any], log_file, result: Dict[str, Any], finish
         return
     if action == labeling.ACTION_CALIBRATE:
         _calibrate_label_voices(job, project_id, out_dir, stored_path, settings, log_file, result, finish)
+        return
+    if action == labeling.ACTION_FACES_SCAN:
+        _scan_label_faces(job, project_id, out_dir, stored_path, log_file, result, finish)
+        return
+    if action == labeling.ACTION_FACES_ENROLL:
+        _enroll_label_faces(job, out_dir, settings, log_file, result, finish)
         return
 
     label_store.set_status(project_id, "processing")
@@ -529,22 +552,75 @@ def _enroll_label_voices(job, out_dir, stored_path, settings, log_file, result, 
     for item in items:
         label = str(item.get("label") or "")
         name = pipeline.sanitize_base(str(item.get("name") or ""))
+        mode = str(item.get("mode") or ("replace" if item.get("replace") else "skip"))
         sample = Path(out_dir) / labeling.SAMPLES_DIR / f"{label}.wav"
         if not name or not sample.exists():
             enroll_results.append({"ok": False, "label": label, "name": name, "error": "no sample"})
             continue
-        if pipeline.voice_exists(name) and not item.get("replace"):
+        if pipeline.voice_exists(name) and mode == "skip":
             enroll_results.append({"ok": True, "label": label, "name": name, "skipped": "exists"})
             continue
-        if item.get("replace"):
+        if mode == "replace":
             _purge_voice_reference(name, log_file)
-        rc = _run_subprocess(job["id"], build_enroll_argv(str(sample), name), log_file)
-        enroll_results.append({"ok": rc == 0, "label": label, "name": name, "rc": rc})
+        rc = _run_subprocess(job["id"], build_enroll_argv(str(sample), name, merge=(mode == "merge")), log_file)
+        enroll_results.append({"ok": rc == 0, "label": label, "name": name, "rc": rc, "mode": mode})
         if rc in (-15, -9):
             break
     result["enroll"] = enroll_results
     ok = bool(enroll_results) and all(r.get("ok") for r in enroll_results)
     finish("done" if ok else "failed", None if ok else "Не все голоса записаны в эталоны")
+
+
+def _scan_label_faces(job, project_id, out_dir, stored_path, log_file, result, finish) -> None:
+    """Faces of the recording around speech -> clusters + thumbnails in <project>/faces (the previous scan is replaced)."""
+    folder = Path(out_dir) / labeling.FACES_DIR
+    shutil.rmtree(folder, ignore_errors=True)
+    project = label_store.get_project(project_id) or {}
+    segments_path = Path(out_dir) / "faces_segments.json"
+    segments_path.write_text(json.dumps(
+        [{"start": s.get("start"), "end": s.get("end")} for s in project.get("segments") or [] if s.get("end") is not None],
+        ensure_ascii=False), encoding="utf-8")
+    argv = [config.voicevideo_python, FACE_CLUSTER_PY, "scan", str(folder), "--clip", stored_path,
+            "--step", str(labeling.FACE_SCAN_STEP), "--segments", str(segments_path)]
+    log_file.write("$ " + " ".join(argv) + "\n")
+    rc = _run_subprocess(job["id"], argv, log_file)
+    result["returncode"] = rc
+    if not _finish_rc(rc, finish, FACE_CLUSTER_PY):
+        return
+    if labeling.load_faces(project_id) is None:
+        finish("failed", "faces.json не получен")
+        return
+    finish("done")
+
+
+def _enroll_label_faces(job, out_dir, settings, log_file, result, finish) -> None:
+    """Signed clusters -> face_roster.json; then (by default) thumbnails and vectors are deleted: biometrics are not kept."""
+    folder = Path(out_dir) / labeling.FACES_DIR
+    assign = settings.get("faces_assign") or {}
+    assign_path = folder / "assign.json"
+    report_path = folder / "enroll_report.json"
+    try:
+        assign_path.write_text(json.dumps(assign, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        finish("failed", "Лица не найдены — запустите поиск лиц")
+        return
+    argv = [config.voicevideo_python, FACE_ENROLL_PY, "apply", str(folder), str(assign_path), "--report", str(report_path)]
+    log_file.write("$ " + " ".join(argv) + "\n")
+    rc = _run_subprocess(job["id"], argv, log_file)
+    result["returncode"] = rc
+    if not _finish_rc(rc, finish, FACE_ENROLL_PY):
+        return
+    try:
+        added = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        added = {}
+    result["enroll"] = [{"ok": True, "name": str(name), "faces": int(count)} for name, count in added.items()]
+    if settings.get("faces_purge", True):
+        rc = _run_subprocess(job["id"], [config.voicevideo_python, FACE_ENROLL_PY, "purge", str(folder)], log_file)
+        if rc != 0:
+            finish("failed", "Лица записаны, но превью удалить не удалось")
+            return
+    finish("done" if added else "failed", None if added else "Ни одно лицо не записано в эталоны")
 
 
 def _calibrate_label_voices(job, project_id, out_dir, stored_path, settings, log_file, result, finish) -> None:

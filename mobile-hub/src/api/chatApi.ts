@@ -27,6 +27,7 @@ import {
   normalizeGlobalMessageSearchHit,
 } from '../chat/chatModels';
 import { detectChatBodyFormat } from '../chat/chatMarkdown';
+import type { ChatGroupActivityItem } from '../chat/chatGroupActivity';
 
 const CHAT_TRANSIENT_READ_RETRY_DELAY_MS = 150;
 
@@ -322,6 +323,21 @@ export async function transferGroupOwnership(
 
 export async function leaveGroup(conversationId: string): Promise<void> {
   await apiClient.post(`/chat/conversations/${conversationId}/leave`, {});
+}
+
+export async function createGroupInvite(conversationId: string): Promise<{ token: string; expires_at: string }> {
+  const { data } = await apiClient.post<{ token: string; expires_at: string }>(
+    `/chat/conversations/${conversationId}/invite-link`,
+    {},
+  );
+  return data;
+}
+
+export async function getGroupActivity(conversationId: string): Promise<ChatGroupActivityItem[]> {
+  const { data } = await apiClient.get<{ items?: ChatGroupActivityItem[] }>(
+    `/chat/conversations/${conversationId}/activity`,
+  );
+  return Array.isArray(data.items) ? data.items : [];
 }
 
 export async function getMessageReads(messageId: string): Promise<ChatMessageReadReceipt[]> {

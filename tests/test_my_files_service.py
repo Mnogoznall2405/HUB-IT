@@ -722,10 +722,10 @@ def test_security_scan_error_records_failing_engine(tmp_path):
         storage_root=tmp_path / "my-files",
         antivirus_scanner=timed_out_kaspersky,
     )
-    spool_path = _stage_upload(service, "large.7z", b"large payload")
+    spool_path = _stage_upload(service, "large.bin", b"large payload")
     created = service.create_pending_upload(
         actor=_user(),
-        original_file_name="large.7z",
+        original_file_name="large.bin",
         mime_type="application/x-7z-compressed",
         spool_path=spool_path,
         original_size_bytes=spool_path.stat().st_size,
@@ -767,6 +767,36 @@ def test_size_limit_skip_passes_fail_closed_pipeline(tmp_path, monkeypatch):
         assert row.security_scan_engine == "size-limit"
     share = service.create_share(file_id=created["id"], user_id=7)
     assert share["token"]
+
+
+def test_archive_policy_skip_passes_fail_closed_and_is_not_requeued_by_backfill(tmp_path, monkeypatch):
+    settings = "backend.services.my_files_service.config.my_files_security"
+    monkeypatch.setattr(f"{settings}.antivirus_fail_closed", True)
+    monkeypatch.setattr(f"{settings}.antivirus_enabled", True)
+    monkeypatch.setattr(f"{settings}.antivirus_skip_archives", True)
+    service = MyFilesService(
+        database_url=_sqlite_url(tmp_path / "app.db"),
+        storage_root=tmp_path / "my-files",
+        antivirus_scanner=lambda _path: pytest.fail("archive must not reach the scanner"),
+    )
+    spool_path = _stage_upload(service, "backup.zip", b"zip payload")
+    created = service.create_pending_upload(
+        actor=_user(),
+        original_file_name="backup.zip",
+        mime_type="application/zip",
+        spool_path=spool_path,
+        original_size_bytes=spool_path.stat().st_size,
+        retention_days=1,
+    )
+
+    result = service.process_file(created["id"])
+
+    assert result is not None and result["status"] == "ready"
+    with app_session(_sqlite_url(tmp_path / "app.db")) as session:
+        row = session.get(AppMyFile, created["id"])
+        assert (row.security_scan_status, row.security_scan_engine) == ("skipped", "policy-archive")
+    assert service.create_share(file_id=created["id"], user_id=7)["token"]
+    assert service.process_next_security_backfill() is False
 
 
 def test_disabled_scan_skip_still_blocked_when_fail_closed(tmp_path, monkeypatch):

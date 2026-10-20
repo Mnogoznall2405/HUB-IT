@@ -1,4 +1,5 @@
 import { act, renderHook, waitFor } from '@testing-library/react-native';
+import { AppState, type AppStateStatus } from 'react-native';
 import type { EquipmentPhotoFile, EquipmentRecord } from '../api/databaseApi';
 import type { InventoryQrPayload } from './nativeDatabaseModel';
 import { loadPendingPhotos, persistPendingPhoto, removePendingPhoto } from './pendingPhotoStore';
@@ -208,5 +209,62 @@ describe('useNativeScanPhotoSession', () => {
 
     await act(async () => { result.current.discardFailed(); });
     await waitFor(() => expect(removePendingPhoto).toHaveBeenCalledTimes(1));
+  });
+
+  describe('automatic retry', () => {
+    const renderOnline = (upload: jest.Mock) => renderHook(
+      ({ offline }: { offline: boolean }) => useNativeScanPhotoSession({
+        databaseId: 'main',
+        userId: 15,
+        offlineMode: offline,
+        resolveEquipment: jest.fn(async (invNo: string) => record(invNo, 101)),
+        uploadPhoto: upload,
+      }),
+      { initialProps: { offline: false } },
+    );
+
+    it('resends shots lost to a dropped connection when the network returns, but not server refusals', async () => {
+      const upload = jest.fn(async (_itemId: number, file: EquipmentPhotoFile) => {
+        if (file.name === 'bad.jpg') throw Object.assign(new Error('Unprocessable'), { response: { status: 422 } });
+        if (upload.mock.calls.filter(([, f]) => f.name === file.name).length === 1) throw new Error('Network Error');
+        return 1;
+      });
+      const hook = await renderOnline(upload as unknown as jest.Mock);
+      const { result } = hook;
+
+      await act(async () => { await result.current.selectTarget(qr('A')); });
+      await act(async () => {
+        result.current.enqueue(shot('net.jpg'));
+        result.current.enqueue(shot('bad.jpg'));
+      });
+      await waitFor(() => expect(result.current.failedCount).toBe(2));
+
+      await act(async () => { hook.rerender({ offline: true }); });
+      await act(async () => { hook.rerender({ offline: false }); });
+
+      await waitFor(() => expect(result.current.uploadedCount).toBe(1));
+      expect(result.current.failedCount).toBe(1);
+      expect(upload.mock.calls.filter(([, f]) => f.name === 'bad.jpg')).toHaveLength(1);
+    });
+
+    it('resends a shot that failed on a hung connection when the app returns to the foreground', async () => {
+      let stateListener: ((state: AppStateStatus) => void) | undefined;
+      jest.spyOn(AppState, 'addEventListener').mockImplementation((_, listener) => {
+        stateListener = listener;
+        return { remove: jest.fn() };
+      });
+      const upload = jest.fn()
+        .mockRejectedValueOnce(Object.assign(new Error('timeout'), { code: 'ECONNABORTED' }))
+        .mockResolvedValue(1);
+      const { result } = await renderOnline(upload);
+
+      await act(async () => { await result.current.selectTarget(qr('A')); });
+      await act(async () => { result.current.enqueue(shot('a1.jpg')); });
+      await waitFor(() => expect(result.current.failedCount).toBe(1));
+
+      await act(async () => { stateListener?.('active'); });
+      await waitFor(() => expect(result.current.uploadedCount).toBe(1));
+      jest.restoreAllMocks();
+    });
   });
 });

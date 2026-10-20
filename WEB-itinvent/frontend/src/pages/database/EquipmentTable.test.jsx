@@ -4,6 +4,8 @@ import { createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
 import EquipmentTable from './EquipmentTable';
+import { EmployeeCompareProvider } from './employeeCompareContext';
+import { OneCMarksProvider } from './oneCMarksContext';
 import { DATA_MODE_CONSUMABLES, DATA_MODE_EQUIPMENT } from './equipmentModel';
 
 vi.mock('../../components/common', () => ({
@@ -17,23 +19,51 @@ vi.mock('../../components/common', () => ({
 
 const theme = createTheme();
 
-const renderTable = (props = {}) => render(
-  <EquipmentTable
-    items={[]}
-    isMobile={false}
-    theme={theme}
-    selectedItemsSet={new Set()}
-    tableSort={{ field: 'employee', direction: 'asc' }}
-    onTableSort={() => {}}
-    onSelectAll={() => {}}
-    isAllSelected={() => false}
-    isSomeSelected={() => false}
-    onSelect={() => {}}
-    onAction={() => {}}
-    dataMode={DATA_MODE_EQUIPMENT}
-    {...props}
-  />
+const renderTable = (props = {}, { summaries = null } = {}) => render(
+  <EmployeeCompareProvider summaries={summaries}>
+    <EquipmentTable
+      items={[]}
+      isMobile={false}
+      theme={theme}
+      selectedItemsSet={new Set()}
+      tableSort={{ field: 'employee', direction: 'asc' }}
+      onTableSort={() => {}}
+      onSelectAll={() => {}}
+      isAllSelected={() => false}
+      isSomeSelected={() => false}
+      onSelect={() => {}}
+      onAction={() => {}}
+      dataMode={DATA_MODE_EQUIPMENT}
+      {...props}
+    />
+  </EmployeeCompareProvider>
 );
+
+const PHILIPS_PART_NO = 'ЦБ-00195776';
+const PHILIPS_KEY = 'цб-00195776';
+
+const philipsItem = (overrides = {}) => ({
+  INV_NO: '100021',
+  ID: 21,
+  PART_NO: PHILIPS_PART_NO,
+  MODEL_NAME: 'Philips monitor',
+  EMPL_NO: 42,
+  OWNER_DISPLAY_NAME: 'Иванов И.И.',
+  ...overrides,
+});
+
+const compareSummaryEntry = (overrides = {}) => ({
+  owner_no: 42,
+  employee_name: 'Иванов И.И.',
+  warehouse_ref: 'wh-1',
+  warehouse_name: 'Иванов И.И.',
+  status: 'match',
+  part_status: { [PHILIPS_KEY]: 'match' },
+  part_quantities: { [PHILIPS_KEY]: { hub_count: 2, qty_1c: 2 } },
+  counts: { match: 1, diff: 0, only_hub: 0, only_1c: 0, no_part: 0, not_in_1c: 0, hub_items: 2 },
+  as_of: new Date().toISOString(),
+  ...overrides,
+});
 
 describe('EquipmentTable', () => {
   it('renders equipment rows and wires selection, sorting, and actions', () => {
@@ -58,7 +88,7 @@ describe('EquipmentTable', () => {
       onAction,
       onTableSort,
       canWrite: true,
-      isAdmin: true,
+      canDeleteEquipment: true,
     });
 
     expect(screen.getByText('1001')).toBeInTheDocument();
@@ -71,8 +101,48 @@ describe('EquipmentTable', () => {
     fireEvent.click(screen.getByText(/\u0418\u043d\u0432/));
     expect(onTableSort).toHaveBeenCalledWith('inv');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Actions for 1001' }));
+    // Колонки «⋮» нет: меню действий открывает клик по строке.
+    expect(screen.queryByRole('button', { name: 'Actions for 1001' })).not.toBeInTheDocument();
+    // Клик по чекбоксу меню не открывает.
+    expect(screen.queryByRole('menuitem', { name: 'Просмотр' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('OptiPlex'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Просмотр' }));
     expect(onAction).toHaveBeenCalledWith('view', expect.objectContaining({ INV_NO: '1001' }));
+  });
+
+  it('opens the card directly on row click when only viewing is allowed', () => {
+    const onAction = vi.fn();
+    renderTable({
+      items: [{ INV_NO: '1001', ID: 7, MODEL_NAME: 'OptiPlex', OWNER_DISPLAY_NAME: 'Ivan Petrov' }],
+      onAction,
+      canWrite: false,
+    });
+
+    fireEvent.click(screen.getByText('OptiPlex'));
+
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(onAction).toHaveBeenCalledWith('view', expect.objectContaining({ INV_NO: '1001' }));
+  });
+
+  it('marks only rows with photos and opens the photos tab on click', () => {
+    const onAction = vi.fn();
+    renderTable({
+      items: [
+        philipsItem({ INV_NO: '100021', ID: 21, photo_count: 2 }),
+        philipsItem({ INV_NO: '100022', ID: 22, photo_count: 0 }),
+        philipsItem({ INV_NO: '100023', ID: 23 }),
+      ],
+      onAction,
+    });
+
+    // Счётчик ещё не пришёл (100023) и «0 фото» (100022) — без отметки.
+    const marks = screen.getAllByRole('button', { name: /Открыть фото/ });
+    expect(marks).toHaveLength(1);
+    expect(marks[0]).toHaveAccessibleName('Открыть фото: 2');
+
+    fireEvent.click(marks[0]);
+    expect(onAction).toHaveBeenCalledWith('photos', expect.objectContaining({ INV_NO: '100021' }));
   });
 
   it('shows the current act state and opens the available act', () => {
@@ -132,5 +202,254 @@ describe('EquipmentTable', () => {
     fireEvent.click(screen.getByLabelText('\u0418\u0437\u043c\u0435\u043d\u0438\u0442\u044c \u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e'));
 
     expect(onEditConsumableQty).toHaveBeenCalledWith(expect.objectContaining({ INV_NO: 'C-1' }));
+  });
+
+  it('marks a fresh per-part match green', () => {
+    renderTable({
+      items: [
+        philipsItem({ INV_NO: '100021', ID: 21 }),
+        philipsItem({ INV_NO: '100022', ID: 22 }),
+      ],
+    }, {
+      summaries: [compareSummaryEntry()],
+    });
+
+    const green = document.querySelectorAll('[data-compare-status="match"]');
+    expect(green).toHaveLength(2);
+    expect(screen.getAllByText('1С ✓')).toHaveLength(2);
+  });
+
+  it('shows yellow mismatch badges with Hub-vs-1C quantities in the tooltip', async () => {
+    renderTable({
+      items: [
+        philipsItem({ INV_NO: '100021', ID: 21 }),
+        philipsItem({ INV_NO: '100022', ID: 22 }),
+      ],
+    }, {
+      summaries: [compareSummaryEntry({
+        status: 'diff',
+        part_status: { [PHILIPS_KEY]: 'diff' },
+        part_quantities: { [PHILIPS_KEY]: { hub_count: 2, qty_1c: 1 } },
+        counts: { match: 0, diff: 1, only_hub: 0, only_1c: 0, no_part: 0, not_in_1c: 0, hub_items: 2 },
+      })],
+    });
+
+    const warnings = document.querySelectorAll('[data-compare-status="diff"]');
+    expect(warnings).toHaveLength(2);
+    expect(screen.getAllByText('1С ≠')).toHaveLength(2);
+    expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+
+    fireEvent.mouseOver(warnings[0]);
+    const tooltip = await screen.findByRole('tooltip');
+    expect(tooltip).toHaveTextContent('Хаб: 2');
+    expect(tooltip).toHaveTextContent('1С: 1');
+  });
+
+  it('trusts quantities over a contradictory match status', () => {
+    renderTable({ items: [philipsItem()] }, {
+      summaries: [compareSummaryEntry({
+        status: 'match',
+        part_status: { [PHILIPS_KEY]: 'match' },
+        part_quantities: { [PHILIPS_KEY]: { hub_count: 2, qty_1c: 1 } },
+      })],
+    });
+
+    expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+    expect(document.querySelectorAll('[data-compare-status="diff"]')).toHaveLength(1);
+  });
+
+  it('never falls back to the owner-level match for unusable PART_NO values', () => {
+    renderTable({
+      items: [
+        philipsItem({ INV_NO: '100021', ID: 21, PART_NO: '' }),
+        philipsItem({ INV_NO: '100022', ID: 22, PART_NO: 'не найден в 1С' }),
+        philipsItem({ INV_NO: '100023', ID: 23, PART_NO: 'нет в 1С' }),
+      ],
+    }, {
+      summaries: [compareSummaryEntry()],
+    });
+
+    expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+    expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+  });
+
+  it('keeps a matched PART_NO green when another code of the same owner differs', () => {
+    renderTable({
+      items: [
+        philipsItem({ INV_NO: '100021', ID: 21 }),
+        philipsItem({ INV_NO: '100030', ID: 30, PART_NO: 'ДРУГОЙ-КОД' }),
+      ],
+    }, {
+      summaries: [compareSummaryEntry({
+        status: 'diff',
+        part_status: { [PHILIPS_KEY]: 'match', 'другой-код': 'diff' },
+        part_quantities: {
+          [PHILIPS_KEY]: { hub_count: 2, qty_1c: 2 },
+          'другой-код': { hub_count: 1, qty_1c: 3 },
+        },
+        counts: { match: 1, diff: 1, only_hub: 0, only_1c: 0, no_part: 0, not_in_1c: 0, hub_items: 3 },
+      })],
+    });
+
+    expect(screen.getAllByText('1С ✓')).toHaveLength(1);
+    expect(screen.getAllByText('1С ≠')).toHaveLength(1);
+  });
+
+  it('does not render any badge for stale, unknown or incomplete summaries', () => {
+    const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const { unmount } = renderTable({
+      items: [philipsItem({ INV_NO: '100021', ID: 21 })],
+    }, {
+      summaries: [compareSummaryEntry({ as_of: stale })],
+    });
+    expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+    unmount();
+
+    const second = renderTable({ items: [philipsItem({ INV_NO: '100025', ID: 25 })] }, {
+      summaries: [compareSummaryEntry({ status: 'unknown' })],
+    });
+    expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+    second.unmount();
+
+    renderTable({ items: [philipsItem({ INV_NO: '100026', ID: 26 })] }, {
+      summaries: [compareSummaryEntry({ as_of: null })],
+    });
+    expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+  });
+
+  it('hides the badge when the part quantities evidence is missing', () => {
+    const { unmount } = renderTable({ items: [philipsItem()] }, {
+      summaries: [compareSummaryEntry({ part_quantities: {} })],
+    });
+    expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+    unmount();
+
+    renderTable({ items: [philipsItem()] }, {
+      summaries: [compareSummaryEntry({
+        part_quantities: { [PHILIPS_KEY]: { hub_count: 2, qty_1c: null } },
+      })],
+    });
+    expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+  });
+
+  it.each([
+    ['missing', { status: undefined }],
+    ['unrecognized', { status: 'reconciled' }],
+    ['unreliable', { status: 'unknown' }],
+  ])('never goes green on a %s owner status even with matching quantities', (_label, overrides) => {
+    renderTable({ items: [philipsItem()] }, {
+      summaries: [compareSummaryEntry(overrides)],
+    });
+
+    expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+    expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+  });
+
+  it.each([
+    [{ hub_count: true, qty_1c: 2 }],
+    [{ hub_count: 2, qty_1c: true }],
+    [{ hub_count: [2], qty_1c: 2 }],
+    [{ hub_count: 2, qty_1c: { value: 2 } }],
+    [{ hub_count: 'x', qty_1c: 2 }],
+    [{ hub_count: 2, qty_1c: -1 }],
+  ])('never paints green on non-numeric quantity evidence %j', (quantities) => {
+    renderTable({ items: [philipsItem()] }, {
+      summaries: [compareSummaryEntry({
+        part_quantities: { [PHILIPS_KEY]: quantities },
+      })],
+    });
+
+    expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+    expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+  });
+
+  it('accepts numeric-string quantity evidence', () => {
+    renderTable({ items: [philipsItem()] }, {
+      summaries: [compareSummaryEntry({
+        part_quantities: { [PHILIPS_KEY]: { hub_count: '2', qty_1c: '2.0' } },
+      })],
+    });
+
+    expect(screen.getByText('1С ✓')).toBeInTheDocument();
+    expect(document.querySelectorAll('[data-compare-status="match"]')).toHaveLength(1);
+  });
+
+  describe('manual 1C mark', () => {
+    const MARK = { inv_no: '100021', marked_by: 'admin', marked_at: '2026-10-20T08:00:00Z', note: '' };
+    const renderWithMarks = (props, { marks = {}, canMark = true, summaries = null } = {}) => render(
+      <EmployeeCompareProvider summaries={summaries}>
+        <OneCMarksProvider value={{ marks, canMark }}>
+          <EquipmentTable
+            items={[philipsItem()]}
+            isMobile={false}
+            theme={theme}
+            selectedItemsSet={new Set()}
+            tableSort={{ field: 'employee', direction: 'asc' }}
+            onTableSort={() => {}}
+            onSelectAll={() => {}}
+            isAllSelected={() => false}
+            isSomeSelected={() => false}
+            onSelect={() => {}}
+            onAction={() => {}}
+            dataMode={DATA_MODE_EQUIPMENT}
+            canWrite
+            {...props}
+          />
+        </OneCMarksProvider>
+      </EmployeeCompareProvider>
+    );
+
+    it('shows a distinct manual chip where the automatic check has nothing (e.g. an object database)', () => {
+      const { container } = renderWithMarks({}, { marks: { 100021: MARK } });
+
+      expect(container.querySelectorAll('[data-compare-status="manual"]')).toHaveLength(1);
+      expect(container.querySelector('[data-compare-status="match"], [data-compare-status="diff"]')).toBeNull();
+    });
+
+    it('keeps a live automatic mismatch visible next to the manual mark', () => {
+      const { container } = renderWithMarks(
+        {},
+        {
+          marks: { 100021: MARK },
+          summaries: [compareSummaryEntry({
+            status: 'diff',
+            part_status: { [PHILIPS_KEY]: 'diff' },
+            part_quantities: { [PHILIPS_KEY]: { hub_count: 2, qty_1c: 3 } },
+          })],
+        },
+      );
+
+      expect(container.querySelector('[data-compare-status="diff"]')).not.toBeNull();
+      expect(container.querySelector('[data-compare-status="manual"]')).not.toBeNull();
+    });
+
+    it('shows only the automatic chip when it already matches', () => {
+      const { container } = renderWithMarks({}, { marks: { 100021: MARK }, summaries: [compareSummaryEntry()] });
+
+      expect(container.querySelector('[data-compare-status="match"]')).not.toBeNull();
+      expect(container.querySelector('[data-compare-status="manual"]')).toBeNull();
+    });
+
+    it('offers set/unset in the row menu only to users who may mark', () => {
+      const onAction = vi.fn();
+      const { unmount } = renderWithMarks({ onAction }, { canMark: true });
+      fireEvent.click(screen.getByText('Philips monitor'));
+      fireEvent.click(screen.getByText('Отметить сверку с 1С'));
+      expect(onAction).toHaveBeenCalledWith('one_c_mark', expect.objectContaining({ INV_NO: '100021' }));
+      unmount();
+
+      const onActionMarked = vi.fn();
+      const marked = renderWithMarks({ onAction: onActionMarked }, { canMark: true, marks: { 100021: MARK } });
+      fireEvent.click(screen.getByText('Philips monitor'));
+      expect(screen.queryByText('Отметить сверку с 1С')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByText('Снять отметку 1С'));
+      expect(onActionMarked).toHaveBeenCalledWith('one_c_unmark', expect.objectContaining({ INV_NO: '100021' }));
+      marked.unmount();
+
+      renderWithMarks({}, { canMark: false });
+      fireEvent.click(screen.getByText('Philips monitor'));
+      expect(screen.queryByRole('menu')).toBeInTheDocument();
+      expect(screen.queryByText(/отметк.* 1С|сверку с 1С/)).not.toBeInTheDocument();
+    });
   });
 });

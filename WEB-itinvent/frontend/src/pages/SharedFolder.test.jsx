@@ -6,11 +6,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   mockGetPublicFolder,
   mockCreateGrant,
+  mockCreateArchiveGrant,
   mockBuildGrantUrl,
   mockTriggerNativeDownload,
 } = vi.hoisted(() => ({
   mockGetPublicFolder: vi.fn(),
   mockCreateGrant: vi.fn(),
+  mockCreateArchiveGrant: vi.fn(),
   mockBuildGrantUrl: vi.fn(),
   mockTriggerNativeDownload: vi.fn(),
 }));
@@ -19,6 +21,7 @@ vi.mock('../api/myFiles', () => ({
   myFilesAPI: {
     getPublicFolder: mockGetPublicFolder,
     createPublicFolderDownloadGrant: mockCreateGrant,
+    createPublicFolderArchiveGrant: mockCreateArchiveGrant,
     buildDownloadGrantUrl: mockBuildGrantUrl,
     triggerNativeDownload: mockTriggerNativeDownload,
     buildPublicFolderPreviewUrl: vi.fn(() => '/preview'),
@@ -49,6 +52,7 @@ describe('SharedFolder page', () => {
     vi.clearAllMocks();
     mockGetPublicFolder.mockResolvedValue(folderPayload);
     mockCreateGrant.mockResolvedValue({ download_path: '/grant/abc' });
+    mockCreateArchiveGrant.mockResolvedValue({ download_path: '/grant/folder-zip' });
     mockBuildGrantUrl.mockReturnValue('https://hub/grant/abc');
     mockTriggerNativeDownload.mockReturnValue(true);
   });
@@ -74,5 +78,29 @@ describe('SharedFolder page', () => {
     expect(await screen.findByText('a.txt')).toBeInTheDocument();
     expect(mockCreateGrant).toHaveBeenCalledWith('tok-1', 'f1');
     expect(mockTriggerNativeDownload).toHaveBeenCalledWith('https://hub/grant/abc');
+  });
+
+  it('downloads the whole folder as a zip archive', async () => {
+    mockBuildGrantUrl.mockReturnValue('https://hub/grant/folder-zip');
+    renderPage();
+    await screen.findByText('a.txt');
+
+    fireEvent.click(screen.getByTestId('shared-folder-download-all'));
+
+    expect(mockCreateArchiveGrant).toHaveBeenCalledWith('tok-1');
+    await screen.findByText('a.txt');
+    expect(mockTriggerNativeDownload).toHaveBeenCalledWith('https://hub/grant/folder-zip');
+    expect(mockCreateGrant).not.toHaveBeenCalled();
+  });
+
+  it('keeps the list usable when the archive download fails', async () => {
+    mockCreateArchiveGrant.mockRejectedValue({ response: { status: 404 } });
+    renderPage();
+    await screen.findByText('a.txt');
+
+    fireEvent.click(screen.getByTestId('shared-folder-download-all'));
+
+    expect(await screen.findByText(/Папка недоступна/i)).toBeInTheDocument();
+    expect(screen.getByTestId('shared-folder-file-f1')).toBeInTheDocument();
   });
 });

@@ -69,7 +69,13 @@ def isolated_network_service(temp_dir, monkeypatch):
         "get_local_store",
         lambda: SimpleNamespace(db_path=str(Path(temp_dir) / "network_export.db")),
     )
+    monkeypatch.setattr(
+        network_service_module,
+        "is_app_database_configured",
+        lambda: False,
+    )
     service = network_service_module.NetworkService()
+    assert service.db_path == Path(temp_dir) / "network_export.db"
     now = "2026-03-13T00:00:00+00:00"
     with service._connect() as conn:
         conn.execute(

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import conftest
 
 import importlib
 import sys
@@ -480,13 +481,10 @@ def test_ai_conversation_summary_exposes_ai_bot_id(chat_env, tmp_path, monkeypat
     from backend.appdb.models import AppBase, AppAiBotConversation
     from backend.appdb import db as appdb_db_module
 
+    conftest.copy_app_metadata_schema(tmp_path / "app.sqlite3")
     engine = create_engine(
         f"sqlite:///{tmp_path / 'app.sqlite3'}",
         execution_options={"schema_translate_map": {"app": None, "system": None}},
-    )
-    AppBase.metadata.create_all(
-        engine,
-        tables=[t for t in AppBase.metadata.sorted_tables if t.name == "ai_bot_conversations"],
     )
 
     @contextmanager

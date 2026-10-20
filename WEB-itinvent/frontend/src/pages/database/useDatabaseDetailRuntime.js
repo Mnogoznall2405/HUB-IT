@@ -65,6 +65,7 @@ export function useDatabaseDetailRuntime({
   setAllEquipment,
   setFilteredData,
   onRecentActivity,
+  onDataVersion,
 } = {}) {
   const [detailModal, setDetailModal] = useState({ open: false, data: null, loading: false, invNo: null });
   const [detailEditMode, setDetailEditMode] = useState(false);
@@ -547,6 +548,9 @@ export function useDatabaseDetailRuntime({
       setDetailEditMode(false);
       setDetailSuccess('Изменения сохранены.');
       setAllEquipment?.((prev) => upsertItemInGrouped(prev, toGroupedItem(updated)));
+      // data_version из PATCH переводит базовую линию и пинает сверку 1С —
+      // иначе отредактированный PART_NO оставлял старую зелёную отметку.
+      onDataVersion?.(updated?.data_version);
       onRecentActivity?.({
         invNo: detailModal.invNo,
         actionType: 'edit',
@@ -558,7 +562,7 @@ export function useDatabaseDetailRuntime({
     } finally {
       setDetailSaving(false);
     }
-  }, [canDatabaseWrite, detailModal?.invNo, detailForm, detailInitialForm, onRecentActivity, setAllEquipment]);
+  }, [canDatabaseWrite, detailModal?.invNo, detailForm, detailInitialForm, onDataVersion, onRecentActivity, setAllEquipment]);
 
   const handleDetailEditKeyDown = useCallback((event) => {
     if (event.key !== 'Enter') return;

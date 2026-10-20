@@ -126,9 +126,12 @@ export default function useChatThreadSection(ctx) {
     handleAddGroupMembers,
     handleRemoveGroupMember,
     handleUpdateGroupMemberRole,
+    handleSetGroupMemberRestriction,
     handleTransferGroupOwnership,
     handleLeaveGroup,
     handleUpdateGroupProfile,
+    handleUploadGroupAvatar,
+    handleRemoveGroupAvatar,
     settingsUpdating,
     user,
     updateConversationSettings,
@@ -395,9 +398,12 @@ export default function useChatThreadSection(ctx) {
         handleAddGroupMembers={handleAddGroupMembers}
         handleRemoveGroupMember={handleRemoveGroupMember}
         handleUpdateGroupMemberRole={handleUpdateGroupMemberRole}
+        handleSetGroupMemberRestriction={handleSetGroupMemberRestriction}
         handleTransferGroupOwnership={handleTransferGroupOwnership}
         handleLeaveGroup={handleLeaveGroup}
         handleUpdateGroupProfile={handleUpdateGroupProfile}
+        handleUploadGroupAvatar={handleUploadGroupAvatar}
+        handleRemoveGroupAvatar={handleRemoveGroupAvatar}
         settingsUpdating={settingsUpdating}
         openMediaViewer={openMediaViewer}
         openTaskFromChat={openTaskFromChat}
@@ -420,7 +426,10 @@ export default function useChatThreadSection(ctx) {
       handleTaskPanelUpdated,
       handleTransferGroupOwnership,
       handleUpdateGroupMemberRole,
+      handleSetGroupMemberRestriction,
       handleUpdateGroupProfile,
+      handleUploadGroupAvatar,
+      handleRemoveGroupAvatar,
       messages,
       openingAiBotId,
       navigate,

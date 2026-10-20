@@ -82,6 +82,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
     private readonly DispatcherTimer _performanceTimer;
     private readonly DispatcherTimer _downloadFailureTimer;
     private readonly DesktopWebViewHost _webViewHost;
+    private readonly DesktopWebViewFullScreen _fullScreen;
     private readonly DesktopWebViewEnvironmentProvider _webViewEnvironmentProvider;
     private readonly DesktopWindowManager _windowManager;
     private readonly DesktopWindowController _windowController;
@@ -203,6 +204,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
             DeferUpdateButton.Visibility = Visibility.Collapsed;
         }
         _webViewHost = new DesktopWebViewHost(BrowserHost, _webViewEnvironmentProvider);
+        _fullScreen = new DesktopWebViewFullScreen(this, BrowserHost);
         _windowController = new DesktopWindowController(this);
         UpdateMaximizeRestoreButton();
         UpdateNewWindowButtonState();
@@ -677,7 +679,8 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
             return nint.Zero;
         }
 
-        if (DesktopWindowController.TryHandleWindowMessage(
+        if (!_fullScreen.IsActive
+            && DesktopWindowController.TryHandleWindowMessage(
                 windowHandle,
                 message,
                 longParameter))
@@ -1337,6 +1340,8 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         core.ServerCertificateErrorDetected += Core_ServerCertificateErrorDetected;
         core.ProcessFailed += Core_ProcessFailed;
         core.DownloadStarting += Core_DownloadStarting;
+        core.PermissionRequested += Core_PermissionRequested;
+        _fullScreen.Attach(core);
         _desktopBridge = new DesktopBridgeHost(
             core,
             _navigationPolicy,
@@ -1365,6 +1370,11 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
             _ = core.AddScriptToExecuteOnDocumentCreatedAsync(
                 DesktopPerfBench.CreateDocumentCreatedScript());
         }
+    }
+
+    private void Core_PermissionRequested(object? sender, CoreWebView2PermissionRequestedEventArgs e)
+    {
+        DesktopPermissionPolicy.Apply(_navigationPolicy, e);
     }
 
     private void Core_NavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)

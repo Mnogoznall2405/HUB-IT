@@ -2,6 +2,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { Linking } from 'react-native';
+import { beginExternalActivity } from '../auth/externalActivity';
 import { validateUploadBatch, validateUploadFile } from './filePolicy';
 
 export type NativeAttachmentSource = 'camera' | 'gallery' | 'document' | 'voice' | 'gif';
@@ -54,6 +55,19 @@ export async function pickNativeAttachment(
 }
 
 export async function pickNativeAttachments(
+  source: NativeAttachmentSource,
+): Promise<NativePickedFile[]> {
+  // Системный пикер уводит приложение в фон: блокировка по отпечатку не должна
+  // срабатывать после каждого снимка или выбора файла.
+  const endExternalActivity = beginExternalActivity();
+  try {
+    return await pickNativeAttachmentsInner(source);
+  } finally {
+    endExternalActivity();
+  }
+}
+
+async function pickNativeAttachmentsInner(
   source: NativeAttachmentSource,
 ): Promise<NativePickedFile[]> {
   if (source === 'document') {

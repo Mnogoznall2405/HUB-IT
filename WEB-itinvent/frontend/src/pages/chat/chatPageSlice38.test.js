@@ -5,8 +5,6 @@ import {
   resolveChatMobileView,
   shouldDisableChatMobileMotion,
 } from './chatMobilePresentation';
-import useChatPageAnchorScrollBridge from './useChatPageAnchorScrollBridge';
-import useChatMobileThreadAnimation from './useChatMobileThreadAnimation';
 import { syncChatPageCollectionRefs } from './syncChatPageCollectionRefs';
 
 describe('chatMobilePresentation', () => {
@@ -96,14 +94,3 @@ describe('syncChatPageCollectionRefs', () => {
   });
 });
 
-describe('useChatPageAnchorScrollBridge', () => {
-  it('exports a hook factory function', () => {
-    expect(typeof useChatPageAnchorScrollBridge).toBe('function');
-  });
-});
-
-describe('useChatMobileThreadAnimation', () => {
-  it('exports a hook factory function', () => {
-    expect(typeof useChatMobileThreadAnimation).toBe('function');
-  });
-});

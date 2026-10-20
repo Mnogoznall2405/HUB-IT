@@ -24,9 +24,11 @@ import {
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import CloseIcon from '@mui/icons-material/Close';
 import QrCode2Icon from '@mui/icons-material/QrCode2';
+import QrCodeScannerIcon from '@mui/icons-material/QrCodeScanner';
 
 import { LoadingSpinner, StatusChip } from '../../components/common';
 import { readFirst, toIdOrNull, toNumberOrNull } from './databaseRecordModel';
+import { getItemCapabilityFlags } from './equipmentModel';
 import EquipmentDetailActsPanel from './EquipmentDetailActsPanel';
 import EquipmentDetailHistoryPanel from './EquipmentDetailHistoryPanel';
 import EquipmentDetailPhotosPanel from './EquipmentDetailPhotosPanel';
@@ -446,11 +448,13 @@ const EquipmentDetailDialog = memo(function EquipmentDetailDialog({
   formatHistoryValue,
   formatHistoryTransition,
   onOpenEmployee = null,
+  onConsumeConsumableQr = null,
   buildWarehouseReturnContext = null,
   disableEnforceFocus = false,
   stackAboveParent = false,
 }) {
   const showGeneralActions = Boolean(data) && tab === 'general';
+  const detailIsPrinterOrMfu = Boolean(data) && getItemCapabilityFlags(data).isPrinterOrMfu;
 
   const renderTabContent = () => (
     <>
@@ -613,6 +617,15 @@ const EquipmentDetailDialog = memo(function EquipmentDetailDialog({
             </Button>
           )
         )}
+        {showGeneralActions && !editMode && canWrite && detailIsPrinterOrMfu && onConsumeConsumableQr ? (
+          <Button
+            onClick={onConsumeConsumableQr}
+            variant="outlined"
+            startIcon={<QrCodeScannerIcon />}
+          >
+            Списать расходник
+          </Button>
+        ) : null}
         {showGeneralActions && !editMode && (
           <Button
             onClick={onOpenQr}

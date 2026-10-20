@@ -2410,6 +2410,43 @@ describe('ChatThread composer', () => {
     expect(composer).toHaveValue('@assignee ');
   });
 
+  it('offers @все only to the owner and moderators of a group', () => {
+    const members = [
+      { user: { id: 1 }, member_role: 'owner' },
+      { user: { id: 2 }, member_role: 'member' },
+    ];
+    const typeAt = () => {
+      fireEvent.change(screen.getByTestId('chat-composer-textarea'), {
+        target: { value: '@', selectionStart: 1, selectionEnd: 1 },
+      });
+    };
+    const renderAs = (currentUserId, kind = 'group') => renderWithTheme(
+      <ChatThread
+        {...buildThreadProps({
+          currentUserId,
+          activeConversation: { id: 'g-1', title: 'Группа', kind, unread_count: 0, members },
+          activeConversationId: 'g-1',
+          mentionCandidates: [{ id: 2, username: 'assignee', full_name: 'Task Assignee' }],
+        })}
+      />,
+    );
+
+    const owner = renderAs(1);
+    typeAt();
+    expect(screen.getByTestId('chat-mention-option-все')).toBeInTheDocument();
+    owner.unmount();
+
+    const member = renderAs(2);
+    typeAt();
+    expect(screen.getByTestId('chat-mention-option-assignee')).toBeInTheDocument();
+    expect(screen.queryByTestId('chat-mention-option-все')).not.toBeInTheDocument();
+    member.unmount();
+
+    renderAs(1, 'direct');
+    typeAt();
+    expect(screen.queryByTestId('chat-mention-option-все')).not.toBeInTheDocument();
+  });
+
   it('keeps mobile Enter reserved for mention insertion when mention suggestions are open', () => {
     const onComposerKeyDown = vi.fn();
 
@@ -3724,6 +3761,38 @@ describe('chat stability UI (package E)', () => {
     );
 
     expect(screen.getByTestId('chat-ai-agent-disabled')).toHaveTextContent('Агент отключён администратором');
+    expect(screen.queryByTestId('chat-composer-textarea')).not.toBeInTheDocument();
+  });
+
+  it('shows the posting plate only to plain members of a managers-only group and to everyone in a closed one', () => {
+    const members = [
+      { user: { id: 1 }, member_role: 'owner' },
+      { user: { id: 2 }, member_role: 'member' },
+    ];
+    const group = (posting_policy) => ({
+      id: 'g-1', title: 'Группа', kind: 'group', unread_count: 0, posting_policy, members,
+    });
+    const renderAs = (currentUserId, posting_policy) => renderWithTheme(
+      <ChatThread
+        {...buildThreadProps({
+          currentUserId,
+          activeConversation: group(posting_policy),
+          activeConversationId: 'g-1',
+        })}
+      />,
+    );
+
+    const managersMember = renderAs(2, 'managers');
+    expect(screen.getByTestId('chat-posting-restricted')).toHaveTextContent('только владелец и модераторы');
+    managersMember.unmount();
+
+    const managersOwner = renderAs(1, 'managers');
+    expect(screen.queryByTestId('chat-posting-restricted')).not.toBeInTheDocument();
+    expect(screen.getByTestId('chat-composer-textarea')).toBeInTheDocument();
+    managersOwner.unmount();
+
+    renderAs(1, 'closed');
+    expect(screen.getByTestId('chat-posting-restricted')).toHaveTextContent('Группа закрыта');
     expect(screen.queryByTestId('chat-composer-textarea')).not.toBeInTheDocument();
   });
 

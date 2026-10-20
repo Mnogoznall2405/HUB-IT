@@ -29,18 +29,7 @@ describe('useChatOptimisticThreadMessages', () => {
     unmount();
   });
 
-  it('mounts without throwing', async () => {
-    const { renderHook } = await import('@testing-library/react');
-
-    const { unmount } = renderHook(() => useChatOptimisticThreadMessages({
-      optimisticMessageSeqRef: { current: 0 },
-      user: { id: 1, username: 'alice' },
-    }));
-
-    unmount();
-  });
-
-  it('createOptimisticFileMessage increments seq ref', async () => {
+    it('createOptimisticFileMessage increments seq ref', async () => {
     const { renderHook } = await import('@testing-library/react');
     const optimisticMessageSeqRef = { current: 0 };
 

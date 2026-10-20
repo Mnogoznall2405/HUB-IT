@@ -39,6 +39,7 @@ from backend.services.one_c_catalog_compact_flags import opaque_routing_user_key
 from backend.services.warehouse_1c_service import (
     Warehouse1CCatalogUnavailableError,
     Warehouse1CQueryError,
+    Warehouse1CUnavailableError,
     Warehouse1CValidationError,
     warehouse_1c_service,
 )
@@ -70,6 +71,8 @@ async def _run_or_raise(coro):
                 "message": str(exc),
             },
         ) from exc
+    except Warehouse1CUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Warehouse1CQueryError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -265,6 +268,7 @@ async def get_dismissed_employee_warehouses(
 
 @router.get("/employee-compare-summary")
 async def get_employee_compare_summary(
+    refresh: bool = Query(False),
     current_user: User = Depends(require_permission(PERM_WAREHOUSE_1C_READ)),
     db_id: str | None = Depends(get_current_database_id),
 ):
@@ -274,7 +278,7 @@ async def get_employee_compare_summary(
         requested_scope="current",
     )
     return await _run_or_raise(
-        warehouse_1c_service.get_employee_compare_summary(db_id=target_db_id)
+        warehouse_1c_service.get_employee_compare_summary(db_id=target_db_id, refresh=refresh)
     )
 
 

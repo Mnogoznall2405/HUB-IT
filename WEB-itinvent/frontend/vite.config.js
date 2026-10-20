@@ -65,7 +65,6 @@ const NODE_TEST_FILES = [
   'src/pages/chat/chatActiveConversationModel.test.js',
   'src/pages/chat/chatConversationModel.test.js',
   'src/pages/chat/chatKeyedInFlight.test.js',
-  'src/pages/chat/chatMobileModel.test.js',
   'src/pages/chat/chatOptimisticMessages.test.js',
   'src/pages/chat/chatThreadHistory.test.js',
   'src/pages/chat/chatThreadMessageMerge.test.js',
@@ -106,7 +105,7 @@ const TEST_PROJECTS = [
     test: {
       name: 'ui-dom',
       environment: 'jsdom',
-      exclude: [...configDefaults.exclude, ...NODE_TEST_FILES],
+      exclude: [...configDefaults.exclude, ...NODE_TEST_FILES, 'e2e/**'],
     },
   },
 ];

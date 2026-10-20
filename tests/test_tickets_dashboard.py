@@ -10,6 +10,7 @@ Tests cover:
 - Top assignees by load (top 5)
 """
 from __future__ import annotations
+import conftest
 
 import sys
 from contextlib import contextmanager
@@ -76,7 +77,7 @@ def service(temp_dir, monkeypatch):
         cursor.execute("PRAGMA foreign_keys=OFF")
         cursor.close()
 
-    AppBase.metadata.create_all(engine, checkfirst=True)
+    conftest.copy_app_metadata_schema_for_url(url)
 
     SessionLocal = sessionmaker(bind=engine)
 
@@ -456,7 +457,7 @@ class TestDashboardEmpty:
             cursor.execute("PRAGMA foreign_keys=OFF")
             cursor.close()
 
-        AppBase.metadata.create_all(engine, checkfirst=True)
+        conftest.copy_app_metadata_schema_for_url(url)
 
         SessionLocal = sessionmaker(bind=engine)
 

@@ -362,6 +362,17 @@ def _build_response_format(
     }
 
 
+def _schema_has_open_objects(value: Any) -> bool:
+    if isinstance(value, dict):
+        if (value.get("type") == "object" or "properties" in value or "additionalProperties" in value):
+            if value.get("additionalProperties") is not False:
+                return True
+        return any(_schema_has_open_objects(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_schema_has_open_objects(item) for item in value)
+    return False
+
+
 def _usage_dict(completion: Any, *, model: str) -> dict[str, Any]:
     usage = getattr(completion, "usage", None)
     return {
@@ -640,13 +651,20 @@ class OpenRouterClient:
                 call=lambda: _request(use_schema=use_schema, use_response_healing=use_response_healing),
             )
 
+        # Claude requires closed objects in structured output. RouterAI silently
+        # compiles our dynamic tool args/artifacts to {}, losing their contents.
+        # Keep JSON parsing and server-side tool validation, but avoid that mode
+        # for open schemas; explicitly closed Claude schemas remain structured.
+        use_schema = bool(response_schema) and not (
+            resolved_model.lower().startswith("anthropic/") and _schema_has_open_objects(response_schema)
+        )
         try:
             completion = _request_with_transient_retry(
-                use_schema=bool(response_schema),
+                use_schema=use_schema,
                 use_response_healing=bool(response_healing),
             )
         except Exception as exc:
-            if (bool(response_schema) or bool(response_healing)) and _is_json_mode_retryable_error(exc):
+            if (use_schema or bool(response_healing)) and _is_json_mode_retryable_error(exc):
                 logger.warning(
                     "RouterAI strict JSON mode failed; retrying with json_object: model=%s error=%s",
                     resolved_model,

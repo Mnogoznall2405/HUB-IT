@@ -78,7 +78,12 @@ def setup_logging():
     root_logger.setLevel(logging.INFO)
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
-    
+
+    # httpx/httpcore логируют полный URL запроса на INFO, а в URL Telegram Bot API
+    # зашит токен бота — не пишем эти записи в bot.log и консоль.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     return logging.getLogger(__name__)
 
 

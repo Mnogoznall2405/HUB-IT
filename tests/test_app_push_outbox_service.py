@@ -1,4 +1,5 @@
 from __future__ import annotations
+import conftest
 
 import importlib
 import runpy
@@ -30,7 +31,7 @@ REVISION = WEB_ROOT / "backend" / "alembic" / "versions" / "20260822_0101_app_pu
 @pytest.fixture
 def outbox_env(tmp_path, monkeypatch):
     database_url = f"sqlite+pysqlite:///{(tmp_path / 'app-push-outbox.db').as_posix()}"
-    initialize_app_schema(database_url)
+    conftest.copy_app_schema_for_url(database_url)
     monkeypatch.setenv("APP_PUSH_OUTBOX_ENABLED", "1")
     monkeypatch.setattr(outbox_module, "is_app_database_configured", lambda: True)
     monkeypatch.setattr(outbox_module, "app_session", lambda: app_session(database_url))

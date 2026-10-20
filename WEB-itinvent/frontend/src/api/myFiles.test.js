@@ -19,13 +19,13 @@ vi.mock('./client', () => ({
 
 import {
   myFilesAPI,
-  MY_FILES_MAX_UPLOAD_BYTES,
   myFilesRetentionOptions,
 } from './myFiles';
 
 describe('myFilesAPI', () => {
   beforeEach(() => {
     window.localStorage.clear();
+    window.localStorage.setItem('user', JSON.stringify({ id: 7, username: 'upload-test' }));
     mockGet.mockReset();
     mockPost.mockReset();
     mockPut.mockReset();
@@ -68,7 +68,7 @@ describe('myFilesAPI', () => {
         mime_type: 'text/csv',
         folder_id: null,
       },
-      { signal: undefined },
+      { signal: expect.any(AbortSignal) },
     );
     expect(mockPut).toHaveBeenCalledTimes(Math.ceil(file.size / 8));
     expect(mockPut.mock.calls.map((call) => call[2].params.offset)).toEqual([0, 8, 16]);
@@ -79,7 +79,7 @@ describe('myFilesAPI', () => {
     expect(mockPost).toHaveBeenLastCalledWith(
       '/my-files/upload-sessions/reserved-file/complete',
       null,
-      { signal: undefined, timeout: 120_000 },
+      { signal: expect.any(AbortSignal), timeout: 120_000 },
     );
     expect(onUploadProgress).toHaveBeenLastCalledWith({ loaded: file.size, total: file.size });
   });
@@ -98,7 +98,7 @@ describe('myFilesAPI', () => {
 
     expect(mockGet).toHaveBeenCalledWith(
       '/my-files/upload-sessions/reserved-file',
-      { signal: undefined },
+      { signal: expect.any(AbortSignal) },
     );
     expect(mockDelete).not.toHaveBeenCalled();
   });
@@ -123,7 +123,7 @@ describe('myFilesAPI', () => {
 
       expect(mockPut.mock.calls.length).toBeGreaterThan(1);
       expect(mockDelete).not.toHaveBeenCalled();
-      const saved = JSON.parse(window.localStorage.getItem('hubit-my-files-uploads') || '{}');
+      const saved = JSON.parse(window.localStorage.getItem('hubit-my-files-uploads:7') || '{}');
       const resumeKey = `fail.bin|${file.size}||${file.lastModified}`;
       expect(saved[resumeKey]).toEqual(expect.objectContaining({ fileId: 'reserved-file' }));
     } finally {
@@ -133,7 +133,7 @@ describe('myFilesAPI', () => {
 
   it('resumes a persisted session instead of creating a new one', async () => {
     const file = new File(['resume-me'], 'resume.bin', { type: 'application/octet-stream' });
-    window.localStorage.setItem('hubit-my-files-uploads', JSON.stringify({
+    window.localStorage.setItem('hubit-my-files-uploads:7', JSON.stringify({
       [`resume.bin|${file.size}||${file.lastModified}`]: { fileId: 'reserved-file', savedAt: Date.now() },
     }));
     mockGet.mockResolvedValueOnce({
@@ -144,7 +144,7 @@ describe('myFilesAPI', () => {
 
     expect(mockPost).not.toHaveBeenCalledWith('/my-files/upload-sessions', expect.anything(), expect.anything());
     expect(mockPut).toHaveBeenCalled();
-    expect(JSON.parse(window.localStorage.getItem('hubit-my-files-uploads') || '{}')).toEqual({});
+    expect(JSON.parse(window.localStorage.getItem('hubit-my-files-uploads:7') || '{}')).toEqual({});
   });
 
   it('does not retry permanent client errors while still aborting with the real reason', async () => {
@@ -164,7 +164,7 @@ describe('myFilesAPI', () => {
       '/my-files/upload-sessions/reserved-file',
       {
         params: { reason: 'Quota exceeded' },
-        signal: undefined,
+        signal: expect.any(AbortSignal),
       },
     );
   });
@@ -198,7 +198,7 @@ describe('myFilesAPI', () => {
     expect(mockPost).toHaveBeenLastCalledWith(
       '/my-files/upload-sessions/reserved-file/complete',
       null,
-      { signal: undefined, timeout: 120_000 },
+      { signal: expect.any(AbortSignal), timeout: 120_000 },
     );
   });
 
@@ -249,7 +249,7 @@ describe('myFilesAPI', () => {
       '/my-files/upload-sessions/reserved-file',
       {
         params: { reason: 'Upload chunk is empty' },
-        signal: undefined,
+        signal: expect.any(AbortSignal),
       },
     );
   });
@@ -280,11 +280,7 @@ describe('myFilesAPI', () => {
     expect(myFilesRetentionOptions).toContain(30);
   });
 
-  it('keeps the client sanity bound at the backend quota ceiling', () => {
-    expect(MY_FILES_MAX_UPLOAD_BYTES).toBe(400 * 1024 * 1024 * 1024);
-  });
-
-  it('loads a public shared file without triggering the login redirect', async () => {
+    it('loads a public shared file without triggering the login redirect', async () => {
     await expect(myFilesAPI.getPublicFile('public-token')).resolves.toEqual({ file_name: 'public.txt' });
 
     expect(mockGet).toHaveBeenCalledWith('/my-files/public/public-token', {

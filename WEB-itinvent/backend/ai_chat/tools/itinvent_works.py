@@ -25,10 +25,10 @@ def _build_source(database_id: object) -> dict:
 
 
 def _resolve_tool_database_id(context: AiToolExecutionContext, args: BaseModel) -> str:
-    requested = _normalize_text(getattr(args, "database_id", None))
-    if requested:
-        return requested
-    return _normalize_text(getattr(context, "effective_database_id", None))
+    # Same access check as tools/itinvent.py: the model-supplied database_id is honoured only
+    # if the user may use it (non-admin: only the effective database; admin: per multi-db mode).
+    requested = getattr(args, "database_id", None)
+    return _normalize_text(context.resolve_tool_database_id(requested))
 
 
 def _database_error(tool_id: str, database_id: object) -> AiToolResult:

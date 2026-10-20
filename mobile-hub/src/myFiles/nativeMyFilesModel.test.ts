@@ -4,7 +4,6 @@ import {
   formatMyFileSize,
   isMyFileProcessing,
   isMyFileReady,
-  MY_FILES_MAX_FILE_BYTES,
   myFileIcon,
   nativeMyFilePreviewKind,
   myFileStatusLabel,
@@ -49,10 +48,6 @@ it('formats sizes and maps status/type metadata', () => {
 it('keeps the server retention allowlist', () => {
   expect(normalizeMyFilesRetention(30)).toBe(30);
   expect(normalizeMyFilesRetention(14)).toBe(1);
-});
-
-it('uses the chunked upload reservation limit from the backend', () => {
-  expect(MY_FILES_MAX_FILE_BYTES).toBe(400 * 1024 * 1024 * 1024);
 });
 
 it('builds only a trusted public HUB path', () => {

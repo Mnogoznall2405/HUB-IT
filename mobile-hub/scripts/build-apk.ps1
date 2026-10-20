@@ -359,6 +359,18 @@ signingConfigs {
   return $expectedSigner
 }
 
+function Get-FileSha256($path) {
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  $stream = [IO.File]::OpenRead($path)
+  try {
+    $bytes = $sha.ComputeHash($stream)
+  } finally {
+    $stream.Dispose()
+    $sha.Dispose()
+  }
+  return ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+}
+
 function Find-AndroidBuildTool($name) {
   $buildToolsRoot = Join-Path $env:ANDROID_HOME 'build-tools'
   $candidate = Get-ChildItem -LiteralPath $buildToolsRoot -Directory |
@@ -423,7 +435,7 @@ function Write-ApkAudit($apkPath, $artifactName, $expectedSigner) {
     version = $versionName
     version_code = $versionCode
     size_bytes = $item.Length
-    sha256 = (Get-FileHash -LiteralPath $apkPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    sha256 = (Get-FileSha256 $apkPath)
     signer_sha256 = $signer
     signing = if ($expectedSigner) { 'release' } else { 'debug-preview' }
     abis = $abis

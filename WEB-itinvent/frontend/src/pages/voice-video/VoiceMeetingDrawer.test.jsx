@@ -2194,3 +2194,122 @@ describe('VoiceMeetingDrawer: доработка по «Ревью 14» (T55, P6
     expect(within(row).getByText('встречался ещё в 2 записях')).toBeInTheDocument();
   });
 });
+
+describe('VoiceMeetingDrawer: шкала, направления, поручения (Ревью 15)', () => {
+  const segs15 = [
+    { speaker: 'S1', text: 'первая реплика', start: 0, end: 30 },
+    { speaker: 'S2', text: 'вторая реплика', start: 60, end: 90 },
+    { speaker: 'S1', text: 'третья реплика', start: 120, end: 150 },
+  ];
+  const render15 = () => render(
+    <ThemeProvider theme={theme}>
+      <VoiceMeetingDrawer
+        open
+        meeting={makeMeeting('A_base', { has_media: true })}
+        onClose={vi.fn()}
+        canManage={false}
+        voices={[]}
+      />
+    </ThemeProvider>,
+  );
+  const setDuration = (sec) => {
+    const video = document.querySelector('video');
+    act(() => {
+      Object.defineProperty(video, 'duration', { value: sec, configurable: true });
+      fireEvent(video, new Event('loadedmetadata'));
+    });
+    return video;
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    globalThis.__vlistCalls = { scrollToItem: [], scrollTo: [] };
+    window.HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
+    window.HTMLMediaElement.prototype.pause = vi.fn();
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+    window.localStorage.removeItem('voiceMeeting.assignTicks');
+    voiceJobsAPI.getTranscript.mockResolvedValue({ segments: segs15, total: 3 });
+    voiceJobsAPI.getTopics.mockResolvedValue({
+      items: [
+        { title: 'Тема первая', start: 0, end: 90 },
+        { title: 'Вторая тема', start: 90, end: 180 },
+      ],
+    });
+    voiceJobsAPI.getAssignments.mockResolvedValue({
+      items: [
+        { num: 1, time: '01:00', task: 'Сделать отчёт', assignee: 'Иван', deadline: '' },
+        { num: 2, time: '01:02', task: 'Согласовать смету', assignee: '', deadline: '' },
+        { num: 3, time: '02:30', task: 'Подготовить акт приёмки', assignee: 'Ольга', deadline: '' },
+      ],
+    });
+    voiceJobsAPI.getAssignmentStatuses.mockResolvedValue({ items: [] });
+  });
+
+  it('близкие поручения на шкале сливаются в одну засечку; засечки можно скрыть', async () => {
+    render15();
+    await screen.findByText('первая реплика');
+    const video = setDuration(180);
+    const slider = await screen.findByRole('slider', { name: 'Шкала записи' });
+    // 1:00 и 1:02 — ближе 1,5% шкалы → одна засечка-группа; 2:30 — отдельно.
+    const group = within(slider).getByRole('button', { name: /Поручения №1, №2/ });
+    expect(group.getAttribute('title')).toMatch(/№1 · 01:00 · Сделать отчёт\n№2 · 01:02 · Согласовать смету/);
+    expect(within(slider).getByRole('button', { name: /Поручение №3 · 02:30/ })).toBeInTheDocument();
+    expect(slider.querySelectorAll('[data-assign-tick]')).toHaveLength(2);
+    fireEvent.click(group);
+    expect(video.currentTime).toBe(60);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Поручения на шкале' }));
+    expect(slider.querySelectorAll('[data-assign-tick]')).toHaveLength(0);
+    expect(window.localStorage.getItem('voiceMeeting.assignTicks')).toBe('0');
+  });
+
+  it('клик по направлению в «Сводке» открывает темы этого направления, фильтр снимается', async () => {
+    voiceJobsAPI.getSummary.mockResolvedValueOnce({
+      available: true, summary: '', decisions: [], open_questions: [], participants: [], keywords: [],
+      topics: [
+        { title: 'Тема первая', start: 0, end: 90, domain_label: 'Финансы' },
+        { title: 'Вторая тема', start: 90, end: 180, domain_label: 'ИТ' },
+      ],
+    });
+    render15();
+    fireEvent.click(await screen.findByRole('button', { name: /Финансы · 50%/ }));
+    await waitFor(() => expect(screen.getByRole('tab', { name: /^Темы/ })).toHaveAttribute('aria-selected', 'true'));
+    expect(await screen.findByRole('button', { name: /Перейти к теме «Тема первая»/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Перейти к теме «Вторая тема»/ })).not.toBeInTheDocument();
+
+    const filterChip = screen.getByRole('button', { name: 'Фильтр по направлению: Финансы' });
+    fireEvent.click(within(filterChip).getByTestId('CancelIcon'));
+    expect(await screen.findByRole('button', { name: /Перейти к теме «Вторая тема»/ })).toBeInTheDocument();
+  });
+
+  it('поручение раскрывается по клику: полный текст и «Смотреть с …» перематывает запись', async () => {
+    render15();
+    await screen.findByText('первая реплика');
+    const video = setDuration(180);
+    fireEvent.click(screen.getByRole('tab', { name: /^Поручения/ }));
+    const row = await screen.findByRole('button', { name: 'Развернуть поручение №3' });
+    expect(screen.queryByRole('button', { name: 'Смотреть с 02:30' })).not.toBeInTheDocument();
+    fireEvent.click(row);
+    expect(row).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(await screen.findByRole('button', { name: 'Смотреть с 02:30' }));
+    expect(video.currentTime).toBe(150);
+
+    // «Свернуть все» сворачивает раскрытые, «Развернуть все» раскрывает весь список.
+    fireEvent.click(screen.getByRole('button', { name: 'Свернуть все' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Смотреть с/ })).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Развернуть все' }));
+    expect(await screen.findAllByRole('button', { name: /Смотреть с/ })).toHaveLength(3);
+  });
+
+  it('«К текущему месту» — в строке инструментов текста, а не плавающим чипом', async () => {
+    render15();
+    await screen.findByText('первая реплика');
+    const video = setDuration(180);
+    act(() => { video.currentTime = 65; fireEvent(video, new Event('seeked')); });
+    fireEvent.wheel(screen.getByText('вторая реплика'));
+    const back = await screen.findByRole('button', { name: 'К текущему месту' });
+    expect(back.closest('[data-toolbar="transcript-filters"]')).toBeTruthy();
+    fireEvent.click(back);
+    expect(screen.getByRole('button', { name: 'Следить за записью' })).toHaveAttribute('aria-pressed', 'true');
+  });
+});

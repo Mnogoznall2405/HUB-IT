@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from backend.services.warehouse_1c_process_bridge import Warehouse1CProcessBridgeValidationError
+
 
 _service: Any | None = None
 
@@ -40,7 +42,7 @@ def dispatch(operation: str, payload: dict[str, Any]) -> Any:
     if operation == "balances_batch":
         refs = payload.get("nomenclature_refs")
         if not isinstance(refs, list):
-            raise ValueError("nomenclature_refs должен быть массивом")
+            raise Warehouse1CProcessBridgeValidationError("nomenclature_refs должен быть массивом")
         return asyncio.run(
             service.get_balances_batch(
                 nomenclature_refs=[str(ref or "") for ref in refs],
@@ -51,7 +53,7 @@ def dispatch(operation: str, payload: dict[str, Any]) -> Any:
     if operation == "balances_by_warehouses":
         refs = payload.get("warehouse_refs")
         if not isinstance(refs, list):
-            raise ValueError("warehouse_refs должен быть массивом")
+            raise Warehouse1CProcessBridgeValidationError("warehouse_refs должен быть массивом")
         return asyncio.run(
             service.get_balances_for_warehouses(
                 warehouse_refs=[str(ref or "") for ref in refs],
@@ -114,7 +116,7 @@ def dispatch(operation: str, payload: dict[str, Any]) -> Any:
     if operation == "construction_object_requests":
         raw_group_refs = payload.get("group_refs")
         if not isinstance(raw_group_refs, list):
-            raise ValueError("group_refs должен быть массивом")
+            raise Warehouse1CProcessBridgeValidationError("group_refs должен быть массивом")
         raw_overdue = payload.get("overdue")
         overdue = raw_overdue if isinstance(raw_overdue, bool) else None
         return asyncio.run(
@@ -135,7 +137,7 @@ def dispatch(operation: str, payload: dict[str, Any]) -> Any:
     if operation == "construction_object_request_detail":
         raw_group_refs = payload.get("group_refs")
         if not isinstance(raw_group_refs, list):
-            raise ValueError("group_refs должен быть массивом")
+            raise Warehouse1CProcessBridgeValidationError("group_refs должен быть массивом")
         return asyncio.run(
             service.get_construction_object_request_detail(
                 group_refs=[str(value or "") for value in raw_group_refs],

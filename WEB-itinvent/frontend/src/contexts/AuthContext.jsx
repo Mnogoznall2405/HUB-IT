@@ -7,6 +7,9 @@ import { disableChatPushSubscription } from '../lib/chatNotifications';
 import { clearAllMailRecentCache } from '../lib/mailRecentCache';
 import { clearMobileOfflineCache } from '../lib/mobileOfflineCache';
 import { isMailSessionEnabled, MAIL_SESSION_CHANGED_EVENT } from '../lib/mailSession';
+import { clearSWRCache } from '../lib/swrCache';
+import { synchronizePrivateMediaSession } from '../lib/privateMediaSession';
+import { synchronizeBrowserAccount } from '../lib/browserAccountSession';
 
 const AuthContext = createContext(null);
 const alwaysGrantedPermissions = [
@@ -132,6 +135,19 @@ const normalizeUserWithPermissions = (value) => {
   return { ...value, role, permissions };
 };
 
+// FastAPI answers 422 with `detail` as an array of {msg, loc}; the UI needs a plain string.
+const resolveErrorDetail = (err, fallback) => {
+  const detail = err?.response?.data?.detail;
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((item) => (typeof item === 'string' ? item : String(item?.msg || '')).trim())
+      .filter(Boolean);
+    if (parts.length) return parts.join('; ');
+  }
+  return fallback;
+};
+
 const isLoginRoute = () => {
   if (typeof window === 'undefined') return false;
   const pathname = String(window.location?.pathname || '').replace(/\/+$/, '') || '/';
@@ -160,62 +176,111 @@ export const AuthProvider = ({ children }) => {
   const [mailSessionEnabled, setMailSessionEnabled] = useState(() => isMailSessionEnabled());
 
   const sessionRefreshGateRef = useRef(null);
+  const sessionGenerationRef = useRef(0);
+  const currentUserRef = useRef(null);
+  const mediaSessionUserKeyRef = useRef('');
+
+  const invalidateSession = useCallback(() => {
+    sessionGenerationRef.current += 1;
+    sessionRefreshGateRef.current = null;
+    currentUserRef.current = null;
+    mediaSessionUserKeyRef.current = '';
+    clearSWRCache();
+    localStorage.removeItem('user');
+    synchronizeBrowserAccount();
+    clearAllMailRecentCache();
+    setUser(null);
+    setLoading(false);
+    const generation = sessionGenerationRef.current;
+    return synchronizePrivateMediaSession('', { clear: true }).then((cleared) => {
+      if (!cleared && generation === sessionGenerationRef.current) setError('Не удалось полностью очистить локальный кэш вложений.');
+      return cleared;
+    });
+  }, []);
+
+  const applySessionUser = useCallback(async (currentUser, generation) => {
+    const previousKey = String(currentUserRef.current?.id ?? currentUserRef.current?.username ?? '');
+    const currentKey = String(currentUser?.id ?? currentUser?.username ?? '');
+    if (previousKey !== currentKey) clearSWRCache();
+    await synchronizePrivateMediaSession(currentKey, { clear: Boolean(previousKey && previousKey !== currentKey) });
+    if (generation !== sessionGenerationRef.current) return false;
+    mediaSessionUserKeyRef.current = currentKey;
+    currentUserRef.current = currentUser || null;
+    setUser(currentUser || null);
+    if (currentUser && typeof currentUser === 'object') {
+      localStorage.setItem('user', JSON.stringify(currentUser));
+    } else {
+      localStorage.removeItem('user');
+    }
+    synchronizeBrowserAccount(currentKey);
+    return true;
+  }, []);
+
+  useEffect(() => {
+    const controllerChanged = () => {
+      void synchronizePrivateMediaSession(mediaSessionUserKeyRef.current);
+    };
+    navigator.serviceWorker?.addEventListener?.('controllerchange', controllerChanged);
+    return () => navigator.serviceWorker?.removeEventListener?.('controllerchange', controllerChanged);
+  }, []);
 
   const refreshSession = useCallback(async ({ suppressAuthRequired = false } = {}) => {
     if (sessionRefreshGateRef.current) {
       return sessionRefreshGateRef.current;
     }
 
+    const generation = sessionGenerationRef.current;
     sessionRefreshGateRef.current = (async () => {
       try {
         const currentUser = normalizeUserWithPermissions(
           await authAPI.getCurrentUser({ suppressAuthRequired })
         );
-        setUser(currentUser || null);
-        if (currentUser && typeof currentUser === 'object') {
-          localStorage.setItem('user', JSON.stringify(currentUser));
-        } else {
-          localStorage.removeItem('user');
-        }
+        if (generation !== sessionGenerationRef.current) return null;
+        if (!(await applySessionUser(currentUser, generation))) return null;
         return currentUser || null;
       } catch (refreshError) {
-        if (isDefinitiveSessionRejection(refreshError)) {
-          setUser(null);
-          localStorage.removeItem('user');
-          clearAllMailRecentCache();
+        if (generation === sessionGenerationRef.current && isDefinitiveSessionRejection(refreshError)) {
+          await invalidateSession();
         }
         throw refreshError;
       } finally {
-        sessionRefreshGateRef.current = null;
+        if (generation === sessionGenerationRef.current) sessionRefreshGateRef.current = null;
       }
     })();
 
     return sessionRefreshGateRef.current;
-  }, []);
+  }, [applySessionUser, invalidateSession]);
 
   // Restore cached user and validate active cookie session
   useEffect(() => {
     const savedUser = localStorage.getItem('user');
-    let hasCachedUser = false;
+    let cancelled = false;
+    if (!savedUser) synchronizeBrowserAccount();
 
     if (savedUser) {
       try {
         const cachedUser = normalizeUserWithPermissions(JSON.parse(savedUser));
         if (cachedUser) {
-          setUser(cachedUser);
-          hasCachedUser = true;
+          currentUserRef.current = cachedUser;
+          const generation = sessionGenerationRef.current;
+          const cachedKey = String(cachedUser.id ?? cachedUser.username ?? '');
+          // Preserve the existing offline session policy, but establish its own
+          // media scope before showing cached-user UI. A later logout wins.
+          void synchronizePrivateMediaSession(cachedKey).then(() => {
+            if (cancelled || generation !== sessionGenerationRef.current || currentUserRef.current !== cachedUser) return;
+            mediaSessionUserKeyRef.current = cachedKey;
+            synchronizeBrowserAccount(cachedKey);
+            setUser(cachedUser);
+            setLoading(false);
+          });
         }
       } catch (e) {
         console.error('Failed to parse saved user:', e);
         localStorage.removeItem('user');
+        synchronizeBrowserAccount();
       }
     }
 
-    if (hasCachedUser) {
-      setLoading(false);
-    }
-
-    let cancelled = false;
     let checkInFlight = false;
     let retryTimer = null;
     let retryAttempt = 0;
@@ -243,9 +308,10 @@ export const AuthProvider = ({ children }) => {
     const verifySession = async () => {
       if (cancelled || definitiveRejection || checkInFlight) return;
       checkInFlight = true;
+      const generation = sessionGenerationRef.current;
       try {
         await refreshSession({ suppressAuthRequired: true });
-        if (!cancelled) {
+        if (!cancelled && generation === sessionGenerationRef.current) {
           retryAttempt = 0;
           setLoading(false);
         }
@@ -254,7 +320,7 @@ export const AuthProvider = ({ children }) => {
         if (isDefinitiveSessionRejection(requestError)) {
           definitiveRejection = true;
           setLoading(false);
-        } else {
+        } else if (generation === sessionGenerationRef.current) {
           scheduleRetry();
         }
       } finally {
@@ -290,15 +356,13 @@ export const AuthProvider = ({ children }) => {
 
   useEffect(() => {
     const onAuthRequired = () => {
-      localStorage.removeItem('user');
-      clearAllMailRecentCache();
-      setUser(null);
+      invalidateSession();
       setLoading(false);
       window.dispatchEvent(new Event('auth-changed'));
     };
     window.addEventListener('auth-required', onAuthRequired);
     return () => window.removeEventListener('auth-required', onAuthRequired);
-  }, []);
+  }, [invalidateSession]);
 
   useEffect(() => {
     const syncMailSession = () => setMailSessionEnabled(isMailSessionEnabled());
@@ -323,13 +387,19 @@ export const AuthProvider = ({ children }) => {
     };
 
     const verifySharedLogin = async (attempt = 0) => {
+      const generation = sessionGenerationRef.current;
       try {
         await refreshSession({ suppressAuthRequired: true });
-        if (!cancelled) {
+        if (!cancelled && generation === sessionGenerationRef.current) {
+          setLoading(false);
           window.dispatchEvent(new Event('auth-changed'));
         }
       } catch (requestError) {
-        if (cancelled || isDefinitiveSessionRejection(requestError)) return;
+        if (cancelled || generation !== sessionGenerationRef.current) return;
+        if (isDefinitiveSessionRejection(requestError)) {
+          setLoading(false);
+          return;
+        }
         const retryDelay = SESSION_RECOVERY_RETRY_DELAYS_MS[
           Math.min(attempt, SESSION_RECOVERY_RETRY_DELAYS_MS.length - 1)
         ];
@@ -347,14 +417,30 @@ export const AuthProvider = ({ children }) => {
 
       clearRetryTimer();
       if (event.newValue === null) {
-        localStorage.removeItem('user');
-        clearAllMailRecentCache();
-        setUser(null);
+        invalidateSession();
         setLoading(false);
         window.dispatchEvent(new Event('auth-changed'));
         return;
       }
 
+      let announcedUser = null;
+      try {
+        announcedUser = JSON.parse(event.newValue);
+      } catch {
+        // Treat an invalid shared cache as an unverified identity.
+      }
+      const announcedKey = String(announcedUser?.id ?? announcedUser?.username ?? '');
+      const currentKey = String(currentUserRef.current?.id ?? currentUserRef.current?.username ?? '');
+      if (announcedKey !== currentKey) {
+        synchronizeBrowserAccount();
+        sessionGenerationRef.current += 1;
+        sessionRefreshGateRef.current = null;
+        clearSWRCache();
+        clearAllMailRecentCache();
+        currentUserRef.current = null;
+        setUser(null);
+        setLoading(true);
+      }
       void verifySharedLogin();
     };
 
@@ -364,7 +450,7 @@ export const AuthProvider = ({ children }) => {
       clearRetryTimer();
       window.removeEventListener('storage', onSharedAuthChanged);
     };
-  }, [refreshSession]);
+  }, [refreshSession, invalidateSession]);
 
   // Silent refresh before access JWT expires (default 15m). Keeps cookies warm
   // even when the tab has no API traffic (chat WS alone used to miss idle touch).
@@ -410,20 +496,23 @@ export const AuthProvider = ({ children }) => {
   /**
    * Login with username and password
    */
-  const applyAuthenticatedPayload = useCallback((payload) => {
+  const applyAuthenticatedPayload = useCallback(async (payload) => {
     const currentUser = normalizeUserWithPermissions(payload?.user);
-    localStorage.setItem('user', JSON.stringify(currentUser));
-    setUser(currentUser);
+    sessionGenerationRef.current += 1;
+    sessionRefreshGateRef.current = null;
+    if (!(await applySessionUser(currentUser, sessionGenerationRef.current))) {
+      throw new Error('Вход отменён: состояние сессии изменилось.');
+    }
     window.dispatchEvent(new Event('auth-changed'));
     return currentUser;
-  }, []);
+  }, [applySessionUser]);
 
   const login = useCallback(async (username, password) => {
     setError(null);
     try {
       const response = await authAPI.login(username, password);
       if (response?.status === 'authenticated' && response?.user) {
-        const currentUser = applyAuthenticatedPayload(response);
+        const currentUser = await applyAuthenticatedPayload(response);
         return { success: true, status: 'authenticated', user: currentUser, session_id: response?.session_id || null };
       }
       return {
@@ -434,7 +523,7 @@ export const AuthProvider = ({ children }) => {
         trusted_devices_available: Boolean(response?.trusted_devices_available),
       };
     } catch (err) {
-      const message = err.response?.data?.detail || 'Ошибка входа';
+      const message = resolveErrorDetail(err, 'Ошибка входа');
       const statusCode = Number(err.response?.status || 0) || 0;
       const retryAfterHeader = err.response?.headers?.['retry-after'] ?? err.response?.headers?.['Retry-After'];
       const retryAfterSeconds = Number(retryAfterHeader);
@@ -454,7 +543,7 @@ export const AuthProvider = ({ children }) => {
     setError(null);
     try {
       const response = await authAPI.verifyTwoFactorSetup(loginChallengeId, totpCode);
-      const currentUser = applyAuthenticatedPayload(response);
+      const currentUser = await applyAuthenticatedPayload(response);
       return {
         success: true,
         status: 'authenticated',
@@ -463,7 +552,7 @@ export const AuthProvider = ({ children }) => {
         backup_codes: Array.isArray(response?.backup_codes) ? response.backup_codes : [],
       };
     } catch (err) {
-      const message = err.response?.data?.detail || 'Не удалось завершить настройку 2FA';
+      const message = resolveErrorDetail(err, 'Не удалось завершить настройку 2FA');
       setError(message);
       return { success: false, error: message };
     }
@@ -474,7 +563,7 @@ export const AuthProvider = ({ children }) => {
     try {
       return { success: true, ...(await authAPI.startTwoFactorSetup(loginChallengeId)) };
     } catch (err) {
-      const message = err.response?.data?.detail || 'Не удалось подготовить настройку 2FA';
+      const message = resolveErrorDetail(err, 'Не удалось подготовить настройку 2FA');
       setError(message);
       return { success: false, error: message };
     }
@@ -484,7 +573,7 @@ export const AuthProvider = ({ children }) => {
     setError(null);
     try {
       const response = await authAPI.verifyTwoFactorLogin(loginChallengeId, payload);
-      const currentUser = applyAuthenticatedPayload(response);
+      const currentUser = await applyAuthenticatedPayload(response);
       return {
         success: true,
         status: 'authenticated',
@@ -492,7 +581,7 @@ export const AuthProvider = ({ children }) => {
         session_id: response?.session_id || null,
       };
     } catch (err) {
-      const message = err.response?.data?.detail || 'Не удалось подтвердить вход';
+      const message = resolveErrorDetail(err, 'Не удалось подтвердить вход');
       setError(message);
       return { success: false, error: message };
     }
@@ -503,7 +592,7 @@ export const AuthProvider = ({ children }) => {
     try {
       return { success: true, ...(await authAPI.getTrustedDeviceAuthOptions(loginChallengeId)) };
     } catch (err) {
-      const message = err.response?.data?.detail || 'Не удалось начать WebAuthn-подтверждение';
+      const message = resolveErrorDetail(err, 'Не удалось начать WebAuthn-подтверждение');
       setError(message);
       return { success: false, error: message };
     }
@@ -513,7 +602,7 @@ export const AuthProvider = ({ children }) => {
     setError(null);
     try {
       const response = await authAPI.verifyTrustedDeviceAuth(loginChallengeId, challengeId, credential);
-      const currentUser = applyAuthenticatedPayload(response);
+      const currentUser = await applyAuthenticatedPayload(response);
       return {
         success: true,
         status: 'authenticated',
@@ -521,7 +610,7 @@ export const AuthProvider = ({ children }) => {
         session_id: response?.session_id || null,
       };
     } catch (err) {
-      const message = err.response?.data?.detail || 'Не удалось подтвердить доверенное устройство';
+      const message = resolveErrorDetail(err, 'Не удалось подтвердить доверенное устройство');
       setError(message);
       return { success: false, error: message };
     }
@@ -532,7 +621,7 @@ export const AuthProvider = ({ children }) => {
     try {
       return { success: true, ...(await authAPI.getPasskeyLoginOptions()) };
     } catch (err) {
-      const message = err.response?.data?.detail || 'Не удалось начать вход по биометрии';
+      const message = resolveErrorDetail(err, 'Не удалось начать вход по биометрии');
       setError(message);
       return { success: false, error: message };
     }
@@ -542,7 +631,7 @@ export const AuthProvider = ({ children }) => {
     setError(null);
     try {
       const response = await authAPI.verifyPasskeyLogin(challengeId, credential);
-      const currentUser = applyAuthenticatedPayload(response);
+      const currentUser = await applyAuthenticatedPayload(response);
       return {
         success: true,
         status: 'authenticated',
@@ -550,7 +639,7 @@ export const AuthProvider = ({ children }) => {
         session_id: response?.session_id || null,
       };
     } catch (err) {
-      const message = err.response?.data?.detail || 'Не удалось завершить вход по биометрии';
+      const message = resolveErrorDetail(err, 'Не удалось завершить вход по биометрии');
       setError(message);
       return { success: false, error: message };
     }
@@ -560,6 +649,9 @@ export const AuthProvider = ({ children }) => {
    * Logout current user
    */
   const logout = useCallback(async () => {
+    // A /me response started before logout must not restore this session.
+    sessionGenerationRef.current += 1;
+    sessionRefreshGateRef.current = null;
     try {
       await disableChatPushSubscription({ removeServer: true });
     } catch (cleanupError) {
@@ -576,12 +668,10 @@ export const AuthProvider = ({ children }) => {
           localStorage.setItem('hubit.login.last-username', lastUsername);
         }
         // Always clear local user cache
-        localStorage.removeItem('user');
-        clearAllMailRecentCache();
-        setUser(null);
+        await invalidateSession();
         window.dispatchEvent(new Event('auth-changed'));
       }
-  }, [user?.username]);
+  }, [invalidateSession, user?.username]);
 
   /**
    * Check if user is authenticated

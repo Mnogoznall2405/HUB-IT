@@ -92,6 +92,9 @@ def test_build_enroll_argv():
     assert "--enroll-voice" in argv
     assert "--speaker-name" in argv
     assert argv[argv.index("--speaker-name") + 1] == "Ivanov"
+    assert "--enroll-merge" not in argv
+    argv_merge = runner.build_enroll_argv("C:/tmp/s.wav", "Ivanov", merge=True)
+    assert "--enroll-merge" in argv_merge
 
 
 def test_llm_env_overrides_main_model_fans_out():
@@ -256,7 +259,7 @@ def test_meeting_assignments_contract(vv_tree):
     items = pipeline.meeting_assignments(base)
     assert len(items) == 2
     first = items[0]
-    assert set(first) == {"num", "key", "section", "time", "clip", "task", "assignee", "deadline"}
+    assert set(first) == {"num", "key", "section", "time", "clip", "task", "assignee", "deadline", "review"}
     assert len(first["key"]) == 16 and first["key"] != items[1]["key"]
     assert first["num"] == "1"
     assert first["time"] == "04:59"
@@ -334,6 +337,99 @@ def test_meeting_topics_timeline(vv_tree):
     assert items[0]["end"] == 100
     assert items[1]["start"] == 120
     assert pipeline.meeting_topics("nope") == []
+
+
+# ---------------------------------------------------------------------------
+# pipeline: upload fragment trim
+# ---------------------------------------------------------------------------
+
+def test_normalize_trim_range_none_without_keys():
+    assert pipeline.normalize_trim_range({}, 600.0) is None
+    assert pipeline.normalize_trim_range({"trim_start": "", "trim_end": ""}, 600.0) is None
+
+
+def test_normalize_trim_range_valid_and_clamped():
+    assert pipeline.normalize_trim_range(
+        {"trim_start": 60, "trim_end": 120}, 600.0
+    ) == (60.0, 120.0)
+    # End beyond duration -> clamped to the media length.
+    assert pipeline.normalize_trim_range(
+        {"trim_start": 60, "trim_end": 9999}, 600.0
+    ) == (60.0, 600.0)
+    # Open end -> to the end of file; numeric strings accepted.
+    assert pipeline.normalize_trim_range({"trim_start": "30"}, 600.0) == (30.0, 600.0)
+    # Only end -> from the beginning.
+    assert pipeline.normalize_trim_range({"trim_end": 45}, 600.0) == (0.0, 45.0)
+
+
+def test_normalize_trim_range_full_file_is_noop():
+    assert pipeline.normalize_trim_range({"trim_start": 0, "trim_end": 600}, 600.0) is None
+
+
+def test_normalize_trim_range_errors():
+    with pytest.raises(ValueError):
+        pipeline.normalize_trim_range({"trim_start": 120, "trim_end": 60}, 600.0)
+    with pytest.raises(ValueError):
+        pipeline.normalize_trim_range({"trim_start": 700}, 600.0)
+    with pytest.raises(ValueError):
+        pipeline.normalize_trim_range({"trim_start": "abc", "trim_end": 90}, 600.0)
+    with pytest.raises(ValueError):
+        pipeline.normalize_trim_range({"trim_start": 10, "trim_end": 10.4}, 600.0)
+    with pytest.raises(ValueError):
+        pipeline.normalize_trim_range({"trim_start": 5}, None)
+
+
+def test_build_trim_argv(vv_tree):
+    argv = pipeline.build_trim_argv(Path("in.mp4"), Path("out.wav"), 30.0, 90.0)
+    joined = " ".join(str(a) for a in argv)
+    assert "-ss 30.000" in joined and "-t 60.000" in joined
+    assert "-vn" in argv and "16000" in argv
+    assert argv[-1] == "out.wav"
+
+
+def test_build_trim_argv_mixes_multiple_audio_tracks(vv_tree):
+    argv = pipeline.build_trim_argv(
+        Path("in.mp4"), Path("out.wav"), 0.0, 10.0, audio_streams=2
+    )
+    joined = " ".join(str(a) for a in argv)
+    assert "amix=inputs=2" in joined
+
+
+def test_cut_media_range_runs_ffmpeg_and_cleans_on_failure(vv_tree, tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(pipeline, "audio_stream_count", lambda p: 1)
+    monkeypatch.setattr(pipeline, "_mean_volume_db", lambda p: -25.0)
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        Path(argv[-1]).write_bytes(b"RIFF" + b"0" * 4096)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(pipeline.subprocess, "run", fake_run)
+    dst = tmp_path / "out.wav"
+    pipeline.cut_media_range(tmp_path / "in.mp4", dst, 0.0, 10.0)
+    assert dst.exists() and len(calls) == 1
+
+    monkeypatch.setattr(
+        pipeline.subprocess, "run",
+        lambda argv, **kw: SimpleNamespace(returncode=1, stderr="boom"),
+    )
+    with pytest.raises(RuntimeError):
+        pipeline.cut_media_range(tmp_path / "in.mp4", tmp_path / "out2.wav", 0.0, 10.0)
+    assert not (tmp_path / "out2.wav").exists()
+
+
+def test_cut_media_range_rejects_silent_fragment(vv_tree, tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline, "audio_stream_count", lambda p: 1)
+    monkeypatch.setattr(pipeline, "_mean_volume_db", lambda p: -91.0)
+    def fake_run(argv, **kw):
+        Path(argv[-1]).write_bytes(b"RIFF" + b"0" * 4096)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(pipeline.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="без звука"):
+        pipeline.cut_media_range(tmp_path / "in.mp4", tmp_path / "out.wav", 0.0, 10.0)
+    assert not (tmp_path / "out.wav").exists()
 
 
 def test_cleanup_temp_removes_only_job_files(vv_tree):
@@ -582,6 +678,22 @@ def test_assignment_key_survives_reordering_and_renumbering(vv_tree):
     assert b[1]["num"] == "2"
 
 
+def test_guard_mark_is_split_from_task_and_does_not_change_status_key(vv_tree):
+    head = "| № | Время | Поручение | Ответственный | Срок |\n|---|---|---|---|---|\n"
+    _write_registry(vv_tree, "m_plain", head + "| 1 | 01:00 | Подписать ДС | Иванов | 01.10 |\n")
+    _write_registry(vv_tree, "m_flag", head + (
+        "| 1 | 01:00 | Подписать ДС ⚠ проверить: нет в обсуждении; нет ответственного | Иванов | 01.10 |\n"
+        "| 2 | 02:00 | ⚠ проверить: пустая формулировка | Петров | — |\n"
+    ))
+    plain = pipeline.meeting_assignments("m_plain")[0]
+    flagged = pipeline.meeting_assignments("m_flag")
+    assert len(flagged) == 1  # строка из одной пометки без текста поручения отбрасывается как битая
+    assert flagged[0]["task"] == "Подписать ДС"
+    assert flagged[0]["review"] == "нет в обсуждении; нет ответственного"
+    assert plain["review"] == ""
+    assert flagged[0]["key"] == plain["key"]  # статус поручения не пропадает от появления/исчезновения пометки
+
+
 def test_assignment_duplicates_get_distinct_keys_and_tolerant_rows(vv_tree):
     head = "| № | Время | Поручение | Ответственный | Срок |\n|---|---|---|---|---|\n"
     _write_registry(vv_tree, "m_c", head + (
@@ -649,6 +761,7 @@ def test_meeting_summary_flattens_decisions_and_survives_junk(vv_tree):
     assert res["available"] is True and res["duration"] == "15:25"
     assert [t["title"] for t in res["topics"]] == ["Смета", "ГПР", "Битое время"]
     assert res["topics"][2]["start"] is None
+    assert res["topics"][0]["domain"] == "" and res["topics"][0]["domain_label"] == ""  # Jev не размечал
     assert res["decisions"] == [
         {"text": "Сдать ГПР к 25.09", "topic": "ГПР", "start": 420.0},
         {"text": "Подписать ДС", "topic": "Смета", "start": 0.0},
@@ -657,3 +770,247 @@ def test_meeting_summary_flattens_decisions_and_survives_junk(vv_tree):
     assert [p["name"] for p in res["participants"]] == ["Иванов", "Петрова"]
     assert res["participants"][0]["segments"] == 0
     assert pipeline.meeting_summary("missing")["available"] is False
+
+
+@pytest.mark.parametrize("report", [
+    [1, 2],
+    {"topics": 5, "participants": 5, "summary": ["x"], "keywords": "abc", "metadata": []},
+    {"topics": {"a": 1}, "participants": "x"},
+    {"topics": [{"start_time": float("inf"), "end_time": float("nan"), "key_decisions": ["d"]}],
+     "participants": [{"name": "A", "segments_count": 3.0, "participation_percentage": float("inf")}]},
+])
+def test_meeting_summary_survives_structurally_broken_report(vv_tree, report):
+    # Corrupt reports must give a JSON-serialisable (not 500) answer: inf/NaN are not valid JSON.
+    mdir = vv_tree / "output" / "m_broken"
+    mdir.mkdir()
+    (mdir / "m_broken_report.json").write_text(json.dumps(report), encoding="utf-8")
+    res = pipeline.meeting_summary("m_broken")
+    json.dumps(res, allow_nan=False)
+    assert isinstance(res["topics"], list) and isinstance(res["participants"], list)
+
+
+def test_trim_timeout_grows_with_video_fragment_but_is_capped():
+    # A fixed 10 min cap made the re-encode of a long video fragment fail (~5x realtime).
+    assert pipeline.trim_timeout_sec(30, True) == 600
+    assert pipeline.trim_timeout_sec(3600, True) > 600
+    assert pipeline.trim_timeout_sec(10 * 3600, True) == 2 * 3600
+    assert pipeline.trim_timeout_sec(3600, False) == 600
+
+
+@pytest.mark.parametrize("encoder", ["libx264", "libopenh264"])
+def test_build_trim_argv_preserves_video_and_maps_mixed_audio(vv_tree, encoder):
+    argv = pipeline.build_trim_argv(
+        Path("in.mkv"), Path("out.mp4"), 1.35, 4.35,
+        audio_streams=2, video_encoder=encoder,
+    )
+    assert "-vn" not in argv
+    assert argv[argv.index("-c:v") + 1] == encoder
+    assert argv[argv.index("-c:a") + 1] == "aac"
+    assert argv[argv.index("-pix_fmt") + 1] == "yuv420p"
+    assert argv[argv.index("-filter_complex") + 1] == (
+        "[0:a:0][0:a:1]amix=inputs=2:duration=longest:normalize=0[mixed]"
+    )
+    assert [argv[i + 1] for i, arg in enumerate(argv) if arg == "-map"] == [
+        "0:V:0", "[mixed]",
+    ]
+    assert argv[argv.index("-movflags") + 1] == "+faststart"
+
+
+@pytest.fixture()
+def trim_api(vv_tree, tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine, event
+    from voice_server import app as app_module, auth, store
+    from voice_server.models import Base
+
+    engine = create_engine(f"sqlite:///{(tmp_path / 'jobs.db').as_posix()}")
+    voice_file = tmp_path / "voice.db"
+
+    @event.listens_for(engine, "connect")
+    def attach(dbapi_connection, _record):
+        dbapi_connection.execute("ATTACH DATABASE ? AS voice", (str(voice_file),))
+
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(store, "_engine", lambda: engine)
+    monkeypatch.setattr(
+        app_module, "config",
+        SimpleNamespace(upload_max_bytes=10 * 1024 * 1024),
+    )
+    current = {"user": {"id": 1, "role": "admin", "username": "trim-test"}}
+    monkeypatch.setattr(auth, "_fetch_web_user", lambda *args, **kwargs: current["user"])
+    with TestClient(app_module.app) as client:
+        client.headers["Authorization"] = "Bearer isolated-test"
+        client.current = current
+        yield client
+    engine.dispose()
+
+
+@pytest.fixture()
+def trim_media_tools(monkeypatch):
+    import shutil
+
+    directory = Path(__file__).resolve().parents[1] / "voice_video" / "ffmpeg" / "bin"
+    ffmpeg = str(directory / "ffmpeg.exe") if (directory / "ffmpeg.exe").exists() else shutil.which("ffmpeg")
+    ffprobe = str(directory / "ffprobe.exe") if (directory / "ffprobe.exe").exists() else shutil.which("ffprobe")
+    if not ffmpeg or not ffprobe:
+        pytest.skip("FFmpeg and ffprobe are required for media integration tests")
+    monkeypatch.setattr(pipeline, "ffmpeg_bin", lambda: ffmpeg)
+    monkeypatch.setattr(pipeline, "ffprobe_bin", lambda: ffprobe)
+    return ffmpeg, ffprobe
+
+
+def _probe_trim_media(path, ffprobe):
+    import subprocess
+
+    proc = subprocess.run(
+        [ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
+        capture_output=True, text=True, check=True, timeout=30,
+    )
+    return json.loads(proc.stdout)
+
+
+@pytest.mark.parametrize("video", [True, False])
+def test_upload_trim_preserves_real_media_and_serves_it(trim_api, vv_tree, tmp_path, trim_media_tools, video):
+    import subprocess
+    from voice_server import store
+
+    ffmpeg, ffprobe = trim_media_tools
+    source = tmp_path / ("source.mkv" if video else "audio-only.mp4")
+    argv = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error"]
+    if video:
+        argv += ["-f", "lavfi", "-i", "testsrc=size=160x90:rate=10:duration=6"]
+        argv += ["-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono"]
+        argv += ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000:duration=6"]
+        argv += ["-map", "0:v:0", "-map", "1:a:0", "-map", "2:a:0", "-c:v", "ffv1", "-c:a", "pcm_s16le"]
+    else:
+        argv += ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000:duration=6", "-c:a", "aac"]
+    argv += ["-t", "6", "-threads", "2", str(source)]
+    subprocess.run(argv, capture_output=True, text=True, check=True, timeout=30)
+
+    response = trim_api.post(
+        "/api/v1/voice/jobs",
+        files={"file": (source.name, source.read_bytes(), "application/octet-stream")},
+        data={"settings_json": json.dumps({"trim_start": 1.35, "trim_end": 4.35})},
+    )
+    assert response.status_code == 201, response.text
+    job = store.get_job(response.json()["id"])
+    artifact = Path(job["stored_path"])
+    assert artifact.suffix == (".mp4" if video else ".wav")
+    assert job["status"] == "queued" and job["file_size"] == artifact.stat().st_size
+    assert list((vv_tree / "input").iterdir()) == [artifact]
+    media = _probe_trim_media(artifact, ffprobe)
+    audio_streams = [stream for stream in media["streams"] if stream["codec_type"] == "audio"]
+    video_streams = [stream for stream in media["streams"] if stream["codec_type"] == "video"]
+    assert len(audio_streams) == 1
+    assert audio_streams[0]["codec_name"] == ("aac" if video else "pcm_s16le")
+    assert audio_streams[0]["channels"] == 1 and audio_streams[0]["sample_rate"] == "16000"
+    assert abs(float(media["format"]["duration"]) - 3.0) <= 0.2
+    assert len(video_streams) == int(video)
+    if video:
+        assert video_streams[0]["codec_name"] == "h264"
+        assert (video_streams[0]["width"], video_streams[0]["height"]) == (160, 90)
+    assert pipeline._mean_volume_db(artifact) > -70
+
+    base = job["base_filename"]
+    destination = vv_tree / "processed" / artifact.name
+    artifact.rename(destination)
+    meeting_dir = vv_tree / "output" / base
+    meeting_dir.mkdir()
+    (meeting_dir / f"{base}_transcript.json").write_text('{"segments": []}', encoding="utf-8")
+    playback = trim_api.get(f"/api/v1/voice/meetings/{base}/media")
+    assert playback.status_code == 200
+    assert playback.headers["content-type"] in (("video/mp4",) if video else ("audio/wav", "audio/x-wav"))
+    assert playback.content == destination.read_bytes()
+    partial = trim_api.get(f"/api/v1/voice/meetings/{base}/media", headers={"Range": "bytes=0-31"})
+    assert partial.status_code == 206 and partial.content == playback.content[:32]
+    assert partial.headers["content-range"] == f"bytes 0-31/{destination.stat().st_size}"
+
+
+@pytest.mark.parametrize("failure", ["probe", "encoder"])
+def test_upload_video_trim_failure_does_not_queue_or_leave_files(trim_api, vv_tree, monkeypatch, failure):
+    from voice_server import store
+
+    monkeypatch.setattr(pipeline, "media_duration_sec", lambda path: 6.0)
+    if failure == "probe":
+        def fail(path):
+            raise RuntimeError("media probe failed")
+        monkeypatch.setattr(pipeline, "trim_media_suffix", fail)
+    else:
+        monkeypatch.setattr(pipeline, "trim_media_suffix", lambda path: ".mp4")
+        def fail(src, dst, start, end):
+            dst.write_bytes(b"partial mp4")
+            raise RuntimeError("video encoder failed")
+        monkeypatch.setattr(pipeline, "cut_media_range", fail)
+    response = trim_api.post(
+        "/api/v1/voice/jobs",
+        files={"file": ("recording.mp4", b"source", "video/mp4")},
+        data={"settings_json": json.dumps({"trim_start": 1, "trim_end": 4})},
+    )
+    assert response.status_code == 422
+    assert store.list_jobs() == []
+    assert list((vv_tree / "input").iterdir()) == []
+
+
+def test_video_trim_upload_requires_permission(trim_api, vv_tree, monkeypatch):
+    from voice_server import store
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("unauthorized upload must not inspect media")
+    monkeypatch.setattr(pipeline, "media_duration_sec", unexpected)
+    trim_api.headers.pop("Authorization")
+    assert trim_api.post(
+        "/api/v1/voice/jobs", files={"file": ("a.mp4", b"media", "video/mp4")},
+    ).status_code == 401
+    trim_api.headers["Authorization"] = "Bearer isolated-test"
+    trim_api.current["user"] = {"id": 2, "role": "user", "permissions": ["voice.read"]}
+    assert trim_api.post(
+        "/api/v1/voice/jobs", files={"file": ("a.mp4", b"media", "video/mp4")},
+    ).status_code == 403
+    assert store.list_jobs() == [] and list((vv_tree / "input").iterdir()) == []
+
+
+@pytest.mark.parametrize("encoders,expected", [
+    (" V....D libopenh264 H.264\n V....D libx264 H.264\n", "libx264"),
+    (" V....D libopenh264 H.264\n", "libopenh264"),
+    (" V....D mpeg4 MPEG-4\n", None),
+])
+def test_video_encoder_uses_available_software_codec(monkeypatch, encoders, expected):
+    monkeypatch.setattr(
+        pipeline.subprocess, "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=encoders),
+    )
+    pipeline._video_encoder.cache_clear()
+    if expected is None:
+        with pytest.raises(RuntimeError, match="H.264"):
+            pipeline._video_encoder("isolated-ffmpeg")
+    else:
+        assert pipeline._video_encoder("isolated-ffmpeg") == expected
+    pipeline._video_encoder.cache_clear()
+
+
+@pytest.mark.parametrize("suffix", [".wav", ".mp4"])
+@pytest.mark.parametrize("failure", ["trim_timeout", "volume_timeout", "silence"])
+def test_cut_media_range_removes_incomplete_output_on_validation_failure(tmp_path, monkeypatch, suffix, failure):
+    import subprocess
+
+    src, dst = tmp_path / "source.mkv", tmp_path / f"fragment{suffix}"
+    src.write_bytes(b"unchanged source")
+    monkeypatch.setattr(pipeline, "audio_stream_count", lambda path: 1)
+    monkeypatch.setattr(pipeline, "_video_encoder", lambda executable: "libopenh264")
+
+    def run(argv, **kwargs):
+        dst.write_bytes(b"partial" + b"0" * 4096)
+        if failure == "trim_timeout":
+            raise subprocess.TimeoutExpired(argv, 600)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    def volume(path):
+        if failure == "volume_timeout":
+            raise subprocess.TimeoutExpired("volumedetect", 120)
+        return -91.0
+
+    monkeypatch.setattr(pipeline.subprocess, "run", run)
+    monkeypatch.setattr(pipeline, "_mean_volume_db", volume)
+    with pytest.raises((RuntimeError, subprocess.TimeoutExpired)):
+        pipeline.cut_media_range(src, dst, 1, 4)
+    assert not dst.exists() and src.read_bytes() == b"unchanged source"

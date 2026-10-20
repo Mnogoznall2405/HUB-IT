@@ -80,8 +80,11 @@ def test_remaining_is_always_non_negative(window: int, margin: int, usages: list
     margin=safety_margin_st,
     usages=usage_sequence,
 )
-def test_remaining_is_monotonically_non_increasing(window: int, margin: int, usages: list):
-    """Property 5b: The `remaining` property is monotonically non-increasing across usage additions.
+def test_cumulative_output_is_monotonically_non_decreasing(window: int, margin: int, usages: list):
+    """Property 5b: accumulated completion tokens only grow.
+
+    `remaining` itself is NOT monotonic by design: it follows the latest context (the same history is
+    re-sent every round and must not be counted twice), so a shorter next context can raise it.
 
     **Validates: Requirements 4.4**
     """
@@ -92,16 +95,12 @@ def test_remaining_is_monotonically_non_increasing(window: int, margin: int, usa
         safety_margin=margin,
     )
 
-    previous_remaining = budget.remaining
+    previous = budget.accumulated_completion_tokens
 
     for prompt_tokens, completion_tokens in usages:
         budget.add_usage({"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens})
-        current_remaining = budget.remaining
-        assert current_remaining <= previous_remaining, (
-            f"remaining increased from {previous_remaining} to {current_remaining} "
-            f"after adding prompt={prompt_tokens}, completion={completion_tokens}"
-        )
-        previous_remaining = current_remaining
+        assert budget.accumulated_completion_tokens >= previous
+        previous = budget.accumulated_completion_tokens
 
 
 @settings(max_examples=100)
@@ -125,7 +124,7 @@ def test_exhausted_iff_accumulated_exceeds_budget(window: int, margin: int, usag
     for prompt_tokens, completion_tokens in usages:
         budget.add_usage({"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens})
 
-    total_used = budget.accumulated_prompt_tokens + budget.accumulated_completion_tokens
+    total_used = max(budget.latest_context_tokens, budget.accumulated_completion_tokens)
     effective_budget = window - margin
 
     if total_used >= effective_budget:
@@ -147,9 +146,10 @@ def test_exhausted_iff_accumulated_exceeds_budget(window: int, margin: int, usag
     usages=usage_sequence,
 )
 def test_exhausted_once_true_stays_true(window: int, margin: int, usages: list):
-    """Property 5d: Once `exhausted` becomes True, it remains True for all subsequent additions.
+    """Property 5d: Once the cumulative output alone fills the budget, `exhausted` stays True.
 
-    This follows from monotonicity of `remaining` — once it hits 0, it stays at 0.
+    (Exhaustion caused by one oversized context can clear if the next context is shorter; cumulative
+    output cannot shrink, so that cause is permanent.)
 
     **Validates: Requirements 4.4**
     """
@@ -165,7 +165,7 @@ def test_exhausted_once_true_stays_true(window: int, margin: int, usages: list):
     for prompt_tokens, completion_tokens in usages:
         budget.add_usage({"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens})
 
-        if budget.exhausted:
+        if budget.accumulated_completion_tokens >= window - margin:
             became_exhausted = True
 
         if became_exhausted:
@@ -198,7 +198,7 @@ def test_remaining_equals_expected_formula(window: int, margin: int, usages: lis
     for prompt_tokens, completion_tokens in usages:
         budget.add_usage({"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens})
 
-        total_used = budget.accumulated_prompt_tokens + budget.accumulated_completion_tokens
+        total_used = max(budget.latest_context_tokens, budget.accumulated_completion_tokens)
         expected_remaining = max(0, window - margin - total_used)
 
         assert budget.remaining == expected_remaining, (

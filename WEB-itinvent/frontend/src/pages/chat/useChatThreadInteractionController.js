@@ -81,6 +81,7 @@ export default function useChatThreadInteractionController({
     setShowJumpToLatest(false);
     queueAutoScroll('bottom', 'ensureLatestThreadWindow');
     await loadLatestThreadWindow('outgoingSend');
+    if (activeConversationIdRef.current !== conversationId) return;
     scrollThreadBottomIntoView({ source: 'ensureLatestThreadWindow:bottom', behavior: 'instant' });
   }, [
     activeConversationIdRef,

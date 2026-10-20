@@ -12,6 +12,8 @@ import MonitorIcon from '@mui/icons-material/DesktopMac';
 import MyLocationIcon from '@mui/icons-material/MyLocation';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import PrintIcon from '@mui/icons-material/Print';
+import RemoveDoneIcon from '@mui/icons-material/RemoveDone';
+import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import StorageIcon from '@mui/icons-material/Storage';
 import TransferIcon from '@mui/icons-material/SwapHoriz';
 
@@ -21,6 +23,7 @@ import EmployeeNameLink from './EmployeeNameLink';
 import EquipmentCurrentActIndicator from './EquipmentCurrentActIndicator';
 import EquipmentPhotoIndicator from './EquipmentPhotoIndicator';
 import { EmployeeCompareBadge, useEmployeeCompare } from './employeeCompareContext';
+import { getOneCMark, useOneCMarks } from './oneCMarksContext';
 
 const getEquipmentCardActionMeta = (action) => {
   switch (action) {
@@ -46,6 +49,18 @@ const getEquipmentCardActionMeta = (action) => {
       return { label: 'Компонент', icon: <StorageIcon sx={{ fontSize: 16 }} /> };
     case 'cleaning':
       return { label: 'Чистка ПК', icon: <ComputerIcon sx={{ fontSize: 16 }} /> };
+    case 'one_c_mark':
+      return {
+        label: 'Отметить 1С',
+        tooltip: 'Ручная отметка: оборудование сверено с 1С. Автоматическую сверку не меняет.',
+        icon: <TaskAltIcon sx={{ fontSize: 16 }} />,
+      };
+    case 'one_c_unmark':
+      return {
+        label: 'Снять отметку 1С',
+        tooltip: 'Убрать ручную отметку; снова действует автоматическая сверка.',
+        icon: <RemoveDoneIcon sx={{ fontSize: 16 }} />,
+      };
     case 'delete':
       return { label: 'Удалить', icon: <DeleteIcon sx={{ fontSize: 16 }} /> };
     default:
@@ -98,7 +113,7 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
   openingCurrentActDocNo = '',
   dataMode = DATA_MODE_EQUIPMENT,
   canWrite = true,
-  isAdmin = false,
+  canDeleteEquipment = false,
   selectionMode = false,
   isSelected = false,
   onToggleSelect,
@@ -118,8 +133,15 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
   const employee = readFirst(item, ['OWNER_DISPLAY_NAME', 'employee_name', 'OWNER_FULLNAME'], '—');
   const employeeOwnerNo = item.EMPL_NO ?? item.empl_no ?? item.OWNER_NO ?? item.owner_no ?? null;
   const compareSummary = useEmployeeCompare(employeeOwnerNo);
-  const compareBadge = compareSummary ? (
-    <EmployeeCompareBadge summary={compareSummary} partNo={readFirst(item, ['PART_NO', 'part_no'], '')} />
+  const oneCMarks = useOneCMarks();
+  const oneCMark = getOneCMark(oneCMarks, toInvNo(item));
+  const canMarkOneC = Boolean(oneCMarks?.canMark);
+  const compareBadge = compareSummary || oneCMark ? (
+    <EmployeeCompareBadge
+      summary={compareSummary}
+      partNo={readFirst(item, ['PART_NO', 'part_no'], '')}
+      invNo={toInvNo(item)}
+    />
   ) : null;
   const dept = readFirst(item, ['OWNER_DEPT', 'employee_dept'], '');
   const status = readFirst(item, ['STATUS_DESCR', 'status_descr', 'DESCR'], '—');
@@ -127,8 +149,10 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
   const typeName = readFirst(item, ['TYPE_NAME', 'type_name'], '');
 
   const actionButtons = useMemo(
-    () => getEquipmentCardActionButtons(getEquipmentRowActions({ item, dataMode, canWrite, isAdmin })),
-    [item, dataMode, canWrite, isAdmin],
+    () => getEquipmentCardActionButtons(getEquipmentRowActions({
+      item, dataMode, canWrite, canDeleteEquipment, canMarkOneC, oneCMarked: Boolean(oneCMark),
+    })),
+    [item, dataMode, canWrite, canDeleteEquipment, canMarkOneC, oneCMark],
   );
 
   const typeConfig = useMemo(() => getTypeConfig(typeName), [typeName]);
@@ -194,7 +218,7 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
         // Let the browser skip off-screen card rendering while keeping the
         // element mounted (expanded state survives scrolling).
         contentVisibility: 'auto',
-        containIntrinsicSize: 'auto 72px',
+        containIntrinsicSize: 'auto 60px',
       }}
     >
       <Box
@@ -202,9 +226,9 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
           display: 'flex',
           alignItems: 'center',
           gap: 0.75,
-          py: 0.75,
+          py: 0.5,
           px: 0.25,
-          minHeight: 52,
+          minHeight: 44,
         }}
       >
         {onToggleSelect && selectionMode ? (

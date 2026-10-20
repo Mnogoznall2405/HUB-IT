@@ -190,7 +190,6 @@ def _log_request_timing(route_name: str, request_id: str, started_at: float, **c
                 request_id,
                 took_ms,
             )
-    # #region agent log
     try:
         if route_name in {"conversations", "messages", "conversation_detail", "unread_summary"} or took_ms >= 200.0:
             from backend.chat.send_audit import audit_send_trace
@@ -220,7 +219,6 @@ def _log_request_timing(route_name: str, request_id: str, started_at: float, **c
             )
     except Exception:
         pass
-    # #endregion
 
 
 def _log_ws_command_timing(command_name: str, started_at: float, **context: Any) -> None:
@@ -294,6 +292,21 @@ def _raise_chat_http_error(exc: Exception) -> None:
 
     if isinstance(exc, AiRunConflictError):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    from backend.chat.chat_group_limits import ChatSlowModeError
+    from backend.chat.chat_group_service import ChatGroupRateLimitedError
+
+    if isinstance(exc, ChatSlowModeError):
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(int(exc.retry_after_sec))},
+        ) from exc
+    if isinstance(exc, ChatGroupRateLimitedError):
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(int(exc.retry_after_sec))},
+        ) from exc
     if isinstance(exc, PermissionError):
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if isinstance(exc, LookupError):
@@ -736,7 +749,6 @@ async def _create_deferred_chat_notifications_after_send(
     push_wait_started_at = time.perf_counter()
     async with _push_sidefx_sem():
         push_sem_wait_ms = (time.perf_counter() - push_wait_started_at) * 1000.0
-        # #region agent log
         try:
             from backend.chat.send_audit import audit_send_trace
 
@@ -751,7 +763,6 @@ async def _create_deferred_chat_notifications_after_send(
             )
         except Exception:
             pass
-        # #endregion
         push_stats = await _run_chat_notification_call(
             _chat_service()._create_chat_notifications,
             create_hub_notifications=False,
@@ -768,7 +779,6 @@ async def _create_deferred_chat_notifications_after_send(
             enqueue_push_outbox=False,
             **common_kwargs,
         )
-    # #region agent log
     try:
         from backend.chat.send_audit import audit_send_trace
 
@@ -786,7 +796,6 @@ async def _create_deferred_chat_notifications_after_send(
         )
     except Exception:
         pass
-    # #endregion
 
 
 async def _apply_delivery_state_after_send(*, message_id: str) -> float:

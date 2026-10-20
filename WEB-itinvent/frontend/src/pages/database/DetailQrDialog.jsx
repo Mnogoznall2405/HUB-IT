@@ -15,15 +15,18 @@ import {
 import {
   buildEquipmentQrLabelContent,
   buildEquipmentQrLabelDataUrl,
+  EQUIPMENT_QR_LABEL_WIDTH_MM,
+  EQUIPMENT_QR_LABEL_HEIGHT_MM,
+  EQUIPMENT_QR_CODE_SIZE_MM,
 } from './equipmentQrLabel';
 
 const toGenericLabelContent = (equipment) => {
   const base = buildEquipmentQrLabelContent(equipment);
   return {
     brandName: base.brandName,
-    topCaption: 'Инв. №',
-    topValue: base.invNo,
-    bottomCaption: 'Серийный номер',
+    topCaption: '',
+    topValue: base.modelName,
+    bottomCaption: '',
     bottomValue: base.serialNo,
   };
 };
@@ -51,8 +54,8 @@ function DetailQrDialog({
   const bottomFontSize = String(label.bottomValue || '').length > 32
     ? { xs: 14, sm: 18 }
     : String(label.bottomValue || '').length > 22
-      ? { xs: 17, sm: 22 }
-      : { xs: 22, sm: 28 };
+      ? { xs: 15, sm: 18 }
+      : { xs: 17, sm: 20 };
   const [downloadUrl, setDownloadUrl] = useState('');
   const [downloadLoading, setDownloadLoading] = useState(false);
 
@@ -105,21 +108,21 @@ function DetailQrDialog({
             sx={{
               width: '100%',
               maxWidth: 500,
-              aspectRatio: '1 / 1',
+              aspectRatio: qrOnly ? '1 / 1' : `${EQUIPMENT_QR_LABEL_WIDTH_MM} / ${EQUIPMENT_QR_LABEL_HEIGHT_MM}`,
               mx: 'auto',
               display: 'grid',
               gridTemplateRows: qrOnly
                 ? (label.modelName ? 'minmax(0, 1fr) auto' : 'minmax(0, 1fr)')
                 : 'auto auto minmax(0, 1fr) auto',
               justifyItems: 'center',
-              gap: { xs: 0.5, sm: 1 },
+              gap: 0.25,
               bgcolor: '#fff',
               color: '#000',
-              border: qrOnly ? 'none' : '2px solid #000',
+              border: 'none',
               borderRadius: 0,
               boxSizing: 'border-box',
-              px: qrOnly ? 0 : { xs: 1.5, sm: 2 },
-              py: qrOnly ? 0 : { xs: 2.25, sm: 2.75 },
+              px: qrOnly ? 0 : 0.5,
+              py: qrOnly ? 0 : 0.5,
               boxShadow: 'none',
               overflow: 'hidden',
             }}
@@ -178,30 +181,17 @@ function DetailQrDialog({
                 minWidth: 0,
               }}
             >
-              <Box
-                component="span"
-                aria-hidden="true"
-                sx={{
-                  display: 'block',
-                  width: { xs: 44, sm: 54 },
-                  height: { xs: 44, sm: 54 },
-                  flexShrink: 0,
-                  bgcolor: '#000',
-                  mask: 'url(/favicon.png) center / contain no-repeat',
-                  WebkitMask: 'url(/favicon.png) center / contain no-repeat',
-                }}
-              />
               <Typography
                 component="div"
                 translate="no"
-                sx={{ fontSize: { xs: 24, sm: 30 }, lineHeight: 1, fontWeight: 800 }}
+                sx={{ fontSize: { xs: 26, sm: 30 }, lineHeight: 1, fontWeight: 800 }}
               >
                 {label.brandName}
               </Typography>
             </Box>
 
             <Box component="dl" sx={{ m: 0, minWidth: 0, width: '100%', maxWidth: '100%', textAlign: 'center' }}>
-              <Typography
+              {label.topCaption ? <Typography
                 component="dt"
                 sx={{
                   color: '#000',
@@ -212,13 +202,13 @@ function DetailQrDialog({
                 }}
               >
                 {label.topCaption}
-              </Typography>
+              </Typography> : null}
               <Typography
                 component="dd"
                 sx={{
                   m: 0,
                   color: '#000',
-                  fontSize: { xs: 25, sm: 32 },
+                  fontSize: { xs: 25, sm: 28 },
                   lineHeight: 1.05,
                   fontWeight: 800,
                   fontVariantNumeric: 'tabular-nums',
@@ -231,8 +221,8 @@ function DetailQrDialog({
 
             <Box
               sx={{
-                width: { xs: '66%', sm: '69%' },
-                maxWidth: 345,
+                width: `${EQUIPMENT_QR_CODE_SIZE_MM / EQUIPMENT_QR_LABEL_WIDTH_MM * 100}%`,
+                maxWidth: 390,
                 alignSelf: 'center',
                 display: 'grid',
                 placeItems: 'center',
@@ -262,7 +252,7 @@ function DetailQrDialog({
             </Box>
 
             <Box component="dl" sx={{ m: 0, minWidth: 0, maxWidth: '100%', textAlign: 'center' }}>
-              <Typography
+              {label.bottomCaption ? <Typography
                 component="dt"
                 sx={{
                   color: '#000',
@@ -273,7 +263,7 @@ function DetailQrDialog({
                 }}
               >
                 {label.bottomCaption}
-              </Typography>
+              </Typography> : null}
               <Typography
                 component="dd"
                 sx={{

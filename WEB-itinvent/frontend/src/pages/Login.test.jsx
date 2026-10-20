@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -100,6 +100,7 @@ vi.mock('../lib/passwordCredentialSave', async (importOriginal) => {
 });
 
 import Login from './Login';
+import * as loginPagePresentation from '../lib/loginPagePresentation';
 
 function installMatchMedia({ mobile = false } = {}) {
   window.matchMedia = vi.fn().mockImplementation((query) => ({
@@ -545,6 +546,78 @@ describe('Login hybrid internal/external flow', () => {
     expect(appleButton).toBeEnabled();
     expect(screen.getByText(/QR-код и ручной ключ/i)).toBeInTheDocument();
     expect(screen.queryByTestId('totp-open-authenticator')).not.toBeInTheDocument();
+  });
+
+  it('resumes TOTP setup after the password-save page even when React StrictMode remounts the effect', async () => {
+    mockGetLoginMode.mockResolvedValue({ network_zone: 'external', biometric_login_enabled: false });
+    mockStartTwoFactorSetup.mockResolvedValue({
+      success: true,
+      login_challenge_id: 'challenge-setup',
+      otpauth_uri: 'otpauth://totp/HUB-IT:ivanov?secret=ABC123&issuer=hubit.zsgp.ru',
+      manual_entry_key: 'ABC123',
+      qr_svg: null,
+    });
+    primeTotpResumeFromSafariSave();
+    // The real page drops resume_challenge from the URL as soon as it consumes it.
+    const replaceStateSpy = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {
+      window.location.search = '';
+    });
+
+    try {
+      render(<React.StrictMode><Login /></React.StrictMode>);
+
+      expect((await screen.findAllByText(/QR-код и ручной ключ|ABC123/i)).length).toBeGreaterThan(0);
+      expect(mockStartTwoFactorSetup).toHaveBeenCalledWith('challenge-setup');
+    } finally {
+      replaceStateSpy.mockRestore();
+    }
+  });
+
+  it('still auto-starts desktop Windows SSO when sessionStorage throws', async () => {
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'internal',
+      biometric_login_enabled: false,
+      client_country_code: 'RU',
+      show_vpn_hint: false,
+      windows_sso_enabled: true,
+    });
+    mockIsDesktopBridgeReady.mockReturnValue(true);
+    const getItemSpy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('blocked', 'SecurityError');
+    });
+    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('blocked', 'SecurityError');
+    });
+
+    try {
+      render(<Login />);
+      await waitFor(() => expect(locationAssignMock).toHaveBeenCalledWith('/api/v1/auth/sso/begin'));
+      expect(locationAssignMock).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('password-auth-form')).toBeInTheDocument();
+    } finally {
+      getItemSpy.mockRestore();
+      setItemSpy.mockRestore();
+    }
+  });
+
+  it('does not walk the whole DOM for the overlay audit while debug logging is off', async () => {
+    // Vitest runs in DEV mode, where debug logging is always on; emulate a production build.
+    vi.stubEnv('DEV', false);
+    const auditSpy = vi.spyOn(loginPagePresentation, 'auditLoginPageOverlays');
+    try {
+      render(<Login />);
+      await ensurePasswordFormVisible();
+      expect(auditSpy).not.toHaveBeenCalled();
+
+      localStorage.setItem('agentDebugLog', '1');
+      cleanup();
+      render(<Login />);
+      await ensurePasswordFormVisible();
+      await waitFor(() => expect(auditSpy).toHaveBeenCalled());
+    } finally {
+      auditSpy.mockRestore();
+      vi.unstubAllEnvs();
+    }
   });
 
   it('shows compact 2FA setup on iPhone without password-save helpers', async () => {

@@ -6,6 +6,7 @@ OCR сервис для распознавания текста с изобра�
 Использует единый RouterAI gateway для анализа изображений и извлечения серийных номеров.
 """
 
+import asyncio
 import logging
 import re
 from typing import Optional
@@ -73,6 +74,19 @@ def _read_image_bytes(file_path: str) -> bytes:
         return image_file.read()
 
 
+def _complete_vision_for_file(file_path: str, *, prompt: str, temperature: float, max_tokens: int):
+    return openrouter_client.complete_vision(
+        image_bytes=_read_image_bytes(file_path),
+        mime_type="image/jpeg",
+        prompt=prompt,
+        system_prompt="",
+        model=_ocr_model(),
+        purpose="ocr",
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+
+
 async def analyze_image(file_path: str) -> str:
     """
     Анализирует изображение для извлечения серийного номера
@@ -87,13 +101,11 @@ async def analyze_image(file_path: str) -> str:
         return "OpenAI клиент не инициализирован. Проверьте настройки API."
 
     try:
-        text, _usage = openrouter_client.complete_vision(
-            image_bytes=_read_image_bytes(file_path),
-            mime_type="image/jpeg",
+        # Blocking file read + HTTP call to the LLM: keep them off the bot's event loop.
+        text, _usage = await asyncio.to_thread(
+            _complete_vision_for_file,
+            file_path,
             prompt=_SERIAL_PROMPT,
-            system_prompt="",
-            model=_ocr_model(),
-            purpose="ocr",
             temperature=0.1,
             max_tokens=150,
         )
@@ -269,13 +281,11 @@ async def analyze_image_detailed(file_path: str) -> str:
         return "OpenAI клиент не инициализирован. Проверьте настройки API."
 
     try:
-        text, _usage = openrouter_client.complete_vision(
-            image_bytes=_read_image_bytes(file_path),
-            mime_type="image/jpeg",
+        # Blocking file read + HTTP call to the LLM: keep them off the bot's event loop.
+        text, _usage = await asyncio.to_thread(
+            _complete_vision_for_file,
+            file_path,
             prompt=_DETAILED_PROMPT,
-            system_prompt="",
-            model=_ocr_model(),
-            purpose="ocr",
             temperature=0.2,
             max_tokens=300,
         )

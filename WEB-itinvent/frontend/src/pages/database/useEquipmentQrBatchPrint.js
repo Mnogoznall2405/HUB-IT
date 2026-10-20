@@ -10,6 +10,7 @@ import {
 import { resolveSelectedEquipmentPrintOrder } from './databaseListModel';
 import { buildEquipmentQrPrintBatch, formatQrLabelCount } from './equipmentQrPrint';
 import { waitForEquipmentQrPrintImages } from './EquipmentQrPrintPortal';
+import { EQUIPMENT_QR_A4_GRID, EQUIPMENT_QR_SMALL_LABEL_SIZE } from './equipmentQrPrintFormats';
 
 const formatSkippedSuffix = (skippedInvNos) => {
   if (!skippedInvNos?.length) return '';
@@ -61,8 +62,10 @@ export default function useEquipmentQrBatchPrint({
     () => isDesktopCapabilityAvailable(DESKTOP_EQUIPMENT_QR_PRINT_CAPABILITY)
   );
   const [job, setJob] = useState(null);
+  const [printPageActive, setPrintPageActive] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [feedback, setFeedback] = useState(null);
+  const [printOptions, setPrintOptions] = useState(null);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -77,16 +80,24 @@ export default function useEquipmentQrBatchPrint({
 
   const queuePreparedJob = useCallback((preparedJob, mode) => {
     attemptRef.current += 1;
+    setPrintPageActive(true);
     setJob({ ...preparedJob, mode, attempt: attemptRef.current });
   }, []);
 
-  const prepareAndPrint = useCallback(async (mode) => {
+  useEffect(() => {
+    if (!job || typeof window === 'undefined') return undefined;
+    const finish = () => setPrintPageActive(false);
+    window.addEventListener('afterprint', finish);
+    return () => window.removeEventListener('afterprint', finish);
+  }, [job]);
+
+  const prepareAndPrint = useCallback(async (mode, format = 'label', items = null) => {
     if (printing) return;
     setPrinting(true);
     setFeedback(null);
 
     try {
-      const ordered = resolveSelectedEquipmentPrintOrder(
+      const ordered = items ? { items, skippedInvNos: [] } : resolveSelectedEquipmentPrintOrder(
         groupedEquipment,
         selectedItems,
         tableSort
@@ -95,6 +106,7 @@ export default function useEquipmentQrBatchPrint({
         items: ordered.items,
         databaseId,
         skippedInvNos: ordered.skippedInvNos,
+        compact: format === 'label_small',
       });
       if (prepared.labels.length === 0) {
         setPrinting(false);
@@ -105,7 +117,11 @@ export default function useEquipmentQrBatchPrint({
         });
         return;
       }
-      queuePreparedJob(prepared, mode);
+      queuePreparedJob({
+        ...prepared,
+        format: format === 'a4' || format === 'label_small' ? format : 'label',
+        singleEquipment: Boolean(items),
+      }, mode);
     } catch (error) {
       console.error('Failed to prepare equipment QR print batch:', error);
       setPrinting(false);
@@ -126,6 +142,7 @@ export default function useEquipmentQrBatchPrint({
       if (!imagesReady || canceled) {
         if (!canceled) {
           setPrinting(false);
+          setPrintPageActive(false);
           setFeedback({
             severity: 'error',
             message: 'Не удалось подготовить страницу печати.',
@@ -140,6 +157,7 @@ export default function useEquipmentQrBatchPrint({
 
       setPrinting(false);
       if (!result.accepted) {
+        setPrintPageActive(false);
         setFeedback({
           severity: 'error',
           message: 'Не удалось открыть печать. Проверьте принтер и повторите.',
@@ -148,7 +166,9 @@ export default function useEquipmentQrBatchPrint({
         return;
       }
 
-      onClearSelection?.();
+      if (result.status === 'succeeded') setPrintPageActive(false);
+
+      if (!job.singleEquipment) onClearSelection?.();
       const labelCount = formatQrLabelCount(job.labels.length);
       const message = result.status === 'succeeded'
         ? `Отправлено на принтер: ${labelCount}.`
@@ -181,15 +201,37 @@ export default function useEquipmentQrBatchPrint({
     () => prepareAndPrint('dialog'),
     [prepareAndPrint]
   );
+  const openPrintOptions = useCallback(() => {
+    if (!printing) setPrintOptions({ items: null });
+  }, [printing]);
+  const openEquipmentPrintOptions = useCallback((equipment) => {
+    if (!printing && equipment) setPrintOptions({ items: [equipment] });
+  }, [printing]);
+  const closePrintOptions = useCallback(() => setPrintOptions(null), []);
+  const confirmPrintOptions = useCallback((format) => {
+    if (!printOptions || printing) return;
+    setPrintOptions(null);
+    void prepareAndPrint('dialog', format, printOptions.items);
+  }, [prepareAndPrint, printOptions, printing]);
   const dismissFeedback = useCallback(() => setFeedback(null), []);
 
   return {
-    labels: job?.labels || [],
+    labels: printPageActive ? (job?.labels || []) : [],
+    printGrid: job?.format === 'a4' ? EQUIPMENT_QR_A4_GRID : null,
+    printLabelSize: job?.format === 'label_small' ? EQUIPMENT_QR_SMALL_LABEL_SIZE : null,
+    printDialog: {
+      open: Boolean(printOptions),
+      count: printOptions?.items?.length ?? (selectedItems?.length || 0),
+      onClose: closePrintOptions,
+      onPrint: confirmPrintOptions,
+    },
     printing,
     feedback,
     desktopQuickPrintAvailable,
     printQuick,
     printWithDialog,
+    openPrintOptions,
+    openEquipmentPrintOptions,
     repeatLastPrint,
     dismissFeedback,
   };

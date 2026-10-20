@@ -10,6 +10,8 @@ const SHELL_ENTRY_URL = '/index.html';
 const STATIC_ASSET_DESTINATIONS = new Set(['style', 'script', 'font', 'image', 'manifest', 'worker']);
 const CHAT_MEDIA_VARIANTS = new Set(['thumb', 'preview', 'poster']);
 const CHAT_MEDIA_CACHE_LIMIT = 120;
+let privateMediaGeneration = 0;
+const privateMediaSessions = new Map();
 const APP_SHELL_URLS = [
   '/',
   '/index.html',
@@ -540,12 +542,12 @@ async function cacheShellAssets() {
 }
 
 async function cleanupOldCaches() {
-  const validCaches = new Set([APP_SHELL_CACHE, APP_ASSET_CACHE, CHAT_MEDIA_CACHE, PUSH_RUNTIME_CACHE]);
+  const validCaches = new Set([APP_SHELL_CACHE, APP_ASSET_CACHE, PUSH_RUNTIME_CACHE]);
   const keys = await caches.keys();
   await Promise.all(
     keys
       .filter((key) => ['hubit-app-shell-', 'hubit-app-assets-', 'hubit-chat-media-', 'itinvent-push-runtime-']
-        .some((prefix) => key.startsWith(prefix)) && !validCaches.has(key))
+        .some((prefix) => key.startsWith(prefix)) && !validCaches.has(key) && !key.startsWith(`${CHAT_MEDIA_CACHE}:`))
       .map((key) => caches.delete(key)),
   );
 }
@@ -625,11 +627,25 @@ async function trimCacheEntries(cache, limit) {
 }
 
 async function handleChatMediaVariantRequest(request, event) {
-  const cache = await caches.open(CHAT_MEDIA_CACHE);
-  const cachedResponse = await cache.match(request);
-  const networkPromise = fetch(request)
+  const session = privateMediaSessions.get(event.clientId);
+  // AuthProvider establishes the current (including restored offline) account
+  // scope. Bare clients without one must let the server check credentials.
+  const fetchAuthorized = () => fetch(new Request(request, { cache: 'no-store' }));
+  if (!session?.userKey) return fetchAuthorized();
+  const generation = privateMediaGeneration;
+  const ownsSession = () => generation === privateMediaGeneration
+    && privateMediaSessions.get(event.clientId) === session;
+  let cache;
+  let cachedResponse;
+  try {
+    cache = await caches.open(`${CHAT_MEDIA_CACHE}:${encodeURIComponent(session.userKey)}`);
+    cachedResponse = await cache.match(request);
+  } catch {
+    return fetchAuthorized();
+  }
+  const networkPromise = fetchAuthorized()
     .then(async (response) => {
-      if (response?.ok) {
+      if (response?.ok && ownsSession()) {
         await cache.put(request, response.clone());
         await trimCacheEntries(cache, CHAT_MEDIA_CACHE_LIMIT);
       }
@@ -637,13 +653,18 @@ async function handleChatMediaVariantRequest(request, event) {
     })
     .catch(() => null);
 
-  if (cachedResponse) {
+  if (cachedResponse && ownsSession()) {
     event.waitUntil(networkPromise);
     return cachedResponse;
   }
 
   const networkResponse = await networkPromise;
-  return networkResponse || fetch(request);
+  return networkResponse || fetchAuthorized();
+}
+
+async function clearPrivateMediaCaches() {
+  const keys = await caches.keys();
+  await Promise.all(keys.filter((key) => key.startsWith('hubit-chat-media-')).map((key) => caches.delete(key)));
 }
 
 async function collectClientVisibilitySnapshot() {
@@ -1206,6 +1227,31 @@ self.addEventListener('pushsubscriptionchange', (event) => {
 self.addEventListener('message', (event) => {
   const messageType = String(event?.data?.type || '').trim();
   if (!messageType) return;
+
+  if (messageType === 'itinvent:private-media-session') {
+    if (!isTrustedClientMessage(event) || !event.source?.id) return;
+    const clientId = event.source.id;
+    const userKey = String(event.data?.user_key || '').trim().slice(0, 160);
+    const clear = event.data?.clear === true;
+    if (clear) privateMediaGeneration += 1;
+    const previous = privateMediaSessions.get(clientId);
+    if (!userKey) privateMediaSessions.delete(clientId);
+    else if (previous?.userKey !== userKey || clear) privateMediaSessions.set(clientId, { userKey });
+    // Closed document IDs cannot authorize another client. Bound retained IDs
+    // as workers may outlive many windows; an evicted client uses the network.
+    while (privateMediaSessions.size > 128) privateMediaSessions.delete(privateMediaSessions.keys().next().value);
+    event.waitUntil((async () => {
+      try {
+        if (clear) await clearPrivateMediaCaches();
+        event.ports?.[0]?.postMessage({ ok: true });
+      } catch {
+        // This client's cache scope was already removed above, even if disk
+        // cleanup failed. It cannot receive cached bytes from the old scope.
+        event.ports?.[0]?.postMessage({ ok: false });
+      }
+    })());
+    return;
+  }
 
   if (messageType === 'itinvent:push-sync-drain') {
     event.waitUntil((async () => {

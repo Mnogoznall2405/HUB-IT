@@ -306,6 +306,41 @@ def test_works_draft_tool_calls_builder(monkeypatch):
     assert captured["payload"]["cartridge_color"] == "Черный"
 
 
+def test_works_draft_rejects_database_user_cannot_use(monkeypatch):
+    # Permission matrix: the model-supplied database_id must not widen the user's access.
+    # E2E cannot cover it: the LLM argument is not reachable from an HTTP boundary.
+    monkeypatch.setattr(
+        tools_context_module,
+        "get_all_db_configs",
+        lambda: [{"id": "ITINVENT", "name": "Main"}, {"id": "SECRET-DB", "name": "Other"}],
+    )
+    calls = []
+
+    def _fake_build(**kwargs):
+        calls.append(kwargs)
+        return {"id": "action-3", "action_type": kwargs["action_type"]}
+
+    monkeypatch.setattr(action_cards, "build_works_draft", _fake_build)
+    tool = works_module.PcCleaningDraftTool()
+
+    denied = tool.execute(
+        context=_ctx(database_id="ITINVENT"),
+        args=works_module.PcCleaningDraftArgs(inv_no="INV-1", database_id="SECRET-DB"),
+    )
+    assert denied.ok is False
+    assert "not resolved" in (denied.error or "")
+    assert calls == []
+
+    for requested in (None, "ITINVENT"):
+        allowed = tool.execute(
+            context=_ctx(database_id="ITINVENT"),
+            args=works_module.PcCleaningDraftArgs(inv_no="INV-1", database_id=requested),
+        )
+        assert allowed.ok is True
+        assert allowed.database_id == "ITINVENT"
+    assert [call["database_id"] for call in calls] == ["ITINVENT", "ITINVENT"]
+
+
 def test_build_works_draft_normalizes_equipment(monkeypatch):
     monkeypatch.setattr(
         action_cards.queries,

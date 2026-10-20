@@ -28,6 +28,10 @@ vi.mock('../components/mobile/MobileInstallerDownload', () => ({
   default: () => <a href="/mobile-updates/stable/test.apk">Скачать для Android</a>,
 }));
 
+vi.mock('../components/mobile/MobileAccessQr', () => ({
+  default: () => <div data-testid="mobile-access-qr" />,
+}));
+
 import About from './About';
 
 describe('About page', () => {

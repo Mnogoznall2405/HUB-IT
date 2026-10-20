@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -59,6 +60,7 @@ class NotificationPreferencesService:
         self.file_path = Path(file_path)
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
         self.store = get_local_store(data_dir=self.file_path.parent)
+        self._update_lock = threading.RLock()
         self._ensure_file()
 
     def _ensure_file(self) -> None:
@@ -134,6 +136,13 @@ class NotificationPreferencesService:
         }
 
     def update_preferences(self, *, user_id: int, patch: dict | None = None) -> dict:
+        # The store keeps one document for all users and save_json rewrites it
+        # entirely, so the whole load-modify-save cycle must be serialized or a
+        # concurrent update of another user is lost.
+        with self._update_lock:
+            return self._update_preferences_locked(user_id=user_id, patch=patch)
+
+    def _update_preferences_locked(self, *, user_id: int, patch: dict | None = None) -> dict:
         current_preferences = self.get_preferences(user_id=int(user_id))
         current = current_preferences["channels"]
         quiet_hours = dict(current_preferences["quiet_hours"])

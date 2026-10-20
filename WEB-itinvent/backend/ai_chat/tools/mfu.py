@@ -128,10 +128,9 @@ class MfuPagesMonthlyArgs(BaseModel):
 
 
 def _resolve_db(context: AiToolExecutionContext, database_id: str | None) -> str | None:
-    from backend.ai_chat.tools.context import normalize_database_id
-    requested = normalize_database_id(database_id)
-    current = normalize_database_id(context.effective_database_id)
-    return requested or current
+    # Access-checked resolution (same as tools/itinvent.py): a model-supplied database_id
+    # the user may not use resolves to None instead of being passed through.
+    return context.resolve_tool_database_id(database_id) or None
 
 
 def _has_permission(context: AiToolExecutionContext, permission: str) -> bool:

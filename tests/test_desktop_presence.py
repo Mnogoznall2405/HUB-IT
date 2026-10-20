@@ -1,4 +1,5 @@
 from __future__ import annotations
+import conftest
 
 from datetime import datetime, timedelta, timezone
 
@@ -28,7 +29,7 @@ def _user(user_id: int = 7) -> User:
 
 def test_heartbeat_upserts_one_row_per_authenticated_session(tmp_path):
     database_url = _sqlite_url(tmp_path)
-    initialize_app_schema(database_url)
+    conftest.copy_app_schema_for_url(database_url)
     now = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
     clock = [now]
     service = DesktopPresenceService(
@@ -53,7 +54,7 @@ def test_heartbeat_upserts_one_row_per_authenticated_session(tmp_path):
 
 def test_presence_keeps_multiple_sessions_for_one_user_independent(tmp_path):
     database_url = _sqlite_url(tmp_path)
-    initialize_app_schema(database_url)
+    conftest.copy_app_schema_for_url(database_url)
     now = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
     service = DesktopPresenceService(database_url=database_url, clock=lambda: now)
 
@@ -69,7 +70,7 @@ def test_presence_keeps_multiple_sessions_for_one_user_independent(tmp_path):
 
 def test_presence_expires_at_server_ttl_boundary_and_cleanup_is_bounded(tmp_path):
     database_url = _sqlite_url(tmp_path)
-    initialize_app_schema(database_url)
+    conftest.copy_app_schema_for_url(database_url)
     clock = [datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)]
     service = DesktopPresenceService(
         database_url=database_url,
@@ -89,7 +90,7 @@ def test_presence_expires_at_server_ttl_boundary_and_cleanup_is_bounded(tmp_path
 
 def test_disconnect_cannot_remove_another_users_session(tmp_path):
     database_url = _sqlite_url(tmp_path)
-    initialize_app_schema(database_url)
+    conftest.copy_app_schema_for_url(database_url)
     service = DesktopPresenceService(database_url=database_url)
     service.heartbeat(user_id=7, session_id="session-a")
 

@@ -730,7 +730,8 @@ def test_transfer_job_response_retries_only_explicit_failed_items(monkeypatch):
         request_count=2,
         operation_id="web-retry-failed-0001",
     )
-    service.mark_done(
+    assert service.claim_for_execution(job["id"], "processing") is True
+    assert service.mark_done(
         job["id"],
         {
             "success_count": 1,

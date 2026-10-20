@@ -236,6 +236,17 @@ const buildCardPayload = (form) => {
   };
 };
 
+const resolveCardLink = (value) => {
+  const source = String(value || '').trim();
+  if (!source) return '';
+  try {
+    const url = new URL(source, window.location.href);
+    return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
+  } catch {
+    return '';
+  }
+};
+
 const formatDateTime = (value) => {
   const raw = String(value || '').trim();
   if (!raw) return 'нет данных';
@@ -271,7 +282,13 @@ const localizeRevisionAction = (value) => REVISION_ACTION_LABELS[String(value ||
 const resolveResponseFileName = (response, fallbackName) => {
   const header = String(response?.headers?.['content-disposition'] || response?.headers?.get?.('content-disposition') || '').trim();
   const utf8Match = header.match(/filename\*=UTF-8''([^;]+)/i);
-  if (utf8Match?.[1]) return decodeURIComponent(utf8Match[1]);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      // Malformed percent-encoding in the header: fall back to the plain filename below.
+    }
+  }
   const simpleMatch = header.match(/filename="?([^"]+)"?/i);
   if (simpleMatch?.[1]) return simpleMatch[1];
   return fallbackName || 'вложение.bin';
@@ -288,7 +305,8 @@ const downloadBlobResponse = (response, fallbackName) => {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
-  window.URL.revokeObjectURL(url);
+  // Revoking right after click can abort the download in Safari/Firefox.
+  window.setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
 };
 
 function ArticleEditorDialog({
@@ -536,6 +554,8 @@ function KnowledgeBase() {
   const [selectedArticle, setSelectedArticle] = useState(null);
   const [selectedTemplate, setSelectedTemplate] = useState(null);
   const [selectedCard, setSelectedCard] = useState(null);
+  const selectedCardLink = resolveCardLink(selectedCard?.external_url);
+  const selectedCoverLink = resolveCardLink(selectedCard?.cover_image_url);
   const [detailLoading, setDetailLoading] = useState('');
 
   const [articleDialogOpen, setArticleDialogOpen] = useState(false);
@@ -1301,8 +1321,13 @@ function KnowledgeBase() {
                   </Typography>
                 </Box>
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
-                  <Button variant="outlined" startIcon={<OpenInNewIcon />} onClick={() => window.open(selectedCard.external_url, '_blank', 'noopener,noreferrer')}>
-                    Открыть
+                  <Button
+                    variant="outlined" startIcon={<OpenInNewIcon />} component="a"
+                    href={selectedCardLink || undefined}
+                    target="_blank" rel="noopener noreferrer"
+                    disabled={!selectedCardLink}
+                  >
+                    {selectedCardLink ? 'Открыть' : 'Ссылка недоступна'}
                   </Button>
                   {canWrite ? <Button variant="outlined" onClick={() => openEditCardDialog(selectedCard)}>Редактировать</Button> : null}
                   {canPublish ? (
@@ -1333,8 +1358,13 @@ function KnowledgeBase() {
                       <InfoRow label="Создано" value={formatDateTime(selectedCard.created_at)} />
                       <InfoRow label="Обновил" value={selectedCard.updated_by || 'нет данных'} />
                       {selectedCard.cover_image_url ? (
-                        <Button variant="outlined" startIcon={<OpenInNewIcon />} onClick={() => window.open(selectedCard.cover_image_url, '_blank', 'noopener,noreferrer')}>
-                          Открыть обложку
+                        <Button
+                          variant="outlined" startIcon={<OpenInNewIcon />} component="a"
+                          href={selectedCoverLink || undefined}
+                          target="_blank" rel="noopener noreferrer"
+                          disabled={!selectedCoverLink}
+                        >
+                          {selectedCoverLink ? 'Открыть обложку' : 'Обложка недоступна'}
                         </Button>
                       ) : null}
                     </Stack>

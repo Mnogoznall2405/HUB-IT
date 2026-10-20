@@ -16,19 +16,26 @@ from shared.llm.env import (
     read_env,
 )
 from shared.llm.errors import OpenRouterClientError
-from shared.llm.jev_client import (
-    JevChoiceAnswer,
-    JevClient,
-    JevClientError,
-    JevDecision,
-    JevNoulAnswer,
-    JevRawAnswer,
-    JevScoreAnswer,
-    jev_choice,
-    jev_client,
-    jev_noul,
-    jev_score,
-)
+try:
+    from shared.llm.jev_client import (
+        JevChoiceAnswer,
+        JevClient,
+        JevClientError,
+        JevDecision,
+        JevNoulAnswer,
+        JevRawAnswer,
+        JevScoreAnswer,
+        jev_choice,
+        jev_client,
+        jev_noul,
+        jev_score,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name != 'shared.llm.jev_client':
+        raise
+    _JEV_AVAILABLE = False
+else:
+    _JEV_AVAILABLE = True
 from shared.llm.models import resolve_model, resolve_model_candidates
 from shared.llm.openai_gateway import (
     OpenAiChatCompletionRequest,
@@ -66,3 +73,9 @@ __all__ = [
     "resolve_model",
     "resolve_model_candidates",
 ]
+if not _JEV_AVAILABLE:
+    __all__ = [name for name in __all__ if name not in {
+        'JevChoiceAnswer', 'JevClient', 'JevClientError', 'JevDecision',
+        'JevNoulAnswer', 'JevRawAnswer', 'JevScoreAnswer',
+        'jev_choice', 'jev_client', 'jev_noul', 'jev_score',
+    }]

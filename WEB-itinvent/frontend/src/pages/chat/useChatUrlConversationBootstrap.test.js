@@ -295,4 +295,50 @@ describe('useChatUrlConversationBootstrap', () => {
     expect(navigate).not.toHaveBeenCalled();
     unmount();
   });
+
+  describe('active conversation missing from a stale list', () => {
+    const mountWithActive = async ({ pendingId }) => {
+      const { renderHook } = await import('@testing-library/react');
+      const setActiveConversationId = vi.fn();
+      const { unmount } = renderHook(() => useChatUrlConversationBootstrap({
+        activeConversationId: 'g-new',
+        pendingCreatedConversationIdRef: { current: pendingId },
+        applyingRequestedConversationRef: { current: '' },
+        cancelPendingInitialAnchor: vi.fn(),
+        clearStoredConversationState: vi.fn(),
+        composePrefillRequested: false,
+        conversationBootstrapComplete: true,
+        conversations: [{ id: 'c1' }],
+        conversationsLoading: false,
+        invalidConversationRef: { current: '' },
+        isMobile: false,
+        loadConversations: vi.fn().mockResolvedValue([]),
+        locationSearch: '',
+        mobileHistoryReadyRef: { current: false },
+        navigate: vi.fn(),
+        notifyInfo: vi.fn(),
+        requestedConversationHandledRef: { current: '' },
+        requestedConversationRetryRef: { current: '' },
+        requestedConversationId: '',
+        restoredConversationId: '',
+        restoredMobileView: 'inbox',
+        setActiveConversationId,
+        setConversationBootstrapComplete: vi.fn(),
+        setMobileView: vi.fn(),
+        writeMobileHistoryState: vi.fn(),
+      }));
+      unmount();
+      return setActiveConversationId;
+    };
+
+    it('keeps a just-created conversation open while the list response is stale', async () => {
+      const setActiveConversationId = await mountWithActive({ pendingId: 'g-new' });
+      expect(setActiveConversationId).not.toHaveBeenCalledWith('');
+    });
+
+    it('still drops an active conversation that vanished from the list', async () => {
+      const setActiveConversationId = await mountWithActive({ pendingId: '' });
+      expect(setActiveConversationId).toHaveBeenCalledWith('');
+    });
+  });
 });

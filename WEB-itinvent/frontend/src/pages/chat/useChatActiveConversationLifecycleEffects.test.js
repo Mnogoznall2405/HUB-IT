@@ -85,30 +85,7 @@ describe('useChatActiveConversationLifecycleEffects helpers', () => {
 });
 
 describe('useChatActiveConversationLifecycleEffects', () => {
-  it('mounts without throwing when conversation is empty', async () => {
-    const { renderHook } = await import('@testing-library/react');
-    const { unmount } = renderHook(() => useChatActiveConversationLifecycleEffects({
-      activeConversationId: '',
-      activeConversationIdRef: { current: '' },
-      closeAttachmentPreview: vi.fn(),
-      closeDocumentPreview: vi.fn(),
-      locationSearch: '',
-      messagesLength: 0,
-      messagesLoading: false,
-      navigate: vi.fn(),
-      requestedConversationId: '',
-      requestedMessageId: '',
-      requestedMessageRevealKeyRef: { current: '' },
-      revealMessageRef: { current: vi.fn() },
-      setMessageMenuAnchor: vi.fn(),
-      setMessageMenuMessage: vi.fn(),
-      setSelectedMessageIds: vi.fn(),
-      setThreadMenuAnchor: vi.fn(),
-    }));
-    unmount();
-  });
-
-  it('reveals an embedded message without rewriting the host route', async () => {
+    it('reveals an embedded message without rewriting the host route', async () => {
     const { renderHook, waitFor } = await import('@testing-library/react');
     const navigate = vi.fn();
     const requestedMessageRevealKeyRef = { current: '' };

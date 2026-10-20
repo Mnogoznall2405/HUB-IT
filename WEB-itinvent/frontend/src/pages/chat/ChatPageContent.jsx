@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Stack } from '@mui/material';
 import { chatAPI } from '../../api/client';
 
@@ -29,6 +29,8 @@ import useChatConversationActionsController from './useChatConversationActionsCo
 import useChatAutoScrollLayoutEffect from './useChatAutoScrollLayoutEffect';
 import useChatNotesConversationBootstrap from './useChatNotesConversationBootstrap';
 import useChatUrlConversationBootstrap from './useChatUrlConversationBootstrap';
+import useChatInviteJoin from './useChatInviteJoin';
+import { useConfirmDialog } from '../../components/feedback/ConfirmDialogProvider';
 import useChatActiveConversationThreadBootstrap from './useChatActiveConversationThreadBootstrap';
 import useChatActiveConversationSurfaceEffects, {
   buildPinnedMessagePayloadFromMessage,
@@ -372,6 +374,23 @@ export function ChatPageContent({
   const activeThreadMessages = activeThreadRenderState.messages;
   const activeThreadMessagesLoading = activeThreadRenderState.loading;
 
+  // Только что созданная беседа попадает в список сразу (до сверки с сервером), а
+  // pending-ref не даёт bootstrap-эффекту сбросить активный чат, пока устаревший
+  // ответ списка не содержит новую беседу.
+  const pendingCreatedConversationIdRef = useRef('');
+  const upsertConversationRef = useRef(null);
+  const upsertConversationDetailRef = useRef(null);
+  const handleConversationCreated = useCallback((created) => {
+    const createdId = String(created?.id || '').trim();
+    if (!createdId) return;
+    pendingCreatedConversationIdRef.current = createdId;
+    upsertConversationRef.current?.(created, { promote: true });
+    upsertConversationDetailRef.current?.(created);
+    window.setTimeout(() => {
+      if (pendingCreatedConversationIdRef.current === createdId) pendingCreatedConversationIdRef.current = '';
+    }, 60000);
+  }, []);
+
   const overlays = useChatPageOverlayDialogs({
     isMobile,
     activeConversationId,
@@ -379,6 +398,7 @@ export function ChatPageContent({
     loadConversationsRef,
     notifyApiError,
     notifyInfo,
+    onConversationCreated: handleConversationCreated,
     openMobileThreadViewRef,
     revealMessageRef,
     setActiveConversationId,
@@ -432,6 +452,7 @@ export function ChatPageContent({
     selectedVisibleMessageIds,
   } = useChatMessageSelection({
     conversationKind: activeConversation?.kind,
+    viewerMemberRole: activeConversation?.viewer_member_role,
     messages: activeThreadMessages,
     selectedMessageIds,
   });
@@ -682,6 +703,11 @@ export function ChatPageContent({
     typingUsers,
   });
 
+  const pinnedMessageMutationRef = useRef(0);
+  useLayoutEffect(() => {
+    pinnedMessageMutationRef.current += 1;
+    return () => { pinnedMessageMutationRef.current += 1; };
+  }, [activeConversationId]);
   const persistPinnedMessage = useCallback((nextPinnedMessage) => {
     setPinnedMessage(nextPinnedMessage || null);
     persistPinnedMessageToStorage(nextPinnedMessage || null);
@@ -817,6 +843,8 @@ export function ChatPageContent({
     setMessages,
     upsertSearchConversation,
   });
+  upsertConversationRef.current = upsertConversation;
+  upsertConversationDetailRef.current = upsertConversationDetail;
   syncConversationPreviewRef.current = syncConversationPreview;
 
   const {
@@ -944,6 +972,7 @@ export function ChatPageContent({
     notifyApiError,
     notifyInfo,
     persistPinnedMessage,
+    pinnedMessageMutationRef,
     pinnedMessage,
     revealMessage,
     setMessages,
@@ -956,7 +985,10 @@ export function ChatPageContent({
     handleRemoveGroupMember,
     handleTransferGroupOwnership,
     handleUpdateGroupMemberRole,
+    handleSetGroupMemberRestriction,
     handleUpdateGroupProfile,
+    handleUploadGroupAvatar,
+    handleRemoveGroupAvatar,
   } = useChatGroupActionsController({
     activeConversationIdRef,
     clearStoredConversationState,
@@ -1100,6 +1132,7 @@ export function ChatPageContent({
 
   useChatUrlConversationBootstrap({
     activeConversationId,
+    pendingCreatedConversationIdRef,
     applyingRequestedConversationRef,
     cancelPendingInitialAnchor,
     clearStoredConversationState,
@@ -1163,6 +1196,24 @@ export function ChatPageContent({
     setOpeningAiBotId,
     setOpeningPeerId,
     upsertConversation,
+  });
+
+  const { confirm: confirmInviteDialog } = useConfirmDialog();
+  const handleInviteJoined = useCallback((conversation) => {
+    const conversationId = String(conversation?.id || '').trim();
+    if (!conversationId) return;
+    handleConversationCreated(conversation);
+    setActiveConversationId(conversationId);
+    openMobileThreadViewRef?.current?.(conversationId);
+  }, [handleConversationCreated, openMobileThreadViewRef, setActiveConversationId]);
+  useChatInviteJoin({
+    locationPathname: location.pathname,
+    locationSearch: location.search,
+    navigate,
+    confirmDialog: confirmInviteDialog,
+    notifyApiError,
+    notifyInfo,
+    onJoined: handleInviteJoined,
   });
 
   const buildChatListReturnPath = useCallback(() => {
@@ -1385,6 +1436,7 @@ export function ChatPageContent({
     activeConversationIdRef,
     buildPinnedMessagePayload,
     conversationKind: activeConversation?.kind,
+    viewerMemberRole: activeConversation?.viewer_member_role,
     conversations,
     focusComposer,
     loadChatDialogsModule,
@@ -1400,6 +1452,7 @@ export function ChatPageContent({
     openConversation,
     patchThreadMessage,
     persistPinnedMessage,
+    pinnedMessageMutationRef,
     pinnedMessage,
     promoteConversationToTop,
     queueAutoScroll,
@@ -1694,8 +1747,8 @@ export function ChatPageContent({
         emojiPickerOpen, insertEmojiAtSelection, handleSendSticker, voiceRecording, voiceRecordingDuration,
         voiceRecordingLevelRef, startVoiceRecording, stopVoiceRecording, cancelVoiceRecording, bindPinnedScroll,
         showTaskPanel, showContextPanel, taskPanelTaskId, closeTaskPanel, openTaskInTasks, handleTaskPanelUpdated,
-        setContextPanelOpen, openShareDialog, handleAddGroupMembers, handleRemoveGroupMember, handleUpdateGroupMemberRole,
-        handleTransferGroupOwnership, handleLeaveGroup, handleUpdateGroupProfile, settingsUpdating, socketStatus,
+        setContextPanelOpen, openShareDialog, handleAddGroupMembers, handleRemoveGroupMember, handleUpdateGroupMemberRole, handleSetGroupMemberRestriction,
+        handleTransferGroupOwnership, handleLeaveGroup, handleUpdateGroupProfile, handleUploadGroupAvatar, handleRemoveGroupAvatar, settingsUpdating, socketStatus,
         currentUser: user, threadMenuAnchor, setThreadMenuAnchor, infoOpen,
         messageMenuAnchor, messageMenuMessage, closeMessageMenu, handleReplyFromMessageMenu, handleCopyMessage,
         handleTogglePinMessageFromMenu, handleCopyMessageLink, forwardHookMessageFromMenu, handleReportMessageFromMenu,
@@ -1751,8 +1804,8 @@ export function ChatPageContent({
         emojiPickerOpen, insertEmojiAtSelection, handleSendSticker, voiceRecording, voiceRecordingDuration,
         voiceRecordingLevelRef, startVoiceRecording, stopVoiceRecording, cancelVoiceRecording, bindPinnedScroll,
         showTaskPanel, showContextPanel, taskPanelTaskId, closeTaskPanel, openTaskInTasks, handleTaskPanelUpdated,
-        setContextPanelOpen, openShareDialog, handleAddGroupMembers, handleRemoveGroupMember, handleUpdateGroupMemberRole,
-        handleTransferGroupOwnership, handleLeaveGroup, handleUpdateGroupProfile, settingsUpdating, socketStatus,
+        setContextPanelOpen, openShareDialog, handleAddGroupMembers, handleRemoveGroupMember, handleUpdateGroupMemberRole, handleSetGroupMemberRestriction,
+        handleTransferGroupOwnership, handleLeaveGroup, handleUpdateGroupProfile, handleUploadGroupAvatar, handleRemoveGroupAvatar, settingsUpdating, socketStatus,
         threadMenuAnchor, setThreadMenuAnchor, infoOpen,
         messageMenuAnchor, messageMenuMessage, closeMessageMenu, handleReplyFromMessageMenu, handleCopyMessage,
         handleTogglePinMessageFromMenu, handleCopyMessageLink, forwardHookMessageFromMenu, handleReportMessageFromMenu,

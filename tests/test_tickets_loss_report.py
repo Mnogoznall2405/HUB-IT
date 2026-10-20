@@ -13,6 +13,7 @@ Tests cover:
 Requirements: 11.1, 11.2, 11.3, 11.4, 11.5, 11.6
 """
 from __future__ import annotations
+import conftest
 
 import sys
 from contextlib import contextmanager
@@ -72,7 +73,7 @@ def service(temp_dir, monkeypatch):
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
-    AppBase.metadata.create_all(engine, checkfirst=True)
+    conftest.copy_app_metadata_schema_for_url(url)
 
     SessionLocal = sessionmaker(bind=engine)
 
@@ -425,7 +426,13 @@ class TestExportRequestsXlsx:
         ws = wb.active
 
         headers = [cell.value for cell in ws[1]]
-        assert headers == ["№", "ФИО", "Объект", "Дата вылета", "Дата прибытия", "Статус", "Ответственный", "Стоимость"]
+        assert headers == [
+            "№ п/п", "Дата подачи", "ФИО", "Подразделение", "Должность",
+            "Серия", "Номер", "Дата выдачи", "Кем выдан", "Код подр.",
+            "Дата рождения", "Место рождения", "Прописка", "Телефон",
+            "Прибытие / город", "№ заявки", "Шифр объекта", "Примечание",
+            "Стоимость", "Возврат", "Статус",
+        ]
 
     def test_xlsx_contains_request_data(self, service, seed_data):
         """The .xlsx file contains the seeded request."""
@@ -440,11 +447,12 @@ class TestExportRequestsXlsx:
 
         # Check data in first data row
         row = [cell.value for cell in ws[2]]
-        assert row[0] == seed_data["request_id"]  # №
-        assert row[1] == "Иванов Иван Иванович"  # ФИО
-        assert row[2] == "Камчатка"  # Объект
-        assert row[5] == "Билет куплен"  # Статус (purchased → Билет куплен)
-        assert row[7] == 15000.0  # Стоимость
+        assert row[0] == 1  # № п/п
+        assert row[2] == "Иванов Иван Иванович"  # ФИО
+        assert row[15] == seed_data["request_id"]  # № заявки
+        assert row[16] == "KAM"  # Шифр объекта
+        assert row[18] == 15000.0  # Стоимость
+        assert row[20] == "Билет куплен"  # Статус (purchased → Билет куплен)
 
     def test_xlsx_respects_filters(self, service, seed_data):
         """Export respects RequestFilters."""
@@ -468,5 +476,5 @@ class TestExportRequestsXlsx:
         ws = wb.active
 
         # The request has status "purchased" which should be "Билет куплен"
-        status_cell = ws.cell(row=2, column=6).value
+        status_cell = ws.cell(row=2, column=21).value
         assert status_cell == "Билет куплен"

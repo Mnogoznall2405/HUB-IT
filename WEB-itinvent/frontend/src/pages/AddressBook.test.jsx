@@ -1071,7 +1071,7 @@ describe('AddressBook page', () => {
     expect(chips).toHaveTextContent('Подразделение: Monitoring department');
 
     const cityInput = screen.getByTestId('address-book-filter-city');
-    fireEvent.mouseDown(cityInput.parentElement.querySelector('.MuiSelect-select'));
+    fireEvent.mouseDown(cityInput);
     fireEvent.click(await screen.findByRole('option', { name: 'Tyumen' }));
     await waitFor(() => {
       expect(addressBookAPI.search).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -1172,7 +1172,16 @@ describe('AddressBook page', () => {
     await screen.findByTestId('address-book-entry-list');
   });
 
-  it('renders the desktop copy-number action and downloads a vCard', async () => {
+  it('renders the desktop copy-number action without a vCard download', async () => {
+    render(<AddressBook />);
+
+    const detail = await screen.findByTestId('address-book-entry-detail');
+    expect(within(detail).getByTestId('address-book-copy-number')).toBeInTheDocument();
+    expect(within(detail).queryByTestId('address-book-save-contact')).not.toBeInTheDocument();
+  });
+
+  it('downloads a vCard from the mobile sheet', async () => {
+    setMatchMedia(isMobileQuery);
     const createObjectURL = vi.fn(() => 'blob:vcf');
     const revokeObjectURL = vi.fn();
     URL.createObjectURL = createObjectURL;
@@ -1181,10 +1190,12 @@ describe('AddressBook page', () => {
     const clickStub = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
     render(<AddressBook />);
 
-    const detail = await screen.findByTestId('address-book-entry-detail');
-    expect(within(detail).getByTestId('address-book-copy-number')).toBeInTheDocument();
+    fireEvent.click(await screen.findByTestId(
+      'address-book-entry-row-Ivanov Ivan Ivanovich|Monitoring department|Lead specialist|0',
+    ));
+    const sheet = await screen.findByTestId('address-book-entry-sheet');
 
-    fireEvent.click(within(detail).getByTestId('address-book-save-contact'));
+    fireEvent.click(within(sheet).getByTestId('address-book-save-contact'));
     await waitFor(() => {
       expect(createObjectURL).toHaveBeenCalled();
       expect(notifySuccessMock).toHaveBeenCalledWith(
@@ -1197,6 +1208,7 @@ describe('AddressBook page', () => {
   });
 
   it('hides the vCard action for dismissed employees', async () => {
+    setMatchMedia(isMobileQuery);
     hasPermissionMock.mockImplementation((permission) => permission === 'address_book.dismissed.read');
     addressBookAPI.search.mockImplementation((_args) => Promise.resolve({
       ...samplePayload,
@@ -1206,9 +1218,15 @@ describe('AddressBook page', () => {
     await screen.findByTestId('address-book-entry-list');
 
     fireEvent.click(screen.getByTestId('address-book-tab-dismissed'));
+    await waitFor(() => {
+      expect(addressBookAPI.search).toHaveBeenLastCalledWith(expect.objectContaining({ dismissed: true }));
+    });
+    fireEvent.click(await screen.findByTestId(
+      'address-book-entry-row-Ivanov Ivan Ivanovich|Monitoring department|Lead specialist|0',
+    ));
+    const sheet = await screen.findByTestId('address-book-entry-sheet');
     await screen.findByTestId('address-book-dismissed-chip');
-    const detail = screen.getByTestId('address-book-entry-detail');
-    expect(within(detail).queryByTestId('address-book-save-contact')).not.toBeInTheDocument();
+    expect(within(sheet).queryByTestId('address-book-save-contact')).not.toBeInTheDocument();
   });
 
   it('renders a sticky footer with primary actions inside the mobile sheet', async () => {
@@ -1288,9 +1306,8 @@ describe('AddressBook page', () => {
     render(<AddressBook />);
     await screen.findByTestId('address-book-entry-list');
 
-    const citySelect = screen.getByTestId('address-book-filter-city')
-      .parentElement.querySelector('.MuiSelect-select');
-    fireEvent.mouseDown(citySelect);
+    const cityInput = screen.getByTestId('address-book-filter-city');
+    fireEvent.mouseDown(cityInput);
     fireEvent.click(await screen.findByRole('option', { name: 'Tyumen' }));
     await waitFor(() => {
       expect(addressBookAPI.search).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -1426,9 +1443,8 @@ describe('AddressBook page', () => {
     await screen.findByTestId('address-book-entry-list');
     expect(addressBookAPI.getFilters).not.toHaveBeenCalled();
 
-    const citySelect = screen.getByTestId('address-book-filter-city')
-      .parentElement.querySelector('.MuiSelect-select');
-    fireEvent.mouseDown(citySelect);
+    const cityInput = screen.getByTestId('address-book-filter-city');
+    fireEvent.mouseDown(cityInput);
     await waitFor(() => {
       expect(addressBookAPI.getFilters).toHaveBeenCalledWith({ dismissed: false });
     });
@@ -1447,13 +1463,12 @@ describe('AddressBook page', () => {
     render(<AddressBook />);
     await screen.findByTestId('address-book-entry-list');
 
-    const citySelect = screen.getByTestId('address-book-filter-city')
-      .parentElement.querySelector('.MuiSelect-select');
-    fireEvent.focus(citySelect);
+    const cityInput = screen.getByTestId('address-book-filter-city');
+    fireEvent.focus(cityInput);
     await waitFor(() => expect(addressBookAPI.getFilters).toHaveBeenCalledTimes(1));
 
     // First attempt failed → nothing cached → next open retries.
-    fireEvent.mouseDown(citySelect);
+    fireEvent.mouseDown(cityInput);
     await waitFor(() => expect(addressBookAPI.getFilters).toHaveBeenCalledTimes(2));
     expect(await screen.findByRole('option', { name: 'Tyumen' })).toBeInTheDocument();
   });
@@ -1465,9 +1480,8 @@ describe('AddressBook page', () => {
 
     fireEvent.click(screen.getByTestId('address-book-filters-button'));
     const dialog = await screen.findByTestId('address-book-filters-dialog');
-    const citySelect = within(dialog).getByTestId('address-book-filter-city')
-      .parentElement.querySelector('.MuiSelect-select');
-    fireEvent.mouseDown(citySelect);
+    const cityInput = within(dialog).getByTestId('address-book-filter-city');
+    fireEvent.mouseDown(cityInput);
     fireEvent.click(await screen.findByRole('option', { name: 'Tyumen' }));
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Готово' }));

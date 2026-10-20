@@ -82,7 +82,7 @@ class FakeMyFilesService:
             download_size_bytes=len(b"grant-payload"),
         )
 
-    def list_files(self, *, user_id: int, folder_id=None, view: str = ""):
+    def list_files(self, *, user_id: int, folder_id=None, view: str = "", query: str = ""):
         self.seen_user_id = user_id
         self.seen_folder_id = folder_id
         return {"items": [], "folders": [], "breadcrumbs": [], "folder": None}

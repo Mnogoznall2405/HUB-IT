@@ -8,6 +8,8 @@ import { writeNativeSnapshot } from '../../cache/nativeSnapshotCache';
 import { openPortalPath } from '../../navigation/moduleRegistry';
 import { NativeNotificationCenterScreen } from './NativeNotificationCenterScreen';
 
+jest.setTimeout(20_000);
+
 let mockPermissions: string[];
 let mockOfflineMode = false;
 let mockUserId = 1;

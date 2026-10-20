@@ -9,8 +9,9 @@
     "test:run": "vitest run",
     "test:unit": "vitest run --project unit-node",
     "test:ui": "vitest run --project ui-dom",
-    "test:chat:gate": "vitest run src/pages/chat/ChatPageContent.smoke.test.jsx src/pages/chat/chatPageSlice38.test.js src/pages/chat/buildChatPagePanesBags.test.js src/pages/chat/useChatPageDialogsLayerProps.test.js src/pages/chat/useChatPageCoreBridge.test.js src/pages/chat/useChatAiController.test.js src/pages/chat/useChatDraftsAndPinned.test.js src/components/chat/useChatComposerTextBridge.test.js src/pages/chat/pickChatPageLayoutSections.test.js src/lib/chat/chatThreadScrollModel.test.js src/pages/chat/useChatThreadController.test.js src/pages/chat/useChatScrollController.test.js src/pages/chat/useChatSocketController.test.js src/pages/Chat.test.jsx src/pages/chat/useChatSidebarSection.test.jsx src/pages/chat/useChatThreadSection.test.jsx src/components/chat/ChatComposer.test.jsx",
+    "test:chat:gate": "vitest run src/pages/chat/ChatPageContent.smoke.test.jsx src/pages/chat/chatPageSlice38.test.js src/pages/chat/buildChatPagePanesBags.test.js src/pages/chat/useChatPageDialogsLayerProps.test.js src/pages/chat/useChatDraftsAndPinned.test.js src/components/chat/useChatComposerTextBridge.test.js src/pages/chat/pickChatPageLayoutSections.test.js src/lib/chat/chatThreadScrollModel.test.js src/pages/chat/useChatThreadController.test.js src/pages/chat/useChatScrollController.test.js src/pages/chat/useChatSocketController.test.js src/pages/Chat.test.jsx src/pages/chat/useChatThreadSection.test.jsx src/components/chat/ChatComposer.test.jsx",
     "test:chat:premerge": "npm run lint:chat-imports && npm run test:chat:gate && npm run build",
+    "test:e2e": "playwright test",
     "lint": "eslint src/pages/chat src/components/chat",
     "lint:mail": "eslint src/pages/Mail.jsx src/pages/Mail.test.jsx src/components/mail src/api/mail*.js",
     "lint:chat-imports": "node scripts/check-chat-page-imports.mjs",
@@ -34,6 +35,7 @@
     "fflate": "^0.8.2",
     "framer-motion": "^12.38.0",
     "html5-qrcode": "^2.3.8",
+    "livekit-client": "^2.22.3",
     "lottie-web": "^5.13.0",
     "pdfjs-dist": "^5.7.284",
     "qrcode": "^1.5.4",
@@ -53,6 +55,7 @@
     "xlsx-js-style": "^1.2.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4.2.4",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.2.0",

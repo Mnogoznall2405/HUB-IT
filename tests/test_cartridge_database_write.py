@@ -154,3 +154,29 @@ def test_upsert_requires_printer_model():
     db = _make_db()
     with pytest.raises(ValueError):
         db.upsert_entry("   ")
+
+
+def test_concurrent_upserts_in_threads_do_not_lose_updates():
+    """Handlers run upsert in worker threads: read-modify-write of the whole document must be serialized."""
+    import threading
+    import time
+
+    class _SlowDataManager(_DictDataManager):
+        def load_json(self, filename, default_content=None):
+            data = super().load_json(filename, default_content)
+            time.sleep(0.05)
+            return data
+
+    db = CartridgeDatabase(data_manager=_SlowDataManager())
+    models = [f"Printer {index}" for index in range(6)]
+    threads = [
+        threading.Thread(target=db.upsert_entry, args=(model,), kwargs={"oem_cartridge": f"C{index}"})
+        for index, model in enumerate(models)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    saved = {entry["printer_model"] for entry in db.list_entries()}
+    assert saved == {model.lower() for model in models}

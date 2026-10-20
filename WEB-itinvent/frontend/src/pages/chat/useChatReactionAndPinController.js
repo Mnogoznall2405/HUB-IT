@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useLayoutEffect, useRef } from 'react';
 
 import { chatAPI } from '../../api/client';
 
@@ -7,10 +7,17 @@ export default function useChatReactionAndPinController({
   notifyApiError,
   notifyInfo,
   persistPinnedMessage,
+  pinnedMessageMutationRef,
   pinnedMessage,
   revealMessage,
   setMessages,
 }) {
+  const internalPinMutationRef = useRef(0);
+  const pinMutationRef = pinnedMessageMutationRef || internalPinMutationRef;
+  useLayoutEffect(() => {
+    pinMutationRef.current += 1;
+    return () => { pinMutationRef.current += 1; };
+  }, [activeConversationIdRef?.current, pinMutationRef]);
   const handleToggleReaction = useCallback(async (messageId, emoji) => {
     const conversationId = String(activeConversationIdRef.current || '').trim();
     if (!conversationId || !messageId || !emoji) return;
@@ -69,15 +76,19 @@ export default function useChatReactionAndPinController({
     }
   }, [notifyInfo, pinnedMessage?.id, revealMessage]);
 
-  const handleUnpinPinnedMessage = useCallback(() => {
-    persistPinnedMessage(null);
+  const handleUnpinPinnedMessage = useCallback(async () => {
     const conversationId = String(activeConversationIdRef.current || '').trim();
-    if (conversationId && typeof chatAPI.setPinnedMessage === 'function') {
-      void chatAPI.setPinnedMessage(conversationId, null).catch((error) => {
-        notifyApiError(error, 'Не удалось открепить сообщение.');
-      });
+    if (!conversationId) return;
+    const request = ++pinMutationRef.current;
+    try {
+      const result = await chatAPI.setPinnedMessage(conversationId, null);
+      if (request === pinMutationRef.current && conversationId === activeConversationIdRef.current) {
+        persistPinnedMessage(result?.pinned_message !== undefined ? result.pinned_message : null);
+      }
+    } catch (error) {
+      notifyApiError(error, 'Не удалось открепить сообщение.');
     }
-  }, [activeConversationIdRef, notifyApiError, persistPinnedMessage]);
+  }, [activeConversationIdRef, notifyApiError, persistPinnedMessage, pinMutationRef]);
 
   return {
     handleOpenPinnedMessage,

@@ -64,6 +64,7 @@ export const loadComputersRoute = defineRouteLoader(() => import('../pages/Compu
 export const loadFileEgressRoute = defineRouteLoader(() => import('../pages/FileEgress'));
 export const loadScanCenterRoute = defineRouteLoader(() => import('../pages/ScanCenter'));
 export const loadMfuRoute = defineRouteLoader(() => import('../pages/Mfu'));
+export const loadMonitoringRoute = defineRouteLoader(() => import('../pages/Monitoring'));
 export const loadMailRoute = defineRouteLoader(() => import('../pages/Mail'));
 export const loadMobileMenuRoute = defineRouteLoader(() => import('../pages/MobileMenu'));
 export const loadVcsRoute = defineRouteLoader(() => import('../pages/Vcs'));
@@ -109,6 +110,7 @@ const ROUTE_LOADERS = new Map([
   ['/dlp', loadFileEgressRoute],
   ['/file-egress', loadFileEgressRoute],
   ['/mfu', loadMfuRoute],
+  ['/monitoring', loadMonitoringRoute],
   ['/mail', loadMailRoute],
   ['/menu', loadMobileMenuRoute],
   ['/ad-users', loadAdminRoute],

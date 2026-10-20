@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -44,6 +44,7 @@ EVENT_OUTBOX_STATUS_QUEUED = "queued"
 EVENT_OUTBOX_STATUS_PROCESSING = "processing"
 EVENT_OUTBOX_STATUS_DELIVERED = "delivered"
 EVENT_OUTBOX_STATUS_FAILED = "failed"
+OUTCOME_SUPERSEDED = "superseded"  # Worker outcome only, never a persisted status.
 
 
 def _utc_now() -> datetime:
@@ -395,6 +396,7 @@ class ChatEventOutboxService:
                                 member_user_ids=member_ids,
                                 sender_user_id=int(message.sender_user_id),
                                 body=getattr(message, "body", None),
+                                conversation_id=str(message.conversation_id),
                             ),
                         )
                     )
@@ -421,11 +423,21 @@ class ChatEventOutboxService:
             )
             now = _utc_now()
             for job in stale_jobs:
-                job.status = EVENT_OUTBOX_STATUS_QUEUED
-                job.next_attempt_at = now
-                job.updated_at = now
-                job.last_error = "Recovered stale processing job"
-                recovered += 1
+                exhausted = int(job.attempt_count or 0) >= self.max_attempts
+                applied = session.execute(
+                    update(ChatEventOutbox).where(
+                        ChatEventOutbox.id == job.id,
+                        ChatEventOutbox.status == EVENT_OUTBOX_STATUS_PROCESSING,
+                        ChatEventOutbox.attempt_count == int(job.attempt_count or 0),
+                        ChatEventOutbox.updated_at == job.updated_at,
+                    ).values(
+                        status=EVENT_OUTBOX_STATUS_FAILED if exhausted else EVENT_OUTBOX_STATUS_QUEUED,
+                        next_attempt_at=now, updated_at=now,
+                        last_error=("Stale processing job exhausted attempt limit"
+                                    if exhausted else "Recovered stale processing job"),
+                    ).execution_options(synchronize_session=False)
+                )
+                recovered += int(applied.rowcount or 0)
         return recovered
 
     def claim_jobs(self, limit: int | None = None) -> list[ChatEventOutboxJob]:
@@ -446,52 +458,69 @@ class ChatEventOutboxService:
             if dialect_name == "postgresql":
                 query = query.with_for_update(skip_locked=True)
             rows = list(session.execute(query).scalars())
+            claimed_jobs = []
             for row in rows:
-                row.status = EVENT_OUTBOX_STATUS_PROCESSING
-                row.attempt_count = int(row.attempt_count or 0) + 1
-                row.updated_at = now
-            session.flush()
-            return [self._serialize_job(row) for row in rows]
+                claimed = session.execute(
+                    update(ChatEventOutbox).where(
+                        ChatEventOutbox.id == row.id,
+                        ChatEventOutbox.status == EVENT_OUTBOX_STATUS_QUEUED,
+                        ChatEventOutbox.attempt_count == int(row.attempt_count or 0),
+                    ).values(
+                        status=EVENT_OUTBOX_STATUS_PROCESSING,
+                        attempt_count=ChatEventOutbox.attempt_count + 1,
+                        updated_at=now,
+                    ).returning(ChatEventOutbox).execution_options(
+                        synchronize_session=False, populate_existing=True,
+                    )
+                ).scalar_one_or_none()
+                if claimed is not None:
+                    claimed_jobs.append(self._serialize_job(claimed))
+            return claimed_jobs
 
     def _update_job(
         self,
         *,
         job_id: int,
+        attempt_count: int,
         status: str,
         next_attempt_at: datetime | None = None,
         last_error: str | None = None,
-    ) -> None:
+    ) -> bool:
+        now = _utc_now()
         with _aux_write_session() as session:
-            row = session.get(ChatEventOutbox, int(job_id))
-            if row is None:
-                return
-            row.status = _normalize_text(status, EVENT_OUTBOX_STATUS_FAILED)
-            row.updated_at = _utc_now()
-            row.next_attempt_at = next_attempt_at or row.updated_at
-            row.last_error = _normalize_text(last_error) or None
+            return bool(session.execute(
+                update(ChatEventOutbox).where(
+                    ChatEventOutbox.id == int(job_id),
+                    ChatEventOutbox.status == EVENT_OUTBOX_STATUS_PROCESSING,
+                    ChatEventOutbox.attempt_count == int(attempt_count),
+                ).values(
+                    status=_normalize_text(status, EVENT_OUTBOX_STATUS_FAILED),
+                    updated_at=now, next_attempt_at=next_attempt_at or now,
+                    last_error=_normalize_text(last_error) or None,
+                )
+            ).rowcount)
 
-    def mark_delivered(self, *, job_id: int, last_error: str | None = None) -> None:
-        self._update_job(
+    def mark_delivered(self, *, job_id: int, attempt_count: int, last_error: str | None = None) -> bool:
+        return self._update_job(
             job_id=int(job_id),
+            attempt_count=attempt_count,
             status=EVENT_OUTBOX_STATUS_DELIVERED,
             next_attempt_at=_utc_now(),
             last_error=last_error,
         )
 
-    def mark_retry(self, *, job_id: int, last_error: str) -> None:
-        with _aux_write_session() as session:
-            row = session.get(ChatEventOutbox, int(job_id))
-            if row is None:
-                return
-            next_attempt_at = _utc_now() + timedelta(seconds=self._retry_delay_sec(int(row.attempt_count or 0)))
-            row.status = EVENT_OUTBOX_STATUS_QUEUED
-            row.next_attempt_at = next_attempt_at
-            row.updated_at = _utc_now()
-            row.last_error = _normalize_text(last_error) or None
+    def mark_retry(self, *, job_id: int, attempt_count: int, last_error: str) -> bool:
+        return self._update_job(
+            job_id=int(job_id), attempt_count=attempt_count,
+            status=EVENT_OUTBOX_STATUS_QUEUED,
+            next_attempt_at=_utc_now() + timedelta(seconds=self._retry_delay_sec(attempt_count)),
+            last_error=last_error,
+        )
 
-    def mark_failed(self, *, job_id: int, last_error: str) -> None:
-        self._update_job(
+    def mark_failed(self, *, job_id: int, attempt_count: int, last_error: str) -> bool:
+        return self._update_job(
             job_id=int(job_id),
+            attempt_count=attempt_count,
             status=EVENT_OUTBOX_STATUS_FAILED,
             next_attempt_at=_utc_now(),
             last_error=last_error,
@@ -523,11 +552,20 @@ class ChatEventOutboxService:
             row = session.execute(query).scalar_one_or_none()
             if row is None:
                 return None
-            row.status = EVENT_OUTBOX_STATUS_PROCESSING
-            row.attempt_count = int(row.attempt_count or 0) + 1
-            row.updated_at = now
-            session.flush()
-            return self._serialize_job(row)
+            claimed = session.execute(
+                update(ChatEventOutbox).where(
+                    ChatEventOutbox.id == row.id,
+                    ChatEventOutbox.status == EVENT_OUTBOX_STATUS_QUEUED,
+                    ChatEventOutbox.attempt_count == int(row.attempt_count or 0),
+                ).values(
+                    status=EVENT_OUTBOX_STATUS_PROCESSING,
+                    attempt_count=ChatEventOutbox.attempt_count + 1,
+                    updated_at=now,
+                ).returning(ChatEventOutbox).execution_options(
+                    synchronize_session=False, populate_existing=True,
+                )
+            ).scalar_one_or_none()
+            return self._serialize_job(claimed) if claimed is not None else None
 
     def process_delivery_state_job_sync(self, job: ChatEventOutboxJob) -> None:
         """Apply unread/sender-seen side effects idempotently (no WS publish)."""
@@ -570,6 +608,14 @@ class ChatEventOutboxService:
 
             if _normalize_text(job.event_type) == CHAT_MESSAGE_DELIVERY_STATE_EVENT:
                 await asyncio.to_thread(self.process_delivery_state_job_sync, job)
+            elif _normalize_text(job.event_type) == "chat.message.metadata.refresh":
+                from dataclasses import asdict
+                from backend.chat.realtime_side_effects import build_message_metadata_event_jobs
+
+                metadata_jobs = await build_message_metadata_event_jobs(
+                    conversation_id=job.conversation_id, message_id=job.message_id,
+                )
+                await asyncio.to_thread(self.enqueue_events, [asdict(item) for item in metadata_jobs])
             else:
                 await publish_event_job(
                     {
@@ -582,17 +628,21 @@ class ChatEventOutboxService:
                     }
                 )
             # mark_* uses sync SQLAlchemy — never run on the asyncio event loop.
-            await asyncio.to_thread(self.mark_delivered, job_id=job.id)
+            applied = await asyncio.to_thread(self.mark_delivered, job_id=job.id, attempt_count=job.attempt_count)
             outcome = EVENT_OUTBOX_STATUS_DELIVERED
+            if not applied:
+                outcome = OUTCOME_SUPERSEDED
             return outcome
         except Exception as exc:
             note = _normalize_text(exc) or "event delivery failed"
             if int(job.attempt_count) >= self.max_attempts:
-                await asyncio.to_thread(self.mark_failed, job_id=job.id, last_error=note)
+                applied = await asyncio.to_thread(self.mark_failed, job_id=job.id, attempt_count=job.attempt_count, last_error=note)
                 outcome = EVENT_OUTBOX_STATUS_FAILED
             else:
-                await asyncio.to_thread(self.mark_retry, job_id=job.id, last_error=note)
+                applied = await asyncio.to_thread(self.mark_retry, job_id=job.id, attempt_count=job.attempt_count, last_error=note)
                 outcome = EVENT_OUTBOX_STATUS_QUEUED
+            if not applied:
+                outcome = OUTCOME_SUPERSEDED
             return outcome
         finally:
             logger.info(
@@ -623,6 +673,7 @@ class ChatEventOutboxService:
                 "delivered": 0,
                 "queued": 0,
                 "failed": 0,
+                "superseded": 0,
                 "recovered": 0,
                 "poll_disabled": int(not poll_enabled),
             }
@@ -635,6 +686,7 @@ class ChatEventOutboxService:
                 "delivered": 0,
                 "queued": 0,
                 "failed": 0,
+                "superseded": 0,
                 "recovered": 0,
                 "skipped_busy": 1,
             }
@@ -653,6 +705,7 @@ class ChatEventOutboxService:
             delivered = 0
             queued = 0
             failed = 0
+            superseded = 0
             semaphore = asyncio.Semaphore(self.max_concurrency)
 
             async def _process_bounded(job: ChatEventOutboxJob) -> str:
@@ -675,6 +728,8 @@ class ChatEventOutboxService:
                     delivered += 1
                 elif outcome == EVENT_OUTBOX_STATUS_QUEUED:
                     queued += 1
+                elif outcome == OUTCOME_SUPERSEDED:
+                    superseded += 1
                 else:
                     failed += 1
             batch_duration_ms = (time.perf_counter() - batch_started_at) * 1000.0
@@ -685,13 +740,14 @@ class ChatEventOutboxService:
                 self._last_heartbeat_at = now
                 backlog = await asyncio.to_thread(self.get_backlog_snapshot)
                 logger.info(
-                    "chat.event_outbox.heartbeat enabled=%s claimed=%s delivered=%s queued=%s failed=%s recovered=%s backlog_queued=%s backlog_failed=%s avg_job_ms=%.1f batch_ms=%.1f concurrency=%s",
+                    "chat.event_outbox.heartbeat enabled=%s claimed=%s delivered=%s queued=%s failed=%s recovered=%s superseded=%s backlog_queued=%s backlog_failed=%s avg_job_ms=%.1f batch_ms=%.1f concurrency=%s",
                     int(self.enabled),
                     len(jobs),
                     delivered,
                     queued,
                     failed,
                     recovered,
+                    superseded,
                     int(backlog.get("queued") or 0),
                     int(backlog.get("failed") or 0),
                     batch_duration_ms / max(1, len(jobs)),
@@ -704,6 +760,7 @@ class ChatEventOutboxService:
                 "delivered": delivered,
                 "queued": queued,
                 "failed": failed,
+                "superseded": superseded,
                 "recovered": recovered,
             }
 

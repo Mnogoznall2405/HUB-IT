@@ -74,8 +74,8 @@ function DatabaseDesktopToolbar({
     <Paper
       elevation={0}
       sx={getOfficeActionTraySx(ui, {
-        p: 0.75,
-        px: 1,
+        p: 0.25,
+        px: 0.75,
         mb: 0,
         display: 'flex',
         alignItems: 'center',

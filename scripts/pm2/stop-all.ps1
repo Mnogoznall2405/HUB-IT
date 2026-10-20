@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = 'C:\Project\Image_scan'
 . (Join-Path $projectRoot 'scripts\pm2\chat-runtime-mode.ps1')
 $resolvedChatMode = Get-ChatRuntimeMode -ProjectRoot $projectRoot -Override $ChatMode
-$processNames = @('itinvent-backend') + (Get-ChatProcessNames -Mode $resolvedChatMode) + @('itinvent-preview-worker', 'itinvent-mail-notification-worker', 'itinvent-chat-push-worker', 'itinvent-ai-chat-worker', 'itinvent-my-files-worker', 'itinvent-hub-notifications-retention-worker', 'itinvent-inventory', 'itinvent-scan', 'itinvent-scan-worker', 'itinvent-bot', 'itinvent-livekit')
+$processNames = @('itinvent-backend') + (Get-ChatProcessNames -Mode $resolvedChatMode) + @('itinvent-preview-worker', 'itinvent-mail-notification-worker', 'itinvent-chat-push-worker', 'itinvent-ai-chat-worker', 'itinvent-my-files-worker', 'itinvent-hub-notifications-retention-worker', 'itinvent-chat-push-outbox-retention-worker', 'itinvent-inventory', 'itinvent-scan', 'itinvent-scan-worker', 'itinvent-scan-system-metrics-retention-worker', 'itinvent-bot', 'itinvent-livekit', 'itinvent-voice', 'itinvent-voice-worker', 'itinvent-voice-archiver')
 
 if ($WhatIf) {
     Write-Host "[WhatIf] chat mode: $resolvedChatMode" -ForegroundColor Cyan
@@ -17,6 +17,10 @@ if ($WhatIf) {
     Write-Host '[WhatIf] would run: pm2 stop <each running managed process>; clear-pm2-orphans.ps1'
     return
 }
+
+# One mutating PM2 operation at a time; released when this process exits.
+$operationMutex = New-Object System.Threading.Mutex($false, 'Global\HUB-IT-PM2-Operations')
+if (-not $operationMutex.WaitOne(0)) { throw 'Another PM2 operation is running (mutex Global\HUB-IT-PM2-Operations).' }
 
 function Resolve-Pm2Command {
     $preferredGlobalPm2Cmd = Join-Path $env:APPDATA 'npm\pm2.cmd'

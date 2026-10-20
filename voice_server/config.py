@@ -64,6 +64,9 @@ class VoiceServerConfig:
     archive_enabled: bool
     archive_dry_run: bool
     source_ttl_days: int
+    # Автоматизация (оба выключены по умолчанию)
+    auto_enroll: bool = False  # VOICE_AUTO_ENROLL: имя спикера в сохранённой разметке -> эталонный голос (слияние)
+    cut_silence_min_duration_sec: int = 0  # VOICE_CUT_SILENCE_MIN_DURATION_SEC: 0 — выкл; иначе вырезать тишину в записях длиннее
 
     @classmethod
     def from_env(cls) -> "VoiceServerConfig":
@@ -131,6 +134,10 @@ class VoiceServerConfig:
             archive_dry_run=_to_bool(os.getenv("VOICE_ARCHIVE_DRY_RUN", "1"), True),
             source_ttl_days=max(
                 1, _to_int(os.getenv("VOICEVIDEO_SOURCE_TTL_DAYS", "7"), 7)
+            ),
+            auto_enroll=_to_bool(os.getenv("VOICE_AUTO_ENROLL", "0"), False),
+            cut_silence_min_duration_sec=max(
+                0, _to_int(os.getenv("VOICE_CUT_SILENCE_MIN_DURATION_SEC", "0"), 0)
             ),
         )
 

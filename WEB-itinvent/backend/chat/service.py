@@ -40,6 +40,8 @@ from backend.chat.chat_delivery_state import (
 from backend.chat.chat_folder_service import ChatFolderService
 from backend.chat.chat_forward_materializer import ChatForwardMaterializer
 from backend.chat.chat_group_service import ChatGroupService
+from backend.chat.chat_group_admin import ChatGroupAdminService
+from backend.chat.chat_group_invites import ChatGroupInviteService
 from backend.chat.chat_membership import ChatMembership
 from backend.chat.chat_mentions import (
     extract_mention_handles as _extract_mention_handles_impl,
@@ -460,6 +462,8 @@ class ChatService:
         self._runtime_status: Optional[ChatRuntimeStatus] = None
         self._membership = ChatMembership(self)
         self._group_service = ChatGroupService(self)
+        self._group_admin_service = ChatGroupAdminService(self)
+        self._group_invite_service = ChatGroupInviteService(self)
         self._presence_service = ChatPresenceService(self)
         self._folder_service = ChatFolderService(self)
         self._notification_orchestrator = ChatNotificationOrchestrator(self)
@@ -579,6 +583,22 @@ class ChatService:
             return _CHAT_UPLOAD_SESSION_CLEANUP_INTERVAL_DEFAULT
 
     @property
+    def group_max_owned(self) -> int:
+        raw = _normalize_text(os.getenv("CHAT_GROUP_MAX_OWNED"), "50")
+        try:
+            return max(1, min(1000, int(raw)))
+        except Exception:
+            return 50
+
+    @property
+    def group_create_per_minute(self) -> int:
+        raw = _normalize_text(os.getenv("CHAT_GROUP_CREATE_PER_MINUTE"), "5")
+        try:
+            return max(1, min(60, int(raw)))
+        except Exception:
+            return 5
+
+    @property
     def group_max_members(self) -> int:
         raw = _normalize_text(os.getenv("CHAT_GROUP_MAX_MEMBERS"), "128")
         try:
@@ -592,8 +612,8 @@ class ChatService:
         return self._cache._cache_get(user_id=user_id, bucket=bucket, extra=extra)
     def _cache_set(self, *, user_id: int, bucket: str, value: Any, extra: str = "", ttl_sec: int | None = None) -> Any:
         return self._cache._cache_set(user_id=user_id, bucket=bucket, value=value, extra=extra, ttl_sec=ttl_sec)
-    def _invalidate_user_cache(self, *, user_id: int, bucket: str | None = None, extra_prefix: str = "") -> None:
-        return self._cache._invalidate_user_cache(user_id=user_id, bucket=bucket, extra_prefix=extra_prefix)
+    def _invalidate_user_cache(self, *, user_id: int, bucket: str | None = None, extra_prefix: str = "", hard: bool = False) -> None:
+        return self._cache._invalidate_user_cache(user_id=user_id, bucket=bucket, extra_prefix=extra_prefix, hard=hard)
     def invalidate_bucket_for_all_users(self, *, bucket: str) -> None:
         """Remove all cache entries for given bucket regardless of user_id."""
         normalized_bucket = _normalize_text(bucket)
@@ -620,11 +640,13 @@ class ChatService:
         conversation_id: str,
         user_ids: list[int] | set[int] | tuple[int, ...],
         hard_drop_unread: bool = False,
+        hard: bool = False,
     ) -> None:
         return self._cache._invalidate_conversation_views_for_users(
             conversation_id=conversation_id,
             user_ids=user_ids,
             hard_drop_unread=hard_drop_unread,
+            hard=hard,
         )
     def _set_request_meta(self, **payload: Any) -> None:
         _chat_request_meta_var.set(dict(payload))
@@ -1416,6 +1438,48 @@ class ChatService:
         with chat_session() as session:
             return self._conversation_member_ids(session, normalized_conversation_id)
 
+    @staticmethod
+    def _delete_conversation_dependents(session, conversation_id: str) -> None:
+        """Rows that hang off a conversation without a guaranteed cascade (SQLite, legacy `public`
+        tables) and tables that may not exist yet. Each goes through its own savepoint, so a missing
+        table never breaks the deletion."""
+        from backend.chat.models import (
+            ChatCall,
+            ChatCallParticipant,
+            ChatGroupAdminAudit,
+            ChatGroupInvite,
+            ChatGroupLimits,
+            ChatGroupPermissions,
+            ChatGroupRestriction,
+            ChatGroupSettings,
+            ChatScheduledMessage,
+        )
+
+        call_ids = select(ChatCall.id).where(ChatCall.conversation_id == conversation_id)
+        statements = (
+            (ChatMessageMention, ChatMessageMention.conversation_id == conversation_id),
+            (ChatPollVote, ChatPollVote.conversation_id == conversation_id),
+            (ChatScheduledMessage, ChatScheduledMessage.conversation_id == conversation_id),
+            (ChatCallParticipant, ChatCallParticipant.call_id.in_(call_ids)),
+            (ChatCall, ChatCall.conversation_id == conversation_id),
+            (ChatGroupSettings, ChatGroupSettings.conversation_id == conversation_id),
+            (ChatGroupLimits, ChatGroupLimits.conversation_id == conversation_id),
+            (ChatGroupPermissions, ChatGroupPermissions.conversation_id == conversation_id),
+            (ChatGroupRestriction, ChatGroupRestriction.conversation_id == conversation_id),
+            (ChatGroupInvite, ChatGroupInvite.conversation_id == conversation_id),
+            (ChatGroupAdminAudit, ChatGroupAdminAudit.conversation_id == conversation_id),
+        )
+        for model, condition in statements:
+            try:
+                with session.begin_nested():
+                    session.query(model).filter(condition).delete(synchronize_session=False)
+            except Exception:
+                logger.warning(
+                    "chat.delete_conversation dependent cleanup skipped table=%s conversation_id=%s",
+                    getattr(model, "__tablename__", model),
+                    conversation_id,
+                )
+
     def _delete_conversation_rows(self, *, session, conversation: ChatConversation) -> dict[str, Any]:
         conversation_id = _normalize_text(conversation.id)
         member_user_ids = self._conversation_member_ids(session, conversation_id)
@@ -1425,6 +1489,7 @@ class ChatService:
         session.query(ChatEventOutbox).filter(
             ChatEventOutbox.conversation_id == conversation_id,
         ).delete(synchronize_session=False)
+        self._delete_conversation_dependents(session, conversation_id)
         for model in (
             ChatMessageReaction,
             ChatMessageRead,
@@ -1453,6 +1518,12 @@ class ChatService:
             user_ids=member_user_ids,
         )
         shutil.rmtree(self._attachments_root / conversation_id, ignore_errors=True)
+        avatar_stem = "".join(c if c.isalnum() or c in "-_" else "_" for c in conversation_id)
+        if avatar_stem:
+            try:
+                (Path(hub_service.data_dir) / "group_avatars" / f"{avatar_stem}.jpg").unlink(missing_ok=True)
+            except OSError:
+                logger.warning("chat.delete_conversation avatar cleanup failed conversation_id=%s", conversation_id)
         chat_attachment_preview_service.delete_conversation_artifacts(conversation_id)
         self._upload_sessions.delete_for_conversation(conversation_id)
         try:
@@ -1580,11 +1651,13 @@ class ChatService:
         member_user_ids: list[int] | set[int] | tuple[int, ...],
         sender_user_id: int,
         body: object,
+        conversation_id: object = None,
     ) -> set[int]:
         return _resolve_mentioned_member_user_ids_impl(
             member_user_ids=member_user_ids,
             sender_user_id=sender_user_id,
             body=body,
+            conversation_id=conversation_id,
         )
 
     def get_conversation(
@@ -2182,6 +2255,7 @@ class ChatService:
             member_user_ids=member_user_ids,
             sender_user_id=int(current_user_id),
             body=body,
+            conversation_id=payload.get("conversation_id"),
         )
         if mentioned_user_ids:
             # File path applies delivery state inline (no outbox job), so the
@@ -2482,13 +2556,125 @@ class ChatService:
         self._ensure_available()
         return self._group_service.transfer_group_ownership(current_user_id=current_user_id, conversation_id=conversation_id, owner_user_id=owner_user_id)
 
-    def leave_group(self, *, current_user_id: int, conversation_id: str) -> dict:
+    def create_group_invite(self, *, current_user_id: int, conversation_id: str) -> dict:
         self._ensure_available()
-        return self._group_service.leave_group(current_user_id=current_user_id, conversation_id=conversation_id)
+        return self._group_invite_service.create_invite(
+            current_user_id=current_user_id, conversation_id=conversation_id
+        )
 
-    def update_group_profile(self, *, current_user_id: int, conversation_id: str, title: str) -> dict:
+    def revoke_group_invites(self, *, current_user_id: int, conversation_id: str) -> dict:
         self._ensure_available()
-        return self._group_service.update_group_profile(current_user_id=current_user_id, conversation_id=conversation_id, title=title)
+        return self._group_invite_service.revoke_invites(
+            current_user_id=current_user_id, conversation_id=conversation_id
+        )
+
+    def preview_group_invite(self, *, current_user_id: int, token: str) -> dict:
+        self._ensure_available()
+        return self._group_invite_service.preview_invite(current_user_id=current_user_id, token=token)
+
+    def join_group_by_invite(self, *, current_user_id: int, token: str) -> dict:
+        self._ensure_available()
+        return self._group_invite_service.join_by_invite(current_user_id=current_user_id, token=token)
+
+    def admin_list_ownerless_groups(self, *, actor_user_id: int, limit: int = 100) -> list:
+        self._ensure_available()
+        return self._group_admin_service.list_groups_without_active_owner(actor_user_id=actor_user_id, limit=limit)
+
+    def admin_get_group_structure(self, *, actor_user_id: int, conversation_id: str) -> dict:
+        self._ensure_available()
+        return self._group_admin_service.get_group_structure(actor_user_id=actor_user_id, conversation_id=conversation_id)
+
+    def admin_list_group_audit(self, *, actor_user_id: int, conversation_id: str, limit: int = 50) -> list:
+        self._ensure_available()
+        return self._group_admin_service.list_audit(
+            actor_user_id=actor_user_id, conversation_id=conversation_id, limit=limit
+        )
+
+    def admin_assign_group_owner(self, *, actor_user_id: int, conversation_id: str, owner_user_id: int) -> dict:
+        self._ensure_available()
+        return self._group_admin_service.assign_group_owner(
+            actor_user_id=actor_user_id, conversation_id=conversation_id, owner_user_id=owner_user_id
+        )
+
+    def list_group_activity(self, *, current_user_id: int, conversation_id: str, limit: int = 50) -> list[dict]:
+        self._ensure_available()
+        return self._group_admin_service.list_group_activity(
+            current_user_id=current_user_id, conversation_id=conversation_id, limit=limit
+        )
+
+    def admin_auto_assign_group_owners(self, *, actor_user_id: int, dry_run: bool = True, limit: int = 25) -> dict:
+        self._ensure_available()
+        return self._group_admin_service.auto_assign_owners(
+            actor_user_id=actor_user_id, dry_run=dry_run, batch_size=limit
+        )
+
+    def admin_remove_group_member(self, *, actor_user_id: int, conversation_id: str, target_user_id: int) -> dict:
+        self._ensure_available()
+        return self._group_admin_service.remove_group_member(
+            actor_user_id=actor_user_id, conversation_id=conversation_id, target_user_id=target_user_id
+        )
+
+    def leave_group(
+        self,
+        *,
+        current_user_id: int,
+        conversation_id: str,
+        successor_user_id: Optional[int] = None,
+    ) -> dict:
+        self._ensure_available()
+        return self._group_service.leave_group(
+            current_user_id=current_user_id,
+            conversation_id=conversation_id,
+            successor_user_id=successor_user_id,
+        )
+
+    def update_group_profile(
+        self,
+        *,
+        current_user_id: int,
+        conversation_id: str,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        posting_policy: Optional[str] = None,
+        slow_mode_seconds: Optional[int] = None,
+        members_send_files: Optional[bool] = None,
+    ) -> dict:
+        self._ensure_available()
+        return self._group_service.update_group_profile(
+            current_user_id=current_user_id,
+            conversation_id=conversation_id,
+            title=title,
+            description=description,
+            posting_policy=posting_policy,
+            slow_mode_seconds=slow_mode_seconds,
+            members_send_files=members_send_files,
+        )
+
+    def restrict_group_member(
+        self,
+        *,
+        current_user_id: int,
+        conversation_id: str,
+        target_user_id: int,
+        duration_seconds: Optional[int] = None,
+    ) -> dict:
+        self._ensure_available()
+        return self._group_service.restrict_group_member(
+            current_user_id=current_user_id,
+            conversation_id=conversation_id,
+            target_user_id=target_user_id,
+            duration_seconds=duration_seconds,
+        )
+
+    def lift_group_member_restriction(
+        self, *, current_user_id: int, conversation_id: str, target_user_id: int
+    ) -> dict:
+        self._ensure_available()
+        return self._group_service.lift_group_member_restriction(
+            current_user_id=current_user_id,
+            conversation_id=conversation_id,
+            target_user_id=target_user_id,
+        )
 
     def update_group_avatar(self, *, current_user_id: int, conversation_id: str, avatar_url: str) -> dict:
         self._ensure_available()
@@ -2506,8 +2692,7 @@ class ChatService:
         if job is None:
             return False
         chat_event_outbox_service.process_delivery_state_job_sync(job)
-        chat_event_outbox_service.mark_delivered(job_id=job.id)
-        return True
+        return chat_event_outbox_service.mark_delivered(job_id=job.id, attempt_count=job.attempt_count)
 
     def send_message(
         self,
@@ -2583,6 +2768,7 @@ class ChatService:
             member_user_ids=member_user_ids,
             sender_user_id=int(current_user_id),
             body=normalized_body,
+            conversation_id=conversation_id,
         )
         public_message = {
             key: value
@@ -2852,6 +3038,16 @@ class ChatService:
                 current_user_id=int(current_user_id),
             )
             conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
+            if _normalize_text(getattr(conversation, "kind", "")) == "group":
+                # Telegram-like: only the owner and moderators pin messages in a group.
+                try:
+                    self._require_group_manager(
+                        session=session,
+                        conversation_id=conversation.id,
+                        current_user_id=int(current_user_id),
+                    )
+                except PermissionError as exc:
+                    raise PermissionError("Закреплять сообщения могут только владелец и модераторы группы") from exc
             if normalized_message_id:
                 message = session.get(ChatMessage, normalized_message_id)
                 if message is None or message.conversation_id != conversation.id:

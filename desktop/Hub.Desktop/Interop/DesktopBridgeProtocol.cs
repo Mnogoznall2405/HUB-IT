@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using Hub.Desktop.Downloads;
 using Hub.Desktop.Lifecycle;
+using Hub.Desktop.Audio;
 using Hub.Desktop.Printing;
 using Hub.Desktop.Shell;
 using Hub.Desktop.Transfers;
@@ -30,6 +31,8 @@ public enum DesktopInboundMessageType
     MailComposeWindowCloseResult,
     MailComposeWindowSent,
     ClearNotificationGroup,
+    DiagnoseMicrophone,
+    OpenMediaSettings,
 }
 
 public enum DesktopThemeMode
@@ -60,7 +63,9 @@ public sealed record DesktopInboundMessage(
     DesktopMailComposeWindowCommand? MailComposeWindow = null,
     DesktopEquipmentQrPrintCommand? EquipmentQrPrint = null,
     DesktopOpenFileDialogCommand? OpenFileDialog = null,
-    string? NotificationGroup = null);
+    string? NotificationGroup = null,
+    string? RequestId = null,
+    DesktopMediaSettingsKind? MediaSettings = null);
 
 public static class DesktopBridgeProtocol
 {
@@ -78,6 +83,7 @@ public static class DesktopBridgeProtocol
     public const int MaximumQuickRouteLabelLength = 48;
     public const int MaximumNotificationGroupLength = 64;
     public const string NotificationClearGroupCapability = "notification-clear-group";
+    public const string MicrophoneDiagnosticsCapability = "microphone-diagnostics";
     private const string ReadyMessageType = "desktop.ready";
     private const string ShowNotificationMessageType = "notification.show";
     private const string ClearNotificationGroupMessageType = "notification.clearGroup";
@@ -115,6 +121,9 @@ public static class DesktopBridgeProtocol
     private const string MailComposeWindowCloseResultMessageType = "mail.composeWindow.closeResult";
     private const string MailComposeWindowSentMessageType = "mail.composeWindow.sent";
     private const string MailComposeWindowCompletedMessageType = "mail.composeWindow.completed";
+    private const string MicrophoneDiagnoseMessageType = "media.microphoneDiagnose";
+    private const string MicrophoneDiagnosisMessageType = "media.microphoneDiagnosis";
+    private const string OpenMediaSettingsMessageType = "media.openSettings";
 
     public static bool TryParseInbound(string? json, out DesktopInboundMessage message)
     {
@@ -183,6 +192,8 @@ public static class DesktopBridgeProtocol
                     root,
                     DesktopInboundMessageType.MailComposeWindowSent,
                     out message),
+                MicrophoneDiagnoseMessageType => TryParseMicrophoneDiagnose(root, out message),
+                OpenMediaSettingsMessageType => TryParseOpenMediaSettings(root, out message),
                 _ => false,
             };
         }
@@ -245,6 +256,7 @@ public static class DesktopBridgeProtocol
             "equipment-qr-print",
             "file-actions-v2",
             "mail-compose-window",
+            MicrophoneDiagnosticsCapability,
         };
         if (notificationsAvailable)
         {
@@ -482,6 +494,113 @@ public static class DesktopBridgeProtocol
             type = MailComposeWindowCompletedMessageType,
             version = CurrentVersion,
         });
+
+    /// <summary>
+    /// Builds <c>media.microphoneDiagnosis</c>. A null diagnosis (timeout or COM
+    /// failure) is reported as <c>status: "failed"</c> without details.
+    /// </summary>
+    public static string CreateMicrophoneDiagnosisMessage(
+        string requestId,
+        DesktopMicrophoneDiagnosis? diagnosis)
+    {
+        if (!IsValidRequestId(requestId))
+        {
+            throw new ArgumentException("Invalid request id.", nameof(requestId));
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            type = MicrophoneDiagnosisMessageType,
+            version = CurrentVersion,
+            requestId,
+            status = diagnosis is null ? "failed" : "completed",
+            diagnosis = diagnosis is null ? null : SerializeMicrophoneDiagnosis(diagnosis),
+        });
+    }
+
+    private static object SerializeMicrophoneDiagnosis(DesktopMicrophoneDiagnosis diagnosis)
+    {
+        return new
+        {
+            reason = ToCamelCase(diagnosis.Reason.ToString()),
+            probe = ToCamelCase(diagnosis.Probe.ToString()),
+            probeHresult = diagnosis.ProbeHresult is int hresult
+                ? "0x" + hresult.ToString("X8", CultureInfo.InvariantCulture)
+                : null,
+            devices = diagnosis.Devices
+                .Take(WindowsMicrophoneDiagnostics.MaximumDevices)
+                .Select(SerializeMicrophoneDevice),
+            defaultConsole = diagnosis.DefaultConsole is null
+                ? null
+                : SerializeMicrophoneDevice(diagnosis.DefaultConsole),
+            defaultCommunications = diagnosis.DefaultCommunications is null
+                ? null
+                : SerializeMicrophoneDevice(diagnosis.DefaultCommunications),
+            consent = new
+            {
+                user = diagnosis.Consent.User,
+                userNonPackaged = diagnosis.Consent.UserNonPackaged,
+                machine = diagnosis.Consent.Machine,
+                policy = diagnosis.Consent.Policy,
+            },
+            apps = diagnosis.Apps.Take(4).Select(app => new
+            {
+                name = app.Name,
+                user = app.User,
+                machine = app.Machine,
+            }),
+            site = diagnosis.Site is null
+                ? null
+                : new
+                {
+                    microphone = diagnosis.Site.Microphone,
+                    camera = diagnosis.Site.Camera,
+                    repaired = diagnosis.Site.Repaired,
+                },
+        };
+    }
+
+    private static object SerializeMicrophoneDevice(DesktopMicrophoneDevice device) => new
+    {
+        id = device.Id,
+        name = device.Name,
+        state = device.State,
+    };
+
+    private static string ToCamelCase(string value) =>
+        string.IsNullOrEmpty(value) ? value : char.ToLowerInvariant(value[0]) + value[1..];
+
+    private static bool TryParseMicrophoneDiagnose(JsonElement root, out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "requestId")
+            || !TryGetBoundedString(root, "requestId", 64, out var requestId)
+            || !IsValidRequestId(requestId))
+        {
+            return false;
+        }
+
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.DiagnoseMicrophone,
+            RequestId: requestId);
+        return true;
+    }
+
+    private static bool TryParseOpenMediaSettings(JsonElement root, out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "kind")
+            || !TryGetBoundedString(root, "kind", 32, out var rawKind)
+            || !DesktopMediaSettings.TryParseKind(rawKind, out var kind))
+        {
+            return false;
+        }
+
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.OpenMediaSettings,
+            MediaSettings: kind);
+        return true;
+    }
 
     private static bool TryParseReady(JsonElement root, out DesktopInboundMessage message)
     {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import {
   myFilesAPI,
@@ -20,6 +20,7 @@ import {
   summarizeFolderSelection,
 } from '../../lib/myFilesFolderZip';
 import { formatFileSize } from '../../lib/myFilesPreview';
+import { BROWSER_ACCOUNT_EVENT, captureBrowserAccountSession, getStoredUserKey } from '../../lib/browserAccountSession';
 
 const normalizeFiles = (value) => Array.from(value || []).filter(Boolean);
 
@@ -53,11 +54,62 @@ export function useMyFilesUpload({
   const [prepareStats, setPrepareStats] = useState({ total: 0, done: 0 });
   const [uploadTargetFolderId, setUploadTargetFolderId] = useState(null);
   const uploadAbortRef = useRef(null);
-
   const resetFileInputs = useCallback(() => {
     if (fileInputRef.current) fileInputRef.current.value = '';
     if (folderInputRef.current) folderInputRef.current.value = '';
   }, []);
+  const userKey = getStoredUserKey();
+  const [accountEpoch, setAccountEpoch] = useState(0);
+  const accountSession = useMemo(() => captureBrowserAccountSession(), [userKey, accountEpoch]);
+  const dropContext = useMemo(
+    () => ({ accountSession, canWrite, currentFolderId, isSpecialView, uploading }),
+    [accountSession, canWrite, currentFolderId, isSpecialView, uploading],
+  );
+  const dropContextRef = useRef(dropContext);
+  dropContextRef.current = dropContext;
+  const dropReadRef = useRef(null);
+  const previousDropContextRef = useRef(dropContext);
+
+  useLayoutEffect(() => {
+    // Directory enumeration can outlive navigation. Discard its old result and
+    // let the new view accept a fresh drop without retaining an old overlay.
+    dropContextRef.current = dropContext;
+    dropReadRef.current = null;
+    setReadingDrop(false);
+    setDragActive(false);
+    if (previousDropContextRef.current !== dropContext) {
+      setUploadDialogOpen(false);
+      setPendingUploadFiles([]);
+      setPendingFolderFiles([]);
+      setUploadTargetFolderId(null);
+      resetFileInputs();
+    }
+    previousDropContextRef.current = dropContext;
+    return () => {
+      dropContextRef.current = null;
+      dropReadRef.current = null;
+    };
+  }, [dropContext, resetFileInputs]);
+
+  useEffect(() => {
+    const accountChanged = () => {
+      if (accountSession.isCurrent()) return;
+      uploadAbortRef.current?.abort();
+      uploadAbortRef.current = null;
+      setAccountEpoch((value) => value + 1);
+      setPendingUploadFiles([]);
+      setPendingFolderFiles([]);
+      setUploadDialogOpen(false);
+      setUploadTargetFolderId(null);
+      setUploadProgress({});
+      setUploadStats({ total: 0, done: 0 });
+      setPrepareStats({ total: 0, done: 0 });
+      setUploading(false);
+      setReadingDrop(false);
+    };
+    window.addEventListener(BROWSER_ACCOUNT_EVENT, accountChanged);
+    return () => window.removeEventListener(BROWSER_ACCOUNT_EVENT, accountChanged);
+  }, [accountSession]);
 
   const quotaLimitBytes = useMemo(() => {
     const limit = Number(quota?.limit_bytes || 0);
@@ -65,6 +117,7 @@ export function useMyFilesUpload({
   }, [quota]);
 
   const queueUploads = useCallback(async (files, selectedRetentionDays = retentionDays, resolveFolderId = null, externalSignal = null) => {
+    if (!accountSession.isCurrent()) return;
     const selected = normalizeFiles(files);
     if (selected.length === 0) return;
     const controller = externalSignal ? null : new AbortController();
@@ -85,7 +138,7 @@ export function useMyFilesUpload({
       const workers = Array.from(
         { length: Math.min(UPLOAD_PARALLEL_FILES, selected.length) },
         async () => {
-          while (nextIndex < selected.length && !signal.aborted) {
+          while (nextIndex < selected.length && !signal.aborted && accountSession.isCurrent()) {
             const index = nextIndex;
             nextIndex += 1;
             const file = selected[index];
@@ -106,7 +159,9 @@ export function useMyFilesUpload({
                 folderId: targetFolderId,
                 parallelChunks,
                 signal,
+                accountSession,
                 onUploadProgress: (event) => {
+                  if (!accountSession.isCurrent()) return;
                   const total = Number(event?.total || file.size || 0);
                   const loaded = Number(event?.loaded || 0);
                   const percent = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 0;
@@ -118,8 +173,10 @@ export function useMyFilesUpload({
                   ));
                 },
               });
+              if (!accountSession.isCurrent()) return;
               uploaded += 1;
             } catch (error) {
+              if (!accountSession.isCurrent()) return;
               const aborted = signal.aborted || error?.name === 'AbortError' || error?.code === 'ERR_CANCELED';
               if (!aborted) {
                 const status = Number(error?.response?.status || 0);
@@ -132,22 +189,25 @@ export function useMyFilesUpload({
                 failures.push(`«${file.name}» — ${detail}`);
               }
             } finally {
-              setUploadProgress((current) => {
-                if (!(progressKey in current)) return current;
-                const next = { ...current };
-                delete next[progressKey];
-                return next;
-              });
-              setUploadStats((current) => ({ ...current, done: current.done + 1 }));
-              processed += 1;
-              if (processed % UPLOAD_LIST_REFRESH_EVERY === 0) {
-                void loadData({ silent: true });
+              if (accountSession.isCurrent()) {
+                setUploadProgress((current) => {
+                  if (!(progressKey in current)) return current;
+                  const next = { ...current };
+                  delete next[progressKey];
+                  return next;
+                });
+                setUploadStats((current) => ({ ...current, done: current.done + 1 }));
+                processed += 1;
+                if (processed % UPLOAD_LIST_REFRESH_EVERY === 0) {
+                  void loadData({ silent: true });
+                }
               }
             }
           }
         },
       );
       await Promise.all(workers);
+      if (!accountSession.isCurrent()) return;
       if (signal.aborted) {
         notifyWarning(
           `Загрузка отменена. Успели загрузиться: ${uploaded} из ${selected.length}.${failures.length > 0 ? ` Ошибок: ${failures.length}.` : ''}`,
@@ -166,18 +226,20 @@ export function useMyFilesUpload({
       }
       await loadData({ silent: true });
     } catch (error) {
-      notifyApiError(error, 'Не удалось загрузить файл.', { dedupeMode: 'none' });
+      if (accountSession.isCurrent()) notifyApiError(error, 'Не удалось загрузить файл.', { dedupeMode: 'none' });
     } finally {
-      uploadAbortRef.current = null;
-      setUploading(false);
-      setUploadProgress({});
-      setUploadStats({ total: 0, done: 0 });
-      resetFileInputs();
+      if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
+      if (accountSession.isCurrent()) {
+        setUploading(false);
+        setUploadProgress({});
+        setUploadStats({ total: 0, done: 0 });
+        resetFileInputs();
+      }
     }
-  }, [currentFolderId, loadData, notifyApiError, notifySuccess, notifyWarning, quota, quotaLimitBytes, resetFileInputs, retentionDays, uploadTargetFolderId]);
+  }, [accountSession, currentFolderId, loadData, notifyApiError, notifySuccess, notifyWarning, quota, quotaLimitBytes, resetFileInputs, retentionDays, uploadTargetFolderId]);
 
   const openUploadDialog = useCallback((files, { asFolder = false, targetFolderId = null } = {}) => {
-    if (!canWrite) return;
+    if (!canWrite || !accountSession.isCurrent()) return;
     const selected = normalizeFiles(files);
     if (selected.length === 0) return;
     setUploadTargetFolderId(targetFolderId || null);
@@ -212,9 +274,10 @@ export function useMyFilesUpload({
     setPendingFolderFiles([]);
     setPendingUploadFiles(selected);
     setUploadDialogOpen(true);
-  }, [canWrite, notifyWarning, quota, quotaLimitBytes, resetFileInputs]);
+  }, [accountSession, canWrite, notifyWarning, quota, quotaLimitBytes, resetFileInputs]);
 
   const acceptDesktopSharedFiles = useCallback(() => {
+    if (!accountSession.isCurrent()) return;
     const files = consumeDesktopSharedFiles();
     if (files.length === 0) return;
     if (!canWrite) {
@@ -225,7 +288,7 @@ export function useMyFilesUpload({
       return;
     }
     openUploadDialog(files);
-  }, [canWrite, notifyWarning, openUploadDialog]);
+  }, [accountSession, canWrite, notifyWarning, openUploadDialog]);
 
   useEffect(() => {
     acceptDesktopSharedFiles();
@@ -234,15 +297,17 @@ export function useMyFilesUpload({
   }, [acceptDesktopSharedFiles]);
 
   const closeUploadDialog = useCallback(() => {
+    if (!accountSession.isCurrent()) return;
     if (uploading) return;
     setUploadDialogOpen(false);
     setPendingUploadFiles([]);
     setPendingFolderFiles([]);
     setUploadTargetFolderId(null);
     resetFileInputs();
-  }, [resetFileInputs, uploading]);
+  }, [accountSession, resetFileInputs, uploading]);
 
   const confirmUpload = useCallback(() => {
+    if (!accountSession.isCurrent()) return;
     const selectedRetentionDays = retentionDays;
     const folderFiles = pendingFolderFiles;
     const selected = pendingUploadFiles;
@@ -263,7 +328,7 @@ export function useMyFilesUpload({
           const dirs = collectFolderUploadDirs(folderFiles);
           setPrepareStats({ total: dirs.length, done: 0 });
           for (const dirPath of dirs) {
-            if (controller.signal.aborted) break;
+            if (controller.signal.aborted || !accountSession.isCurrent()) return;
             const parts = dirPath.split('/');
             const name = parts[parts.length - 1];
             const parentId = dirToId.get(parts.slice(0, -1).join('/')) || null;
@@ -272,17 +337,20 @@ export function useMyFilesUpload({
               dirToId.set(dirPath, existing.get(key));
             } else {
               const created = await myFilesAPI.createFolder({ name, parentId });
+              if (!accountSession.isCurrent()) return;
               dirToId.set(dirPath, String(created.id));
               existing.set(key, String(created.id));
             }
             setPrepareStats((current) => ({ ...current, done: current.done + 1 }));
           }
+          if (!accountSession.isCurrent()) return;
           setPrepareStats({ total: 0, done: 0 });
           await queueUploads(folderFiles, selectedRetentionDays, (file) => {
             const dirPath = folderDirPathOfFile(file);
             return dirToId.get(dirPath) || baseFolderId;
           }, controller.signal);
         } catch (error) {
+          if (!accountSession.isCurrent()) return;
           setUploading(false);
           setUploadProgress({});
           setUploadStats({ total: 0, done: 0 });
@@ -290,7 +358,7 @@ export function useMyFilesUpload({
           resetFileInputs();
           notifyApiError(error, 'Не удалось создать структуру папок.', { dedupeMode: 'none' });
         } finally {
-          uploadAbortRef.current = null;
+          if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
         }
       })();
       return;
@@ -303,6 +371,7 @@ export function useMyFilesUpload({
     setUploadTargetFolderId(null);
     void queueUploads(selected, selectedRetentionDays, () => baseFolderId);
   }, [
+    accountSession,
     notifyApiError,
     allFolders,
     currentFolderId,
@@ -324,12 +393,17 @@ export function useMyFilesUpload({
 
   const handleDrop = useCallback(async (event) => {
     event.preventDefault();
+    event.stopPropagation();
     setDragActive(false);
     if (event.dataTransfer?.types?.includes('application/x-hubit-file')) return;
-    if (!canWrite || uploading || readingDrop) return;
+    if (!canWrite || isSpecialView || uploading || readingDrop || dropReadRef.current || dropContextRef.current !== dropContext || !accountSession.isCurrent()) return;
+    const readToken = {};
+    dropReadRef.current = readToken;
+    const ownsDrop = () => dropContextRef.current === dropContext && dropReadRef.current === readToken;
     setReadingDrop(true);
     try {
       const { files, asFolder } = await collectDataTransferFiles(event.dataTransfer);
+      if (!ownsDrop()) return;
       if (!files.length) {
         notifyWarning('Не удалось прочитать перетащенные файлы или папку.', {
           source: 'my-files-upload',
@@ -339,11 +413,14 @@ export function useMyFilesUpload({
       }
       openUploadDialog(files, { asFolder });
     } catch (error) {
-      notifyApiError(error, 'Не удалось прочитать перетащенную папку.', { dedupeMode: 'none' });
+      if (ownsDrop()) notifyApiError(error, 'Не удалось прочитать перетащенную папку.', { dedupeMode: 'none' });
     } finally {
-      setReadingDrop(false);
+      if (dropReadRef.current === readToken) {
+        dropReadRef.current = null;
+        setReadingDrop(false);
+      }
     }
-  }, [canWrite, notifyApiError, notifyWarning, openUploadDialog, readingDrop, uploading]);
+  }, [accountSession, canWrite, dropContext, isSpecialView, notifyApiError, notifyWarning, openUploadDialog, readingDrop, uploading]);
 
   // Window-level drag tracking: показываем оверлей, пока файлы ОС над страницей,
   // и ловим drop в любой точке — как на Google Диске. Внутренние перетаскивания
@@ -395,8 +472,9 @@ export function useMyFilesUpload({
   );
 
   const cancelUpload = useCallback(() => {
+    if (!accountSession.isCurrent()) return;
     uploadAbortRef.current?.abort();
-  }, []);
+  }, [accountSession]);
 
   useEffect(() => {
     if (!uploading) return undefined;

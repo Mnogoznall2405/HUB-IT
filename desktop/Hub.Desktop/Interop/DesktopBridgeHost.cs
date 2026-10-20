@@ -3,6 +3,7 @@ using Microsoft.Web.WebView2.Core;
 using Hub.Desktop.Downloads;
 using Hub.Desktop.Diagnostics;
 using Hub.Desktop.Lifecycle;
+using Hub.Desktop.Audio;
 using Hub.Desktop.Notifications;
 using Hub.Desktop.Security;
 using Hub.Desktop.Shell;
@@ -20,6 +21,7 @@ public sealed class DesktopBridgeHost : IDisposable
     private readonly string _windowsUsername;
     private readonly DesktopVncHandlerProbe _vncHandlerProbe;
     private readonly DesktopSharedFileRegistry _sharedFiles;
+    private readonly DesktopMicrophoneBridge _microphone;
     private bool _bridgeReady;
     private bool _disposed;
 
@@ -54,6 +56,7 @@ public sealed class DesktopBridgeHost : IDisposable
         _windowsUsername = windowsUsername;
         _vncHandlerProbe = vncHandlerProbe ?? throw new ArgumentNullException(nameof(vncHandlerProbe));
         _sharedFiles = new DesktopSharedFileRegistry(trustedBaseUri);
+        _microphone = new DesktopMicrophoneBridge(navigationPolicy);
         _core.WebMessageReceived += Core_WebMessageReceived;
         _core.AddWebResourceRequestedFilter(
             _sharedFiles.ShareUrlFilter,
@@ -558,6 +561,50 @@ public sealed class DesktopBridgeHost : IDisposable
             return;
         }
 
+        if (message.Type == DesktopInboundMessageType.DiagnoseMicrophone
+            && message.RequestId is { } diagnoseRequestId)
+        {
+            if (!_bridgeReady)
+            {
+                DesktopLog.Warning("Rejected microphone diagnostics before bridge handshake");
+                return;
+            }
+
+            var response = await _microphone.CreateDiagnosisResponseAsync(
+                _core.Source,
+                diagnoseRequestId,
+                GetCaptureExecutablePaths(),
+                async () => await DesktopPermissionPolicy.InspectAndRepairAsync(_navigationPolicy, _core.Profile));
+            if (response is null || _disposed || !IsTrustedDocument(_core.Source))
+            {
+                return;
+            }
+
+            try
+            {
+                _core.PostWebMessageAsJson(response);
+            }
+            catch (Exception exception)
+            {
+                DesktopLog.Error("Microphone diagnostics response failed", exception);
+            }
+
+            return;
+        }
+
+        if (message.Type == DesktopInboundMessageType.OpenMediaSettings
+            && message.MediaSettings is DesktopMediaSettingsKind settingsKind)
+        {
+            if (!_bridgeReady)
+            {
+                DesktopLog.Warning("Rejected Windows settings request before bridge handshake");
+                return;
+            }
+
+            _microphone.OpenSettings(_core.Source, settingsKind);
+            return;
+        }
+
         if (message.Type == DesktopInboundMessageType.OpenDownloadedFile)
         {
             var eventArgs = new DesktopOpenDownloadedFileRequestedEventArgs();
@@ -622,6 +669,34 @@ public sealed class DesktopBridgeHost : IDisposable
             _core.PostWebMessageAsJson(DesktopBridgeProtocol.CreateNotificationResultMessage(
                 message.Notification.Id, accepted));
         }
+    }
+
+    /// <summary>
+    /// HUB.Desktop.exe and the msedgewebview2.exe of the running WebView2 Runtime:
+    /// Windows keeps a separate microphone consent for each of them.
+    /// </summary>
+    private List<string> GetCaptureExecutablePaths()
+    {
+        var paths = new List<string>(2);
+        if (!string.IsNullOrWhiteSpace(Environment.ProcessPath))
+        {
+            paths.Add(Environment.ProcessPath);
+        }
+
+        try
+        {
+            using var browser = System.Diagnostics.Process.GetProcessById(checked((int)_core.BrowserProcessId));
+            if (browser.MainModule?.FileName is { Length: > 0 } browserPath)
+            {
+                paths.Add(browserPath);
+            }
+        }
+        catch (Exception exception)
+        {
+            DesktopLog.Warning($"WebView2 browser path unavailable; error={exception.GetType().Name}");
+        }
+
+        return paths;
     }
 
     private bool IsTrustedDocument(string? source)

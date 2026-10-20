@@ -1,209 +1,123 @@
 # AGENTS.md — HUB-IT
 
-Отвечать по-русски, сначала итог, затем необходимые детали. HUB-IT — монорепозиторий внутренней IT-платформы: React 18/Vite/MUI, Python/FastAPI, SQL Server, PostgreSQL, WPF/WebView2 и Expo Android.
+Reply to the user in Russian: result first, then only the necessary details. HUB-IT is a monorepo for an internal IT platform: React 18/Vite/MUI, Python/FastAPI, SQL Server, PostgreSQL, WPF/WebView2, Expo Android.
 
-Не добавлять обязательные Redis, Docker, новый брокер сообщений или сервис без прямого указания пользователя. Существующие опциональные контуры сохранять и проверять по коду/runtime.
+Do not add mandatory Redis, Docker, a message broker or a new service without the user's direct instruction. Keep existing optional components; verify them against code/runtime.
 
-## Навигация по задаче
+## Navigation
 
-Изучать только относящиеся к запросу код, тесты и документы. Подробная [карта репозитория и команды](documentation/technical/REPOSITORY_MAP.md) — справочник по необходимости. Обзор — [README.md](README.md), язык домена — [CONTEXT.md](CONTEXT.md), решения — `docs/adr/`. Не создавать второй словарь терминов вместо `CONTEXT.md`.
+Read only the code, tests and docs relevant to the request; find the area with `rg`. Where to start per subsystem/task: [REPOSITORY_MAP.md](documentation/technical/REPOSITORY_MAP.md) («Куда смотреть по типу задачи»). Tests: [TESTING.md](documentation/technical/TESTING.md). Domain language: [CONTEXT.md](CONTEXT.md) (do not create a second glossary). Decisions: `docs/adr/`.
 
-| Область | Где начинать |
-|---|---|
-| Web API / auth | `WEB-itinvent/backend/main.py`, `api/v1/`, `api/deps.py`, `services/`; [Web guide](WEB-itinvent/CLAUDE.md) |
-| Web UI / браузер на телефоне | `WEB-itinvent/frontend/src/pages/`, `src/App.jsx`, доменные `src/api/`; frontend общий для браузера и Desktop |
-| Chat | `WEB-itinvent/backend/chat_main.py`, `backend/chat/`, `backend/ai_chat/`; [архитектура](documentation/technical/CHAT_BACKEND_ARCHITECTURE.md) |
-| Scan | `scan_server/`, `scan_agent/`; [архитектура и IIS proxy](documentation/technical/SCAN_ARCHITECTURE.md) |
-| Inventory | `agent.py`, `agent/`, `inventory_server/` |
-| Desktop | `desktop/`; [README](desktop/README.md) |
-| Android | `mobile-hub/`; [README](mobile-hub/README.md) |
-| Telegram | `bot/`; [README](bot/README.md) |
-| 1С | `integrations/1c/`; [интеграция](documentation/technical/ONE_C_INTEGRATION.md) |
-| Хранилища | [PostgreSQL schema](documentation/technical/POSTGRES_APP_SCHEMA.md), [общие JSON](data/README.md) |
-| Эксплуатация | [PM2 runbook](scripts/pm2/README.md), [IIS](documentation/technical/IIS_DEPLOYMENT_WEB.md) |
+If docs contradict code or production facts, record the contradiction and verify the implementation safely; never silently pick one.
 
-## Проверочные команды
+## Working mode
 
-Выбирать проверки по изменению, не запускать весь список автоматически:
+- «Проверить», «разобраться», «аудит», «найти причину» → read-only diagnostics, no changes.
+- «Исправить», «сделать», «реализовать» → minimal diff, relevant tests, verifiable result. A code-fix request does not authorize deployment or restart.
+- Resolve ambiguity from the request, prior decisions, code and tests. Ask only about choices that materially change business logic, a public contract, the data schema or data-loss risk; make routine reversible choices yourself and state assumptions. While waiting for an answer, continue independent permitted work.
+- Touch only task-related files; follow neighbouring code style and the `router/handler → service → store` layering. No drive-by refactoring, no "future" dependencies, no unrequested public behaviour changes.
+- The working tree may be dirty: never overwrite others' changes, never use `git reset --hard`/`git checkout --`, no commits or branches unless asked.
 
-- Python: `pytest -q tests/test_<area>_<feature>.py`; bot — `pytest -q -c pytest.bot.ini`.
-- Frontend из `WEB-itinvent/frontend`: релевантные `npm test` / Vitest, `npm run build` по правилам ниже.
-- Desktop: `dotnet test desktop/Hub.Desktop.sln -c Release` (системный `dotnet` без SDK — использовать портативный `tools/dotnet-sdk-8/dotnet.exe`).
-- Mobile: команды и проверки из `mobile-hub/README.md`.
+## Production safety
 
-Повторять успешные проверки при новых изменениях, сбоях или конкретной непроверенной гипотезе. Не считать локальные тесты автоматически изолированными: перед запуском проверки, которая обращается к БД или сервисам, проверить её fixtures и настройки окружения.
+Production is read-only by default. Lack of staging never permits testing on production: use a local environment, test DB or isolated harness.
 
-Для локальных backend-правок начинать с конкретных pytest nodeid или релевантных файлов, а не со всех тестов изменённого рабочего дерева. Общую fixture проверять её тестами изоляции и затронутыми потребителями. Широкий backend gate запускать отдельно, после стабилизации межмодульных изменений или по прямому запросу; уже успешные незатронутые наборы не повторять.
+Without the user's explicit request it is forbidden to:
 
-Для диагностики длительности использовать `--durations=10`, различать collection, setup, call и teardown. Сравнивать одинаковые сценарии и окружение, учитывать первую сборку шаблона БД; оборванный прогон не считать успешным. `unit`, `integration`, `slow` применять только к проверенным по зависимости тестам: маркирование существующего набора пока неполное.
+- change `.env`, IIS, PM2, PostgreSQL config or Windows settings;
+- run DDL/DML/DELETE, migrations, retention or cleanup on production;
+- restart processes, free ports or deploy (including `npm run build`: it writes `dist/`, which IIS serves live);
+- delete tables, indexes, users, files or data.
 
-В поведенческих app/chat-тестах можно использовать `prebuilt_chat_db`: шаблон схемы строится один раз на pytest-процесс, каждый тест получает отдельную копию. Тесты создания схемы и миграций должны продолжать работать с пустой БД и настоящими initializer/Alembic; не заменять их готовым шаблоном и не ослаблять assertions ради скорости.
+An explicit request or earlier consent authorizes the named operation within the agreed environment and scope; ask again only if the goal, scope or risks change. Before a dangerous operation: read-only check of the exact target, then command, expected effect, rollback and post-check.
 
-Web: `npm run test:unit` запускает проверенные pure-тесты в Node, `npm run test:ui` — DOM-тесты; `npm run test:run -- <путь>` сохраняет узкий запуск по файлам. В `vite.config.js` Node allowlist явный: новые тесты по умолчанию остаются в DOM-проекте, перед переносом проверить всю цепочку импортов. Mobile: `npm run test:related -- <пути исходников>` использует Jest `--findRelatedTests`; полный `test:ci` остаётся доступным.
+Restarts only via the standard scripts and only on explicit request: backend `scripts/pm2/restart-backend.ps1` (also runs `restart-scan.ps1` — include in scope), split chat `restart-chat.ps1`, everything `restart-all.ps1` (only if a full restart is needed). Never replace them with a bare `pm2 restart`: the scripts clean orphan processes and ports. The frontend is served by IIS, not PM2. Diagnostics may use read-only health requests and `scripts/pm2/health-check.ps1` without `-RepairBackend`/`-RepairScan`. If `pm2.cmd` cannot find Node, put `tools/node-v24.14.0-win-x64-full` on PATH.
 
-## Правила для AI-агентов
+When a PM2 process is added, renamed or removed, in the same change:
 
-### Режим работы
+- add it to an ecosystem file included by `scripts/pm2/ecosystem.all.config.js` (autostart `pm2-boot-resurrect.ps1` takes the set from there and `dump.pm2`); a process with its own config must be described in the [PM2 runbook](scripts/pm2/README.md) and followed by `pm2 save` after the agreed start;
+- update the lists in `start-all.ps1`/`restart-all.ps1`/`health-check.ps1` (if critical) and the staged list in `pm2-boot-resurrect.ps1` (if a heavy worker);
+- run `powershell -File scripts\pm2\pm2-boot-resurrect.ps1 -DelaySeconds 0`: `_boot_resurrect.log` must list the process in `expected apps` and `online`.
 
-- «Проверить», «разобраться», «аудит», «найти причину» — read-only диагностика без изменений.
-- «Исправить», «сделать», «реализовать» — минимальный diff, релевантные тесты и проверяемый результат.
-- Сначала разрешать неопределённость по запросу, ранее принятым решениям, коду и тестам. Спрашивать о неразрешённом выборе, который существенно меняет согласованную бизнес-логику, публичный контракт, схему данных или риск потери данных. Рутинные обратимые решения внутри согласованного объёма принимать самостоятельно, обозначая существенные допущения. Пока требуется ответ, продолжать независимую разрешённую работу. Production-согласования действуют отдельно.
-- Определять область через `rg`; открывать относящиеся к запросу entrypoint, соседний код, тесты и профильные документы по необходимости. Не читать весь репозиторий или обязательный набор документов перед каждой правкой.
-- Если документация расходится с runtime-кодом или production-фактами, зафиксировать противоречие и проверить реализацию безопасным способом; не выбирать версию молча.
-- Менять только относящиеся к задаче файлы. Следовать стилю соседнего кода и слоям `router/handler → service → store`.
-- Не выполнять попутный рефакторинг, не добавлять зависимости «на будущее» и не менять публичное поведение без запроса.
-- Рабочее дерево может быть грязным: не перезаписывать чужие изменения, не использовать `git reset --hard`/`git checkout --`, не создавать коммиты и ветки без просьбы.
-- Отвечать пользователю по-русски, если не попросили иначе.
+Deactivate users by default, keeping PK, history and relations. Cleanup needs dry-run, a feature flag defaulting to `false`, bounded batches, a single-run lock, metrics and safe re-runs.
 
-### Production safety
+## Secrets
 
-Production по умолчанию только read-only. Отсутствие полноценного staging не разрешает тестировать изменения на production: использовать локальную среду, тестовую БД или изолированный harness.
+Never put passwords, tokens, cookies, private keys or connection strings in code, commands, logs or reports; do not pass them via CLI when env or a protected config exists. Never commit `.env` or the local `LLM_PROJECT_CONTEXT.md`; `.env.example` holds placeholders only.
 
-Без явного запроса пользователя запрещено:
+## Data and migrations
 
-- менять `.env`, IIS, PM2, PostgreSQL config и Windows settings;
-- выполнять DDL/DML/DELETE, миграции, retention и cleanup в production;
-- перезапускать процессы, освобождать порты и выполнять deployment;
-- удалять таблицы, индексы, пользователей, файлы или данные.
+### SQL Server
 
-Явный запрос или ранее данное согласие пользователя считается разрешением на указанную операцию в согласованных окружении и объёме. Повторно спрашивать только при изменении цели, объёма, существенных рисков или обнаружении дополнительных последствий. Перед запросом выполнить всю разрешённую подготовку и представить конкретную операцию, ожидаемый эффект, rollback и post-check. Запрос исправления кода сам по себе не разрешает deployment или restart.
+Source of truth for legacy ITINVENT and equipment. `pyodbc`: parameterized `?` queries only. Do not change the meaning of legacy fields/procedures without checking consumers.
 
-Перед разрешённой опасной операцией: read-only проверка точной цели, затем команда, ожидаемый эффект, rollback и post-check.
+### PostgreSQL
 
-Пользователей по умолчанию деактивировать, сохраняя PK, историю и связи. Cleanup должен иметь dry-run, feature flag `false` по умолчанию, ограниченные batch-операции, single-run lock, метрики и безопасный повторный запуск.
+- Holds app/chat/scan runtime. Schema changes only via Alembic; no runtime `CREATE TABLE/INDEX` in the request path. Use the existing ORM/SQL abstraction and bound parameters.
+- Production processes never apply migrations: `initialize_app_schema`/`initialize_chat_schema` only compare `system.alembic_version` with head and log `schema_migration_check`. Migrations run by explicit command at release ([runbook](scripts/pm2/README.md#миграции-бд-при-релизе)); a new file in `alembic/versions` changes nothing in production. Test migrations on sqlite/test DB, including upgrade/downgrade.
+- Before migrating, check the actual schema, volume, indexes, FKs, duplicates, orphan rows, locks and free space.
+- Alembic does not read the URL from `.env`: pass it explicitly (`alembic -x url=<url> ...` or `ALEMBIC_DATABASE_URL`).
+- Chat migrations are idempotent ("create if missing") and never skip DDL based on `itinvent_scope`: check that tables exist (`chat.*` or legacy `public.chat_*`), not the scope.
+- **Chat invariant:** ORM and base migrations use the logical schema `chat`, but the legacy runtime may route it to `public` via `schema_translate_map` while `chat.chat_conversations` does not exist. Before a migration, `alembic check` or manual SQL, verify the actual runtime schema.
+- No network calls, heavy serialization or computation inside transactions; long operations in batches with a rollback plan.
 
-### Секреты
+### JSON
 
-- Не выводить пароли, токены, cookies, приватные ключи и строки подключения в код, команды, логи или отчёты.
-- Не коммитить `.env` и локальный `LLM_PROJECT_CONTEXT.md`; в `.env.example` оставлять только плейсхолдеры.
-- Не передавать секреты через CLI, если доступны env или защищённый конфигурационный файл.
+`data/*.json` is shared by web and bot: keep the existing locking patterns and atomic writes. With `APP_ENV=production` the JSON runtime must not silently fall back to SQLite.
 
-### Данные и миграции
+## Backend and concurrency
 
-#### SQL Server
+- Short transactions; no blocking I/O in the event loop.
+- Status transitions, approve/reject, update/update and retries: check races, idempotency, lost updates.
+- WebSocket: reconnect, ordering, duplicate delivery, backpressure, slow clients. ACK never waits for optional notifications, external calls or heavy serialization.
+- Workers survive restarts and multiple concurrent processes.
+- Structured logs without secrets, with request/correlation id and stage where the subsystem uses them.
 
-- SQL Server — source of truth для legacy ITINVENT и оборудования.
-- Для `pyodbc` использовать параметризованные запросы с `?`; не конкатенировать пользовательские значения.
-- Не менять смысл legacy-полей и процедур без проверки потребителей.
+## Frontend
 
-#### PostgreSQL
+- New domain APIs go into separate files in `WEB-itinvent/frontend/src/api/`; do not grow legacy `client.js`.
+- Update the object/query cache instead of refetching the whole page.
+- Keep the design system, responsiveness and dark theme; handle loading, empty, error, reconnect and expired-session states.
+- Do not break silent refresh, tab return, WebSocket reconnect or the auth flow. API data is not trusted HTML.
 
-- PostgreSQL хранит app/chat/scan runtime.
-- Production-изменения схемы выполнять через существующие Alembic-механизмы; не добавлять runtime `CREATE TABLE/INDEX` в request path.
-- Перед миграцией проверить фактическую схему, объём, индексы, FK, дубликаты, orphan rows, блокировки и свободное место.
-- Использовать существующую ORM/SQL abstraction и bound parameters драйвера.
-- Production-процессы не применяют миграции при старте: `initialize_app_schema`/`initialize_chat_schema` только сверяют `system.alembic_version` с head из кода и пишут предупреждение `schema_migration_check` (stage, текущая и ожидаемая версия). Миграции — только явной командой при релизе ([runbook](scripts/pm2/README.md#миграции-бд-при-релизе)). Новый файл в `alembic/versions` ничего не меняет в production-БД, пока команда не выполнена; миграции проверять на sqlite/тестовой БД.
-- Миграции chat не пропускают DDL по `itinvent_scope`, если chat-таблицы лежат в той же БД: проверять наличие таблиц (`chat.*` или legacy `public.chat_*`), а не scope. Миграция должна быть идемпотентной («создать, если нет»).
-- Alembic не берёт URL из корневого `.env`: целевую БД задавать явно (`alembic -x url=<url> ...` или `ALEMBIC_DATABASE_URL`), иначе `env.py` завершится ошибкой. `tests/conftest.py` подменяет и `APP_DATABASE_URL`, и `CHAT_DATABASE_URL` на sqlite; pytest всё равно запускать с явными sqlite-URL.
-- Не держать сетевые вызовы, тяжёлую сериализацию и вычисления внутри транзакций; долгие операции делать batch-ами с rollback-планом.
+## Subsystem invariants
 
-Критический инвариант chat: ORM и базовые миграции используют логическую схему `chat`. Legacy PostgreSQL runtime может через `schema_translate_map` направлять её в `public`, если таблицы `chat.chat_conversations` ещё нет. Поэтому перед миграцией, `alembic check` или ручным SQL нужно проверить фактическую runtime-схему; нельзя без проверки считать `public.chat_*` или `chat.*` универсальным source of truth.
+- **LLM:** all OpenRouter/LLM calls only through `shared/llm/`; no local `OpenAI()` clients; never log confidential prompts/responses without redaction.
+- **Scan / Inventory:** do not mix. Scan = `scan_agent/`, `scan_server/`, schema `scan` (or an explicitly allowed dev fallback); Inventory = `agent.py`, `agent/`, `inventory_server/`. Read [SCAN_ARCHITECTURE.md](documentation/technical/SCAN_ARCHITECTURE.md) before changing Scan routes/proxy.
+- **Desktop:** `desktop/` is a thin WPF/WebView2 shell of the portal (the web frontend is shared by browser and Desktop); auth, REST, WebSocket and business logic stay in frontend/backend. Preserve the origin/navigation policy.
+- **Mobile:** the live app is Expo React Native in `mobile-hub/`; never restore the old `mobile-android/` or Capacitor (a native-push API does not imply a Capacitor client).
+- **Auth:** read [AUTH_SECURITY_STACK.md](documentation/technical/AUTH_SECURITY_STACK.md) first. Never change session lifetime, refresh rotation, device trust, WebAuthn origin/RP ID or 2FA policy as a side effect. One client's failure must not weaken server checks for others.
 
-#### JSON
+## Verification commands
 
-- `data/*.json` совместно используют web и bot: соблюдать существующие locking-паттерны и атомарную запись.
-- При `APP_ENV=production` JSON runtime не должен молча переходить на SQLite; использовать предусмотренное PostgreSQL-хранилище и штатную миграцию.
+Pick checks by change, narrow to broad; run details in [TESTING.md](documentation/technical/TESTING.md).
 
-### Backend и конкурентность
+- Python: `pytest -q tests/test_<area>_<feature>.py` or specific nodeids; bot `pytest -q -c pytest.bot.ini`. A changed shared fixture: its isolation tests plus affected consumers. The broad backend gate runs separately, after cross-module changes stabilize or on request; do not rerun passing untouched suites.
+- Frontend (`WEB-itinvent/frontend`): `npm run test:run -- <paths>`; trial build only `npx vite build --outDir <outside dist>`.
+- Playwright E2E: only the relevant spec files (`npx playwright test e2e/<file>.spec.js`), locally with `E2E_LOCAL=1`. The full suite only on explicit request.
+- Desktop: `dotnet test desktop/Hub.Desktop.sln -c Release` (portable `tools/dotnet-sdk-8/dotnet.exe`).
+- Mobile: per `mobile-hub/README.md`.
 
-- Держать транзакции короткими.
-- Для status transition, approve/reject, update/update и повторных запросов проверять гонки, идемпотентность и lost update.
-- Не выполнять блокирующий I/O в event loop.
-- Для WebSocket учитывать reconnect, ordering, duplicate delivery, backpressure и медленных клиентов.
-- ACK не должен ждать необязательные уведомления, внешние вызовы или тяжёлую сериализацию.
-- Workers должны безопасно переживать повторный запуск и работу нескольких процессов.
-- Логировать структурированно и без секретов; добавлять request/correlation id и stage, когда это принято в подсистеме.
+Rerun passing checks only after new changes, failures or a specific untested hypothesis. Before a check that touches a DB or services, inspect its fixtures and environment — local tests are not automatically isolated. Extra per change type: database — upgrade/downgrade and schema on a test DB; concurrency — a parallel test of the critical transition and final state; WebSocket — reconnect/duplicate/order; frontend — production build after changes to build, routing, auth or API client; Desktop — Release test/build for WebView2, navigation, packaging, auth bridge.
 
-### Frontend
+Never claim tests passed, a problem is fixed or a deployment is done without actually checking; if a check is impossible, state why.
 
-- Новые доменные API размещать в отдельных файлах `WEB-itinvent/frontend/src/api/`; не раздувать legacy `client.js`.
-- Не делать полный refetch страницы, если достаточно точечного обновления объекта или query cache.
-- Сохранять design system, адаптивность и dark theme.
-- Проверять loading, empty, error, reconnect и expired-session состояния.
-- Не ломать silent refresh, возврат на вкладку, WebSocket reconnect и текущий auth flow.
-- Данные API не считать доверенным HTML.
+## Test quality
 
-### Инварианты подсистем
+By default write only E2E tests for important user scenarios: Playwright (`WEB-itinvent/frontend/e2e/`) for UI, the app's real `TestClient` for backend boundaries (model: `tests/test_e2e_smoke.py`). Check DOM through user actions, HTTP through routes.
 
-#### LLM
+A unit test is allowed only for complex business logic/algorithms, pure functions, or critical spots whose failure cannot be reproduced through a boundary (races, crypto, migrations, permission matrix, offline state machines). Before writing one, state briefly which failures E2E would miss. Write tests before or with the implementation, never afterwards for coverage.
 
-Все OpenRouter/LLM-вызовы — только через `shared/llm/`. Не создавать локальные `OpenAI()`-клиенты в backend, bot или services и не логировать потенциально конфиденциальные prompt/response без предусмотренной редактуры.
+Forbidden (delete when found): trivial tests and tests restating the implementation; empty, boilerplate or coverage-only tests; "renders without error" without a behavioural assertion; export-existence checks (`typeof x === 'function'`, `callable(x)`); constant tautologies; snapshot-only checks; mock-echo (asserting what the test's own mock returned).
 
-#### Scan и inventory
+## Performance
 
-Не смешивать контуры:
+Find the bottleneck and record a baseline first; compare before/after on the same scenario and volume. API/WS — p50/p95/p99, error rate, event-loop lag, queue wait, stage timings; SQL — query count, time, locks, plan. `EXPLAIN (ANALYZE, BUFFERS)` only in a safe environment or with permission for production. Never declare an optimization successful from a single run or extrapolate a small benchmark to production scale without a caveat.
 
-- Scan: `scan_agent/`, `scan_server/`, PostgreSQL schema `scan` или явно разрешённый dev fallback;
-- Inventory: `agent.py`, `agent/`, `inventory_server/`.
+## Finishing a task
 
-Перед изменением Scan routes/proxy прочитать [SCAN_ARCHITECTURE.md](./documentation/technical/SCAN_ARCHITECTURE.md).
+Report briefly: what was done or the cause found; files changed; checks run and their actual results; what could not be checked; remaining risks and deployment steps. Do not retell the process unless asked.
 
-#### Desktop
+## Maintaining these instructions
 
-`desktop/` — тонкая WPF/WebView2-оболочка существующего портала. Auth, REST, WebSocket и бизнес-логика остаются во frontend/backend. Не дублировать backend и сохранять origin/navigation policy.
-
-#### Mobile
-
-Действующее приложение — Expo React Native в `mobile-hub/`. Старый `mobile-android/` и Capacitor pipeline удалены; не восстанавливать их. Наличие native-push API не означает наличие старого Capacitor-клиента.
-
-#### Auth
-
-Перед изменениями прочитать [AUTH_SECURITY_STACK.md](./documentation/technical/AUTH_SECURITY_STACK.md). Не менять session lifetime, refresh rotation, device trust, WebAuthn origin/RP ID и 2FA policy как побочный эффект. Ошибка одного клиента не должна ослаблять серверную проверку для остальных.
-
-### Проверка изменений
-
-Сначала запускать узкие тесты затронутой области, затем расширять набор при необходимости. Базовые команды собраны в разделе [Проверочные команды](#проверочные-команды) выше.
-
-Дополнительно:
-
-- database — upgrade/downgrade и проверка схемы на тестовой БД;
-- concurrency — параллельный тест критического перехода и финального состояния;
-- WebSocket — reconnect/duplicate/order для изменённого сценария;
-- frontend — production build после изменений сборки, routing, auth или API client;
-- Desktop — Release test/build для WebView2, navigation, packaging или auth bridge.
-
-Не утверждать, что тесты пройдены, проблема исправлена или deployment выполнен без фактической проверки. Если проверка невозможна, назвать точную причину.
-
-### Производительность
-
-- Сначала определить узкое место и зафиксировать baseline.
-- Сравнивать до/после в одинаковом сценарии и на одинаковом объёме данных.
-- Для API/WS использовать подходящие p50/p95/p99, error rate, event-loop lag, queue wait и stage timings.
-- Для SQL сравнивать query count, execution time, locks и план запроса.
-- `EXPLAIN (ANALYZE, BUFFERS)` использовать только в безопасной среде либо с явным разрешением для production.
-- Не объявлять оптимизацию успешной по одному прогону и не переносить небольшой benchmark на production scale без оговорки.
-
-### Deployment и перезапуски
-
-Наличие команд не даёт разрешения на их выполнение. Только по явному запросу пользователя:
-
-- backend — `scripts/pm2/restart-backend.ps1`;
-- split chat — `scripts/pm2/restart-chat.ps1`;
-- весь контур — `scripts/pm2/restart-all.ps1`, только если нужен полный restart;
-- frontend обслуживается IIS, а не PM2.
-
-В рамках диагностики и post-check разрешены read-only health-запросы и `scripts/pm2/health-check.ps1` без `-RepairBackend` и `-RepairScan`. Режимы ремонта, рестарты и освобождение портов требуют явного разрешения.
-
-Автозапуск после перезагрузки сервера (`HUB-IT PM2 Autostart` → `scripts/pm2/pm2-boot-resurrect.ps1`) берёт состав процессов из `scripts/pm2/ecosystem.all.config.js` и `dump.pm2`. При добавлении, переименовании или удалении PM2-процесса в том же изменении:
-
-- добавить его в ecosystem-файл, подключённый в `ecosystem.all.config.js`; процесс с отдельным конфигом — описать в [PM2 runbook](scripts/pm2/README.md) и после согласованного старта выполнить `pm2 save`;
-- обновить списки процессов в `start-all.ps1`/`restart-all.ps1`/`health-check.ps1`, если процесс критичен, и staged-список в `pm2-boot-resurrect.ps1`, если это тяжёлый воркер;
-- проверить `powershell -File scripts\pm2\pm2-boot-resurrect.ps1 -DelaySeconds 0` (идемпотентен) — в `_boot_resurrect.log` новый процесс должен быть в `expected apps` и `online`.
-
-Не заменять штатные скрипты прямым `pm2 restart`: они могут очищать orphan-процессы, освобождать порты и восстанавливать связанный runtime. `restart-backend.ps1` также вызывает `restart-scan.ps1`: включать этот побочный эффект в preflight и согласованный объём. Если `pm2.cmd` не находит Node, использовать проектный `tools/node-v24.14.0-win-x64-full` в PATH.
-
-### Завершение задачи
-
-В конце кратко сообщать:
-
-1. Что сделано или какая причина найдена.
-2. Какие файлы изменены.
-3. Какие проверки выполнены и их фактический результат.
-4. Что не удалось проверить.
-5. Оставшиеся риски и отдельные действия для deployment.
-
-Не пересказывать весь процесс без запроса.
-
-## Поддержание инструкций
-
-Обновлять правила при изменении обязательных инвариантов, а [карту репозитория](documentation/technical/REPOSITORY_MAP.md) — при смене подсистем, entrypoint или runtime. Подробности оставлять в README подсистем и профильной документации. Повторяющиеся поправки пользователя записывать в соответствующее правило без дублирования.
+Update the rules when mandatory invariants change, and [REPOSITORY_MAP.md](documentation/technical/REPOSITORY_MAP.md) when subsystems, entrypoints or runtime change. Keep details in subsystem READMEs and topic docs. Record recurring user corrections in the matching rule without duplication.

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import {
   Alert,
@@ -698,7 +698,12 @@ export default function Dashboard() {
     preferences?.dashboard_sections,
   ]);
 
+  const dashboardRequestRef = useRef(0);
+  const docflowSummaryRequestRef = useRef(0);
+
   const loadDashboard = useCallback(async (silent = false) => {
+    const requestId = dashboardRequestRef.current + 1;
+    dashboardRequestRef.current = requestId;
     if (!silent) setLoading(true);
     if (!silent) setError('');
     const [dashboardResult, chatResult, mailResult] = await Promise.allSettled([
@@ -709,6 +714,9 @@ export default function Dashboard() {
       canReadChat ? chatNotificationsAPI.getUnreadSummary() : Promise.resolve(null),
       canReadMail ? mailNotificationsAPI.getUnreadCount({ force: true }) : Promise.resolve(null),
     ]);
+
+    // A newer load superseded this one: its result must not overwrite fresher data.
+    if (requestId !== dashboardRequestRef.current) return;
 
     if (dashboardResult.status === 'fulfilled') {
       setPayload(dashboardResult.value || EMPTY_DASHBOARD);
@@ -730,16 +738,21 @@ export default function Dashboard() {
         ? Number(mailResult.value?.unread_count || mailResult.value?.total_unread || 0)
         : (silent ? current.mail : 0),
     }));
-    if (!silent) setLoading(false);
+    // The latest load always clears the spinner, even if it was a silent one that superseded a visible load.
+    setLoading(false);
   }, [canReadChat, canReadMail]);
 
   const loadDocflowSummary = useCallback(async (showLoading = false) => {
     if (!canReadDocflow) return;
+    const requestId = docflowSummaryRequestRef.current + 1;
+    docflowSummaryRequestRef.current = requestId;
     if (showLoading) setDocflowSummary({ status: 'loading', count: null, truncated: false });
     try {
       const result = await docflowAPI.getInboxSummary();
+      if (requestId !== docflowSummaryRequestRef.current) return;
       setDocflowSummary(result || { status: 'unavailable', count: null, truncated: false });
     } catch {
+      if (requestId !== docflowSummaryRequestRef.current) return;
       setDocflowSummary({ status: 'unavailable', count: null, truncated: false });
     }
   }, [canReadDocflow]);
@@ -750,14 +763,19 @@ export default function Dashboard() {
 
   useEffect(() => {
     let timer = null;
+    // Events coalesced into one window must all be honoured, not just the first one.
+    let refreshDocflowSummary = false;
     const refresh = (event) => {
+      if (event?.type === HUB_REALTIME_DOCFLOW_EVENT || event?.type === HUB_REALTIME_CONNECTED_EVENT) {
+        refreshDocflowSummary = true;
+      }
       if (timer) return;
       timer = window.setTimeout(() => {
         timer = null;
+        const withDocflow = refreshDocflowSummary;
+        refreshDocflowSummary = false;
         void loadDashboard(true);
-        if (event?.type === HUB_REALTIME_DOCFLOW_EVENT || event?.type === HUB_REALTIME_CONNECTED_EVENT) {
-          void loadDocflowSummary(false);
-        }
+        if (withDocflow) void loadDocflowSummary(false);
       }, 180);
     };
     const eventNames = [

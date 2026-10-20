@@ -828,6 +828,7 @@ describe('Mail read-state behavior', () => {
     clearSWRCache();
     window.sessionStorage.clear();
     window.localStorage.clear();
+    window.localStorage.setItem('user', JSON.stringify({ id: 100, username: 'mail-user' }));
     mockRenderStats.reset();
 
     mockGetBootstrap.mockReset();
@@ -3411,7 +3412,7 @@ describe('Mail read-state behavior', () => {
       });
     });
 
-    expect(JSON.parse(window.localStorage.getItem('mail_recent_searches_v1'))[0]).toMatchObject({
+    expect(JSON.parse(window.localStorage.getItem('mail_recent_searches_v1:100'))[0]).toMatchObject({
       q: 'quarterly',
       from_filter: 'sender@example.com',
       subject_filter: 'Budget',
@@ -3420,7 +3421,7 @@ describe('Mail read-state behavior', () => {
   });
 
   it('applies recent advanced search entries and resets the draft filters', async () => {
-    window.localStorage.setItem('mail_recent_searches_v1', JSON.stringify([
+    window.localStorage.setItem('mail_recent_searches_v1:100', JSON.stringify([
       {
         q: 'router',
         from_filter: 'ops@example.com',

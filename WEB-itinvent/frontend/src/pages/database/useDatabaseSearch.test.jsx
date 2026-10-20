@@ -298,6 +298,42 @@ describe('useDatabaseSearch (server-primary)', () => {
     expect(merged).toEqual(new Set(['HQ', 'Remote']));
   });
 
+  it('paginates type-only server results when the text query is empty', async () => {
+    equipmentAPI.searchUniversal
+      .mockResolvedValueOnce({
+        equipment: [serverPrinterRow],
+        total: 2,
+        page: 1,
+        pages: 2,
+      })
+      .mockResolvedValueOnce({
+        equipment: [serverRemoteRow],
+        total: 2,
+        page: 2,
+        pages: 2,
+      });
+    const { result } = renderSearchHook({ searchTypeNo: 7 });
+
+    // The mount effect fires the type-only search automatically.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(equipmentAPI.searchUniversal).toHaveBeenCalledWith('', 1, 200, { typeNo: 7, field: '' });
+    expect(result.current.searchHasMore).toBe(true);
+    expect(result.current.searchTotal).toBe(2);
+
+    await act(async () => {
+      result.current.loadMoreSearchResults();
+    });
+
+    expect(equipmentAPI.searchUniversal).toHaveBeenLastCalledWith('', 2, 200, { typeNo: 7, field: '' });
+    expect(result.current.filteredData).toEqual({
+      HQ: { Office: [serverPrinterRow] },
+      Remote: { Stock: [serverRemoteRow] },
+    });
+    expect(result.current.searchHasMore).toBe(false);
+  });
+
   it('merges lazy act badges into server search rows', async () => {
     equipmentAPI.getCurrentActs.mockResolvedValue({
       items: [{ item_id: 11, available: true, doc_no: 5, doc_number: 'A-5', doc_date: '2026-01-05' }],

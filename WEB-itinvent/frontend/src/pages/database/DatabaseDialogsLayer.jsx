@@ -36,7 +36,7 @@ export default function DatabaseDialogsLayer({
   ui,
   canDatabaseWrite,
   canViewWarehouse1C,
-  isAdmin,
+  canDeleteEquipment,
   formatDate,
   formatHistoryValue,
   formatHistoryTransition,

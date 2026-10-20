@@ -47,6 +47,7 @@ export function useDatabaseEmployeeFallback({
   searchQuery = '',
   appliedSearchQuery = '',
   hubSearchEmpty = false,
+  employeeSearch,
 }) {
   const [state, setState] = useState(createEmptyState);
   const [retryToken, setRetryToken] = useState(0);
@@ -66,11 +67,16 @@ export function useDatabaseEmployeeFallback({
 
   const normalizedQuery = String(searchQuery || '').trim();
   const normalizedAppliedQuery = String(appliedSearchQuery || '').trim();
+  // The common search has already checked ITinvent. Only look up a 1C-only
+  // warehouse after a successful empty result; do not repeat the owner query
+  // or hide a failed owner lookup behind a warehouse match.
+  const reuseEmployeeSearch = Boolean(employeeSearch?.active);
   const shouldSearch = Boolean(
     enabled
     && hubSearchEmpty
     && normalizedQuery.length >= MIN_QUERY_LENGTH
-    && normalizedAppliedQuery === normalizedQuery,
+    && normalizedAppliedQuery === normalizedQuery
+    && (!reuseEmployeeSearch || (!employeeSearch.loading && !employeeSearch.error && employeeSearch.total === 0)),
   );
 
   useEffect(() => {
@@ -96,17 +102,19 @@ export function useDatabaseEmployeeFallback({
       let employees = [];
       let employeeError = '';
 
-      try {
-        const payload = await equipmentSearchAPI.searchByEmployee(
-          normalizedQuery,
-          1,
-          EMPLOYEE_RESULT_LIMIT,
-          { signal: controller.signal },
-        );
-        employees = Array.isArray(payload?.employees) ? payload.employees : [];
-      } catch (error) {
-        if (isAbortError(error, controller.signal) || requestId !== requestIdRef.current) return;
-        employeeError = resolveEmployeeErrorMessage(error);
+      if (!reuseEmployeeSearch) {
+        try {
+          const payload = await equipmentSearchAPI.searchByEmployee(
+            normalizedQuery,
+            1,
+            EMPLOYEE_RESULT_LIMIT,
+            { signal: controller.signal },
+          );
+          employees = Array.isArray(payload?.employees) ? payload.employees : [];
+        } catch (error) {
+          if (isAbortError(error, controller.signal) || requestId !== requestIdRef.current) return;
+          employeeError = resolveEmployeeErrorMessage(error);
+        }
       }
 
       if (controller.signal.aborted || requestId !== requestIdRef.current) return;
@@ -211,7 +219,7 @@ export function useDatabaseEmployeeFallback({
         abortControllerRef.current = null;
       }
     };
-  }, [normalizedQuery, reset, retryToken, shouldSearch]);
+  }, [normalizedQuery, reset, retryToken, shouldSearch, reuseEmployeeSearch]);
 
   useEffect(() => () => {
     requestIdRef.current += 1;

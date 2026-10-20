@@ -24,6 +24,7 @@ import AdUsers from '../AdUsers';
 import { AiBotsAdminSection } from './admin/AiBotsAdminSection';
 import { ChatGroupsAdminSection } from './admin/ChatGroupsAdminSection';
 import DepartmentsTab from './admin/DepartmentsTab';
+import ItinventReferencesTab from './admin/ItinventReferencesTab';
 import MyFilesAdminTab from './admin/MyFilesAdminTab';
 import SessionsTab from './admin/SessionsTab';
 import SystemSettingsSection from './admin/SystemSettingsSection';
@@ -132,6 +133,8 @@ function AccountWorkspace({ area = 'settings' }) {
       );
     } else if (data.activeSection === 'departments' && data.canManageDepartments) {
       adminContent = <DepartmentsTab canManageDepartments={data.canManageDepartments} />;
+    } else if (data.activeSection === 'references' && data.canManageReferences) {
+      adminContent = <ItinventReferencesTab dbOptions={data.dbOptions} />;
     } else if (data.activeSection === 'ad-users') {
       adminContent = <AdUsers embedded />;
     } else if (data.activeSection === 'ai-bots' && data.canManageAiBots) {

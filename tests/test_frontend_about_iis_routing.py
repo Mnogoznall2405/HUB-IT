@@ -16,11 +16,15 @@ def test_about_directory_is_rewritten_to_the_spa_before_the_generic_fallback():
     rules = root.findall("./system.webServer/rewrite/rules/rule")
     names = [rule.get("name") for rule in rules]
 
-    about_rule = next(rule for rule in rules if rule.get("name") == "Public About SPA Entry")
+    about_rule = next(
+        rule
+        for rule in rules
+        if rule.find("match") is not None and rule.find("match").get("url") == r"^about/?$"
+    )
     match = about_rule.find("match")
     action = about_rule.find("action")
 
-    assert names.index("Public About SPA Entry") < names.index("React Router Fallback")
+    assert rules.index(about_rule) < names.index("React Router Fallback")
     assert about_rule.get("stopProcessing") == "true"
     assert match is not None and match.get("url") == r"^about/?$"
     assert action is not None and action.attrib == {

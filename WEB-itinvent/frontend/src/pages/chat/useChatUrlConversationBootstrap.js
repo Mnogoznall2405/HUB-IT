@@ -67,6 +67,7 @@ function handleMissingRequestedConversation({
 
 export default function useChatUrlConversationBootstrap({
   activeConversationId,
+  pendingCreatedConversationIdRef,
   applyingRequestedConversationRef,
   cancelPendingInitialAnchor,
   clearStoredConversationState,
@@ -276,6 +277,7 @@ export default function useChatUrlConversationBootstrap({
       applyingRequestedConversationRef.current = '';
     }
     if (activeConversationId && conversationExistsInList(conversations, activeConversationId)) return;
+    if (activeConversationId && pendingCreatedConversationIdRef?.current === activeConversationId) return;
     if (activeConversationId) {
       clearStoredConversationState({ conversationId: activeConversationId, invalidateThread: true });
     }
@@ -285,6 +287,7 @@ export default function useChatUrlConversationBootstrap({
   }, [
     activeConversationId,
     applyingRequestedConversationRef,
+    pendingCreatedConversationIdRef,
     cancelPendingInitialAnchor,
     clearStoredConversationState,
     composePrefillRequested,

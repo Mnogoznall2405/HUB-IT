@@ -42,6 +42,7 @@ export default function SharedFolder() {
   const [loadError, setLoadError] = useState('');
   const [downloadError, setDownloadError] = useState('');
   const [downloadingId, setDownloadingId] = useState('');
+  const [downloadingAll, setDownloadingAll] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,7 +57,7 @@ export default function SharedFolder() {
   }, [token]);
 
   const handleDownload = async (file) => {
-    if (downloadingId) return;
+    if (downloadingId || downloadingAll) return;
     setDownloadingId(String(file.id));
     setDownloadError('');
     try {
@@ -69,6 +70,23 @@ export default function SharedFolder() {
       setDownloadError(resolveError(requestError));
     } finally {
       setDownloadingId('');
+    }
+  };
+
+  const handleDownloadAll = async () => {
+    if (downloadingId || downloadingAll) return;
+    setDownloadingAll(true);
+    setDownloadError('');
+    try {
+      const grant = await myFilesAPI.createPublicFolderArchiveGrant(token);
+      const url = myFilesAPI.buildDownloadGrantUrl(grant?.download_path);
+      if (!url || !myFilesAPI.triggerNativeDownload(url)) {
+        throw new Error('download failed');
+      }
+    } catch (requestError) {
+      setDownloadError(resolveError(requestError));
+    } finally {
+      setDownloadingAll(false);
     }
   };
 
@@ -145,7 +163,7 @@ export default function SharedFolder() {
               >
                 <FolderOutlinedIcon />
               </Box>
-              <Box sx={{ minWidth: 0 }}>
+              <Box sx={{ minWidth: 0, flex: 1 }}>
                 <Typography component="h1" sx={{ fontWeight: 800, fontSize: '1.1rem', wordBreak: 'break-word' }}>
                   {payload.folder_name || 'Папка'}
                 </Typography>
@@ -153,6 +171,22 @@ export default function SharedFolder() {
                   {items.length > 0 ? `Файлов: ${items.length}` : 'В папке нет доступных файлов'}
                 </Typography>
               </Box>
+              {items.length > 0 ? (
+                downloadingAll ? (
+                  <CircularProgress size={20} />
+                ) : (
+                  <Button
+                    size="small"
+                    variant="contained"
+                    startIcon={<DownloadOutlinedIcon />}
+                    onClick={() => void handleDownloadAll()}
+                    data-testid="shared-folder-download-all"
+                    sx={{ textTransform: 'none', fontWeight: 700, flexShrink: 0 }}
+                  >
+                    Скачать всё (.zip)
+                  </Button>
+                )
+              ) : null}
             </Stack>
 
             {downloadError ? (

@@ -33,8 +33,8 @@ def test_mail_message_serializer_normalizes_sender_recipients_and_subject():
 
     assert item_sender(item) == "boss@example.com"
     assert item_recipient_people(item) == [
-        {"name": "User", "email": "user@example.com", "display": "User"},
-        {"name": "Other", "email": "other@example.com", "display": "Other"},
+        {"name": "User", "email": "user@example.com", "display": "User", "avatar_url": None},
+        {"name": "Other", "email": "other@example.com", "display": "Other", "avatar_url": None},
     ]
     assert normalize_subject_for_conversation("Re: FW: Quarterly Report") == "quarterly report"
     assert normalize_subject_for_conversation("Отв: Переслано: Отчёт") == "отчёт"

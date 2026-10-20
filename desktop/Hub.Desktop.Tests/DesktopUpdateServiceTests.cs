@@ -292,7 +292,7 @@ public sealed class DesktopUpdateServiceTests
             ["Автоматическое обновление"],
             new DesktopUpdateSignature(
                 DesktopUpdateManifestVerifier.SignatureAlgorithm,
-                DesktopUpdateTrust.KeyId,
+                DesktopUpdateTrust.TlsKeyId,
                 "placeholder"));
         var signature = Convert.ToBase64String(rsa.SignData(
             DesktopUpdateManifestVerifier.CreateCanonicalPayload(manifest),

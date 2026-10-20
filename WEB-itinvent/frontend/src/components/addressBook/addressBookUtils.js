@@ -87,6 +87,7 @@ export const formatDate = (value) => {
   const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!match) return '';
   const [, year, month, day] = match;
+  if (Number(year) <= 100) return '';
   const parsed = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
   if (
     parsed.getUTCFullYear() !== Number(year)

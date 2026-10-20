@@ -30,6 +30,7 @@ jest.mock('../../preferences/PreferencesContext', () => ({
 jest.mock('../../api/databaseApi', () => ({
   deleteConsumable: jest.fn(),
   getCurrentDatabase: jest.fn(),
+  getEquipmentByInvNos: jest.fn(),
   listAvailableDatabases: jest.fn(),
   listConsumables: jest.fn(),
   listEquipment: jest.fn(),

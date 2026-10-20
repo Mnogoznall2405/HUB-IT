@@ -441,6 +441,52 @@ describe('Docflow page', () => {
     expect(docflowAPI.getTask).toHaveBeenCalledTimes(2);
   });
 
+  it('starts a fresh forced reload when a realtime event arrives while the card detail is still loading', async () => {
+    const taskRef = '55555555-5555-5555-5555-555555555555';
+    const taskBase = {
+      ref: taskRef,
+      title: 'Согласовать смету',
+      task_type: 'ЗадачаИсполнителя',
+      task_type_label: 'Задача исполнителя',
+      due_at: '2026-08-01T12:00:00',
+      completed: false,
+      files: [],
+      related_objects: [],
+    };
+    docflowAPI.getProfile.mockResolvedValue({ configured: true, login: 'personal.login', status: 'valid' });
+    docflowAPI.listTasks.mockResolvedValue({
+      items: [taskBase], returned: 1, scope: 'inbox', source: 'live_1c', truncated: false,
+    });
+    let resolveStaleEnriched;
+    let call = 0;
+    docflowAPI.getTask.mockImplementation(() => {
+      call += 1;
+      if (call === 1) return Promise.resolve({ ...taskBase, description: 'Старое описание' });
+      if (call === 2) return new Promise((resolve) => { resolveStaleEnriched = resolve; });
+      return Promise.resolve({ ...taskBase, description: 'Новое описание' });
+    });
+
+    render(<Docflow />);
+    fireEvent.click((await screen.findByText('Согласовать смету')).closest('[role="button"]'));
+    await waitFor(() => expect(docflowAPI.getTask).toHaveBeenCalledTimes(2));
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('hub-realtime-docflow-changed', {
+        detail: { payload: { task_ref: taskRef } },
+      }));
+    });
+
+    expect(await screen.findByText('Новое описание')).toBeInTheDocument();
+    expect(docflowAPI.getTask.mock.calls.length).toBeGreaterThanOrEqual(4);
+
+    await act(async () => {
+      resolveStaleEnriched({ ...taskBase, description: 'Старое описание' });
+    });
+
+    expect(screen.queryByText('Старое описание')).not.toBeInTheDocument();
+    expect(screen.getByText('Новое описание')).toBeInTheDocument();
+  });
+
   it('uses compact full-width controls and a bottom task surface on mobile', async () => {
     useMediaQueryMock.mockReturnValue(true);
     docflowAPI.getProfile.mockResolvedValue({
@@ -1169,5 +1215,49 @@ describe('Docflow page', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Обновить задания' }));
     await waitFor(() => expect(docflowAPI.listTasks).toHaveBeenCalledTimes(3));
     expect(docflowAPI.listTasks).toHaveBeenLastCalledWith({ scope: 'inbox', q: '', limit: 50 });
+  });
+
+  it('stops polling an unconfirmed 1C command after a bounded number of checks', async () => {
+    const taskRef = '11111111-1111-1111-1111-111111111177';
+    const commandId = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+    docflowAPI.getProfile.mockResolvedValue({ configured: true, login: 'personal.login', status: 'valid' });
+    docflowAPI.listTasks.mockResolvedValue({
+      items: [{ ref: taskRef, title: 'Согласовать договор', completed: false }],
+      returned: 1, scope: 'inbox', source: 'live_1c', truncated: false,
+    });
+    docflowAPI.getTask.mockResolvedValue({
+      ref: taskRef,
+      title: 'Согласовать договор',
+      task_type: 'ЗадачаИсполнителя',
+      completed: false,
+      state_token: 'signed-state-token',
+      available_actions: [{ code: 'approve', label: 'Согласовать', tone: 'success', comment_mode: 'optional' }],
+      files: [],
+    });
+    docflowAPI.applyTaskAction.mockResolvedValue({
+      command_id: commandId, status: 'state_unknown', task: null, error_code: 'DOCFLOW_ACTION_STATE_UNKNOWN',
+    });
+    docflowAPI.getCommand.mockResolvedValue({
+      command_id: commandId, status: 'state_unknown', task: null, error_code: 'DOCFLOW_ACTION_STATE_UNKNOWN',
+    });
+
+    render(<Docflow />);
+    fireEvent.click((await screen.findByText('Согласовать договор')).closest('[role="button"]'));
+    const approve = await screen.findByRole('button', { name: 'Согласовать' });
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(approve);
+      await act(async () => fireEvent.click(screen.getAllByRole('button', { name: 'Согласовать' }).at(-1)));
+      await act(async () => vi.advanceTimersByTimeAsync(20 * 60 * 1000));
+      const callsAfterTwentyMinutes = docflowAPI.getCommand.mock.calls.length;
+      expect(callsAfterTwentyMinutes).toBeGreaterThan(5);
+      expect(callsAfterTwentyMinutes).toBeLessThanOrEqual(31);
+      expect(screen.getByText(/Автопроверка остановлена/)).toBeInTheDocument();
+
+      await act(async () => vi.advanceTimersByTimeAsync(20 * 60 * 1000));
+      expect(docflowAPI.getCommand.mock.calls.length).toBe(callsAfterTwentyMinutes);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

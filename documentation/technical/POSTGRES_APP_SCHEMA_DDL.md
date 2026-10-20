@@ -1,6 +1,6 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-10-02 10:55 UTC_  
+_Сгенерировано: 2026-10-07 12:16 UTC_  
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@10.103.0.10:5432/hubit_chat?sslmode=require` (`10.103.0.10:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
@@ -4126,7 +4126,7 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 ---
 
-## Schema `voice` (4 tables)
+## Schema `voice` (6 tables)
 
 ### `voice.alembic_version`
 
@@ -4135,6 +4135,66 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `version_num` **PK** | varchar(32) | no | `` |
 
 - **Primary key:** `version_num`
+
+---
+
+### `voice.glossary_terms`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(36) | no | `` |
+| `term` | varchar(120) | no | `` |
+| `term_key` | varchar(120) | no | `` |
+| `kind` | varchar(16) | no | `` |
+| `expansion` | text | yes | `` |
+| `aliases` | json | yes | `` |
+| `status` | varchar(16) | no | `` |
+| `core` | boolean | no | `` |
+| `occurrences` | integer | no | `` |
+| `first_base` | varchar(512) | yes | `` |
+| `last_base` | varchar(512) | yes | `` |
+| `evidence` | text | yes | `` |
+| `created_by` | varchar(256) | yes | `` |
+| `updated_by` | varchar(256) | yes | `` |
+| `created_at` | timestamptz | no | `now()` |
+| `updated_at` | timestamptz | no | `now()` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_glossary_terms_status`: (status)
+  - `uq_glossary_terms_term_key` UNIQUE: (term_key)
+
+---
+
+### `voice.label_projects`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(36) | no | `` |
+| `title` | varchar(512) | no | `` |
+| `original_filename` | varchar(1024) | yes | `` |
+| `media_path` | text | yes | `` |
+| `audio_path` | text | yes | `` |
+| `duration` | double precision | yes | `` |
+| `status` | varchar(16) | no | `'queued'::character varying` |
+| `job_id` | varchar(36) | yes | `` |
+| `aux_job_id` | varchar(36) | yes | `` |
+| `settings` | json | yes | `` |
+| `variants` | json | yes | `` |
+| `auto_segments` | json | yes | `` |
+| `segments` | json | yes | `` |
+| `speakers` | json | yes | `` |
+| `version` | integer | no | `0` |
+| `error` | text | yes | `` |
+| `created_by` | varchar(256) | yes | `` |
+| `updated_by` | varchar(256) | yes | `` |
+| `edited_at` | timestamptz | yes | `` |
+| `created_at` | timestamptz | no | `now()` |
+| `updated_at` | timestamptz | no | `now()` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_label_projects_created_at`: (created_at)
 
 ---
 
@@ -4166,11 +4226,13 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `marked_by` | varchar(256) | yes | `` |
 | `created_at` | timestamptz | no | `now()` |
 | `updated_at` | timestamptz | no | `now()` |
+| `item_key` | varchar(64) | yes | `` |
+| `task_id` | varchar(64) | yes | `` |
 
 - **Primary key:** `id`
 - **Indexes:**
   - `ix_voice_assignment_statuses_base`: (base_filename)
-  - `uq_voice_assignment_statuses_base_num` UNIQUE: (base_filename, num)
+  - `uq_voice_assignment_statuses_base_key` UNIQUE: (base_filename, item_key)
 
 ---
 

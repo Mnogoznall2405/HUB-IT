@@ -7,6 +7,8 @@ import * as nativeFilePicker from '../../files/nativeFilePicker';
 import type { CompanyStructureNode, CompanyStructurePerson } from '../../api/companyStructureApi';
 import { NativeCompanyStructureScreen } from './NativeCompanyStructureScreen';
 
+jest.setTimeout(20_000);
+
 let mockPermissions = ['company_structure.read', 'company_structure.write'];
 let mockOfflineMode = false;
 

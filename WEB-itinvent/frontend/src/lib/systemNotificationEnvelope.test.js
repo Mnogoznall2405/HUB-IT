@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
   buildSystemNotificationId,
   createSystemNotificationEnvelope,
-  SYSTEM_NOTIFICATION_CHANNELS,
 } from './systemNotificationEnvelope';
 
 describe('systemNotificationEnvelope', () => {
@@ -37,19 +36,7 @@ describe('systemNotificationEnvelope', () => {
     });
   });
 
-  it('keeps the supported channel list explicit', () => {
-    expect(SYSTEM_NOTIFICATION_CHANNELS).toEqual([
-      'chat',
-      'mention',
-      'task',
-      'feed',
-      'mail',
-      'ticket',
-      'scan',
-    ]);
-  });
-
-  it('normalizes controls and truncates text to bridge v1 limits', () => {
+    it('normalizes controls and truncates text to bridge v1 limits', () => {
     const envelope = createSystemNotificationEnvelope({
       id: buildSystemNotificationId('task', 'task with spaces/<>'),
       channel: 'task',

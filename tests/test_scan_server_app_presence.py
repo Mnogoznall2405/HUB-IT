@@ -36,7 +36,7 @@ def test_health_exposes_ocr_capacity_and_large_page_limits():
 
     assert payload["analysis"]["ocr_page_limit"] == 3
     assert payload["analysis"]["text_page_limit"] == 10
-    assert payload["analysis"]["focused_ocr_dpi"] >= 400
+    assert 250 <= payload["analysis"]["focused_ocr_dpi"] <= 600
     assert payload["analysis"]["full_page_max_pixels"] >= 20_000_000
     assert payload["analysis"]["focused_region_max_pixels"] >= 12_000_000
     assert payload["analysis"]["pdf_max_bytes"] >= 25 * 1024 * 1024

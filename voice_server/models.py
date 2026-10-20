@@ -148,3 +148,34 @@ class VoiceLabelProject(Base):
         Index("ix_label_projects_created_at", "created_at"),
         {"schema": VOICE_SCHEMA},
     )
+
+
+class VoiceGlossaryTerm(Base):
+    """Словарь компании: аббревиатуры, объекты, подрядчики. Кандидатов предлагает LLM, подтверждает человек."""
+
+    __tablename__ = "glossary_terms"
+
+    id = Column(String(36), primary_key=True)
+    term = Column(String(120), nullable=False)
+    term_key = Column(String(120), nullable=False)  # нормализованный термин (нижний регистр, ё->е): уникален
+    kind = Column(String(16), nullable=False, default="other")  # abbr|object|org|doc|person|other
+    expansion = Column(Text, nullable=True)  # расшифровка (для аббревиатур и документов)
+    aliases = Column(JSON, nullable=True)  # неверные написания (ошибки распознавания) -> заменяются на term
+    status = Column(String(16), nullable=False, default="candidate")  # candidate|confirmed|rejected
+    core = Column(Boolean, nullable=False, default=False)  # общий термин компании: всегда в ядре промпта
+    occurrences = Column(Integer, nullable=False, default=1)  # в скольких записях встретился как кандидат
+    first_base = Column(String(512), nullable=True)
+    last_base = Column(String(512), nullable=True)
+    evidence = Column(Text, nullable=True)
+    created_by = Column(String(256), nullable=True)
+    updated_by = Column(String(256), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("uq_glossary_terms_term_key", "term_key", unique=True),
+        Index("ix_glossary_terms_status", "status"),
+        {"schema": VOICE_SCHEMA},
+    )

@@ -123,14 +123,14 @@ export function MovementDetailDialog({
       <DialogTitle
         sx={{
           pr: 6,
-          pt: fullScreen ? 'calc(env(safe-area-inset-top) + 12px)' : undefined,
+          pt: fullScreen ? 1.5 : undefined,
         }}
       >
         {documentTitle}
         <IconButton
           aria-label="Закрыть"
           onClick={onClose}
-          sx={{ position: 'absolute', right: 8, top: fullScreen ? 'calc(env(safe-area-inset-top) + 4px)' : 8 }}
+          sx={{ position: 'absolute', right: 8, top: fullScreen ? 4 : 8 }}
         >
           <CloseIcon />
         </IconButton>

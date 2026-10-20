@@ -415,7 +415,7 @@ function ChatThread({
   onComposerDragOver,
   onComposerDragLeave,
   isFileDragActive,
-  mentionCandidates = [],
+  mentionCandidates: baseMentionCandidates = [],
   onSearchMentionPeople,
   showJumpToLatest,
   onJumpToLatest,
@@ -517,6 +517,42 @@ function ChatThread({
   const isAiConversation = String(activeConversation?.kind || '').trim() === 'ai';
   // R31: OpenCode (sandbox) выключен администратором — беседа только для чтения.
   const aiAgentReadOnly = isAiConversation && Boolean(aiStatus?.agent_read_only);
+  // The list item carries only member_preview, so the role comes from viewer_member_role first.
+  const viewerMemberRole = String(
+    activeConversation?.viewer_member_role
+      || (Array.isArray(activeConversation?.members) ? activeConversation.members : []).find(
+        (member) => Number(member?.user?.id) === Number(currentUserId),
+      )?.member_role
+      || '',
+  ).trim();
+  // «Только владелец и модераторы пишут»: обычный участник видит плашку вместо поля ввода.
+  const postingRestricted = (() => {
+    if (String(activeConversation?.kind || '').trim() !== 'group') return false;
+    const policy = String(activeConversation?.posting_policy || '').trim();
+    // A closed group stops everyone, owner included.
+    if (policy === 'closed') return true;
+    if (policy !== 'managers') return false;
+    // Unknown role: leave the decision to the server (403 with a reason).
+    if (!viewerMemberRole) return false;
+    return viewerMemberRole !== 'owner' && viewerMemberRole !== 'moderator';
+  })();
+  // A member barred by the owner / a moderator reads the group but cannot write; an expired term is ignored.
+  const restrictedUntilMs = Date.parse(String(activeConversation?.viewer_restricted_until || ''));
+  const viewerRestricted = String(activeConversation?.kind || '').trim() === 'group'
+    && Boolean(activeConversation?.viewer_restricted)
+    && (!Number.isFinite(restrictedUntilMs) || restrictedUntilMs > Date.now());
+  const viewerRestrictedText = Number.isFinite(restrictedUntilMs)
+    ? `Вам ограничена отправка сообщений до ${new Date(restrictedUntilMs).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}.`
+    : 'Вам ограничена отправка сообщений в этой группе.';
+  // «@все» подсказывается только тем, кому сервер разрешает уведомить всю группу.
+  const canMentionAll = String(activeConversation?.kind || '').trim() === 'group'
+    && (viewerMemberRole === 'owner' || viewerMemberRole === 'moderator');
+  const mentionCandidates = useMemo(
+    () => (canMentionAll
+      ? [{ id: 0, username: 'все', full_name: 'Все участники группы' }, ...(Array.isArray(baseMentionCandidates) ? baseMentionCandidates : [])]
+      : baseMentionCandidates),
+    [baseMentionCandidates, canMentionAll],
+  );
   // "Send later" (regular chats only; the server switches it with CHAT_SCHEDULED_MESSAGES_ENABLED).
   const scheduledApi = useChatScheduledMessages({
     conversationId: String(activeConversationId || activeConversation?.id || '').trim(),
@@ -1699,11 +1735,11 @@ function ChatThread({
         </Box>
       ) : null}
 
-      {aiAgentReadOnly ? (
+      {aiAgentReadOnly || postingRestricted || viewerRestricted ? (
         <Box
           ref={composerDockCallbackRef}
           role="status"
-          data-testid="chat-ai-agent-disabled"
+          data-testid={aiAgentReadOnly ? 'chat-ai-agent-disabled' : (postingRestricted ? 'chat-posting-restricted' : 'chat-viewer-restricted')}
           sx={{
             flexShrink: 0,
             px: compactMobile ? 1.5 : 2,
@@ -1716,7 +1752,13 @@ function ChatThread({
             borderTop: `1px solid ${ui.borderSoft || theme.palette.divider}`,
           }}
         >
-          Агент отключён администратором. История доступна только для чтения.
+          {aiAgentReadOnly
+            ? 'Агент отключён администратором. История доступна только для чтения.'
+            : (postingRestricted
+              ? (String(activeConversation?.posting_policy || '').trim() === 'closed'
+                ? 'Группа закрыта: писать в неё нельзя.'
+                : 'Писать в эту группу могут только владелец и модераторы.')
+              : viewerRestrictedText)}
         </Box>
       ) : selectionMode ? (
         <ChatSelectionActionDock

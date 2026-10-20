@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -128,19 +128,23 @@ export default function Feed() {
   const tagRef = useRef(tag);
   const itemsLengthRef = useRef(items.length);
   const listRequestRef = useRef(0);
+  const bookmarkingIdsRef = useRef(new Set());
   const listPendingRef = useRef(false);
   const loadMoreObserverRef = useRef(null);
   const listScope = JSON.stringify([query, activeFilter, categoryId, tag, deepLinkedPostId]);
   const listScopeRef = useRef(listScope);
-  if (listScopeRef.current !== listScope) {
-    listScopeRef.current = listScope;
-    listRequestRef.current += 1;
-  }
-  queryRef.current = query;
-  activeFilterRef.current = activeFilter;
-  categoryIdRef.current = categoryId;
-  tagRef.current = tag;
-  itemsLengthRef.current = items.length;
+  // Refs are synced in a layout effect (before any passive effect that loads data), not during render.
+  useLayoutEffect(() => {
+    if (listScopeRef.current !== listScope) {
+      listScopeRef.current = listScope;
+      listRequestRef.current += 1;
+    }
+    queryRef.current = query;
+    activeFilterRef.current = activeFilter;
+    categoryIdRef.current = categoryId;
+    tagRef.current = tag;
+    itemsLengthRef.current = items.length;
+  });
 
   const loadPage = useCallback(async ({ reset = false } = {}) => {
     if (!reset && listPendingRef.current) return;
@@ -448,6 +452,10 @@ export default function Feed() {
   }, []);
 
   const handleBookmark = useCallback(async (post) => {
+    const postId = String(post?.id || '');
+    // One request per post at a time: a late answer must not overwrite a newer click.
+    if (!postId || bookmarkingIdsRef.current.has(postId)) return;
+    bookmarkingIdsRef.current.add(postId);
     const nextValue = !post?.viewer_bookmarked;
     patchPost(post.id, { viewer_bookmarked: nextValue });
     try {
@@ -458,6 +466,8 @@ export default function Feed() {
     } catch (requestError) {
       patchPost(post.id, { viewer_bookmarked: !nextValue });
       notifyApiError(requestError, 'Не удалось изменить сохранённые публикации.');
+    } finally {
+      bookmarkingIdsRef.current.delete(postId);
     }
   }, [notifyApiError, patchPost]);
 

@@ -173,6 +173,8 @@ const DatabaseSearchBar = memo(function DatabaseSearchBar({
   onSearchTypeChange,
   searchField = '',
   onSearchFieldChange,
+  // embedded: бар живёт внутри компактной шапки страницы — без внешнего отступа, ниже.
+  embedded = false,
 }) {
   const showScopeToggle = !isConsumablesMode && typeof onSearchScopeChange === 'function';
   const isActsScope = searchScope === SEARCH_SCOPE_ACTS;
@@ -187,16 +189,20 @@ const DatabaseSearchBar = memo(function DatabaseSearchBar({
   const actionHover = ui?.actionHover || alpha(theme.palette.text.primary, theme.palette.mode === 'dark' ? 0.08 : 0.06);
   const textSecondary = ui?.textSecondary || theme.palette.text.secondary;
   const textPrimary = ui?.textPrimary || theme.palette.text.primary;
-  const scopeHeight = compact ? 44 : 40;
+  const scopeHeight = compact ? 44 : (embedded ? 36 : 40);
 
   return (
     <Box
       sx={{
-        mb: compact ? 0.5 : 1.25,
+        mb: embedded ? 0 : (compact ? 0.5 : 1.25),
+        ...(embedded ? { flex: 1, minWidth: 0 } : {}),
         display: 'flex',
         alignItems: 'center',
         gap: compact ? 0.5 : 1,
         flexDirection: 'row',
+        // На узком экране фильтры переносятся на вторую строку — иначе поле
+        // поиска сжималось до нуля и уезжало за viewport.
+        flexWrap: compact ? 'wrap' : 'nowrap',
       }}
     >
       {showScopeToggle ? (
@@ -224,7 +230,7 @@ const DatabaseSearchBar = memo(function DatabaseSearchBar({
               px: compact ? 0.55 : 1.25,
               py: 0,
               minWidth: compact ? 48 : 88,
-              minHeight: compact ? 44 : 36,
+              minHeight: compact ? 44 : (embedded ? 32 : 36),
               textTransform: 'none',
               fontSize: compact ? '0.68rem' : '0.8125rem',
               fontWeight: 500,
@@ -325,7 +331,7 @@ const DatabaseSearchBar = memo(function DatabaseSearchBar({
         }}
         sx={{
           flex: 1,
-          minWidth: 0,
+          minWidth: compact ? 140 : (embedded ? 160 : 0),
           '& .MuiOutlinedInput-root': {
             borderRadius: '4px',
             bgcolor: panelBg,

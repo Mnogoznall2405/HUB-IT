@@ -60,7 +60,7 @@ def test_fast_message_created_does_not_publish_room_and_inbox_duplicates(monkeyp
     )
     monkeypatch.setattr(
         side_effects_module.chat_realtime,
-        "conversation_room_user_ids",
+        "conversation_room_only_user_ids",
         lambda **_kwargs: {2},
     )
     monkeypatch.setattr(
@@ -152,3 +152,57 @@ def test_typing_command_fans_out_by_user_so_inbox_sockets_receive_it(monkeypatch
     )
     assert len(sent) == 1
     assert sent[0]["event_type"] == "chat.typing.stopped"
+
+
+class _Socket:
+    async def accept(self) -> None:
+        return None
+
+    async def send_text(self, data: str) -> None:
+        return None
+
+    async def send_json(self, data) -> None:
+        return None
+
+    async def send_bytes(self, data: bytes) -> None:
+        return None
+
+    async def close(self, code: int = 1000, reason: str | None = None) -> None:
+        return None
+
+
+def test_user_with_extra_connection_outside_room_still_gets_inbox_event():
+    """Tab A is in the room, tab B (same user) only listens to the sidebar inbox."""
+    user_calls: list[dict] = []
+
+    async def scenario() -> None:
+        manager = realtime_module.ChatRealtimeManager()
+        # user 2: one tab in the room + one tab outside; user 3: only in the room
+        room_tab, _ = await manager.connect(_Socket(), user_id=2, track_presence=False)
+        await manager.connect(_Socket(), user_id=2, track_presence=False)
+        peer_tab, _ = await manager.connect(_Socket(), user_id=3, track_presence=False)
+        manager.subscribe_conversation(room_tab, "conv-1")
+        manager.subscribe_conversation(peer_tab, "conv-1")
+
+        async def _publish_users(**kwargs):
+            user_calls.append(kwargs)
+            return len(set(kwargs["user_ids"]))
+
+        manager.publish_user_events = _publish_users  # type: ignore[method-assign]
+        original = side_effects_module.chat_realtime
+        side_effects_module.chat_realtime = manager
+        try:
+            await side_effects_module.publish_message_created_fast_after_send(
+                conversation_id="conv-1",
+                message_id="msg-1",
+                member_user_ids=[1, 2, 3],
+                message_payload={"id": "msg-1", "conversation_id": "conv-1"},
+                sender_user_id=1,
+            )
+        finally:
+            side_effects_module.chat_realtime = original
+
+    asyncio.run(scenario())
+
+    assert len(user_calls) == 1
+    assert sorted(user_calls[0]["user_ids"]) == [2]

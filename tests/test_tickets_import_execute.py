@@ -13,6 +13,7 @@ Tests cover:
 Requirements: 1.2, 1.4, 1.5, 1.6, 1.8, 1.9, 1.10, 1.11
 """
 from __future__ import annotations
+import conftest
 
 import json
 import sys
@@ -95,7 +96,7 @@ def db_session_factory(temp_dir, monkeypatch):
         cursor.execute("PRAGMA foreign_keys=OFF")
         cursor.close()
 
-    AppBase.metadata.create_all(engine, checkfirst=True)
+    conftest.copy_app_metadata_schema_for_url(url)
 
     SessionLocal = sessionmaker(bind=engine)
 
@@ -615,7 +616,7 @@ class TestExecuteImport:
             assert job.status == "completed"
 
     def test_import_skips_rows_without_name(self, service, db_session_factory, setup_object, setup_job):
-        """Rows without ФИО are counted as errors."""
+        """Rows without ФИО are counted as warnings."""
         wb = Workbook()
         ws = wb.active
         ws.title = "Камчатка"
@@ -631,7 +632,9 @@ class TestExecuteImport:
 
         result = service.execute_import(job_id, settings, user_id=1)
         assert result.imported == 1
-        assert result.errors == 1
+        assert result.errors == 0
+        assert result.warnings == 1
+        assert result.warning_details[0]["warning"] == "Обязательное поле ФИО отсутствует"
 
     def test_import_handles_losses_sheet(self, service, db_session_factory, setup_object, setup_job):
         """ПОТЕРИ sheet creates TicketFinancialOp records."""
@@ -695,7 +698,7 @@ class TestExecuteImport:
         assert result.imported == 0
 
     def test_import_stores_raw_trace_for_errors(self, service, db_session_factory, setup_object, setup_job):
-        """Raw traces are stored even for rows that fail parsing."""
+        """Raw traces are stored even for rows skipped during parsing."""
         wb = Workbook()
         ws = wb.active
         ws.title = "Камчатка"
@@ -708,11 +711,11 @@ class TestExecuteImport:
         settings = ImportSettings(sheet_object_map={"Камчатка": setup_object})
 
         result = service.execute_import(job_id, settings, user_id=1)
-        assert result.errors == 1
+        assert result.warnings == 1
 
         with db_session_factory() as session:
             traces = session.query(TicketImportRawTrace).all()
-            assert len(traces) == 1  # Error row still gets a trace
+            assert len(traces) == 1  # Skipped row still gets a trace
 
     def test_import_reconciliation_in_result_json(self, service, db_session_factory, setup_object, setup_job):
         """Reconciliation report is stored in job result_json."""

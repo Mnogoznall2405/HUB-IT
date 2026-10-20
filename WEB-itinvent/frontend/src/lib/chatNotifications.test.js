@@ -123,6 +123,9 @@ describe('chatNotifications', () => {
     Object.defineProperty(navigator, 'serviceWorker', {
       configurable: true,
       value: {
+        getRegistration: vi.fn(async () => ({
+          pushManager: { getSubscription: mockGetSubscription, subscribe: mockSubscribe },
+        })),
         ready: Promise.resolve({
           pushManager: {
             getSubscription: mockGetSubscription,

@@ -1,11 +1,13 @@
 ﻿from __future__ import annotations
 
+import os
 import sqlite3
 import urllib.parse
 from io import BytesIO
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -13,7 +15,11 @@ from backend.api.deps import ensure_user_permission, get_current_active_user
 from backend.models.auth import User
 from backend.services.authorization_service import PERM_NETWORKS_WRITE
 from backend.services.network_service import NetworkConflictError, network_service
+from backend.utils.upload_limits import read_upload_limited
 
+
+# Upper bound for Excel/template/map uploads (read in chunks, 413 above it); override per deployment.
+_NETWORK_UPLOAD_MAX_BYTES = max(1, int(os.getenv("NETWORK_UPLOAD_MAX_MB", "50") or "50")) * 1024 * 1024
 
 router = APIRouter()
 
@@ -171,7 +177,7 @@ async def get_branches(
     city: str = Query("tmn", min_length=1),
     _: User = Depends(get_current_active_user),
 ):
-    return {"branches": network_service.list_branches(city)}
+    return {"branches": (await run_in_threadpool(network_service.list_branches, city))}
 
 
 @router.post("/branches")
@@ -207,8 +213,7 @@ async def create_branch(
                 for p in payload.panels
             ]
 
-        return network_service.create_branch_with_profile(
-            city_code=payload.city_code,
+        return await run_in_threadpool(network_service.create_branch_with_profile, city_code=payload.city_code,
             branch_code=payload.branch_code,
             name=payload.branch_name,
             panel_count=payload.panel_count,
@@ -217,8 +222,7 @@ async def create_branch(
             default_site_code=payload.default_site_code,
             db_id=payload.db_id,
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -231,15 +235,13 @@ async def update_branch(
 ):
     _ensure_write_role(current_user)
     try:
-        updated = network_service.update_branch(
-            branch_id=branch_id,
+        updated = await run_in_threadpool(network_service.update_branch, branch_id=branch_id,
             branch_name=payload.branch_name,
             default_site_code=payload.default_site_code,
             db_id=payload.db_id,
             updated_by=getattr(current_user, "username", None),
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
         return {"success": True, "branch": updated}
     except ValueError as exc:
         if str(exc) == "Branch not found":
@@ -254,11 +256,9 @@ async def delete_branch(
 ):
     _ensure_write_role(current_user)
     try:
-        network_service.delete_branch(
-            branch_id=branch_id,
+        await run_in_threadpool(network_service.delete_branch, branch_id=branch_id,
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
         return {"success": True}
     except ValueError as exc:
         if str(exc) == "Branch not found":
@@ -272,7 +272,7 @@ async def get_branch_overview(
     _: User = Depends(get_current_active_user),
 ):
     try:
-        return network_service.get_branch_overview(branch_id)
+        return await run_in_threadpool(network_service.get_branch_overview, branch_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -282,7 +282,7 @@ async def get_devices(
     branch_id: int,
     _: User = Depends(get_current_active_user),
 ):
-    return {"devices": network_service.list_devices(branch_id)}
+    return {"devices": (await run_in_threadpool(network_service.list_devices, branch_id))}
 
 
 @router.get("/devices/{device_id}/ports")
@@ -295,13 +295,11 @@ async def get_ports(
     _: User = Depends(get_current_active_user),
 ):
     return {
-        "ports": network_service.list_ports(
-            device_id,
+        "ports": (await run_in_threadpool(network_service.list_ports, device_id,
             search=search,
             vlan=vlan,
             occupied=occupied,
-            location=location,
-        )
+            location=location))
     }
 
 
@@ -316,14 +314,12 @@ async def get_branch_ports(
     _: User = Depends(get_current_active_user),
 ):
     return {
-        "ports": network_service.list_ports_by_branch(
-            branch_id,
+        "ports": (await run_in_threadpool(network_service.list_ports_by_branch, branch_id,
             search=search,
             vlan=vlan,
             occupied=occupied,
             location=location,
-            limit=limit,
-        )
+            limit=limit))
     }
 
 
@@ -335,11 +331,9 @@ async def get_branch_sockets(
     _: User = Depends(get_current_active_user),
 ):
     return {
-        "sockets": network_service.list_sockets(
-            branch_id,
+        "sockets": (await run_in_threadpool(network_service.list_sockets, branch_id,
             search=search,
-            limit=limit,
-        )
+            limit=limit))
     }
 
 
@@ -351,12 +345,10 @@ async def create_branch_socket(
 ):
     _ensure_write_role(current_user)
     try:
-        return network_service.create_socket(
-            branch_id=branch_id,
+        return await run_in_threadpool(network_service.create_socket, branch_id=branch_id,
             payload=_payload(payload),
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
     except ValueError as exc:
         _raise_network_http(exc)
 
@@ -369,12 +361,10 @@ async def update_socket(
 ):
     _ensure_write_role(current_user)
     try:
-        return network_service.update_socket(
-            socket_id=socket_id,
+        return await run_in_threadpool(network_service.update_socket, socket_id=socket_id,
             payload=_payload(payload, exclude_unset=True),
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
     except ValueError as exc:
         _raise_network_http(exc)
 
@@ -385,11 +375,9 @@ async def delete_socket(
     current_user: User = Depends(get_current_active_user),
 ):
     _ensure_write_role(current_user)
-    ok = network_service.delete_socket(
-        socket_id=socket_id,
+    ok = await run_in_threadpool(network_service.delete_socket, socket_id=socket_id,
         actor_user_id=getattr(current_user, "id", None),
-        actor_role=getattr(current_user, "role", None),
-    )
+        actor_role=getattr(current_user, "role", None))
     if not ok:
         raise HTTPException(status_code=404, detail="Socket not found")
     return {"success": True}
@@ -403,13 +391,11 @@ async def bootstrap_branch_sockets(
 ):
     _ensure_write_role(current_user)
     try:
-        return network_service.bootstrap_branch_sockets(
-            branch_id=branch_id,
+        return await run_in_threadpool(network_service.bootstrap_branch_sockets, branch_id=branch_id,
             panel_count=payload.panel_count,
             ports_per_panel=payload.ports_per_panel,
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -423,12 +409,10 @@ async def sync_branch_socket_host_context(
     """Sync socket/port IP+MAC+FIO by strict MAC matching in linked SQL DB."""
     _ensure_write_role(current_user)
     try:
-        return network_service.sync_socket_host_context(
-            branch_id=branch_id,
+        return await run_in_threadpool(network_service.sync_socket_host_context, branch_id=branch_id,
             socket_ids=(payload.socket_ids if payload else None),
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -440,15 +424,13 @@ async def import_branch_sockets_template(
     current_user: User = Depends(get_current_active_user),
 ):
     _ensure_write_role(current_user)
-    template_bytes = await template_file.read()
+    template_bytes = await read_upload_limited(template_file, _NETWORK_UPLOAD_MAX_BYTES)
     try:
-        return network_service.import_sockets_template(
-            branch_id=branch_id,
+        return await run_in_threadpool(network_service.import_sockets_template, branch_id=branch_id,
             file_name=template_file.filename or "socket_template.xlsx",
             file_bytes=template_bytes,
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -462,15 +444,13 @@ async def import_branch_equipment_excel(
     """Import switches/devices and their ports from a multi-sheet Excel file into an existing branch.
     Links ports to existing sockets via 'Port P/P' column."""
     _ensure_write_role(current_user)
-    file_bytes = await excel_file.read()
+    file_bytes = await read_upload_limited(excel_file, _NETWORK_UPLOAD_MAX_BYTES)
     try:
-        return network_service.import_equipment_from_excel(
-            branch_id=branch_id,
+        return await run_in_threadpool(network_service.import_equipment_from_excel, branch_id=branch_id,
             file_name=excel_file.filename or "equipment.xlsx",
             file_bytes=file_bytes,
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -482,7 +462,7 @@ async def get_branch_db_mapping(
     _: User = Depends(get_current_active_user),
 ):
     try:
-        return network_service.get_branch_db_mapping(branch_id)
+        return await run_in_threadpool(network_service.get_branch_db_mapping, branch_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -495,13 +475,11 @@ async def patch_branch_db_mapping(
 ):
     _ensure_write_role(current_user)
     try:
-        return network_service.update_branch_db_mapping(
-            branch_id=branch_id,
+        return await run_in_threadpool(network_service.update_branch_db_mapping, branch_id=branch_id,
             db_id=payload.db_id,
             updated_by=getattr(current_user, "username", None),
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -515,12 +493,10 @@ async def resolve_branch_socket_fio(
     """Backward-compatible alias for legacy clients."""
     _ensure_write_role(current_user)
     try:
-        return network_service.sync_socket_host_context(
-            branch_id=branch_id,
+        return await run_in_threadpool(network_service.sync_socket_host_context, branch_id=branch_id,
             socket_ids=(payload.socket_ids if payload else None),
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -530,7 +506,7 @@ async def get_maps(
     branch_id: int,
     _: User = Depends(get_current_active_user),
 ):
-    return {"maps": network_service.list_maps(branch_id)}
+    return {"maps": (await run_in_threadpool(network_service.list_maps, branch_id))}
 
 
 @router.get("/branches/{branch_id}/map-points")
@@ -539,7 +515,7 @@ async def get_map_points(
     map_id: Optional[int] = Query(None),
     _: User = Depends(get_current_active_user),
 ):
-    return {"points": network_service.list_map_points(branch_id=branch_id, map_id=map_id)}
+    return {"points": (await run_in_threadpool(network_service.list_map_points, branch_id=branch_id, map_id=map_id))}
 
 
 @router.get("/maps/{map_id}/file")
@@ -549,7 +525,7 @@ async def download_map_file(
     _: User = Depends(get_current_active_user),
 ):
     try:
-        data = network_service.get_map_file_for_view(map_id, render_mode=render)
+        data = await run_in_threadpool(network_service.get_map_file_for_view, map_id, render_mode=render)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not data:
@@ -572,7 +548,7 @@ async def export_map_pdf(
     _: User = Depends(get_current_active_user),
 ):
     try:
-        data = network_service.export_map_pdf(map_id)
+        data = await run_in_threadpool(network_service.export_map_pdf, map_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not data:
@@ -591,7 +567,7 @@ async def get_audit(
     limit: int = Query(100, ge=1, le=500),
     _: User = Depends(get_current_active_user),
 ):
-    return {"items": network_service.list_audit(branch_id=branch_id, limit=limit)}
+    return {"items": (await run_in_threadpool(network_service.list_audit, branch_id=branch_id, limit=limit))}
 
 
 @router.post("/import")
@@ -604,10 +580,10 @@ async def import_network_data(
     current_user: User = Depends(get_current_active_user),
 ):
     _ensure_write_role(current_user)
-    excel_bytes = await excel_file.read()
+    excel_bytes = await read_upload_limited(excel_file, _NETWORK_UPLOAD_MAX_BYTES)
     maps_payload = []
     for map_file in map_files or []:
-        map_bytes = await map_file.read()
+        map_bytes = await read_upload_limited(map_file, _NETWORK_UPLOAD_MAX_BYTES)
         maps_payload.append(
             {
                 "file_name": map_file.filename,
@@ -616,16 +592,14 @@ async def import_network_data(
             }
         )
     try:
-        return network_service.import_branch_data(
-            city_code=city_code,
+        return await run_in_threadpool(network_service.import_branch_data, city_code=city_code,
             branch_code=branch_code,
             branch_name=branch_name,
             excel_file_name=excel_file.filename or "network.xlsx",
             excel_file_bytes=excel_bytes,
             map_files=maps_payload,
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -637,12 +611,10 @@ async def create_device(
 ):
     _ensure_write_role(current_user)
     try:
-        return network_service.create_device(
-            branch_id=payload.branch_id,
+        return await run_in_threadpool(network_service.create_device, branch_id=payload.branch_id,
             payload=_payload(payload),
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except sqlite3.IntegrityError as exc:
@@ -657,12 +629,10 @@ async def update_device(
 ):
     _ensure_write_role(current_user)
     try:
-        return network_service.update_device(
-            device_id=device_id,
+        return await run_in_threadpool(network_service.update_device, device_id=device_id,
             payload=_payload(payload, exclude_unset=True),
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -673,11 +643,9 @@ async def delete_device(
     current_user: User = Depends(get_current_active_user),
 ):
     _ensure_write_role(current_user)
-    ok = network_service.delete_device(
-        device_id=device_id,
+    ok = await run_in_threadpool(network_service.delete_device, device_id=device_id,
         actor_user_id=getattr(current_user, "id", None),
-        actor_role=getattr(current_user, "role", None),
-    )
+        actor_role=getattr(current_user, "role", None))
     if not ok:
         raise HTTPException(status_code=404, detail="Device not found")
     return {"success": True}
@@ -695,12 +663,10 @@ async def bootstrap_device_ports(
 ):
     _ensure_write_role(current_user)
     try:
-        return network_service.bootstrap_device_ports(
-            device_id=device_id,
+        return await run_in_threadpool(network_service.bootstrap_device_ports, device_id=device_id,
             port_count=payload.port_count,
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -712,12 +678,10 @@ async def create_port(
 ):
     _ensure_write_role(current_user)
     try:
-        return network_service.create_port(
-            device_id=payload.device_id,
+        return await run_in_threadpool(network_service.create_port, device_id=payload.device_id,
             payload=_payload(payload),
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
     except ValueError as exc:
         _raise_network_http(exc)
 
@@ -730,12 +694,10 @@ async def update_port(
 ):
     _ensure_write_role(current_user)
     try:
-        return network_service.update_port(
-            port_id=port_id,
+        return await run_in_threadpool(network_service.update_port, port_id=port_id,
             payload=_payload(payload, exclude_unset=True),
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
     except ValueError as exc:
         _raise_network_http(exc)
 
@@ -746,11 +708,9 @@ async def delete_port(
     current_user: User = Depends(get_current_active_user),
 ):
     _ensure_write_role(current_user)
-    ok = network_service.delete_port(
-        port_id=port_id,
+    ok = await run_in_threadpool(network_service.delete_port, port_id=port_id,
         actor_user_id=getattr(current_user, "id", None),
-        actor_role=getattr(current_user, "role", None),
-    )
+        actor_role=getattr(current_user, "role", None))
     if not ok:
         raise HTTPException(status_code=404, detail="Port not found")
     return {"success": True}
@@ -768,10 +728,9 @@ async def upload_map(
     current_user: User = Depends(get_current_active_user),
 ):
     _ensure_write_role(current_user)
-    file_bytes = await file.read()
+    file_bytes = await read_upload_limited(file, _NETWORK_UPLOAD_MAX_BYTES)
     try:
-        return network_service.upload_map(
-            branch_id=branch_id,
+        return await run_in_threadpool(network_service.upload_map, branch_id=branch_id,
             file_name=file.filename or "map.bin",
             mime_type=file.content_type or "application/octet-stream",
             file_bytes=file_bytes,
@@ -781,8 +740,7 @@ async def upload_map(
             floor_label=floor_label,
             source_path=source_path,
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -795,12 +753,10 @@ async def update_map(
 ):
     _ensure_write_role(current_user)
     try:
-        return network_service.update_map_meta(
-            map_id=map_id,
+        return await run_in_threadpool(network_service.update_map_meta, map_id=map_id,
             payload=_payload(payload, exclude_unset=True),
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -811,11 +767,9 @@ async def delete_map(
     current_user: User = Depends(get_current_active_user),
 ):
     _ensure_write_role(current_user)
-    ok = network_service.delete_map(
-        map_id=map_id,
+    ok = await run_in_threadpool(network_service.delete_map, map_id=map_id,
         actor_user_id=getattr(current_user, "id", None),
-        actor_role=getattr(current_user, "role", None),
-    )
+        actor_role=getattr(current_user, "role", None))
     if not ok:
         raise HTTPException(status_code=404, detail="Map not found")
     return {"success": True}
@@ -828,11 +782,9 @@ async def create_map_point(
 ):
     _ensure_write_role(current_user)
     try:
-        return network_service.create_map_point(
-            payload=_payload(payload),
+        return await run_in_threadpool(network_service.create_map_point, payload=_payload(payload),
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
     except ValueError as exc:
         _raise_network_http(exc)
 
@@ -845,12 +797,10 @@ async def update_map_point(
 ):
     _ensure_write_role(current_user)
     try:
-        return network_service.update_map_point(
-            point_id=point_id,
+        return await run_in_threadpool(network_service.update_map_point, point_id=point_id,
             payload=_payload(payload, exclude_unset=True),
             actor_user_id=getattr(current_user, "id", None),
-            actor_role=getattr(current_user, "role", None),
-        )
+            actor_role=getattr(current_user, "role", None))
     except ValueError as exc:
         _raise_network_http(exc)
 
@@ -861,11 +811,9 @@ async def delete_map_point(
     current_user: User = Depends(get_current_active_user),
 ):
     _ensure_write_role(current_user)
-    ok = network_service.delete_map_point(
-        point_id=point_id,
+    ok = await run_in_threadpool(network_service.delete_map_point, point_id=point_id,
         actor_user_id=getattr(current_user, "id", None),
-        actor_role=getattr(current_user, "role", None),
-    )
+        actor_role=getattr(current_user, "role", None))
     if not ok:
         raise HTTPException(status_code=404, detail="Map point not found")
     return {"success": True}

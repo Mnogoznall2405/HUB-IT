@@ -264,6 +264,17 @@ export function historyDate(row: Record<string, unknown>): string {
   return formatDatabaseDate(historyField(row, ['ch_date', 'CH_DATE', 'date', 'DATE', 'created_at', 'CREATED_AT', 'history_date', 'HISTORY_DATE']));
 }
 
+export function validateNativeTransferEmployeeName(value: string): boolean {
+  if (!value || typeof value !== 'string') return false;
+  const normalized = value.trim();
+  if (normalized.length < 2 || normalized.length > 100) return false;
+  const dangerousChars = ['<', '>', '"', "'", '&', ';', '|', '`', '\n', '\r'];
+  if (dangerousChars.some((char) => normalized.includes(char))) return false;
+  const upper = normalized.toUpperCase();
+  const sqlKeywords = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'DROP', 'UNION', 'EXEC'];
+  return !sqlKeywords.some((keyword) => upper.includes(keyword));
+}
+
 export type EquipmentDraftErrors = Partial<Record<'ip_address' | 'mac_address', string>>;
 
 export function validateEquipmentDraft(draft: { ip_address?: string | null; mac_address?: string | null }): EquipmentDraftErrors {

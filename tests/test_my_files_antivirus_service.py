@@ -263,6 +263,38 @@ def test_size_limit_skips_scan_without_resolving_scanner(tmp_path, monkeypatch, 
     assert result == antivirus.SecurityScanResult(status="skipped", engine="size-limit")
 
 
+@pytest.mark.parametrize(
+    ("file_name", "size", "skip_archives", "exe_limit", "expected_engine"),
+    [
+        ("backup.ZIP", 10, True, 100, "policy-archive"),
+        ("data.tar.gz", 10, True, 100, "policy-archive"),
+        ("backup.zip", 10, False, 100, None),
+        ("setup.exe", 101, True, 100, "policy-exe-size"),
+        ("setup.exe", 100, True, 100, None),
+        ("setup.exe", 10**9, True, 0, None),
+        ("report.pdf", 10**9, True, 100, None),
+        ("big.msi", 10**9, True, 100, None),
+    ],
+)
+def test_scan_policy_skip_matrix(monkeypatch, enabled_antivirus, file_name, size, skip_archives, exe_limit, expected_engine):
+    monkeypatch.setattr(enabled_antivirus, "antivirus_skip_archives", skip_archives, raising=False)
+    monkeypatch.setattr(enabled_antivirus, "antivirus_exe_max_size_bytes", exe_limit, raising=False)
+
+    result = antivirus.scan_policy_skip(file_name, size)
+
+    if expected_engine is None:
+        assert result is None
+    else:
+        assert result == antivirus.SecurityScanResult(status="skipped", engine=expected_engine)
+        assert antivirus.is_policy_skip(result.status, result.engine)
+
+
+def test_scan_policy_skip_is_inactive_when_antivirus_disabled(monkeypatch):
+    monkeypatch.setattr(config.my_files_security, "antivirus_enabled", False)
+
+    assert antivirus.scan_policy_skip("backup.zip", 10) is None
+
+
 def test_size_limit_zero_keeps_normal_scan_path(tmp_path, monkeypatch, enabled_antivirus):
     monkeypatch.setattr(enabled_antivirus, "antivirus_max_size_bytes", 0, raising=False)
     payload = tmp_path / "safe.bin"

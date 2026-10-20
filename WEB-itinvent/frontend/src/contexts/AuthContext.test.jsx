@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getCurrentUserMock = vi.fn();
@@ -7,11 +7,13 @@ const clearAllMailRecentCacheMock = vi.fn();
 const disableChatPushSubscriptionMock = vi.fn();
 const clearMobileOfflineCacheMock = vi.fn();
 const logoutMock = vi.fn();
+const loginMock = vi.fn();
 
 vi.mock('../api/client', () => ({
   authAPI: {
     getCurrentUser: (...args) => getCurrentUserMock(...args),
     logout: (...args) => logoutMock(...args),
+    login: (...args) => loginMock(...args),
   },
 }));
 
@@ -28,9 +30,11 @@ vi.mock('../lib/mobileOfflineCache', () => ({
 }));
 
 import { AuthProvider, useAuth } from './AuthContext';
+import { clearSWRCache, peekSWRCache, setSWRCache } from '../lib/swrCache';
 
 function AuthProbe() {
-  const { loading, user, logout, refreshSession, hasPermission } = useAuth();
+  const { loading, user, logout, refreshSession, hasPermission, login } = useAuth();
+  const [loginResult, setLoginResult] = React.useState('');
   return (
     <>
       <div data-testid="loading">{String(loading)}</div>
@@ -49,6 +53,10 @@ function AuthProbe() {
       <button type="button" onClick={() => logout()}>
         logout
       </button>
+      <button type="button" onClick={async () => { const result = await login('ivanov', 'pw'); setLoginResult(String(result.error)); }}>
+        login
+      </button>
+      <div data-testid="login-error">{loginResult}</div>
     </>
   );
 }
@@ -69,6 +77,7 @@ describe('AuthProvider startup', () => {
     disableChatPushSubscriptionMock.mockResolvedValue(undefined);
     clearMobileOfflineCacheMock.mockResolvedValue(0);
     localStorage.clear();
+    clearSWRCache();
     window.history.pushState({}, '', '/');
   });
 
@@ -83,18 +92,20 @@ describe('AuthProvider startup', () => {
     expect(screen.getByTestId('username')).toHaveTextContent('trusted-device-user');
   });
 
-  it('shows cached user immediately and validates the session in the background', async () => {
+  it('restores cached user before the background session check completes', async () => {
     localStorage.setItem('user', JSON.stringify({ id: 7, username: 'cached', role: 'operator' }));
-    getCurrentUserMock.mockResolvedValue({ id: 7, username: 'fresh', role: 'operator' });
+    let resolveSession;
+    getCurrentUserMock.mockImplementation(() => new Promise((resolve) => { resolveSession = resolve; }));
 
     renderAuth('/dashboard');
 
+    await waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('cached'));
     expect(screen.getByTestId('loading')).toHaveTextContent('false');
-    expect(screen.getByTestId('username')).toHaveTextContent('cached');
 
     await waitFor(() => {
       expect(getCurrentUserMock).toHaveBeenCalledWith({ suppressAuthRequired: true });
     });
+    await act(async () => resolveSession({ id: 7, username: 'fresh', role: 'operator' }));
     await waitFor(() => {
       expect(screen.getByTestId('username')).toHaveTextContent('fresh');
     });
@@ -108,6 +119,7 @@ describe('AuthProvider startup', () => {
 
     renderAuth('/dashboard');
 
+    await waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('cached'));
     expect(screen.getByTestId('loading')).toHaveTextContent('false');
     expect(screen.getByTestId('username')).toHaveTextContent('cached');
     await waitFor(() => expect(getCurrentUserMock).toHaveBeenCalledTimes(1));
@@ -156,6 +168,13 @@ describe('AuthProvider startup', () => {
       expect(screen.getByTestId('username')).toHaveTextContent('');
     });
     expect(localStorage.getItem('user')).toBeNull();
+  });
+
+  it('finishes anonymous startup after a definitive session rejection', async () => {
+    getCurrentUserMock.mockRejectedValue({ response: { status: 401, data: { detail: 'Session expired' } } });
+    renderAuth('/login');
+    await waitFor(() => expect(screen.getByTestId('loading')).toHaveTextContent('false'));
+    expect(screen.getByTestId('username')).toBeEmptyDOMElement();
   });
 
   it('keeps refreshSession available for explicit session refreshes', async () => {
@@ -231,6 +250,26 @@ describe('AuthProvider startup', () => {
     });
   });
 
+  it('does not reuse a previous account check after a shared-window login', async () => {
+    let resolveOld;
+    getCurrentUserMock.mockResolvedValueOnce({ id: 7, username: 'user-a', role: 'viewer' })
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }))
+      .mockResolvedValueOnce({ id: 8, username: 'verified-user-b', role: 'viewer' });
+    renderAuth('/login');
+    await screen.findByText('user-a');
+    setSWRCache('private-cache', 'user-A');
+    fireEvent.click(screen.getByRole('button', { name: 'refresh', exact: true }));
+    await waitFor(() => expect(getCurrentUserMock).toHaveBeenCalledTimes(2));
+    const announced = JSON.stringify({ id: 8, username: 'untrusted-user-b', role: 'admin' });
+    localStorage.setItem('user', announced);
+    fireEvent(window, new StorageEvent('storage', { key: 'user', newValue: announced }));
+    await waitFor(() => expect(getCurrentUserMock).toHaveBeenCalledTimes(3));
+    await screen.findByText('verified-user-b');
+    await act(async () => { resolveOld({ id: 7, username: 'old-user-a', role: 'viewer' }); });
+    expect(screen.getByTestId('username')).toHaveTextContent('verified-user-b');
+    expect(peekSWRCache('private-cache')).toBeNull();
+  });
+
   it('does not grant tickets access from the operator fallback permissions', async () => {
     getCurrentUserMock.mockResolvedValue({ id: 8, username: 'operator', role: 'operator' });
 
@@ -283,6 +322,34 @@ describe('AuthProvider startup', () => {
     expect(screen.getByTestId('can-ai-sandbox')).toHaveTextContent('true');
   });
 
+  it('does not restore a logged-out session from a late refresh response', async () => {
+    let resolveRefresh;
+    getCurrentUserMock.mockResolvedValueOnce({ id: 7, username: 'user-a', role: 'viewer' })
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveRefresh = resolve; }));
+    renderAuth('/login');
+    await screen.findByText('user-a');
+    setSWRCache('private-cache', 'user-A');
+    fireEvent.click(screen.getByRole('button', { name: 'refresh', exact: true }));
+    await waitFor(() => expect(getCurrentUserMock).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole('button', { name: 'logout', exact: true }));
+    await waitFor(() => expect(screen.getByTestId('username')).toBeEmptyDOMElement());
+    await act(async () => { resolveRefresh({ id: 7, username: 'late-user-a', role: 'viewer' }); });
+    await waitFor(() => expect(localStorage.getItem('user')).toBeNull());
+    expect(screen.getByTestId('username')).toBeEmptyDOMElement();
+    expect(peekSWRCache('private-cache')).toBeNull();
+  });
+
+  it('clears shared SWR entries when the verified session changes account', async () => {
+    getCurrentUserMock.mockResolvedValueOnce({ id: 7, username: 'user-a', role: 'viewer' })
+      .mockResolvedValueOnce({ id: 8, username: 'user-b', role: 'viewer' });
+    renderAuth('/login');
+    await screen.findByText('user-a');
+    setSWRCache('private-cache', 'user-A');
+    fireEvent.click(screen.getByRole('button', { name: 'refresh', exact: true }));
+    await screen.findByText('user-b');
+    expect(peekSWRCache('private-cache')).toBeNull();
+  });
+
   it('keeps the current username for the next login after logout', async () => {
     localStorage.setItem('user', JSON.stringify({ id: 7, username: 'ivanov', role: 'operator' }));
     getCurrentUserMock.mockResolvedValue({ id: 7, username: 'ivanov', role: 'operator' });
@@ -311,5 +378,18 @@ describe('AuthProvider startup', () => {
     expect(screen.getByTestId('can-chat-write')).toHaveTextContent('true');
     expect(screen.getByTestId('can-dashboard')).toHaveTextContent('true');
     expect(screen.getByTestId('can-task-create')).toHaveTextContent('true');
+  });
+
+  it('turns a FastAPI 422 detail array into a plain login error message', async () => {
+    getCurrentUserMock.mockRejectedValue({ response: { status: 401 } });
+    loginMock.mockRejectedValue({
+      response: { status: 422, data: { detail: [{ loc: ['body', 'username'], msg: 'Поле обязательно' }] } },
+    });
+    renderAuth('/login');
+    await waitFor(() => expect(screen.getByTestId('loading')).toHaveTextContent('false'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'login' }));
+
+    await waitFor(() => expect(screen.getByTestId('login-error')).toHaveTextContent('Поле обязательно'));
   });
 });

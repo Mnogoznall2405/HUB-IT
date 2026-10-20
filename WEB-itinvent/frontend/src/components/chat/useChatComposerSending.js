@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useLayoutEffect, useRef } from 'react';
 
 import { chatAPI } from '../../api/client';
 import { chatStickersAPI } from '../../api/chatStickers';
@@ -42,6 +42,20 @@ export default function useChatComposerSending({
   // records back after every thread payload.
   const internalFailedMessagesRef = useRef(new Map());
   const failedMessagesRef = failedThreadMessagesRef || internalFailedMessagesRef;
+  const preparingSendsRef = useRef(new Set());
+  const composerGenerationRef = useRef(0);
+  const latestComposerModeRef = useRef(null);
+  latestComposerModeRef.current = {
+    editingId: String(editingMessage?.id || ''),
+    replyId: String(replyMessage?.id || ''),
+  };
+  useLayoutEffect(() => {
+    composerGenerationRef.current += 1;
+    return () => { composerGenerationRef.current += 1; };
+  }, [activeConversationId]);
+  useLayoutEffect(() => {
+    if (editingMessage?.id || replyMessage?.id) composerGenerationRef.current += 1;
+  }, [editingMessage?.id, replyMessage?.id]);
 
   const markOptimisticMessageFailed = useCallback((conversationId, optimisticMessage, replyToMessageId, extras = {}) => {
     const normalizedConversationId = String(conversationId || '').trim();
@@ -167,6 +181,7 @@ export default function useChatComposerSending({
     const draftReplyMessage = !draftEditingMessage && replyMessage ? { ...replyMessage } : null;
 
     if (draftEditingMessage?.id) {
+      const editGeneration = composerGenerationRef.current;
       const messageId = String(draftEditingMessage.id || '').trim();
       if (!messageId) return false;
       const previousBody = String(draftEditingMessage.body || '').trim();
@@ -188,7 +203,10 @@ export default function useChatComposerSending({
         }
         return true;
       } catch (error) {
-        if (activeConversationIdRef.current === conversationId && !String(latestMessageTextRef.current || '').trim()) {
+        if (activeConversationIdRef.current === conversationId
+          && composerGenerationRef.current === editGeneration
+          && !latestComposerModeRef.current.editingId && !latestComposerModeRef.current.replyId
+          && !String(latestMessageTextRef.current || '').trim()) {
           setMessageText(body);
           setEditingMessage(draftEditingMessage);
           focusComposer({ forceMobile: true });
@@ -198,36 +216,64 @@ export default function useChatComposerSending({
       }
     }
 
-    // R20: while a partial window is loaded (has_newer), the optimistic bubble
-    // must land after the real tail — drain newer pages first so the history
-    // has no gap below the viewport.
-    await ensureLatestThreadWindow?.();
-    const optimisticMessage = createOptimisticTextMessage({
-      conversationId,
-      body,
-      bodyFormat,
-      replyPreview: buildReplyPreview(draftReplyMessage),
-    });
-    const draftStorageKeyForConversation = buildChatDraftKey(userId, conversationId);
-    if (draftWriteTimeoutRef.current) {
-      window.clearTimeout(draftWriteTimeoutRef.current);
-      draftWriteTimeoutRef.current = null;
-    }
-    flushDraftToStorage(draftStorageKeyForConversation, '');
-    setMessageText('');
-    setReplyMessage(null);
-    if (optimisticMessage) {
-      applyOutgoingThreadMessage(conversationId, optimisticMessage, {
-        scroll: true,
-        scrollSource: 'sendMessage',
+    if (preparingSendsRef.current.has(conversationId)) return false;
+    preparingSendsRef.current.add(conversationId);
+    const generation = composerGenerationRef.current;
+    let optimisticMessage;
+    try {
+      // Load the tail before inserting the outgoing bubble, and consume this
+      // draft only if the same composer still owns it when the request finishes.
+      await ensureLatestThreadWindow?.();
+      optimisticMessage = createOptimisticTextMessage({
+        conversationId,
+        body,
+        bodyFormat,
+        replyPreview: buildReplyPreview(draftReplyMessage),
       });
+      const sameComposer = activeConversationIdRef.current === conversationId
+        && composerGenerationRef.current === generation;
+      const ownsDraft = sameComposer
+        && String(latestMessageTextRef.current || '') === rawBody
+        && !latestComposerModeRef.current.editingId
+        && latestComposerModeRef.current.replyId === String(draftReplyMessage?.id || '');
+      const draftStorageKeyForConversation = buildChatDraftKey(userId, conversationId);
+      if (ownsDraft) {
+        if (draftWriteTimeoutRef.current) {
+          window.clearTimeout(draftWriteTimeoutRef.current);
+          draftWriteTimeoutRef.current = null;
+        }
+        flushDraftToStorage(draftStorageKeyForConversation, '');
+        setMessageText('');
+        setReplyMessage(null);
+      } else {
+        try {
+          if (window.localStorage.getItem(draftStorageKeyForConversation) === rawBody) {
+            flushDraftToStorage(draftStorageKeyForConversation, '');
+          }
+        } catch {
+          // The active draft remains intact if browser storage is unavailable.
+        }
+      }
+      if (optimisticMessage) {
+        applyOutgoingThreadMessage(conversationId, optimisticMessage, {
+          scroll: sameComposer,
+          scrollSource: 'sendMessage',
+        });
+      }
+      if (sameComposer) {
+        cancelPendingInitialAnchor();
+        focusComposer({ forceMobile: true });
+      }
+      logChatDebug('sendMessage:autoScroll', {
+        conversationId,
+        optimistic: Boolean(optimisticMessage),
+      });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось подготовить отправку сообщения.');
+      return false;
+    } finally {
+      preparingSendsRef.current.delete(conversationId);
     }
-    cancelPendingInitialAnchor();
-    logChatDebug('sendMessage:autoScroll', {
-      conversationId,
-      optimistic: Boolean(optimisticMessage),
-    });
-    focusComposer({ forceMobile: true });
     try {
       const serverMessage = await deliverOptimisticMessage(
         conversationId,

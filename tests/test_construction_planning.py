@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+import conftest
 from datetime import date, timedelta
 import json
 from uuid import uuid4
@@ -26,10 +27,8 @@ MONDAY = planning.monday(TODAY)
 
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
+    conftest.copy_app_metadata_schema(tmp_path / "plan.db")
     engine = sa.create_engine(f'sqlite:///{tmp_path / "plan.db"}', execution_options={'schema_translate_map': {'app': None, 'system': None}})
-    names = {'construction_objects', 'construction_object_1c_groups', 'construction_work_items', 'construction_work_entries', 'construction_work_audit', 'app_settings', 'construction_week_plans', 'construction_day_crews', 'construction_planning_audit'}
-    tables = [t for t in AppBase.metadata.sorted_tables if t.name in names]
-    AppBase.metadata.create_all(engine, tables=tables)
     @contextmanager
     def session_factory(database_url=None):
         with Session(engine) as session, session.begin(): yield session

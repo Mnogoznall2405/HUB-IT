@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import select
 
 from backend.chat.db import ChatConfigurationError, chat_session, get_chat_database_url, is_chat_enabled
@@ -268,14 +269,17 @@ async def publish_task_discussion_updated(
     if not normalized_task_id:
         return
 
-    try:
+    def _collect_updated_state() -> Optional[tuple[str, dict]]:
+        # Blocking chat-DB work: runs in a worker thread, not on the event loop.
+        from backend.chat.service import chat_service
+
         sync_task_discussion_members(task_id=normalized_task_id, task=task)
         with chat_session() as session:
             conversation = session.execute(
                 select(ChatConversation).where(ChatConversation.task_id == normalized_task_id).limit(1)
             ).scalar_one_or_none()
             if conversation is None:
-                return
+                return None
             conversation_id = str(conversation.id)
             member_ids = sorted({
                 int(item)
@@ -288,19 +292,23 @@ async def publish_task_discussion_updated(
                 if int(item) > 0
             })
         if not member_ids:
-            return
-
-        from backend.chat.realtime import chat_realtime
-        from backend.chat.service import chat_service
-
+            return None
         chat_service._invalidate_conversation_views_for_users(
             conversation_id=conversation_id,
             user_ids=member_ids,
         )
-        summaries = chat_service.get_conversation_summaries_for_users(
+        return conversation_id, chat_service.get_conversation_summaries_for_users(
             conversation_id=conversation_id,
             user_ids=member_ids,
         )
+
+    try:
+        from backend.chat.realtime import chat_realtime
+
+        collected = await run_in_threadpool(_collect_updated_state)
+        if collected is None:
+            return
+        conversation_id, summaries = collected
         await asyncio.gather(*(
             chat_realtime.publish_inbox_event(
                 user_id=int(user_id),
@@ -335,7 +343,7 @@ async def delete_task_discussion(*, task_id: str) -> Optional[dict[str, Any]]:
     from backend.chat.realtime import chat_realtime
     from backend.chat.service import chat_service
 
-    deleted = chat_service.delete_task_conversation(task_id=normalized_task_id)
+    deleted = await run_in_threadpool(chat_service.delete_task_conversation, task_id=normalized_task_id)
     if not deleted:
         return None
 
@@ -352,7 +360,7 @@ async def delete_task_discussion(*, task_id: str) -> Optional[dict[str, Any]]:
     if not conversation_id or not member_user_ids:
         return deleted
 
-    unread_summaries = chat_service.get_unread_summaries(user_ids=member_user_ids)
+    unread_summaries = await run_in_threadpool(chat_service.get_unread_summaries, user_ids=member_user_ids)
 
     async def _publish_removed(user_id: int) -> None:
         await chat_realtime.publish_inbox_event(

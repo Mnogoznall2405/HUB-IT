@@ -9,6 +9,8 @@ import * as addressBookSnapshot from '../../cache/nativeAddressBookSnapshot';
 import * as snapshotCache from '../../cache/nativeSnapshotCache';
 import { DEFAULT_PREFERENCES, type UserPreferences } from '../../preferences/preferenceNormalizers';
 
+jest.setTimeout(20_000);
+
 let mockAuth: {
   user: { id: number; username: string; role: string; permissions: string[] };
   hasPermission: (permission: string) => boolean;

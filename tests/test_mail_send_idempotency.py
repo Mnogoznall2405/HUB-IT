@@ -1,4 +1,5 @@
 from __future__ import annotations
+import conftest
 
 import runpy
 import sys
@@ -55,7 +56,7 @@ class _Clock:
 @pytest.fixture
 def store_env(tmp_path):
     database_url = f"sqlite+pysqlite:///{(tmp_path / 'mail-send-idempotency.db').as_posix()}"
-    initialize_app_schema(database_url)
+    conftest.copy_app_schema_for_url(database_url)
     reset_mail_send_idempotency_metrics()
     clock = _Clock()
     store = MailSendIdempotencyStore(database_url, now_fn=clock, lease_sec=150)
@@ -344,8 +345,9 @@ def _install_fake_exchangelib(monkeypatch, created_messages):
     monkeypatch.setitem(sys.modules, "exchangelib.attachments", exchangelib_attachments)
 
 
-def test_send_message_replays_without_second_exchange_send(tmp_path, monkeypatch):
-    monkeypatch.setenv("MAIL_SEND_IDEMPOTENCY", "1")
+@pytest.mark.parametrize("enabled,required", [("1", False), ("0", True)])
+def test_send_message_replays_without_second_exchange_send(tmp_path, monkeypatch, enabled, required):
+    monkeypatch.setenv("MAIL_SEND_IDEMPOTENCY", enabled)
     database_url = f"sqlite+pysqlite:///{(tmp_path / 'mail-send-service.db').as_posix()}"
     initialize_app_schema(database_url)
     created_messages = []
@@ -393,6 +395,7 @@ def test_send_message_replays_without_second_exchange_send(tmp_path, monkeypatch
         body="<p>Hi</p>",
         is_html=True,
         idempotency_key="compose-key-abc",
+        require_idempotency=required,
     )
     first = service.send_message(**kwargs)
     second = service.send_message(**kwargs)

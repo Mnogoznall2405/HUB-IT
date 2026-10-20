@@ -269,3 +269,131 @@ it('persists an empty snapshot after clear so nothing lingers between sessions (
     { items: [] },
   ));
 });
+
+it('cancels an in-flight add when clear() runs before the resolver answers', async () => {
+  let release: (value: EquipmentRecord | null) => void = () => undefined;
+  const resolveEquipment = jest.fn(() => new Promise<EquipmentRecord | null>((done) => { release = done; }));
+  const { result } = await renderHook(() => useNativeScanBatch(hookProps({ resolveEquipment })));
+
+  const addPromise = result.current.add(qr('INV-1'));
+  expect(resolveEquipment).toHaveBeenCalledWith('INV-1', 'ITINVENT');
+
+  await act(async () => { result.current.clear(); });
+  let settled: unknown;
+  await act(async () => { release({ ...equipment, inv_no: 'INV-1' }); settled = await addPromise; });
+  expect(settled).toEqual({ kind: 'cancelled' });
+  expect(result.current.items).toHaveLength(0);
+
+  for (const call of (snapshotCache.writeNativeEntitySnapshot as jest.Mock).mock.calls) {
+    expect(call[3]).not.toEqual(expect.objectContaining({
+      items: expect.arrayContaining([expect.objectContaining({ invNo: 'INV-1' })]),
+    }));
+  }
+});
+
+it('cancels an in-flight add when the user or database scope changes', async () => {
+  const releases: Array<(value: EquipmentRecord | null) => void> = [];
+  const resolveEquipment = jest.fn((invNo: string) => new Promise<EquipmentRecord | null>((done) => {
+    releases.push(done);
+  }));
+  const props = hookProps({ resolveEquipment });
+  const { result, rerender } = await renderHook(
+    (hookArgs: typeof props) => useNativeScanBatch(hookArgs),
+    { initialProps: props },
+  );
+
+  const addPromise = result.current.add(qr('INV-1'));
+  await act(async () => { rerender({ ...props, databaseId: 'OBJ-ITINVENT' }); });
+  let settled: unknown;
+  await act(async () => { releases[0]({ ...equipment, inv_no: 'INV-1' }); settled = await addPromise; });
+  expect(settled).toEqual({ kind: 'cancelled' });
+  expect(result.current.items).toHaveLength(0);
+
+  const secondPromise = result.current.add(qr('INV-2', 'OBJ-ITINVENT'));
+  await act(async () => { rerender({ ...props, userId: 18, databaseId: 'OBJ-ITINVENT' }); });
+  let second: unknown;
+  await act(async () => { releases[1]({ ...equipment, inv_no: 'INV-2' }); second = await secondPromise; });
+  expect(second).toEqual({ kind: 'cancelled' });
+  expect(result.current.items).toHaveLength(0);
+});
+
+it('keeps a newer same-number reservation when a stale response resolves after clear', async () => {
+  const releases: Array<() => void> = [];
+  const resolveEquipment = jest.fn((invNo: string) => new Promise<EquipmentRecord | null>((done) => {
+    releases.push(() => done({ ...equipment, inv_no: invNo }));
+  }));
+  const { result } = await renderHook(() => useNativeScanBatch(hookProps({ resolveEquipment })));
+
+  const stalePromise = result.current.add(qr('INV-1'));
+  await act(async () => { result.current.clear(); });
+  const freshPromise = result.current.add(qr('INV-1'));
+
+  let stale: unknown;
+  await act(async () => { releases[0](); stale = await stalePromise; });
+  expect(stale).toEqual({ kind: 'cancelled' });
+
+  await act(async () => {
+    expect(await result.current.add(qr('INV-1'))).toEqual({ kind: 'duplicate', invNo: 'INV-1' });
+  });
+  expect(resolveEquipment).toHaveBeenCalledTimes(2);
+
+  let fresh: unknown;
+  await act(async () => { releases[1](); fresh = await freshPromise; });
+  expect(fresh).toEqual({ kind: 'added', item: expect.objectContaining({ invNo: 'INV-1' }) });
+  expect(result.current.items).toHaveLength(1);
+  expect(result.current.items[0].equipment?.inv_no).toBe('INV-1');
+});
+
+it('cancels an in-flight add on unmount without writing an item', async () => {
+  let release: (value: EquipmentRecord | null) => void = () => undefined;
+  const resolveEquipment = jest.fn(() => new Promise<EquipmentRecord | null>((done) => { release = done; }));
+  const { result, unmount } = await renderHook(() => useNativeScanBatch(hookProps({ resolveEquipment })));
+
+  const addPromise = result.current.add(qr('INV-1'));
+  await unmount();
+  let settled: unknown;
+  await act(async () => { release({ ...equipment, inv_no: 'INV-1' }); settled = await addPromise; });
+  expect(settled).toEqual({ kind: 'cancelled' });
+  expect(snapshotCache.writeNativeEntitySnapshot).not.toHaveBeenCalled();
+});
+
+it('stops the offline-to-online refresh when clear() runs mid-flight', async () => {
+  const props = hookProps({ offlineMode: true, resolveEquipment: jest.fn(async () => null) });
+  const { result, rerender } = await renderHook(
+    (hookArgs: typeof props) => useNativeScanBatch(hookArgs),
+    { initialProps: props },
+  );
+
+  await act(async () => { await result.current.add(qr('INV-404')); });
+  await act(async () => { await result.current.add(qr('INV-405')); });
+  expect(result.current.items.map((item) => item.status)).toEqual(['offline-missing', 'offline-missing']);
+
+  const releases: Array<() => void> = [];
+  const onlineResolve = jest.fn((invNo: string) => new Promise<EquipmentRecord | null>((done) => {
+    releases.push(() => done({ ...equipment, inv_no: invNo }));
+  }));
+  await act(async () => { rerender({ ...props, offlineMode: false, resolveEquipment: onlineResolve }); });
+  expect(onlineResolve).toHaveBeenCalledTimes(1);
+
+  await act(async () => { result.current.clear(); });
+  await act(async () => { releases.splice(0).forEach((release) => release()); });
+  await waitFor(() => expect(result.current.items).toHaveLength(0));
+  expect(onlineResolve).toHaveBeenCalledTimes(1);
+});
+
+it('invalidates a pending add when keepOnly trims the settled batch', async () => {
+  let release: (value: EquipmentRecord | null) => void = () => undefined;
+  const resolveEquipment = jest.fn((invNo: string) => (invNo === 'INV-1'
+    ? new Promise<EquipmentRecord | null>((done) => { release = done; })
+    : Promise.resolve<EquipmentRecord | null>({ ...equipment, inv_no: invNo })));
+  const { result } = await renderHook(() => useNativeScanBatch(hookProps({ resolveEquipment })));
+
+  await act(async () => { await result.current.add(qr('INV-2')); });
+  const pendingAdd = result.current.add(qr('INV-1'));
+
+  await act(async () => { result.current.keepOnly(['INV-2']); });
+  let settled: unknown;
+  await act(async () => { release({ ...equipment, inv_no: 'INV-1' }); settled = await pendingAdd; });
+  expect(settled).toEqual({ kind: 'cancelled' });
+  expect(result.current.items.map((item) => item.invNo)).toEqual(['INV-2']);
+});

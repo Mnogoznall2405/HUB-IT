@@ -157,20 +157,30 @@ Read-only COM bridge прогревается в фоне при запуске 
 | `WAREHOUSE_1C_PROCESS_BRIDGE_ENABLED` | `0` (включать после controlled rollout) |
 | `WAREHOUSE_1C_QUERY_TIMEOUT_SECONDS` | 45 с |
 | `WAREHOUSE_1C_BRIDGE_QUEUE_LIMIT` | 16 запросов |
+| `WAREHOUSE_1C_BRIDGE_QUEUE_WAIT_SECONDS` | 15 с (в пределах общего timeout чтения) |
 | `WAREHOUSE_1C_BRIDGE_FAILURE_THRESHOLD` | 4 |
 | `WAREHOUSE_1C_BRIDGE_COOLDOWN_SECONDS` | 60 с |
-| COM workers | 1 isolated bridge process |
+| COM workers | 1 interactive process + 1 отдельный process синхронизации каталога |
 | Очередь COM | 16 запросов |
 | Circuit breaker | 4 подряд ошибки, cooldown 60 с |
 | `WAREHOUSE_1C_MAX_ATTACHED_FILE_BYTES` | 25 MiB |
 
-При `WAREHOUSE_1C_PROCESS_BRIDGE_ENABLED=1` COM выполняется только в отдельном
-Windows child-process с JSON-only allowlist read-операций. Timeout завершает и
-перезапускает child; сервер не делает silent fallback к in-process COM. В legacy
-режиме status явно показывает `bridge.mode=in_process_compatibility`. В
+При `WAREHOUSE_1C_PROCESS_BRIDGE_ENABLED=1` COM выполняется в отдельных
+Windows child-process с JSON-only allowlist read-операций. `catalog_sync` имеет
+собственный процесс и не занимает очередь интерактивных чтений. Ожидающие
+запросы остаются в parent-process: переполнение или истечение ожидания даёт
+HTTP 503 без отправки запроса в COM и без перезапуска активного чтения.
+Timeout выполняемой COM-операции завершает и перезапускает только её child;
+сервер не делает silent fallback к in-process COM. Ошибки фильтра возвращаются
+как HTTP 400 и не учитываются circuit breaker. Frontend ждёт до 120 с, покрывая
+90-секундный backend timeout с накладными расходами; при увеличении backend
+timeout это значение нужно согласовать отдельно. PostgreSQL session advisory
+lease удерживается в AUTOCOMMIT, без открытой транзакции на время COM-экспорта.
+В legacy режиме status явно показывает `bridge.mode=in_process_compatibility`. В
 мониторинг нужно вынести
 возраст последней успешной синхронизации, `catalog.status`, последнюю ошибку,
-`bridge.queue_length`, `bridge.timed_out` и состояние breaker. При `stale`,
+`bridge.queue_length`, `bridge.timed_out`, `catalog_bridge` и состояние breaker.
+Readiness process-режима также требует `bridge.ready=true`. При `stale`,
 `error` или открытом breaker UI показывает недоступность вместо нулевого остатка.
 
 Вложения отдаются без physical path, с лимитом размера и через HTTP stream;

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -10,6 +11,8 @@ from sqlalchemy import delete, func, select
 
 from backend.appdb.db import app_session, initialize_app_schema
 from backend.appdb.models import AppJsonDocument, AppJsonRecord
+
+logger = logging.getLogger(__name__)
 
 
 FILE_KIND_MAP: dict[str, str] = {
@@ -146,6 +149,7 @@ class AppJsonDataStore:
                 session.add(row)
             return True
         except Exception:
+            logger.exception("JSON store save failed: file=%s", normalized_name)
             return False
 
     def append_to_json(self, file_name: str, record: Any) -> bool:
@@ -179,6 +183,7 @@ class AppJsonDataStore:
                 )
             return True
         except Exception:
+            logger.exception("JSON store append failed: file=%s", normalized_name)
             return False
 
     def update_json_array(

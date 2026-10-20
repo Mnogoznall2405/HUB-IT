@@ -20,6 +20,17 @@ import {
   CHAT_SOCKET_UNREAD_SUMMARY_EVENT,
 } from '../../lib/chatSocket';
 
+// Group changes that append a system message to the thread: the open thread
+// pulls it incrementally instead of waiting for a reload.
+const GROUP_SYSTEM_MESSAGE_REASONS = new Set([
+  'member_added',
+  'member_removed',
+  'member_left',
+  'member_role_updated',
+  'ownership_transferred',
+  'profile_updated',
+]);
+
 export default function useChatSocketEvents({
   activeConversation,
   activeConversationIdRef,
@@ -179,6 +190,9 @@ export default function useChatSocketEvents({
         normalizedConversationId
         && normalizedConversationId === activeConversationIdRef.current
         && threadNearBottomRef.current
+        && !messagesHasNewerRef?.current
+        && document.visibilityState === 'visible'
+        && document.hasFocus()
       );
       const isReadThroughLatest = lastMessageSeq > 0 && effectiveReadSeq >= lastMessageSeq;
       const nextConversation = (isActiveAndAtBottom || isReadThroughLatest)
@@ -202,6 +216,7 @@ export default function useChatSocketEvents({
           reason === 'message_created'
           || reason === 'created'
           || reason === 'updated'
+          || GROUP_SYSTEM_MESSAGE_REASONS.has(reason)
         )
       ) {
         if (shouldSkipActiveThreadRevalidate({
@@ -384,6 +399,11 @@ export default function useChatSocketEvents({
       // that no page can ever fill. Only bump the ↓ badge (unread_count) and
       // update the sidebar preview; pages deliver the message contiguously.
       const windowCutFromTail = Boolean(messagesHasNewerRef?.current);
+      if (alreadyRendered && message.action_card !== undefined) {
+        // The same row may arrive first as lean text and later with its action card.
+        // Preserve identity for unread/scroll dedupe, but apply enriched fields.
+        mergeMessageIntoThread(message);
+      }
       if (!alreadyRendered && !windowCutFromTail) {
         mergeMessageIntoThread(message, { liveAppear: true });
         startTransition(() => {
@@ -551,11 +571,14 @@ export default function useChatSocketEvents({
       if (!conversationId) return;
       const status = String(payload?.status || '').trim();
       const botTitle = String(payload?.bot_title || '').trim();
+      const isActiveConversation = conversationId === activeConversationIdRef.current;
       setAiStatusByConversation((current) => mergeAiStatusPayload(current, payload, conversationId));
       if ((status === 'queued' || status === 'running') && String(payload?.run_id || '').trim()) {
-        setTypingUsers((current) => (
-          botTitle && !current.includes(botTitle) ? [...current, botTitle] : current
-        ));
+        if (isActiveConversation) {
+          setTypingUsers((current) => (
+            botTitle && !current.includes(botTitle) ? [...current, botTitle] : current
+          ));
+        }
         aiRunStartedAtByConversationRef.current = {
           ...aiRunStartedAtByConversationRef.current,
           [conversationId]: Date.parse(String(payload?.updated_at || '').trim()) || Date.now(),
@@ -563,10 +586,10 @@ export default function useChatSocketEvents({
       }
       if (
         conversationId === activeConversationIdRef.current
-        && (status === 'completed' || status === 'failed')
+        && (status === 'completed' || status === 'failed' || payload.stage === 'result_ready')
         && !messagesLoadingRef.current
       ) {
-        const skipThreadRevalidate = shouldSkipActiveThreadRevalidate({
+        const skipThreadRevalidate = !payload.result_message_id && shouldSkipActiveThreadRevalidate({
           activeConversationId: activeConversationIdRef.current,
           conversationId,
           reason: status === 'completed' ? 'ai_run_completed' : 'ai_run_failed',
@@ -579,7 +602,8 @@ export default function useChatSocketEvents({
             reason: `socket:ai-run-updated:${status}`,
           });
         } else {
-          const requestOptions = buildActiveThreadPollLoadOptions(messagesRef.current);
+          const requestOptions = payload.result_message_id
+            ? { force: true } : buildActiveThreadPollLoadOptions(messagesRef.current);
           void loadMessagesRef.current?.(conversationId, {
             ...requestOptions,
             reason: requestOptions.afterMessageId ? 'socket:ai-run-updated:newer' : 'socket:ai-run-updated:bootstrap',
@@ -587,7 +611,9 @@ export default function useChatSocketEvents({
         }
       }
       if ((status === 'completed' || status === 'failed' || status === 'cancelled') && botTitle) {
-        setTypingUsers((current) => current.filter((item) => item !== botTitle));
+        if (isActiveConversation) {
+          setTypingUsers((current) => current.filter((item) => item !== botTitle));
+        }
         aiRunStartedAtByConversationRef.current = {
           ...aiRunStartedAtByConversationRef.current,
           [conversationId]: 0,

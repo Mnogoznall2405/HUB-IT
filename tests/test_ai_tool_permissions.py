@@ -176,3 +176,25 @@ def test_specs_for_model_only_contain_permitted_tools():
     permitted = filter_tools_for_user(enabled, VIEWER)
     spec_ids = {spec["tool_id"] for spec in ai_tool_registry.list_specs(tool_ids=permitted)}
     assert spec_ids == {"ai.files.create", "office.tasks.search"}
+
+
+def test_list_specs_explicit_empty_allowlist_does_not_leak_catalog():
+    registry = AiToolRegistry()
+    registry.register(_EchoTool("alpha.tool"))
+    registry.register(_EchoTool("beta.tool"))
+
+    catalog = {spec["tool_id"] for spec in registry.list_specs()}
+    assert catalog == {"alpha.tool", "beta.tool"}
+    assert {spec["tool_id"] for spec in registry.list_specs(tool_ids=None)} == catalog
+    assert registry.list_specs(tool_ids=[]) == []
+    assert registry.list_specs(tool_ids=[" "]) == []
+    assert registry.list_specs(tool_ids=["unknown.tool"]) == []
+    assert [spec["tool_id"] for spec in registry.list_specs(tool_ids=["alpha.tool"])] == ["alpha.tool"]
+
+
+def test_list_specs_empty_permission_result_returns_no_specs():
+    from backend.ai_chat.tools.registry import ai_tool_registry
+
+    permitted = filter_tools_for_user(["itinvent.equipment.search"], VIEWER)
+    assert permitted == []
+    assert ai_tool_registry.list_specs(tool_ids=permitted) == []

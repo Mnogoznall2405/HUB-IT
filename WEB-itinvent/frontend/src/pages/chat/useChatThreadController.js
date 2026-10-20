@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { chatAPI } from '../../api/client';
+import { mergeThreadActionCard } from '../../lib/chat/chatSendAck';
 import { CHAT_FEATURE_ENABLED } from '../../lib/chatFeature';
 import { emitAgentDebugLog } from '../../lib/debugClientLog';
 import { getOrFetchSWR, peekSWRCache } from '../../lib/swrCache';
@@ -189,9 +190,9 @@ export default function useChatThreadController({
     const id = String(conversationId || '').trim();
     const ids = (Array.isArray(messageItems) ? messageItems : [])
       .map((item) => String(item?.id || '').trim())
-      .filter(Boolean);
+      .filter(Boolean).slice(-50);
     if (!id || !ids.length || typeof chatAPI.hydrateThreadMessages !== 'function') return;
-    void chatAPI.hydrateThreadMessages(id, ids)
+    return chatAPI.hydrateThreadMessages(id, ids)
       .then((data) => {
         if (requestSeq !== messagesRequestSeqRef.current || activeConversationIdRef.current !== id) return;
         const hydrateItems = Array.isArray(data?.items) ? data.items : [];
@@ -208,11 +209,37 @@ export default function useChatThreadController({
             read_by_count: Number.isFinite(nextReadByCount) ? nextReadByCount : message.read_by_count,
             delivery_status: hydrated.delivery_status ?? message.delivery_status,
             reactions: Array.isArray(hydrated.reactions) ? hydrated.reactions : message.reactions,
+            action_card: mergeThreadActionCard(message.action_card, hydrated.action_card, { deleted: message.is_deleted }),
           };
         }));
       })
       .catch(() => {});
   }, [activeConversationIdRef]);
+
+  const activeActionKey = messages
+    .filter((message) => ['pending', 'executing'].includes(message.action_card?.status))
+    .map((message) => `${message.id}:${message.action_card.status}`).join('|');
+  useEffect(() => {
+    if (!activeConversationId || !activeActionKey) return undefined;
+    let inFlight = false;
+    let disposed = false;
+    const refreshActions = async () => {
+      if (disposed || inFlight || document.visibilityState === 'hidden') return;
+      inFlight = true;
+      try {
+        await scheduleThreadHydrate(activeConversationId, messagesRef.current.filter(
+          (message) => ['pending', 'executing'].includes(message.action_card?.status),
+        ), messagesRequestSeqRef.current);
+      } finally { inFlight = false; }
+    };
+    const timer = window.setInterval(refreshActions, 15000);
+    window.addEventListener('focus', refreshActions);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refreshActions);
+    };
+  }, [activeConversationId, activeActionKey, scheduleThreadHydrate]);
 
   const applyLatestThreadPayload = useCallback((conversationId, payload, { hydrateLatestCache = true } = {}) => {
     const normalizedConversationId = String(conversationId || '').trim();

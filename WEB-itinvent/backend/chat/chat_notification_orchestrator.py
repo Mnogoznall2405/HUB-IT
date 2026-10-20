@@ -302,7 +302,6 @@ class ChatNotificationOrchestrator:
                         created = int(hub_service.create_notifications_batch(hub_rows, conn=hub_conn) or 0)
                 stats["hub_count"] = created
                 stats["hub_notifications_ms"] = round((time.perf_counter() - hub_started_at) * 1000.0, 1)
-                # #region agent log
                 try:
                     from backend.chat.send_audit import audit_send_trace
 
@@ -323,7 +322,6 @@ class ChatNotificationOrchestrator:
                     )
                 except Exception:
                     pass
-                # #endregion
                 stats["loop_ms"] = round((time.perf_counter() - loop_started_at) * 1000.0, 1)
         except Exception:
             stats["prep_ms"] = round((time.perf_counter() - started_at) * 1000.0, 1)

@@ -32,9 +32,9 @@ def equipment_delete_env():
 
     return {
         "client": TestClient(app),
-        "set_user": lambda role: current.__setitem__(
+        "set_user": lambda role, **extra: current.__setitem__(
             "user",
-            SimpleNamespace(username=role, role=role, is_active=True),
+            SimpleNamespace(username=role, role=role, is_active=True, **extra),
         ),
     }
 
@@ -42,8 +42,8 @@ def equipment_delete_env():
 def test_delete_equipment_route_allows_admin_success(monkeypatch, equipment_delete_env):
     calls = []
 
-    def fake_delete(inv_no, db_id=None):
-        calls.append((inv_no, db_id))
+    def fake_delete(inv_no, db_id=None, force=False):
+        calls.append((inv_no, db_id, force))
         return {"success": True, "inv_no": "1001", "item_id": 77, "message": "Equipment deleted"}
 
     monkeypatch.setattr(equipment_api.queries, "delete_equipment_by_inv", fake_delete)
@@ -53,28 +53,66 @@ def test_delete_equipment_route_allows_admin_success(monkeypatch, equipment_dele
 
     assert response.status_code == 200, response.text
     assert response.json()["success"] is True
-    assert calls == [("1001", "main")]
+    assert calls == [("1001", "main", False)]
 
 
-def test_delete_equipment_route_rejects_non_admin_before_query(monkeypatch, equipment_delete_env):
+def test_delete_equipment_route_rejects_user_without_permission_before_query(monkeypatch, equipment_delete_env):
     equipment_delete_env["set_user"]("operator")
 
     def fail_if_called(*args, **kwargs):
-        raise AssertionError("delete helper must not be called for non-admin users")
+        raise AssertionError("delete helper must not be called without database.delete_equipment")
 
     monkeypatch.setattr(equipment_api.queries, "delete_equipment_by_inv", fail_if_called)
 
     response = equipment_delete_env["client"].delete("/equipment/1001")
 
     assert response.status_code == 403, response.text
-    assert response.json()["detail"] == "Admin privileges required"
+    assert "database.delete_equipment" in response.json()["detail"]
+
+
+def test_delete_equipment_route_allows_non_admin_with_custom_permission(monkeypatch, equipment_delete_env):
+    equipment_delete_env["set_user"](
+        "operator",
+        use_custom_permissions=True,
+        custom_permissions=["database.delete_equipment"],
+    )
+    calls = []
+
+    def fake_delete(inv_no, db_id=None, force=False):
+        calls.append((inv_no, db_id, force))
+        return {"success": True, "inv_no": "1001", "item_id": 77, "message": "Equipment deleted"}
+
+    monkeypatch.setattr(equipment_api.queries, "delete_equipment_by_inv", fake_delete)
+    monkeypatch.setattr(equipment_api, "_remove_recent_card_for_equipment_safely", lambda **kwargs: None)
+
+    response = equipment_delete_env["client"].delete("/equipment/1001")
+
+    assert response.status_code == 200, response.text
+    assert calls == [("1001", "main", False)]
+
+
+def test_database_delete_permission_does_not_allow_equipment_delete(monkeypatch, equipment_delete_env):
+    equipment_delete_env["set_user"](
+        "operator",
+        use_custom_permissions=True,
+        custom_permissions=["database.delete"],
+    )
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "delete_equipment_by_inv",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("consumable permission must not delete equipment")),
+    )
+
+    response = equipment_delete_env["client"].delete("/equipment/1001")
+
+    assert response.status_code == 403, response.text
 
 
 def test_delete_equipment_route_returns_not_found(monkeypatch, equipment_delete_env):
     monkeypatch.setattr(
         equipment_api.queries,
         "delete_equipment_by_inv",
-        lambda inv_no, db_id=None: {
+        lambda inv_no, db_id=None, force=False: {
             "success": False,
             "code": "not_found",
             "message": "Equipment with INV_NO 1001 not found",
@@ -91,7 +129,7 @@ def test_delete_equipment_route_returns_conflict_for_dependencies(monkeypatch, e
     monkeypatch.setattr(
         equipment_api.queries,
         "delete_equipment_by_inv",
-        lambda inv_no, db_id=None: {
+        lambda inv_no, db_id=None, force=False: {
             "success": False,
             "code": "has_dependencies",
             "message": "Equipment is linked to acts or history and cannot be deleted (acts=1, history=2)",
@@ -125,6 +163,9 @@ class _FakeCursor:
             return
         if "SELECT COUNT(1) FROM CI_HISTORY" in normalized:
             self._fetchone = (self.history_count,)
+            return
+        if normalized.startswith("DELETE FROM DOCS_LIST") or normalized.startswith("DELETE FROM CI_HISTORY"):
+            self._fetchone = None
             return
         if normalized.startswith("DELETE FROM ITEMS"):
             self._fetchone = None
@@ -177,5 +218,58 @@ def test_delete_equipment_query_helper_deletes_item_without_dependencies(monkeyp
         "item_id": 77,
         "inv_no": "1001",
         "message": "Equipment deleted",
+        "docs_deleted": 0,
+        "history_deleted": 0,
     }
     assert any(query.startswith("DELETE FROM ITEMS") for query, _ in cursor.executed)
+
+
+def test_delete_with_history_requires_its_own_permission_before_query(monkeypatch, equipment_delete_env):
+    equipment_delete_env["set_user"](
+        "operator",
+        use_custom_permissions=True,
+        custom_permissions=["database.delete_equipment"],
+    )
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "delete_equipment_by_inv",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("history delete must be guarded")),
+    )
+
+    response = equipment_delete_env["client"].delete("/equipment/1001?with_history=true")
+
+    assert response.status_code == 403, response.text
+    assert "database.delete_equipment_history" in response.json()["detail"]
+
+
+def test_delete_with_history_passes_force_for_permitted_user(monkeypatch, equipment_delete_env):
+    equipment_delete_env["set_user"](
+        "operator",
+        use_custom_permissions=True,
+        custom_permissions=["database.delete_equipment", "database.delete_equipment_history"],
+    )
+    calls = []
+
+    def fake_delete(inv_no, db_id=None, force=False):
+        calls.append((inv_no, db_id, force))
+        return {"success": True, "inv_no": "1001", "item_id": 77, "docs_deleted": 1, "history_deleted": 3}
+
+    monkeypatch.setattr(equipment_api.queries, "delete_equipment_by_inv", fake_delete)
+    monkeypatch.setattr(equipment_api, "_remove_recent_card_for_equipment_safely", lambda **kwargs: None)
+
+    response = equipment_delete_env["client"].delete("/equipment/1001?with_history=true")
+
+    assert response.status_code == 200, response.text
+    assert calls == [("1001", "main", True)]
+
+
+def test_force_delete_removes_acts_links_and_history_before_the_item(monkeypatch):
+    cursor = _FakeCursor(item_row=(77, 1001.0), docs_count=1, history_count=3, delete_rowcount=1)
+    monkeypatch.setattr(db_queries, "get_db", lambda db_id=None: _FakeDB(cursor))
+
+    result = db_queries.delete_equipment_by_inv("1001", db_id="main", force=True)
+
+    assert result["success"] is True
+    assert (result["docs_deleted"], result["history_deleted"]) == (1, 3)
+    deletes = [query.split(" WHERE")[0] for query, _ in cursor.executed if query.startswith("DELETE")]
+    assert deletes == ["DELETE FROM DOCS_LIST", "DELETE FROM CI_HISTORY", "DELETE FROM ITEMS"]

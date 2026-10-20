@@ -141,6 +141,8 @@ flowchart LR
 
 **Префиксы API** (`/api/v1/…`): `auth`, `equipment`, `database`, `json`, `settings`, `networks`, `discovery`, `inventory`, `kb`, `mfu`, `hub`, `departments`, `ad-users`, `mail`, `vcs`, `ai-bots`, `tickets`, `address-book`, `chat` (если включён).
 
+**Мониторинг сетевого оборудования:** `/monitoring` → `src/pages/Monitoring.jsx` и `pages/monitoring/`; API `api/v1/monitoring.py` (`/api/v1/monitoring`) → `network_monitor_service.py` → `network_monitor_store.py`, модели `appdb/monitoring_models.py`. Прямой SNMP/ICMP — `network_monitor_probe.py`, расчёты — `network_monitor_calculations.py`. Фоновый цикл внутри backend, выключен по умолчанию; PostgreSQL advisory lock, без отдельного PM2-процесса. Связь с существующими `network_devices`, отдельные права `monitoring.read/manage`. Миграция `20261015_0135`; `20261016_0137` добавляет `network_devices.monitoring_only` для скрытия отдельных карточек из «Сетей» с сохранением мониторинга (применение отдельно от кода). [Запуск и ограничения](NETWORK_MONITORING.md).
+
 **Фото оборудования, проверка и качество данных:** фото лежат в SQL Server `FILES`; отметки «проверено/отклонено» и автор загрузки — `equipment_photo_check_service.py` (`app.equipment_photo_checks`), очередь проверки — `equipment_photo_review_service.py`, уведомление загрузившему — `equipment_photo_notification_service.py`, панель качества данных — `equipment_quality_service.py`. Серийники с фото через LLM — `equipment_photo_ocr_service.py` (`app.equipment_photo_ocr`, миграция `20261015_0136`, флаг `EQUIPMENT_PHOTO_OCR_ENABLED`, по умолчанию выключен, платный; вердикт считается при чтении по текущему `ITEMS.SERIAL_NO`). Маршруты — `api/v1/equipment.py` (`/photos/*`, `/quality/*`), UI — `pages/database/EquipmentDetailPhotosPanel.jsx`, `EquipmentPhotoReviewDialog.jsx`, `EquipmentQualityDialog.jsx`.
 
 OpenAPI в dev: `http://localhost:8001/docs`
@@ -318,22 +320,7 @@ powershell -ExecutionPolicy Bypass -File scripts\pm2\restart-backend.ps1
 
 ## Тесты
 
-```powershell
-# Python (корень)
-pytest -q tests
-
-# Только bot
-pytest -q -c pytest.bot.ini
-
-# Frontend
-cd WEB-itinvent\frontend
-npm test
-npm run build
-
-# Windows Desktop
-cd C:\Project\Image_scan
-dotnet test desktop\Hub.Desktop.sln -c Release
-```
+Команды и устройство тестов — [TESTING.md](TESTING.md). Запускать узкие наборы по изменению; `npm run build` пишет в `dist/`, который раздаёт production IIS, поэтому проверочная сборка — только `npx vite build --outDir <вне dist>`.
 
 Именование: `tests/test_<area>_<feature>.py`. Перед крупным рефакторингом API client — см. `WEB-itinvent/frontend/src/api/client.test.js`.
 
@@ -350,7 +337,10 @@ dotnet test desktop\Hub.Desktop.sln -c Release
 | Оборудование, акты | `WEB-itinvent/backend/api/v1/equipment.py`, `WEB-itinvent/backend/api/v1/json_operations.py`, `data/equipment_transfers.json` |
 | Hub / задачи | `WEB-itinvent/backend/api/v1/hub.py`, `WEB-itinvent/backend/services/hub_service.py`, `WEB-itinvent/frontend/src/api/hub*.js` |
 | Почта | `WEB-itinvent/backend/api/v1/mail.py`, `WEB-itinvent/backend/services/mail_*.py` |
-| Чат / AI | `shared/llm/`, `WEB-itinvent/backend/chat/`, `WEB-itinvent/backend/ai_chat/`, `WEB-itinvent/frontend/src/api/chat*.js` |
+| Чат / AI | `WEB-itinvent/backend/chat_main.py`, `shared/llm/`, `WEB-itinvent/backend/chat/`, `WEB-itinvent/backend/ai_chat/`, `WEB-itinvent/frontend/src/api/chat*.js`, [CHAT_BACKEND_ARCHITECTURE.md](CHAT_BACKEND_ARCHITECTURE.md) |
+| Inventory ingest | `agent.py`, `agent/`, `inventory_server/` |
+| Хранилища | [POSTGRES_APP_SCHEMA.md](POSTGRES_APP_SCHEMA.md), [data/README.md](../../data/README.md) |
+| IIS / reverse proxy | [IIS_DEPLOYMENT_WEB.md](IIS_DEPLOYMENT_WEB.md), `WEB-itinvent/frontend/public/web.config` |
 | Нативный Chat / жесты / папки | `mobile-hub/src/screens/chat/`, `mobile-hub/src/components/chat/`, [MOBILE_HUB_NATIVE_CHAT_GAP_ROADMAP.md](../../documentation/technical/MOBILE_HUB_NATIVE_CHAT_GAP_ROADMAP.md) |
 | Scan Center | `WEB-itinvent/frontend/src/pages/ScanCenter.jsx`, `WEB-itinvent/frontend/src/api/scan*.js`, `scan_server/`, `documentation/technical/SCAN_ARCHITECTURE.md` |
 | 1С / склад | `integrations/1c/`, `documentation/technical/ONE_C_INTEGRATION.md`, `documentation/technical/DOCFLOW_1C_INTEGRATION.md` |

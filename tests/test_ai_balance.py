@@ -1,5 +1,6 @@
 """AG: provider balance warning (threshold, managers notified, 402 text) on sqlite only."""
 from __future__ import annotations
+import conftest
 
 import importlib
 import json
@@ -30,7 +31,7 @@ def env(tmp_path, monkeypatch):
     appdb._engines.clear()
     appdb._session_factories.clear()
     appdb._initialized_schema_urls.clear()
-    appdb.initialize_app_schema(url)
+    conftest.copy_app_schema_for_url(url)
     models = importlib.import_module("backend.appdb.models")
     now = datetime.now(timezone.utc)
 

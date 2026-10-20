@@ -224,15 +224,132 @@ export function compareQtyBreakdown(rawKey, maps) {
 export function isBalancesMetaIncomplete(meta = null) {
   if (!meta || typeof meta !== 'object') return true;
   const status = String(meta.status || '').trim().toLowerCase();
-  if (status && status !== 'ok') return true;
+  if (status !== 'ok') return true;
   return Boolean(meta.truncated || meta.has_more || meta.hasMore);
 }
 
 /** Summary payload is trustworthy only when the 1C snapshot is complete. */
 export function isEmployeeCompareSummaryComplete(meta = null) {
   if (!meta || typeof meta !== 'object') return false;
+  const balancesStatus = meta.balances_status ?? meta.balancesStatus;
   return String(meta.status || '').trim().toLowerCase() === 'ok'
     && !meta.truncated
     && !meta.has_more
-    && !meta.hasMore;
+    && !meta.hasMore
+    && !meta.balances_truncated
+    && !meta.balancesTruncated
+    && !meta.catalog_truncated
+    && !meta.catalogTruncated
+    && (balancesStatus === undefined
+      || String(balancesStatus || '').trim().toLowerCase() === 'ok');
+}
+
+export const EMPLOYEE_COMPARE_MAX_AGE_MS = 120_000;
+
+export function isEmployeeCompareSnapshotFresh(asOf, now = Date.now()) {
+  if (asOf === null || asOf === undefined || asOf === '') return false;
+  if (!Number.isFinite(now)) return false;
+  const stamp = typeof asOf === 'number' ? asOf : Date.parse(asOf);
+  if (!Number.isFinite(stamp)) return false;
+  const age = now - stamp;
+  return age >= 0 && age < EMPLOYEE_COMPARE_MAX_AGE_MS;
+}
+
+export function toFiniteQuantity(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+  return null;
+}
+
+export function areBalanceQuantitiesValid(balances = []) {
+  if (!Array.isArray(balances)) return false;
+  return balances.every((row) => {
+    const qty = toFiniteQuantity(row?.qty_balance);
+    return qty !== null && qty >= 0;
+  });
+}
+
+export function buildEmployeeCompareSummary({
+  ownerNo,
+  employeeName = '',
+  warehouse = null,
+  hubItems = [],
+  balances = [],
+  asOf,
+} = {}) {
+  const items = Array.isArray(hubItems) ? hubItems : [];
+  const rows = Array.isArray(balances) ? balances : [];
+  const { noPartNoItems, notIn1cItems } = groupHubItemsByPartNo(items);
+  const maps = buildCompareMaps({ hubItems: items, balances: rows });
+  const { qty1cByCode, countByPartNo } = maps;
+
+  const counts = {
+    match: 0,
+    diff: 0,
+    only_hub: 0,
+    only_1c: 0,
+    no_part: noPartNoItems.length,
+    not_in_1c: notIn1cItems.length,
+    hub_items: items.length,
+  };
+  const partStatus = {};
+  const partQuantities = {};
+  for (const key of new Set([...countByPartNo.keys(), ...qty1cByCode.keys()])) {
+    const status = countByPartNo.has(key)
+      ? resolveHubRowStatus(key, maps)
+      : resolve1cRowStatus(key, maps);
+    if (status && counts[status] !== undefined) counts[status] += 1;
+    if (countByPartNo.has(key)) {
+      partStatus[key] = status;
+      partQuantities[key] = {
+        hub_count: countByPartNo.get(key),
+        qty_1c: qty1cByCode.has(key) ? qty1cByCode.get(key) : null,
+      };
+    }
+  }
+
+  let status;
+  if (counts.diff) status = 'diff';
+  else if (counts.only_hub) status = 'only_hub';
+  else if (counts.only_1c) status = 'only_1c';
+  else if (countByPartNo.size === 0 && qty1cByCode.size === 0 && counts.no_part > 0) {
+    status = 'unknown';
+  } else status = 'match';
+
+  return {
+    owner_no: ownerNo,
+    employee_name: employeeName,
+    warehouse_ref: warehouse?.ref || '',
+    warehouse_name: warehouse?.name || '',
+    status,
+    part_status: partStatus,
+    part_quantities: partQuantities,
+    counts,
+    as_of: asOf,
+  };
+}
+
+const QTY_COMPARE_EPSILON = 1e-6;
+const RELIABLE_SUMMARY_STATUS = new Set(['match', 'diff', 'only_hub', 'only_1c']);
+
+/**
+ * Automatic per-row comparison with 1C: the row's PART_NO against the owner's 1C balance.
+ * Returns { matched, hubCount, qty1c } or null when the summary is stale/unreliable or the
+ * PART_NO has no usable counterpart — i.e. nothing to show.
+ */
+export function resolvePartCompare(summary, partNo) {
+  const summaryReliable = isEmployeeCompareSnapshotFresh(summary?.as_of)
+    && RELIABLE_SUMMARY_STATUS.has(String(summary?.status || ''));
+  if (!summaryReliable || !isUsableHubPartNo(partNo)) return null;
+  const quantities = summary?.part_quantities?.[normalizeCompareKey(partNo)];
+  const hubCount = toFiniteQuantity(quantities?.hub_count);
+  const qty1c = quantities?.qty_1c === null || quantities?.qty_1c === undefined
+    ? null
+    : toFiniteQuantity(quantities.qty_1c);
+  if (hubCount === null || !Number.isInteger(hubCount) || hubCount <= 0) return null;
+  if (qty1c === null || qty1c < 0) return null;
+  return { matched: Math.abs(qty1c - hubCount) <= QTY_COMPARE_EPSILON, hubCount, qty1c };
 }

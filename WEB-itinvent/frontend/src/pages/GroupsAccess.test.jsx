@@ -213,6 +213,62 @@ describe('GroupsAccess', () => {
     expect(screen.getByTestId('groups-access-user-results-scroll')).toBeInTheDocument();
   });
 
+  it('ignores a slow answer to an old employee query after the query changed', async () => {
+    let resolveOld;
+    mockSearchUser.mockImplementation(({ q }) => (q === 'petrov'
+      ? new Promise((resolve) => { resolveOld = resolve; })
+      : Promise.resolve({
+        items: [{ login: 'ivanov_i', display_name: 'Иванов И.И.', access_count: 0, access: [] }],
+        total: 1,
+      })));
+    renderPage();
+
+    fireEvent.click(await screen.findByText('По сотруднику'));
+    const input = screen.getByPlaceholderText('Логин или ФИО сотрудника');
+    fireEvent.change(input, { target: { value: 'petrov' } });
+    await waitFor(() => expect(mockSearchUser).toHaveBeenCalledWith(expect.objectContaining({ q: 'petrov' })));
+    fireEvent.change(input, { target: { value: 'ivanov' } });
+    expect(await screen.findByText('ivanov_i')).toBeInTheDocument();
+
+    resolveOld({
+      items: [{ login: 'petrov_p', display_name: 'Петров П.П.', access_count: 0, access: [] }],
+      total: 1,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.queryByText('petrov_p')).toBeNull();
+    expect(screen.getByText('ivanov_i')).toBeInTheDocument();
+  });
+
+  it('does not show results of the previous mode after switching modes while a load is in flight', async () => {
+    let resolveFolders;
+    mockGetMatrix.mockReset();
+    mockGetMatrix.mockImplementationOnce(() => new Promise((resolve) => { resolveFolders = resolve; }));
+    renderPage();
+
+    await waitFor(() => expect(mockGetMatrix).toHaveBeenCalledTimes(1));
+    fireEvent.click(await screen.findByText('По сотруднику'));
+    fireEvent.change(screen.getByPlaceholderText('Логин или ФИО сотрудника'), { target: { value: 'petrov' } });
+    expect(await screen.findByText('petrov_p')).toBeInTheDocument();
+
+    resolveFolders({
+      items: [{
+        dn: 'CN=Late,OU=SPb,OU=Groups,DC=zsgp,DC=corp',
+        cn: 'LateFolder',
+        branch: 'SPb',
+        folder_label: 'LateFolder',
+        folder_path: 'Resources / LateFolder',
+        access_level: 'member',
+        member_count: 1,
+      }],
+      total: 1,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(screen.queryByText('LateFolder')).toBeNull();
+    expect(screen.getByText('petrov_p')).toBeInTheDocument();
+  });
+
   it('requests a capped matrix grid and explains truncated results', async () => {
     mockGetMatrixGrid.mockResolvedValueOnce({
       groups: [

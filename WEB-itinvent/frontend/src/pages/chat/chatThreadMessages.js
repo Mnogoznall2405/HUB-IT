@@ -1,3 +1,5 @@
+import { mergeThreadActionCard } from '../../lib/chat/chatSendAck';
+
 const isOptimisticThreadMessageId = (messageId) => String(messageId || '').trim().startsWith('optimistic:');
 const EMPTY_ACTIVE_THREAD_MESSAGES = Object.freeze([]);
 
@@ -271,7 +273,12 @@ export const reconcileThreadMessages = (currentMessages, incomingMessages, {
     const existing = currentById.get(messageId)
       || (clientMessageId ? currentOptimisticByClientId.get(clientMessageId) : null)
       || null;
-    const nextMessage = withPreservedThreadRenderKey(message, existing);
+    const nextMessage = withPreservedThreadRenderKey({
+      ...message,
+      action_card: mergeThreadActionCard(existing?.action_card, message.action_card, {
+        lean: message.payload_mode === 'lean', deleted: Boolean(message.is_deleted),
+      }),
+    }, existing);
     return areThreadMessagesEquivalent(existing, nextMessage) ? existing : nextMessage;
   });
 

@@ -6,8 +6,11 @@ the model on the next round.
 """
 from __future__ import annotations
 
+import asyncio
 import sys
+import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -84,6 +87,20 @@ def test_execute_tool_calls_returns_diagnostic_for_invalid_args():
     assert traces[0].get("diagnostic", {}).get("error_code") == "invalid_arguments"
 
 
+def test_tool_validation_logs_do_not_include_confidential_argument_values(caplog):
+    from backend.ai_chat.service import AiChatService
+
+    marker = "PRIVATE_DOCUMENT_CONTENT_FOR_LOG_REGRESSION"
+    results, _ = AiChatService()._execute_tool_calls(
+        tool_calls=[{"tool_id": "itinvent.equipment.search", "args": {"document": marker}}],
+        tool_context=_make_context(),
+        report_stage=None,
+    )
+    assert results[0]["data"]["diagnostic"]["error_code"] == "invalid_arguments"
+    assert "AI tool validation failed" in caplog.text
+    assert marker not in caplog.text
+
+
 def test_execute_tool_calls_does_not_raise_on_unknown_tool():
     """Unknown tools surface a generic error result, not a hard exception."""
     from backend.ai_chat.service import AiChatService
@@ -98,6 +115,111 @@ def test_execute_tool_calls_does_not_raise_on_unknown_tool():
     assert len(results) == 1
     assert results[0]["ok"] is False
     assert traces[0]["status"] == "error"
+
+
+def _multi_call_context():
+    context = _make_context()
+    context.tool_settings["max_tool_calls_per_round"] = 3
+    return context
+
+
+class _StubToolResult:
+    def __init__(self, tool_id):
+        self.tool_id = tool_id
+
+    def to_payload(self):
+        return {"tool_id": self.tool_id, "ok": True, "data": {}, "error": None}
+
+
+def _stub_two_independent_tools(monkeypatch, executed):
+    """Two independent fake tools so calls land in one parallel group."""
+    from backend.ai_chat.tools.registry import ai_tool_registry
+
+    stages = {"alpha.ping": "stage_ok", "beta.pong": "stage_cancel"}
+
+    monkeypatch.setattr(
+        ai_tool_registry, "get", lambda tool_id: SimpleNamespace(stage=stages.get(tool_id, "stage_ok"))
+    )
+
+    def _execute(*, tool_id, raw_args, context):
+        executed.append(tool_id)
+        return _StubToolResult(tool_id), {"tool_id": tool_id, "status": "ok"}
+
+    monkeypatch.setattr(ai_tool_registry, "execute", _execute)
+    return stages
+
+
+def test_execute_tool_calls_stage_callback_failure_isolated(monkeypatch):
+    """A report_stage exception becomes a failed result for that call only."""
+    from backend.ai_chat.service import AiChatService
+
+    executed = []
+    _stub_two_independent_tools(monkeypatch, executed)
+
+    def report_stage(stage):
+        if stage == "stage_ok":
+            raise RuntimeError("status push failed")
+
+    service = AiChatService()
+    results, traces = service._execute_tool_calls(
+        tool_calls=[{"tool_id": "alpha.ping", "args": {}}, {"tool_id": "beta.pong", "args": {}}],
+        tool_context=_multi_call_context(),
+        report_stage=report_stage,
+    )
+
+    assert [item["tool_id"] for item in results] == ["alpha.ping", "beta.pong"]
+    assert results[0]["ok"] is False
+    assert results[1]["ok"] is True
+    assert len(traces) == 2
+    assert executed == ["beta.pong"]
+
+
+@pytest.mark.parametrize("inside_running_loop", [False, True])
+def test_execute_tool_calls_cancel_propagates_without_replay(monkeypatch, inside_running_loop):
+    """AiRunCancelled must propagate and completed calls must not be re-executed."""
+    from backend.ai_chat.service import AiChatService, AiRunCancelled
+
+    executed = []
+    stage_calls = []
+    first_done = threading.Event()
+    _stub_two_independent_tools(monkeypatch, executed)
+
+    def report_stage(stage):
+        stage_calls.append(stage)
+        if stage == "stage_cancel":
+            assert first_done.wait(timeout=15)
+            raise AiRunCancelled()
+
+    def _execute(*, tool_id, raw_args, context):
+        executed.append(tool_id)
+        first_done.set()
+        return _StubToolResult(tool_id), {"tool_id": tool_id, "status": "ok"}
+
+    from backend.ai_chat.tools.registry import ai_tool_registry
+
+    monkeypatch.setattr(ai_tool_registry, "execute", _execute)
+
+    service = AiChatService()
+    tool_calls = [{"tool_id": "alpha.ping", "args": {}}, {"tool_id": "beta.pong", "args": {}}]
+    context = _multi_call_context()
+
+    if inside_running_loop:
+        async def _run():
+            return service._execute_tool_calls(
+                tool_calls=tool_calls, tool_context=context, report_stage=report_stage
+            )
+
+        with pytest.raises(AiRunCancelled):
+            asyncio.run(_run())
+    else:
+        with pytest.raises(AiRunCancelled):
+            service._execute_tool_calls(
+                tool_calls=tool_calls, tool_context=context, report_stage=report_stage
+            )
+
+    assert executed == ["alpha.ping"]
+    assert stage_calls.count("stage_ok") == 1
+    assert stage_calls.count("stage_cancel") == 1
 
 
 def test_has_report_file_intent_does_not_match_task_creation():

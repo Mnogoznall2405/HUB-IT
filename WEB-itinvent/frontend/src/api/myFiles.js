@@ -1,4 +1,5 @@
 import apiClient, { API_V1_BASE } from './client';
+import { BROWSER_ACCOUNT_EVENT, captureBrowserAccountSession } from '../lib/browserAccountSession';
 
 const RETENTION_OPTIONS = [1, 3, 7, 10, 30, 0];
 /** Transient network blips on multi‑hundred‑MB uploads need more than two short retries. */
@@ -20,24 +21,26 @@ const UPLOAD_RESUME_KEY = 'hubit-my-files-uploads';
 /** Совпадает с backend upload_reservation_ttl_sec; старше — сессия уже сгнила. */
 const UPLOAD_RESUME_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 
-const readUploadResumeMap = () => {
+const readUploadResumeMap = (storageKey = UPLOAD_RESUME_KEY) => {
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(UPLOAD_RESUME_KEY) || '{}');
+    const parsed = JSON.parse(window.localStorage.getItem(storageKey) || '{}');
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
     return {};
   }
 };
 
-const writeUploadResumeMap = (map) => {
+const writeUploadResumeMap = (map, storageKey = UPLOAD_RESUME_KEY) => {
   const cutoff = Date.now() - UPLOAD_RESUME_MAX_AGE_MS;
   const pruned = Object.fromEntries(
     Object.entries(map).filter(([, entry]) => Number(entry?.savedAt || 0) > cutoff),
   );
   try {
-    window.localStorage.setItem(UPLOAD_RESUME_KEY, JSON.stringify(pruned));
+    window.localStorage.setItem(storageKey, JSON.stringify(pruned));
+    return true;
   } catch {
     // Quota/приватный режим — просто не сохраняем resume.
+    return false;
   }
 };
 
@@ -48,17 +51,34 @@ const uploadResumeKey = (file, folderId) => [
   Number(file?.lastModified || 0),
 ].join('|');
 
-const findResumableSession = async ({ file, folderId, signal }) => {
+const resumeStorageKey = (account) => `${UPLOAD_RESUME_KEY}:${encodeURIComponent(account.userKey)}`;
+const sessionChangedError = () => Object.assign(new Error('Сессия изменилась. Повторите загрузку в своём аккаунте.'), { code: 'ERR_SESSION_CHANGED' });
+
+const findResumableSession = async ({ file, folderId, signal, account, assertCurrent }) => {
+  assertCurrent();
   const key = uploadResumeKey(file, folderId);
-  const entry = readUploadResumeMap()[key];
+  const ownEntry = readUploadResumeMap(resumeStorageKey(account))[key];
+  const entry = ownEntry || readUploadResumeMap()[key];
   if (!entry || typeof entry !== 'object') return null;
   if (Date.now() - Number(entry.savedAt || 0) > UPLOAD_RESUME_MAX_AGE_MS) return null;
   const fileId = String(entry.fileId || '');
   if (!fileId) return null;
   try {
     const status = await myFilesAPI.getUploadSession(fileId, { signal });
+    assertCurrent();
     if (Number(status?.file_size_bytes || 0) !== Number(file?.size || 0)) return null;
-    if (status?.complete) return null;
+    if (String(status?.file_id || '') !== fileId) return null;
+    if (!ownEntry) {
+      // The protected endpoint verifies ownership. Migrate only that entry;
+      // unknown legacy entries may still belong to another account.
+      if (saveUploadResume(file, folderId, fileId, account)) {
+        const legacy = readUploadResumeMap();
+        if (legacy[key]?.fileId === fileId) {
+          delete legacy[key];
+          writeUploadResumeMap(legacy);
+        }
+      }
+    }
     return {
       file_id: fileId,
       chunk_size_bytes: status?.chunk_size_bytes,
@@ -66,22 +86,32 @@ const findResumableSession = async ({ file, folderId, signal }) => {
       ranges: status?.ranges,
     };
   } catch {
+    assertCurrent();
     return null;
   }
 };
 
-const saveUploadResume = (file, folderId, fileId) => {
-  const map = readUploadResumeMap();
+const saveUploadResume = (file, folderId, fileId, account) => {
+  const storageKey = resumeStorageKey(account);
+  const map = readUploadResumeMap(storageKey);
   map[uploadResumeKey(file, folderId)] = { fileId, savedAt: Date.now() };
-  writeUploadResumeMap(map);
+  return writeUploadResumeMap(map, storageKey);
 };
 
-const clearUploadResume = (file, folderId) => {
-  const map = readUploadResumeMap();
+const clearUploadResume = (file, folderId, account, fileId) => {
+  const storageKey = resumeStorageKey(account);
+  const map = readUploadResumeMap(storageKey);
   const key = uploadResumeKey(file, folderId);
-  if (key in map) {
+  if (map[key]?.fileId === fileId) {
     delete map[key];
-    writeUploadResumeMap(map);
+    writeUploadResumeMap(map, storageKey);
+  }
+  // A failed migration may have left the verified session in legacy storage.
+  // Clear it only after completion/explicit cancellation of that same ID.
+  const legacy = readUploadResumeMap();
+  if (legacy[key]?.fileId === fileId) {
+    delete legacy[key];
+    writeUploadResumeMap(legacy);
   }
 };
 
@@ -200,11 +230,15 @@ const capacityRetryDelayMs = (error) => {
   return Math.min(Math.max(suggested, 2000), UPLOAD_SESSION_CAPACITY_MAX_DELAY_MS);
 };
 
-const createUploadSessionWithCapacityRetry = async ({ file, retentionDays, folderId, signal }) => {
+const createUploadSessionWithCapacityRetry = async ({ file, retentionDays, folderId, signal, assertCurrent }) => {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await myFilesAPI.createUploadSession({ file, retentionDays, folderId, signal });
+      assertCurrent();
+      const session = await myFilesAPI.createUploadSession({ file, retentionDays, folderId, signal });
+      assertCurrent();
+      return session;
     } catch (error) {
+      assertCurrent();
       const status = Number(error?.response?.status || 0);
       if (status !== 429 || signal?.aborted || attempt >= UPLOAD_SESSION_CAPACITY_MAX_RETRIES) {
         throw error;
@@ -319,6 +353,14 @@ export const myFilesAPI = {
     );
     return response.data;
   },
+  createPublicFolderArchiveGrant: async (token) => {
+    const response = await apiClient.post(
+      `/my-files/public-folders/${encodeURIComponent(token)}/archive-grant`,
+      undefined,
+      { suppressAuthRequired: true },
+    );
+    return response.data;
+  },
   createFolderArchiveGrant: async (folderId) => {
     const response = await apiClient.post(
       `/my-files/folders/${encodeURIComponent(folderId)}/archive-grant`,
@@ -389,19 +431,37 @@ export const myFilesAPI = {
     );
     return response.data;
   },
-  uploadFile: async ({ file, retentionDays = 1, folderId = null, onUploadProgress, signal, parallelChunks = UPLOAD_PARALLEL_CHUNKS } = {}) => {
+  uploadFile: async ({ file, retentionDays = 1, folderId = null, onUploadProgress, signal: outerSignal, parallelChunks = UPLOAD_PARALLEL_CHUNKS, accountSession = captureBrowserAccountSession() } = {}) => {
+    if (!accountSession.isCurrent()) throw sessionChangedError();
+    const accountController = new AbortController();
+    const operationController = new AbortController();
+    const signal = operationController.signal;
+    const onOuterAbort = () => operationController.abort();
+    const onAccountChanged = () => {
+      if (accountSession.isCurrent()) return;
+      accountController.abort();
+      operationController.abort();
+    };
+    if (outerSignal?.aborted) onOuterAbort();
+    outerSignal?.addEventListener('abort', onOuterAbort, { once: true });
+    window.addEventListener(BROWSER_ACCOUNT_EVENT, onAccountChanged);
+    const assertCurrent = () => {
+      if (!accountSession.isCurrent()) throw sessionChangedError();
+      if (signal.aborted) throw new DOMException('Upload aborted', 'AbortError');
+    };
     const totalBytes = Math.max(0, Number(file?.size || 0));
     let fileId = '';
     emitUploadProgress(onUploadProgress, 0, totalBytes);
     try {
-      const session = (await findResumableSession({ file, folderId, signal }))
-        || await createUploadSessionWithCapacityRetry({ file, retentionDays, folderId, signal });
+      const session = (await findResumableSession({ file, folderId, signal, account: accountSession, assertCurrent }))
+        || await createUploadSessionWithCapacityRetry({ file, retentionDays, folderId, signal, assertCurrent });
+      assertCurrent();
       fileId = String(session?.file_id || '').trim();
-      saveUploadResume(file, folderId, fileId);
       const chunkSizeBytes = Number(session?.chunk_size_bytes || 0);
       if (!fileId || !Number.isFinite(chunkSizeBytes) || chunkSizeBytes <= 0) {
         throw new Error('My files upload session response is invalid');
       }
+      saveUploadResume(file, folderId, fileId, accountSession);
 
       const coveredRanges = normalizeUploadRanges(session?.ranges, totalBytes)
         || (Number(session?.uploaded_bytes || 0) > 0
@@ -411,6 +471,7 @@ export const myFilesAPI = {
       let confirmedBytes = coveredRanges.reduce((sum, [start, end]) => sum + (end - start), 0);
       const inFlight = new Map();
       const emitAggregate = () => {
+        if (!accountSession.isCurrent()) return;
         let sent = confirmedBytes;
         inFlight.forEach((loaded) => { sent += loaded; });
         emitUploadProgress(onUploadProgress, sent, totalBytes);
@@ -422,6 +483,7 @@ export const myFilesAPI = {
         const { offset, end } = tasks[taskIndex];
         const chunk = file.slice(offset, end);
         const uploadChunkWithWatchdog = async () => {
+          assertCurrent();
           const stallController = new AbortController();
           const onOuterAbort = () => stallController.abort();
           if (signal?.aborted) {
@@ -464,15 +526,18 @@ export const myFilesAPI = {
         for (let attempt = 0; ; attempt += 1) {
           try {
             await uploadChunkWithWatchdog();
+            assertCurrent();
             inFlight.delete(taskIndex);
             confirmedBytes += end - offset;
             emitAggregate();
             return;
           } catch (error) {
+            assertCurrent();
             inFlight.delete(taskIndex);
             if (signal?.aborted) throw error;
             try {
               const status = await myFilesAPI.getUploadSession(fileId, { signal });
+              assertCurrent();
               const ranges = normalizeUploadRanges(status?.ranges, totalBytes);
               if (ranges && rangeIsCovered(ranges, offset, end)) {
                 confirmedBytes += end - offset;
@@ -480,6 +545,7 @@ export const myFilesAPI = {
                 return;
               }
             } catch (statusError) {
+              assertCurrent();
               if (signal?.aborted) throw statusError;
             }
             if (!isRetriableUploadError(error) || attempt >= UPLOAD_RETRY_DELAYS_MS.length) {
@@ -503,24 +569,33 @@ export const myFilesAPI = {
       );
       await Promise.all(workers);
 
+      assertCurrent();
       const completed = await myFilesAPI.completeUploadSession(fileId, { signal });
+      assertCurrent();
       emitUploadProgress(onUploadProgress, totalBytes, totalBytes);
-      clearUploadResume(file, folderId);
+      clearUploadResume(file, folderId, accountSession, fileId);
       return completed;
     } catch (error) {
+      if (!accountSession.isCurrent()) throw sessionChangedError();
       const aborted = Boolean(signal?.aborted) || error?.name === 'AbortError' || error?.code === 'ERR_CANCELED';
       if (fileId && (aborted || !isRetriableUploadError(error))) {
         // Отменяем только точные провалы; сетевые сбои оставляем на resume в течение TTL сессии.
-        clearUploadResume(file, folderId);
+        clearUploadResume(file, folderId, accountSession, fileId);
         try {
           await myFilesAPI.cancelUploadSession(fileId, {
             reason: describeUploadFailure(error, { aborted }),
+            signal: accountController.signal,
           });
         } catch {
           // The server expires incomplete reservations if cleanup is unavailable.
         }
       }
       throw error;
+    } finally {
+      operationController.abort();
+      accountController.abort();
+      outerSignal?.removeEventListener('abort', onOuterAbort);
+      window.removeEventListener(BROWSER_ACCOUNT_EVENT, onAccountChanged);
     }
   },
   createDownloadGrant: async (fileId) => {

@@ -845,15 +845,23 @@ class AppInventoryStore:
             row.after_json = json.dumps(event.get("after_signature") or {}, ensure_ascii=False)
             row.created_at = _utcnow()
 
-    def prune_change_events(self, cutoff_ts: int) -> int:
+    # Pruning runs on every agent write; deleting an unbounded backlog in one statement would hold a long
+    # lock on the write path, so each call removes at most one batch and later calls finish the backlog.
+    PRUNE_BATCH_SIZE = 2000
+
+    def prune_change_events(self, cutoff_ts: int, *, batch_size: int | None = None) -> int:
+        limit = max(1, int(batch_size or self.PRUNE_BATCH_SIZE))
         with app_session(self._database_url) as session:
-            rows = session.scalars(
-                select(AppInventoryChangeEvent.event_id).where(AppInventoryChangeEvent.detected_at < int(cutoff_ts))
+            event_ids = session.scalars(
+                select(AppInventoryChangeEvent.event_id)
+                .where(AppInventoryChangeEvent.detected_at < int(cutoff_ts))
+                .order_by(AppInventoryChangeEvent.detected_at.asc())
+                .limit(limit)
             ).all()
-            if not rows:
+            if not event_ids:
                 return 0
-            session.execute(delete(AppInventoryChangeEvent).where(AppInventoryChangeEvent.detected_at < int(cutoff_ts)))
-            return len(rows)
+            session.execute(delete(AppInventoryChangeEvent).where(AppInventoryChangeEvent.event_id.in_(event_ids)))
+            return len(event_ids)
 
     def replace_from_legacy(self, snapshot: dict[str, Any], changes: list[dict[str, Any]]) -> None:
         with app_session(self._database_url) as session:

@@ -67,10 +67,23 @@ def test_settings_read_permission_can_read_department_members(monkeypatch):
     assert response.json()["department"]["id"] == "it"
 
 
-def test_department_read_is_forbidden_without_either_permission():
+def test_viewer_baseline_permission_can_read_departments_without_custom_permissions(monkeypatch):
+    monkeypatch.setattr(
+        departments_api.department_service,
+        "get_user_department_ids",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        departments_api.department_service,
+        "list_departments",
+        lambda **_kwargs: [{"id": "it", "name": "ИТ", "members_count": 3, "managers_count": 1}],
+    )
+
     response = _client(_user([])).get("/departments")
 
-    assert response.status_code == 403
+    assert response.status_code == 200
+    assert response.json()["items"][0]["id"] == "it"
+    assert response.json()["items"][0]["is_current_user_manager"] is False
 
 
 def test_settings_read_alone_cannot_run_department_sync():

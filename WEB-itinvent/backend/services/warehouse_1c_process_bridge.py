@@ -60,17 +60,29 @@ _WINDOWS_SPAWN_EXECUTABLE_LOCK = threading.Lock()
 class Warehouse1CProcessBridgeError(RuntimeError):
     """Base error for the managed 1C process bridge."""
 
+    reason_code = "query_failed"
+
+    def __init__(self, *args, reason_code: str | None = None):
+        super().__init__(*args)
+        self.reason_code = reason_code or type(self).reason_code
+
 
 class Warehouse1CProcessBridgeBusy(Warehouse1CProcessBridgeError):
     """The bounded bridge queue has no capacity left."""
+
+    reason_code = "queue_full"
 
 
 class Warehouse1CProcessBridgeUnavailable(Warehouse1CProcessBridgeError):
     """The worker is unavailable or its circuit breaker is open."""
 
+    reason_code = "unavailable"
+
 
 class _Warehouse1CProcessBridgeWorkerLost(Warehouse1CProcessBridgeUnavailable):
     """The worker died by itself while a read was pending (repeated once by ``call``)."""
+
+    reason_code = "worker_lost"
 
 
 class Warehouse1CProcessBridgeTimeout(Warehouse1CProcessBridgeError):
@@ -80,13 +92,23 @@ class Warehouse1CProcessBridgeTimeout(Warehouse1CProcessBridgeError):
     integration, and callers must never reinterpret it as a zero balance.
     """
 
+    reason_code = "timeout"
+
 
 class Warehouse1CProcessBridgeRemoteError(Warehouse1CProcessBridgeError):
     """The isolated worker rejected or failed an operation."""
 
+    reason_code = "remote_error"
+
+
+class Warehouse1CProcessBridgeValidationError(ValueError):
+    """Invalid read input, distinct from a failed 1C connection or operation."""
+
 
 class Warehouse1CProcessBridgeConfigurationError(Warehouse1CProcessBridgeError):
     """The dispatcher or bridge configuration is invalid."""
+
+    reason_code = "configuration_error"
 
 
 class Warehouse1CReadDispatcher(Protocol):
@@ -289,6 +311,16 @@ def _worker_main(
                         "result": _json_clone(result, maximum_bytes=maximum_message_bytes),
                     }
                 )
+            except Warehouse1CProcessBridgeValidationError as exc:
+                response_queue.put(
+                    {
+                        "kind": "response",
+                        "request_id": request_id,
+                        "ok": False,
+                        "error_kind": "validation",
+                        "error": str(exc)[:500],
+                    }
+                )
             except Exception as exc:  # The parent must receive a plain, safe error message only.
                 response_queue.put(
                     {
@@ -323,11 +355,11 @@ class Warehouse1CProcessBridge:
     """A managed single-process, bounded, read-only 1C COM bridge.
 
     A process has one COM apartment, so calls are intentionally serialized.
-    ``queue_limit`` controls extra requests waiting behind the active call;
+    ``queue_limit`` controls extra requests waiting in the parent behind the active call;
     once it is full the caller gets an explicit overload error.  A timed-out
-    call terminates the whole child process because a Python thread cannot
-    safely interrupt COM.  All pending reads then fail as *unknown*, and a
-    fresh child starts lazily for the next request.
+    executing call terminates the child because a Python thread cannot safely
+    interrupt COM. Expired queued reads are never sent to the child and cannot
+    interrupt another operation. A fresh child starts lazily for the next read.
     """
 
     def __init__(
@@ -336,6 +368,7 @@ class Warehouse1CProcessBridge:
         *,
         allowed_operations: Iterable[str] | None = None,
         queue_limit: int = 16,
+        queue_wait_seconds: float | None = None,
         failure_threshold: int = 4,
         cooldown_seconds: float = 60,
         maximum_message_bytes: int = 1_048_576,
@@ -348,6 +381,7 @@ class Warehouse1CProcessBridge:
         self._allowed_operations = _read_operations(allowed_operations)
         self._queue_limit = max(0, int(queue_limit))
         self._capacity = 1 + self._queue_limit
+        self._queue_wait_seconds = None if queue_wait_seconds is None else max(0.0, float(queue_wait_seconds))
         self._failure_threshold = _positive_int(failure_threshold, 4)
         self._cooldown_seconds = max(1.0, float(cooldown_seconds))
         self._maximum_message_bytes = _positive_int(maximum_message_bytes, 1_048_576, minimum=1024)
@@ -358,7 +392,9 @@ class Warehouse1CProcessBridge:
             raise Warehouse1CProcessBridgeConfigurationError("Некорректный multiprocessing context") from exc
 
         self._capacity_slots = threading.BoundedSemaphore(self._capacity)
+        self._execution_lock = threading.Lock()
         self._lock = threading.RLock()
+        self._waiting_calls = 0
         self._pending: dict[str, _PendingCall] = {}
         self._process: Any | None = None
         self._request_queue: Any | None = None
@@ -411,7 +447,7 @@ class Warehouse1CProcessBridge:
 
         with self._lock:
             if self._shutting_down:
-                raise Warehouse1CProcessBridgeUnavailable("1С bridge остановлен")
+                raise Warehouse1CProcessBridgeUnavailable("1С bridge остановлен", reason_code="bridge_stopped")
             self._ensure_process_locked()
             return self._status_locked()
 
@@ -455,16 +491,33 @@ class Warehouse1CProcessBridge:
 
         request_id = uuid.uuid4().hex
         pending = _PendingCall(event=threading.Event())
+        waiting = False
+        executing = False
         try:
+            with self._lock:
+                self._raise_if_unavailable_locked()
+                self._waiting_calls += 1
+                waiting = True
+            remaining = max(0.0, deadline - time.monotonic())
+            queue_timeout = remaining if self._queue_wait_seconds is None else min(remaining, self._queue_wait_seconds)
+            executing = self._execution_lock.acquire(timeout=queue_timeout)
+            with self._lock:
+                self._waiting_calls -= 1
+                waiting = False
+                if not executing or deadline <= time.monotonic():
+                    self._rejected += 1
+                    raise Warehouse1CProcessBridgeBusy(
+                        "Истекло время ожидания в очереди 1С; повторите запрос позже", reason_code="queue_timeout"
+                    )
             with self._lock:
                 self._raise_if_unavailable_locked()
                 self._ensure_process_locked()
                 if self._startup_error:
                     error = self._startup_error
                     self._restart_locked("Ошибка запуска worker 1С")
-                    raise Warehouse1CProcessBridgeUnavailable(error)
+                    raise Warehouse1CProcessBridgeUnavailable(error, reason_code="worker_startup_failed")
                 if self._request_queue is None:
-                    raise Warehouse1CProcessBridgeUnavailable("Очередь 1С bridge не запущена")
+                    raise Warehouse1CProcessBridgeUnavailable("Очередь 1С bridge не запущена", reason_code="bridge_not_ready")
                 self._pending[request_id] = pending
                 try:
                     self._request_queue.put_nowait(
@@ -496,10 +549,13 @@ class Warehouse1CProcessBridge:
                 with self._lock:
                     if not self._process_is_alive_locked():
                         self._pending.pop(request_id, None)
+                        startup_failed = bool(self._startup_error)
                         error = self._startup_error or _worker_exit_message(self._process)
                         self._record_failure_locked(error)
                         self._restart_locked("Worker 1С завершился", worker_lost=True)
-                        raise _Warehouse1CProcessBridgeWorkerLost(error)
+                        raise _Warehouse1CProcessBridgeWorkerLost(
+                            error, reason_code="worker_startup_failed" if startup_failed else "worker_lost"
+                        )
 
             response = pending.response or {
                 "ok": False,
@@ -511,12 +567,19 @@ class Warehouse1CProcessBridge:
                 return response.get("result")
 
             error = str(response.get("error") or "Ошибка read-операции 1С")[:500]
+            if response.get("error_kind") == "validation":
+                raise Warehouse1CProcessBridgeValidationError(error)
             with self._lock:
                 self._record_failure_locked(error)
             if response.get("worker_lost"):
                 raise _Warehouse1CProcessBridgeWorkerLost(error)
             raise Warehouse1CProcessBridgeRemoteError(error)
         finally:
+            if waiting:
+                with self._lock:
+                    self._waiting_calls -= 1
+            if executing:
+                self._execution_lock.release()
             self._capacity_slots.release()
 
     def restart(self) -> dict[str, Any]:
@@ -528,7 +591,7 @@ class Warehouse1CProcessBridge:
 
         with self._lock:
             if self._shutting_down:
-                raise Warehouse1CProcessBridgeUnavailable("1С bridge остановлен")
+                raise Warehouse1CProcessBridgeUnavailable("1С bridge остановлен", reason_code="bridge_stopped")
             self._restart_locked("Ручной restart 1С bridge")
             self._circuit_open_until = 0.0
             self._consecutive_failures = 0
@@ -550,6 +613,8 @@ class Warehouse1CProcessBridge:
             return self._status_locked()
 
     def _raise_if_unavailable_locked(self) -> None:
+        if self._shutting_down:
+            raise Warehouse1CProcessBridgeUnavailable("1С bridge остановлен", reason_code="bridge_stopped")
         now = time.monotonic()
         if self._circuit_open_until and now >= self._circuit_open_until:
             self._circuit_open_until = 0.0
@@ -557,7 +622,8 @@ class Warehouse1CProcessBridge:
         if self._circuit_open_until > now:
             retry_after = max(1, int(self._circuit_open_until - now))
             raise Warehouse1CProcessBridgeUnavailable(
-                f"1С bridge временно отключён после ошибок; повторите через {retry_after} сек."
+                f"1С bridge временно отключён после ошибок; повторите через {retry_after} сек.",
+                reason_code="circuit_open",
             )
 
     def _ensure_process_locked(self) -> None:
@@ -716,9 +782,9 @@ class Warehouse1CProcessBridge:
             "allowed_operations": sorted(self._allowed_operations),
             "workers": 1,
             "queue_limit": self._queue_limit,
-            "queue_length": max(0, pending_count - 1),
+            "queue_length": self._waiting_calls,
             "in_flight": min(1, pending_count),
-            "pending": pending_count,
+            "pending": pending_count + self._waiting_calls,
             "completed": self._completed,
             "failed": self._failed,
             "timed_out": self._timed_out,
@@ -742,4 +808,5 @@ __all__ = [
     "Warehouse1CProcessBridgeRemoteError",
     "Warehouse1CProcessBridgeTimeout",
     "Warehouse1CProcessBridgeUnavailable",
+    "Warehouse1CProcessBridgeValidationError",
 ]

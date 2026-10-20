@@ -1,5 +1,6 @@
 """AG-3: тесты скрипта merge_ai_bots_into_corp_assistant (sqlite, без внешних сервисов)."""
 from __future__ import annotations
+import conftest
 
 import importlib
 import os
@@ -51,6 +52,7 @@ def _configure_app_db(tmp_path: Path, monkeypatch, name: str = "ai_bot_merge.db"
     chat_db._session_factory = None
     chat_db._read_engine = None
     chat_db._read_session_factory = None
+    conftest.copy_chat_schema_for_url(database_url)
     return database_url
 
 

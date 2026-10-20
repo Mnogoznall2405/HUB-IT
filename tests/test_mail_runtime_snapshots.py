@@ -1,4 +1,5 @@
 from __future__ import annotations
+import conftest
 
 import sys
 import threading
@@ -16,7 +17,7 @@ from backend.services.mail_runtime_snapshot_service import MailRuntimeSnapshotSe
 
 def test_mail_snapshot_is_shared_and_error_preserves_confirmed_value(tmp_path):
     database_url = f"sqlite+pysqlite:///{(tmp_path / 'mail-snapshot.db').as_posix()}"
-    initialize_app_schema(database_url)
+    conftest.copy_app_schema_for_url(database_url)
     writer = MailRuntimeSnapshotService(database_url)
     reader = MailRuntimeSnapshotService(database_url)
 
@@ -45,7 +46,7 @@ def test_mail_snapshot_is_shared_and_error_preserves_confirmed_value(tmp_path):
 
 def test_mail_snapshot_concurrent_first_write_is_an_atomic_upsert(tmp_path, monkeypatch):
     database_url = f"sqlite+pysqlite:///{(tmp_path / 'mail-snapshot-race.db').as_posix()}"
-    initialize_app_schema(database_url)
+    conftest.copy_app_schema_for_url(database_url)
     service = MailRuntimeSnapshotService(database_url)
     original_find = service._find
     both_read_missing = threading.Barrier(2)
@@ -91,7 +92,7 @@ def test_mail_snapshot_concurrent_first_write_is_an_atomic_upsert(tmp_path, monk
 
 def test_mail_snapshot_read_state_write_through_updates_counts_feed_and_bootstrap(tmp_path):
     database_url = f"sqlite+pysqlite:///{(tmp_path / 'mail-read-state.db').as_posix()}"
-    initialize_app_schema(database_url)
+    conftest.copy_app_schema_for_url(database_url)
     service = MailRuntimeSnapshotService(database_url)
     service.write_success(
         user_id=51,
@@ -148,7 +149,7 @@ def test_mail_snapshot_read_state_write_through_updates_counts_feed_and_bootstra
 
 def test_mail_notification_cycle_persists_count_and_feed_together(tmp_path):
     database_url = f"sqlite+pysqlite:///{(tmp_path / 'mail-notification-cycle.db').as_posix()}"
-    initialize_app_schema(database_url)
+    conftest.copy_app_schema_for_url(database_url)
     service = MailRuntimeSnapshotService(database_url)
     feed = {
         "total_unread": 2,
@@ -165,7 +166,7 @@ def test_mail_notification_cycle_persists_count_and_feed_together(tmp_path):
 
 def test_mail_notification_delivery_checkpoint_overrides_legacy_feed(tmp_path):
     database_url = f"sqlite+pysqlite:///{(tmp_path / 'mail-delivery-checkpoint.db').as_posix()}"
-    initialize_app_schema(database_url)
+    conftest.copy_app_schema_for_url(database_url)
     service = MailRuntimeSnapshotService(database_url)
     legacy_feed = {"total_unread": 1, "items": [{"id": "msg-legacy"}]}
     delivered_feed = {"total_unread": 2, "items": [{"id": "msg-delivered"}]}
@@ -185,7 +186,7 @@ def test_mail_notification_delivery_checkpoint_overrides_legacy_feed(tmp_path):
 
 def test_mail_preferences_write_through_updates_bootstrap_without_refreshing_its_age(tmp_path):
     database_url = f"sqlite+pysqlite:///{(tmp_path / 'mail-preferences-snapshot.db').as_posix()}"
-    initialize_app_schema(database_url)
+    conftest.copy_app_schema_for_url(database_url)
     service = MailRuntimeSnapshotService(database_url)
     service.write_success(
         user_id=53,

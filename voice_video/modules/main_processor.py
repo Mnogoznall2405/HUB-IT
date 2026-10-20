@@ -9,7 +9,8 @@ import time
 
 from .audio_processor import AudioProcessor, ProcessingConfig
 from .transcription import TranscriptionProcessor
-from .diarization import SpeakerDiarization
+from .diarization import DiarizationChunkError, SpeakerDiarization, diarization_model_fingerprint
+from .speaker_utils import diarization_cache_policy
 from .analyzer import MeetingAnalyzer
 from .segmentation import MeetingSegmentation
 from .report_generator import ReportGenerator
@@ -65,6 +66,34 @@ class MainProcessor:
             return f"{int(m.group(1)):02d}.{int(m.group(2)):02d}.{m.group(3)}"
         return None
 
+    def _diarization_stage_key(self, stage):
+        import hashlib
+
+        policy = diarization_cache_policy(self.config)
+        if policy is None:
+            return None
+        identity = {'policy': policy}
+        if getattr(self.config, 'enable_diarization', True):
+            processor = self.transcription_processor
+            if processor.diarize_model is None:
+                processor.load_diarization_model()
+            if processor.diarize_model is None:
+                raise DiarizationChunkError('Не удалось проверить модель для чекпоинта диаризации')
+            identity['model'] = diarization_model_fingerprint(processor.diarize_model)
+            identity['parameters'] = json.loads(json.dumps(
+                processor.diarize_model.model.parameters(instantiated=True), default=repr))
+        if stage == 'speakers':
+            from config import REFERENCE_VOICES_DIR
+
+            paths = list(Path(REFERENCE_VOICES_DIR).glob('**/*.wav')) + list(Path(REFERENCE_VOICES_DIR).glob('**/*.pkl'))
+            local = self.speaker_diarization._resolve_local_embedding_model_path()
+            if local:
+                paths += [Path(local) / 'pytorch_model.bin', Path(local) / 'config.yaml']
+            identity['references'] = [(str(path), path.stat().st_size, path.stat().st_mtime_ns) for path in sorted(paths)]
+            identity['thresholds'] = [self.config.strict_similarity_threshold, self.config.moderate_similarity_threshold,
+                                      self.config.loose_similarity_threshold, self.config.enable_speaker_identification]
+        return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+
     def _ckpt_load(self, base_filename: str, stage: str, source_file: Path) -> Optional[Any]:
         """Грузит чекпоинт, если он от этого же исходника (путь+размер)."""
         if not getattr(self.config, 'use_checkpoints', True):
@@ -77,9 +106,20 @@ class MainProcessor:
             meta = data.get('_meta', {})
             stat = Path(source_file).stat()
             if meta.get('source') == str(source_file) and meta.get('size') == stat.st_size:
+                if stage in ('stt', 'diarization', 'speakers'):
+                    policy = diarization_cache_policy(self.config)
+                    cached_policy = meta.get('diarization_policy')
+                    if policy or cached_policy:
+                        if (not policy or not cached_policy or meta.get('mtime') != stat.st_mtime
+                                or cached_policy != self._diarization_stage_key(stage)):
+                            logger.info('Чекпоинт %s не соответствует текущей диаризации — пересчитываем', stage)
+                            return None
                 logger.info(f"♻️ Найден чекпоинт этапа '{stage}'")
                 return data.get('payload')
             logger.info(f"↻ Чекпоинт '{stage}' от другого исходника — игнорирую")
+            return None
+        except DiarizationChunkError as exc:
+            logger.warning("Чекпоинт '%s' не проверен (%s) — этап будет пересчитан", stage, exc)
             return None
         except Exception:
             return None
@@ -94,13 +134,16 @@ class MainProcessor:
                     'source': str(source_file),
                     'size': stat.st_size,
                     'mtime': stat.st_mtime,
-                    'saved_at': datetime.now().isoformat()
+                    'saved_at': datetime.now().isoformat(),
+                    'diarization_policy': self._diarization_stage_key(stage) if stage in ('stt', 'diarization', 'speakers') else None,
                 },
                 'payload': payload
             }
             self._ckpt_path(base_filename, stage).write_text(
                 json.dumps(data, ensure_ascii=False), encoding='utf-8'
             )
+        except DiarizationChunkError as e:
+            logger.warning("Чекпоинт '%s' не сохранён: нет ключа диаризации (%s)", stage, e)
         except Exception as e:
             logger.debug(f"Чекпоинт '{stage}' не сохранён: {e}")
 
@@ -164,6 +207,7 @@ class MainProcessor:
                 self._ckpt_save(base_filename, 'stt', file_path, transcription_result)
 
             segments_with_speakers = transcription_result['segments']
+            self._apply_glossary_corrections(segments_with_speakers)
 
             # Проверяем, была ли выполнена диаризация в рамках транскрипции
             if transcription_result.get('diarization', False):
@@ -197,6 +241,8 @@ class MainProcessor:
                         segments_with_speakers = diarization_result['segments']
                     self._ckpt_save(base_filename, 'diarization', file_path, diarization_result)
 
+            review_speakers = list((transcription_result.get('diarization_details')
+                                    or diarization_result.get('diarization_details') or {}).get('review_speakers', []))
             speakers_ckpt = self._ckpt_load(base_filename, 'speakers', file_path)
             if speakers_ckpt and speakers_ckpt.get('segments'):
                 logger.info("♻️ Чекпоинт: именование спикеров уже выполнено — этап пропущен")
@@ -210,11 +256,14 @@ class MainProcessor:
                     base_filename,
                     diarize_turns=(transcription_result.get('diarize_segments')
                                    or diarization_result.get('diarization_result')),
+                    blocked_speakers=review_speakers,
                 )
+                segments_with_speakers = self._reidentify_segments(processed_audio_path, segments_with_speakers, speaker_naming_result)
                 self._ckpt_save(base_filename, 'speakers', file_path, {
                     'segments': segments_with_speakers,
                     'naming': speaker_naming_result
                 })
+            self._save_video_hints(file_path, segments_with_speakers, base_filename, speaker_naming_result)
             transcription_result['segments'] = segments_with_speakers
             transcription_result['speaker_naming'] = speaker_naming_result
             transcription_result['speakers_count'] = len({segment.get('speaker', 'UNKNOWN') for segment in segments_with_speakers})
@@ -256,9 +305,12 @@ class MainProcessor:
             logger.info("📄 Этап 8: Генерация отчетов...")
             generated_reports = self.report_generator.generate_all_reports(
                 combined_analysis, segments_with_speakers, insights, base_filename,
-                word_segments=transcription_result.get('word_segments')
+                word_segments=transcription_result.get('word_segments'),
+                review_speakers=review_speakers,
             )
-            
+
+            self._save_glossary_candidates(base_filename, detailed_analysis)
+
             # Перемещаем обработанный файл
             self._move_processed_file(file_path)
             
@@ -295,6 +347,80 @@ class MainProcessor:
                 'error': str(e),
                 'processed_at': datetime.now().isoformat()
             }
+
+    def _reidentify_segments(self, audio_file: str, segments: List[Dict[str, Any]], naming_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """SPEAKER_REIDENTIFY: реплики, явно похожие на другой эталон, получают его имя (склейки диаризации)."""
+        try:
+            from config import SPEAKER_REIDENTIFY, REFERENCE_VOICES_DIR
+            if not SPEAKER_REIDENTIFY or not self.config.enable_speaker_identification:
+                return segments
+            from .reidentify import reidentify
+            result = reidentify(audio_file, segments, self.speaker_diarization, REFERENCE_VOICES_DIR,
+                                strict=0.30, margin=0.10, min_duration=3.0, current_ok=0.35)
+            naming_result['reidentified'] = result
+            logger.info(f"🔁 Проверка реплик по эталонам: проверено {result['checked']}, переименовано {result['changed']} {result['by_name']}")
+        except Exception as e:  # noqa: BLE001 - проверка — улучшение, не повод ронять обработку
+            logger.warning(f"⚠️ Пореплечная проверка пропущена: {e}")
+        return segments
+
+    def _save_video_hints(self, file_path: Path, segments: List[Dict[str, Any]], base_filename: str,
+                          speaker_naming_result: Dict[str, Any]) -> None:
+        """VIDEO_HINTS: кто говорит по видео ВКС -> <base>_video_hints.json и speaker_naming['video_hints'] (только подсказки)."""
+        try:
+            from config import VIDEO_HINTS
+            if not VIDEO_HINTS or Path(file_path).suffix.lower() not in ('.mp4', '.mkv', '.mov', '.avi', '.webm', '.m4v'):
+                return
+            from video_speaker_hints import analyze
+            turns = []
+            for seg in segments:
+                start, end = seg.get('start', seg.get('start_time')), seg.get('end', seg.get('end_time'))
+                if start is not None and end is not None:
+                    turns.append({'start': float(start), 'end': float(end), 'speaker': str(seg.get('speaker', ''))})
+            from config import FACE_HINTS, FACE_ROSTER_PATH
+            from config import GLOSSARY_PATH
+            from .glossary import load_terms
+            result = analyze(Path(file_path), turns, faces=FACE_HINTS, roster_path=Path(FACE_ROSTER_PATH),
+                             staff_terms=[x for x in load_terms(GLOSSARY_PATH) if x.get('source') == 'staff'])
+            hints = {key: result[key] for key in ('suggested', 'conflicts', 'mixed', 'rooms', 'voices')}
+            if result.get('room_people'):
+                hints['room_people'] = result['room_people']
+            if result.get('faces'):
+                hints['faces'] = result['faces']
+            speaker_naming_result['video_hints'] = {key: hints[key] for key in ('suggested', 'conflicts', 'mixed', 'rooms')}
+            target = Path(OUTPUT_DIR) / base_filename / f"{base_filename}_video_hints.json"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps({'video': Path(file_path).name, 'frames': result['frames'], 'detected': result['detected'], **hints},
+                                         ensure_ascii=False, indent=1), encoding='utf-8')
+            logger.info(f"🎥 Видео-подсказки: имён для безымянных голосов {len(hints['suggested'])}, комнат {len(hints['rooms'])}, "
+                        f"расхождений аккаунт/голос {len(hints['conflicts'])}, смешанных голосов {len(hints['mixed'])}")
+        except Exception as e:  # noqa: BLE001 - подсказки не должны ломать обработку
+            logger.warning(f"⚠️ Видео-подсказки пропущены: {e}")
+
+    def _apply_glossary_corrections(self, segments: List[Dict[str, Any]]) -> None:
+        """Подтверждённые варианты написания (ошибки распознавания) -> верный термин; без LLM, точные совпадения."""
+        try:
+            from config import GLOSSARY_PATH, GLOSSARY_CORRECT
+            if not GLOSSARY_CORRECT:
+                return
+            from .glossary import load_terms, correct_segments
+            changed = correct_segments(segments, load_terms(GLOSSARY_PATH))
+            if changed:
+                logger.info(f"📖 Глоссарий: исправлено написаний в тексте: {changed}")
+        except Exception as e:  # noqa: BLE001 - словарь не должен ломать обработку
+            logger.warning(f"⚠️ Корректор словаря пропущен: {e}")
+
+    def _save_glossary_candidates(self, base_filename: str, detailed_analysis: Dict[str, Any]) -> None:
+        """Кандидаты в словарь рядом с отчётами: voice_server заберёт их во вкладку «Словарь» (на подтверждение)."""
+        try:
+            candidates = (detailed_analysis or {}).get('glossary_candidates') or []
+            if not candidates:
+                return
+            target = Path(OUTPUT_DIR) / base_filename / f"{base_filename}_glossary_candidates.json"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps({'base': base_filename, 'candidates': candidates}, ensure_ascii=False, indent=1),
+                              encoding='utf-8')
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"⚠️ Кандидаты в словарь не сохранены: {e}")
 
     def _diarization_audio_path(self, base_filename: str, processed_audio_path: str) -> str:
         """Звук для диаризации: сырой (DIARIZATION_AUDIO=raw) или тот же, что для STT."""
@@ -335,6 +461,8 @@ class MainProcessor:
                 s['end'] = float(s.get('end', s.get('end_time', 0)) or 0)
 
             word_segments = data.get('word_segments')
+            # Голоса, чью сшивку диаризации нужно проверить вручную (см. process_file)
+            review_speakers = list((data.get('metadata') or {}).get('review_speakers') or [])
 
             if not getattr(self.config, 'meeting_date', None):
                 self.config.meeting_date = self._extract_meeting_date(base_filename)
@@ -351,7 +479,7 @@ class MainProcessor:
             self.config.export_unknown_speaker_samples = prev_export and audio_available
             try:
                 segments_with_speakers, speaker_naming_result = self._resolve_speaker_names(
-                    str(processed_audio), segments, base_filename
+                    str(processed_audio), segments, base_filename, blocked_speakers=review_speakers,
                 )
             finally:
                 self.config.export_unknown_speaker_samples = prev_export
@@ -379,7 +507,7 @@ class MainProcessor:
                 combined_analysis, segments_with_speakers, source_parts, base_filename)
             generated_reports = self.report_generator.generate_all_reports(
                 combined_analysis, segments_with_speakers, insights, base_filename,
-                word_segments=word_segments
+                word_segments=word_segments, review_speakers=review_speakers,
             )
 
             result = {
@@ -508,6 +636,7 @@ class MainProcessor:
         segments_with_speakers: List[Dict[str, Any]],
         base_filename: str,
         diarize_turns: Optional[List[Dict[str, Any]]] = None,
+        blocked_speakers: Optional[List[str]] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """Сначала пытается сопоставить спикеров автоматически, затем спрашивает ФИО для оставшихся."""
         speaker_naming_result = {
@@ -532,6 +661,13 @@ class MainProcessor:
                 identification_details = self.speaker_diarization.get_speaker_identification_details(
                     speaker_embeddings
                 )
+                for speaker in blocked_speakers or []:
+                    if speaker in identification_details:
+                        identification_details[speaker].update(
+                            identified=False, status='review', display_name=speaker, diarization_review=True,
+                            matched_name=None,
+                        )
+                        logger.warning('Голос %s требует проверки сшивки; автоматическое ФИО не применено', speaker)
                 auto_identifications = {
                     speaker: details['display_name']
                     for speaker, details in identification_details.items()

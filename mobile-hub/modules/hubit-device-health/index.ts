@@ -21,6 +21,8 @@ export type HubitAndroidConnectivityResult = {
 type HubitDeviceHealthNativeModule = {
   getHistoricalProcessExitInfoAsync(): Promise<HubitAndroidProcessExitResult>;
   getConnectivityAsync(): Promise<HubitAndroidConnectivityResult>;
+  isIgnoringBatteryOptimizationsAsync(): Promise<boolean>;
+  openBatteryOptimizationSettingsAsync(): Promise<boolean>;
   addListener(
     eventName: 'onConnectivityChanged',
     listener: (event: HubitAndroidConnectivityResult) => void,

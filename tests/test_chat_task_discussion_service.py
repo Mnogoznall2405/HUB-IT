@@ -1,7 +1,10 @@
 from __future__ import annotations
+import conftest
 
+import asyncio
 import importlib
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -78,7 +81,7 @@ def task_discussion_env(temp_dir, monkeypatch):
     monkeypatch.setattr(chat_db_module.config.chat, "max_overflow", 10, raising=False)
     monkeypatch.setattr(task_discussion_module.config.chat, "task_discussion_enabled", True, raising=False)
 
-    chat_db_module.initialize_chat_schema()
+    conftest.copy_chat_schema_for_url(f"sqlite:///{Path(temp_dir) / 'chat.sqlite3'}")
 
     actor = {"id": 1, "username": "author", "full_name": "Task Author", "role": "operator"}
     project = hub_service.create_task_project(name="Task Discussion Project", code="TASK_DISC")
@@ -333,3 +336,56 @@ def test_hub_add_comment_blocked_when_task_discussion_enabled(task_discussion_en
             body="legacy comment",
             user={"id": 1, "username": "author", "full_name": "Task Author", "role": "operator"},
         )
+
+
+async def _max_loop_gap_during(coro_factory) -> float:
+    gaps = []
+    stop = asyncio.Event()
+
+    async def ticker():
+        last = time.perf_counter()
+        while not stop.is_set():
+            await asyncio.sleep(0.01)
+            now = time.perf_counter()
+            gaps.append(now - last)
+            last = now
+
+    task = asyncio.create_task(ticker())
+    await asyncio.sleep(0.05)
+    await coro_factory()
+    stop.set()
+    await task
+    return max(gaps)
+
+
+@pytest.mark.asyncio
+async def test_task_discussion_publish_and_delete_do_not_block_the_event_loop(task_discussion_env, monkeypatch):
+    task = task_discussion_env["task"]
+    chat_service = task_discussion_env["chat_service"]
+    task_discussion_module.ensure_task_discussion(task_id=task["id"], actor_user_id=1)
+
+    async def _publish_inbox_event(**_payload):
+        return None
+
+    realtime_module = importlib.import_module("backend.chat.realtime")
+    monkeypatch.setattr(chat_service_module, "chat_service", chat_service)
+    monkeypatch.setattr(realtime_module.chat_realtime, "publish_inbox_event", _publish_inbox_event)
+
+    def _slow(original):
+        def call(*args, **kwargs):
+            time.sleep(0.4)
+            return original(*args, **kwargs)
+        return call
+
+    monkeypatch.setattr(chat_service, "get_conversation_summaries_for_users", _slow(chat_service.get_conversation_summaries_for_users))
+    monkeypatch.setattr(chat_service, "delete_task_conversation", _slow(chat_service.delete_task_conversation))
+
+    publish_gap = await _max_loop_gap_during(
+        lambda: task_discussion_module.publish_task_discussion_updated(task_id=task["id"], task=task)
+    )
+    delete_gap = await _max_loop_gap_during(
+        lambda: task_discussion_module.delete_task_discussion(task_id=task["id"])
+    )
+
+    assert publish_gap < 0.2, f"publish blocked the event loop for {publish_gap:.2f}s"
+    assert delete_gap < 0.2, f"delete blocked the event loop for {delete_gap:.2f}s"

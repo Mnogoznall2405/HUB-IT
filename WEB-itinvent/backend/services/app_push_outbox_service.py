@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from backend.appdb.db import app_session, is_app_database_configured
@@ -27,6 +27,7 @@ STATUS_SENT = "sent"
 STATUS_NO_SUBSCRIPTIONS = "no_subscriptions"
 STATUS_FAILED = "failed"
 STATUS_EXPIRED = "expired"
+OUTCOME_SUPERSEDED = "superseded"  # Worker outcome only, never a persisted status.
 
 
 def _utc_now() -> datetime:
@@ -350,6 +351,7 @@ class AppPushOutboxService:
 
     def recover_stale_jobs(self) -> int:
         cutoff = _utc_now() - timedelta(seconds=self.processing_timeout_sec)
+        recovered = 0
         with app_session() as session:
             rows = list(
                 session.execute(
@@ -361,11 +363,22 @@ class AppPushOutboxService:
             )
             now = _utc_now()
             for row in rows:
-                row.status = STATUS_QUEUED
-                row.next_attempt_at = now
-                row.updated_at = now
-                row.last_error = "Recovered stale processing job"
-            return len(rows)
+                exhausted = int(row.attempt_count or 0) >= self.max_attempts
+                applied = session.execute(
+                    update(AppPushOutbox).where(
+                        AppPushOutbox.id == row.id,
+                        AppPushOutbox.status == STATUS_PROCESSING,
+                        AppPushOutbox.attempt_count == int(row.attempt_count or 0),
+                        AppPushOutbox.updated_at == row.updated_at,
+                    ).values(
+                        status=STATUS_FAILED if exhausted else STATUS_QUEUED,
+                        next_attempt_at=now, updated_at=now,
+                        last_error=("Stale processing job exhausted attempt limit"
+                                    if exhausted else "Recovered stale processing job"),
+                    ).execution_options(synchronize_session=False)
+                )
+                recovered += int(applied.rowcount or 0)
+            return recovered
 
     def claim_jobs(self, limit: int | None = None) -> list[AppPushOutboxJob]:
         now = _utc_now()
@@ -384,25 +397,43 @@ class AppPushOutboxService:
             if dialect == "postgresql":
                 query = query.with_for_update(skip_locked=True)
             rows = list(session.execute(query).scalars())
+            claimed_jobs = []
             for row in rows:
-                row.status = STATUS_PROCESSING
-                row.attempt_count = int(row.attempt_count or 0) + 1
-                row.updated_at = now
-            session.flush()
-            return [self._serialize_job(row) for row in rows]
+                claimed = session.execute(
+                    update(AppPushOutbox).where(
+                        AppPushOutbox.id == row.id,
+                        AppPushOutbox.status == STATUS_QUEUED,
+                        AppPushOutbox.attempt_count == int(row.attempt_count or 0),
+                    ).values(
+                        status=STATUS_PROCESSING,
+                        attempt_count=AppPushOutbox.attempt_count + 1,
+                        updated_at=now,
+                    ).returning(AppPushOutbox).execution_options(
+                        synchronize_session=False, populate_existing=True,
+                    )
+                ).scalar_one_or_none()
+                if claimed is not None:
+                    claimed_jobs.append(self._serialize_job(claimed))
+            return claimed_jobs
 
-    def _update_job(self, job_id: int, *, status: str, error: str | None = None, retry_delay: int = 0) -> None:
+    def _update_job(self, job_id: int, *, attempt_count: int, status: str, error: str | None = None, retry_delay: int = 0) -> bool:
+        now = _utc_now()
+        values = {
+            "status": status,
+            "updated_at": now,
+            "next_attempt_at": now + timedelta(seconds=max(0, int(retry_delay))),
+            "last_error": _normalize_text(error, max_length=2000) or None,
+        }
+        if status == STATUS_SENT:
+            values["delivered_at"] = now
         with app_session() as session:
-            row = session.get(AppPushOutbox, int(job_id))
-            if row is None:
-                return
-            now = _utc_now()
-            row.status = status
-            row.updated_at = now
-            row.next_attempt_at = now + timedelta(seconds=max(0, int(retry_delay)))
-            row.last_error = _normalize_text(error, max_length=2000) or None
-            if status == STATUS_SENT:
-                row.delivered_at = now
+            return bool(session.execute(
+                update(AppPushOutbox).where(
+                    AppPushOutbox.id == int(job_id),
+                    AppPushOutbox.status == STATUS_PROCESSING,
+                    AppPushOutbox.attempt_count == int(attempt_count),
+                ).values(**values)
+            ).rowcount)
 
     def process_job(self, job: AppPushOutboxJob) -> str:
         started_at = time.perf_counter()
@@ -411,8 +442,10 @@ class AppPushOutboxService:
         try:
             if job.expires_at <= _utc_now():
                 note = "Notification TTL expired before delivery"
-                self._update_job(job.id, status=STATUS_EXPIRED, error=note)
+                applied = self._update_job(job.id, attempt_count=job.attempt_count, status=STATUS_EXPIRED, error=note)
                 outcome = STATUS_EXPIRED
+                if not applied:
+                    outcome = OUTCOME_SUPERSEDED
                 return outcome
             result = chat_push_service.send_notification(
                 recipient_user_id=job.recipient_user_id,
@@ -432,16 +465,17 @@ class AppPushOutboxService:
             disabled = int(getattr(result, "disabled", 0) or 0)
             if sent > 0:
                 note = f"partial_delivery failed={failed} disabled={disabled}" if failed > 0 else None
-                self._update_job(job.id, status=STATUS_SENT, error=note)
+                applied = self._update_job(job.id, attempt_count=job.attempt_count, status=STATUS_SENT, error=note)
                 outcome = STATUS_SENT
             elif failed > 0:
                 note = f"delivery_failed failed={failed} disabled={disabled}"
                 if job.attempt_count >= self.max_attempts:
-                    self._update_job(job.id, status=STATUS_FAILED, error=note)
+                    applied = self._update_job(job.id, attempt_count=job.attempt_count, status=STATUS_FAILED, error=note)
                     outcome = STATUS_FAILED
                 else:
-                    self._update_job(
+                    applied = self._update_job(
                         job.id,
+                        attempt_count=job.attempt_count,
                         status=STATUS_QUEUED,
                         error=note,
                         retry_delay=self._retry_delay_sec(job.attempt_count),
@@ -449,22 +483,27 @@ class AppPushOutboxService:
                     outcome = STATUS_QUEUED
             else:
                 note = "No active push subscriptions"
-                self._update_job(job.id, status=STATUS_NO_SUBSCRIPTIONS, error=note)
+                applied = self._update_job(job.id, attempt_count=job.attempt_count, status=STATUS_NO_SUBSCRIPTIONS, error=note)
                 outcome = STATUS_NO_SUBSCRIPTIONS
+            if not applied:
+                outcome = OUTCOME_SUPERSEDED
             return outcome
         except Exception as exc:
             note = _normalize_text(exc, "push delivery failed", max_length=2000)
             if job.attempt_count >= self.max_attempts:
-                self._update_job(job.id, status=STATUS_FAILED, error=note)
+                applied = self._update_job(job.id, attempt_count=job.attempt_count, status=STATUS_FAILED, error=note)
                 outcome = STATUS_FAILED
             else:
-                self._update_job(
+                applied = self._update_job(
                     job.id,
+                    attempt_count=job.attempt_count,
                     status=STATUS_QUEUED,
                     error=note,
                     retry_delay=self._retry_delay_sec(job.attempt_count),
                 )
                 outcome = STATUS_QUEUED
+            if not applied:
+                outcome = OUTCOME_SUPERSEDED
             return outcome
         finally:
             logger.info(
@@ -542,6 +581,7 @@ class AppPushOutboxService:
             "sent": 0,
             "no_subscriptions": 0,
             "requeued": 0,
+            "superseded": 0,
             "failed": 0,
             "expired": 0,
             "recovered": int(recovered),
@@ -558,11 +598,13 @@ class AppPushOutboxService:
                     result["failed"] += 1
                 elif outcome == STATUS_EXPIRED:
                     result["expired"] += 1
+                elif outcome == OUTCOME_SUPERSEDED:
+                    result["superseded"] += 1
                 else:
                     result["requeued"] += 1
         await self._emit_heartbeat_if_due()
         logger.info(
-            "app.push_outbox.poll claimed=%s sent=%s no_subscriptions=%s requeued=%s failed=%s expired=%s recovered=%s duration_ms=%.1f",
+            "app.push_outbox.poll claimed=%s sent=%s no_subscriptions=%s requeued=%s failed=%s expired=%s recovered=%s superseded=%s duration_ms=%.1f",
             result["claimed"],
             result["sent"],
             result["no_subscriptions"],
@@ -570,6 +612,7 @@ class AppPushOutboxService:
             result["failed"],
             result["expired"],
             result["recovered"],
+            result["superseded"],
             (time.perf_counter() - started_at) * 1000.0,
         )
         return result

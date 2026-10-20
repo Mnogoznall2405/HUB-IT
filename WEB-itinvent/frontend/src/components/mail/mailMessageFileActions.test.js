@@ -9,7 +9,6 @@ import {
   buildAttachmentRequestContext,
   buildMessageSourceDownloadPayload,
   buildPrintMailDocumentHtml,
-  createEmptyAttachmentPreview,
   normalizeAttachmentPreviewMetadata,
   parseDownloadFilename,
 } from './mailMessageFileActions';
@@ -192,14 +191,7 @@ describe('mailMessageFileActions', () => {
     });
   });
 
-  it('provides empty preview state and print document shell', () => {
-    expect(createEmptyAttachmentPreview()).toMatchObject({
-      open: false,
-      loading: false,
-      kind: 'unsupported',
-      blob: null,
-    });
-
+  it('escapes sender text without altering the rendered message body', () => {
     const printHtml = buildPrintMailDocumentHtml({
       subject: 'Quarterly report',
       senderLine: 'Ops <ops@example.com>',
@@ -208,7 +200,7 @@ describe('mailMessageFileActions', () => {
     });
 
     expect(printHtml).toContain('<title>Quarterly report</title>');
-    expect(printHtml).toContain('Ops <ops@example.com>');
+    expect(printHtml).toContain('Ops &lt;ops@example.com&gt;');
     expect(printHtml).toContain('<p>Hello</p>');
   });
 });

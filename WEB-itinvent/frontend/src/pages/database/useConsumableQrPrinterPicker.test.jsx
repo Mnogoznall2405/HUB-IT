@@ -138,6 +138,12 @@ describe('useConsumableQrPrinterPicker', () => {
     act(() => { result.current.clearPrinter(); });
     expect(result.current.selectedPrinter).toBeNull();
   });
+
+  it('seeds selectedPrinter from initialPrinter (MFU scanned first)', async () => {
+    const { result } = renderPicker({ initialPrinter: mfu });
+
+    await waitFor(() => expect(result.current.selectedPrinter).toBe(mfu));
+  });
 });
 
 const renderCard = (options = {}) =>
@@ -232,5 +238,49 @@ describe('useConsumableCard MFU write-off', () => {
 
     expect(equipmentAPI.consumeConsumable).not.toHaveBeenCalled();
     expect(result.current.consumeError).toContain('серийный номер');
+  });
+
+  it('opens the consumable card with the scanned MFU preselected (completeConsumablePair)', async () => {
+    const { result } = renderCard();
+
+    act(() => { result.current.completeConsumablePair(cartridgeItem, mfu); });
+
+    expect(result.current.consumableCardModal.open).toBe(true);
+    expect(result.current.consumableCardModal.item.ID).toBe(42);
+    await waitFor(() => expect(result.current.consumableQrPrinterPicker.selectedPrinter).toBe(mfu));
+
+    await act(async () => { await result.current.handleConsumableConsume(1); });
+    expect(equipmentAPI.consumeConsumable).toHaveBeenCalledWith(
+      expect.objectContaining({ item_id: 42, qty: 1, reason: 'cartridge' }),
+    );
+    expect(jsonAPI.addCartridgeReplacement).toHaveBeenCalledWith(
+      expect.objectContaining({ inv_no: 'INV-100', equipment_id: 900 }),
+    );
+  });
+
+  it('re-targets the MFU when the pair finishes on the already open card', async () => {
+    const { result } = renderCard();
+    act(() => { result.current.openConsumableCard(cartridgeItem); });
+
+    const other = { ...mfu, id: 999, inv_no: 'INV-999', model_name: 'Brother MFC-L2750' };
+    act(() => { result.current.completeConsumablePair(cartridgeItem, other); });
+
+    await waitFor(() => expect(result.current.consumableQrPrinterPicker.selectedPrinter).toBe(other));
+    expect(result.current.consumableCardModal.open).toBe(true);
+    expect(result.current.consumableCardModal.item.ID).toBe(42);
+  });
+
+  it('rejects a completed pair whose scanned unit is not an MFU', () => {
+    const notifyDatabaseError = vi.fn();
+    const { result } = renderCard({ notifyDatabaseError });
+
+    act(() => {
+      result.current.completeConsumablePair(cartridgeItem, {
+        ...mfu, type_name: 'Системный блок', model_name: 'OptiPlex 7090', vendor_name: 'Dell',
+      });
+    });
+
+    expect(result.current.consumableCardModal.open).toBe(false);
+    expect(notifyDatabaseError).toHaveBeenCalledWith(expect.stringContaining('не МФУ'));
   });
 });

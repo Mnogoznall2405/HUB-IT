@@ -251,6 +251,23 @@ export function NativeAppSettingsScreen() {
     intervals?: Record<string, { p50?: number | null }>;
     storageOps?: Record<string, { p95?: number | null }>;
   } | undefined;
+  const uiTiming = diagnosticsState?.uiTiming as {
+    threadOpens?: {
+      count?: number;
+      fromCache?: number;
+      intervals?: Record<string, { p50?: number | null }>;
+    };
+    inbox?: {
+      loads?: number;
+      intervals?: Record<string, { p50?: number | null }>;
+    };
+    loopLag?: {
+      sampledSeconds?: number;
+      stalls500?: number;
+      stalls1500?: number;
+      maxLagMs?: number;
+    };
+  } | undefined;
   const formatTimingMs = (value: number | null | undefined) => (value == null ? '—' : `${Math.round(value)} мс`);
   const snapshotScopes = Array.isArray(offlineState?.snapshotScopes)
     ? offlineState.snapshotScopes.map(String)
@@ -576,6 +593,16 @@ export function NativeAppSettingsScreen() {
         {(chatSendTiming?.sends || 0) > 0 ? (
           <Text style={{ color: tokens.textSecondary, marginBottom: 10 }}>
             {`Чат: tap→пузырь ${formatTimingMs(chatSendTiming?.intervals?.tap_to_bubble?.p50)} · tap→ответ ${formatTimingMs(chatSendTiming?.intervals?.tap_to_ack?.p50)} · очередь write p95 ${formatTimingMs(chatSendTiming?.storageOps?.write?.p95)}`}
+          </Text>
+        ) : null}
+        {(uiTiming?.threadOpens?.count || 0) > 0 ? (
+          <Text style={{ color: tokens.textSecondary, marginBottom: 10 }}>
+            {`Открытие диалога: тап→экран ${formatTimingMs(uiTiming?.threadOpens?.intervals?.tap_to_mount?.p50)} · экран→данные ${formatTimingMs(uiTiming?.threadOpens?.intervals?.mount_to_ready?.p50)} · из кэша ${uiTiming?.threadOpens?.fromCache ?? 0}/${uiTiming?.threadOpens?.count ?? 0}`}
+          </Text>
+        ) : null}
+        {(uiTiming?.loopLag?.sampledSeconds || 0) > 0 ? (
+          <Text style={{ color: tokens.textSecondary, marginBottom: 10 }}>
+            {`JS-паузы за ${Math.round((uiTiming?.loopLag?.sampledSeconds || 0) / 60)} мин: ≥0,5с ${(uiTiming?.loopLag?.stalls500 ?? 0) + (uiTiming?.loopLag?.stalls1500 ?? 0)} · макс ${formatTimingMs(uiTiming?.loopLag?.maxLagMs)}`}
           </Text>
         ) : null}
         <View style={styles.actions}>

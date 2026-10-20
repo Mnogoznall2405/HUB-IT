@@ -7,6 +7,7 @@ Property 17: Comment chronological ordering
 **Validates: Requirements 9.1, 9.2, 9.3, 9.4**
 """
 from __future__ import annotations
+import conftest
 
 import sys
 from contextlib import contextmanager
@@ -82,7 +83,7 @@ def service(temp_dir, monkeypatch):
         cursor.execute("PRAGMA foreign_keys=OFF")
         cursor.close()
 
-    AppBase.metadata.create_all(engine, checkfirst=True)
+    conftest.copy_app_metadata_schema_for_url(url)
 
     SessionLocal = sessionmaker(bind=engine)
 

@@ -216,11 +216,15 @@ def test_list_conversations_query_count_and_latency(chat_env, capsys):
     assert len(items) == 50
     assert payload["has_more"] is True
 
+    # Snapshot before the plan loop below: its EXPLAIN statements run on the same
+    # instrumented engine and must not count against the page-build budget.
+    query_count = len(statements)
+
     slowest = sorted(statements, key=lambda item: item[1], reverse=True)[:5]
     report = [
         "",
         f"AI7 list_conversations profile (sqlite, {CONVERSATIONS_TOTAL} conversations, page=50):",
-        f"  statements on chat read engine: {len(statements)}",
+        f"  statements on chat read engine: {query_count}",
         f"  wall time: {total_ms:.1f} ms (search call: {cold_ms:.1f} ms)",
         "  slowest statements:",
     ]
@@ -243,9 +247,9 @@ def test_list_conversations_query_count_and_latency(chat_env, capsys):
 
     # Bounded batch read: page list + members + last messages + attachments +
     # reads + states + (per-statement extra such as PRAGMA) — never per-item N+1.
-    assert len(statements) <= 15, (
-        f"list_conversations issued {len(statements)} statements for a 50-item page "
-        f"(N+1 regression?):\n" + "\n".join(stmt[:120] for stmt, _ms, _p in statements)
+    assert query_count <= 15, (
+        f"list_conversations issued {query_count} statements for a 50-item page "
+        f"(N+1 regression?):\n" + "\n".join(stmt[:120] for stmt, _ms, _p in statements[:query_count])
     )
     # sqlite is not PostgreSQL, but an in-process page build this large must not
     # take seconds; production p95 target (300 ms) is validated on the stand.

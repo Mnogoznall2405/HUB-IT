@@ -9,6 +9,7 @@ from backend.database import queries
 from backend.database.equipment_db import invalidate_equipment_cache
 from backend.services.transfer_act_reminder_service import transfer_act_reminder_service
 from backend.services.transfer_service import (
+    TransferActGenerationError,
     generate_transfer_acts,
     get_act_records,
     register_act_records,
@@ -198,6 +199,10 @@ def execute_equipment_transfer(
         transferred.append(transfer_result)
     failed = command.failed
 
+    # A document failure must not hide already committed inventory changes.
+    if transferred:
+        invalidate_equipment_cache(db_id)
+
     prior_result = dict(recovered_result or {})
     prior_acts = [dict(act) for act in list(prior_result.get("acts") or []) if isinstance(act, dict)]
     prior_records = [
@@ -219,14 +224,30 @@ def execute_equipment_transfer(
         # for this operation.  If a crash happened just before that checkpoint,
         # ``generate_transfer_acts`` still reuses deterministic operation files
         # and act IDs rather than emitting another document.
-        acts = prior_acts or generate_transfer_acts(
-            transferred_items=transferred,
-            new_employee_name=target_employee_name,
-            new_employee_dept=str(target_employee_dept or ""),
-            new_employee_email=target_employee_email,
-            db_id=db_id,
-            operation_id=operation_id or None,
-        )
+        if not prior_acts and checkpoint is not None:
+            checkpoint({
+                "success_count": len(transferred),
+                "failed_count": 0,
+                "transferred": transferred,
+                "failed": [],
+                "retry_inv_nos": [],
+                "acts": [],
+                "execution_stage": "inventory_transferred",
+                "one_c_sync_state": "not_requested",
+            })
+        try:
+            acts = prior_acts or generate_transfer_acts(
+                transferred_items=transferred,
+                new_employee_name=target_employee_name,
+                new_employee_dept=str(target_employee_dept or ""),
+                new_employee_email=target_employee_email,
+                db_id=db_id,
+                operation_id=operation_id or None,
+            )
+        except TransferActGenerationError as exc:
+            raise TransferActGenerationError(
+                "Перемещение выполнено, но не удалось создать PDF акта. Не повторяйте перемещение."
+            ) from exc
         if acts and checkpoint is not None:
             checkpoint(
                 {
@@ -271,9 +292,6 @@ def execute_equipment_transfer(
                 logger.exception("Failed to create transfer act upload reminder")
                 reminder_result = _default_reminder_result()
                 reminder_result["warning"] = f"Напоминание о загрузке акта не создано: {exc}"
-
-    if transferred:
-        invalidate_equipment_cache(db_id)
 
     result = {
         "success_count": len(transferred),

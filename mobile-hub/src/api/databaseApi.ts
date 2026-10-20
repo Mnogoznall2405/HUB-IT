@@ -1,6 +1,8 @@
 import apiClient from './client';
 import { LegacyUploadRequired, uploadPhotoResumable } from '../database/resumablePhotoUpload';
 import type { DatabaseOption } from '../account/accountFormat';
+import { getSessionGeneration, subscribeAccessTokenChanges } from '../auth/tokenStore';
+import { addNativeSnapshotClearListener } from '../cache/nativeSnapshotCache';
 
 export type CurrentDatabase = DatabaseOption & {
   access?: string;
@@ -267,6 +269,9 @@ export type EquipmentWorkPayload = {
   componentType?: string;
   componentName?: string;
   componentModel?: string;
+  // Стабильный ключ повтора: клиент переиспользует его при retry, сервер
+  // возобновляет durable-операцию вместо повторного списания расходника.
+  operationId?: string;
 };
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -639,6 +644,34 @@ export async function getEquipment(invNo: string, databaseId?: string): Promise<
   return result;
 }
 
+export type EquipmentBatch = {
+  equipment: EquipmentRecord[];
+  not_found: string[];
+};
+
+export async function getEquipmentByInvNos(invNos: string[], databaseId?: string): Promise<EquipmentBatch> {
+  const seen = new Set<string>();
+  const requested: string[] = [];
+  for (const value of invNos) {
+    const invNo = asText(value);
+    const key = invNo.toLocaleUpperCase('ru-RU');
+    if (!invNo || seen.has(key)) continue;
+    seen.add(key);
+    requested.push(invNo);
+  }
+  if (!requested.length) return { equipment: [], not_found: [] };
+  const { data } = await apiClient.post(
+    '/equipment/by-inv-nos',
+    { inv_nos: requested },
+    databaseHeaders(databaseId),
+  );
+  const row = asRecord(data);
+  return {
+    equipment: normalizeEquipmentList(row.equipment),
+    not_found: (Array.isArray(row.not_found) ? row.not_found : []).map((value) => asText(value)).filter(Boolean),
+  };
+}
+
 export async function getEquipmentActs(invNo: string, databaseId?: string): Promise<EquipmentActsResponse> {
   const normalized = asText(invNo);
   if (!normalized) throw new Error('Не указан инвентарный номер');
@@ -776,20 +809,129 @@ function normalizeDirectoryOptions(value: unknown, idKeys: string[], nameKeys: s
   });
 }
 
-export async function listEquipmentBranches(databaseId?: string): Promise<EquipmentDirectoryOption[]> {
-  const { data } = await apiClient.get('/equipment/branches', databaseHeaders(databaseId));
-  return normalizeDirectoryOptions(data, ['id', 'BRANCH_NO', 'branch_no'], ['name', 'BRANCH_NAME', 'branch_name']);
+type EquipmentDirectoryCacheEntry = {
+  promise: Promise<unknown[]>;
+  settled: boolean;
+  expiresAt: number;
+  scope: string;
+};
+
+const EQUIPMENT_DIRECTORY_TTL_MS = 60_000;
+const EQUIPMENT_DIRECTORY_CACHE_LIMIT = 32;
+const equipmentDirectoryCache = new Map<string, EquipmentDirectoryCacheEntry>();
+let equipmentDirectoryEpoch = 0;
+let lastDirectorySessionGeneration: number | null = null;
+
+function equipmentDirectoryScope(generation: number): string {
+  return `${generation}:${equipmentDirectoryEpoch}`;
 }
 
-export async function listEquipmentLocations(
+export function clearEquipmentDirectoryCache(): void {
+  equipmentDirectoryEpoch += 1;
+  equipmentDirectoryCache.clear();
+  lastDirectorySessionGeneration = getSessionGeneration();
+}
+
+if (typeof subscribeAccessTokenChanges === 'function') {
+  subscribeAccessTokenChanges((accessToken) => {
+    if (accessToken === null) clearEquipmentDirectoryCache();
+  });
+}
+
+if (typeof addNativeSnapshotClearListener === 'function') {
+  addNativeSnapshotClearListener(() => clearEquipmentDirectoryCache());
+}
+
+function cloneDirectoryRows<T>(rows: T[]): T[] {
+  return rows.map((row) => (
+    row !== null && typeof row === 'object' ? { ...(row as Record<string, unknown>) } as T : row
+  ));
+}
+
+function deliverEquipmentDirectoryRows<T>(entry: EquipmentDirectoryCacheEntry): Promise<T[]> {
+  return entry.promise.then((rows) => {
+    if (entry.scope !== equipmentDirectoryScope(getSessionGeneration())) {
+      throw new Error('Сессия или кэш справочников изменились; повторите загрузку.');
+    }
+    return cloneDirectoryRows(rows as T[]);
+  });
+}
+
+function cachedEquipmentDirectory<T>(
+  kind: string,
+  databaseId: string | undefined,
+  branchKey: number | string | null | undefined,
+  loader: () => Promise<T[]>,
+): Promise<T[]> {
+  const generation = getSessionGeneration();
+  if (lastDirectorySessionGeneration === null) {
+    lastDirectorySessionGeneration = generation;
+  } else if (generation !== lastDirectorySessionGeneration) {
+    clearEquipmentDirectoryCache();
+  }
+  const normalizedDatabaseId = asText(databaseId);
+  if (!normalizedDatabaseId) return loader();
+  const normalizedBranch = asText(branchKey) || null;
+  const key = JSON.stringify([generation, normalizedDatabaseId, kind, normalizedBranch]);
+  const existing = equipmentDirectoryCache.get(key);
+  if (existing) {
+    if (!existing.settled || existing.expiresAt > Date.now()) {
+      return deliverEquipmentDirectoryRows(existing);
+    }
+    equipmentDirectoryCache.delete(key);
+  }
+  const scope = equipmentDirectoryScope(generation);
+  const entry: EquipmentDirectoryCacheEntry = {
+    promise: Promise.resolve([]),
+    settled: false,
+    expiresAt: 0,
+    scope,
+  };
+  if (equipmentDirectoryCache.size >= EQUIPMENT_DIRECTORY_CACHE_LIMIT) {
+    const oldest = equipmentDirectoryCache.keys().next().value;
+    if (oldest !== undefined) equipmentDirectoryCache.delete(oldest);
+  }
+  equipmentDirectoryCache.set(key, entry);
+  try {
+    entry.promise = loader().then((rows) => {
+      if (scope !== equipmentDirectoryScope(getSessionGeneration())) {
+        throw new Error('Сессия или кэш справочников изменились; повторите загрузку.');
+      }
+      entry.settled = true;
+      entry.expiresAt = Date.now() + EQUIPMENT_DIRECTORY_TTL_MS;
+      return rows;
+    });
+  } catch (cause) {
+    if (equipmentDirectoryCache.get(key) === entry) equipmentDirectoryCache.delete(key);
+    throw cause;
+  }
+  entry.promise.then(
+    () => undefined,
+    () => {
+      if (equipmentDirectoryCache.get(key) === entry) equipmentDirectoryCache.delete(key);
+    },
+  );
+  return deliverEquipmentDirectoryRows(entry);
+}
+
+export function listEquipmentBranches(databaseId?: string): Promise<EquipmentDirectoryOption[]> {
+  return cachedEquipmentDirectory('branches', databaseId, null, async () => {
+    const { data } = await apiClient.get('/equipment/branches', databaseHeaders(databaseId));
+    return normalizeDirectoryOptions(data, ['id', 'BRANCH_NO', 'branch_no'], ['name', 'BRANCH_NAME', 'branch_name']);
+  });
+}
+
+export function listEquipmentLocations(
   branchNo?: number | string | null,
   databaseId?: string,
 ): Promise<EquipmentDirectoryOption[]> {
-  const { data } = await apiClient.get('/equipment/locations', {
-    params: branchNo === null || branchNo === undefined || asText(branchNo) === '' ? {} : { branch_no: branchNo },
-    ...databaseHeaders(databaseId),
+  return cachedEquipmentDirectory('locations', databaseId, branchNo, async () => {
+    const { data } = await apiClient.get('/equipment/locations', {
+      params: branchNo === null || branchNo === undefined || asText(branchNo) === '' ? {} : { branch_no: branchNo },
+      ...databaseHeaders(databaseId),
+    });
+    return normalizeDirectoryOptions(data, ['loc_no', 'LOC_NO', 'id'], ['loc_name', 'LOC_NAME', 'name']);
   });
-  return normalizeDirectoryOptions(data, ['loc_no', 'LOC_NO', 'id'], ['loc_name', 'LOC_NAME', 'name']);
 }
 
 export async function listEquipmentTypes(ciType = 1, databaseId?: string): Promise<EquipmentTypeOption[]> {
@@ -854,13 +996,31 @@ export async function searchEquipmentOwners(
   return (Array.isArray(source) ? source : []).flatMap((entry) => {
     const row = asRecord(entry);
     const ownerNo = asNumber(readFirst(row, ['owner_no', 'OWNER_NO', 'id', 'ID']));
-    const name = asText(readFirst(row, ['name', 'OWNER_NAME', 'owner_name']));
+    const name = asText(readFirst(row, ['OWNER_DISPLAY_NAME', 'owner_display_name', 'name', 'OWNER_NAME', 'owner_name']));
     return ownerNo === null || !name ? [] : [{
       owner_no: ownerNo,
       name,
-      department: asText(readFirst(row, ['department', 'DEPT', 'OWNER_DEPT'])),
+      department: asText(readFirst(row, ['department', 'DEPT', 'OWNER_DEPT', 'owner_dept'])),
       email: asText(readFirst(row, ['email', 'EMAIL', 'OWNER_EMAIL'])),
     }];
+  });
+}
+
+export function listEquipmentOwnerDepartments(databaseId?: string): Promise<string[]> {
+  return cachedEquipmentDirectory('owner-departments', databaseId, null, async () => {
+    const { data } = await apiClient.get('/equipment/owners/departments', {
+      params: { limit: 1000 },
+      ...databaseHeaders(databaseId),
+    });
+    const source = asRecord(data).departments;
+    const seen = new Set<string>();
+    return (Array.isArray(source) ? source : []).flatMap((entry) => {
+      const name = asText(entry);
+      const key = name.toLocaleLowerCase('ru-RU');
+      if (!name || seen.has(key)) return [];
+      seen.add(key);
+      return [name];
+    });
   });
 }
 
@@ -1153,6 +1313,7 @@ export async function recordEquipmentWork({
   componentType,
   componentName,
   componentModel,
+  operationId,
 }: EquipmentWorkPayload): Promise<{ qty_new?: number }> {
   const serialNumber = asText(equipment.serial_no);
   const common = {
@@ -1175,13 +1336,6 @@ export async function recordEquipmentWork({
     return {};
   }
   if (!consumable?.id) throw new Error('Выберите расходник');
-  const { data: consumeResult } = await apiClient.post('/equipment/consumables/consume', {
-    item_id: consumable.id,
-    inv_no: consumable.inv_no || undefined,
-    qty: 1,
-    reason: kind,
-  }, databaseHeaders(databaseId));
-  const qty_new = asNumber(asRecord(consumeResult).qty_new) ?? undefined;
   const additional_data = {
     consumable_item_id: consumable.id,
     consumable_inv_no: consumable.inv_no,
@@ -1189,8 +1343,11 @@ export async function recordEquipmentWork({
     consumable_branch: consumable.branch_name,
     consumable_location: consumable.location_name,
   };
+  // Полезная нагрузка работы собирается и валидируется ДО списания — раньше
+  // ошибка параметров обнаруживалась уже после уменьшения остатка.
+  let workPayload: Record<string, unknown>;
   if (kind === 'cartridge') {
-    await apiClient.post('/json/works/cartridge', {
+    workPayload = {
       ...common,
       printer_model: equipment.model_name || 'Unknown',
       cartridge_color: 'black',
@@ -1199,22 +1356,33 @@ export async function recordEquipmentWork({
       cartridge_model: consumable.model_name || undefined,
       detection_source: 'sql-consumables',
       additional_data,
-    });
-    return { qty_new };
+    };
+  } else {
+    const normalizedComponentType = asText(componentType);
+    const normalizedComponentModel = asText(componentModel) || consumable.model_name;
+    if (!normalizedComponentType || !normalizedComponentModel) throw new Error('Укажите тип и модель компонента');
+    const value = [equipment.type_name, equipment.model_name].join(' ').toLowerCase();
+    workPayload = {
+      ...common,
+      component_type: normalizedComponentType,
+      component_name: asText(componentName) || normalizedComponentType,
+      component_model: normalizedComponentModel,
+      equipment_kind: /(^|[^a-zа-я0-9])(pc|пк)([^a-zа-я0-9]|$)|системн/.test(value) ? 'pc' : 'printer',
+      detection_source: 'sql-consumables',
+      additional_data,
+    };
   }
-  const normalizedComponentType = asText(componentType);
-  const normalizedComponentModel = asText(componentModel) || consumable.model_name;
-  if (!normalizedComponentType || !normalizedComponentModel) throw new Error('Укажите тип и модель компонента');
-  const value = [equipment.type_name, equipment.model_name].join(' ').toLowerCase();
-  await apiClient.post('/json/works/component', {
-    ...common,
-    component_type: normalizedComponentType,
-    component_name: asText(componentName) || normalizedComponentType,
-    component_model: normalizedComponentModel,
-    equipment_kind: /(^|[^a-zа-я0-9])(pc|пк)([^a-zа-я0-9]|$)|системн/.test(value) ? 'pc' : 'printer',
-    detection_source: 'sql-consumables',
-    additional_data,
-  });
+  // Одна durable-операция: сервер атомарно списывает расходник и пишет работу;
+  // повтор с тем же operation_id возобновляет с checkpoint, без двойного списания.
+  const { data: consumeResult } = await apiClient.post('/equipment/consumables/consume', {
+    item_id: consumable.id,
+    inv_no: consumable.inv_no || undefined,
+    qty: 1,
+    reason: kind,
+    operation_id: operationId || undefined,
+    work: { kind, payload: workPayload },
+  }, databaseHeaders(databaseId));
+  const qty_new = asNumber(asRecord(consumeResult).qty_new) ?? undefined;
   return { qty_new };
 }
 

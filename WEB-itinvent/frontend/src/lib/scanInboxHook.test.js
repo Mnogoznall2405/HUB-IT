@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { INCIDENT_BATCH_SIZE, useScanIncidentInbox } from '../hooks/useScanIncidentInbox';
+import { useScanIncidentInbox } from '../hooks/useScanIncidentInbox';
 
 describe('useScanIncidentInbox', () => {
   let getIncidents;
@@ -9,11 +9,7 @@ describe('useScanIncidentInbox', () => {
     getIncidents = vi.fn();
   });
 
-  it('uses a smaller default batch size for inbox pages', () => {
-    expect(INCIDENT_BATCH_SIZE).toBe(80);
-  });
-
-  it('skips fetching when enabled is false', async () => {
+    it('skips fetching when enabled is false', async () => {
     renderHook(() => useScanIncidentInbox(
       { status: 'new' },
       { batchSize: 1, enabled: false, getIncidents },

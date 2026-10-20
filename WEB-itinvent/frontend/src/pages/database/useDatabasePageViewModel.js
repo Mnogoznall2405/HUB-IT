@@ -11,7 +11,8 @@ import { useNotification } from '../../contexts/NotificationContext';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { createNavigateToastAction } from '../../components/feedback/toastActions';
 import { getOfficeSubtlePanelSx } from '../../theme/officeUiTokens';
-import { toInvNo } from './equipmentModel';
+import { toInvNo, upsertItemInGrouped } from './equipmentModel';
+import { buildEquipmentIndex } from './databaseListModel';
 import { useDatabaseAdSync } from './useDatabaseAdSync';
 import { useDatabaseDbTransfer } from './useDatabaseDbTransfer';
 import { useDatabaseLookups } from './useDatabaseLookups';
@@ -54,7 +55,7 @@ export {
 
 
 export function useDatabasePageViewModel() {
-  const { user, hasPermission } = useAuth();
+  const { hasPermission } = useAuth();
   const {
     notifySuccess: pushSuccessToast,
     notifyInfo: pushInfoToast,
@@ -65,7 +66,8 @@ export function useDatabasePageViewModel() {
   const canDatabaseDelete = hasPermission('database.delete');
   const canAdSync = hasPermission('database.ad_sync');
   const canViewWarehouse1C = hasPermission('warehouse_1c.read');
-  const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
+  const canDeleteEquipment = hasPermission('database.delete_equipment');
+  const canDeleteEquipmentWithHistory = hasPermission('database.delete_equipment_history');
   const location = useLocation();
   const navigate = useNavigate();
   const databaseToastAction = useMemo(() => createNavigateToastAction('/database', 'Открыть базу'), []);
@@ -126,7 +128,8 @@ export function useDatabasePageViewModel() {
   const dialogs = useDatabaseDialogController({
     canDatabaseWrite,
     canDatabaseDelete,
-    isAdmin,
+    canDeleteEquipment,
+    canDeleteEquipmentWithHistory,
     dbName: db_name,
     currentDb,
     location,
@@ -165,6 +168,7 @@ export function useDatabasePageViewModel() {
     refreshRecentActs: list.refreshRecentActs,
     handleDetailRecentActivity: list.handleDetailRecentActivity,
     handleTransferJobDone: list.handleTransferJobDone,
+    photoWorklist: list.photoWorklist,
   });
 
   const employee = useDatabaseEmployeeFlow({
@@ -172,6 +176,7 @@ export function useDatabasePageViewModel() {
     dbName: db_name,
     currentDb,
     initialLoading: list.initialLoading,
+    equipmentRevision: list.comparisonRevision,
     isConsumablesMode: list.isConsumablesMode,
     searchScope: list.searchScope,
     searchQuery: list.searchQuery,
@@ -180,6 +185,7 @@ export function useDatabasePageViewModel() {
     loadingMoreEquipment: list.loadingMoreEquipment,
     nextEquipmentPage: list.nextEquipmentPage,
     hubSearchEmpty: list.hubSearchEmpty,
+    employeeSearch: list.employeeSearch,
     findEquipmentByInvNo: list.findEquipmentByInvNo,
     applyUiSnapshot: list.applyUiSnapshot,
     detailModal: dialogs.detailModal,
@@ -232,18 +238,19 @@ export function useDatabasePageViewModel() {
       });
 
       // Кладём в общий индекс Инвентаря — следующие открытия мгновенные.
+      // allEquipment — grouped {branch → location → items[]}; upsert мержит
+      // поля в существующую строку и переносит её при смене филиала.
       if (mergedRows.length && typeof list.setAllEquipment === 'function') {
         list.setAllEquipment((prev) => {
-          const prevList = Array.isArray(prev) ? prev : [];
-          const byInv = new Map(
-            prevList.map((item) => [String(item?.INV_NO ?? item?.inv_no ?? '').trim(), item]),
-          );
+          const index = buildEquipmentIndex(prev || {});
+          let next = prev || {};
           mergedRows.forEach((row) => {
-            const invNo = String(row?.INV_NO ?? row?.inv_no ?? '').trim();
+            const invNo = toInvNo(row);
             if (!invNo) return;
-            byInv.set(invNo, { ...(byInv.get(invNo) || {}), ...row });
+            const existing = index.get(invNo);
+            next = upsertItemInGrouped(next, existing ? { ...existing, ...row } : row);
           });
-          return Array.from(byInv.values());
+          return next;
         });
       }
     } catch (error) {
@@ -331,7 +338,7 @@ export function useDatabasePageViewModel() {
     canDatabaseDelete,
     canAdSync,
     canViewWarehouse1C,
-    isAdmin,
+    canDeleteEquipment,
     db_name,
     databases,
     currentDb,

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import conftest
 
 import io
 import importlib
@@ -102,6 +103,7 @@ def _configure_local_backend_runtime(tmp_path: Path, monkeypatch, name: str = "a
     chat_db._session_factory = None
     chat_db._read_engine = None
     chat_db._read_session_factory = None
+    conftest.copy_chat_schema_for_url(database_url)
     return database_url
 
 
@@ -471,7 +473,7 @@ def test_ai_chat_service_keeps_multiple_agent_conversations_isolated(tmp_path, m
         assert session.get(chat_models.ChatConversation, second["id"]) is None
 
 
-def test_general_ai_is_hidden_auto_titles_and_captures_safe_memory(tmp_path, monkeypatch):
+def test_general_ai_is_hidden_auto_titles_and_defers_memory_to_worker(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "general_ai_memory.db")
     ai_chat_module = importlib.import_module("backend.ai_chat.service")
     chat_service_module = importlib.import_module("backend.chat.service")
@@ -527,8 +529,9 @@ def test_general_ai_is_hidden_auto_titles_and_captures_safe_memory(tmp_path, mon
     )["title"] == "Я предпочитаю краткие ответы по оборудованию"
     memory = service.list_personal_memory(current_user_id=int(actor["id"]))
     assert memory["enabled"] is True
-    assert len(memory["items"]) == 1
-    assert "краткие ответы" in memory["items"][0]["content"]
+    # The queue ACK no longer extracts durable facts; the real worker path is
+    # exercised in test_e2e_ai_smart_memory through HTTP and source provenance.
+    assert memory["items"] == []
 
     service.rename_conversation(
         conversation_id=conversation["id"], current_user_id=int(actor["id"]), title="Моё название"
@@ -581,12 +584,6 @@ def test_personal_memory_feature_flag_is_fail_closed(tmp_path, monkeypatch):
     service = ai_chat_module.AiChatService()
     monkeypatch.setattr(ai_chat_module, "AI_PERSONAL_MEMORY_ENABLED", False)
 
-    service._capture_memory_candidates(
-        user_id=9,
-        conversation_id="conv-1",
-        message_id="msg-1",
-        text="Я предпочитаю краткие ответы",
-    )
     settings = service.set_personal_memory_enabled(current_user_id=9, enabled=True)
 
     assert settings == {
@@ -644,7 +641,8 @@ def test_personal_memory_ranks_relevant_fact_before_newer_noise(tmp_path, monkey
 
     assert "relevant-old" not in rendered
     assert "принтеров Canon" in rendered
-    assert len(rendered.splitlines()) == 20
+    assert len(rendered.splitlines()) == 1
+    assert "Настройка интерфейса" not in rendered
 
 
 def test_personal_memory_reports_only_relevant_facts_and_marks_the_answer(tmp_path, monkeypatch):
@@ -675,7 +673,7 @@ def test_personal_memory_reports_only_relevant_facts_and_marks_the_answer(tmp_pa
         return text, hits
 
     text, hits = build("Что важно при обслуживании принтеров Canon?")
-    assert "тёмное оформление" in text and hits == ["m-canon"]
+    assert "тёмное оформление" not in text and hits == ["m-canon"]
     assert build("Как настроить VPN?")[1] == []
 
     mark = ai_chat_module._append_memory_mark

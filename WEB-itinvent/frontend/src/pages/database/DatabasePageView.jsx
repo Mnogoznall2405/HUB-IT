@@ -6,6 +6,9 @@ import DatabaseAdSyncDialog from './DatabaseAdSyncDialog';
 import DatabaseDbTransferDialog from './DatabaseDbTransferDialog';
 import DatabaseDataSections from './DatabaseDataSections';
 import { EmployeeCompareProvider } from './employeeCompareContext';
+import { OneCMarksProvider, isOneCMarkAction, useEquipmentOneCMarks } from './oneCMarksContext';
+import { useAuth } from '../../contexts/AuthContext';
+import { useNotification } from '../../contexts/NotificationContext';
 import DatabaseDialogsLayer from './DatabaseDialogsLayer';
 import DatabaseMobileHeader from './DatabaseMobileHeader';
 import DatabasePageHeader from './DatabasePageHeader';
@@ -19,6 +22,7 @@ import { formatDetailDate as formatDate } from './detailModel';
 import { buildDialogsLayerProps } from './dialogsLayerProps';
 
 const DatabaseEmployeeSearchFallback = lazy(() => import('./DatabaseEmployeeSearchFallback'));
+const DatabaseEmployeeSearchResults = lazy(() => import('./DatabaseEmployeeSearchResults'));
 const EquipmentPhotoReviewDialog = lazy(() => import('./EquipmentPhotoReviewDialog'));
 const EquipmentQualityDialog = lazy(() => import('./EquipmentQualityDialog'));
 
@@ -153,6 +157,7 @@ export default function DatabasePageView({ vm }) {
     employeeCompareSummaries,
     employeeEquipmentDialog,
     employeeFallback,
+    employeeSearch,
     equipment,
     equipmentLoadMoreSentinelRef,
     equipmentPagesTotal,
@@ -215,7 +220,7 @@ export default function DatabasePageView({ vm }) {
     identifyPCLoading,
     initialLoading,
     isActsScope,
-    isAdmin,
+    canDeleteEquipment,
     isConsumablesMode,
     isMobile,
     isServerSearchActive,
@@ -383,6 +388,24 @@ export default function DatabasePageView({ vm }) {
     typeof window !== 'undefined' ? window.localStorage.getItem('selected_database') : '',
   );
   const photoReviewEnabled = Boolean(canPhotoVerify) && !isConsumablesMode;
+
+  const { hasPermission } = useAuth();
+  const { notifySuccess, notifyError } = useNotification();
+  const oneCMarks = useEquipmentOneCMarks({
+    dbKey: photoReviewDbId,
+    enabled: !isConsumablesMode,
+    canMark: hasPermission('database.one_c_mark'),
+    notifySuccess,
+    notifyError,
+  });
+  const applyOneCMarkAction = oneCMarks.applyAction;
+  const handleRowAction = useCallback((actionType, itemOrInvNo) => {
+    if (isOneCMarkAction(actionType)) {
+      void applyOneCMarkAction(actionType, itemOrInvNo);
+      return;
+    }
+    handleAction(actionType, itemOrInvNo);
+  }, [applyOneCMarkAction, handleAction]);
   const { summary: photoReviewSummary, refresh: refreshPhotoReviewSummary } = useEquipmentPhotoReviewSummary({
     enabled: photoReviewEnabled,
     dbId: photoReviewDbId,
@@ -466,7 +489,7 @@ export default function DatabasePageView({ vm }) {
         onTableSort={handleTableSort}
         onSelectAll={handleSelectAll}
         onSelect={handleCheckboxChange}
-        onAction={handleAction}
+        onAction={handleRowAction}
         onOpenEmployee={handleOpenEmployee}
         onOpenCurrentAct={handleOpenEquipmentActFile}
         openingCurrentActDocNo={detailActOpeningDocNo}
@@ -476,7 +499,7 @@ export default function DatabasePageView({ vm }) {
         dataMode={dataMode}
         canWrite={canDatabaseWrite}
         canDelete={canDatabaseDelete}
-        isAdmin={isAdmin}
+        canDeleteEquipment={canDeleteEquipment}
         mobileSelectionMode={mobileSelectionMode}
         onMobileCardSelect={handleMobileCardSelect}
         onToggleBranch={toggleBranch}
@@ -492,14 +515,14 @@ export default function DatabasePageView({ vm }) {
     expandedBranches,
     expandedCards,
     expandedLocations,
-    handleAction,
+    handleRowAction,
     handleOpenEquipmentActFile,
     handleOpenEmployee,
     handleCheckboxChange,
     handleMobileCardSelect,
     handleSelectAll,
     handleTableSort,
-    isAdmin,
+    canDeleteEquipment,
     isMobile,
     detailActOpeningDocNo,
     mobileSelectionMode,
@@ -516,7 +539,7 @@ export default function DatabasePageView({ vm }) {
 
   if (initialLoading) {
     return (
-      <MainLayout headerMode={isMobile ? 'hidden' : 'default'} showDatabaseSelector>
+      <MainLayout headerMode={isMobile ? 'hidden' : 'integrated'} showDatabaseSelector={isMobile}>
         <PageShell>
           <LoadingSpinner message="Загрузка данных..." />
         </PageShell>
@@ -525,7 +548,10 @@ export default function DatabasePageView({ vm }) {
   }
 
   return (
-    <MainLayout headerMode={isMobile ? 'hidden' : 'default'} showDatabaseSelector>
+    <MainLayout
+      headerMode={isMobile ? 'hidden' : 'integrated'}
+      showDatabaseSelector={isMobile}
+    >
       <PageShell sx={{
         pb: isMobile
           ? `calc(var(--app-shell-mobile-bottom-nav-height, 64px) + ${!isConsumablesMode && selectedItems.length > 0 ? `${MOBILE_BAR_HEIGHT + MOBILE_BAR_GAP + 4}px` : '8px'})`
@@ -554,8 +580,8 @@ export default function DatabasePageView({ vm }) {
           onSearchChange={handleSearchChange}
           onSearchKeyDown={handleCombinedSearchKeyDown}
           onSearchClear={clearSearch}
-          searchLoading={searchLoading}
-          serverSearchDegraded={serverSearchDegraded}
+          searchLoading={searchLoading || employeeSearch.loading}
+          serverSearchDegraded={searchScope === 'equipment' && serverSearchDegraded}
           searchTypeNo={searchTypeNo}
           onSearchTypeChange={setSearchTypeNo}
           typeOptions={equipmentTypeOptions}
@@ -563,9 +589,15 @@ export default function DatabasePageView({ vm }) {
           onSearchFieldChange={setSearchField}
           dataVersionStale={dataVersionStale}
           onRefreshData={() => void refreshCurrentDbData({ force: true })}
+          databases={databases}
+          currentDb={currentDb}
+          dbName={db_name}
+          selectedDatabaseName={selectedDatabaseName}
+          onDatabaseSelectChange={handleDatabaseSelectChange}
         />
 
         <EmployeeCompareProvider summaries={employeeCompareSummaries}>
+        <OneCMarksProvider value={oneCMarks.value}>
           {employeeFallback.active && (
             <Suspense fallback={null}>
               <DatabaseEmployeeSearchFallback
@@ -578,6 +610,11 @@ export default function DatabasePageView({ vm }) {
             </Suspense>
           )}
 
+        {employeeSearch.active && !employeeFallback.active && (
+          <Suspense fallback={null}>
+            <DatabaseEmployeeSearchResults search={employeeSearch} onOpenEmployee={handleOpenEmployee} />
+          </Suspense>
+        )}
         <DatabaseScopeContent
           theme={theme}
           ui={ui}
@@ -635,7 +672,7 @@ export default function DatabasePageView({ vm }) {
           printing={qrBatchPrint.printing}
           onClearSelection={handleClearSelection}
           onQuickPrint={qrBatchPrint.printQuick}
-          onPrintWithDialog={qrBatchPrint.printWithDialog}
+          onPrintWithDialog={qrBatchPrint.openPrintOptions}
           onOpenLocationTransfer={handleOpenLocationTransferForSelection}
           onOpenTransfer={handleOpenTransferForSelection}
           onOpenDbTransfer={openDbTransfer}
@@ -680,6 +717,7 @@ export default function DatabasePageView({ vm }) {
             equipmentPagesTotal={equipmentPagesTotal}
           />
         </DatabaseScopeContent>
+        </OneCMarksProvider>
         </EmployeeCompareProvider>
 
         <DatabaseDialogsLayer {...dialogsLayerProps} />
@@ -689,7 +727,7 @@ export default function DatabasePageView({ vm }) {
             <EquipmentQualityDialog
               open
               dbId={photoReviewDbId}
-              isAdmin={isAdmin}
+              canDeleteEquipment={canDeleteEquipment}
               reloadToken={listReloadToken}
               onClose={handleCloseQuality}
               onOpenEquipment={handleOpenEquipmentFromQuality}

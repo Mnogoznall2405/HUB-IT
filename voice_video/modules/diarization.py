@@ -20,10 +20,16 @@ except ImportError:
 
 from .audio_processor import ProcessingConfig, retry_on_failure, monitor_memory, cleanup_memory
 from .speaker_utils import (
+    DiarizationChunkError,
+    DiarizationSegments,
+    REFERENCE_SAMPLES_LIMIT,
     TurnIndex,
     assign_words_by_overlap,
+    diarization_cache_policy,
     mean_normalized,
     pick_embedding_spans,
+    reference_sample_files,
+    run_chunked_diarization,
     solo_segments,
 )
 from config import DEVICE, HF_TOKEN, MODELS_DIR, PROJECT_ROOT, REFERENCE_VOICES_DIR
@@ -91,8 +97,144 @@ def _pyannote_major_version() -> int:
         return 0
 
 
+def _annotation_turns(annotation):
+    if hasattr(annotation, 'itertracks'):
+        return [{'start': float(turn.start), 'end': float(turn.end), 'speaker': str(speaker)}
+                for turn, _, speaker in annotation.itertracks(yield_label=True)]
+    if hasattr(annotation, 'to_dict'):
+        annotation = annotation.to_dict('records')
+    return [{'start': float(turn['start']), 'end': float(turn['end']), 'speaker': str(turn['speaker'])}
+            for turn in annotation]
+
+
+def diarization_model_fingerprint(diarize_wrapper):
+    import hashlib
+    import pyannote.audio as pyannote_audio
+
+    cached = getattr(diarize_wrapper, '_chunk_model_fingerprint', None)
+    if cached is not None:
+        return cached
+    pipeline = getattr(diarize_wrapper, 'model', None)
+    if pipeline is None:
+        raise DiarizationChunkError('Модель диаризации недоступна для проверки чекпоинтов')
+    digest = hashlib.sha256(str(pyannote_audio.__version__).encode())
+    models = (getattr(getattr(pipeline, '_segmentation', None), 'model', None),
+              getattr(getattr(pipeline, '_embedding', None), 'model_', None))
+    for model in models:
+        if model is None or not hasattr(model, 'state_dict'):
+            raise DiarizationChunkError('Нельзя проверить версии моделей чанковой диаризации')
+        for name, tensor in sorted(model.state_dict().items()):
+            digest.update(f'{name}:{tensor.dtype}:{tuple(tensor.shape)}'.encode())
+            digest.update(tensor.detach().contiguous().reshape(-1).view(torch.uint8).cpu().numpy().tobytes())
+    diarize_wrapper._chunk_model_fingerprint = digest.hexdigest()
+    return diarize_wrapper._chunk_model_fingerprint
+
+
+def _label_embeddings(diarize_wrapper, audio, selected, overlap, *, sample_rate):
+    """Вектор каждой метки по чистым репликам всей записи (до 30 центральных отрезков ≤8 с).
+
+    Эмбеддер — тот же, что у pipeline. Для слияния дублей это надёжнее оконных прототипов:
+    у малоговорящих голосов те шумят, а здесь вектор набирается со всей записи.
+    """
+    pipeline = getattr(diarize_wrapper, 'model', None)
+    embed = getattr(pipeline, '_embedding', None)
+    if embed is None:
+        raise DiarizationChunkError('Эмбеддер pipeline недоступен для пересчёта голосов')
+    min_samples = int(getattr(embed, 'min_num_samples', 0) or 0)
+    by_label = {}
+    for turn in selected:
+        by_label.setdefault(turn['speaker'], []).append(turn)
+    vectors = {}
+    for label, turns in by_label.items():
+        solo = solo_segments(turns, label, overlap)
+        spans = (pick_embedding_spans(solo, max_spans=30, min_duration=2.0)
+                 or pick_embedding_spans(turns, max_spans=30, min_duration=1.0))
+        parts = []
+        for start, end in spans:
+            chunk = np.ascontiguousarray(audio[max(0, int(start * sample_rate)):int(end * sample_rate)])
+            if len(chunk) <= max(min_samples, 1):
+                continue
+            wave = torch.from_numpy(chunk).float().unsqueeze(0).unsqueeze(0)
+            parts.append(np.asarray(embed(wave)).reshape(-1))
+        vector = mean_normalized(parts)
+        if vector is not None:
+            vectors[label] = vector
+    return vectors
+
+
+def _native_chunk_payload(diarize_wrapper, audio, *, sample_rate, exclusive, **kwargs):
+    import time
+
+    pipeline = getattr(diarize_wrapper, 'model', None)
+    if pipeline is None or _pyannote_major_version() < 4:
+        raise DiarizationChunkError('Чанковая диаризация требует pyannote.audio 4 и эмбеддингов community-1')
+    last_progress = [time.monotonic()]
+
+    def hook(stage, artifact, file=None, total=None, completed=None):
+        if time.monotonic() - last_progress[0] >= 30 and total:
+            logger.info('Диаризация окна: %s %s/%s', stage, completed, total)
+            last_progress[0] = time.monotonic()
+
+    waveform = torch.from_numpy(np.ascontiguousarray(audio)).float().unsqueeze(0)
+    output = pipeline({'waveform': waveform, 'sample_rate': sample_rate}, hook=hook, **kwargs)
+    ordinary = getattr(output, 'speaker_diarization', None)
+    selected = getattr(output, 'exclusive_speaker_diarization', None) if exclusive else ordinary
+    if ordinary is None or selected is None:
+        raise DiarizationChunkError('Модель не вернула обычную и exclusive-разметку окна')
+    embeddings = getattr(output, 'speaker_embeddings', None)
+    labels = ordinary.labels()
+    if labels and (embeddings is None or np.asarray(embeddings).ndim != 2 or len(embeddings) != len(labels)):
+        raise DiarizationChunkError('Модель не вернула согласованные эмбеддинги спикеров окна')
+    return {'segments': _annotation_turns(selected), 'overlap_segments': _annotation_turns(ordinary),
+            'embeddings': {str(label): embeddings[idx] for idx, label in enumerate(labels)}}
+
+
+def _run_long_diarization(diarize_wrapper, audio, config, audio_file, *, sample_rate, exclusive,
+                         num_speakers, min_speakers, max_speakers):
+    from functools import partial
+
+    prefix, identity = None, {'policy': diarization_cache_policy(config), 'exclusive': exclusive}
+    if audio_file and getattr(config, 'use_checkpoints', True):
+        import json
+
+        prefix = Path(audio_file).with_name(f'{Path(audio_file).stem}_diar_window')
+        identity['model'] = diarization_model_fingerprint(diarize_wrapper)
+        pipeline = getattr(diarize_wrapper, 'model', None)
+        identity['parameters'] = json.loads(json.dumps(
+            pipeline.parameters(instantiated=True), default=repr))
+    local_max = int(getattr(config, 'diarization_chunk_max_speakers', 20))
+    if num_speakers:
+        local_max = min(local_max, int(num_speakers))
+    result = run_chunked_diarization(
+        audio, partial(_native_chunk_payload, diarize_wrapper, sample_rate=sample_rate, exclusive=exclusive),
+        sample_rate=sample_rate, chunk_seconds=config.diarization_chunk_seconds,
+        overlap_seconds=getattr(config, 'diarization_chunk_overlap_seconds', 30),
+        local_max_speakers=local_max, similarity=getattr(config, 'diarization_stitch_similarity', .80),
+        margin=getattr(config, 'diarization_stitch_margin', .08),
+        min_speech=getattr(config, 'diarization_stitch_min_speech', 6), cache_prefix=prefix, cache_identity=identity,
+        progress=lambda done, total, detail: logger.info(
+            'Диаризация: окно %s/%s завершено за %.3f с%s',
+            done, total, detail['seconds'], ' (чекпоинт)' if detail['cached'] else '',
+        ),
+        label_embedder=lambda selected, overlap: _label_embeddings(
+            diarize_wrapper, audio, selected, overlap, sample_rate=sample_rate),
+    )
+    if result.metadata.get('merge_vectors') != 'final':
+        logger.warning('Диаризация: слияние дублей по оконным прототипам (пересчёт эмбеддингов недоступен)')
+    result.metadata['model'] = identity.get('model')
+    result.metadata['requested_speakers'] = num_speakers
+    result.metadata['requested_range'] = [min_speakers, max_speakers]
+    count = result.metadata['speakers_count']
+    if (num_speakers and count != num_speakers) or (min_speakers and count < min_speakers):
+        logger.warning('Диаризация: общий реестр содержит %s голосов; заданное число не достигнуто, принудительного слияния нет', count)
+    if any(window['saturated'] for window in result.metadata['windows']):
+        logger.warning('Диаризация: есть окна на верхней границе числа спикеров; проверьте разметку этих окон')
+    logger.info('Диаризация: общий реестр %s голосов, без глобального предела %s', count, max_speakers)
+    return result
+
+
 def run_diarization(diarize_wrapper, audio, *, num_speakers, min_speakers, max_speakers,
-                    exclusive: bool = False, sample_rate: int = 16000):
+                    exclusive: bool = False, sample_rate: int = 16000, config=None, audio_file=None):
     """Диаризация через WhisperX DiarizationPipeline.
 
     exclusive=True (DIARIZATION_EXCLUSIVE) — берём ``exclusive_speaker_diarization``
@@ -100,6 +242,20 @@ def run_diarization(diarize_wrapper, audio, *, num_speakers, min_speakers, max_s
     скорее всего распознал STT. WhisperX отдаёт только обычную разметку с
     наложениями, поэтому зовём pipeline напрямую; при любой проблеме — как раньше.
     """
+    chunk_seconds = float(getattr(config, 'diarization_chunk_seconds', 0))
+    threshold = float(getattr(config, 'diarization_chunk_threshold_seconds', 1800))
+    if not np.isfinite(chunk_seconds) or chunk_seconds < 0 or not np.isfinite(threshold) or threshold < 0:
+        raise DiarizationChunkError('Некорректные настройки чанковой диаризации')
+    if chunk_seconds and len(audio) / sample_rate > max(chunk_seconds, threshold):
+        try:
+            return _run_long_diarization(
+                diarize_wrapper, audio, config, audio_file, sample_rate=sample_rate, exclusive=exclusive,
+                num_speakers=num_speakers, min_speakers=min_speakers, max_speakers=max_speakers,
+            )
+        except DiarizationChunkError:
+            raise
+        except Exception as exc:
+            raise DiarizationChunkError(f'Не удалось выполнить чанковую диаризацию: {exc}') from exc
     if exclusive:
         pipeline = getattr(diarize_wrapper, 'model', None)
         if pipeline is None or _pyannote_major_version() < 4:
@@ -117,6 +273,10 @@ def run_diarization(diarize_wrapper, audio, *, num_speakers, min_speakers, max_s
                 exclusive_ann = getattr(output, 'exclusive_speaker_diarization', None)
                 if exclusive_ann is not None:
                     logger.info("🎭 Эксклюзивная диаризация community-1 (без наложений)")
+                    if chunk_seconds:
+                        ordinary = getattr(output, 'speaker_diarization', None)
+                        if ordinary is not None:
+                            return DiarizationSegments(_annotation_turns(exclusive_ann), _annotation_turns(ordinary), {'mode': 'single'})
                     return exclusive_ann
                 logger.warning("⚠️ Модель не вернула exclusive_speaker_diarization — обычная разметка")
                 return getattr(output, 'speaker_diarization', output)
@@ -396,7 +556,7 @@ class SpeakerDiarization:
         )
         return self.embedding_inference
 
-    @retry_on_failure(max_retries=2, delay=1.0)
+    @retry_on_failure(max_retries=2, delay=1.0, fatal=(DiarizationChunkError,))
     def perform_diarization(self, audio_file: str) -> Optional[Dict]:
         """Выполняет диаризацию аудио."""
         try:
@@ -420,6 +580,8 @@ class SpeakerDiarization:
                 min_speakers=self.config.diarization_min_speakers,
                 max_speakers=self.config.diarization_max_speakers,
                 exclusive=bool(getattr(self.config, 'diarization_exclusive', False)),
+                config=self.config,
+                audio_file=audio_file,
             )
             
             # Освобождаем память
@@ -436,7 +598,10 @@ class SpeakerDiarization:
                 logger.warning("⚠️ Диаризация не дала результатов")
             
             return diarize_segments
-            
+
+        except DiarizationChunkError:
+            cleanup_memory()
+            raise
         except Exception as e:
             logger.error(f"❌ Ошибка диаризации: {e}")
             cleanup_memory()
@@ -446,6 +611,8 @@ class SpeakerDiarization:
         """Приводит результат диаризации WhisperX к списку словарей."""
         if diarization_result is None:
             return []
+        if isinstance(diarization_result, DiarizationSegments):
+            return diarization_result
 
         if hasattr(diarization_result, "to_dict"):
             diarization_result = diarization_result.to_dict("records")
@@ -1010,8 +1177,8 @@ class SpeakerDiarization:
                         logger.error(f"❌ Ошибка загрузки эмбеддинга для {speaker_name}: {e}")
                         continue
                 if speaker_name not in reference_embeddings:
-                    # Создаем эмбеддинг из аудиофайлов
-                    audio_files = list(speaker_dir.glob("*.wav")) + list(speaker_dir.glob("*.mp3"))
+                    # Создаем эмбеддинг из аудиофайлов (естественный порядок, лимит REFERENCE_SAMPLES_LIMIT)
+                    audio_files = reference_sample_files(speaker_dir)
                     
                     if audio_files:
                         try:
@@ -1037,7 +1204,7 @@ class SpeakerDiarization:
             
             embeddings = []
             
-            for audio_file in audio_files[:3]:  # Ограничиваем количество файлов
+            for audio_file in audio_files[:REFERENCE_SAMPLES_LIMIT]:  # Ограничиваем количество файлов
                 try:
                     # Конвертируем в WAV если нужно
                     if audio_file.suffix.lower() != '.wav':
@@ -1106,9 +1273,12 @@ class SpeakerDiarization:
             return {
                 'success': True,
                 'segments': segments_with_speakers,
-                'diarization_result': diarization_result
+                'diarization_result': getattr(diarization_result, 'overlap_segments', diarization_result),
+                'diarization_details': getattr(diarization_result, 'metadata', {})
             }
-            
+
+        except DiarizationChunkError:
+            raise
         except Exception as e:
             logger.error(f"❌ Ошибка диаризации: {e}")
             return {'success': False, 'segments': transcript_segments}

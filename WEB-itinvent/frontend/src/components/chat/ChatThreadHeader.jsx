@@ -27,6 +27,7 @@ import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 
 import { chatAPI } from '../../api/client';
+import ConversationCallButtons from './calls/ConversationCallButtons';
 import { ConversationAvatar } from './ChatCommon';
 import { getConversationDisplayTitle, resolveActiveAiBotRecord } from './chatHelpers';
 import { CHAT_DEFAULT_FONT_SIZES, CHAT_FONT_FAMILY } from './chatUiTokens';
@@ -84,6 +85,8 @@ export const AI_STAGE_LABELS = {
   retrieving_kb: 'Ищу в базе знаний',
   checking_itinvent: 'Проверяю данные ITinvent',
   checking_ad: 'Проверяю данные сотрудников',
+  checking_office: 'Проверяю почту и рабочие данные',
+  result_ready: 'Ответ готов',
   searching_equipment: 'Ищу оборудование',
   opening_equipment_card: 'Открываю карточку HUB',
   generating_answer: 'Формирую ответ',
@@ -648,6 +651,12 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
               compactMobile={compactMobile}
             />
           ) : null}
+          <ConversationCallButtons
+            conversation={activeConversation}
+            ActionComponent={HeaderAction}
+            compactMobile={compactMobile}
+            density={density}
+          />
           <HeaderAction title="Поиск по сообщениям" onClick={onOpenSearch} compactMobile={compactMobile} hidden={compactMobile} density={density}>
             <SearchRoundedIcon fontSize="small" />
           </HeaderAction>

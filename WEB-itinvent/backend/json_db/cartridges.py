@@ -8,6 +8,7 @@ to compatible cartridges.
 """
 
 import logging
+import threading
 from typing import Dict, List, Optional, Any, Set
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -61,6 +62,10 @@ class CartridgeDatabase:
     """
 
     CARTRIDGE_DB_FILE = "cartridge_database.json"
+
+    # A new instance is created per request and writers run in worker threads, so the
+    # whole-document read-modify-write of upsert/delete is serialized process-wide.
+    _write_lock = threading.Lock()
 
     def __init__(self, data_manager: Optional[JSONDataManager] = None):
         """
@@ -351,6 +356,23 @@ class CartridgeDatabase:
         compatible_models: Optional[List[Dict[str, Any]]] = None,
         is_color: Optional[bool] = None,
     ) -> Dict[str, Any]:
+        """Create or update a printer entry under the process-wide write lock."""
+        with self._write_lock:
+            return self._upsert_entry_locked(
+                printer_model,
+                oem_cartridge=oem_cartridge,
+                compatible_models=compatible_models,
+                is_color=is_color,
+            )
+
+    def _upsert_entry_locked(
+        self,
+        printer_model: str,
+        *,
+        oem_cartridge: Optional[str] = None,
+        compatible_models: Optional[List[Dict[str, Any]]] = None,
+        is_color: Optional[bool] = None,
+    ) -> Dict[str, Any]:
         """
         Create or update a printer compatibility entry.
 
@@ -403,6 +425,11 @@ class CartridgeDatabase:
         return entry
 
     def delete_entry(self, printer_model: str) -> bool:
+        """Remove a printer entry under the process-wide write lock."""
+        with self._write_lock:
+            return self._delete_entry_locked(printer_model)
+
+    def _delete_entry_locked(self, printer_model: str) -> bool:
         """
         Remove a printer compatibility entry.
 

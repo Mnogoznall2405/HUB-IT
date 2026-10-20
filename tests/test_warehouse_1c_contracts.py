@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import types
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,6 +24,12 @@ from backend.services.warehouse_1c_service import (  # noqa: E402
 from backend.api.v1 import warehouse_1c as warehouse_1c_api  # noqa: E402
 from backend.models.auth import User  # noqa: E402
 from backend.models.warehouse_1c import Warehouse1CBalanceBatchRequest  # noqa: E402
+from tests.test_warehouse_1c_process_bridge import DISPATCHER_PATH, _wait_until
+
+
+@pytest.fixture(autouse=True)
+def _use_pooled_test_transport(monkeypatch):
+    monkeypatch.setattr(warehouse_1c_service, "_process_bridge_enabled", False)
 
 
 def _balance(*, qty: float, series: str) -> dict:
@@ -36,6 +43,122 @@ def _balance(*, qty: float, series: str) -> dict:
         "qty_balance": qty,
         "cost_balance": qty * 10,
     }
+
+
+@pytest.fixture
+def isolated_bridge_client(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from backend.api import deps
+
+    monkeypatch.setenv("WAREHOUSE_1C_BRIDGE_DISPATCHER", DISPATCHER_PATH)
+    monkeypatch.setenv("WAREHOUSE_1C_BRIDGE_QUEUE_LIMIT", "0")
+    service = Warehouse1CService(
+        data_manager=types.SimpleNamespace(load_json=lambda _name, default_content=None: default_content),
+        enable_process_bridge=True,
+    )
+    monkeypatch.setattr(warehouse_1c_api, "warehouse_1c_service", service)
+    app = FastAPI()
+    app.include_router(warehouse_1c_api.router, prefix="/warehouse-1c")
+    app.dependency_overrides[deps.get_current_active_user] = lambda: User(
+        id=42, username="warehouse-read-test", role="admin", is_active=True
+    )
+    try:
+        service._run_process_bridge_sync("warmup", {}, timeout=10)
+        with TestClient(app) as client:
+            yield client, service
+    finally:
+        service.shutdown()
+
+
+def test_http_invalid_filters_do_not_disable_subsequent_warehouse_read(isolated_bridge_client):
+    client, service = isolated_bridge_client
+    # Both parent-side validation and remote typed validation must remain HTTP 400.
+    for params in ({}, {"q": "invalid-filter"}, {"q": "invalid-filter"}, {"q": "invalid-filter"}):
+        response = client.get("/warehouse-1c/balances", params=params)
+        assert response.status_code == 400
+    response = client.get("/warehouse-1c/balances", params={"warehouse_ref": "wh-1"})
+    assert response.status_code == 200
+    assert service._process_bridge.get_status()["failed"] == 0
+    assert service._process_bridge.get_status()["circuit_breaker"] == "closed"
+
+
+def test_http_overload_is_503_and_does_not_interrupt_the_active_read(isolated_bridge_client):
+    client, service = isolated_bridge_client
+    responses = []
+
+    def read_balances():
+        responses.append(client.get("/warehouse-1c/balances", params={"q": "slow-read"}))
+
+    thread = threading.Thread(target=read_balances)
+    thread.start()
+    try:
+        assert _wait_until(lambda: service._process_bridge.get_status()["pending"] == 1)
+        overloaded = client.get("/warehouse-1c/balances", params={"warehouse_ref": "wh-1"})
+        assert overloaded.status_code == 503
+        assert "items" not in overloaded.json()
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+        assert responses[0].status_code == 200
+        assert service._process_bridge.get_status()["restarts"] == 0
+    finally:
+        thread.join(timeout=10)
+
+
+def test_http_readiness_is_false_when_the_interactive_worker_is_stopped(isolated_bridge_client, monkeypatch):
+    client, service = isolated_bridge_client
+    monkeypatch.setattr(service, "get_catalog_status", lambda: {"status": "ok"})
+    service._process_bridge.shutdown()
+    response = client.get("/warehouse-1c/status")
+    assert response.status_code == 200
+    assert response.json()["bridge"]["ready"] is False
+    assert response.json()["ready"] is False
+
+
+@pytest.mark.parametrize("export_fails", [False, True])
+def test_catalog_leader_lease_has_no_open_transaction_during_export(monkeypatch, export_fails):
+    from backend.appdb import db as app_db
+
+    class LeaseConnection:
+        locked = False
+        in_transaction = False
+        autocommit = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            assert not self.locked
+
+        def execution_options(self, *, isolation_level):
+            self.autocommit = isolation_level == "AUTOCOMMIT"
+            return self
+
+        def execute(self, statement, params):
+            self.in_transaction = not self.autocommit
+            self.locked = "pg_try_advisory_lock" in str(statement)
+            return types.SimpleNamespace(scalar=lambda: True)
+
+    connection = LeaseConnection()
+    monkeypatch.setattr(app_db, "is_app_database_configured", lambda: True)
+    monkeypatch.setattr(app_db, "get_app_engine", lambda: types.SimpleNamespace(
+        dialect=types.SimpleNamespace(name="postgresql"), connect=lambda: connection
+    ))
+
+    def export():
+        assert connection.locked, "export must retain the leader lease"
+        assert not connection.in_transaction, "waiting on 1C must not keep a PostgreSQL transaction open"
+        if export_fails:
+            raise RuntimeError("catalog export failed")
+        return {"status": "ok"}
+
+    monkeypatch.setattr(warehouse_1c_service, "sync_catalog_from_1c", export)
+    if export_fails:
+        with pytest.raises(RuntimeError, match="catalog export failed"):
+            warehouse_1c_service.sync_catalog_from_1c_as_leader()
+    else:
+        warehouse_1c_service.sync_catalog_from_1c_as_leader()
+    assert not connection.locked
 
 
 def test_connect_decodes_ascii_unicode_escapes_in_username(monkeypatch):

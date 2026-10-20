@@ -2,6 +2,7 @@
 Equipment API endpoints - search, retrieve and update equipment information.
 """
 from typing import Optional, Any, List, Literal
+from datetime import date
 from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, Query, HTTPException, Response, status, UploadFile, File
@@ -23,11 +24,15 @@ from backend.api.deps import (
 )
 from backend.database import queries
 from backend.database import equipment_photos
+from backend.database.employee_history_reads import get_employee_history as read_employee_history
 from backend.database.connection import get_db
 from backend.database.equipment_db import get_equipment_data_version, invalidate_equipment_cache
 from backend.models.auth import User
 from backend.services.authorization_service import (
     PERM_DATABASE_DELETE,
+    PERM_DATABASE_DELETE_EQUIPMENT,
+    PERM_DATABASE_DELETE_EQUIPMENT_HISTORY,
+    PERM_DATABASE_ONE_C_MARK,
     PERM_DATABASE_PHOTO_VERIFY,
     PERM_DATABASE_READ,
     PERM_DATABASE_WRITE,
@@ -84,6 +89,8 @@ from backend.models.equipment import (
     EquipmentPhotoUploadSessionState,
 )
 from backend.services.transfer_service import (
+    TransferActGenerationError,
+    prepare_act_download,
     get_act_records,
     generate_transfer_acts,
     generate_transfer_acts_without_move,
@@ -91,7 +98,10 @@ from backend.services.transfer_service import (
     send_transfer_acts_email,
     send_binary_file_email,
 )
-from backend.services.equipment_db_transfer_service import transfer_items_to_db
+from backend.services.equipment_db_transfer_service import (
+    transfer_items_to_db, DbTransferConflict, DbTransferValidationError, DbTransferAccessError,
+    get_transfer_file, save_transfer_followup,
+)
 from backend.services.equipment_transfer_execution_service import (
     EquipmentTransferExecutionError,
     execute_equipment_transfer,
@@ -102,10 +112,12 @@ from backend.services import equipment_photo_check_service
 from backend.services import equipment_photo_upload_service
 from backend.services import equipment_photo_notification_service
 from backend.services import equipment_photo_ocr_service
+from backend.services import equipment_one_c_mark_service
 from backend.services import equipment_photo_review_service
 from backend.services import equipment_quality_service
 from backend.services.equipment_recent_acts_service import equipment_recent_acts_service
 from backend.services import transfer_act_job_service
+from backend.services import consumable_work_service
 from backend.services.transfer_act_reminder_service import transfer_act_reminder_service
 from backend.services.act_upload_service import (
     DraftNotFoundError,
@@ -115,6 +127,7 @@ from backend.services.act_upload_service import (
     get_uploaded_act_draft,
     commit_uploaded_act_draft,
 )
+from backend.utils.upload_limits import read_upload_limited
 import urllib.parse
 import logging
 
@@ -123,6 +136,7 @@ _DATABASE_ACCESS_PERMISSIONS = (
     PERM_DATABASE_READ,
     PERM_DATABASE_WRITE,
     PERM_DATABASE_DELETE,
+    PERM_DATABASE_DELETE_EQUIPMENT,
 )
 
 router = APIRouter(
@@ -295,11 +309,12 @@ def _start_transfer_job_lease_heartbeat(job_id: str):
     """
     stop = threading.Event()
     interval = transfer_act_job_service.execution_lease_heartbeat_seconds()
+    claim_token = transfer_act_job_service.execution_claim_token(job_id)
 
     def _renew() -> None:
         while not stop.wait(interval):
             try:
-                if not transfer_act_job_service.touch_execution_lease(job_id):
+                if not transfer_act_job_service.touch_execution_lease(job_id, claim_token=claim_token):
                     return
             except Exception:
                 logger.warning("Failed to renew transfer job lease job_id=%s", job_id, exc_info=True)
@@ -374,19 +389,24 @@ def _run_transfer_job(
             )
         if result.get("failed_count"):
             if result.get("success_count"):
-                transfer_act_job_service.mark_done(
+                finalized = transfer_act_job_service.mark_done(
                     job_id,
                     _result_with_act_records(result),
                     "Перемещение выполнено частично; акты не созданы",
                 )
             else:
-                transfer_act_job_service.mark_failed(
+                finalized = transfer_act_job_service.mark_failed(
                     job_id,
                     "Не удалось переместить оборудование; акты не созданы",
                     _result_with_act_records(result),
                 )
         else:
-            transfer_act_job_service.mark_done(job_id, _result_with_act_records(result))
+            finalized = transfer_act_job_service.mark_done(job_id, _result_with_act_records(result))
+        if finalized is False:
+            # The service refused the transition: the lease was lost and the
+            # job now belongs to another worker (or is already terminal).
+            logger.warning("Transfer act job lost its lease, result not stored job_id=%s", job_id)
+            return
         logger.info(
             "Transfer act job done job_id=%s operation=transfer success=%s failed=%s acts=%s",
             job_id,
@@ -396,7 +416,7 @@ def _run_transfer_job(
         )
     except EquipmentTransferExecutionError as exc:
         logger.warning("Transfer act job failed job_id=%s status=%s detail=%s", job_id, exc.status_code, exc.detail)
-        transfer_act_job_service.mark_failed(
+        if transfer_act_job_service.mark_failed(
             job_id,
             exc.detail,
             {
@@ -407,12 +427,14 @@ def _run_transfer_job(
                 "retry_inv_nos": [],
                 "acts": [],
             },
-        )
+        ) is False:
+            logger.warning("Transfer act job lost its lease, failure not stored job_id=%s", job_id)
     except Exception as exc:
         logger.exception("Transfer act job failed job_id=%s", job_id)
         checkpointed = transfer_act_job_service.get_job(job_id) or {}
         persisted_result = dict(checkpointed.get("result") or {})
-        transfer_act_job_service.mark_failed(job_id, str(exc), persisted_result or None)
+        if transfer_act_job_service.mark_failed(job_id, str(exc), persisted_result or None) is False:
+            logger.warning("Transfer act job lost its lease, failure not stored job_id=%s", job_id)
     finally:
         stop_lease_heartbeat()
 
@@ -910,7 +932,7 @@ async def search_universal(
         queries.search_equipment_universal, q, page, limit, db_id, type_no, field
     )
     if isinstance(result, dict):
-        result["data_version"] = get_equipment_data_version(db_id)
+        result["data_version"] = await run_in_threadpool(get_equipment_data_version, db_id)
     return result
 
 
@@ -939,6 +961,30 @@ async def search_by_employee(
     results = await run_in_threadpool(queries.search_employees, q, page, limit, db_id)
 
     return EmployeeSearchResponse(**results)
+
+
+@router.get("/employee/{owner_no}/history")
+async def get_employee_history(
+    owner_no: int,
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+    direction: Literal["all", "incoming", "outgoing"] = Query("all"),
+    q: str = Query("", max_length=200),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    _: User = Depends(get_current_active_user),
+):
+    if owner_no <= 0:
+        raise HTTPException(status_code=422, detail="owner_no must be positive")
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=422, detail="Дата начала должна быть не позже даты окончания")
+    if date_to == date.max:
+        raise HTTPException(status_code=422, detail="Дата окончания выходит за допустимый диапазон")
+    return await run_in_threadpool(
+        read_employee_history, owner_no, db_id,
+        date_from=date_from, date_to=date_to, direction=direction, q=q, page=page, limit=limit,
+    )
 
 
 @router.get("/employee/{owner_no}/items", response_model=EquipmentSearchResponse)
@@ -1060,7 +1106,7 @@ async def get_equipment_by_inv_nos(
         "equipment": equipment,
         "not_found": not_found,
         "requested": len(normalized_inv_nos),
-        "data_version": get_equipment_data_version(db_id),
+        "data_version": await run_in_threadpool(get_equipment_data_version, db_id),
     }
 
 
@@ -1269,6 +1315,70 @@ async def export_quality_issues(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="quality-{rule}.csv"'},
     )
+
+
+class EquipmentOneCMarkRequest(BaseModel):
+    note: str = Field("", max_length=equipment_one_c_mark_service.NOTE_MAX_LENGTH)
+
+
+def _one_c_mark_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Хранилище ручных отметок 1С недоступно (миграция не применена)",
+    )
+
+
+@router.get("/one-c-marks", response_model=dict)
+async def list_one_c_marks(
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
+):
+    """Manual 1C marks of the current database: {inv_no: {marked_by, marked_at, note}}."""
+    marks = await run_in_threadpool(equipment_one_c_mark_service.list_marks, db_id)
+    return {"marks": marks}
+
+
+@router.put("/{inv_no}/one-c-mark", response_model=dict)
+async def set_one_c_mark(
+    inv_no: str,
+    payload: EquipmentOneCMarkRequest,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_ONE_C_MARK)),
+):
+    """Set the manual «reconciled with 1C» mark (idempotent)."""
+    equipment = await run_in_threadpool(queries.get_equipment_by_inv, inv_no, db_id)
+    if not equipment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipment not found")
+    try:
+        mark = await run_in_threadpool(
+            lambda: equipment_one_c_mark_service.set_mark(
+                db_id, inv_no, actor=current_user.username, note=payload.note
+            )
+        )
+    except equipment_one_c_mark_service.OneCMarkUnavailableError:
+        raise _one_c_mark_unavailable()
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    logger.info("equipment 1C mark set db=%s inv_no=%s user=%s", db_id, mark["inv_no"], current_user.username)
+    return {"success": True, "mark": mark}
+
+
+@router.delete("/{inv_no}/one-c-mark", response_model=dict)
+async def clear_one_c_mark(
+    inv_no: str,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_ONE_C_MARK)),
+):
+    """Remove the manual mark; the automatic comparison status applies again."""
+    try:
+        removed = await run_in_threadpool(equipment_one_c_mark_service.clear_mark, db_id, inv_no)
+    except equipment_one_c_mark_service.OneCMarkUnavailableError:
+        raise _one_c_mark_unavailable()
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    if removed:
+        logger.info("equipment 1C mark cleared db=%s inv_no=%s user=%s", db_id, inv_no, current_user.username)
+    return {"success": True, "removed": removed}
 
 
 @router.post("/current-acts", response_model=EquipmentCurrentActsResponse)
@@ -1934,7 +2044,7 @@ async def create_consumable(
     )
     if not result.get("success"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result.get("message") or "Failed to create consumable")
-    invalidate_equipment_cache(db_id)
+    await run_in_threadpool(invalidate_equipment_cache, db_id)
     return ConsumableCreateResponse(**result)
 
 
@@ -1953,6 +2063,46 @@ async def consume_consumable(
     if item_id is None and not inv_no:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="item_id or inv_no is required")
 
+    # Durable path: a supplied operation_id (and optionally a bundled works
+    # record) runs through the resumable job machinery — a failed works write
+    # no longer leaves stock silently consumed, and retries do not
+    # double-decrement.
+    work_payload = payload.work.model_dump() if payload.work else None
+    if payload.operation_id or work_payload:
+        try:
+            result = await run_in_threadpool(
+                consumable_work_service.execute_consume_with_work,
+                db_id=db_id,
+                user=current_user,
+                item_id=item_id,
+                inv_no=inv_no or None,
+                qty=qty,
+                reason=payload.reason,
+                operation_id=payload.operation_id,
+                work=work_payload,
+            )
+        except consumable_work_service.TransferOperationConflict:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="operation_id is already used by another operation",
+            )
+        except consumable_work_service.ConsumableOperationInProgress:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Операция уже выполняется — повторите запрос позже",
+            )
+        except consumable_work_service.ConsumableConsumeRejected as exc:
+            message = exc.message
+            if message == "Consumable not found":
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
+            if message == "Insufficient consumable quantity":
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message)
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        await run_in_threadpool(invalidate_equipment_cache, db_id)
+        return ConsumableConsumeResponse(**result)
+
     changed_by = current_user.username if current_user else "IT-WEB"
     result = await run_in_threadpool(
         queries.consume_consumable_stock,
@@ -1963,7 +2113,7 @@ async def consume_consumable(
         changed_by=changed_by,
     )
     if result.get("success"):
-        invalidate_equipment_cache(db_id)
+        await run_in_threadpool(invalidate_equipment_cache, db_id)
         return ConsumableConsumeResponse(**result)
 
     message = str(result.get("message") or "Failed to consume consumable")
@@ -1999,7 +2149,7 @@ async def update_consumable_qty(
         changed_by=changed_by,
     )
     if result.get("success"):
-        invalidate_equipment_cache(db_id)
+        await run_in_threadpool(invalidate_equipment_cache, db_id)
         return ConsumableQtyUpdateResponse(**result)
 
     message = str(result.get("message") or "Failed to update consumable quantity")
@@ -2018,7 +2168,7 @@ async def delete_consumable(
     del current_user
     result = await run_in_threadpool(queries.delete_consumable_by_id, item_id, db_id=db_id)
     if result.get("success"):
-        invalidate_equipment_cache(db_id)
+        await run_in_threadpool(invalidate_equipment_cache, db_id)
         return ConsumableDeleteResponse(**result)
 
     code = str(result.get("code") or "").strip().lower()
@@ -2153,7 +2303,7 @@ async def create_equipment(
     if not result.get("success"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result.get("message") or "Failed to create equipment")
 
-    invalidate_equipment_cache(db_id)
+    await run_in_threadpool(invalidate_equipment_cache, db_id)
     return EquipmentCreateResponse(**result)
 
 
@@ -2291,25 +2441,43 @@ async def update_equipment_by_inv(
         action_type="edit",
         snapshot=equipment_after,
     )
-    invalidate_equipment_cache(db_id)
+    await run_in_threadpool(invalidate_equipment_cache, db_id)
+    # The bumped data_version tells the client its cached comparison/search
+    # state is stale — without it an edited PART_NO kept the old 1C badge.
+    equipment_after = dict(equipment_after)
+    equipment_after["data_version"] = await run_in_threadpool(get_equipment_data_version, db_id)
     return equipment_after
 
 
 @router.delete("/{inv_no}", response_model=dict)
 async def delete_equipment_by_inv(
     inv_no: str,
+    with_history: bool = Query(False, description="Also delete act links and CI_HISTORY rows"),
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    current_user: User = Depends(get_current_admin_user),
+    current_user: User = Depends(require_permission(PERM_DATABASE_DELETE_EQUIPMENT)),
 ):
-    """Hard-delete one equipment card from ITEMS for admin users only."""
-    result = await run_in_threadpool(queries.delete_equipment_by_inv, inv_no, db_id=db_id)
+    """Hard-delete one equipment card from ITEMS (blocked when acts or history exist unless with_history)."""
+    if with_history:
+        ensure_user_permission(current_user, PERM_DATABASE_DELETE_EQUIPMENT_HISTORY)
+    result = await run_in_threadpool(
+        queries.delete_equipment_by_inv, inv_no, db_id=db_id, force=with_history
+    )
     if result.get("success"):
+        if with_history:
+            logger.warning(
+                "equipment_delete_with_history actor=%s db=%s inv_no=%s acts=%s history=%s",
+                getattr(current_user, "username", ""),
+                db_id,
+                result.get("inv_no") or inv_no,
+                result.get("docs_deleted"),
+                result.get("history_deleted"),
+            )
         await run_in_threadpool(
             _remove_recent_card_for_equipment_safely,
             db_id=db_id,
             inv_no=result.get("inv_no") or inv_no,
         )
-        invalidate_equipment_cache(db_id)
+        await run_in_threadpool(invalidate_equipment_cache, db_id)
         return result
 
     code = str(result.get("code") or "").strip().lower()
@@ -2561,53 +2729,35 @@ async def transfer_equipment_to_db(
             target_branch_no=int(payload.target_branch_no) if payload.target_branch_no is not None else None,
             target_loc_no=int(payload.target_loc_no) if payload.target_loc_no is not None else None,
             changed_by=changed_by,
+            operation_id=payload.operation_id,
+            request_context={"user_id": current_user.id, "task_assignee_user_ids": payload.task_assignee_user_ids,
+                             "task_due_at": payload.task_due_at, "comment": payload.comment},
         )
+    except DbTransferConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DbTransferValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TransferActGenerationError as exc:
+        raise HTTPException(status_code=503, detail="Новый PDF акта не создан; исходные данные сохранены") from exc
     except Exception as exc:  # noqa: BLE001
         logger.exception("transfer-to-db failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка переноса: {exc}",
+            detail="Перенос не завершён. Повторите запрос с тем же operation_id или обратитесь к администратору.",
         ) from exc
 
-    # Act files (DOCX/PDF) for the moved items, registered for download/email.
-    act_items = [
-        item["act_item"]
-        for item in report.get("items") or []
-        if item.get("status") in ("ok", "partial") and item.get("act_item")
-    ]
-    owner_row = None
-    if report.get("resolved_owner_no") is not None:
-        owner_row = await run_in_threadpool(queries.get_owner_by_no, int(report["resolved_owner_no"]), target_db)
-    new_employee_name = (
-        (owner_row or {}).get("OWNER_DISPLAY_NAME")
-        or (owner_row or {}).get("owner_display_name")
-        or str(payload.new_owner_name or "").strip()
-    )
-    new_employee_dept = str((owner_row or {}).get("OWNER_DEPT") or (owner_row or {}).get("owner_dept") or "")
-    new_employee_email = None
-    if report.get("resolved_owner_no") is not None:
-        new_employee_email = await run_in_threadpool(
-            queries.get_owner_email_by_no, int(report["resolved_owner_no"]), target_db
-        )
-    acts: list[dict[str, Any]] = []
-    if act_items:
-        try:
-            acts = await run_in_threadpool(
-                generate_transfer_acts,
-                act_items,
-                new_employee_name,
-                new_employee_dept,
-                new_employee_email,
-                target_db,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("transfer-to-db act generation failed: %s", exc)
-            report["acts_error"] = str(exc)
+    act_items = [item["act_item"] for item in report.get("items", []) if item.get("act_item")]
+    if not report.get("replayed"):
+        for affected_db in (source_db, target_db):
+            try:
+                await run_in_threadpool(invalidate_equipment_cache, affected_db)
+            except Exception:
+                logger.exception("transfer-to-db cache invalidation failed")
 
     # Acceptance task for the receiving side.
-    task_payload = None
+    task_payload = report.get("task")
     assignee_ids = [int(v) for v in (payload.task_assignee_user_ids or []) if str(v).strip().isdigit() or isinstance(v, int)]
-    if assignee_ids and act_items:
+    if assignee_ids and act_items and not report.get("replayed"):
         try:
             from backend.services.hub_service import hub_service
 
@@ -2646,11 +2796,67 @@ async def transfer_equipment_to_db(
             task_payload = {"id": task.get("id"), "title": task.get("title")}
         except Exception as exc:  # noqa: BLE001
             logger.warning("transfer-to-db task creation failed: %s", exc)
-            report["task_error"] = str(exc)
+            report["task_error"] = "Задача приёмки не создана; перенос техники и файлов завершён"
 
-    report["acts"] = acts
     report["task"] = task_payload
+    if assignee_ids and report.get("replayed") and not task_payload and not report.get("task_error"):
+        report["task_error"] = "Создание задачи приёмки не подтверждено. Проверьте задачи перед ручным созданием."
+    if not report.get("replayed") and assignee_ids:
+        try:
+            await run_in_threadpool(save_transfer_followup, report)
+        except Exception:
+            logger.exception("transfer-to-db followup journal failed")
+            report["task_error"] = "Результат создания задачи не сохранён. Проверьте задачи перед ручным созданием."
     return report
+
+
+class DbTransferFileEmailRequest(BaseModel):
+    recipient_email: str = Field(..., max_length=254, pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+
+@router.get("/transfer/to-db/{target_db}/files/{file_no}")
+async def download_db_transfer_file(
+    target_db: str,
+    file_no: int,
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+    current_db_id: Optional[str] = Depends(get_request_scoped_database_id),
+):
+    # The transfer explicitly names its destination; a fixed source assignment
+    # must not redirect this download into the wrong database.
+    try:
+        file = await run_in_threadpool(get_transfer_file, target_db, file_no, current_user, current_db_id)
+    except DbTransferAccessError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except DbTransferValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not file:
+        raise HTTPException(status_code=404, detail="PDF акта переноса не найден")
+    return Response(content=bytes(file["FILE_DATA"]), media_type="application/pdf",
+                    headers={"Content-Disposition": "attachment; filename=transfer_act.pdf; filename*=UTF-8''" + quote(str(file["FILE_NAME"]), safe="")})
+
+
+@router.post("/transfer/to-db/{target_db}/files/{file_no}/email")
+async def email_db_transfer_file(
+    target_db: str,
+    file_no: int,
+    payload: DbTransferFileEmailRequest,
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+    current_db_id: Optional[str] = Depends(get_request_scoped_database_id),
+):
+    try:
+        file = await run_in_threadpool(get_transfer_file, target_db, file_no, current_user, current_db_id)
+    except DbTransferAccessError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except DbTransferValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not file:
+        raise HTTPException(status_code=404, detail="PDF акта переноса не найден")
+    sent = await send_binary_file_email(recipient_email=payload.recipient_email,
+        file_name=file["FILE_NAME"], file_bytes=bytes(file["FILE_DATA"]),
+        subject="Акт переноса техники", body="Во вложении акт переноса техники между базами ITINVENT.")
+    if not sent:
+        raise HTTPException(status_code=502, detail="Не удалось отправить PDF акта")
+    return {"sent": True}
 
 
 @router.get("/transfer/reminders/{reminder_id}", response_model=TransferActReminderResponse)
@@ -2694,19 +2900,20 @@ async def parse_uploaded_act(
             detail="Поддерживается только PDF",
         )
 
-    file_bytes = await file.read()
+    max_size_mb = int(os.getenv("ACT_UPLOAD_MAX_SIZE_MB", "15"))
+    max_size_bytes = max_size_mb * 1024 * 1024
+    file_bytes = await read_upload_limited(
+        file,
+        max_size_bytes,
+        too_large=lambda: HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Размер файла превышает лимит {max_size_mb} МБ",
+        ),
+    )
     if not file_bytes:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Файл пустой",
-        )
-
-    max_size_mb = int(os.getenv("ACT_UPLOAD_MAX_SIZE_MB", "15"))
-    max_size_bytes = max_size_mb * 1024 * 1024
-    if len(file_bytes) > max_size_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Размер файла превышает лимит {max_size_mb} МБ",
         )
 
     created_by = current_user.username if current_user else "IT-WEB"
@@ -2774,7 +2981,7 @@ async def commit_uploaded_act(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    invalidate_equipment_cache(db_id)
+    await run_in_threadpool(invalidate_equipment_cache, db_id)
 
     reminder_result = await run_in_threadpool(
         transfer_act_reminder_service.complete_for_uploaded_act,
@@ -2964,6 +3171,8 @@ async def send_uploaded_act_email(
     # Per-recipient sends are independent SMTP calls — run them in parallel
     # with a bounded timeout instead of serial seconds-per-recipient waits.
     send_timeout_sec = max(5, int(os.getenv("TRANSFER_EMAIL_TIMEOUT_SEC", "60") or "60"))
+    # Bounded parallelism: a long recipient list must not open hundreds of SMTP sessions at once.
+    send_slots = asyncio.Semaphore(max(1, int(os.getenv("TRANSFER_EMAIL_CONCURRENCY", "8") or "8")))
 
     async def _send_act_to_recipient(owner_no: int, owner_name: str) -> dict:
         owner_email = await run_in_threadpool(queries.get_owner_email_by_no, owner_no, db_id)
@@ -3001,10 +3210,11 @@ async def send_uploaded_act_email(
 
     async def _send_act_with_timeout(owner_no: int, owner_name: str) -> dict:
         try:
-            return await asyncio.wait_for(
-                _send_act_to_recipient(owner_no, owner_name),
-                timeout=send_timeout_sec,
-            )
+            async with send_slots:
+                return await asyncio.wait_for(
+                    _send_act_to_recipient(owner_no, owner_name),
+                    timeout=send_timeout_sec,
+                )
         except Exception:
             return {
                 "owner_no": int(owner_no),
@@ -3217,8 +3427,6 @@ async def download_transfer_act(
         )
 
     file_path = str(record.get("file_path") or "")
-    file_name = str(record.get("file_name") or "transfer_act")
-    file_type = str(record.get("file_type") or "").lower()
     if not file_path:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -3231,12 +3439,13 @@ async def download_transfer_act(
             detail="Act file not found on disk",
         )
 
-    media_type = (
-        "application/pdf"
-        if file_type == "pdf"
-        else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    try:
+        prepared = await run_in_threadpool(prepare_act_download, record)
+    except TransferActGenerationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    return FileResponse(
+        path=prepared["file_path"], filename=prepared["file_name"], media_type="application/pdf",
     )
-    return FileResponse(path=file_path, filename=file_name, media_type=media_type)
 
 
 @router.get("/{item_id}/photos", response_model=EquipmentPhotoListResponse)
@@ -3646,7 +3855,13 @@ async def upload_equipment_photo(
     """
     Upload a photo into FILES for an equipment card (FILE_TYPE=0).
     """
-    file_bytes = await file.read()
+    file_bytes = await read_upload_limited(
+        file,
+        equipment_photos.MAX_PHOTO_BYTES,
+        too_large=lambda: HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="file exceeds the size limit"
+        ),
+    )
     try:
         result = await run_in_threadpool(
             equipment_photos.insert_equipment_photo,

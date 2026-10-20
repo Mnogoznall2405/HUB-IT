@@ -19,6 +19,7 @@ import SecurityRoundedIcon from '@mui/icons-material/SecurityRounded';
 import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded';
 import VerifiedUserOutlinedIcon from '@mui/icons-material/VerifiedUserOutlined';
 import DesktopInstallerDownload from '../components/desktop/DesktopInstallerDownload';
+import MobileAccessQr from '../components/mobile/MobileAccessQr';
 import MobileInstallerDownload from '../components/mobile/MobileInstallerDownload';
 import { authAPI } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
@@ -535,6 +536,7 @@ export default function About({ mode = 'onboarding' }) {
           <div className="about-mobile-install">
             <MobileInstallerDownload variant="section" />
           </div>
+          <MobileAccessQr />
           <div className="about-mobile-gallery">
             {MOBILE_SCREENS.map((screen) => (
               <article key={screen.title} className="about-mobile-card">

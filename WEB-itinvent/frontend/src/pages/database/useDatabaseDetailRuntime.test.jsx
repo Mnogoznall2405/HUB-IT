@@ -187,9 +187,11 @@ describe('useDatabaseDetailRuntime', () => {
     expect(result.current.detailError).toBe('');
   });
 
-  it('saves changes and upserts the updated equipment into grouped state', async () => {
+  it('saves changes, upserts grouped state and notifies the new data_version', async () => {
     const allEquipment = createStateSetter(grouped);
-    const { result } = renderDetailHook({ setAllEquipment: allEquipment.setter });
+    const onDataVersion = vi.fn();
+    equipmentAPI.updateByInvNo.mockResolvedValue({ ...updatedItem, data_version: 9 });
+    const { result } = renderDetailHook({ setAllEquipment: allEquipment.setter, onDataVersion });
     await openLoadedDetail(result);
 
     act(() => {
@@ -206,7 +208,8 @@ describe('useDatabaseDetailRuntime', () => {
       expect(equipmentAPI.updateByInvNo).toHaveBeenCalledWith('1001', { serial_no: 'SN-2' });
     });
 
-    expect(result.current.detailModal.data).toEqual(updatedItem);
+    expect(onDataVersion).toHaveBeenCalledWith(9);
+    expect(result.current.detailModal.data).toEqual({ ...updatedItem, data_version: 9 });
     expect(result.current.detailForm.serial_no).toBe('SN-2');
     expect(result.current.detailEditMode).toBe(false);
     expect(result.current.detailSuccess).toBe('Изменения сохранены.');

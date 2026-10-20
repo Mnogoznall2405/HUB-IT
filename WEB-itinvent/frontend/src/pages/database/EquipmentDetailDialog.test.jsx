@@ -225,6 +225,47 @@ describe('EquipmentDetailDialog', () => {
     expect(onSave).toHaveBeenCalledTimes(1);
   });
 
+  it('shows «Списать расходник» for MFU cards and wires the QR pair entry', () => {
+    const onConsumeConsumableQr = vi.fn();
+
+    renderDialog({ canWrite: true, onConsumeConsumableQr });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Списать расходник' }));
+    expect(onConsumeConsumableQr).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides «Списать расходник» for non-printer equipment and read-only users', () => {
+    const { rerender } = renderDialog({ canWrite: true, onConsumeConsumableQr: vi.fn() });
+    expect(screen.getByRole('button', { name: 'Списать расходник' })).toBeInTheDocument();
+
+    rerender(
+      <EquipmentDetailDialog
+        open
+        data={{ ...data, MODEL_NAME: 'OptiPlex 7090', VENDOR_NAME: 'Dell' }}
+        form={form}
+        tab="general"
+        canWrite
+        options={options}
+        onConsumeConsumableQr={vi.fn()}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'Списать расходник' })).not.toBeInTheDocument();
+
+    rerender(
+      <EquipmentDetailDialog
+        open
+        data={data}
+        form={form}
+        tab="general"
+        canWrite={false}
+        options={options}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'Списать расходник' })).not.toBeInTheDocument();
+  });
+
   it('shows a back action only when the equipment card has a parent dialog', () => {
     const onBack = vi.fn();
     const { rerender } = renderDialog({ onBack });

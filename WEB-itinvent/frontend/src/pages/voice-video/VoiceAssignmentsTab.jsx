@@ -6,6 +6,7 @@ import {
   Button,
   Checkbox,
   Chip,
+  Collapse,
   Dialog,
   DialogActions,
   DialogContent,
@@ -19,6 +20,7 @@ import {
   Skeleton,
   Stack,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
 import CloseOutlinedIcon from '@mui/icons-material/CloseOutlined';
@@ -82,6 +84,24 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
   const [statuses, setStatuses] = useState({}); // по статус-ключу поручения (skOf)
   const [commentDialog, setCommentDialog] = useState(null); // { item, comment }
   const [rowMenu, setRowMenu] = useState(null); // { anchor, item }
+  // Раскрытые строки (полный текст, причина проверки, комментарий и
+  // кнопка «Смотреть с …»); «Развернуть все» раскрывает весь список.
+  const [expandedKeys, setExpandedKeys] = useState(() => new Set());
+  const [expandAll, setExpandAll] = useState(false);
+  const isExpanded = (item) => expandAll || expandedKeys.has(skOf(item));
+  const toggleExpanded = (item) => {
+    if (expandAll) {
+      // Из режима «всё раскрыто» клик сворачивает только эту строку.
+      setExpandAll(false);
+      setExpandedKeys(new Set((items || []).map(skOf).filter((k) => k !== skOf(item))));
+      return;
+    }
+    setExpandedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(skOf(item))) next.delete(skOf(item)); else next.add(skOf(item));
+      return next;
+    });
+  };
   const clipMediaRef = useRef(null);
   const searchSeq = useRef(0);
 
@@ -362,6 +382,16 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
           color={filter === 'noassignee' ? 'warning' : 'default'}
           onClick={() => setFilter('noassignee')}
         />
+        <Box sx={{ flex: 1 }} />
+        <Button
+          size="small"
+          onClick={() => {
+            if (expandAll || expandedKeys.size) { setExpandAll(false); setExpandedKeys(new Set()); } else setExpandAll(true);
+          }}
+          sx={{ textTransform: 'none', minHeight: 24, py: 0 }}
+        >
+          {expandAll || expandedKeys.size ? 'Свернуть все' : 'Развернуть все'}
+        </Button>
       </Stack>
       {!visible.length && <Alert severity="info">По фильтру поручений нет.</Alert>}
       {/* P4-1: компактный список вместо таблицы — всё помещается в узкую панель
@@ -405,33 +435,60 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
               {item.clip || onSeekTime ? (
                 // T30: таймкод перематывает основной плеер (onSeekTime);
                 // без него — прежнее поведение: отдельный clip-диалог.
-                <Chip
-                  size="small"
-                  clickable
-                  label={fmtClock(item.time)}
-                  aria-label={onSeekTime
-                    ? `Перейти к ${fmtClock(item.time)} (поручение №${item.num})`
-                    : `Фрагмент поручения №${item.num}, ${fmtClock(item.time)}`}
-                  onClick={() => (onSeekTime
-                    ? onSeekTime(item.time)
-                    : setClipPlayer({ clip: item.clip, time: item.time, num: item.num }))}
-                  sx={{ fontFamily: 'monospace', fontVariantNumeric: 'tabular-nums', flexShrink: 0, mt: '1px' }}
-                />
+                <Tooltip title={onSeekTime ? 'Перейти к этому месту в записи' : 'Открыть фрагмент записи'}>
+                  <Chip
+                    size="small"
+                    clickable
+                    color="primary"
+                    variant="outlined"
+                    icon={<PlayArrowOutlinedIcon />}
+                    label={fmtClock(item.time)}
+                    aria-label={onSeekTime
+                      ? `Перейти к ${fmtClock(item.time)} (поручение №${item.num})`
+                      : `Фрагмент поручения №${item.num}, ${fmtClock(item.time)}`}
+                    onClick={() => (onSeekTime
+                      ? onSeekTime(item.time)
+                      : setClipPlayer({ clip: item.clip, time: item.time, num: item.num }))}
+                    sx={{
+                      fontFamily: 'monospace', fontVariantNumeric: 'tabular-nums', flexShrink: 0, mt: '1px',
+                      // В тёмной теме primary.main на тёмном фоне почти не читается.
+                      color: (t) => (t.palette.mode === 'dark' ? t.palette.primary.light : t.palette.primary.main),
+                      borderColor: 'currentColor',
+                      '& .MuiChip-icon': { fontSize: 16, ml: '3px', mr: '-4px', color: 'inherit' },
+                    }}
+                  />
+                </Tooltip>
               ) : (
                 <Typography variant="caption" sx={{ fontFamily: 'monospace', flexShrink: 0, pt: '4px' }}>
                   {fmtClock(item.time) || '—'}
                 </Typography>
               )}
-              <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Box
+                role="button"
+                tabIndex={0}
+                aria-expanded={isExpanded(item)}
+                aria-label={`${isExpanded(item) ? 'Свернуть' : 'Развернуть'} поручение №${item.num}`}
+                onClick={() => toggleExpanded(item)}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) return;
+                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpanded(item); }
+                }}
+                sx={{
+                  flex: 1, minWidth: 0, cursor: 'pointer', borderRadius: 0.5,
+                  '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main' },
+                }}
+              >
                 <Typography
                   variant="body2"
                   component="div"
-                  title={item.task}
+                  title={isExpanded(item) ? undefined : item.task}
                   sx={{
-                    display: '-webkit-box',
-                    WebkitBoxOrient: 'vertical',
-                    WebkitLineClamp: 2,
-                    overflow: 'hidden',
+                    ...(isExpanded(item) ? {} : {
+                      display: '-webkit-box',
+                      WebkitBoxOrient: 'vertical',
+                      WebkitLineClamp: 2,
+                      overflow: 'hidden',
+                    }),
                     textDecoration: isDone(item) ? 'line-through' : 'none',
                     fontWeight: isDone(item) ? 400 : 500,
                   }}
@@ -439,6 +496,17 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
                   {isPriority(item.task) && (
                     <Chip size="small" color="error" label="Критично" sx={{ mr: 0.5, verticalAlign: '1px' }} />
                   )}
+                  {item.review ? (
+                    <Chip
+                      size="small"
+                      color="warning"
+                      variant="outlined"
+                      label="Проверить"
+                      title={`Контроль протокола: ${item.review}`}
+                      data-assign-review="1"
+                      sx={{ mr: 0.5, verticalAlign: '1px' }}
+                    />
+                  ) : null}
                   {item.task}
                 </Typography>
                 <Typography variant="caption" component="div" color="text.secondary" noWrap>
@@ -466,6 +534,55 @@ function VoiceAssignmentsTab({ base, canCreateTasks = false, onCountChange, item
                 <MoreVertOutlinedIcon fontSize="small" />
               </IconButton>
             </Stack>
+            <Collapse in={isExpanded(item)} unmountOnExit>
+              <Stack spacing={0.75} sx={{ pl: 4.5, pr: 1, pt: 0.75 }} data-assign-details={item.num}>
+                {item.review ? (
+                  <Typography variant="caption" color="warning.main" component="div">
+                    {`Проверить: ${item.review}`}
+                  </Typography>
+                ) : null}
+                {statuses[skOf(item)]?.comment ? (
+                  <Typography variant="caption" color="text.secondary" component="div">
+                    {`Комментарий: ${statuses[skOf(item)].comment}`}
+                  </Typography>
+                ) : null}
+                <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', rowGap: 0.5 }}>
+                  {onSeekTime && fmtClock(item.time) ? (
+                    <Button
+                      size="small"
+                      variant="contained"
+                      disableElevation
+                      startIcon={<PlayArrowOutlinedIcon />}
+                      onClick={() => onSeekTime(item.time)}
+                      sx={{ textTransform: 'none' }}
+                    >
+                      {`Смотреть с ${fmtClock(item.time)}`}
+                    </Button>
+                  ) : null}
+                  <Button
+                    size="small"
+                    startIcon={<CommentOutlinedIcon />}
+                    onClick={() => {
+                      setCommentError('');
+                      setCommentDialog({ item, comment: statuses[skOf(item)]?.comment || '' });
+                    }}
+                    sx={{ textTransform: 'none' }}
+                  >
+                    Комментарий
+                  </Button>
+                  {canCreateTasks && !hasTask(item) ? (
+                    <Button
+                      size="small"
+                      startIcon={<AddTaskOutlinedIcon />}
+                      onClick={() => openTaskDialog(item)}
+                      sx={{ textTransform: 'none' }}
+                    >
+                      Создать задачу
+                    </Button>
+                  ) : null}
+                </Stack>
+              </Stack>
+            </Collapse>
           </Paper>
         ))}
           </Stack>

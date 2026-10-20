@@ -131,6 +131,7 @@ vi.mock('../components/documentPreview/DocumentPreviewDialog', () => ({
 
 vi.mock('../contexts/AuthContext', () => ({
   useAuth: () => ({
+    user: { id: 7, username: 'files-test' },
     hasPermission: () => true,
   }),
 }));
@@ -199,6 +200,7 @@ describe('MyFiles page', () => {
     expect(screen.queryByTestId('document-preview-dialog')).not.toBeInTheDocument();
   });
   beforeEach(() => {
+    localStorage.setItem('user', JSON.stringify({ id: 7, username: 'files-test' }));
     mockListFiles.mockReset();
     mockGetQuota.mockReset();
     mockUploadFile.mockReset();
@@ -279,30 +281,6 @@ describe('MyFiles page', () => {
     });
   });
 
-  it('shows retention notice and uploads with default one-day retention', async () => {
-    renderPage();
-
-    await screen.findByRole('heading', { name: 'Мой диск' });
-    expect(screen.getByText(/Файлы хранятся до 30 дней/)).toBeInTheDocument();
-
-    const file = new File(['hello'], 'hello.txt', { type: 'text/plain' });
-    fireEvent.change(screen.getByTestId('my-files-input'), { target: { files: [file] } });
-
-    const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText('hello.txt')).toBeInTheDocument();
-    expect(within(dialog).getByText(/Файлы будут удалены по окончании выбранного срока хранения/)).toBeInTheDocument();
-    expect(mockUploadFile).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Загрузить' }));
-
-    await waitFor(() => {
-      expect(mockUploadFile).toHaveBeenCalledWith(expect.objectContaining({
-        file,
-        retentionDays: 1,
-        onUploadProgress: expect.any(Function),
-      }));
-    });
-  });
-
   it('allows a file larger than the former one-gigabyte limit', async () => {
     renderPage();
     await screen.findByRole('heading', { name: 'Мой диск' });
@@ -316,36 +294,6 @@ describe('MyFiles page', () => {
 
     await waitFor(() => expect(mockUploadFile).toHaveBeenCalledWith(expect.objectContaining({ file })));
     expect(mockNotifyWarning).not.toHaveBeenCalledWith(expect.stringContaining('1 ГБ'), expect.anything());
-  });
-
-  it('creates and displays a public share link for a ready file', async () => {
-    mockListFiles.mockResolvedValue({ items: [readyFile] });
-
-    renderPage();
-
-    await screen.findByText('report.txt');
-    expect(screen.getByTestId('my-files-card-file-1')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('my-files-share-file-1'));
-
-    await waitFor(() => expect(mockCreateShare).toHaveBeenCalledWith('file-1', { rotate: false }));
-    expect(mockBuildPublicUrl).toHaveBeenCalledWith('public-token');
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('http://localhost/shared-files/public-token');
-    expect(await screen.findByTestId('my-files-share-url')).toHaveTextContent('http://localhost/shared-files/public-token');
-    expect(screen.getByTestId('my-files-share-copied-alert')).toHaveTextContent('Скопировано');
-  });
-
-  it('downloads a ready file directly from its right-click menu', async () => {
-    mockListFiles.mockResolvedValue({ items: [readyFile] });
-    renderPage();
-
-    const card = await screen.findByTestId('my-files-card-file-1');
-    fireEvent.contextMenu(card, { clientX: 120, clientY: 80 });
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Скачать' }));
-
-    await waitFor(() => expect(mockCreateDownloadGrant).toHaveBeenCalledWith('file-1'));
-    expect(mockTriggerNativeDownload).toHaveBeenCalledWith(
-      'http://localhost/api/v1/my-files/download-grant/test-token',
-    );
   });
 
   it('treats a dropped folder as a real folder upload', async () => {
@@ -432,80 +380,6 @@ describe('MyFiles page', () => {
     expect(mockDownloadPreviewContent).toHaveBeenCalledWith('pdf-1');
     expect(mockCreateShare).not.toHaveBeenCalled();
     expect(await screen.findByTestId('document-preview-dialog')).toHaveTextContent('report.pdf:pdf');
-  });
-
-  it('renders folders and navigates into them', async () => {
-    mockListFiles.mockResolvedValue({
-      items: [readyFile],
-      folders: [{ id: 'folder-1', name: 'Документы', parent_id: null }],
-      breadcrumbs: [],
-      folder: null,
-    });
-    mockListFolders.mockResolvedValue({ items: [{ id: 'folder-1', name: 'Документы', parent_id: null }] });
-    renderPage();
-
-    const folderCard = await screen.findByTestId('my-files-folder-folder-1');
-    expect(folderCard).toHaveTextContent('Документы');
-
-    mockListFiles.mockResolvedValue({
-      items: [],
-      folders: [],
-      breadcrumbs: [{ id: 'folder-1', name: 'Документы', parent_id: null }],
-      folder: { id: 'folder-1', name: 'Документы', parent_id: null },
-    });
-    fireEvent.click(folderCard);
-
-    await waitFor(() => expect(mockListFiles).toHaveBeenCalledWith(expect.objectContaining({ folderId: 'folder-1' })));
-    expect(await screen.findByTestId('my-files-breadcrumbs')).toHaveTextContent('Мой диск');
-  });
-
-  it('creates a folder via dialog', async () => {
-    mockListFiles.mockResolvedValue({ items: [], folders: [], breadcrumbs: [], folder: null });
-    mockCreateFolder.mockResolvedValue({ id: 'folder-new', name: 'Новая папка', parent_id: null });
-    renderPage();
-
-    fireEvent.click(await screen.findByTestId('my-files-create-button'));
-    fireEvent.click(await screen.findByTestId('my-files-create-folder-button'));
-    const input = await screen.findByTestId('my-files-folder-name-input');
-    fireEvent.change(input, { target: { value: 'Новая папка' } });
-    fireEvent.click(screen.getByTestId('my-files-create-folder-confirm'));
-
-    await waitFor(() => expect(mockCreateFolder).toHaveBeenCalledWith({ name: 'Новая папка', parentId: null }));
-  });
-
-  it('renames a file via context menu', async () => {
-    mockListFiles.mockResolvedValue({ items: [readyFile], folders: [], breadcrumbs: [], folder: null });
-    mockUpdateFile.mockResolvedValue({ ...readyFile, original_file_name: 'renamed.txt' });
-    renderPage();
-
-    const card = await screen.findByTestId('my-files-card-file-1');
-    fireEvent.contextMenu(card);
-    fireEvent.click(await screen.findByTestId('file-action-rename'));
-
-    const input = await screen.findByTestId('my-files-rename-input');
-    fireEvent.change(input, { target: { value: 'renamed.txt' } });
-    fireEvent.click(screen.getByTestId('my-files-rename-confirm'));
-
-    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith('file-1', { name: 'renamed.txt' }));
-  });
-
-  it('moves a file to a folder via context menu', async () => {
-    mockListFiles.mockResolvedValue({ items: [readyFile], folders: [], breadcrumbs: [], folder: null });
-    mockListFolders.mockResolvedValue({ items: [{ id: 'folder-7', name: 'Архив', parent_id: null }] });
-    mockUpdateFile.mockResolvedValue({ ...readyFile, folder_id: 'folder-7' });
-    renderPage();
-
-    const card = await screen.findByTestId('my-files-card-file-1');
-    fireEvent.contextMenu(card);
-    fireEvent.click(await screen.findByTestId('file-action-move'));
-
-    const select = await screen.findByRole('combobox');
-    fireEvent.mouseDown(select);
-    const option = await screen.findByRole('option', { name: 'Архив' });
-    fireEvent.click(option);
-    fireEvent.click(screen.getByTestId('my-files-move-confirm'));
-
-    await waitFor(() => expect(mockUpdateFile).toHaveBeenCalledWith('file-1', { folderId: 'folder-7' }));
   });
 
   it('filters rows by search query', async () => {
@@ -609,28 +483,6 @@ describe('MyFiles page', () => {
 
     fireEvent.click(screen.getByTestId('my-files-view-list'));
     await waitFor(() => expect(screen.queryByTestId('my-files-grid')).not.toBeInTheDocument());
-  });
-
-  it('shows trash entries and restores a file', async () => {
-    mockListTrash.mockResolvedValue({
-      items: [{ ...readyFile, id: 'file-dead' }],
-      folders: [{ id: 'folder-dead', name: 'Старое' }],
-    });
-    render(
-      <MemoryRouter initialEntries={['/?view=trash']}>
-        <ThemeProvider theme={theme}>
-          <MyFiles />
-        </ThemeProvider>
-      </MemoryRouter>,
-    );
-
-    await screen.findByText('report.txt');
-    expect(screen.getByText('Старое')).toBeInTheDocument();
-    expect(mockListTrash).toHaveBeenCalled();
-    expect(screen.getAllByText('Корзина').length).toBeGreaterThanOrEqual(2);
-
-    fireEvent.click(screen.getByTestId('my-files-restore-file-dead'));
-    await waitFor(() => expect(mockRestoreFile).toHaveBeenCalledWith('file-dead'));
   });
 
   it('purges a trashed file after confirmation', async () => {

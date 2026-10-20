@@ -1,5 +1,6 @@
 const cacheStore = new Map();
 const inFlightStore = new Map();
+let cacheGeneration = 0;
 
 const DEFAULT_STALE_TIME_MS = 30_000;
 const DEFAULT_MAX_ENTRIES = 80;
@@ -28,6 +29,7 @@ const isKeyPrefixMatch = (cacheKey, prefixParts) => {
 export const buildCacheKey = (...keyParts) => toCacheKey(keyParts);
 
 export const clearSWRCache = () => {
+  cacheGeneration += 1;
   cacheStore.clear();
   inFlightStore.clear();
 };
@@ -107,14 +109,15 @@ const runDedupedFetch = async (cacheKey, fetcher) => {
     return inFlightStore.get(cacheKey);
   }
 
+  const generation = cacheGeneration;
   const requestPromise = Promise.resolve()
     .then(fetcher)
     .then((data) => {
-      setCacheEntry(cacheKey, data);
+      if (generation === cacheGeneration) setCacheEntry(cacheKey, data);
       return data;
     })
     .finally(() => {
-      inFlightStore.delete(cacheKey);
+      if (inFlightStore.get(cacheKey) === requestPromise) inFlightStore.delete(cacheKey);
     });
 
   inFlightStore.set(cacheKey, requestPromise);

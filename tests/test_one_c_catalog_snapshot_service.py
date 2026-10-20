@@ -1,4 +1,5 @@
 from __future__ import annotations
+import conftest
 
 import asyncio
 import sys
@@ -36,7 +37,7 @@ from backend.services.warehouse_1c_service import (  # noqa: E402
 
 def _store(temp_dir) -> OneCCatalogSnapshotStore:
     database_url = f"sqlite:///{(Path(temp_dir) / 'one_c_catalog.db').as_posix()}"
-    initialize_app_schema(database_url)
+    conftest.copy_app_schema_for_url(database_url)
     return OneCCatalogSnapshotStore(database_url)
 
 

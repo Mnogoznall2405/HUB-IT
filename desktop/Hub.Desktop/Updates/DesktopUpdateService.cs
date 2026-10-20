@@ -20,7 +20,7 @@ public sealed class DesktopUpdateService : IDesktopUpdateService, IDisposable
     private readonly Version _currentVersion;
     private readonly HttpClient _httpClient;
     private readonly bool _ownsHttpClient;
-    private readonly X509Certificate2 _trustCertificate;
+    private readonly X509Certificate2? _trustCertificate;
     private readonly string _updatesFolder;
     private readonly string _packagesFolder;
     private readonly string _runnersFolder;
@@ -35,7 +35,7 @@ public sealed class DesktopUpdateService : IDesktopUpdateService, IDisposable
             options,
             currentVersion,
             httpClient,
-            DesktopUpdateTrust.LoadCertificate(),
+            null,
             DesktopPaths.UpdatesFolder,
             null,
             new DesktopSettingsStore(DesktopPaths.SettingsFile))
@@ -46,7 +46,7 @@ public sealed class DesktopUpdateService : IDesktopUpdateService, IDisposable
         DesktopUpdateOptions options,
         Version? currentVersion,
         HttpClient? httpClient,
-        X509Certificate2 trustCertificate,
+        X509Certificate2? trustCertificate,
         string updatesFolder,
         Func<string, long>? getAvailableFreeSpace = null,
         DesktopSettingsStore? settings = null)
@@ -105,7 +105,10 @@ public sealed class DesktopUpdateService : IDesktopUpdateService, IDisposable
             throw new InvalidDataException($"Update manifest was rejected: {parseError}.");
         }
 
-        if (!DesktopUpdateManifestVerifier.VerifySignature(manifest, _trustCertificate))
+        var signatureValid = _trustCertificate is null
+            ? DesktopUpdateManifestVerifier.VerifySignature(manifest)
+            : DesktopUpdateManifestVerifier.VerifySignature(manifest, _trustCertificate);
+        if (!signatureValid)
         {
             throw new InvalidDataException("Update manifest signature is invalid.");
         }
@@ -208,7 +211,7 @@ public sealed class DesktopUpdateService : IDesktopUpdateService, IDisposable
             _httpClient.Dispose();
         }
 
-        _trustCertificate.Dispose();
+        _trustCertificate?.Dispose();
     }
 
     private async Task<DesktopUpdatePackage> EnsurePackageAsync(
@@ -470,39 +473,13 @@ public sealed class DesktopUpdateService : IDesktopUpdateService, IDisposable
 
     private static HttpClient CreateHttpClient()
     {
-        var trustedSpkiHashes = new HashSet<string>(
-            DesktopUpdateTrust.GetTrustedSpkiHashes(),
-            StringComparer.OrdinalIgnoreCase);
-
+        // No leaf-certificate pin: it broke on every TLS re-issue. Integrity rests on the
+        // signed manifest (allowlisted key id) and the signed SHA-256 of the setup; TLS
+        // validation errors stay fatal because the default handler validation is kept.
         var handler = new HttpClientHandler
         {
             AllowAutoRedirect = false,
             UseCookies = false,
-            ServerCertificateCustomValidationCallback = (sender, cert, chain, errors) =>
-            {
-                if (errors != SslPolicyErrors.None || cert is null)
-                {
-                    return false;
-                }
-
-                try
-                {
-                    using var certificate = new X509Certificate2(cert);
-                    var spkiHash = DesktopUpdateTrust.ComputeSpkiHash(certificate);
-                    if (trustedSpkiHashes.Contains(spkiHash))
-                    {
-                        return true;
-                    }
-
-                    DesktopLog.Warning($"Update endpoint certificate is not pinned; spki={spkiHash}");
-                }
-                catch (Exception exception)
-                {
-                    DesktopLog.Error("Update endpoint certificate pinning failed", exception);
-                }
-
-                return false;
-            },
         };
         return new HttpClient(handler)
         {

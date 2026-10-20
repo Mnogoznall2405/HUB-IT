@@ -124,7 +124,7 @@ class ScanServerConfig:
         if legacy_key and legacy_key not in keys:
             keys.append(legacy_key)
         if not keys:
-            app_env = str(os.getenv("APP_ENV", "development") or "development").strip().lower()
+            app_env = str(os.getenv("APP_ENV", "production") or "production").strip().lower()
             if app_env in {"production", "prod"}:
                 raise RuntimeError(
                     "SCAN_SERVER_API_KEYS (or SCAN_SERVER_API_KEY) must be configured in production"

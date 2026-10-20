@@ -21,6 +21,7 @@ vi.mock('../../api/voiceLabeling', () => ({
     calibrate: vi.fn(),
     getCalibration: vi.fn(async () => ({ available: false })),
     getOverallCalibration: vi.fn(async () => ({ projects: 0, suggestion: null })),
+    getFaces: vi.fn(async () => ({ is_video: false, available: false, clusters: [], people: [] })),
     mediaUrl: vi.fn((id) => `/api/v1/voice/labeling/projects/${id}/media`),
     rttmUrl: vi.fn((id) => `/api/v1/voice/labeling/projects/${id}/rttm`),
   },
@@ -83,6 +84,39 @@ describe('VoiceLabelEditor', () => {
     expect(payload.version).toBe(3);
     expect(payload.segments.map((s) => s.speaker)).toEqual(['SPEAKER_00', 'SPEAKER_00']);
     await screen.findByText(/Сохранено/);
+  });
+
+  it('re-arms autosave for edits made while a long save was running', async () => {
+    voiceLabelingAPI.getProject.mockResolvedValue(project());
+    let finishFirstSave;
+    voiceLabelingAPI.saveProject
+      .mockImplementationOnce(() => new Promise((resolve) => { finishFirstSave = resolve; }))
+      .mockImplementation(async (_id, payload) => ({ ...project(), ...payload, version: 5 }));
+    render(<VoiceLabelEditor projectId="p1" onClose={() => {}} />);
+    await screen.findByText('добрый день');
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(rowOf('начнём'));
+      fireEvent.keyDown(window, { key: '1', code: 'Digit1' });
+      fireEvent.keyDown(window, { key: 's', code: 'KeyS', ctrlKey: true });
+      expect(voiceLabelingAPI.saveProject).toHaveBeenCalledTimes(1);
+
+      // Edit while the first save is still running; the autosave timer fires mid-save and is skipped.
+      fireEvent.click(rowOf('добрый день'));
+      fireEvent.keyDown(window, { key: 'Delete', code: 'Delete' });
+      await vi.advanceTimersByTimeAsync(31000);
+      expect(voiceLabelingAPI.saveProject).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(0);
+      finishFirstSave({ ...project(), version: 4 });
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(31000);
+
+      expect(voiceLabelingAPI.saveProject).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('undoes the last edit with Ctrl+Z', async () => {
@@ -219,11 +253,11 @@ describe('VoiceLabelEditor: waveform, quality and voices', () => {
     await screen.findByText('добрый день');
 
     fireEvent.click(screen.getByRole('button', { name: 'Записать голоса в эталоны (1)' }));
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Заменить голоса, которые уже есть в эталонах' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Заменить существующий эталон новым сэмплом' }));
     fireEvent.click(screen.getByRole('button', { name: 'Записать' }));
 
     await waitFor(() => expect(voiceLabelingAPI.enrollVoices).toHaveBeenCalledWith(
-      'p1', { labels: ['SPEAKER_00'], replace: true },
+      'p1', { labels: ['SPEAKER_00'], mode: 'replace' },
     ));
     expect(await screen.findByText('Иванов И.И: записан')).toBeInTheDocument();
   });

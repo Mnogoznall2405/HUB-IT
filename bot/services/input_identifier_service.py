@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Dict, Optional
 
 from bot.services.ocr_service import extract_serial_from_image
@@ -66,7 +67,8 @@ async def detect_identifiers_from_image(file_path: str) -> Dict[str, Optional[st
       serial_no: str | None
       qr_payload_text: str | None
     """
-    qr_payload_text = extract_qr_payload_from_image(file_path)
+    # OpenCV decoding (many retry passes) is CPU-bound: keep it off the bot's event loop.
+    qr_payload_text = await asyncio.to_thread(extract_qr_payload_from_image, file_path)
     if qr_payload_text:
         qr_data = parse_qr_equipment_payload(qr_payload_text)
         inv_no = _normalize(qr_data.get("inv_no"))

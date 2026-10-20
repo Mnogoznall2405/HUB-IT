@@ -4,7 +4,6 @@ Session persistence and lifecycle management for web authentication.
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -12,7 +11,7 @@ from threading import Lock
 from time import monotonic
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.appdb.db import app_session, initialize_app_schema, is_app_database_configured
 from backend.appdb.models import AppSessionRecord, AppUser
@@ -145,38 +144,6 @@ class SessionService:
         self._active_cache_lock = Lock()
         # session_id -> (expires_mono, is_active, last_touch_mono)
         self._active_cache: dict[str, tuple[float, bool, float]] = {}
-        self._active_cache_hits = 0
-
-    def _agent_log_cache_hit(self, *, location: str, message: str, data: dict) -> None:
-        if str(os.getenv("DEBUG_CLIENT_LOG_ENABLED", "0")).strip().lower() not in {"1", "true", "yes", "on"}:
-            return
-        # Sample under load: log every 100th hit to avoid IO stampede.
-        with self._active_cache_lock:
-            self._active_cache_hits += 1
-            hit_n = self._active_cache_hits
-        if hit_n % 100 != 1:
-            return
-        # #region agent log
-        try:
-            import json as _json
-            import time as _time
-            from pathlib import Path as _Path
-
-            _log = _Path(__file__).resolve().parents[3] / "debug-20cb37.log"
-            payload = {
-                "sessionId": "20cb37",
-                "runId": "post-fix",
-                "hypothesisId": "S",
-                "location": location,
-                "message": message,
-                "data": {**data, "cache_hit_n": hit_n},
-                "timestamp": int(_time.time() * 1000),
-            }
-            with _log.open("a", encoding="utf-8") as _f:
-                _f.write(_json.dumps(payload, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
-        # #endregion
 
     def _ensure_file(self) -> None:
         if self._use_app_database:
@@ -733,11 +700,6 @@ class SessionService:
     def touch_session(self, session_id: str) -> bool:
         normalized_id = str(session_id or "").strip()
         if normalized_id and self._cache_touch_fresh(normalized_id):
-            self._agent_log_cache_hit(
-                location="session_service.py:touch_session",
-                message="session touch cache hit",
-                data={"session_id_prefix": normalized_id[:8]},
-            )
             return True
         if self._use_app_database:
             with app_session(self._database_url) as session:
@@ -753,13 +715,25 @@ class SessionService:
                 if not self._should_write_touch(item, now=now):
                     self._cache_put_active(normalized_id, is_active=True, touched=True)
                     return True
-                now_iso = now.isoformat()
-                item["last_seen_at"] = now_iso
-                item["idle_expires_at"] = (
-                    now + self._idle_timeout_delta(item, db_session=session)
-                ).isoformat()
-                item["status"] = "active"
-                self._apply_session_payload(row, item)
+                idle_expires_at = now + self._idle_timeout_delta(item, db_session=session)
+                # Touch only moves the activity timestamps and only while the
+                # row is still active in the database.  A concurrent logout or
+                # admin termination may have committed after the read above;
+                # writing the whole snapshot back would resurrect that session.
+                session.flush()  # pending normalisation first, so the timestamps below win
+                updated = session.execute(
+                    update(AppSessionRecord)
+                    .where(
+                        AppSessionRecord.session_id == normalized_id,
+                        AppSessionRecord.is_active.is_(True),
+                        AppSessionRecord.status == "active",
+                    )
+                    .values(last_seen_at=now, idle_expires_at=idle_expires_at)
+                    .execution_options(synchronize_session=False)
+                )
+                if not updated.rowcount:
+                    self._cache_put_active(normalized_id, is_active=False)
+                    return False
                 self._cache_put_active(normalized_id, is_active=True, touched=True)
                 return True
         sessions = self._load_sessions()
@@ -798,14 +772,6 @@ class SessionService:
             return True
         cached = self._cache_get_active(str(session_id))
         if cached is not None:
-            self._agent_log_cache_hit(
-                location="session_service.py:is_session_active",
-                message="session active cache hit",
-                data={
-                    "session_id_prefix": str(session_id)[:8],
-                    "is_active": bool(cached),
-                },
-            )
             return bool(cached)
         # This is the hot authentication path used by every REST request and
         # WebSocket revalidation. Validating one session below is sufficient
@@ -926,6 +892,10 @@ class SessionService:
                     select(AppSessionRecord).where(AppSessionRecord.user_id == int(user_id))
                 ).all()
                 for row in rows:
+                    if not bool(row.is_active):
+                        # Already closed/expired: keep its original status,
+                        # closed_reason and closed_at; do not count it.
+                        continue
                     item = self._row_to_session_dict(row)
                     closed_ids.append(str(item.get("session_id") or row.session_id or ""))
                     if self._close_session_record(item, reason="terminated", db_session=session):

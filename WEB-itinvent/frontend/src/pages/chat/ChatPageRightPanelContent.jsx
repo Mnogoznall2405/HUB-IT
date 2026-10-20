@@ -35,9 +35,12 @@ export default function ChatPageRightPanelContent({
   handleAddGroupMembers,
   handleRemoveGroupMember,
   handleUpdateGroupMemberRole,
+  handleSetGroupMemberRestriction,
   handleTransferGroupOwnership,
   handleLeaveGroup,
   handleUpdateGroupProfile,
+  handleUploadGroupAvatar,
+  handleRemoveGroupAvatar,
   settingsUpdating,
   openMediaViewer,
   openTaskFromChat,
@@ -107,9 +110,12 @@ export default function ChatPageRightPanelContent({
           onAddGroupMembers={handleAddGroupMembers}
           onRemoveGroupMember={handleRemoveGroupMember}
           onUpdateGroupMemberRole={handleUpdateGroupMemberRole}
+          onSetGroupMemberRestriction={handleSetGroupMemberRestriction}
           onTransferGroupOwnership={handleTransferGroupOwnership}
           onLeaveGroup={handleLeaveGroup}
           onUpdateGroupProfile={handleUpdateGroupProfile}
+          onUploadGroupAvatar={handleUploadGroupAvatar}
+          onRemoveGroupAvatar={handleRemoveGroupAvatar}
           settingsUpdating={settingsUpdating}
           onOpenAttachmentPreview={openMediaViewer}
           onOpenTask={openTaskFromChat}

@@ -126,6 +126,8 @@ class AiConversationStatusResponse(BaseModel):
     stage: Optional[str] = None
     status_text: Optional[str] = None
     run_id: Optional[str] = None
+    run_created_at: Optional[str] = None
+    result_message_id: Optional[str] = None
     error_text: Optional[str] = None
     updated_at: Optional[str] = None
     # R36: серверное «сейчас» — клиент считает возраст запуска без перекоса часов.
@@ -160,6 +162,10 @@ class AiMemoryItemResponse(BaseModel):
     id: str
     content: str
     category: str = "preference"
+    fact_key: str = ""
+    version: int = 1
+    source_message_id: Optional[str] = None
+    source_conversation_id: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 

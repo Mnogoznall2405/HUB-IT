@@ -534,7 +534,9 @@ export default function Warehouse1CReconcilePanel({
         if (cancelled) return;
         setOwnerHubPending(Array.isArray(data?.hub_pending) ? data.hub_pending : []);
         setOwnerHubTotal(Number(data?.hub_pending_total) || 0);
-        setOwnerMismatches(Array.isArray(data?.mismatched) ? data.mismatched : []);
+        const mismatchRows = Array.isArray(data?.mismatched) ? data.mismatched : [];
+        const hubOnlyRows = Array.isArray(data?.only_in_hub) ? data.only_in_hub : [];
+        setOwnerMismatches([...mismatchRows, ...hubOnlyRows]);
         setWarehouseStatus(String(data?.warehouse_status || ''));
         setItems(Array.isArray(data?.hub_pending) ? data.hub_pending : []);
         setTotal(Number(data?.hub_pending_total) || 0);
@@ -853,6 +855,7 @@ export default function Warehouse1CReconcilePanel({
                       {onOpenNomenclature ? (
                         <Button
                           size="small"
+                          disabled={!row?.nomenclature_ref}
                           onClick={() => onOpenNomenclature(row)}
                           sx={{ textTransform: 'none' }}
                         >

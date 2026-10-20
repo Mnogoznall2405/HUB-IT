@@ -120,7 +120,8 @@ describe('useMyFilesShares', () => {
   });
 
   it('creates and revokes a folder share', async () => {
-    const { result } = renderShares();
+    const onFolderShareChanged = vi.fn();
+    const { result } = renderShares({ onFolderShareChanged });
     await act(async () => { await result.current.shareFolder({ id: 'd1', name: 'Документы' }); });
     expect(mockCreateFolderShare).toHaveBeenCalledWith('d1', { rotate: false });
     expect(result.current.folderShareDialog).toMatchObject({
@@ -129,9 +130,11 @@ describe('useMyFilesShares', () => {
       url: 'https://hub/f/tok-2',
       folderName: 'Документы',
     });
+    expect(onFolderShareChanged).toHaveBeenCalledWith('d1', true);
 
     await act(async () => { await result.current.revokeFolderShare('d1'); });
     expect(mockRevokeFolderShare).toHaveBeenCalledWith('d1');
     expect(result.current.folderShareDialog.open).toBe(false);
+    expect(onFolderShareChanged).toHaveBeenCalledWith('d1', false);
   });
 });

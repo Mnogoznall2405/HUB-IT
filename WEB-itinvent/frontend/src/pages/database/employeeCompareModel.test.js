@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  EMPLOYEE_COMPARE_MAX_AGE_MS,
   aggregateEmployeeBalances,
+  areBalanceQuantitiesValid,
   buildCompareMaps,
+  buildEmployeeCompareSummary,
   groupHubItemsByPartNo,
   isBalancesMetaIncomplete,
+  isEmployeeCompareSnapshotFresh,
   isEmployeeCompareSummaryComplete,
   normalizeCompareKey,
   resolve1cRowStatus,
@@ -134,8 +138,10 @@ describe('isBalancesMetaIncomplete', () => {
     expect(isBalancesMetaIncomplete({ status: 'ok', has_more: false, truncated: false })).toBe(false);
   });
 
-  it('flags missing meta and non-ok statuses', () => {
+  it('flags missing meta, empty meta and non-ok statuses', () => {
     expect(isBalancesMetaIncomplete(null)).toBe(true);
+    expect(isBalancesMetaIncomplete({})).toBe(true);
+    expect(isBalancesMetaIncomplete({ status: '' })).toBe(true);
     expect(isBalancesMetaIncomplete({ status: 'incomplete' })).toBe(true);
     expect(isBalancesMetaIncomplete({ status: 'ok', has_more: true })).toBe(true);
     expect(isBalancesMetaIncomplete({ status: 'ok', truncated: true })).toBe(true);
@@ -155,6 +161,130 @@ describe('isEmployeeCompareSummaryComplete', () => {
     expect(isEmployeeCompareSummaryComplete({ status: 'ok', truncated: true })).toBe(false);
     expect(isEmployeeCompareSummaryComplete({ status: 'ok', has_more: true })).toBe(false);
     expect(isEmployeeCompareSummaryComplete({ status: 'ok', hasMore: true })).toBe(false);
+    expect(isEmployeeCompareSummaryComplete({ status: 'ok', balances_status: 'unknown' })).toBe(false);
+    expect(isEmployeeCompareSummaryComplete({ status: 'ok', balances_truncated: true })).toBe(false);
+    expect(isEmployeeCompareSummaryComplete({ status: 'ok', catalog_truncated: true })).toBe(false);
+    expect(isEmployeeCompareSummaryComplete({ status: 'ok', balances_status: 'ok' })).toBe(true);
+  });
+});
+
+describe('isEmployeeCompareSnapshotFresh', () => {
+  const now = Date.parse('2026-05-27T12:00:00.000Z');
+
+  it('accepts a recent parseable timestamp', () => {
+    expect(isEmployeeCompareSnapshotFresh('2026-05-27T11:59:30.000Z', now)).toBe(true);
+    expect(isEmployeeCompareSnapshotFresh(now - EMPLOYEE_COMPARE_MAX_AGE_MS + 1, now)).toBe(true);
+  });
+
+  it('rejects missing, malformed, stale or future timestamps', () => {
+    expect(isEmployeeCompareSnapshotFresh(null, now)).toBe(false);
+    expect(isEmployeeCompareSnapshotFresh(undefined, now)).toBe(false);
+    expect(isEmployeeCompareSnapshotFresh('', now)).toBe(false);
+    expect(isEmployeeCompareSnapshotFresh('not-a-date', now)).toBe(false);
+    expect(isEmployeeCompareSnapshotFresh('2026-05-27T11:58:00.000Z', now)).toBe(false);
+    expect(isEmployeeCompareSnapshotFresh(now - EMPLOYEE_COMPARE_MAX_AGE_MS, now)).toBe(false);
+    expect(isEmployeeCompareSnapshotFresh('2026-05-27T12:00:01.000Z', now)).toBe(false);
+    expect(isEmployeeCompareSnapshotFresh(now + 1, now)).toBe(false);
+  });
+});
+
+describe('areBalanceQuantitiesValid', () => {
+  it('requires every row to carry a finite non-negative qty_balance', () => {
+    expect(areBalanceQuantitiesValid([
+      { nomenclature_code: 'a', qty_balance: 0 },
+      { nomenclature_code: 'b', qty_balance: '2.5' },
+    ])).toBe(true);
+    expect(areBalanceQuantitiesValid([])).toBe(true);
+    expect(areBalanceQuantitiesValid(null)).toBe(false);
+    expect(areBalanceQuantitiesValid([{ qty_balance: '' }])).toBe(false);
+    expect(areBalanceQuantitiesValid([{ qty_balance: '  ' }])).toBe(false);
+    expect(areBalanceQuantitiesValid([{ qty_balance: null }])).toBe(false);
+    expect(areBalanceQuantitiesValid([{ qty_balance: 'abc' }])).toBe(false);
+    expect(areBalanceQuantitiesValid([{ qty_balance: NaN }])).toBe(false);
+    expect(areBalanceQuantitiesValid([{ qty_balance: Infinity }])).toBe(false);
+    expect(areBalanceQuantitiesValid([{ qty_balance: -1 }])).toBe(false);
+    expect(areBalanceQuantitiesValid([{ qty_balance: true }])).toBe(false);
+    expect(areBalanceQuantitiesValid([{ qty_balance: false }])).toBe(false);
+    expect(areBalanceQuantitiesValid([{ qty_balance: [2] }])).toBe(false);
+    expect(areBalanceQuantitiesValid([{ qty_balance: { value: 2 } }])).toBe(false);
+    expect(areBalanceQuantitiesValid([{ qty_balance: '2' }])).toBe(true);
+  });
+});
+
+describe('buildEmployeeCompareSummary', () => {
+  const baseArgs = {
+    ownerNo: 42,
+    employeeName: 'Иванов И.И.',
+    warehouse: { ref: 'wh-1', name: 'Иванов И.И.' },
+    asOf: '2026-05-27T12:00:00.000Z',
+  };
+
+  it('marks a 2-vs-1 quantity split as diff with per-part evidence', () => {
+    const summary = buildEmployeeCompareSummary({
+      ...baseArgs,
+      hubItems: [
+        hubItem({ inv_no: '100021', part_no: 'ЦБ-00195776' }),
+        hubItem({ inv_no: '100022', part_no: 'ЦБ-00195776' }),
+      ],
+      balances: [
+        balanceRow({ nomenclature_code: 'ЦБ-00195776', qty_balance: 1 }),
+      ],
+    });
+
+    const key = normalizeCompareKey('ЦБ-00195776');
+    expect(summary.owner_no).toBe(42);
+    expect(summary.employee_name).toBe('Иванов И.И.');
+    expect(summary.warehouse_ref).toBe('wh-1');
+    expect(summary.as_of).toBe('2026-05-27T12:00:00.000Z');
+    expect(summary.status).toBe('diff');
+    expect(summary.part_status[key]).toBe('diff');
+    expect(summary.part_quantities[key]).toEqual({ hub_count: 2, qty_1c: 1 });
+    expect(summary.counts).toEqual({
+      match: 0, diff: 1, only_hub: 0, only_1c: 0,
+      no_part: 0, not_in_1c: 0, hub_items: 2,
+    });
+  });
+
+  it('sums series rows, counts codes and reports only-1C positions', () => {
+    const summary = buildEmployeeCompareSummary({
+      ...baseArgs,
+      hubItems: [
+        hubItem({ inv_no: 'A', part_no: 'PN-1' }),
+        hubItem({ inv_no: 'B', part_no: 'PN-2' }),
+      ],
+      balances: [
+        balanceRow({ nomenclature_code: 'pn-1', qty_balance: 0.5 }),
+        balanceRow({ nomenclature_code: 'PN-1', qty_balance: 0.5 }),
+        balanceRow({ nomenclature_code: 'PN-9', qty_balance: 3 }),
+      ],
+    });
+
+    expect(summary.part_status[normalizeCompareKey('PN-1')]).toBe('match');
+    expect(summary.part_status[normalizeCompareKey('PN-2')]).toBe('only_hub');
+    expect(summary.part_quantities[normalizeCompareKey('PN-1')]).toEqual({ hub_count: 1, qty_1c: 1 });
+    expect(summary.part_quantities[normalizeCompareKey('PN-2')]).toEqual({ hub_count: 1, qty_1c: null });
+    expect(summary.counts.match).toBe(1);
+    expect(summary.counts.only_hub).toBe(1);
+    expect(summary.counts.only_1c).toBe(1);
+    expect(summary.status).toBe('only_hub');
+  });
+
+  it('reports unknown when no usable Hub codes remain but unlinked items exist', () => {
+    const summary = buildEmployeeCompareSummary({
+      ...baseArgs,
+      hubItems: [
+        hubItem({ inv_no: 'A', part_no: '' }),
+        hubItem({ inv_no: 'B', part_no: 'нет в 1С' }),
+      ],
+      balances: [],
+    });
+
+    expect(summary.status).toBe('unknown');
+    expect(summary.counts.no_part).toBe(1);
+    expect(summary.counts.not_in_1c).toBe(1);
+    expect(summary.counts.hub_items).toBe(2);
+    expect(summary.part_status).toEqual({});
+    expect(summary.part_quantities).toEqual({});
   });
 });
 

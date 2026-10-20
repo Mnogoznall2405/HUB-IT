@@ -1,6 +1,8 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { NativeAppSettingsScreen, SETTINGS_STATE_TIMEOUT_MS } from './NativeAppSettingsScreen';
 
+jest.setTimeout(20_000);
+
 const mockExecute = jest.fn();
 const mockNativeUpdaterState = {
   status: 'current',

@@ -1,5 +1,6 @@
 """Stage 3 ai_chat tools: unsigned acts, 1C warehouse, MFU low toner, morning IT digest."""
 from __future__ import annotations
+import conftest
 
 import asyncio
 import importlib
@@ -188,6 +189,157 @@ def test_my_it_requests_exact_initiator(monkeypatch):
     assert "responsible" not in result.data["items"][0]
 
 
+def test_warehouse_balances_requests_meta_and_keeps_complete_totals(monkeypatch):
+    fake = _FakeWarehouse()
+    monkeypatch.setattr(warehouse, "_warehouse_service", lambda: fake)
+    result = warehouse.BalancesSearchTool().execute(context=_ctx(), args=warehouse.BalancesSearchArgs(query="CF259A"))
+    assert result.ok is True
+    assert fake.calls[-1][1].get("include_meta") is True
+    assert result.data["total"] == 2
+    assert result.data["total_qty"] == 10
+    assert result.data["returned"] == 2
+    assert result.data["returned_qty"] == 10
+    assert result.data["count"] == 2
+    assert result.data["truncated"] is False
+    assert result.data["has_more"] is False
+    assert result.data["incomplete_reason"] is None
+
+
+def test_warehouse_balances_partial_source_hides_totals(monkeypatch):
+    rows = [
+        {"nomenclature_name": "Позиция", "nomenclature_code": "1", "warehouse_name": "Склад ИТ", "qty_balance": 1}
+        for _ in range(199)
+    ] + [
+        {"nomenclature_name": "Позиция", "nomenclature_code": "1", "warehouse_name": "Склад Урал", "qty_balance": 1}
+    ]
+
+    class _Partial:
+        async def get_balances(self, **kw):
+            return {"items": rows, "has_more": True, "status": "incomplete", "incomplete_reason": "limit_cap"}
+
+    monkeypatch.setattr(warehouse, "_warehouse_service", lambda: _Partial())
+    result = warehouse.BalancesSearchTool().execute(context=_ctx(), args=warehouse.BalancesSearchArgs(query="позиция"))
+    assert result.ok is True
+    assert result.data["total"] is None
+    assert result.data["total_qty"] is None
+    assert result.data["returned"] == 200
+    assert result.data["returned_qty"] == 200
+    assert result.data["truncated"] is True
+    assert result.data["has_more"] is True
+    assert result.data["incomplete_reason"] == "limit_cap"
+
+    narrowed = warehouse.BalancesSearchTool().execute(
+        context=_ctx(), args=warehouse.BalancesSearchArgs(query="позиция", warehouse="урал")
+    )
+    assert narrowed.data["returned"] == 1
+    assert narrowed.data["total"] is None
+    assert narrowed.data["total_qty"] is None
+    assert narrowed.data["truncated"] is True
+    assert narrowed.data["has_more"] is True
+    empty = warehouse.BalancesSearchTool().execute(
+        context=_ctx(), args=warehouse.BalancesSearchArgs(query="позиция", warehouse="несуществующий")
+    )
+    assert empty.data["returned"] == 0
+    assert empty.data["total"] is None
+    assert empty.data["truncated"] is True
+    assert empty.data["has_more"] is True
+
+
+def test_warehouse_balances_output_cap_keeps_total(monkeypatch):
+    rows = [
+        {"nomenclature_name": "Позиция", "nomenclature_code": "1", "warehouse_name": "Склад", "qty_balance": 2}
+        for _ in range(25)
+    ]
+
+    class _Complete:
+        async def get_balances(self, **kw):
+            return {"items": rows, "truncated": False, "has_more": False, "status": "ok"}
+
+    monkeypatch.setattr(warehouse, "_warehouse_service", lambda: _Complete())
+    result = warehouse.BalancesSearchTool().execute(context=_ctx(), args=warehouse.BalancesSearchArgs(query="позиция"))
+    assert result.data["total"] == 25
+    assert result.data["total_qty"] == 50
+    assert result.data["returned"] == 25
+    assert result.data["returned_qty"] == 50
+    assert result.data["count"] == 20
+    assert len(result.data["items"]) == 20
+    assert result.data["truncated"] is True
+    assert result.data["has_more"] is False
+    assert result.data["incomplete_reason"] is None
+
+
+def test_my_it_requests_truncated_and_cursor(monkeypatch):
+    rows = [
+        {"request_ref": f"ref-{i}", "request_number": f"{i}-ИТ", "initiator_name": "Иванов Иван Иванович"}
+        for i in range(20)
+    ]
+
+    class _Many:
+        async def get_it_requests(self, **kw):
+            return {"items": rows, "total": 20}
+
+    monkeypatch.setattr(warehouse, "_warehouse_service", lambda: _Many())
+    self_identity = importlib.import_module("backend.ai_chat.self_identity")
+    monkeypatch.setattr(
+        self_identity, "resolve_self_identity", lambda context: SimpleNamespace(full_name="Иванов Иван Иванович")
+    )
+    result = warehouse.MyItRequestsTool().execute(context=_ctx(), args=warehouse._NoArgs())
+    assert result.data["count"] == 15
+    assert len(result.data["items"]) == 15
+    assert result.data["truncated"] is True
+    assert result.data["has_more"] is False
+
+    class _ForeignWithCursor:
+        async def get_it_requests(self, **kw):
+            return {
+                "items": [{"request_ref": "ref-x", "initiator_name": "Петров Пётр"}],
+                "total": 1,
+                "next_cursor": "c9",
+            }
+
+    monkeypatch.setattr(warehouse, "_warehouse_service", lambda: _ForeignWithCursor())
+    result = warehouse.MyItRequestsTool().execute(context=_ctx(), args=warehouse._NoArgs())
+    assert result.data["count"] == 0
+    assert result.data["items"] == []
+    assert result.data["has_more"] is True
+    assert result.data["truncated"] is True
+
+
+def test_warehouse_balances_list_payload_compatibility(monkeypatch):
+    class _ListPayload:
+        async def get_balances(self, **kw):
+            return [
+                {"nomenclature_name": "A", "warehouse_name": "W1", "qty_balance": 3},
+                {"nomenclature_name": "A", "warehouse_name": "W2", "qty_balance": 7},
+            ]
+
+    monkeypatch.setattr(warehouse, "_warehouse_service", lambda: _ListPayload())
+    result = warehouse.BalancesSearchTool().execute(context=_ctx(), args=warehouse.BalancesSearchArgs(query="AA"))
+    assert result.ok is True
+    assert result.data["total"] == 2
+    assert result.data["total_qty"] == 10
+    assert result.data["returned"] == 2
+    assert result.data["returned_qty"] == 10
+    assert result.data["has_more"] is False
+    assert result.data["truncated"] is False
+
+
+def test_warehouse_detail_marks_positions_truncation(monkeypatch):
+    class _Deep:
+        async def get_it_request_detail(self, request_ref):
+            return {
+                "request_ref": request_ref,
+                "request_number": "31-ИТ",
+                "positions": [{"nomenclature_name": f"Позиция {i}", "qty_requested": 1} for i in range(31)],
+            }
+
+    monkeypatch.setattr(warehouse, "_warehouse_service", lambda: _Deep())
+    detail = warehouse.ItRequestGetTool().execute(context=_ctx(), args=warehouse.ItRequestGetArgs(request_ref="ref-31abcdef"))
+    assert detail.data["positions_returned"] == 30
+    assert detail.data["positions_truncated"] is True
+    assert len(detail.data["positions"]) == 30
+
+
 def test_warehouse_error_is_reported(monkeypatch):
     class Broken:
         async def get_balances(self, **kw):
@@ -300,7 +452,7 @@ def digest_env(tmp_path, monkeypatch):
     appdb._engines.clear()
     appdb._session_factories.clear()
     appdb._initialized_schema_urls.clear()
-    appdb.initialize_app_schema(url)
+    conftest.copy_app_schema_for_url(url)
     monkeypatch.setenv("AI_IT_DIGEST_ENABLED", "1")
     monkeypatch.setenv("AI_IT_DIGEST_USER_IDS", "7, 8, x")
     monkeypatch.setenv("AI_IT_DIGEST_HOUR", "8")

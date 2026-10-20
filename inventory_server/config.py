@@ -70,7 +70,7 @@ class InventoryServerConfig:
                 keys.append(legacy_key)
 
         if not keys:
-            app_env = str(os.getenv("APP_ENV", "development") or "development").strip().lower()
+            app_env = str(os.getenv("APP_ENV", "production") or "production").strip().lower()
             if app_env in {"production", "prod"}:
                 raise RuntimeError(
                     "INVENTORY_SERVER_API_KEYS (or ITINV_AGENT_API_KEYS) must be configured in production"

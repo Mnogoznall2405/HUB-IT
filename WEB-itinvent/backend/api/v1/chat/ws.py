@@ -392,7 +392,6 @@ async def chat_websocket(websocket: WebSocket):
                         error_code = "command_failed"
                 else:
                     error_code = "command_failed"
-                # #region agent log
                 try:
                     from backend.chat.send_audit import audit_send_trace
 
@@ -408,7 +407,6 @@ async def chat_websocket(websocket: WebSocket):
                     )
                 except Exception:
                     pass
-                # #endregion
                 try:
                     from backend.chat.async_logging import allow_rate_limited
 

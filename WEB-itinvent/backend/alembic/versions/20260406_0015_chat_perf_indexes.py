@@ -30,8 +30,15 @@ def _scope() -> str:
     return str(op.get_context().config.attributes.get("itinvent_scope", "all") or "all").strip().lower()
 
 
+def _chat_tables_present() -> bool:
+    """Skip only when the database has no chat tables at all, never by ``itinvent_scope``."""
+    bind = op.get_bind()
+    schema = "chat" if bind.dialect.name == "postgresql" else None
+    return bool(sa.inspect(bind).has_table("chat_conversations", schema=schema))
+
+
 def upgrade() -> None:
-    if _scope() == "app":
+    if not _chat_tables_present():
         return
     chat_message_indexes = _index_names("chat", "chat_messages")
     if "ix_chat_messages_conversation_id_created_at_id" not in chat_message_indexes:
@@ -63,7 +70,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    if _scope() == "app":
+    if not _chat_tables_present():
         return
     chat_message_indexes = _index_names("chat", "chat_messages")
     if "ix_chat_messages_conversation_id_created_at_id" in chat_message_indexes:

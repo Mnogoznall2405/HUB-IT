@@ -17,6 +17,7 @@ import {
   subscribeNativeConnectivity,
 } from '../network/nativeConnectivity';
 import { createDeferredOfflineConnectivityController } from '../network/nativeConnectivityGrace';
+import { logChatDevice } from '../diagnostics/chatDeviceLog';
 import { setNativeOfflineReadOnly } from '../offline/nativeOfflinePolicy';
 import { bumpNativeChatThreadHistoryGeneration } from '../chat/nativeChatThreadHistory';
 import {
@@ -27,6 +28,8 @@ import {
   isBiometricLoginEnabled,
   unlockBiometricLogin,
 } from './biometricAuth';
+
+export type ServerCheck = { at: number; ok: boolean; ms: number };
 
 export type BiometricUnlockResult = {
   user: HubUser;
@@ -44,6 +47,10 @@ type AuthContextValue = {
   offlineMode: boolean;
   /** Android reports no usable network at the physical layer. */
   connectivityOffline: boolean;
+  /** Last HUB-IT reachability probe (/auth/me): when, whether it answered and how fast. */
+  serverCheck: ServerCheck | null;
+  /** Manual «Проверить связь»: probes HUB-IT now; resolves true when it answered. */
+  checkServerNow: () => Promise<boolean>;
   /** HUB-IT answered JSON 403: the session is valid but this network is not allowed. */
   sessionNetworkRestricted: boolean;
   vpnActive: boolean;
@@ -75,6 +82,14 @@ const SESSION_RECOVERY_ATTEMPT_TIMEOUT_MS = 5_000;
 function isTransportFailure(error: unknown): boolean {
   if (!error || typeof error !== 'object') return true;
   return !('response' in error) || (error as { response?: unknown }).response == null;
+}
+
+// Short enum-like token for the device log: HTTP status or axios error code, never a message.
+function probeErrorToken(error: unknown): string {
+  const status = Number((error as { response?: { status?: unknown } })?.response?.status || 0);
+  if (status) return `http${status}`;
+  const code = String((error as { code?: unknown })?.code || 'none');
+  return code.replace(/[^a-zA-Z0-9_.:+-]/g, '').slice(0, 32) || 'none';
 }
 
 async function restoreUserWithRetry(
@@ -142,6 +157,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [offlineCacheKey, setOfflineCacheKey] = useState<string | null>(null);
   const [appLockPendingUnlock, setAppLockPendingUnlock] = useState(false);
   const lastApiSuccessAtRef = useRef(0);
+  const [serverCheck, setServerCheck] = useState<ServerCheck | null>(null);
   const offlineMode = sessionOfflineMode || connectivityOffline;
   const userId = user ? Number(user.id) : null;
 
@@ -234,11 +250,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setVpnActive,
       recheck: getNativeConnectivitySnapshot,
     });
-    void getNativeConnectivitySnapshot().then(controller.apply).catch(() => undefined);
-    const subscription = subscribeNativeConnectivity(controller.apply);
+    // Every snapshot lands in the shareable device log: a stuck «Нет связи» is
+    // diagnosed from the order of native events, foreground resyncs and probes.
+    // Android шлёт событие на каждое колебание сигнала Wi-Fi: в журнал идут только
+    // реальные смены состояния, иначе он вытеснит всё остальное (кольцо на 400 записей).
+    let lastLoggedKey = '';
+    const applyLogged = (source: string) => (snapshot: Parameters<typeof controller.apply>[0]) => {
+      const key = `${snapshot.available}|${snapshot.online}|${snapshot.connected}|${snapshot.transport}`;
+      if (source !== 'event' || key !== lastLoggedKey) {
+        logChatDevice('net_snapshot', {
+          src: source,
+          avail: snapshot.available,
+          online: snapshot.online,
+          connected: snapshot.connected,
+          transport: snapshot.transport,
+        });
+      }
+      lastLoggedKey = key;
+      controller.apply(snapshot);
+    };
+    void getNativeConnectivitySnapshot().then(applyLogged('start')).catch(() => undefined);
+    const subscription = subscribeNativeConnectivity(applyLogged('event'));
+    // Native events are not delivered reliably while the screen is locked or the
+    // app is in the background: the «offline» flag could survive the return to
+    // the app and keep every write blocked. Re-read the real state on resume.
+    const appStateSubscription = AppState.addEventListener('change', (nextState) => {
+      logChatDevice('app_state', { state: nextState });
+      if (nextState !== 'active') return;
+      warmApiConnection();
+      void getNativeConnectivitySnapshot().then(applyLogged('foreground')).catch(() => undefined);
+    });
     return () => {
       controller.dispose();
       subscription.remove();
+      appStateSubscription.remove();
     };
   }, []);
 
@@ -377,7 +422,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // growing timer capped at 60 s. The local session ends only on an unambiguous
   // JSON 401/403 from HUB-IT or when the server reports a different user id.
   useEffect(() => {
-    if (!user || !sessionOfflineMode || logoutPromise.current) return undefined;
+    // connectivityOffline alone must also recover: a missed native «network is
+    // back» event would otherwise keep the app read-only until Wi-Fi is toggled.
+    if (!user || !(sessionOfflineMode || connectivityOffline) || logoutPromise.current) return undefined;
     let disposed = false;
     const generation = authGenerationRef.current;
     const expectedUserId = userId;
@@ -418,6 +465,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (!isCurrent()) return;
       inFlight = true;
       immediateRequested = false;
+      const startedAt = Date.now();
       try {
         const me = await authApi.fetchMe({ timeoutMs: SESSION_RECOVERY_ATTEMPT_TIMEOUT_MS });
         if (!isCurrent()) return;
@@ -426,11 +474,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           await expireSessionLocally();
           return;
         }
+        logChatDevice('net_probe', { ok: true, ms: Date.now() - startedAt, tries: failedAttempts });
+        setServerCheck({ at: Date.now(), ok: true, ms: Date.now() - startedAt });
         setUser(me);
         markApiOnline();
         cacheSessionUserInBackground(me);
       } catch (error) {
         if (!isCurrent()) return;
+        logChatDevice('net_probe', {
+          ok: false,
+          ms: Date.now() - startedAt,
+          tries: failedAttempts,
+          code: probeErrorToken(error),
+        });
+        setServerCheck({ at: Date.now(), ok: false, ms: Date.now() - startedAt });
         if (isUserDeactivatedRejection(error)) {
           await wipeDeactivatedSession();
           return;
@@ -452,7 +509,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    setSessionRestoreState('checking');
+    if (sessionOfflineMode) setSessionRestoreState('checking');
     void runAttempt();
     const connectivitySubscription = subscribeNativeConnectivity((snapshot) => {
       if (snapshot.connected || snapshot.online) void runAttempt();
@@ -472,7 +529,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       connectivitySubscription.remove();
       appStateSubscription.remove();
     };
-  }, [markApiOnline, sessionOfflineMode, userId, wipeDeactivatedSession]);
+  }, [connectivityOffline, markApiOnline, sessionOfflineMode, userId, wipeDeactivatedSession]);
 
   const beginAuthentication = useCallback(() => {
     if (logoutPromise.current) throw new Error('Выход ещё выполняется. Дождитесь завершения и повторите вход.');
@@ -707,6 +764,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [user],
   );
 
+  // Ручная проверка связи («Проверить связь» в сканере): тот же /auth/me, что и у
+  // фонового восстановления. Успех снимает режим офлайна, не дожидаясь событий Android.
+  const checkServerNow = useCallback(async (): Promise<boolean> => {
+    const startedAt = Date.now();
+    const generation = authGenerationRef.current;
+    try {
+      const me = await authApi.fetchMe({ timeoutMs: SESSION_RECOVERY_ATTEMPT_TIMEOUT_MS });
+      const ms = Date.now() - startedAt;
+      logChatDevice('net_probe', { ok: true, ms, src: 'manual' });
+      if (generation !== authGenerationRef.current) return false;
+      setServerCheck({ at: Date.now(), ok: true, ms });
+      if (userId !== null && Number(me.id) === userId) markApiOnline();
+      return true;
+    } catch (error) {
+      const ms = Date.now() - startedAt;
+      logChatDevice('net_probe', { ok: false, ms, src: 'manual', code: probeErrorToken(error) });
+      if (generation === authGenerationRef.current) setServerCheck({ at: Date.now(), ok: false, ms });
+      return false;
+    }
+  }, [markApiOnline, userId]);
+
   const value = useMemo(
     () => ({
       user,
@@ -718,6 +796,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       biometricEnrollmentAvailable: Boolean(biometricEnrollmentCode),
       offlineMode,
       connectivityOffline,
+      serverCheck,
+      checkServerNow,
       sessionNetworkRestricted,
       vpnActive,
       offlineCacheKey,
@@ -746,6 +826,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       biometricEnrollmentCode,
       offlineMode,
       connectivityOffline,
+      serverCheck,
+      checkServerNow,
       sessionNetworkRestricted,
       vpnActive,
       offlineCacheKey,

@@ -101,7 +101,10 @@ export default function useEmployeeEquipmentData({
             if (cancelled) return;
             const items = Array.isArray(data)
               ? data
-              : (Array.isArray(data?.equipment) ? data.equipment : []);
+              : (Array.isArray(data?.equipment) ? data.equipment : null);
+            if (items === null) {
+              throw new Error('Malformed employee equipment response');
+            }
             setHubItems(items);
             // Cross-DB lookups report per-DB failures — surface them so a
             // partial list isn't mistaken for the complete picture.

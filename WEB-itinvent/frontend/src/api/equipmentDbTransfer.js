@@ -8,7 +8,20 @@ const targetDbHeaders = (dbId) => ({ 'X-Database-ID': String(dbId || '').trim() 
 
 export const equipmentDbTransferAPI = {
   transferToDb: async (payload) => {
-    const response = await apiClient.post('/equipment/transfer/to-db', payload);
+    const response = await apiClient.post('/equipment/transfer/to-db', payload, { timeout: 180_000 });
+    return response.data;
+  },
+
+  downloadAct: async (dbId, fileNo) => apiClient.get(
+    `/equipment/transfer/to-db/${encodeURIComponent(dbId)}/files/${fileNo}`,
+    { responseType: 'blob' },
+  ),
+
+  emailAct: async (dbId, fileNo, recipientEmail) => {
+    const response = await apiClient.post(
+      `/equipment/transfer/to-db/${encodeURIComponent(dbId)}/files/${fileNo}/email`,
+      { recipient_email: recipientEmail },
+    );
     return response.data;
   },
 

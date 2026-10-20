@@ -156,3 +156,29 @@ def test_quiet_hours_reject_equal_start_and_end_when_enabled(temp_dir):
         assert "must be different" in str(exc)
     else:
         raise AssertionError("equal quiet hours boundaries must be rejected")
+
+
+def test_concurrent_updates_of_different_users_are_not_lost(temp_dir):
+    import threading
+    import time
+
+    service = _service(temp_dir)
+    original_load_all = service._load_all
+
+    def slow_load_all():
+        data = original_load_all()
+        time.sleep(0.02)  # widen the load -> save window
+        return data
+
+    service._load_all = slow_load_all
+    user_ids = list(range(100, 108))
+    threads = [
+        threading.Thread(target=service.update_preferences, kwargs={"user_id": uid, "patch": {"mail": False}})
+        for uid in user_ids
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert service.enabled_user_ids(user_ids=user_ids, channel="mail") == set()

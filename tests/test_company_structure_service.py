@@ -1,4 +1,5 @@
 from __future__ import annotations
+import conftest
 
 import io
 
@@ -31,7 +32,7 @@ class MemoryDataManager:
 def structure_service(tmp_path, monkeypatch):
     database_url = f"sqlite+pysqlite:///{(tmp_path / 'company-structure.db').as_posix()}"
     monkeypatch.setenv("APP_DATABASE_URL", database_url)
-    initialize_app_schema(database_url)
+    conftest.copy_app_schema_for_url(database_url)
     return CompanyStructureService(database_url=database_url)
 
 

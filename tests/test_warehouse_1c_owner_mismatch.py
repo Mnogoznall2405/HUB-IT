@@ -151,3 +151,58 @@ def test_owner_mismatch_flags_incomplete_when_hub_count_fails(monkeypatch):
     # the status must not read as a clean "ok".
     assert payload["status"] == "incomplete"
     assert payload["hub_count_failures"] == 1
+
+
+def test_owner_mismatch_lists_hub_only_items(monkeypatch):
+    monkeypatch.setattr(
+        reconcile,
+        "list_reconcile_queue",
+        lambda **kwargs: {"items": [], "total": 0},
+    )
+
+    async def fake_employee_warehouse(**kwargs):
+        return {
+            "status": "matched",
+            "warehouse": {"ref": "warehouse-1", "name": "Main"},
+            "balances": [_balance("s1")],
+            "balances_meta": {"status": "ok", "truncated": False},
+            "candidates": [],
+        }
+
+    monkeypatch.setattr(reconcile.warehouse_1c_service, "get_employee_warehouse", fake_employee_warehouse)
+    monkeypatch.setattr(
+        "backend.api.v1.database.get_all_db_configs",
+        lambda: [{"id": "ITINVENT", "name": "ITINVENT"}],
+    )
+    monkeypatch.setattr(
+        one_c_reconcile_registry_service,
+        "get_active_owner_links",
+        lambda **kwargs: {"warehouse-1": [7]},
+    )
+    monkeypatch.setattr(
+        db_queries,
+        "count_equipment_by_owners_and_part_nos",
+        lambda owner_nos, part_nos, db_id=None: {(7, "pn-1"): 1},
+    )
+    monkeypatch.setattr(
+        db_queries,
+        "get_equipment_by_owner",
+        lambda owner_no, db_id=None: [
+            {"INV_NO": "1001", "PART_NO": "PN-1", "MODEL_NAME": "Monitor"},
+            {"INV_NO": "1002", "PART_NO": "PN-EXTRA", "MODEL_NAME": "Dock"},
+            {"INV_NO": "1003", "PART_NO": "", "MODEL_NAME": "Cable"},
+        ],
+    )
+
+    payload = asyncio.run(
+        reconcile.list_owner_mismatches(employee_name="Main", db_id="ITINVENT")
+    )
+
+    assert payload["status"] == "ok"
+    assert len(payload["only_in_hub"]) == 1
+    only_hub_row = payload["only_in_hub"][0]
+    assert only_hub_row["nomenclature_code"] == "PN-EXTRA"
+    assert only_hub_row["hub_count"] == 1
+    assert only_hub_row["qty_1c"] == 0.0
+    assert only_hub_row["inv_nos"] == ["1002"]
+    assert only_hub_row["owner_link_method"] == "explicit"

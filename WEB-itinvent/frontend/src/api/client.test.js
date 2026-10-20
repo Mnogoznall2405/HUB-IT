@@ -1252,18 +1252,6 @@ describe('equipmentTransferActsAPI contract', () => {
     expect(apiClientMock.post).toHaveBeenNthCalledWith(6, '/equipment/transfer/email', payload);
   });
 
-  it('keeps client equipmentAPI methods compatible with the dedicated module and re-export', async () => {
-    const { equipmentTransferActsAPI } = await importEquipmentTransferActsAPI();
-    const {
-      equipmentAPI,
-      equipmentTransferActsAPI: clientEquipmentTransferActsAPI,
-    } = await import('./client');
-
-    expect(clientEquipmentTransferActsAPI).toBe(equipmentTransferActsAPI);
-    transferActMethods.forEach((methodName) => {
-      expect(equipmentAPI[methodName]).toBe(equipmentTransferActsAPI[methodName]);
-    });
-  });
 });
 
 describe('adUsersAPI', () => {
@@ -1473,18 +1461,6 @@ describe('mailMailboxesAPI contract', () => {
     expect(apiClientMock.delete).toHaveBeenCalledWith('/mail/mailboxes/ops%2Fshared%20mailbox');
   });
 
-  it('keeps mailAPI mailbox methods compatible with the dedicated module and re-export', async () => {
-    const { mailMailboxesAPI } = await importMailMailboxesAPI();
-    const {
-      mailAPI,
-      mailMailboxesAPI: clientMailMailboxesAPI,
-    } = await import('./client');
-
-    expect(clientMailMailboxesAPI).toBe(mailMailboxesAPI);
-    mailboxMethods.forEach((methodName) => {
-      expect(mailAPI[methodName]).toBe(mailMailboxesAPI[methodName]);
-    });
-  });
 
   it('resolves mailAPI mailbox methods through dedicated module getters', async () => {
     const { mailMailboxesAPI } = await importMailMailboxesAPI();
@@ -1631,18 +1607,6 @@ describe('mailFoldersAPI contract', () => {
     );
   });
 
-  it('keeps mailAPI folder methods compatible with the dedicated module and re-export', async () => {
-    const { mailFoldersAPI } = await importMailFoldersAPI();
-    const {
-      mailAPI,
-      mailFoldersAPI: clientMailFoldersAPI,
-    } = await import('./client');
-
-    expect(clientMailFoldersAPI).toBe(mailFoldersAPI);
-    folderMethods.forEach((methodName) => {
-      expect(mailAPI[methodName]).toBe(mailFoldersAPI[methodName]);
-    });
-  });
 
   it('resolves mailAPI folder methods through dedicated module getters', async () => {
     const { mailFoldersAPI } = await importMailFoldersAPI();
@@ -1701,18 +1665,6 @@ describe('mailTemplatesAPI contract', () => {
     expect(apiClientMock.delete).toHaveBeenCalledWith('/mail/templates/it%2Frequest%201');
   });
 
-  it('keeps mailAPI template methods compatible with the dedicated module and re-export', async () => {
-    const { mailTemplatesAPI } = await importMailTemplatesAPI();
-    const {
-      mailAPI,
-      mailTemplatesAPI: clientMailTemplatesAPI,
-    } = await import('./client');
-
-    expect(clientMailTemplatesAPI).toBe(mailTemplatesAPI);
-    templateMethods.forEach((methodName) => {
-      expect(mailAPI[methodName]).toBe(mailTemplatesAPI[methodName]);
-    });
-  });
 
   it('resolves mailAPI template methods through dedicated module getters', async () => {
     const { mailTemplatesAPI } = await importMailTemplatesAPI();
@@ -1786,18 +1738,6 @@ describe('mailItRequestsAPI contract', () => {
     });
   });
 
-  it('keeps mailAPI IT request methods compatible with the dedicated module and re-export', async () => {
-    const { mailItRequestsAPI } = await importMailItRequestsAPI();
-    const {
-      mailAPI,
-      mailItRequestsAPI: clientMailItRequestsAPI,
-    } = await import('./client');
-
-    expect(clientMailItRequestsAPI).toBe(mailItRequestsAPI);
-    itRequestMethods.forEach((methodName) => {
-      expect(mailAPI[methodName]).toBe(mailItRequestsAPI[methodName]);
-    });
-  });
 
   it('resolves mailAPI IT request methods through dedicated module getters', async () => {
     const { mailItRequestsAPI } = await importMailItRequestsAPI();
@@ -1910,18 +1850,6 @@ describe('mailConfigAPI contract', () => {
     expect(apiClientMock.post).toHaveBeenCalledWith('/mail/test-connection', {});
   });
 
-  it('keeps mailAPI config methods compatible with the dedicated module and re-export', async () => {
-    const { mailConfigAPI } = await importMailConfigAPI();
-    const {
-      mailAPI,
-      mailConfigAPI: clientMailConfigAPI,
-    } = await import('./client');
-
-    expect(clientMailConfigAPI).toBe(mailConfigAPI);
-    configMethods.forEach((methodName) => {
-      expect(mailAPI[methodName]).toBe(mailConfigAPI[methodName]);
-    });
-  });
 
   it('resolves mailAPI config methods through dedicated module getters', async () => {
     const { mailConfigAPI } = await importMailConfigAPI();
@@ -2027,18 +1955,6 @@ describe('mailPreferencesAPI contract', () => {
     expect(apiClientMock.patch).toHaveBeenCalledWith('/mail/preferences', payload);
   });
 
-  it('keeps mailAPI preference methods compatible with the dedicated module and re-export', async () => {
-    const { mailPreferencesAPI } = await importMailPreferencesAPI();
-    const {
-      mailAPI,
-      mailPreferencesAPI: clientMailPreferencesAPI,
-    } = await import('./client');
-
-    expect(clientMailPreferencesAPI).toBe(mailPreferencesAPI);
-    preferenceMethods.forEach((methodName) => {
-      expect(mailAPI[methodName]).toBe(mailPreferencesAPI[methodName]);
-    });
-  });
 
   it('resolves mailAPI preference methods through dedicated module getters', async () => {
     const { mailPreferencesAPI } = await importMailPreferencesAPI();
@@ -2269,18 +2185,6 @@ describe('mailComposeAPI contract', () => {
     expect(multipartCall[2].headers['Content-Type']).toBe('multipart/form-data');
   });
 
-  it('keeps mailAPI compose methods compatible with the dedicated module and re-export', async () => {
-    const { mailComposeAPI } = await importMailComposeAPI();
-    const {
-      mailAPI,
-      mailComposeAPI: clientMailComposeAPI,
-    } = await import('./client');
-
-    expect(clientMailComposeAPI).toBe(mailComposeAPI);
-    composeMethods.forEach((methodName) => {
-      expect(mailAPI[methodName]).toBe(mailComposeAPI[methodName]);
-    });
-  });
 
   it('resolves mailAPI compose methods through dedicated module getters', async () => {
     const { mailComposeAPI } = await importMailComposeAPI();
@@ -2411,18 +2315,6 @@ describe('mailMessageListAPI contract', () => {
     spy.mockRestore();
   });
 
-  it('keeps mailAPI message list methods compatible with the dedicated module and re-export', async () => {
-    const { mailMessageListAPI } = await importMailMessageListAPI();
-    const {
-      mailAPI,
-      mailMessageListAPI: clientMailMessageListAPI,
-    } = await import('./client');
-
-    expect(clientMailMessageListAPI).toBe(mailMessageListAPI);
-    messageListMethods.forEach((methodName) => {
-      expect(mailAPI[methodName]).toBe(mailMessageListAPI[methodName]);
-    });
-  });
 
   it('resolves mailAPI message list methods through dedicated module getters', async () => {
     const { mailMessageListAPI } = await importMailMessageListAPI();
@@ -2479,18 +2371,6 @@ describe('mailMessageDetailAPI contract', () => {
     });
   });
 
-  it('keeps mailAPI message detail methods compatible with the dedicated module and re-export', async () => {
-    const { mailMessageDetailAPI } = await importMailMessageDetailAPI();
-    const {
-      mailAPI,
-      mailMessageDetailAPI: clientMailMessageDetailAPI,
-    } = await import('./client');
-
-    expect(clientMailMessageDetailAPI).toBe(mailMessageDetailAPI);
-    messageDetailMethods.forEach((methodName) => {
-      expect(mailAPI[methodName]).toBe(mailMessageDetailAPI[methodName]);
-    });
-  });
 
   it('resolves mailAPI message detail methods through dedicated module getters', async () => {
     const { mailMessageDetailAPI } = await importMailMessageDetailAPI();
@@ -2585,18 +2465,6 @@ describe('mailMessageFilesAPI contract', () => {
     });
   });
 
-  it('keeps mailAPI message file methods compatible with the dedicated module and re-export', async () => {
-    const { mailMessageFilesAPI } = await importMailMessageFilesAPI();
-    const {
-      mailAPI,
-      mailMessageFilesAPI: clientMailMessageFilesAPI,
-    } = await import('./client');
-
-    expect(clientMailMessageFilesAPI).toBe(mailMessageFilesAPI);
-    messageFileMethods.forEach((methodName) => {
-      expect(mailAPI[methodName]).toBe(mailMessageFilesAPI[methodName]);
-    });
-  });
 
   it('resolves mailAPI message file methods through dedicated module getters', async () => {
     const { mailMessageFilesAPI } = await importMailMessageFilesAPI();
@@ -2718,18 +2586,6 @@ describe('mailMessageActionsAPI contract', () => {
     expect(apiClientMock.post).toHaveBeenNthCalledWith(3, '/mail/messages/mark-all-read', {});
   });
 
-  it('keeps mailAPI message action methods compatible with the dedicated module and re-export', async () => {
-    const { mailMessageActionsAPI } = await importMailMessageActionsAPI();
-    const {
-      mailAPI,
-      mailMessageActionsAPI: clientMailMessageActionsAPI,
-    } = await import('./client');
-
-    expect(clientMailMessageActionsAPI).toBe(mailMessageActionsAPI);
-    messageActionMethods.forEach((methodName) => {
-      expect(mailAPI[methodName]).toBe(mailMessageActionsAPI[methodName]);
-    });
-  });
 
   it('resolves mailAPI message action methods through dedicated module getters', async () => {
     const { mailMessageActionsAPI } = await importMailMessageActionsAPI();
@@ -2873,18 +2729,6 @@ describe('mailConversationsAPI contract', () => {
     );
   });
 
-  it('keeps mailAPI conversation methods compatible with the dedicated module and re-export', async () => {
-    const { mailConversationsAPI } = await importMailConversationsAPI();
-    const {
-      mailAPI,
-      mailConversationsAPI: clientMailConversationsAPI,
-    } = await import('./client');
-
-    expect(clientMailConversationsAPI).toBe(mailConversationsAPI);
-    conversationMethods.forEach((methodName) => {
-      expect(mailAPI[methodName]).toBe(mailConversationsAPI[methodName]);
-    });
-  });
 
   it('resolves mailAPI conversation methods through dedicated module getters', async () => {
     const { mailConversationsAPI } = await importMailConversationsAPI();
@@ -2993,18 +2837,6 @@ describe('mailNotificationsAPI contract', () => {
     });
   });
 
-  it('keeps mailAPI notification methods compatible with the dedicated module and re-export', async () => {
-    const { mailNotificationsAPI } = await importMailNotificationsAPI();
-    const {
-      mailAPI,
-      mailNotificationsAPI: clientMailNotificationsAPI,
-    } = await import('./client');
-
-    expect(clientMailNotificationsAPI).toBe(mailNotificationsAPI);
-    notificationMethods.forEach((methodName) => {
-      expect(mailAPI[methodName]).toBe(mailNotificationsAPI[methodName]);
-    });
-  });
 
   it('resolves mailAPI notification methods through dedicated module getters', async () => {
     const { mailNotificationsAPI } = await importMailNotificationsAPI();
@@ -3093,18 +2925,6 @@ describe('chatDirectoryAPI contract', () => {
     expect(apiClientMock.delete).toHaveBeenCalledWith('/chat/ai/conversations/conv%2F1');
   });
 
-  it('keeps client chat directory methods compatible with the dedicated module and re-export', async () => {
-    const { chatDirectoryAPI } = await importChatDirectoryAPI();
-    const {
-      chatAPI,
-      chatDirectoryAPI: clientChatDirectoryAPI,
-    } = await import('./client');
-
-    expect(clientChatDirectoryAPI).toBe(chatDirectoryAPI);
-    directoryMethods.forEach((methodName) => {
-      expect(chatAPI[methodName]).toBe(chatDirectoryAPI[methodName]);
-    });
-  });
 
   it('sends AI run retry/stop through the real chatAPI facade without mocking it', async () => {
     const { chatAPI } = await import('./client');
@@ -3196,24 +3016,6 @@ describe('chatNotificationsAPI contract', () => {
     });
   });
 
-  it('keeps client chat notification methods compatible with the dedicated module and re-export', async () => {
-    const { chatNotificationsAPI } = await importChatNotificationsAPI();
-    const {
-      chatAPI,
-      chatNotificationsAPI: clientChatNotificationsAPI,
-    } = await import('./client');
-    const notificationMethods = [
-      'getUnreadSummary',
-      'getPushConfig',
-      'upsertPushSubscription',
-      'deletePushSubscription',
-    ];
-
-    expect(clientChatNotificationsAPI).toBe(chatNotificationsAPI);
-    notificationMethods.forEach((methodName) => {
-      expect(chatAPI[methodName]).toBe(chatNotificationsAPI[methodName]);
-    });
-  });
 
   it('resolves chatAPI notification methods through the dedicated module getters', async () => {
     const { chatNotificationsAPI } = await importChatNotificationsAPI();
@@ -3255,18 +3057,6 @@ describe('chatConversationsAPI contract', () => {
     });
   });
 
-  it('keeps client chat conversation methods compatible with the dedicated module and re-export', async () => {
-    const { chatConversationsAPI } = await importChatConversationsAPI();
-    const {
-      chatAPI,
-      chatConversationsAPI: clientChatConversationsAPI,
-    } = await import('./client');
-
-    expect(clientChatConversationsAPI).toBe(chatConversationsAPI);
-    conversationMethods.forEach((methodName) => {
-      expect(chatAPI[methodName]).toBe(chatConversationsAPI[methodName]);
-    });
-  });
 
   it('resolves chatAPI conversation methods through dedicated module getters', async () => {
     const { chatConversationsAPI } = await importChatConversationsAPI();
@@ -3346,18 +3136,6 @@ describe('chatConversationDetailsAPI contract', () => {
     );
   });
 
-  it('keeps client chat conversation detail methods compatible with the dedicated module and re-export', async () => {
-    const { chatConversationDetailsAPI } = await importChatConversationDetailsAPI();
-    const {
-      chatAPI,
-      chatConversationDetailsAPI: clientChatConversationDetailsAPI,
-    } = await import('./client');
-
-    expect(clientChatConversationDetailsAPI).toBe(chatConversationDetailsAPI);
-    conversationDetailMethods.forEach((methodName) => {
-      expect(chatAPI[methodName]).toBe(chatConversationDetailsAPI[methodName]);
-    });
-  });
 
   it('resolves chatAPI conversation detail methods through dedicated module getters', async () => {
     const { chatConversationDetailsAPI } = await importChatConversationDetailsAPI();
@@ -3451,15 +3229,6 @@ describe('chatGroupsAPI contract', () => {
     expect(apiClientMock.patch.mock.calls[1][1]).toBe(profilePayload);
   });
 
-  it('keeps client chat group methods compatible with the dedicated module and re-export', async () => {
-    const { chatGroupsAPI } = await importChatGroupsAPI();
-    const { chatAPI, chatGroupsAPI: clientChatGroupsAPI } = await import('./client');
-
-    expect(clientChatGroupsAPI).toBe(chatGroupsAPI);
-    groupMethods.forEach((methodName) => {
-      expect(chatAPI[methodName]).toBe(chatGroupsAPI[methodName]);
-    });
-  });
 
   it('resolves chatAPI group methods through dedicated module getters', async () => {
     const { chatGroupsAPI } = await importChatGroupsAPI();
@@ -3559,18 +3328,6 @@ describe('chatAiActionsAPI contract', () => {
     ]);
   });
 
-  it('keeps client chat AI action methods compatible with the dedicated module and re-export', async () => {
-    const { chatAiActionsAPI } = await importChatAiActionsAPI();
-    const {
-      chatAPI,
-      chatAiActionsAPI: clientChatAiActionsAPI,
-    } = await import('./client');
-
-    expect(clientChatAiActionsAPI).toBe(chatAiActionsAPI);
-    aiActionMethods.forEach((methodName) => {
-      expect(chatAPI[methodName]).toBe(chatAiActionsAPI[methodName]);
-    });
-  });
 
   it('resolves chatAPI AI action methods through dedicated module getters', async () => {
     const { chatAiActionsAPI } = await importChatAiActionsAPI();
@@ -3685,18 +3442,6 @@ describe('chatThreadMessagesAPI contract', () => {
     );
   });
 
-  it('keeps client chat thread message methods compatible with the dedicated module and re-export', async () => {
-    const { chatThreadMessagesAPI } = await importChatThreadMessagesAPI();
-    const {
-      chatAPI,
-      chatThreadMessagesAPI: clientChatThreadMessagesAPI,
-    } = await import('./client');
-
-    expect(clientChatThreadMessagesAPI).toBe(chatThreadMessagesAPI);
-    threadMessageMethods.forEach((methodName) => {
-      expect(chatAPI[methodName]).toBe(chatThreadMessagesAPI[methodName]);
-    });
-  });
 
   it('resolves chatAPI thread message methods through dedicated module getters', async () => {
     const { chatThreadMessagesAPI } = await importChatThreadMessagesAPI();
@@ -3845,18 +3590,6 @@ describe('chatMessageSendingAPI contract', () => {
     ]);
   });
 
-  it('keeps client chat message sending methods compatible with the dedicated module and re-export', async () => {
-    const { chatMessageSendingAPI } = await importChatMessageSendingAPI();
-    const {
-      chatAPI,
-      chatMessageSendingAPI: clientChatMessageSendingAPI,
-    } = await import('./client');
-
-    expect(clientChatMessageSendingAPI).toBe(chatMessageSendingAPI);
-    messageSendingMethods.forEach((methodName) => {
-      expect(chatAPI[methodName]).toBe(chatMessageSendingAPI[methodName]);
-    });
-  });
 
   it('resolves chatAPI message sending methods through dedicated module getters', async () => {
     const { chatMessageSendingAPI } = await importChatMessageSendingAPI();
@@ -3965,18 +3698,6 @@ describe('chatAttachmentsAPI contract', () => {
     );
   });
 
-  it('keeps client chat attachment methods compatible with the dedicated module and re-export', async () => {
-    const { chatAttachmentsAPI } = await importChatAttachmentsAPI();
-    const {
-      chatAPI,
-      chatAttachmentsAPI: clientChatAttachmentsAPI,
-    } = await import('./client');
-
-    expect(clientChatAttachmentsAPI).toBe(chatAttachmentsAPI);
-    chatAttachmentMethods.forEach((methodName) => {
-      expect(chatAPI[methodName]).toBe(chatAttachmentsAPI[methodName]);
-    });
-  });
 
   it('resolves chatAPI attachment methods through dedicated module getters', async () => {
     const { chatAttachmentsAPI } = await importChatAttachmentsAPI();
@@ -4093,18 +3814,6 @@ describe('chatUploadSessionsAPI contract', () => {
     });
   });
 
-  it('keeps client chat upload-session methods compatible with the dedicated module and re-export', async () => {
-    const { chatUploadSessionsAPI } = await importChatUploadSessionsAPI();
-    const {
-      chatAPI,
-      chatUploadSessionsAPI: clientChatUploadSessionsAPI,
-    } = await import('./client');
-
-    expect(clientChatUploadSessionsAPI).toBe(chatUploadSessionsAPI);
-    uploadSessionMethods.forEach((methodName) => {
-      expect(chatAPI[methodName]).toBe(chatUploadSessionsAPI[methodName]);
-    });
-  });
 
   it('resolves chatAPI upload-session methods through dedicated module getters', async () => {
     const { chatUploadSessionsAPI } = await importChatUploadSessionsAPI();
@@ -4359,16 +4068,6 @@ describe('chatFileUploadsAPI contract', () => {
     createSpy.mockRestore();
   });
 
-  it('keeps client chat file upload methods compatible with the dedicated module and re-export', async () => {
-    const { chatFileUploadsAPI } = await importChatFileUploadsAPI();
-    const {
-      chatAPI,
-      chatFileUploadsAPI: clientChatFileUploadsAPI,
-    } = await import('./client');
-
-    expect(clientChatFileUploadsAPI).toBe(chatFileUploadsAPI);
-    expect(chatAPI.sendFiles).toBe(chatFileUploadsAPI.sendFiles);
-  });
 
   it('resolves chatAPI sendFiles through the dedicated module getter', async () => {
     const { chatFileUploadsAPI } = await importChatFileUploadsAPI();
@@ -5382,20 +5081,6 @@ describe('authTrustedDevicesAPI contract', () => {
     expect(apiClientMock.post.mock.calls[1][1].credential).toBe(credential);
   });
 
-  it('keeps client authAPI trusted-device methods compatible with the dedicated module and re-export', async () => {
-    const { authTrustedDevicesAPI } = await importAuthTrustedDevicesAPI();
-    const { authAPI, authTrustedDevicesAPI: clientAuthTrustedDevicesAPI } = await import('./client');
-
-    expect(clientAuthTrustedDevicesAPI).toBe(authTrustedDevicesAPI);
-    expect(authAPI.getTrustedDevices).toBe(authTrustedDevicesAPI.getTrustedDevices);
-    expect(authAPI.revokeTrustedDevice).toBe(authTrustedDevicesAPI.revokeTrustedDevice);
-    expect(authAPI.getTrustedDeviceRegistrationOptions)
-      .toBe(authTrustedDevicesAPI.getTrustedDeviceRegistrationOptions);
-    expect(authAPI.verifyTrustedDeviceRegistration)
-      .toBe(authTrustedDevicesAPI.verifyTrustedDeviceRegistration);
-    expect(authAPI.getTrustedDeviceAuthOptions).toBe(authTrustedDevicesAPI.getTrustedDeviceAuthOptions);
-    expect(authAPI.verifyTrustedDeviceAuth).toBe(authTrustedDevicesAPI.verifyTrustedDeviceAuth);
-  });
 });
 
 describe('authSessionsAPI contract', () => {
@@ -5442,17 +5127,6 @@ describe('authSessionsAPI contract', () => {
     expect(apiClientMock.post).toHaveBeenNthCalledWith(3, '/auth/sessions/normalize-limit', { apply: true });
   });
 
-  it('keeps client authAPI session methods compatible with the dedicated module and re-export', async () => {
-    const { authSessionsAPI } = await importAuthSessionsAPI();
-    const { authAPI, authSessionsAPI: clientAuthSessionsAPI } = await import('./client');
-
-    expect(clientAuthSessionsAPI).toBe(authSessionsAPI);
-    expect(authAPI.getSessions).toBe(authSessionsAPI.getSessions);
-    expect(authAPI.terminateSession).toBe(authSessionsAPI.terminateSession);
-    expect(authAPI.cleanupSessions).toBe(authSessionsAPI.cleanupSessions);
-    expect(authAPI.purgeInactiveSessions).toBe(authSessionsAPI.purgeInactiveSessions);
-    expect(authAPI.normalizeSessionLimit).toBe(authSessionsAPI.normalizeSessionLimit);
-  });
 });
 
 describe('authPasswordLoginAPI contract', () => {
@@ -5535,16 +5209,6 @@ describe('authPasswordLoginAPI contract', () => {
     );
   });
 
-  it('keeps client authAPI password/2FA methods compatible with the dedicated module and re-export', async () => {
-    const { authPasswordLoginAPI } = await importAuthPasswordLoginAPI();
-    const { authAPI, authPasswordLoginAPI: clientAuthPasswordLoginAPI } = await import('./client');
-
-    expect(clientAuthPasswordLoginAPI).toBe(authPasswordLoginAPI);
-    expect(authAPI.login).toBe(authPasswordLoginAPI.login);
-    expect(authAPI.startTwoFactorSetup).toBe(authPasswordLoginAPI.startTwoFactorSetup);
-    expect(authAPI.verifyTwoFactorSetup).toBe(authPasswordLoginAPI.verifyTwoFactorSetup);
-    expect(authAPI.verifyTwoFactorLogin).toBe(authPasswordLoginAPI.verifyTwoFactorLogin);
-  });
 });
 
 describe('authPasskeyLoginAPI contract', () => {
@@ -5605,15 +5269,6 @@ describe('authPasskeyLoginAPI contract', () => {
     expect(apiClientMock.post.mock.calls[0][1].credential).toBe(credential);
   });
 
-  it('keeps client authAPI passkey-first methods compatible with the dedicated module and re-export', async () => {
-    const { authPasskeyLoginAPI } = await importAuthPasskeyLoginAPI();
-    const { authAPI, authPasskeyLoginAPI: clientAuthPasskeyLoginAPI } = await import('./client');
-
-    expect(clientAuthPasskeyLoginAPI).toBe(authPasskeyLoginAPI);
-    expect(authAPI.getLoginMode).toBe(authPasskeyLoginAPI.getLoginMode);
-    expect(authAPI.getPasskeyLoginOptions).toBe(authPasskeyLoginAPI.getPasskeyLoginOptions);
-    expect(authAPI.verifyPasskeyLogin).toBe(authPasskeyLoginAPI.verifyPasskeyLogin);
-  });
 });
 
 describe('authAccountSecurityAPI contract', () => {
@@ -5682,17 +5337,6 @@ describe('authAccountSecurityAPI contract', () => {
     expect(apiClientMock.post).toHaveBeenNthCalledWith(2, '/auth/reset-2fa-self');
   });
 
-  it('keeps client authAPI account-security methods compatible with the dedicated module and re-export', async () => {
-    const { authAccountSecurityAPI } = await importAuthAccountSecurityAPI();
-    const { authAPI, authAccountSecurityAPI: clientAuthAccountSecurityAPI } = await import('./client');
-
-    expect(clientAuthAccountSecurityAPI).toBe(authAccountSecurityAPI);
-    expect(authAPI.getCurrentUser).toBe(authAccountSecurityAPI.getCurrentUser);
-    expect(authAPI.completeAboutOnboarding).toBe(authAccountSecurityAPI.completeAboutOnboarding);
-    expect(authAPI.logout).toBe(authAccountSecurityAPI.logout);
-    expect(authAPI.regenerateBackupCodes).toBe(authAccountSecurityAPI.regenerateBackupCodes);
-    expect(authAPI.resetOwnTwoFactor).toBe(authAccountSecurityAPI.resetOwnTwoFactor);
-  });
 });
 
 describe('authUserAdminAPI contract', () => {
@@ -5837,25 +5481,6 @@ describe('authUserAdminAPI contract', () => {
     );
   });
 
-  it('keeps client authAPI user-admin methods compatible with the dedicated module and re-export', async () => {
-    const { authUserAdminAPI } = await importAuthUserAdminAPI();
-    const { authAPI, authUserAdminAPI: clientAuthUserAdminAPI } = await import('./client');
-
-    expect(clientAuthUserAdminAPI).toBe(authUserAdminAPI);
-    expect(authAPI.getUsers).toBe(authUserAdminAPI.getUsers);
-    expect(authAPI.createUser).toBe(authUserAdminAPI.createUser);
-    expect(authAPI.updateUser).toBe(authUserAdminAPI.updateUser);
-    expect(authAPI.deleteUser).toBe(authUserAdminAPI.deleteUser);
-    expect(authAPI.getTaskDelegates).toBe(authUserAdminAPI.getTaskDelegates);
-    expect(authAPI.getTaskDelegatesBulk).toBe(authUserAdminAPI.getTaskDelegatesBulk);
-    expect(authAPI.updateTaskDelegates).toBe(authUserAdminAPI.updateTaskDelegates);
-    expect(authUserAdminAPI.syncAD).toBeUndefined();
-    expect(authUserAdminAPI.adminResetTwoFactor).toBeUndefined();
-    expect(authUserAdminAPI.changePassword).toBeUndefined();
-    expect(authAPI.syncAD).toEqual(expect.any(Function));
-    expect(authAPI.adminResetTwoFactor).toEqual(expect.any(Function));
-    expect(authAPI.changePassword).toEqual(expect.any(Function));
-  });
 });
 
 
@@ -6032,14 +5657,6 @@ describe('mfuAPI contract', () => {
     expect(apiClientMock.get).toHaveBeenCalledWith('/mfu/pages/monthly', { params });
   });
 
-  it('keeps client mfuAPI compatibility through the dedicated module and re-export', async () => {
-    const { mfuAPI } = await importMfuAPI();
-    const { mfuAPI: clientMfuAPI } = await import('./client');
-
-    expect(clientMfuAPI).toBe(mfuAPI);
-    expect(clientMfuAPI.getDevices).toBe(mfuAPI.getDevices);
-    expect(clientMfuAPI.getMonthlyPages).toBe(mfuAPI.getMonthlyPages);
-  });
 });
 
 describe('scanOverviewAPI contract', () => {
@@ -6100,15 +5717,6 @@ describe('scanOverviewAPI contract', () => {
     expect(apiClientMock.get).toHaveBeenCalledWith('/scan/hosts/table', { params });
   });
 
-  it('keeps client scanAPI overview methods compatible with the dedicated module and re-export', async () => {
-    const { scanOverviewAPI } = await importScanOverviewAPI();
-    const { scanAPI, scanOverviewAPI: clientScanOverviewAPI } = await import('./client');
-
-    expect(clientScanOverviewAPI).toBe(scanOverviewAPI);
-    scanOverviewMethods.forEach((methodName) => {
-      expect(scanAPI[methodName]).toBe(scanOverviewAPI[methodName]);
-    });
-  });
 
   it('resolves scanAPI overview methods through the dedicated module getters', async () => {
     const { scanOverviewAPI } = await importScanOverviewAPI();
@@ -6198,15 +5806,6 @@ describe('scanAgentsAPI contract', () => {
     expect(apiClientMock.get).toHaveBeenCalledWith('/scan/agents/activity?agent_id=agent%2F1&agent_id=agent+2');
   });
 
-  it('keeps client scanAPI agent methods compatible with the dedicated module and re-export', async () => {
-    const { scanAgentsAPI } = await importScanAgentsAPI();
-    const { scanAPI, scanAgentsAPI: clientScanAgentsAPI } = await import('./client');
-
-    expect(clientScanAgentsAPI).toBe(scanAgentsAPI);
-    scanAgentMethods.forEach((methodName) => {
-      expect(scanAPI[methodName]).toBe(scanAgentsAPI[methodName]);
-    });
-  });
 
   it('resolves scanAPI agent methods through the dedicated module getters', async () => {
     const { scanAgentsAPI } = await importScanAgentsAPI();
@@ -6308,15 +5907,6 @@ describe('scanIncidentsAPI contract', () => {
     expect(apiClientMock.post).toHaveBeenCalledWith('/scan/incidents/bulk-ack', payload);
   });
 
-  it('keeps client scanAPI incident methods compatible with the dedicated module and re-export', async () => {
-    const { scanIncidentsAPI } = await importScanIncidentsAPI();
-    const { scanAPI, scanIncidentsAPI: clientScanIncidentsAPI } = await import('./client');
-
-    expect(clientScanIncidentsAPI).toBe(scanIncidentsAPI);
-    scanIncidentMethods.forEach((methodName) => {
-      expect(scanAPI[methodName]).toBe(scanIncidentsAPI[methodName]);
-    });
-  });
 
   it('resolves scanAPI incident methods through the dedicated module getters', async () => {
     const { scanIncidentsAPI } = await importScanIncidentsAPI();
@@ -6437,15 +6027,6 @@ describe('scanTasksAPI contract', () => {
     });
   });
 
-  it('keeps client scanAPI task methods compatible with the dedicated module and re-export', async () => {
-    const { scanTasksAPI } = await importScanTasksAPI();
-    const { scanAPI, scanTasksAPI: clientScanTasksAPI } = await import('./client');
-
-    expect(clientScanTasksAPI).toBe(scanTasksAPI);
-    scanTaskMethods.forEach((methodName) => {
-      expect(scanAPI[methodName]).toBe(scanTasksAPI[methodName]);
-    });
-  });
 
   it('resolves scanAPI task methods through the dedicated module getters', async () => {
     const { scanTasksAPI } = await importScanTasksAPI();

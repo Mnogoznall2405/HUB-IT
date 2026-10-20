@@ -294,8 +294,10 @@ export const downloadBlobFile = (blob, filename, { preferOpenFallback = false } 
   const url = window.URL.createObjectURL(blob);
   const useOpenFallback = Boolean(preferOpenFallback) && shouldPreferBlobOpenFallback();
   if (useOpenFallback) {
-    const popup = window.open(url, '_blank', 'noopener,noreferrer');
+    const popup = window.open('', '_blank');
     if (popup) {
+      popup.opener = null;
+      popup.location.replace(url);
       window.setTimeout(() => {
         window.URL.revokeObjectURL(url);
       }, 60_000);
@@ -311,6 +313,13 @@ export const downloadBlobFile = (blob, filename, { preferOpenFallback = false } 
   document.body.removeChild(link);
 };
 
+const escapePrintText = (value) => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
 export const buildPrintMailDocumentHtml = ({
   subject,
   senderLine,
@@ -319,7 +328,8 @@ export const buildPrintMailDocumentHtml = ({
 }) => `
       <html>
         <head>
-          <title>${String(subject || '\u041f\u0438\u0441\u044c\u043c\u043e')}</title>
+          <meta name="referrer" content="no-referrer">
+          <title>${escapePrintText(subject || '\u041f\u0438\u0441\u044c\u043c\u043e')}</title>
           <style>
             body { font-family: Aptos, Calibri, "Segoe UI", Arial, sans-serif; margin: 24px; line-height: 1.5; color: #111827; }
             h1 { font-size: 20px; margin-bottom: 8px; }
@@ -329,8 +339,8 @@ export const buildPrintMailDocumentHtml = ({
           </style>
         </head>
         <body>
-          <h1>${String(subject || '(\u0431\u0435\u0437 \u0442\u0435\u043c\u044b)')}</h1>
-          <div class="meta">\u041e\u0442: ${senderLine}<br/>\u0414\u0430\u0442\u0430: ${dateLine}</div>
+          <h1>${escapePrintText(subject || '(\u0431\u0435\u0437 \u0442\u0435\u043c\u044b)')}</h1>
+          <div class="meta">\u041e\u0442: ${escapePrintText(senderLine)}<br/>\u0414\u0430\u0442\u0430: ${escapePrintText(dateLine)}</div>
           <div>${html}</div>
         </body>
       </html>

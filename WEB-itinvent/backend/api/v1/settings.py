@@ -197,10 +197,8 @@ async def update_my_settings(
     current_user: User = Depends(get_current_active_user),
 ):
     payload_data = payload.model_dump(exclude_unset=True) if hasattr(payload, "model_dump") else payload.dict(exclude_unset=True)
-    updated = settings_service.update_user_settings(
-        current_user.id,
-        payload_data,
-    )
+    updated = await run_in_threadpool(settings_service.update_user_settings, current_user.id,
+        payload_data)
     return UserSettingsResponse(**updated)
 
 
@@ -272,7 +270,7 @@ async def get_native_push_status(
     current_user: User = Depends(get_current_active_user),
 ):
     _ = current_user
-    payload = native_push_service.get_runtime_status()
+    payload = await run_in_threadpool(native_push_service.get_runtime_status)
     try:
         outbox = await run_in_threadpool(app_push_outbox_service.get_backlog_snapshot)
     except Exception:
@@ -298,7 +296,8 @@ async def put_native_push_token(
     current_user: User = Depends(get_current_active_user),
 ):
     try:
-        data = native_push_service.upsert_token(
+        data = await run_in_threadpool(
+            native_push_service.upsert_token,
             user_id=int(current_user.id),
             token=payload.token,
             platform=payload.platform,
@@ -318,7 +317,8 @@ async def delete_native_push_token(
     payload: NativePushTokenDeletePayload,
     current_user: User = Depends(get_current_active_user),
 ):
-    data = native_push_service.delete_token(
+    data = await run_in_threadpool(
+        native_push_service.delete_token,
         user_id=int(current_user.id),
         token=payload.token,
     )
@@ -355,7 +355,7 @@ async def get_app_settings(
     current_user: User = Depends(get_current_admin_user),
 ):
     _ = current_user
-    return AppSettingsResponse(**app_settings_service.resolve_transfer_act_reminder_controller())
+    return AppSettingsResponse(**(await run_in_threadpool(app_settings_service.resolve_transfer_act_reminder_controller)))
 
 
 @router.patch("/app", response_model=AppSettingsResponse)
@@ -366,17 +366,17 @@ async def update_app_settings(
     _ = current_user
     payload_data = payload.model_dump(exclude_unset=True) if hasattr(payload, "model_dump") else payload.dict(exclude_unset=True)
     try:
-        app_settings_service.update_settings(payload_data)
+        await run_in_threadpool(app_settings_service.update_settings, payload_data)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return AppSettingsResponse(**app_settings_service.resolve_transfer_act_reminder_controller())
+    return AppSettingsResponse(**(await run_in_threadpool(app_settings_service.resolve_transfer_act_reminder_controller)))
 
 
 @router.get("/env", response_model=EnvSettingsResponse)
 async def get_env_settings(
     current_user: User = Depends(get_current_admin_user),
 ):
-    return EnvSettingsResponse(**env_settings_service.get_snapshot())
+    return EnvSettingsResponse(**(await run_in_threadpool(env_settings_service.get_snapshot)))
 
 
 @router.patch("/env", response_model=EnvSettingsResponse)
@@ -397,8 +397,6 @@ async def update_env_settings(
             for key, value in raw_items.items()
             if str(key).strip()
         }
-    return EnvSettingsResponse(**env_settings_service.update_variables(
-        updates,
+    return EnvSettingsResponse(**(await run_in_threadpool(env_settings_service.update_variables, updates,
         actor_user_id=current_user.id,
-        actor_username=current_user.username,
-    ))
+        actor_username=current_user.username)))

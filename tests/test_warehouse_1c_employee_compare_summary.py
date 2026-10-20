@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from pathlib import Path
 
 
@@ -150,3 +151,146 @@ def test_compare_summary_unknown_balance_status_fails_closed(monkeypatch):
     assert item["counts"]["only_1c"] == 0
     # Локальные Hub-факты сохраняются.
     assert item["counts"]["hub_items"] == 2
+
+
+def test_compare_summary_part_quantities_evidence(monkeypatch):
+    _patch_inputs(
+        monkeypatch,
+        owners=[{"OWNER_NO": 42, "OWNER_DISPLAY_NAME": "Иванов Иван Иванович"}],
+        counts=[
+            {"owner_no": 42, "part_no": "ЦБ-00195776", "item_count": 2},
+            {"owner_no": 42, "part_no": "PN-9", "item_count": 1},
+        ],
+        warehouses=[{"ref": "wh-1", "name": "Иванов И.И."}],
+        balances=[
+            {"warehouse_ref": "wh-1", "nomenclature_code": "цб-00195776", "qty_balance": 1},
+        ],
+    )
+
+    item = _run()["items"][0]
+    key = "цб-00195776"
+    assert item["status"] == "diff"
+    assert item["part_status"][key] == "diff"
+    assert item["part_status"]["pn-9"] == "only_hub"
+    assert item["part_quantities"][key] == {"hub_count": 2, "qty_1c": 1}
+    assert item["part_quantities"]["pn-9"] == {"hub_count": 1, "qty_1c": None}
+    assert item["counts"]["diff"] == 1
+    assert item["counts"]["only_hub"] == 1
+
+
+def test_compare_summary_sums_balance_series_rows(monkeypatch):
+    _patch_inputs(
+        monkeypatch,
+        owners=[{"OWNER_NO": 7, "OWNER_DISPLAY_NAME": "Рябов Александр Сергеевич"}],
+        counts=[{"owner_no": 7, "part_no": "PN-1", "item_count": 1}],
+        warehouses=[{"ref": "wh-1", "name": "Рябов А.С."}],
+        balances=[
+            {"warehouse_ref": "wh-1", "nomenclature_code": "pn-1", "qty_balance": 0.5},
+            {"warehouse_ref": "wh-1", "nomenclature_code": "PN-1", "qty_balance": 0.5},
+        ],
+    )
+
+    item = _run()["items"][0]
+    assert item["status"] == "match"
+    assert item["part_status"]["pn-1"] == "match"
+    assert item["part_quantities"]["pn-1"] == {"hub_count": 1, "qty_1c": 1.0}
+
+
+def test_compare_summary_refresh_bypasses_cached_snapshot(monkeypatch):
+    monkeypatch.setattr(time, "monotonic", lambda: 0.0)
+    balances = [{"warehouse_ref": "wh-1", "nomenclature_code": "pn-1", "qty_balance": 2}]
+    _patch_inputs(
+        monkeypatch,
+        owners=[{"OWNER_NO": 7, "OWNER_DISPLAY_NAME": "Рябов Александр Сергеевич"}],
+        counts=[{"owner_no": 7, "part_no": "PN-1", "item_count": 2}],
+        warehouses=[{"ref": "wh-1", "name": "Рябов А.С."}],
+        balances=balances,
+    )
+
+    first = _run()
+    assert first["items"][0]["part_quantities"]["pn-1"]["qty_1c"] == 2
+
+    balances.clear()
+    balances.append({"warehouse_ref": "wh-1", "nomenclature_code": "pn-1", "qty_balance": 5})
+
+    cached = _run()
+    assert cached["items"][0]["part_quantities"]["pn-1"]["qty_1c"] == 2
+
+    fresh = asyncio.run(
+        warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT", refresh=True)
+    )
+    assert fresh["items"][0]["part_quantities"]["pn-1"]["qty_1c"] == 5
+    assert fresh["items"][0]["part_status"]["pn-1"] == "diff"
+
+
+def test_compare_summary_queued_refresh_shares_inflight_rebuild(monkeypatch):
+    warehouse_1c_service._employee_compare_cache.clear()
+    monkeypatch.setattr(time, "monotonic", lambda: 0.0)
+    builds = []
+
+    async def scenario():
+        monkeypatch.setattr(
+            warehouse_1c_service,
+            "_employee_compare_lock",
+            asyncio.Lock(),
+        )
+        build_started = asyncio.Event()
+        release_build = asyncio.Event()
+
+        async def fake_build(db_id=None):
+            builds.append(db_id)
+            build_started.set()
+            await release_build.wait()
+            return {"meta": {"status": "ok"}, "items": [], "generation": len(builds)}
+
+        monkeypatch.setattr(
+            warehouse_1c_service,
+            "_build_employee_compare_summary",
+            fake_build,
+        )
+
+        first = asyncio.create_task(
+            warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT", refresh=True)
+        )
+        await build_started.wait()
+        second = asyncio.create_task(
+            warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT", refresh=True)
+        )
+        await asyncio.sleep(0)
+        release_build.set()
+        first_result, second_result = await asyncio.gather(first, second)
+        assert builds == ["ITINVENT"]
+        third_result = await warehouse_1c_service.get_employee_compare_summary(
+            db_id="ITINVENT",
+            refresh=True,
+        )
+        assert builds == ["ITINVENT", "ITINVENT"]
+        return first_result, second_result, third_result
+
+    first_result, second_result, third_result = asyncio.run(scenario())
+    try:
+        assert first_result["generation"] == 1
+        assert second_result["generation"] == 1
+        assert third_result["generation"] == 2
+    finally:
+        warehouse_1c_service._employee_compare_cache.clear()
+
+
+def test_compare_summary_incomplete_clears_part_quantities(monkeypatch):
+    _patch_inputs(
+        monkeypatch,
+        owners=[{"OWNER_NO": 7, "OWNER_DISPLAY_NAME": "Рябов Александр Сергеевич"}],
+        counts=[{"owner_no": 7, "part_no": "PN-1", "item_count": 2}],
+        warehouses=[{"ref": "wh-1", "name": "Рябов А.С."}],
+        balances=[
+            {"warehouse_ref": "wh-1", "nomenclature_code": "pn-1", "qty_balance": 1},
+        ],
+        balance_status="unknown",
+    )
+
+    payload = _run()
+    assert payload["meta"]["status"] == "incomplete"
+    item = payload["items"][0]
+    assert item["status"] == "unknown"
+    assert item["part_status"] == {}
+    assert item["part_quantities"] == {}

@@ -152,7 +152,7 @@ export default function AiMailActionEditDialog({
     <Dialog open={Boolean(open)} onClose={sending ? undefined : onClose} maxWidth="md" fullWidth>
       <DialogTitle>Редактировать письмо</DialogTitle>
       <DialogContent dividers>
-        <Stack spacing={1.4} sx={{ pt: 0.5 }}>
+        <Stack component="fieldset" disabled={sending} spacing={1.4} sx={{ border: 0, m: 0, p: 0, pt: 0.5, minWidth: 0 }}>
           {errorText ? <Alert severity="error">{errorText}</Alert> : null}
           <TextField size="small" label="Mailbox" value={draft.mailbox_id} onChange={(event) => setDraft((current) => ({ ...current, mailbox_id: event.target.value }))} fullWidth />
           <TextField size="small" label="Кому" value={draft.to} onChange={(event) => setDraft((current) => ({ ...current, to: event.target.value }))} fullWidth />

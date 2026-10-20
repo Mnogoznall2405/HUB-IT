@@ -7,7 +7,6 @@ import {
   CHAT_PAGE_THREAD_POLL_MS,
   logChatInitDebug,
 } from './useChatPageBootEffects';
-import useChatPageBootEffects from './useChatPageBootEffects';
 
 describe('useChatPageBootEffects helpers', () => {
   it('bootLoadConversationsAndFolders invokes loaders', () => {
@@ -51,17 +50,3 @@ describe('useChatPageBootEffects helpers', () => {
   });
 });
 
-describe('useChatPageBootEffects', () => {
-  it('mounts without throwing', async () => {
-    const { renderHook } = await import('@testing-library/react');
-
-    const { unmount } = renderHook(() => useChatPageBootEffects({
-      loadConversations: vi.fn(),
-      loadChatFolders: vi.fn(),
-      loadAiBots: vi.fn(),
-      logChatDebug: vi.fn(),
-    }));
-
-    unmount();
-  });
-});

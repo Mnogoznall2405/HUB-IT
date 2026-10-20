@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="UTF-8"><title>Приватный media-кэш</title></head>
+<body>
+  <button id="connect">Подключить worker</button>
+  <button id="authenticate">Подтвердить A</button>
+  <button id="logout">Завершить сессию</button>
+  <button id="load">Запросить превью</button>
+  <output aria-label="Состояние"></output><output aria-label="Ответ"></output>
+  <script type="module">
+    const state = document.querySelector('[aria-label="Состояние"]');
+    const result = document.querySelector('[aria-label="Ответ"]');
+    const media = '/api/v1/chat/messages/audit-a/attachments/1/file?inline=1&variant=thumb';
+    document.getElementById('connect').onclick = async () => {
+      await navigator.serviceWorker.register('/sw.js');
+      await navigator.serviceWorker.ready;
+      if (!navigator.serviceWorker.controller) await new Promise((resolve) => navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true }));
+      state.textContent = 'controlled';
+    };
+    document.getElementById('authenticate').onclick = async () => {
+      const { synchronizePrivateMediaSession } = await import('/src/lib/privateMediaSession.js');
+      state.textContent = await synchronizePrivateMediaSession('user-a') ? 'authenticated' : 'failed';
+    };
+    document.getElementById('logout').onclick = async () => {
+      const { synchronizePrivateMediaSession } = await import('/src/lib/privateMediaSession.js');
+      state.textContent = await synchronizePrivateMediaSession('', { clear: true }) ? 'cleared' : 'failed';
+    };
+    document.getElementById('load').onclick = async () => {
+      const response = await fetch(media);
+      result.textContent = `${response.status}:${await response.text()}`;
+    };
+  </script>
+</body></html>

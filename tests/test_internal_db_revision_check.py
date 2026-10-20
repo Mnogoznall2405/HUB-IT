@@ -135,6 +135,7 @@ def test_development_chat_postgres_still_upgrades(monkeypatch):
     monkeypatch.setattr(chat_db_module, "upgrade_internal_database", lambda url, *a, **k: upgrades.append((url, k)))
     monkeypatch.setattr(chat_db_module.Base.metadata, "create_all", lambda *a, **k: None)
     monkeypatch.setattr(chat_db_module, "_ensure_chat_push_outbox_columns", lambda current_engine: None)
+    monkeypatch.setenv("APP_SCHEMA_DEV_AUTO_CREATE", "1")
     monkeypatch.setattr(chat_db_module.config.app, "environment", "development", raising=False)
     chat_db_module.initialize_chat_schema("postgresql://chat-dev")
     assert upgrades == [("postgresql://chat-dev", {"scope": "chat"})]

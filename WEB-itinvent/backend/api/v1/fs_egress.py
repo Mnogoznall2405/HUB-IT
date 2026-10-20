@@ -5,10 +5,12 @@ import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, Response
 
 from backend.api.deps import get_current_admin_user
 from backend.services import dlp_report_service, fs_egress_store_service as store
+from backend.utils.upload_limits import read_json_body_limited
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -41,11 +43,11 @@ def _is_valid_agent_api_key(candidate: Optional[str]) -> bool:
 async def ingest_fs_egress(request: Request, x_api_key: Optional[str] = Header(None)) -> Dict[str, Any]:
     if not _is_valid_agent_api_key(x_api_key):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API Key")
-    body = await request.json()
+    body = await read_json_body_limited(request)
     events = body.get("events") if isinstance(body, dict) else None
     if not isinstance(events, list):
         raise HTTPException(status_code=400, detail="events list required")
-    inserted = store.ingest_events(events)
+    inserted = await run_in_threadpool(store.ingest_events, events)
     return {"success": True, "inserted": inserted}
 
 
@@ -69,10 +71,10 @@ def list_fs_egress(
 async def ingest_telegram_probe(request: Request, x_api_key: Optional[str] = Header(None)) -> Dict[str, Any]:
     if not _is_valid_agent_api_key(x_api_key):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API Key")
-    payload = await request.json()
+    payload = await read_json_body_limited(request)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="JSON object required")
-    result = store.ingest_telegram_payload(payload)
+    result = await run_in_threadpool(store.ingest_telegram_payload, payload)
     return {"success": True, **result}
 
 
@@ -122,10 +124,10 @@ def telegram_probe_media(computer_name: str, file_name: str):
 async def ingest_browser_probe(request: Request, x_api_key: Optional[str] = Header(None)) -> Dict[str, Any]:
     if not _is_valid_agent_api_key(x_api_key):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API Key")
-    payload = await request.json()
+    payload = await read_json_body_limited(request)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="JSON object required")
-    result = store.ingest_browser_payload(payload)
+    result = await run_in_threadpool(store.ingest_browser_payload, payload)
     return {"success": True, **result}
 
 
@@ -168,10 +170,10 @@ def browser_probe_media(computer_name: str, file_name: str):
 async def ingest_max_probe(request: Request, x_api_key: Optional[str] = Header(None)) -> Dict[str, Any]:
     if not _is_valid_agent_api_key(x_api_key):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API Key")
-    payload = await request.json()
+    payload = await read_json_body_limited(request)
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="JSON object required")
-    result = store.ingest_max_payload(payload)
+    result = await run_in_threadpool(store.ingest_max_payload, payload)
     return {"success": True, **result}
 
 

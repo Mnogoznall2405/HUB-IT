@@ -10,7 +10,6 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  Grid,
   IconButton,
   InputAdornment,
   Paper,
@@ -25,9 +24,9 @@ import {
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import CloseIcon from '@mui/icons-material/Close';
-import RefreshIcon from '@mui/icons-material/Refresh';
 import SearchIcon from '@mui/icons-material/Search';
 import { useNavigate } from 'react-router-dom';
+import AddressBookDesktopToolbar from '../components/addressBook/AddressBookDesktopToolbar';
 import AddressBookEntryDetail from '../components/addressBook/AddressBookEntryDetail';
 import AddressBookEntryDrawer from '../components/addressBook/AddressBookEntryDrawer';
 import AddressBookEntryList from '../components/addressBook/AddressBookEntryList';
@@ -38,7 +37,6 @@ import AddressBookMobileToolbar from '../components/addressBook/AddressBookMobil
 import {
   addressBookScrollbarSx,
   dedupeNamedOptions,
-  formatDateTime,
   getEntryIdentity,
   getEntryKey,
   normalizeText,
@@ -604,11 +602,23 @@ const AddressBook = () => {
   }, []);
 
   return (
-    <MainLayout showDatabaseSelector={false}>
+    <MainLayout
+      headerMode="integrated"
+      contentMode="edge-to-edge"
+      showDatabaseSelector={false}
+    >
       <PageShell
         ref={pageShellRef}
         fullHeight
-        sx={{ gap: { xs: 0.75, sm: 1 } }}
+        sx={{
+          gap: { xs: 0.75, sm: 1 },
+          height: 'auto',
+          flex: 1,
+          minHeight: 0,
+          minWidth: 0,
+          overflow: 'hidden',
+          p: { xs: 1, sm: 1.5 },
+        }}
       >
         {isMobile ? (
           <>
@@ -663,7 +673,7 @@ const AddressBook = () => {
                     title={`Подразделение: ${departmentFilter}`}
                     onDelete={() => setDepartmentFilter('')}
                     aria-label={`Убрать фильтр по подразделению ${departmentFilter}`}
-                    sx={{ maxWidth: 320, '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }}
+                    sx={{ maxWidth: '100%', '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }}
                   />
                 ) : null}
                 {cityFilter ? (
@@ -673,7 +683,7 @@ const AddressBook = () => {
                     title={`Город: ${cityFilter}`}
                     onDelete={() => setCityFilter('')}
                     aria-label={`Убрать фильтр по городу ${cityFilter}`}
-                    sx={{ maxWidth: 320, '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }}
+                    sx={{ maxWidth: '100%', '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }}
                   />
                 ) : null}
                 <Button
@@ -690,70 +700,19 @@ const AddressBook = () => {
         ) : (
           <>
             {/* T2: header row 1 — title, tabs, count; right: status chips, sync */}
-            <Stack
-              direction="row"
-              alignItems="center"
-              spacing={1}
-              useFlexGap
-              flexWrap="wrap"
-              sx={{ flexShrink: 0 }}
-              data-testid="address-book-header-row1"
-            >
-              <Typography variant="h5" sx={{ fontWeight: 600 }}>
-                Адресная книга
-              </Typography>
-              {canViewDismissed ? (
-                <Tabs
-                  value={tab}
-                  onChange={handleTabChange}
-                  sx={{ flexShrink: 0, minHeight: 36 }}
-                  data-testid="address-book-tabs"
-                >
-                  <Tab value="active" label="Сотрудники" data-testid="address-book-tab-active" sx={{ minHeight: 36, py: 0.5 }} />
-                  <Tab value="dismissed" label="Уволенные" data-testid="address-book-tab-dismissed" sx={{ minHeight: 36, py: 0.5 }} />
-                </Tabs>
-              ) : null}
-              <Typography variant="body2" color="text.secondary">
-                {countLabel}
-              </Typography>
-              <Box sx={{ flexGrow: 1 }} />
-              <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" alignItems="center">
-                <Chip
-                  label={`Обновлено: ${formatDateTime(statusDate)}`}
-                  size="small"
-                  variant="outlined"
-                />
-                {statusLoading ? <Chip label="Проверяем статус…" size="small" variant="outlined" /> : null}
-                {syncing || status?.sync_in_progress ? (
-                  <Chip label="Идёт обновление" size="small" color="info" variant="outlined" />
-                ) : null}
-                {status?.last_sync_failed ? (
-                  <Tooltip title={isAdmin ? status?.last_error || 'Последняя синхронизация завершилась ошибкой' : ''}>
-                    <Chip
-                      label={isAdmin ? 'Ошибка синхронизации' : 'Данные могут быть неактуальны'}
-                      aria-label={isAdmin && status?.last_error
-                        ? `Ошибка синхронизации: ${status.last_error}`
-                        : undefined}
-                      size="small"
-                      color="warning"
-                      variant="outlined"
-                      data-testid="address-book-sync-status"
-                    />
-                  </Tooltip>
-                ) : null}
-              </Stack>
-              {isAdmin ? (
-                <Button
-                  variant="contained"
-                  size="small"
-                  startIcon={syncing ? <CircularProgress size={16} color="inherit" /> : <RefreshIcon />}
-                  onClick={handleSync}
-                  disabled={syncing || status?.sync_in_progress}
-                >
-                  Обновить
-                </Button>
-              ) : null}
-            </Stack>
+            <AddressBookDesktopToolbar
+              tab={tab}
+              onTabChange={handleTabChange}
+              canViewDismissed={canViewDismissed}
+              countLabel={countLabel}
+              statusUpdatedAt={statusDate}
+              statusLoading={statusLoading}
+              syncInProgress={syncing || Boolean(status?.sync_in_progress)}
+              syncFailed={Boolean(status?.last_sync_failed)}
+              syncError={status?.last_error || ''}
+              isAdmin={isAdmin}
+              onSync={handleSync}
+            />
 
             {/* T2: header row 2 — search and filters on one wrapped line */}
             <Paper sx={{ ...panelSx, px: 1, py: 0.75, flexShrink: 0 }}>
@@ -824,7 +783,7 @@ const AddressBook = () => {
                     title={`Подразделение: ${departmentFilter}`}
                     onDelete={() => setDepartmentFilter('')}
                     aria-label={`Убрать фильтр по подразделению ${departmentFilter}`}
-                    sx={{ maxWidth: 320, '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }}
+                    sx={{ maxWidth: '100%', '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }}
                   />
                 ) : null}
                 {cityFilter ? (
@@ -834,7 +793,7 @@ const AddressBook = () => {
                     title={`Город: ${cityFilter}`}
                     onDelete={() => setCityFilter('')}
                     aria-label={`Убрать фильтр по городу ${cityFilter}`}
-                    sx={{ maxWidth: 320, '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }}
+                    sx={{ maxWidth: '100%', '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }}
                   />
                 ) : null}
                 <Button
@@ -869,43 +828,88 @@ const AddressBook = () => {
         ) : null}
         <Box
           sx={{
+            display: 'grid',
+            gridTemplateColumns: isWide
+              ? 'clamp(280px, 32%, 360px) minmax(0, 1fr)'
+              : 'minmax(0, 1fr)',
+            gap: 1.5,
             flex: 1,
             minHeight: 0,
-            display: 'flex',
-            flexDirection: 'column',
+            minWidth: 0,
           }}
         >
-          <Grid
-            container
-            spacing={{ xs: 0, sm: 2 }}
+          <Box
             sx={{
-              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
               minHeight: 0,
-              height: '100%',
+              minWidth: 0,
             }}
           >
-            <Grid
-              item
-              xs={12}
-              lg={4}
+            {/* T1: list-mode switcher sits outside the scroll area,
+                in the list column (desktop) / under the header (phone, tablet). */}
+            {!dismissed ? (
+              <AddressBookListModes
+                mode={listMode}
+                favoritesCount={favoriteCodes.length}
+                recentsCount={recentCodes.length}
+                onChange={handleListModeChange}
+                onClearRecent={handleClearRecent}
+              />
+            ) : null}
+            <Box
+              sx={{
+                flex: 1,
+                minHeight: 0,
+                overflowY: 'auto',
+                overflowX: 'hidden',
+                WebkitOverflowScrolling: 'touch',
+                mt: showModesRow ? 0.75 : 0,
+                ...addressBookScrollbarSx(theme),
+              }}
+              data-testid="address-book-entry-list-scroll"
+            >
+              <AddressBookEntryList
+                items={items}
+                selectedEntryKey={selectedEntryKey}
+                loading={loading}
+                hasActiveFilters={hasActiveFilters}
+                onClearFilters={handleClearFilters}
+                query={query}
+                enableTelLinks={isMobile}
+                showOnlyPrimaryAction
+                hasMore={hasMore}
+                loadingMore={loadingMore}
+                error={searchError}
+                isAdmin={isAdmin}
+                dismissed={dismissed}
+                listMode={listMode}
+                syncing={syncing}
+                onRetry={handleRetrySearch}
+                onClearQuery={handleClearQuery}
+                onSync={handleSync}
+                onLoadMore={handleLoadMore}
+                selectionFollowsFocus={isWide}
+                onSelect={handleListSelect}
+                onOpenTelegram={handleOpenTelegram}
+                onComposeEmail={handleComposeEmail}
+                canComposeEmail={canComposeEmail}
+                onOpenChat={handleOpenChat}
+                showChatAction={canUseChat && !dismissed}
+                chatBusyEntryKey={chatBusyEntryKey}
+              />
+            </Box>
+          </Box>
+
+          {isWide ? (
+            <Box
               sx={{
                 display: 'flex',
                 flexDirection: 'column',
                 minHeight: 0,
-                height: '100%',
+                minWidth: 0,
               }}
             >
-              {/* T1: list-mode switcher sits outside the scroll area,
-                  in the list column (desktop) / under the header (phone, tablet). */}
-              {!dismissed ? (
-                <AddressBookListModes
-                  mode={listMode}
-                  favoritesCount={favoriteCodes.length}
-                  recentsCount={recentCodes.length}
-                  onChange={handleListModeChange}
-                  onClearRecent={handleClearRecent}
-                />
-              ) : null}
               <Box
                 sx={{
                   flex: 1,
@@ -913,98 +917,41 @@ const AddressBook = () => {
                   overflowY: 'auto',
                   overflowX: 'hidden',
                   WebkitOverflowScrolling: 'touch',
-                  mt: showModesRow ? 0.75 : 0,
                   ...addressBookScrollbarSx(theme),
                 }}
-                data-testid="address-book-entry-list-scroll"
+                data-testid="address-book-entry-detail-scroll"
               >
-                <AddressBookEntryList
-                  items={items}
-                  selectedEntryKey={selectedEntryKey}
-                  loading={loading}
-                  hasActiveFilters={hasActiveFilters}
-                  onClearFilters={handleClearFilters}
-                  query={query}
-                  enableTelLinks={isMobile}
-                  showOnlyPrimaryAction
-                  hasMore={hasMore}
-                  loadingMore={loadingMore}
-                  error={searchError}
-                  isAdmin={isAdmin}
-                  dismissed={dismissed}
-                  listMode={listMode}
-                  syncing={syncing}
-                  onRetry={handleRetrySearch}
-                  onClearQuery={handleClearQuery}
-                  onSync={handleSync}
-                  onLoadMore={handleLoadMore}
-                  selectionFollowsFocus={isWide}
-                  onSelect={handleListSelect}
-                  onOpenTelegram={handleOpenTelegram}
-                  onComposeEmail={handleComposeEmail}
-                  canComposeEmail={canComposeEmail}
-                  onOpenChat={handleOpenChat}
-                  showChatAction={canUseChat && !dismissed}
-                  chatBusyEntryKey={chatBusyEntryKey}
-                />
+                {selectedItem ? (
+                  <AddressBookEntryDetail
+                    item={selectedItem}
+                    query={query}
+                    enableTelLinks={false}
+                    dismissed={dismissed}
+                    canComposeEmail={canComposeEmail}
+                    onCopy={handleCopy}
+                    onOpenTelegram={handleOpenTelegram}
+                    onOpenMax={handleOpenMax}
+                    onComposeEmail={handleComposeEmail}
+                    onOpenChat={(item) => handleOpenChat(item, items.findIndex((entry, idx) => getEntryKey(entry, idx) === selectedEntryKey))}
+                    showChatAction={canUseChat && !dismissed}
+                    chatBusy={Boolean(chatBusyEntryKey)}
+                    isFavorite={selectedIsFavorite}
+                    onToggleFavorite={dismissed ? undefined : handleToggleFavorite}
+                  />
+                ) : (
+                  <AddressBookDetailEmptyState
+                    query={query}
+                    dismissed={dismissed}
+                    error={Boolean(error)}
+                    loading={loading}
+                    isAdmin={isAdmin}
+                    onClearQuery={handleClearQuery}
+                    onSync={handleSync}
+                  />
+                )}
               </Box>
-            </Grid>
-
-            {isWide ? (
-              <Grid
-                item
-                lg={8}
-                sx={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  minHeight: 0,
-                  height: '100%',
-                }}
-              >
-                <Box
-                  sx={{
-                    flex: 1,
-                    minHeight: 0,
-                    overflowY: 'auto',
-                    overflowX: 'hidden',
-                    WebkitOverflowScrolling: 'touch',
-                    ...addressBookScrollbarSx(theme),
-                  }}
-                  data-testid="address-book-entry-detail-scroll"
-                >
-                  {selectedItem ? (
-                    <AddressBookEntryDetail
-                      item={selectedItem}
-                      query={query}
-                      enableTelLinks={false}
-                      dismissed={dismissed}
-                      canComposeEmail={canComposeEmail}
-                      onCopy={handleCopy}
-                      onOpenTelegram={handleOpenTelegram}
-                      onOpenMax={handleOpenMax}
-                      onComposeEmail={handleComposeEmail}
-                      onOpenChat={(item) => handleOpenChat(item, items.findIndex((entry, idx) => getEntryKey(entry, idx) === selectedEntryKey))}
-                      showChatAction={canUseChat && !dismissed}
-                      chatBusy={Boolean(chatBusyEntryKey)}
-                      isFavorite={selectedIsFavorite}
-                      onToggleFavorite={dismissed ? undefined : handleToggleFavorite}
-                      onSaveContact={handleSaveContact}
-                    />
-                  ) : (
-                    <AddressBookDetailEmptyState
-                      query={query}
-                      dismissed={dismissed}
-                      error={Boolean(error)}
-                      loading={loading}
-                      isAdmin={isAdmin}
-                      onClearQuery={handleClearQuery}
-                      onSync={handleSync}
-                    />
-                  )}
-                </Box>
-              </Grid>
-            ) : null}
-          </Grid>
+            </Box>
+          ) : null}
         </Box>
 
         {!isMobile && !isWide ? (
@@ -1028,7 +975,6 @@ const AddressBook = () => {
             chatBusy={Boolean(chatBusyEntryKey)}
             isFavorite={selectedIsFavorite}
             onToggleFavorite={dismissed ? undefined : handleToggleFavorite}
-            onSaveContact={handleSaveContact}
           />
         ) : null}
 

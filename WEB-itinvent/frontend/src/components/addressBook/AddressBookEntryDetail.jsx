@@ -40,6 +40,28 @@ const metaLabelSx = {
   flexShrink: { md: 0 },
 };
 
+const metaValueSx = {
+  minWidth: 0,
+  flex: { md: 1 },
+  overflowWrap: 'anywhere',
+};
+
+const sectionTitleSx = {
+  lineHeight: 1.5,
+};
+
+const metaChipSx = {
+  maxWidth: '100%',
+  height: 'auto',
+  py: 0.5,
+  '& .MuiChip-label': {
+    whiteSpace: 'normal',
+    overflowWrap: 'anywhere',
+    display: 'block',
+    py: 0.25,
+  },
+};
+
 // Quick actions: 44px on touch, 36px on desktop per design system targets.
 const actionButtonSx = { height: { xs: 44, sm: 36 }, minHeight: { xs: 44, sm: 36 } };
 
@@ -49,7 +71,7 @@ function MetaField({ label, testId, children }) {
       <Typography variant="caption" sx={metaLabelSx}>
         {label}
       </Typography>
-      <Box sx={{ minWidth: 0, flex: { md: 1 } }}>{children}</Box>
+      <Box sx={metaValueSx}>{children}</Box>
     </Box>
   );
 }
@@ -104,7 +126,7 @@ export default function AddressBookEntryDetail({
   const absenceLabel = formatAbsenceLabel(item?.absence);
   const ageLabel = formatAge(item?.age);
   const hireDateLabel = formatDate(item?.hire_date);
-  const dismissalDateLabel = formatDate(item?.dismissal_date);
+  const dismissalDateLabel = dismissed ? formatDate(item?.dismissal_date) : '';
   const dismissedLabel = dismissed
     ? `Уволен${dismissalDateLabel ? ` ${dismissalDateLabel}` : ''}`
     : '';
@@ -139,14 +161,15 @@ export default function AddressBookEntryDetail({
       sx={{
         border: compact ? 'none' : `1px solid ${theme.palette.divider}`,
         bgcolor: compact ? 'transparent' : alpha(theme.palette.background.paper, 0.82),
-        p: compact ? 2 : 2.5,
+        p: 2,
         minHeight: compact ? 'auto' : 280,
       }}
     >
-      <Stack spacing={3}>
+      <Stack spacing={2}>
         <Stack spacing={1.5}>
           <Stack direction="row" spacing={1.5} alignItems="center">
             <Avatar
+              src={item?.photo_url || undefined}
               sx={{
                 width: compact ? 40 : 48,
                 height: compact ? 40 : 48,
@@ -315,7 +338,7 @@ export default function AddressBookEntryDetail({
 
         {hasContacts ? (
           <Stack spacing={1.5}>
-            <Typography variant="overline" color="text.secondary" fontWeight={800}>
+            <Typography variant="overline" color="text.secondary" fontWeight={800} sx={sectionTitleSx}>
               Контакты
             </Typography>
             <Stack spacing={1.5}>
@@ -363,13 +386,18 @@ export default function AddressBookEntryDetail({
 
         {hasWorkMeta ? (
           <Stack spacing={1}>
-            <Typography variant="overline" color="text.secondary" fontWeight={800}>
+            <Typography variant="overline" color="text.secondary" fontWeight={800} sx={sectionTitleSx}>
               Работа
             </Typography>
             <Stack spacing={0.75}>
               {item.department ? (
                 <MetaField label="Подразделение">
-                  <Chip label={<HighlightText value={item.department} query={query} />} size="small" />
+                  <Chip
+                    label={<HighlightText value={item.department} query={query} />}
+                    title={item.department}
+                    size="small"
+                    sx={metaChipSx}
+                  />
                 </MetaField>
               ) : null}
               {item.department_code ? (
@@ -381,7 +409,13 @@ export default function AddressBookEntryDetail({
               ) : null}
               {item.department_location ? (
                 <MetaField label="Город">
-                  <Chip label={<HighlightText value={item.department_location} query={query} />} size="small" variant="outlined" />
+                  <Chip
+                    label={<HighlightText value={item.department_location} query={query} />}
+                    title={item.department_location}
+                    size="small"
+                    variant="outlined"
+                    sx={metaChipSx}
+                  />
                 </MetaField>
               ) : null}
               {workplaceLabel ? (
@@ -405,7 +439,7 @@ export default function AddressBookEntryDetail({
                   </Typography>
                 </MetaField>
               ) : null}
-              {dismissalDateLabel ? (
+              {dismissed && dismissalDateLabel ? (
                 <MetaField label="Дата увольнения" testId="address-book-dismissal-date">
                   <Typography variant="body2" color="text.secondary">
                     {dismissalDateLabel}
@@ -418,7 +452,7 @@ export default function AddressBookEntryDetail({
 
         {hasPersonalMeta ? (
           <Stack spacing={1}>
-            <Typography variant="overline" color="text.secondary" fontWeight={800}>
+            <Typography variant="overline" color="text.secondary" fontWeight={800} sx={sectionTitleSx}>
               Личное
             </Typography>
             <Stack spacing={0.75}>

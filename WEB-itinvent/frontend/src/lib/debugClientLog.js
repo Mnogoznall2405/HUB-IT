@@ -9,7 +9,7 @@ const buildRelayUrl = () => {
   return `${apiBase}/v1/debug/client-log`;
 };
 
-function isAgentDebugLoggingEnabled() {
+export function isAgentDebugLoggingEnabled() {
   if (typeof window === 'undefined') return false;
   if (import.meta.env?.DEV) return true;
   try {

@@ -28,18 +28,39 @@ export const mergeAiStatusPayload = (current, payload, fallbackConversationId = 
   const previous = nextCurrent[conversationId] && typeof nextCurrent[conversationId] === 'object'
     ? nextCurrent[conversationId]
     : {};
+  const incomingRun = String(nextPayload.run_id || '').trim();
+  const previousRun = String(previous.run_id || '').trim();
+  const newRun = Boolean(incomingRun && previousRun && incomingRun !== previousRun);
+  const previousTime = Date.parse(previous.updated_at || '');
+  const nextTime = Date.parse(nextPayload.updated_at || '');
+  const previousCreated = Date.parse(previous.run_created_at || '');
+  const nextCreated = Date.parse(nextPayload.run_created_at || '');
+  const terminal = ['completed', 'failed', 'cancelled'];
+  if ((incomingRun && previous._previous_run_ids?.includes(incomingRun))
+    || (newRun && Number.isFinite(previousCreated) && Number.isFinite(nextCreated) && nextCreated < previousCreated)
+    || (previousRun && incomingRun && Number.isFinite(previousTime) && Number.isFinite(nextTime) && nextTime < previousTime)
+    || (!newRun && terminal.includes(previous.status) && ['queued', 'running'].includes(nextPayload.status))) {
+    return nextCurrent;
+  }
+  const base = newRun ? {} : previous;
   const stage = String(nextPayload?.stage || '').trim();
+  const previousStage = String(base.stage || '').trim();
+  const completedPrevious = previousStage && previousStage !== stage
+    && !['queued', 'completed', 'failed', 'cancelled'].includes(previousStage)
+    && (nextPayload.status === 'completed' || ['running', 'queued'].includes(nextPayload.status));
   const completedStages = [
-    ...(Array.isArray(previous?.completed_stages) ? previous.completed_stages : []),
-    ...(stage && !['queued', 'completed', 'failed', 'cancelled'].includes(stage) ? [stage] : []),
+    ...(Array.isArray(base.completed_stages) ? base.completed_stages : []),
+    ...(Array.isArray(nextPayload.completed_stages) ? nextPayload.completed_stages : []),
+    ...(completedPrevious ? [previousStage] : []),
   ].filter((value, index, values) => values.indexOf(value) === index);
-  const hasStageHistory = completedStages.length > 0 || Array.isArray(previous?.completed_stages);
+  const hasStageHistory = newRun || completedStages.length > 0 || Array.isArray(base.completed_stages);
   return {
     ...nextCurrent,
     [conversationId]: {
-      ...previous,
+      ...base,
       ...nextPayload,
       ...(hasStageHistory ? { completed_stages: completedStages } : {}),
+      ...(newRun ? { _previous_run_ids: [...(previous._previous_run_ids || []), previousRun].slice(-16) } : {}),
     },
   };
 };
@@ -91,7 +112,9 @@ export const buildAiStatusDisplayModel = (aiStatus) => {
   const status = String(payload?.status || '').trim();
   const stage = String(payload?.stage || '').trim();
   const explicitText = String(payload?.status_text || '').trim();
-  const fallbackText = explicitText
+  const resultReady = status === 'running' && Boolean(payload.result_message_id)
+    && ['generating_answer', 'result_ready'].includes(stage);
+  const fallbackText = resultReady ? 'Ответ готов. Завершаю обработку.' : explicitText
     || AI_STATUS_FALLBACK_TEXTS[stage]
     || AI_STATUS_FALLBACK_TEXTS[status]
     || '';
@@ -101,7 +124,7 @@ export const buildAiStatusDisplayModel = (aiStatus) => {
     tone: status === 'failed' ? 'error' : 'info',
     primaryText: fallbackText,
     secondaryText: status === 'failed' ? String(payload?.error_text || '').trim() : '',
-    showSpinner: status === 'queued' || status === 'running',
+    showSpinner: (status === 'queued' || status === 'running') && !resultReady,
     status,
     stage,
   };

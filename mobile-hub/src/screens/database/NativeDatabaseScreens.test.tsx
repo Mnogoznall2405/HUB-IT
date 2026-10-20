@@ -1,5 +1,7 @@
-import { act, fireEvent, render, waitFor, within } from '@testing-library/react-native';
+import { createRef } from 'react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react-native';
 import * as Clipboard from 'expo-clipboard';
+import * as Haptics from 'expo-haptics';
 import { Alert, Share, StyleSheet } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as databaseApi from '../../api/databaseApi';
@@ -7,6 +9,9 @@ import * as equipmentCatalog from '../../cache/nativeEquipmentCatalogSnapshot';
 import * as snapshotCache from '../../cache/nativeSnapshotCache';
 import { pickNativeDatabaseActPdf } from '../../database/nativeDatabaseActUpload';
 import { downloadEquipmentAct } from '../../database/nativeDatabaseFiles';
+import { NativeEquipmentActions, type NativeEquipmentActionsHandle } from '../../components/database/NativeEquipmentActions';
+import { updateNativeEquipmentDetailSnapshot } from '../../database/nativeDatabaseSnapshot';
+import { getFluentTokens } from '../../theme/fluentTokens';
 import { NativeDatabaseScreen } from './NativeDatabaseScreen';
 import { NativeEquipmentDetailScreen } from './NativeEquipmentDetailScreen';
 
@@ -38,10 +43,13 @@ jest.mock('../../api/databaseApi', () => ({
   touchRecentEquipmentCard: jest.fn(),
   getEquipment: jest.fn(),
   getEquipmentActs: jest.fn(),
+  getEquipmentByInvNos: jest.fn(),
   getEquipmentHistory: jest.fn(),
   getEquipmentWorkHistories: jest.fn(),
   updateEquipment: jest.fn(),
   updateConsumableQuantity: jest.fn(),
+  consumeConsumableStock: jest.fn(),
+  listCompatiblePrinterModels: jest.fn(),
   listRecentEquipmentCards: jest.fn(),
   listRecentEquipmentActs: jest.fn(),
   touchRecentEquipmentAct: jest.fn(),
@@ -54,6 +62,7 @@ jest.mock('../../api/databaseApi', () => ({
   listEquipmentStatuses: jest.fn(),
   listEquipmentModels: jest.fn(),
   searchEquipmentOwners: jest.fn(),
+  listEquipmentOwnerDepartments: jest.fn(),
   getConsumableById: jest.fn(),
   submitEquipmentTransfer: jest.fn(),
   getEquipmentTransferJob: jest.fn(),
@@ -93,6 +102,8 @@ jest.mock('../../cache/nativeSnapshotCache', () => ({
 }));
 jest.mock('../../cache/nativeEquipmentCatalogSnapshot', () => ({
   readNativeEquipmentCatalogSnapshot: jest.fn(),
+  findNativeEquipmentCatalogItem: jest.fn(),
+  invalidateNativeEquipmentCatalogCache: jest.fn(),
 }));
 let mockQrScanData = 'INV_NO: INV-1';
 
@@ -121,7 +132,9 @@ const equipment = {
   employee_name: 'Иванов И.И.',
   employee_dept: 'ИТ',
   employee_email: 'ivanov@example.com',
+  branch_no: 1,
   branch_name: 'Главный офис',
+  loc_no: 2,
   location_name: 'Кабинет 12',
   ip_address: '10.0.0.7',
   mac_address: '',
@@ -144,6 +157,16 @@ beforeEach(() => {
   (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue(null);
   (snapshotCache.readNativeSnapshot as jest.Mock).mockResolvedValue(null);
   (equipmentCatalog.readNativeEquipmentCatalogSnapshot as jest.Mock).mockResolvedValue(null);
+  (equipmentCatalog.findNativeEquipmentCatalogItem as jest.Mock).mockImplementation(
+    async (userId: number, databaseId: string, invNo: string, maxAgeMs?: number) => {
+      const snapshot = await (equipmentCatalog.readNativeEquipmentCatalogSnapshot as jest.Mock)(userId, databaseId, maxAgeMs);
+      if (!snapshot) return null;
+      const normalized = String(invNo || '').trim().toLocaleUpperCase('ru-RU');
+      return (snapshot.data.equipment as typeof equipment[]).find(
+        (item) => item.inv_no.trim().toLocaleUpperCase('ru-RU') === normalized,
+      ) ?? null;
+    },
+  );
   (databaseApi.listAvailableDatabases as jest.Mock).mockResolvedValue([{ id: 'ITINVENT', name: 'Основная' }]);
   (databaseApi.getCurrentDatabase as jest.Mock).mockResolvedValue({ id: 'ITINVENT', name: 'Основная', locked: false });
   (databaseApi.searchEquipment as jest.Mock).mockResolvedValue({ equipment: [equipment], total: 1, page: 1, pages: 1 });
@@ -155,6 +178,7 @@ beforeEach(() => {
     truncated: false,
   });
   (databaseApi.getEquipment as jest.Mock).mockResolvedValue(equipment);
+  (databaseApi.getEquipmentByInvNos as jest.Mock).mockResolvedValue({ equipment: [], not_found: [] });
   (databaseApi.getEquipmentActs as jest.Mock).mockResolvedValue({ acts: [{ doc_no: 7, doc_number: 'A-7', has_file: false, items: [], type_name: 'Передача', branch_name: '', location_name: '', employee_name: '', raw: {} }], total: 1 });
   (databaseApi.getEquipmentHistory as jest.Mock).mockResolvedValue({ history: [{ CH_COMMENT: 'Передача', CH_DATE: '2026-08-24T10:00:00+05:00' }], total: 1 });
   (databaseApi.getEquipmentWorkHistories as jest.Mock).mockResolvedValue({
@@ -165,15 +189,19 @@ beforeEach(() => {
   (databaseApi.touchRecentEquipmentCard as jest.Mock).mockResolvedValue(undefined);
   (databaseApi.updateEquipment as jest.Mock).mockResolvedValue({ ...equipment, serial_no: 'SN-NEW' });
   (databaseApi.updateConsumableQuantity as jest.Mock).mockResolvedValue({ qty_old: 3, qty_new: 5 });
+  (databaseApi.consumeConsumableStock as jest.Mock).mockResolvedValue({ qty_old: 3, qty_new: 2 });
+  (databaseApi.listCompatiblePrinterModels as jest.Mock).mockResolvedValue([]);
   (databaseApi.listRecentEquipmentCards as jest.Mock).mockResolvedValue([]);
   (databaseApi.listRecentEquipmentActs as jest.Mock).mockResolvedValue([]);
-  (databaseApi.listEquipmentBranches as jest.Mock).mockResolvedValue([]);
-  (databaseApi.listEquipmentLocations as jest.Mock).mockResolvedValue([]);
+  (databaseApi.listEquipmentBranches as jest.Mock).mockResolvedValue([{ id: 1, name: 'Главный офис' }]);
+  (databaseApi.listEquipmentLocations as jest.Mock).mockResolvedValue([{ id: 2, name: 'Кабинет 12' }]);
   (databaseApi.listEquipmentTypes as jest.Mock).mockResolvedValue([]);
   (databaseApi.listEquipmentStatuses as jest.Mock).mockResolvedValue([]);
   (databaseApi.listEquipmentModels as jest.Mock).mockResolvedValue([]);
   (databaseApi.searchEquipmentOwners as jest.Mock).mockResolvedValue([]);
+  (databaseApi.listEquipmentOwnerDepartments as jest.Mock).mockResolvedValue(['ИТ', 'Склад']);
   (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue({ success_count: 1, failed_count: 0, failed: [], retry_inv_nos: [], acts: [], job_status: 'done' });
+  (databaseApi.getEquipmentTransferJob as jest.Mock).mockResolvedValue({ success_count: 0, failed_count: 0, failed: [], retry_inv_nos: [], acts: [], job_status: 'done' });
   (databaseApi.sendEquipmentTransferActsEmail as jest.Mock).mockResolvedValue({ success_count: 1, failed_count: 0, errors: [] });
   (databaseApi.deleteEquipment as jest.Mock).mockResolvedValue(undefined);
   (databaseApi.deleteConsumable as jest.Mock).mockResolvedValue(undefined);
@@ -189,6 +217,10 @@ beforeEach(() => {
   (pickNativeDatabaseActPdf as jest.Mock).mockResolvedValue({
     uri: 'file:///cache/signed.pdf', name: 'signed.pdf', mimeType: 'application/pdf', size: 2048,
   });
+});
+
+afterEach(() => {
+  jest.useRealTimers();
 });
 
 it('searches equipment and opens the native detail route', async () => {
@@ -417,6 +449,69 @@ it('promotes a cached equipment-list item for native QR detail navigation offlin
   await waitFor(() => expect(detail.getAllByText('OptiPlex').length).toBeGreaterThan(0));
   expect(detail.getByText('Инв. № INV-1')).toBeTruthy();
   expect(databaseApi.getEquipment).not.toHaveBeenCalled();
+});
+
+it('keeps an existing full detail snapshot when opening the same equipment from QR offline', async () => {
+  mockOfflineMode = true;
+  const storedDetail = {
+    databaseId: 'ITINVENT',
+    equipment,
+    acts: [{ doc_no: 7, doc_number: 'A-7', has_file: false, items: [], type_name: 'Передача', branch_name: '', location_name: '', employee_name: '', raw: {} }],
+    history: [{ CH_COMMENT: 'Передача', CH_DATE: '2026-08-24T10:00:00+05:00' }],
+    workHistory: [{ kind: 'cleaning', count: 2, last_date: '2026-08-20', time_ago_str: '4 дн. назад' }],
+    unavailableWorkKinds: ['battery'],
+    loadedTabs: ['works', 'acts', 'history'],
+  };
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockImplementation(
+    async (_scope: string, _userId: number, key: string) => (
+      key === 'ITINVENT:INV-1' ? { savedAt: 1, data: storedDetail } : null
+    ),
+  );
+  (snapshotCache.readNativeSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      databases: [{ id: 'ITINVENT', name: 'Основная' }],
+      currentDatabase: { id: 'ITINVENT', name: 'Основная', locked: false },
+    },
+  });
+  (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      signature: '', databaseId: 'ITINVENT', mode: 'equipment', query: '',
+      equipment: [equipment], consumables: [], acts: [], total: 1, page: 1, pages: 1,
+    },
+  });
+
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-qr-camera')); });
+
+  await waitFor(() => expect(router.push).toHaveBeenCalledWith({
+    pathname: '/(shell)/database/[invNo]',
+    params: { invNo: 'INV-1', databaseId: 'ITINVENT', tab: 'general' },
+  }));
+  expect(snapshotCache.readNativeEntitySnapshot).toHaveBeenCalledWith(
+    'database-item-details',
+    17,
+    'ITINVENT:INV-1',
+  );
+  expect(snapshotCache.writeNativeEntitySnapshot).not.toHaveBeenCalledWith(
+    'database-item-details',
+    17,
+    'ITINVENT:INV-1',
+    expect.anything(),
+  );
+  expect(databaseApi.getEquipment).not.toHaveBeenCalled();
+
+  await view.unmount();
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT', tab: 'acts' });
+  const detail = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(detail.getByText('Акт A-7')).toBeTruthy());
+  expect(detail.getByText('Инв. № INV-1')).toBeTruthy();
+  expect(databaseApi.getEquipment).not.toHaveBeenCalled();
+  expect(databaseApi.getEquipmentActs).not.toHaveBeenCalled();
 });
 
 it('keeps the inventory toolbar and equipment card readable without icon-only primary actions', async () => {
@@ -695,12 +790,24 @@ it('does not load database data without database.read', async () => {
   expect(databaseApi.searchEquipment).not.toHaveBeenCalled();
 });
 
-const fillEmployeeManually = async (view: Awaited<ReturnType<typeof render>>, name: string, fieldTestID = 'native-transfer-employee') => {
+const pickTransferDepartment = async (view: Awaited<ReturnType<typeof render>>, name: string) => {
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-pick-department')); });
+  await waitFor(() => expect(view.getByTestId(`native-transfer-department-option-${name}`)).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId(`native-transfer-department-option-${name}`)); });
+};
+
+const fillEmployeeManually = async (
+  view: Awaited<ReturnType<typeof render>>,
+  name: string,
+  fieldTestID = 'native-transfer-employee',
+  department?: string,
+) => {
   await act(async () => { fireEvent.press(view.getByTestId(fieldTestID)); });
   await waitFor(() => expect(view.getByTestId('native-owner-picker-search')).toBeTruthy());
   await act(async () => { fireEvent.changeText(view.getByTestId('native-owner-picker-search'), name); });
   await waitFor(() => expect(view.getByTestId('native-owner-picker-manual')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByTestId('native-owner-picker-manual')); });
+  if (department) await pickTransferDepartment(view, department);
 };
 
 it('transfers one equipment card natively with a stable operation id', async () => {
@@ -712,7 +819,7 @@ it('transfers one equipment card natively with a stable operation id', async () 
   await waitFor(() => expect(view.getByTestId('native-equipment-transfer-owner')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
   await waitFor(() => expect(view.getByTestId('native-transfer-employee')).toBeTruthy());
-  await fillEmployeeManually(view, 'Петров П.П.');
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
   await waitFor(() => expect(view.getByText('Петров П.П.')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
   await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledWith(
@@ -720,6 +827,7 @@ it('transfers one equipment card natively with a stable operation id', async () 
     expect.objectContaining({
       inv_nos: ['INV-1'],
       new_employee: 'Петров П.П.',
+      new_employee_dept: 'ИТ',
       operation_id: expect.any(String),
     }),
     'ITINVENT',
@@ -737,11 +845,11 @@ it('selects several cards and sends one server-supported bulk transfer request',
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-INV-2')); });
   await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-transfer-owner')); });
-  await fillEmployeeManually(view, 'Петров П.П.');
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
   await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-action-confirm')); });
   await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledWith(
     'owner',
-    expect.objectContaining({ inv_nos: ['INV-1', 'INV-2'], new_employee: 'Петров П.П.', operation_id: expect.any(String) }),
+    expect.objectContaining({ inv_nos: ['INV-1', 'INV-2'], new_employee: 'Петров П.П.', new_employee_dept: 'ИТ', operation_id: expect.any(String) }),
     'ITINVENT',
   ));
 });
@@ -765,6 +873,7 @@ it('substitutes a new employee from the ITINVENT owner directory search', async 
   await waitFor(() => expect(view.getByTestId('native-owner-picker-option-2900')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByTestId('native-owner-picker-option-2900')); });
   await waitFor(() => expect(view.getByText('Козлов К.К.')).toBeTruthy());
+  expect(view.queryByTestId('native-transfer-pick-department')).toBeNull();
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
   await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledWith(
     'owner',
@@ -798,11 +907,104 @@ it('drops the picked owner id when the employee name is entered manually', async
   await waitFor(() => expect(view.getByTestId('native-owner-picker-manual')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByTestId('native-owner-picker-manual')); });
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await waitFor(() => expect(view.getByText('Выберите отдел нового сотрудника из списка.')).toBeTruthy());
+  expect(databaseApi.submitEquipmentTransfer).not.toHaveBeenCalled();
+  await pickTransferDepartment(view, 'Склад');
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
   await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalled());
   const payload = (databaseApi.submitEquipmentTransfer as jest.Mock).mock.calls[0][1];
   expect(payload.new_employee).toBe('Иванов Тест');
   expect(payload.new_employee_no).toBeUndefined();
-  expect(payload.new_employee_dept).toBeUndefined();
+  expect(payload.new_employee_dept).toBe('Склад');
+});
+
+it('blocks a manual transfer until a department is picked, then sends it without an owner id', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-employee')).toBeTruthy());
+  await fillEmployeeManually(view, 'Петров П.П.');
+  await waitFor(() => expect(view.getByTestId('native-transfer-pick-department')).toBeTruthy());
+  expect(databaseApi.listEquipmentOwnerDepartments).toHaveBeenCalledWith('ITINVENT');
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await waitFor(() => expect(view.getByText('Выберите отдел нового сотрудника из списка.')).toBeTruthy());
+  expect(databaseApi.submitEquipmentTransfer).not.toHaveBeenCalled();
+
+  await pickTransferDepartment(view, 'ИТ');
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledWith(
+    'owner',
+    expect.objectContaining({
+      inv_nos: ['INV-1'],
+      new_employee: 'Петров П.П.',
+      new_employee_dept: 'ИТ',
+      operation_id: expect.any(String),
+    }),
+    'ITINVENT',
+  ));
+  expect((databaseApi.submitEquipmentTransfer as jest.Mock).mock.calls[0][1].new_employee_no).toBeUndefined();
+});
+
+it('blocks the manual path when departments fail but a picked owner still transfers', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.listEquipmentOwnerDepartments as jest.Mock).mockRejectedValue(new Error('down'));
+  (databaseApi.searchEquipmentOwners as jest.Mock).mockResolvedValue([
+    { owner_no: 2900, name: 'Козлов К.К.', department: 'ИТ', email: '' },
+  ]);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
+  await fillEmployeeManually(view, 'Петров П.П.');
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await waitFor(() => expect(view.getByText(/Не удалось загрузить список отделов/)).toBeTruthy());
+  expect(databaseApi.submitEquipmentTransfer).not.toHaveBeenCalled();
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-employee')); });
+  await act(async () => { fireEvent.changeText(view.getByTestId('native-owner-picker-search'), 'Козл'); });
+  await waitFor(() => expect(view.getByTestId('native-owner-picker-option-2900')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-owner-picker-option-2900')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledWith(
+    'owner',
+    expect.objectContaining({ new_employee_no: 2900, new_employee_dept: 'ИТ' }),
+    'ITINVENT',
+  ));
+});
+
+it.each(['Петров <script>', ` ${'А'.repeat(101)} `])(
+  'rejects the invalid manual employee name %j without calling the transfer endpoint',
+  async (name) => {
+    mockPermissions = ['database.read', 'database.write'];
+    params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+    const view = await render(<NativeEquipmentDetailScreen />);
+    await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+    await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+    await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
+    await fillEmployeeManually(view, name, 'native-transfer-employee', 'ИТ');
+    await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+    await waitFor(() => expect(view.getByText(/Некорректное ФИО/)).toBeTruthy());
+    expect(databaseApi.submitEquipmentTransfer).not.toHaveBeenCalled();
+  },
+);
+
+it('requires a branch and a location for an owner transfer', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.getEquipment as jest.Mock).mockResolvedValue({ ...equipment, loc_no: null });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await waitFor(() => expect(view.getByText(/филиал и размещение/i)).toBeTruthy());
+  expect(databaseApi.submitEquipmentTransfer).not.toHaveBeenCalled();
 });
 
 it('picks branch and location from searchable sheets for a location transfer', async () => {
@@ -844,6 +1046,89 @@ it('picks branch and location from searchable sheets for a location transfer', a
   ));
 });
 
+it('opens and submits an act-only transfer without loading placement directories', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-act-only')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledWith(
+    'act-only',
+    expect.objectContaining({ inv_nos: ['INV-1'], issuer_employee: 'Иванов И.И.' }),
+    'ITINVENT',
+  ));
+  expect(databaseApi.listEquipmentBranches).not.toHaveBeenCalled();
+  expect(databaseApi.listEquipmentLocations).not.toHaveBeenCalled();
+  expect(databaseApi.listEquipmentOwnerDepartments).not.toHaveBeenCalled();
+});
+
+it('reloads only locations when the branch changes and clears stale options', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.listEquipmentBranches as jest.Mock).mockResolvedValue([
+    { id: 1, name: 'Филиал A' },
+    { id: 5, name: 'Филиал B' },
+  ]);
+  let finishLocations5: ((value: { id: number; name: string }[]) => void) | null = null;
+  (databaseApi.listEquipmentLocations as jest.Mock).mockImplementation((branchNo: unknown) => (
+    branchNo === 5 || branchNo === '5'
+      ? new Promise((resolve) => { finishLocations5 = resolve; })
+      : Promise.resolve([{ id: 2, name: 'Склад A' }])
+  ));
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-location')); });
+  await waitFor(() => expect(databaseApi.listEquipmentBranches).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(databaseApi.listEquipmentLocations).toHaveBeenCalledWith(1, 'ITINVENT'));
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-pick-branch')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-branch-option-5')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-branch-option-5')); });
+  await waitFor(() => expect(databaseApi.listEquipmentLocations).toHaveBeenCalledWith(5, 'ITINVENT'));
+  expect(databaseApi.listEquipmentBranches).toHaveBeenCalledTimes(1);
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-pick-location')); });
+  expect(view.queryByTestId('native-transfer-location-search')).toBeNull();
+  await act(async () => { finishLocations5?.([{ id: 9, name: 'Склад B' }]); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-pick-location')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-location-option-9')).toBeTruthy());
+  expect(view.queryByTestId('native-transfer-location-option-2')).toBeNull();
+});
+
+it('ignores a late location response from the previously selected branch', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.listEquipmentBranches as jest.Mock).mockResolvedValue([
+    { id: 1, name: 'Филиал A' },
+    { id: 5, name: 'Филиал B' },
+  ]);
+  let finishLocations1: ((value: { id: number; name: string }[]) => void) | null = null;
+  (databaseApi.listEquipmentLocations as jest.Mock).mockImplementation((branchNo: unknown) => (
+    branchNo === 5 || branchNo === '5'
+      ? Promise.resolve([{ id: 9, name: 'Склад B' }])
+      : new Promise((resolve) => { finishLocations1 = resolve; })
+  ));
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-location')); });
+  await waitFor(() => expect(databaseApi.listEquipmentLocations).toHaveBeenCalledWith(1, 'ITINVENT'));
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-pick-branch')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-branch-option-5')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-branch-option-5')); });
+  await waitFor(() => expect(databaseApi.listEquipmentLocations).toHaveBeenCalledWith(5, 'ITINVENT'));
+
+  await act(async () => { finishLocations1?.([{ id: 2, name: 'Склад A' }]); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-pick-location')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-location-option-9')).toBeTruthy());
+  expect(view.queryByTestId('native-transfer-location-option-2')).toBeNull();
+  expect(databaseApi.listEquipmentBranches).toHaveBeenCalledTimes(1);
+});
+
 it('resolves the act issuer against the ITINVENT owner directory', async () => {
   mockPermissions = ['database.read', 'database.write'];
   params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
@@ -861,6 +1146,7 @@ it('resolves the act issuer against the ITINVENT owner directory', async () => {
   await waitFor(() => expect(view.getByTestId('native-owner-picker-option-7')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByTestId('native-owner-picker-option-7')); });
   await waitFor(() => expect(view.getByText('Сидоров С.С.')).toBeTruthy());
+  expect(view.queryByTestId('native-transfer-pick-department')).toBeNull();
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
   await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledWith(
     'act-only',
@@ -886,7 +1172,7 @@ const transferResultWithAct = {
 const runOwnerTransferToResult = async (view: Awaited<ReturnType<typeof render>>) => {
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
-  await fillEmployeeManually(view, 'Петров П.П.');
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
   await waitFor(() => expect(view.getByTestId('native-transfer-act-act-1')).toBeTruthy());
 };
@@ -975,13 +1261,499 @@ it('retries only the failed positions from the transfer result', async () => {
   await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
-  await fillEmployeeManually(view, 'Петров П.П.');
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
   await waitFor(() => expect(view.getByTestId('native-transfer-retry-failed')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByTestId('native-transfer-retry-failed')); });
   await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(2));
-  expect((databaseApi.submitEquipmentTransfer as jest.Mock).mock.calls[1][1].inv_nos).toEqual(['INV-1']);
+  const retryCalls = (databaseApi.submitEquipmentTransfer as jest.Mock).mock.calls;
+  expect(retryCalls[1][1].inv_nos).toEqual(['INV-1']);
+  expect(retryCalls[1][1].operation_id).toEqual(expect.any(String));
+  expect(retryCalls[1][1].operation_id).not.toBe(retryCalls[0][1].operation_id);
   await waitFor(() => expect(view.getByTestId('native-transfer-act-act-1')).toBeTruthy());
+});
+
+const queuedJobResult = {
+  job_id: 'job-1', job_status: 'queued', job_status_text: 'В очереди',
+  success_count: 0, failed_count: 0, failed: [], retry_inv_nos: [], acts: [],
+};
+const processingJobResult = { ...queuedJobResult, job_status: 'processing', job_status_text: 'Формируются документы' };
+const doneJobResult = { ...transferResultWithAct, job_id: 'job-1' };
+const networkError = { code: 'ERR_NETWORK', isAxiosError: true };
+
+const openOwnerModalWithManualEmployee = async (view: Awaited<ReturnType<typeof render>>) => {
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-employee')).toBeTruthy());
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
+};
+
+const advanceJobPoll = async (ms = 1300) => {
+  await act(async () => { await jest.advanceTimersByTimeAsync(ms); });
+};
+
+it('polls the queued transfer job through a transient network error until it is done', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(queuedJobResult);
+  (databaseApi.getEquipmentTransferJob as jest.Mock)
+    .mockRejectedValueOnce(networkError)
+    .mockResolvedValueOnce(processingJobResult)
+    .mockResolvedValue(doneJobResult);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await openOwnerModalWithManualEmployee(view);
+
+  jest.useFakeTimers();
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(1);
+
+  await advanceJobPoll();
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(1);
+  await advanceJobPoll();
+  await advanceJobPoll();
+  await act(async () => {});
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(3);
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenLastCalledWith('job-1', 'ITINVENT');
+  expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy();
+  expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(1);
+  expect(databaseApi.getEquipment).toHaveBeenCalledTimes(2);
+});
+
+it('resets the consecutive error streak on a successful poll', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(queuedJobResult);
+  (databaseApi.getEquipmentTransferJob as jest.Mock)
+    .mockRejectedValueOnce(networkError)
+    .mockRejectedValueOnce(networkError)
+    .mockResolvedValueOnce(processingJobResult)
+    .mockRejectedValueOnce(networkError)
+    .mockRejectedValueOnce(networkError)
+    .mockResolvedValue(doneJobResult);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await openOwnerModalWithManualEmployee(view);
+
+  jest.useFakeTimers();
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  for (let step = 0; step < 4; step += 1) await advanceJobPoll();
+  await advanceJobPoll(2600);
+  await advanceJobPoll(2600);
+  await act(async () => {});
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(6);
+  expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy();
+  expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(1);
+});
+
+it('stops after three consecutive poll errors and resumes the same job from «Проверить статус»', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(queuedJobResult);
+  (databaseApi.getEquipmentTransferJob as jest.Mock).mockRejectedValue(networkError);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await openOwnerModalWithManualEmployee(view);
+
+  jest.useFakeTimers();
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  for (let step = 0; step < 3; step += 1) await advanceJobPoll();
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(3);
+  await advanceJobPoll(60_000);
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(3);
+  expect(view.getByText(/обновить статус/i)).toBeTruthy();
+  expect(view.getByText('Проверить статус')).toBeTruthy();
+
+  (databaseApi.getEquipmentTransferJob as jest.Mock).mockResolvedValue(doneJobResult);
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await advanceJobPoll();
+  await act(async () => {});
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(4);
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenLastCalledWith('job-1', 'ITINVENT');
+  expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy();
+  expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(1);
+});
+
+it('stops polling immediately on a permanent HTTP error without blind retries', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(queuedJobResult);
+  (databaseApi.getEquipmentTransferJob as jest.Mock).mockRejectedValue({
+    response: { status: 403, data: { detail: 'Недостаточно прав' } },
+    isAxiosError: true,
+  });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await openOwnerModalWithManualEmployee(view);
+
+  jest.useFakeTimers();
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await advanceJobPoll();
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(1);
+  await advanceJobPoll(60_000);
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(1);
+  expect(view.getByText('Недостаточно прав')).toBeTruthy();
+  expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(1);
+});
+
+it('keeps the pending job after a polling timeout so the same job can be checked later', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(queuedJobResult);
+  (databaseApi.getEquipmentTransferJob as jest.Mock).mockResolvedValue(processingJobResult);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await openOwnerModalWithManualEmployee(view);
+
+  jest.useFakeTimers();
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await advanceJobPoll(4 * 1200 + 240 * 2500);
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(240);
+  expect(view.getByText(/дольше обычного/i)).toBeTruthy();
+  expect(view.getByText('Проверить статус')).toBeTruthy();
+
+  (databaseApi.getEquipmentTransferJob as jest.Mock).mockResolvedValue(doneJobResult);
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await advanceJobPoll();
+  await act(async () => {});
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenLastCalledWith('job-1', 'ITINVENT');
+  expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy();
+  expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(1);
+}, 30_000);
+
+it('stops polling and never reports a change after the screen unmounts', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(queuedJobResult);
+  (databaseApi.getEquipmentTransferJob as jest.Mock).mockResolvedValue(processingJobResult);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await openOwnerModalWithManualEmployee(view);
+
+  jest.useFakeTimers();
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await advanceJobPoll();
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(1);
+
+  await act(async () => { view.unmount(); });
+  await advanceJobPoll(60_000);
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(1);
+  expect(databaseApi.getEquipment).toHaveBeenCalledTimes(1);
+});
+
+it('keeps the pending job when the modal closes and resumes it on the next action open', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(queuedJobResult);
+  (databaseApi.getEquipmentTransferJob as jest.Mock).mockResolvedValue(processingJobResult);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await openOwnerModalWithManualEmployee(view);
+
+  jest.useFakeTimers();
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await advanceJobPoll();
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(1);
+
+  await act(async () => { fireEvent.press(view.getByLabelText('Закрыть операцию')); });
+  await advanceJobPoll(10_000);
+  expect(view.queryByTestId('native-transfer-employee')).toBeNull();
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(1);
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-location')); });
+  await waitFor(() => expect(view.getByText('Проверить статус')).toBeTruthy());
+  expect(view.getByTestId('native-transfer-employee').props.accessibilityState.disabled).toBe(true);
+
+  (databaseApi.getEquipmentTransferJob as jest.Mock).mockResolvedValue(doneJobResult);
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await advanceJobPoll();
+  await act(async () => {});
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenLastCalledWith('job-1', 'ITINVENT');
+  expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy();
+  expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(1);
+});
+
+it.each([408, 429, 503])('recovers a transient HTTP %s poll error and completes the same job', async (status) => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(queuedJobResult);
+  (databaseApi.getEquipmentTransferJob as jest.Mock)
+    .mockRejectedValueOnce({ response: { status }, isAxiosError: true })
+    .mockResolvedValue(doneJobResult);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await openOwnerModalWithManualEmployee(view);
+
+  jest.useFakeTimers();
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await advanceJobPoll();
+  await advanceJobPoll();
+  await act(async () => {});
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(2);
+  expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy();
+  expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(1);
+});
+
+it('keeps a terminal failed job pending so checking status never resubmits', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(queuedJobResult);
+  (databaseApi.getEquipmentTransferJob as jest.Mock)
+    .mockResolvedValueOnce({ ...queuedJobResult, job_status: 'failed', job_error: 'Отказ сервера' })
+    .mockResolvedValue(doneJobResult);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await openOwnerModalWithManualEmployee(view);
+
+  jest.useFakeTimers();
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await advanceJobPoll();
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(1);
+  expect(view.getByText('Отказ сервера')).toBeTruthy();
+  expect(view.getByText('Проверить статус')).toBeTruthy();
+
+  await act(async () => { fireEvent.press(view.getByLabelText('Закрыть операцию')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-location')); });
+  await waitFor(() => expect(view.getByText('Проверить статус')).toBeTruthy());
+  expect(view.queryByText('Выполнить')).toBeNull();
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await advanceJobPoll();
+  await act(async () => {});
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenLastCalledWith('job-1', 'ITINVENT');
+  expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy();
+  expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(1);
+});
+
+it('keeps a failed POST result with a known job as a GET-only pending job', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue({
+    job_id: 'job-9', job_status: 'failed', job_error: 'Отказ сервера',
+    success_count: 0, failed_count: 1, failed: [{ inv_no: 'INV-1', error: 'Отказ' }], retry_inv_nos: [], acts: [],
+  });
+  (databaseApi.getEquipmentTransferJob as jest.Mock).mockResolvedValue({ ...doneJobResult, job_id: 'job-9' });
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await openOwnerModalWithManualEmployee(view);
+
+  jest.useFakeTimers();
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  expect(databaseApi.getEquipmentTransferJob).not.toHaveBeenCalled();
+  expect(view.getByText('Отказ сервера')).toBeTruthy();
+  expect(view.getByText('Проверить статус')).toBeTruthy();
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await advanceJobPoll();
+  await act(async () => {});
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenLastCalledWith('job-9', 'ITINVENT');
+  expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy();
+  expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(1);
+});
+
+it('keeps polling when a processing response omits job_id', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(queuedJobResult);
+  (databaseApi.getEquipmentTransferJob as jest.Mock)
+    .mockResolvedValueOnce({ job_status: 'processing', job_status_text: 'Формируются документы' })
+    .mockResolvedValue(doneJobResult);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await openOwnerModalWithManualEmployee(view);
+
+  jest.useFakeTimers();
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await advanceJobPoll();
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(1);
+  expect(view.queryByText('Перемещено: 1, ошибок: 0')).toBeNull();
+
+  await advanceJobPoll();
+  await act(async () => {});
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(2);
+  expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy();
+  expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(1);
+});
+
+it('stops with an explanatory error when the job status is missing', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(queuedJobResult);
+  (databaseApi.getEquipmentTransferJob as jest.Mock)
+    .mockResolvedValueOnce({ success_count: 0, failed_count: 0, failed: [], retry_inv_nos: [], acts: [] })
+    .mockResolvedValue(doneJobResult);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await openOwnerModalWithManualEmployee(view);
+
+  jest.useFakeTimers();
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await advanceJobPoll();
+  expect(view.getByText(/Неожиданный статус задания/)).toBeTruthy();
+  expect(view.getByText('Проверить статус')).toBeTruthy();
+  expect(view.queryByText('Перемещено: 1, ошибок: 0')).toBeNull();
+  expect(databaseApi.getEquipment).toHaveBeenCalledTimes(1);
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await advanceJobPoll();
+  await act(async () => {});
+  expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy();
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(2);
+  expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(1);
+});
+
+it('submits the job only once when confirm is pressed twice in the same turn', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(queuedJobResult);
+  (databaseApi.getEquipmentTransferJob as jest.Mock).mockResolvedValue(doneJobResult);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await openOwnerModalWithManualEmployee(view);
+
+  jest.useFakeTimers();
+  await act(async () => {
+    fireEvent.press(view.getByTestId('native-equipment-action-confirm'));
+    fireEvent.press(view.getByTestId('native-equipment-action-confirm'));
+  });
+  await advanceJobPoll();
+  await act(async () => {});
+  expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(1);
+  expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy();
+});
+
+it('drops an in-flight poll response after unmount without side effects', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  let resolveGet: (value: unknown) => void = () => undefined;
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(queuedJobResult);
+  (databaseApi.getEquipmentTransferJob as jest.Mock).mockImplementation(
+    () => new Promise((resolve) => { resolveGet = resolve; }),
+  );
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await openOwnerModalWithManualEmployee(view);
+
+  jest.useFakeTimers();
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await advanceJobPoll();
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(1);
+
+  await act(async () => { view.unmount(); });
+  await act(async () => { resolveGet(processingJobResult); });
+  await act(async () => {});
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(1);
+  expect(databaseApi.getEquipment).toHaveBeenCalledTimes(1);
+  expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(1);
+});
+
+it('drops an in-flight poll response after close and keeps the pending job', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  let resolveGet: (value: unknown) => void = () => undefined;
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(queuedJobResult);
+  (databaseApi.getEquipmentTransferJob as jest.Mock).mockImplementation(
+    () => new Promise((resolve) => { resolveGet = resolve; }),
+  );
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-actions-open')).toBeTruthy());
+  await openOwnerModalWithManualEmployee(view);
+
+  jest.useFakeTimers();
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await advanceJobPoll();
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(1);
+
+  await act(async () => { fireEvent.press(view.getByLabelText('Закрыть операцию')); });
+  await act(async () => { resolveGet(processingJobResult); });
+  await act(async () => {});
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenCalledTimes(1);
+  expect(view.queryByTestId('native-transfer-employee')).toBeNull();
+
+  (databaseApi.getEquipmentTransferJob as jest.Mock).mockResolvedValue(doneJobResult);
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-actions-open')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
+  await waitFor(() => expect(view.getByText('Проверить статус')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await advanceJobPoll();
+  await act(async () => {});
+  expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy();
+  expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(1);
+});
+
+it('keeps the completed result when the change callback fails', async () => {
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(queuedJobResult);
+  (databaseApi.getEquipmentTransferJob as jest.Mock).mockResolvedValue(doneJobResult);
+  const ref = createRef<NativeEquipmentActionsHandle>();
+  const view = await render(
+    <NativeEquipmentActions
+      ref={ref}
+      equipment={equipment}
+      databaseId="ITINVENT"
+      canWrite
+      canDeleteEquipment={false}
+      offline={false}
+      surface="general"
+      tokens={getFluentTokens('light')}
+      onChanged={jest.fn().mockRejectedValue(new Error('refresh failed'))}
+      onDeleted={jest.fn()}
+    />,
+  );
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
+
+  jest.useFakeTimers();
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await advanceJobPoll();
+  await act(async () => {});
+  expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy();
+  expect(view.getByText(/не удалось обновить данные/)).toBeTruthy();
+  expect(view.getByTestId('native-transfer-act-act-1')).toBeTruthy();
+  expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(1);
+});
+
+it('keeps the pending job scoped to its database and frozen selection across rerenders', async () => {
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(queuedJobResult);
+  (databaseApi.getEquipmentTransferJob as jest.Mock).mockResolvedValue(processingJobResult);
+  const ref = createRef<NativeEquipmentActionsHandle>();
+  const other = { ...equipment, inv_no: 'INV-9', model_name: 'ThinkCentre', raw: { INV_NO: 'INV-9' } };
+  const common = {
+    canWrite: true,
+    canDeleteEquipment: false,
+    offline: false,
+    surface: 'general' as const,
+    tokens: getFluentTokens('light'),
+    onChanged: jest.fn(),
+    onDeleted: jest.fn(),
+  };
+  const view = await render(<NativeEquipmentActions ref={ref} equipment={equipment} databaseId="ITINVENT" {...common} />);
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
+
+  jest.useFakeTimers();
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
+  await advanceJobPoll();
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenLastCalledWith('job-1', 'ITINVENT');
+
+  await act(async () => {
+    view.rerender(
+      <NativeEquipmentActions
+        ref={ref}
+        equipment={other}
+        targets={[other, { ...equipment, inv_no: 'INV-8', raw: { INV_NO: 'INV-8' } }]}
+        databaseId="MSK-ITINVENT"
+        {...common}
+      />,
+    );
+  });
+  expect(view.getByText('Инв. № INV-1')).toBeTruthy();
+  expect(view.queryByText('Выбрано карточек: 2')).toBeNull();
+
+  await advanceJobPoll();
+  expect(databaseApi.getEquipmentTransferJob).toHaveBeenLastCalledWith('job-1', 'ITINVENT');
+  expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(1);
 });
 
 it('applies the top safe-area inset to the action modal header', async () => {
@@ -1438,7 +2210,7 @@ it('does not reload work history after a transfer from the bottom bar', async ()
   await waitFor(() => expect(view.getByTestId('native-equipment-transfer-owner')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-transfer-owner')); });
   await waitFor(() => expect(view.getByTestId('native-transfer-employee')).toBeTruthy());
-  await fillEmployeeManually(view, 'Петров П.П.');
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
   await act(async () => { fireEvent.press(view.getByTestId('native-equipment-action-confirm')); });
   await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledWith(
     'owner',
@@ -1538,7 +2310,7 @@ it('collects two different QRs and submits both inv_nos through the shared trans
 
   await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-batch-transfer-owner')); });
   await waitFor(() => expect(view.getByTestId('native-transfer-employee')).toBeTruthy());
-  await fillEmployeeManually(view, 'Петров П.П.');
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
   await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-batch-action-confirm')); });
   await waitFor(() => expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledWith(
     'owner',
@@ -1591,6 +2363,178 @@ it('opens the consumable card and resets a one-item batch on a consumable QR (Ш
   await waitFor(() => expect(view.queryByTestId('native-database-qr-camera')).toBeNull());
   await waitFor(() => expect(view.getByText('HP 12A')).toBeTruthy());
   expect(view.queryByTestId('native-scan-batch-card')).toBeNull();
+});
+
+// ===== Режим пары «расходник ↔ МФУ» в одном сканере =====
+
+const pairConsumable = { id: 4821, inv_no: 'C-4821', type_name: 'Картридж', model_name: 'HP 12A', qty: 2, branch_name: 'Склад', location_name: '', part_no: '', description: '', raw: {} };
+const pairMfu = { ...equipment, inv_no: 'INV-9', type_name: 'МФУ', model_name: 'HP LaserJet M404', serial_no: 'SN-M404' };
+const pairConsumableQr = 'https://hubit.zsgp.ru/database?consumable=4821&db_id=ITINVENT';
+
+const mockPairApi = () => {
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...pairMfu, inv_no: invNo }));
+  (databaseApi.getConsumableById as jest.Mock).mockResolvedValue(pairConsumable);
+  (databaseApi.recordEquipmentWork as jest.Mock).mockResolvedValue({ qty_new: 1 });
+};
+
+it('completes a consumable→MFU pair inside one scanner session', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  mockPairApi();
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-pair-mode-start')); });
+  await waitFor(() => expect(view.getByTestId('native-pair-panel')).toBeTruthy());
+  expect(view.getByText('Сканируйте QR расходника')).toBeTruthy();
+  expect(view.getByText('Сканируйте QR МФУ')).toBeTruthy();
+
+  await scanQr(view, pairConsumableQr);
+  await waitFor(() => expect(databaseApi.getConsumableById).toHaveBeenCalledWith(4821, 'ITINVENT'));
+  // Сканер остаётся открыт, слот расходника заполнен.
+  expect(view.getByTestId('native-database-qr-camera')).toBeTruthy();
+  await waitFor(() => expect(view.getByText('HP 12A')).toBeTruthy());
+
+  await scanQr(view, 'INV_NO: INV-9');
+  await waitFor(() => expect(view.queryByTestId('native-database-qr-camera')).toBeNull());
+  await waitFor(() => expect(view.getByText('HP LaserJet M404')).toBeTruthy());
+  expect(view.queryByTestId('native-pair-panel')).toBeNull();
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-consumable-scan-consume')); });
+  await waitFor(() => expect(databaseApi.recordEquipmentWork).toHaveBeenCalledWith(expect.objectContaining({
+    kind: 'cartridge',
+    databaseId: 'ITINVENT',
+    equipment: expect.objectContaining({ inv_no: 'INV-9' }),
+    consumable: expect.objectContaining({ id: 4821 }),
+  })));
+});
+
+it('completes an MFU→consumable pair in the reversed order', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  mockPairApi();
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-pair-mode-start')); });
+  await waitFor(() => expect(view.getByTestId('native-pair-panel')).toBeTruthy());
+
+  await scanQr(view, 'INV_NO: INV-9');
+  await waitFor(() => expect(databaseApi.getEquipment).toHaveBeenCalledWith('INV-9', 'ITINVENT'));
+  expect(view.getByTestId('native-database-qr-camera')).toBeTruthy();
+  await waitFor(() => expect(view.getByText(/HP LaserJet M404/)).toBeTruthy());
+
+  await scanQr(view, pairConsumableQr);
+  await waitFor(() => expect(view.queryByTestId('native-database-qr-camera')).toBeNull());
+  await waitFor(() => expect(view.getByText('HP 12A')).toBeTruthy());
+  expect(view.getByText('HP LaserJet M404')).toBeTruthy();
+});
+
+it('rejects a non-printer QR in the MFU slot and keeps pair mode', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  mockPairApi();
+  (databaseApi.getEquipment as jest.Mock).mockResolvedValue(equipment);
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-pair-mode-start')); });
+
+  await scanQr(view, 'INV_NO: INV-1');
+  await waitFor(() => expect(view.getByTestId('native-toast').props.children).toContain('не МФУ/принтер'));
+  expect(view.getByTestId('native-database-qr-camera')).toBeTruthy();
+  expect(view.getByTestId('native-pair-panel')).toBeTruthy();
+});
+
+it('scans the MFU QR from the open consumable card', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  mockPairApi();
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await scanQr(view, pairConsumableQr);
+  await waitFor(() => expect(view.getByText('HP 12A')).toBeTruthy());
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-scan-mfu-qr')); });
+  // Пока открыты обе RN-Modal (карточка + сканер), их поддеревья считаются
+  // скрытыми для запросов — поэтому нужен includeHiddenElements.
+  const hidden = { includeHiddenElements: true } as const;
+  await waitFor(() => expect(screen.getByTestId('native-pair-panel', hidden)).toBeTruthy());
+  mockQrScanData = 'INV_NO: INV-9';
+  await act(async () => { fireEvent.press(screen.getByTestId('native-database-qr-camera', hidden)); });
+  await waitFor(() => expect(screen.queryByTestId('native-database-qr-camera', hidden)).toBeNull());
+  // Карточка осталась открыта, МФУ подставлена — «Списать 1» активна.
+  await waitFor(() => expect(screen.getByText('HP LaserJet M404', hidden)).toBeTruthy());
+  await act(async () => { fireEvent.press(screen.getByTestId('native-consumable-scan-consume', hidden)); });
+  await waitFor(() => expect(databaseApi.recordEquipmentWork).toHaveBeenCalledWith(expect.objectContaining({
+    kind: 'cartridge',
+    equipment: expect.objectContaining({ inv_no: 'INV-9' }),
+  })));
+});
+
+it('starts the pair scanner from the MFU card menu and via the pairMfu deep link', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockResolvedValue(pairMfu);
+  params.mockReturnValue({ invNo: 'INV-9', databaseId: 'ITINVENT' });
+  const detail = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(detail.getByTestId('native-equipment-menu')).toBeTruthy());
+  await act(async () => { fireEvent.press(detail.getByTestId('native-equipment-menu')); });
+  await act(async () => { fireEvent.press(detail.getByTestId('native-equipment-consume-consumable')); });
+  expect(router.push).toHaveBeenCalledWith(expect.objectContaining({
+    pathname: '/(shell)/database',
+    params: expect.objectContaining({ pairMfu: 'INV-9', databaseId: 'ITINVENT' }),
+  }));
+
+  // Дип-линк открывает сканер в режиме пары с уже выбранной МФУ.
+  (databaseApi.getConsumableById as jest.Mock).mockResolvedValue(pairConsumable);
+  params.mockReturnValue({ pairMfu: 'INV-9', databaseId: 'ITINVENT' });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+  await waitFor(() => expect(view.getByTestId('native-pair-panel')).toBeTruthy());
+  await waitFor(() => expect(view.getByText(/HP LaserJet M404/)).toBeTruthy());
+  await scanQr(view, pairConsumableQr);
+  await waitFor(() => expect(view.getByText('HP 12A')).toBeTruthy());
+});
+
+it('exits pair mode on cancel and returns to normal batch scanning', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  mockPairApi();
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-pair-mode-start')); });
+  await waitFor(() => expect(view.getByTestId('native-pair-panel')).toBeTruthy());
+
+  // Первый слот заполнен — «передумал» сбрасывает пару, сканер остаётся открыт.
+  await scanQr(view, pairConsumableQr);
+  await waitFor(() => expect(view.getByText('HP 12A')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-pair-cancel')); });
+  expect(view.queryByTestId('native-pair-panel')).toBeNull();
+  expect(view.getByTestId('native-database-qr-camera')).toBeTruthy();
+  expect(view.getByTestId('native-pair-mode-start')).toBeTruthy();
+
+  // Дальше скан работает как обычно — оборудование уходит в batch-список.
+  await scanQr(view, 'INV_NO: INV-9');
+  await waitFor(() => expect(view.getByTestId('native-scan-batch-card')).toBeTruthy());
+  expect(view.queryByTestId('native-pair-panel')).toBeNull();
+  expect(databaseApi.getConsumableById).toHaveBeenCalledTimes(1);
+});
+
+it('resets an unfinished pair when the scanner is closed and reopened', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  mockPairApi();
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-pair-mode-start')); });
+  await scanQr(view, pairConsumableQr);
+  await waitFor(() => expect(view.getByText('HP 12A')).toBeTruthy());
+
+  await act(async () => { fireEvent.press(view.getByLabelText('Закрыть сканер QR-кода')); });
+  await waitFor(() => expect(view.queryByTestId('native-database-qr-camera')).toBeNull());
+
+  // Повторное открытие — обычный режим, «хвоста» прошлой пары нет.
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+  expect(view.queryByTestId('native-pair-panel')).toBeNull();
+  expect(view.getByTestId('native-pair-mode-start')).toBeTruthy();
 });
 
 it('asks «Открыть расходник?» over a 2+ item batch; «Отмена» keeps the list (Ш5-7)', async () => {
@@ -1737,6 +2681,85 @@ it('adds offline rows from snapshots and disables Действия without netwo
   expect(view.getByTestId('native-scan-batch-actions').props.accessibilityState?.disabled).toBe(true);
 });
 
+it('prefers a fresher detail snapshot over catalog data for an offline scan', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  mockOfflineMode = true;
+  const staleItem = { ...equipment, employee_name: 'Старый Владелец' };
+  const freshItem = { ...equipment, employee_name: 'Новый Владелец' };
+  (snapshotCache.readNativeSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      databases: [{ id: 'ITINVENT', name: 'Основная' }],
+      currentDatabase: { id: 'ITINVENT', name: 'Основная', locked: false },
+    },
+  });
+  (snapshotCache.readNativeCollectionSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      signature: '', databaseId: 'ITINVENT', mode: 'equipment', query: '',
+      equipment: [staleItem], consumables: [], acts: [], total: 1, page: 1, pages: 1,
+    },
+  });
+  (equipmentCatalog.readNativeEquipmentCatalogSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: { databaseId: 'ITINVENT', equipment: [staleItem], total: 1 },
+  });
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockImplementation(
+    async (_scope: string, _userId: number, key: string) => (
+      key === 'ITINVENT:INV-1'
+        ? {
+          savedAt: 3,
+          data: {
+            databaseId: 'ITINVENT', equipment: freshItem,
+            acts: [], history: [], workHistory: [], unavailableWorkKinds: [], loadedTabs: [],
+          },
+        }
+        : null
+    ),
+  );
+
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await scanQr(view, 'INV_NO: INV-1');
+  await waitFor(() => expect(
+    within(view.getByTestId('native-scan-batch-card')).getByText(/Новый Владелец/),
+  ).toBeTruthy());
+  expect(within(view.getByTestId('native-scan-batch-card')).queryByText(/Старый Владелец/)).toBeNull();
+  expect(equipmentCatalog.findNativeEquipmentCatalogItem).not.toHaveBeenCalled();
+});
+
+it('resolves an offline scan through the catalog index when no detail snapshot exists', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  mockOfflineMode = true;
+  const catalogOnlyItem = { ...equipment, inv_no: 'INV-9', employee_name: 'Каталог Владелец' };
+  (snapshotCache.readNativeSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      databases: [{ id: 'ITINVENT', name: 'Основная' }],
+      currentDatabase: { id: 'ITINVENT', name: 'Основная', locked: false },
+    },
+  });
+  (equipmentCatalog.readNativeEquipmentCatalogSnapshot as jest.Mock)
+    .mockResolvedValueOnce({
+      savedAt: 1,
+      data: { databaseId: 'ITINVENT', equipment: [equipment], total: 1 },
+    })
+    .mockResolvedValue({
+      savedAt: 1,
+      data: { databaseId: 'ITINVENT', equipment: [equipment, catalogOnlyItem], total: 2 },
+    });
+
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await scanQr(view, 'INV_NO: INV-9');
+  await waitFor(() => expect(view.getByText(/Каталог Владелец/)).toBeTruthy());
+  expect(equipmentCatalog.findNativeEquipmentCatalogItem).toHaveBeenCalledWith(
+    17, 'ITINVENT', 'INV-9',
+  );
+});
+
 it('keeps the legacy single-scan behavior without database.write', async () => {
   const view = await render(<NativeDatabaseScreen />);
   await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
@@ -1771,7 +2794,7 @@ it('keeps only retry_inv_nos after a partial batch transfer error', async () => 
   await act(async () => { fireEvent.press(view.getByTestId('native-scan-batch-actions')); });
   await waitFor(() => expect(view.getByTestId('native-database-scan-batch')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-batch-transfer-owner')); });
-  await fillEmployeeManually(view, 'Петров П.П.');
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
   await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-batch-action-confirm')); });
   await waitFor(() => expect(view.getByText('Перемещено: 1, ошибок: 1')).toBeTruthy());
   await act(async () => { fireEvent.press(view.getByText('Готово')); });
@@ -1828,6 +2851,33 @@ it('closes the scanner with one item without asking and resets the list (Ш5-8)'
   expect(view.getByText(/Инв\. № INV-5/)).toBeTruthy();
   expect(view.queryByText(/INV-1/)).toBeNull();
   alertSpy.mockRestore();
+});
+
+it('ignores a late scan resolution after the scanner was closed and reopened', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  let release: (value: typeof equipment | null) => void = () => undefined;
+  (databaseApi.getEquipment as jest.Mock).mockImplementation(
+    () => new Promise((done) => { release = done; }),
+  );
+  const hapticsSpy = jest.spyOn(Haptics, 'selectionAsync').mockResolvedValue(undefined);
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+  await scanQr(view, 'INV_NO: INV-1');
+  await waitFor(() => expect(databaseApi.getEquipment).toHaveBeenCalledWith('INV-1', 'ITINVENT'));
+
+  await act(async () => { fireEvent.press(view.getByLabelText('Закрыть сканер QR-кода')); });
+  await waitFor(() => expect(view.queryByTestId('native-database-qr-camera')).toBeNull());
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await waitFor(() => expect(view.getByTestId('native-database-qr-camera')).toBeTruthy());
+
+  await act(async () => { release({ ...equipment, inv_no: 'INV-1' }); });
+  expect(view.queryByTestId('native-scan-batch-card')).toBeNull();
+  expect(view.queryByTestId('native-toast')).toBeNull();
+  expect(hapticsSpy).not.toHaveBeenCalled();
+  hapticsSpy.mockRestore();
 });
 
 it('asks before closing the scanner with 2+ items and «Закрыть» resets the list (Ш5-8)', async () => {
@@ -2062,4 +3112,880 @@ it('fires each code at most once while two labels alternate in frame (Ш5-4)', a
   await scanQr(view, 'INV_NO: INV-2');
   await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
   expect(view.queryByText('Уже в списке')).toBeNull();
+});
+
+it('point-refreshes transferred rows after Done without reloading loaded pages', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  const second = { ...equipment, inv_no: 'INV-2', model_name: 'Latitude', employee_name: 'Сидоров С.С.', raw: { INV_NO: 'INV-2' } };
+  const third = { ...equipment, inv_no: 'INV-3', model_name: 'ThinkPad', raw: { INV_NO: 'INV-3' } };
+  (databaseApi.listEquipment as jest.Mock)
+    .mockResolvedValueOnce({ equipment: [equipment, second], total: 3, page: 1, pages: 3 })
+    .mockResolvedValueOnce({ equipment: [third], total: 3, page: 2, pages: 3 })
+    .mockResolvedValue({ equipment: [], total: 3, page: 3, pages: 3 });
+  (databaseApi.getEquipmentByInvNos as jest.Mock).mockResolvedValue({
+    equipment: [{ ...equipment, employee_name: 'Петров П.П.' }],
+    not_found: [],
+  });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-2')).toBeTruthy());
+  await act(async () => { view.getByTestId('native-database-results').props.onEndReached(); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-3')).toBeTruthy());
+  (databaseApi.listEquipment as jest.Mock).mockClear();
+
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-1'), 'longPress'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-transfer-owner')); });
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-action-confirm')); });
+  await waitFor(() => expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy());
+  expect(databaseApi.getEquipmentByInvNos).not.toHaveBeenCalled();
+
+  await act(async () => { fireEvent.press(view.getByText('Готово')); });
+  await waitFor(() => expect(databaseApi.getEquipmentByInvNos).toHaveBeenCalledTimes(1));
+  expect(databaseApi.getEquipmentByInvNos).toHaveBeenCalledWith(['INV-1'], 'ITINVENT');
+  expect(databaseApi.listEquipment).not.toHaveBeenCalled();
+  await waitFor(() => expect(view.getByText(/Петров П\.П\./)).toBeTruthy());
+  expect(view.getByTestId('native-equipment-INV-2')).toBeTruthy();
+  expect(view.getByTestId('native-equipment-INV-3')).toBeTruthy();
+
+  await act(async () => { view.getByTestId('native-database-results').props.onEndReached(); });
+  await waitFor(() => expect(databaseApi.listEquipment).toHaveBeenCalledWith(3, 50, 'ITINVENT'));
+});
+
+it('does not touch the list or batch endpoint when the bulk transfer modal is cancelled', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByText('OptiPlex')).toBeTruthy());
+  (databaseApi.listEquipment as jest.Mock).mockClear();
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-1'), 'longPress'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-transfer-owner')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-employee')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByLabelText('Закрыть операцию')); });
+  await waitFor(() => expect(view.queryByTestId('native-transfer-employee')).toBeNull());
+  expect(databaseApi.submitEquipmentTransfer).not.toHaveBeenCalled();
+  expect(databaseApi.getEquipmentByInvNos).not.toHaveBeenCalled();
+  expect(databaseApi.listEquipment).not.toHaveBeenCalled();
+  expect(view.getByText('Выбрано: 1')).toBeTruthy();
+});
+
+it('reconciles scanned batch targets with one scoped read after Done', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.getEquipment as jest.Mock).mockImplementation((invNo: string) => Promise.resolve({ ...equipment, inv_no: invNo }));
+  const second = { ...equipment, inv_no: 'INV-2', model_name: 'Latitude', raw: { INV_NO: 'INV-2' } };
+  (databaseApi.listEquipment as jest.Mock).mockResolvedValue({ equipment: [equipment, second], total: 2, page: 1, pages: 1 });
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue({
+    ...transferResultWithAct,
+    success_count: 2,
+    acts: [{ act_id: 'act-9', old_employee: 'Иванов И.И.', new_employee: 'Петров П.П.', equipment_count: 2, file_name: 'act-9.pdf', file_type: 'pdf' as const }],
+  });
+  (databaseApi.getEquipmentByInvNos as jest.Mock).mockResolvedValue({
+    equipment: [{ ...equipment, employee_name: 'Петров П.П.' }, { ...second, employee_name: 'Петров П.П.' }],
+    not_found: [],
+  });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-database-scan-qr')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-qr')); });
+  await scanQr(view, 'INV_NO: INV-1');
+  await scanQr(view, 'https://hubit.zsgp.ru/database?inv_no=INV-2&db_id=ITINVENT');
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+  (databaseApi.listEquipment as jest.Mock).mockClear();
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-scan-batch-actions')); });
+  await waitFor(() => expect(view.getByTestId('native-database-scan-batch')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-batch-transfer-owner')); });
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-scan-batch-action-confirm')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-act-act-9')).toBeTruthy());
+  expect(view.getByTestId('native-transfer-email-send')).toBeTruthy();
+  expect(view.getByTestId('native-database-scan-batch')).toBeTruthy();
+  expect(databaseApi.getEquipmentByInvNos).not.toHaveBeenCalled();
+
+  await act(async () => { fireEvent.press(view.getByText('Готово')); });
+  await waitFor(() => expect(view.queryByTestId('native-database-scan-batch')).toBeNull());
+  await waitFor(() => expect(databaseApi.getEquipmentByInvNos).toHaveBeenCalledTimes(1));
+  expect(databaseApi.getEquipmentByInvNos).toHaveBeenCalledWith(expect.arrayContaining(['INV-1', 'INV-2']), 'ITINVENT');
+  expect((databaseApi.getEquipmentByInvNos as jest.Mock).mock.calls[0][0]).toHaveLength(2);
+  expect(databaseApi.listEquipment).not.toHaveBeenCalled();
+  await waitFor(() => expect(view.getAllByText(/Петров П\.П\./)).toHaveLength(2));
+});
+
+it('skips the point refresh and keeps failed items after a zero-success transfer', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue({
+    success_count: 0,
+    failed_count: 1,
+    failed: [{ inv_no: 'INV-1', error: 'Ошибка сервера' }],
+    retry_inv_nos: ['INV-1'],
+    acts: [],
+    job_status: 'done',
+  });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-1')).toBeTruthy());
+  (databaseApi.listEquipment as jest.Mock).mockClear();
+
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-1'), 'longPress'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-transfer-owner')); });
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-action-confirm')); });
+  await waitFor(() => expect(view.getByText('Перемещено: 0, ошибок: 1')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByText('Готово')); });
+  await waitFor(() => expect(view.queryByTestId('native-transfer-employee')).toBeNull());
+  expect(databaseApi.getEquipmentByInvNos).not.toHaveBeenCalled();
+  expect(databaseApi.listEquipment).not.toHaveBeenCalled();
+  expect(view.getByText('Выбрано: 1')).toBeTruthy();
+});
+
+it('marks only cached acts dirty after an act-only result without any list reads', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockImplementation(
+    async (_scope: string, _userId: number, key: string) => (
+      key === 'ITINVENT:INV-1'
+        ? {
+            savedAt: 1,
+            data: {
+              databaseId: 'ITINVENT',
+              equipment,
+              acts: [{ doc_no: 7, doc_number: 'A-7' }],
+              history: [],
+              workHistory: [],
+              unavailableWorkKinds: [],
+              loadedTabs: ['acts'],
+            },
+          }
+        : null
+    ),
+  );
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-1')).toBeTruthy());
+  (databaseApi.listEquipment as jest.Mock).mockClear();
+
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-1'), 'longPress'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-transfer-act-only')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-issuer')).toBeTruthy());
+  await fillEmployeeManually(view, 'Сидоров С.С.', 'native-transfer-issuer');
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-action-confirm')); });
+  await waitFor(() => expect(view.getByText('Подготовлено позиций: 1, ошибок: 0')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByText('Готово')); });
+  await waitFor(() => expect(view.queryByTestId('native-transfer-issuer')).toBeNull());
+  await waitFor(() => expect(snapshotCache.writeNativeEntitySnapshot).toHaveBeenCalledWith(
+    'database-item-details',
+    17,
+    'ITINVENT:INV-1',
+    expect.objectContaining({
+      invalidatedTabs: ['acts'],
+      acts: [{ doc_no: 7, doc_number: 'A-7' }],
+      loadedTabs: ['acts'],
+    }),
+  ));
+  expect(databaseApi.getEquipmentByInvNos).not.toHaveBeenCalled();
+  expect(databaseApi.listEquipment).not.toHaveBeenCalled();
+  expect(databaseApi.searchEquipment).not.toHaveBeenCalled();
+});
+
+it('coalesces partial bulk retries into one batch read and reposts only failed targets', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  const second = { ...equipment, inv_no: 'INV-2', model_name: 'Latitude', raw: { INV_NO: 'INV-2' } };
+  (databaseApi.listEquipment as jest.Mock).mockResolvedValue({ equipment: [equipment, second], total: 2, page: 1, pages: 1 });
+  (databaseApi.submitEquipmentTransfer as jest.Mock)
+    .mockResolvedValueOnce({
+      success_count: 1,
+      failed_count: 1,
+      failed: [{ inv_no: 'INV-2', error: 'Ошибка сервера' }],
+      retry_inv_nos: ['INV-2'],
+      acts: [{ act_id: 'act-1', old_employee: 'Иванов И.И.', new_employee: 'Петров П.П.', equipment_count: 1, file_name: 'act-1.pdf', file_type: 'pdf' as const }],
+      job_status: 'done',
+    })
+    .mockResolvedValue({ ...transferResultWithAct });
+  (databaseApi.getEquipmentByInvNos as jest.Mock).mockResolvedValue({
+    equipment: [{ ...equipment, employee_name: 'Петров П.П.' }, { ...second, employee_name: 'Петров П.П.' }],
+    not_found: [],
+  });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-2')).toBeTruthy());
+  (databaseApi.listEquipment as jest.Mock).mockClear();
+
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-1'), 'longPress'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-INV-2')); });
+  await waitFor(() => expect(view.getByText('Выбрано: 2')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-transfer-owner')); });
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-action-confirm')); });
+  await waitFor(() => expect(view.getByText('Перемещено: 1, ошибок: 1')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-transfer-retry-failed')); });
+  await waitFor(() => expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy());
+  expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(2);
+  expect((databaseApi.submitEquipmentTransfer as jest.Mock).mock.calls[1][1].inv_nos).toEqual(['INV-2']);
+
+  await act(async () => { fireEvent.press(view.getByText('Готово')); });
+  await waitFor(() => expect(databaseApi.getEquipmentByInvNos).toHaveBeenCalledTimes(1));
+  expect(databaseApi.getEquipmentByInvNos).toHaveBeenCalledWith(expect.arrayContaining(['INV-1', 'INV-2']), 'ITINVENT');
+  expect(databaseApi.listEquipment).not.toHaveBeenCalled();
+  await waitFor(() => expect(view.getAllByText(/Петров П\.П\./)).toHaveLength(2));
+});
+
+it('re-reads the loaded filtered window from the server after a transfer', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ q: 'Иванов' });
+  const ivanov5 = { ...equipment, inv_no: 'INV-5', model_name: 'Latitude', raw: { INV_NO: 'INV-5' } };
+  const ivanov6 = { ...equipment, inv_no: 'INV-6', model_name: 'ThinkPad', raw: { INV_NO: 'INV-6' } };
+  const ivanov7 = { ...equipment, inv_no: 'INV-7', model_name: 'ProBook', raw: { INV_NO: 'INV-7' } };
+  (databaseApi.searchEquipment as jest.Mock)
+    .mockResolvedValueOnce({ equipment: [equipment, ivanov5], total: 4, page: 1, pages: 3 })
+    .mockResolvedValueOnce({ equipment: [ivanov6], total: 4, page: 2, pages: 3 })
+    .mockResolvedValueOnce({ equipment: [equipment, ivanov7], total: 3, page: 1, pages: 3 })
+    .mockResolvedValueOnce({ equipment: [ivanov6], total: 3, page: 2, pages: 3 })
+    .mockResolvedValue({ equipment: [], total: 3, page: 3, pages: 3 });
+  (databaseApi.getEquipmentByInvNos as jest.Mock).mockResolvedValue({
+    equipment: [{ ...ivanov5, employee_name: 'Петров П.П.' }],
+    not_found: [],
+  });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-5')).toBeTruthy());
+  await act(async () => { view.getByTestId('native-database-results').props.onEndReached(); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-6')).toBeTruthy());
+
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-5'), 'longPress'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-transfer-owner')); });
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-action-confirm')); });
+  await waitFor(() => expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByText('Готово')); });
+
+  await waitFor(() => expect(databaseApi.searchEquipment).toHaveBeenCalledTimes(4));
+  expect(databaseApi.searchEquipment).toHaveBeenNthCalledWith(3, 'Иванов', 1, 50, 'ITINVENT');
+  expect(databaseApi.searchEquipment).toHaveBeenNthCalledWith(4, 'Иванов', 2, 50, 'ITINVENT');
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-7')).toBeTruthy());
+  expect(view.queryByTestId('native-equipment-INV-5')).toBeNull();
+  expect(view.getByTestId('native-equipment-INV-6')).toBeTruthy();
+  expect(view.getByText('Найдено: 3')).toBeTruthy();
+
+  await act(async () => { view.getByTestId('native-database-results').props.onEndReached(); });
+  await waitFor(() => expect(databaseApi.searchEquipment).toHaveBeenCalledTimes(5));
+  expect(databaseApi.searchEquipment).toHaveBeenNthCalledWith(5, 'Иванов', 3, 50, 'ITINVENT');
+});
+
+it('reconciles a wildcard query through server reads, not local filtering', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ q: 'Ив%' });
+  const moved = { ...equipment, inv_no: 'INV-5', employee_name: 'Сидоров С.С.', raw: { INV_NO: 'INV-5' } };
+  (databaseApi.searchEquipment as jest.Mock)
+    .mockResolvedValueOnce({ equipment: [equipment, moved], total: 2, page: 1, pages: 1 })
+    .mockResolvedValueOnce({ equipment: [equipment], total: 1, page: 1, pages: 1 });
+  (databaseApi.getEquipmentByInvNos as jest.Mock).mockResolvedValue({
+    equipment: [{ ...moved, employee_name: 'Петров П.П.' }],
+    not_found: [],
+  });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-5')).toBeTruthy());
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-5'), 'longPress'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-transfer-owner')); });
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-action-confirm')); });
+  await waitFor(() => expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByText('Готово')); });
+  await waitFor(() => expect(databaseApi.searchEquipment).toHaveBeenCalledTimes(2));
+  expect(databaseApi.searchEquipment).toHaveBeenNthCalledWith(2, 'Ив%', 1, 50, 'ITINVENT');
+  await waitFor(() => expect(view.queryByTestId('native-equipment-INV-5')).toBeNull());
+});
+
+it('drops a deferred reconcile when the query changed while the batch read was pending', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  let releaseBatch: (value: { equipment: typeof equipment[]; not_found: string[] }) => void = () => undefined;
+  (databaseApi.getEquipmentByInvNos as jest.Mock).mockImplementation(
+    () => new Promise((done) => { releaseBatch = done; }),
+  );
+  let releaseSearch: (value: { equipment: typeof equipment[]; total: number; page: number; pages: number }) => void = () => undefined;
+  const kozlov = { ...equipment, inv_no: 'INV-9', model_name: 'ProBook', employee_name: 'Козлов К.К.', raw: { INV_NO: 'INV-9' } };
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-1')).toBeTruthy());
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-1'), 'longPress'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-transfer-owner')); });
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-action-confirm')); });
+  await waitFor(() => expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByText('Готово')); });
+  await waitFor(() => expect(databaseApi.getEquipmentByInvNos).toHaveBeenCalledTimes(1));
+
+  (databaseApi.searchEquipment as jest.Mock).mockImplementation(
+    () => new Promise((done) => { releaseSearch = done; }),
+  );
+  await act(async () => { fireEvent.changeText(view.getByTestId('native-database-search'), 'Козл'); });
+  await waitFor(() => expect(databaseApi.searchEquipment).toHaveBeenCalledWith('Козл', 1, 50, 'ITINVENT'));
+
+  (snapshotCache.writeNativeCollectionSnapshot as jest.Mock).mockClear();
+  await act(async () => { releaseBatch({ equipment: [{ ...equipment, employee_name: 'Петров П.П.' }], not_found: [] }); });
+  await act(async () => undefined);
+  expect(view.queryByText(/Петров П\.П\./)).toBeNull();
+  expect(snapshotCache.writeNativeCollectionSnapshot).not.toHaveBeenCalled();
+  expect(snapshotCache.writeNativeEntitySnapshot).toHaveBeenCalledWith(
+    'database-item-details',
+    17,
+    'ITINVENT:INV-1',
+    expect.objectContaining({ equipment: expect.objectContaining({ employee_name: 'Петров П.П.' }) }),
+  );
+  expect(view.queryByTestId('native-equipment-INV-9')).toBeNull();
+
+  await act(async () => { releaseSearch({ equipment: [kozlov], total: 1, page: 1, pages: 1 }); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-9')).toBeTruthy());
+  expect(view.queryByText(/Петров П\.П\./)).toBeNull();
+});
+
+it('keeps the newly selected database load alive while a stale batch resolves', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.listAvailableDatabases as jest.Mock).mockResolvedValue([
+    { id: 'ITINVENT', name: 'Основная' },
+    { id: 'MSK-ITINVENT', name: 'Москва' },
+  ]);
+  (databaseApi.switchDatabase as jest.Mock).mockResolvedValue({ id: 'MSK-ITINVENT', name: 'Москва', locked: false });
+  let releaseBatch: (value: { equipment: typeof equipment[]; not_found: string[] }) => void = () => undefined;
+  (databaseApi.getEquipmentByInvNos as jest.Mock).mockImplementation(
+    () => new Promise((done) => { releaseBatch = done; }),
+  );
+  const mskEquipment = { ...equipment, inv_no: 'INV-MSK', model_name: 'ThinkCentre', employee_name: 'Сидоров С.С.', raw: { INV_NO: 'INV-MSK' } };
+  let releaseList: (value: { equipment: typeof equipment[]; total: number; page: number; pages: number }) => void = () => undefined;
+  (databaseApi.listEquipment as jest.Mock).mockImplementation((page: number, _limit: number, databaseId?: string) => (
+    databaseId === 'MSK-ITINVENT'
+      ? new Promise((done) => { releaseList = done; })
+      : Promise.resolve({ equipment: [equipment], total: 1, page: 1, pages: 1 })
+  ));
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-1')).toBeTruthy());
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-1'), 'longPress'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-transfer-owner')); });
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-action-confirm')); });
+  await waitFor(() => expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByText('Готово')); });
+  await waitFor(() => expect(databaseApi.getEquipmentByInvNos).toHaveBeenCalledTimes(1));
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-header-selector')); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-option-MSK-ITINVENT')); });
+  await waitFor(() => expect(databaseApi.switchDatabase).toHaveBeenCalledWith('MSK-ITINVENT'));
+  await waitFor(() => expect(databaseApi.listEquipment).toHaveBeenCalledWith(1, 50, 'MSK-ITINVENT'));
+
+  await act(async () => { releaseBatch({ equipment: [{ ...equipment, employee_name: 'Петров П.П.' }], not_found: [] }); });
+  await act(async () => undefined);
+  expect(view.queryByText(/Петров П\.П\./)).toBeNull();
+
+  await act(async () => { releaseList({ equipment: [mskEquipment], total: 1, page: 1, pages: 1 }); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-MSK')).toBeTruthy());
+  expect(view.queryByTestId('native-equipment-INV-1')).toBeNull();
+});
+
+it('stops the filtered window reread when the query changes mid-window', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ q: 'Иванов' });
+  const ivanov5 = { ...equipment, inv_no: 'INV-5', model_name: 'ThinkPad', raw: { INV_NO: 'INV-5' } };
+  const ivanov6 = { ...equipment, inv_no: 'INV-6', model_name: 'EliteBook', raw: { INV_NO: 'INV-6' } };
+  const ivanov7 = { ...equipment, inv_no: 'INV-7', model_name: 'ProBook', raw: { INV_NO: 'INV-7' } };
+  const petrov = { ...equipment, inv_no: 'INV-9', model_name: 'ProDesk', employee_name: 'Петров П.П.', raw: { INV_NO: 'INV-9' } };
+  let releaseWindowPage: (value: { equipment: typeof equipment[]; total: number; page: number; pages: number }) => void = () => undefined;
+  let ivanovSearchCalls = 0;
+  (databaseApi.searchEquipment as jest.Mock).mockImplementation((query: string, page: number) => {
+    if (query === 'Иванов') {
+      ivanovSearchCalls += 1;
+      if (page === 1) return Promise.resolve({ equipment: [equipment, ivanov5], total: 5, page: 1, pages: 3 });
+      if (page === 2) {
+        return ivanovSearchCalls >= 5
+          ? new Promise((done) => { releaseWindowPage = done; })
+          : Promise.resolve({ equipment: [ivanov6], total: 5, page: 2, pages: 3 });
+      }
+      return Promise.resolve({ equipment: [ivanov7], total: 5, page: 3, pages: 3 });
+    }
+    return Promise.resolve({ equipment: [petrov], total: 1, page: 1, pages: 1 });
+  });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-5')).toBeTruthy());
+  await act(async () => { view.getByTestId('native-database-results').props.onEndReached(); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-6')).toBeTruthy());
+  await act(async () => { view.getByTestId('native-database-results').props.onEndReached(); });
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-7')).toBeTruthy());
+
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-5'), 'longPress'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-transfer-owner')); });
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-action-confirm')); });
+  await waitFor(() => expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByText('Готово')); });
+  await waitFor(() => expect(
+    (databaseApi.searchEquipment as jest.Mock).mock.calls.filter(
+      (call) => call[0] === 'Иванов' && call[1] === 2,
+    ).length,
+  ).toBe(2));
+
+  await act(async () => { fireEvent.changeText(view.getByTestId('native-database-search'), 'Петр'); });
+  await waitFor(() => expect(databaseApi.searchEquipment).toHaveBeenCalledWith('Петр', 1, 50, 'ITINVENT'));
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-9')).toBeTruthy());
+
+  await act(async () => { releaseWindowPage({ equipment: [ivanov6], total: 5, page: 2, pages: 3 }); });
+  await act(async () => undefined);
+  expect(ivanovSearchCalls).toBe(5);
+  expect((databaseApi.searchEquipment as jest.Mock).mock.calls.filter(
+    (call) => call[0] === 'Иванов' && call[1] === 3,
+  ).length).toBe(1);
+  expect(view.getByTestId('native-equipment-INV-9')).toBeTruthy();
+  expect(view.queryByTestId('native-equipment-INV-5')).toBeNull();
+});
+
+it('does not reread the filtered window when the batch read fails', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ q: 'Иванов' });
+  (databaseApi.getEquipmentByInvNos as jest.Mock).mockRejectedValue(new Error('network'));
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-1')).toBeTruthy());
+
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-1'), 'longPress'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-transfer-owner')); });
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-action-confirm')); });
+  await waitFor(() => expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByText('Готово')); });
+  await waitFor(() => expect(view.getByText('Перемещение завершено, но не удалось обновить карточки. Обновите список.')).toBeTruthy());
+  expect(databaseApi.getEquipmentByInvNos).toHaveBeenCalledTimes(1);
+  expect(databaseApi.searchEquipment).toHaveBeenCalledTimes(1);
+  expect(view.getByText(/Иванов И\.И\./)).toBeTruthy();
+});
+
+it('ignores not_found entries outside the requested scope', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  const other = { ...equipment, inv_no: 'INV-2', model_name: 'ThinkPad', raw: { INV_NO: 'INV-2' } };
+  (databaseApi.listEquipment as jest.Mock).mockResolvedValue({ equipment: [equipment, other], total: 2, page: 1, pages: 1 });
+  (databaseApi.getEquipmentByInvNos as jest.Mock).mockResolvedValue({
+    equipment: [{ ...equipment, employee_name: 'Петров П.П.' }],
+    not_found: ['INV-2', 'INV-999'],
+  });
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-2')).toBeTruthy());
+
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-1'), 'longPress'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-transfer-owner')); });
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-action-confirm')); });
+  await waitFor(() => expect(view.getByText('Перемещено: 1, ошибок: 0')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByText('Готово')); });
+  await waitFor(() => expect(view.getByText(/Петров П\.П\./)).toBeTruthy());
+  expect(view.getByTestId('native-equipment-INV-2')).toBeTruthy();
+});
+
+it('keeps the list and shows a notice when the batch read fails after Done', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(transferResultWithAct);
+  (databaseApi.getEquipmentByInvNos as jest.Mock).mockRejectedValue(new Error('network'));
+  const view = await render(<NativeDatabaseScreen />);
+  await waitFor(() => expect(view.getByTestId('native-equipment-INV-1')).toBeTruthy());
+  (databaseApi.listEquipment as jest.Mock).mockClear();
+
+  await act(async () => { fireEvent(view.getByTestId('native-equipment-INV-1'), 'longPress'); });
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-transfer-owner')); });
+  await fillEmployeeManually(view, 'Петров П.П.', 'native-transfer-employee', 'ИТ');
+  await act(async () => { fireEvent.press(view.getByTestId('native-database-bulk-action-confirm')); });
+  await waitFor(() => expect(view.getByTestId('native-transfer-act-act-1')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByText('Готово')); });
+  await waitFor(() => expect(view.getByText('Перемещение завершено, но не удалось обновить карточки. Обновите список.')).toBeTruthy());
+  expect(databaseApi.getEquipmentByInvNos).toHaveBeenCalledTimes(1);
+  expect(databaseApi.submitEquipmentTransfer).toHaveBeenCalledTimes(1);
+  expect(databaseApi.listEquipment).not.toHaveBeenCalled();
+  expect(databaseApi.searchEquipment).not.toHaveBeenCalled();
+  expect(view.getByText(/Иванов И\.И\./)).toBeTruthy();
+});
+
+it('merges fresh rows into the cached detail without dropping loaded tabs or works', async () => {
+  const stored = {
+    databaseId: 'ITINVENT',
+    equipment: { ...equipment, date_create: '2024-01-02', changed_by: 'admin', hub_db_id: 'hub-7', hub_db_name: 'Hub' },
+    acts: [{ doc_no: 7, doc_number: 'A-7' }],
+    history: [{ CH_COMMENT: 'Передача' }],
+    workHistory: [{ kind: 'cleaning', count: 2 }],
+    unavailableWorkKinds: ['component'],
+    loadedTabs: ['acts', 'history', 'works'],
+    invalidatedTabs: ['history'],
+  };
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue({ savedAt: 1, data: stored });
+  await updateNativeEquipmentDetailSnapshot(17, 'ITINVENT', 'INV-1', {
+    equipment: { ...equipment, employee_name: 'Петров П.П.' },
+    invalidatedTabs: ['acts'],
+  });
+  expect(snapshotCache.writeNativeEntitySnapshot).toHaveBeenCalledWith(
+    'database-item-details',
+    17,
+    'ITINVENT:INV-1',
+    expect.objectContaining({
+      acts: [{ doc_no: 7, doc_number: 'A-7' }],
+      history: [{ CH_COMMENT: 'Передача' }],
+      workHistory: [{ kind: 'cleaning', count: 2 }],
+      unavailableWorkKinds: ['component'],
+      loadedTabs: ['acts', 'history', 'works'],
+      invalidatedTabs: expect.arrayContaining(['acts', 'history']),
+      equipment: expect.objectContaining({
+        employee_name: 'Петров П.П.',
+        date_create: '2024-01-02',
+        changed_by: 'admin',
+        hub_db_id: 'hub-7',
+        hub_db_name: 'Hub',
+      }),
+    }),
+  );
+});
+
+it('creates a minimal detail snapshot for a fresh row and no-ops without one', async () => {
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue(null);
+  await updateNativeEquipmentDetailSnapshot(17, 'ITINVENT', 'INV-8', {
+    equipment: { ...equipment, inv_no: 'INV-8' },
+    invalidatedTabs: ['acts'],
+  });
+  expect(snapshotCache.writeNativeEntitySnapshot).toHaveBeenCalledWith(
+    'database-item-details',
+    17,
+    'ITINVENT:INV-8',
+    expect.objectContaining({
+      equipment: expect.objectContaining({ inv_no: 'INV-8' }),
+      acts: [],
+      history: [],
+      workHistory: [],
+      loadedTabs: [],
+      invalidatedTabs: ['acts'],
+    }),
+  );
+  (snapshotCache.writeNativeEntitySnapshot as jest.Mock).mockClear();
+  await updateNativeEquipmentDetailSnapshot(17, 'ITINVENT', 'INV-9', { invalidatedTabs: ['acts'] });
+  expect(snapshotCache.writeNativeEntitySnapshot).not.toHaveBeenCalled();
+});
+
+it('shows a saved dirty acts tab offline without a request and reloads it online', async () => {
+  mockOfflineMode = true;
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  (snapshotCache.readNativeSnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      databases: [{ id: 'ITINVENT', name: 'Основная' }],
+      currentDatabase: { id: 'ITINVENT', name: 'Основная', locked: false },
+    },
+  });
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockImplementation(
+    async (_scope: string, _userId: number, key: string) => (
+      key === 'ITINVENT:INV-1'
+        ? {
+            savedAt: 1,
+            data: {
+              databaseId: 'ITINVENT',
+              equipment,
+              acts: [{ doc_no: 7, doc_number: 'A-7', has_file: false, items: [], type_name: 'Передача', branch_name: '', location_name: '', employee_name: '', raw: {} }],
+              history: [],
+              workHistory: [],
+              unavailableWorkKinds: [],
+              loadedTabs: ['acts'],
+              invalidatedTabs: ['acts'],
+            },
+          }
+        : null
+    ),
+  );
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('Инв. № INV-1')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-tab-acts')); });
+  await waitFor(() => expect(view.getByText('Акт A-7')).toBeTruthy());
+  expect(view.getByText(/обновится при появлении сети|обновится при подключении|требует обновления/i)).toBeTruthy();
+  expect(databaseApi.getEquipmentActs).not.toHaveBeenCalled();
+  expect(databaseApi.getEquipment).not.toHaveBeenCalled();
+});
+
+it('reloads only the dirty tab online and persists the cleared flag', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  let stored: { savedAt: number; data: unknown } | null = {
+    savedAt: 1,
+    data: {
+      databaseId: 'ITINVENT',
+      equipment,
+      acts: [{ doc_no: 7, doc_number: 'A-7', has_file: false, items: [], type_name: 'Передача', branch_name: '', location_name: '', employee_name: '', raw: {} }],
+      history: [],
+      workHistory: [],
+      unavailableWorkKinds: [],
+      loadedTabs: ['acts', 'history'],
+      invalidatedTabs: ['acts', 'history'],
+    },
+  };
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockImplementation(
+    async (_scope: string, _userId: number, key: string) => (key === 'ITINVENT:INV-1' ? stored : null),
+  );
+  (snapshotCache.writeNativeEntitySnapshot as jest.Mock).mockImplementation(
+    async (_scope: string, _userId: number, key: string, data: unknown) => {
+      if (key === 'ITINVENT:INV-1') stored = { savedAt: (stored?.savedAt || 0) + 1, data };
+      return true;
+    },
+  );
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('Инв. № INV-1')).toBeTruthy());
+  (databaseApi.getEquipmentActs as jest.Mock).mockClear();
+  (snapshotCache.writeNativeEntitySnapshot as jest.Mock).mockClear();
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-tab-acts')); });
+  await waitFor(() => expect(databaseApi.getEquipmentActs).toHaveBeenCalledWith('INV-1', 'ITINVENT'));
+  expect(databaseApi.getEquipmentHistory).not.toHaveBeenCalled();
+  expect(databaseApi.getEquipmentWorkHistories).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(snapshotCache.writeNativeEntitySnapshot).toHaveBeenCalledWith(
+    'database-item-details',
+    17,
+    'ITINVENT:INV-1',
+    expect.objectContaining({ invalidatedTabs: ['history'] }),
+  ));
+});
+
+it('marks acts and history dirty after an owner transfer and reloads a visible dirty tab', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  let stored: { savedAt: number; data: unknown } | null = {
+    savedAt: 1,
+    data: {
+      databaseId: 'ITINVENT',
+      equipment,
+      acts: [],
+      history: [{ CH_COMMENT: 'Передача', CH_DATE: '2026-08-24T10:00:00+05:00' }],
+      workHistory: [],
+      unavailableWorkKinds: [],
+      loadedTabs: [],
+    },
+  };
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockImplementation(
+    async (_scope: string, _userId: number, key: string) => (key === 'ITINVENT:INV-1' ? stored : null),
+  );
+  (snapshotCache.writeNativeEntitySnapshot as jest.Mock).mockImplementation(
+    async (_scope: string, _userId: number, key: string, data: unknown) => {
+      if (key === 'ITINVENT:INV-1') stored = { savedAt: (stored?.savedAt || 0) + 1, data };
+      return true;
+    },
+  );
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(transferResultWithAct);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('Инв. № INV-1')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-tab-history')); });
+  await waitFor(() => expect(databaseApi.getEquipmentHistory).toHaveBeenCalledTimes(1));
+
+  await runOwnerTransferToResult(view);
+  await waitFor(() => expect(snapshotCache.writeNativeEntitySnapshot).toHaveBeenCalledWith(
+    'database-item-details',
+    17,
+    'ITINVENT:INV-1',
+    expect.objectContaining({ invalidatedTabs: expect.arrayContaining(['acts', 'history']) }),
+  ));
+  await waitFor(() => expect(databaseApi.getEquipmentHistory).toHaveBeenCalledTimes(2));
+  expect(databaseApi.getEquipmentWorkHistories).toHaveBeenCalledTimes(1);
+});
+
+it('skips the detail snapshot write when the caller staleness guard expires during the read', async () => {
+  let releaseRead: (value: unknown) => void = () => undefined;
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockImplementation(
+    () => new Promise((done) => { releaseRead = done; }),
+  );
+  let current = true;
+  const pending = updateNativeEquipmentDetailSnapshot(17, 'ITINVENT', 'INV-1', {
+    equipment: { ...equipment, employee_name: 'Петров П.П.' },
+    invalidatedTabs: ['history'],
+    isCurrent: () => current,
+  });
+  current = false;
+  releaseRead({
+    savedAt: 1,
+    data: { databaseId: 'ITINVENT', equipment, acts: [], history: [], workHistory: [], unavailableWorkKinds: [], loadedTabs: [] },
+  });
+  await pending;
+  expect(snapshotCache.writeNativeEntitySnapshot).not.toHaveBeenCalled();
+});
+
+it('does not touch the detail snapshot when the caller staleness guard is already stale', async () => {
+  await updateNativeEquipmentDetailSnapshot(17, 'ITINVENT', 'INV-1', {
+    equipment: { ...equipment, employee_name: 'Петров П.П.' },
+    isCurrent: () => false,
+  });
+  expect(snapshotCache.readNativeEntitySnapshot).not.toHaveBeenCalled();
+  expect(snapshotCache.writeNativeEntitySnapshot).not.toHaveBeenCalled();
+});
+
+it('drops arrays from a foreign detail snapshot and rejects a mismatched fresh row', async () => {
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockResolvedValue({
+    savedAt: 1,
+    data: {
+      databaseId: 'ITINVENT',
+      equipment: { ...equipment, inv_no: 'INV-77' },
+      acts: [{ doc_no: 9, doc_number: 'A-9' }],
+      history: [{ CH_COMMENT: 'Посторонняя запись' }],
+      workHistory: [{ kind: 'cleaning', count: 5 }],
+      unavailableWorkKinds: ['component'],
+      loadedTabs: ['acts', 'history', 'works'],
+      invalidatedTabs: ['history'],
+    },
+  });
+  await updateNativeEquipmentDetailSnapshot(17, 'ITINVENT', 'INV-1', {
+    equipment: { ...equipment, employee_name: 'Петров П.П.' },
+    invalidatedTabs: ['acts'],
+  });
+  expect(snapshotCache.writeNativeEntitySnapshot).toHaveBeenCalledWith(
+    'database-item-details',
+    17,
+    'ITINVENT:INV-1',
+    expect.objectContaining({
+      equipment: expect.objectContaining({ inv_no: 'INV-1', employee_name: 'Петров П.П.' }),
+      acts: [],
+      history: [],
+      workHistory: [],
+      loadedTabs: [],
+      invalidatedTabs: ['acts'],
+    }),
+  );
+  (snapshotCache.writeNativeEntitySnapshot as jest.Mock).mockClear();
+  await updateNativeEquipmentDetailSnapshot(17, 'ITINVENT', 'INV-1', {
+    equipment: { ...equipment, inv_no: 'INV-2' },
+  });
+  expect(snapshotCache.writeNativeEntitySnapshot).not.toHaveBeenCalled();
+});
+
+it('waits for equipment before loading a directly opened works tab', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT', tab: 'works' });
+  let releaseEquipment: (value: typeof equipment) => void = () => undefined;
+  (databaseApi.getEquipment as jest.Mock).mockImplementation(
+    () => new Promise((done) => { releaseEquipment = done; }),
+  );
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await act(async () => undefined);
+  expect(databaseApi.getEquipmentWorkHistories).not.toHaveBeenCalled();
+
+  await act(async () => { releaseEquipment(equipment); });
+  await waitFor(() => expect(databaseApi.getEquipmentWorkHistories).toHaveBeenCalledTimes(1));
+  expect(databaseApi.getEquipmentWorkHistories).toHaveBeenCalledWith(equipment, expect.any(Array));
+});
+
+it('waits for the resolved database before loading an initially selected acts tab', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', tab: 'acts' });
+  let releaseDatabase: (value: { id: string; name: string; locked: boolean }) => void = () => undefined;
+  (databaseApi.getCurrentDatabase as jest.Mock).mockImplementation(
+    () => new Promise((done) => { releaseDatabase = done; }),
+  );
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await act(async () => undefined);
+  expect(databaseApi.getEquipmentActs).not.toHaveBeenCalled();
+
+  await act(async () => { releaseDatabase({ id: 'ITINVENT', name: 'Основная', locked: false }); });
+  await waitFor(() => expect(databaseApi.getEquipmentActs).toHaveBeenCalledTimes(1));
+  expect(databaseApi.getEquipmentActs).toHaveBeenCalledWith('INV-1', 'ITINVENT');
+});
+
+it('reloads a visible dirty acts tab once when connectivity returns', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  mockOfflineMode = true;
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT', tab: 'acts' });
+  let stored: { savedAt: number; data: Record<string, unknown> } | null = {
+    savedAt: 1,
+    data: {
+      databaseId: 'ITINVENT',
+      equipment,
+      acts: [{ doc_no: 7, doc_number: 'A-7', has_file: false, items: [], type_name: 'Передача', branch_name: '', location_name: '', employee_name: '', raw: {} }],
+      history: [],
+      workHistory: [],
+      unavailableWorkKinds: [],
+      loadedTabs: ['acts'],
+      invalidatedTabs: ['acts'],
+    },
+  };
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockImplementation(
+    async (_scope: string, _userId: number, key: string) => (key === 'ITINVENT:INV-1' ? stored : null),
+  );
+  (snapshotCache.writeNativeEntitySnapshot as jest.Mock).mockImplementation(
+    async (_scope: string, _userId: number, key: string, data: unknown) => {
+      if (key === 'ITINVENT:INV-1') stored = { savedAt: (stored?.savedAt || 0) + 1, data: data as Record<string, unknown> };
+      return true;
+    },
+  );
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('Акт A-7')).toBeTruthy());
+  expect(databaseApi.getEquipmentActs).not.toHaveBeenCalled();
+
+  mockOfflineMode = false;
+  await act(async () => { view.rerender(<NativeEquipmentDetailScreen />); });
+  await waitFor(() => expect(databaseApi.getEquipmentActs).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect((stored?.data.invalidatedTabs as string[] | undefined) || []).toEqual([]));
+  expect(databaseApi.getEquipmentActs).toHaveBeenCalledTimes(1);
+});
+
+it('does not resurrect a cleared acts flag when a slower works read finishes later', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT', tab: 'acts' });
+  let stored: { savedAt: number; data: Record<string, unknown> } | null = {
+    savedAt: 1,
+    data: {
+      databaseId: 'ITINVENT',
+      equipment,
+      acts: [{ doc_no: 7, doc_number: 'A-7', has_file: false, items: [], type_name: 'Передача', branch_name: '', location_name: '', employee_name: '', raw: {} }],
+      history: [],
+      workHistory: [],
+      unavailableWorkKinds: [],
+      loadedTabs: ['acts', 'history'],
+      invalidatedTabs: ['acts', 'history'],
+    },
+  };
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockImplementation(
+    async (_scope: string, _userId: number, key: string) => (key === 'ITINVENT:INV-1' ? stored : null),
+  );
+  (snapshotCache.writeNativeEntitySnapshot as jest.Mock).mockImplementation(
+    async (_scope: string, _userId: number, key: string, data: unknown) => {
+      if (key === 'ITINVENT:INV-1') stored = { savedAt: (stored?.savedAt || 0) + 1, data: data as Record<string, unknown> };
+      return true;
+    },
+  );
+  let releaseWorks: (value: unknown) => void = () => undefined;
+  (databaseApi.getEquipmentWorkHistories as jest.Mock).mockImplementation(
+    () => new Promise((done) => { releaseWorks = done; }),
+  );
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(databaseApi.getEquipmentWorkHistories).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect((stored?.data.invalidatedTabs as string[] | undefined) || []).toEqual(['history']));
+  expect(databaseApi.getEquipmentActs).toHaveBeenCalledTimes(1);
+
+  await act(async () => {
+    releaseWorks({ histories: [{ kind: 'cleaning', count: 2, last_date: '2026-08-20', time_ago_str: '4 дн. назад' }], unavailable: [], failed: [] });
+  });
+  await act(async () => undefined);
+  expect((stored?.data.invalidatedTabs as string[] | undefined) || []).toEqual(['history']);
+  expect(databaseApi.getEquipmentActs).toHaveBeenCalledTimes(1);
+});
+
+it('reloads the acts tab invalidated by a transfer done on the general tab', async () => {
+  mockPermissions = ['database.read', 'database.write'];
+  params.mockReturnValue({ invNo: 'INV-1', databaseId: 'ITINVENT' });
+  let stored: { savedAt: number; data: Record<string, unknown> } | null = {
+    savedAt: 1,
+    data: {
+      databaseId: 'ITINVENT',
+      equipment,
+      acts: [],
+      history: [],
+      workHistory: [],
+      unavailableWorkKinds: [],
+      loadedTabs: [],
+    },
+  };
+  (snapshotCache.readNativeEntitySnapshot as jest.Mock).mockImplementation(
+    async (_scope: string, _userId: number, key: string) => (key === 'ITINVENT:INV-1' ? stored : null),
+  );
+  (snapshotCache.writeNativeEntitySnapshot as jest.Mock).mockImplementation(
+    async (_scope: string, _userId: number, key: string, data: unknown) => {
+      if (key === 'ITINVENT:INV-1') stored = { savedAt: (stored?.savedAt || 0) + 1, data: data as Record<string, unknown> };
+      return true;
+    },
+  );
+  (databaseApi.submitEquipmentTransfer as jest.Mock).mockResolvedValue(transferResultWithAct);
+  const view = await render(<NativeEquipmentDetailScreen />);
+  await waitFor(() => expect(view.getByText('Инв. № INV-1')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-tab-acts')); });
+  await waitFor(() => expect(databaseApi.getEquipmentActs).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(view.getByText('Акт A-7')).toBeTruthy());
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-tab-general')); });
+
+  await runOwnerTransferToResult(view);
+  await waitFor(() => expect(((stored?.data.invalidatedTabs as string[] | undefined) || [])).toEqual(['acts', 'history']));
+  await act(async () => { fireEvent.press(view.getByText('Закрыть')); });
+
+  await act(async () => { fireEvent.press(view.getByTestId('native-equipment-tab-acts')); });
+  await waitFor(() => expect(databaseApi.getEquipmentActs).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(((stored?.data.invalidatedTabs as string[] | undefined) || [])).toEqual(['history']));
+  expect(databaseApi.getEquipmentWorkHistories).toHaveBeenCalledTimes(1);
 });

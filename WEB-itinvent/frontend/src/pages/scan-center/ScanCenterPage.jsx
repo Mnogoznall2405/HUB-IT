@@ -627,6 +627,11 @@ function ScanCenterPage() {
   const hostNewCountRequestIdRef = useRef(0);
   const hostScanRunsRequestIdRef = useRef(0);
   const refreshAllInFlightRef = useRef(false);
+  const refreshAllPromiseRef = useRef(null);
+  const refreshAllManualRef = useRef(false);
+  const dashboardRequestIdRef = useRef(0);
+  const branchOptionsRequestIdRef = useRef(0);
+  const hostOverviewRequestIdRef = useRef(0);
   const hostOverviewFilesCacheRef = useRef(new Map());
   const hostOverviewPrefetchHostRef = useRef('');
   const hostOverviewFiltersKeyRef = useRef('');
@@ -795,14 +800,18 @@ function ScanCenterPage() {
   }, [hostIncidents, incidentInbox.items]);
 
   const loadDashboard = async ({ silent = false } = {}) => {
+    const requestId = dashboardRequestIdRef.current + 1;
+    dashboardRequestIdRef.current = requestId;
     if (!silent) setDashboardLoading(true);
     try {
       const data = await scanAPI.getDashboard();
+      if (requestId !== dashboardRequestIdRef.current) return;
       setDashboard(data && typeof data === 'object' ? data : { totals: {}, daily: [], by_severity: [], by_branch: [], new_hosts: [] });
     } catch (error) {
       console.error('Scan dashboard load failed', error);
     } finally {
-      if (!silent) setDashboardLoading(false);
+      // The newest request always owns the spinner, even when it was a silent one that superseded a visible load.
+      if (requestId === dashboardRequestIdRef.current) setDashboardLoading(false);
     }
   };
 
@@ -839,20 +848,26 @@ function ScanCenterPage() {
       && cached.items.length >= 0
       && (now - Number(cached.at || 0)) < BRANCHES_CACHE_TTL_MS
     ) {
+      branchOptionsRequestIdRef.current += 1;
       setBranchOptions(cached.items);
+      setBranchOptionsLoading(false);
       return;
     }
+    const requestId = branchOptionsRequestIdRef.current + 1;
+    branchOptionsRequestIdRef.current = requestId;
     setBranchOptionsLoading(true);
     try {
       const data = await scanAPI.getBranches();
+      if (requestId !== branchOptionsRequestIdRef.current) return;
       const items = Array.isArray(data) ? data.filter((item) => String(item || '').trim()) : [];
       branchesCacheRef.current = { at: Date.now(), items };
       setBranchOptions(items);
     } catch (error) {
+      if (requestId !== branchOptionsRequestIdRef.current) return;
       console.error('Scan branches load failed', error);
       setBranchOptions([]);
     } finally {
-      setBranchOptionsLoading(false);
+      if (requestId === branchOptionsRequestIdRef.current) setBranchOptionsLoading(false);
     }
   };
 
@@ -1154,8 +1169,23 @@ function ScanCenterPage() {
   };
 
   const refreshAll = async ({ silent = true } = {}) => {
-    if (refreshAllInFlightRef.current) return;
+    if (refreshAllInFlightRef.current) {
+      // A background tick yields to the running cycle; a manual refresh must not be dropped silently:
+      // wait for the running cycle and then run its own, so the user always gets a fresh result.
+      if (silent || refreshAllManualRef.current) return;
+      setRefreshing(true);
+      while (refreshAllInFlightRef.current) {
+        try {
+          await refreshAllPromiseRef.current;
+        } catch {
+          // The failed cycle reports its own error; this manual run starts afterwards anyway.
+        }
+      }
+    }
     refreshAllInFlightRef.current = true;
+    refreshAllManualRef.current = !silent;
+    let finishCycle;
+    refreshAllPromiseRef.current = new Promise((resolve) => { finishCycle = resolve; });
     if (!silent) setRefreshing(true);
     try {
       // Always refresh dashboard counters; heavy lists only for the active tab.
@@ -1179,6 +1209,8 @@ function ScanCenterPage() {
       ]);
     } finally {
       refreshAllInFlightRef.current = false;
+      refreshAllManualRef.current = false;
+      finishCycle();
       if (!silent) setRefreshing(false);
     }
   };
@@ -1538,6 +1570,8 @@ function ScanCenterPage() {
   // (not just the currently loaded inbox page), useful for navigating very large
   // inboxes where loading every incident client-side would be wasteful.
   const loadHostOverview = async (hostOffset = 0) => {
+    const requestId = hostOverviewRequestIdRef.current + 1;
+    hostOverviewRequestIdRef.current = requestId;
     setHostOverviewLoading(true);
     setHostOverviewError(false);
     try {
@@ -1548,13 +1582,15 @@ function ScanCenterPage() {
         host_offset: hostOffset,
         files_per_host: 0,
       });
+      if (requestId !== hostOverviewRequestIdRef.current) return;
       setHostOverviewData(response);
     } catch (error) {
+      if (requestId !== hostOverviewRequestIdRef.current) return;
       console.error('Host overview load failed', error);
       setHostOverviewError(true);
       if (hostOffset === 0) setHostOverviewData(null);
     } finally {
-      setHostOverviewLoading(false);
+      if (requestId === hostOverviewRequestIdRef.current) setHostOverviewLoading(false);
     }
   };
 

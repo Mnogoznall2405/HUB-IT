@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.appdb.models import AppBase
+from backend.appdb import monitoring_models as _monitoring_models  # noqa: F401
 from backend.chat.models import Base as ChatBase
 from backend.db_schema import uses_named_schemas
 

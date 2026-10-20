@@ -78,6 +78,30 @@ def _is_processing_lease_stale(value: Any, *, now: datetime | None = None) -> bo
     return updated_at <= current - timedelta(seconds=TRANSFER_ACT_JOB_LEASE_SECONDS)
 
 
+# Per-worker-thread claim tokens (job_id -> ``started_at`` written by this
+# thread's successful claim).  A job runner claims and finalizes in one thread.
+_claims = threading.local()
+
+
+def _remember_claim(job_id: str, token: Any) -> None:
+    if not hasattr(_claims, "tokens"):
+        _claims.tokens = {}
+    _claims.tokens[job_id] = token
+
+
+def _claim_token(job_id: str) -> Any:
+    return getattr(_claims, "tokens", {}).get(job_id)
+
+
+def execution_claim_token(job_id: str) -> Any:
+    """Capture the current worker's claim for its separate heartbeat thread."""
+    return _claim_token(str(job_id or "").strip())
+
+
+def _forget_claim(job_id: str) -> None:
+    getattr(_claims, "tokens", {}).pop(job_id, None)
+
+
 def _json_dumps(value: Any) -> str:
     return json.dumps(value if value is not None else {}, ensure_ascii=False, default=str)
 
@@ -393,10 +417,54 @@ def requeue_stale_processing_job(job_id: str) -> Optional[dict[str, Any]]:
         return payload
 
 
-def touch_execution_lease(job_id: str) -> bool:
+def requeue_failed_job(job_id: str, status_text: str = "Операция повторно поставлена в очередь") -> bool:
+    """Atomically move a ``failed`` durable job back to ``queued``.
+
+    Retries of a failed idempotent operation must pass through this
+    compare-and-swap so two concurrent retries cannot both resume the same
+    operation.  The stored ``result_json`` is preserved — resume logic reads
+    already-completed stages from it.
+    """
+    normalized_id = str(job_id or "").strip()
+    if not normalized_id:
+        return False
+
+    now = _now()
+    if _app_db_available():
+        with app_session() as session:
+            resumed = session.execute(
+                update(AppTransferActJob)
+                .where(
+                    AppTransferActJob.id == normalized_id,
+                    AppTransferActJob.status == "failed",
+                )
+                .values(
+                    status="queued",
+                    status_text=status_text,
+                    completed_at=None,
+                    updated_at=now,
+                )
+            )
+            return bool(resumed.rowcount)
+
+    with _memory_lock:
+        row = _memory_jobs.get(normalized_id)
+        if not row or str(row.get("status") or "").strip() != "failed":
+            return False
+        row["status"] = "queued"
+        row["status_text"] = status_text
+        row["completed_at"] = None
+        row["updated_at"] = now.isoformat()
+        return True
+
+
+def touch_execution_lease(job_id: str, *, claim_token: Any = None) -> bool:
     """Renew an actively claimed job so a live worker is never requeued."""
     normalized_id = str(job_id or "").strip()
     if not normalized_id:
+        return False
+    token = claim_token if claim_token is not None else _claim_token(normalized_id)
+    if token is None:
         return False
     now = _now()
     if _app_db_available():
@@ -406,6 +474,7 @@ def touch_execution_lease(job_id: str) -> bool:
                 .where(
                     AppTransferActJob.id == normalized_id,
                     AppTransferActJob.status == "processing",
+                    AppTransferActJob.started_at == token,
                 )
                 .values(updated_at=now)
             )
@@ -413,7 +482,7 @@ def touch_execution_lease(job_id: str) -> bool:
 
     with _memory_lock:
         row = _memory_jobs.get(normalized_id)
-        if not row or str(row.get("status") or "").strip() != "processing":
+        if not row or row.get("status") != "processing" or row.get("started_at") != token:
             return False
         row["updated_at"] = now.isoformat()
         return True
@@ -437,6 +506,9 @@ def checkpoint_processing_result(
     normalized_id = str(job_id or "").strip()
     if not normalized_id:
         return False
+    token = _claim_token(normalized_id)
+    if token is None:
+        return False
     now = _now()
     serialized = _json_dumps(result)
     if _app_db_available():
@@ -446,6 +518,7 @@ def checkpoint_processing_result(
                 .where(
                     AppTransferActJob.id == normalized_id,
                     AppTransferActJob.status == "processing",
+                    AppTransferActJob.started_at == token,
                 )
                 .values(
                     result_json=serialized,
@@ -457,7 +530,7 @@ def checkpoint_processing_result(
 
     with _memory_lock:
         row = _memory_jobs.get(normalized_id)
-        if not row or str(row.get("status") or "").strip() != "processing":
+        if not row or row.get("status") != "processing" or row.get("started_at") != token:
             return False
         row["result_json"] = serialized
         row["status_text"] = str(status_text or "")[:500]
@@ -491,7 +564,13 @@ def mark_processing(job_id: str, status_text: str = "Создание актов
 
 
 def claim_for_execution(job_id: str, status_text: str) -> bool:
-    """Atomically claim a queued job so retries/restarts cannot run it twice."""
+    """Atomically claim a queued job so retries/restarts cannot run it twice.
+
+    ``started_at`` is rewritten on every claim and is remembered (per worker
+    thread) as a fencing token: ``mark_done``/``mark_failed`` only apply while
+    the job still carries that exact value, so a worker that lost its lease
+    cannot finalize a job that was requeued and claimed by someone else.
+    """
     normalized_id = str(job_id or "").strip()
     if not normalized_id:
         return False
@@ -511,6 +590,8 @@ def claim_for_execution(job_id: str, status_text: str) -> bool:
                     updated_at=now,
                 )
             )
+            if claimed.rowcount:
+                _remember_claim(normalized_id, now)
             return bool(claimed.rowcount)
 
     with _memory_lock:
@@ -519,45 +600,79 @@ def claim_for_execution(job_id: str, status_text: str) -> bool:
             return False
         row["status"] = "processing"
         row["status_text"] = status_text
-        row["started_at"] = row.get("started_at") or now.isoformat()
+        row["started_at"] = now.isoformat()
         row["updated_at"] = now.isoformat()
+        _remember_claim(normalized_id, row["started_at"])
         return True
 
 
-def mark_done(job_id: str, result: dict[str, Any], status_text: str = "Акты созданы") -> None:
+def _finalize_processing_job(job_id: str, values: dict[str, Any], *, outcome: str) -> bool:
+    """Apply a terminal transition only if the caller still owns the job.
+
+    The job must be ``processing`` and, when this thread claimed it, still
+    carry the claim's ``started_at`` token.  Returns ``False`` (and changes
+    nothing) when the lease was lost: the job was requeued, re-claimed by
+    another worker or already reached a terminal status.
+    """
     normalized_id = str(job_id or "").strip()
     if not normalized_id:
-        return
+        return False
+    token = _claim_token(normalized_id)
     now = _now()
+    values = {**values, "completed_at": now, "updated_at": now}
+    applied = False
     if _app_db_available():
+        conditions = [
+            AppTransferActJob.id == normalized_id,
+            AppTransferActJob.status == "processing",
+        ]
+        if token is not None:
+            conditions.append(AppTransferActJob.started_at == token)
         with app_session() as session:
-            row = session.get(AppTransferActJob, normalized_id)
-            if row is None:
-                return
-            row.status = "done"
-            row.status_text = status_text
-            row.result_json = _json_dumps(result)
-            row.error_text = None
-            row.completed_at = now
-            row.updated_at = now
-        return
+            applied = bool(
+                session.execute(
+                    update(AppTransferActJob).where(*conditions).values(**values)
+                ).rowcount
+            )
+    else:
+        with _memory_lock:
+            row = _memory_jobs.get(normalized_id)
+            if (
+                row
+                and str(row.get("status") or "").strip() == "processing"
+                and (token is None or row.get("started_at") == token)
+            ):
+                for key, value in values.items():
+                    row[key] = value.isoformat() if isinstance(value, datetime) else value
+                applied = True
+    if applied:
+        _forget_claim(normalized_id)
+    else:
+        # Keep the token: a worker that lost its lease stays fenced off.
+        logger.warning(
+            "Transfer act job %s ignored: lease lost or job already finalized job_id=%s",
+            outcome,
+            normalized_id,
+        )
+    return applied
 
-    with _memory_lock:
-        row = _memory_jobs.get(normalized_id)
-        if row:
-            row["status"] = "done"
-            row["status_text"] = status_text
-            row["result_json"] = _json_dumps(result)
-            row["error_text"] = None
-            row["completed_at"] = now.isoformat()
-            row["updated_at"] = now.isoformat()
+
+def mark_done(job_id: str, result: dict[str, Any], status_text: str = "Акты созданы") -> bool:
+    """Finish a job owned by the caller; ``False`` means the lease was lost."""
+    return _finalize_processing_job(
+        job_id,
+        {
+            "status": "done",
+            "status_text": status_text,
+            "result_json": _json_dumps(result),
+            "error_text": None,
+        },
+        outcome="mark_done",
+    )
 
 
-def mark_failed(job_id: str, error_text: str, result: Optional[dict[str, Any]] = None) -> None:
-    normalized_id = str(job_id or "").strip()
-    if not normalized_id:
-        return
-    now = _now()
+def mark_failed(job_id: str, error_text: str, result: Optional[dict[str, Any]] = None) -> bool:
+    """Fail a job owned by the caller; ``False`` means the lease was lost."""
     safe_error = str(error_text or "Не удалось создать акты").strip()
     safe_result = result or {
         "success_count": 0,
@@ -566,28 +681,16 @@ def mark_failed(job_id: str, error_text: str, result: Optional[dict[str, Any]] =
         "failed": [{"inv_no": "", "error": safe_error}],
         "acts": [],
     }
-    if _app_db_available():
-        with app_session() as session:
-            row = session.get(AppTransferActJob, normalized_id)
-            if row is None:
-                return
-            row.status = "failed"
-            row.status_text = "Создание актов завершилось ошибкой"
-            row.result_json = _json_dumps(safe_result)
-            row.error_text = safe_error
-            row.completed_at = now
-            row.updated_at = now
-        return
-
-    with _memory_lock:
-        row = _memory_jobs.get(normalized_id)
-        if row:
-            row["status"] = "failed"
-            row["status_text"] = "Создание актов завершилось ошибкой"
-            row["result_json"] = _json_dumps(safe_result)
-            row["error_text"] = safe_error
-            row["completed_at"] = now.isoformat()
-            row["updated_at"] = now.isoformat()
+    return _finalize_processing_job(
+        job_id,
+        {
+            "status": "failed",
+            "status_text": "Создание актов завершилось ошибкой",
+            "result_json": _json_dumps(safe_result),
+            "error_text": safe_error,
+        },
+        outcome="mark_failed",
+    )
 
 
 def response_payload(job_id: str) -> Optional[dict[str, Any]]:

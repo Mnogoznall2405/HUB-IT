@@ -283,6 +283,14 @@ async def _publish_group_conversation_change(
         for member_user_id in member_ids
         if (payload := conversation_updates_by_user.get(int(member_user_id))) is not None
     ]
+    if removed_ids:
+        # Removed members must stop receiving room events (messages, reads, typing).
+        publish_tasks.append(
+            _chat_realtime().publish_conversation_eviction(
+                conversation_id=conversation_id,
+                user_ids=removed_ids,
+            )
+        )
     for removed_user_id in removed_ids:
         publish_tasks.append(
             _chat_realtime().publish_inbox_event(
@@ -510,7 +518,6 @@ async def _publish_message_read(
             payload=unread_payload,
         )
     publish_ms = (time.perf_counter() - stage_started) * 1000.0
-    # #region agent log
     try:
         from backend.chat.send_audit import audit_send_trace
 
@@ -524,7 +531,6 @@ async def _publish_message_read(
         )
     except Exception:
         pass
-    # #endregion
 
 
 async def _publish_message_created_after_send(*, conversation_id: str, message_id: str) -> None:

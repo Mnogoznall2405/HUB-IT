@@ -202,3 +202,35 @@ def test_publish_sha_mismatch_does_not_leave_final(tmp_path: Path):
         )
     assert not destination.exists()
     assert list(destination.parent.glob("*.tmp-*")) == [] if destination.parent.exists() else True
+
+
+def test_purge_keeps_blob_file_on_rollback_and_removes_it_after_commit(tmp_path: Path, monkeypatch):
+    service = _new_service(tmp_path)
+    database_url = _sqlite_url(tmp_path / "app.db")
+    uploaded = _upload(service, _user(7), "gone.bin", b"only-copy")
+    with app_session(database_url) as session:
+        blob_id = session.get(AppMyFile, uploaded["id"]).blob_id
+        blob_path = service._resolve_stored_path(session.get(AppMyFileBlob, blob_id).storage_path)
+    assert blob_path.exists()
+    service.delete_file(file_id=uploaded["id"], user_id=7, actor=_user(7))
+
+    # Сбой после освобождения блоба (ref_count -> 0), но до commit: откат транзакции.
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("audit write failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(service, "_write_audit", _boom)
+        with pytest.raises(RuntimeError, match="audit write failed"):
+            service.purge_file(file_id=uploaded["id"], user_id=7, actor=_user(7))
+
+    assert blob_path.exists(), "физический файл не должен удаляться до commit"
+    with app_session(database_url) as session:
+        row = session.get(AppMyFile, uploaded["id"])
+        assert row.status == "ready"
+        assert session.get(AppMyFileBlob, blob_id) is not None
+
+    # Нормальный purge: файл удаляется после успешного commit.
+    service.purge_file(file_id=uploaded["id"], user_id=7, actor=_user(7))
+    assert not blob_path.exists()
+    with app_session(database_url) as session:
+        assert session.get(AppMyFileBlob, blob_id) is None

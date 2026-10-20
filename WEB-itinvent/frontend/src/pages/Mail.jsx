@@ -223,6 +223,11 @@ const COMPOSE_DRAFT_STORAGE_KEY = 'mail_compose_draft_v2';
 const MAIL_BOOTSTRAP_LIMIT = 20;
 
 function Mail() {
+  const { user } = useAuth();
+  return <MailWorkspace key={String(user?.id ?? user?.username ?? 'anonymous')} />;
+}
+
+function MailWorkspace() {
   const theme = useTheme();
   const ui = useMemo(() => buildMailUiTokens(theme), [theme]);
   const mailRenderColorScheme = ui.isDark ? 'dark' : 'light';
@@ -351,6 +356,7 @@ function Mail() {
     handleResetAdvancedSearch,
     handleApplyRecentSearch,
   } = useMailAdvancedSearch({
+    userKey: user?.id ?? user?.username ?? '',
     initialFilters: initialMailViewState.advancedFiltersApplied,
     onSearchChange: setSearch,
   });

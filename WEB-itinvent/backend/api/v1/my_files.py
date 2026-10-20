@@ -498,6 +498,26 @@ async def create_public_folder_download_grant(
         raise _service_error_to_secure_http(exc) from exc
 
 
+@router.post("/public-folders/{token}/archive-grant", response_model=MyFileDownloadGrantResponse)
+async def create_public_folder_archive_grant(
+    token: str,
+    request: Request,
+    response: Response,
+) -> dict:
+    enforce_public_meta_limits(request, token)
+    _set_public_response_headers(response)
+    try:
+        return await run_in_threadpool(
+            my_files_service.create_public_folder_archive_grant,
+            token=token,
+        )
+    except MyFilesNotFoundError as exc:
+        enforce_public_miss_limit(request)
+        raise _service_error_to_secure_http(exc) from exc
+    except Exception as exc:
+        raise _service_error_to_secure_http(exc) from exc
+
+
 @router.get("/trash", response_model=MyFileTrashResponse)
 async def list_my_files_trash(
     current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
@@ -670,7 +690,7 @@ async def upload_my_file(
 ) -> dict:
     _enforce_trusted_browser_origin(request)
     enforce_upload_limits(request, user_id=int(current_user.id))
-    spool_path = my_files_service.new_spool_path(file_name)
+    spool_path = await run_in_threadpool(my_files_service.new_spool_path, file_name)
     reserved_file_id = ""
     try:
         reserved = await run_in_threadpool(
@@ -728,7 +748,7 @@ async def create_my_file_upload_session(
 ) -> dict:
     _enforce_trusted_browser_origin(request)
     enforce_upload_limits(request, user_id=int(current_user.id))
-    spool_path = my_files_service.new_spool_path(payload.file_name)
+    spool_path = await run_in_threadpool(my_files_service.new_spool_path, payload.file_name)
     try:
         reserved = await run_in_threadpool(
             my_files_service.reserve_upload,

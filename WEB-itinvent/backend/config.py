@@ -300,6 +300,8 @@ class MyFilesSecurityConfig:
     antivirus_fail_closed: bool = True
     antivirus_timeout_sec: int = 300
     antivirus_max_size_bytes: int = 0
+    antivirus_skip_archives: bool = True
+    antivirus_exe_max_size_bytes: int = 100 * 1024 * 1024
     antivirus_provider: str = "auto"
     kaspersky_path: str = ""
     defender_path: str = ""
@@ -364,7 +366,7 @@ class Config:
     @classmethod
     def from_env(cls) -> "Config":
         """Load configuration from environment variables."""
-        environment = _normalize_environment(os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")))
+        environment = _normalize_environment(os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "production")))
         jwt_secret_keys_raw = str(os.getenv("JWT_SECRET_KEYS", "") or "").strip()
         jwt_previous_keys_raw = str(os.getenv("JWT_PREVIOUS_SECRET_KEYS", "") or "").strip()
 
@@ -561,6 +563,10 @@ class Config:
                 antivirus_fail_closed=_bool_env("MY_FILES_ANTIVIRUS_FAIL_CLOSED", environment == "production"),
                 antivirus_timeout_sec=_positive_int_env("MY_FILES_ANTIVIRUS_TIMEOUT_SEC", 300),
                 antivirus_max_size_bytes=_positive_int_env("MY_FILES_ANTIVIRUS_MAX_SIZE_BYTES", 0, minimum=0),
+                antivirus_skip_archives=_bool_env("MY_FILES_ANTIVIRUS_SKIP_ARCHIVES", True),
+                antivirus_exe_max_size_bytes=_positive_int_env(
+                    "MY_FILES_ANTIVIRUS_EXE_MAX_SIZE_BYTES", 100 * 1024 * 1024, minimum=0
+                ),
                 antivirus_provider=str(os.getenv("MY_FILES_ANTIVIRUS_PROVIDER", "auto") or "auto").strip().lower(),
                 kaspersky_path=str(os.getenv("MY_FILES_KASPERSKY_PATH", "") or "").strip(),
                 defender_path=str(os.getenv("MY_FILES_DEFENDER_PATH", "") or "").strip(),

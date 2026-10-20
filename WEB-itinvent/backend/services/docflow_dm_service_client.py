@@ -5,7 +5,6 @@ import asyncio
 import base64
 import binascii
 import copy
-import json
 import mimetypes
 import os
 import re
@@ -499,9 +498,6 @@ class DocflowDMServiceClient:
         )
         response_status = 0
         response_payload = b""
-        # #region agent log
-        _dbg_t0 = time.perf_counter()
-        # #endregion
         try:
             async with self._slot():
                 async with self._client.stream(
@@ -538,90 +534,9 @@ class DocflowDMServiceClient:
                             raise Docflow1CUnavailableError("Ответ DMService превышает допустимый размер")
                         chunks.append(chunk)
                     response_payload = b"".join(chunks)
-            # #region agent log
-            try:
-                with open(r"c:\Project\Image_scan\debug-b3272c.log", "a", encoding="utf-8") as _dbg_f:
-                    _dbg_f.write(
-                        json.dumps(
-                            {
-                                "sessionId": "b3272c",
-                                "runId": "samkom-tyutev",
-                                "hypothesisId": "HA",
-                                "location": "docflow_dm_service_client.py:_execute",
-                                "message": "soap_ok",
-                                "data": {
-                                    "request_type": request_type,
-                                    "ms": int((time.perf_counter() - _dbg_t0) * 1000),
-                                    "status": response_status,
-                                    "bytes": len(response_payload),
-                                    "file_response": bool(file_response),
-                                    "timeout_s": float(timeout_seconds),
-                                },
-                                "timestamp": int(time.time() * 1000),
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
-            except Exception:
-                pass
-            # #endregion
         except (Docflow1CAuthenticationError, Docflow1CFileTooLargeError, Docflow1CUnavailableError):
-            # #region agent log
-            try:
-                with open(r"c:\Project\Image_scan\debug-b3272c.log", "a", encoding="utf-8") as _dbg_f:
-                    _dbg_f.write(
-                        json.dumps(
-                            {
-                                "sessionId": "b3272c",
-                                "runId": "samkom-tyutev",
-                                "hypothesisId": "HA",
-                                "location": "docflow_dm_service_client.py:_execute",
-                                "message": "soap_domain_error",
-                                "data": {
-                                    "request_type": request_type,
-                                    "ms": int((time.perf_counter() - _dbg_t0) * 1000),
-                                    "status": response_status,
-                                    "bytes": len(response_payload),
-                                },
-                                "timestamp": int(time.time() * 1000),
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
-            except Exception:
-                pass
-            # #endregion
             raise
-        except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as _exc:
-            # #region agent log
-            try:
-                with open(r"c:\Project\Image_scan\debug-b3272c.log", "a", encoding="utf-8") as _dbg_f:
-                    _dbg_f.write(
-                        json.dumps(
-                            {
-                                "sessionId": "b3272c",
-                                "runId": "samkom-tyutev",
-                                "hypothesisId": "HB",
-                                "location": "docflow_dm_service_client.py:_execute",
-                                "message": "soap_timeout_or_network",
-                                "data": {
-                                    "request_type": request_type,
-                                    "ms": int((time.perf_counter() - _dbg_t0) * 1000),
-                                    "exc_type": type(_exc).__name__,
-                                    "timeout_s": float(timeout_seconds),
-                                    "file_response": bool(file_response),
-                                },
-                                "timestamp": int(time.time() * 1000),
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
-            except Exception:
-                pass
-            # #endregion
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError):
             if write:
                 raise Docflow1COutcomeUnknownError(
                     "DMService не подтвердил результат записи; команда не будет отправлена повторно"
@@ -1037,27 +952,6 @@ class DocflowDMServiceClient:
             except etree.XMLSyntaxError:
                 cached_task = None
             if cached_task is not None and _object_id(cached_task):
-                # #region agent log
-                try:
-                    with open(r"c:\Project\Image_scan\debug-b3272c.log", "a", encoding="utf-8") as _dbg_f:
-                        _dbg_f.write(
-                            json.dumps(
-                                {
-                                    "sessionId": "b3272c",
-                                    "runId": "samkom-tyutev",
-                                    "hypothesisId": "HA",
-                                    "location": "docflow_dm_service_client.py:_visible_task_element",
-                                    "message": "task_xml_cache_hit",
-                                    "data": {"task_ref": str(task_ref)[:80]},
-                                    "timestamp": int(time.time() * 1000),
-                                },
-                                ensure_ascii=False,
-                            )
-                            + "\n"
-                        )
-                except Exception:
-                    pass
-                # #endregion
                 return cached_task
 
         cached_types = self._get_visible_type_cache(login)
@@ -1065,31 +959,6 @@ class DocflowDMServiceClient:
         truncated = bool(cached_types[1]) if cached_types is not None else False
         task_key = str(task_ref).casefold()
         object_type = type_map.get(task_key)
-        # #region agent log
-        try:
-            with open(r"c:\Project\Image_scan\debug-b3272c.log", "a", encoding="utf-8") as _dbg_f:
-                _dbg_f.write(
-                    json.dumps(
-                        {
-                            "sessionId": "b3272c",
-                            "runId": "samkom-tyutev",
-                            "hypothesisId": "HA",
-                            "location": "docflow_dm_service_client.py:_visible_task_element",
-                            "message": "type_cache_lookup",
-                            "data": {
-                                "task_ref": str(task_ref)[:80],
-                                "type_cache_hit": cached_types is not None,
-                                "task_in_cache": bool(object_type),
-                            },
-                            "timestamp": int(time.time() * 1000),
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-        except Exception:
-            pass
-        # #endregion
         if not object_type:
             # Completed tasks leave inbox; probing known XDTO types is ~0.5s each and avoids
             # the multi‑MB withExecuted=true dump (~25s) used only as last resort.
@@ -1113,31 +982,6 @@ class DocflowDMServiceClient:
                     continue
                 concrete = _object_type(probed[0]) or candidate
                 self._merge_visible_type_cache(login, {task_key: concrete}, truncated)
-                # #region agent log
-                try:
-                    with open(r"c:\Project\Image_scan\debug-b3272c.log", "a", encoding="utf-8") as _dbg_f:
-                        _dbg_f.write(
-                            json.dumps(
-                                {
-                                    "sessionId": "b3272c",
-                                    "runId": "measure-202-check",
-                                    "hypothesisId": "H-TIME",
-                                    "location": "docflow_dm_service_client.py:_visible_task_element",
-                                    "message": "candidate_type_hit",
-                                    "data": {
-                                        "task_ref": str(task_ref)[:80],
-                                        "candidate": candidate,
-                                        "concrete": concrete,
-                                    },
-                                    "timestamp": int(time.time() * 1000),
-                                },
-                                ensure_ascii=False,
-                            )
-                            + "\n"
-                        )
-                except Exception:
-                    pass
-                # #endregion
                 try:
                     self._set_task_xml_cache(login, task_ref, etree.tostring(probed[0], encoding="utf-8"))
                 except Exception:
@@ -1362,33 +1206,6 @@ class DocflowDMServiceClient:
                     related_partial = True
                 except (Docflow1CUnavailableError, Docflow1CNotFoundError, Docflow1CMappingError):
                     related_partial = True
-            # #region agent log
-            try:
-                with open(r"c:\Project\Image_scan\debug-b3272c.log", "a", encoding="utf-8") as _dbg_f:
-                    _dbg_f.write(
-                        json.dumps(
-                            {
-                                "sessionId": "b3272c",
-                                "runId": "opt-postfix",
-                                "hypothesisId": "HD",
-                                "location": "docflow_dm_service_client.py:get_task_detail",
-                                "message": "enrich_files",
-                                "data": {
-                                    "task_ref": str(task_ref)[:80],
-                                    "related_ids": len(related_ids),
-                                    "related_retrieved": len(related_objects),
-                                    "related_partial": related_partial,
-                                    "files": len(detail.get("files") or []),
-                                },
-                                "timestamp": int(time.time() * 1000),
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
-            except Exception:
-                pass
-            # #endregion
         else:
             detail["dm_version"] = await self.get_version(login=login, password=password)
             detail["files"] = self._file_summaries([task])
@@ -1606,33 +1423,6 @@ class DocflowDMServiceClient:
                 object_type=task_type,
             )
             after = self._parse_task(after_element)
-            # #region agent log
-            try:
-                with open(r"c:\Project\Image_scan\debug-b3272c.log", "a", encoding="utf-8") as _dbg_f:
-                    _dbg_f.write(
-                        json.dumps(
-                            {
-                                "sessionId": "b3272c",
-                                "runId": "stuck-approve",
-                                "hypothesisId": "H4",
-                                "location": "docflow_dm_service_client.py:apply_task_action",
-                                "message": "post_update_retrieve",
-                                "data": {
-                                    "task_ref": str(task_ref)[:80],
-                                    "attempt": attempt + 1,
-                                    "completed": bool(after.get("completed")),
-                                    "has_completed_at": bool(after.get("completed_at")),
-                                    "accepted": bool(after.get("accepted")),
-                                },
-                                "timestamp": int(time.time() * 1000),
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
-            except Exception:
-                pass
-            # #endregion
             if after["completed"] and after.get("completed_at"):
                 return {"before": before, "task": after}
         raise Docflow1COutcomeUnknownError("1С не подтвердила завершение задания")

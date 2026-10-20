@@ -11,6 +11,11 @@ export default function useChatScheduledMessages({ conversationId = '', availabl
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const sequenceRef = useRef(0);
+  const retryTimerRef = useRef(null);
+  const reloadRef = useRef(null);
+  const scopeKey = `${Boolean(available && enabled)}:${conversationId}`;
+  const scopeRef = useRef({ key: scopeKey });
+  if (scopeRef.current.key !== scopeKey) scopeRef.current = { key: scopeKey };
 
   useEffect(() => {
     let alive = true;
@@ -18,35 +23,82 @@ export default function useChatScheduledMessages({ conversationId = '', availabl
       setEnabled(false);
       return undefined;
     }
-    getChatConfigCached()
-      .then((config) => { if (alive) setEnabled(Boolean(config?.scheduled_messages_enabled)); })
-      .catch(() => { if (alive) setEnabled(false); });
-    return () => { alive = false; };
+    let timer;
+    let attempts = 0;
+    let pending = false;
+    let resolved = false;
+    const load = async () => {
+      if (!alive || pending || resolved) return;
+      clearTimeout(timer);
+      pending = true;
+      try {
+        const config = await getChatConfigCached();
+        if (alive) {
+          resolved = true;
+          setEnabled(Boolean(config?.scheduled_messages_enabled));
+        }
+      } catch {
+        if (alive && attempts < 3) {
+          attempts += 1;
+          timer = setTimeout(load, attempts * 5000);
+        }
+      } finally {
+        pending = false;
+      }
+    };
+    void load();
+    window.addEventListener('online', load);
+    window.addEventListener('focus', load);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+      window.removeEventListener('online', load);
+      window.removeEventListener('focus', load);
+    };
   }, [available]);
 
   const reload = useCallback(async () => {
+    if (scopeRef.current.key !== scopeKey) return [];
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
     const id = String(conversationId || '').trim();
-    if (!enabled || !id) {
+    if (!available || !enabled || !id) {
       setItems([]);
       return [];
     }
     const sequence = sequenceRef.current + 1;
     sequenceRef.current = sequence;
+    const scope = scopeRef.current;
     try {
       const next = await chatScheduledAPI.list(id);
-      if (sequence === sequenceRef.current) setItems(next);
+      if (sequence === sequenceRef.current && scope === scopeRef.current) {
+        setItems(next);
+        setError('');
+      }
       return next;
-    } catch {
-      if (sequence === sequenceRef.current) setItems([]);
+    } catch (caught) {
+      if (sequence === sequenceRef.current && scope === scopeRef.current) {
+        const detail = caught?.response?.data?.detail;
+        setError(typeof detail === 'string' && detail ? detail : 'Не удалось загрузить отложенные сообщения.');
+        retryTimerRef.current = setTimeout(() => { void reloadRef.current?.(); }, 10000);
+      }
       return [];
     }
-  }, [conversationId, enabled]);
+  }, [available, conversationId, enabled, scopeKey]);
+  reloadRef.current = reload;
 
   useEffect(() => {
     setItems([]);
     setError('');
+    setBusy(false);
     void reload();
-    return () => { sequenceRef.current += 1; };
+    return () => {
+      sequenceRef.current += 1;
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    };
   }, [reload]);
 
   useEffect(() => {
@@ -61,18 +113,20 @@ export default function useChatScheduledMessages({ conversationId = '', availabl
   }, [items, reload]);
 
   const run = useCallback(async (action, fallback) => {
+    const scope = scopeRef.current;
     setBusy(true);
     setError('');
     try {
       const result = await action();
+      if (scope !== scopeRef.current) return null;
       await reload();
-      return result;
+      return scope === scopeRef.current ? result : null;
     } catch (caught) {
       const detail = caught?.response?.data?.detail;
-      setError(typeof detail === 'string' && detail ? detail : fallback);
+      if (scope === scopeRef.current) setError(typeof detail === 'string' && detail ? detail : fallback);
       return null;
     } finally {
-      setBusy(false);
+      if (scope === scopeRef.current) setBusy(false);
     }
   }, [reload]);
 

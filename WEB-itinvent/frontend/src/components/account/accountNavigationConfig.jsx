@@ -10,6 +10,7 @@ import SecurityOutlinedIcon from '@mui/icons-material/SecurityOutlined';
 import SettingsApplicationsOutlinedIcon from '@mui/icons-material/SettingsApplicationsOutlined';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import CloudOutlinedIcon from '@mui/icons-material/CloudOutlined';
+import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
 
 export const ADMIN_AREA_PERMISSIONS = [
   'departments.manage',
@@ -19,6 +20,7 @@ export const ADMIN_AREA_PERMISSIONS = [
   'ad_users.read',
   'ad_users.manage',
   'my_files.stats.read',
+  'database.references.manage',
 ];
 
 export const PERSONAL_SETTINGS_SECTIONS = [
@@ -85,6 +87,13 @@ const ADMIN_SECTION_DEFINITIONS = [
     adminOnlyFallback: true,
   },
   {
+    key: 'references',
+    label: 'Справочники ITINVENT',
+    description: 'Номенклатура, модели, производители, кабинеты',
+    icon: <StorageOutlinedIcon />,
+    permission: 'database.references.manage',
+  },
+  {
     key: 'ai-bots',
     label: 'AI-боты',
     description: 'Модели, инструменты и запуски',
@@ -105,6 +114,13 @@ const ADMIN_SECTION_DEFINITIONS = [
     icon: <CloudOutlinedIcon />,
     permission: 'my_files.stats.read',
     adminOnlyFallback: true,
+  },
+  {
+    key: 'chat-groups',
+    label: 'Беседы чата',
+    description: 'Беседы без владельца и журнал действий',
+    icon: <GroupOutlinedIcon />,
+    adminOnly: true,
   },
   {
     key: 'system',

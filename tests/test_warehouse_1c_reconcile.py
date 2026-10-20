@@ -19,6 +19,89 @@ from backend.services.one_c_reconcile_registry_service import (  # noqa: E402
 )
 
 
+def test_reconcile_queue_single_db_does_not_double_offset(monkeypatch):
+    """205 rows, limit=100: page 2 must return 100 rows, not an empty page."""
+    rows = [
+        {
+            "inv_no": f"{1000 + i}",
+            "employee_name": "Иванов",
+            "part_no": "PN-1",
+        }
+        for i in range(205)
+    ]
+
+    def fake_list(*, status=None, limit=100, offset=0, q="", has_owner="with", db_id=None):
+        return {
+            "items": rows[offset : offset + limit],
+            "total": len(rows),
+            "limit": limit,
+            "offset": offset,
+        }
+
+    monkeypatch.setattr(
+        reconcile,
+        "_hub_db_configs",
+        lambda db_id=None: [{"id": "ITINVENT", "name": "ITINVENT"}],
+    )
+    monkeypatch.setattr(db_queries, "list_hub_equipment_by_part_no_status", fake_list)
+
+    class _Registry:
+        configured = False
+
+    monkeypatch.setattr(reconcile, "one_c_reconcile_registry_service", _Registry())
+
+    page1 = reconcile.list_reconcile_queue(queue="pending", limit=100, offset=0)
+    page2 = reconcile.list_reconcile_queue(queue="pending", limit=100, offset=100)
+    page3 = reconcile.list_reconcile_queue(queue="pending", limit=100, offset=200)
+
+    assert len(page1["items"]) == 100
+    assert len(page2["items"]) == 100
+    assert len(page3["items"]) == 5
+    assert page1["items"][0]["inv_no"] == "1000"
+    assert page2["items"][0]["inv_no"] == "1100"
+    assert page3["items"][-1]["inv_no"] == "1204"
+
+
+def test_resolve_owner_no_across_db_rejects_ambiguous_fio(monkeypatch):
+    monkeypatch.setattr(
+        db_queries,
+        "list_owners_compact",
+        lambda db_id=None: [
+            {"OWNER_NO": 10, "OWNER_DISPLAY_NAME": "Иванов Иван Иванович"},
+            {"OWNER_NO": 20, "OWNER_DISPLAY_NAME": "Иванов Иван Иванович"},
+        ],
+    )
+
+    resolved = db_queries._resolve_owner_no_across_db(
+        db_id="OTHER",
+        owner_no=None,
+        current_db_id="ITINVENT",
+        employee_name="Иванов Иван Иванович",
+    )
+
+    assert resolved is None
+
+
+def test_resolve_owner_no_across_db_accepts_single_fio_match(monkeypatch):
+    monkeypatch.setattr(
+        db_queries,
+        "list_owners_compact",
+        lambda db_id=None: [
+            {"OWNER_NO": 10, "OWNER_DISPLAY_NAME": "Иванов Иван Иванович"},
+            {"OWNER_NO": 20, "OWNER_DISPLAY_NAME": "Петров Пётр"},
+        ],
+    )
+
+    resolved = db_queries._resolve_owner_no_across_db(
+        db_id="OTHER",
+        owner_no=None,
+        current_db_id="ITINVENT",
+        employee_name="Иванов Иван Иванович",
+    )
+
+    assert resolved == 10
+
+
 def test_part_no_sentinel_not_usable_but_closed():
     assert db_queries._is_not_in_1c_hub_part_no("нет в 1С") is True
     assert db_queries._is_not_in_1c_hub_part_no("нет в 1c") is True

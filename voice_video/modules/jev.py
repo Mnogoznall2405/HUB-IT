@@ -10,23 +10,56 @@ Jev не генерирует текст — отвечает типизиров
 дедуп соседних тем после оконной сегментации и проверка полноты протокола.
 """
 import logging
+import os
+import sys
 import time
+from pathlib import Path
 from typing import Dict, List, Optional, Any
 
 import requests
 
-from config import OPENROUTER_KEY, JEV_ENABLED, JEV_DEDUP_THRESHOLD, JEV_COVERAGE_THRESHOLD, JEV_MODEL
+from config import (OPENROUTER_KEY, JEV_ENABLED, JEV_DEDUP_THRESHOLD, JEV_COVERAGE_THRESHOLD, JEV_MODEL,
+                    JEV_DOMAIN_TAGS, JEV_PROTOCOL_GUARD, JEV_GUARD_SUPPORT_MIN, JEV_GUARD_OWNER_MIN)
 
 logger = logging.getLogger(__name__)
 
 JEV_URL = 'https://openrouter.ai/api/alpha/decisions'
 
 
+_SHARED_CLIENT: Any = None  # None — ещё не пробовали, False — shared.llm недоступен
+
+
+def _shared_client():
+    """Клиент Jev из shared.llm (правило репозитория: LLM-вызовы идут через shared/llm); False, если импорт невозможен."""
+    global _SHARED_CLIENT
+    if _SHARED_CLIENT is None:
+        try:
+            root = Path(__file__).resolve().parents[2]
+            if (root / 'shared' / 'llm' / 'jev_client.py').exists() and str(root) not in sys.path:
+                sys.path.insert(0, str(root))
+            os.environ.setdefault('JEV_API_KEY', OPENROUTER_KEY or '')
+            from shared.llm.jev_client import jev_client
+            _SHARED_CLIENT = jev_client
+        except Exception as e:  # noqa: BLE001 - пайплайн переносим: без shared работаем напрямую
+            logger.info(f"Jev: shared.llm недоступен ({e}) — прямой вызов")
+            _SHARED_CLIENT = False
+    return _SHARED_CLIENT
+
+
 def jev_decide(state: Any, questions: Dict[str, Dict],
                model: str = JEV_MODEL, timeout: int = 45, retries: int = 2) -> Optional[Dict[str, Dict]]:
-    """Один вызов Decisions API. Возвращает {qid: answer} или None при сбое."""
+    """Один вызов Jev. Возвращает {qid: answer} или None при сбое."""
     if not (JEV_ENABLED and OPENROUTER_KEY):
         return None
+    client = _shared_client()
+    if client:
+        try:
+            decision = client.decide(state=state, questions=questions, model=model, timeout=timeout,
+                                     max_retries=retries)
+            return {name: dict(getattr(answer, 'raw', None) or {}) for name, answer in decision.answers.items()}
+        except Exception as e:  # noqa: BLE001 - JevClientError и сеть: протокол без Jev лучше, чем без протокола
+            logger.warning(f"Jev недоступен: {e}")
+            return None
     body = {'model': model, 'state': state, 'questions': questions}
     for attempt in range(retries + 1):
         try:
@@ -184,3 +217,25 @@ def check_protocol_coverage(topics: List[Dict], protocol_md: str,
                 logger.info(f"🚩 Jev: решение не попало в протокол (p={p:.2f}): {d[:80]}")
 
     return missed
+
+
+def tag_topic_domains(topics: List[Dict]) -> int:
+    """Направление каждой темы (стройка/финансы/снабжение…) — поля domain, domain_confidence, domain_alt."""
+    if not (JEV_ENABLED and JEV_DOMAIN_TAGS and topics):
+        return 0
+    from .protocol_guard import classify_topics
+    tagged = classify_topics(topics, jev_decide)
+    logger.info(f"🏷️ Jev: направление проставлено у {tagged} из {len(topics)} тем")
+    return tagged
+
+
+def guard_registry_items(groups: List[Dict], topics: List[Dict], transcript: List[Dict]) -> int:
+    """Сторож реестра: сомнительным поручениям ставит flags (рисуются как «⚠ проверить: …»)."""
+    if not (JEV_ENABLED and JEV_PROTOCOL_GUARD and groups):
+        return 0
+    from .protocol_guard import check_items
+    flagged = check_items(groups, topics, transcript, jev_decide,
+                          support_min=JEV_GUARD_SUPPORT_MIN, owner_min=JEV_GUARD_OWNER_MIN)
+    if flagged:
+        logger.info(f"⚠️ Jev: сомнительных поручений: {flagged}")
+    return flagged

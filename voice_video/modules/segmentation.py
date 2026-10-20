@@ -9,11 +9,16 @@ from openai import OpenAI
 from tqdm import tqdm
 
 from .audio_processor import ProcessingConfig, retry_on_failure
+from . import glossary as company_glossary
 from config import (OPENROUTER_KEY, OPENAI_MODEL, OPENAI_SETTINGS, PROJECT_ROOT,
                     SEGMENTATION_LLM_MODEL, TOPIC_ANALYSIS_MODEL,
-                    TOPIC_ANALYSIS_BATCH, SEGMENTATION_MAX_CHARS)
+                    TOPIC_ANALYSIS_BATCH, SEGMENTATION_MAX_CHARS,
+                    GLOSSARY_PATH, GLOSSARY_PROMPT, GLOSSARY_EXTRACT)
 
 logger = logging.getLogger(__name__)
+
+OBJECT_PROMPTS = {'analysis_prompt.txt', 'protocol_prompt.txt', 'action_registry_prompt.txt'}
+
 
 class MeetingSegmentation:
     """Класс для семантической сегментации встреч с использованием LLM"""
@@ -34,6 +39,14 @@ class MeetingSegmentation:
         self.segmentation_prompt_file = project_root / "segmentation_prompt.txt"
         self.analysis_prompt_file = project_root / "analysis_prompt.txt"
         self.protocol_prompt_file = project_root / "protocol_prompt.txt"
+        self.glossary_prompt_file = project_root / "glossary_prompt.txt"
+        self._glossary_terms: List[Dict[str, Any]] = []
+        self._glossary_block = ""
+        self._objects_block = ""
+        if GLOSSARY_PROMPT or GLOSSARY_EXTRACT:
+            self._glossary_terms = company_glossary.load_terms(GLOSSARY_PATH)
+            if GLOSSARY_PROMPT:
+                self._objects_block = company_glossary.format_objects_block(self._glossary_terms)
     
     def _call_llm(self, prompt_file: str, context: str, max_tokens: int = 8000,
                   use_json_mode: bool = True, model: Optional[str] = None) -> Optional[str]:
@@ -48,6 +61,10 @@ class MeetingSegmentation:
 
             with open(prompt_path, "r", encoding="utf-8") as f:
                 system_prompt = f.read()
+            # Только термины этой записи (select_relevant) + ядро, с потолком по размеру — промпт не раздувается
+            system_prompt += getattr(self, '_glossary_block', '') or ''
+            if prompt_path.name in OBJECT_PROMPTS:  # список объектов нужен там, где поручения и темы привязываются к объекту
+                system_prompt += getattr(self, '_objects_block', '') or ''
         except FileNotFoundError:
             logger.error(f"❌ Не найден файл промпта: {prompt_file}")
             return None
@@ -438,10 +455,26 @@ class MeetingSegmentation:
             # LLM отдаёт JSON, таблицу собираем сами: «|» в тексте или пропущенная
             # колонка больше не ломают разбор поручений в веб-интерфейсе.
             from .action_registry import registry_markdown_from_llm
-            return registry_markdown_from_llm(response_text)
+
+            def guard(groups):
+                from .jev import guard_registry_items
+                guard_registry_items(groups, topics, getattr(self, '_guard_transcript', None) or [])
+
+            return registry_markdown_from_llm(response_text, annotate=guard)
         except Exception as e:
             logger.error(f"❌ Ошибка сборки реестра поручений: {e}", exc_info=True)
             return None
+
+    def extract_glossary_candidates(self, topics: List[Dict]) -> List[Dict[str, Any]]:
+        """Кандидаты в словарь компании по темам встречи (на подтверждение человеком во вкладке «Словарь»)."""
+        context = company_glossary.build_candidate_context(topics)
+        if not context.strip():
+            return []
+        response = self._call_llm(str(self.glossary_prompt_file), context, max_tokens=12000,
+                                  use_json_mode=True, model=self.config.openai_model)
+        candidates = company_glossary.parse_candidates(response, self._glossary_terms)
+        logger.info(f"📖 Кандидатов в словарь: {len(candidates)}")
+        return candidates
 
     def call_llm_for_protocol(self, topics: List[Dict]) -> Optional[str]:
         """Синтезирует итоговый протокол совещания по проанализированным темам."""
@@ -481,6 +514,16 @@ class MeetingSegmentation:
         """Выполняет полную сегментацию и анализ встречи."""
         try:
             logger.info("🤖 Запуск двухэтапного LLM-анализа...")
+            from .system_voices import drop_system_voices
+            transcript, dropped = drop_system_voices(transcript)  # автоответчик — не участник совещания
+            if dropped:
+                logger.info(f"📵 Служебные голоса (автоответчик) исключены из анализа: {dropped} реплик")
+            self._guard_transcript = transcript  # для сторожа поручений (Jev)
+            if GLOSSARY_PROMPT and self._glossary_terms:
+                text = " ".join(str(seg.get("text", "")) for seg in transcript)
+                relevant = company_glossary.select_relevant(self._glossary_terms, text)
+                self._glossary_block = company_glossary.format_prompt_block(relevant)
+                logger.info(f"📖 Глоссарий: в промпт идёт {len(relevant)} из {len(self._glossary_terms)} терминов")
             
             # Этап 1: Сегментация
             topic_segments = self.call_llm_for_segmentation(transcript)
@@ -553,6 +596,13 @@ class MeetingSegmentation:
             except Exception as e:
                 logger.warning(f"⚠️ Jev дедупликация пропущена: {e}")
 
+            # Направление тем (стройка/финансы/снабжение…) — для фильтров и истории
+            try:
+                from .jev import tag_topic_domains
+                tag_topic_domains(final_report["topics"])
+            except Exception as e:
+                logger.warning(f"⚠️ Jev: направления тем пропущены: {e}")
+
             # Этап 3: Синтез итогового протокола по проанализированным темам
             protocol_md = self.call_llm_for_protocol(final_report["topics"])
             if protocol_md:
@@ -576,6 +626,12 @@ class MeetingSegmentation:
                     final_report['action_registry'] = registry_md
             except Exception as e:
                 logger.warning(f"⚠️ Реестр поручений не собран: {e}")
+
+            if GLOSSARY_EXTRACT and self.client and final_report["topics"]:
+                try:
+                    final_report["glossary_candidates"] = self.extract_glossary_candidates(final_report["topics"])
+                except Exception as e:
+                    logger.warning(f"⚠️ Кандидаты в словарь не собраны: {e}")
 
             logger.info(f"✅ Анализ завершен: обработано {len(final_report['topics'])} тем")
             return final_report

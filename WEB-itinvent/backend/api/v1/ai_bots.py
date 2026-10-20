@@ -90,7 +90,7 @@ async def list_ai_bots_admin(
 ):
     from backend.ai_chat.service import ai_chat_service
 
-    return ai_chat_service.list_admin_bots()
+    return await run_in_threadpool(ai_chat_service.list_admin_bots)
 
 
 @router.post("", response_model=AiBotAdminResponse)
@@ -100,7 +100,7 @@ async def create_ai_bot_admin(
 ):
     from backend.ai_chat.service import ai_chat_service
 
-    return ai_chat_service.create_bot(payload.model_dump())
+    return await run_in_threadpool(ai_chat_service.create_bot, payload.model_dump())
 
 
 @router.patch("/{bot_id}", response_model=AiBotAdminResponse)
@@ -111,7 +111,7 @@ async def update_ai_bot_admin(
 ):
     from backend.ai_chat.service import ai_chat_service
 
-    return ai_chat_service.update_bot(bot_id, payload.model_dump(exclude_unset=True))
+    return await run_in_threadpool(ai_chat_service.update_bot, bot_id, payload.model_dump(exclude_unset=True))
 
 
 @router.get("/{bot_id}/runs", response_model=AiBotRunListResponse)
@@ -121,4 +121,4 @@ async def list_ai_bot_runs_admin(
 ):
     from backend.ai_chat.service import ai_chat_service
 
-    return {"items": ai_chat_service.list_recent_runs(bot_id=bot_id)}
+    return {"items": await run_in_threadpool(ai_chat_service.list_recent_runs, bot_id=bot_id)}

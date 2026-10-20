@@ -6,8 +6,11 @@ import { parseEquipmentQrLink } from './qrModel';
 import { normalizeDbId } from './databaseRecordModel';
 import { deserializeDatabaseUiSnapshot } from './databaseReturnContext';
 import { useDatabaseEmployeeFallback } from './useDatabaseEmployeeFallback';
-import { isEmployeeCompareSummaryComplete } from './employeeCompareModel';
-import { buildCacheKey, getOrFetchSWR } from '../../lib/swrCache';
+import {
+  EMPLOYEE_COMPARE_MAX_AGE_MS,
+  isEmployeeCompareSnapshotFresh,
+  isEmployeeCompareSummaryComplete,
+} from './employeeCompareModel';
 import { SEARCH_SCOPE_EQUIPMENT } from './DatabaseSearchBar';
 
 // Employee-scope controller: employee search fallback, the employee equipment
@@ -18,6 +21,7 @@ export function useDatabaseEmployeeFlow({
   dbName,
   currentDb,
   initialLoading,
+  equipmentRevision = 0,
   isConsumablesMode,
   searchScope,
   searchQuery,
@@ -26,6 +30,7 @@ export function useDatabaseEmployeeFlow({
   loadingMoreEquipment,
   nextEquipmentPage,
   hubSearchEmpty,
+  employeeSearch,
   findEquipmentByInvNo,
   applyUiSnapshot,
   detailModal,
@@ -40,6 +45,7 @@ export function useDatabaseEmployeeFlow({
       canViewWarehouse1C
       && !isConsumablesMode
       && searchScope === SEARCH_SCOPE_EQUIPMENT
+      && (!employeeSearch || employeeSearch.active)
       && !modeLoading
       && !loadingMoreEquipment
       && !nextEquipmentPage,
@@ -47,6 +53,7 @@ export function useDatabaseEmployeeFlow({
     searchQuery,
     appliedSearchQuery,
     hubSearchEmpty,
+    employeeSearch,
   });
 
   const [employeeEquipmentDialog, setEmployeeEquipmentDialog] = useState({
@@ -59,38 +66,221 @@ export function useDatabaseEmployeeFlow({
   const [detailOpenedFromEmployee, setDetailOpenedFromEmployee] = useState(false);
   const [employeeCompareSummaries, setEmployeeCompareSummaries] = useState([]);
 
+  const compareStoreRef = useRef({ scope: '', items: new Map(), overrides: new Map() });
+  const compareRequestSeqRef = useRef(0);
+  const compareInFlightRef = useRef({ scope: '', seq: 0 });
+  const compareRetryRef = useRef({ timer: null, attempts: 0 });
+  const compareExpiryTimerRef = useRef(null);
+  const compareRearmRef = useRef(() => {});
+  const employeeDialogScopeRef = useRef('');
+
+  const publishCompareSummaries = useCallback(() => {
+    const store = compareStoreRef.current;
+    const now = Date.now();
+    for (const [ownerNo, entry] of store.items) {
+      if (!isEmployeeCompareSnapshotFresh(entry.asOfMs, now)) store.items.delete(ownerNo);
+    }
+    for (const [ownerNo, entry] of store.overrides) {
+      if (!isEmployeeCompareSnapshotFresh(entry.at, now)) store.overrides.delete(ownerNo);
+    }
+    const merged = new Map();
+    for (const [ownerNo, entry] of store.items) merged.set(ownerNo, entry.summary);
+    for (const [ownerNo, entry] of store.overrides) {
+      if (entry.summary) merged.set(ownerNo, entry.summary);
+      else merged.delete(ownerNo);
+    }
+    setEmployeeCompareSummaries([...merged.values()]);
+    compareRearmRef.current();
+  }, []);
+
   // One batched 1C call — badges next to employee names in the list.
+  const fetchCompareSummaries = useCallback(async ({ refresh = false } = {}) => {
+    const store = compareStoreRef.current;
+    const scope = store.scope;
+    if (!canViewWarehouse1C || !scope) return;
+    if (!refresh && compareInFlightRef.current.scope === scope) return;
+    const seq = ++compareRequestSeqRef.current;
+    compareInFlightRef.current = { scope, seq };
+    publishCompareSummaries();
+    try {
+      const data = await warehouse1cAPI.getEmployeeCompareSummary(refresh ? { refresh: true } : {});
+      if (seq !== compareRequestSeqRef.current || store.scope !== scope) return;
+      compareRetryRef.current.attempts = 0;
+      if (!isEmployeeCompareSummaryComplete(data?.meta) || !Array.isArray(data?.items)) {
+        store.items.clear();
+        publishCompareSummaries();
+        return;
+      }
+      const metaAsOf = data.meta.as_of ?? data.meta.asOf;
+      const asOfMs = Date.parse(metaAsOf);
+      if (!isEmployeeCompareSnapshotFresh(asOfMs)) {
+        store.items.clear();
+        publishCompareSummaries();
+        return;
+      }
+      const nextItems = new Map();
+      for (const item of data.items) {
+        const ownerNo = Number(item?.owner_no);
+        if (!Number.isInteger(ownerNo) || ownerNo <= 0) continue;
+        const itemAsOf = item?.as_of ?? item?.asOf;
+        const itemAsOfMs = Date.parse(itemAsOf);
+        const effectiveAsOfMs = Number.isFinite(itemAsOfMs)
+          ? Math.min(itemAsOfMs, asOfMs)
+          : asOfMs;
+        nextItems.set(ownerNo, {
+          summary: { ...item, as_of: itemAsOf || metaAsOf },
+          asOfMs: effectiveAsOfMs,
+        });
+        const override = store.overrides.get(ownerNo);
+        if (override && effectiveAsOfMs > override.at) store.overrides.delete(ownerNo);
+      }
+      store.items = nextItems;
+      publishCompareSummaries();
+    } catch (err) {
+      console.warn('Failed to load employee compare summary:', err);
+      if (seq !== compareRequestSeqRef.current || store.scope !== scope) return;
+      store.items.clear();
+      publishCompareSummaries();
+      const retry = compareRetryRef.current;
+      if (retry.attempts < 2) {
+        retry.attempts += 1;
+        retry.timer = setTimeout(() => {
+          retry.timer = null;
+          void fetchCompareSummaries();
+        }, 5000);
+      }
+    } finally {
+      if (compareInFlightRef.current.seq === seq) {
+        compareInFlightRef.current = { scope: '', seq: 0 };
+      }
+    }
+  }, [canViewWarehouse1C, publishCompareSummaries]);
+
+  compareRearmRef.current = () => {
+    if (compareExpiryTimerRef.current) {
+      clearTimeout(compareExpiryTimerRef.current);
+      compareExpiryTimerRef.current = null;
+    }
+    const store = compareStoreRef.current;
+    const scope = store.scope;
+    let earliest = Infinity;
+    for (const entry of store.items.values()) {
+      if (Number.isFinite(entry.asOfMs) && entry.asOfMs < earliest) earliest = entry.asOfMs;
+    }
+    for (const entry of store.overrides.values()) {
+      if (Number.isFinite(entry.at) && entry.at < earliest) earliest = entry.at;
+    }
+    if (!Number.isFinite(earliest)) return;
+    const delay = Math.max(0, earliest + EMPLOYEE_COMPARE_MAX_AGE_MS - Date.now());
+    compareExpiryTimerRef.current = setTimeout(() => {
+      compareExpiryTimerRef.current = null;
+      if (compareStoreRef.current.scope !== scope) return;
+      publishCompareSummaries();
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (compareInFlightRef.current.scope === scope) return;
+      void fetchCompareSummaries({ refresh: true });
+    }, delay);
+  };
+
   useEffect(() => {
-    if (!canViewWarehouse1C || initialLoading || !dbName) {
-      setEmployeeCompareSummaries([]);
-      return undefined;
+    const scope = normalizeDbId(currentDb?.id || dbName || '');
+    const store = compareStoreRef.current;
+    compareRequestSeqRef.current += 1;
+    const scopeChanged = Boolean(store.scope) && store.scope !== scope;
+    store.scope = scope;
+    store.items.clear();
+    store.overrides.clear();
+    if (scopeChanged) {
+      employeeDialogScopeRef.current = '';
+      setEmployeeEquipmentDialog((prev) => (prev.open ? {
+        open: false,
+        ownerNo: null,
+        employeeName: '',
+        warehouseRef: '',
+        stackAboveParent: false,
+      } : prev));
     }
     setEmployeeCompareSummaries([]);
-    let cancelled = false;
-    getOrFetchSWR(
-      buildCacheKey('warehouse-1c', 'employee-compare-summary', currentDb?.id || dbName || ''),
-      () => warehouse1cAPI.getEmployeeCompareSummary(),
-      { staleTimeMs: 120_000 },
-    )
-      .then(({ data }) => {
-        if (cancelled) return;
-        setEmployeeCompareSummaries(
-          isEmployeeCompareSummaryComplete(data?.meta) && Array.isArray(data?.items)
-            ? data.items
-            : [],
-        );
-      })
-      .catch((err) => {
-        console.warn('Failed to load employee compare summary:', err);
+    compareRearmRef.current();
+
+    if (!canViewWarehouse1C || initialLoading || !scope) return undefined;
+
+    void fetchCompareSummaries();
+
+    const intervalId = window.setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      void fetchCompareSummaries();
+    }, EMPLOYEE_COMPARE_MAX_AGE_MS);
+
+    const handleWindowFocus = () => { void fetchCompareSummaries(); };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void fetchCompareSummaries();
+    };
+    window.addEventListener('focus', handleWindowFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      compareRequestSeqRef.current += 1;
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleWindowFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (compareRetryRef.current.timer) {
+        clearTimeout(compareRetryRef.current.timer);
+        compareRetryRef.current.timer = null;
+      }
+      compareRetryRef.current.attempts = 0;
+      if (compareExpiryTimerRef.current) {
+        clearTimeout(compareExpiryTimerRef.current);
+        compareExpiryTimerRef.current = null;
+      }
+    };
+  }, [canViewWarehouse1C, initialLoading, dbName, currentDb?.id, fetchCompareSummaries]);
+
+  const lastCompareRevisionRef = useRef(equipmentRevision);
+  useEffect(() => {
+    if (equipmentRevision === lastCompareRevisionRef.current) return;
+    lastCompareRevisionRef.current = equipmentRevision;
+    const store = compareStoreRef.current;
+    if (!canViewWarehouse1C || !store.scope) return;
+    compareRequestSeqRef.current += 1;
+    store.items.clear();
+    store.overrides.clear();
+    publishCompareSummaries();
+    void fetchCompareSummaries({ refresh: true });
+  }, [equipmentRevision, canViewWarehouse1C, fetchCompareSummaries, publishCompareSummaries]);
+
+  const handleEmployeeComparisonChange = useCallback(({ ownerNo, summary } = {}) => {
+    const owner = Number(ownerNo);
+    if (!Number.isInteger(owner) || owner <= 0) return;
+    const store = compareStoreRef.current;
+    if (!store.scope || employeeDialogScopeRef.current !== store.scope) return;
+    const at = Date.now();
+    if (summary && typeof summary === 'object') {
+      const summaryAsOf = summary.as_of ?? summary.asOf;
+      const summaryAsOfMs = Date.parse(summaryAsOf);
+      store.overrides.set(owner, {
+        summary: {
+          ...summary,
+          as_of: summaryAsOf || new Date(at).toISOString(),
+        },
+        at: Number.isFinite(summaryAsOfMs) ? summaryAsOfMs : at,
       });
-    return () => { cancelled = true; };
-  }, [canViewWarehouse1C, initialLoading, dbName, currentDb?.id]);
+    } else {
+      store.items.delete(owner);
+      store.overrides.set(owner, { summary: null, at });
+    }
+    publishCompareSummaries();
+  }, [publishCompareSummaries]);
 
   const handleOpenEmployee = useCallback(({ ownerNo, employeeName, warehouseRef = '' }) => {
     const normalizedEmployeeName = String(employeeName || '').trim();
     const normalizedWarehouseRef = String(warehouseRef || '').trim();
     if (!ownerNo && !normalizedEmployeeName && !normalizedWarehouseRef) return;
     if (!ownerNo && !canViewWarehouse1C) return;
+    employeeDialogScopeRef.current = compareStoreRef.current.scope;
+    if (ownerNo) {
+      handleEmployeeComparisonChange({ ownerNo, summary: null });
+    }
     // Close equipment card first — otherwise it stays on top and the employee
     // dialog only becomes visible after the equipment window is closed.
     if (detailModal.open) {
@@ -103,9 +293,10 @@ export function useDatabaseEmployeeFlow({
       warehouseRef: normalizedWarehouseRef,
       stackAboveParent: false,
     });
-  }, [canViewWarehouse1C, detailModal.open, handleDetailClose]);
+  }, [canViewWarehouse1C, detailModal.open, handleDetailClose, handleEmployeeComparisonChange]);
 
   const handleCloseEmployeeEquipmentDialog = useCallback(() => {
+    employeeDialogScopeRef.current = '';
     setEmployeeEquipmentDialog({
       open: false,
       ownerNo: null,
@@ -135,7 +326,11 @@ export function useDatabaseEmployeeFlow({
 
     const item = findEquipmentByInvNo?.(normalized);
     setDetailOpenedFromEmployee(true);
-    openDetailView(item || normalized, { invNo: normalized, loading: !item });
+    openDetailView(item || normalized, {
+      invNo: normalized,
+      loading: !item,
+      ...(meta?.initialTab ? { initialTab: meta.initialTab } : {}),
+    });
   }, [currentDb?.id, dbName, findEquipmentByInvNo, notifyDatabaseError, openDetailView]);
 
   const handleBackToEmployeeEquipment = useCallback(() => {
@@ -277,6 +472,7 @@ export function useDatabaseEmployeeFlow({
       || (reopenDetail?.kind === 'employee' && (reopenDetail?.ownerNo || reopenDetail?.employeeName))
     ) {
       const employee = reopenEmployee || reopenDetail;
+      employeeDialogScopeRef.current = compareStoreRef.current.scope;
       setEmployeeEquipmentDialog({
         open: true,
         ownerNo: employee.ownerNo || null,
@@ -297,6 +493,7 @@ export function useDatabaseEmployeeFlow({
     employeeEquipmentDialog,
     detailOpenedFromEmployee,
     employeeCompareSummaries,
+    handleEmployeeComparisonChange,
     handleOpenEmployee,
     handleCloseEmployeeEquipmentDialog,
     handleOpenEquipmentFromEmployee,

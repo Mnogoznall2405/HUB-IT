@@ -8,6 +8,9 @@ param(
     [string]$SigningKeyId = 'hubit-zsgp-ru-tls-2026-04',
     [ValidateCount(1, 10)]
     [string[]]$ReleaseNotes = @('Обновление HUB Desktop'),
+    [ValidateSet('Tls', 'Dedicated')]
+    [string]$SigningKeyKind = 'Tls',
+    [switch]$AllowShortCertificateLifetime,
     [switch]$NoBuild,
     [switch]$NoRestore,
     [switch]$ValidateSigningCertificateOnly
@@ -55,12 +58,53 @@ function Get-ValidatedSigningCertificate {
         throw 'Signing key id has an invalid format.'
     }
 
+    $expectedKeyIdPrefix = if ($SigningKeyKind -eq 'Dedicated') { 'hub-update-signing-' } else { 'hubit-zsgp-ru-tls-' }
+    if (-not $SigningKeyId.StartsWith($expectedKeyIdPrefix, [StringComparison]::Ordinal)) {
+        throw "Signing key id must start with '$expectedKeyIdPrefix' for the $SigningKeyKind key kind."
+    }
+
     $certificatePath = Join-Path $signingCertificateStore $normalizedSigningThumbprint
     $certificate = Get-Item -LiteralPath $certificatePath -ErrorAction Stop
     if (-not $certificate.Thumbprint.Equals(
             $normalizedSigningThumbprint,
             [StringComparison]::OrdinalIgnoreCase)) {
         throw 'The selected signing certificate thumbprint does not match the requested thumbprint.'
+    }
+
+    $now = [DateTime]::UtcNow
+    if ($certificate.NotBefore.ToUniversalTime() -gt $now) {
+        throw 'The selected signing certificate is not valid yet.'
+    }
+    if ($certificate.NotAfter.ToUniversalTime() -le $now) {
+        throw 'The selected signing certificate has expired.'
+    }
+
+    if (-not $certificate.HasPrivateKey) {
+        throw 'Desktop update signing certificate has no private key.'
+    }
+
+    $ekuExtension = @($certificate.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.37' })
+    $ekuValues = @()
+    if ($ekuExtension.Count -eq 1) {
+        $ekuValues = @($ekuExtension[0].EnhancedKeyUsages | ForEach-Object { $_.Value })
+    }
+
+    if ($SigningKeyKind -eq 'Dedicated') {
+        # Dedicated update-signing key: not a TLS certificate, long-lived by design.
+        if ($ekuValues -contains '1.3.6.1.5.5.7.3.1') {
+            throw 'The dedicated update signing certificate must not be valid for TLS server authentication.'
+        }
+        if (-not ($ekuValues -contains '1.3.6.1.5.5.7.3.3')) {
+            throw 'The dedicated update signing certificate must carry the code signing usage.'
+        }
+        if ($certificate.PublicKey.Key.KeySize -lt 3072) {
+            throw 'The dedicated update signing key must be RSA 3072 or larger.'
+        }
+        if ($certificate.NotAfter.ToUniversalTime() -le $now.AddDays(365)) {
+            throw 'The dedicated update signing certificate must remain valid for more than one year.'
+        }
+
+        return $certificate
     }
 
     $dnsNames = @($certificate.DnsNameList | ForEach-Object { $_.Unicode })
@@ -72,23 +116,13 @@ function Get-ValidatedSigningCertificate {
         throw 'A self-signed certificate cannot be used as the production TLS signing certificate.'
     }
 
-    $now = [DateTime]::UtcNow
-    if ($certificate.NotBefore.ToUniversalTime() -gt $now) {
-        throw 'The selected signing certificate is not valid yet.'
-    }
-    if ($certificate.NotAfter.ToUniversalTime() -le $now.AddDays(30)) {
-        throw 'The selected signing certificate expires in 30 days or less; rotate trust before publishing.'
+    if (-not $AllowShortCertificateLifetime -and
+        $certificate.NotAfter.ToUniversalTime() -le $now.AddDays(30)) {
+        throw 'The selected signing certificate expires in 30 days or less; rotate trust before publishing (or pass -AllowShortCertificateLifetime for the one-off trust-rotation release).'
     }
 
-    $ekuExtension = @($certificate.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.37' })
-    if ($ekuExtension.Count -ne 1 -or
-        -not @($ekuExtension[0].EnhancedKeyUsages | ForEach-Object { $_.Value }).Contains(
-            '1.3.6.1.5.5.7.3.1')) {
+    if (-not ($ekuValues -contains '1.3.6.1.5.5.7.3.1')) {
         throw 'The selected signing certificate is not valid for TLS server authentication.'
-    }
-
-    if (-not $certificate.HasPrivateKey) {
-        throw 'Desktop update signing certificate has no private key.'
     }
 
     return $certificate
@@ -96,10 +130,15 @@ function Get-ValidatedSigningCertificate {
 
 function Invoke-PayloadSigner([byte[]]$Data) {
     $payloadBase64 = [Convert]::ToBase64String($Data)
+    $signerArguments = @(
+        '-SigningCertificateThumbprint', $normalizedSigningThumbprint,
+        '-PayloadBase64', $payloadBase64,
+        '-SigningKeyKind', $SigningKeyKind)
+    if ($AllowShortCertificateLifetime) {
+        $signerArguments += '-AllowShortCertificateLifetime'
+    }
     $signatureOutput = & powershell -NoProfile -ExecutionPolicy Bypass `
-        -File $payloadSignerScript `
-        -SigningCertificateThumbprint $normalizedSigningThumbprint `
-        -PayloadBase64 $payloadBase64
+        -File $payloadSignerScript @signerArguments
     if ($LASTEXITCODE -ne 0) {
         throw "Production TLS payload signer failed with exit code $LASTEXITCODE"
     }

@@ -43,12 +43,13 @@ export function ScheduleSendDialog({
   const presets = useMemo(() => (open ? buildSchedulePresets() : []), [open]);
   const [body, setBody] = useState('');
   const [localValue, setLocalValue] = useState('');
+  const initialDateValue = initialDate ? new Date(initialDate).getTime() : null;
 
   useEffect(() => {
     if (!open) return;
     setBody(String(initialBody || ''));
-    setLocalValue(toDateTimeLocalValue(initialDate || buildSchedulePresets()[0].date));
-  }, [open, initialBody, initialDate]);
+    setLocalValue(toDateTimeLocalValue(initialDateValue !== null ? new Date(initialDateValue) : buildSchedulePresets()[0].date));
+  }, [open, initialBody, initialDateValue]);
 
   const date = fromDateTimeLocalValue(localValue);
   const dateError = validateScheduleDate(date);
@@ -113,10 +114,10 @@ export function ScheduleSendDialog({
 }
 
 // A line above the composer: how many messages are waiting and when the nearest goes out.
-export function ScheduledMessagesBar({ items = [], onOpen }) {
+export function ScheduledMessagesBar({ items = [], error = '', onOpen }) {
   const waiting = items.filter((item) => item.status === 'scheduled' || item.status === 'sending');
   const failed = items.filter((item) => item.status === 'failed');
-  if (!waiting.length && !failed.length) return null;
+  if (!waiting.length && !failed.length && !error) return null;
   const nearest = waiting.length ? waiting[0].scheduled_for : '';
   return (
     <Box
@@ -133,7 +134,7 @@ export function ScheduledMessagesBar({ items = [], onOpen }) {
         minHeight: 36,
         border: 'none',
         bgcolor: 'transparent',
-        color: failed.length ? 'error.main' : 'primary.main',
+        color: failed.length || error ? 'error.main' : 'primary.main',
         cursor: 'pointer',
         textAlign: 'left',
         fontSize: 13.5,
@@ -142,9 +143,11 @@ export function ScheduledMessagesBar({ items = [], onOpen }) {
     >
       <ScheduleSendRoundedIcon sx={{ fontSize: 18 }} />
       <span>
-        {waiting.length ? `Запланировано: ${waiting.length}` : ''}
-        {waiting.length && nearest ? ` · ближайшее ${formatScheduledTime(nearest)}` : ''}
-        {failed.length ? `${waiting.length ? ' · ' : ''}не отправлено: ${failed.length}` : ''}
+        {error || <>
+          {waiting.length ? `Запланировано: ${waiting.length}` : ''}
+          {waiting.length && nearest ? ` · ближайшее ${formatScheduledTime(nearest)}` : ''}
+          {failed.length ? `${waiting.length ? ' · ' : ''}не отправлено: ${failed.length}` : ''}
+        </>}
       </span>
     </Box>
   );
@@ -157,7 +160,7 @@ export function ScheduledMessagesDialog({ open, items = [], busy = false, error 
       <DialogTitle id="chat-scheduled-list-title">Запланированные сообщения</DialogTitle>
       <DialogContent dividers>
         {error ? <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert> : null}
-        {!items.length ? (
+        {!items.length && !error ? (
           <Typography variant="body2" color="text.secondary">Запланированных сообщений нет.</Typography>
         ) : (
           <Stack spacing={1}>

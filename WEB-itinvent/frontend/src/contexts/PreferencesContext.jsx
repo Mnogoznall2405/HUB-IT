@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { ThemeProvider, CssBaseline } from '@mui/material';
 import { alpha, createTheme } from '@mui/material/styles';
 import { settingsAPI } from '../api/client';
@@ -7,7 +7,8 @@ import {
   DEFAULT_MOBILE_BOTTOM_NAV_ITEMS,
   normalizeMobileBottomNavItems,
 } from '../lib/mobileNavigationPreferences';
-import { mergeServerBranchFilters, normalizeDatabaseBranchFilters } from '../pages/database/databaseBranchPreferences';
+import { flushPersistBranchFilters, mergeServerBranchFilters, normalizeDatabaseBranchFilters } from '../pages/database/databaseBranchPreferences';
+import { BROWSER_ACCOUNT_EVENT, getBrowserAccount, getStoredUserKey, PREFERENCES_CACHE_KEY, presentationPreferences } from '../lib/browserAccountSession';
 
 export {
   DEFAULT_MOBILE_BOTTOM_NAV_ITEMS,
@@ -15,7 +16,7 @@ export {
 } from '../lib/mobileNavigationPreferences';
 
 const PreferencesContext = createContext(null);
-const CACHE_KEY = 'web_preferences_cache';
+const CACHE_KEY = PREFERENCES_CACHE_KEY;
 export const DASHBOARD_SECTION_KEYS = ['attention', 'tasks', 'absences', 'communication', 'news'];
 export const DEFAULT_DASHBOARD_SECTIONS = ['attention', 'tasks', 'absences', 'communication', 'news'];
 export const DASHBOARD_MOBILE_SECTION_KEYS = ['urgent', 'announcements', 'tasks'];
@@ -127,7 +128,7 @@ function readCachedPreferences() {
     const raw = localStorage.getItem(CACHE_KEY);
     if (!raw) return DEFAULT_PREFERENCES;
     const parsed = JSON.parse(raw);
-    return normalizePreferencePayload(parsed);
+    return normalizePreferencePayload(getBrowserAccount() ? parsed : presentationPreferences(parsed));
   } catch {
     return DEFAULT_PREFERENCES;
   }
@@ -148,6 +149,10 @@ function syncSelectedDatabase(databaseId) {
 export function PreferencesProvider({ children }) {
   const [preferences, setPreferences] = useState(() => readCachedPreferences());
   const [loading, setLoading] = useState(false);
+  const accountKeyRef = useRef(getStoredUserKey());
+  const accountEpochRef = useRef(0);
+  const refreshGateRef = useRef(null);
+  const accountEpoch = accountEpochRef.current;
   const [systemPrefersDark, setSystemPrefersDark] = useState(() => (
     typeof window !== 'undefined'
     && typeof window.matchMedia === 'function'
@@ -169,21 +174,31 @@ export function PreferencesProvider({ children }) {
   }, [resolvedThemeMode]);
 
   const refreshFromServer = useCallback(async () => {
-    const hasUser = !!localStorage.getItem('user');
-    if (!hasUser) return;
+    const key = getStoredUserKey();
+    if (!key || key !== accountKeyRef.current) return;
+    const epoch = accountEpochRef.current;
+    if (refreshGateRef.current?.epoch === epoch) return refreshGateRef.current.promise;
+    const ownsAccount = () => epoch === accountEpochRef.current && key === getStoredUserKey();
+    const gate = { epoch, promise: null };
+    refreshGateRef.current = gate;
     setLoading(true);
-    try {
-      const data = await settingsAPI.getMySettings({ suppressAuthRequired: true });
-      const next = normalizePreferencePayload(data);
-      setPreferences(next);
-      cachePreferences(next);
-      syncSelectedDatabase(next.pinned_database);
-      mergeServerBranchFilters(next.database_branch_filters);
-    } catch (error) {
-      console.error('Failed to load preferences:', error);
-    } finally {
-      setLoading(false);
-    }
+    gate.promise = (async () => {
+      try {
+        const data = await settingsAPI.getMySettings({ suppressAuthRequired: true });
+        if (!ownsAccount()) return;
+        const next = normalizePreferencePayload(data);
+        setPreferences(next);
+        cachePreferences(next);
+        syncSelectedDatabase(next.pinned_database);
+        mergeServerBranchFilters(next.database_branch_filters);
+      } catch (error) {
+        if (ownsAccount()) console.error('Failed to load preferences:', error);
+      } finally {
+        if (refreshGateRef.current === gate) refreshGateRef.current = null;
+        if (ownsAccount()) setLoading(false);
+      }
+    })();
+    return gate.promise;
   }, []);
 
   useEffect(() => {
@@ -210,16 +225,33 @@ export function PreferencesProvider({ children }) {
       }
       scheduleRefresh();
     };
+    const accountChanged = (event) => {
+      const key = event.detail?.key || '';
+      if (!event.detail?.reset && key === accountKeyRef.current) return;
+      accountEpochRef.current += 1;
+      accountKeyRef.current = key;
+      refreshGateRef.current = null;
+      flushPersistBranchFilters();
+      setPreferences(readCachedPreferences());
+      setLoading(false);
+      authChanged();
+    };
     window.addEventListener('auth-changed', authChanged);
+    window.addEventListener(BROWSER_ACCOUNT_EVENT, accountChanged);
     return () => {
       if (timeoutId !== null) {
         window.clearTimeout(timeoutId);
       }
       window.removeEventListener('auth-changed', authChanged);
+      window.removeEventListener(BROWSER_ACCOUNT_EVENT, accountChanged);
     };
   }, [refreshFromServer]);
 
   const savePreferences = useCallback(async (patch) => {
+    const key = accountKeyRef.current;
+    const ownsAccount = () => accountEpoch === accountEpochRef.current && key === getStoredUserKey();
+    const expiredSession = () => new Error('Настройки относятся к завершённой сессии.');
+    if (!key || !ownsAccount()) throw expiredSession();
     const previousPreferences = preferences;
     const normalizedPatch = {
       ...patch,
@@ -252,6 +284,7 @@ export function PreferencesProvider({ children }) {
 
     try {
       const saved = await settingsAPI.updateMySettings(normalizedPatch);
+      if (!ownsAccount()) throw expiredSession();
       const next = normalizePreferencePayload(saved);
       setPreferences(next);
       cachePreferences(next);
@@ -260,6 +293,7 @@ export function PreferencesProvider({ children }) {
       }
       return next;
     } catch (error) {
+      if (!ownsAccount()) throw expiredSession();
       console.error('Failed to save preferences:', error);
       setPreferences(previousPreferences);
       cachePreferences(previousPreferences);
@@ -268,7 +302,7 @@ export function PreferencesProvider({ children }) {
       }
       throw error;
     }
-  }, [preferences]);
+  }, [preferences, accountEpoch]);
 
   const theme = useMemo(() => {
     const mode = resolvedThemeMode;

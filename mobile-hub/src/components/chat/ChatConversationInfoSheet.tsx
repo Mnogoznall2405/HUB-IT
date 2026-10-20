@@ -1,9 +1,12 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import * as chatApi from '../../api/chatApi';
+import { HUB_WEB_ORIGIN } from '../../api/config';
+import { buildInviteLink, describeGroupActivity, type ChatGroupActivityItem } from '../../chat/chatGroupActivity';
 import type { ChatAiBot, ChatConversationAttachment, ChatConversationSummary, ChatMember } from '../../api/types';
 import { isAiConversation } from '../../chat/chatAiWorkspace';
+import { groupSlowModeLabel } from '../../chat/chatModels';
 import { isSandboxAiBot } from '../../chat/chatAiSandbox';
 import { ChatOpenCodePanel } from './ChatOpenCodePanel';
 import { useReducedMotion } from '../../accessibility/useReducedMotion';
@@ -72,6 +75,41 @@ export function ChatConversationInfoSheet({
     (member) => member.user.id === currentUserId,
   )?.member_role;
   const canManage = role === 'owner' || role === 'moderator';
+  const [activity, setActivity] = useState<ChatGroupActivityItem[] | null>(null);
+  const [managerBusy, setManagerBusy] = useState(false);
+
+  useEffect(() => {
+    setActivity(null);
+  }, [conversation?.id, visible]);
+
+  const shareInviteLink = async () => {
+    if (!conversation?.id || managerBusy) return;
+    setManagerBusy(true);
+    try {
+      const invite = await chatApi.createGroupInvite(conversation.id);
+      await Share.share({ message: buildInviteLink(HUB_WEB_ORIGIN, invite.token) });
+    } catch {
+      Alert.alert('Ссылка-приглашение', 'Не удалось создать ссылку. Попробуйте позже.');
+    } finally {
+      setManagerBusy(false);
+    }
+  };
+
+  const toggleActivity = async () => {
+    if (!conversation?.id || managerBusy) return;
+    if (activity) {
+      setActivity(null);
+      return;
+    }
+    setManagerBusy(true);
+    try {
+      setActivity(await chatApi.getGroupActivity(conversation.id));
+    } catch {
+      Alert.alert('Журнал действий', 'Не удалось загрузить журнал.');
+    } finally {
+      setManagerBusy(false);
+    }
+  };
 
   const loadGallery = useCallback(async (
     conversationId: string,
@@ -154,6 +192,12 @@ export function ChatConversationInfoSheet({
                   ? `${conversation?.member_count || members.length} участников · ${conversation?.online_member_count || 0} онлайн`
                   : formatChatPresenceText(conversation?.direct_peer?.presence)}
               </Text>
+              {groupSlowModeLabel(conversation) ? (
+                <Text style={styles.subtitle}>{groupSlowModeLabel(conversation)}</Text>
+              ) : null}
+              {conversation?.kind === 'group' && conversation.members_send_files === false ? (
+                <Text style={styles.subtitle}>Файлы: только владелец и модераторы</Text>
+              ) : null}
             </View>
 
             {!isGroup && conversation?.direct_peer ? (
@@ -249,6 +293,30 @@ export function ChatConversationInfoSheet({
                   );
                 })}
                 {!members.length ? <Text style={styles.empty}>Список участников недоступен</Text> : null}
+              </View>
+            ) : null}
+
+            {isGroup && canManage ? (
+              <View style={styles.section}>
+                <ActionRow
+                  icon="link-variant"
+                  label="Ссылка-приглашение"
+                  onPress={() => { void shareInviteLink(); }}
+                  disabled={busy || managerBusy}
+                />
+                <ActionRow
+                  icon="history"
+                  label={activity ? 'Скрыть журнал действий' : 'Журнал действий'}
+                  onPress={() => { void toggleActivity(); }}
+                  disabled={busy || managerBusy}
+                />
+                {activity ? (
+                  activity.length ? activity.map((item) => (
+                    <Text key={item.id} style={styles.memberMeta}>
+                      {`${item.actor_name || 'Участник'} ${describeGroupActivity(item)}`}
+                    </Text>
+                  )) : <Text style={styles.empty}>Записей пока нет</Text>
+                ) : null}
               </View>
             ) : null}
 

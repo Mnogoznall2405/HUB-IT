@@ -1,39 +1,30 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 
 export function useMultiSelect() {
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [selectionMode, setSelectionMode] = useState(false);
 
-  const toggleSelection = useCallback((id) => {
-    console.log('[MultiSelect] toggleSelection called for:', id);
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-        console.log('[MultiSelect] Deselected:', id);
-      } else {
-        next.add(id);
-        console.log('[MultiSelect] Selected:', id);
-      }
+  const selectedIdsRef = useRef(selectedIds);
 
-      if (next.size === 0) {
-        console.log('[MultiSelect] Exit selection mode, count:', next.size);
-        setSelectionMode(false);
-      } else {
-        console.log('[MultiSelect] Enter selection mode, count:', next.size);
-        setSelectionMode(true);
-      }
-      return next;
-    });
+  const toggleSelection = useCallback((id) => {
+    // Compute from the ref and call the setters outside any state updater (updaters must be pure).
+    const next = new Set(selectedIdsRef.current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    selectedIdsRef.current = next;
+    setSelectedIds(next);
+    setSelectionMode(next.size > 0);
   }, []);
 
   const selectAll = useCallback((items) => {
-    setSelectedIds(new Set(items.map((item) => item.id || item)));
+    const next = new Set(items.map((item) => item.id || item));
+    selectedIdsRef.current = next;
+    setSelectedIds(next);
     setSelectionMode(true);
   }, []);
 
   const clearSelection = useCallback(() => {
-    setSelectedIds(new Set());
+    selectedIdsRef.current = new Set();
+    setSelectedIds(selectedIdsRef.current);
     setSelectionMode(false);
   }, []);
 
@@ -42,7 +33,8 @@ export function useMultiSelect() {
   }, []);
 
   const exitSelectionMode = useCallback(() => {
-    setSelectedIds(new Set());
+    selectedIdsRef.current = new Set();
+    setSelectedIds(selectedIdsRef.current);
     setSelectionMode(false);
   }, []);
 

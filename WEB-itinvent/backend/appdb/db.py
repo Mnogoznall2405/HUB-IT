@@ -51,8 +51,12 @@ def _postgres_dev_schema_auto_create_enabled() -> bool:
     legacy configuration compatibility.  They still need an explicit way to
     prevent every utility/worker process from running development DDL against
     the live database.
+
+    Fail-closed: DDL runs only when the flag is set explicitly. A host that
+    copied ``.env.example`` or lost the variable gets the Alembic revision check
+    instead of ``create_all`` against a live database.
     """
-    raw = str(os.getenv("APP_SCHEMA_DEV_AUTO_CREATE", "1") or "1")
+    raw = str(os.getenv("APP_SCHEMA_DEV_AUTO_CREATE", "0") or "0")
     return raw.strip().casefold() in {"1", "true", "yes", "on"}
 
 
@@ -74,6 +78,7 @@ def _create_all_app_metadata(connection_or_engine) -> None:
     # file stable. Register extension tables before local/dev create_all; in
     # production Alembic 0100 remains the only schema-change path.
     from backend.ai_sandbox import models as _ai_sandbox_models  # noqa: F401
+    from backend.appdb import monitoring_models as _monitoring_models  # noqa: F401
 
     if _compact_create_all_allowed():
         AppBase.metadata.create_all(bind=connection_or_engine)
@@ -246,22 +251,15 @@ def _initialize_app_schema_uncached(database_url: str | None = None) -> None:
 
     engine = get_app_engine(database_url)
     if engine.dialect.name == "postgresql":
-        if config.app.is_production:
+        if config.app.is_production or not _postgres_dev_schema_auto_create_enabled():
             if not _postgres_has_alembic_version(engine):
                 raise AppDatabaseConfigurationError(
-                    "Production APP_DATABASE_URL is not Alembic-initialized; "
+                    "APP_DATABASE_URL is not Alembic-initialized and startup DDL is disabled; "
                     "run backend Alembic migrations before startup."
                 )
-            # Production never applies migrations on startup: only compare the revision
-            # with the code's head and log a warning (migrations run at release by command).
+            # Honor the explicit no-DDL guard on legacy Windows runtimes that retain
+            # APP_ENV=development, just as initialize_chat_schema does.
             check_internal_database_revision(engine, ensure_app_database_configured(database_url), scope="app")
-            return
-        if not _postgres_dev_schema_auto_create_enabled():
-            if not _postgres_has_alembic_version(engine):
-                raise AppDatabaseConfigurationError(
-                    "APP_SCHEMA_DEV_AUTO_CREATE=0 requires an Alembic-initialized PostgreSQL database"
-                )
-            upgrade_internal_database(ensure_app_database_configured(database_url), scope="app")
             return
         with engine.begin() as connection:
             connection.execute(

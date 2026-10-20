@@ -16,11 +16,49 @@ MIB_BYTES = 1024**2
 _MAX_SCAN_TIMEOUT_SEC = 3600
 
 
+ENGINE_SIZE_LIMIT = "size-limit"
+ENGINE_POLICY_ARCHIVE = "policy-archive"
+ENGINE_POLICY_EXE_SIZE = "policy-exe-size"
+# Skips that are a deliberate policy decision: the file stays accessible under fail-closed.
+POLICY_SKIP_ENGINES = frozenset({ENGINE_SIZE_LIMIT, ENGINE_POLICY_ARCHIVE, ENGINE_POLICY_EXE_SIZE})
+ARCHIVE_EXTENSIONS = frozenset(
+    {
+        ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".tbz2",
+        ".xz", ".txz", ".zst", ".lz", ".lzma", ".cab", ".arj", ".iso",
+    }
+)
+
+
 @dataclass(frozen=True)
 class SecurityScanResult:
     status: str
     engine: str
     detail: str = ""
+
+
+def is_policy_skip(status: object, engine: object) -> bool:
+    return (
+        str(status or "").strip().lower() == "skipped"
+        and str(engine or "").strip() in POLICY_SKIP_ENGINES
+    )
+
+
+def scan_policy_skip(file_name: str, size_bytes: int) -> SecurityScanResult | None:
+    """Return a skip result for files the policy does not scan, or None to scan normally.
+
+    Unpacking archives and big self-extracting installers takes minutes to an hour
+    in Kaspersky, so they are excluded by name/size before the scanner is started.
+    """
+    settings = config.my_files_security
+    if not settings.antivirus_enabled:
+        return None
+    extension = Path(str(file_name or "")).suffix.lower()
+    if settings.antivirus_skip_archives and extension in ARCHIVE_EXTENSIONS:
+        return SecurityScanResult(status="skipped", engine=ENGINE_POLICY_ARCHIVE)
+    exe_limit = int(getattr(settings, "antivirus_exe_max_size_bytes", 0) or 0)
+    if extension == ".exe" and exe_limit > 0 and int(size_bytes) > exe_limit:
+        return SecurityScanResult(status="skipped", engine=ENGINE_POLICY_EXE_SIZE)
+    return None
 
 
 class MyFilesAntivirusError(RuntimeError):
@@ -207,7 +245,7 @@ def scan_my_file(path: Path) -> SecurityScanResult:
 
     max_size = int(getattr(settings, "antivirus_max_size_bytes", 0) or 0)
     if max_size > 0 and int(path.stat().st_size) > max_size:
-        return SecurityScanResult(status="skipped", engine="size-limit")
+        return SecurityScanResult(status="skipped", engine=ENGINE_SIZE_LIMIT)
 
     provider = str(settings.antivirus_provider or "auto").strip().lower()
     if provider not in {"auto", "kaspersky", "defender"}:

@@ -347,14 +347,14 @@ export default function HubNomenclatureMatchDialog({
       <DialogTitle
         sx={{
           pr: 6,
-          pt: isMobile ? 'calc(env(safe-area-inset-top) + 12px)' : undefined,
+          pt: isMobile ? 1.5 : undefined,
         }}
       >
         Сверка с Хабом
         <IconButton
           aria-label="Закрыть"
           onClick={onClose}
-          sx={{ position: 'absolute', right: 8, top: isMobile ? 'calc(env(safe-area-inset-top) + 4px)' : 8 }}
+          sx={{ position: 'absolute', right: 8, top: isMobile ? 4 : 8 }}
         >
           <CloseIcon />
         </IconButton>

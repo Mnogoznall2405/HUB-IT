@@ -649,10 +649,15 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         self._use_app_db = bool(self._database_url)
         self.store = None if self._use_app_db else get_local_store()
         self.db_path = None if self.store is None else Path(self.store.db_path)
+        hub_data_dir_env = str(os.getenv("HUB_DATA_DIR", "") or "").strip()
         self.data_dir = (
-            (Path(__file__).resolve().parents[3] / "data")
-            if self.store is None
-            else Path(self.store.data_dir)
+            Path(hub_data_dir_env)
+            if hub_data_dir_env
+            else (
+                (Path(__file__).resolve().parents[3] / "data")
+                if self.store is None
+                else Path(self.store.data_dir)
+            )
         )
         self._app_schema = schema_name("app", self._database_url)
         self.announcement_attachments_root = self.data_dir / "hub_announcement_attachments"

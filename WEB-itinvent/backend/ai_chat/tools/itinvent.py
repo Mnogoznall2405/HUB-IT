@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
+import threading
 import time
+from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
 logger = logging.getLogger(__name__)
@@ -39,6 +42,7 @@ from backend.ai_chat.tools.context import (
     ITINVENT_TOOL_EQUIPMENT_MODELS_SEARCH,
     ITINVENT_TOOL_USER_BY_NAME,
     ITINVENT_TOOL_USER_FULL_CONTEXT,
+    WAREHOUSE_TOOL_BALANCES_SEARCH,
     get_available_database_options,
 )
 from backend.ai_chat.tools.registry import ai_tool_registry
@@ -617,6 +621,10 @@ class EmployeeSearchArgs(_LimitMixin):
 
 class EmployeeListEquipmentArgs(_LimitMixin):
     owner_no: int = Field(..., ge=1)
+    compare_1c: bool = Field(default=False, description=(
+        "For an explicit ITinvent vs connected 1C warehouse comparison, include the existing portal "
+        "employee comparison/highlight summary. Resolve OWNER_NO with employee.search first."
+    ))
 
 
 class ConsumablesSearchArgs(_LimitMixin):
@@ -980,8 +988,16 @@ class EmployeeSearchTool(AiTool):
 
 
 class EmployeeListEquipmentTool(AiTool):
+    # Worker runs use different asyncio.run loops. Keep the portal service's
+    # asyncio cache lock uncontended across those threads.
+    _comparison_lock = threading.Lock()
     tool_id = ITINVENT_TOOL_EMPLOYEE_LIST_EQUIPMENT
-    description = "List equipment assigned to an employee by OWNER_NO."
+    description = (
+        "List equipment assigned to an employee by OWNER_NO in the selected ITinvent database. "
+        "For 'сравни технику сотрудника в ITinvent и 1С / покажи расхождения', set compare_1c=true: "
+        "returns the same comparison summary used by portal highlighting (nomenclature code and quantity, "
+        "not proof of a serial-number match). Ambiguous employees must be clarified first."
+    )
     input_model = EmployeeListEquipmentArgs
     stage = "searching_equipment"
 
@@ -996,6 +1012,10 @@ class EmployeeListEquipmentTool(AiTool):
             for row in _cap_rows(rows, args.limit)
             if isinstance(row, dict)
         ]
+        comparison = None
+        if args.compare_1c:
+            comparison = self._comparison(context=context, owner_no=args.owner_no, database_id=database_id,
+                                          equipment_rows=rows or [], limit=args.limit)
         return AiToolResult(
             tool_id=self.tool_id,
             ok=True,
@@ -1004,9 +1024,125 @@ class EmployeeListEquipmentTool(AiTool):
                 "owner_no": args.owner_no,
                 **_result_metadata(returned_count=len(items), total=total, limit=args.limit),
                 "items": items,
+                **({"comparison_1c": comparison} if args.compare_1c else {}),
             },
-            sources=[_build_source(database_id)],
+            sources=[_build_source(database_id)] + (
+                [{"system": "warehouse_1c", "source": comparison.get("meta", {}).get("source"),
+                  "as_of": comparison.get("meta", {}).get("as_of")}]
+                if comparison and comparison.get("meta") else []
+            ),
         )
+
+    @staticmethod
+    def _comparison(*, context, owner_no, database_id, equipment_rows, limit):
+        # Reuse the portal's badge/highlight service; do not build a second reconcile algorithm.
+        from backend.ai_chat.tool_permissions import user_can_use_tool
+        from backend.ai_chat.tools.warehouse import _warehouse_service, run_coroutine
+        from backend.services.warehouse_1c_service import (
+            EMPLOYEE_COMPARE_SUMMARY_TTL_SECONDS, WAREHOUSE_1C_FAILURE_CODES,
+        )
+
+        unavailable = {"status": "unknown", "complete": False, "matches_all": None,
+                       "method": "nomenclature_code_and_quantity", "part_status": {}, "part_quantities": {}}
+        employee_names = {_truncate_text(_row_value(row, "employee_name", "fio", "owner_name", "owner_display_name"), limit=180)
+                          for row in equipment_rows if isinstance(row, dict)} - {""}
+        if len(employee_names) == 1:
+            unavailable["employee_name"] = employee_names.pop()
+        if (WAREHOUSE_TOOL_BALANCES_SEARCH not in context.enabled_tools
+                or not user_can_use_tool(WAREHOUSE_TOOL_BALANCES_SEARCH, context.user_payload)):
+            return {**unavailable, "status": "forbidden", "reason": "Нет доступа к подключённому Складу 1С."}
+        if not EmployeeListEquipmentTool._comparison_lock.acquire(timeout=30):
+            return {**unavailable, "status": "error", "reason_code": "comparison_busy",
+                    "reason": "Сверка занята другим запросом; повторите позже."}
+        try:
+            payload = run_coroutine(_warehouse_service().get_employee_compare_summary(db_id=database_id))
+        except Exception as exc:
+            reason_code = getattr(exc, "reason_code", None)
+            if reason_code not in WAREHOUSE_1C_FAILURE_CODES:
+                reason_code = "timeout" if isinstance(exc, TimeoutError) else "query_failed"
+            logger.warning("ai employee comparison failed run_id=%s database_id=%s owner_no=%s error_type=%s reason_code=%s",
+                           context.run_id, database_id, owner_no, type(exc).__name__, reason_code)
+            return {**unavailable, "status": "error", "reason_code": reason_code,
+                    "reason": "Сверка со Складом 1С недоступна."}
+        finally:
+            EmployeeListEquipmentTool._comparison_lock.release()
+        meta = dict(payload.get("meta") or {})
+        summary = next((row for row in payload.get("items") or [] if row.get("owner_no") == owner_no), None)
+        if summary is None:
+            return {**unavailable, "meta": meta, "reason": "Сводка сверки для сотрудника отсутствует."}
+        counts = dict(summary.get("counts") or {})
+        status = str(summary.get("status") or "unknown")
+        quantities = dict(summary.get("part_quantities") or {})
+        # Fresh data can contain only cards without linkage codes. Source loading
+        # succeeded even though there is no position that can be compared.
+        only_unlinked = (status == "unknown" and not quantities and counts.get("hub_items", 0) > 0
+                         and (counts.get("no_part", 0) + counts.get("not_in_1c", 0)) == counts["hub_items"])
+        complete = (meta.get("status") == "ok" and meta.get("balances_status") == "ok"
+                    and not any(meta.get(key) for key in (
+                        "truncated", "has_more", "balances_truncated", "catalog_truncated"))
+                    and (status in {"match", "diff", "only_hub", "only_1c"} or only_unlinked))
+        try:
+            as_of = datetime.fromisoformat(str(meta.get("as_of") or "").replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - as_of).total_seconds()
+            complete = complete and 0 <= age <= EMPLOYEE_COMPARE_SUMMARY_TTL_SECONDS
+        except (ValueError, TypeError):
+            complete = False
+        # A cached snapshot must not override equipment that has already changed.
+        current_counts = {}
+        for row in equipment_rows:
+            code = _normalize_text(_row_value(row, "part_no"))
+            if queries._is_usable_hub_part_no(code):
+                key = queries._normalize_hub_part_no_text(code)
+                current_counts[key] = current_counts.get(key, 0) + 1
+        snapshot_counts = {key: value.get("hub_count") for key, value in quantities.items() if value.get("hub_count")}
+        if snapshot_counts != current_counts or counts.get("hub_items") != len(equipment_rows):
+            complete = False
+        for value in quantities.values():
+            qty = value.get("qty_1c")
+            if qty is not None and (isinstance(qty, bool) or not isinstance(qty, (int, float)) or not math.isfinite(qty) or qty < 0):
+                complete = False
+        if not complete:
+            for key in ("match", "diff", "only_hub", "only_1c"):
+                counts[key] = None
+        keys = sorted(quantities, key=lambda key: (summary.get("part_status", {}).get(key) == "match", key))[:_safe_limit(limit)] if complete else []
+        truncated = complete and len(quantities) > len(keys)
+        coverage_complete = complete and not counts.get("no_part") and not counts.get("not_in_1c") and not truncated
+        matches_all = (status == "match" if coverage_complete else None)
+        counts["matched_items"] = (sum(value.get("hub_count") or 0 for key, value in quantities.items()
+                                        if summary.get("part_status", {}).get(key) == "match") if complete else None)
+        counts["one_c_positions"] = (sum(value.get("qty_1c") is not None for value in quantities.values())
+                                      if complete else None)
+        counts["one_c_units"] = (sum(value.get("qty_1c") or 0 for value in quantities.values())
+                                  if complete else None)
+        if counts["one_c_units"] is not None and not math.isfinite(counts["one_c_units"]):
+            counts["one_c_units"] = None
+        unverified_items = [
+            {"inv_no": _row_value(row, "inv_no"), "model_name": _row_value(row, "model_name"),
+             "type_name": _row_value(row, "type_name")}
+            for row in equipment_rows if not queries._is_usable_hub_part_no(_row_value(row, "part_no"))
+        ][:_safe_limit(limit)]
+        part_names = dict(summary.get("part_names") or {})
+        missing_names = [key for key in keys if not part_names.get(key)]
+        if missing_names:
+            try:
+                catalog = _warehouse_service().lookup_nomenclature_codes(missing_names)
+                part_names.update({key: _truncate_text(row.get("name"), limit=220)
+                                   for key, row in catalog.items() if isinstance(row, dict) and row.get("name")})
+            except Exception as exc:
+                # Missing labels must not discard valid quantities or leak transport details.
+                logger.warning("ai comparison name lookup failed error_type=%s", type(exc).__name__)
+        return {**unavailable, "employee_name": summary.get("employee_name"),
+                "warehouse_ref": summary.get("warehouse_ref"), "warehouse_name": summary.get("warehouse_name"),
+                "status": status if complete or status in {"ambiguous", "no_warehouse"} else "unknown",
+                "complete": complete, "matches_all": matches_all, "meta": meta, "counts": counts,
+                "part_status": {key: summary.get("part_status", {}).get(key) for key in keys},
+                "part_quantities": {key: quantities[key] for key in keys},
+                "part_names": {key: _truncate_text(part_names[key], limit=220) for key in keys if part_names.get(key)},
+                "coverage_complete": coverage_complete, "unverified_items": unverified_items,
+                "truncated": truncated,
+                **({"reason_code": "invalid_quantity"} if meta.get("reason_code") == "invalid_quantity" else {}),
+                "reason": ("Сопоставление по коду номенклатуры и количеству; серийные номера не проверены."
+                           if complete else "Сверка не подтверждена: проверьте выбор склада и полноту/давность данных.")}
 
 
 class ConsumablesSearchTool(AiTool):

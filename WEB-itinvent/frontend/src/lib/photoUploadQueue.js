@@ -45,6 +45,8 @@ export function createIndexedDbStore() {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error || new Error('IndexedDB open failed'));
     });
+    // A failed open (blocked, quota, private mode) must not be cached forever: allow a retry.
+    opening.catch(() => { opening = null; });
     return opening;
   };
   const run = async (mode, operation) => {

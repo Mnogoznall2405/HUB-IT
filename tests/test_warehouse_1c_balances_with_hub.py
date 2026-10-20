@@ -420,3 +420,57 @@ def test_get_balances_with_hub_shows_hub_only_when_1c_empty(monkeypatch):
     assert rows[0]["hub_count"] == 1
     assert float(rows[0]["qty_1c_total"]) == 0
     assert rows[0]["owner_link_method"] == "hub_only"
+
+
+def test_get_balances_with_hub_marks_unknown_when_count_query_fails(monkeypatch):
+    """A failed HUB count must surface as unknown, not as a trustworthy zero."""
+    service = Warehouse1CService()
+
+    async def fake_get_balances(**kwargs):
+        return [
+            {
+                "warehouse_ref": "w1",
+                "warehouse_name": "Рябов Александр Сергеевич",
+                "qty_balance": 1,
+            },
+        ]
+
+    monkeypatch.setattr(service, "get_balances", fake_get_balances)
+    monkeypatch.setattr(
+        "backend.api.v1.database.get_all_db_configs",
+        lambda: [{"id": "ITINVENT", "name": "ITINVENT"}],
+    )
+
+    import backend.database.queries as db_queries
+
+    monkeypatch.setattr(
+        db_queries,
+        "list_owners_compact",
+        lambda db_id=None: [
+            {"OWNER_NO": 10, "OWNER_DISPLAY_NAME": "Рябов Александр Сергеевич"},
+        ],
+    )
+
+    def failing_counts(owner_nos, **kwargs):
+        raise RuntimeError("hub db unavailable")
+
+    monkeypatch.setattr(db_queries, "count_equipment_by_owners_hub_query", failing_counts)
+    monkeypatch.setattr(db_queries, "count_all_owners_by_hub_query", lambda **kwargs: [])
+    monkeypatch.setattr(
+        "backend.services.employment_status_service.resolve_employment_status_batch",
+        lambda names, cache=None: {},
+    )
+
+    rows = asyncio.run(
+        service.get_balances_with_hub(
+            nomenclature_ref="n1",
+            part_no="PN-111",
+            db_id="ITINVENT",
+        )
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["hub_owner_no"] == 10
+    assert rows[0]["hub_count"] is None
+    assert rows[0]["hub_count_kind"] == "unknown"
+    assert rows[0]["unlinked_candidate_count"] is None

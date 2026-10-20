@@ -178,3 +178,71 @@ describe('VoiceUploadDialog: диапазон спикеров', () => {
     expect(screen.getByLabelText('Участников от')).toBeDisabled();
   });
 });
+
+describe('VoiceUploadDialog: вырезание фрагмента', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('передаёт trim_start/trim_end в секундах из «мм:сс»', async () => {
+    voiceJobsAPI.uploadJob.mockResolvedValue({});
+    const onUploaded = vi.fn();
+    const { container } = render(
+      <VoiceUploadDialog open onClose={vi.fn()} onUploaded={onUploaded} options={{}} />,
+    );
+    addFiles(container, ['a.mp3']);
+    fireEvent.change(screen.getByLabelText('Фрагмент: с'), { target: { value: '30:00' } });
+    fireEvent.change(screen.getByLabelText('по'), { target: { value: '42:00' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Отправить на обработку' }));
+    await vi.waitFor(() => expect(onUploaded).toHaveBeenCalled());
+    expect(voiceJobsAPI.uploadJob.mock.calls[0][1])
+      .toMatchObject({ trim_start: 1800, trim_end: 2520 });
+  });
+
+  it('открытый конец — только trim_start; «ч:мм:сс» тоже парсится', async () => {
+    voiceJobsAPI.uploadJob.mockResolvedValue({});
+    const onUploaded = vi.fn();
+    const { container } = render(
+      <VoiceUploadDialog open onClose={vi.fn()} onUploaded={onUploaded} options={{}} />,
+    );
+    addFiles(container, ['a.mp3']);
+    fireEvent.change(screen.getByLabelText('Фрагмент: с'), { target: { value: '1:02:03' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Отправить на обработку' }));
+    await vi.waitFor(() => expect(onUploaded).toHaveBeenCalled());
+    const payload = voiceJobsAPI.uploadJob.mock.calls[0][1];
+    expect(payload.trim_start).toBe(3723);
+    expect(payload.trim_end).toBeUndefined();
+  });
+
+  it('конец раньше начала блокирует отправку и показывает подсказку', async () => {
+    const { container } = render(
+      <VoiceUploadDialog open onClose={vi.fn()} options={{}} />,
+    );
+    addFiles(container, ['a.mp3']);
+    fireEvent.change(screen.getByLabelText('Фрагмент: с'), { target: { value: '30:00' } });
+    fireEvent.change(screen.getByLabelText('по'), { target: { value: '10:00' } });
+
+    expect(screen.getByRole('button', { name: 'Отправить на обработку' })).toBeDisabled();
+    expect(screen.getByText('Конец фрагмента должен быть позже начала')).toBeInTheDocument();
+    expect(voiceJobsAPI.uploadJob).not.toHaveBeenCalled();
+  });
+
+  it('видео-файл: показывает плеер, кнопки проставляют границы из позиции', async () => {
+    URL.createObjectURL = vi.fn(() => 'blob:fake');
+    URL.revokeObjectURL = vi.fn();
+    const { container } = render(
+      <VoiceUploadDialog open onClose={vi.fn()} options={{}} />,
+    );
+    addFiles(container, ['meeting.mp4']);
+
+    // Диалог рендерится в портале — плеер ищем в document, не в container.
+    const video = document.querySelector('video');
+    expect(video).toBeInTheDocument();
+    Object.defineProperty(video, 'currentTime', { configurable: true, value: 3723 });
+
+    fireEvent.click(screen.getByRole('button', { name: 'С — из позиции плеера' }));
+    expect(screen.getByLabelText('Фрагмент: с')).toHaveValue('1:02:03');
+    fireEvent.click(screen.getByRole('button', { name: 'По — из позиции плеера' }));
+    expect(screen.getByLabelText('по')).toHaveValue('1:02:03');
+  });
+});

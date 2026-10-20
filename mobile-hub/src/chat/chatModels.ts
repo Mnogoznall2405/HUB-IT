@@ -30,6 +30,76 @@ function finiteNumber(value: unknown, fallback = 0): number {
 }
 
 /** Idempotency key for optimistic sends; durable while the outbox row lives. */
+// Group posting rules: a closed group stops everyone, "managers" stops plain members. An unknown
+// policy or role never blocks here; the server stays the authority and answers 403 with the reason.
+export function groupPostingBlockReason(
+  conversation:
+    | Pick<
+      ChatConversationSummary,
+      'kind' | 'posting_policy' | 'viewer_member_role' | 'viewer_restricted' | 'viewer_restricted_until'
+    >
+    | null
+    | undefined,
+  now: number = Date.now(),
+): string {
+  if (!conversation || conversation.kind !== 'group') return '';
+  if (conversation.posting_policy === 'closed') return 'Группа закрыта: писать в неё нельзя.';
+  if (conversation.posting_policy === 'managers') {
+    const role = conversation.viewer_member_role;
+    if (role && role !== 'owner' && role !== 'moderator') {
+      return 'Писать в эту группу могут только владелец и модераторы.';
+    }
+  }
+  if (conversation.viewer_restricted) {
+    const until = conversation.viewer_restricted_until ? Date.parse(conversation.viewer_restricted_until) : NaN;
+    if (!Number.isFinite(until)) return 'Вам ограничена отправка сообщений в этой группе.';
+    // An elapsed term no longer blocks; the stale flag only lives until the next refresh.
+    if (until > now) {
+      return `Вам ограничена отправка сообщений до ${new Date(until).toLocaleString('ru-RU', {
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      })}.`;
+    }
+  }
+  return '';
+}
+
+// Slow mode of a group as a short label ('' while it is off); owner and moderators are exempt.
+export function groupSlowModeLabel(
+  conversation: Pick<ChatConversationSummary, 'kind' | 'slow_mode_seconds'> | null | undefined,
+): string {
+  if (!conversation || conversation.kind !== 'group') return '';
+  const seconds = Number(conversation.slow_mode_seconds || 0);
+  if (!Number.isFinite(seconds) || seconds <= 0) return '';
+  if (seconds >= 3600 && seconds % 3600 === 0) return `Медленный режим: ${seconds / 3600} ч`;
+  if (seconds >= 60 && seconds % 60 === 0) return `Медленный режим: ${seconds / 60} мин`;
+  return `Медленный режим: ${seconds} с`;
+}
+
+// Why a plain member cannot attach files to a group ('' when they can or the role is unknown);
+// the server stays the authority and answers 403 with the same reason.
+export function groupFilesBlockReason(
+  conversation: Pick<ChatConversationSummary, 'kind' | 'members_send_files' | 'viewer_member_role'> | null | undefined,
+): string {
+  if (!conversation || conversation.kind !== 'group') return '';
+  if (conversation.members_send_files !== false) return '';
+  const role = conversation.viewer_member_role;
+  if (!role || role === 'owner' || role === 'moderator') return '';
+  return 'В этой группе файлы могут отправлять только владелец и модераторы.';
+}
+
+// The server lets only the owner and moderators of a group notify everybody with @все.
+export function groupMentionAllCandidate(
+  conversation: Pick<ChatConversationSummary, 'kind' | 'viewer_member_role'> | null | undefined,
+): ChatUserSummary | null {
+  if (!conversation || conversation.kind !== 'group') return null;
+  const role = conversation.viewer_member_role;
+  if (role !== 'owner' && role !== 'moderator') return null;
+  return { id: -1, username: 'все', full_name: 'Все участники группы' };
+}
+
 export function createChatClientMessageId(): string {
   return `mobile-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 }
@@ -118,6 +188,8 @@ export function normalizeChatConversation(value: unknown): ChatConversationSumma
     online_member_count: Math.max(0, finiteNumber(item.online_member_count)),
     member_count: Math.max(0, finiteNumber(item.member_count)),
     viewer_member_role: optionalText(item.viewer_member_role),
+    description: optionalText(item.description),
+    posting_policy: optionalText(item.posting_policy),
     members,
     member_preview: memberPreview,
     direct_peer: directPeer,

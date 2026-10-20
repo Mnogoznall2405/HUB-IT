@@ -104,6 +104,8 @@ const GroupsAccess = () => {
   const { notifySuccess, notifyApiError } = useNotification();
   const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
   const groupDetailRequestIdRef = useRef(0);
+  // Folders, user search and matrix loaders are alternatives: only the newest request may apply its result.
+  const datasetRequestIdRef = useRef(0);
 
   const [branchTab, setBranchTab] = useState('all');
   const [viewMode, setViewMode] = useState(VIEW_MODES.FOLDERS);
@@ -242,7 +244,16 @@ const GroupsAccess = () => {
     }
   }, [notifyApiError]);
 
+  // The newest request owns all three spinners, so a superseded loader of another mode cannot leave one stuck.
+  const clearDatasetLoading = useCallback(() => {
+    setLoadingList(false);
+    setLoadingUserSearch(false);
+    setLoadingMatrix(false);
+  }, []);
+
   const loadListGroups = useCallback(async () => {
+    const requestId = datasetRequestIdRef.current + 1;
+    datasetRequestIdRef.current = requestId;
     setLoadingList(true);
     setError('');
     try {
@@ -252,6 +263,7 @@ const GroupsAccess = () => {
         page: 1,
         limit: 5000,
       });
+      if (datasetRequestIdRef.current !== requestId) return;
       const nextGroups = Array.isArray(payload?.items) ? payload.items : [];
       setGroups(nextGroups);
       setUsers([]);
@@ -270,14 +282,17 @@ const GroupsAccess = () => {
         return '';
       });
     } catch (requestError) {
+      if (datasetRequestIdRef.current !== requestId) return;
       setError('Не удалось загрузить список папок');
       notifyApiError(requestError, 'Не удалось загрузить список папок');
     } finally {
-      setLoadingList(false);
+      if (datasetRequestIdRef.current === requestId) clearDatasetLoading();
     }
   }, [activeBranch, debouncedFolderQuery, notifyApiError]);
 
   const loadUserSearch = useCallback(async () => {
+    const requestId = datasetRequestIdRef.current + 1;
+    datasetRequestIdRef.current = requestId;
     setLoadingUserSearch(true);
     setError('');
     try {
@@ -286,6 +301,7 @@ const GroupsAccess = () => {
         branch: activeBranch,
         limit: 200,
       });
+      if (datasetRequestIdRef.current !== requestId) return;
       const nextUsers = Array.isArray(payload?.items) ? payload.items : [];
       setUsers(nextUsers);
       setMatrixCells([]);
@@ -295,14 +311,17 @@ const GroupsAccess = () => {
       setSelectedGroupDn('');
       setGroupDetail(null);
     } catch (requestError) {
+      if (datasetRequestIdRef.current !== requestId) return;
       setError('Не удалось найти учётки');
       notifyApiError(requestError, 'Не удалось найти учётки');
     } finally {
-      setLoadingUserSearch(false);
+      if (datasetRequestIdRef.current === requestId) clearDatasetLoading();
     }
   }, [activeBranch, debouncedUserQuery, notifyApiError]);
 
   const loadMatrixGrid = useCallback(async () => {
+    const requestId = datasetRequestIdRef.current + 1;
+    datasetRequestIdRef.current = requestId;
     setLoadingMatrix(true);
     setError('');
     try {
@@ -313,6 +332,7 @@ const GroupsAccess = () => {
         groupLimit: MATRIX_GROUP_LIMIT,
         userLimit: MATRIX_USER_LIMIT,
       });
+      if (datasetRequestIdRef.current !== requestId) return;
       const nextGroups = Array.isArray(payload?.groups) ? payload.groups : [];
       const nextUsers = Array.isArray(payload?.users) ? payload.users : [];
       const nextCells = Array.isArray(payload?.cells) ? payload.cells : [];
@@ -332,10 +352,11 @@ const GroupsAccess = () => {
         return '';
       });
     } catch (requestError) {
+      if (datasetRequestIdRef.current !== requestId) return;
       setError('Не удалось загрузить матрицу доступа');
       notifyApiError(requestError, 'Не удалось загрузить матрицу доступа');
     } finally {
-      setLoadingMatrix(false);
+      if (datasetRequestIdRef.current === requestId) clearDatasetLoading();
     }
   }, [activeBranch, debouncedFolderQuery, debouncedUserQuery, notifyApiError]);
 
@@ -380,14 +401,15 @@ const GroupsAccess = () => {
       if (debouncedUserQuery) {
         loadUserSearch();
       } else {
+        datasetRequestIdRef.current += 1;
         setUsers([]);
         setDatasetSummary(null);
-        setLoadingUserSearch(false);
+        clearDatasetLoading();
       }
       return;
     }
     loadListGroups();
-  }, [debouncedUserQuery, loadListGroups, loadMatrixGrid, loadUserSearch, viewMode]);
+  }, [clearDatasetLoading, debouncedUserQuery, loadListGroups, loadMatrixGrid, loadUserSearch, viewMode]);
 
   useEffect(() => {
     if (viewMode !== VIEW_MODES.FOLDERS && viewMode !== VIEW_MODES.EXPORT) return;

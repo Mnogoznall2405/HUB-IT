@@ -63,6 +63,7 @@ from backend.services.markdown_transform_service import (
     MarkdownTransformError,
     markdown_transform_service,
 )
+from backend.utils.upload_limits import read_upload_limited
 
 
 router = APIRouter()
@@ -325,6 +326,10 @@ def _enrich_task_collection(payload: dict) -> dict:
     return result
 
 
+def _upload_too_large(context: str) -> HTTPException:
+    return HTTPException(status_code=413, detail=f"{context}: file is too large")
+
+
 def _validate_upload(file_name: str, payload_size: int, *, max_bytes: int, context: str) -> None:
     normalized_name = _normalize_text(file_name) or "file.bin"
     ext = Path(normalized_name).suffix.lower().lstrip(".")
@@ -353,7 +358,7 @@ async def get_hub_dashboard(
         tasks_limit=int(tasks_limit),
     )
     if isinstance(payload, dict) and isinstance(payload.get("my_tasks"), dict):
-        payload["my_tasks"] = _enrich_task_collection(payload.get("my_tasks") or {})
+        payload["my_tasks"] = await run_in_threadpool(_enrich_task_collection, payload.get("my_tasks") or {})
     return payload
 
 
@@ -427,11 +432,9 @@ async def create_hub_absence(
             payload if isinstance(payload, dict) else {},
             created_by=int(current_user.id),
         )
-        hub_service.publish_permission_realtime(
-            permission=PERM_DASHBOARD_READ,
+        await run_in_threadpool(hub_service.publish_permission_realtime, permission=PERM_DASHBOARD_READ,
             event_type=HUB_DASHBOARD_INVALIDATE_EVENT,
-            payload={"sections": ["absences"], "operation": "created"},
-        )
+            payload={"sections": ["absences"], "operation": "created"})
         return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -450,11 +453,9 @@ async def update_hub_absence(
             int(absence_id),
             payload if isinstance(payload, dict) else {},
         )
-        hub_service.publish_permission_realtime(
-            permission=PERM_DASHBOARD_READ,
+        await run_in_threadpool(hub_service.publish_permission_realtime, permission=PERM_DASHBOARD_READ,
             event_type=HUB_DASHBOARD_INVALIDATE_EVENT,
-            payload={"sections": ["absences"], "operation": "updated"},
-        )
+            payload={"sections": ["absences"], "operation": "updated"})
         return result
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="Запись об отсутствии не найдена") from exc
@@ -472,11 +473,9 @@ async def delete_hub_absence(
         await run_in_threadpool(employee_absence_service.delete, int(absence_id))
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="Запись об отсутствии не найдена") from exc
-    hub_service.publish_permission_realtime(
-        permission=PERM_DASHBOARD_READ,
+    await run_in_threadpool(hub_service.publish_permission_realtime, permission=PERM_DASHBOARD_READ,
         event_type=HUB_DASHBOARD_INVALIDATE_EVENT,
-        payload={"sections": ["absences"], "operation": "deleted"},
-    )
+        payload={"sections": ["absences"], "operation": "deleted"})
     return {"ok": True}
 
 
@@ -497,8 +496,7 @@ async def get_announcements(
     audience_targeted: bool = Query(False),
     current_user: User = Depends(require_permission(PERM_ANNOUNCEMENTS_READ)),
 ):
-    return hub_service.list_announcements(
-        user_id=int(current_user.id),
+    return await run_in_threadpool(hub_service.list_announcements, user_id=int(current_user.id),
         q=_normalize_text(q),
         priority=_normalize_text(priority),
         unread_only=bool(unread_only),
@@ -511,8 +509,7 @@ async def get_announcements(
         category_id=_normalize_text(category_id),
         tag=_normalize_text(tag),
         bookmarked_only=bool(bookmarked_only),
-        audience_targeted=bool(audience_targeted),
-    )
+        audience_targeted=bool(audience_targeted))
 
 
 @router.get("/announcements/manage")
@@ -544,11 +541,9 @@ async def get_announcement(
     current_user: User = Depends(require_permission(PERM_ANNOUNCEMENTS_READ)),
 ):
     try:
-        item = hub_service.get_announcement(
-            announcement_id,
+        item = await run_in_threadpool(hub_service.get_announcement, announcement_id,
             user_id=int(current_user.id),
-            is_admin=_can_moderate_announcements(current_user),
-        )
+            is_admin=_can_moderate_announcements(current_user))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not item:
@@ -599,7 +594,9 @@ async def create_announcement(
                     continue
                 file_name = _normalize_text(getattr(form_file, "filename", "")) or "file.bin"
                 file_mime = _normalize_text(getattr(form_file, "content_type", ""))
-                payload_bytes = await form_file.read()
+                payload_bytes = await read_upload_limited(
+                    form_file, MAX_ANNOUNCEMENT_FILE_BYTES, too_large=lambda: _upload_too_large("Announcement attachment")
+                )
                 _validate_upload(
                     file_name=file_name,
                     payload_size=len(payload_bytes),
@@ -639,8 +636,7 @@ async def create_announcement(
             tags = payload.get("tags") if isinstance(payload.get("tags"), list) else []
             poll = payload.get("poll") if isinstance(payload.get("poll"), dict) else None
             client_request_id = _normalize_text(payload.get("client_request_id"))
-        return hub_service.create_announcement(
-            payload={
+        return await run_in_threadpool(hub_service.create_announcement, payload={
                 "title": title,
                 "preview": preview,
                 "body": body,
@@ -665,8 +661,7 @@ async def create_announcement(
                 "client_request_id": client_request_id,
             },
             actor=_actor_dict(current_user),
-            attachments=attachments,
-        )
+            attachments=attachments)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -697,12 +692,10 @@ async def patch_announcement(
 ):
     _require_announcement_manager(current_user)
     try:
-        updated = hub_service.update_announcement(
-            announcement_id,
+        updated = await run_in_threadpool(hub_service.update_announcement, announcement_id,
             payload or {},
             actor_user_id=int(current_user.id),
-            is_admin=_can_moderate_announcements(current_user),
-        )
+            is_admin=_can_moderate_announcements(current_user))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
@@ -835,7 +828,7 @@ async def get_announcement_analytics(
     current_user: User = Depends(get_current_active_user),
 ):
     _require_announcement_manager(current_user)
-    detail = hub_service.get_announcement(announcement_id, user_id=int(current_user.id), is_admin=_can_moderate_announcements(current_user))
+    detail = await run_in_threadpool(hub_service.get_announcement, announcement_id, user_id=int(current_user.id), is_admin=_can_moderate_announcements(current_user))
     if not detail:
         raise HTTPException(status_code=404, detail="Announcement not found")
     if not detail.get("can_manage") and not _can_moderate_announcements(current_user):
@@ -863,7 +856,9 @@ async def upload_announcement_attachment(
 ):
     _require_announcement_manager(current_user)
     file_name = _normalize_text(file.filename) or "file.bin"
-    file_bytes = await file.read()
+    file_bytes = await read_upload_limited(
+        file, MAX_ANNOUNCEMENT_FILE_BYTES, too_large=lambda: _upload_too_large("Announcement attachment")
+    )
     _validate_upload(file_name=file_name, payload_size=len(file_bytes), max_bytes=MAX_ANNOUNCEMENT_FILE_BYTES, context="Announcement attachment")
     try:
         return await run_in_threadpool(
@@ -915,11 +910,9 @@ async def delete_announcement(
     current_user: User = Depends(require_permission(PERM_ANNOUNCEMENTS_MODERATE)),
 ):
     try:
-        ok = hub_service.delete_announcement(
-            announcement_id=announcement_id,
+        ok = await run_in_threadpool(hub_service.delete_announcement, announcement_id=announcement_id,
             actor_user_id=int(current_user.id),
-            is_admin=True,
-        )
+            is_admin=True)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not ok:
@@ -933,10 +926,8 @@ async def mark_announcement_as_read(
     current_user: User = Depends(require_permission(PERM_ANNOUNCEMENTS_READ)),
 ):
     try:
-        ok = hub_service.mark_announcement_read(
-            announcement_id=announcement_id,
-            user=_actor_dict(current_user),
-        )
+        ok = await run_in_threadpool(hub_service.mark_announcement_read, announcement_id=announcement_id,
+            user=_actor_dict(current_user))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not ok:
@@ -950,10 +941,8 @@ async def acknowledge_announcement(
     current_user: User = Depends(require_permission(PERM_ANNOUNCEMENTS_READ)),
 ):
     try:
-        return hub_service.acknowledge_announcement(
-            announcement_id=announcement_id,
-            user=_actor_dict(current_user),
-        )
+        return await run_in_threadpool(hub_service.acknowledge_announcement, announcement_id=announcement_id,
+            user=_actor_dict(current_user))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
@@ -967,18 +956,16 @@ async def get_announcement_reads(
 ):
     _require_announcement_manager(current_user)
     try:
-        detail = hub_service.get_announcement(
-            announcement_id,
+        detail = await run_in_threadpool(hub_service.get_announcement, announcement_id,
             user_id=int(current_user.id),
-            is_admin=_can_moderate_announcements(current_user),
-        )
+            is_admin=_can_moderate_announcements(current_user))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not detail:
         raise HTTPException(status_code=404, detail="Announcement not found")
     if not detail.get("can_manage") and not _can_moderate_announcements(current_user):
         raise HTTPException(status_code=403, detail="Announcement reads are available only for managers")
-    return hub_service.get_announcement_reads(announcement_id)
+    return await run_in_threadpool(hub_service.get_announcement_reads, announcement_id)
 
 
 @router.get("/announcements/{announcement_id}/attachments/{attachment_id}/file")
@@ -988,19 +975,15 @@ async def download_announcement_attachment(
     current_user: User = Depends(require_permission(PERM_ANNOUNCEMENTS_READ)),
 ):
     try:
-        detail = hub_service.get_announcement(
-            announcement_id,
+        detail = await run_in_threadpool(hub_service.get_announcement, announcement_id,
             user_id=int(current_user.id),
-            is_admin=_can_moderate_announcements(current_user),
-        )
+            is_admin=_can_moderate_announcements(current_user))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not detail:
         raise HTTPException(status_code=404, detail="Announcement not found")
-    item = hub_service.get_announcement_attachment(
-        announcement_id=announcement_id,
-        attachment_id=attachment_id,
-    )
+    item = await run_in_threadpool(hub_service.get_announcement_attachment, announcement_id=announcement_id,
+        attachment_id=attachment_id)
     if not item:
         raise HTTPException(status_code=404, detail="Announcement attachment not found")
     file_path = Path(_normalize_text(item.get("file_abs_path")))
@@ -1069,11 +1052,9 @@ async def like_announcement(
     current_user: User = Depends(require_permission(PERM_ANNOUNCEMENTS_READ)),
 ):
     try:
-        return hub_service.set_announcement_like(
-            announcement_id=announcement_id,
+        return await run_in_threadpool(hub_service.set_announcement_like, announcement_id=announcement_id,
             user=_actor_dict(current_user),
-            liked=True,
-        )
+            liked=True)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
@@ -1088,11 +1069,9 @@ async def unlike_announcement(
     current_user: User = Depends(require_permission(PERM_ANNOUNCEMENTS_READ)),
 ):
     try:
-        return hub_service.set_announcement_like(
-            announcement_id=announcement_id,
+        return await run_in_threadpool(hub_service.set_announcement_like, announcement_id=announcement_id,
             user=_actor_dict(current_user),
-            liked=False,
-        )
+            liked=False)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
@@ -1112,15 +1091,13 @@ async def list_announcement_comments(
     current_user: User = Depends(require_permission(PERM_ANNOUNCEMENTS_READ)),
 ):
     try:
-        return hub_service.list_announcement_comments(
-            announcement_id=announcement_id,
+        return await run_in_threadpool(hub_service.list_announcement_comments, announcement_id=announcement_id,
             user=_actor_dict(current_user),
             limit=int(limit),
             offset=int(offset),
             sort=sort,
             root_comment_id=root_comment_id,
-            changed_since=changed_since,
-        )
+            changed_since=changed_since)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
@@ -1146,7 +1123,9 @@ async def create_announcement_comment(
                 if form_file is None or not hasattr(form_file, "read"):
                     continue
                 file_name = _normalize_text(getattr(form_file, "filename", "")) or "file.bin"
-                file_bytes = await form_file.read()
+                file_bytes = await read_upload_limited(
+                    form_file, MAX_ANNOUNCEMENT_FILE_BYTES, too_large=lambda: _upload_too_large("Comment attachment")
+                )
                 _validate_upload(
                     file_name=file_name,
                     payload_size=len(file_bytes),
@@ -1165,15 +1144,13 @@ async def create_announcement_comment(
             parent_comment_id = _normalize_text(payload.get("parent_comment_id"))
             mentioned_user_ids = payload.get("mentioned_user_ids") if isinstance(payload.get("mentioned_user_ids"), list) else []
             client_request_id = _normalize_text(payload.get("client_request_id"))
-        return hub_service.add_announcement_comment(
-            announcement_id=announcement_id,
+        return await run_in_threadpool(hub_service.add_announcement_comment, announcement_id=announcement_id,
             user=_actor_dict(current_user),
             body=body,
             parent_comment_id=parent_comment_id,
             mentioned_user_ids=mentioned_user_ids,
             attachments=attachments,
-            client_request_id=client_request_id,
-        )
+            client_request_id=client_request_id)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
@@ -1190,12 +1167,10 @@ async def update_announcement_comment(
     current_user: User = Depends(require_permission(PERM_ANNOUNCEMENTS_READ)),
 ):
     try:
-        return hub_service.update_announcement_comment(
-            announcement_id=announcement_id,
+        return await run_in_threadpool(hub_service.update_announcement_comment, announcement_id=announcement_id,
             comment_id=comment_id,
             user=_actor_dict(current_user),
-            body=_normalize_text((payload or {}).get("body")),
-        )
+            body=_normalize_text((payload or {}).get("body")))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
@@ -1211,11 +1186,9 @@ async def delete_announcement_comment(
     current_user: User = Depends(require_permission(PERM_ANNOUNCEMENTS_READ)),
 ):
     try:
-        deleted = hub_service.delete_announcement_comment(
-            announcement_id=announcement_id,
+        deleted = await run_in_threadpool(hub_service.delete_announcement_comment, announcement_id=announcement_id,
             comment_id=comment_id,
-            user=_actor_dict(current_user),
-        )
+            user=_actor_dict(current_user))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not deleted:
@@ -1268,8 +1241,8 @@ async def download_announcement_comment_attachment(
     attachment_id: str,
     current_user: User = Depends(require_permission(PERM_ANNOUNCEMENTS_READ)),
 ):
-    hub_service.get_announcement(announcement_id, user_id=int(current_user.id), is_admin=_can_moderate_announcements(current_user))
-    item = hub_service.get_announcement_comment_attachment(announcement_id=announcement_id, comment_id=comment_id, attachment_id=attachment_id)
+    await run_in_threadpool(hub_service.get_announcement, announcement_id, user_id=int(current_user.id), is_admin=_can_moderate_announcements(current_user))
+    item = await run_in_threadpool(hub_service.get_announcement_comment_attachment, announcement_id=announcement_id, comment_id=comment_id, attachment_id=attachment_id)
     if not item:
         raise HTTPException(status_code=404, detail="Comment attachment not found")
     file_path = Path(_normalize_text(item.get("file_abs_path")))
@@ -1337,12 +1310,10 @@ async def create_task_project(
     _: User = Depends(require_any_permission((PERM_TASKS_CREATE, PERM_TASKS_WRITE))),
 ):
     try:
-        return hub_service.create_task_project(
-            name=_normalize_text(payload.get("name")),
+        return await run_in_threadpool(hub_service.create_task_project, name=_normalize_text(payload.get("name")),
             code=_normalize_text(payload.get("code")),
             description=_normalize_text(payload.get("description")),
-            is_active=payload.get("is_active") is not False,
-        )
+            is_active=payload.get("is_active") is not False)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1354,7 +1325,7 @@ async def patch_task_project(
     _: User = Depends(require_permission(PERM_TASKS_WRITE)),
 ):
     try:
-        updated = hub_service.update_task_project(project_id, payload or {})
+        updated = await run_in_threadpool(hub_service.update_task_project, project_id, payload or {})
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not updated:
@@ -1384,13 +1355,11 @@ async def create_task_object(
     _: User = Depends(require_permission(PERM_TASKS_WRITE)),
 ):
     try:
-        return hub_service.create_task_object(
-            project_id=_normalize_text(payload.get("project_id")),
+        return await run_in_threadpool(hub_service.create_task_object, project_id=_normalize_text(payload.get("project_id")),
             name=_normalize_text(payload.get("name")),
             code=_normalize_text(payload.get("code")),
             description=_normalize_text(payload.get("description")),
-            is_active=payload.get("is_active") is not False,
-        )
+            is_active=payload.get("is_active") is not False)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1402,7 +1371,7 @@ async def patch_task_object(
     _: User = Depends(require_permission(PERM_TASKS_WRITE)),
 ):
     try:
-        updated = hub_service.update_task_object(object_id, payload or {})
+        updated = await run_in_threadpool(hub_service.update_task_object, object_id, payload or {})
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not updated:
@@ -1451,7 +1420,7 @@ async def transform_markdown(
         ensure_user_any_permission(current_user, (PERM_TASKS_CREATE, PERM_TASKS_WRITE))
 
     try:
-        return markdown_transform_service.transform_text(text=text, context=context)
+        return await run_in_threadpool(markdown_transform_service.transform_text, text=text, context=context)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except MarkdownTransformConfigError as exc:
@@ -1502,7 +1471,7 @@ async def get_tasks(
         offset=int(offset),
         allow_all_scope=allow_all,
     )
-    return _enrich_task_collection(payload)
+    return await run_in_threadpool(_enrich_task_collection, payload)
 
 
 @router.get("/tasks/analytics")
@@ -1565,7 +1534,10 @@ async def create_task(
 ):
     try:
         controller_raw = payload.get("controller_user_id")
-        controller_user_id = 0 if controller_raw in (None, "", 0, "0") else int(controller_raw)
+        try:
+            controller_user_id = 0 if controller_raw in (None, "", 0, "0") else int(controller_raw)
+        except (TypeError, ValueError):
+            raise ValueError("controller_user_id must be an integer") from None
         assignee_ids_raw = payload.get("assignee_user_ids")
         assignee_ids: list[int] = []
         if isinstance(assignee_ids_raw, list):
@@ -1579,7 +1551,10 @@ async def create_task(
         if not assignee_ids:
             single_assignee = payload.get("assignee_user_id")
             if single_assignee is not None:
-                assignee_ids = [int(single_assignee)]
+                try:
+                    assignee_ids = [int(single_assignee)]
+                except (TypeError, ValueError):
+                    raise ValueError("assignee_user_id must be an integer") from None
         if not assignee_ids:
             raise ValueError("At least one assignee is required")
 
@@ -1676,13 +1651,13 @@ async def create_task(
                 raise first_error
             if failed_items:
                 return {
-                    "items": transfer_act_reminder_service.enrich_tasks(created_items),
+                    "items": (await run_in_threadpool(transfer_act_reminder_service.enrich_tasks, created_items)),
                     "created": len(created_items),
                     "failed": failed_items,
                     "partial": True,
                 }
             return {
-                "items": transfer_act_reminder_service.enrich_tasks(created_items),
+                "items": (await run_in_threadpool(transfer_act_reminder_service.enrich_tasks, created_items)),
                 "created": len(created_items),
             }
         else:
@@ -1698,7 +1673,7 @@ async def create_task(
             )
             created_items = [created_task]
         return {
-            "items": transfer_act_reminder_service.enrich_tasks(created_items),
+            "items": (await run_in_threadpool(transfer_act_reminder_service.enrich_tasks, created_items)),
             "created": len(created_items),
         }
     except ValueError as exc:
@@ -1730,7 +1705,7 @@ async def get_task(
         task_id=task_id,
         user_id=int(current_user.id),
     )
-    return _enrich_task_payload_for_user(item, current_user)
+    return await run_in_threadpool(_enrich_task_payload_for_user, item, current_user)
 
 
 @router.get("/tasks/{task_id}/canvas", response_model=TaskCanvasResponse)
@@ -1803,7 +1778,7 @@ async def patch_task(
     if not updated:
         raise HTTPException(status_code=404, detail="Task not found")
     await publish_task_discussion_updated(task_id=task_id, task=updated)
-    return _enrich_task_payload(updated)
+    return await run_in_threadpool(_enrich_task_payload, updated)
 
 
 @router.delete("/tasks/{task_id}")
@@ -1852,7 +1827,7 @@ async def start_task(
         user_id=int(current_user.id),
     )
     await _safe_publish_task_discussion_updated(task_id=task_id, task=updated, operation="start")
-    return _enrich_task_payload(updated)
+    return await run_in_threadpool(_enrich_task_payload, updated)
 
 
 @router.post("/tasks/{task_id}/reopen")
@@ -1888,7 +1863,7 @@ async def reopen_task(
         user_id=int(current_user.id),
     )
     await _safe_publish_task_discussion_updated(task_id=task_id, task=updated, operation="reopen")
-    return _enrich_task_payload_for_user(updated, current_user)
+    return await run_in_threadpool(_enrich_task_payload_for_user, updated, current_user)
 
 
 @router.post("/tasks/{task_id}/submit")
@@ -1904,7 +1879,9 @@ async def submit_task(
     if file is not None:
         file_name = _normalize_text(file.filename) or "report.bin"
         file_mime = _normalize_text(file.content_type)
-        payload = await file.read()
+        payload = await read_upload_limited(
+            file, MAX_TASK_REPORT_FILE_BYTES, too_large=lambda: _upload_too_large("Task report")
+        )
         _validate_upload(
             file_name=file_name,
             payload_size=len(payload),
@@ -1933,7 +1910,7 @@ async def submit_task(
     if not updated:
         raise HTTPException(status_code=404, detail="Task not found")
     await _safe_publish_task_discussion_updated(task_id=task_id, task=updated, operation="submit")
-    return _enrich_task_payload(updated)
+    return await run_in_threadpool(_enrich_task_payload, updated)
 
 
 @router.post("/tasks/{task_id}/attachments")
@@ -1944,7 +1921,9 @@ async def upload_task_attachment(
 ):
     file_name = _normalize_text(file.filename) or "file.bin"
     file_mime = _normalize_text(file.content_type)
-    payload = await file.read()
+    payload = await read_upload_limited(
+        file, MAX_TASK_ATTACHMENT_FILE_BYTES, too_large=lambda: _upload_too_large("Task attachment")
+    )
     _validate_upload(
         file_name=file_name,
         payload_size=len(payload),
@@ -1994,7 +1973,7 @@ async def review_task(
     if not updated:
         raise HTTPException(status_code=404, detail="Task not found")
     await _safe_publish_task_discussion_updated(task_id=task_id, task=updated, operation="review")
-    return _enrich_task_payload(updated)
+    return await run_in_threadpool(_enrich_task_payload, updated)
 
 
 @router.post("/tasks/{task_id}/complete")
@@ -2025,7 +2004,7 @@ async def complete_task(
         user_id=int(current_user.id),
     )
     await _safe_publish_task_discussion_updated(task_id=task_id, task=updated, operation="complete")
-    return _enrich_task_payload_for_user(updated, current_user)
+    return await run_in_threadpool(_enrich_task_payload_for_user, updated, current_user)
 
 
 @router.get("/tasks/{task_id}/attachments/{attachment_id}/file")
@@ -2035,18 +2014,16 @@ async def download_task_attachment(
     current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
     try:
-        task = hub_service.get_task(
-            task_id,
+        task = await run_in_threadpool(hub_service.get_task, task_id,
             user_id=int(current_user.id),
-            is_admin=_is_admin_user(current_user),
-        )
+            is_admin=_is_admin_user(current_user))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    item = hub_service.get_task_attachment(task_id=task_id, attachment_id=attachment_id)
+    item = await run_in_threadpool(hub_service.get_task_attachment, task_id=task_id, attachment_id=attachment_id)
     if not item:
         raise HTTPException(status_code=404, detail="Task attachment not found")
     file_path = Path(_normalize_text(item.get("file_abs_path")))
@@ -2164,15 +2141,13 @@ async def download_task_report(
     report_id: str,
     current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
-    item = hub_service.get_report(report_id)
+    item = await run_in_threadpool(hub_service.get_report, report_id)
     if not item:
         raise HTTPException(status_code=404, detail="Task report not found")
     try:
-        task = hub_service.get_task(
-            _normalize_text(item.get("task_id")),
+        task = await run_in_threadpool(hub_service.get_task, _normalize_text(item.get("task_id")),
             user_id=int(current_user.id),
-            is_admin=_can_moderate_announcements(current_user),
-        )
+            is_admin=_can_moderate_announcements(current_user))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
@@ -2260,11 +2235,9 @@ async def create_task_comment(
     if len(body) < 1:
         raise HTTPException(status_code=400, detail="Comment body is required")
     try:
-        result = hub_service.add_task_comment(
-            task_id=task_id,
+        result = await run_in_threadpool(hub_service.add_task_comment, task_id=task_id,
             user=_actor_dict(current_user),
-            body=body,
-        )
+            body=body)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
@@ -2356,7 +2329,7 @@ async def mark_notification_read(
     notification_id: str,
     current_user: User = Depends(_require_notifications_access),
 ):
-    ok = hub_service.mark_notification_read(notification_id=notification_id, user_id=int(current_user.id))
+    ok = await run_in_threadpool(hub_service.mark_notification_read, notification_id=notification_id, user_id=int(current_user.id))
     if not ok:
         raise HTTPException(status_code=404, detail="Notification not found")
     return {"ok": True, "notification_id": notification_id}
@@ -2366,7 +2339,7 @@ async def mark_notification_read(
 async def mark_all_notifications_read(
     current_user: User = Depends(_require_notifications_access),
 ):
-    changed = hub_service.mark_all_notifications_read(user_id=int(current_user.id))
+    changed = await run_in_threadpool(hub_service.mark_all_notifications_read, user_id=int(current_user.id))
     return {"ok": True, "marked_count": int(changed)}
 
 

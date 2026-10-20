@@ -5,7 +5,7 @@ import { myFilesAPI } from '../../api/myFiles';
 const EMPTY_FOLDER_SHARE = { open: false, folderId: '', folder: null, url: '', folderName: '', linkCopied: false };
 const EMPTY_FILE_SHARE = { open: false, fileId: '', item: null, url: '', expiresAt: null, fileName: '', linkCopied: false };
 
-export function useMyFilesShares({ onFileShareChanged, notifySuccess, notifyWarning, notifyApiError }) {
+export function useMyFilesShares({ onFileShareChanged, onFolderShareChanged, notifySuccess, notifyWarning, notifyApiError }) {
   const [folderShareDialog, setFolderShareDialog] = useState(EMPTY_FOLDER_SHARE);
   const [shareDialog, setShareDialog] = useState(EMPTY_FILE_SHARE);
 
@@ -70,20 +70,22 @@ export function useMyFilesShares({ onFileShareChanged, notifySuccess, notifyWarn
       if (rotate) {
         notifySuccess('Создана новая публичная ссылка на папку.', { source: 'my-files-folder-share-rotate', dedupeMode: 'none' });
       }
+      onFolderShareChanged?.(folder.id, true);
     } catch (error) {
       notifyApiError(error, 'Не удалось создать ссылку на папку.', { dedupeMode: 'none' });
     }
-  }, [notifyApiError, notifySuccess, notifyWarning]);
+  }, [onFolderShareChanged, notifyApiError, notifySuccess, notifyWarning]);
 
   const revokeFolderShare = useCallback(async (folderId) => {
     try {
       await myFilesAPI.revokeFolderShare(folderId);
       setFolderShareDialog(EMPTY_FOLDER_SHARE);
+      onFolderShareChanged?.(folderId, false);
       notifySuccess('Ссылка на папку отключена.', { source: 'my-files-folder-share', dedupeMode: 'none' });
     } catch (error) {
       notifyApiError(error, 'Не удалось отключить ссылку.', { dedupeMode: 'none' });
     }
-  }, [notifyApiError, notifySuccess]);
+  }, [onFolderShareChanged, notifyApiError, notifySuccess]);
 
   return {
     shareDialog,

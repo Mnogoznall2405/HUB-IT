@@ -1,34 +1,27 @@
 from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from typing import Optional, List, Dict, Any
 import logging
 
 from backend.api.deps import get_current_active_user, get_current_database_id
 from backend.models.auth import User
 from backend.database.connection import get_db
+from backend.utils.request_network import build_request_network_context
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 def get_client_ip(request: Request) -> str:
-    """Extract client IP from request headers or socket."""
-    # First, try standard X-Forwarded-For (if behind proxy/nginx)
-    x_forwarded_for = request.headers.get("x-forwarded-for")
-    ip = ""
-    if x_forwarded_for:
-        ip = x_forwarded_for.split(",")[0].strip()
-    
-    # Fallback to direct client host
-    elif request.client and request.client.host:
-        ip = request.client.host
-        
-    # Strip port if present (e.g. 10.105.0.42:51019 -> 10.105.0.42)
-    if ip and ":" in ip:
-        # Check if it's an IPv6 address, they have multiple colons. 
-        # IPv4 with port has only one colon.
-        if ip.count(":") == 1:
-            ip = ip.split(":")[0]
-            
+    """Resolve the caller's IP through the trusted-proxy chain.
+
+    The left-most X-Forwarded-For entry is whatever the client typed, so it must never pick the PC that
+    gets looked up (it would reveal another person's equipment list).
+    """
+    ip = build_request_network_context(request).client_ip
+    if not ip and request.client and request.client.host:
+        ip = str(request.client.host).strip()
     return ip
+
 
 @router.get("/identify-workspace")
 async def identify_workspace(
@@ -69,7 +62,7 @@ async def identify_workspace(
         WHERE i.IP_ADDRESS = ? AND i.STATUS_NO = 1 -- Status 1 is usually 'Active/In use'
         ORDER BY i.ID DESC
     """
-    pc_result = db.execute_query(pc_query, (client_ip,))
+    pc_result = await run_in_threadpool(db.execute_query, pc_query, (client_ip,))
     
     if not pc_result:
         return {
@@ -99,7 +92,7 @@ async def identify_workspace(
         WHERE ITEM_ID = ?
         ORDER BY HIST_ID DESC
     """
-    pc_hist = db.execute_query(pc_history_query, (pc_info["ID"],))
+    pc_hist = await run_in_threadpool(db.execute_query, pc_history_query, (pc_info["ID"],))
     pc_prev_owner = pc_hist[0].get("EMPL_NO_OLD") if pc_hist else None
     
     # 3. Find ALL active equipment belonging to this owner
@@ -112,7 +105,7 @@ async def identify_workspace(
         LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
         WHERE i.EMPL_NO = ? AND i.STATUS_NO = 1
     """
-    owner_items = db.execute_query(owner_items_query, (owner_no,))
+    owner_items = await run_in_threadpool(db.execute_query, owner_items_query, (owner_no,))
     
     # 4. Analyze history for each item to find "Linked" equipment (same previous owner)
     linked_inv_nos = []
@@ -130,7 +123,7 @@ async def identify_workspace(
                 WHERE ITEM_ID = ?
                 ORDER BY HIST_ID DESC
             """
-            item_hist = db.execute_query(item_hist_query, (item["ID"],))
+            item_hist = await run_in_threadpool(db.execute_query, item_hist_query, (item["ID"],))
             
             if item_hist:
                 item_prev_owner = item_hist[0].get("EMPL_NO_OLD")

@@ -13,6 +13,7 @@ import pytest
 
 import scan_server.worker as scan_worker
 from scan_server.config import ScanServerConfig
+from scan_server.database import ScanStore
 from scan_server.worker import ScanWorker
 
 
@@ -205,11 +206,10 @@ def test_process_pdf_job_filters_local_hits_from_task_payload(monkeypatch, temp_
     worker._process_job(job)
 
     assert [row["pattern"] for row in calls["incident"]["matched_patterns"]] == ["loan_keyword"]
-    assert calls["finalize"] == {
-        "job_id": "job-1",
-        "status": "analysis_incomplete",
-        "error_text": scan_worker.MISSING_TRANSIENT_PDF_PAYLOAD,
-    }
+    assert calls["incident"]["finalize_status"] == "analysis_incomplete"
+    assert calls["incident"]["finalize_error_text"] == scan_worker.MISSING_TRANSIENT_PDF_PAYLOAD
+    assert calls["incident"]["job"]["id"] == "job-1"
+    assert "finalize" not in calls
 
 
 def test_process_pdf_job_uses_all_patterns_when_task_filter_is_empty(monkeypatch, temp_dir):
@@ -250,11 +250,10 @@ def test_process_pdf_job_uses_all_patterns_when_task_filter_is_empty(monkeypatch
     worker._process_job(job)
 
     assert [row["pattern"] for row in calls["incident"]["matched_patterns"]] == ["password_strict"]
-    assert calls["finalize"] == {
-        "job_id": "job-1",
-        "status": "analysis_incomplete",
-        "error_text": scan_worker.MISSING_TRANSIENT_PDF_PAYLOAD,
-    }
+    assert calls["incident"]["finalize_status"] == "analysis_incomplete"
+    assert calls["incident"]["finalize_error_text"] == scan_worker.MISSING_TRANSIENT_PDF_PAYLOAD
+    assert calls["incident"]["job"]["id"] == "job-1"
+    assert "finalize" not in calls
 
 
 def test_collect_pdf_matches_falls_back_to_ocr_for_gibberish_text_layer(monkeypatch, temp_dir):
@@ -349,8 +348,9 @@ def test_process_incomplete_job_preserves_local_incident_candidate(temp_dir):
     })
 
     assert calls["incident"]["matched_patterns"][0]["pattern"] == "dsp_official_use"
-    assert calls["finalize"]["status"] == "analysis_incomplete"
-    assert calls["finalize"]["error_text"] == "pdf_slice_creation_failed"
+    assert calls["incident"]["finalize_status"] == "analysis_incomplete"
+    assert calls["incident"]["finalize_error_text"] == "pdf_slice_creation_failed"
+    assert "finalize" not in calls
 
 
 def test_collect_pdf_matches_rejects_oversized_pdf_without_ocr(monkeypatch, temp_dir):
@@ -442,11 +442,10 @@ def test_process_job_creates_incident_for_text_pdf_after_mandatory_ocr(monkeypat
 
     assert "incident" in calls
     assert not any(worker.config.archive_dir.rglob("*"))
-    assert calls["finalize"] == {
-        "job_id": "job-1",
-        "status": "done_with_incident",
-        "summary": "Найдено совпадений: 1 (combined_match)",
-    }
+    assert calls["incident"]["job"]["id"] == "job-1"
+    assert calls["incident"]["finalize_status"] == "done_with_incident"
+    assert calls["incident"]["finalize_summary"] == "Найдено совпадений: 1 (combined_match)"
+    assert "finalize" not in calls
 
 
 def test_process_job_skips_blank_tiny_pdf_with_explicit_summary(monkeypatch, temp_dir):
@@ -609,9 +608,10 @@ def test_process_job_processes_pdf_in_memory_and_ocr_finds_match(monkeypatch, te
 
     assert "incident" in calls
     assert not any(worker.config.archive_dir.rglob("*"))
-    assert calls["finalize"]["job_id"] == "job-archive-fail"
-    assert calls["finalize"]["status"] == "done_with_incident"
-    assert calls["finalize"]["summary"] == "Найдено совпадений: 1 (ocr_match)"
+    assert calls["incident"]["job"]["id"] == "job-archive-fail"
+    assert calls["incident"]["finalize_status"] == "done_with_incident"
+    assert calls["incident"]["finalize_summary"] == "Найдено совпадений: 1 (ocr_match)"
+    assert "finalize" not in calls
     assert "job-archive-fail" not in worker._test_spool_store
 
 
@@ -649,7 +649,8 @@ def test_process_job_converts_office_document_before_three_page_ocr(monkeypatch,
 
     worker._process_job(job)
 
-    assert calls["finalize"]["status"] == "done_with_incident"
+    assert calls["incident"]["finalize_status"] == "done_with_incident"
+    assert "finalize" not in calls
     assert any(
         row.get("pattern") == "dsp_official_use"
         for row in calls["incident"]["matched_patterns"]
@@ -1094,3 +1095,61 @@ def test_coerce_matches_drops_furniture_dsp_local_hits(temp_dir):
 
     assert len(matches) == 1
     assert matches[0]["snippet"].startswith("Гриф документа")
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "expected_error"),
+    [
+        ("pdf_slice", scan_worker.MISSING_TRANSIENT_PDF_PAYLOAD),
+        ("analysis_incomplete", "pdf_slice_creation_failed"),
+    ],
+)
+def test_worker_persists_incomplete_incident_atomically(temp_dir, source_kind, expected_error):
+    worker = _make_worker(temp_dir)
+    store = ScanStore(
+        db_path=Path(temp_dir) / "worker.db",
+        archive_dir=Path(temp_dir) / "archive",
+        task_ack_timeout_sec=300,
+        agent_online_timeout_sec=1800,
+    )
+    worker.store = store
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-atomic",
+            "hostname": "HOST-ATOMIC",
+            "source_kind": source_kind,
+            "event_id": f"atomic-{source_kind}",
+            "local_pattern_hits": [
+                {
+                    "pattern": "dsp_official_use",
+                    "pattern_name": "Для служебного пользования",
+                    "value": "Для служебного пользования",
+                }
+            ],
+            "metadata": {"analysis_incomplete_reason": "pdf_slice_creation_failed"},
+            "text_excerpt": "",
+        }
+    )
+
+    with store._lock, store._connect() as conn:
+        job = dict(
+            conn.execute("SELECT * FROM scan_jobs WHERE id=?", (queued["job_id"],)).fetchone()
+        )
+    worker._process_job(job)
+
+    with store._lock, store._connect() as conn:
+        job_row = dict(
+            conn.execute("SELECT * FROM scan_jobs WHERE id=?", (queued["job_id"],)).fetchone()
+        )
+        findings = conn.execute(
+            "SELECT COUNT(*) FROM scan_findings WHERE job_id=?", (queued["job_id"],)
+        ).fetchone()[0]
+        incidents = conn.execute(
+            "SELECT COUNT(*) FROM scan_incidents WHERE job_id=?", (queued["job_id"],)
+        ).fetchone()[0]
+
+    assert job_row["status"] == "analysis_incomplete"
+    assert job_row["error_text"] == expected_error
+    assert job_row["finished_at"] is not None
+    assert findings == 1
+    assert incidents == 1

@@ -29,6 +29,11 @@ class TransferManager:
         """
         self.data_manager = data_manager or JSONDataManager()
 
+    def _append_record(self, file_name: str, record) -> None:
+        """Append a record; a failed write must not look like a successful operation."""
+        if self.data_manager.append_to_json(file_name, record) is False:
+            raise RuntimeError(f"Failed to persist record to {file_name}")
+
     def add_transfer(
         self,
         serial_number: str,
@@ -86,7 +91,7 @@ class TransferManager:
         }
 
         # Save to JSON
-        self.data_manager.append_to_json(self.TRANSFERS_FILE, new_record)
+        self._append_record(self.TRANSFERS_FILE, new_record)
         logger.info(f"Added transfer: {serial_number} -> {new_employee}")
 
         return new_record

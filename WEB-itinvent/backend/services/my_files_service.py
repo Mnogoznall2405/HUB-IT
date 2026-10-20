@@ -27,7 +27,13 @@ from backend.config import config
 from backend.services.my_files_recovery import cleanup_tmp_blob_files
 from backend.appdb.models import AppMyFile, AppMyFileAudit, AppMyFileBlob, AppMyFileDownloadGrant, AppMyFileFolder, AppMyFilePreview, AppUser
 from backend.services.hubit_storage import HubitStorageError
-from backend.services.my_files_antivirus_service import SecurityScanResult, scan_my_file
+from backend.services.my_files_antivirus_service import (
+    POLICY_SKIP_ENGINES,
+    SecurityScanResult,
+    is_policy_skip,
+    scan_my_file,
+    scan_policy_skip,
+)
 from backend.services.my_files_storage_layout import (
     configured_previews_dir,
     configured_spool_dir,
@@ -1330,6 +1336,7 @@ class MyFilesService:
         database_url = self._database_url_or_raise()
         owner_user_id = _actor_id(actor)
         spool_paths: list[Path] = []
+        blob_paths: list[Path] = []
         with app_session(database_url) as session:
             row = session.get(AppMyFileFolder, _normalize_text(folder_id))
             if row is None or row.owner_user_id != owner_user_id or row.deleted_at is None:
@@ -1353,7 +1360,7 @@ class MyFilesService:
                 if _normalize_text(file_row.spool_path):
                     spool_paths.append(Path(_normalize_text(file_row.spool_path)))
                 if file_row.status == STATUS_READY:
-                    self._release_blob_locked(session, file_row.blob_id)
+                    self._release_blob_locked(session, file_row.blob_id, blob_paths)
                 file_row.status = STATUS_DELETED
                 file_row.folder_id = None
                 file_row.updated_at = now
@@ -1369,6 +1376,7 @@ class MyFilesService:
             self._write_audit(session, action="folder_purged", row=None, actor=actor, meta=meta)
             purged_count = len(files)
 
+        self._delete_physical_files(blob_paths)
         for path in spool_paths:
             self._delete_spool_payload(path)
         return purged_count
@@ -2103,7 +2111,14 @@ class MyFilesService:
         except Exception:
             return 0
 
-    def _delete_preview_artifact_locked(self, session, blob_id: str | None) -> None:
+    def _delete_preview_artifact_locked(
+        self,
+        session,
+        blob_id: str | None,
+        pending_deletes: list[Path],
+    ) -> None:
+        # Физические файлы превью не удаляются здесь: пути копятся в pending_deletes
+        # и удаляются вызывающим только после успешного commit транзакции.
         normalized = _normalize_text(blob_id)
         if not normalized:
             return
@@ -2115,14 +2130,8 @@ class MyFilesService:
         if not raw_path:
             return
         path = Path(raw_path)
-        self._delete_physical_file(path)
-        self._delete_physical_file(self._preview_thumb_path(path))
-        try:
-            parent = path.parent
-            if parent.exists() and parent.is_dir() and not any(parent.iterdir()):
-                parent.rmdir()
-        except OSError:
-            pass
+        # Каталог идёт последним: _delete_physical_files удалит его, только если он пуст.
+        pending_deletes.extend([path, self._preview_thumb_path(path), path.parent])
 
     def _preview_download_size_locked(self, row: AppMyFile) -> int:
         if row.storage_mode == STORAGE_OPTIMIZED_MEDIA:
@@ -2208,9 +2217,15 @@ class MyFilesService:
                 row=row,
             )
 
-    def _scan_spool_payload(self, file_id: str, spool_path: Path) -> SecurityScanResult:
+    def _run_antivirus(self, path: Path, file_name: str, size_bytes: int | None = None) -> SecurityScanResult:
+        skipped = scan_policy_skip(file_name, path.stat().st_size if size_bytes is None else size_bytes)
+        if skipped is not None:
+            return skipped
+        return self._antivirus_scanner(path)
+
+    def _scan_spool_payload(self, file_id: str, spool_path: Path, file_name: str) -> SecurityScanResult:
         try:
-            result = self._antivirus_scanner(spool_path)
+            result = self._run_antivirus(spool_path, file_name)
         except Exception as exc:
             logger.error("Security scan failed for my-file %s: %s", file_id, exc)
             result = SecurityScanResult(
@@ -2232,10 +2247,7 @@ class MyFilesService:
 
     @staticmethod
     def _security_scan_is_size_limited(status: Any, engine: Any) -> bool:
-        return (
-            _normalize_text(status).lower() == "skipped"
-            and _normalize_text(engine) == "size-limit"
-        )
+        return is_policy_skip(_normalize_text(status), _normalize_text(engine))
 
     @classmethod
     def _security_scan_allows_access(cls, row: AppMyFile) -> bool:
@@ -2440,6 +2452,10 @@ class MyFilesService:
                         AppMyFile.deleted_at.is_(None),
                         AppMyFile.expires_at > now,
                         AppMyFile.security_scan_status != "clean",
+                        ~(
+                            (AppMyFile.security_scan_status == "skipped")
+                            & AppMyFile.security_scan_engine.in_(sorted(POLICY_SKIP_ENGINES))
+                        ),
                         (
                             AppMyFile.security_scanned_at.is_(None)
                             | (AppMyFile.security_scanned_at <= retry_before)
@@ -2658,10 +2674,22 @@ class MyFilesService:
             blob_path = self._resolve_stored_path(blob.storage_path)
             blob_mode = _normalize_text(blob.storage_mode)
             original_file_name = _normalize_text(row.original_file_name) or "file.bin"
+            original_size = int(row.original_size_bytes or 0)
 
         try:
             if not blob_path.exists() or not blob_path.is_file():
                 raise MyFilesValidationError("Stored payload is missing")
+            skipped = scan_policy_skip(original_file_name, original_size)
+            if skipped is not None:
+                self._record_security_scan(file_id, skipped)
+                with app_session(database_url) as session:
+                    row = session.get(AppMyFile, _normalize_text(file_id))
+                    if row is not None and row.deleted_at is None:
+                        row.status = STATUS_READY
+                        row.error_text = ""
+                        row.updated_at = _utc_now()
+                        self._queue_preview_for_row_locked(session, row)
+                return
             scan_path = blob_path
             if blob_mode == STORAGE_ZSTD:
                 temporary_path = self.new_spool_path(f"{original_file_name}.security-scan")
@@ -2676,11 +2704,12 @@ class MyFilesService:
             result = self._antivirus_scanner(scan_path)
             self._record_security_scan(file_id, result)
             if result.status == "blocked":
+                blob_paths: list[Path] = []
                 with app_session(database_url) as session:
                     row = session.get(AppMyFile, _normalize_text(file_id))
                     if row is None or row.deleted_at is not None:
                         return
-                    self._release_blob_locked(session, row.blob_id)
+                    self._release_blob_locked(session, row.blob_id, blob_paths)
                     row.status = STATUS_FAILED
                     row.error_text = "File blocked by security scan"
                     self._clear_share(row)
@@ -2689,8 +2718,9 @@ class MyFilesService:
                     row.stored_size_bytes = 0
                     row.updated_at = _utc_now()
                     session.execute(delete(AppMyFileDownloadGrant).where(AppMyFileDownloadGrant.file_id == row.id))
+                self._delete_physical_files(blob_paths)
                 return
-            if result.status != "clean":
+            if result.status != "clean" and not is_policy_skip(result.status, result.engine):
                 raise MyFilesValidationError("File did not pass security scan")
             with app_session(database_url) as session:
                 row = session.get(AppMyFile, _normalize_text(file_id))
@@ -2741,7 +2771,7 @@ class MyFilesService:
                 raise MyFilesValidationError("Upload payload is missing from spool")
             if spool_path.stat().st_size != reserved_size:
                 raise MyFilesValidationError("Uploaded file size does not match reservation")
-            self._scan_spool_payload(file_id, spool_path)
+            self._scan_spool_payload(file_id, spool_path, original_file_name)
             with app_session(database_url) as session:
                 row = session.get(AppMyFile, _normalize_text(file_id))
                 if row is None or row.deleted_at is not None:
@@ -2905,7 +2935,27 @@ class MyFilesService:
         except OSError as exc:
             logger.warning("Failed to delete my-files blob %s: %s", path, exc)
 
-    def _release_blob_locked(self, session, blob_id: str | None) -> None:
+    def _delete_physical_files(self, paths: list[Path]) -> None:
+        """Best-effort удаление файлов (и пустых каталогов) после commit транзакции."""
+        for path in paths:
+            try:
+                if path.is_dir():
+                    if not any(path.iterdir()):
+                        path.rmdir()
+                else:
+                    self._delete_physical_file(path)
+            except OSError as exc:
+                logger.warning("Failed to delete my-files path %s: %s", path, exc)
+
+    def _release_blob_locked(
+        self,
+        session,
+        blob_id: str | None,
+        pending_deletes: list[Path],
+    ) -> None:
+        # Физические файлы НЕ удаляются внутри транзакции: при rollback строка БД
+        # вернётся, а файл уже был бы потерян. Пути копятся в pending_deletes,
+        # вызывающий удаляет их через _delete_physical_files после успешного commit.
         normalized = _normalize_text(blob_id)
         if not normalized:
             return
@@ -2918,9 +2968,9 @@ class MyFilesService:
             blob.updated_at = _utc_now()
             return
         path = self._resolve_stored_path(blob.storage_path)
-        self._delete_preview_artifact_locked(session, normalized)
+        self._delete_preview_artifact_locked(session, normalized, pending_deletes)
         session.delete(blob)
-        self._delete_physical_file(path)
+        pending_deletes.append(path)
 
     def delete_file(
         self,
@@ -2985,6 +3035,7 @@ class MyFilesService:
     ) -> None:
         database_url = self._database_url_or_raise()
         spool_path: Path | None = None
+        blob_paths: list[Path] = []
         with app_session(database_url) as session:
             row = session.get(AppMyFile, _normalize_text(file_id))
             if (
@@ -2997,13 +3048,14 @@ class MyFilesService:
             now = _utc_now()
             spool_path = Path(_normalize_text(row.spool_path)) if _normalize_text(row.spool_path) else None
             if row.status == STATUS_READY:
-                self._release_blob_locked(session, row.blob_id)
+                self._release_blob_locked(session, row.blob_id, blob_paths)
             row.status = STATUS_DELETED
             self._clear_share(row)
             session.execute(delete(AppMyFileDownloadGrant).where(AppMyFileDownloadGrant.file_id == row.id))
             row.updated_at = now
             row.spool_path = ""
             self._write_audit(session, action="purged", row=row, actor=actor, meta=meta)
+        self._delete_physical_files(blob_paths)
         if spool_path is not None:
             self._delete_spool_payload(spool_path)
 
@@ -3272,6 +3324,46 @@ class MyFilesService:
                 token_hash=_hash_token(grant_token),
                 file_id=row.id,
                 owner_user_id=int(row.owner_user_id),
+                expires_at=now + timedelta(seconds=ttl_seconds),
+                used_at=None,
+                created_at=now,
+            )
+            session.add(grant)
+            expires_at = grant.expires_at
+        return {
+            "token": grant_token,
+            "download_path": f"/my-files/download-grant/{grant_token}",
+            "expires_at": expires_at,
+            "expires_in_seconds": ttl_seconds,
+        }
+
+    def create_public_folder_archive_grant(self, *, token: str) -> dict[str, Any]:
+        """Short-lived grant that downloads the whole shared folder as a ZIP."""
+        database_url = self._database_url_or_raise()
+        ttl_seconds = self._download_grant_ttl_seconds()
+        grant_token = secrets.token_urlsafe(32)
+        now = _utc_now()
+        with app_session(database_url) as session:
+            folder = self._public_folder_locked(session, token)
+            subtree_ids, _paths = self._public_folder_file_rows_locked(session, folder)
+            files = session.scalars(
+                select(AppMyFile)
+                .where(
+                    AppMyFile.folder_id.in_(subtree_ids),
+                    AppMyFile.deleted_at.is_(None),
+                    AppMyFile.status == STATUS_READY,
+                    AppMyFile.expires_at > now,
+                )
+                .limit(2)
+            ).all()
+            if not any(self._security_scan_allows_access(file_row) for file_row in files):
+                raise MyFilesValidationError("Folder is empty")
+            self._purge_stale_download_grants_locked(session)
+            grant = AppMyFileDownloadGrant(
+                token_hash=_hash_token(grant_token),
+                file_id=None,
+                folder_id=folder.id,
+                owner_user_id=int(folder.owner_user_id),
                 expires_at=now + timedelta(seconds=ttl_seconds),
                 used_at=None,
                 created_at=now,
@@ -3870,6 +3962,7 @@ class MyFilesService:
         database_url = self._database_url_or_raise()
         count = 0
         spool_paths: list[Path] = []
+        blob_paths: list[Path] = []
         with app_session(database_url) as session:
             rows = session.scalars(
                 select(AppMyFile)
@@ -3882,9 +3975,10 @@ class MyFilesService:
             ).all()
             for row in rows:
                 try:
+                    row_blob_paths: list[Path] = []
                     with session.begin_nested():
                         if row.status == STATUS_READY:
-                            self._release_blob_locked(session, row.blob_id)
+                            self._release_blob_locked(session, row.blob_id, row_blob_paths)
                         if _normalize_text(row.spool_path):
                             spool_paths.append(Path(_normalize_text(row.spool_path)))
                         row.status = STATUS_DELETED
@@ -3894,8 +3988,11 @@ class MyFilesService:
                         row.spool_path = ""
                         self._write_audit(session, action="expired", row=row)
                         count += 1
+                    # savepoint зафиксирован; файлы удаляются только после commit внешней транзакции
+                    blob_paths.extend(row_blob_paths)
                 except Exception:
                     logger.exception("Failed to expire my-file %s", row.id)
+        self._delete_physical_files(blob_paths)
         for path in spool_paths:
             self._delete_spool_payload(path)
         return count

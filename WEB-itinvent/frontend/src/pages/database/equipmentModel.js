@@ -121,7 +121,9 @@ export const getEquipmentRowActions = ({
   item,
   dataMode = DATA_MODE_EQUIPMENT,
   canWrite = true,
-  isAdmin = false,
+  canDeleteEquipment = false,
+  canMarkOneC = false,
+  oneCMarked = false,
 }) => {
   if (dataMode === DATA_MODE_CONSUMABLES) {
     return [];
@@ -134,7 +136,8 @@ export const getEquipmentRowActions = ({
     ...(canWrite && flags.isUps ? ['battery'] : []),
     ...(canWrite && flags.isPc && !flags.isPrinterOrMfu ? ['component'] : []),
     ...(canWrite && flags.isPc ? ['cleaning'] : []),
-    ...(isAdmin ? ['delete'] : []),
+    ...(canMarkOneC ? [oneCMarked ? 'one_c_unmark' : 'one_c_mark'] : []),
+    ...(canDeleteEquipment ? ['delete'] : []),
   ]));
 };
 

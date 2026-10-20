@@ -11,6 +11,8 @@ from uuid import uuid4
 from sqlalchemy import insert, select
 from sqlalchemy.exc import IntegrityError
 
+from backend.chat.chat_group_permissions import enforce_files_allowed
+from backend.chat.chat_group_settings import enforce_group_posting_policy
 from backend.chat.chat_delivery_state import (
     _apply_new_message_delivery_state,
     _get_or_create_conversation_state,
@@ -137,6 +139,7 @@ class ChatSystemMessagePersistence:
         body: str,
         member_user_ids: list[int],
         now: datetime,
+        actor_is_member: bool = True,
     ) -> ChatMessage:
         next_conversation_seq = int(getattr(conversation, "last_message_seq", 0) or 0) + 1
         message = ChatMessage(
@@ -150,6 +153,20 @@ class ChatSystemMessagePersistence:
             created_at=now,
         )
         session.add(message)
+        if not actor_is_member:
+            # A portal admin acting from outside the group gets no read state in it.
+            conversation.last_message_id = message.id
+            conversation.last_message_seq = int(message.conversation_seq or 0)
+            conversation.last_message_at = now
+            conversation.updated_at = now
+            _increment_unread_counters_for_recipients(
+                session=session,
+                conversation_id=conversation.id,
+                sender_user_id=int(actor_user_id),
+                member_user_ids=member_user_ids,
+                seen_at=now,
+            )
+            return message
         _apply_new_message_delivery_state(
             session=session,
             conversation=conversation,
@@ -293,6 +310,7 @@ class ChatTextMessagePersistence:
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
+            enforce_group_posting_policy(session, conversation, int(current_user_id))
             if getattr(conversation, "kind", None) == "ai":
                 from backend.ai_chat.access import require_conversation_access
                 require_conversation_access(conversation.id, int(current_user_id), require_mapping=True)
@@ -629,6 +647,8 @@ class ChatFileMessagePersistence:
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
+            enforce_group_posting_policy(session, conversation, int(current_user_id))
+            enforce_files_allowed(session, conversation, int(current_user_id))
             if getattr(conversation, "kind", None) == "ai":
                 from backend.ai_chat.access import require_conversation_access
                 require_conversation_access(conversation.id, int(current_user_id), require_mapping=True)
@@ -832,6 +852,9 @@ class ChatForwardMessagePersistence:
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
+            enforce_group_posting_policy(session, conversation, int(current_user_id))
+            if prepared_attachments:
+                enforce_files_allowed(session, conversation, int(current_user_id))
             if getattr(conversation, "kind", None) == "ai":
                 from backend.ai_chat.access import require_conversation_access
                 require_conversation_access(conversation.id, int(current_user_id), require_mapping=True)
@@ -1014,6 +1037,7 @@ class ChatTaskShareMessagePersistence:
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
+            enforce_group_posting_policy(session, conversation, int(current_user_id))
             if getattr(conversation, "kind", None) == "ai":
                 from backend.ai_chat.access import require_conversation_access
                 require_conversation_access(conversation.id, int(current_user_id), require_mapping=True)

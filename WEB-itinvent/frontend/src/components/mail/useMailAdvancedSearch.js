@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { BROWSER_ACCOUNT_EVENT, getStoredUserKey } from '../../lib/browserAccountSession';
 
 export const MAIL_RECENT_SEARCHES_KEY = 'mail_recent_searches_v1';
 
@@ -57,44 +58,96 @@ function persistRecentSearches(nextSearches, storageKey) {
 export default function useMailAdvancedSearch({
   initialFilters = DEFAULT_ADVANCED_FILTERS,
   storageKey = MAIL_RECENT_SEARCHES_KEY,
+  userKey = getStoredUserKey(),
   onSearchChange,
 } = {}) {
-  const [advancedSearchOpen, setAdvancedSearchOpen] = useState(false);
-  const [advancedFiltersDraft, setAdvancedFiltersDraft] = useState({
-    ...DEFAULT_ADVANCED_FILTERS,
-    ...(initialFilters || {}),
-  });
-  const [advancedFiltersApplied, setAdvancedFiltersApplied] = useState({
-    ...DEFAULT_ADVANCED_FILTERS,
-    ...(initialFilters || {}),
-  });
-  const [recentSearches, setRecentSearches] = useState([]);
+  const owner = String(userKey ?? '');
+  const scopedStorageKey = owner ? `${storageKey}:${encodeURIComponent(owner)}` : '';
+  const epochRef = useRef(0);
+  const mountedRef = useRef(true);
+  const [epoch, setEpoch] = useState(0);
+  const scope = JSON.stringify([scopedStorageKey, epoch]);
+  const activeScopeRef = useRef(scope);
+  activeScopeRef.current = scope;
+
+  const createState = useCallback((filters = DEFAULT_ADVANCED_FILTERS) => {
+    let recentSearches = [];
+    try {
+      const raw = scopedStorageKey && getStoredUserKey() === owner
+        ? window.localStorage.getItem(scopedStorageKey) : null;
+      const parsed = raw ? JSON.parse(raw) : [];
+      recentSearches = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      // Unavailable storage must not prevent searching.
+    }
+    return {
+      scope,
+      advancedSearchOpen: false,
+      advancedFiltersDraft: { ...DEFAULT_ADVANCED_FILTERS, ...(filters || {}) },
+      advancedFiltersApplied: { ...DEFAULT_ADVANCED_FILTERS, ...(filters || {}) },
+      recentSearches,
+    };
+  }, [owner, scope, scopedStorageKey]);
+  const [state, setState] = useState(() => createState(initialFilters));
+  const ownsScope = useCallback(() => (
+    mountedRef.current && activeScopeRef.current === scope && epochRef.current === epoch && getStoredUserKey() === owner
+  ), [epoch, owner, scope]);
+  // A changed account must not expose old state even during the first render,
+  // before effects hydrate the new scope.
+  const currentState = state.scope === scope && ownsScope() ? state : createState();
+  const { advancedFiltersDraft } = currentState;
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      const raw = window.localStorage.getItem(storageKey);
-      const parsed = raw ? JSON.parse(raw) : [];
-      setRecentSearches(Array.isArray(parsed) ? parsed : []);
-    } catch {
-      setRecentSearches([]);
-    }
-  }, [storageKey]);
+    mountedRef.current = true;
+    const accountChanged = (event) => {
+      if (!event.detail?.reset) return;
+      epochRef.current += 1;
+      setEpoch(epochRef.current);
+    };
+    window.addEventListener(BROWSER_ACCOUNT_EVENT, accountChanged);
+    return () => {
+      mountedRef.current = false;
+      window.removeEventListener(BROWSER_ACCOUNT_EVENT, accountChanged);
+    };
+  }, []);
+
+  useEffect(() => {
+    setState((previous) => previous.scope === scope ? previous : createState());
+  }, [createState, scope]);
+
+  const updateState = useCallback((update) => {
+    if (!ownsScope()) return;
+    setState((previous) => {
+      if (!ownsScope()) return previous;
+      return update(previous.scope === scope ? previous : createState());
+    });
+  }, [createState, ownsScope, scope]);
+
+  const setAdvancedSearchOpen = useCallback((value) => updateState((previous) => ({
+    ...previous, advancedSearchOpen: typeof value === 'function' ? value(previous.advancedSearchOpen) : value,
+  })), [updateState]);
+  const setAdvancedFiltersDraft = useCallback((value) => updateState((previous) => ({
+    ...previous, advancedFiltersDraft: typeof value === 'function' ? value(previous.advancedFiltersDraft) : value,
+  })), [updateState]);
+  const setAdvancedFiltersApplied = useCallback((value) => updateState((previous) => ({
+    ...previous, advancedFiltersApplied: typeof value === 'function' ? value(previous.advancedFiltersApplied) : value,
+  })), [updateState]);
 
   const rememberRecentSearch = useCallback((filters) => {
     const payload = buildRecentSearchEntry(filters);
-    setRecentSearches((prev) => {
-      const current = Array.isArray(prev) ? prev : [];
+    updateState((previous) => {
+      const current = previous.recentSearches;
       const deduped = current.filter((item) => (
         JSON.stringify({ ...item, label: undefined }) !== JSON.stringify({ ...payload, label: undefined })
       ));
       const next = [payload, ...deduped].slice(0, 8);
-      persistRecentSearches(next, storageKey);
-      return next;
+      if (scopedStorageKey) persistRecentSearches(next, scopedStorageKey);
+      return { ...previous, recentSearches: next };
     });
-  }, [storageKey]);
+  }, [scopedStorageKey, updateState]);
 
   const handleApplyAdvancedSearch = useCallback(() => {
+    if (!ownsScope()) return;
     const nextFilters = { ...DEFAULT_ADVANCED_FILTERS, ...(advancedFiltersDraft || {}) };
     setAdvancedFiltersApplied(nextFilters);
     onSearchChange?.(String(nextFilters.q || ''));
@@ -102,30 +155,32 @@ export default function useMailAdvancedSearch({
       rememberRecentSearch(nextFilters);
     }
     setAdvancedSearchOpen(false);
-  }, [advancedFiltersDraft, onSearchChange, rememberRecentSearch]);
+  }, [advancedFiltersDraft, onSearchChange, ownsScope, rememberRecentSearch, setAdvancedFiltersApplied, setAdvancedSearchOpen]);
 
   const handleResetAdvancedSearch = useCallback(() => {
+    if (!ownsScope()) return;
     setAdvancedFiltersDraft(DEFAULT_ADVANCED_FILTERS);
     setAdvancedFiltersApplied(DEFAULT_ADVANCED_FILTERS);
     onSearchChange?.('');
-  }, [onSearchChange]);
+  }, [onSearchChange, ownsScope, setAdvancedFiltersApplied, setAdvancedFiltersDraft]);
 
   const handleApplyRecentSearch = useCallback((item) => {
+    if (!ownsScope()) return;
     const nextFilters = { ...DEFAULT_ADVANCED_FILTERS, ...(item || {}) };
     setAdvancedFiltersDraft(nextFilters);
     setAdvancedFiltersApplied(nextFilters);
     onSearchChange?.(String(nextFilters.q || ''));
     setAdvancedSearchOpen(false);
-  }, [onSearchChange]);
+  }, [onSearchChange, ownsScope, setAdvancedFiltersApplied, setAdvancedFiltersDraft, setAdvancedSearchOpen]);
 
   return {
-    advancedSearchOpen,
+    advancedSearchOpen: currentState.advancedSearchOpen,
     setAdvancedSearchOpen,
     advancedFiltersDraft,
     setAdvancedFiltersDraft,
-    advancedFiltersApplied,
+    advancedFiltersApplied: currentState.advancedFiltersApplied,
     setAdvancedFiltersApplied,
-    recentSearches,
+    recentSearches: currentState.recentSearches,
     rememberRecentSearch,
     handleApplyAdvancedSearch,
     handleResetAdvancedSearch,

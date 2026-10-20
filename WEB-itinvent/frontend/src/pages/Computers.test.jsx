@@ -593,6 +593,26 @@ describe('Computers page', () => {
     }, { timeout: 3000 });
   }, 15000);
 
+  it('allows pagination after refresh supersedes an unfinished append', async () => {
+    let resolveAppend;
+    const initial = { items: [sampleComputer], total: 2, limit: 50, offset: 0, has_more: true, next_offset: 1 };
+    equipmentAPI.searchAgentComputers
+      .mockResolvedValueOnce(initial)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveAppend = resolve; }))
+      .mockResolvedValue(initial);
+    renderComputers();
+    await screen.findByTestId('computers-load-more-sentinel');
+    await intersectLatestLoadSentinel();
+    await waitFor(() => expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole('button', { name: 'Обновить данные' }));
+    await waitFor(() => expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledTimes(3));
+    await act(async () => { resolveAppend({ ...initial, items: [], has_more: false }); });
+    await waitFor(() => expect(screen.getByTestId('computers-load-more-sentinel')).not.toHaveTextContent('Подгружаем'));
+    await intersectLatestLoadSentinel();
+    await waitFor(() => expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledTimes(4));
+    expect(equipmentAPI.searchAgentComputers.mock.calls[3][0].offset).toBe(1);
+  }, 15000);
+
   it('refreshes the loaded range and does not query when a location is expanded', async () => {
     const nextComputer = {
       ...sampleComputer,

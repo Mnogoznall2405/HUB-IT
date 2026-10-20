@@ -112,6 +112,11 @@ class WorksManager:
 
     # ========== Cartridge Replacements ==========
 
+    def _append_record(self, file_name: str, record) -> None:
+        """Append a record; a failed write must not look like a successful operation."""
+        if self.data_manager.append_to_json(file_name, record) is False:
+            raise RuntimeError(f"Failed to persist record to {file_name}")
+
     def add_cartridge_replacement(
         self,
         printer_model: str,
@@ -224,7 +229,7 @@ class WorksManager:
         if additional_data:
             record['additional_data'] = additional_data
 
-        self.data_manager.append_to_json(self.CARTRIDGE_FILE, record)
+        self._append_record(self.CARTRIDGE_FILE, record)
         logger.info(f"Added cartridge replacement: {normalized_printer_model} - {normalized_color}")
 
         if equipment_id and db_name:
@@ -369,7 +374,7 @@ class WorksManager:
             'additional_data': additional_data or {},
         }
 
-        self.data_manager.append_to_json(self.BATTERY_FILE, record)
+        self._append_record(self.BATTERY_FILE, record)
         logger.info(f"Added battery replacement: {normalized_serial}")
 
         if equipment_id and db_name:
@@ -645,13 +650,13 @@ class WorksManager:
                 'employee': (employee or "").strip(),
                 'inv_no': (inv_no or "").strip(),
             }
-            self.data_manager.append_to_json(self.CARTRIDGE_FILE, printer_record)
+            self._append_record(self.CARTRIDGE_FILE, printer_record)
             logger.info(
                 "Added printer component replacement to cartridge file: "
                 f"{normalized_serial} - {resolved_component_name}"
             )
         else:
-            self.data_manager.append_to_json(self.COMPONENT_FILE, record)
+            self._append_record(self.COMPONENT_FILE, record)
             logger.info(f"Added component replacement: {normalized_serial} - {resolved_component_name}")
 
         if equipment_id and db_name:
@@ -818,7 +823,7 @@ class WorksManager:
         }
 
         # Save to JSON
-        self.data_manager.append_to_json(self.CLEANING_FILE, record)
+        self._append_record(self.CLEANING_FILE, record)
         logger.info(f"Added PC cleaning: {serial_number} - {employee}")
 
         # Update SQL DESCR if equipment_id and db_name are provided

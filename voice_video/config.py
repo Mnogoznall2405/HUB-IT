@@ -78,6 +78,28 @@ JEV_ENABLED = os.getenv('JEV_ENABLED', 'true').lower() in ('true', '1', 't')
 JEV_DEDUP_THRESHOLD = float(os.getenv('JEV_DEDUP_THRESHOLD', '0.8'))
 JEV_COVERAGE_THRESHOLD = float(os.getenv('JEV_COVERAGE_THRESHOLD', '0.5'))
 JEV_MODEL = os.getenv('JEV_MODEL', 'typesafe/jev-1.13')
+# Jev как контролёр протокола: направление темы и «сторож» поручений (⚠ проверить в реестре).
+# Сбой Jev не ломает протокол; выключатели — на случай, если нужен прежний вывод.
+# Словарь компании (аббревиатуры, объекты, подрядчики): выгружается voice_server из вкладки «Словарь».
+# GLOSSARY_PROMPT — подставлять релевантные термины в промпты анализа; GLOSSARY_CORRECT — заменять подтверждённые
+# варианты написания в тексте; GLOSSARY_EXTRACT — после анализа собирать кандидатов в словарь (на подтверждение).
+GLOSSARY_PATH = Path(os.getenv('GLOSSARY_PATH', str(PROJECT_ROOT / 'data' / 'company_glossary.json')))
+GLOSSARY_PROMPT = os.getenv('GLOSSARY_PROMPT', 'true').lower() in ('true', '1', 't')
+GLOSSARY_CORRECT = os.getenv('GLOSSARY_CORRECT', 'true').lower() in ('true', '1', 't')
+GLOSSARY_EXTRACT = os.getenv('GLOSSARY_EXTRACT', 'true').lower() in ('true', '1', 't')
+# Подсказки «кто говорит» по видео ВКС (TrueConf): рамка активного говорящего + подпись плитки (локальный OCR).
+# Пишет <base>_video_hints.json: имена для безымянных голосов, состав комнат, расхождения «аккаунт ≠ голос».
+# Только подсказка в отчёте — имена в протокол автоматически не подставляются. Выключено по умолчанию.
+VIDEO_HINTS = os.getenv('VIDEO_HINTS', '0').strip().lower() in ('1', 'true', 'yes', 'on')
+# Опознание лиц в подсвеченной плитке (биометрия: включать только после согласования с ИБ/юристами). Нужен VIDEO_HINTS=1.
+# Пореплечная проверка голосов по эталонам: исправляет остаточные склейки диаризации (modules/reidentify.py).
+SPEAKER_REIDENTIFY = os.getenv('SPEAKER_REIDENTIFY', '0').strip().lower() in ('1', 'true', 'yes', 'on')
+FACE_HINTS = os.getenv('FACE_HINTS', '0').strip().lower() in ('1', 'true', 'yes', 'on')
+FACE_ROSTER_PATH = os.getenv('FACE_ROSTER_PATH', str(Path(__file__).resolve().parent / 'data' / 'face_roster.json'))
+JEV_DOMAIN_TAGS = os.getenv('JEV_DOMAIN_TAGS', 'true').lower() in ('true', '1', 't')
+JEV_PROTOCOL_GUARD = os.getenv('JEV_PROTOCOL_GUARD', 'true').lower() in ('true', '1', 't')
+JEV_GUARD_SUPPORT_MIN = float(os.getenv('JEV_GUARD_SUPPORT_MIN', '0.4'))
+JEV_GUARD_OWNER_MIN = float(os.getenv('JEV_GUARD_OWNER_MIN', '0.5'))
 DEFAULT_WHISPER_MODEL = os.getenv('DEFAULT_WHISPER_MODEL', 'bzikst/faster-whisper-large-v3-ru-podlodka')
 
 # Движок транскрипции: 'whisper' — локальный WhisperX на GPU,
@@ -88,6 +110,10 @@ STT_API_MODELS = {
     'grok': 'x-ai/grok-stt-1.0',                # все сущности верно, таймкоды слов, ~$0.10/час
     'mai': 'microsoft/mai-transcribe-2',        # сегментная разметка, дословно, ~$0.10/час
 }
+# 'gigaam' — локальный GigaAM-v3 e2e_rnnt (MIT, русский): распознаёт реплики диаризации во внешнем окружении
+# (GIGAAM_PYTHON, GIGAAM_MODEL_DIR); по замеру на 40 фрагментах ВКС полнее и точнее Gemini (27:6), без стоимости API.
+GIGAAM_PYTHON = os.getenv('GIGAAM_PYTHON', str(Path(__file__).resolve().parent / 'temp' / 'asr_lab' / 'venv' / 'Scripts' / 'python.exe'))
+GIGAAM_MODEL_DIR = os.getenv('GIGAAM_MODEL_DIR', str(Path(__file__).resolve().parent / 'temp' / 'asr_lab' / 'gigaam_e2e_rnnt'))
 STT_CHUNK_SECONDS = int(os.getenv('STT_CHUNK_SECONDS', '900'))  # ~15 мин → ~7MB mp3 (лимит ~9-10MB)
 
 WHISPER_MODELS = {
@@ -110,6 +136,12 @@ DEMUCS_MODEL = 'htdemucs'
 # demucs — классический htdemucs
 # none — без сепарации
 SEPARATOR_ENGINE = os.getenv('SEPARATOR_ENGINE', 'kim')
+# Нормализация громкости по стандарту вещания (−16 LUFS) вместо пиковой. Тест на ВКС: Gemini на сыром звуке
+# терял слова (расхождение со вторым распознавателем 13.1%), с Kim 8.1%, с loudnorm 6.7% и больше всего слов;
+# Kim помогал лишь тем, что поднимал уровень. С AUDIO_LOUDNORM=1 сепаратор можно отключить (SEPARATOR_ENGINE=none).
+AUDIO_LOUDNORM = os.getenv('AUDIO_LOUDNORM', '0').strip().lower() in ('1', 'true', 'yes', 'on')
+# Участки записи без звука дольше N секунд не нормализуются (пустой рабочий стол часами); длина файла и тайм-коды те же. 0 — выкл.
+DEAD_AIR_SECONDS = int(os.getenv('DEAD_AIR_SECONDS', '600') or 0)
 SEPARATOR_MODELS = {
     'kim': 'Kim_Vocal_2.onnx',
     'melband': 'vocals_mel_band_roformer.ckpt',
@@ -251,6 +283,18 @@ SPEAKER_RECURRING_SIMILARITY = _env_float('SPEAKER_RECURRING_SIMILARITY', 0.6)
 SPEAKER_ID_STRICT = _env_float('SPEAKER_ID_STRICT', 0.25)
 SPEAKER_ID_MODERATE = _env_float('SPEAKER_ID_MODERATE', 0.35)
 SPEAKER_ID_LOOSE = _env_float('SPEAKER_ID_LOOSE', 0.45)
+
+
+def diarization_chunk_options():
+    return {
+        'diarization_chunk_seconds': _env_float('DIARIZATION_CHUNK_SECONDS', 0),
+        'diarization_chunk_threshold_seconds': _env_float('DIARIZATION_CHUNK_THRESHOLD_SECONDS', 1800),
+        'diarization_chunk_overlap_seconds': _env_float('DIARIZATION_CHUNK_OVERLAP_SECONDS', 30),
+        'diarization_chunk_max_speakers': int(_env_float('DIARIZATION_CHUNK_MAX_SPEAKERS', 20)),
+        'diarization_stitch_similarity': _env_float('DIARIZATION_STITCH_SIMILARITY', .80),
+        'diarization_stitch_margin': _env_float('DIARIZATION_STITCH_MARGIN', .08),
+        'diarization_stitch_min_speech': _env_float('DIARIZATION_STITCH_MIN_SPEECH', 6),
+    }
 
 # STT API: вырезание тишины перед отправкой (1 = резать, 0 = слать всё)
 STT_CUT_SILENCE = os.getenv('STT_CUT_SILENCE', '1').strip().lower() in ('1', 'true', 'yes', 'on')

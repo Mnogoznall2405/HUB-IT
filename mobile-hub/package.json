@@ -1,8 +1,8 @@
 {
   "name": "mobile-hub",
-  "version": "1.1.75",
+  "version": "1.1.78",
   "hubit": {
-    "androidVersionCode": 77
+    "androidVersionCode": 80
   },
   "main": "expo-router/entry",
   "scripts": {
@@ -23,7 +23,8 @@
     "benchmark:apk": "powershell -ExecutionPolicy Bypass -File scripts/benchmark-apk.ps1",
     "smoke:device": "powershell -ExecutionPolicy Bypass -File scripts/device-smoke.ps1",
     "android": "expo run:android",
-    "ios": "expo run:ios"
+    "ios": "expo run:ios",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
@@ -91,6 +92,7 @@
     "@types/react": "~19.2.10",
     "jest": "^29.7.0",
     "jest-expo": "~57.0.5",
+    "patch-package": "^8.0.1",
     "react-test-renderer": "^19.2.3",
     "test-renderer": "^1.2.0",
     "typescript": "~6.0.3"

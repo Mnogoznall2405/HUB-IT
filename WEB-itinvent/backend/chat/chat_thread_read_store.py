@@ -444,6 +444,17 @@ class ChatThreadReadStore:
             extra=bootstrap_cache_extra,
         )
         if cached is not None:
+            # Cached message bodies may be reused, but confirmation/expiry and
+            # membership are authoritative reads, including across worker processes.
+            with chat_session() as session:
+                self._service._require_membership(session=session, conversation_id=normalized_conversation_id,
+                    current_user_id=int(current_user_id))
+                cached_cards = self._service._batch_action_cards_for_messages(session=session,
+                    message_ids=[item["id"] for item in cached.get("items", []) if not item.get("is_deleted")])
+            cached = {**cached, "items": [
+                {**item, "action_card": None if item.get("is_deleted") else cached_cards.get(item["id"])}
+                for item in cached.get("items", [])
+            ]}
             self._service._set_request_meta(
                 route="thread_bootstrap",
                 cache_hit=True,
@@ -688,6 +699,9 @@ class ChatThreadReadStore:
                     for emoji, user_ids in emoji_map.items()
                 ]
 
+            action_cards = self._service._batch_action_cards_for_messages(
+                session=session, message_ids=[item.id for item in messages if not item.is_deleted],
+            )
             items: list[dict[str, Any]] = []
             for message in messages:
                 reader_user_ids = [
@@ -715,6 +729,7 @@ class ChatThreadReadStore:
                             ("read" if read_by_count > 0 else "sent") if is_own else None
                         ),
                         "reactions": list(reactions_by_message_id.get(message.id, [])),
+                        "action_card": None if message.is_deleted else action_cards.get(message.id),
                     }
                 )
 
@@ -1096,8 +1111,9 @@ class ChatThreadReadStore:
                 )
             ).scalar_one_or_none()
             message_ids = [item.id for item in messages]
-            # Keep chat DB connection short: skip APP-DB work (action cards + presence).
-            # Frontend hydrates those via /messages/hydrate after first paint.
+            # Confirmation cards are part of the result, not optional decoration.
+            # Batch them even in the fast path; presence/read receipts may hydrate later.
+            action_cards = svc._batch_action_cards_for_messages(session=session, message_ids=message_ids)
             attachments_by_message = svc._list_attachments_by_message(
                 session=session,
                 message_ids=message_ids,
@@ -1136,7 +1152,7 @@ class ChatThreadReadStore:
                         reply_previews=reply_previews,
                         forward_previews=forward_previews,
                         attachments=attachments_by_message.get(item.id, []),
-                        action_cards_by_message_id={},
+                        action_cards_by_message_id=action_cards,
                     )
                     for item in messages
                 ],

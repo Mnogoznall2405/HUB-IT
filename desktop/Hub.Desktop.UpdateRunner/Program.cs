@@ -34,8 +34,7 @@ internal static class Program
                 return 4;
             }
 
-            using var certificate = DesktopUpdateTrust.LoadCertificate();
-            if (!DesktopUpdateManifestVerifier.VerifySignature(manifest, certificate)
+            if (!DesktopUpdateManifestVerifier.VerifySignature(manifest)
                 || !await DesktopUpdateManifestVerifier.VerifyFileAsync(
                     manifest,
                     options.SetupPath))

@@ -48,16 +48,3 @@ describe('useChatHealthBootstrap helpers', () => {
   });
 });
 
-describe('useChatDebugController hook', () => {
-  it('exports a default hook function', async () => {
-    const module = await import('./useChatDebugController');
-    expect(typeof module.default).toBe('function');
-  });
-});
-
-describe('useChatRevealMessage hook', () => {
-  it('exports a default hook function', async () => {
-    const module = await import('./useChatRevealMessage');
-    expect(typeof module.default).toBe('function');
-  });
-});

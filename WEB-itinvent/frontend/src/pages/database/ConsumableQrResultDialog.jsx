@@ -17,6 +17,7 @@ import {
   Typography,
 } from '@mui/material';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
+import QrCodeScannerIcon from '@mui/icons-material/QrCodeScanner';
 
 import jsonAPI from '../../api/json_client';
 import { readFirst, readQty, toNumberOrNull } from './databaseRecordModel';
@@ -78,6 +79,7 @@ function ConsumableQrResultDialog({
   onConsume,
   onEditQty,
   printerPicker = null,
+  onScanPrinterQr = null,
 }) {
   const [localCompatiblePrinters, setLocalCompatiblePrinters] = useState(null);
 
@@ -209,16 +211,28 @@ function ConsumableQrResultDialog({
                   </Box>
                 ) : (
                   <>
-                    <TextField
-                      size="small"
-                      fullWidth
-                      placeholder="Модель, инв. №, серийник или локация"
-                      value={pickerQuery}
-                      onChange={(event) => printerPicker?.setPrinterQuery?.(event.target.value)}
-                      inputProps={{ 'aria-label': 'Поиск МФУ' }}
-                      sx={{ mt: 0.5 }}
-                      disabled={consumeLoading}
-                    />
+                    <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', mt: 0.5 }}>
+                      <TextField
+                        size="small"
+                        fullWidth
+                        placeholder="Модель, инв. №, серийник или локация"
+                        value={pickerQuery}
+                        onChange={(event) => printerPicker?.setPrinterQuery?.(event.target.value)}
+                        inputProps={{ 'aria-label': 'Поиск МФУ' }}
+                        disabled={consumeLoading}
+                      />
+                      {onScanPrinterQr ? (
+                        <IconButton
+                          onClick={onScanPrinterQr}
+                          disabled={consumeLoading}
+                          aria-label="Сканировать QR МФУ"
+                          color="primary"
+                          sx={{ flexShrink: 0 }}
+                        >
+                          <QrCodeScannerIcon />
+                        </IconButton>
+                      ) : null}
+                    </Box>
                     {pickerSearching ? (
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
                         <CircularProgress size={16} />

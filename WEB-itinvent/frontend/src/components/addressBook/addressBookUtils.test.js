@@ -26,6 +26,13 @@ describe('addressBookUtils', () => {
     expect(formatDate(null)).toBe('');
   });
 
+  it('formatDate rejects sentinel null-dates from 1С', () => {
+    expect(formatDate('0100-01-01')).toBe('');
+    expect(formatDate('0001-01-01')).toBe('');
+    expect(formatDate('0101-01-01')).toBe('01.01.0101');
+    expect(formatDate('2024-01-31')).toBe('31.01.2024');
+  });
+
   it('formatAbsenceLabel shows return date from ZUP', () => {
     expect(formatAbsenceLabel({
       kind: 'vacation',

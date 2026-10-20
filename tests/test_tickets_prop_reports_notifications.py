@@ -8,6 +8,7 @@ Properties tested:
 **Validates: Requirements 11.2, 11.3, 11.4**
 """
 from __future__ import annotations
+import conftest
 
 import sys
 from contextlib import contextmanager
@@ -132,7 +133,7 @@ def db_env(temp_dir, monkeypatch):
         cursor.execute("PRAGMA foreign_keys=OFF")
         cursor.close()
 
-    AppBase.metadata.create_all(engine, checkfirst=True)
+    conftest.copy_app_metadata_schema_for_url(url)
 
     SessionLocal = sessionmaker(bind=engine)
 

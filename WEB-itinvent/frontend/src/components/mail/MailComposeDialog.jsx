@@ -1386,6 +1386,7 @@ export default function MailComposeDialog(props) {
         PaperProps={{
           'data-testid': 'mail-compose-mobile-paper',
           sx: {
+            '--dialog-safe-top': '0px',
             ...tokens.typographyVars,
             bgcolor: tokens.panelBg,
             color: tokens.textPrimary,
@@ -1425,6 +1426,7 @@ export default function MailComposeDialog(props) {
         PaperProps={{
           'data-testid': 'mail-compose-desktop-fullscreen-paper',
           sx: {
+            '--dialog-safe-top': '0px',
             ...tokens.typographyVars,
             bgcolor: tokens.panelBg,
             color: tokens.textPrimary,

@@ -73,6 +73,12 @@ describe('useEquipmentQrBatchPrint', () => {
       severity: 'info',
       canRepeat: true,
     }));
+    expect(result.current.labels).toHaveLength(1);
+    act(() => window.dispatchEvent(new Event('afterprint')));
+    expect(result.current.labels).toHaveLength(0);
+    await act(async () => { result.current.repeatLastPrint(); });
+    await waitFor(() => expect(window.print).toHaveBeenCalledTimes(2));
+    expect(result.current.labels).toHaveLength(1);
   });
 
   it('falls back to the Desktop printer dialog when quick printing fails', async () => {
@@ -111,5 +117,28 @@ describe('useEquipmentQrBatchPrint', () => {
     }));
     expect(window.print).not.toHaveBeenCalled();
     expect(onClearSelection).not.toHaveBeenCalled();
+  });
+
+  it('prints the small 28 x 25 mm label as a compact roll label, not on the A4 grid', async () => {
+    const { result } = renderPrintHook();
+
+    act(() => result.current.openPrintOptions());
+    await act(async () => { result.current.printDialog.onPrint('label_small'); });
+
+    await waitFor(() => expect(window.print).toHaveBeenCalledTimes(1));
+    expect(buildEquipmentQrPrintBatch).toHaveBeenCalledWith(expect.objectContaining({ compact: true }));
+    expect(result.current.printLabelSize).toEqual({ cellWidthMm: 28, cellHeightMm: 25 });
+    expect(result.current.printGrid).toBeNull();
+  });
+
+  it('keeps the regular 56 x 50 mm label full size', async () => {
+    const { result } = renderPrintHook();
+
+    act(() => result.current.openPrintOptions());
+    await act(async () => { result.current.printDialog.onPrint('label'); });
+
+    await waitFor(() => expect(window.print).toHaveBeenCalledTimes(1));
+    expect(buildEquipmentQrPrintBatch).toHaveBeenCalledWith(expect.objectContaining({ compact: false }));
+    expect(result.current.printLabelSize).toBeNull();
   });
 });

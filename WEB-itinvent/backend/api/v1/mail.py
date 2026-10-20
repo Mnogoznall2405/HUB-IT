@@ -15,6 +15,7 @@ from urllib.parse import quote
 from typing import Any, Optional
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Form, File, UploadFile, Response, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
@@ -51,6 +52,7 @@ from backend.services.mail_observability import (
 )
 from backend.services.session_auth_context_service import session_auth_context_service
 from backend.services.user_service import user_service
+from backend.utils.upload_limits import read_upload_limited
 
 
 router = APIRouter()
@@ -99,6 +101,10 @@ def _parse_inline_content_ids(raw_value: str, *, expected_count: int) -> list[st
     return content_ids
 
 
+def _mail_file_too_large() -> MailPayloadTooLargeError:
+    return MailPayloadTooLargeError("Attachment exceeds the maximum allowed file size")
+
+
 async def _read_compose_attachments(
     *,
     files: list[UploadFile],
@@ -106,8 +112,9 @@ async def _read_compose_attachments(
     inline_content_ids_json: str,
 ) -> list[MailOutgoingAttachment]:
     attachments: list[MailOutgoingAttachment] = []
+    max_file_size = mail_service.max_mail_file_size
     for file in files or []:
-        content = await file.read()
+        content = await read_upload_limited(file, max_file_size, too_large=_mail_file_too_large)
         if not content:
             continue
         attachments.append(
@@ -130,7 +137,7 @@ async def _read_compose_attachments(
             or not _is_inline_safe_attachment(content_type=content_type, filename=filename)
         ):
             raise MailServiceError("Inline attachments must use a safe image/* MIME type")
-        content = await file.read()
+        content = await read_upload_limited(file, max_file_size, too_large=_mail_file_too_large)
         if not content:
             raise MailServiceError("Inline image must not be empty")
         attachments.append(
@@ -984,9 +991,16 @@ async def get_mail_bootstrap(
                         limit=int(limit),
                         snapshot_context=snapshot_context,
                     )
+                # The snapshot may predate a connected/changed mailbox: take the list from the live rows.
+                live_mailboxes = await _run_in_mail_executor(
+                    mail_service.reconcile_mailbox_entries,
+                    user_id=int(current_user.id),
+                    entries=snapshot["payload"].get("mailboxes"),
+                )
                 # Always expose state=ok to UI so client SWR does not force a live Exchange roundtrip.
                 return {
                     **snapshot["payload"],
+                    "mailboxes": live_mailboxes,
                     "state": "ok",
                     "source": snapshot["source"],
                     "as_of": snapshot.get("as_of"),
@@ -2194,7 +2208,9 @@ async def send_it_request_message_multipart(
 
         attachments: list[tuple[str, bytes]] = []
         for file in files:
-            content = await file.read()
+            content = await read_upload_limited(
+                file, mail_service.max_mail_file_size, too_large=_mail_file_too_large
+            )
             if not content:
                 continue
             attachments.append((file.filename or "attachment.bin", content))
@@ -2366,7 +2382,7 @@ async def post_mail_test_connection(
     target_user_id = int(payload.user_id or current_user.id)
     if target_user_id != int(current_user.id) and current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin privileges required")
-    target_user = user_service.get_by_id(target_user_id)
+    target_user = await run_in_threadpool(user_service.get_by_id, target_user_id)
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
     if (

@@ -5,13 +5,18 @@ import Feed from './Feed';
 import { hubAnnouncementsAPI } from '../api/hubAnnouncements';
 
 vi.mock('../api/hubAnnouncements', () => ({ hubAnnouncementsAPI: {
-  getAnnouncements: vi.fn(), getCategories: vi.fn(), getTags: vi.fn(),
+  getAnnouncements: vi.fn(), getCategories: vi.fn(), getTags: vi.fn(), setBookmark: vi.fn(),
 } }));
 vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ user: {}, hasPermission: () => false }) }));
-vi.mock('../contexts/NotificationContext', () => ({ useNotification: () => ({}) }));
+vi.mock('../contexts/NotificationContext', () => ({ useNotification: () => ({ notifyApiError: vi.fn() }) }));
 vi.mock('../components/layout/MainLayout', () => ({ default: ({ children }) => children }));
 vi.mock('../components/layout/PageShell', () => ({ default: ({ children }) => children }));
-vi.mock('../components/feed/FeedPostCard', () => ({ default: ({ post }) => <div>{post.title}</div> }));
+vi.mock('../components/feed/FeedPostCard', () => ({ default: ({ post, onBookmark }) => (
+  <div>
+    {post.title}
+    {onBookmark ? <button type="button" onClick={() => onBookmark(post)}>{`bookmark ${post.id}:${post.viewer_bookmarked ? 'on' : 'off'}`}</button> : null}
+  </div>
+) }));
 vi.mock('../components/feed/FeedSidebar', () => ({ default: ({ query, onQueryChange }) => (
   <input aria-label="Feed search" value={query} onChange={(event) => onQueryChange(event.target.value)} />
 ) }));
@@ -63,5 +68,25 @@ describe('Feed request ordering', () => {
     expect(screen.getByText('New result')).toBeInTheDocument();
     expect(screen.queryByText('Old result')).not.toBeInTheDocument();
     expect(screen.queryByText('Old error')).not.toBeInTheDocument();
+  });
+
+  it('sends one bookmark request per post at a time and keeps the state after a late answer', async () => {
+    const pending = [];
+    hubAnnouncementsAPI.getAnnouncements.mockResolvedValue({ items: [{ id: 1, title: 'Post', viewer_bookmarked: false }], total: 1 });
+    hubAnnouncementsAPI.setBookmark.mockImplementation(() => new Promise((resolve) => { pending.push(resolve); }));
+    render(<MemoryRouter><Feed /></MemoryRouter>);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'bookmark 1:off' }));
+    // A second click while the first request is in flight must not start a competing request.
+    fireEvent.click(await screen.findByRole('button', { name: 'bookmark 1:on' }));
+    expect(hubAnnouncementsAPI.setBookmark).toHaveBeenCalledTimes(1);
+    expect(hubAnnouncementsAPI.setBookmark).toHaveBeenCalledWith(1, true);
+
+    await act(async () => { pending[0]({}); });
+    expect(screen.getByRole('button', { name: 'bookmark 1:on' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'bookmark 1:on' }));
+    expect(hubAnnouncementsAPI.setBookmark).toHaveBeenCalledTimes(2);
+    expect(hubAnnouncementsAPI.setBookmark).toHaveBeenLastCalledWith(1, false);
   });
 });

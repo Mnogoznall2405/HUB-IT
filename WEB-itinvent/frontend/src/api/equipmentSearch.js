@@ -21,10 +21,11 @@ export const equipmentSearchAPI = {
     return response.data;
   },
 
-  searchByEmployee: async (query, page = 1, limit = 50, { signal } = {}) => {
+  searchByEmployee: async (query, page = 1, limit = 50, { signal, databaseId } = {}) => {
     const response = await apiClient.get('/equipment/search/employee', {
       params: { q: query, page, limit },
       ...(signal ? { signal } : {}),
+      ...(databaseId ? { headers: { 'X-Database-ID': databaseId } } : {}),
     });
     return response.data;
   },

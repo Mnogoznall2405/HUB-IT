@@ -47,6 +47,21 @@ describe('VoiceAssignmentsTab', () => {
     expect(screen.getByText(/№2 ·/)).toBeInTheDocument();
   });
 
+  it('помечает «Проверить» только поручения, которые сторож счёл сомнительными', async () => {
+    const { voiceJobsAPI } = await import('../../api/voiceJobs');
+    voiceJobsAPI.getAssignments.mockResolvedValueOnce({
+      items: [
+        { num: '1', section: 'Охрана', time: '04:59', clip: '', task: 'Провести инструктаж', assignee: 'Иванов', deadline: '', review: '' },
+        { num: '2', section: 'Охрана', time: '05:10', clip: '', task: 'Вернуть аванс', assignee: '', deadline: '', review: 'нет в обсуждении; нет ответственного' },
+      ],
+    });
+    render(<VoiceAssignmentsTab base="test-review" />);
+    await screen.findByText('Вернуть аванс');
+    const chips = screen.getAllByText('Проверить');
+    expect(chips).toHaveLength(1);
+    expect(chips[0].closest('[data-assign-review]')).toHaveAttribute('title', expect.stringContaining('нет в обсуждении'));
+  });
+
   it('shows empty state when no assignments', async () => {
     const { voiceJobsAPI } = await import('../../api/voiceJobs');
     voiceJobsAPI.getAssignments.mockResolvedValueOnce({ items: [] });

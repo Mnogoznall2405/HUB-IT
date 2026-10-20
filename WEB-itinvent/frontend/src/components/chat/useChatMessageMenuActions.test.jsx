@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import useChatMessageMenuActions from './useChatMessageMenuActions';
@@ -107,11 +107,13 @@ describe('useChatMessageMenuActions', () => {
     expect(notifyInfo).not.toHaveBeenCalled();
   });
 
-  it('pins, unpins, selects, and opens menu anchors without page state in Chat.jsx', () => {
+  it('commits pinning after the server response, then unpins and opens selection/menu anchors', async () => {
     const persistPinnedMessage = vi.fn();
     const setSelectedMessageIds = vi.fn();
     const setMessageMenuAnchor = vi.fn();
     const setMessageMenuMessage = vi.fn();
+    let finishPin;
+    chatAPI.setPinnedMessage.mockImplementationOnce(() => new Promise(resolve => { finishPin = resolve; }));
 
     const { rerender } = render(
       <Harness
@@ -123,6 +125,8 @@ describe('useChatMessageMenuActions', () => {
     );
 
     fireEvent.click(document.querySelectorAll('button')[1]);
+    expect(persistPinnedMessage).not.toHaveBeenCalled();
+    await act(async () => { finishPin({}); });
     expect(persistPinnedMessage).toHaveBeenCalledWith({ id: 'msg-2', preview: 'Pinned' });
     expect(chatAPI.setPinnedMessage).toHaveBeenCalledWith('conv-active', 'msg-2');
 
@@ -136,7 +140,7 @@ describe('useChatMessageMenuActions', () => {
       />,
     );
     fireEvent.click(document.querySelectorAll('button')[1]);
-    expect(persistPinnedMessage).toHaveBeenCalledWith(null);
+    await waitFor(() => expect(persistPinnedMessage).toHaveBeenLastCalledWith(null));
 
     fireEvent.click(document.querySelectorAll('button')[2]);
     expect(setSelectedMessageIds).toHaveBeenCalledWith(expect.any(Function));

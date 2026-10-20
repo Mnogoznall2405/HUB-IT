@@ -351,6 +351,40 @@ def test_create_uploaded_transfer_act_rejects_oversized_item_list():
         )
 
 
+def test_equipment_count_cache_distinguishes_query_identity(monkeypatch):
+    """Same params under a different count SELECT must not share the cached
+    total — the field-scoped universal search reuses identical params."""
+    from backend.database import equipment_db
+
+    monkeypatch.setattr(equipment_db, "bump_equipment_data_version", lambda db_id=None: 0)
+    monkeypatch.setattr(equipment_db, "get_equipment_data_version", lambda db_id=None: 0)
+    equipment_db.invalidate_equipment_cache()
+
+    calls = []
+
+    class FakeDb:
+        def execute_query(self, query, params=None):
+            calls.append(query)
+            return [{"total": len(calls)}]
+
+    monkeypatch.setattr(equipment_db, "get_db", lambda db_id=None: FakeDb())
+
+    params = ("%x%",)
+    total_model = equipment_db._get_cached_equipment_total(
+        "universal_search", "main", "SELECT COUNT(1) AS total FROM i WHERE model LIKE ?", params,
+    )
+    total_branch = equipment_db._get_cached_equipment_total(
+        "universal_search", "main", "SELECT COUNT(1) AS total FROM i WHERE branch LIKE ?", params,
+    )
+    total_model_again = equipment_db._get_cached_equipment_total(
+        "universal_search", "main", "SELECT COUNT(1) AS total FROM i WHERE model LIKE ?", params,
+    )
+
+    assert (total_model, total_branch, total_model_again) == (1, 2, 1)
+    # The third call hit the cache — only two real count queries ran.
+    assert len(calls) == 2
+
+
 def test_equipment_payload_cache_evicts_oldest_beyond_cap(monkeypatch):
     from backend.database import equipment_db
 

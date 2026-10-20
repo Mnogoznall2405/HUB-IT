@@ -918,6 +918,9 @@ class TelegramStickerService:
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
+            from backend.chat.chat_group_settings import enforce_group_posting_policy
+
+            enforce_group_posting_policy(session, conversation, int(current_user_id))
             row = session.execute(
                 select(ChatSticker, ChatStickerPack)
                 .join(ChatStickerPack, ChatStickerPack.id == ChatSticker.pack_id)

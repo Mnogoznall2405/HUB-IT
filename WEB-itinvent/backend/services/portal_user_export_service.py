@@ -100,14 +100,23 @@ class PortalUserExportService:
         self._source_service = source_service or address_book_service
 
     def fetch_rows(self) -> list[list[str]]:
-        """Load employees from ZUP and return portal CSV rows (15 columns)."""
-        employees, _dismissed, personal_by_code = self._source_service._load_items_from_1c()
+        """Load active employees from ZUP and return portal CSV rows (15 columns).
+
+        Only what the feed needs is loaded: the dismissed directory (~55k rows,
+        most of the run time) and absences are skipped, and one 1C connection
+        serves all queries.
+        """
+        source = self._source_service
         import pythoncom  # type: ignore
 
         pythoncom.CoInitialize()
         connection = None
         try:
-            connection = self._source_service._connect_1c()
+            connection = source._connect_1c()
+            employees = source._load_employees(connection)
+            phones = source._load_phones(connection)
+            emails = source._load_emails(connection)
+            personal_by_code = source._load_personal_data(connection)
             names = self._load_split_names(connection)
         finally:
             connection = None
@@ -116,16 +125,20 @@ class PortalUserExportService:
         rows: list[list[str]] = []
         seen_codes: set[str] = set()
         for employee in employees:
-            code = normalize_text(employee.get("employee_code"))
+            code = normalize_text(employee.pop("_employee_code", ""))
             if not code or code in seen_codes:
                 continue
             seen_codes.add(code)
+            contact_phones = phones.get(code, {"work": [], "personal": []})
+            contact_emails = emails.get(code, {"work": [], "personal": []})
             name_parts = names.get(code) or _split_full_name(employee.get("full_name", ""))
             personal = personal_by_code.get(code) or {}
+            # 1C sometimes stores a trailing dot ("name@zsgp.ru.") — strip it
+            # before the domain check, otherwise the employee is dropped.
             email = (
-                _first_contact_value(employee.get("work_emails"))
-                or _first_contact_value(employee.get("personal_emails"))
-            )
+                _first_contact_value(contact_emails.get("work"))
+                or _first_contact_value(contact_emails.get("personal"))
+            ).rstrip(".")
             if not email.lower().endswith("@zsgp.ru"):
                 continue
             rows.append(
@@ -140,8 +153,8 @@ class PortalUserExportService:
                     normalize_text(employee.get("department_code")),
                     normalize_text(employee.get("office_room")),
                     normalize_text(employee.get("department_location")),
-                    _first_contact_value(employee.get("work_phones"))
-                    or _first_contact_value(employee.get("personal_phones")),
+                    _first_contact_value(contact_phones.get("work"))
+                    or _first_contact_value(contact_phones.get("personal")),
                     email,
                     normalize_text(employee.get("office_address")),
                     normalize_text(employee.get("workplace_number")),

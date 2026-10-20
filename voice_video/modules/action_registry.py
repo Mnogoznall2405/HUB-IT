@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 _DASH = "—"
+REVIEW_MARK = "⚠"
 
 
 def _cell(value: Any) -> str:
@@ -59,7 +60,7 @@ def render_registry_markdown(groups: List[Dict[str, Any]]) -> str:
     """Таблица в прежнем формате; нумерация сквозная внутри каждой группы."""
     lines = ["## Протокол поручений", ""]
     for group in groups or []:
-        title = _cell(group.get("title")) if group.get("title") else "Общие поручения"
+        title = _cell(group.get("title")) if group.get("title") else "Разное"
         lines += [
             f"### {title}",
             "",
@@ -67,18 +68,31 @@ def render_registry_markdown(groups: List[Dict[str, Any]]) -> str:
             "|---|-------|-----------|---------------|------|",
         ]
         for n, item in enumerate(group.get("items") or [], 1):
+            task = _cell(item.get('task'))
+            if item.get("flags"):
+                # Пометка сторожа (modules/protocol_guard.py); voice_server.pipeline отрезает её от текста поручения
+                task += f" {REVIEW_MARK} проверить: " + _cell("; ".join(str(f) for f in item["flags"]))
             lines.append(
-                f"| {n} | {_cell(item.get('time'))} | {_cell(item.get('task'))} | "
+                f"| {n} | {_cell(item.get('time'))} | {task} | "
                 f"{_cell(item.get('assignee'))} | {_cell(item.get('deadline'))} |"
             )
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
-def registry_markdown_from_llm(text: Optional[str]) -> Optional[str]:
-    """JSON -> markdown; старый ответ таблицей (модель проигнорировала формат) — как есть."""
+def registry_markdown_from_llm(text: Optional[str], annotate=None) -> Optional[str]:
+    """JSON -> markdown; старый ответ таблицей (модель проигнорировала формат) — как есть.
+
+    ``annotate(groups)`` — необязательный контролёр (сторож Jev): ставит поручениям ``flags``.
+    Его сбой не должен лишать протокол реестра.
+    """
     groups = parse_registry_json(text)
     if groups is not None:
+        if groups and annotate is not None:
+            try:
+                annotate(groups)
+            except Exception:  # noqa: BLE001
+                pass
         return render_registry_markdown(groups) if groups else None
     if text and "|" in text:
         return text

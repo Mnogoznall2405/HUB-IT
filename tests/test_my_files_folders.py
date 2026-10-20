@@ -287,6 +287,40 @@ def test_folder_share_lists_subtree_files_and_grants_download(tmp_path):
         service.get_public_folder(token=share["token"])
 
 
+def test_folder_share_archive_grant_builds_zip(tmp_path):
+    import zipfile
+
+    service = _new_service(tmp_path)
+    outer = service.create_folder(actor=_user(), name="Внешняя")
+    inner = service.create_folder(actor=_user(), name="Внутренняя", parent_id=outer["id"])
+    nested = _upload(service, "nested.bin", folder_id=inner["id"])
+    top = _upload(service, "top.bin", folder_id=outer["id"])
+    other = _upload(service, "other.bin")
+    for item in (nested, top, other):
+        service.process_file(item["id"])
+
+    share = service.create_folder_share(actor=_user(), folder_id=outer["id"])
+    grant = service.create_public_folder_archive_grant(token=share["token"])
+    payload = service.consume_download_grant(token=grant["token"])
+    assert payload.file_name == "Внешняя.zip"
+    assert payload.cleanup_after is True
+    with zipfile.ZipFile(payload.path) as archive:
+        assert sorted(archive.namelist()) == ["top.bin", "Внутренняя/nested.bin"]
+    payload.path.unlink(missing_ok=True)
+
+    service.revoke_folder_share(actor=_user(), folder_id=outer["id"])
+    with pytest.raises(MyFilesNotFoundError):
+        service.create_public_folder_archive_grant(token=share["token"])
+
+
+def test_folder_share_archive_grant_rejects_empty_folder(tmp_path):
+    service = _new_service(tmp_path)
+    outer = service.create_folder(actor=_user(), name="Пустая")
+    share = service.create_folder_share(actor=_user(), folder_id=outer["id"])
+    with pytest.raises(MyFilesValidationError):
+        service.create_public_folder_archive_grant(token=share["token"])
+
+
 def test_favorites_and_recent_views(tmp_path):
     service = _new_service(tmp_path)
     folder = service.create_folder(actor=_user(), name="Избранная")

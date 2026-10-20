@@ -2,6 +2,7 @@
 Equipment database functions using correct schema with dynamic database switching.
 """
 from typing import List, Dict, Any, Optional
+import hashlib
 import json
 import logging
 import os
@@ -175,7 +176,11 @@ def _get_cached_equipment_total(
     query: str,
     params: tuple = (),
 ) -> int:
-    cache_key = _build_equipment_cache_key(f"{kind}_total", db_id, "count", *params)
+    # The query itself is part of the identity: different count SELECTs (e.g.
+    # universal search scoped to another field) can share identical params,
+    # so params alone cannot distinguish them.
+    query_key = hashlib.sha1(str(query or "").encode("utf-8")).hexdigest()[:16]
+    cache_key = _build_equipment_cache_key(f"{kind}_total", db_id, "count", query_key, *params)
     cached_total = _get_cached_equipment_payload(cache_key)
     if cached_total is not None:
         return int(cached_total)

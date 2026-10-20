@@ -117,29 +117,3 @@ describe('useChatSessionPersistenceEffects helpers', () => {
   });
 });
 
-describe('useChatSessionPersistenceEffects', () => {
-  it('mounts without throwing when caches are not hydrated', async () => {
-    const { renderHook } = await import('@testing-library/react');
-    const { unmount } = renderHook(() => useChatSessionPersistenceEffects({
-      activeConversationId: '',
-      aiBots: [],
-      aiBotsCacheHydratedRef: { current: false },
-      aiBotsCacheKeyParts: ['ai-bots'],
-      canUseAiChat: false,
-      conversations: [],
-      conversationsCacheHydratedRef: { current: false },
-      conversationsCacheKeyParts: ['conversations'],
-      hydratedThreadConversationIdRef: { current: '' },
-      lastConversationSessionKey: 'chat:last-conversation',
-      lastMobileViewSessionKey: 'chat:last-mobile-view',
-      messages: [],
-      messagesHasMore: false,
-      messagesHasNewer: false,
-      mobileView: 'inbox',
-      userCacheId: 'u1',
-      viewerLastReadAt: '',
-      viewerLastReadMessageId: '',
-    }));
-    unmount();
-  });
-});
