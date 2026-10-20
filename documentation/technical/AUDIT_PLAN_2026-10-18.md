@@ -632,6 +632,14 @@ AD: черновик принимает только точный найденн
 - После рестарта чат-контура (chat-a/b, preview, chat-push): ошибок/трейсбеков в логах нет, `chat-push-worker` отдаёт heartbeat, `health-check` 0 failures. Факт: в `.env` `CALLS_ENABLED` включён, `LIVEKIT_*` заданы, `itinvent-livekit` online, `Permissions-Policy` в `web.config` — `camera/microphone=(self)` → **звонки чата достижимы пользователям**; тесты звонков и миграция 0126 были проверены ранее, реальная сквозная проверка звонка с клиента не выполнялась.
 - `/ПК/` добавлена в `.gitignore` (блок ПДн рядом с `/VEL/`), файлы не удалялись.
 
+### Продолжение 47 (2026-10-20): P1-7 бот — SQL-вызовы вынесены из event loop
+
+По рекомендации советника (код без смены схемы/контракта), коммит `0512d14b`. В async-обработчиках `bot/handlers/{transfer,employee,database,work,act_email}.py` 24 синхронных запроса (`find_by_*`, `get_owner_*`, `get_equipment_*`, `get_branches`) заменены на `await asyncio.to_thread(...)`; соединение каждого обработчика создаётся отдельно (`create_database_connection`), общий коннект между потоками не делится. Найдены AST-проходом, правка механическая. Не тронуты: блоки `with db._get_connection() as conn:` с курсорами (work.py ~861/942/1246, database.py ~918) и `database_manager.get_*` — нужен ручной разбор и тест-стенд бота.
+- Тест `test_transfer_employee_department_lookup_does_not_block_the_event_loop`: **красный на HEAD** (цикл заблокирован 0.40 с), зелёный после. `pytest -c pytest.bot.ini` — 19 passed, `test_bot_event_loop_not_blocked.py` — 3 passed.
+- Деплой: рестарт `itinvent-bot` (отдельного restart-скрипта нет — `pm2 stop` + `clear-pm2-orphans.ps1` + `pm2 start`), только по команде.
+- Проверено при разборе APP_ENV: `inventory_server`/`scan_server` сами грузят корневой `.env` (`APP_ENV=development`), ветка production-ключей для них недостижима; дефолт оставлен.
+- Проверено по реальным логам: в `chat-a/b` после 16:40 ошибок нет; трейс `IdleInTransactionSessionTimeout` у chat-push — около 12:01 (до рестарта).
+
 ### Реестр: закрыто решением владельца 20.10 / ждёт отдельной команды
 Не выполняются без явной команды, повторно не спрашиваются: ротация секретов (владелец делает сам); смена `APP_ENV` в `.env` на production; удаление неиспользуемых npm-пакетов (`rehype-raw`, `react-hook-form`, `qrcode`, `decode-uri-component-safe`, дубль `xlsx`/`xlsx-js-style`); потолок тела запроса в IIS; мьютекс в `restart-backend/restart-scan` (нужен `-SkipOperationLock` для watchdog); решение по `ПК/`. Требуют дизайна или замеров: `user_service._save_users`, `postgres_realtime` (poison row, runtime DDL), дубли rate-limit, граница Scan/Inventory, P3-2, P2-производительность (baseline), блокирующие вызовы бота (~35), E2E-пробелы, файлы Codex (`pages/database/*`, `VoiceMeetingDrawer.jsx`), 07-B14/08-B15/08-B16, остаток Q4, мёртвый `one_c_catalog_compact_cleanup`.
 
