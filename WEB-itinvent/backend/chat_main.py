@@ -214,8 +214,7 @@ app = FastAPI(
 )
 app.state.limiter = limiter
 
-if internal_ip_bypass_middleware is not None:
-    app.add_middleware(internal_ip_bypass_middleware)
+# InternalIPBypassMiddleware is not installed: nothing reads request.state.skip_rate_limit (see main.py).
 
 app.add_middleware(
     CORSMiddleware,

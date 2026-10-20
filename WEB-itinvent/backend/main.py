@@ -454,8 +454,8 @@ app = FastAPI(
 )
 app.state.limiter = limiter
 
-if internal_ip_bypass_middleware is not None:
-    app.add_middleware(internal_ip_bypass_middleware)
+# No per-route @limiter.limit exists and nothing reads request.state.skip_rate_limit, so the former
+# InternalIPBypassMiddleware (a BaseHTTPMiddleware on every request) was dead weight and is not installed.
 
 # JSON-only gzip: starlette's GZipMiddleware buffers streams and would break SSE/file downloads.
 from backend.services.json_gzip_middleware import JsonGzipMiddleware
