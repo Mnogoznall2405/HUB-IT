@@ -310,7 +310,7 @@ async def show_equipment_types_menu(update: Update, context: ContextTypes.DEFAUL
             return States.DB_SELECTION_MENU
         
         # Получаем типы оборудования
-        all_equipment_types = db.get_equipment_types()
+        all_equipment_types = await asyncio.to_thread(db.get_equipment_types)
         db.close_connection()
         
         if not all_equipment_types:
@@ -453,7 +453,7 @@ async def show_equipment_by_type(update: Update, context: ContextTypes.DEFAULT_T
             return States.DB_VIEW_PAGINATION
         
         # Получаем список филиалов
-        branches = db.get_branches()
+        branches = await asyncio.to_thread(db.get_branches)
         db.close_connection()
         
         # Сохраняем список филиалов
@@ -537,7 +537,7 @@ async def show_equipment_by_type_and_branch(update: Update, context: ContextType
             return States.DB_VIEW_PAGINATION
         
         # Получаем оборудование
-        equipment_list = db.get_equipment_by_type(equipment_type, branch_name=branch_name)
+        equipment_list = await asyncio.to_thread(db.get_equipment_by_type, equipment_type, branch_name=branch_name)
         db.close_connection()
         
         if not equipment_list:

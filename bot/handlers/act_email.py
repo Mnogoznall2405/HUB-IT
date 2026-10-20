@@ -219,12 +219,12 @@ async def handle_act_action_callback(update: Update, context: ContextTypes.DEFAU
                 # Получаем email старого владельца
                 try:
                     logger.info(f"[ACT_EMAIL] Получение email для {old_employee} (strict=True)")
-                    owner_email = user_db.get_owner_email(old_employee, strict=True)
+                    owner_email = await asyncio.to_thread(user_db.get_owner_email, old_employee, strict=True)
                     logger.info(f"[ACT_EMAIL] Email (strict=True): {owner_email}")
                     
                     if not owner_email:
                         logger.info(f"[ACT_EMAIL] Получение email для {old_employee} (strict=False)")
-                        owner_email = user_db.get_owner_email(old_employee, strict=False)
+                        owner_email = await asyncio.to_thread(user_db.get_owner_email, old_employee, strict=False)
                         logger.info(f"[ACT_EMAIL] Email (strict=False): {owner_email}")
                     
                     if not owner_email:
@@ -490,9 +490,9 @@ async def handle_act_action_callback(update: Update, context: ContextTypes.DEFAU
                     await return_to_main_menu(update, context)
                     return
 
-                owner_email = user_db.get_owner_email(employee_name, strict=True)
+                owner_email = await asyncio.to_thread(user_db.get_owner_email, employee_name, strict=True)
                 if not owner_email:
-                    owner_email = user_db.get_owner_email(employee_name, strict=False)
+                    owner_email = await asyncio.to_thread(user_db.get_owner_email, employee_name, strict=False)
 
                 if not owner_email:
                     keyboard = InlineKeyboardMarkup([

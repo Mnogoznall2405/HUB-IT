@@ -559,12 +559,12 @@ async def receive_transfer_photos(update: Update, context: ContextTypes.DEFAULT_
 
             if search_inv_no:
                 logger.info("[TRANSFER] try_inv_lookup user_id=%s inv_no=%s", user_id, search_inv_no)
-                equipment = db.find_by_inventory_number(search_inv_no)
+                equipment = await asyncio.to_thread(db.find_by_inventory_number, search_inv_no)
                 logger.info("[TRANSFER] inv_lookup_result user_id=%s found=%s", user_id, bool(equipment))
 
             if not equipment and search_serial_no:
                 logger.info("[TRANSFER] try_serial_lookup user_id=%s serial=%s", user_id, search_serial_no)
-                equipment = db.find_by_serial_number(search_serial_no)
+                equipment = await asyncio.to_thread(db.find_by_serial_number, search_serial_no)
                 logger.info("[TRANSFER] serial_lookup_result user_id=%s found=%s", user_id, bool(equipment))
         except Exception as e:
             lookup_value = search_inv_no or search_serial_no or "-"
@@ -727,7 +727,7 @@ async def receive_transfer_photos(update: Update, context: ContextTypes.DEFAULT_
                         user_id,
                         search_inv_no,
                     )
-                    equipment = db.find_by_inventory_number(search_inv_no)
+                    equipment = await asyncio.to_thread(db.find_by_inventory_number, search_inv_no)
                     logger.info(
                         "[TRANSFER] inv_lookup_result user_id=%s found=%s",
                         user_id,
@@ -741,7 +741,7 @@ async def receive_transfer_photos(update: Update, context: ContextTypes.DEFAULT_
                         user_id,
                         search_serial_no,
                     )
-                    equipment = db.find_by_serial_number(search_serial_no)
+                    equipment = await asyncio.to_thread(db.find_by_serial_number, search_serial_no)
                     logger.info(
                         "[TRANSFER] serial_lookup_result user_id=%s found=%s",
                         user_id,
@@ -857,9 +857,9 @@ async def receive_new_employee(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if db:
         try:
-            owner_no = db.get_owner_no_by_name(new_employee, strict=True)
+            owner_no = await asyncio.to_thread(db.get_owner_no_by_name, new_employee, strict=True)
             if not owner_no:
-                owner_no = db.get_owner_no_by_name(new_employee, strict=False)
+                owner_no = await asyncio.to_thread(db.get_owner_no_by_name, new_employee, strict=False)
             employee_exists = owner_no is not None
         except Exception as e:
             logger.error(f"Ошибка проверки сотрудника: {e}")
@@ -1219,9 +1219,9 @@ async def handle_transfer_confirmation(update: Update, context: ContextTypes.DEF
                             new_branch = checkpoint_payload.get("new_branch", new_branch)
                             new_location = checkpoint_payload.get("new_location", new_location)
                         else:
-                            new_employee_id = transfer_db.get_owner_no_by_name(new_employee, strict=True)
+                            new_employee_id = await asyncio.to_thread(transfer_db.get_owner_no_by_name, new_employee, strict=True)
                             if not new_employee_id:
-                                new_employee_id = transfer_db.get_owner_no_by_name(new_employee, strict=False)
+                                new_employee_id = await asyncio.to_thread(transfer_db.get_owner_no_by_name, new_employee, strict=False)
                             if not new_employee_id:
                                 logger.info("Сотрудник '%s' не найден в OWNERS, создаём новую запись", new_employee)
                                 new_employee_id = transfer_db.create_owner(
@@ -1755,18 +1755,18 @@ async def get_employee_department(update: Update, context: ContextTypes.DEFAULT_
     if db:
         try:
             # Сначала пробуем точное совпадение
-            new_employee_dept = db.get_owner_dept(employee_name, strict=True)
+            new_employee_dept = await asyncio.to_thread(db.get_owner_dept, employee_name, strict=True)
             logger.info(f"Поиск отдела (strict=True) для '{employee_name}': {new_employee_dept}")
             
             # Если не нашли - пробуем нечеткий поиск
             if not new_employee_dept:
-                new_employee_dept = db.get_owner_dept(employee_name, strict=False)
+                new_employee_dept = await asyncio.to_thread(db.get_owner_dept, employee_name, strict=False)
                 logger.info(f"Поиск отдела (strict=False) для '{employee_name}': {new_employee_dept}")
             
             # Если все еще не нашли - пробуем через find_by_employee
             if not new_employee_dept:
                 logger.warning(f"Отдел не найден через get_owner_dept, пробуем find_by_employee")
-                employees = db.find_by_employee(employee_name, strict=False)
+                employees = await asyncio.to_thread(db.find_by_employee, employee_name, strict=False)
                 if employees and len(employees) > 0:
                     # Берем отдел из первой записи оборудования
                     new_employee_dept = employees[0].get('OWNER_DEPT', '')

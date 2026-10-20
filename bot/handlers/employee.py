@@ -4,6 +4,7 @@
 Обработчики поиска оборудования по сотруднику
 Содержит функции для поиска всего оборудования, закрепленного за сотрудником.
 """
+import asyncio
 import logging
 import os
 from telegram import Update, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
@@ -101,7 +102,7 @@ async def find_by_employee_input(update: Update, context: ContextTypes.DEFAULT_T
             return ConversationHandler.END
         
         # Поиск оборудования сотрудника
-        equipment_list = db.find_by_employee(employee_name)
+        equipment_list = await asyncio.to_thread(db.find_by_employee, employee_name)
         
         if not equipment_list:
             await update.message.reply_text(
@@ -347,11 +348,11 @@ async def handle_employee_export_delivery(update: Update, context: ContextTypes.
         if db:
             try:
                 # Сначала точное совпадение
-                employee_email = db.get_owner_email(employee_name, strict=True)
+                employee_email = await asyncio.to_thread(db.get_owner_email, employee_name, strict=True)
                 
                 # Если не нашли - нечеткий поиск
                 if not employee_email:
-                    employee_email = db.get_owner_email(employee_name, strict=False)
+                    employee_email = await asyncio.to_thread(db.get_owner_email, employee_name, strict=False)
                 
                 if employee_email:
                     logger.info(f"Email сотрудника '{employee_name}': {employee_email}")
@@ -585,7 +586,7 @@ async def handle_employee_search_suggestion(update: Update, context: ContextType
                     )
                     return ConversationHandler.END
                 
-                equipment_list = db.find_by_employee(selected_name)
+                equipment_list = await asyncio.to_thread(db.find_by_employee, selected_name)
                 
                 if not equipment_list:
                     await context.bot.send_message(
@@ -635,7 +636,7 @@ async def handle_employee_search_suggestion(update: Update, context: ContextType
             )
             return ConversationHandler.END
         
-        equipment_list = db.find_by_employee(pending)
+        equipment_list = await asyncio.to_thread(db.find_by_employee, pending)
         
         if not equipment_list:
             await context.bot.send_message(

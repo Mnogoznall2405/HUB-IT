@@ -3,6 +3,7 @@
 """
 Обработчики для регистрации выполненных работ
 """
+import asyncio
 import json
 import logging
 import os
@@ -256,12 +257,12 @@ async def handle_serial_input_with_ocr(
         result = None
         if search_inv_no:
             logger.info("[WORK] try_inv_lookup user_id=%s inv_no=%s", user_id, search_inv_no)
-            result = db.find_by_inventory_number(search_inv_no)
+            result = await asyncio.to_thread(db.find_by_inventory_number, search_inv_no)
             logger.info("[WORK] inv_lookup_result user_id=%s found=%s", user_id, bool(result))
 
         if not result and search_serial_no:
             logger.info("[WORK] try_serial_lookup user_id=%s serial=%s", user_id, search_serial_no)
-            result = db.find_by_serial_number(search_serial_no)
+            result = await asyncio.to_thread(db.find_by_serial_number, search_serial_no)
             logger.info("[WORK] serial_lookup_result user_id=%s found=%s", user_id, bool(result))
 
         # Проверяем тип результата - может быть список или одиночная запись

@@ -85,3 +85,25 @@ async def test_equipment_search_sql_lookup_does_not_block_the_event_loop(monkeyp
 
     assert any("не найдено" in text for text in sent), sent
     assert gap < MAX_ALLOWED_LOOP_GAP, f"bot event loop was blocked for {gap:.2f}s"
+
+
+@pytest.mark.asyncio
+async def test_transfer_employee_department_lookup_does_not_block_the_event_loop(monkeypatch):
+    from bot.handlers import transfer as transfer_handlers
+
+    class _SlowDb:
+        def get_owner_dept(self, _name, strict=True):
+            time.sleep(SLOW_SECONDS)
+            return "ИТ отдел"
+
+        def close_connection(self):
+            pass
+
+    monkeypatch.setattr(transfer_handlers.database_manager, "create_database_connection", lambda _uid: _SlowDb())
+    context = SimpleNamespace(user_data={})
+    update = SimpleNamespace(effective_user=SimpleNamespace(id=1))
+
+    gap = await _max_loop_gap_during(transfer_handlers.get_employee_department(update, context, "Иванов Иван"))
+
+    assert context.user_data["new_employee_dept"] == "ИТ отдел"
+    assert gap < MAX_ALLOWED_LOOP_GAP, f"bot event loop was blocked for {gap:.2f}s"
