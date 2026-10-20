@@ -26,6 +26,7 @@ export default function AddressBookEntrySheet({
   showChatAction = false,
   chatBusy = false,
   isFavorite = false,
+  showStaffIdentifiers = false,
   onToggleFavorite,
   onSaveContact,
 }) {
@@ -108,6 +109,7 @@ export default function AddressBookEntrySheet({
           showChatAction={showChatAction}
           chatBusy={chatBusy}
           isFavorite={isFavorite}
+          showStaffIdentifiers={showStaffIdentifiers}
           onToggleFavorite={onToggleFavorite}
           onSaveContact={onSaveContact}
           primaryActionsInFooter

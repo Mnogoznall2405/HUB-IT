@@ -97,6 +97,8 @@ export default function AddressBookEntryDetail({
   // R5: bottom-sheet variant keeps primary actions (call/chat) exclusively in
   // the sticky footer; the header block shows secondary actions only.
   primaryActionsInFooter = false,
+  // Табельный номер, код подразделения and отчество are not shown to the base (viewer) role.
+  showStaffIdentifiers = false,
 }) {
   const theme = useTheme();
 
@@ -142,14 +144,14 @@ export default function AddressBookEntryDetail({
     .join(' · ');
   const hasWorkMeta = Boolean(
     item.department
-      || item.department_code
+      || (showStaffIdentifiers && item.department_code)
       || item.department_location
-      || item.employee_code
+      || (showStaffIdentifiers && item.employee_code)
       || workplaceLabel
       || hireDateLabel
       || dismissalDateLabel
   );
-  const hasPersonalMeta = Boolean(item.middle_name || ageLabel || item.inn);
+  const hasPersonalMeta = Boolean((showStaffIdentifiers && item.middle_name) || ageLabel || item.inn);
   const hasContacts = listAny(item.work_phones)
     || listAny(item.personal_phones)
     || listAny(item.work_emails)
@@ -400,7 +402,7 @@ export default function AddressBookEntryDetail({
                   />
                 </MetaField>
               ) : null}
-              {item.department_code ? (
+              {showStaffIdentifiers && item.department_code ? (
                 <MetaField label="Код подразделения" testId="address-book-division">
                   <Typography variant="body2" color="text.secondary">
                     <HighlightText value={item.department_code} query={query} />
@@ -425,7 +427,7 @@ export default function AddressBookEntryDetail({
                   </Typography>
                 </MetaField>
               ) : null}
-              {item.employee_code ? (
+              {showStaffIdentifiers && item.employee_code ? (
                 <MetaField label="Табельный номер" testId="address-book-employee-code">
                   <Typography variant="body2" color="text.secondary">
                     <HighlightText value={item.employee_code} query={query} />
@@ -456,7 +458,7 @@ export default function AddressBookEntryDetail({
               Личное
             </Typography>
             <Stack spacing={0.75}>
-              {item.middle_name ? (
+              {showStaffIdentifiers && item.middle_name ? (
                 <MetaField label="Отчество" testId="address-book-middle-name">
                   <Typography variant="body2" color="text.secondary">
                     <HighlightText value={item.middle_name} query={query} />

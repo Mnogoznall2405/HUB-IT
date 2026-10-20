@@ -143,6 +143,8 @@ const AddressBook = () => {
   const { user, hasPermission } = useAuth();
   const { notifySuccess, notifyWarning, notifyApiError } = useNotification();
   const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
+  // Табельный номер, код подразделения and отчество are hidden from the base role (viewer); other roles: decided later.
+  const canSeeStaffIdentifiers = ['admin', 'operator'].includes(String(user?.role || '').trim().toLowerCase());
   const canComposeEmail = hasPermission('mail.access');
   const canUseChat = CHAT_FEATURE_ENABLED && hasPermission('chat.read') && hasPermission('chat.write');
   const canViewDismissed = hasPermission('address_book.dismissed.read');
@@ -936,6 +938,7 @@ const AddressBook = () => {
                     showChatAction={canUseChat && !dismissed}
                     chatBusy={Boolean(chatBusyEntryKey)}
                     isFavorite={selectedIsFavorite}
+                    showStaffIdentifiers={canSeeStaffIdentifiers}
                     onToggleFavorite={dismissed ? undefined : handleToggleFavorite}
                   />
                 ) : (
@@ -974,6 +977,7 @@ const AddressBook = () => {
             showChatAction={canUseChat && !dismissed}
             chatBusy={Boolean(chatBusyEntryKey)}
             isFavorite={selectedIsFavorite}
+            showStaffIdentifiers={canSeeStaffIdentifiers}
             onToggleFavorite={dismissed ? undefined : handleToggleFavorite}
           />
         ) : null}
@@ -1000,6 +1004,7 @@ const AddressBook = () => {
           showChatAction={canUseChat && !dismissed}
           chatBusy={Boolean(chatBusyEntryKey)}
           isFavorite={sheetIsFavorite}
+          showStaffIdentifiers={canSeeStaffIdentifiers}
           onToggleFavorite={dismissed ? undefined : handleToggleFavorite}
           onSaveContact={handleSaveContact}
         />

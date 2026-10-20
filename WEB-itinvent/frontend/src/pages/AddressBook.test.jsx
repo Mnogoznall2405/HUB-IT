@@ -446,6 +446,29 @@ describe('AddressBook page', () => {
     expect(screen.queryByRole('button', { name: /Обновить/i })).not.toBeInTheDocument();
   });
 
+  it.each([
+    ['viewer', false],
+    ['operator', true],
+    ['admin', true],
+  ])('staff identifiers (tab number, division code, patronymic) are hidden from the base viewer role: %s', async (role, visible) => {
+    authUser = { role };
+    addressBookAPI.search.mockResolvedValue({
+      ...samplePayload,
+      items: [{ ...samplePayload.items[0], employee_code: 'T-0042', department_code: 'D-77', middle_name: 'Ivanovich' }],
+    });
+    render(<AddressBook />);
+
+    const detail = await screen.findByTestId('address-book-entry-detail');
+    for (const id of ['address-book-employee-code', 'address-book-division', 'address-book-middle-name']) {
+      if (visible) {
+        expect(await within(detail).findByTestId(id)).toBeInTheDocument();
+      } else {
+        expect(within(detail).queryByTestId(id)).not.toBeInTheDocument();
+      }
+    }
+    expect(within(detail).queryByText('T-0042') !== null).toBe(visible);
+  });
+
   it('uses search placeholder with e-mail', async () => {
     render(<AddressBook />);
 
