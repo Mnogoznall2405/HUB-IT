@@ -25,6 +25,5 @@ pyotp
 qrcode
 Pillow
 redis
-slowapi
 webauthn
 zstandard>=0.25.0

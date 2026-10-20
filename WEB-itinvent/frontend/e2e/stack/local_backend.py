@@ -92,7 +92,6 @@ os.environ.update(
         "AUTH_NEW_LOGIN_EMAIL_ENABLED": "0",
         "REDIS_URL": "",
         "REDIS_PASSWORD": "",
-        "RATE_LIMIT_STORAGE_URL": "",
     }
 )
 

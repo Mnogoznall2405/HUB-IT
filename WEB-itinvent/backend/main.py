@@ -55,7 +55,6 @@ from backend.services.announcement_publish_worker import (
 )
 from backend.services.request_metrics_service import request_metrics_middleware
 from backend.json_db.manager import validate_json_runtime_storage
-from backend.rate_limit import limiter, rate_limit_exception, rate_limit_exception_handler, internal_ip_bypass_middleware
 from local_store import get_local_store
 
 
@@ -235,7 +234,6 @@ async def lifespan(app: FastAPI):
         f" 2fa_enforced={config.security.twofa_enforced}"
         f" 2fa_policy={config.security.twofa_policy or ('all' if config.security.twofa_enforced else 'off')}"
         f" runtime_store={auth_runtime_store_service.backend_name}"
-        f" rate_limit_storage={(config.security.rate_limit_storage_url or 'memory://')}"
     )
     validate_json_runtime_storage()
     if str(config.app_db.database_url or "").strip():
@@ -452,8 +450,6 @@ app = FastAPI(
     docs_url="/docs" if config.app.debug else None,
     redoc_url="/redoc" if config.app.debug else None,
 )
-app.state.limiter = limiter
-
 # No per-route @limiter.limit exists and nothing reads request.state.skip_rate_limit, so the former
 # InternalIPBypassMiddleware (a BaseHTTPMiddleware on every request) was dead weight and is not installed.
 
@@ -473,10 +469,7 @@ app.add_middleware(
 
 app.middleware("http")(request_metrics_middleware)
 
-# Global SlowAPIMiddleware stays disabled.
 # Auth throttling is enforced explicitly in auth.py so internal requests can be skipped reliably.
-if rate_limit_exception is not None and rate_limit_exception_handler is not None:
-    app.add_exception_handler(rate_limit_exception, rate_limit_exception_handler)
 
 
 # Health check endpoints

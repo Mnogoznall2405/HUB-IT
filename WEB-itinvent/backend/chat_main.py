@@ -30,7 +30,6 @@ from fastapi.responses import JSONResponse
 
 from backend.config import config
 from backend.api.v1 import auth, system
-from backend.rate_limit import limiter, rate_limit_exception, rate_limit_exception_handler, internal_ip_bypass_middleware
 from backend.runtime_role import get_runtime_role, is_chat_process
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.request_metrics_service import request_metrics_middleware
@@ -212,8 +211,6 @@ app = FastAPI(
     docs_url="/docs" if config.app.debug else None,
     redoc_url="/redoc" if config.app.debug else None,
 )
-app.state.limiter = limiter
-
 # InternalIPBypassMiddleware is not installed: nothing reads request.state.skip_rate_limit (see main.py).
 
 app.add_middleware(
@@ -252,8 +249,6 @@ async def chat_latency_asgi_marks(request, call_next):
     return response
 
 
-if rate_limit_exception is not None and rate_limit_exception_handler is not None:
-    app.add_exception_handler(rate_limit_exception, rate_limit_exception_handler)
 
 
 _CHAT_PROCESS_STARTED_MONOTONIC = time.monotonic()
