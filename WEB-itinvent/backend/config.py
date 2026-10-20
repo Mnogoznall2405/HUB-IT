@@ -326,7 +326,6 @@ class AuthSecurityConfig:
     passkey_allow_internal: bool = False
     trusted_device_ttl_days: int = 90
     new_login_email_enabled: bool = False
-    rate_limit_storage_url: Optional[str] = None
     windows_sso_enabled: bool = False
     windows_sso_domain: str = "ZSGP"
     adfs_base_url: Optional[str] = None
@@ -508,7 +507,6 @@ class Config:
                 passkey_allow_internal=str(os.getenv("AUTH_PASSKEY_ALLOW_INTERNAL", "0")).strip().lower() in {"1", "true", "yes", "on"},
                 trusted_device_ttl_days=int(os.getenv("AUTH_TRUSTED_DEVICE_TTL_DAYS", "90")),
                 new_login_email_enabled=str(os.getenv("AUTH_NEW_LOGIN_EMAIL_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"},
-                rate_limit_storage_url=(str(os.getenv("RATE_LIMIT_STORAGE_URL", "") or "").strip() or None),
                 windows_sso_enabled=str(os.getenv("WINDOWS_SSO_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"},
                 windows_sso_domain=(str(os.getenv("WINDOWS_SSO_DOMAIN", "ZSGP") or "").strip() or "ZSGP"),
                 adfs_base_url=(str(os.getenv("ADFS_BASE_URL", "") or "").strip().rstrip("/") or None),
