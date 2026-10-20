@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime, timezone
 
 from sqlalchemy import event
 
@@ -45,7 +46,8 @@ def attach_slow_sql_logging(engine, *, source: str) -> None:
         duration_ms = (time.perf_counter() - started_at) * 1000.0
         if duration_ms >= _threshold_ms():
             logger.warning(
-                "sql.slow source=%s took_ms=%.1f fingerprint=%s",
+                "sql.slow timestamp=%s source=%s took_ms=%.1f fingerprint=%s",
+                datetime.now(timezone.utc).isoformat(),
                 source,
                 duration_ms,
                 _fingerprint(statement),
