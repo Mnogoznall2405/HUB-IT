@@ -622,6 +622,19 @@ AD: черновик принимает только точный найденн
 - **Рестарт:** `restart-ai-agents.ps1 -ChatWorkerOnly` — `itinvent-ai-chat-worker` online, старт чистый. `preview` и `chat-push` штатно перезапускаются только внутри `restart-chat-scale.ps1`, который заодно перекатывает chat-a/b — не выполнено, ждёт решения.
 - Проверки: затронутые тесты (APP_ENV/ENVIRONMENT, 246 прогнано) — 237 passed, 9 failed (те же `test_ai_chat_runtime`, baseline-red на HEAD); `health-check.ps1` без repair — 0 failures (известный APPCRASH `1c-bridge`).
 
+### Продолжение 46 (2026-10-20): `test_ai_chat_runtime.py` — 9 падений закрыты
+
+Разбор по рекомендации советника: `ai_chat/` без незакоммиченных правок (всё в `1dd21843`), конкурентных правок нет. **Это не поломки прод-кода, а устаревшие ожидания тестов** (код менял Codex намеренно); `service.py` не трогался.
+- **Планировщик «умной памяти»** (`ai_chat/memory.py`, `prepare`) первым вызывает тот же `openrouter_client.complete_json`, что подменяют тесты, и «съедал» заготовленный ответ с `tool_calls` (в логе `ai_memory_plan_failed`) → 7 тестов (маршрутизация инструментов, отправка вложений KB/сгенерированных файлов, контекст БД). Теперь `_configure_local_backend_runtime` подставляет в `ai_chat.memory` отдельную заглушку клиента, бросающую ошибку (планировщик штатно откатывается на поиск по ключевым словам).
+- **Повтор при «invalid JSON»** (`service.py` ~6004, `for attempt in range(2)`) — тест ждал 2 вызова, теперь 3 (повтор того же шага).
+- **Частичный текст ответа** (`_publish_response_preview`) намеренно не публикуется (комментарий в коде: «два конкурирующих результата в UI») → тест ждёт `partial_events == []`. Метод остался мёртвым — удаление за Codex.
+- Итог: `tests/test_ai_chat_runtime.py` — **72 passed**.
+- После рестарта чат-контура (chat-a/b, preview, chat-push): ошибок/трейсбеков в логах нет, `chat-push-worker` отдаёт heartbeat, `health-check` 0 failures. Факт: в `.env` `CALLS_ENABLED` включён, `LIVEKIT_*` заданы, `itinvent-livekit` online, `Permissions-Policy` в `web.config` — `camera/microphone=(self)` → **звонки чата достижимы пользователям**; тесты звонков и миграция 0126 были проверены ранее, реальная сквозная проверка звонка с клиента не выполнялась.
+- `/ПК/` добавлена в `.gitignore` (блок ПДн рядом с `/VEL/`), файлы не удалялись.
+
+### Реестр: закрыто решением владельца 20.10 / ждёт отдельной команды
+Не выполняются без явной команды, повторно не спрашиваются: ротация секретов (владелец делает сам); смена `APP_ENV` в `.env` на production; удаление неиспользуемых npm-пакетов (`rehype-raw`, `react-hook-form`, `qrcode`, `decode-uri-component-safe`, дубль `xlsx`/`xlsx-js-style`); потолок тела запроса в IIS; мьютекс в `restart-backend/restart-scan` (нужен `-SkipOperationLock` для watchdog); решение по `ПК/`. Требуют дизайна или замеров: `user_service._save_users`, `postgres_realtime` (poison row, runtime DDL), дубли rate-limit, граница Scan/Inventory, P3-2, P2-производительность (baseline), блокирующие вызовы бота (~35), E2E-пробелы, файлы Codex (`pages/database/*`, `VoiceMeetingDrawer.jsx`), 07-B14/08-B15/08-B16, остаток Q4, мёртвый `one_c_catalog_compact_cleanup`.
+
 ### Остаётся владельцу / по команде
 - Ротация: пароли внешних серверов (из удалённого `migrate_vcs_info.py`), всё из удалённых env-файлов (в т.ч. `SCAN_AGENT_API_KEY`), **токен Telegram-бота** (был в `bot.log*` до правки уровня логов), затем удалить `bot.log*`. Проверить на реальные значения `deploy/mailbox_quota_collector/*`, `desktop/Hub.Desktop/appsettings.json`.
 - Рестарт backend/бота и публикация frontend по отдельной команде для применения правок. Решение по Windows SSO уже записано в `AUTH_SECURITY_STACK.md` в этом продолжении.

@@ -104,6 +104,18 @@ def _configure_local_backend_runtime(tmp_path: Path, monkeypatch, name: str = "a
     chat_db._read_engine = None
     chat_db._read_session_factory = None
     conftest.copy_chat_schema_for_url(database_url)
+
+    # The memory planner calls openrouter_client.complete_json before the answer. These tests script that client
+    # call by call, so the planner would consume the scripted tool-call reply; on any error it falls back to
+    # keyword matching, which is the behaviour these tests do not exercise. Imported here, after the runtime
+    # DB is configured, so the import does not initialise the default app DB first.
+    smart_memory_module = importlib.import_module("backend.ai_chat.memory")
+
+    def _no_planner_call(**kwargs):
+        raise RuntimeError("memory planner disabled in this test module")
+
+    # A separate stub object: tests patch complete_json on the real shared client afterwards.
+    monkeypatch.setattr(smart_memory_module, "openrouter_client", SimpleNamespace(complete_json=_no_planner_call))
     return database_url
 
 
@@ -2912,8 +2924,8 @@ def test_ai_chat_service_opens_one_dialog_queues_run_and_filters_hidden_bot_user
         "generating_answer",
     ]
     assert stage_names[-1] == "completed"
-    assert partial_events
-    assert partial_events[-1]["partial_text"].startswith("## AI reply")
+    # The finished answer is delivered only as the durable message: no artificial partial-text slices.
+    assert partial_events == []
     assert "generating_files" not in stage_names
     assert stage_events[0]["status_text"] == "Запрос принят. Ставлю задачу в очередь."
     assert any(item.get("status_text") == "Изучаю вложенные файлы и контекст." for item in stage_events)
@@ -3704,7 +3716,9 @@ def test_ai_chat_tools_use_effective_database_context(tmp_path, monkeypatch):
     assert queued is not None
     assert temp_ai_service.process_next_run() is True
     assert query_calls == [{"search_term": "WS-42", "db_id": "OBJ-ITINVENT"}]
-    assert len(completion_calls) == 2
+    # The scripted reply to call 2 is "invalid JSON": the service retries that formatting step once (call 3).
+    assert len(completion_calls) == 3
+    assert completion_calls[2]["schema_name"] == completion_calls[1]["schema_name"]
     assert "itinvent.equipment.search" in completion_calls[0]["user_prompt"]
     assert "Accumulated tool results JSON" in completion_calls[1]["user_prompt"]
     assert "matching the provided schema" in completion_calls[0]["system_prompt"]
