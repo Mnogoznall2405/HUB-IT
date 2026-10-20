@@ -467,6 +467,8 @@ describe('AddressBook page', () => {
       }
     }
     expect(within(detail).queryByText('T-0042') !== null).toBe(visible);
+    // The patronymic also leaves the full name (header, list, vCard) for the base role.
+    expect(screen.queryAllByText(/Ivanovich/).length > 0).toBe(visible);
   });
 
   it('uses search placeholder with e-mail', async () => {
