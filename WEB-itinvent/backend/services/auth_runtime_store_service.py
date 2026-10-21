@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.exc import IntegrityError
 
 from backend.appdb.db import app_session, initialize_app_schema, is_app_database_configured
@@ -333,6 +333,72 @@ class AuthRuntimeStoreService:
             )
         return {"count": count, "window_started_at": window_started_at, "expires_at": expires_ts}
 
+    def _increment_counter_postgres(
+        self,
+        namespace: str,
+        key: str,
+        *,
+        window_seconds: int,
+        amount: int,
+    ) -> Optional[dict[str, Any]]:
+        """One atomic upsert round trip instead of SELECT ... FOR UPDATE + UPDATE.
+
+        Same window semantics as the portable path below. Returns None when the backend is not
+        PostgreSQL or the stored value is unreadable, so the caller falls back to the portable path.
+        """
+        now = _utc_now()
+        now_ts = int(now.timestamp())
+        expires_at = now + timedelta(seconds=window_seconds)
+        fresh = json.dumps({"count": amount, "window_started_at": now_ts}, ensure_ascii=False)
+        table = AppAuthRuntimeItem.__table__
+        statement = text(
+            f"""
+            INSERT INTO {table.schema}.{table.name}
+                (namespace, item_key, value_text, expires_at, created_at, updated_at)
+            VALUES (:namespace, :item_key, :fresh, :expires_at, :now, :now)
+            ON CONFLICT (namespace, item_key) DO UPDATE SET
+                value_text = CASE
+                    WHEN ({table.name}.expires_at IS NOT NULL AND {table.name}.expires_at <= :now)
+                        OR COALESCE(({table.name}.value_text::jsonb ->> 'window_started_at')::bigint, 0) + :window <= :now_ts
+                    THEN :fresh
+                    ELSE jsonb_build_object(
+                        'count', COALESCE(({table.name}.value_text::jsonb ->> 'count')::bigint, 0) + :amount,
+                        'window_started_at', ({table.name}.value_text::jsonb ->> 'window_started_at')::bigint
+                    )::text
+                END,
+                expires_at = :expires_at,
+                updated_at = :now
+            RETURNING value_text
+            """
+        )
+        try:
+            with app_session(self._database_url) as session:
+                bind = session.get_bind()
+                if getattr(getattr(bind, "dialect", None), "name", "") != "postgresql":
+                    return None
+                stored = session.execute(
+                    statement,
+                    {
+                        "namespace": namespace,
+                        "item_key": key,
+                        "fresh": fresh,
+                        "expires_at": expires_at,
+                        "now": now,
+                        "now_ts": now_ts,
+                        "window": window_seconds,
+                        "amount": amount,
+                    },
+                ).scalar_one()
+        except Exception:
+            logger.debug("Atomic rate-limit counter failed, using portable path", exc_info=True)
+            return None
+        payload = _json_dict(stored)
+        return {
+            "count": int(payload.get("count", 0) or 0),
+            "window_started_at": int(payload.get("window_started_at", 0) or 0),
+            "expires_at": int(expires_at.timestamp()),
+        }
+
     def _increment_counter_db(
         self,
         namespace: str,
@@ -343,6 +409,11 @@ class AuthRuntimeStoreService:
     ) -> dict[str, Any]:
         normalized_namespace = self._normalize_namespace(namespace)
         normalized_key = self._normalize_key(key)
+        atomic = self._increment_counter_postgres(
+            normalized_namespace, normalized_key, window_seconds=window_seconds, amount=amount
+        )
+        if atomic is not None:
+            return atomic
         for attempt in range(2):
             now = _utc_now()
             now_ts = int(now.timestamp())

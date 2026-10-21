@@ -51,7 +51,8 @@ async def heartbeat_desktop_presence(
 ):
     _ = payload
     normalized_session_id = _require_session(session_id)
-    enforce_rate_limit(
+    await run_in_threadpool(
+        enforce_rate_limit,
         namespace="desktop_presence_heartbeat",
         key=f"user:{int(current_user.id)}",
         limit=120,

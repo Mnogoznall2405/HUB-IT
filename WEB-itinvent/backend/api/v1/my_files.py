@@ -345,7 +345,7 @@ async def create_my_file_folder_archive_grant(
     current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
 ) -> dict:
     _enforce_trusted_browser_origin(request)
-    enforce_download_grant_mint_limits(request, user_id=int(current_user.id))
+    await run_in_threadpool(enforce_download_grant_mint_limits, request, user_id=int(current_user.id))
     try:
         return await run_in_threadpool(
             my_files_service.create_folder_archive_grant,
@@ -694,7 +694,7 @@ async def upload_my_file(
     current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
 ) -> dict:
     _enforce_trusted_browser_origin(request)
-    enforce_upload_limits(request, user_id=int(current_user.id))
+    await run_in_threadpool(enforce_upload_limits, request, user_id=int(current_user.id))
     spool_path = await run_in_threadpool(my_files_service.new_spool_path, file_name)
     reserved_file_id = ""
     try:
@@ -752,7 +752,7 @@ async def create_my_file_upload_session(
     current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
 ) -> dict:
     _enforce_trusted_browser_origin(request)
-    enforce_upload_limits(request, user_id=int(current_user.id))
+    await run_in_threadpool(enforce_upload_limits, request, user_id=int(current_user.id))
     spool_path = await run_in_threadpool(my_files_service.new_spool_path, payload.file_name)
     try:
         reserved = await run_in_threadpool(
@@ -1029,7 +1029,7 @@ async def create_my_file_download_grant(
     current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
 ) -> dict:
     _enforce_trusted_browser_origin(request)
-    enforce_download_grant_mint_limits(request, user_id=int(current_user.id))
+    await run_in_threadpool(enforce_download_grant_mint_limits, request, user_id=int(current_user.id))
     try:
         payload = await run_in_threadpool(
             my_files_service.create_download_grant,
