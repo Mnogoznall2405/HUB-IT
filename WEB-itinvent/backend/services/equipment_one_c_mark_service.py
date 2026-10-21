@@ -30,7 +30,7 @@ KIND_MISMATCH = "mismatch"
 KINDS = (KIND_OK, KIND_MISMATCH)
 
 _table_lock = threading.Lock()
-_table_state: dict[str, Any] = {"available": None, "kind": False, "checked_at": 0.0}
+_table_state: dict[str, Any] = {"available": None, "kind": False, "snapshot": False, "checked_at": 0.0}
 _TABLE_RECHECK_SEC = 60.0
 
 
@@ -42,19 +42,21 @@ def reset_table_probe() -> None:
     with _table_lock:
         _table_state["available"] = None
         _table_state["kind"] = False
+        _table_state["snapshot"] = False
         _table_state["checked_at"] = 0.0
 
 
-def _probe(session) -> tuple[bool, bool]:
-    """(table exists, ``kind`` column exists); cached until both are present, else re-probed."""
+def _probe(session) -> tuple[bool, bool, bool]:
+    """(table exists, ``kind`` column exists, snapshot columns exist); cached until all are present."""
     with _table_lock:
         available = _table_state["available"]
         kind = bool(_table_state["kind"])
-        if available is True and kind:
-            return True, True
+        snapshot = bool(_table_state["snapshot"])
+        if available is True and kind and snapshot:
+            return True, True, True
         if available is not None and time.monotonic() - float(_table_state["checked_at"]) < _TABLE_RECHECK_SEC:
-            return bool(available), kind
-    has_table = has_kind = False
+            return bool(available), kind, snapshot
+    has_table = has_kind = has_snapshot = False
     try:
         table = AppEquipmentOneCMark.__table__
         connection = session.connection()
@@ -62,16 +64,17 @@ def _probe(session) -> tuple[bool, bool]:
         inspector = inspect(connection)
         has_table = bool(inspector.has_table(table.name, schema=schema))
         if has_table:
-            has_kind = any(
-                str(column.get("name")) == "kind" for column in inspector.get_columns(table.name, schema=schema)
-            )
+            column_names = {str(column.get("name")) for column in inspector.get_columns(table.name, schema=schema)}
+            has_kind = "kind" in column_names
+            has_snapshot = {"part_no_snapshot", "model_snapshot"} <= column_names
     except Exception:
         logger.info("Equipment 1C mark table probe failed", exc_info=True)
     with _table_lock:
         _table_state["available"] = has_table
         _table_state["kind"] = has_kind
+        _table_state["snapshot"] = has_snapshot
         _table_state["checked_at"] = time.monotonic()
-    return has_table, has_kind
+    return has_table, has_kind, has_snapshot
 
 
 def table_available(session) -> bool:
@@ -98,7 +101,27 @@ def normalize_kind(value: Any) -> str:
     return kind
 
 
-def _to_dict(row: AppEquipmentOneCMark, *, has_kind: bool) -> dict[str, Any]:
+def _normalize_snapshot_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def _snapshot_text(value: Any, maximum: int) -> str:
+    return " ".join(str(value or "").split())[:maximum]
+
+
+def _load_options(query, *, has_kind: bool, has_snapshot: bool):
+    """Skip columns the database does not have yet (code may run before the migration)."""
+    if not has_kind:
+        query = query.options(defer(AppEquipmentOneCMark.kind))
+    if not has_snapshot:
+        query = query.options(
+            defer(AppEquipmentOneCMark.part_no_snapshot),
+            defer(AppEquipmentOneCMark.model_snapshot),
+        )
+    return query
+
+
+def _to_dict(row: AppEquipmentOneCMark, *, has_kind: bool, has_snapshot: bool = False) -> dict[str, Any]:
     marked_at = row.marked_at
     return {
         "kind": (row.kind or KIND_OK) if has_kind else KIND_OK,
@@ -106,6 +129,10 @@ def _to_dict(row: AppEquipmentOneCMark, *, has_kind: bool) -> dict[str, Any]:
         "marked_by": row.marked_by or "",
         "marked_at": marked_at.isoformat() if marked_at else None,
         "note": row.note or "",
+        # PART_NO / model of the card when it was marked; None - no snapshot (older mark or
+        # migration 0142 not applied), which the UI treats as "cannot tell if it changed".
+        "part_no_snapshot": row.part_no_snapshot if has_snapshot else None,
+        "model_snapshot": row.model_snapshot if has_snapshot else None,
     }
 
 
@@ -120,13 +147,18 @@ def list_marks(db_id: Any, *, database_url: Optional[str] = None) -> dict[str, d
         return {}
     try:
         with app_session(database_url) as session:
-            has_table, has_kind = _probe(session)
+            has_table, has_kind, has_snapshot = _probe(session)
             if not has_table:
                 return {}
-            query = select(AppEquipmentOneCMark).where(AppEquipmentOneCMark.db_id == _db_key(db_id))
-            if not has_kind:
-                query = query.options(defer(AppEquipmentOneCMark.kind))
-            return {row.inv_no: _to_dict(row, has_kind=has_kind) for row in session.scalars(query).all()}
+            query = _load_options(
+                select(AppEquipmentOneCMark).where(AppEquipmentOneCMark.db_id == _db_key(db_id)),
+                has_kind=has_kind,
+                has_snapshot=has_snapshot,
+            )
+            return {
+                row.inv_no: _to_dict(row, has_kind=has_kind, has_snapshot=has_snapshot)
+                for row in session.scalars(query).all()
+            }
     except Exception:
         logger.warning("Failed to read equipment 1C marks", exc_info=True)
         return {}
@@ -139,12 +171,18 @@ def set_mark(
     actor: str,
     note: str = "",
     kind: str = KIND_OK,
+    part_no: Any = None,
+    model: Any = None,
     database_url: Optional[str] = None,
 ) -> dict[str, Any]:
     """Idempotent: a repeat keeps author and time and only updates the note.
 
     Switching the kind (ok <-> mismatch) is a new verdict, so it takes the new author and time.
     A "mismatch" needs a comment: the reviewer must say what does not match.
+
+    ``part_no`` / ``model`` are the card's current values, stored as a snapshot. A repeat while the
+    card differs from the stored snapshot is a fresh review: it takes the new author, time and
+    snapshot. A mark without a snapshot (an older one) just gets it filled in; author and time stay.
     """
     key = normalize_inv_no(inv_no)
     if not key:
@@ -157,7 +195,7 @@ def set_mark(
     for attempt in range(2):
         try:
             with app_session(database_url) as session:
-                has_table, has_kind = _probe(session)
+                has_table, has_kind, has_snapshot = _probe(session)
                 if not has_table:
                     raise OneCMarkUnavailableError("1C mark table is not migrated yet")
                 if mark_kind == KIND_MISMATCH and not has_kind:
@@ -166,9 +204,22 @@ def set_mark(
                     AppEquipmentOneCMark.db_id == _db_key(db_id),
                     AppEquipmentOneCMark.inv_no == key,
                 )
-                if not has_kind:
-                    query = query.options(defer(AppEquipmentOneCMark.kind))
+                query = _load_options(query, has_kind=has_kind, has_snapshot=has_snapshot)
                 row = session.scalar(query)
+                snapshot_part = _snapshot_text(part_no, 200)
+                snapshot_model = _snapshot_text(model, 255)
+
+                def _write_snapshot(target: AppEquipmentOneCMark) -> None:
+                    if has_snapshot:
+                        target.part_no_snapshot = snapshot_part
+                        target.model_snapshot = snapshot_model
+
+                def _snapshot_differs(target: AppEquipmentOneCMark) -> bool:
+                    return (
+                        _normalize_snapshot_text(target.part_no_snapshot) != _normalize_snapshot_text(snapshot_part)
+                        or _normalize_snapshot_text(target.model_snapshot) != _normalize_snapshot_text(snapshot_model)
+                    )
+
                 if row is None:
                     row = AppEquipmentOneCMark(
                         db_id=_db_key(db_id),
@@ -179,16 +230,28 @@ def set_mark(
                     )
                     if has_kind:
                         row.kind = mark_kind
+                    _write_snapshot(row)
                     session.add(row)
                 elif has_kind and (row.kind or KIND_OK) != mark_kind:
                     row.kind = mark_kind
                     row.marked_by = str(actor or "")[:128]
                     row.marked_at = datetime.now(timezone.utc)
                     row.note = clean_note
-                elif clean_note and clean_note != row.note:
-                    row.note = clean_note
+                    _write_snapshot(row)
+                elif has_snapshot and row.part_no_snapshot is not None and _snapshot_differs(row):
+                    # The card changed after the previous review: this repeat is a new review.
+                    row.marked_by = str(actor or "")[:128]
+                    row.marked_at = datetime.now(timezone.utc)
+                    if clean_note:
+                        row.note = clean_note
+                    _write_snapshot(row)
+                else:
+                    if clean_note and clean_note != row.note:
+                        row.note = clean_note
+                    if has_snapshot and row.part_no_snapshot is None:
+                        _write_snapshot(row)
                 session.flush()
-                result = _to_dict(row, has_kind=has_kind)
+                result = _to_dict(row, has_kind=has_kind, has_snapshot=has_snapshot)
             return result
         except IntegrityError:
             # A concurrent request created the same mark first: re-read and keep it.

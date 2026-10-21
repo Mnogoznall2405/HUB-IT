@@ -17,6 +17,28 @@ export const MARK_KIND_MISMATCH = 'mismatch';
 /** Вердикт проверяющего: '' — отметки нет, иначе 'ok' или 'mismatch' (старые записи без kind = 'ok'). */
 export const getOneCMarkKind = (mark) => (mark ? (mark.kind === MARK_KIND_MISMATCH ? MARK_KIND_MISMATCH : MARK_KIND_OK) : '');
 
+const normalizeSnapshotText = (value) => String(value ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/**
+ * Что в карточке изменилось после ручной отметки: { partNo: {was, now}, model: {was, now} }
+ * (только изменившиеся поля) или null — не менялось либо снимка нет (старая отметка).
+ * Текущее значение `undefined` — поле не известно этой строке, его не сравниваем.
+ */
+export const getOneCMarkChanges = (mark, { partNo, modelName } = {}) => {
+  if (!mark || mark.part_no_snapshot === null || mark.part_no_snapshot === undefined) return null;
+  const changes = {};
+  if (partNo !== undefined && partNo !== null
+    && normalizeSnapshotText(partNo) !== normalizeSnapshotText(mark.part_no_snapshot)) {
+    changes.partNo = { was: String(mark.part_no_snapshot).trim(), now: String(partNo).trim() };
+  }
+  if (modelName !== undefined && modelName !== null
+    && mark.model_snapshot !== null && mark.model_snapshot !== undefined
+    && normalizeSnapshotText(modelName) !== normalizeSnapshotText(mark.model_snapshot)) {
+    changes.model = { was: String(mark.model_snapshot).trim(), now: String(modelName).trim() };
+  }
+  return Object.keys(changes).length ? changes : null;
+};
+
 /** «1001», «1001.0» и « 1001 » — одна карточка (как на бэкенде). */
 export const normalizeOneCMarkKey = (value) => {
   const text = String(value ?? '').trim();

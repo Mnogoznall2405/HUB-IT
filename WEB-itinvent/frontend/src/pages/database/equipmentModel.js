@@ -125,6 +125,8 @@ export const getEquipmentRowActions = ({
   canMarkOneC = false,
   // '' — отметки нет, 'ok' — сверено вручную, 'mismatch' — не сходится с 1С.
   oneCKind = '',
+  // Карточка изменилась после отметки: её можно отметить заново, не снимая.
+  oneCStale = false,
 }) => {
   if (dataMode === DATA_MODE_CONSUMABLES) {
     return [];
@@ -138,7 +140,7 @@ export const getEquipmentRowActions = ({
     ...(canWrite && flags.isPc && !flags.isPrinterOrMfu ? ['component'] : []),
     ...(canWrite && flags.isPc ? ['cleaning'] : []),
     ...(canMarkOneC ? [
-      ...(oneCKind === 'ok' ? [] : ['one_c_mark']),
+      ...(oneCKind === 'ok' && !oneCStale ? [] : ['one_c_mark']),
       'one_c_mismatch',
       ...(oneCKind ? ['one_c_unmark'] : []),
     ] : []),

@@ -33,7 +33,7 @@ import { sortEquipmentItems } from './databaseListModel';
 import EquipmentCurrentActIndicator from './EquipmentCurrentActIndicator';
 import EquipmentPhotoIndicator from './EquipmentPhotoIndicator';
 import { EmployeeCompareBadge, useEmployeeCompare } from './employeeCompareContext';
-import { getOneCMark, getOneCMarkKind, useOneCMarks } from './oneCMarksContext';
+import { getOneCMark, getOneCMarkChanges, getOneCMarkKind, useOneCMarks } from './oneCMarksContext';
 import { isPartNoMissingIn1C } from './partNoCheck';
 
 const TABLE_VIRTUALIZE_THRESHOLD = 40;
@@ -98,7 +98,12 @@ const EquipmentRow = memo(function EquipmentRow({
   const employeeOwnerNo = item.EMPL_NO ?? item.empl_no ?? item.OWNER_NO ?? item.owner_no ?? null;
   const compareSummary = useEmployeeCompare(employeeOwnerNo);
   const oneCMarks = useOneCMarks();
-  const oneCKind = getOneCMarkKind(getOneCMark(oneCMarks, invNo));
+  const oneCMark = getOneCMark(oneCMarks, invNo);
+  const oneCKind = getOneCMarkKind(oneCMark);
+  const oneCStale = Boolean(getOneCMarkChanges(oneCMark, {
+    partNo: item.PART_NO ?? item.part_no ?? '',
+    modelName: item.MODEL_NAME ?? item.model_name,
+  }));
   const partNoMissingIn1C = isPartNoMissingIn1C(oneCMarks?.missingPartNos, item.PART_NO || item.part_no || '');
   const canMarkOneC = Boolean(oneCMarks?.canMark);
   const employeeDept = String(item.OWNER_DEPT || item.employee_dept || '').trim();
@@ -107,8 +112,8 @@ const EquipmentRow = memo(function EquipmentRow({
   const qtyValue = readQty(item, 1);
 
   const actions = useMemo(
-    () => getEquipmentRowActions({ item, dataMode, canWrite, canDeleteEquipment, canMarkOneC, oneCKind }),
-    [item, dataMode, canWrite, canDeleteEquipment, canMarkOneC, oneCKind]
+    () => getEquipmentRowActions({ item, dataMode, canWrite, canDeleteEquipment, canMarkOneC, oneCKind, oneCStale }),
+    [item, dataMode, canWrite, canDeleteEquipment, canMarkOneC, oneCKind, oneCStale]
   );
 
   if (isConsumablesMode) {
@@ -262,6 +267,7 @@ const EquipmentRow = memo(function EquipmentRow({
           summary={compareSummary}
           partNo={item.PART_NO || item.part_no || ''}
           invNo={invNo}
+          modelName={item.MODEL_NAME ?? item.model_name}
         />
       </TableCell>
       <TableCell

@@ -24,7 +24,7 @@ import EmployeeNameLink from './EmployeeNameLink';
 import EquipmentCurrentActIndicator from './EquipmentCurrentActIndicator';
 import EquipmentPhotoIndicator from './EquipmentPhotoIndicator';
 import { EmployeeCompareBadge, useEmployeeCompare } from './employeeCompareContext';
-import { getOneCMark, getOneCMarkKind, useOneCMarks } from './oneCMarksContext';
+import { getOneCMark, getOneCMarkChanges, getOneCMarkKind, useOneCMarks } from './oneCMarksContext';
 
 const getEquipmentCardActionMeta = (action) => {
   switch (action) {
@@ -143,11 +143,16 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
   const oneCMarks = useOneCMarks();
   const oneCMark = getOneCMark(oneCMarks, toInvNo(item));
   const canMarkOneC = Boolean(oneCMarks?.canMark);
+  const oneCStale = Boolean(getOneCMarkChanges(oneCMark, {
+    partNo: readFirst(item, ['PART_NO', 'part_no'], ''),
+    modelName: item.MODEL_NAME ?? item.model_name,
+  }));
   const compareBadge = compareSummary || oneCMark ? (
     <EmployeeCompareBadge
       summary={compareSummary}
       partNo={readFirst(item, ['PART_NO', 'part_no'], '')}
       invNo={toInvNo(item)}
+      modelName={item.MODEL_NAME ?? item.model_name}
     />
   ) : null;
   const dept = readFirst(item, ['OWNER_DEPT', 'employee_dept'], '');
@@ -157,9 +162,9 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
 
   const actionButtons = useMemo(
     () => getEquipmentCardActionButtons(getEquipmentRowActions({
-      item, dataMode, canWrite, canDeleteEquipment, canMarkOneC, oneCKind: getOneCMarkKind(oneCMark),
+      item, dataMode, canWrite, canDeleteEquipment, canMarkOneC, oneCKind: getOneCMarkKind(oneCMark), oneCStale,
     })),
-    [item, dataMode, canWrite, canDeleteEquipment, canMarkOneC, oneCMark],
+    [item, dataMode, canWrite, canDeleteEquipment, canMarkOneC, oneCMark, oneCStale],
   );
 
   const typeConfig = useMemo(() => getTypeConfig(typeName), [typeName]);

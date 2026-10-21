@@ -1,6 +1,13 @@
 import { createContext, Fragment, useContext, useMemo } from 'react';
 import { Box, Chip, Tooltip } from '@mui/material';
-import { getOneCMark, getOneCMarkKind, MARK_KIND_MISMATCH, MARK_KIND_OK, useOneCMarks } from './oneCMarksContext';
+import {
+  getOneCMark,
+  getOneCMarkChanges,
+  getOneCMarkKind,
+  MARK_KIND_MISMATCH,
+  MARK_KIND_OK,
+  useOneCMarks,
+} from './oneCMarksContext';
 import { isPartNoMissingIn1C } from './partNoCheck';
 import { isEmployeeCompareSnapshotFresh, resolveNoWarehouse, resolvePartCompare } from './employeeCompareModel';
 import { formatWarehouseQty } from './warehouse1cShared';
@@ -182,6 +189,29 @@ function MismatchOneCChip({ mark }) {
   );
 }
 
+function StaleOneCChip({ mark, changes }) {
+  const verdict = getOneCMarkKind(mark) === MARK_KIND_MISMATCH ? 'не сходится с 1С' : 'сверено с 1С';
+  const title = [
+    'Данные изменились после ручной отметки — проверьте и отметьте заново',
+    `Было отмечено: ${verdict}`,
+    `Кто и когда: ${formatManualMarkLine(mark)}`,
+    mark?.note ? `Примечание: ${mark.note}` : '',
+    changes.partNo ? `Парт. №: было «${changes.partNo.was || '—'}», стало «${changes.partNo.now || '—'}»` : '',
+    changes.model ? `Модель: была «${changes.model.was || '—'}», стала «${changes.model.now || '—'}»` : '',
+  ].filter(Boolean).join('\n');
+  return (
+    <Tooltip title={title}>
+      <Chip
+        size="small"
+        color="info"
+        label="1С ⟳"
+        data-compare-status="stale"
+        sx={chipSx}
+      />
+    </Tooltip>
+  );
+}
+
 function NotInNomenclatureChip({ partNo }) {
   return (
     <Tooltip title={`В номенклатуре 1С нет позиции с таким PART_NO («${String(partNo).trim()}»). Проверьте код.`}>
@@ -203,11 +233,15 @@ function NotInNomenclatureChip({ partNo }) {
  * авто-чип (в подсказке — кто отметил); «1С ✕» (красный, комментарий в подсказке) — вердикт
  * «не сходится», виден всегда рядом с авто-статусом; «1С ?» (оранжевый) — PART_NO нет в
  * номенклатуре 1С. «Склада в 1С нет» рядом с ручной отметкой или «1С ?» только шумит и скрыт.
+ * «1С ⟳» (синий) — после ручной отметки изменились парт. № или модель: отметка устарела и
+ * заменяет «1С ✎»/«1С ✕», пока контролёр не отметит карточку заново.
  */
-export function EmployeeCompareBadge({ summary, partNo = null, invNo = null }) {
+export function EmployeeCompareBadge({ summary, partNo = null, invNo = null, modelName = undefined }) {
   const oneC = useOneCMarks();
   const mark = invNo !== null && invNo !== undefined && invNo !== '' ? getOneCMark(oneC, invNo) : null;
   const kind = getOneCMarkKind(mark);
+  // Парт. № или модель поменялись после отметки: вердикт устарел, контролёру нужно проверить снова.
+  const staleChanges = mark ? getOneCMarkChanges(mark, { partNo: partNo ?? undefined, modelName }) : null;
   const notInNomenclature = partNo !== null && partNo !== undefined && isPartNoMissingIn1C(oneC?.missingPartNos, partNo);
   const { node: auto, matched, gap } = renderAutoCompareBadge({
     summary,
@@ -218,8 +252,9 @@ export function EmployeeCompareBadge({ summary, partNo = null, invNo = null }) {
   if (kind === MARK_KIND_OK && matched) return auto;
   const nodes = [];
   if (auto && !(gap && (kind || notInNomenclature))) nodes.push(<Fragment key="auto">{auto}</Fragment>);
-  if (kind === MARK_KIND_MISMATCH) nodes.push(<MismatchOneCChip key="mismatch" mark={mark} />);
-  if (kind === MARK_KIND_OK) nodes.push(<ManualOneCChip key="manual" mark={mark} />);
+  if (staleChanges) nodes.push(<StaleOneCChip key="stale" mark={mark} changes={staleChanges} />);
+  else if (kind === MARK_KIND_MISMATCH) nodes.push(<MismatchOneCChip key="mismatch" mark={mark} />);
+  else if (kind === MARK_KIND_OK) nodes.push(<ManualOneCChip key="manual" mark={mark} />);
   if (notInNomenclature) nodes.push(<NotInNomenclatureChip key="nomenclature" partNo={partNo} />);
   if (!nodes.length) return null;
   if (nodes.length === 1) return nodes[0];

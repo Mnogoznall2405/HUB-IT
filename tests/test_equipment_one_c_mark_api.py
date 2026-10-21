@@ -185,3 +185,94 @@ def test_kind_migration_adds_column_once_keeps_rows_as_ok_and_downgrades():
         step["downgrade"]()
         columns = {column["name"] for column in sa.inspect(connection).get_columns("equipment_one_c_marks")}
         assert "kind" not in columns and "inv_no" in columns
+
+
+MIGRATION_SNAPSHOT = ROOT / "WEB-itinvent/backend/alembic/versions/20261021_0142_equipment_one_c_mark_snapshot.py"
+
+
+def _card(monkeypatch, **fields):
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "get_equipment_by_inv",
+        lambda inv_no, db_id=None: {"inv_no": inv_no, **fields},
+    )
+
+
+def test_mark_stores_card_snapshot_and_a_changed_card_needs_a_fresh_review(mark_env, monkeypatch):
+    client = mark_env.client
+    _card(monkeypatch, part_no="C0001", model_name="Dell E2720H")
+
+    first = client.put("/equipment/1001/one-c-mark", json={"note": "акт 12"}).json()["mark"]
+    assert (first["part_no_snapshot"], first["model_snapshot"]) == ("C0001", "Dell E2720H")
+
+    # Same card, another reviewer: author, time and snapshot stay.
+    mark_env.set_user("second_admin", "admin")
+    stored_before = client.get("/equipment/one-c-marks").json()["marks"]["1001"]
+    client.put("/equipment/1001/one-c-mark", json={})
+    stored_after = client.get("/equipment/one-c-marks").json()["marks"]["1001"]
+    assert stored_after["marked_by"] == "admin" and stored_after["marked_at"] == stored_before["marked_at"]
+
+    # PART_NO was edited after the review: the repeat is a new review with a new snapshot.
+    _card(monkeypatch, part_no="C0002", model_name="Dell E2720H")
+    fresh = client.put("/equipment/1001/one-c-mark", json={}).json()["mark"]
+    assert fresh["marked_by"] == "second_admin"
+    assert (fresh["part_no_snapshot"], fresh["model_snapshot"]) == ("C0002", "Dell E2720H")
+    assert fresh["note"] == "акт 12"
+    assert client.get("/equipment/one-c-marks").json()["marks"]["1001"]["part_no_snapshot"] == "C0002"
+
+
+def test_mark_without_snapshot_gets_it_filled_without_changing_author(mark_env, monkeypatch):
+    engine = sa.create_engine(mark_env.database_url)
+    _card(monkeypatch, part_no="C0001", model_name="Монитор")
+    client = mark_env.client
+    client.put("/equipment/1001/one-c-mark", json={})
+    with engine.begin() as connection:
+        connection.execute(sa.text(
+            "UPDATE equipment_one_c_marks SET part_no_snapshot = NULL, model_snapshot = NULL"
+        ))
+
+    assert client.get("/equipment/one-c-marks").json()["marks"]["1001"]["part_no_snapshot"] is None
+
+    mark_env.set_user("second_admin", "admin")
+    filled = client.put("/equipment/1001/one-c-mark", json={}).json()["mark"]
+    assert filled["marked_by"] == "admin"
+    assert (filled["part_no_snapshot"], filled["model_snapshot"]) == ("C0001", "Монитор")
+
+
+def test_without_snapshot_columns_marks_work_and_carry_no_snapshot(mark_env, monkeypatch):
+    engine = sa.create_engine(mark_env.database_url)
+    with engine.begin() as connection:
+        connection.execute(sa.text("ALTER TABLE equipment_one_c_marks DROP COLUMN part_no_snapshot"))
+        connection.execute(sa.text("ALTER TABLE equipment_one_c_marks DROP COLUMN model_snapshot"))
+    marks.reset_table_probe()
+    _card(monkeypatch, part_no="C0001", model_name="Монитор")
+    client = mark_env.client
+
+    assert client.put("/equipment/1001/one-c-mark", json={"note": "акт"}).status_code == 200
+    stored = client.get("/equipment/one-c-marks").json()["marks"]["1001"]
+    assert stored["note"] == "акт" and stored["part_no_snapshot"] is None and stored["model_snapshot"] is None
+
+
+def test_snapshot_migration_adds_nullable_columns_once_and_downgrades():
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        base = runpy.run_path(str(MIGRATION))
+        base["upgrade"].__globals__["op"] = Operations(MigrationContext.configure(connection))
+        base["upgrade"].__globals__["_scope"] = lambda: "app"
+        base["upgrade"]()
+        connection.execute(sa.text("INSERT INTO equipment_one_c_marks (db_id, inv_no) VALUES ('main', '1001')"))
+
+        step = runpy.run_path(str(MIGRATION_SNAPSHOT))
+        step["upgrade"].__globals__["op"] = Operations(MigrationContext.configure(connection))
+        step["upgrade"].__globals__["_scope"] = lambda: "app"
+        step["upgrade"]()
+        step["upgrade"]()
+        row = connection.execute(sa.text(
+            "SELECT part_no_snapshot, model_snapshot FROM equipment_one_c_marks"
+        )).one()
+        assert tuple(row) == (None, None)
+
+        step["downgrade"]()
+        step["downgrade"]()
+        columns = {column["name"] for column in sa.inspect(connection).get_columns("equipment_one_c_marks")}
+        assert "part_no_snapshot" not in columns and "model_snapshot" not in columns and "inv_no" in columns

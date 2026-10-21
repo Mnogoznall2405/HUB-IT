@@ -1354,7 +1354,13 @@ async def set_one_c_mark(
     try:
         mark = await run_in_threadpool(
             lambda: equipment_one_c_mark_service.set_mark(
-                db_id, inv_no, actor=current_user.username, note=payload.note, kind=payload.kind
+                db_id,
+                inv_no,
+                actor=current_user.username,
+                note=payload.note,
+                kind=payload.kind,
+                part_no=equipment.get("part_no") or equipment.get("PART_NO"),
+                model=equipment.get("model_name") or equipment.get("MODEL_NAME"),
             )
         )
     except equipment_one_c_mark_service.OneCMarkUnavailableError:

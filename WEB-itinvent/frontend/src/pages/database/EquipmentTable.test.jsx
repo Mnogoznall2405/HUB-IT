@@ -488,6 +488,50 @@ describe('EquipmentTable', () => {
       expect(onAction).toHaveBeenCalledWith('one_c_mismatch', expect.objectContaining({ INV_NO: '100021' }));
     });
 
+    describe('a mark made before the card changed', () => {
+      const snapshotMark = (overrides = {}) => ({
+        ...MARK,
+        part_no_snapshot: PHILIPS_PART_NO,
+        model_snapshot: 'Philips monitor',
+        ...overrides,
+      });
+
+      it('keeps the manual chip while PART_NO and model are what the reviewer saw', () => {
+        const { container } = renderWithMarks({}, { marks: { 100021: snapshotMark() } });
+
+        expect(container.querySelector('[data-compare-status="manual"]')).not.toBeNull();
+        expect(container.querySelector('[data-compare-status="stale"]')).toBeNull();
+      });
+
+      it('replaces the manual chip with a «check again» chip when PART_NO changed, and allows marking again', async () => {
+        const onAction = vi.fn();
+        const { container } = renderWithMarks(
+          { onAction },
+          { marks: { 100021: snapshotMark({ part_no_snapshot: 'OLD-PART' }) } },
+        );
+
+        const chip = container.querySelector('[data-compare-status="stale"]');
+        expect(chip).not.toBeNull();
+        expect(container.querySelector('[data-compare-status="manual"]')).toBeNull();
+        fireEvent.mouseOver(chip);
+        expect(await screen.findByText(/было «OLD-PART»/)).toBeInTheDocument();
+
+        fireEvent.click(screen.getByText('Philips monitor'));
+        fireEvent.click(screen.getByText('Отметить сверку с 1С'));
+        expect(onAction).toHaveBeenCalledWith('one_c_mark', expect.objectContaining({ INV_NO: '100021' }));
+      });
+
+      it('also stales a «does not match» verdict when the model changed', () => {
+        const { container } = renderWithMarks(
+          {},
+          { marks: { 100021: snapshotMark({ kind: 'mismatch', note: 'нет в 1С', model_snapshot: 'Старая модель' }) } },
+        );
+
+        expect(container.querySelector('[data-compare-status="stale"]')).not.toBeNull();
+        expect(container.querySelector('[data-compare-status="mismatch"]')).toBeNull();
+      });
+    });
+
     it('flags a PART_NO that has no nomenclature in 1C', () => {
       const missing = new Set([PHILIPS_PART_NO.toLowerCase()]);
       const { container } = renderWithMarks({}, { missing });

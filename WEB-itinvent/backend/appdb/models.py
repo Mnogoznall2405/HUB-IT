@@ -751,6 +751,11 @@ class AppEquipmentOneCMark(AppBase):
     # 'ok' — reconciled by hand, 'mismatch' — the reviewer says it does not match 1C.
     # server_default only: code deployed before migration 0140 must still insert.
     kind: Mapped[str] = mapped_column(String(16), nullable=False, server_default="ok")
+    # PART_NO / model of the card at marking time (migration 0142); NULL - no snapshot recorded.
+    # server_default only (like `kind`): an unset value is left out of the INSERT, so code
+    # deployed before the migration can still insert marks.
+    part_no_snapshot: Mapped[str | None] = mapped_column(String(200), nullable=True, server_default=text("NULL"))
+    model_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True, server_default=text("NULL"))
 
 
 class AppPasswordVaultEntry(AppBase):
