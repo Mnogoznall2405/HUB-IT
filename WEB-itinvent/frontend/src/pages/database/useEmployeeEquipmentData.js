@@ -1,8 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { equipmentSearchAPI } from '../../api/equipmentSearch';
 import { warehouse1cAPI } from '../../api/warehouse1c';
+import { isBalancesMetaIncomplete } from './employeeCompareModel';
 import { resolveWarehouseErrorMessage } from './warehouse1cShared';
+
+// Mirrors backend EMPLOYEE_WAREHOUSE_MATCH_LIMIT: a candidate list this long may be
+// truncated, so it stays ambiguous and is never summed.
+const SUMMABLE_CANDIDATES_LIMIT = 20;
+// Several 1C warehouses of one person are loaded a few at a time: the 1C queue is shared.
+const CANDIDATE_LOAD_CONCURRENCY = 3;
 
 // Owns all remote state of the employee equipment dialog: Hub equipment list,
 // the matched/candidate 1C warehouse with balances, and lazy warehouse
@@ -252,13 +259,13 @@ export default function useEmployeeEquipmentData({
 
   const loadCandidateBalances = useCallback((candidateRef) => {
     const ref = String(candidateRef || '');
-    if (!canViewWarehouse1C || !ref) return;
+    if (!canViewWarehouse1C || !ref) return Promise.resolve();
     // Loaded or in flight: expanding again must not refetch; a failure retries.
-    if (candidateRequestedRef.current.has(ref)) return;
+    if (candidateRequestedRef.current.has(ref)) return Promise.resolve();
     candidateRequestedRef.current.add(ref);
     const session = candidateSessionRef.current;
     setCandidateBalances((prev) => ({ ...prev, [ref]: { loading: true, error: '', rows: [], meta: null } }));
-    warehouse1cAPI.getEmployeeWarehouse({ employeeName, warehouseRef: ref, loadBalances: true })
+    return warehouse1cAPI.getEmployeeWarehouse({ employeeName, warehouseRef: ref, loadBalances: true })
       .then((data) => {
         if (candidateSessionRef.current !== session) return;
         setCandidateBalances((prev) => ({
@@ -287,7 +294,52 @@ export default function useEmployeeEquipmentData({
       });
   }, [canViewWarehouse1C, employeeName]);
 
+  // One person with several 1C warehouses (one per object): the Hub equipment is compared
+  // with the sum of all of them, like the backend summary does.
+  const summableCandidates = useMemo(() => (
+    warehouseStatus === 'ambiguous'
+    && warehouseCandidates.length > 0
+    && warehouseCandidates.length < SUMMABLE_CANDIDATES_LIMIT
+      ? warehouseCandidates
+      : []
+  ), [warehouseStatus, warehouseCandidates]);
+
+  useEffect(() => {
+    if (!open || !canViewWarehouse1C || summableCandidates.length === 0) return undefined;
+    let cancelled = false;
+    const queue = summableCandidates.map((candidate) => candidate?.ref).filter(Boolean);
+    const worker = async () => {
+      while (!cancelled && queue.length) {
+        await loadCandidateBalances(queue.shift());
+      }
+    };
+    void Promise.all(
+      Array.from({ length: Math.min(CANDIDATE_LOAD_CONCURRENCY, queue.length) }, worker),
+    );
+    return () => { cancelled = true; };
+  }, [open, canViewWarehouse1C, summableCandidates, loadCandidateBalances]);
+
+  // Summed balances exist only when every candidate loaded completely: a partial sum
+  // must not look like a smaller warehouse.
+  const summedCandidates = useMemo(() => {
+    if (summableCandidates.length === 0) return null;
+    const rows = [];
+    let oldestAsOf = null;
+    for (const candidate of summableCandidates) {
+      const state = candidateBalances[candidate?.ref];
+      if (!state || state.loading || state.error || isBalancesMetaIncomplete(state.meta)) return null;
+      rows.push(...state.rows);
+      const asOf = state.meta?.as_of ?? state.meta?.asOf;
+      if (Number.isFinite(Date.parse(asOf)) && (oldestAsOf === null || Date.parse(asOf) < Date.parse(oldestAsOf))) {
+        oldestAsOf = asOf;
+      }
+    }
+    return { balances: rows, meta: { status: 'ok', ...(oldestAsOf ? { as_of: oldestAsOf } : {}) } };
+  }, [summableCandidates, candidateBalances]);
+
   return {
+    summedCandidateBalances: summedCandidates?.balances ?? null,
+    summedCandidateMeta: summedCandidates?.meta ?? null,
     hubItems,
     hubLoading,
     hubError,

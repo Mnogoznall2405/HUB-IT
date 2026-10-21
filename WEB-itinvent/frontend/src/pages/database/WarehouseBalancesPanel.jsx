@@ -282,6 +282,7 @@ export function Warehouse1CBalancesPanel({
         <WarehouseCandidateAccordions
           candidates={candidates}
           balancesByRef={candidateBalances}
+          compareMaps={compareMaps}
           filterText={filterText}
           onLoadBalances={onLoadCandidateBalances}
           onOpenWarehousePage={onOpenWarehousePage}

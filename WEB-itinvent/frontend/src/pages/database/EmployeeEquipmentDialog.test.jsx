@@ -733,17 +733,88 @@ describe('EmployeeEquipmentDialog', () => {
 
     const office = await screen.findByRole('button', { name: /Иванова Е\.Ю\. \(офис\)/ });
     expect(screen.queryByText('Кабель HDMI')).not.toBeInTheDocument();
-    expect(getEmployeeWarehouse).toHaveBeenCalledTimes(1);
 
     fireEvent.click(office);
     expect(await screen.findByText('Кабель HDMI')).toBeInTheDocument();
-    expect(getEmployeeWarehouse).toHaveBeenLastCalledWith(
+    // Balances of every candidate are loaded once (for the summed comparison); expanding does not refetch.
+    await waitFor(() => expect(getEmployeeWarehouse).toHaveBeenCalledTimes(3));
+    expect(getEmployeeWarehouse).toHaveBeenCalledWith(
       expect.objectContaining({ warehouseRef: 'wh-a', loadBalances: true }),
     );
-    expect(getEmployeeWarehouse).toHaveBeenCalledTimes(2);
+    expect(getEmployeeWarehouse).toHaveBeenCalledWith(
+      expect.objectContaining({ warehouseRef: 'wh-b', loadBalances: true }),
+    );
 
     fireEvent.click(office);
     await waitFor(() => expect(screen.queryByText('Кабель HDMI')).not.toBeInTheDocument());
+  });
+
+  describe('several warehouses of one person', () => {
+    const candidatesPayload = (count = 2) => ({
+      status: 'ambiguous',
+      warehouse: null,
+      candidates: Array.from({ length: count }, (_, index) => ({ ref: `wh-${index}`, name: `Склад объекта ${index}` })),
+      balances: [],
+    });
+    const balancesByRef = (map, failRef = '') => async ({ warehouseRef }) => {
+      if (!warehouseRef) return candidatesPayload(Object.keys(map).length);
+      if (warehouseRef === failRef) throw new Error('1C is busy');
+      return {
+        status: 'matched',
+        warehouse: { ref: warehouseRef },
+        balances: map[warehouseRef] || [],
+        balances_meta: { status: 'ok' },
+      };
+    };
+    const monitorRow = (qty) => ({
+      nomenclature_ref: 'n1', nomenclature_code: '10', nomenclature_name: 'Монитор Dell', qty_balance: qty,
+    });
+
+    it('compares the Hub with the sum of all candidate warehouses', async () => {
+      getEmployeeEquipment.mockResolvedValue({
+        equipment: [
+          { INV_NO: 'INV-1', MODEL_NAME: 'Dell E2720H', PART_NO: '10' },
+          { INV_NO: 'INV-2', MODEL_NAME: 'Dell E2720H', PART_NO: '10' },
+        ],
+      });
+      // One monitor on each of two object warehouses: 1 + 1 matches the two Hub items.
+      getEmployeeWarehouse.mockImplementation(balancesByRef({ 'wh-0': [monitorRow(1)], 'wh-1': [monitorRow(1)] }));
+
+      renderDialog(false, true);
+
+      await waitFor(() => expect(document.querySelectorAll('[data-compare-status="match"]')).toHaveLength(2));
+      expect(document.querySelectorAll('[data-compare-status="diff"]')).toHaveLength(0);
+    });
+
+    it('shows no comparison while one of the warehouses failed to load', async () => {
+      getEmployeeEquipment.mockResolvedValue({
+        equipment: [{ INV_NO: 'INV-1', MODEL_NAME: 'Dell E2720H', PART_NO: '10' }],
+      });
+      getEmployeeWarehouse.mockImplementation(
+        balancesByRef({ 'wh-0': [monitorRow(1)], 'wh-1': [] }, 'wh-1'),
+      );
+
+      renderDialog(false, true);
+
+      await waitFor(() => expect(getEmployeeWarehouse).toHaveBeenCalledWith(
+        expect.objectContaining({ warehouseRef: 'wh-1', loadBalances: true }),
+      ));
+      await screen.findByText('INV-1');
+      expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+    });
+
+    it('does not sum a candidate list that may be truncated', async () => {
+      getEmployeeEquipment.mockResolvedValue({
+        equipment: [{ INV_NO: 'INV-1', MODEL_NAME: 'Dell E2720H', PART_NO: '10' }],
+      });
+      getEmployeeWarehouse.mockImplementation(async () => candidatesPayload(20));
+
+      renderDialog(false, true);
+
+      await screen.findByText('INV-1');
+      expect(getEmployeeWarehouse).toHaveBeenCalledTimes(1);
+      expect(document.querySelectorAll('[data-compare-status]')).toHaveLength(0);
+    });
   });
 
   it('shows warehouse movements grouped by document in the Перемещения tab', async () => {

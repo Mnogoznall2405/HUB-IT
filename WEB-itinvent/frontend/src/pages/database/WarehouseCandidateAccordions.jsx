@@ -18,7 +18,9 @@ import {
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import { LoadingSpinner } from '../../components/common';
-import { isBalancesMetaIncomplete } from './employeeCompareModel';
+import { compareQtyBreakdown, isBalancesMetaIncomplete, resolve1cRowStatus } from './employeeCompareModel';
+import { comparisonRowSx } from './employeeComparisonStyles';
+import { CompareQtyNote } from './HubEquipmentList';
 import { filterBalancesByText, formatWarehouseQty, sortBalancesByNomenclature } from './warehouse1cShared';
 
 const identifierSx = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
@@ -32,7 +34,7 @@ const twoLineTextSx = {
 
 // Several 1C warehouses matched the employee: each one is a collapsible block
 // whose balances load on the first expand, so nothing navigates away.
-function CandidateBalances({ candidate, state, filterText, onOpenBalanceRow, onOpenInWarehouse1C }) {
+function CandidateBalances({ candidate, state, filterText, compareMaps = null, onOpenBalanceRow, onOpenInWarehouse1C }) {
   const rows = useMemo(
     () => filterBalancesByText(sortBalancesByNomenclature(state?.rows || []), filterText),
     [state?.rows, filterText],
@@ -59,15 +61,26 @@ function CandidateBalances({ candidate, state, filterText, onOpenBalanceRow, onO
         <Table size="small" aria-label={`Остатки склада ${candidate.name}`} sx={{ tableLayout: 'fixed' }}>
           <colgroup><col style={{ width: 96 }} /><col /><col style={{ width: 64 }} /><col style={{ width: 38 }} /></colgroup>
           <TableBody>
-            {rows.map((row, index) => (
+            {rows.map((row, index) => {
+              const rowStatus = resolve1cRowStatus(row?.nomenclature_code, compareMaps);
+              return (
               <TableRow
                 key={`${row.nomenclature_ref || row.nomenclature_name}|${index}`}
                 hover
+                data-compare-status={rowStatus || undefined}
                 onClick={() => onOpenBalanceRow?.(row, candidate)}
-                sx={{ cursor: onOpenBalanceRow ? 'pointer' : 'default' }}
+                sx={(theme) => ({
+                  cursor: onOpenBalanceRow ? 'pointer' : 'default',
+                  ...comparisonRowSx(theme, rowStatus),
+                })}
               >
                 <TableCell><Box title={row.nomenclature_code || '—'} sx={identifierSx}>{row.nomenclature_code || '—'}</Box></TableCell>
-                <TableCell><Box title={row.nomenclature_name || '—'} sx={twoLineTextSx}>{row.nomenclature_name || '—'}</Box></TableCell>
+                <TableCell>
+                  <Box title={row.nomenclature_name || '—'} sx={twoLineTextSx}>{row.nomenclature_name || '—'}</Box>
+                  {rowStatus === 'diff' ? (
+                    <CompareQtyNote breakdown={compareQtyBreakdown(row?.nomenclature_code, compareMaps)} />
+                  ) : null}
+                </TableCell>
                 <TableCell align="right">
                   <Box title={formatWarehouseQty(row.qty_balance)} sx={identifierSx}>{formatWarehouseQty(row.qty_balance)}</Box>
                 </TableCell>
@@ -85,7 +98,8 @@ function CandidateBalances({ candidate, state, filterText, onOpenBalanceRow, onO
                   ) : null}
                 </TableCell>
               </TableRow>
-            ))}
+              );
+            })}
           </TableBody>
         </Table>
       )}
@@ -96,6 +110,7 @@ function CandidateBalances({ candidate, state, filterText, onOpenBalanceRow, onO
 export default function WarehouseCandidateAccordions({
   candidates = [],
   balancesByRef = {},
+  compareMaps = null,
   filterText = '',
   onLoadBalances,
   onOpenWarehousePage,
@@ -116,7 +131,9 @@ export default function WarehouseCandidateAccordions({
   return (
     <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-        Найдено складов: {candidates.length}. Раскройте нужный, чтобы увидеть остатки.
+        {compareMaps
+          ? `Найдено складов: ${candidates.length}. Хаб сверен с суммой остатков всех этих складов.`
+          : `Найдено складов: ${candidates.length}. Раскройте нужный, чтобы увидеть остатки.`}
       </Typography>
       {candidates.map((candidate) => {
         const isExpanded = expanded.has(candidate.ref);
@@ -157,6 +174,7 @@ export default function WarehouseCandidateAccordions({
                 candidate={candidate}
                 state={state}
                 filterText={filterText}
+                compareMaps={compareMaps}
                 onOpenBalanceRow={onOpenBalanceRow}
                 onOpenInWarehouse1C={onOpenInWarehouse1C}
               />

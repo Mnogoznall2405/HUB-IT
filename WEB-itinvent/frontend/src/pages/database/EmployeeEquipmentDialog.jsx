@@ -143,6 +143,8 @@ export default function EmployeeEquipmentDialog({
     employmentLabel,
     candidateBalances,
     loadCandidateBalances,
+    summedCandidateBalances,
+    summedCandidateMeta,
     handleMovementsDatesChange,
     handleLoadMoreMovements,
   } = useEmployeeEquipmentData({
@@ -200,6 +202,9 @@ export default function EmployeeEquipmentDialog({
     || Boolean(typeFilter)
     || noActFilter
     || (Boolean(statusFilter) && canViewWarehouse1C);
+  // One matched warehouse, or the sum of several candidate warehouses of the same person.
+  const compareBalances = warehouseStatus === 'matched' ? warehouseBalances : summedCandidateBalances;
+  const compareBalancesMeta = warehouseStatus === 'matched' ? warehouseBalancesMeta : summedCandidateMeta;
   const comparisonComplete = Boolean(
     canViewWarehouse1C
     && !hubLoading
@@ -208,14 +213,14 @@ export default function EmployeeEquipmentDialog({
     && warehouseLoaded
     && !warehouseLoading
     && !warehouseError
-    && warehouseStatus === 'matched'
+    && (warehouseStatus === 'matched' || (warehouseStatus === 'ambiguous' && summedCandidateBalances))
     && !warehouseBalancesLoading
-    && !isBalancesMetaIncomplete(warehouseBalancesMeta)
-    && areBalanceQuantitiesValid(warehouseBalances)
+    && !isBalancesMetaIncomplete(compareBalancesMeta)
+    && areBalanceQuantitiesValid(compareBalances)
   );
   const compareMaps = useMemo(
-    () => (comparisonComplete ? buildCompareMaps({ hubItems, balances: warehouseBalances }) : null),
-    [comparisonComplete, hubItems, warehouseBalances],
+    () => (comparisonComplete ? buildCompareMaps({ hubItems, balances: compareBalances }) : null),
+    [comparisonComplete, hubItems, compareBalances],
   );
 
   useEffect(() => {
@@ -226,7 +231,7 @@ export default function EmployeeEquipmentDialog({
       onComparisonChange({ ownerNo: owner, summary: null });
       return;
     }
-    const metaAsOf = warehouseBalancesMeta?.as_of ?? warehouseBalancesMeta?.asOf;
+    const metaAsOf = compareBalancesMeta?.as_of ?? compareBalancesMeta?.asOf;
     const asOf = Number.isFinite(Date.parse(metaAsOf)) ? metaAsOf : new Date().toISOString();
     onComparisonChange({
       ownerNo: owner,
@@ -235,7 +240,7 @@ export default function EmployeeEquipmentDialog({
         employeeName,
         warehouse: warehouseInfo,
         hubItems,
-        balances: warehouseBalances,
+        balances: compareBalances,
         asOf,
       }),
     });
@@ -246,10 +251,10 @@ export default function EmployeeEquipmentDialog({
     ownerNo,
     employeeName,
     comparisonComplete,
-    warehouseBalancesMeta,
+    compareBalancesMeta,
     warehouseInfo,
     hubItems,
-    warehouseBalances,
+    compareBalances,
   ]);
   const statusFilterActive = Boolean(statusFilter) && comparisonComplete;
   const equipmentTypes = useMemo(() => {
@@ -315,14 +320,14 @@ export default function EmployeeEquipmentDialog({
       const status = resolveHubRowStatus(readFirst(item, ['PART_NO', 'part_no'], ''), compareMaps);
       counts[status || 'none'] += 1;
     }
-    for (const row of Array.isArray(warehouseBalances) ? warehouseBalances : []) {
+    for (const row of Array.isArray(compareBalances) ? compareBalances : []) {
       const status = resolve1cRowStatus(row?.nomenclature_code, compareMaps);
       counts[status || 'none'] += 1;
     }
     return counts;
-  }, [canViewWarehouse1C, hubItems, warehouseBalances, compareMaps]);
+  }, [canViewWarehouse1C, hubItems, compareBalances, compareMaps]);
   const visibleWarehouseBalances = useMemo(() => {
-    let rows = filterBalancesByText(sortBalancesByNomenclature(warehouseBalances), sharedFilter);
+    let rows = filterBalancesByText(sortBalancesByNomenclature(compareBalances ?? warehouseBalances), sharedFilter);
     if (allowed1cCodes) {
       rows = rows.filter((row) => allowed1cCodes.has(normalizeCompareKey(row?.nomenclature_code)));
     }
@@ -333,7 +338,7 @@ export default function EmployeeEquipmentDialog({
       });
     }
     return sortRowsBy(rows, WH_SORT_GETTERS, warehouseSort.key, warehouseSort.dir);
-  }, [warehouseBalances, sharedFilter, allowed1cCodes, statusFilter, statusFilterActive, compareMaps, warehouseSort]);
+  }, [compareBalances, warehouseBalances, sharedFilter, allowed1cCodes, statusFilter, statusFilterActive, compareMaps, warehouseSort]);
   const { handleOpenWarehousePage, handleOpenBalanceInWarehouse1C } = useEmployeeWarehouseNavigation({
     ownerNo,
     employeeName,
@@ -361,7 +366,8 @@ export default function EmployeeEquipmentDialog({
     warehouseLoaded,
     warehouseLoading,
     warehouseMovements,
-    warehouseStatus,
+    // Summed candidates export as one combined 1C list, not as «выберите склад».
+    warehouseStatus: warehouseStatus === 'ambiguous' && summedCandidateBalances ? 'matched' : warehouseStatus,
   });
 
   const handleOpenBalanceRow = useCallback((row, warehouse) => {
@@ -411,7 +417,7 @@ export default function EmployeeEquipmentDialog({
     employeeName,
     comparisonComplete,
     hubItems,
-    warehouseBalances,
+    warehouseBalances: compareBalances,
     compareMaps,
   });
 
