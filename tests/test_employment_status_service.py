@@ -69,6 +69,24 @@ def test_resolve_employment_status_batch():
     assert result["Рябов А.С."]["status"] == STATUS_ACTIVE
 
 
+def test_object_warehouse_with_working_owner_is_active_and_without_owner_is_unknown():
+    cache = _fresh_cache([{"full_name": "Садовников Павел Александрович"}])
+    result = resolve_employment_status_batch(
+        [
+            "Шарапово Автопарк Садовников Павел Александрович",
+            "Шарапово Автопарк Садовников П.А.",
+            "Шарапово Автопарк Сидоров Сидор Сидорович",
+            "Сидоров Сидор Сидорович",
+        ],
+        cache=cache,
+    )
+    assert result["Шарапово Автопарк Садовников Павел Александрович"]["status"] == STATUS_ACTIVE
+    assert result["Шарапово Автопарк Садовников П.А."]["status"] == STATUS_ACTIVE
+    # The owner is not in the address book, but a long object name is not proof of dismissal.
+    assert result["Шарапово Автопарк Сидоров Сидор Сидорович"]["status"] == STATUS_UNKNOWN
+    assert result["Сидоров Сидор Сидорович"]["status"] == STATUS_DISMISSED
+
+
 def test_resolve_employment_status_is_unknown_when_hr_cache_is_stale_or_failed():
     stale = {
         "updated_at": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),

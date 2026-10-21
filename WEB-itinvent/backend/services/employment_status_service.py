@@ -24,6 +24,7 @@ STATUS_DISMISSED = "dismissed"
 STATUS_UNKNOWN = "unknown"
 
 _MIN_FIO_SCORE = 50
+_MAX_PERSON_NAME_TOKENS = 3
 DEFAULT_ADDRESS_BOOK_MAX_AGE_SECONDS = 86_400
 
 
@@ -91,7 +92,11 @@ def _resolve_from_indexes(
 
     # Fuzzy: warehouse-style FIO ("Иванов И.И.") vs address-book full name.
     tokens = person_name_tokens(name)
-    candidates = surname_index.get(tokens[0], []) if tokens else []
+    # Object warehouses are named "<object> <FIO>" ("Шарапово Автопарк Иванов Иван Иванович"),
+    # so the surname may sit at any position, not only first.
+    candidates: list[str] = []
+    for token in dict.fromkeys(tokens):
+        candidates.extend(surname_index.get(token, []))
     best_score = 0
     best_name: str | None = None
     for book_name in candidates:
@@ -104,6 +109,15 @@ def _resolve_from_indexes(
             "status": STATUS_ACTIVE,
             "matched_name": best_name,
             "label": "Сотрудник работает",
+        }
+
+    if len(tokens) > _MAX_PERSON_NAME_TOKENS:
+        # Too long for a personal name and no FIO found in it: an object warehouse
+        # without a recognisable owner proves nothing about a dismissal.
+        return {
+            "status": STATUS_UNKNOWN,
+            "matched_name": None,
+            "label": "",
         }
 
     return {
