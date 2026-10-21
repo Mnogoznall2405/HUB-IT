@@ -97,7 +97,7 @@ export default function AddressBookEntryDetail({
   // R5: bottom-sheet variant keeps primary actions (call/chat) exclusively in
   // the sticky footer; the header block shows secondary actions only.
   primaryActionsInFooter = false,
-  // Табельный номер, код подразделения and отчество are not shown to the base (viewer) role.
+  // Табельный номер, код подразделения and the separate «Отчество» field are not shown to the base (viewer) role.
   showStaffIdentifiers = false,
 }) {
   const theme = useTheme();

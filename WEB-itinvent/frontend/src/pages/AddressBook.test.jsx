@@ -450,7 +450,7 @@ describe('AddressBook page', () => {
     ['viewer', false],
     ['operator', true],
     ['admin', true],
-  ])('staff identifiers (tab number, division code, patronymic) are hidden from the base viewer role: %s', async (role, visible) => {
+  ])('staff identifiers (tab number, division code, separate patronymic field) are hidden from the base viewer role; patronymic stays in the full name: %s', async (role, visible) => {
     authUser = { role };
     addressBookAPI.search.mockResolvedValue({
       ...samplePayload,
@@ -467,8 +467,8 @@ describe('AddressBook page', () => {
       }
     }
     expect(within(detail).queryByText('T-0042') !== null).toBe(visible);
-    // The patronymic also leaves the full name (header, list, vCard) for the base role.
-    expect(screen.queryAllByText(/Ivanovich/).length > 0).toBe(visible);
+    // The patronymic stays in the full name (header, list, vCard) for every role.
+    expect(screen.queryAllByText(/Ivanovich/).length > 0).toBe(true);
   });
 
   it('uses search placeholder with e-mail', async () => {

@@ -134,17 +134,6 @@ const useDebouncedValue = (value, delayMs = SEARCH_DEBOUNCE_MS) => {
   return debounced;
 };
 
-// The base role (viewer) must not see the patronymic anywhere: field, full name or vCard.
-const withoutPatronymic = (entry) => {
-  const patronymic = String(entry?.middle_name || '').trim();
-  if (!patronymic) return entry;
-  const fullName = String(entry?.full_name || '')
-    .split(/\s+/)
-    .filter((part) => part && part.toLowerCase() !== patronymic.toLowerCase())
-    .join(' ');
-  return { ...entry, middle_name: '', full_name: fullName };
-};
-
 const AddressBook = () => {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
@@ -154,7 +143,7 @@ const AddressBook = () => {
   const { user, hasPermission } = useAuth();
   const { notifySuccess, notifyWarning, notifyApiError } = useNotification();
   const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
-  // Табельный номер, код подразделения and отчество are hidden from the base role (viewer); other roles: decided later.
+  // Табельный номер, код подразделения and the separate «Отчество» field are hidden from the base role (viewer); other roles: decided later.
   const canSeeStaffIdentifiers = ['admin', 'operator'].includes(String(user?.role || '').trim().toLowerCase());
   const canComposeEmail = hasPermission('mail.access');
   const canUseChat = CHAT_FEATURE_ENABLED && hasPermission('chat.read') && hasPermission('chat.write');
@@ -253,7 +242,6 @@ const AddressBook = () => {
         };
         nextItems = [...nextItems].sort((a, b) => rank(a) - rank(b));
       }
-      if (!canSeeStaffIdentifiers) nextItems = nextItems.map(withoutPatronymic);
       setItems((prev) => (append ? [...prev, ...nextItems] : nextItems));
       setTotal(Number(data?.total || 0));
       setHasMore(Boolean(data?.has_more));
@@ -283,7 +271,7 @@ const AddressBook = () => {
         setLoadingMore(false);
       }
     }
-  }, [beginSearch, canSeeStaffIdentifiers, listMode, modeCodes]);
+  }, [beginSearch, listMode, modeCodes]);
 
   useEffect(() => {
     void loadItems(debouncedQuery, dismissed, 0, SEARCH_LIMIT, departmentFilter, cityFilter);
