@@ -22,6 +22,7 @@ from backend.models.warehouse_1c import (
     ReconcileAutoLinkRequest,
     ReconcileMarkNotIn1CRequest,
     Warehouse1CBalanceBatchRequest,
+    Warehouse1CPartNoCheckRequest,
     WarehouseOwnerLinkRequest,
 )
 from backend.services.authorization_service import (
@@ -1064,6 +1065,15 @@ async def reconcile_item_suggestions(
             db_id=target_db_id,
         )
     )
+
+
+@router.post("/part-no-check")
+async def check_part_nos(
+    payload: Warehouse1CPartNoCheckRequest = Body(...),
+    _: User = Depends(require_permission(PERM_WAREHOUSE_1C_READ)),
+):
+    """PART_NO values that have no nomenclature with that code in the 1C snapshot (no 1C call)."""
+    return await run_in_threadpool(warehouse_1c_service.check_nomenclature_codes, payload.codes)
 
 
 @router.post("/balances/batch")

@@ -13,6 +13,7 @@ import MyLocationIcon from '@mui/icons-material/MyLocation';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import PrintIcon from '@mui/icons-material/Print';
 import RemoveDoneIcon from '@mui/icons-material/RemoveDone';
+import ReportProblemOutlinedIcon from '@mui/icons-material/ReportProblemOutlined';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import StorageIcon from '@mui/icons-material/Storage';
 import TransferIcon from '@mui/icons-material/SwapHoriz';
@@ -23,7 +24,7 @@ import EmployeeNameLink from './EmployeeNameLink';
 import EquipmentCurrentActIndicator from './EquipmentCurrentActIndicator';
 import EquipmentPhotoIndicator from './EquipmentPhotoIndicator';
 import { EmployeeCompareBadge, useEmployeeCompare } from './employeeCompareContext';
-import { getOneCMark, useOneCMarks } from './oneCMarksContext';
+import { getOneCMark, getOneCMarkKind, useOneCMarks } from './oneCMarksContext';
 
 const getEquipmentCardActionMeta = (action) => {
   switch (action) {
@@ -54,6 +55,12 @@ const getEquipmentCardActionMeta = (action) => {
         label: 'Отметить 1С',
         tooltip: 'Ручная отметка: оборудование сверено с 1С. Автоматическую сверку не меняет.',
         icon: <TaskAltIcon sx={{ fontSize: 16 }} />,
+      };
+    case 'one_c_mismatch':
+      return {
+        label: 'Не сходится с 1С',
+        tooltip: 'Ручная отметка: оборудование не сходится с 1С. Нужен комментарий.',
+        icon: <ReportProblemOutlinedIcon sx={{ fontSize: 16 }} />,
       };
     case 'one_c_unmark':
       return {
@@ -150,7 +157,7 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
 
   const actionButtons = useMemo(
     () => getEquipmentCardActionButtons(getEquipmentRowActions({
-      item, dataMode, canWrite, canDeleteEquipment, canMarkOneC, oneCMarked: Boolean(oneCMark),
+      item, dataMode, canWrite, canDeleteEquipment, canMarkOneC, oneCKind: getOneCMarkKind(oneCMark),
     })),
     [item, dataMode, canWrite, canDeleteEquipment, canMarkOneC, oneCMark],
   );

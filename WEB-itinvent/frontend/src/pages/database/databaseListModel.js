@@ -1,6 +1,9 @@
 import { getItemCapabilityFlags, toInvNo } from './equipmentModel';
 import { normalizeText, readQty } from './databaseRecordModel';
 import { toItemId } from './detailModel';
+import { resolveNoWarehouse, resolvePartCompare } from './employeeCompareModel';
+import { getOneCMarkKind, normalizeOneCMarkKey } from './oneCMarksContext';
+import { isPartNoMissingIn1C } from './partNoCheck';
 
 export const DEFAULT_ACTION_BATCH_SIZE = 10;
 
@@ -279,6 +282,83 @@ export const buildActStats = (groupedData) => {
         if (available === null) stats.unknown += 1;
         else if (available) stats.withAct += 1;
         else stats.withoutAct += 1;
+      });
+    });
+  });
+  return stats;
+};
+
+export const ONE_C_FILTER_ALL = 'all';
+export const ONE_C_FILTER_SYNCED = 'synced';
+export const ONE_C_FILTER_DIFF = 'diff';
+export const ONE_C_FILTER_MANUAL = 'manual';
+export const ONE_C_FILTER_UNSYNCED = 'unsynced';
+export const ONE_C_FILTER_NO_WAREHOUSE = 'no_warehouse';
+export const ONE_C_FILTER_MISMATCH = 'mismatch';
+export const ONE_C_FILTER_NOT_IN_NOMENCLATURE = 'not_in_nomenclature';
+
+/**
+ * Состояние сверки с 1С одной строки: автоматическое (match/diff/null — как значок в таблице)
+ * и ручная отметка. `summaryByOwner` — Map owner_no → сводка, `marks` — { inv_no: отметка }.
+ */
+export const readOneCState = (item, { summaryByOwner = null, marks = null, missingPartNos = null } = {}) => {
+  const ownerNo = Number(item?.EMPL_NO ?? item?.empl_no ?? item?.OWNER_NO ?? item?.owner_no);
+  const summary = summaryByOwner?.get?.(ownerNo) || null;
+  const compare = summary ? resolvePartCompare(summary, item?.PART_NO ?? item?.part_no ?? '') : null;
+  const invNo = normalizeOneCMarkKey(toInvNo(item));
+  const markKind = getOneCMarkKind(invNo ? marks?.[invNo] : null);
+  return {
+    auto: compare ? (compare.matched ? 'match' : 'diff') : null,
+    manual: markKind === 'ok',
+    mismatch: markKind === 'mismatch',
+    missingNomenclature: isPartNoMissingIn1C(missingPartNos, item?.PART_NO ?? item?.part_no ?? ''),
+    noWarehouse: !compare && Boolean(summary) && resolveNoWarehouse(summary, item?.PART_NO ?? item?.part_no ?? '') !== null,
+  };
+};
+
+// «Сверено» = автоматически сходится или есть ручная отметка «сверено», пока авто не показывает «≠»:
+// расхождение ручная отметка не скрывает, а вердикт «не сходится» всегда исключает из «сверено».
+const matchesOneCFilter = (state, mode) => {
+  switch (mode) {
+    case ONE_C_FILTER_SYNCED: return !state.mismatch && (state.auto === 'match' || (state.manual && state.auto !== 'diff'));
+    case ONE_C_FILTER_DIFF: return state.auto === 'diff';
+    case ONE_C_FILTER_MANUAL: return state.manual;
+    case ONE_C_FILTER_MISMATCH: return state.mismatch;
+    case ONE_C_FILTER_NOT_IN_NOMENCLATURE: return state.missingNomenclature;
+    case ONE_C_FILTER_UNSYNCED: return state.auto === null && !state.manual && !state.mismatch;
+    case ONE_C_FILTER_NO_WAREHOUSE: return state.noWarehouse;
+    default: return true;
+  }
+};
+
+export const filterGroupedByOneC = (groupedData, mode, context) => {
+  if (!mode || mode === ONE_C_FILTER_ALL) return groupedData;
+  const filtered = {};
+  Object.entries(groupedData || {}).forEach(([branchName, locations]) => {
+    const nextLocations = {};
+    Object.entries(locations || {}).forEach(([locationName, items]) => {
+      const kept = (items || []).filter((item) => matchesOneCFilter(readOneCState(item, context), mode));
+      if (kept.length) nextLocations[locationName] = kept;
+    });
+    if (Object.keys(nextLocations).length) filtered[branchName] = nextLocations;
+  });
+  return filtered;
+};
+
+export const buildOneCStats = (groupedData, context) => {
+  const stats = { total: 0, synced: 0, diff: 0, manual: 0, mismatch: 0, missingNomenclature: 0, unsynced: 0, noWarehouse: 0 };
+  Object.values(groupedData || {}).forEach((locations) => {
+    Object.values(locations || {}).forEach((items) => {
+      (items || []).forEach((item) => {
+        const state = readOneCState(item, context);
+        stats.total += 1;
+        if (matchesOneCFilter(state, ONE_C_FILTER_SYNCED)) stats.synced += 1;
+        if (state.auto === 'diff') stats.diff += 1;
+        if (state.manual) stats.manual += 1;
+        if (state.mismatch) stats.mismatch += 1;
+        if (state.missingNomenclature) stats.missingNomenclature += 1;
+        if (matchesOneCFilter(state, ONE_C_FILTER_UNSYNCED)) stats.unsynced += 1;
+        if (state.noWarehouse) stats.noWarehouse += 1;
       });
     });
   });

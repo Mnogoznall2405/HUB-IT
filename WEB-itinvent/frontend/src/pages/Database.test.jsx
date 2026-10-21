@@ -51,7 +51,23 @@ const mockApi = vi.hoisted(() => ({
     unverify: vi.fn(),
     fetchContent: vi.fn(),
   },
+  equipmentOneCMarksAPI: {
+    list: vi.fn(),
+    set: vi.fn(),
+    clear: vi.fn(),
+  },
+  warehousePartNoCheckAPI: {
+    check: vi.fn(),
+  },
   grantedPermissions: new Set(['database.read', 'database.write']),
+}));
+
+vi.mock('../api/equipmentOneCMarks', () => ({
+  equipmentOneCMarksAPI: mockApi.equipmentOneCMarksAPI,
+}));
+
+vi.mock('../api/warehousePartNoCheck', () => ({
+  warehousePartNoCheckAPI: mockApi.warehousePartNoCheckAPI,
 }));
 
 vi.mock('../api/equipmentPhotos', () => ({
@@ -200,6 +216,8 @@ beforeEach(() => {
   mockApi.grantedPermissions.clear();
   mockApi.grantedPermissions.add('database.read');
   mockApi.grantedPermissions.add('database.write');
+  mockApi.equipmentOneCMarksAPI.list.mockResolvedValue({});
+  mockApi.warehousePartNoCheckAPI.check.mockResolvedValue({ available: true, missing: [] });
   mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockResolvedValue({
     meta: { status: 'ok', as_of: new Date().toISOString() },
     items: [],
@@ -407,6 +425,12 @@ beforeEach(() => {
   });
 });
 
+// Фильтры списка — чипы с выпадающим списком: открыть чип, выбрать значение.
+const chooseListFilter = async (filterBar, chipName, optionName) => {
+  fireEvent.click(await within(filterBar).findByRole('button', { name: chipName }));
+  fireEvent.click(await screen.findByRole('menuitem', { name: optionName }));
+};
+
 describe('Database equipment row helpers', () => {
   it('opens a database-scoped equipment QR link directly on the requested tab', async () => {
     mockApi.databaseAPI.getCurrentDatabase.mockImplementation(async () => {
@@ -533,21 +557,20 @@ describe('Database equipment row helpers', () => {
     renderDatabase();
 
     const filterBar = await screen.findByTestId('equipment-list-filters');
-    await waitFor(() => expect(within(filterBar).getByRole('button', { name: 'Без фото (1)' })).toBeInTheDocument());
-    expect(screen.getByRole('button', { name: /HQ.*с фото 1 из 2/ })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: /HQ.*с фото 1 из 2/ })).toBeInTheDocument());
 
     fireEvent.click(screen.getByText('HQ'));
     expect(await screen.findByText('Office')).toBeInTheDocument();
     expect(screen.getByText('Lab')).toBeInTheDocument();
 
-    fireEvent.click(within(filterBar).getByRole('button', { name: 'Без фото (1)' }));
+    await chooseListFilter(filterBar, 'Фильтр по наличию фото', 'Без фото (1)');
     await waitFor(() => expect(screen.queryByText('Office')).not.toBeInTheDocument());
     expect(screen.getByText('Lab')).toBeInTheDocument();
     // Автоподгрузка на время фильтра выключена — только ручная кнопка.
     expect(screen.queryByTestId('equipment-load-more-sentinel')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Загрузить ещё' })).toBeInTheDocument();
 
-    fireEvent.click(within(filterBar).getByRole('button', { name: 'Без фото (1)' }));
+    await chooseListFilter(filterBar, 'Фильтр по наличию фото', 'Все');
     expect(await screen.findByText('Office')).toBeInTheDocument();
   });
 
@@ -579,18 +602,16 @@ describe('Database equipment row helpers', () => {
     renderDatabase();
 
     const filterBar = await screen.findByTestId('equipment-list-filters');
-    await waitFor(() => expect(within(filterBar).getByRole('button', { name: 'Без акта (1)' })).toBeInTheDocument());
-
     fireEvent.click(screen.getByText('HQ'));
     expect(await screen.findByText('Office')).toBeInTheDocument();
     expect(screen.getByText('Lab')).toBeInTheDocument();
 
-    fireEvent.click(within(filterBar).getByRole('button', { name: 'Без акта (1)' }));
+    await chooseListFilter(filterBar, 'Фильтр по наличию акта', 'Без акта (1)');
     await waitFor(() => expect(screen.queryByText('Office')).not.toBeInTheDocument());
     expect(screen.getByText('Lab')).toBeInTheDocument();
 
     // Фильтры складываются: «без акта» + «с фото» — подходящих строк нет.
-    fireEvent.click(within(filterBar).getByRole('button', { name: /С фото/ }));
+    await chooseListFilter(filterBar, 'Фильтр по наличию фото', /С фото/);
     await waitFor(() => expect(screen.queryByText('Lab')).not.toBeInTheDocument());
     expect(screen.getByText('Среди загруженных строк нет подходящей техники')).toBeInTheDocument();
   });
@@ -1519,6 +1540,71 @@ describe('Database inventory 1C compare badges', () => {
     await closeEmployeeDialog(reopened);
     expect(await screen.findAllByText('1С ≠')).toHaveLength(2);
     expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
+  });
+
+  it('filters the list by the automatic 1C check and resets all filters in one click', async () => {
+    installPhilipsScenario();
+    mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockResolvedValue(philipsSummaryResponse());
+
+    renderDatabase();
+    await expandPhilipsRows();
+    expect(await screen.findAllByText('1С ✓')).toHaveLength(2);
+
+    const filterBar = await screen.findByTestId('equipment-list-filters');
+    await chooseListFilter(filterBar, 'Фильтр по сверке с 1С', /Расхождение/);
+    expect(await screen.findByText('Среди загруженных строк нет подходящей техники')).toBeInTheDocument();
+    expect(screen.queryByText('100021')).not.toBeInTheDocument();
+
+    fireEvent.click(within(filterBar).getByTestId('list-filters-reset'));
+    expect(await screen.findByText('HQ')).toBeInTheDocument();
+
+    // Раскрытые ветки остаются раскрытыми: после сброса и «Сверено» строки на месте.
+    await chooseListFilter(filterBar, 'Фильтр по сверке с 1С', 'Сверено (2)');
+    expect(await screen.findByText('100021')).toBeInTheDocument();
+    expect(screen.getByText('100022')).toBeInTheDocument();
+  });
+
+  it('marks a card as «does not match 1C» only with a comment, then shows the red chip', async () => {
+    installPhilipsScenario();
+    mockApi.grantedPermissions.add('database.one_c_mark');
+    mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockResolvedValue(philipsSummaryResponse());
+    mockApi.equipmentOneCMarksAPI.set.mockResolvedValue({
+      inv_no: '100021', kind: 'mismatch', marked_by: 'admin', marked_at: '2026-10-20T08:00:00Z', note: 'в 1С остаток 1',
+    });
+
+    renderDatabase();
+    await expandPhilipsRows();
+    fireEvent.click((await screen.findAllByText('Philips 243V'))[0]);
+    fireEvent.click(await screen.findByText('Не сходится с 1С…'));
+
+    const dialog = await screen.findByTestId('one-c-mismatch-dialog');
+    const save = within(dialog).getByTestId('one-c-mismatch-save');
+    expect(save).toBeDisabled();
+    fireEvent.change(within(dialog).getByLabelText('Комментарий к отметке «не сходится с 1С»'), {
+      target: { value: '  в 1С остаток 1  ' },
+    });
+    fireEvent.click(save);
+
+    await waitFor(() => expect(mockApi.equipmentOneCMarksAPI.set).toHaveBeenCalledWith('100021', 'в 1С остаток 1', 'mismatch'));
+    expect(await screen.findByText('1С ✕')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByTestId('one-c-mismatch-dialog')).not.toBeInTheDocument());
+  });
+
+  it('highlights rows whose PART_NO has no nomenclature in 1C and filters them', async () => {
+    installPhilipsScenario();
+    mockApi.warehouse1cAPI.getEmployeeCompareSummary.mockResolvedValue(philipsSummaryResponse());
+    mockApi.warehousePartNoCheckAPI.check.mockResolvedValue({ available: true, missing: [PHILIPS_PART_NO] });
+
+    renderDatabase();
+    await expandPhilipsRows();
+
+    expect(await screen.findAllByText('1С ?')).toHaveLength(2);
+    expect(mockApi.warehousePartNoCheckAPI.check).toHaveBeenCalledWith([PHILIPS_PART_NO]);
+
+    const filterBar = await screen.findByTestId('equipment-list-filters');
+    await chooseListFilter(filterBar, 'Фильтр по сверке с 1С', /Нет в номенклатуре/);
+    expect(await screen.findByText('100021')).toBeInTheDocument();
+    expect(screen.getByText('100022')).toBeInTheDocument();
   });
 
   it('ignores a stale summary response resolved after the dialog correction', async () => {

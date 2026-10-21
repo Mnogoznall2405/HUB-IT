@@ -6,7 +6,18 @@ import DatabaseAdSyncDialog from './DatabaseAdSyncDialog';
 import DatabaseDbTransferDialog from './DatabaseDbTransferDialog';
 import DatabaseDataSections from './DatabaseDataSections';
 import { EmployeeCompareProvider } from './employeeCompareContext';
-import { OneCMarksProvider, isOneCMarkAction, useEquipmentOneCMarks } from './oneCMarksContext';
+import { buildOneCStats, filterGroupedByOneC } from './databaseListModel';
+import {
+  ONE_C_MISMATCH_ACTION,
+  OneCMarksProvider,
+  getOneCMark,
+  isOneCMarkAction,
+  normalizeOneCMarkKey,
+  useEquipmentOneCMarks,
+} from './oneCMarksContext';
+import OneCMismatchDialog from './OneCMismatchDialog';
+import { useMissingPartNos } from './partNoCheck';
+import { toInvNo } from './equipmentModel';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
 import DatabaseDialogsLayer from './DatabaseDialogsLayer';
@@ -141,7 +152,7 @@ export default function DatabasePageView({ vm }) {
     detailSaving,
     detailSuccess,
     detailTab,
-    displayData,
+    displayData: listDisplayData,
     loadMoreNow,
     photoFilter,
     listFilterActive,
@@ -149,6 +160,9 @@ export default function DatabasePageView({ vm }) {
     setPhotoFilter,
     actFilter,
     actStats,
+    oneCFilter,
+    setOneCFilter,
+    baseDisplayData,
     setActFilter,
     editConsumableQtyError,
     editConsumableQtyLoading,
@@ -399,13 +413,50 @@ export default function DatabasePageView({ vm }) {
     notifyError,
   });
   const applyOneCMarkAction = oneCMarks.applyAction;
+  // Проверка PART_NO по номенклатуре 1С (локальный снимок): строки с несуществующим кодом подсвечиваются.
+  const missingPartNos = useMissingPartNos({
+    dbKey: photoReviewDbId,
+    enabled: !isConsumablesMode,
+    groupedData: baseDisplayData,
+  });
+  const oneCValue = useMemo(
+    () => ({ ...oneCMarks.value, missingPartNos }),
+    [oneCMarks.value, missingPartNos],
+  );
+  const [mismatchTarget, setMismatchTarget] = useState(null);
+
+  // Фильтр «1С»: значок в таблице считается из сводки сверки и ручных отметок, поэтому
+  // применяется здесь, а не в контроллере списка. Счётчики — по всем загруженным строкам.
+  const oneCContext = useMemo(() => {
+    const summaryByOwner = new Map();
+    for (const entry of Array.isArray(employeeCompareSummaries) ? employeeCompareSummaries : []) {
+      const ownerNo = Number(entry?.owner_no);
+      if (Number.isInteger(ownerNo) && ownerNo > 0) summaryByOwner.set(ownerNo, entry);
+    }
+    return { summaryByOwner, marks: oneCMarks.value.marks, missingPartNos };
+  }, [employeeCompareSummaries, oneCMarks.value.marks, missingPartNos]);
+  const oneCStats = useMemo(
+    () => (isConsumablesMode ? null : buildOneCStats(baseDisplayData, oneCContext)),
+    [baseDisplayData, isConsumablesMode, oneCContext],
+  );
+  const displayData = useMemo(
+    () => (isConsumablesMode ? listDisplayData : filterGroupedByOneC(listDisplayData, oneCFilter, oneCContext)),
+    [isConsumablesMode, listDisplayData, oneCContext, oneCFilter],
+  );
   const handleRowAction = useCallback((actionType, itemOrInvNo) => {
+    if (actionType === ONE_C_MISMATCH_ACTION) {
+      const invNo = normalizeOneCMarkKey(
+        typeof itemOrInvNo === 'object' && itemOrInvNo ? toInvNo(itemOrInvNo) : itemOrInvNo,
+      );
+      if (invNo) setMismatchTarget({ invNo, note: getOneCMark(oneCMarks.value, invNo)?.note || '' });
+      return;
+    }
     if (isOneCMarkAction(actionType)) {
       void applyOneCMarkAction(actionType, itemOrInvNo);
       return;
     }
     handleAction(actionType, itemOrInvNo);
-  }, [applyOneCMarkAction, handleAction]);
+  }, [applyOneCMarkAction, handleAction, oneCMarks.value]);
   const { summary: photoReviewSummary, refresh: refreshPhotoReviewSummary } = useEquipmentPhotoReviewSummary({
     enabled: photoReviewEnabled,
     dbId: photoReviewDbId,
@@ -597,7 +648,7 @@ export default function DatabasePageView({ vm }) {
         />
 
         <EmployeeCompareProvider summaries={employeeCompareSummaries}>
-        <OneCMarksProvider value={oneCMarks.value}>
+        <OneCMarksProvider value={oneCValue}>
           {employeeFallback.active && (
             <Suspense fallback={null}>
               <DatabaseEmployeeSearchFallback
@@ -689,6 +740,9 @@ export default function DatabasePageView({ vm }) {
               actValue={actFilter}
               onActChange={setActFilter}
               actStats={actStats}
+              oneCValue={oneCFilter}
+              onOneCChange={setOneCFilter}
+              oneCStats={oneCStats}
               isMobile={isMobile}
               onOpenReview={photoReviewEnabled ? handleOpenPhotoReview : null}
               reviewSummary={photoReviewSummary}
@@ -721,6 +775,14 @@ export default function DatabasePageView({ vm }) {
         </EmployeeCompareProvider>
 
         <DatabaseDialogsLayer {...dialogsLayerProps} />
+
+        <OneCMismatchDialog
+          open={Boolean(mismatchTarget)}
+          invNo={mismatchTarget?.invNo || ''}
+          initialNote={mismatchTarget?.note || ''}
+          onClose={() => setMismatchTarget(null)}
+          onSave={(note) => oneCMarks.saveMismatch(mismatchTarget?.invNo, note)}
+        />
 
         {qualityOpen ? (
           <Suspense fallback={null}>

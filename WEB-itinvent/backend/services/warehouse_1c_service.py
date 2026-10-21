@@ -45,6 +45,7 @@ from backend.services.one_c_catalog_search import (
     catalog_query_tokens,
     catalog_rows_fingerprint,
     fold_search_text,
+    normalize_catalog_text,
 )
 from backend.services.warehouse_1c_scope import (
     Warehouse1CAllScopeConfigurationError,
@@ -132,6 +133,8 @@ MAX_CONCURRENT_1C_CALLS = 2
 # result is cached briefly — repeat page loads stay instant, data stays fresh
 # enough for a reconciliation indicator.
 EMPLOYEE_COMPARE_SUMMARY_TTL_SECONDS = 120
+# Past the TTL a snapshot is still served (and rebuilt in the background) up to this age.
+EMPLOYEE_COMPARE_SUMMARY_STALE_SECONDS = 1800
 MAX_QUEUED_1C_CALLS = 16
 COM_CIRCUIT_BREAKER_FAILURES = 4
 COM_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 60
@@ -1056,6 +1059,7 @@ class Warehouse1CService:
         self._catalog_app_status_cache: dict[str, Any] | None = None
         self._employee_compare_cache: dict[str, dict[str, Any]] = {}
         self._employee_compare_lock = asyncio.Lock()
+        self._employee_compare_rebuilds: set[str] = set()
         self._catalog_leader_status: dict[str, Any] = {
             "mode": "not_checked",
             "is_leader": False,
@@ -2082,6 +2086,36 @@ class Warehouse1CService:
             if normalize_text(entry_ref).lower() in wanted
         }
 
+    def check_nomenclature_codes(self, codes: list[str]) -> dict[str, Any]:
+        """Which of ``codes`` have no nomenclature with that exact code in the 1C snapshot.
+
+        Local snapshot only (no 1C call, no legacy cache): when the snapshot is not ready the
+        answer is ``available=False`` with nothing missing, so the UI marks no row on a guess.
+        """
+        wanted: dict[str, str] = {}
+        for code in codes or []:
+            text = normalize_text(code)[:200]
+            key = normalize_catalog_text(text)
+            if key:
+                wanted.setdefault(key, text)
+        store = self._catalog_snapshot_store
+        if not wanted or store is None:
+            return {"available": False, "missing": []}
+        try:
+            available, rows = store.lookup_nomenclature_codes(
+                sorted(wanted), source_base=DEFAULT_1C_REF
+            )
+        except Exception as exc:
+            logger.warning("Warehouse 1C PART_NO check failed: %s", exc)
+            return {"available": False, "missing": []}
+        if not available:
+            return {"available": False, "missing": []}
+        found = {str(key) for key in dict(rows or {})}
+        return {
+            "available": True,
+            "missing": [text for key, text in wanted.items() if key not in found],
+        }
+
     def lookup_nomenclature_codes(self, codes: list[str]) -> dict[str, dict[str, str]]:
         """Resolve exact catalogue codes without materialising the full app snapshot."""
         normalized_codes = {
@@ -2640,6 +2674,16 @@ class Warehouse1CService:
         """Cached wrapper — the build costs one batched 1C call (~5-10 s)."""
         cache_key = str(db_id or "default").casefold() or "default"
         observed_entry = self._employee_compare_cache.get(cache_key)
+        if observed_entry and not refresh:
+            age = time.monotonic() - observed_entry["at"]
+            if (
+                EMPLOYEE_COMPARE_SUMMARY_TTL_SECONDS <= age < EMPLOYEE_COMPARE_SUMMARY_STALE_SECONDS
+            ):
+                # Stale-while-revalidate: the badges are advisory, so answer from the previous
+                # snapshot at once and rebuild in the background instead of making the user
+                # wait for the 1C call.
+                self._schedule_employee_compare_rebuild(cache_key, db_id)
+                return dict(observed_entry["payload"])
         async with self._employee_compare_lock:
             entry = self._employee_compare_cache.get(cache_key)
             if (
@@ -2654,6 +2698,25 @@ class Warehouse1CService:
                 "payload": payload,
             }
             return payload
+
+    def _schedule_employee_compare_rebuild(self, cache_key: str, db_id) -> None:
+        running = self._employee_compare_rebuilds
+        if cache_key in running:
+            return
+
+        async def _rebuild() -> None:
+            try:
+                await self.get_employee_compare_summary(db_id, refresh=True)
+            except Exception as exc:
+                logger.warning("Employee compare summary background rebuild failed: %s", exc)
+            finally:
+                running.discard(cache_key)
+
+        running.add(cache_key)
+        try:
+            asyncio.get_running_loop().create_task(_rebuild())
+        except RuntimeError:
+            running.discard(cache_key)
 
     async def _build_employee_compare_summary(self, db_id=None) -> dict[str, Any]:
         """Per-owner Hub↔1C reconcile summary for list badges.
@@ -2698,13 +2761,13 @@ class Warehouse1CService:
             name = normalize_text(entry.get("name"))
             if not ref or not name:
                 continue
-            tokens = person_name_tokens(name)
-            if tokens:
-                warehouses_by_surname.setdefault(tokens[0], []).append(
+            # An object warehouse reads «<object> <FIO>», so the surname is not the first
+            # token: index under every token and let the FIO scorer pick the real matches.
+            for token in dict.fromkeys(person_name_tokens(name)):
+                warehouses_by_surname.setdefault(token, []).append(
                     {"ref": ref, "name": name}
                 )
 
-        matched: dict[int, dict[str, str]] = {}
         owner_rows: list[dict[str, Any]] = []
         for owner in owners or []:
             try:
@@ -2724,20 +2787,46 @@ class Warehouse1CService:
             tokens = person_name_tokens(employee_name)
             candidates = warehouses_by_surname.get(tokens[0], []) if tokens else []
             match = self._match_employee_warehouse_entries(employee_name, candidates)
-            warehouse = match.get("warehouse") if match.get("status") == "matched" else None
-            ambiguous = warehouse is None and match.get("status") == "ambiguous"
-            if warehouse:
-                matched[owner_no] = warehouse
-            if not has_hub_items and warehouse is None and not ambiguous:
+            # One person may own several 1C warehouses (e.g. one per object).  The FIO
+            # scorer returns all best-scored ones as «ambiguous» candidates: their balances
+            # are summed.  A full candidate list may be truncated, so it stays ambiguous.
+            owner_warehouses: list[dict[str, str]] = []
+            if match.get("status") == "matched" and match.get("warehouse"):
+                owner_warehouses = [match["warehouse"]]
+            elif match.get("status") == "ambiguous":
+                candidates = match.get("candidates") or []
+                if 0 < len(candidates) < EMPLOYEE_WAREHOUSE_MATCH_LIMIT:
+                    owner_warehouses = list(candidates)
+            ambiguous = not owner_warehouses and match.get("status") == "ambiguous"
+            if not has_hub_items and not owner_warehouses and not ambiguous:
                 continue
             owner_rows.append({
                 "owner_no": owner_no,
                 "employee_name": employee_name,
-                "warehouse": warehouse,
+                "warehouses": owner_warehouses,
                 "ambiguous": ambiguous,
+                "summed": match.get("status") == "ambiguous" and bool(owner_warehouses),
             })
 
-        refs = [w["ref"] for w in matched.values() if w.get("ref")]
+        def _collect_refs() -> list[str]:
+            return list(dict.fromkeys(
+                w["ref"] for row in owner_rows for w in row["warehouses"] if w.get("ref")
+            ))
+
+        refs = _collect_refs()
+        if len(refs) > DISMISSED_WAREHOUSE_REFS_MAX:
+            # One batched call is capped: keep exact matches and show summed (ambiguous)
+            # owners as «ambiguous» again rather than failing the whole summary with 400.
+            logger.warning(
+                "Employee compare summary: %s warehouse refs exceed %s, summed candidates dropped",
+                len(refs),
+                DISMISSED_WAREHOUSE_REFS_MAX,
+            )
+            for row in owner_rows:
+                if row.get("summed"):
+                    row["warehouses"] = []
+                    row["ambiguous"] = True
+            refs = _collect_refs()
         if refs:
             balance_payload = await self.get_balances_for_warehouses(
                 warehouse_refs=refs,
@@ -2784,9 +2873,15 @@ class Warehouse1CService:
         items: list[dict[str, Any]] = []
         for owner_row in owner_rows:
             owner_no = owner_row["owner_no"]
-            warehouse = owner_row["warehouse"]
+            owner_warehouses = owner_row["warehouses"]
+            warehouse = owner_warehouses[0] if owner_warehouses else None
             counts_map = hub_counts.get(owner_no, {})
-            qty_map = qty_by_warehouse.get(warehouse["ref"], {}) if warehouse else {}
+            qty_map: dict[str, float] = {}
+            part_names: dict[str, str] = {}
+            for owner_warehouse in owner_warehouses:
+                for code, qty in qty_by_warehouse.get(owner_warehouse["ref"], {}).items():
+                    qty_map[code] = qty_map.get(code, 0.0) + qty
+                part_names.update(names_by_warehouse.get(owner_warehouse["ref"], {}))
             match_cnt = diff = only_hub = only_1c = 0
             part_status: dict[str, str] = {}
             part_quantities: dict[str, dict[str, Any]] = {}
@@ -2828,11 +2923,13 @@ class Warehouse1CService:
                 "owner_no": owner_no,
                 "employee_name": owner_row["employee_name"],
                 "warehouse_ref": warehouse["ref"] if warehouse else "",
-                "warehouse_name": warehouse["name"] if warehouse else "",
+                "warehouse_name": "; ".join(w["name"] for w in owner_warehouses),
+                "warehouses": [{"ref": w["ref"], "name": w["name"]} for w in owner_warehouses],
+                "warehouse_count": len(owner_warehouses),
                 "status": status,
                 "part_status": part_status,
                 "part_quantities": part_quantities,
-                "part_names": names_by_warehouse.get(warehouse["ref"], {}) if warehouse else {},
+                "part_names": part_names,
                 "counts": {
                     "match": match_cnt,
                     "diff": diff,

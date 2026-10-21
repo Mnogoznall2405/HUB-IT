@@ -33,7 +33,8 @@ import { sortEquipmentItems } from './databaseListModel';
 import EquipmentCurrentActIndicator from './EquipmentCurrentActIndicator';
 import EquipmentPhotoIndicator from './EquipmentPhotoIndicator';
 import { EmployeeCompareBadge, useEmployeeCompare } from './employeeCompareContext';
-import { getOneCMark, useOneCMarks } from './oneCMarksContext';
+import { getOneCMark, getOneCMarkKind, useOneCMarks } from './oneCMarksContext';
+import { isPartNoMissingIn1C } from './partNoCheck';
 
 const TABLE_VIRTUALIZE_THRESHOLD = 40;
 // Single-line rows: the virtualizer's spacer math relies on this exact height,
@@ -97,7 +98,8 @@ const EquipmentRow = memo(function EquipmentRow({
   const employeeOwnerNo = item.EMPL_NO ?? item.empl_no ?? item.OWNER_NO ?? item.owner_no ?? null;
   const compareSummary = useEmployeeCompare(employeeOwnerNo);
   const oneCMarks = useOneCMarks();
-  const oneCMarked = Boolean(getOneCMark(oneCMarks, invNo));
+  const oneCKind = getOneCMarkKind(getOneCMark(oneCMarks, invNo));
+  const partNoMissingIn1C = isPartNoMissingIn1C(oneCMarks?.missingPartNos, item.PART_NO || item.part_no || '');
   const canMarkOneC = Boolean(oneCMarks?.canMark);
   const employeeDept = String(item.OWNER_DEPT || item.employee_dept || '').trim();
   const modelName = String(item.MODEL_NAME || item.model_name || '-');
@@ -105,8 +107,8 @@ const EquipmentRow = memo(function EquipmentRow({
   const qtyValue = readQty(item, 1);
 
   const actions = useMemo(
-    () => getEquipmentRowActions({ item, dataMode, canWrite, canDeleteEquipment, canMarkOneC, oneCMarked }),
-    [item, dataMode, canWrite, canDeleteEquipment, canMarkOneC, oneCMarked]
+    () => getEquipmentRowActions({ item, dataMode, canWrite, canDeleteEquipment, canMarkOneC, oneCKind }),
+    [item, dataMode, canWrite, canDeleteEquipment, canMarkOneC, oneCKind]
   );
 
   if (isConsumablesMode) {
@@ -204,9 +206,20 @@ const EquipmentRow = memo(function EquipmentRow({
           <Typography variant="body2" noWrap sx={{ lineHeight: 1.25 }}>
             {String(item.SERIAL_NO || item.serial_no || item.HW_SERIAL_NO || item.hw_serial_no || '-')}
           </Typography>
-          <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block', lineHeight: 1.25 }}>
-            {String(item.PART_NO || item.part_no || '-')}
-          </Typography>
+          <Tooltip
+            title={partNoMissingIn1C ? 'В номенклатуре 1С нет позиции с таким PART_NO — проверьте код.' : ''}
+            placement="bottom-start"
+          >
+            <Typography
+              variant="caption"
+              color={partNoMissingIn1C ? 'warning.main' : 'text.secondary'}
+              noWrap
+              data-part-no-missing={partNoMissingIn1C ? 'true' : undefined}
+              sx={{ display: 'block', lineHeight: 1.25, ...(partNoMissingIn1C ? { fontWeight: 600 } : {}) }}
+            >
+              {String(item.PART_NO || item.part_no || '-')}
+            </Typography>
+          </Tooltip>
         </TableCell>
       )}
       {!isMobile && (

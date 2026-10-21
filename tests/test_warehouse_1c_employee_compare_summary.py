@@ -294,3 +294,93 @@ def test_compare_summary_incomplete_clears_part_quantities(monkeypatch):
     assert item["status"] == "unknown"
     assert item["part_status"] == {}
     assert item["part_quantities"] == {}
+
+
+def test_compare_summary_sums_balances_of_several_warehouses_of_one_person(monkeypatch):
+    _patch_inputs(
+        monkeypatch,
+        owners=[{"OWNER_NO": 7, "OWNER_DISPLAY_NAME": "Рябов Александр Сергеевич"}],
+        counts=[{"owner_no": 7, "part_no": "PN-1", "item_count": 3}],
+        warehouses=[
+            {"ref": "wh-1", "name": "ОБЪЕКТ-1 (Тикси) Рябов А.С."},
+            {"ref": "wh-2", "name": "ОБЪЕКТ-2 (Диксон) Рябов А.С."},
+        ],
+        balances=[
+            {"warehouse_ref": "wh-1", "nomenclature_code": "pn-1", "qty_balance": 1},
+            {"warehouse_ref": "wh-2", "nomenclature_code": "pn-1", "qty_balance": 2},
+        ],
+    )
+
+    item = _run()["items"][0]
+    assert item["status"] == "match"
+    assert item["part_quantities"]["pn-1"] == {"hub_count": 3, "qty_1c": 3.0}
+    assert item["warehouse_count"] == 2
+    assert [w["ref"] for w in item["warehouses"]] == ["wh-1", "wh-2"]
+    assert "Тикси" in item["warehouse_name"] and "Диксон" in item["warehouse_name"]
+
+
+
+def test_compare_summary_over_ref_cap_drops_summed_candidates_instead_of_failing(monkeypatch):
+    from backend.services import warehouse_1c_service as service_module
+
+    _patch_inputs(
+        monkeypatch,
+        owners=[{"OWNER_NO": 7, "OWNER_DISPLAY_NAME": "Рябов Александр Сергеевич"}],
+        counts=[{"owner_no": 7, "part_no": "PN-1", "item_count": 3}],
+        warehouses=[
+            {"ref": "wh-1", "name": "ОБЪЕКТ-1 (Тикси) Рябов А.С."},
+            {"ref": "wh-2", "name": "ОБЪЕКТ-2 (Диксон) Рябов А.С."},
+        ],
+        balances=[],
+    )
+    requested: list[int] = []
+
+    async def capped_balances(*, warehouse_refs, limit=None):
+        if len(warehouse_refs) > service_module.DISMISSED_WAREHOUSE_REFS_MAX:
+            raise service_module.Warehouse1CValidationError("too many warehouses")
+        requested.append(len(warehouse_refs))
+        return {"items": [], "status": "ok", "truncated": False, "as_of": "2025-01-01T00:00:00", "source": "live_1c"}
+
+    monkeypatch.setattr(warehouse_1c_service, "get_balances_for_warehouses", capped_balances)
+    monkeypatch.setattr(service_module, "DISMISSED_WAREHOUSE_REFS_MAX", 1)
+
+    item = _run()["items"][0]
+    assert requested == [] or requested == [0]
+    assert item["warehouses"] == []
+    assert item["status"] == "ambiguous"
+
+
+def test_compare_summary_serves_stale_snapshot_and_rebuilds_in_background(monkeypatch):
+    from backend.services import warehouse_1c_service as service_module
+
+    _patch_inputs(
+        monkeypatch,
+        owners=[{"OWNER_NO": 7, "OWNER_DISPLAY_NAME": "Рябов Александр Сергеевич"}],
+        counts=[{"owner_no": 7, "part_no": "PN-1", "item_count": 3}],
+        warehouses=[{"ref": "wh-1", "name": "Рябов А.С."}],
+        balances=[{"warehouse_ref": "wh-1", "nomenclature_code": "pn-1", "qty_balance": 3}],
+    )
+    builds: list[int] = []
+    original_build = warehouse_1c_service._build_employee_compare_summary
+
+    async def counting_build(db_id=None):
+        builds.append(1)
+        await asyncio.sleep(0.05)
+        return await original_build(db_id)
+
+    monkeypatch.setattr(warehouse_1c_service, "_build_employee_compare_summary", counting_build)
+
+    async def scenario():
+        await warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT")
+        for entry in warehouse_1c_service._employee_compare_cache.values():
+            entry["at"] -= service_module.EMPLOYEE_COMPARE_SUMMARY_TTL_SECONDS + 1.0
+        started = time.perf_counter()
+        stale = await warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT")
+        answered_in = time.perf_counter() - started
+        await asyncio.sleep(0.3)
+        return stale, answered_in
+
+    stale, answered_in = asyncio.run(scenario())
+    assert stale["items"], "the previous snapshot is served"
+    assert answered_in < 0.04, "a stale snapshot must not wait for the rebuild"
+    assert len(builds) == 2, "the background rebuild ran exactly once"

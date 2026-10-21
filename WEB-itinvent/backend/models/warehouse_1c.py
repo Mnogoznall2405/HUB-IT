@@ -16,6 +16,12 @@ class _Warehouse1CRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True, str_strip_whitespace=True)
 
 
+class Warehouse1CPartNoCheckRequest(_Warehouse1CRequest):
+    """PART_NO values of the visible equipment rows to look up in the 1C nomenclature."""
+
+    codes: list[str] = Field(..., min_length=1, max_length=500)
+
+
 class Warehouse1CBalanceBatchRequest(_Warehouse1CRequest):
     """One bounded read-only 1C balance query for multiple nomenclatures."""
 

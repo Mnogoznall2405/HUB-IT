@@ -376,9 +376,9 @@ describe('EquipmentTable', () => {
 
   describe('manual 1C mark', () => {
     const MARK = { inv_no: '100021', marked_by: 'admin', marked_at: '2026-10-20T08:00:00Z', note: '' };
-    const renderWithMarks = (props, { marks = {}, canMark = true, summaries = null } = {}) => render(
+    const renderWithMarks = (props, { marks = {}, canMark = true, summaries = null, missing = null } = {}) => render(
       <EmployeeCompareProvider summaries={summaries}>
-        <OneCMarksProvider value={{ marks, canMark }}>
+        <OneCMarksProvider value={{ marks, canMark, missingPartNos: missing }}>
           <EquipmentTable
             items={[philipsItem()]}
             isMobile={false}
@@ -423,6 +423,19 @@ describe('EquipmentTable', () => {
       expect(container.querySelector('[data-compare-status="manual"]')).not.toBeNull();
     });
 
+    it('says so when the owner has no 1C warehouse, but lets a manual mark speak instead', () => {
+      const noWarehouse = [compareSummaryEntry({
+        status: 'no_warehouse', part_status: {}, part_quantities: {}, warehouse_ref: '', warehouse_name: '', warehouse_count: 0,
+      })];
+      const bare = renderWithMarks({}, { summaries: noWarehouse });
+      expect(bare.container.querySelector('[data-compare-status="no_warehouse"]')).not.toBeNull();
+      bare.unmount();
+
+      const marked = renderWithMarks({}, { marks: { 100021: MARK }, summaries: noWarehouse });
+      expect(marked.container.querySelector('[data-compare-status="manual"]')).not.toBeNull();
+      expect(marked.container.querySelector('[data-compare-status="no_warehouse"]')).toBeNull();
+    });
+
     it('shows only the automatic chip when it already matches', () => {
       const { container } = renderWithMarks({}, { marks: { 100021: MARK }, summaries: [compareSummaryEntry()] });
 
@@ -450,6 +463,44 @@ describe('EquipmentTable', () => {
       fireEvent.click(screen.getByText('Philips monitor'));
       expect(screen.queryByRole('menu')).toBeInTheDocument();
       expect(screen.queryByText(/отметк.* 1С|сверку с 1С/)).not.toBeInTheDocument();
+    });
+
+    it('shows a red «does not match» chip with the reviewer comment next to the automatic status', async () => {
+      const mismatch = { ...MARK, kind: 'mismatch', note: 'в 1С остаток 2, в хабе 1' };
+      const { container } = renderWithMarks({}, { marks: { 100021: mismatch }, summaries: [compareSummaryEntry()] });
+
+      expect(container.querySelector('[data-compare-status="match"]')).not.toBeNull();
+      const chip = container.querySelector('[data-compare-status="mismatch"]');
+      expect(chip).not.toBeNull();
+      expect(container.querySelector('[data-compare-status="manual"]')).toBeNull();
+
+      fireEvent.mouseOver(chip);
+      expect(await screen.findByText(/в 1С остаток 2, в хабе 1/)).toBeInTheDocument();
+    });
+
+    it('offers the «does not match» action with a comment and keeps it available for a marked card', () => {
+      const onAction = vi.fn();
+      renderWithMarks({ onAction }, { canMark: true, marks: { 100021: { ...MARK, kind: 'mismatch', note: 'x' } } });
+      fireEvent.click(screen.getByText('Philips monitor'));
+
+      expect(screen.getByText('Отметить сверку с 1С')).toBeInTheDocument();
+      fireEvent.click(screen.getByText('Не сходится с 1С…'));
+      expect(onAction).toHaveBeenCalledWith('one_c_mismatch', expect.objectContaining({ INV_NO: '100021' }));
+    });
+
+    it('flags a PART_NO that has no nomenclature in 1C', () => {
+      const missing = new Set([PHILIPS_PART_NO.toLowerCase()]);
+      const { container } = renderWithMarks({}, { missing });
+
+      expect(container.querySelector('[data-compare-status="not_in_nomenclature"]')).not.toBeNull();
+      expect(container.querySelector('[data-part-no-missing="true"]')).toHaveTextContent(PHILIPS_PART_NO);
+    });
+
+    it('does not flag anything while the nomenclature check has found no absent codes', () => {
+      const { container } = renderWithMarks({}, { missing: new Set() });
+
+      expect(container.querySelector('[data-compare-status="not_in_nomenclature"]')).toBeNull();
+      expect(container.querySelector('[data-part-no-missing]')).toBeNull();
     });
   });
 });

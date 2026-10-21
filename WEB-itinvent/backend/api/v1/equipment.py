@@ -1319,6 +1319,8 @@ async def export_quality_issues(
 
 class EquipmentOneCMarkRequest(BaseModel):
     note: str = Field("", max_length=equipment_one_c_mark_service.NOTE_MAX_LENGTH)
+    # "ok" — reconciled by hand; "mismatch" — does not match 1C (a comment is required).
+    kind: str = Field(equipment_one_c_mark_service.KIND_OK, max_length=16)
 
 
 def _one_c_mark_unavailable() -> HTTPException:
@@ -1333,7 +1335,7 @@ async def list_one_c_marks(
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_READ)),
 ):
-    """Manual 1C marks of the current database: {inv_no: {marked_by, marked_at, note}}."""
+    """Manual 1C marks of the current database: {inv_no: {kind, marked_by, marked_at, note}}."""
     marks = await run_in_threadpool(equipment_one_c_mark_service.list_marks, db_id)
     return {"marks": marks}
 
@@ -1352,14 +1354,17 @@ async def set_one_c_mark(
     try:
         mark = await run_in_threadpool(
             lambda: equipment_one_c_mark_service.set_mark(
-                db_id, inv_no, actor=current_user.username, note=payload.note
+                db_id, inv_no, actor=current_user.username, note=payload.note, kind=payload.kind
             )
         )
     except equipment_one_c_mark_service.OneCMarkUnavailableError:
         raise _one_c_mark_unavailable()
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-    logger.info("equipment 1C mark set db=%s inv_no=%s user=%s", db_id, mark["inv_no"], current_user.username)
+    logger.info(
+        "equipment 1C mark set db=%s inv_no=%s kind=%s user=%s",
+        db_id, mark["inv_no"], mark["kind"], current_user.username,
+    )
     return {"success": True, "mark": mark}
 
 

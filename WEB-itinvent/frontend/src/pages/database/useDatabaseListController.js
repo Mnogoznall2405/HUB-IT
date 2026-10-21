@@ -12,6 +12,7 @@ import {
 import { normalizeDbId } from './databaseRecordModel';
 import {
   ACT_FILTER_ALL,
+  ONE_C_FILTER_ALL,
   PHOTO_FILTER_ALL,
   buildActStats,
   buildEquipmentIndex,
@@ -325,7 +326,11 @@ export function useDatabaseListController({
   const [actFilter, setActFilter] = useState(ACT_FILTER_ALL);
   const photoFilterActive = !isConsumablesMode && photoFilter !== PHOTO_FILTER_ALL;
   const actFilterActive = !isConsumablesMode && actFilter !== ACT_FILTER_ALL;
-  const listFilterActive = photoFilterActive || actFilterActive;
+  // Фильтр «1С» хранится здесь (чтобы выключать автоподгрузку), а применяется в представлении:
+  // сводка сверки и ручные отметки живут вне этого хука.
+  const [oneCFilter, setOneCFilter] = useState(ONE_C_FILTER_ALL);
+  const oneCFilterActive = !isConsumablesMode && oneCFilter !== ONE_C_FILTER_ALL;
+  const listFilterActive = photoFilterActive || actFilterActive || oneCFilterActive;
   const baseDisplayData = filteredData !== null ? filteredData : equipment;
   const displayData = useMemo(() => {
     let next = baseDisplayData;
@@ -621,6 +626,10 @@ export function useDatabaseListController({
     actFilter,
     setActFilter,
     actStats,
+    oneCFilter,
+    setOneCFilter,
+    oneCFilterActive,
+    baseDisplayData,
     listFilterActive,
     photoWorklist,
     loadMoreNow,

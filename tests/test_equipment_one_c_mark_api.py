@@ -130,3 +130,58 @@ def test_migration_is_repeatable_unique_per_card_and_downgrades_cleanly():
         assert not sa.inspect(connection).has_table("equipment_one_c_marks")
         _migration(connection, "chat")["upgrade"]()
         assert sa.inspect(connection).get_table_names() == []
+
+
+MIGRATION_KIND = ROOT / "WEB-itinvent/backend/alembic/versions/20261020_0141_equipment_one_c_mark_kind.py"
+
+
+def test_mismatch_mark_needs_comment_and_switching_kind_takes_new_author(mark_env):
+    client = mark_env.client
+
+    assert client.put("/equipment/1001/one-c-mark", json={"kind": "mismatch"}).status_code == 400
+    assert client.put("/equipment/1001/one-c-mark", json={"kind": "bogus", "note": "x"}).status_code == 400
+    assert client.get("/equipment/one-c-marks").json() == {"marks": {}}
+
+    ok = client.put("/equipment/1001/one-c-mark", json={}).json()["mark"]
+    assert ok["kind"] == "ok"
+
+    mark_env.set_user("second_admin", "admin")
+    bad = client.put("/equipment/1001/one-c-mark", json={"kind": "mismatch", "note": "в 1С 2 шт, в хабе 1"})
+    assert bad.status_code == 200, bad.text
+    stored = client.get("/equipment/one-c-marks").json()["marks"]["1001"]
+    assert (stored["kind"], stored["marked_by"], stored["note"]) == ("mismatch", "second_admin", "в 1С 2 шт, в хабе 1")
+
+
+def test_without_kind_column_marks_read_as_ok_and_only_mismatch_is_refused(mark_env):
+    engine = sa.create_engine(mark_env.database_url)
+    with engine.begin() as connection:
+        connection.execute(sa.text("ALTER TABLE equipment_one_c_marks DROP COLUMN kind"))
+    marks.reset_table_probe()
+    client = mark_env.client
+
+    assert client.put("/equipment/1001/one-c-mark", json={"note": "акт"}).status_code == 200
+    assert client.put("/equipment/1002/one-c-mark", json={"kind": "mismatch", "note": "нет"}).status_code == 503
+    listed = client.get("/equipment/one-c-marks").json()["marks"]
+    assert list(listed) == ["1001"] and listed["1001"]["kind"] == "ok"
+
+
+def test_kind_migration_adds_column_once_keeps_rows_as_ok_and_downgrades():
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        base = runpy.run_path(str(MIGRATION))
+        base["upgrade"].__globals__["op"] = Operations(MigrationContext.configure(connection))
+        base["upgrade"].__globals__["_scope"] = lambda: "app"
+        base["upgrade"]()
+        connection.execute(sa.text("INSERT INTO equipment_one_c_marks (db_id, inv_no) VALUES ('main', '1001')"))
+
+        step = runpy.run_path(str(MIGRATION_KIND))
+        step["upgrade"].__globals__["op"] = Operations(MigrationContext.configure(connection))
+        step["upgrade"].__globals__["_scope"] = lambda: "app"
+        step["upgrade"]()
+        step["upgrade"]()
+        assert connection.execute(sa.text("SELECT kind FROM equipment_one_c_marks")).scalar() == "ok"
+
+        step["downgrade"]()
+        step["downgrade"]()
+        columns = {column["name"] for column in sa.inspect(connection).get_columns("equipment_one_c_marks")}
+        assert "kind" not in columns and "inv_no" in columns

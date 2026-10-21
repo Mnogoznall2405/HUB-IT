@@ -336,6 +336,17 @@ const QTY_COMPARE_EPSILON = 1e-6;
 const RELIABLE_SUMMARY_STATUS = new Set(['match', 'diff', 'only_hub', 'only_1c']);
 
 /**
+ * The owner has no 1C warehouse to compare against: 'no_warehouse' (nothing matched) or
+ * 'ambiguous' (too many similar candidates). Only for rows with a usable PART_NO and a fresh
+ * summary — otherwise the reviewer would see noise instead of a real gap.
+ */
+export function resolveNoWarehouse(summary, partNo) {
+  if (!isEmployeeCompareSnapshotFresh(summary?.as_of) || !isUsableHubPartNo(partNo)) return null;
+  const status = String(summary?.status || '');
+  return status === 'no_warehouse' || status === 'ambiguous' ? status : null;
+}
+
+/**
  * Automatic per-row comparison with 1C: the row's PART_NO against the owner's 1C balance.
  * Returns { matched, hubCount, qty1c } or null when the summary is stale/unreliable or the
  * PART_NO has no usable counterpart — i.e. nothing to show.

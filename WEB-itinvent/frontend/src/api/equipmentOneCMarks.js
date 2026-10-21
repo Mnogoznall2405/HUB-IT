@@ -9,8 +9,9 @@ export const equipmentOneCMarksAPI = {
     const { data } = await apiClient.get('/equipment/one-c-marks');
     return data?.marks && typeof data.marks === 'object' ? data.marks : {};
   },
-  set: async (invNo, note = '') => {
-    const { data } = await apiClient.put(`/equipment/${encodeInvNo(invNo)}/one-c-mark`, { note });
+  // kind: 'ok' — сверено вручную, 'mismatch' — не сходится с 1С (нужен комментарий).
+  set: async (invNo, note = '', kind = 'ok') => {
+    const { data } = await apiClient.put(`/equipment/${encodeInvNo(invNo)}/one-c-mark`, { note, kind });
     return data?.mark || null;
   },
   clear: async (invNo) => {

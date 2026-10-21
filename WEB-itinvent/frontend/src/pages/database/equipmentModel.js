@@ -123,7 +123,8 @@ export const getEquipmentRowActions = ({
   canWrite = true,
   canDeleteEquipment = false,
   canMarkOneC = false,
-  oneCMarked = false,
+  // '' — отметки нет, 'ok' — сверено вручную, 'mismatch' — не сходится с 1С.
+  oneCKind = '',
 }) => {
   if (dataMode === DATA_MODE_CONSUMABLES) {
     return [];
@@ -136,7 +137,11 @@ export const getEquipmentRowActions = ({
     ...(canWrite && flags.isUps ? ['battery'] : []),
     ...(canWrite && flags.isPc && !flags.isPrinterOrMfu ? ['component'] : []),
     ...(canWrite && flags.isPc ? ['cleaning'] : []),
-    ...(canMarkOneC ? [oneCMarked ? 'one_c_unmark' : 'one_c_mark'] : []),
+    ...(canMarkOneC ? [
+      ...(oneCKind === 'ok' ? [] : ['one_c_mark']),
+      'one_c_mismatch',
+      ...(oneCKind ? ['one_c_unmark'] : []),
+    ] : []),
     ...(canDeleteEquipment ? ['delete'] : []),
   ]));
 };

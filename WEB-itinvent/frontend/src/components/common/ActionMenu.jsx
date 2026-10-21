@@ -10,6 +10,7 @@ import BuildIcon from '@mui/icons-material/Build';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import RemoveDoneIcon from '@mui/icons-material/RemoveDone';
+import ReportProblemOutlinedIcon from '@mui/icons-material/ReportProblemOutlined';
 
 // Shared by the ⋮ trigger (ActionMenu) and the row-click menu (RowActionMenu).
 // Returns an array (not a fragment) because MUI Menu needs direct children.
@@ -86,6 +87,16 @@ export function renderActionMenuItems(actions = [], handleAction) {
         <MenuItem onClick={() => handleAction('one_c_mark')}>
           <ListItemIcon><TaskAltIcon fontSize="small" /></ListItemIcon>
           <ListItemText>Отметить сверку с 1С</ListItemText>
+        </MenuItem>
+      </Tooltip>,
+    );
+  }
+  if (has('one_c_mismatch')) {
+    list.push(
+      <Tooltip key="one_c_mismatch" title="Ручная отметка: оборудование не сходится с 1С. Нужен комментарий." placement="left" arrow>
+        <MenuItem onClick={() => handleAction('one_c_mismatch')}>
+          <ListItemIcon><ReportProblemOutlinedIcon fontSize="small" color="error" /></ListItemIcon>
+          <ListItemText>Не сходится с 1С…</ListItemText>
         </MenuItem>
       </Tooltip>,
     );

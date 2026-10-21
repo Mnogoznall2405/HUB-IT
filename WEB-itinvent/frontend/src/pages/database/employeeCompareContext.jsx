@@ -1,7 +1,8 @@
-import { createContext, useContext, useMemo } from 'react';
+import { createContext, Fragment, useContext, useMemo } from 'react';
 import { Box, Chip, Tooltip } from '@mui/material';
-import { getOneCMark, useOneCMarks } from './oneCMarksContext';
-import { isEmployeeCompareSnapshotFresh, resolvePartCompare } from './employeeCompareModel';
+import { getOneCMark, getOneCMarkKind, MARK_KIND_MISMATCH, MARK_KIND_OK, useOneCMarks } from './oneCMarksContext';
+import { isPartNoMissingIn1C } from './partNoCheck';
+import { isEmployeeCompareSnapshotFresh, resolveNoWarehouse, resolvePartCompare } from './employeeCompareModel';
 import { formatWarehouseQty } from './warehouse1cShared';
 
 const EmployeeCompareContext = createContext(null);
@@ -53,7 +54,29 @@ function renderAutoCompareBadge({ summary, partNo = null, manualMark = null }) {
 
   if (partNo !== null && partNo !== undefined) {
     const compare = resolvePartCompare(summary, partNo);
-    if (!compare) return NO_AUTO_BADGE;
+    if (!compare) {
+      const gap = resolveNoWarehouse(summary, partNo);
+      if (!gap) return NO_AUTO_BADGE;
+      return {
+        matched: false,
+        gap: true,
+        node: (
+          <Tooltip
+            title={gap === 'ambiguous'
+              ? 'Сверка с 1С невозможна: найдено слишком много похожих складов, сотрудника не удалось определить.'
+              : 'Сверка с 1С невозможна: склад сотрудника в 1С не найден.'}
+          >
+            <Chip
+              size="small"
+              variant="outlined"
+              label="1С —"
+              data-compare-status="no_warehouse"
+              sx={{ ...chipSx, color: 'text.secondary' }}
+            />
+          </Tooltip>
+        ),
+      };
+    }
     const { matched, hubCount, qty1c } = compare;
     const status = matched ? 'match' : 'diff';
     const title = [
@@ -61,7 +84,9 @@ function renderAutoCompareBadge({ summary, partNo = null, manualMark = null }) {
         ? 'Сверка с 1С (текущая база) — позиция сходится по PART_NO'
         : 'Сверка с 1С (текущая база) — расхождение по PART_NO',
       `Хаб: ${hubCount} · 1С: ${formatWarehouseQty(qty1c)}`,
-      summary?.warehouse_name ? `Склад: ${summary.warehouse_name}` : '',
+      summary?.warehouse_name
+        ? `${Number(summary.warehouse_count) > 1 ? `Склады (остатки суммируются, ${summary.warehouse_count})` : 'Склад'}: ${summary.warehouse_name}`
+        : '',
       matched && manualMark ? `Также отмечено вручную: ${formatManualMarkLine(manualMark)}` : '',
     ].filter(Boolean).join('\n');
     return {
@@ -137,21 +162,70 @@ function ManualOneCChip({ mark }) {
   );
 }
 
+function MismatchOneCChip({ mark }) {
+  const title = [
+    'Отмечено вручную: не сходится с 1С',
+    `Кто и когда: ${formatManualMarkLine(mark)}`,
+    mark?.note ? `Комментарий: ${mark.note}` : '',
+    'Это не результат автоматической сверки; пересчёт её не меняет.',
+  ].filter(Boolean).join('\n');
+  return (
+    <Tooltip title={title}>
+      <Chip
+        size="small"
+        color="error"
+        label="1С ✕"
+        data-compare-status="mismatch"
+        sx={chipSx}
+      />
+    </Tooltip>
+  );
+}
+
+function NotInNomenclatureChip({ partNo }) {
+  return (
+    <Tooltip title={`В номенклатуре 1С нет позиции с таким PART_NO («${String(partNo).trim()}»). Проверьте код.`}>
+      <Chip
+        size="small"
+        variant="outlined"
+        color="warning"
+        label="1С ?"
+        data-compare-status="not_in_nomenclature"
+        sx={chipSx}
+      />
+    </Tooltip>
+  );
+}
+
 /**
- * «1С ✓/≠» — автоматическая сверка по PART_NO. С `invNo` рядом учитывается ручная отметка
- * («1С ✎», контурный чип): при автоматическом «сходится» показывается только он сам, а в
- * подсказке — кто отметил вручную; при «≠» или без авто-статуса ручная отметка видна отдельно.
+ * «1С ✓/≠» — автоматическая сверка по PART_NO. С `invNo` рядом учитывается ручная отметка:
+ * «1С ✎» (контурный зелёный) — сверено вручную, при автоматическом «сходится» показывается только
+ * авто-чип (в подсказке — кто отметил); «1С ✕» (красный, комментарий в подсказке) — вердикт
+ * «не сходится», виден всегда рядом с авто-статусом; «1С ?» (оранжевый) — PART_NO нет в
+ * номенклатуре 1С. «Склада в 1С нет» рядом с ручной отметкой или «1С ?» только шумит и скрыт.
  */
 export function EmployeeCompareBadge({ summary, partNo = null, invNo = null }) {
   const oneC = useOneCMarks();
-  const manualMark = invNo !== null && invNo !== undefined && invNo !== '' ? getOneCMark(oneC, invNo) : null;
-  const { node: auto, matched } = renderAutoCompareBadge({ summary, partNo, manualMark });
-  if (!manualMark || matched) return auto;
-  if (!auto) return <ManualOneCChip mark={manualMark} />;
+  const mark = invNo !== null && invNo !== undefined && invNo !== '' ? getOneCMark(oneC, invNo) : null;
+  const kind = getOneCMarkKind(mark);
+  const notInNomenclature = partNo !== null && partNo !== undefined && isPartNoMissingIn1C(oneC?.missingPartNos, partNo);
+  const { node: auto, matched, gap } = renderAutoCompareBadge({
+    summary,
+    partNo,
+    manualMark: kind === MARK_KIND_OK ? mark : null,
+  });
+
+  if (kind === MARK_KIND_OK && matched) return auto;
+  const nodes = [];
+  if (auto && !(gap && (kind || notInNomenclature))) nodes.push(<Fragment key="auto">{auto}</Fragment>);
+  if (kind === MARK_KIND_MISMATCH) nodes.push(<MismatchOneCChip key="mismatch" mark={mark} />);
+  if (kind === MARK_KIND_OK) nodes.push(<ManualOneCChip key="manual" mark={mark} />);
+  if (notInNomenclature) nodes.push(<NotInNomenclatureChip key="nomenclature" partNo={partNo} />);
+  if (!nodes.length) return null;
+  if (nodes.length === 1) return nodes[0];
   return (
     <Box sx={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 0.25 }}>
-      {auto}
-      <ManualOneCChip mark={manualMark} />
+      {nodes}
     </Box>
   );
 }

@@ -739,6 +739,8 @@ class AppEquipmentOneCMark(AppBase):
         UniqueConstraint("db_id", "inv_no", name="uq_app_equipment_one_c_marks_db_inv"),
         schema=APP_SCHEMA,
     )
+    # No RETURNING of the server-default `kind`: before migration 0140 the column is absent.
+    __mapper_args__ = {"eager_defaults": False}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     db_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
@@ -746,6 +748,9 @@ class AppEquipmentOneCMark(AppBase):
     marked_by: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     marked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     note: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    # 'ok' — reconciled by hand, 'mismatch' — the reviewer says it does not match 1C.
+    # server_default only: code deployed before migration 0140 must still insert.
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, server_default="ok")
 
 
 class AppPasswordVaultEntry(AppBase):
