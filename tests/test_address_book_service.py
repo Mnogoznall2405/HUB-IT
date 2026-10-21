@@ -1848,6 +1848,21 @@ def test_search_index_built_once_and_reused_for_same_document():
     assert manager.load_count == 1
 
 
+def test_warm_up_makes_first_search_reuse_parsed_document_and_index():
+    manager = VersionedMemoryDataManager(
+        {"items": [{"full_name": "А", "employee_code": "E1"}, {"full_name": "Б", "employee_code": "E2"}]}
+    )
+    service = AddressBookService(data_manager=manager)
+
+    assert service.warm_search_index() == 2
+    index = service._search_index
+    assert manager.load_count == 1
+
+    assert service.search("а")["total"] == 1
+    assert service._search_index is index
+    assert manager.load_count == 1, "the first search after warm-up must not re-read the document"
+
+
 def test_search_index_rebuilt_after_version_change():
     manager = VersionedMemoryDataManager(
         {"items": [{"full_name": "До", "employee_code": "E1"}]}

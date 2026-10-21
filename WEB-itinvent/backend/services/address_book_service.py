@@ -1202,6 +1202,14 @@ class AddressBookService:
                 self._search_index = index
             return dict(document), index[source_key]
 
+    def warm_search_index(self) -> int:
+        """Parse the cached document and build the search index ahead of the first request."""
+        try:
+            return len(self._load_search_context("items")[1])
+        except Exception:
+            logger.warning("Address book search index warm-up failed", exc_info=True)
+            return 0
+
     def get_person_by_code(self, employee_code: str) -> dict[str, Any] | None:
         code = normalize_text(employee_code)
         if not code:
@@ -2348,6 +2356,7 @@ async def background_address_book_sync_loop() -> None:
             logger.info("Starting scheduled address book sync")
             await asyncio.to_thread(address_book_service.sync_from_1c)
             logger.info("Scheduled address book sync finished")
+            await asyncio.to_thread(address_book_service.warm_search_index)
             await asyncio.sleep(interval)
         except asyncio.CancelledError:
             logger.info("Address book sync loop cancelled")

@@ -34,7 +34,7 @@ from backend.runtime_role import chat_routes_enabled, get_runtime_role, heavy_ap
 from backend.services.ad_sync_service import background_ad_sync_loop
 from backend.services.ad_app_user_sync_service import background_ad_app_user_sync_loop
 from backend.services.ad_groups_access_sync_service import background_ad_groups_access_sync_loop
-from backend.services.address_book_service import background_address_book_sync_loop
+from backend.services.address_book_service import address_book_service, background_address_book_sync_loop
 from backend.services.warehouse_1c_service import background_warehouse_1c_catalog_sync_loop, warehouse_1c_service
 from backend.services.docflow_service import docflow_service
 from backend.services.docflow_notification_service import docflow_notification_service
@@ -193,6 +193,8 @@ async def lifespan(app: FastAPI):
         ad_app_user_sync_task = asyncio.create_task(background_ad_app_user_sync_loop())
     if AD_GROUPS_ACCESS_SYNC_ENABLED:
         ad_groups_access_sync_task = asyncio.create_task(background_ad_groups_access_sync_loop())
+    # Parse the address book and build its search index before the first user search (cold ≈ 2.8 s).
+    address_book_warmup_task = asyncio.create_task(asyncio.to_thread(address_book_service.warm_search_index))
     if ADDRESS_BOOK_SYNC_ENABLED:
         address_book_sync_task = asyncio.create_task(background_address_book_sync_loop())
     if WAREHOUSE_1C_CATALOG_SYNC_ENABLED:
