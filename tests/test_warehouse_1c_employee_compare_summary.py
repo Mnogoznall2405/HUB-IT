@@ -386,7 +386,7 @@ def test_compare_summary_serves_stale_snapshot_and_rebuilds_in_background(monkey
     assert len(builds) == 2, "the background rebuild ran exactly once"
 
 
-def test_compare_summary_serves_last_good_snapshot_when_1c_fails_and_backs_off(monkeypatch):
+def test_compare_summary_serves_last_good_snapshot_when_1c_fails_and_backs_off(monkeypatch, caplog):
     from backend.services import warehouse_1c_service as service_module
 
     _patch_inputs(
@@ -412,8 +412,11 @@ def test_compare_summary_serves_last_good_snapshot_when_1c_fails_and_backs_off(m
         second = await warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT")
         return good, first, second
 
-    good, first, second = asyncio.run(scenario())
+    with caplog.at_level("WARNING"):
+        good, first, second = asyncio.run(scenario())
     warehouse_1c_service._employee_compare_failures.clear()
+    failure_logs = [r for r in caplog.records if "build failed" in r.getMessage()]
+    assert len(failure_logs) == 1 and "1C bridge timed out" in failure_logs[0].getMessage()
     assert good["items"] and not good.get("stale")
     assert first["items"] == good["items"] and first["stale"] is True
     assert second["stale"] is True

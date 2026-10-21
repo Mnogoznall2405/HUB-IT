@@ -2707,6 +2707,12 @@ class Warehouse1CService:
                     time.monotonic() + EMPLOYEE_COMPARE_FAILURE_BACKOFF_SECONDS,
                     exc,
                 )
+                # Logged once per back-off window (the window itself suppresses repeat builds).
+                logger.warning(
+                    "Employee compare summary build failed (%s): %s",
+                    "serving stale snapshot" if entry else "no snapshot",
+                    exc,
+                )
                 return self._employee_compare_fallback(entry, exc)
             self._employee_compare_failures.pop(cache_key, None)
             self._employee_compare_cache[cache_key] = {
