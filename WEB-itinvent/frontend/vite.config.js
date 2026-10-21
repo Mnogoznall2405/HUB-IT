@@ -225,6 +225,18 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       manifest: true,
+      rollupOptions: {
+        output: {
+          // Stable vendor chunks: an app-only deploy keeps react/MUI/router cached in the browser
+          // (only the small app entry changes its hash instead of the whole 250 KB gzip entry).
+          manualChunks(id) {
+            if (!id.includes('node_modules')) return undefined;
+            if (/[\/]node_modules[\/](react|react-dom|scheduler)[\/]/.test(id)) return 'vendor-react';
+            if (/[\/]node_modules[\/]react-router(-dom)?[\/]|[\/]node_modules[\/]@remix-run[\/]/.test(id)) return 'vendor-router';
+            return undefined;
+          },
+        },
+      },
     },
   };
 });
