@@ -1403,28 +1403,18 @@ async def get_equipment_current_acts(
 
     from backend.database.equipment_current_act_reads import lookup_current_acts
 
-    acts_by_item_id = await run_in_threadpool(
-        lookup_current_acts,
-        item_ids,
-        db_id,
-        get_db_fn=queries.get_db,
-    )
-    # Photo flag rides on the same lazy batch; failures are independent, so a
-    # broken act lookup does not hide photos and vice versa.
-    photo_counts = await run_in_threadpool(
-        equipment_photos.lookup_equipment_photo_counts,
-        item_ids,
-        db_id,
-        get_db_fn=queries.get_db,
-    )
+    def _lookup_all():
+        # One threadpool hop for three independent lookups: under a saturated pool every
+        # extra hop queued separately (p50 124 ms, spikes > 1 s). Each lookup keeps its own
+        # failure domain: a failed one returns None ("unknown"), never "missing".
+        # Photo flag rides on the same lazy batch; "Проверено" mark lives in PostgreSQL.
+        return (
+            lookup_current_acts(item_ids, db_id, get_db_fn=queries.get_db),
+            equipment_photos.lookup_equipment_photo_counts(item_ids, db_id, get_db_fn=queries.get_db),
+            equipment_photo_check_service.lookup_mark_counts(item_ids, db_id, get_db_fn=queries.get_db),
+        )
 
-    # "Проверено" mark lives in PostgreSQL: its own failure domain (None = unknown).
-    mark_counts = await run_in_threadpool(
-        equipment_photo_check_service.lookup_mark_counts,
-        item_ids,
-        db_id,
-        get_db_fn=queries.get_db,
-    )
+    acts_by_item_id, photo_counts, mark_counts = await run_in_threadpool(_lookup_all)
 
     items = []
     for item_id in item_ids:
