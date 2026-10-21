@@ -384,3 +384,52 @@ def test_compare_summary_serves_stale_snapshot_and_rebuilds_in_background(monkey
     assert stale["items"], "the previous snapshot is served"
     assert answered_in < 0.04, "a stale snapshot must not wait for the rebuild"
     assert len(builds) == 2, "the background rebuild ran exactly once"
+
+
+def test_compare_summary_serves_last_good_snapshot_when_1c_fails_and_backs_off(monkeypatch):
+    from backend.services import warehouse_1c_service as service_module
+
+    _patch_inputs(
+        monkeypatch,
+        owners=[{"OWNER_NO": 7, "OWNER_DISPLAY_NAME": "Рябов Александр Сергеевич"}],
+        counts=[{"owner_no": 7, "part_no": "PN-1", "item_count": 3}],
+        warehouses=[{"ref": "wh-1", "name": "Рябов А.С."}],
+        balances=[{"warehouse_ref": "wh-1", "nomenclature_code": "pn-1", "qty_balance": 3}],
+    )
+    warehouse_1c_service._employee_compare_failures.clear()
+    calls: list[int] = []
+
+    async def failing_build(db_id=None):
+        calls.append(1)
+        raise RuntimeError("1C bridge timed out")
+
+    async def scenario():
+        good = await warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT")
+        for entry in warehouse_1c_service._employee_compare_cache.values():
+            entry["at"] -= service_module.EMPLOYEE_COMPARE_SUMMARY_STALE_SECONDS + 5.0
+        monkeypatch.setattr(warehouse_1c_service, "_build_employee_compare_summary", failing_build)
+        first = await warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT")
+        second = await warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT")
+        return good, first, second
+
+    good, first, second = asyncio.run(scenario())
+    warehouse_1c_service._employee_compare_failures.clear()
+    assert good["items"] and not good.get("stale")
+    assert first["items"] == good["items"] and first["stale"] is True
+    assert second["stale"] is True
+    assert len(calls) == 1, "1C is not called again inside the back-off window"
+
+
+def test_compare_summary_failure_without_snapshot_still_raises(monkeypatch):
+    import pytest
+
+    _patch_inputs(monkeypatch, owners=[], counts=[], warehouses=[], balances=[])
+    warehouse_1c_service._employee_compare_failures.clear()
+
+    async def failing_build(db_id=None):
+        raise RuntimeError("1C bridge timed out")
+
+    monkeypatch.setattr(warehouse_1c_service, "_build_employee_compare_summary", failing_build)
+    with pytest.raises(RuntimeError):
+        _run()
+    warehouse_1c_service._employee_compare_failures.clear()

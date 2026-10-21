@@ -135,6 +135,8 @@ MAX_CONCURRENT_1C_CALLS = 2
 EMPLOYEE_COMPARE_SUMMARY_TTL_SECONDS = 120
 # Past the TTL a snapshot is still served (and rebuilt in the background) up to this age.
 EMPLOYEE_COMPARE_SUMMARY_STALE_SECONDS = 1800
+# After a failed build 1C is not called again for this long; the last good snapshot is served marked stale.
+EMPLOYEE_COMPARE_FAILURE_BACKOFF_SECONDS = 60
 MAX_QUEUED_1C_CALLS = 16
 COM_CIRCUIT_BREAKER_FAILURES = 4
 COM_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 60
@@ -1060,6 +1062,8 @@ class Warehouse1CService:
         self._employee_compare_cache: dict[str, dict[str, Any]] = {}
         self._employee_compare_lock = asyncio.Lock()
         self._employee_compare_rebuilds: set[str] = set()
+        self._employee_compare_failures: dict[str, tuple[float, BaseException]] = {}
+        self._employee_compare_cap_logged_at = float("-inf")
         self._catalog_leader_status: dict[str, Any] = {
             "mode": "not_checked",
             "is_leader": False,
@@ -2692,12 +2696,34 @@ class Warehouse1CService:
                 and (not refresh or entry is not observed_entry)
             ):
                 return dict(entry["payload"])
-            payload = await self._build_employee_compare_summary(db_id)
+            failure = self._employee_compare_failures.get(cache_key)
+            if failure and failure[0] > time.monotonic():
+                # 1C failed a moment ago: do not queue another call into an unhealthy bridge.
+                return self._employee_compare_fallback(entry, failure[1])
+            try:
+                payload = await self._build_employee_compare_summary(db_id)
+            except Exception as exc:
+                self._employee_compare_failures[cache_key] = (
+                    time.monotonic() + EMPLOYEE_COMPARE_FAILURE_BACKOFF_SECONDS,
+                    exc,
+                )
+                return self._employee_compare_fallback(entry, exc)
+            self._employee_compare_failures.pop(cache_key, None)
             self._employee_compare_cache[cache_key] = {
                 "at": time.monotonic(),
                 "payload": payload,
             }
             return payload
+
+    @staticmethod
+    def _employee_compare_fallback(entry, exc: BaseException) -> dict[str, Any]:
+        """Last good snapshot marked stale; without one the original error surfaces."""
+        if not entry:
+            raise exc
+        payload = dict(entry["payload"])
+        payload["stale"] = True
+        payload["stale_age_seconds"] = int(time.monotonic() - entry["at"])
+        return payload
 
     def _schedule_employee_compare_rebuild(self, cache_key: str, db_id) -> None:
         running = self._employee_compare_rebuilds
@@ -2817,11 +2843,14 @@ class Warehouse1CService:
         if len(refs) > DISMISSED_WAREHOUSE_REFS_MAX:
             # One batched call is capped: keep exact matches and show summed (ambiguous)
             # owners as «ambiguous» again rather than failing the whole summary with 400.
-            logger.warning(
-                "Employee compare summary: %s warehouse refs exceed %s, summed candidates dropped",
-                len(refs),
-                DISMISSED_WAREHOUSE_REFS_MAX,
-            )
+            now_mono = time.monotonic()
+            if now_mono - self._employee_compare_cap_logged_at >= 600:
+                self._employee_compare_cap_logged_at = now_mono
+                logger.warning(
+                    "Employee compare summary: %s warehouse refs exceed %s, summed candidates dropped",
+                    len(refs),
+                    DISMISSED_WAREHOUSE_REFS_MAX,
+                )
             for row in owner_rows:
                 if row.get("summed"):
                     row["warehouses"] = []
