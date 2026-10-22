@@ -22,8 +22,8 @@ class MonitoringTarget(AppBase):
     __tablename__ = "monitoring_targets"
     __table_args__ = {"schema": APP_SCHEMA}
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    # Legacy network registry uses its own SQL store; validated through it.
-    network_device_id: Mapped[int] = mapped_column(Integer, unique=True)
+    # Legacy network registry uses its own SQL store; validated through it. NULL - not linked (migration 0143).
+    network_device_id: Mapped[int | None] = mapped_column(Integer, unique=True, nullable=True)
     name: Mapped[str] = mapped_column(String(160))
     address: Mapped[str] = mapped_column(String(45))
     port: Mapped[int] = mapped_column(Integer, default=161)

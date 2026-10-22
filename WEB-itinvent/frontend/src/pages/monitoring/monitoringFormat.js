@@ -1,5 +1,7 @@
 export const isNumber = (value) => typeof value === 'number' && Number.isFinite(value);
-export const formatNumber = (value, digits = 1) => isNumber(value) ? new Intl.NumberFormat('ru-RU', { maximumFractionDigits: digits }).format(value) : '—';
+const numberFormats = [0, 1, 2].map((digits) => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: digits }));
+const dateTimeFormat = new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+export const formatNumber = (value, digits = 1) => isNumber(value) ? (numberFormats[digits] || new Intl.NumberFormat('ru-RU', { maximumFractionDigits: digits })).format(value) : '—';
 export const formatBps = (value) => {
   if (!isNumber(value)) return '—';
   if (value >= 1e9) return `${formatNumber(value / 1e9)} Гбит/с`;
@@ -10,7 +12,7 @@ export const formatBps = (value) => {
 export const formatBytes = (value) => isNumber(value) ? `${formatNumber(value / 1e9, 2)} ГБ` : '—';
 export const formatTime = (value) => {
   if (!value || Number.isNaN(new Date(value).getTime())) return 'Ещё не было';
-  return new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(value));
+  return dateTimeFormat.format(new Date(value));
 };
 export const isStale = (value, seconds = 120) => !value || Date.now() - new Date(value).getTime() > seconds * 1000;
 const DEVICE_NAMES = {

@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
+import json
+import time
 from datetime import datetime
 from functools import wraps
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from starlette.responses import JSONResponse
@@ -40,6 +43,28 @@ def service():
     return network_monitor_service
 
 
+async def read_response(request, function, *args, **kwargs):
+    """Keep large chart JSON and gzip out of the shared API event loop."""
+    submitted = time.perf_counter()
+    compressed = "gzip" in request.headers.get("accept-encoding", "").lower()
+
+    def render():
+        started = time.perf_counter()
+        payload = function(*args, **kwargs)
+        fetched = time.perf_counter()
+        body = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+        headers = {"Vary": "Accept-Encoding"}
+        if compressed and len(body) >= 1024:
+            body = gzip.compress(body, compresslevel=6)
+            headers["Content-Encoding"] = "gzip"
+        ended = time.perf_counter()
+        headers["Server-Timing"] = (f"monitoring_queue;dur={(started - submitted) * 1000:.1f},"
+            f"monitoring_store;dur={(fetched - started) * 1000:.1f},monitoring_encode;dur={(ended - fetched) * 1000:.1f}")
+        return Response(content=body, media_type="application/json", headers=headers)
+
+    return await asyncio.to_thread(render)
+
+
 def guarded(function):
     @wraps(function)
     async def wrapped(*args, **kwargs):
@@ -65,8 +90,8 @@ def guarded(function):
 
 @router.get("/overview")
 @guarded
-async def overview(svc=Depends(service)):
-    return await asyncio.to_thread(svc.overview)
+async def overview(request: Request, svc=Depends(service)):
+    return await read_response(request, svc.overview)
 
 
 @router.get("/catalog", dependencies=manage)
@@ -107,8 +132,8 @@ async def update_target(target_id: str, payload: TargetUpdate, svc=Depends(servi
 
 @router.get("/targets/{target_id}")
 @guarded
-async def detail(target_id: str, svc=Depends(service)):
-    return await asyncio.to_thread(svc.store.detail, target_id)
+async def detail(target_id: str, request: Request, svc=Depends(service)):
+    return await read_response(request, svc.store.detail, target_id)
 
 
 @router.delete("/targets/{target_id}", status_code=204, dependencies=manage)
@@ -135,9 +160,17 @@ async def configure_interface(target_id: str, interface_id: str, payload: Interf
 
 @router.get("/targets/{target_id}/history")
 @guarded
-async def history(target_id: str, interface_id: str = Query("", max_length=36), hours: int = Query(24, ge=1, le=8760),
+async def history(target_id: str, request: Request, interface_id: str = Query("", max_length=36), hours: int = Query(24, ge=1, le=8760),
                   start: datetime | None = Query(None), end: datetime | None = Query(None), svc=Depends(service)):
-    return await asyncio.to_thread(svc.store.history, target_id, interface_id, hours, svc.clock(), start=start, end=end)
+    return await read_response(request, svc.store.history, target_id, interface_id, hours, svc.clock(), start=start, end=end)
+
+
+@router.get("/targets/{target_id}/latency-history")
+@guarded
+async def latency_history(target_id: str, request: Request, hours: int = Query(24, ge=1, le=8760),
+                          start: datetime | None = Query(None), end: datetime | None = Query(None),
+                          after: datetime | None = Query(None), svc=Depends(service)):
+    return await read_response(request, svc.store.latency_history, target_id, hours, svc.clock(), start=start, end=end, after=after)
 
 
 @router.get("/events")

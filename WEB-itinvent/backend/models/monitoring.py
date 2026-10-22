@@ -29,7 +29,8 @@ class TargetSettings(StrictModel):
 
 
 class TargetCreate(StrictModel):
-    network_device_id: int = Field(gt=0)
+    # Optional legacy link to a «Сети» registry card; new devices are connected by name and address only.
+    network_device_id: int | None = Field(default=None, gt=0)
     name: str = Field(min_length=1, max_length=160)
     address: IPv4Address
     port: int = Field(default=161, ge=1, le=65535)

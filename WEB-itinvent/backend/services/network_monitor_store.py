@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 import math
+import threading
+import time
+from collections import OrderedDict
+from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4, uuid5, NAMESPACE_URL
 
@@ -21,9 +25,20 @@ class MonitoringNotReady(RuntimeError):
 class MonitoringStore:
     def __init__(self, database_url: str | None = None):
         self.database_url = database_url
+        self._history_cache = OrderedDict()
+        self._history_pending = {}
+        self._history_lock = threading.Lock()
 
     def session(self):
         return app_session(self.database_url)
+
+    def collection_limits(self):
+        from backend.config import config
+        engine = get_app_engine(self.database_url)
+        budget = config.app_db.pool_size + config.app_db.max_overflow
+        # Owner + four SNMP leases; retain at least six connections for writes/API.
+        icmp = 12 if engine.dialect.name == "sqlite" else max(1, min(12, budget - 11))
+        return {"icmp": icmp, "snmp": 4}
 
     def ready(self):
         engine = get_app_engine(self.database_url)
@@ -85,17 +100,33 @@ class MonitoringStore:
             if session.get(MonitoringProfile, payload["profile_id"]) is None:
                 raise ValueError("Выберите существующий профиль SNMP")
             row = self.target_row(session, target_id, lock=True) if target_id else None
-            conflict = session.scalar(select(MonitoringTarget).where(MonitoringTarget.network_device_id == payload["network_device_id"]))
-            if conflict is not None and conflict.id != target_id:
-                raise ValueError("Эта учётная карточка уже подключена")
-            if row is not None and row.network_device_id != payload["network_device_id"]:
-                raise ValueError("Учётную карточку цели нельзя заменить: создайте отдельную цель")
+            card_id = payload.get("network_device_id")
+            if card_id is not None:
+                conflict = session.scalar(select(MonitoringTarget).where(MonitoringTarget.network_device_id == card_id))
+                if conflict is not None and conflict.id != target_id:
+                    raise ValueError("Эта учётная карточка уже подключена")
+                if row is not None and row.network_device_id is not None and row.network_device_id != card_id:
+                    raise ValueError("Учётную карточку цели нельзя заменить: создайте отдельную цель")
             if row is None:
                 row = MonitoringTarget(id=str(uuid4()), current={})
                 session.add(row)
+            elif row.enabled != payload["enabled"] and row.current:
+                current = dict(row.current or {})
+                pauses = [dict(pause) for pause in current.get("icmp_pauses", [])]
+                changed_at = datetime.now(timezone.utc).isoformat()
+                if not payload["enabled"]:
+                    pauses.append({"from": changed_at, "until": None})
+                elif pauses and pauses[-1].get("until") is None:
+                    pauses[-1]["until"] = changed_at
+                if len(pauses) > 256:
+                    current["icmp_pause_history_since"] = pauses[-256]["from"]
+                current["icmp_pauses"] = pauses[-256:]
+                row.current = current
             reset = row.address is not None and (row.address != str(payload["address"]) or row.profile_id != payload["profile_id"] or row.port != payload["port"])
-            for key in ("network_device_id", "name", "profile_id", "port", "enabled", "settings"):
+            for key in ("name", "profile_id", "port", "enabled", "settings"):
                 setattr(row, key, payload[key])
+            if card_id is not None:
+                row.network_device_id = card_id
             row.address = str(payload["address"])
             row.updated_at = datetime.now(timezone.utc)
             if reset:
@@ -200,6 +231,14 @@ class MonitoringStore:
             encrypted = row.community_enc
         return decrypt_secret(encrypted)
 
+    def probe_target(self, target_id, *, include_interfaces=True):
+        """Collector input without UI events, outage ranking or card sparklines."""
+        with self.session() as session:
+            result = self.target_data(self.target_row(session, target_id))
+            result["interfaces"] = [self.interface_data(row) for row in session.scalars(
+                select(MonitoringInterface).where(MonitoringInterface.target_id == target_id))] if include_interfaces else []
+            return result
+
     def save_interface(self, target_id, interface_id, settings, now=None):
         with self.session() as session:
             if session.bind.dialect.name == "sqlite":
@@ -232,24 +271,32 @@ class MonitoringStore:
             return [self.event_data(row) for row in session.scalars(query.order_by(MonitoringEvent.opened_at.desc()).limit(limit))]
 
     @staticmethod
-    def _samples(session, target_id, series, now, duration=60):
+    def _samples(session, target_id, series, now, duration=60, *, merge_device=False):
         # Deterministic identifiers make sample retries and aggregate updates idempotent.
         sample_at = utc(now).replace(second=0, microsecond=0)
+        if merge_device and "" in series:
+            MonitoringStore._merge_device_sample(session, target_id, series[""], sample_at)
+            series = {iid: values for iid, values in series.items() if iid}
+            if not series:
+                return
         new = []
         identifiers = {iid: str(uuid5(NAMESPACE_URL, f"monitor:{target_id}:{iid}:{sample_at.isoformat()}")) for iid in series}
         existing = set(session.scalars(select(MonitoringSample.id).where(MonitoringSample.id.in_(list(identifiers.values())))))
         for iid, values in series.items():
             if identifiers[iid] in existing:
                 continue
-            session.add(MonitoringSample(id=identifiers[iid], target_id=target_id, interface_id=iid, observed_at=sample_at, values=values))
-            new.append((iid, values))
+            interval = number(values.get("rx_seconds")) or number(values.get("tx_seconds")) or duration
+            interval = min(180, max(1, interval))
+            stored = {**values, "_duration": interval} if merge_device else values
+            session.add(MonitoringSample(id=identifiers[iid], target_id=target_id, interface_id=iid, observed_at=sample_at, values=stored))
+            new.append((iid, values, interval))
         if not new:
             return
         buckets = {resolution: datetime.fromtimestamp(int(sample_at.timestamp()) // resolution * resolution, timezone.utc) for resolution in (300, 3600)}
         aggregate_rows = list(session.scalars(select(MonitoringAggregate).where(
             MonitoringAggregate.target_id == target_id, MonitoringAggregate.bucket_at.in_(list(buckets.values())))))
         index = {(r.interface_id, r.resolution, utc(r.bucket_at)): r for r in aggregate_rows}
-        for iid, values in new:
+        for iid, values, interval in new:
             for resolution, bucket in buckets.items():
                 key = (iid, resolution, bucket)
                 row = index.get(key)
@@ -258,7 +305,89 @@ class MonitoringStore:
                                               resolution=resolution, bucket_at=bucket, values={})
                     session.add(row)
                     index[key] = row
-                row.values = aggregate_values(row.values, values, min(180, max(1, duration)))
+                row.values = aggregate_values(row.values, values, interval)
+
+    @staticmethod
+    def _merge_device_sample(session, target_id, values, sample_at):
+        """Replace one minute's rollup contribution; never add it a second time."""
+        identifier = str(uuid5(NAMESPACE_URL, f"monitor:{target_id}::{sample_at.isoformat()}"))
+        row = session.scalar(select(MonitoringSample).where(MonitoringSample.target_id == target_id,
+            MonitoringSample.interface_id == "", MonitoringSample.observed_at == sample_at))
+        if row is not None and "_stats" not in row.values:
+            # Preserve the transition minute: the old writer did not save trustworthy packet counts/weights.
+            return
+        prior = (row.values.get("_stats") or aggregate_values({}, row.values)) if row else {}
+        weights = values.get("_weights", {})
+        stats = prior
+        for key, value in values.items():
+            if not key.startswith("_"):
+                stats = merge_aggregates(stats, aggregate_values({}, {key: value}, weights.get(key, 60)))
+        metrics = {key: value for key, value in chart_values(stats, True).items() if not key.endswith(("_min", "_max"))}
+        if row is None:
+            row = MonitoringSample(id=identifier, target_id=target_id, interface_id="", observed_at=sample_at, values={})
+            session.add(row)
+        row.values = {**(row.values or {}), **metrics, "_stats": stats}
+        session.flush()
+        hour = sample_at.replace(minute=0)
+        minute5 = sample_at.replace(minute=sample_at.minute // 5 * 5)
+        rollups = {(r.resolution, utc(r.bucket_at)): r for r in session.scalars(select(MonitoringAggregate).where(
+            MonitoringAggregate.target_id == target_id, MonitoringAggregate.interface_id == "",
+            MonitoringAggregate.bucket_at.in_((hour, minute5))))}
+        for resolution, bucket in ((300, minute5), (3600, hour)):
+            aggregate = rollups.get((resolution, bucket))
+            if aggregate is None:
+                # Rebuild only a missing bucket. Existing legacy weights stay untouched.
+                combined = {}
+                raw = session.scalars(select(MonitoringSample).where(MonitoringSample.target_id == target_id,
+                    MonitoringSample.interface_id == "", MonitoringSample.observed_at >= bucket,
+                    MonitoringSample.observed_at < bucket + timedelta(seconds=resolution)))
+                for sample in raw:
+                    combined = merge_aggregates(combined, sample.values.get("_stats") or aggregate_values({}, sample.values))
+                aggregate = MonitoringAggregate(id=str(uuid4()), target_id=target_id, interface_id="", resolution=resolution, bucket_at=bucket, values={})
+                session.add(aggregate)
+                aggregate.values = combined
+            else:
+                combined = {key: dict(value) for key, value in aggregate.values.items()}
+                for key, after in stats.items():
+                    before = prior.get(key, {})
+                    previous = combined.get(key, {})
+                    combined[key] = {"sum": previous.get("sum", 0) + after["sum"] - before.get("sum", 0),
+                        "weight": previous.get("weight", 0) + after["weight"] - before.get("weight", 0),
+                        "count": previous.get("count", 0) + after["count"] - before.get("count", 0),
+                        "min": min(previous.get("min", after["min"]), after["min"]),
+                        "max": max(previous.get("max", after["max"]), after["max"])}
+                aggregate.values = combined
+
+    @staticmethod
+    def _icmp_sample(session, target_id, ping, now, scheduled_at=None, backoff_until=None):
+        # Six bounded slots share the existing minute row; no new table or row rate.
+        session.flush()
+        scheduled = timestamp(scheduled_at)
+        slot_time = scheduled if scheduled and scheduled <= now < scheduled + timedelta(seconds=10) else now
+        minute = slot_time.replace(second=0, microsecond=0)
+        row = session.scalar(select(MonitoringSample).where(MonitoringSample.target_id == target_id,
+            MonitoringSample.interface_id == "", MonitoringSample.observed_at == minute))
+        if row is None:
+            row = MonitoringSample(id=str(uuid5(NAMESPACE_URL, f"monitor:{target_id}::{minute.isoformat()}")),
+                target_id=target_id, interface_id="", observed_at=minute, values={"_stats": {}})
+            session.add(row)
+        slots = dict((row.values or {}).get("_icmp_10s") or {})
+        key = str(slot_time.second // 10 * 10)
+        prior = slots.get(key) or {}
+        # Manual refresh must not erase the evidence of an automatic check.
+        if not scheduled and prior.get("source") == "scheduled":
+            return
+        error = ping.get("error")
+        error = error if error in {"collector_timeout", "process_error"} else ("collector_error" if error else None)
+        slots[key] = {"observed_at": now.isoformat(), "started_at": ping.get("started_at") or now.isoformat(),
+            "completed_at": ping.get("completed_at"), "scheduled_at": scheduled_at,
+            "source": "scheduled" if scheduled else "manual", "status": ping.get("status", "unknown"),
+            "error": error, "sent": number(ping.get("sent")), "received": number(ping.get("received")),
+            "loss_pct": number(ping.get("loss_pct")) if not error else None,
+            "latency_ms": number(ping.get("latency_ms")) if ping.get("status") == "online" and not error else None,
+            "partial_latency_ms": number(ping.get("latency_ms")) if error else None,
+            "backoff_until": backoff_until}
+        row.values = {**(row.values or {}), "_icmp_10s": slots}
 
     @staticmethod
     def _rule(session, opened, state, target_id, iid, kind, condition, title, now, delay=60, severity="warning", started_at=None):
@@ -281,26 +410,63 @@ class MonitoringStore:
                 event.closed_at = now
         state[key] = rule
 
-    def record(self, target, snapshot, now):
+    def record(self, target, snapshot, now, *, return_current=False):
         now = utc(now)
         with self.session() as session:
+            if session.bind.dialect.name == "sqlite":
+                session.connection().exec_driver_sql("BEGIN IMMEDIATE")
             row = self.target_row(session, target["id"], lock=True)
             if not row.enabled or utc(row.updated_at).isoformat() != target["updated_at"]:
                 return False  # Configuration changed while the request was in flight.
             previous = dict(row.current or {})
             previous_at = timestamp(previous.get("checked_at"))
-            if previous_at and now <= previous_at:
-                return False
+            protocol = snapshot.get("protocol")
+            split = protocol in {"icmp", "snmp"}
+            kinds = (protocol,) if split else ("icmp", "snmp")
+            for kind in kinds:
+                observed = timestamp(previous.get(f"{kind}_checked_at"))
+                if observed is None and not any(previous.get(f"{key}_checked_at") for key in ("icmp", "snmp")):
+                    observed = previous_at  # Legacy combined snapshot, before independent protocol clocks.
+                if observed and now <= observed:
+                    return False
             settings = row.settings or {}
-            snmp_ok = snapshot.get("snmp_status") == "ok"
-            full = snapshot.get("full", True)
-            ping = snapshot.get("ping", {})
-            reachable = snmp_ok or ping.get("status") == "online"
+            has_snmp, has_ping = "snmp" in kinds, "icmp" in kinds
+            snmp_ok = has_snmp and snapshot.get("snmp_status") == "ok"
+            full = has_snmp and snapshot.get("full", True)
+            ping = snapshot.get("ping", {}) if has_ping else previous.get("ping", {})
             previous_success = previous.get("last_success_at")
-            failures = 0 if reachable else int(previous.get("failures", 0)) + 1
-            current = {**previous, "checked_at": now.isoformat(), "ping": ping, "snmp_status": snapshot.get("snmp_status", "error"),
-                       "snmp_error": snapshot.get("error"), "last_success_at": now.isoformat() if snmp_ok else previous_success,
-                       "failures": failures, "status": "online" if reachable else ("offline" if failures >= settings.get("failure_polls", 3) else "unknown")}
+            current = {**previous, "checked_at": max(now, previous_at or now).isoformat()}
+            for kind in kinds:
+                current[f"{kind}_checked_at"] = now.isoformat()
+            if has_ping:
+                current["ping"] = ping
+            if has_snmp:
+                current.update(snmp_status=snapshot.get("snmp_status", "error"), snmp_error=snapshot.get("error"),
+                               snmp_quality=snapshot.get("snmp_quality"), last_success_at=now.isoformat() if snmp_ok else previous_success)
+            reference = max(now, previous_at or now)
+            ping_at = timestamp(current.get("icmp_checked_at"))
+            snmp_at = timestamp(current.get("snmp_checked_at"))
+            # Success expires quickly; confirmed failures remain usable during the bounded offline backoff.
+            ping_fresh = 20 if ping.get("status") == "online" else 75
+            snmp_fresh = 45 if current.get("snmp_status") == "ok" else 330
+            ping_state = ping.get("status") if ping_at and (reference - ping_at).total_seconds() <= ping_fresh else None
+            snmp_state = current.get("snmp_status") if snmp_at and (reference - snmp_at).total_seconds() <= snmp_fresh and current.get("snmp_quality") != "unknown" else None
+            reachable = True if ping_state == "online" or snmp_state == "ok" else (False if ping_state == "offline" and snmp_state == "error" else None)
+            failures = int(previous.get("failures", 0))
+            if reachable is True:
+                failures = 0
+                current.pop("failure_checked_at", None)
+            elif reachable is False:
+                counted = timestamp(previous.get("failure_checked_at"))
+                if counted is None or (reference - counted).total_seconds() >= 30:
+                    failures += 1
+                    current["failure_checked_at"] = reference.isoformat()
+            elif failures < settings.get("failure_polls", 3):
+                failures = 0  # Unknown collection cannot join two separate failure streaks.
+                current.pop("failure_checked_at", None)
+            current.update(failures=failures, status="online" if reachable is True else ("offline" if reachable is False and failures >= settings.get("failure_polls", 3) else "unknown"))
+            if snapshot.get("timings"):
+                current["probe_timings"] = {**previous.get("probe_timings", {}), protocol or "combined": snapshot["timings"]}
             if snmp_ok:
                 current["device"] = {**(previous.get("device") or {}), **snapshot.get("device", {})}
                 if snapshot.get("discovered_at"):
@@ -313,19 +479,25 @@ class MonitoringStore:
                 availability = {"initial_state_known": not bool(previous_at),
                                 "observed_since": now.isoformat() if previous_at is None else None,
                                 "ever_reachable": bool(previous_success)}
-            if reachable:
+            if reachable is True:
                 if availability.get("initial_state_known") and not availability.get("ever_reachable"):
                     availability["first_reachable_at"] = now.isoformat()
-                availability.update(ever_reachable=True, last_reachable_at=now.isoformat())
+                last_reachable = timestamp(availability.get("last_reachable_at")) or now
+                availability.update(ever_reachable=True, last_reachable_at=max(now, last_reachable).isoformat())
                 availability.pop("unreachable_since", None)
-            elif not availability.get("unreachable_since"):
+            elif reachable is None and not failures and ":unreachable" not in opened:
+                availability.pop("unreachable_since", None)
+            elif reachable is False and not availability.get("unreachable_since"):
                 existing = opened.get(":unreachable")
                 availability["unreachable_since"] = utc(existing.opened_at).isoformat() if existing else now.isoformat()
             current["availability"] = availability
-            rule = lambda iid, kind, condition, title, **kw: self._rule(session, opened, rules, row.id, iid, kind, condition, title, now, **kw)
-            rule("", "unreachable", failures >= settings.get("failure_polls", 3), "Устройство недоступно из HUB", delay=0, severity="critical",
+            event_now = reference
+            rule = lambda iid, kind, condition, title, **kw: self._rule(session, opened, rules, row.id, iid, kind, condition, title, event_now, **kw)
+            confirmed = True if reachable is False and failures >= settings.get("failure_polls", 3) else (False if reachable is True else None)
+            rule("", "unreachable", confirmed, "Устройство недоступно из HUB", delay=0, severity="critical",
                  started_at=timestamp(availability.get("unreachable_since")))
-            rule("", "snmp", not snmp_ok if ping.get("status") == "online" else (False if snmp_ok else None), "Нет ответа SNMP")
+            if has_snmp:
+                rule("", "snmp", not snmp_ok if ping_state == "online" and snmp_state is not None else (False if snmp_ok else None), "Нет ответа SNMP")
             device = snapshot.get("device", {}) if snmp_ok else {}
             for key, limit, title in (("cpu_pct", settings.get("cpu_warn", 85), "Высокая загрузка CPU"),
                                       ("memory_pct", settings.get("memory_warn", 90), "Высокая загрузка памяти"),
@@ -336,7 +508,8 @@ class MonitoringStore:
             for key, metric, threshold, title in (("latency", "latency_ms", settings.get("latency_warn_ms", 150), "Высокая задержка от HUB"),
                                                   ("loss", "loss_pct", settings.get("loss_warn_pct", 20), "Потери ICMP от HUB")):
                 value = number(ping.get(metric))
-                rule("", key, value > threshold if value is not None else None, title, delay=300)
+                if has_ping:
+                    rule("", key, value > threshold if value is not None else None, title, delay=300)
             uptime = device.get("hardware_uptime_ticks") or device.get("uptime_ticks")
             previous_device = previous.get("device") or {}
             old_uptime = previous_device.get("hardware_uptime_ticks") or previous_device.get("uptime_ticks")
@@ -344,10 +517,19 @@ class MonitoringStore:
                 event = MonitoringEvent(id=str(uuid4()), target_id=row.id, interface_id="", kind="restart",
                                         title="Изменился uptime устройства", severity="info", opened_at=now, closed_at=now)
                 session.add(event)
-            known = {item.name: item for item in session.scalars(select(MonitoringInterface).where(MonitoringInterface.target_id == row.id))}
+            known = {item.name: item for item in session.scalars(select(MonitoringInterface).where(MonitoringInterface.target_id == row.id))} if has_snmp else {}
             series = {"": {**{key: number(device.get(key)) for key in ("cpu_pct", "memory_pct", "temperature_c", "storage_pct")},
-                           "latency_ms": number(ping.get("latency_ms")), "loss_pct": number(ping.get("loss_pct")),
-                           "snmp_up": 1 if snmp_ok else 0, "ping_up": 1 if ping.get("status") == "online" else (0 if ping.get("status") == "offline" else None)}}
+                           "latency_ms": number(ping.get("latency_ms")) if has_ping else None, "loss_pct": number(ping.get("loss_pct")) if has_ping else None,
+                           "snmp_up": (1 if snmp_ok else (None if current.get("snmp_quality") == "unknown" else 0)) if has_snmp else None,
+                           "ping_up": (1 if ping.get("status") == "online" else (0 if ping.get("status") == "offline" else None)) if has_ping else None}}
+            if split and has_ping:
+                values = series[""]
+                sent, received = number(ping.get("sent")), number(ping.get("received"))
+                values.update(icmp_checks=1, icmp_unknown_checks=int(ping.get("status") not in {"online", "offline"}),
+                              icmp_sent_packets=sent, icmp_received_packets=received if sent is not None else None,
+                              _weights={"latency_ms": max(1, received or 0), "loss_pct": max(1, sent or 0), "ping_up": 1})
+            elif split:
+                series[""]["_weights"] = {"snmp_up": 1}
             for data in snapshot.get("interfaces", []) if snmp_ok else []:
                 name = str(data.get("name") or "").strip()
                 if not name:
@@ -398,19 +580,31 @@ class MonitoringStore:
                 errors = [updated[k] for k in ("rx_errors_pps", "tx_errors_pps", "rx_discards_pps", "tx_discards_pps") if updated.get(k) is not None]
                 if full:
                     rule(item.id, "errors", max(errors) > config.get("errors_warn_pps", 2) if errors else None, f"{name}: ошибки или отбрасывания пакетов", delay=300)
-                if config.get("history_enabled", True) and (data.get("oper") == 1 or critical):
+                if full and config.get("history_enabled", True) and (data.get("oper") == 1 or critical):
                     series[item.id] = {key: number(updated.get(key)) for key in ("rx_bps", "tx_bps", "rx_bytes", "tx_bytes", "rx_seconds", "tx_seconds", "rx_util_pct", "tx_util_pct", "speed_bps", "rx_errors_pps", "tx_errors_pps", "rx_discards_pps", "tx_discards_pps", "oper")}
             current["rules"] = rules
             current["open_events"] = len(opened)
-            row.current = current
             sample_age = (now - (timestamp(previous.get("sample_at")) or datetime.min.replace(tzinfo=timezone.utc))).total_seconds()
-            if full and sample_age >= 55:
-                self._samples(session, row.id, series, now, min(sample_age, 60))
-                current["sample_at"] = now.isoformat()
-                row.current = dict(current)
-            return True
+            if split or (full and sample_age >= 55):
+                self._samples(session, row.id, series, now, min(sample_age, 60), merge_device=split)
+            if has_ping:
+                scheduled = timestamp(snapshot.get("scheduled_at"))
+                first_check = scheduled if scheduled and scheduled <= now < scheduled + timedelta(seconds=10) else now
+                current.setdefault("icmp_history_since", first_check.replace(microsecond=0, second=first_check.second // 10 * 10).isoformat())
+                if scheduled:
+                    current["icmp_schedule_phase"] = scheduled.timestamp() % 10
+                backoff = (now + timedelta(seconds=min(60, 30 * failures))).isoformat() if current["status"] == "offline" else None
+                self._icmp_sample(session, row.id, ping, now, snapshot.get("scheduled_at"), backoff)
+            if split or has_ping or (full and sample_age >= 55):
+                current["sample_at"] = max(now, timestamp(previous.get("sample_at")) or now).isoformat()
+                current["history_revision"] = current["sample_at"][:16]
+                current["history_data_revision"] = str(uuid4())
+            # Minute merge flushes samples: assign JSON only after all revision fields are complete.
+            row.current = current
+            return current if return_current else True
 
-    def history(self, target_id, interface_id, hours, now, *, start=None, end=None):
+    @staticmethod
+    def _history_period(hours, now, start, end):
         now = utc(now)
         if (start is None) != (end is None):
             raise ValueError("Укажите начало и конец периода")
@@ -423,24 +617,159 @@ class MonitoringStore:
             now, hours = until, (until - since).total_seconds() / 3600
         else:
             since = now - timedelta(hours=hours)
+        return since, now, hours
+
+    def history(self, target_id, interface_id, hours, now, *, start=None, end=None):
+        since, now, hours = self._history_period(hours, now, start, end)
         resolution = 60 if hours <= 168 else (300 if hours <= 720 else 3600)
+        step = resolution * max(1, math.ceil(hours * 3600 / resolution / 1400))
         with self.session() as session:
-            self.target_row(session, target_id)
+            target = self.target_row(session, target_id)
             if interface_id:
                 interface = session.get(MonitoringInterface, interface_id)
                 if interface is None or interface.target_id != target_id:
                     raise LookupError("Интерфейс не найден")
+            current = target.current or {}
+            lower = int(since.timestamp()) // 60 if resolution == 60 else math.ceil(since.timestamp() / resolution)
+            key = (target_id, interface_id, resolution, step, lower, int(now.timestamp()) // resolution,
+                   int(since.timestamp()) // step, int(now.timestamp()) // step, utc(target.updated_at).isoformat(),
+                   ((interface.current or {}).get("counter_checked_at") or current.get("sample_at")) if interface_id
+                   else current.get("history_data_revision") or current.get("sample_at"))
+        # A waiting follower never occupies a database connection. Auth is checked by the route,
+        # and target/interface existence and ownership were checked above, including cache hits.
+        return self._cached_history(key, lambda: self._history_points(target_id, interface_id, since, now, resolution, step))
+
+    def latency_history(self, target_id, hours, now, *, start=None, end=None, after=None):
+        since, until, duration = self._history_period(hours, now, start, end)
+        if after is not None and (after.tzinfo is None or utc(after) > until + timedelta(minutes=1)):
+            raise ValueError("Для обновления истории нужна дата с часовым поясом внутри прошедшего периода")
+        # Long windows retain bounded aggregation. Ten-second detail is available
+        # in any selected window up to one day within existing raw retention.
+        if duration > 24:
+            history = self.history(target_id, "", hours, now, start=start, end=end)
+            step = history["resolution_seconds"]
+            first = int(since.timestamp()) // step * step
+            replace = max(first, int(utc(after).timestamp()) // step * step) if after else first
+            points = [{key: value for key, value in point.items() if key == "at" or key.startswith("latency_ms")}
+                      | {"source_resolution_seconds": step} for point in history["points"] if timestamp(point["at"]).timestamp() >= replace]
+            return {**history, "points": points, "window_start": datetime.fromtimestamp(first, timezone.utc).isoformat(),
+                    "replace_from": datetime.fromtimestamp(replace, timezone.utc).isoformat()}
+        first = int(since.timestamp()) // 10 * 10
+        last = int(until.timestamp()) // 10 * 10
+        replace = max(first, int(utc(after).timestamp()) // 10 * 10) if after else first
+        with self.session() as session:
+            target = self.target_row(session, target_id)
+            current = target.current or {}
+            quality_since = current.get("icmp_history_since")
+            phase = current.get("icmp_schedule_phase", 0)
+            pauses = current.get("icmp_pauses", [])
+            pause_history_since = current.get("icmp_pause_history_since")
+            key = ("latency", target_id, first, last, replace, utc(target.updated_at).isoformat(),
+                   current.get("icmp_checked_at"), int(utc(now).timestamp()) // 10)
+        return self._cached_history(key, lambda: self._latency_points(target_id, first, last, replace,
+            utc(now).timestamp(), quality_since, phase, pauses, pause_history_since))
+
+    def _latency_points(self, target_id, first, last, replace, as_of, quality_since, phase, pauses, pause_history_since):
+        lower = datetime.fromtimestamp(replace // 60 * 60 - 60, timezone.utc)
+        upper = datetime.fromtimestamp(last, timezone.utc)
+        with self.session() as session:
+            rows = {int(utc(row.observed_at).timestamp()): row.values for row in session.scalars(select(MonitoringSample).where(
+                MonitoringSample.target_id == target_id, MonitoringSample.interface_id == "",
+                MonitoringSample.observed_at >= lower, MonitoringSample.observed_at <= upper))}
+        points = []
+        known_since = timestamp(quality_since)
+        pause_since = timestamp(pause_history_since)
+        pause_windows = [(timestamp(pause.get("from")), timestamp(pause.get("until"))) for pause in pauses]
+        backoff_until = 0
+        for minute, values in rows.items():
+            for offset, sample in (values.get("_icmp_10s") or {}).items():
+                until = timestamp(sample.get("backoff_until"))
+                if minute + int(offset) < replace and until:
+                    backoff_until = max(backoff_until, until.timestamp())
+        for minute in range(replace // 60 * 60, last + 1, 60):
+            values = rows.get(minute)
+            slots = (values or {}).get("_icmp_10s")
+            if values is not None and not slots and ("_stats" not in values or known_since is None or minute + 60 <= known_since.timestamp()):
+                if replace <= minute <= last:
+                    legacy = chart_values(values.get("_stats") or aggregate_values({}, values), True)
+                    points.append({"at": datetime.fromtimestamp(minute, timezone.utc).isoformat(),
+                        **{key: value for key, value in legacy.items() if key.startswith("latency_ms")},
+                        "quality_status": "legacy", "source_resolution_seconds": 60})
+                continue
+            for bucket in range(max(minute, replace), min(minute + 50, last) + 1, 10):
+                sample = (slots or {}).get(str(bucket - minute), {})
+                state = sample.get("status")
+                if sample:
+                    if sample.get("error") or state == "unknown":
+                        quality = "collector_error"
+                    elif state in {"online", "offline"}:
+                        quality = "partial" if state == "online" and (sample.get("loss_pct") or 0) > 0 else state
+                    else:
+                        quality = "legacy"  # Old latency-only slots do not prove packet counts.
+                elif known_since is None or bucket < known_since.timestamp() or (pause_since and bucket < pause_since.timestamp()):
+                    quality = "unobserved"
+                elif any(a and a.timestamp() <= bucket + phase and (b is None or bucket + phase < b.timestamp()) for a, b in pause_windows):
+                    quality = "paused"
+                elif bucket + phase + 10 > as_of:
+                    quality = "pending"
+                elif bucket + phase < backoff_until:
+                    quality = "backoff"
+                else:
+                    quality = "missing"
+                points.append({"at": datetime.fromtimestamp(bucket, timezone.utc).isoformat(),
+                    **sample, "latency_ms": sample.get("latency_ms"), "observed_at": sample.get("observed_at"),
+                    "quality_status": quality, "source_resolution_seconds": 10})
+                until = timestamp(sample.get("backoff_until"))
+                if until:
+                    backoff_until = max(backoff_until, until.timestamp())
+        return {"points": points, "totals": {}, "resolution_seconds": 10, "has_data": any(number(p.get("latency_ms")) is not None for p in points),
+            "interface_id": "", "window_start": datetime.fromtimestamp(first, timezone.utc).isoformat(),
+            "replace_from": datetime.fromtimestamp(replace, timezone.utc).isoformat(), "quality_since": quality_since}
+
+    def _cached_history(self, key, build):
+        with self._history_lock:
+            entry = self._history_cache.get(key)
+            if entry and time.monotonic() - entry[0] < 30:
+                self._history_cache.move_to_end(key)
+                return entry[1]
+            pending = self._history_pending.get(key)
+            owner = pending is None
+            if owner:
+                pending = Future()
+                self._history_pending[key] = pending
+        if not owner:
+            try:
+                return pending.result(timeout=30)
+            except TimeoutError:
+                raise MonitoringNotReady("Подготовка истории задерживается") from None
+        try:
+            result = build()
+            with self._history_lock:
+                self._history_cache[key] = (time.monotonic(), result)
+                self._history_cache.move_to_end(key)
+                while len(self._history_cache) > 32:
+                    self._history_cache.popitem(last=False)
+            pending.set_result(result)
+            return result
+        except BaseException as exc:
+            pending.set_exception(exc)
+            raise
+        finally:
+            with self._history_lock:
+                self._history_pending.pop(key, None)
+
+    def _history_points(self, target_id, interface_id, since, now, resolution, step):
+        with self.session() as session:
             if resolution == 60:
                 query = select(MonitoringSample).where(MonitoringSample.target_id == target_id, MonitoringSample.interface_id == interface_id,
                                                        MonitoringSample.observed_at > since, MonitoringSample.observed_at <= now).order_by(MonitoringSample.observed_at)
-                source = [(utc(r.observed_at), aggregate_values({}, r.values)) for r in session.scalars(query)]
+                source = [(utc(r.observed_at), r.values.get("_stats") or aggregate_values({}, r.values, r.values.get("_duration", 60))) for r in session.scalars(query)]
             else:
                 query = select(MonitoringAggregate).where(MonitoringAggregate.target_id == target_id, MonitoringAggregate.interface_id == interface_id,
                     MonitoringAggregate.resolution == resolution, MonitoringAggregate.bucket_at >= since,
                     MonitoringAggregate.bucket_at < datetime.fromtimestamp(int(now.timestamp()) // resolution * resolution, timezone.utc)).order_by(MonitoringAggregate.bucket_at)
                 source = [(utc(r.bucket_at), r.values) for r in session.scalars(query)]
         # Gap-aware resampling, with a strict output bound even for a full year.
-        step = resolution * max(1, math.ceil(hours * 3600 / resolution / 1400))
         groups = {}
         for at, values in source:
             bucket = int(at.timestamp()) // step * step
@@ -475,8 +804,9 @@ class MonitoringStore:
                 for resolution in (300, 3600):
                     bucket = datetime.fromtimestamp(int(utc(row.observed_at).timestamp()) // resolution * resolution, timezone.utc)
                     stats = coverage.get((row.target_id, row.interface_id, resolution, bucket))
-                    covered &= stats is not None and all(key in stats and stats[key]["min"] <= value <= stats[key]["max"]
-                        for key, value in row.values.items() if number(value) is not None)
+                    raw_stats = row.values.get("_stats") or aggregate_values({}, row.values)
+                    covered &= stats is not None and all(key in stats and stats[key]["min"] <= value["min"] <= value["max"] <= stats[key]["max"]
+                        and stats[key]["count"] >= value["count"] for key, value in raw_stats.items())
                 if covered:
                     safe.append(row.id)
             # Keep rollups while any raw data in their time window is retained.

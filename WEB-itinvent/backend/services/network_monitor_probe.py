@@ -5,6 +5,8 @@ import asyncio
 import platform
 import re
 import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from backend.services.network_monitor_calculations import timestamp
@@ -22,27 +24,62 @@ COUNTER_OIDS = {"rx_octets": "1.3.6.1.2.1.31.1.1.1.6", "tx_octets": "1.3.6.1.2.1
 NAME_BASE = "1.3.6.1.2.1.31.1.1.1.1"
 
 
+def _ping_result(output, *, complete, error=None):
+    windows = platform.system().lower() == "windows"
+    if isinstance(output, bytes):
+        output = output.decode("oem" if windows else "utf-8", errors="replace")
+    output = output or ""
+    replies = min(3, len(re.findall(r"ttl=\d+", output, re.I)))
+    times = [float(v) for line in output.splitlines() if re.search(r"ttl=\d+", line, re.I)
+             for v in re.findall(r"[=<]\s*([\d.]+)\s*(?:ms|мс)", line, re.I)]
+    return {"status": "online" if replies else ("offline" if complete else "unknown"),
+            "loss_pct": 100 * (3 - replies) / 3 if complete else None,
+            "latency_ms": sum(times) / len(times) if times else None,
+            "sent": 3 if complete else None, "received": replies, "error": error}
+
+
 def _ping(address):
     windows = platform.system().lower() == "windows"
     command = ["ping", "-n", "3", "-w", "800", address] if windows else ["ping", "-n", "-c", "3", "-W", "1", address]
+    started = datetime.now(timezone.utc)
+    timer = time.monotonic()
     try:
         result = subprocess.run(command, capture_output=True, timeout=5, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if windows else 0)
-        output = result.stdout.decode("oem" if windows else "utf-8", errors="replace")
-        replies = len(re.findall(r"ttl=\d+", output, re.I))
-        times = [float(v) for line in output.splitlines() if re.search(r"ttl=\d+", line, re.I)
-                 for v in re.findall(r"[=<]\s*([\d.]+)\s*(?:ms|мс)", line, re.I)]
-        online = replies > 0 or result.returncode == 0
-        return {"status": "online" if online else "offline", "loss_pct": 100 * (3 - min(3, replies)) / 3 if replies or not online else None,
-                "latency_ms": sum(times) / len(times) if times else None}
-    except subprocess.TimeoutExpired:
-        return {"status": "offline", "loss_pct": 100, "latency_ms": None}
+        value = _ping_result(result.stdout, complete=result.returncode in (0, 1), error=None if result.returncode in (0, 1) else "process_error")
+    except subprocess.TimeoutExpired as exc:
+        value = _ping_result(exc.stdout, complete=False, error="collector_timeout")
     except OSError:
-        return {"status": "unknown", "loss_pct": None, "latency_ms": None}
+        value = _ping_result(b"", complete=False, error="process_error")
+    return {**value, "started_at": started.isoformat(), "completed_at": datetime.now(timezone.utc).isoformat(),
+            "duration_seconds": time.monotonic() - timer}
 
 
 class NetworkMonitorProbe:
-    async def read(self, target, community, *, full=True):
-        ping_task = asyncio.create_task(asyncio.to_thread(_ping, target["address"]))
+    def __init__(self):
+        self._ping_executor = None
+
+    async def ping(self, target):
+        # Network waits must not occupy the executor used by DB reads/commits.
+        if self._ping_executor is None:
+            self._ping_executor = ThreadPoolExecutor(max_workers=12, thread_name_prefix="monitor-icmp")
+        task = asyncio.get_running_loop().run_in_executor(self._ping_executor, _ping, target["address"])
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # Keep the protocol lease until its bounded OS process really finishes.
+            await task
+            raise
+
+    async def close(self):
+        executor, self._ping_executor = self._ping_executor, None
+        if executor is not None:
+            await asyncio.to_thread(executor.shutdown, wait=True, cancel_futures=True)
+
+    async def read_snmp(self, target, community, *, full=True):
+        return await self.read(target, community, full=full, include_ping=False)
+
+    async def read(self, target, community, *, full=True, include_ping=True):
+        ping_task = asyncio.create_task(self.ping(target)) if include_ping else None
         result = {"full": full, "snmp_status": "error", "error": "timeout", "device": {}, "interfaces": []}
         engine = None
         try:
@@ -164,13 +201,17 @@ class NetworkMonitorProbe:
                 result["interfaces"] = [{key: value for key, value in row.items() if key != "settings"} for row in interfaces]
         except ImportError:
             result["error"] = "SNMP-клиент недоступен"
+            result["snmp_quality"] = "unknown"
         except TimeoutError:
             result["error"] = "Неполный опрос" if result["snmp_status"] == "ok" else "timeout"
         except Exception:
             # Do not expose library exceptions: they may contain authentication data.
             result["error"] = "Ошибка SNMP-клиента"
+            if result["snmp_status"] != "ok":
+                result["snmp_quality"] = "unknown"
         finally:
             if engine:
                 engine.close_dispatcher()
-            result["ping"] = await ping_task
+            if ping_task is not None:
+                result["ping"] = await ping_task
         return result

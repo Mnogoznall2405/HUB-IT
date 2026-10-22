@@ -4,6 +4,8 @@ from __future__ import annotations
 import math
 from datetime import datetime, timezone
 
+SUM_SUFFIXES = ("_bytes", "_seconds", "_packets", "_checks")
+
 
 def utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
@@ -56,11 +58,13 @@ def interface_rates(previous: dict, current: dict, now: datetime, uptime: int | 
 def aggregate_values(existing: dict, values: dict, duration: float = 60) -> dict:
     result = {key: dict(value) for key, value in existing.items()}
     for key, value in values.items():
+        if key.startswith("_"):
+            continue
         value = number(value)
         if value is None:
             continue
         prior = result.get(key, {})
-        weight = 1 if key.endswith(("_bytes", "_seconds")) else duration
+        weight = 1 if key.endswith(SUM_SUFFIXES) else duration
         result[key] = {"sum": prior.get("sum", 0) + value * weight,
                        "weight": prior.get("weight", 0) + weight,
                        "min": min(prior.get("min", value), value),
@@ -74,7 +78,7 @@ def chart_values(values: dict, aggregated: bool) -> dict:
         return values
     result = {}
     for key, stats in values.items():
-        result[key] = stats["sum"] if key.endswith(("_bytes", "_seconds")) else (stats["sum"] / stats["weight"] if stats.get("weight") else None)
+        result[key] = stats["sum"] if key.endswith(SUM_SUFFIXES) else (stats["sum"] / stats["weight"] if stats.get("weight") else None)
         result[key + "_min"] = stats.get("min")
         result[key + "_max"] = stats.get("max")
     return result

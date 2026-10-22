@@ -259,12 +259,13 @@ test('pin follows the chosen interface on the card and after reload, switches an
   await expect(page.getByRole('button', { name: 'Закрепить ether1_wan', exact: true })).toHaveAttribute('aria-pressed', 'false');
 });
 
-test('connect registry card with a write-only profile and pause collection', async ({ page }) => {
+test('connect a device by name and address with a write-only profile and pause collection', async ({ page }) => {
   await login(page);
   await page.getByRole('button', { name: 'Подключить устройство', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Подключить устройство', exact: true });
-  await dialog.getByRole('combobox', { name: 'Устройство из раздела «Сети»' }).fill('Новый');
-  await page.getByRole('option', { name: /Новый коммутатор/ }).click();
+  await expect(dialog.getByRole('combobox', { name: /раздела «Сети»/ })).toHaveCount(0);
+  await dialog.getByLabel(/^Название в мониторинге/).fill('Новый коммутатор');
+  await dialog.getByLabel(/^IP для опроса/).fill('192.0.2.77');
   await dialog.getByRole('button', { name: 'Новый профиль', exact: true }).click();
   const profile = page.getByRole('dialog', { name: 'Новый профиль SNMP', exact: true });
   await profile.getByLabel(/^Название профиля/).fill('Browser test profile');

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Accordion, AccordionDetails, AccordionSummary, Alert, Autocomplete, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, MenuItem, Stack, Switch, TextField, Typography } from '@mui/material';
+import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, MenuItem, Stack, Switch, TextField, Typography } from '@mui/material';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import { monitoringAPI } from '../../api/monitoring';
@@ -37,7 +37,6 @@ function ProfileDialog({ open, profile, onClose, onSaved }) {
 }
 
 export function MonitoringTargetDialog({ open, target, onClose, onSaved }) {
-  const [catalog, setCatalog] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -47,15 +46,15 @@ export function MonitoringTargetDialog({ open, target, onClose, onSaved }) {
   useEffect(() => {
     if (!open) return undefined;
     let active = true;
-    setForm({ network_device_id: target?.network_device_id || null, name: target?.name || '', address: target?.address || '', port: target?.port || 161, profile_id: target?.profile_id || '', enabled: target?.enabled ?? true, settings: { ...deviceDefaults, ...target?.settings } });
+    setForm({ network_device_id: target?.network_device_id ?? null, name: target?.name || '', address: target?.address || '', port: target?.port || 161, profile_id: target?.profile_id || '', enabled: target?.enabled ?? true, settings: { ...deviceDefaults, ...target?.settings } });
     setError(''); setLoading(true);
-    Promise.all([monitoringAPI.catalog(), monitoringAPI.profiles()]).then(([devices, profileList]) => { if (active) { setCatalog(devices); setProfiles(profileList); } }).catch((err) => { if (active) setError(errorMessage(err)); }).finally(() => { if (active) setLoading(false); });
+    monitoringAPI.profiles().then((profileList) => { if (active) setProfiles(profileList); }).catch((err) => { if (active) setError(errorMessage(err)); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [open, target]);
   const field = (key, value) => setForm((old) => ({ ...old, [key]: value }));
   const submit = async (event) => {
     event.preventDefault(); setError('');
-    if (!form.network_device_id || !form.profile_id || !form.name?.trim()) { setError('Выберите устройство, название и профиль SNMP.'); return; }
+    if (!form.profile_id || !form.name?.trim() || !form.address?.trim()) { setError('Укажите название, IP для опроса и профиль SNMP.'); return; }
     setSaving(true);
     try {
       const saved = await monitoringAPI.saveTarget({ ...form, name: form.name.trim(), port: Number(form.port), settings: Object.fromEntries(Object.entries(form.settings).map(([k, v]) => [k, Number(v)])) }, target?.id);
@@ -67,9 +66,8 @@ export function MonitoringTargetDialog({ open, target, onClose, onSaved }) {
       <DialogTitle>{target ? 'Настройки устройства' : 'Подключить устройство'}</DialogTitle>
       <DialogContent><Stack spacing={2.5} sx={{ pt: 1 }}>
         {error && <Alert severity="error">{error}</Alert>}
-        {loading && <Alert severity="info" icon={<CircularProgress size={18} />}>Загрузка сетевого реестра и профилей…</Alert>}
-        <Autocomplete options={catalog} value={catalog.find((row) => row.id === form.network_device_id) || null} disabled={Boolean(target) || loading} getOptionLabel={(row) => `${row.name}${row.branch_name ? ` · ${row.branch_name}` : ''}`} isOptionEqualToValue={(a, b) => a.id === b.id} onChange={(_, value) => setForm((old) => ({ ...old, network_device_id: value?.id || null, name: value?.name || old.name, address: value?.address || old.address }))} renderInput={(params) => <TextField {...params} autoFocus={!target} label="Устройство из раздела «Сети»" required helperText={!catalog.length && !loading ? 'Сначала создайте учётную карточку устройства в разделе «Сети».' : 'История привязана к этой учётной карточке.'} />} />
-        <TextField label="Название в мониторинге" required value={form.name || ''} onChange={(e) => field('name', e.target.value)} inputProps={{ maxLength: 160 }} />
+        {loading && <Alert severity="info" icon={<CircularProgress size={18} />}>Загрузка профилей…</Alert>}
+        <TextField autoFocus={!target} label="Название в мониторинге" required value={form.name || ''} onChange={(e) => field('name', e.target.value)} inputProps={{ maxLength: 160 }} />
         <Box sx={grid}><TextField required label="IP для опроса" value={form.address || ''} onChange={(e) => field('address', e.target.value)} autoComplete="off" inputProps={{ maxLength: 45 }} /><TextField label="Порт SNMP" type="number" required value={form.port ?? 161} onChange={(e) => field('port', e.target.value)} inputProps={{ min: 1, max: 65535 }} /></Box>
         <Stack direction="row" alignItems="flex-start" gap={1.5} flexWrap="wrap">
           <TextField select label="Профиль SNMPv2c" required value={form.profile_id || ''} onChange={(e) => field('profile_id', e.target.value)} sx={{ minWidth: 180, flex: 1 }}>{profiles.map((profile) => <MenuItem key={profile.id} value={profile.id}>{profile.name}</MenuItem>)}</TextField>
