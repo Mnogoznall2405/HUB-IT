@@ -908,6 +908,11 @@
     linear-gradient(120deg, oklch(0.24 0.028 238 / 0.92), var(--about-surface));
 }
 
+.about-final > div > p a {
+  color: var(--about-accent);
+  text-underline-offset: 3px;
+}
+
 .about-final__actions {
   justify-content: flex-end;
   margin: 0;

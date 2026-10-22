@@ -43,6 +43,7 @@ import AssignmentTurnedInOutlinedIcon from '@mui/icons-material/AssignmentTurned
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import PageTopBar from '../components/layout/PageTopBar';
+import AboutHubPromoCard from '../components/about/AboutHubPromoCard';
 import { hubAPI } from '../api/client';
 import { chatNotificationsAPI } from '../api/chatNotifications';
 import { mailNotificationsAPI } from '../api/mailNotifications';
@@ -1350,6 +1351,7 @@ export default function Dashboard() {
       <PageShell sx={{ pb: isMobile ? 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 8px)' : undefined }}>
         {isMobile ? null : <PageTopBar title="Главная" sx={{ maxWidth: 1320, mx: 'auto', width: '100%' }} />}
         <Stack spacing={{ xs: 1, sm: 1.25 }} sx={{ maxWidth: 1320, mx: 'auto', width: '100%' }}>
+          <AboutHubPromoCard userId={user?.id} />
           <Paper
             data-testid="dashboard-today-header"
             sx={{

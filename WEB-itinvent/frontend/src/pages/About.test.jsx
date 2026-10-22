@@ -51,7 +51,7 @@ describe('About page', () => {
     expect(screen.getByRole('link', { name: 'Перейти к содержанию' })).toHaveAttribute('href', '#about-main');
     expect(screen.getByRole('heading', { name: 'Личные беседы и групповые чаты' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Диалог, чек-лист и материалы внутри задачи' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'HUB адаптируется к экрану телефона' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'HUB всегда с вами — на телефоне, откуда угодно' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'HUB в отдельном приложении для Windows' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Доступ к разделам зависит от роли' })).toBeInTheDocument();
     expect(screen.getByText(/подтверждение по PIN-коду либо биометрии/i)).toBeInTheDocument();

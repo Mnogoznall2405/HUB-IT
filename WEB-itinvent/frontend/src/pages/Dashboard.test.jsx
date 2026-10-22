@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -412,6 +412,29 @@ describe('Dashboard today page', () => {
         dashboard_sections: ['attention', 'tasks', 'communication'],
       });
     });
+  });
+
+  it('offers the HUB introduction once and stops after the user dismisses or opens it', async () => {
+    window.localStorage.removeItem('hubit.about-promo.dismissed.v1.1');
+    const first = renderDashboard();
+
+    expect(await screen.findByTestId('about-hub-promo')).toHaveTextContent('Что умеет HUB');
+    fireEvent.click(screen.getByRole('button', { name: /Скрыть подсказку/ }));
+    expect(screen.queryByTestId('about-hub-promo')).toBeNull();
+    first.unmount();
+
+    renderDashboard();
+    await screen.findByTestId('dashboard-today-header');
+    expect(screen.queryByTestId('about-hub-promo')).toBeNull();
+
+    window.localStorage.removeItem('hubit.about-promo.dismissed.v1.1');
+    cleanup();
+    renderDashboard();
+    fireEvent.click(await screen.findByRole('button', { name: 'Посмотреть' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent('/settings/about');
+    });
+    expect(window.localStorage.getItem('hubit.about-promo.dismissed.v1.1')).toBe('1');
   });
 
   it('redirects legacy announcement deep links to the feed route', async () => {

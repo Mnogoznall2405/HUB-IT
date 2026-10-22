@@ -24,6 +24,7 @@ import MobileInstallerDownload from '../components/mobile/MobileInstallerDownloa
 import { authAPI } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { resolveAfterAboutOnboardingPath } from '../lib/aboutOnboarding';
+import { dismissAboutPromo } from '../lib/aboutPromo';
 import { useNavigate } from 'react-router-dom';
 import './About.css';
 
@@ -52,7 +53,7 @@ const WORKDAY_STEPS = [
   ['01', 'Получить уведомление', 'HUB сообщит о новом письме, сообщении или изменении задачи.'],
   ['02', 'Обсудить вопрос', 'Ответьте в личном или групповом чате либо продолжите обсуждение внутри задачи.'],
   ['03', 'Выполнить задачу', 'Описание, сроки, участники, чек-лист и файлы находятся в одной карточке.'],
-  ['04', 'Открыть документ', 'Просмотрите или скачайте файл. В HUB Desktop его можно открыть в привычной программе и распечатать.'],
+  ['04', 'Открыть документ', 'Просмотрите файл в HUB. В HUB Desktop его можно открыть в привычной программе и распечатать.'],
 ];
 
 const TOOLS = [
@@ -64,17 +65,17 @@ const TOOLS = [
     description: 'Читайте переписку, работайте с вложениями и сразу переходите к связанным действиям.',
     src: '/about/mail-desktop-dark@2x.png',
     alt: 'Почта HUB-IT в тёмной теме с тестовой перепиской и списком писем',
-    caption: 'Почта HUB-IT · обезличенная тестовая переписка',
+    caption: 'Почта',
   },
   {
     id: 'files',
     label: 'Файлы',
     icon: FolderOpenRoundedIcon,
     title: 'Рабочие файлы всегда под рукой',
-    description: 'Храните материалы, скачивайте их или открывайте в установленных приложениях через HUB Desktop.',
+    description: 'Храните рабочие материалы в одном месте, просматривайте и скачивайте их в любой момент.',
     src: '/about/files-desktop-dark@2x.png',
     alt: 'Раздел файлов HUB-IT в тёмной теме с тестовыми документами',
-    caption: 'Мой диск · три безопасных тестовых документа',
+    caption: 'Мой диск',
   },
   {
     id: 'contacts',
@@ -85,7 +86,7 @@ const TOOLS = [
     src: '/about/address-book-desktop-dark@2x.png',
     mobileSrc: '/about/address-book-mobile-dark@3x.png',
     alt: 'Адресная книга HUB-IT в тёмной теме с вымышленными контактами',
-    caption: 'Адресная книга · только вымышленные сотрудники и контакты',
+    caption: 'Адресная книга',
   },
 ];
 
@@ -116,7 +117,7 @@ const MOBILE_SCREENS = [
   },
   {
     title: 'Меню',
-    text: 'Только разделы, доступные обычному сотруднику.',
+    text: 'Только разделы, доступные вашей роли.',
     src: '/about/menu-mobile-dark@3x.png',
     width: 1170,
     height: 2532,
@@ -134,8 +135,8 @@ const DESKTOP_FEATURES = [
 const SECURITY_FEATURES = [
   [VerifiedUserOutlinedIcon, 'Корпоративная учётная запись'],
   [SecurityRoundedIcon, 'Пароль, проверочный код или ключ доступа'],
-  [LanRoundedIcon, 'Защищённое соединение'],
-  [MenuBookRoundedIcon, 'Доступ только к нужным разделам'],
+  [LanRoundedIcon, 'Шифрование соединения (HTTPS)'],
+  [MenuBookRoundedIcon, 'Права доступа назначаются по роли'],
 ];
 
 function ProductShot({
@@ -265,7 +266,7 @@ function ProductShot({
 export default function About({ mode = 'onboarding' }) {
   const embedded = mode === 'embedded';
   const navigate = useNavigate();
-  const { refreshSession } = useAuth();
+  const { user, refreshSession } = useAuth();
   const [activeTool, setActiveTool] = useState(TOOLS[0].id);
   const [completing, setCompleting] = useState(false);
   const [completionError, setCompletionError] = useState('');
@@ -278,6 +279,7 @@ export default function About({ mode = 'onboarding' }) {
     try {
       await authAPI.completeAboutOnboarding();
       await refreshSession({ suppressAuthRequired: true });
+      dismissAboutPromo(user?.id);
       navigate(resolveAfterAboutOnboardingPath(), { replace: true });
     } catch {
       setCompletionError('Не удалось сохранить. Проверьте подключение и повторите попытку.');
@@ -366,8 +368,8 @@ export default function About({ mode = 'onboarding' }) {
             <p className="about-eyebrow"><span aria-hidden="true" />Корпоративная платформа</p>
             <h1 id="about-title">Все рабочие сервисы — <span>в одном HUB</span></h1>
             <p className="about-hero__lead">
-              Общайтесь, решайте задачи, работайте с почтой, документами и IT-сервисами
-              в едином защищённом пространстве.
+              Общайтесь, решайте задачи, работайте с почтой, документами
+              и IT-сервисами — всё в одном окне.
             </p>
             <div className="about-hero__actions">
               {continueButton}
@@ -379,7 +381,7 @@ export default function About({ mode = 'onboarding' }) {
               </p>
             ) : null}
             <ul className="about-hero__facts" aria-label="Ключевые особенности">
-              <li>Работает в браузере и на телефоне</li>
+              <li>Работает в браузере и на телефоне — откуда угодно</li>
               <li>Есть приложения для Windows и Android</li>
               <li>Доступ зависит от рабочих прав</li>
             </ul>
@@ -398,7 +400,7 @@ export default function About({ mode = 'onboarding' }) {
 
         <section id="possibilities" className="about-section about-shell" aria-labelledby="possibilities-title">
           <div className="about-section-heading">
-            <p className="about-kicker">Всё нужное рядом</p>
+            <p className="about-kicker">Возможности</p>
             <h2 id="possibilities-title">Всё для работы — под одной учётной записью</h2>
             <p>В HUB не нужно открывать несколько разрозненных сервисов: основные рабочие инструменты собраны в одном интерфейсе.</p>
           </div>
@@ -529,8 +531,8 @@ export default function About({ mode = 'onboarding' }) {
         <section id="mobile" className="about-section about-shell" aria-labelledby="mobile-title">
           <div className="about-section-heading">
             <p className="about-kicker">HUB на телефоне</p>
-            <h2 id="mobile-title">HUB адаптируется к экрану телефона</h2>
-            <p>Откройте HUB в мобильном браузере или установите приложение для Android — задачи, чаты, почта и другие разделы останутся под рукой.</p>
+            <h2 id="mobile-title">HUB всегда с вами — на телефоне, откуда угодно</h2>
+            <p>Откройте HUB в мобильном браузере или установите приложение для Android и работайте откуда угодно: из дома, в дороге или в командировке. Ставьте задачи, обсуждайте их в чатах и читайте почту — так же, как за рабочим компьютером.</p>
             <p className="about-data-note">На всех экранах показаны вымышленные сотрудники и тестовые данные.</p>
           </div>
           <div className="about-mobile-install">
@@ -549,7 +551,7 @@ export default function About({ mode = 'onboarding' }) {
                   desktopWidth={screen.width}
                   desktopHeight={screen.height}
                   alt={screen.alt}
-                  caption={`${screen.title} · мобильная версия HUB-IT`}
+                  caption={`${screen.title} · мобильная версия`}
                   type="phone"
                   showCaption={false}
                 />
@@ -613,7 +615,7 @@ export default function About({ mode = 'onboarding' }) {
                 <ProductShot
                   desktopSrc="/about/files-desktop-dark@2x.png"
                   alt="Экран файлов HUB-IT в тёмной теме с тестовыми DOCX, PDF и XLSX и действиями над файлами"
-                  caption="Файлы и действия · обезличенные тестовые DOCX, PDF и XLSX"
+                  caption="Файлы и действия: DOCX, PDF и XLSX"
                   type="fragment-wide"
                 />
               </article>
@@ -642,7 +644,11 @@ export default function About({ mode = 'onboarding' }) {
           <div>
             <p className="about-kicker">Начните работу</p>
             <h2 id="final-title">Откройте своё рабочее пространство</h2>
-            <p>Войдите в браузере или установите HUB Desktop на компьютер с Windows 10/11 x64.</p>
+            <p>
+              Войдите в браузере или установите HUB Desktop на компьютер с Windows 10/11 x64.
+              Если что-то непонятно — загляните в{' '}
+              <a href="/help" onClick={(event) => { event.preventDefault(); navigate('/help'); }}>«Справку»</a>.
+            </p>
           </div>
           <div className="about-final__actions">
             {continueButton}
