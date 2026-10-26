@@ -2098,6 +2098,29 @@ async def complete_task(
     return await run_in_threadpool(_enrich_task_payload_for_user, updated, current_user)
 
 
+@router.delete("/tasks/{task_id}/attachments/{attachment_id}")
+async def delete_task_attachment(
+    task_id: str,
+    attachment_id: str,
+    current_user: User = Depends(require_permission(PERM_TASKS_READ)),
+):
+    try:
+        deleted = await run_in_threadpool(
+            hub_service.delete_task_attachment,
+            task_id=task_id,
+            attachment_id=attachment_id,
+            user=_actor_dict(current_user),
+            is_admin=_is_admin_user(current_user),
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Task attachment not found")
+    return {"deleted": True, "id": attachment_id}
+
+
 @router.get("/tasks/{task_id}/attachments/{attachment_id}/file")
 async def download_task_attachment(
     task_id: str,

@@ -17,13 +17,16 @@ import {
   searchTaskControllers,
   uploadTaskAttachment,
   type TaskAssignee,
+  type TaskAssignmentMode,
   type TaskCreatePayload,
+  type TaskCreateResult,
   type TaskObject,
   type TaskProject,
   type TaskUploadFile,
 } from '../../api/taskApi';
 import { useAuth } from '../../auth/AuthContext';
 import { HubTextField, type HubTextFieldHandle } from '../../components/ui/HubTextField';
+import { NativeSegmentedControl } from '../../components/ui/NativeFilterControls';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { consumeIncomingShare } from '../../share/incomingShare';
 import {
@@ -96,6 +99,7 @@ export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: 
   const [assigneeQuery, setAssigneeQuery] = useState('');
   const [assignees, setAssignees] = useState<TaskAssignee[]>([]);
   const [selectedAssigneeIds, setSelectedAssigneeIds] = useState<number[]>([]);
+  const [assignmentMode, setAssignmentMode] = useState<TaskAssignmentMode>('shared');
   const [projects, setProjects] = useState<TaskProject[]>([]);
   const [projectId, setProjectId] = useState('');
   const [newProjectName, setNewProjectName] = useState('');
@@ -134,8 +138,8 @@ export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: 
   const debouncedAssigneeQuery = useDebouncedValue(assigneeQuery);
   const [protocolDate, setProtocolDate] = useState(() => todayProtocolDate());
   const [uploadRecovery, setUploadRecovery] = useState<{ taskIds: string[]; pending: Array<{ taskId: string; file: TaskUploadFile }>; creating?: boolean } | null>(null);
-  const localState = { title, description, dueDate, emailReminder, priority, selectedAssigneeIds, projectId, controllerId, observerIds, objectId, departmentId, visibility, checklistText, checklistItems, files, protocolDate, newProjectName, newObjectName, uploadRecovery };
-  const draft = useNativeFormDraft({ userId: Number(user?.id || 0), scope: isSubtask ? `task-subtask-${parentTaskId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 96)}` : 'task-create', state: localState, ready: allowed && !loadingRefs, paused: saving, restore: (saved) => { setTitle(saved.title); setDescription(saved.description); setDueDate(saved.dueDate); setEmailReminder(saved.emailReminder); setPriority(saved.priority); setSelectedAssigneeIds(saved.selectedAssigneeIds); setProjectId(saved.projectId); setControllerId(saved.controllerId); setObserverIds(saved.observerIds); setObjectId(saved.objectId); setDepartmentId(saved.departmentId); setVisibility(saved.visibility); setChecklistText(saved.checklistText); setChecklistItems(saved.checklistItems); setFiles(saved.files); setProtocolDate(saved.protocolDate); setNewProjectName(saved.newProjectName); setNewObjectName(saved.newObjectName); setUploadRecovery(saved.uploadRecovery); } });
+  const localState = { title, description, dueDate, emailReminder, priority, selectedAssigneeIds, assignmentMode, projectId, controllerId, observerIds, objectId, departmentId, visibility, checklistText, checklistItems, files, protocolDate, newProjectName, newObjectName, uploadRecovery };
+  const draft = useNativeFormDraft({ userId: Number(user?.id || 0), scope: isSubtask ? `task-subtask-${parentTaskId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 96)}` : 'task-create', state: localState, ready: allowed && !loadingRefs, paused: saving, restore: (saved) => { setTitle(saved.title); setDescription(saved.description); setDueDate(saved.dueDate); setEmailReminder(saved.emailReminder); setPriority(saved.priority); setSelectedAssigneeIds(saved.selectedAssigneeIds); setAssignmentMode(saved.assignmentMode === 'separate' ? 'separate' : 'shared'); setProjectId(saved.projectId); setControllerId(saved.controllerId); setObserverIds(saved.observerIds); setObjectId(saved.objectId); setDepartmentId(saved.departmentId); setVisibility(saved.visibility); setChecklistText(saved.checklistText); setChecklistItems(saved.checklistItems); setFiles(saved.files); setProtocolDate(saved.protocolDate); setNewProjectName(saved.newProjectName); setNewObjectName(saved.newObjectName); setUploadRecovery(saved.uploadRecovery); } });
   const visibleObjects = useMemo(
     () => objects.filter((item) => String(item.project_id) === projectId),
     [objects, projectId],
@@ -325,6 +329,8 @@ export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: 
     }
   }, [canCreateObject, newObjectName, objectSaving, offlineMode, projectId]);
 
+  const multipleAssignees = !isSubtask && selectedAssigneeIds.length >= 2;
+
   const submit = useCallback(async () => {
     if (saving || offlineMode || !draft.restored) return;
     const normalizedTitle = title.trim();
@@ -373,7 +379,7 @@ export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: 
           controller_user_id: controllerId,
           checklist_items: checklistItems,
         };
-        const created = isSubtask
+        const created: TaskCreateResult = isSubtask
           ? [await createSubtask(parentTaskId, common)]
           : await createTask({
             ...common,
@@ -381,7 +387,31 @@ export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: 
             department_id: departmentId || null,
             visibility_scope: departmentId ? visibility : 'private',
             object_id: objectId || null,
+            ...(multipleAssignees ? { assignment_mode: assignmentMode } : {}),
           });
+        const failed = created.failed ?? [];
+        if (failed.length) {
+          // Часть задач создана: оставляем в форме только тех, кому задача не досталась,
+          // чтобы повторная отправка не задублировала уже созданные.
+          const failedIds = failed.map((item) => Number(item.assignee_user_id)).filter((id) => selectedAssigneeIds.includes(id));
+          let notUploaded = 0;
+          for (const task of created) {
+            for (const file of savedDraft.files) {
+              try { await uploadTaskAttachment(String(task.id), file); } catch { notUploaded += 1; }
+            }
+          }
+          const nextMode: TaskAssignmentMode = failedIds.length >= 2 ? assignmentMode : 'shared';
+          await draft.write({ ...savedDraft, selectedAssigneeIds: failedIds, assignmentMode: nextMode, uploadRecovery: null });
+          setUploadRecovery(null);
+          setSelectedAssigneeIds(failedIds);
+          setAssignmentMode(nextMode);
+          const names = failedIds.map((id) => {
+            const person = assignees.find((item) => Number(item.id) === id);
+            return person ? assigneeLabel(person) : String(id);
+          }).join(', ');
+          setError(`Создано ${created.length} из ${selectedAssigneeIds.length} задач. Не удалось создать для: ${names}. Исполнители оставлены в форме — повторите отправку.${notUploaded ? ` Не загружено вложений: ${notUploaded}.` : ''}`);
+          return;
+        }
         const taskIds = created.map((task) => String(task.id || '').trim()).filter(Boolean);
         recovery = { taskIds, pending: taskIds.flatMap((taskId) => savedDraft.files.map((file) => ({ taskId, file }))) };
         setUploadRecovery(recovery);
@@ -419,7 +449,7 @@ export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: 
     } finally {
       setSaving(false);
     }
-  }, [draft, uploadRecovery, leaveSaved, isSubtask, parentTaskId, checklistItems, controllerId, departmentId, description, dueDate, emailReminder, files, objectId, observerIds, offlineMode, priority, projectId, protocolDate, saving, selectedAssigneeIds, title, visibility]);
+  }, [draft, uploadRecovery, leaveSaved, isSubtask, parentTaskId, checklistItems, controllerId, departmentId, description, dueDate, emailReminder, files, objectId, observerIds, offlineMode, priority, projectId, protocolDate, saving, selectedAssigneeIds, assignmentMode, multipleAssignees, assignees, title, visibility]);
 
   if (!allowed) {
     return (
@@ -486,12 +516,12 @@ export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: 
         <View style={styles.fieldGap} />
       </AccountSectionCard>
 
-
-
       <AccountSectionCard
         tokens={tokens}
         title={`Исполнители * (${selectedAssigneeIds.length})`}
-        description="Все выбранные исполнители работают в одной общей задаче."
+        description={multipleAssignees && assignmentMode === 'separate'
+          ? `Каждый получит свою задачу: будет создано ${selectedAssigneeIds.length}, статусы независимы.`
+          : 'Все выбранные исполнители работают в одной общей задаче.'}
       >
         <HubTextField
           testID="native-task-create-assignee-search"
@@ -501,6 +531,28 @@ export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: 
           autoCapitalize="words"
         />
         {assigneesLoading ? <ActivityIndicator color={tokens.primary} style={styles.inlineLoader} /> : null}
+        {selectedAssigneeIds.length ? (
+          <Text testID="native-task-assignees-selected" style={[styles.selectedSummary, { color: tokens.textSecondary }]}>
+            Выбрано: {selectedAssigneeIds.map((id) => {
+              const person = assignees.find((item) => Number(item.id) === id);
+              return person ? assigneeLabel(person) : `№${id}`;
+            }).join(', ')}
+          </Text>
+        ) : null}
+        {multipleAssignees ? (
+          <View style={styles.modeSwitch}>
+            <NativeSegmentedControl
+              options={[
+                { value: 'shared', label: 'Одна на всех' },
+                { value: 'separate', label: 'Каждому своя' },
+              ]}
+              selected={assignmentMode}
+              onSelect={(value) => setAssignmentMode(value === 'separate' ? 'separate' : 'shared')}
+              tokens={tokens}
+              testIDPrefix="native-task-assignment-mode"
+            />
+          </View>
+        ) : null}
         <View style={styles.peopleList}>
           {assignees.length === 0 && !assigneesLoading ? (
             <Text style={{ color: tokens.textSecondary }}>Исполнители не найдены.</Text>
@@ -778,18 +830,20 @@ const styles = StyleSheet.create({
   warning: { fontSize: 13, fontWeight: '700' },
   fieldGap: { height: 12 },
   descriptionField: { minHeight: 112 },
-  helper: { marginTop: 8, fontSize: 12, fontWeight: '600' },
-  subsection: { marginTop: 16 },
+  helper: { marginTop: 8, fontSize: 13, fontWeight: '600' },
+  subsection: { marginTop: 18 },
   subsectionLabel: { marginBottom: 8, fontSize: 12, lineHeight: 17, fontWeight: '800' },
   choiceWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   choice: { minHeight: 44, borderWidth: 1, borderRadius: 22, paddingHorizontal: 13, alignItems: 'center', justifyContent: 'center' },
+  modeSwitch: { marginTop: 10 },
+  selectedSummary: { marginTop: 10, fontSize: 13, lineHeight: 18, fontWeight: '700' },
   inlineLoader: { marginVertical: 10 },
-  peopleList: { gap: 8, marginTop: 10 },
+  peopleList: { gap: 8, marginTop: 12 },
   personRow: { minHeight: 56, borderWidth: 1, borderRadius: 12, padding: 10, flexDirection: 'row', alignItems: 'center', gap: 10 },
   check: { width: 24, height: 24, borderWidth: 2, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
   personText: { flex: 1, minWidth: 0 },
   personName: { fontSize: 14, fontWeight: '800' },
-  personMeta: { marginTop: 2, fontSize: 12 },
+  personMeta: { marginTop: 2, fontSize: 13 },
   inlineActions: { marginTop: 9 },
   checklistRow: { minHeight: 48, borderBottomWidth: 1, flexDirection: 'row', alignItems: 'center', gap: 8 },
   checklistText: { flex: 1, minWidth: 0, fontSize: 13, lineHeight: 18 },

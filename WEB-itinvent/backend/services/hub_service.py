@@ -6950,6 +6950,63 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             item["file_size"] = self._as_int(item.get("file_size"))
             return item
 
+    def delete_task_attachment(
+        self,
+        *,
+        task_id: str,
+        attachment_id: str,
+        user: dict[str, Any],
+        is_admin: bool = False,
+    ) -> bool:
+        """Удаляет вложение, добавленное пользователем (scope=task).
+
+        Права: автор файла, постановщик задачи или администратор. В закрытой задаче
+        файлы неизменны; отчётные и сгенерированные файлы не удаляются.
+        Возвращает False, если задача или вложение не найдены.
+        """
+        normalized_task_id = _normalize_text(task_id)
+        normalized_attachment_id = _normalize_text(attachment_id)
+        if not normalized_task_id or not normalized_attachment_id:
+            return False
+        user_id = self._as_int(user.get("id"))
+        now_iso = _utc_now_iso()
+        with self._lock, self._connect() as conn:
+            task_row = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_task_id,)).fetchone()
+            if task_row is None:
+                return False
+            task = dict(task_row)
+            if not self._task_user_can_view(task, user_id=user_id, is_admin=bool(is_admin)):
+                raise PermissionError("Task is not available for current user")
+            row = conn.execute(
+                f"""
+                SELECT id, scope, file_path, uploaded_by_user_id
+                FROM {self._TASK_ATTACH_TABLE}
+                WHERE id = ? AND task_id = ?
+                """,
+                (normalized_attachment_id, normalized_task_id),
+            ).fetchone()
+            if row is None:
+                return False
+            is_author = self._as_int(row["uploaded_by_user_id"]) == user_id
+            is_creator = self._as_int(task.get("created_by_user_id")) == user_id
+            if not (bool(is_admin) or is_author or is_creator):
+                raise PermissionError("Only file author or task creator can delete attachments")
+            if _normalize_text(row["scope"]) != "task":
+                raise ValueError("Only attachments added to the task can be deleted")
+            if _normalize_text(task.get("status")).lower() == "done":
+                raise ValueError("Attachments of a completed task cannot be deleted")
+            conn.execute(f"DELETE FROM {self._TASK_ATTACH_TABLE} WHERE id = ?", (normalized_attachment_id,))
+            conn.execute(f"UPDATE {self._TASKS_TABLE} SET updated_at = ? WHERE id = ?", (now_iso, normalized_task_id))
+            conn.commit()
+            rel_path = _normalize_text(row["file_path"])
+        self._remove_relative_files([rel_path])
+        self._publish_task_realtime(
+            task={**task, "updated_at": now_iso},
+            operation="attachment_deleted",
+            actor_user_id=user_id,
+        )
+        return True
+
     def precheck_task_creation_batch(
         self,
         *,

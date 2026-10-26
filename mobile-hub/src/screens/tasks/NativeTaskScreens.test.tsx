@@ -58,6 +58,7 @@ jest.mock('../../api/taskApi', () => ({
   createTaskObject: jest.fn(),
   updateTask: jest.fn(),
   uploadTaskAttachment: jest.fn(),
+  deleteTaskAttachment: jest.fn(),
   deleteTask: jest.fn(),
 }));
 
@@ -838,6 +839,114 @@ describe('Native Tasks screens', () => {
       // Родитель уже открыт под формой: возвращаемся к нему, а не открываем второй экземпляр.
       expect(router.back).toHaveBeenCalled();
       expect(router.replace).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('assignment mode', () => {
+    const createWithAssignees = async (ids: number[]) => {
+      const view = await render(<NativeTaskCreateScreen />);
+      await waitFor(() => expect(view.getByTestId('native-task-assignee-7')).toBeTruthy());
+      // Черновик восстанавливается асинхронно и перезаписывает поля: выбираем исполнителей после него.
+      await waitFor(() => expect(view.getByTestId('native-task-create-submit')).toBeEnabled());
+      await act(async () => {
+        fireEvent.changeText(view.getByTestId('native-task-create-title'), 'Общая настройка');
+        for (const id of ids) fireEvent.press(view.getByTestId(`native-task-assignee-${id}`));
+      });
+      return view;
+    };
+    const submit = (view: Awaited<ReturnType<typeof render>>) => act(async () => { fireEvent.press(view.getByTestId('native-task-create-submit')); });
+
+    it('offers one shared task or a task per assignee only for several assignees', async () => {
+      const view = await createWithAssignees([7]);
+      expect(view.queryByTestId('native-task-assignment-mode-separate')).toBeNull();
+      await submit(view);
+      await waitFor(() => expect(taskApi.createTask).toHaveBeenCalledTimes(1));
+      expect((taskApi.createTask as jest.Mock).mock.calls[0][0]).not.toHaveProperty('assignment_mode');
+    });
+
+    it('sends a shared task by default', async () => {
+      const view = await createWithAssignees([7, 8]);
+      expect(view.getByTestId('native-task-assignment-mode-shared')).toBeTruthy();
+      await submit(view);
+      await waitFor(() => expect(taskApi.createTask).toHaveBeenLastCalledWith(expect.objectContaining({
+        assignee_user_ids: [7, 8], assignment_mode: 'shared',
+      })));
+    });
+
+    it('sends a task per assignee when the author picks that mode', async () => {
+      const view = await createWithAssignees([7, 8]);
+      await fireEvent.press(view.getByTestId('native-task-assignment-mode-separate'));
+      await submit(view);
+      await waitFor(() => expect(taskApi.createTask).toHaveBeenLastCalledWith(expect.objectContaining({
+        assignee_user_ids: [7, 8], assignment_mode: 'separate',
+      })));
+    });
+
+    it('keeps only the assignees without a task after a partial result and does not duplicate the rest', async () => {
+      (taskApi.createTask as jest.Mock).mockResolvedValueOnce(
+        Object.assign([{ id: 'created-1' }], { failed: [{ assignee_user_id: 8, detail: 'нет доступа' }] }),
+      );
+      const view = await createWithAssignees([7, 8]);
+      await fireEvent.press(view.getByTestId('native-task-assignment-mode-separate'));
+      await submit(view);
+
+      await waitFor(() => expect(view.getByText(/Создано 1 из 2 задач\. Не удалось создать для: Анна Смирнова/)).toBeTruthy());
+      expect(router.replace).not.toHaveBeenCalled();
+      expect(view.getByTestId('native-task-assignee-8').props.accessibilityState.checked).toBe(true);
+      expect(view.getByTestId('native-task-assignee-7').props.accessibilityState.checked).toBe(false);
+      expect(view.queryByTestId('native-task-assignment-mode-separate')).toBeNull();
+
+      await submit(view);
+      await waitFor(() => expect(taskApi.createTask).toHaveBeenCalledTimes(2));
+      const retry = (taskApi.createTask as jest.Mock).mock.calls[1][0];
+      expect(retry.assignee_user_ids).toEqual([8]);
+      expect(retry).not.toHaveProperty('assignment_mode');
+    });
+  });
+
+  describe('task attachment deletion', () => {
+    const files = [
+      { id: 'own', file_name: 'my.pdf', scope: 'task', uploaded_by_user_id: 1 },
+      { id: 'foreign', file_name: 'foreign.pdf', scope: 'task', uploaded_by_user_id: 9 },
+      { id: 'report', file_name: 'report.pdf', scope: 'report', uploaded_by_user_id: 1 },
+    ];
+    const openFiles = async (task: Record<string, unknown>) => {
+      (taskApi.getTask as jest.Mock).mockResolvedValue({ ...detailTask, created_by_user_id: 5, attachments: files, ...task });
+      const view = await render(<NativeTaskDetailScreen taskId="task-1" />);
+      await waitFor(() => expect(view.getByTestId('native-task-tab-files')).toBeTruthy());
+      await fireEvent.press(view.getByTestId('native-task-tab-files'));
+      await waitFor(() => expect(view.getByTestId('native-task-attachment-own')).toBeTruthy());
+      return view;
+    };
+
+    it('lets the user delete only their own task files and confirms before removing', async () => {
+      const alert = jest.spyOn(Alert, 'alert');
+      (taskApi.deleteTaskAttachment as jest.Mock).mockResolvedValue(undefined);
+      const view = await openFiles({});
+      expect(view.getByTestId('native-task-attachment-delete-own')).toBeTruthy();
+      expect(view.queryByTestId('native-task-attachment-delete-foreign')).toBeNull();
+      expect(view.queryByTestId('native-task-attachment-delete-report')).toBeNull();
+
+      (taskApi.getTask as jest.Mock).mockResolvedValue({ ...detailTask, created_by_user_id: 5, attachments: files.slice(1) });
+      await fireEvent.press(view.getByTestId('native-task-attachment-delete-own'));
+      expect(taskApi.deleteTaskAttachment).not.toHaveBeenCalled();
+      await act(async () => alert.mock.calls[0][2]?.[1].onPress?.());
+
+      await waitFor(() => expect(taskApi.deleteTaskAttachment).toHaveBeenCalledWith('task-1', 'own'));
+      await waitFor(() => expect(view.queryByTestId('native-task-attachment-own')).toBeNull());
+      expect(view.getByText('Файл удалён из задачи.')).toBeTruthy();
+      alert.mockRestore();
+    });
+
+    it('gives the task creator the delete button for any task file', async () => {
+      const view = await openFiles({ created_by_user_id: 1 });
+      expect(view.getByTestId('native-task-attachment-delete-foreign')).toBeTruthy();
+      expect(view.queryByTestId('native-task-attachment-delete-report')).toBeNull();
+    });
+
+    it('hides deletion once the task is done', async () => {
+      const view = await openFiles({ created_by_user_id: 1, status: 'done' });
+      expect(view.queryByTestId('native-task-attachment-delete-own')).toBeNull();
     });
   });
 

@@ -4,6 +4,7 @@ import { router } from 'expo-router';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
   Pressable,
   FlatList,
@@ -33,6 +34,7 @@ import {
   submitTask,
   updateTask,
   uploadTaskAttachment,
+  deleteTaskAttachment,
   type HubTask,
   type TaskAttachment,
   type TaskAssignee,
@@ -69,6 +71,7 @@ import {
   taskDiscussionConversationId,
   taskPerson,
   taskPriorityLabel,
+  canDeleteTaskAttachment,
 } from '../../tasks/taskFormat';
 import { downloadNativeTaskAttachment, pickNativeTaskFile } from '../../tasks/nativeTaskFiles';
 import { NativeTaskParentLink, NativeTaskSubtasksCard, openSubtasksWarning } from '../../components/tasks/NativeTaskSubtasks';
@@ -663,6 +666,32 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
     }
   }, [fileBusy, loadTask, offlineMode, task]);
 
+  const removeAttachment = useCallback((attachment: TaskAttachment) => {
+    if (!task || fileBusy || offlineMode) return;
+    Alert.alert('Удалить файл?', `«${attachment.file_name}» будет удалён из задачи без возможности восстановления.`, [
+      { text: 'Отмена', style: 'cancel' },
+      {
+        text: 'Удалить',
+        style: 'destructive',
+        onPress: () => {
+          void (async () => {
+            setFileBusy(true);
+            setError('');
+            try {
+              await deleteTaskAttachment(task.id, attachment.id);
+              await loadTask('refresh');
+              setMessage('Файл удалён из задачи.');
+            } catch (cause) {
+              setError(formatApiError(cause, 'Не удалось удалить файл.'));
+            } finally {
+              setFileBusy(false);
+            }
+          })();
+        },
+      },
+    ]);
+  }, [fileBusy, loadTask, offlineMode, task]);
+
   const openAttachment = useCallback(async (attachment: TaskAttachment) => {
     if (!task || fileBusy || offlineMode) return;
     setFileBusy(true);
@@ -863,10 +892,22 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
 
             </View>
 
-            <View style={styles.actions} accessibilityRole="tablist">
-              {([['overview', 'Описание'], ['discussion', 'Обсуждение'], ['files', 'Файлы']] as const).map(([key, label]) => (
-                <Pressable key={key} testID={`native-task-tab-${key}`} accessibilityRole="tab" accessibilityState={{ selected: detailTab === key }} onPress={() => setDetailTab(key)} style={[styles.actionButton, { backgroundColor: detailTab === key ? tokens.selected : tokens.panelSolid, borderColor: tokens.border }]}><Text style={{ color: tokens.textPrimary }}>{label}</Text></Pressable>
-              ))}
+            <View style={styles.tabBar} accessibilityRole="tablist">
+              {([['overview', 'Описание'], ['discussion', 'Обсуждение'], ['files', 'Файлы']] as const).map(([key, label]) => {
+                const active = detailTab === key;
+                return (
+                  <Pressable
+                    key={key}
+                    testID={`native-task-tab-${key}`}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: active }}
+                    onPress={() => setDetailTab(key)}
+                    style={[styles.tab, { backgroundColor: active ? tokens.selected : tokens.panelSolid, borderColor: active ? tokens.selectedBorder : tokens.borderSoft }]}
+                  >
+                    <Text numberOfLines={1} style={[styles.tabLabel, { color: active ? tokens.primary : tokens.textSecondary }]}>{label}</Text>
+                  </Pressable>
+                );
+              })}
             </View>
             {detailTab === 'overview' ? <>
               <Text style={[styles.description, { color: tokens.textSecondary }]}>
@@ -1021,23 +1062,38 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
             {detailTab === 'files' ? <>
             <AccountSectionCard tokens={tokens} title={`Файлы · ${(task.attachments || []).length}`} description="Открывайте оригиналы или прикрепляйте новый файл размером до 20 МБ.">
               {(task.attachments || []).length ? (task.attachments || []).map((attachment) => (
-                <Pressable
-                  key={attachment.id}
-                  testID={`native-task-attachment-${attachment.id}`}
-                  onPress={() => { void openAttachment(attachment); }}
-                  disabled={fileBusy || offlineMode}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Открыть файл ${attachment.file_name}`}
-                  accessibilityState={{ disabled: fileBusy || offlineMode }}
-                  style={[styles.fileRow, { borderColor: tokens.borderSoft }]}
-                >
-                  <MaterialCommunityIcons name="file-outline" size={23} color={tokens.primary} />
-                  <View style={styles.flex}>
-                    <Text numberOfLines={2} style={[styles.fileName, { color: tokens.textPrimary }]}>{attachment.file_name}</Text>
-                    <Text style={[styles.fileMeta, { color: tokens.textSecondary }]}>{taskFileSize(attachment.file_size)} · {formatTaskDate(attachment.uploaded_at)}</Text>
-                  </View>
-                  <MaterialCommunityIcons name="open-in-new" size={19} color={tokens.iconMuted} />
-                </Pressable>
+                <View key={attachment.id} style={[styles.fileRow, { borderColor: tokens.borderSoft }]}>
+                  <Pressable
+                    testID={`native-task-attachment-${attachment.id}`}
+                    onPress={() => { void openAttachment(attachment); }}
+                    disabled={fileBusy || offlineMode}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Открыть файл ${attachment.file_name}`}
+                    accessibilityState={{ disabled: fileBusy || offlineMode }}
+                    style={styles.fileOpen}
+                  >
+                    <MaterialCommunityIcons name="file-outline" size={23} color={tokens.primary} />
+                    <View style={styles.flex}>
+                      <Text numberOfLines={2} style={[styles.fileName, { color: tokens.textPrimary }]}>{attachment.file_name}</Text>
+                      <Text style={[styles.fileMeta, { color: tokens.textSecondary }]}>{taskFileSize(attachment.file_size)} · {formatTaskDate(attachment.uploaded_at)}</Text>
+                    </View>
+                    <MaterialCommunityIcons name="open-in-new" size={19} color={tokens.iconMuted} />
+                  </Pressable>
+                  {canDeleteTaskAttachment(task, attachment, user) ? (
+                    <Pressable
+                      testID={`native-task-attachment-delete-${attachment.id}`}
+                      onPress={() => removeAttachment(attachment)}
+                      disabled={fileBusy || offlineMode}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Удалить файл ${attachment.file_name}`}
+                      accessibilityState={{ disabled: fileBusy || offlineMode }}
+                      hitSlop={6}
+                      style={[styles.fileDelete, { opacity: fileBusy || offlineMode ? 0.4 : 1 }]}
+                    >
+                      <MaterialCommunityIcons name="trash-can-outline" size={22} color={tokens.error} />
+                    </Pressable>
+                  ) : null}
+                </View>
               )) : <Text style={{ color: tokens.textSecondary }}>Файлов пока нет.</Text>}
               {task.capabilities?.can_upload_files ? (
                 <Pressable
@@ -1546,13 +1602,13 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   headerActions: { flexDirection: 'row', alignItems: 'center' },
   headerAction: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  content: { gap: 16 },
+  content: { gap: 14 },
   emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
   error: { fontSize: 13, fontWeight: '700' },
   message: { fontSize: 13, fontWeight: '700' },
   offlineText: { fontSize: 13, fontWeight: '700' },
   retryButton: { minHeight: 44, minWidth: 120, borderWidth: 1, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  hero: { gap: 10 },
+  hero: { gap: 8 },
   title: { fontSize: 24, lineHeight: 30, fontWeight: '900' },
   badgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   badge: { minHeight: 30, borderRadius: 15, borderWidth: 1, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center' },
@@ -1575,7 +1631,9 @@ const styles = StyleSheet.create({
   addRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 },
   addInput: { flex: 1, minHeight: 44, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, fontSize: 15 },
   addButton: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  fileRow: { minHeight: 58, borderBottomWidth: 1, flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 },
+  fileRow: { minHeight: 58, borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', gap: 4 },
+  fileOpen: { flex: 1, minWidth: 0, minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 },
+  fileDelete: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   fileName: { fontSize: 14, lineHeight: 19, fontWeight: '800' },
   fileMeta: { marginTop: 2, fontSize: 12, lineHeight: 17 },
   historyRow: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 9, borderBottomWidth: StyleSheet.hairlineWidth },
@@ -1584,6 +1642,9 @@ const styles = StyleSheet.create({
   reportFileBlock: { marginTop: 2 },
   selectedFileRow: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8 },
   actions: { gap: 10 },
+  tabBar: { flexDirection: 'row', gap: 8 },
+  tab: { flex: 1, minHeight: 44, borderWidth: 1, borderRadius: 12, paddingHorizontal: 6, alignItems: 'center', justifyContent: 'center' },
+  tabLabel: { fontSize: 14, fontWeight: '800' },
   actionButton: { minHeight: 44, borderWidth: 1, borderRadius: 12, paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center' },
   textArea: { minHeight: 88, maxHeight: 160, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15, textAlignVertical: 'top' },
   confirmActions: { flexDirection: 'row', gap: 12, marginTop: 12 },
@@ -1591,9 +1652,9 @@ const styles = StyleSheet.create({
   confirmLabel: { color: '#fff', fontWeight: '800', fontSize: 14 },
   deleteConfirm: { gap: 12 },
   discussionButton: { minHeight: 48, borderRadius: 12, paddingHorizontal: 14, flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center' },
-  comment: { borderTopWidth: 1, paddingVertical: 10 },
+  comment: { borderTopWidth: StyleSheet.hairlineWidth, paddingVertical: 12 },
   commentAuthor: { fontSize: 13, fontWeight: '800' },
-  commentDate: { marginTop: 2, fontSize: 11 },
+  commentDate: { marginTop: 2, fontSize: 12 },
   commentBody: { marginTop: 6, fontSize: 14, lineHeight: 20 },
   composer: { borderTopWidth: 1, paddingTop: 8, paddingHorizontal: 4, flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
   composerInput: { flex: 1, minHeight: 44, maxHeight: 120, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, fontSize: 15 },

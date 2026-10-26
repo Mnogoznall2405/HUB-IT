@@ -1,4 +1,4 @@
-import type { HubTask } from '../api/taskApi';
+import type { HubTask, TaskAttachment } from '../api/taskApi';
 
 export const TASK_STATUS_OPTIONS = [
   { value: '', label: 'Все' },
@@ -96,4 +96,21 @@ export function taskSubtaskProgress(task: Pick<HubTask, 'subtasks_total' | 'subt
   const total = Math.max(0, Number(task.subtasks_total) || 0);
   const done = Math.min(Math.max(0, Number(task.subtasks_done) || 0), total);
   return { total, done, open: total - done };
+}
+
+/**
+ * Можно ли показать «Удалить» у файла задачи: свои загрузки автора файла и постановщика, администратору — любые.
+ * Отчётные и сгенерированные файлы, а также файлы закрытой задачи не удаляются. Окончательно решает сервер.
+ */
+export function canDeleteTaskAttachment(
+  task: Pick<HubTask, 'status' | 'created_by_user_id'>,
+  attachment: Pick<TaskAttachment, 'scope' | 'uploaded_by_user_id'>,
+  user: { id?: number | string | null; role?: string | null } | null | undefined,
+): boolean {
+  const userId = Number(user?.id || 0);
+  if (!userId || attachment.scope !== 'task' || task.status === 'done') return false;
+  const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
+  return isAdmin
+    || Number(attachment.uploaded_by_user_id || 0) === userId
+    || Number(task.created_by_user_id || 0) === userId;
 }

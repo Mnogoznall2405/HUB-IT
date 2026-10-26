@@ -44,6 +44,8 @@ export type TaskAttachment = {
   file_name: string;
   file_mime?: string | null;
   file_size?: number | null;
+  scope?: string | null;
+  uploaded_by_user_id?: number | null;
   uploaded_by_username?: string | null;
   uploaded_at?: string | null;
 };
@@ -259,7 +261,16 @@ export type TaskCreatePayload = {
   department_id?: string | null;
   visibility_scope?: 'private' | 'department' | 'department_managers';
   checklist_items?: TaskChecklistItem[];
+  /** Только при 2+ исполнителях: `separate` — отдельная задача каждому, иначе одна общая. */
+  assignment_mode?: TaskAssignmentMode;
 };
+
+export type TaskAssignmentMode = 'shared' | 'separate';
+
+export type TaskCreateFailure = { assignee_user_id: number; detail?: string };
+
+/** Созданные задачи; `failed` заполнен, если в режиме «каждому своя» часть исполнителей не получила задачу. */
+export type TaskCreateResult = HubTask[] & { failed?: TaskCreateFailure[] };
 
 /** Проект, объект, отдел и видимость подзадача наследует от родителя. */
 export type SubtaskCreatePayload = Pick<TaskCreatePayload,
@@ -430,15 +441,20 @@ export async function updateTaskObject(
   return data;
 }
 
-export async function createTask(payload: TaskCreatePayload): Promise<HubTask[]> {
-  const { data } = await apiClient.post<{ items?: HubTask[]; created?: number } | HubTask>(
+export async function createTask(payload: TaskCreatePayload): Promise<TaskCreateResult> {
+  const { data } = await apiClient.post<{ items?: HubTask[]; created?: number; failed?: TaskCreateFailure[] } | HubTask>(
     '/hub/tasks',
     payload,
   );
   if (data && typeof data === 'object' && 'items' in data && Array.isArray(data.items)) {
-    return data.items;
+    const failed = Array.isArray(data.failed) ? data.failed : [];
+    return Object.assign([...data.items], failed.length ? { failed } : {}) as TaskCreateResult;
   }
-  return data && typeof data === 'object' && 'id' in data ? [data as HubTask] : [];
+  return (data && typeof data === 'object' && 'id' in data ? [data as HubTask] : []) as TaskCreateResult;
+}
+
+export async function deleteTaskAttachment(taskId: string, attachmentId: string): Promise<void> {
+  await apiClient.delete(`${taskPath(taskId)}/attachments/${encodeURIComponent(attachmentId)}`);
 }
 
 export async function createSubtask(parentTaskId: string, payload: SubtaskCreatePayload): Promise<HubTask> {
