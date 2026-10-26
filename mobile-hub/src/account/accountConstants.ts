@@ -91,6 +91,8 @@ export const SETTINGS_PERMISSION_GROUPS: PermissionGroup[] = [
     permissions: [
       { value: 'networks.read', label: 'Сети: просмотр' },
       { value: 'networks.write', label: 'Сети: изменения' },
+      { value: 'monitoring.read', label: 'Мониторинг: просмотр' },
+      { value: 'monitoring.manage', label: 'Мониторинг: управление' },
       { value: 'scan.read', label: 'Scan Center и DLP: просмотр' },
       { value: 'scan.ack', label: 'Scan Center и DLP: ACK инцидентов' },
       { value: 'scan.tasks', label: 'Scan Center и DLP: задачи агентам' },

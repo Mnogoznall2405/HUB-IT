@@ -162,6 +162,9 @@ function portalPathFromNativeRoute(destination: string): string | null {
     if (parsed.pathname === '/statistics' || parsed.pathname === '/(shell)/statistics') {
       return '/statistics';
     }
+    if (parsed.pathname === '/monitoring' || parsed.pathname === '/(shell)/monitoring') {
+      return '/monitoring';
+    }
     if (parsed.pathname === '/help' || parsed.pathname === '/(shell)/help') {
       return '/help';
     }

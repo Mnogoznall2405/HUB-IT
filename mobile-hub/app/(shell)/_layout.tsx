@@ -51,6 +51,7 @@ function ShellTabs() {
             <Tabs.Screen name="construction" options={{ title: 'Объекты строительства', href: null }} />
             <Tabs.Screen name="mfu" options={{ title: 'МФУ', href: null }} />
             <Tabs.Screen name="statistics" options={{ title: 'Статистика', href: null }} />
+            <Tabs.Screen name="monitoring" options={{ title: 'Мониторинг', href: null }} />
         </Tabs>
       </View>
     </View>

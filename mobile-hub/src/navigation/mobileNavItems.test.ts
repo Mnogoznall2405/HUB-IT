@@ -17,7 +17,7 @@ describe('resolveMobileNavigationItems', () => {
     expect(paths).toEqual(expect.arrayContaining([
       '/dashboard', '/feed', '/tasks', '/chat', '/mail', '/docflow',
       '/address-book', '/company-structure', '/my-files', '/database',
-      '/passwords', '/mfu', '/statistics',
+      '/passwords', '/mfu', '/statistics', '/monitoring',
     ]));
     [
       '/tickets', '/networks', '/vcs', '/dlp', '/kb', '/file-egress',

@@ -80,6 +80,11 @@ import {
   nativeStatisticsDestinationFromPortalPath,
   type NativeStatisticsDestination,
 } from '../statistics/nativeStatisticsFeature';
+import {
+  NATIVE_MONITORING_ENABLED,
+  nativeMonitoringDestinationFromPortalPath,
+  type NativeMonitoringDestination,
+} from '../monitoring/nativeMonitoringFeature';
 
 export type NativeModuleHref =
   | NativeConstructionDestination
@@ -103,6 +108,7 @@ export type NativeModuleHref =
   | NativeWarehouse1CDestination
   | NativeMfuDestination
   | NativeStatisticsDestination
+  | NativeMonitoringDestination
   | { pathname: '/(shell)/help' };
 
 function nativeRootFallback(pathname: string): NativeModuleHref {
@@ -221,6 +227,11 @@ export function hrefForPortalPath(
   if (NATIVE_STATISTICS_ENABLED) {
     const statisticsHref = nativeStatisticsDestinationFromPortalPath(normalized);
     if (statisticsHref) return statisticsHref;
+  }
+
+  if (NATIVE_MONITORING_ENABLED) {
+    const monitoringHref = nativeMonitoringDestinationFromPortalPath(normalized);
+    if (monitoringHref) return monitoringHref;
   }
 
   if (NATIVE_CHAT_ENABLED) {
@@ -345,6 +356,7 @@ function routePathFromHref(href: NativeModuleHref): string {
   }
   if (href.pathname === '/(shell)/mfu') return '/mfu';
   if (href.pathname === '/(shell)/statistics') return '/statistics';
+  if (href.pathname === '/(shell)/monitoring') return '/monitoring';
   if (href.pathname === '/(shell)/help') return '/help';
   if (href.pathname === '/(shell)/chat') {
     const workspace = href.params?.workspace;

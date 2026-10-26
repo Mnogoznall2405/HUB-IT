@@ -19,6 +19,7 @@ export const MOBILE_BOTTOM_NAV_ALLOWED_PATHS = [
   '/scan-center',
   '/warehouse-1c',
   '/statistics',
+  '/monitoring',
 ] as const;
 
 export const DASHBOARD_SECTION_KEYS = ['attention', 'tasks', 'absences', 'communication', 'news'] as const;

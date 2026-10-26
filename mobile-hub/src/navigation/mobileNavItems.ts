@@ -13,6 +13,7 @@ import { NATIVE_PASSWORDS_ENABLED } from '../passwords/nativePasswordsFeature';
 import { DEFAULT_MOBILE_BOTTOM_NAV_ITEMS } from '../preferences/preferenceNormalizers';
 import { NATIVE_SCAN_CENTER_ENABLED } from '../scanCenter/nativeScanCenterFeature';
 import { NATIVE_STATISTICS_ENABLED } from '../statistics/nativeStatisticsFeature';
+import { NATIVE_MONITORING_ENABLED } from '../monitoring/nativeMonitoringFeature';
 import { NATIVE_TASKS_ENABLED } from '../tasks/nativeTasksFeature';
 import { NATIVE_WAREHOUSE_1C_ENABLED } from '../warehouse1c/nativeWarehouse1cFeature';
 
@@ -58,6 +59,7 @@ export const navigationItems: MobileNavItem[] = [
   ...whenNative(NATIVE_SCAN_CENTER_ENABLED, { path: '/scan-center', label: 'Scan Center', shortLabel: 'Scan', icon: 'shield-search', permission: 'scan.read', group: 'tools' }),
   ...whenNative(NATIVE_WAREHOUSE_1C_ENABLED, { path: '/warehouse-1c', label: 'Склад 1С', shortLabel: 'Склад 1С', icon: 'package-variant-closed', permission: 'warehouse_1c.read', group: 'tools' }),
   ...whenNative(NATIVE_STATISTICS_ENABLED, { path: '/statistics', label: 'Статистика', shortLabel: 'Статистика', icon: 'chart-bar', permission: 'statistics.read', group: 'tools' }),
+  ...whenNative(NATIVE_MONITORING_ENABLED, { path: '/monitoring', label: 'Мониторинг', shortLabel: 'Мониторинг', icon: 'lan-connect', permission: 'monitoring.read', group: 'tools' }),
   { path: '/help', label: 'Справка', shortLabel: 'Справка', icon: 'help-circle-outline', permission: 'kb.read', group: 'tools' },
 ];
 

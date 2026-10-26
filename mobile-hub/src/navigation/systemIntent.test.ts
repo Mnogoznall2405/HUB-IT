@@ -26,6 +26,7 @@ it.each([
   ['https://hubit.zsgp.ru/warehouse-1c', '/menu'],
   ['https://hubit.zsgp.ru/passwords', '/passwords'],
   ['https://hubit.zsgp.ru/mfu', '/mfu'],
+  ['https://hubit.zsgp.ru/monitoring', '/monitoring'],
   ['https://hubit.zsgp.ru/dashboard', '/dashboard'],
 ])('maps a trusted Android intent %s', (input, expected) => {
   expect(routeSystemIntentPath(input)).toBe(expected);

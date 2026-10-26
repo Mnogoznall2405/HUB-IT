@@ -54,6 +54,7 @@ export function resolveShellTabPath(pathname: string, _legacyPath?: string): str
   if (pathname === '/warehouse-1c' || pathname.startsWith('/warehouse-1c/')) return '/warehouse-1c';
   if (pathname === '/mfu' || pathname.startsWith('/mfu/')) return '/mfu';
   if (pathname === '/statistics' || pathname.startsWith('/statistics/')) return '/statistics';
+  if (pathname === '/monitoring' || pathname.startsWith('/monitoring/')) return '/monitoring';
   if (isAccountTabPath(pathname)) return '/menu';
   return '/dashboard';
 }

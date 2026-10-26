@@ -98,6 +98,7 @@ describe('native-only route registry', () => {
   it.each([
     ['/passwords', 'EXPO_PUBLIC_NATIVE_PASSWORDS_ENABLED'],
     ['/mfu', 'EXPO_PUBLIC_NATIVE_MFU_ENABLED'],
+    ['/monitoring', 'EXPO_PUBLIC_NATIVE_MONITORING_ENABLED'],
   ])('exposes native module %s by default and supports an explicit kill switch', (path, envName) => {
     const previous = process.env[envName];
     process.env[envName] = 'false';
@@ -127,6 +128,7 @@ describe('resolveShellTabPath', () => {
     ['/groups-access', '/groups-access'],
     ['/warehouse-1c', '/warehouse-1c'],
     ['/mfu', '/mfu'],
+    ['/monitoring', '/monitoring'],
   ])('selects the owning native tab for %s', (pathname, expected) => {
     expect(resolveShellTabPath(pathname, '/dashboard')).toBe(expected);
   });
