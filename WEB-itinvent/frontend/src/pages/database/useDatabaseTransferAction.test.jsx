@@ -311,7 +311,7 @@ describe('useDatabaseTransferAction', () => {
     });
 
     await waitFor(() => {
-      expect(props.getLocationsCached).toHaveBeenCalledWith('10');
+      expect(props.getLocationsCached).toHaveBeenCalledWith('10', { onlyBranch: true });
     });
 
     await waitFor(() => {

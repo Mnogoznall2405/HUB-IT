@@ -14,6 +14,8 @@ import {
   MenuItem,
   TextField,
   Typography,
+  Checkbox,
+  FormControlLabel,
 } from '@mui/material';
 
 import equipmentDbTransferAPI from '../../api/equipmentDbTransfer';
@@ -57,6 +59,7 @@ const DatabaseDbTransferDialog = memo(function DatabaseDbTransferDialog({
   const [locNo, setLocNo] = useState('');
   const [branchOptions, setBranchOptions] = useState([]);
   const [locationOptions, setLocationOptions] = useState([]);
+  const [showAllLocations, setShowAllLocations] = useState(false);
   const [assignee, setAssignee] = useState(null);
   const [assigneeInput, setAssigneeInput] = useState('');
   const [assigneeOptions, setAssigneeOptions] = useState([]);
@@ -87,6 +90,7 @@ const DatabaseDbTransferDialog = memo(function DatabaseDbTransferDialog({
     setOwnerOptions([]);
     setBranchNo('');
     setLocNo('');
+    setShowAllLocations(false);
     setBranchOptions([]);
     setLocationOptions([]);
     setAssignee(null);
@@ -105,11 +109,21 @@ const DatabaseDbTransferDialog = memo(function DatabaseDbTransferDialog({
     equipmentDbTransferAPI.getTargetBranches(targetDb)
       .then((rows) => { if (!cancelled) setBranchOptions(Array.isArray(rows) ? rows : []); })
       .catch(() => { if (!cancelled) setBranchOptions([]); });
-    equipmentDbTransferAPI.getTargetLocations(targetDb, branchNo || undefined)
-      .then((rows) => { if (!cancelled) setLocationOptions(Array.isArray(rows) ? rows : []); })
+    equipmentDbTransferAPI.getTargetLocations(
+      targetDb,
+      branchNo || undefined,
+      showAllLocations ? undefined : { onlyBranch: true },
+    )
+      .then((rows) => {
+        if (cancelled) return;
+        const next = Array.isArray(rows) ? rows : [];
+        setLocationOptions(next);
+        // A room picked from the wider list may not exist in the branch list.
+        setLocNo((prev) => (prev === '' || next.some((l) => String(l.loc_no) === String(prev)) ? prev : ''));
+      })
       .catch(() => { if (!cancelled) setLocationOptions([]); });
     return () => { cancelled = true; };
-  }, [open, targetDb, branchNo]);
+  }, [open, targetDb, branchNo, showAllLocations]);
 
   const loadOwnerOptions = useCallback((query) => {
     if (!targetDb) return;
@@ -330,6 +344,19 @@ const DatabaseDbTransferDialog = memo(function DatabaseDbTransferDialog({
                   <MenuItem key={l.loc_no} value={l.loc_no}>{l.loc_name}</MenuItem>
                 ))}
               </TextField>
+              {branchNo !== '' ? (
+                <FormControlLabel
+                  sx={{ mt: -0.5 }}
+                  control={(
+                    <Checkbox
+                      size="small"
+                      checked={showAllLocations}
+                      onChange={(event) => setShowAllLocations(event.target.checked)}
+                    />
+                  )}
+                  label={<Typography variant="body2">Показать все кабинеты</Typography>}
+                />
+              ) : null}
             </Box>
 
             <Divider textAlign="left">

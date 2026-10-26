@@ -1079,3 +1079,39 @@ async def test_concurrent_create_equipment_does_not_serialize_sync_stages(monkey
     assert first.success is True
     assert second.success is True
     assert elapsed < 0.30
+
+
+def test_only_branch_returns_rooms_linked_or_used_by_the_branch(monkeypatch):
+    calls = []
+
+    class FakeDB:
+        def execute_query(self, query, params=None):
+            calls.append((query, params))
+            if "INFORMATION_SCHEMA.COLUMNS" in query:
+                return []
+            return [{"LOC_NO": 401, "LOC_NAME": "401 (29)"}]
+
+    monkeypatch.setattr(db_queries, "get_db", lambda db_id=None: FakeDB())
+
+    rows = db_queries.get_all_locations(db_id="only-branch-db", branch_no="17", only_branch=True)
+
+    assert rows == [{"loc_no": 401, "loc_name": "401 (29)"}]
+    assert calls[-1] == (db_queries.QUERY_GET_LOCATIONS_FOR_BRANCH, ("17", "17"))
+    assert "LOC_BRANCH" in db_queries.QUERY_GET_LOCATIONS_FOR_BRANCH
+    assert "ITEMS" in db_queries.QUERY_GET_LOCATIONS_FOR_BRANCH
+
+
+@pytest.mark.asyncio
+async def test_locations_endpoint_restricts_to_branch_only_on_request(monkeypatch):
+    calls = []
+
+    def fake_get_all_locations(db_id=None, branch_no=None, only_branch=False):
+        calls.append((branch_no, only_branch))
+        return [{"loc_no": 1, "loc_name": "A"}]
+
+    monkeypatch.setattr(equipment_api.queries, "get_all_locations", fake_get_all_locations)
+
+    await equipment_api.get_all_locations(response=Response(), branch_no="31", only_branch=True, db_id="ob-main", _=_user())
+    await equipment_api.get_all_locations(response=Response(), branch_no="32", only_branch=False, db_id="ob-main", _=_user())
+
+    assert calls == [("31", True), ("32", False)]

@@ -71,8 +71,26 @@ describe('useDatabaseAddWorkflows', () => {
 
     await waitFor(() => expect(result.current.addLocationOptions).toHaveLength(1));
     await waitFor(() => expect(result.current.addModelOptions).toHaveLength(1));
-    expect(props.getLocationsCached).toHaveBeenCalledWith('1');
+    expect(props.getLocationsCached).toHaveBeenCalledWith('1', { onlyBranch: true });
     expect(props.getModelsCached).toHaveBeenCalledWith(3);
+  });
+
+  it('loads rooms of the chosen branch only and widens to all rooms on request', async () => {
+    const props = createProps({
+      getLocationsCached: vi.fn(async () => [{ LOC_NO: 10, LOCATION_NAME: 'Office' }]),
+    });
+    const { result } = renderHook(() => useDatabaseAddWorkflows(props));
+
+    act(() => {
+      result.current.openAddEquipmentModal();
+    });
+    await waitFor(() => expect(result.current.addLocationOptions).toHaveLength(1));
+    expect(props.getLocationsCached).toHaveBeenLastCalledWith('1', { onlyBranch: true });
+
+    act(() => {
+      result.current.setAddShowAllLocations(true);
+    });
+    await waitFor(() => expect(props.getLocationsCached).toHaveBeenLastCalledWith('1', undefined));
   });
 
   it('debounces add-equipment owner search and dedupes the selected owner', async () => {

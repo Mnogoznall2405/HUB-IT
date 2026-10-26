@@ -265,6 +265,10 @@ const TransferActionContent = memo(function TransferActionContent({
                   disabled={!transfer.branchNo || transfer.locationsLoading}
                   loading={Boolean(transfer.locationsLoading)}
                   size={isMobile ? 'medium' : 'small'}
+                  hasBranch={Boolean(transfer.branchNo)}
+                  branchName={branchOptions.find((b) => String(b.branch_no) === String(transfer.branchNo))?.branch_name}
+                  showAll={Boolean(transfer.showAllLocations)}
+                  onShowAllChange={transfer.onShowAllLocationsChange}
                   onChange={(locNo) => actions.onLocationChange?.(locNo)}
                 />
               </FormControl>

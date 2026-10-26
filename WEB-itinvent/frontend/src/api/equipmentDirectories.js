@@ -11,13 +11,13 @@ export const equipmentDirectoriesAPI = {
     return response.data;
   },
 
-  getLocations: async (branchNo) => {
+  getLocations: async (branchNo, { onlyBranch = false } = {}) => {
     const normalizedBranchNo = branchNo === undefined || branchNo === null || String(branchNo).trim() === ''
       ? undefined
       : branchNo;
-    const response = await apiClient.get('/equipment/locations', {
-      params: normalizedBranchNo !== undefined ? { branch_no: normalizedBranchNo } : {},
-    });
+    const params = normalizedBranchNo !== undefined ? { branch_no: normalizedBranchNo } : {};
+    if (onlyBranch && normalizedBranchNo !== undefined) params.only_branch = true;
+    const response = await apiClient.get('/equipment/locations', { params });
     return response.data;
   },
 

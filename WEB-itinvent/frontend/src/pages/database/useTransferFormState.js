@@ -56,6 +56,7 @@ export function useTransferFormState({
   const [transferLocationNo, setTransferLocationNo] = useState(null);
   const [transferLocations, setTransferLocations] = useState([]);
   const [transferLocationsLoading, setTransferLocationsLoading] = useState(false);
+  const [transferShowAllLocations, setTransferShowAllLocations] = useState(false);
   const [transferEmployeeInput, setTransferEmployeeInput] = useState('');
   const [transferEmployeeOptions, setTransferEmployeeOptions] = useState([]);
   const [transferEmployeeLoading, setTransferEmployeeLoading] = useState(false);
@@ -157,6 +158,10 @@ export function useTransferFormState({
   ]);
 
   useEffect(() => {
+    if (!actionModal?.open) setTransferShowAllLocations(false);
+  }, [actionModal?.open]);
+
+  useEffect(() => {
     if (!actionModal?.open || actionModal?.type !== 'transfer' || transferResult) return undefined;
     if (![TRANSFER_OPERATION_MOVE, TRANSFER_OPERATION_LOCATION_ONLY].includes(transferOperationMode)) return undefined;
 
@@ -217,7 +222,10 @@ export function useTransferFormState({
     setTransferLocationsLoading(true);
     const loadLocations = async () => {
       try {
-        const response = await getLocationsCached?.(transferBranchNo);
+        const response = await getLocationsCached?.(
+          transferBranchNo,
+          transferShowAllLocations ? undefined : { onlyBranch: true },
+        );
         if (canceled) return;
         const nextLocations = Array.isArray(response) ? response : [];
         setTransferLocations(nextLocations);
@@ -272,6 +280,7 @@ export function useTransferFormState({
     transferResult,
     transferOperationMode,
     transferBranchNo,
+    transferShowAllLocations,
     getLocationsCached,
     transferSourceDefaults.loc_no,
     transferSourceDefaults.location_name,
@@ -309,6 +318,8 @@ export function useTransferFormState({
     setTransferLocations,
     transferLocationOptions,
     transferLocationsLoading,
+    transferShowAllLocations,
+    setTransferShowAllLocations,
     transferEmployeeInput,
     setTransferEmployeeInput,
     transferEmployeeOptions,

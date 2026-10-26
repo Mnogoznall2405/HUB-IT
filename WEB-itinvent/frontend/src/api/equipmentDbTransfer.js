@@ -40,12 +40,14 @@ export const equipmentDbTransferAPI = {
     return response.data;
   },
 
-  getTargetLocations: async (dbId, branchNo) => {
+  getTargetLocations: async (dbId, branchNo, { onlyBranch = false } = {}) => {
     const normalizedBranchNo = branchNo === undefined || branchNo === null || String(branchNo).trim() === ''
       ? undefined
       : branchNo;
+    const params = normalizedBranchNo !== undefined ? { branch_no: normalizedBranchNo } : {};
+    if (onlyBranch && normalizedBranchNo !== undefined) params.only_branch = true;
     const response = await apiClient.get('/equipment/locations', {
-      params: normalizedBranchNo !== undefined ? { branch_no: normalizedBranchNo } : {},
+      params,
       headers: targetDbHeaders(dbId),
     });
     return response.data;

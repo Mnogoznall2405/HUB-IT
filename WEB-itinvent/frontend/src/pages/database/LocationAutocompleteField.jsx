@@ -1,5 +1,5 @@
 import { Children, forwardRef, memo, useMemo, useState } from 'react';
-import { Autocomplete, Box, TextField } from '@mui/material';
+import { Autocomplete, Box, Checkbox, FormControlLabel, TextField, Typography } from '@mui/material';
 import {
   filterLocationOptions,
   formatLocationOptionLabel,
@@ -68,13 +68,29 @@ const LocationAutocompleteField = memo(function LocationAutocompleteField({
   required = false,
   size = 'small',
   popperSx = undefined,
+  helperText = undefined,
+  // Branch scoping (optional): when onShowAllChange is given the field explains the
+  // room list and offers a «Показать все кабинеты» switch.
+  hasBranch = true,
+  branchName = '',
+  showAll = false,
+  onShowAllChange = null,
 }) {
   const selectedOption = useMemo(
     () => (Array.isArray(options) ? options.find((option) => option.loc_no === value) || null : null),
     [options, value]
   );
 
-  return (
+  const scoped = typeof onShowAllChange === 'function';
+  let scopeHint = helperText;
+  if (scoped) {
+    if (!hasBranch) scopeHint = 'Сначала выберите филиал';
+    else if (showAll) scopeHint = 'Показаны все кабинеты';
+    else if (!loading && (options || []).length === 0) scopeHint = 'У филиала нет кабинетов — включите «Показать все кабинеты»';
+    else scopeHint = branchName ? `Кабинеты филиала «${branchName}»` : 'Кабинеты выбранного филиала';
+  }
+
+  const field = (
     <Autocomplete
       options={options}
       value={selectedOption}
@@ -99,9 +115,30 @@ const LocationAutocompleteField = memo(function LocationAutocompleteField({
           required={required}
           size={size}
           placeholder="Начните вводить название или код"
+          helperText={scopeHint}
+          InputLabelProps={{ ...params.InputLabelProps, shrink: true }}
         />
       )}
     />
+  );
+
+  if (!scoped) return field;
+  return (
+    <Box>
+      {field}
+      <FormControlLabel
+        sx={{ mt: 0.25 }}
+        control={(
+          <Checkbox
+            size="small"
+            checked={showAll}
+            disabled={!hasBranch}
+            onChange={(event) => onShowAllChange(event.target.checked)}
+          />
+        )}
+        label={<Typography variant="body2">Показать все кабинеты</Typography>}
+      />
+    </Box>
   );
 });
 

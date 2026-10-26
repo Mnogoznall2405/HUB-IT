@@ -38,6 +38,21 @@ QUERY_GET_ALL_LOCATIONS_WITH_BRANCH_PRIORITY = """
         l.LOC_NO
 """
 
+# Rooms of one branch: linked through LOC_BRANCH or already used by its items
+# (LOC_BRANCH is incomplete in some databases, e.g. OBJ-ITINVENT).
+QUERY_GET_LOCATIONS_FOR_BRANCH = """
+    SELECT
+        l.LOC_NO as LOC_NO,
+        l.DESCR as LOC_NAME
+    FROM LOCATIONS l
+    WHERE l.LOC_NO IS NOT NULL
+      AND (
+        EXISTS (SELECT 1 FROM LOC_BRANCH b WHERE b.LOC_NO = l.LOC_NO AND b.BRANCH_NO = ?)
+        OR EXISTS (SELECT 1 FROM ITEMS i WHERE i.LOC_NO = l.LOC_NO AND i.BRANCH_NO = ?)
+      )
+    ORDER BY l.DESCR, l.LOC_NO
+"""
+
 QUERY_GET_LOCATIONS_BY_BRANCH_COLUMN = """
     SELECT
         l.LOC_NO as LOC_NO,
@@ -131,15 +146,18 @@ def get_all_locations(
     db_id: Optional[str] = None,
     branch_no: Any = None,
     *,
+    only_branch: bool = False,
     get_db_fn: Optional[Callable[[Optional[str]], Any]] = None,
 ) -> List[dict]:
-    """Get the full location directory from LOCATIONS with optional branch priority."""
+    """Get the location directory; with a branch, either prioritize or (only_branch) restrict to it."""
     db = _get_db(db_id, get_db_fn)
     normalized_branch = None if branch_no in (None, "", "null") else branch_no
     if normalized_branch is None:
         rows = db.execute_query(QUERY_GET_ALL_LOCATIONS)
     elif locations_has_branch_column(db_id, get_db_fn=get_db_fn):
         rows = db.execute_query(QUERY_GET_LOCATIONS_BY_BRANCH_COLUMN, (normalized_branch,))
+    elif only_branch:
+        rows = db.execute_query(QUERY_GET_LOCATIONS_FOR_BRANCH, (normalized_branch, normalized_branch))
     else:
         rows = db.execute_query(QUERY_GET_ALL_LOCATIONS_WITH_BRANCH_PRIORITY, (normalized_branch,))
     result = []

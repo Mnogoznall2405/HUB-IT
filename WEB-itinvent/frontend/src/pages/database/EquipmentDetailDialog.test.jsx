@@ -108,7 +108,10 @@ describe('EquipmentDetailDialog', () => {
       model_name: '',
     });
 
-    fireEvent.mouseDown(screen.getByLabelText('Модель'));
+    const modelInput = screen.getByLabelText('Модель');
+    fireEvent.focus(modelInput);
+    fireEvent.change(modelInput, { target: { value: 'think' } });
+    expect(screen.queryByRole('option', { name: 'HP LaserJet' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('option', { name: 'Lenovo ThinkPad' }));
     expect(onFormPatch).toHaveBeenCalledWith({
       model_no: 20,
@@ -120,6 +123,8 @@ describe('EquipmentDetailDialog', () => {
     expect(onFormPatch).toHaveBeenCalledWith({
       branch_no: '8',
       branch_name: 'Филиал',
+      loc_no: null,
+      location_name: '',
     });
 
     fireEvent.change(screen.getByLabelText('Серийный номер'), {
@@ -150,7 +155,7 @@ describe('EquipmentDetailDialog', () => {
     for (const [label, option] of selectCases) {
       fireEvent.mouseDown(screen.getByLabelText(label));
       const listbox = await screen.findByRole('listbox');
-      const menuRoot = listbox.closest('.MuiMenu-root');
+      const menuRoot = listbox.closest('.MuiAutocomplete-popper');
       expect(menuRoot).not.toBeNull();
       expect(Number(window.getComputedStyle(menuRoot).zIndex)).toBeGreaterThan(
         Number(window.getComputedStyle(dialogRoot).zIndex)
@@ -165,6 +170,21 @@ describe('EquipmentDetailDialog', () => {
     expect(Number(window.getComputedStyle(locationPopper).zIndex)).toBeGreaterThan(
       Number(window.getComputedStyle(dialogRoot).zIndex)
     );
+  });
+
+  it('lets the user widen the room list from the branch rooms to all rooms', () => {
+    const onShowAllLocationsChange = vi.fn();
+
+    renderDialog({
+      editMode: true,
+      canWrite: true,
+      onFormPatch: vi.fn(),
+      options: { ...options, locations: [], showAllLocations: false, onShowAllLocationsChange },
+    });
+
+    expect(screen.getByText(/нет кабинетов/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Показать все кабинеты' }));
+    expect(onShowAllLocationsChange).toHaveBeenCalledWith(true);
   });
 
   it('wires footer edit, cancel, save, and close actions', () => {

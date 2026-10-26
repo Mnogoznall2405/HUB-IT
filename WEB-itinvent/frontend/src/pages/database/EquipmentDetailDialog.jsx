@@ -1,6 +1,7 @@
-import { memo } from 'react';
+import { memo, useCallback, useMemo } from 'react';
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Chip,
@@ -9,13 +10,9 @@ import {
   DialogContent,
   DialogTitle,
   Divider,
-  FormControl,
   Grid,
   IconButton,
-  InputLabel,
-  MenuItem,
   Paper,
-  Select,
   Tab,
   Tabs,
   TextField,
@@ -40,14 +37,103 @@ const EDIT_PICKER_OVERLAY_SX = {
   zIndex: (theme) => `${theme.zIndex.modal + 3} !important`,
 };
 
-const EDIT_SELECT_MENU_PROPS = {
-  sx: EDIT_PICKER_OVERLAY_SX,
-};
+const EDIT_POPPER_SLOT_PROPS = { popper: { sx: EDIT_PICKER_OVERLAY_SX } };
+const SHRUNK_LABEL_PROPS = { shrink: true };
 
 const getOptionByNumber = (options, field, value) => {
   const numberValue = toNumberOrNull(value);
   return (options || []).find((option) => toNumberOrNull(option?.[field]) === numberValue);
 };
+
+// Searchable replacement for MUI Select: type to filter, pick with mouse or Enter.
+const SearchField = memo(function SearchField({
+  id,
+  label,
+  options,
+  value,
+  getKey,
+  getLabel,
+  onChange,
+  size = 'small',
+  disabled = false,
+  loading = false,
+  placeholder = 'Начните вводить для поиска',
+  helperText = undefined,
+}) {
+  const selected = useMemo(
+    () => (options || []).find((option) => String(getKey(option)) === String(value ?? '')) || null,
+    [options, value, getKey],
+  );
+
+  // Stable callbacks: MUI resets the typed text whenever these identities change.
+  const optionLabel = useCallback((option) => String(getLabel(option) ?? ''), [getLabel]);
+  const sameOption = useCallback(
+    (option, current) => String(getKey(option)) === String(getKey(current)),
+    [getKey],
+  );
+
+  return (
+    <Autocomplete
+      id={id}
+      fullWidth
+      size={size}
+      options={options || []}
+      value={selected}
+      disabled={disabled}
+      loading={loading}
+      disableClearable
+      autoHighlight
+      getOptionLabel={optionLabel}
+      isOptionEqualToValue={sameOption}
+      onChange={(_, next) => { if (next) onChange(next); }}
+      noOptionsText="Ничего не найдено"
+      loadingText="Загрузка..."
+      slotProps={EDIT_POPPER_SLOT_PROPS}
+      renderInput={(params) => (
+        <TextField
+          {...params}
+          label={label}
+          placeholder={placeholder}
+          helperText={helperText}
+          InputLabelProps={{ ...params.InputLabelProps, ...SHRUNK_LABEL_PROPS }}
+        />
+      )}
+    />
+  );
+});
+
+const getStatusKey = (status) => status.status_no;
+const getStatusLabel = (status) => status.status_name;
+const getTypeKey = (type) => type.type_no;
+const getTypeLabel = (type) => type.type_name;
+const getModelKey = (model) => model.model_no;
+const getModelLabel = (model) => model.model_name;
+const getBranchKey = (branch) => branch.branch_no;
+const getBranchLabel = (branch) => branch.branch_name;
+
+function ReadOnlyField({ label, value, size = 'small', helperText = undefined }) {
+  return (
+    <TextField
+      fullWidth
+      size={size}
+      label={label}
+      value={value || '-'}
+      helperText={helperText}
+      InputLabelProps={SHRUNK_LABEL_PROPS}
+      InputProps={{ readOnly: true }}
+      sx={{ '& .MuiInputBase-input': { color: 'text.secondary' } }}
+    />
+  );
+}
+
+function ViewValue({ label, children }) {
+  return (
+    <>
+      <Typography variant="caption" color="text.secondary">{label}</Typography>
+      <Typography variant="body2" component="div">{children}</Typography>
+    </>
+  );
+}
 
 const EquipmentDetailGeneralTab = memo(function EquipmentDetailGeneralTab({
   data,
@@ -65,7 +151,43 @@ const EquipmentDetailGeneralTab = memo(function EquipmentDetailGeneralTab({
     modelsLoading = false,
     branches = [],
     locations = [],
+    locationsLoading = false,
+    showAllLocations = false,
+    onShowAllLocationsChange = null,
   } = options;
+  const fieldSize = isMobile ? 'medium' : 'small';
+  const vendorName = readFirst(data, ['VENDOR_NAME', 'vendor_name', 'MANUFACTURER', 'manufacturer'], '-');
+
+  const textField = (label, name) => (
+    <TextField
+      fullWidth
+      size={fieldSize}
+      label={label}
+      value={form[name] ?? ''}
+      onChange={(event) => onFormPatch?.({ [name]: event.target.value })}
+      InputLabelProps={SHRUNK_LABEL_PROPS}
+    />
+  );
+
+  const employeeBlock = (
+    <>
+      <Typography variant="caption" color="text.secondary">Сотрудник</Typography>
+      <EmployeeNameLink
+        name={form.employee_name || '-'}
+        ownerNo={form.empl_no}
+        onOpenEmployee={onOpenEmployee}
+        variant="body2"
+      />
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+        Отдел: {form.employee_dept || '-'}
+      </Typography>
+      {editMode ? (
+        <Typography variant="caption" color="warning.main" sx={{ display: 'block', mt: 0.5 }}>
+          Изменение сотрудника доступно только через операцию «Перемещение».
+        </Typography>
+      ) : null}
+    </>
+  );
 
   return (
     <>
@@ -79,23 +201,18 @@ const EquipmentDetailGeneralTab = memo(function EquipmentDetailGeneralTab({
               size="small"
             />
           ) : (
-            <FormControl size="small" sx={{ minWidth: 220 }}>
-              <InputLabel id="equipment-detail-status-label">Статус</InputLabel>
-              <Select
-                labelId="equipment-detail-status-label"
+            <Box sx={{ width: { xs: '100%', sm: 260 } }}>
+              <SearchField
                 id="equipment-detail-status"
-                MenuProps={EDIT_SELECT_MENU_PROPS}
-                value={form.status_no ?? ''}
-                onChange={(event) => onFormPatch?.({ status_no: toNumberOrNull(event.target.value) })}
                 label="Статус"
-              >
-                {statuses.map((status) => (
-                  <MenuItem key={status.status_no} value={status.status_no}>
-                    {status.status_name}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+                options={statuses}
+                value={form.status_no}
+                getKey={getStatusKey}
+                getLabel={getStatusLabel}
+                size={fieldSize}
+                onChange={(status) => onFormPatch?.({ status_no: toNumberOrNull(status.status_no) })}
+              />
+            </Box>
           )}
           <Chip label={form.branch_name || 'Филиал не указан'} size="small" variant="outlined" />
           <Chip label={form.location_name || 'Местоположение не указано'} size="small" variant="outlined" />
@@ -108,186 +225,89 @@ const EquipmentDetailGeneralTab = memo(function EquipmentDetailGeneralTab({
             <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600 }}>
               Идентификация
             </Typography>
-            <Grid container spacing={1.25}>
-              <Grid item xs={12} sm={editMode ? 12 : 6}>
-                {editMode ? (
-                  <FormControl fullWidth size={isMobile ? 'medium' : 'small'}>
-                    <InputLabel id="equipment-detail-type-label">Тип оборудования</InputLabel>
-                    <Select
-                      labelId="equipment-detail-type-label"
+            {editMode ? (
+              <>
+                <Grid container spacing={1.5}>
+                  <Grid item xs={12} sm={6}>
+                    <SearchField
                       id="equipment-detail-type"
-                      MenuProps={EDIT_SELECT_MENU_PROPS}
-                      value={form.type_no ?? ''}
                       label="Тип оборудования"
-                      onChange={(event) => {
-                        const typeNo = toNumberOrNull(event.target.value);
-                        const selectedType = getOptionByNumber(types, 'type_no', typeNo);
+                      options={types}
+                      value={form.type_no}
+                      getKey={getTypeKey}
+                      getLabel={getTypeLabel}
+                      size={fieldSize}
+                      onChange={(type) => {
+                        const typeNo = toNumberOrNull(type.type_no);
                         onFormPatch?.({
                           type_no: typeNo,
-                          type_name: selectedType?.type_name || '',
+                          type_name: type.type_name || '',
                           model_no: null,
                           model_name: '',
                         });
                       }}
-                    >
-                      {types.map((type) => (
-                        <MenuItem key={type.type_no} value={type.type_no}>
-                          {type.type_name}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                ) : (
-                  <>
-                    <Typography variant="caption" color="text.secondary">Тип оборудования</Typography>
-                    <Typography variant="body2">{form.type_name || '-'}</Typography>
-                  </>
-                )}
-              </Grid>
-              <Grid item xs={12} sm={editMode ? 12 : 6}>
-                {editMode ? (
-                  <FormControl
-                    fullWidth
-                    size={isMobile ? 'medium' : 'small'}
-                    disabled={!form.type_no || modelsLoading}
-                  >
-                    <InputLabel id="equipment-detail-model-label">Модель</InputLabel>
-                    <Select
-                      labelId="equipment-detail-model-label"
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={6}>
+                    <SearchField
                       id="equipment-detail-model"
-                      MenuProps={EDIT_SELECT_MENU_PROPS}
-                      value={form.model_no ?? ''}
                       label="Модель"
-                      onChange={(event) => {
-                        const modelNo = toNumberOrNull(event.target.value);
-                        const selectedModel = getOptionByNumber(models, 'model_no', modelNo);
-                        onFormPatch?.({
-                          model_no: modelNo,
-                          model_name: selectedModel?.model_name || '',
-                        });
-                      }}
-                    >
-                      {models.map((model) => (
-                        <MenuItem key={model.model_no} value={model.model_no}>
-                          {model.model_name}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                ) : (
-                  <>
-                    <Typography variant="caption" color="text.secondary">Модель</Typography>
-                    <Typography variant="body2">{form.model_name || '-'}</Typography>
-                  </>
-                )}
-              </Grid>
-              <Grid item xs={12} sm={6}>
-                <Typography variant="caption" color="text.secondary">Производитель</Typography>
-                <Typography variant="body2">
-                  {readFirst(data, ['VENDOR_NAME', 'vendor_name', 'MANUFACTURER', 'manufacturer'], '-')}
+                      options={models}
+                      value={form.model_no}
+                      getKey={getModelKey}
+                      getLabel={getModelLabel}
+                      size={fieldSize}
+                      disabled={!form.type_no}
+                      loading={modelsLoading}
+                      placeholder={form.type_no ? 'Начните вводить для поиска' : 'Сначала выберите тип'}
+                      onChange={(model) => onFormPatch?.({
+                        model_no: toNumberOrNull(model.model_no),
+                        model_name: model.model_name || '',
+                      })}
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={6}>
+                    <ReadOnlyField label="Производитель" value={vendorName === '-' ? '' : vendorName} size={fieldSize} />
+                  </Grid>
+                  <Grid item xs={12} sm={6}>{textField('Part Number', 'part_no')}</Grid>
+                  <Grid item xs={12} sm={6}>{textField('Серийный номер', 'serial_no')}</Grid>
+                  <Grid item xs={12} sm={6}>{textField('Аппаратный серийный номер', 'hw_serial_no')}</Grid>
+                </Grid>
+
+                <Typography variant="subtitle2" sx={{ mt: 2.5, mb: 1.5, fontWeight: 600 }}>
+                  Сеть
                 </Typography>
+                <Grid container spacing={1.5}>
+                  <Grid item xs={12} sm={6}>{textField('IP-адрес', 'ip_address')}</Grid>
+                  <Grid item xs={12} sm={6}>{textField('MAC-адрес', 'mac_address')}</Grid>
+                  <Grid item xs={12} sm={6}>{textField('Имя компьютера', 'network_name')}</Grid>
+                  <Grid item xs={12} sm={6}>
+                    <ReadOnlyField label="Домен" value={form.domain_name} size={fieldSize} />
+                  </Grid>
+                </Grid>
+              </>
+            ) : (
+              <Grid container spacing={1.25}>
+                <Grid item xs={12} sm={6}><ViewValue label="Тип оборудования">{form.type_name || '-'}</ViewValue></Grid>
+                <Grid item xs={12} sm={6}><ViewValue label="Модель">{form.model_name || '-'}</ViewValue></Grid>
+                <Grid item xs={12} sm={6}><ViewValue label="Производитель">{vendorName}</ViewValue></Grid>
+                <Grid item xs={12} sm={6}>
+                  <ViewValue label="Серийный номер">{readFirst(data, ['SERIAL_NO', 'serial_no'], '-')}</ViewValue>
+                </Grid>
+                <Grid item xs={12} sm={6}>
+                  <ViewValue label="HW серийный номер">{readFirst(data, ['HW_SERIAL_NO', 'hw_serial_no'], '-')}</ViewValue>
+                </Grid>
+                <Grid item xs={12} sm={6}>
+                  <ViewValue label="Part Number">{readFirst(data, ['PART_NO', 'part_no'], '-')}</ViewValue>
+                </Grid>
+                <Grid item xs={12} sm={6}><ViewValue label="IP-адрес">{form.ip_address || '-'}</ViewValue></Grid>
+                <Grid item xs={12} sm={6}><ViewValue label="MAC-адрес">{form.mac_address || '-'}</ViewValue></Grid>
+                <Grid item xs={12} sm={6}>
+                  <ViewValue label="Имя компьютера">{form.network_name || form.domain_name || '-'}</ViewValue>
+                </Grid>
+                <Grid item xs={12} sm={6}><ViewValue label="Домен">{form.domain_name || '-'}</ViewValue></Grid>
               </Grid>
-              <Grid item xs={12} sm={editMode ? 12 : 6}>
-                {editMode ? (
-                  <TextField
-                    fullWidth
-                    size={isMobile ? 'medium' : 'small'}
-                    label="Серийный номер"
-                    value={form.serial_no}
-                    onChange={(event) => onFormPatch?.({ serial_no: event.target.value })}
-                  />
-                ) : (
-                  <>
-                    <Typography variant="caption" color="text.secondary">Серийный номер</Typography>
-                    <Typography variant="body2">{readFirst(data, ['SERIAL_NO', 'serial_no'], '-')}</Typography>
-                  </>
-                )}
-              </Grid>
-              <Grid item xs={12} sm={editMode ? 12 : 6}>
-                {editMode ? (
-                  <TextField
-                    fullWidth
-                    size={isMobile ? 'medium' : 'small'}
-                    label="Аппаратный серийный номер"
-                    value={form.hw_serial_no}
-                    onChange={(event) => onFormPatch?.({ hw_serial_no: event.target.value })}
-                  />
-                ) : (
-                  <>
-                    <Typography variant="caption" color="text.secondary">HW серийный номер</Typography>
-                    <Typography variant="body2">{readFirst(data, ['HW_SERIAL_NO', 'hw_serial_no'], '-')}</Typography>
-                  </>
-                )}
-              </Grid>
-              <Grid item xs={12} sm={editMode ? 12 : 6}>
-                {editMode ? (
-                  <TextField
-                    fullWidth
-                    size={isMobile ? 'medium' : 'small'}
-                    label="Part Number"
-                    value={form.part_no}
-                    onChange={(event) => onFormPatch?.({ part_no: event.target.value })}
-                  />
-                ) : (
-                  <>
-                    <Typography variant="caption" color="text.secondary">Part Number</Typography>
-                    <Typography variant="body2">{readFirst(data, ['PART_NO', 'part_no'], '-')}</Typography>
-                  </>
-                )}
-              </Grid>
-              <Grid item xs={12} sm={editMode ? 12 : 6}>
-                {editMode ? (
-                  <TextField
-                    fullWidth
-                    size={isMobile ? 'medium' : 'small'}
-                    label="IP-адрес"
-                    value={form.ip_address}
-                    onChange={(event) => onFormPatch?.({ ip_address: event.target.value })}
-                  />
-                ) : (
-                  <>
-                    <Typography variant="caption" color="text.secondary">IP-адрес</Typography>
-                    <Typography variant="body2">{form.ip_address || '-'}</Typography>
-                  </>
-                )}
-              </Grid>
-              <Grid item xs={12} sm={editMode ? 12 : 6}>
-                {editMode ? (
-                  <TextField
-                    fullWidth
-                    size={isMobile ? 'medium' : 'small'}
-                    label="MAC-адрес"
-                    value={form.mac_address}
-                    onChange={(event) => onFormPatch?.({ mac_address: event.target.value })}
-                  />
-                ) : (
-                  <>
-                    <Typography variant="caption" color="text.secondary">MAC-адрес</Typography>
-                    <Typography variant="body2">{form.mac_address || '-'}</Typography>
-                  </>
-                )}
-              </Grid>
-              <Grid item xs={12} sm={editMode ? 12 : 6}>
-                {editMode ? (
-                  <TextField
-                    fullWidth
-                    size={isMobile ? 'medium' : 'small'}
-                    label="Имя компьютера"
-                    value={form.network_name}
-                    onChange={(event) => onFormPatch?.({ network_name: event.target.value })}
-                  />
-                ) : (
-                  <>
-                    <Typography variant="caption" color="text.secondary">Имя компьютера</Typography>
-                    <Typography variant="body2">{form.network_name || form.domain_name || '-'}</Typography>
-                  </>
-                )}
-              </Grid>
-              <Grid item xs={12} sm={6}>
-                <Typography variant="caption" color="text.secondary">Домен</Typography>
-                <Typography variant="body2">{form.domain_name || '-'}</Typography>
-              </Grid>
-            </Grid>
+            )}
           </Paper>
         </Grid>
 
@@ -296,65 +316,44 @@ const EquipmentDetailGeneralTab = memo(function EquipmentDetailGeneralTab({
             <Typography variant="subtitle2" sx={{ mb: 1.5, fontWeight: 600 }}>
               Назначение
             </Typography>
-            <Grid container spacing={1.25}>
-              <Grid item xs={12} sm={editMode ? 12 : 6}>
-                <Typography variant="caption" color="text.secondary">Сотрудник</Typography>
-                <EmployeeNameLink
-                  name={form.employee_name || '-'}
-                  ownerNo={form.empl_no}
-                  onOpenEmployee={onOpenEmployee}
-                  variant="body2"
-                />
-                <Typography variant="caption" color="text.secondary">
-                  Отдел: {form.employee_dept || '-'}
-                </Typography>
-                <Typography variant="caption" color="warning.main" sx={{ display: 'block', mt: 0.5 }}>
-                  Изменение сотрудника доступно только через операцию «Перемещение».
-                </Typography>
-              </Grid>
-
-              <Grid item xs={12} sm={editMode ? 12 : 6}>
-                {editMode ? (
-                  <FormControl fullWidth size={isMobile ? 'medium' : 'small'}>
-                    <InputLabel id="equipment-detail-branch-label">Филиал</InputLabel>
-                    <Select
-                      labelId="equipment-detail-branch-label"
-                      id="equipment-detail-branch"
-                      MenuProps={EDIT_SELECT_MENU_PROPS}
-                      value={form.branch_no ?? ''}
-                      label="Филиал"
-                      onChange={(event) => {
-                        const branchNo = toIdOrNull(event.target.value);
-                        const selectedBranchOption = getOptionByNumber(branches, 'branch_no', branchNo);
-                        onFormPatch?.({
-                          branch_no: branchNo,
-                          branch_name: selectedBranchOption?.branch_name || '',
-                        });
-                      }}
-                    >
-                      {branches.map((branch) => (
-                        <MenuItem key={branch.branch_no} value={branch.branch_no}>
-                          {branch.branch_name}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                ) : (
-                  <>
-                    <Typography variant="caption" color="text.secondary">Филиал</Typography>
-                    <Typography variant="body2">{form.branch_name || '-'}</Typography>
-                  </>
-                )}
-              </Grid>
-
-              <Grid item xs={12}>
-                {editMode ? (
+            {editMode ? (
+              <Grid container spacing={1.5}>
+                <Grid item xs={12}>{employeeBlock}</Grid>
+                <Grid item xs={12}>
+                  <SearchField
+                    id="equipment-detail-branch"
+                    label="Филиал"
+                    options={branches}
+                    value={form.branch_no}
+                    getKey={getBranchKey}
+                    getLabel={getBranchLabel}
+                    size={fieldSize}
+                    onChange={(branch) => {
+                      const branchNo = toIdOrNull(branch.branch_no);
+                      // The room list is per branch, so the old room no longer applies.
+                      onFormPatch?.({
+                        branch_no: branchNo,
+                        branch_name: branch.branch_name || '',
+                        ...(String(branchNo) !== String(form.branch_no ?? '')
+                          ? { loc_no: null, location_name: '' }
+                          : {}),
+                      });
+                    }}
+                  />
+                </Grid>
+                <Grid item xs={12}>
                   <LocationAutocompleteField
                     label="Местоположение"
                     value={form.loc_no ?? ''}
                     options={locations}
+                    disabled={!form.branch_no}
+                    loading={locationsLoading}
                     popperSx={EDIT_PICKER_OVERLAY_SX}
-                    size={isMobile ? 'medium' : 'small'}
+                    size={fieldSize}
+                    hasBranch={Boolean(form.branch_no)}
+                    branchName={form.branch_name}
+                    showAll={showAllLocations}
+                    onShowAllChange={typeof onShowAllLocationsChange === 'function' ? onShowAllLocationsChange : null}
                     onChange={(locNo) => {
                       const locationNo = toIdOrNull(locNo);
                       const selectedLocation = getOptionByNumber(locations, 'loc_no', locationNo);
@@ -364,14 +363,15 @@ const EquipmentDetailGeneralTab = memo(function EquipmentDetailGeneralTab({
                       });
                     }}
                   />
-                ) : (
-                  <>
-                    <Typography variant="caption" color="text.secondary">Местоположение</Typography>
-                    <Typography variant="body2">{form.location_name || '-'}</Typography>
-                  </>
-                )}
+                </Grid>
               </Grid>
-            </Grid>
+            ) : (
+              <Grid container spacing={1.25}>
+                <Grid item xs={12} sm={6}>{employeeBlock}</Grid>
+                <Grid item xs={12} sm={6}><ViewValue label="Филиал">{form.branch_name || '-'}</ViewValue></Grid>
+                <Grid item xs={12}><ViewValue label="Местоположение">{form.location_name || '-'}</ViewValue></Grid>
+              </Grid>
+            )}
           </Paper>
         </Grid>
 
@@ -384,11 +384,12 @@ const EquipmentDetailGeneralTab = memo(function EquipmentDetailGeneralTab({
               <TextField
                 fullWidth
                 multiline
-                minRows={4}
+                minRows={3}
                 maxRows={10}
                 label="Описание"
                 value={form.description}
                 onChange={(event) => onFormPatch?.({ description: event.target.value })}
+                InputLabelProps={SHRUNK_LABEL_PROPS}
               />
             ) : (
               <Typography

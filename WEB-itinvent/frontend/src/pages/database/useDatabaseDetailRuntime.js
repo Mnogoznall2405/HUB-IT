@@ -75,6 +75,8 @@ export function useDatabaseDetailRuntime({
   const [detailForm, setDetailForm] = useState(null);
   const [detailInitialForm, setDetailInitialForm] = useState(null);
   const [detailLocations, setDetailLocations] = useState([]);
+  const [detailLocationsLoading, setDetailLocationsLoading] = useState(false);
+  const [detailShowAllLocations, setDetailShowAllLocations] = useState(false);
   const [detailModels, setDetailModels] = useState([]);
   const [detailModelsLoading, setDetailModelsLoading] = useState(false);
   const [detailEmployeeOptions, setDetailEmployeeOptions] = useState([]);
@@ -316,9 +318,13 @@ export function useDatabaseDetailRuntime({
     if (!detailModal.open || !detailEditMode) return undefined;
 
     let canceled = false;
+    setDetailLocationsLoading(true);
     const loadLocations = async () => {
       try {
-        const response = await getLocationsCached?.(detailForm?.branch_no);
+        const response = await getLocationsCached?.(
+          detailForm?.branch_no,
+          detailShowAllLocations ? undefined : { onlyBranch: true },
+        );
         if (!canceled) {
           setDetailLocations(Array.isArray(response) ? response : []);
         }
@@ -327,6 +333,10 @@ export function useDatabaseDetailRuntime({
         if (!canceled) {
           setDetailLocations([]);
         }
+      } finally {
+        if (!canceled) {
+          setDetailLocationsLoading(false);
+        }
       }
     };
 
@@ -334,7 +344,7 @@ export function useDatabaseDetailRuntime({
     return () => {
       canceled = true;
     };
-  }, [detailModal.open, detailEditMode, detailForm?.branch_no, getLocationsCached]);
+  }, [detailModal.open, detailEditMode, detailForm?.branch_no, detailShowAllLocations, getLocationsCached]);
 
   useEffect(() => {
     if (!detailModal.open || !detailEditMode) return undefined;
@@ -653,6 +663,9 @@ export function useDatabaseDetailRuntime({
     detailInitialForm,
     setDetailInitialForm,
     detailLocations,
+    detailLocationsLoading,
+    detailShowAllLocations,
+    setDetailShowAllLocations,
     setDetailLocations,
     detailModels,
     setDetailModels,

@@ -209,8 +209,17 @@ def get_all_statuses_cached(db_id: Optional[str] = None) -> List[Dict[str, Any]]
     return _cached_dict_query("statuses", db_id, lambda: queries.get_all_statuses(db_id))
 
 
-def get_all_locations_cached(db_id: Optional[str] = None, branch_no: Any = None) -> List[Dict[str, Any]]:
+def get_all_locations_cached(
+    db_id: Optional[str] = None, branch_no: Any = None, only_branch: bool = False
+) -> List[Dict[str, Any]]:
     from backend.database import queries
+    if only_branch:
+        return _cached_dict_query(
+            "locations_branch_only",
+            db_id,
+            lambda: queries.get_all_locations(db_id, branch_no=branch_no, only_branch=True),
+            branch_no,
+        )
     return _cached_dict_query("locations", db_id, lambda: queries.get_all_locations(db_id, branch_no=branch_no), branch_no)
 
 

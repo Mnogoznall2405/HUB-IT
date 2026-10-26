@@ -69,6 +69,8 @@ export function useDatabaseAddWorkflows({
   const [addEmployeeLoading, setAddEmployeeLoading] = useState(false);
   const [addLocations, setAddLocations] = useState([]);
   const [addLocationsLoading, setAddLocationsLoading] = useState(false);
+  const [addShowAllLocations, setAddShowAllLocations] = useState(false);
+  const [addConsumableShowAllLocations, setAddConsumableShowAllLocations] = useState(false);
   const [addModels, setAddModels] = useState([]);
   const [addModelsLoading, setAddModelsLoading] = useState(false);
 
@@ -245,7 +247,10 @@ export function useDatabaseAddWorkflows({
     setAddLocationsLoading(true);
     const loadLocations = async () => {
       try {
-        const response = await getLocationsCached?.(addEquipmentForm.branch_no);
+        const response = await getLocationsCached?.(
+          addEquipmentForm.branch_no,
+          addShowAllLocations ? undefined : { onlyBranch: true },
+        );
         if (canceled) return;
         const nextLocations = Array.isArray(response) ? response : [];
         setAddLocations(nextLocations);
@@ -274,7 +279,11 @@ export function useDatabaseAddWorkflows({
     return () => {
       canceled = true;
     };
-  }, [addEquipmentModalOpen, addEquipmentForm?.branch_no, addEquipmentForm?.loc_no, getLocationsCached]);
+  }, [addEquipmentModalOpen, addEquipmentForm?.branch_no, addEquipmentForm?.loc_no, addShowAllLocations, getLocationsCached]);
+
+  useEffect(() => {
+    if (!addEquipmentModalOpen) setAddShowAllLocations(false);
+  }, [addEquipmentModalOpen]);
 
   useEffect(() => {
     if (!addEquipmentModalOpen) return;
@@ -322,7 +331,10 @@ export function useDatabaseAddWorkflows({
     setAddConsumableLocationsLoading(true);
     const loadLocations = async () => {
       try {
-        const response = await getLocationsCached?.(addConsumableForm.branch_no);
+        const response = await getLocationsCached?.(
+          addConsumableForm.branch_no,
+          addConsumableShowAllLocations ? undefined : { onlyBranch: true },
+        );
         if (canceled) return;
         const nextLocations = Array.isArray(response) ? response : [];
         setAddConsumableLocations(nextLocations);
@@ -351,7 +363,11 @@ export function useDatabaseAddWorkflows({
     return () => {
       canceled = true;
     };
-  }, [addConsumableModalOpen, addConsumableForm?.branch_no, addConsumableForm?.loc_no, getLocationsCached]);
+  }, [addConsumableModalOpen, addConsumableForm?.branch_no, addConsumableForm?.loc_no, addConsumableShowAllLocations, getLocationsCached]);
+
+  useEffect(() => {
+    if (!addConsumableModalOpen) setAddConsumableShowAllLocations(false);
+  }, [addConsumableModalOpen]);
 
   useEffect(() => {
     if (!addConsumableModalOpen) return;
@@ -468,6 +484,8 @@ export function useDatabaseAddWorkflows({
     addEmployeeLoading,
     addLocationOptions,
     addLocationsLoading,
+    addShowAllLocations,
+    setAddShowAllLocations,
     addModelOptions,
     addModelsLoading,
     selectedAddEmployeeOption,
@@ -488,6 +506,8 @@ export function useDatabaseAddWorkflows({
     addConsumableSuccess,
     addConsumableLocationOptions,
     addConsumableLocationsLoading,
+    addConsumableShowAllLocations,
+    setAddConsumableShowAllLocations,
     addConsumableModelOptions,
     addConsumableModelsLoading,
     openAddConsumableModal,

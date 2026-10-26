@@ -39,6 +39,8 @@ function AddEquipmentDialog({
   branchOptions = [],
   locationOptions = [],
   locationsLoading = false,
+  showAllLocations = false,
+  onShowAllLocationsChange = null,
   typeOptions = [],
   statusOptions = [],
   modelOptions = [],
@@ -176,6 +178,10 @@ function AddEquipmentDialog({
                     loading={locationsLoading}
                     required
                     size={fieldSize}
+                    hasBranch={Boolean(form?.branch_no)}
+                    branchName={branchOptions.find((b) => String(b.branch_no) === String(form?.branch_no))?.branch_name}
+                    showAll={showAllLocations}
+                    onShowAllChange={onShowAllLocationsChange}
                     onChange={(locNo) => updateForm({ loc_no: toIdOrNull(locNo) || '' })}
                   />
                 </Grid>

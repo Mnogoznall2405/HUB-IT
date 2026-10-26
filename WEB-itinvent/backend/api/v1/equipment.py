@@ -1608,6 +1608,7 @@ async def get_branches(
 async def get_all_locations(
     response: Response,
     branch_no: Optional[str] = Query(None, description="Optional branch number to prioritize used locations"),
+    only_branch: bool = Query(False, description="Return only rooms of branch_no (LOC_BRANCH or used by its items)"),
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
     _: User = Depends(get_current_active_user)
 ):
@@ -1619,6 +1620,8 @@ async def get_all_locations(
     """
     _set_dict_cache_headers(response)
     from backend.database.equipment_db import get_all_locations_cached
+    if only_branch is True and branch_no:
+        return await run_in_threadpool(get_all_locations_cached, db_id, branch_no=branch_no, only_branch=True)
     return await run_in_threadpool(get_all_locations_cached, db_id, branch_no=branch_no)
 
 

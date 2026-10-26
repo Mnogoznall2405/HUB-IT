@@ -24,6 +24,7 @@ from backend.database.equipment_directory_reads import (
     QUERY_GET_ALL_BRANCHES,
     QUERY_GET_ALL_LOCATIONS,
     QUERY_GET_ALL_LOCATIONS_WITH_BRANCH_PRIORITY,
+    QUERY_GET_LOCATIONS_FOR_BRANCH,
     QUERY_GET_LOCATIONS_BY_BRANCH_COLUMN,
     QUERY_LOCATIONS_HAS_BRANCH_COLUMN,
     get_all_branches as _directory_get_all_branches,
@@ -2599,8 +2600,8 @@ def get_locations_by_branch(branch_id: Any, db_id: Optional[str] = None) -> List
     return _directory_get_locations_by_branch(branch_id, db_id, get_db_fn=get_db)
 
 
-def get_all_locations(db_id: Optional[str] = None, branch_no: Any = None) -> List[dict]:
-    return _directory_get_all_locations(db_id, branch_no=branch_no, get_db_fn=get_db)
+def get_all_locations(db_id: Optional[str] = None, branch_no: Any = None, only_branch: bool = False) -> List[dict]:
+    return _directory_get_all_locations(db_id, branch_no=branch_no, only_branch=only_branch, get_db_fn=get_db)
 
 
 def get_all_equipment_types(db_id: Optional[str] = None) -> List[dict]:

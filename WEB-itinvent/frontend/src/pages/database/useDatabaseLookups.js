@@ -40,12 +40,16 @@ export function useDatabaseLookups({ dbName, staleTimeMs = 30000 } = {}) {
   );
 
   const getLocationsCached = useCallback(
-    async (branchNo) => {
+    async (branchNo, { onlyBranch = false } = {}) => {
       const safeBranchNo = String(branchNo ?? '').trim();
-      const cacheKey = buildCacheKey('locations-priority', getDbCacheScope(), safeBranchNo);
+      const cacheKey = buildCacheKey(
+        onlyBranch ? 'locations-branch-only' : 'locations-priority',
+        getDbCacheScope(),
+        safeBranchNo,
+      );
       const { data } = await getOrFetchSWR(
         cacheKey,
-        () => equipmentAPI.getLocations(branchNo),
+        () => (onlyBranch ? equipmentAPI.getLocations(branchNo, { onlyBranch: true }) : equipmentAPI.getLocations(branchNo)),
         { staleTimeMs }
       );
       return data;
