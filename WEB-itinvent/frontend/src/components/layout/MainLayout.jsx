@@ -157,7 +157,7 @@ import {
   normalizeNotificationPreferences,
   NOTIFICATION_PREFERENCES_CHANGED_EVENT,
 } from '../../lib/notificationPreferences';
-import { applyPwaUpdate, getPwaInstallState, subscribePwaInstallState } from '../../lib/pwaInstall';
+import { getPwaInstallState, subscribePwaInstallState } from '../../lib/pwaInstall';
 import { prefetchRouteByPath } from '../../lib/routeLoaders';
 import { resolveChatMessageNotificationPlan } from '../../lib/chatSocketNotificationPlan';
 import { playChatMessageSound } from '../../lib/chatMessageSound';
@@ -543,7 +543,6 @@ function MainLayout({
   const lastConnectionBannerStateRef = useRef('offline');
   if (connectionBannerState) lastConnectionBannerStateRef.current = connectionBannerState;
   const renderedConnectionBannerState = connectionBannerState || lastConnectionBannerStateRef.current;
-  const showPwaUpdateBanner = Boolean(pwaState?.updateAvailable);
   const isStandaloneShell = Boolean(pwaState?.installed);
   const isWindowControlsOverlay = Boolean(
     pwaState?.displayMode === 'window-controls-overlay' || pwaState?.windowControlsOverlayVisible,
@@ -680,7 +679,7 @@ function MainLayout({
       observer.disconnect();
       window.removeEventListener('resize', updateBannerOffset);
     };
-  }, [connectionBannerState, showNotificationPermissionBanner, showPwaUpdateBanner]);
+  }, [connectionBannerState, showNotificationPermissionBanner]);
 
   useEffect(() => {
     if (hiddenHeader) {
@@ -846,23 +845,6 @@ function MainLayout({
       }
     });
   }, [hasMailPermission, navigate, rememberRecentMailNotification]);
-
-  const handleApplyPwaUpdate = useCallback(async () => {
-    const applied = await applyPwaUpdate();
-    if (!applied) {
-      notifyWarning('Не удалось обновить HUB-IT автоматически. Обновите страницу вручную.', {
-        source: 'pwa',
-        dedupeMode: 'recent',
-        dedupeKey: 'pwa:update-apply-failed',
-      });
-      return;
-    }
-    notifyInfo('HUB-IT обновляется. После активации новой версии страница перезагрузится автоматически.', {
-      source: 'pwa',
-      dedupeMode: 'recent',
-      dedupeKey: 'pwa:update-apply-started',
-    });
-  }, [notifyInfo, notifyWarning]);
 
   useEffect(() => {
     chatUnreadSummaryRef.current = {
@@ -2502,24 +2484,6 @@ useEffect(() => {
             </Alert>
           </Box>
         </Collapse>
-
-        {showPwaUpdateBanner ? (
-          <Alert
-            severity="info"
-            variant="filled"
-            action={(
-              <Button color="inherit" size="small" onClick={() => { void handleApplyPwaUpdate(); }}>
-                Обновить
-              </Button>
-            )}
-            sx={{
-              borderRadius: 0,
-              alignItems: 'center',
-            }}
-          >
-            Доступна новая версия HUB-IT.
-          </Alert>
-        ) : null}
       </Stack>
 
       {/* AppBar */}
