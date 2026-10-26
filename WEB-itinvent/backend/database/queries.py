@@ -5307,3 +5307,36 @@ def resolve_pc_context_by_mac_or_hostname(
                 continue
 
     return None
+
+
+def list_pc_cards_for_binding(db_id: Optional[str] = None) -> List[dict]:
+    """
+    Все карточки ПК ITINVENT (ITEMS.CI_TYPE=1) одним запросом для пакетной привязки
+    inventory-хостов. Сопоставление выполняется в памяти (backend/services/inventory_binding.py).
+
+    ORDER BY ID DESC: при совпадении ключа побеждает самая свежая карточка.
+    """
+    db = get_db(db_id)
+    query = """
+        SELECT
+            i.ID AS item_id,
+            CAST(i.INV_NO AS VARCHAR(64)) AS inv_no,
+            i.MAC_ADDRESS AS mac_address,
+            i.NETBIOS_NAME AS network_name,
+            i.DOMAIN_NAME AS domain_name,
+            i.IP_ADDRESS AS ip_address,
+            m.MODEL_NAME AS model_name,
+            i.BRANCH_NO AS branch_no,
+            b.BRANCH_NAME AS branch_name,
+            l.DESCR AS location_name,
+            o.OWNER_DISPLAY_NAME AS employee_name
+        FROM ITEMS i
+        LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+        LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
+        LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
+        LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+        WHERE i.CI_TYPE = 1
+          AND i.INV_NO IS NOT NULL
+        ORDER BY i.ID DESC
+    """
+    return db.execute_query(query)

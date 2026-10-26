@@ -119,6 +119,7 @@ def store(tmp_path_factory):
             hostname=f"WS-{i:05d}",
             db_id=["itinv", "msk", "spb"][i % 3],
             context={
+                "inv_no": f"INV-{i:05d}",
                 "branch_name": branches[i % 8],
                 "location_name": f"Room {i % 50}",
                 "employee_name": f"Employee {i % 300}",

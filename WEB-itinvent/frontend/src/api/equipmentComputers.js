@@ -69,6 +69,8 @@ export const equipmentComputersAPI = {
       limit: Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.trunc(limit))) : 50,
       offset: Number.isFinite(offset) ? Math.max(0, Math.trunc(offset)) : 0,
       include_summary: options?.includeSummary === true,
+      // Список компьютеров рисует карточку: облегчённая строка; полные данные — в детали.
+      view: String(options?.view || 'card'),
     };
     const etag = String(options?.etag || '').trim();
     const requestId = String(options?.requestId || '').trim();

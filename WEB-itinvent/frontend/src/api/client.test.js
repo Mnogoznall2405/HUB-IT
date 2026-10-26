@@ -377,6 +377,7 @@ describe('equipmentAPI.searchAgentComputers', () => {
         limit: 50,
         offset: 100,
         include_summary: true,
+        view: 'card',
       },
       validateStatus: expect.any(Function),
     });
@@ -462,6 +463,7 @@ describe('equipmentComputersAPI contract', () => {
         limit: 50,
         offset: 100,
         include_summary: true,
+        view: 'card',
       },
       validateStatus: expect.any(Function),
     });

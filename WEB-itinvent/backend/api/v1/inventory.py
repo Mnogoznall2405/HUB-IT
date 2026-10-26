@@ -1,5 +1,6 @@
 ﻿import logging
 import ipaddress
+import random
 import re
 import sqlite3
 import threading
@@ -7,8 +8,10 @@ import time
 import os
 import hashlib
 from collections import OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field
@@ -23,6 +26,8 @@ from backend.db_schema import schema_name
 from backend import inventory_runtime
 from backend.models.auth import User
 from backend.services.user_db_selection_service import user_db_selection_service
+from backend.services import inventory_binding
+from backend.services.inventory_binding import EMPTY_BRANCH_LABEL, UNASSIGNED_BRANCH_LABEL
 from backend.services.authorization_service import (
     PERM_COMPUTERS_MANAGE,
     PERM_COMPUTERS_READ,
@@ -55,12 +60,47 @@ COMPUTER_SEARCH_FIELDS = {"identity", "user", "profiles", "outlook", "network", 
 COMPUTER_SEARCH_DEFAULT_FIELDS = set(COMPUTER_SEARCH_FIELDS)
 
 # Кеш обогащённых записей _collect_scoped_computer_records: повторные запросы
-# (poll, пагинация, summary) переиспользуют коллекцию, пока probe-отпечаток БД
-# (hosts/sql_contexts/change_events) не изменился и TTL не истёк.
+# (poll, пагинация, summary) переиспользуют коллекцию, пока отпечаток содержимого
+# (content_version_probe) не изменился. Запись: (monotonic момента сборки, версия, записи).
+# Свежая (возраст <= TTL) отдаётся как есть; устаревшая до STALE_MAX отдаётся сразу,
+# а пересборка уходит в фон (stale-while-revalidate). Статусы online/stale/offline
+# пересчитываются от now при каждой выдаче, поэтому устаревание last_seen не даёт ложный online.
 COMPUTERS_RECORDS_CACHE_TTL_SEC = 60.0
 COMPUTERS_RECORDS_CACHE_MAX_ENTRIES = 6
-_computers_records_cache: "OrderedDict[tuple, Tuple[float, tuple]]" = OrderedDict()
+COMPUTERS_RECORDS_CACHE_STALE_MAX_SEC = 600.0
+COMPUTERS_RECORDS_FLIGHT_WAIT_SEC = 20.0
+COMPUTERS_RECORDS_REBUILD_WORKERS = 2
+COMPUTERS_LIST_HOT_MAX_KEYS = 8
+COMPUTERS_LIST_HOT_IDLE_SEC = 300.0
+_computers_records_cache: "OrderedDict[tuple, Tuple[float, Any, tuple]]" = OrderedDict()
 _computers_records_cache_lock = threading.Lock()
+# Single-flight: один активный пересчёт на ключ; остальные запросы ждут его результат.
+_computers_flights: Dict[tuple, Tuple[Any, Future]] = {}
+_computers_flights_lock = threading.Lock()
+_computers_rebuild_executor = ThreadPoolExecutor(
+    max_workers=COMPUTERS_RECORDS_REBUILD_WORKERS,
+    thread_name_prefix="inventory-list-rebuild",
+)
+# Горячие ключи списка (последний запрос и рецепт вызова) для фонового прогрева.
+_computers_hot_keys: "OrderedDict[tuple, Tuple[float, Dict[str, Any]]]" = OrderedDict()
+_computers_hot_lock = threading.Lock()
+_computers_list_counters: Dict[str, float] = {
+    "hit": 0,
+    "stale": 0,
+    "miss": 0,
+    "wait": 0,
+    "rebuild_ok": 0,
+    "rebuild_error": 0,
+    "rebuild_ms_total": 0.0,
+    "rebuild_ms_last": 0.0,
+    "warmup_runs": 0,
+}
+_computers_list_counters_lock = threading.Lock()
+# Производные кэши (TTL + версия данных): индекс изменений за 30 дней и сетевой индекс.
+# Без них каждый запрос списка заново читал 90 дней событий и весь сетевой индекс.
+_derived_cache_lock = threading.Lock()
+_changes_index_cache: Optional[Tuple[float, tuple, Dict[str, Dict[str, Any]]]] = None
+_network_lookup_index_cache: Optional[Tuple[float, tuple, Dict[str, Dict[str, Dict[str, Any]]]]] = None
 
 # Native clients intentionally receive only the fields rendered by the native
 # Computers UI.  Full agent/profile/change payloads remain available to the
@@ -551,6 +591,33 @@ def _project_mobile_computer(record: Dict[str, Any], *, detail: bool) -> Dict[st
         projected["network"] = {"devices": projected_devices}
 
     return projected
+
+
+# Поля, которые десктопная карточка списка (Computers.jsx ComputerCard) не читает.
+_CARD_LIST_DROP_FIELDS = (
+    "timestamp",
+    "last_seen_at",
+    "cpu_model",
+    "cpu_load_percent",
+    "ram_gb",
+    "ram_used_percent",
+    "uptime_seconds",
+    "last_reboot_at",
+    "assignment_source",
+    "branch_source",
+    "network",
+    "user_profile_sizes",
+    "outlook",
+)
+
+
+def _project_card_computer(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Строка списка для карточки: _trim_computer_list_record без полей, которые карточка не выводит.
+
+    Карточка по-прежнему получает network_link, logical_disks и storage (SMART-счётчик, drive usage)
+    и outlook_* поля; тяжёлое обогащение не вызывается, полные данные остаются в детали.
+    """
+    return {key: value for key, value in record.items() if key not in _CARD_LIST_DROP_FIELDS}
 
 
 def _extract_ip_fields(record: Dict[str, Any]) -> Tuple[str, List[str]]:
@@ -1084,11 +1151,31 @@ def _build_signature_diff(before_sig: Dict[str, Any], after_sig: Dict[str, Any])
     return diff
 
 
-def _load_changes(store: Any = None, since_ts: Optional[int] = None) -> List[Dict[str, Any]]:
+def _load_changes(
+    store: Any = None,
+    since_ts: Optional[int] = None,
+    *,
+    host_mac: Optional[str] = None,
+    host_hostname: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """События изменений; host_mac/host_hostname — только события одного хоста (детали карточки)."""
+    host_filter = host_mac is not None or host_hostname is not None
+    host_key = _event_host_key(host_mac or "", host_hostname or "") if host_filter else None
     app_store = _get_inventory_app_store() if store is None else None
     if app_store is not None:
-        payload = app_store.list_change_events(since_ts=since_ts)
-        return [row for row in payload if isinstance(row, dict)]
+        if host_filter:
+            payload = app_store.list_change_events(
+                since_ts=since_ts,
+                host_mac=_normalize_mac(host_mac or ""),
+                host_hostname=_normalize_text(host_hostname).lower(),
+            )
+        else:
+            payload = app_store.list_change_events(since_ts=since_ts)
+        rows = [row for row in payload if isinstance(row, dict)]
+        if host_key is not None:
+            # SQL отбирает по нормализованному MAC; точную проверку ключом делаем здесь же.
+            rows = [row for row in rows if _event_host_key(row.get("mac_address"), row.get("hostname")) == host_key]
+        return rows
 
     if store is None:
         store = get_local_store()
@@ -1098,7 +1185,33 @@ def _load_changes(store: Any = None, since_ts: Optional[int] = None) -> List[Dic
     rows = [row for row in payload if isinstance(row, dict)]
     if since_ts is not None:
         rows = [row for row in rows if _to_int(row.get("detected_at"), 0) >= int(since_ts)]
+    if host_key is not None:
+        rows = [row for row in rows if _event_host_key(row.get("mac_address"), row.get("hostname")) == host_key]
     return rows
+
+
+def _get_changes_index(now_ts: int, content_version: Optional[tuple]) -> Dict[str, Dict[str, Any]]:
+    """Индекс изменений по хостам за окно 30 дней; кэш по версии данных и TTL (только app-db)."""
+    global _changes_index_cache
+    cacheable = content_version is not None and _get_inventory_app_store() is not None
+    if cacheable:
+        with _derived_cache_lock:
+            cached = _changes_index_cache
+        if (
+            cached is not None
+            and cached[1] == content_version
+            and time.monotonic() - cached[0] <= COMPUTERS_RECORDS_CACHE_TTL_SEC
+        ):
+            return cached[2]
+    changes = _prune_old_changes(
+        _load_changes(since_ts=now_ts - HISTORY_RETENTION_DAYS * 24 * 60 * 60),
+        now_ts,
+    )
+    index = _build_changes_index(changes, now_ts)
+    if cacheable:
+        with _derived_cache_lock:
+            _changes_index_cache = (time.monotonic(), content_version, index)
+    return index
 
 
 def _prune_old_changes(rows: List[Dict[str, Any]], now_ts: int) -> List[Dict[str, Any]]:
@@ -1288,6 +1401,21 @@ def _get_accessible_db_ids(current_user: User) -> List[str]:
     return all_db_ids
 
 
+def _can_read_all_databases(current_user: User) -> bool:
+    """Чужие базы видны в scope=selected только при computers.read_all (или admin)."""
+    try:
+        ensure_user_permission(current_user, PERM_COMPUTERS_READ_ALL)
+    except HTTPException:
+        return False
+    return True
+
+
+inventory_binding.configure(
+    store_factory=lambda: _get_inventory_app_store(),
+    db_ids_provider=lambda: _get_available_db_ids(),
+)
+
+
 def _resolve_network_link(
     conn: Optional[sqlite3.Connection],
     mac_address: str,
@@ -1436,6 +1564,33 @@ def _load_network_lookup_index(conn: Optional[Any]) -> Optional[Dict[str, Dict[s
         for ip in _extract_ipv4_candidates(row["endpoint_ip_raw"]):
             by_ip.setdefault(ip, payload)
     return {"mac": by_mac, "ip": by_ip}
+
+
+def _load_network_lookup_index_cached(conn: Optional[Any]) -> Optional[Dict[str, Dict[str, Dict[str, Any]]]]:
+    """Сетевой индекс с TTL и версией network_ports (count, max updated_at); None не кэшируем."""
+    global _network_lookup_index_cache
+    if conn is None:
+        return None
+    try:
+        version_row = conn.execute(
+            "SELECT COUNT(*) AS n, MAX(updated_at) AS u FROM network_ports"
+        ).fetchone()
+        version = (str(version_row["n"]), str(version_row["u"] or ""))
+    except Exception:
+        return _load_network_lookup_index(conn)
+    with _derived_cache_lock:
+        cached = _network_lookup_index_cache
+    if (
+        cached is not None
+        and cached[1] == version
+        and time.monotonic() - cached[0] <= COMPUTERS_RECORDS_CACHE_TTL_SEC
+    ):
+        return cached[2]
+    index = _load_network_lookup_index(conn)
+    if index is not None:
+        with _derived_cache_lock:
+            _network_lookup_index_cache = (time.monotonic(), version, index)
+    return index
 
 
 def _resolve_network_link_from_index(
@@ -1870,6 +2025,7 @@ def _resolve_scoped_host_keys(
     context_db_ids: List[str],
     network_lookup: Optional[Dict[str, Dict[str, Dict[str, Any]]]],
     database_name_map: Optional[Dict[str, str]] = None,
+    restrict_to_context_dbs: bool = False,
 ) -> Optional[set[str]]:
     tokens = _search_tokens(q)
     if not tokens or app_store is None:
@@ -1883,7 +2039,7 @@ def _resolve_scoped_host_keys(
     try:
         needs_unassigned = bool(fields & {"location", "database"})
         unassigned_keys: set[str] = set()
-        if needs_unassigned or scope == "selected":
+        if needs_unassigned or restrict_to_context_dbs:
             unassigned_keys = app_store.list_unassigned_host_keys(context_db_ids)
         network_keys_by_token: Dict[str, set[str]] = {}
         if "network" in fields:
@@ -1915,7 +2071,7 @@ def _resolve_scoped_host_keys(
             if not result:
                 return set()
         result = result or set()
-        if scope == "selected":
+        if restrict_to_context_dbs:
             result &= unassigned_keys | app_store.list_mac_addresses_for_db_ids(db_candidates)
         return result
     except Exception as exc:
@@ -1940,9 +2096,9 @@ def _resolve_filter_host_keys(
     try:
         result: Optional[set[str]] = None
         branch_value = _normalize_text(branch).lower()
-        if branch_value:
-            context_db_scope = db_candidates if scope == "selected" else context_db_ids
-            keys = app_store.list_host_keys_for_context(context_db_scope, branch_name=branch_value)
+        # «Без филиала» не индексируется (включает хосты с branch из network_scope): фильтр по Python.
+        if branch_value and branch_value != EMPTY_BRANCH_LABEL.lower():
+            keys = app_store.list_host_keys_for_context(context_db_ids, branch_name=branch_value)
             # Unassigned-ветка: «Без привязки» и branch из network_scope не индексируются
             keys |= app_store.list_unassigned_host_keys(context_db_ids)
             result = keys
@@ -1984,10 +2140,24 @@ def _collect_scoped_computer_records(
     hide_vm_172: bool = False,
     network_lookup: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
     changes_index: Optional[Dict[str, Dict[str, Any]]] = None,
+    content_version: Optional[tuple] = None,
+    copy_items: bool = True,
+    track_hot: bool = True,
 ) -> List[Dict[str, Any]]:
+    """Обогащённые записи с учётом видимости, через кэш записей (см. COMPUTERS_RECORDS_CACHE_TTL_SEC).
+
+    Решение по записи кэша (версия содержимого должна совпасть):
+    - возраст <= TTL: отдаём; статусы пересчитываются от now;
+    - TTL < возраст <= STALE_MAX и ключ не зависит от времени (без status/changed_only):
+      отдаём устаревшие записи сразу, пересборка в фоне (single-flight, executor с ограничением);
+    - иначе синхронная пересборка; параллельные запросы того же ключа ждут её, а не дублируют.
+    Версия изменилась: пересборка синхронная, чтобы запись сразу после правки была видна.
+    copy_items сохранён для совместимости: записи, отданные из кэша, всегда новые dict.
+    """
     fields = _parse_computer_search_fields(search_fields)
     app_store = _get_inventory_app_store()
     requested_scope = _normalize_scope(scope)
+    can_read_all = _can_read_all_databases(current_user)
     db_candidates = _resolve_computer_db_candidates(
         current_user=current_user,
         db_id_selected=db_id_selected,
@@ -2000,12 +2170,19 @@ def _collect_scoped_computer_records(
             if normalized_database_id and normalized_database_id not in context_db_ids:
                 context_db_ids.append(normalized_database_id)
 
-    cache_key: Optional[tuple] = None
-    if app_store is not None:
+    if app_store is not None and content_version is None:
         try:
+            content_version = app_store.content_version_probe()
+        except Exception:
+            content_version = None
+
+    cache_key: Optional[tuple] = None
+    if app_store is not None and content_version is not None:
+        try:
+            # Ключ без версии: версия хранится в записи, поэтому устаревшая запись остаётся доступна.
             cache_key = (
-                app_store.data_version_probe(),
                 requested_scope,
+                bool(can_read_all),
                 tuple(db_candidates),
                 tuple(context_db_ids),
                 _normalize_text(branch).lower(),
@@ -2022,22 +2199,302 @@ def _collect_scoped_computer_records(
             )
         except Exception:
             cache_key = None
-    if cache_key is not None:
-        with _computers_records_cache_lock:
-            cached_entry = _computers_records_cache.get(cache_key)
-            if cached_entry is not None:
-                cached_at, cached_records = cached_entry
-                if time.monotonic() - cached_at <= COMPUTERS_RECORDS_CACHE_TTL_SEC:
-                    _computers_records_cache.move_to_end(cache_key)
-                    cached_hit = cached_records
-                else:
-                    _computers_records_cache.pop(cache_key, None)
-                    cached_hit = None
-            else:
-                cached_hit = None
-        if cached_hit is not None:
-            logger.debug("computers_collect cache=hit records=%d", len(cached_hit))
-            return [dict(item) for item in cached_hit]
+
+    pre = {
+        "fields": fields,
+        "app_store": app_store,
+        "requested_scope": requested_scope,
+        "can_read_all": can_read_all,
+        "db_candidates": db_candidates,
+        "context_db_ids": context_db_ids,
+    }
+    compute_kwargs = dict(
+        current_user=current_user,
+        db_id_selected=db_id_selected,
+        scope=scope,
+        branch=branch,
+        status_filter=status_filter,
+        outlook_status=outlook_status,
+        q=q,
+        search_fields=search_fields,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        changed_only=changed_only,
+        include_hidden=include_hidden,
+        hidden_only=hidden_only,
+        hide_vm_172=hide_vm_172,
+    )
+    if cache_key is None:
+        return _compute_scoped_records(
+            **compute_kwargs,
+            network_lookup=network_lookup,
+            changes_index=changes_index,
+            content_version=content_version,
+            pre=pre,
+            cache_key=None,
+        )
+
+    if track_hot:
+        _track_hot_list_key(cache_key, dict(compute_kwargs, copy_items=False, track_hot=False))
+    time_sensitive = bool(_normalize_text(status_filter)) or bool(changed_only)
+
+    def _build_now(
+        index: Optional[Dict[str, Dict[str, Any]]],
+        net: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = network_lookup,
+    ) -> List[Dict[str, Any]]:
+        return _compute_scoped_records(
+            **compute_kwargs,
+            network_lookup=net,
+            changes_index=index,
+            content_version=content_version,
+            pre=pre,
+            cache_key=cache_key,
+        )
+
+    now_mono = time.monotonic()
+    with _computers_records_cache_lock:
+        entry = _computers_records_cache.get(cache_key)
+        if entry is not None:
+            _computers_records_cache.move_to_end(cache_key)
+    if entry is not None and entry[1] == content_version:
+        age = now_mono - entry[0]
+        if age <= COMPUTERS_RECORDS_CACHE_TTL_SEC:
+            _count_computers_list("hit")
+            logger.debug("computers_collect cache=hit records=%d", len(entry[2]))
+            return _serve_cached_computer_records(entry[2], status_filter)
+        if not time_sensitive and age <= COMPUTERS_RECORDS_CACHE_STALE_MAX_SEC:
+            _count_computers_list("stale")
+            _schedule_computers_rebuild(cache_key, content_version, lambda: _build_now(None))
+            return _serve_cached_computer_records(entry[2], status_filter)
+
+    _count_computers_list("miss")
+    flight, owner = _claim_computers_flight(cache_key, content_version)
+    if not owner:
+        try:
+            shared = flight.result(timeout=COMPUTERS_RECORDS_FLIGHT_WAIT_SEC)
+        except FutureTimeoutError:
+            # Владелец завис: строим самостоятельно, без регистрации в single-flight.
+            return _build_now(changes_index)
+        _count_computers_list("wait")
+        return _serve_cached_computer_records(shared, status_filter)
+    return _run_computers_flight(cache_key, flight, lambda: _build_now(changes_index), inline=True)
+
+
+def _serve_cached_computer_records(
+    records: Any,
+    status_filter: Optional[str],
+) -> List[Dict[str, Any]]:
+    """Выдача из кэша: новые dict со статусом и возрастом от текущего времени.
+
+    Для фильтра по статусу состав пересчитывается по свежему статусу записи.
+    """
+    now_ts = int(time.time())
+    served = [_enrich_status(item, now_ts) for item in records if isinstance(item, dict)]
+    target_status = _normalize_text(status_filter).lower()
+    if target_status:
+        served = [item for item in served if _normalize_text(item.get("status")).lower() == target_status]
+    return served
+
+
+def _count_computers_list(name: str, value: float = 1.0) -> None:
+    with _computers_list_counters_lock:
+        _computers_list_counters[name] = _computers_list_counters.get(name, 0) + value
+
+
+def list_cache_metrics() -> Dict[str, float]:
+    """Счётчики кэша списка компьютеров (hit/stale/miss/wait/rebuild_*) для логов и диагностики."""
+    with _computers_list_counters_lock:
+        return dict(_computers_list_counters)
+
+
+def _key_tag(cache_key: tuple) -> str:
+    # В логи попадает только короткий хэш ключа: в ключе есть текст поиска и филиал.
+    return hashlib.sha1(repr(cache_key).encode("utf-8")).hexdigest()[:8]
+
+
+def _claim_computers_flight(cache_key: tuple, content_version: Any) -> Tuple[Future, bool]:
+    with _computers_flights_lock:
+        current = _computers_flights.get(cache_key)
+        if current is not None and current[0] == content_version and not current[1].done():
+            return current[1], False
+        flight: Future = Future()
+        _computers_flights[cache_key] = (content_version, flight)
+        return flight, True
+
+
+def _release_computers_flight(cache_key: tuple, flight: Future) -> None:
+    with _computers_flights_lock:
+        current = _computers_flights.get(cache_key)
+        if current is not None and current[1] is flight:
+            _computers_flights.pop(cache_key, None)
+
+
+def _run_computers_flight(
+    cache_key: tuple,
+    flight: Future,
+    build: Callable[[], List[Dict[str, Any]]],
+    *,
+    inline: bool,
+) -> List[Dict[str, Any]]:
+    """Пересборка владельцем флага. Ошибка не трогает кэш: запись кладётся только при успехе."""
+    started = time.perf_counter()
+    try:
+        result = build()
+    except BaseException as exc:
+        _count_computers_list("rebuild_error")
+        _release_computers_flight(cache_key, flight)
+        flight.set_exception(exc)
+        if not isinstance(exc, Exception):
+            raise
+        logger.warning("computers_rebuild failed key=%s error=%s", _key_tag(cache_key), type(exc).__name__)
+        if inline:
+            raise
+        return []
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    _count_computers_list("rebuild_ok")
+    _count_computers_list("rebuild_ms_total", elapsed_ms)
+    with _computers_list_counters_lock:
+        _computers_list_counters["rebuild_ms_last"] = round(elapsed_ms, 1)
+    logger.debug("computers_rebuild ok key=%s ms=%.1f records=%d", _key_tag(cache_key), elapsed_ms, len(result))
+    _release_computers_flight(cache_key, flight)
+    flight.set_result(result)
+    return result
+
+
+def _schedule_computers_rebuild(
+    cache_key: tuple,
+    content_version: Any,
+    build: Callable[[], List[Dict[str, Any]]],
+) -> None:
+    flight, owner = _claim_computers_flight(cache_key, content_version)
+    if not owner:
+        return
+    try:
+        _computers_rebuild_executor.submit(_run_computers_flight, cache_key, flight, build, inline=False)
+    except Exception as exc:
+        _release_computers_flight(cache_key, flight)
+        logger.warning("computers_rebuild schedule failed error=%s", type(exc).__name__)
+
+
+def _track_hot_list_key(cache_key: tuple, recipe: Dict[str, Any]) -> None:
+    now = time.monotonic()
+    with _computers_hot_lock:
+        _computers_hot_keys[cache_key] = (now, recipe)
+        _computers_hot_keys.move_to_end(cache_key)
+        while len(_computers_hot_keys) > COMPUTERS_LIST_HOT_MAX_KEYS:
+            _computers_hot_keys.popitem(last=False)
+
+
+def warm_hot_list_keys(stop_event: Optional[threading.Event] = None) -> int:
+    """Прогрев горячих ключей списка: повторный вызов по рецепту. Свежая запись не пересчитывается,
+    устаревшая или сменившая версию пересобирается. Ключи, к которым не обращались дольше
+    COMPUTERS_LIST_HOT_IDLE_SEC, выбрасываются. Сам прогрев ключи не регистрирует."""
+    now = time.monotonic()
+    with _computers_hot_lock:
+        for key in [k for k, (last, _) in _computers_hot_keys.items() if now - last > COMPUTERS_LIST_HOT_IDLE_SEC]:
+            _computers_hot_keys.pop(key, None)
+        recipes = [recipe for _, recipe in _computers_hot_keys.values()]
+    done = 0
+    for recipe in recipes:
+        if stop_event is not None and stop_event.is_set():
+            break
+        try:
+            _collect_scoped_computer_records(**recipe)
+        except Exception as exc:
+            logger.warning("computers_warmup key failed error=%s", type(exc).__name__)
+        done += 1
+    _count_computers_list("warmup_runs")
+    return done
+
+
+def _list_warmup_enabled() -> bool:
+    raw = os.getenv("INVENTORY_LIST_WARMUP_ENABLED")
+    if raw is None or raw.strip() == "":
+        return True
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _list_warmup_interval_sec() -> float:
+    try:
+        value = float(os.getenv("INVENTORY_LIST_WARMUP_INTERVAL_SEC", "30"))
+    except (TypeError, ValueError):
+        value = 30.0
+    return max(10.0, value)
+
+
+class _ListWarmupWorker:
+    def __init__(self) -> None:
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+
+    def start(self) -> bool:
+        if self._thread is not None and self._thread.is_alive():
+            return True
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="inventory-list-warmup", daemon=True)
+        self._thread.start()
+        return True
+
+    def stop(self) -> None:
+        self._stop.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=5)
+        self._thread = None
+
+    def _run(self) -> None:
+        interval = _list_warmup_interval_sec()
+        # Одна нить на процесс: прогревы не параллелятся. Джиттер разводит процессы по времени.
+        while not self._stop.wait(interval + random.uniform(0, 10)):
+            try:
+                warm_hot_list_keys(self._stop)
+            except Exception as exc:
+                logger.warning("computers_warmup tick failed error=%s", type(exc).__name__)
+
+
+_list_warmup_worker = _ListWarmupWorker()
+
+
+def start_list_warmup() -> bool:
+    """Фоновый прогрев горячих ключей списка; выключается INVENTORY_LIST_WARMUP_ENABLED=0."""
+    if not _list_warmup_enabled():
+        return False
+    return _list_warmup_worker.start()
+
+
+def stop_list_warmup() -> None:
+    _list_warmup_worker.stop()
+
+
+def _compute_scoped_records(
+    *,
+    current_user: User,
+    db_id_selected: Optional[str],
+    scope: str,
+    branch: Optional[str],
+    status_filter: Optional[str],
+    outlook_status: Optional[str],
+    q: Optional[str],
+    search_fields: Any,
+    sort_by: str,
+    sort_dir: str,
+    changed_only: bool,
+    include_hidden: bool,
+    hidden_only: bool,
+    hide_vm_172: bool,
+    network_lookup: Optional[Dict[str, Dict[str, Dict[str, Any]]]],
+    changes_index: Optional[Dict[str, Dict[str, Any]]],
+    content_version: Optional[tuple],
+    pre: Dict[str, Any],
+    cache_key: Optional[tuple],
+) -> List[Dict[str, Any]]:
+    """Сборка записей из снимка БД без чтения кэша. При cache_key результат кладётся в кэш с версией."""
+    fields = pre["fields"]
+    app_store = pre["app_store"]
+    requested_scope = pre["requested_scope"]
+    can_read_all = pre["can_read_all"]
+    db_candidates = pre["db_candidates"]
+    context_db_ids = pre["context_db_ids"]
 
     database_name_map = _get_database_name_map()
     now_ts = int(time.time())
@@ -2051,6 +2508,7 @@ def _collect_scoped_computer_records(
         context_db_ids=context_db_ids,
         network_lookup=network_lookup,
         database_name_map=database_name_map,
+        restrict_to_context_dbs=requested_scope == "selected" and not can_read_all,
     )
     if scoped_keys is not None and len(scoped_keys) == 0:
         return []
@@ -2080,11 +2538,7 @@ def _collect_scoped_computer_records(
         current_data = {}
 
     if changes_index is None:
-        changes = _prune_old_changes(
-            _load_changes(since_ts=now_ts - HISTORY_RETENTION_DAYS * 24 * 60 * 60),
-            now_ts,
-        )
-        changes_index = _build_changes_index(changes, now_ts)
+        changes_index = _get_changes_index(now_ts, content_version)
 
     sql_cache: Dict[str, Optional[Dict[str, Any]]] = {}
     prefetched_sql_contexts: Dict[tuple[str, str, str], Dict[str, Any]] = {}
@@ -2097,9 +2551,8 @@ def _collect_scoped_computer_records(
         except Exception as exc:
             logger.debug("Inventory SQL context prefetch skipped: %s", exc)
             prefetched_sql_contexts = {}
-    allow_sync_context_resolution = app_store is None or (
-        not prefetched_sql_contexts and len(current_data) <= 10
-    )
+    # Список читает только сохранённые привязки; per-host резолв ITINVENT только без app-DB (legacy/JSON).
+    allow_sync_context_resolution = app_store is None
 
     def _get_prefetched_sql_context(mac_address: str, hostname: str, db_id: str) -> Optional[Dict[str, Any]]:
         normalized_mac = _normalize_mac(mac_address)
@@ -2128,8 +2581,8 @@ def _collect_scoped_computer_records(
 
             mac_address = _normalize_text(record.get("mac_address"))
             hostname = _normalize_text(record.get("hostname"))
-            cache_key = f"{_normalize_mac(mac_address)}|{hostname.lower()}|{','.join(context_db_ids)}"
-            if cache_key not in sql_cache:
+            sql_key = f"{_normalize_mac(mac_address)}|{hostname.lower()}|{','.join(context_db_ids)}"
+            if sql_key not in sql_cache:
                 selected_context: Optional[Dict[str, Any]] = None
                 any_context: Optional[Dict[str, Any]] = None
                 for candidate_db in context_db_ids:
@@ -2147,12 +2600,15 @@ def _collect_scoped_computer_records(
                     if candidate_db in db_candidates and selected_context is None:
                         selected_context = enriched_context
 
-                resolved_context = any_context if requested_scope == "all" else selected_context
-                assigned_elsewhere = requested_scope == "selected" and selected_context is None and any_context is not None
+                # Карточку в чужой БД видят только admin/computers.read_all; иначе хост скрывается.
+                excluded = not can_read_all and selected_context is None and any_context is not None
+                resolved_context = selected_context if selected_context is not None else (
+                    any_context if can_read_all else None
+                )
                 network_scope = _resolve_inventory_network_scope(record)
-                if resolved_context is None and not assigned_elsewhere and isinstance(network_scope, dict):
+                if resolved_context is None and not excluded and isinstance(network_scope, dict):
                     network_database_id = _normalize_text(network_scope.get("database_id"))
-                    if requested_scope == "all" or network_database_id in db_candidates:
+                    if requested_scope == "all" or network_database_id in db_candidates or can_read_all:
                         resolved_context = {
                             "branch_name": _normalize_text(network_scope.get("branch_name")),
                             "ip_address": _normalize_text(network_scope.get("ip_address")),
@@ -2161,21 +2617,21 @@ def _collect_scoped_computer_records(
                             "assignment_source": "network_scope",
                         }
                     else:
-                        assigned_elsewhere = True
+                        excluded = True
 
-                if assigned_elsewhere or (resolved_context is None and app_store is None):
-                    sql_cache[cache_key] = {"_excluded": True}
+                if excluded or (resolved_context is None and app_store is None):
+                    sql_cache[sql_key] = {"_excluded": True}
                 else:
-                    sql_cache[cache_key] = resolved_context
+                    sql_cache[sql_key] = resolved_context
 
-            sql_context = sql_cache.get(cache_key)
+            sql_context = sql_cache.get(sql_key)
             if isinstance(sql_context, dict) and sql_context.get("_excluded"):
                 continue
 
             if isinstance(sql_context, dict):
                 assignment_source = _normalize_text(sql_context.get("assignment_source")) or "sql"
                 record["branch_no"] = sql_context.get("branch_no")
-                record["branch_name"] = _normalize_text(sql_context.get("branch_name"))
+                record["branch_name"] = _normalize_text(sql_context.get("branch_name")) or EMPTY_BRANCH_LABEL
                 record["location_name"] = _normalize_text(sql_context.get("location_name"))
                 record["branch_source"] = assignment_source
                 record["assignment_source"] = assignment_source
@@ -2188,7 +2644,7 @@ def _collect_scoped_computer_records(
                     record["user_full_name"] = _normalize_person_name(sql_context.get("employee_name"))
             else:
                 record["branch_no"] = None
-                record["branch_name"] = "Без привязки"
+                record["branch_name"] = UNASSIGNED_BRANCH_LABEL
                 record["location_name"] = ""
                 record["branch_source"] = "unassigned"
                 record["assignment_source"] = "unassigned"
@@ -2243,27 +2699,36 @@ def _collect_scoped_computer_records(
     reverse = _normalize_text(sort_dir).lower() == "desc"
     records.sort(key=lambda item: _computer_sort_key(item, normalized_sort_by), reverse=reverse)
     if cache_key is not None:
+        snapshot = tuple(dict(item) for item in records)
         with _computers_records_cache_lock:
-            _computers_records_cache[cache_key] = (
-                time.monotonic(),
-                tuple(dict(item) for item in records),
-            )
+            _computers_records_cache[cache_key] = (time.monotonic(), content_version, snapshot)
             _computers_records_cache.move_to_end(cache_key)
             while len(_computers_records_cache) > COMPUTERS_RECORDS_CACHE_MAX_ENTRIES:
                 _computers_records_cache.popitem(last=False)
     return records
 
 
-def _inventory_data_etag() -> Optional[str]:
-    """Weak ETag-отпечаток инвентаря: опрашивает hosts/contexts/events за ~мс."""
+def _inventory_content_version() -> Optional[tuple]:
+    """Отпечаток содержимого (без heartbeat); один вызов на запрос, передаётся дальше."""
     app_store = _get_inventory_app_store()
     if app_store is None:
         return None
     try:
-        probe = app_store.data_version_probe()
+        return app_store.content_version_probe()
     except Exception:
         return None
-    digest = hashlib.sha1(repr(probe).encode("utf-8")).hexdigest()[:16]
+
+
+def _inventory_data_etag(content_version: Optional[tuple] = None) -> Optional[str]:
+    """Weak ETag: содержимое + минутный бакет времени.
+
+    Статусы online/stale/offline зависят от now (порог 12 и 60 мин), поэтому без бакета 304
+    могло бы вернуть устаревший статус. Бакет по минуте: 304 не переживает смену минуты.
+    """
+    if content_version is None:
+        return None
+    bucket = int(time.time()) // 60
+    digest = hashlib.sha1(repr((content_version, bucket)).encode("utf-8")).hexdigest()[:16]
     return f'W/"inv-{digest}"'
 
 
@@ -2277,7 +2742,7 @@ def _computer_summary(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         if status_key not in status_counts:
             status_key = "unknown"
         status_counts[status_key] += 1
-        branch_name = _normalize_text(item.get("branch_name")) or "Без филиала"
+        branch_name = _normalize_text(item.get("branch_name")) or EMPTY_BRANCH_LABEL
         branch_counts[branch_name] = branch_counts.get(branch_name, 0) + 1
         outlook_key = _normalize_text(item.get("outlook_status")).lower() or "unknown"
         if outlook_key not in outlook_counts:
@@ -2398,15 +2863,17 @@ def _build_computers_search_payload(
     limit: Optional[int] = None,
     offset: int = 0,
     include_summary: bool = False,
+    content_version: Optional[tuple] = None,
 ) -> Dict[str, Any]:
     fields = _parse_computer_search_fields(search_fields)
     needle = _normalize_text(q).lower()
     now_ts = int(time.time())
-    changes = _prune_old_changes(
-        _load_changes(since_ts=now_ts - HISTORY_RETENTION_DAYS * 24 * 60 * 60),
-        now_ts,
-    )
-    changes_index = _build_changes_index(changes, now_ts)
+    if content_version is None and _get_inventory_app_store() is not None:
+        try:
+            content_version = _get_inventory_app_store().content_version_probe()
+        except Exception:
+            content_version = None
+    changes_index = _get_changes_index(now_ts, content_version)
 
     network_conn: Optional[Any] = None
     network_index: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None
@@ -2417,7 +2884,7 @@ def _build_computers_search_payload(
             network_conn = None
         if network_conn is not None:
             try:
-                network_index = _load_network_lookup_index(network_conn)
+                network_index = _load_network_lookup_index_cached(network_conn)
             except Exception:
                 network_index = None
     try:
@@ -2438,9 +2905,13 @@ def _build_computers_search_payload(
             hide_vm_172=hide_vm_172,
             network_lookup=network_index,
             changes_index=changes_index,
+            content_version=content_version,
+            copy_items=False,
         )
 
         if needle and "network" in fields:
+            # records могут быть ссылками из кэша: network_link пишем только в копии.
+            records = [dict(item) for item in records]
             network_cache: Dict[str, Optional[Dict[str, Any]]] = {}
 
             def _attach_network_fields(items: List[Dict[str, Any]]) -> None:
@@ -2453,7 +2924,7 @@ def _build_computers_search_payload(
                     except Exception:
                         network_conn = None
                 if network_index is None and network_conn is not None:
-                    network_index = _load_network_lookup_index(network_conn)
+                    network_index = _load_network_lookup_index_cached(network_conn)
                 for record in items:
                     mac_address = _normalize_text(record.get("mac_address"))
                     record_ip_list = record.get("ip_list") if isinstance(record.get("ip_list"), list) else []
@@ -2482,11 +2953,12 @@ def _build_computers_search_payload(
         total = len(records)
         safe_offset = max(0, int(offset or 0))
         if limit is None:
-            page_items = list(records)
+            page_items = [dict(item) for item in records]
             safe_limit = len(records)
         else:
             safe_limit = max(1, min(500, int(limit or 50)))
-            page_items = list(records[safe_offset:safe_offset + safe_limit])
+            # Копируем только страницу: обогащение ниже меняет элементы, кэш не должен.
+            page_items = [dict(item) for item in records[safe_offset:safe_offset + safe_limit]]
 
         if page_items:
             network_cache_enrich: Dict[str, Optional[Dict[str, Any]]] = {}
@@ -2501,7 +2973,7 @@ def _build_computers_search_payload(
                     except Exception:
                         network_conn = None
                 if network_index is None and network_conn is not None:
-                    network_index = _load_network_lookup_index(network_conn)
+                    network_index = _load_network_lookup_index_cached(network_conn)
                 for record in items:
                     mac_address = _normalize_text(record.get("mac_address"))
                     record_ip_list = record.get("ip_list") if isinstance(record.get("ip_list"), list) else []
@@ -2649,12 +3121,13 @@ def _build_computer_detail_payload(
         if candidate_db in db_candidates and selected_context is None:
             selected_context = context
 
-    sql_context = any_context if requested_scope == "all" else selected_context
-    assigned_elsewhere = requested_scope == "selected" and selected_context is None and any_context is not None
+    can_read_all = _can_read_all_databases(current_user)
+    sql_context = selected_context if selected_context is not None else (any_context if can_read_all else None)
+    excluded = not can_read_all and selected_context is None and any_context is not None
     network_scope = _resolve_inventory_network_scope(record)
-    if sql_context is None and not assigned_elsewhere and isinstance(network_scope, dict):
+    if sql_context is None and not excluded and isinstance(network_scope, dict):
         network_database_id = _normalize_text(network_scope.get("database_id"))
-        if requested_scope == "all" or network_database_id in db_candidates:
+        if requested_scope == "all" or network_database_id in db_candidates or can_read_all:
             sql_context = {
                 "branch_name": _normalize_text(network_scope.get("branch_name")),
                 "ip_address": _normalize_text(network_scope.get("ip_address")),
@@ -2663,15 +3136,15 @@ def _build_computer_detail_payload(
                 "assignment_source": "network_scope",
             }
         else:
-            assigned_elsewhere = True
+            excluded = True
 
-    if assigned_elsewhere or (sql_context is None and app_store is None):
+    if excluded or (sql_context is None and app_store is None):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Computer not found")
 
     if isinstance(sql_context, dict):
         assignment_source = _normalize_text(sql_context.get("assignment_source")) or "sql"
         record["branch_no"] = sql_context.get("branch_no")
-        record["branch_name"] = _normalize_text(sql_context.get("branch_name"))
+        record["branch_name"] = _normalize_text(sql_context.get("branch_name")) or EMPTY_BRANCH_LABEL
         record["location_name"] = _normalize_text(sql_context.get("location_name"))
         record["branch_source"] = assignment_source
         record["assignment_source"] = assignment_source
@@ -2684,7 +3157,7 @@ def _build_computer_detail_payload(
             record["user_full_name"] = _normalize_person_name(sql_context.get("employee_name"))
     else:
         record["branch_no"] = None
-        record["branch_name"] = "Без привязки"
+        record["branch_name"] = UNASSIGNED_BRANCH_LABEL
         record["location_name"] = ""
         record["branch_source"] = "unassigned"
         record["assignment_source"] = "unassigned"
@@ -2709,8 +3182,13 @@ def _build_computer_detail_payload(
     record["ip_primary"] = ip_primary
     record["ip_list"] = _dedupe_strings(ip_list)
 
+    # Только события этого хоста: фильтр по MAC/hostname в SQL, без чтения 90 дней по всем ПК.
     changes = _prune_old_changes(
-        _load_changes(since_ts=now_ts - HISTORY_RETENTION_DAYS * 24 * 60 * 60),
+        _load_changes(
+            since_ts=now_ts - HISTORY_RETENTION_DAYS * 24 * 60 * 60,
+            host_mac=_normalize_mac(mac_value),
+            host_hostname=hostname,
+        ),
         now_ts,
     )
     changes_index = _build_changes_index(changes, now_ts)
@@ -2721,40 +3199,22 @@ def _build_computer_detail_payload(
     record["has_hardware_changes"] = record["changes_count_30d"] > 0
 
     page_items = [record]
-    network_cache: Dict[str, Optional[Dict[str, Any]]] = {}
     network_conn: Optional[Any] = None
-    network_index: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None
 
     def _attach_network_fields(items: List[Dict[str, Any]]) -> None:
-        nonlocal network_conn, network_index
+        # Одна карточка: резолв по MAC/IP в БД, без полного сетевого индекса на каждый запрос.
+        nonlocal network_conn
         if network_conn is None:
             try:
                 network_conn = _open_network_lookup_connection()
             except Exception:
                 network_conn = None
-        if network_index is None and network_conn is not None:
-            network_index = _load_network_lookup_index(network_conn)
         for row in items:
-            mac_item = _normalize_text(row.get("mac_address"))
-            record_ip_list = row.get("ip_list") if isinstance(row.get("ip_list"), list) else []
-            network_key = f"{_normalize_mac(mac_item)}|{','.join(_dedupe_strings(record_ip_list))}"
-            if network_key not in network_cache:
-                indexed_link = _resolve_network_link_from_index(
-                    network_index,
-                    mac_address=mac_item,
-                    ip_list=record_ip_list,
-                )
-                if indexed_link is not None:
-                    network_cache[network_key] = indexed_link
-                elif network_index is not None:
-                    network_cache[network_key] = None
-                else:
-                    network_cache[network_key] = _resolve_network_link(
-                        network_conn,
-                        mac_address=mac_item,
-                        ip_list=record_ip_list,
-                    )
-            row["network_link"] = network_cache.get(network_key)
+            row["network_link"] = _resolve_network_link(
+                network_conn,
+                mac_address=_normalize_text(row.get("mac_address")),
+                ip_list=row.get("ip_list") if isinstance(row.get("ip_list"), list) else [],
+            )
 
     try:
         for row in page_items:
@@ -2789,7 +3249,8 @@ def get_computers_summary(
     hide_vm_172: bool = Query(False),
 ):
     """Return aggregate counts for computers matching the current filters."""
-    etag = _inventory_data_etag()
+    content_version = _inventory_content_version()
+    etag = _inventory_data_etag(content_version)
     if etag and request is not None and request.headers.get("if-none-match") == etag:
         return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": etag})
     include_hidden = _query_bool(include_hidden, False)
@@ -2807,11 +3268,12 @@ def get_computers_summary(
             network_conn = None
         if network_conn is not None:
             try:
-                network_index = _load_network_lookup_index(network_conn)
+                network_index = _load_network_lookup_index_cached(network_conn)
             except Exception:
                 network_index = None
     try:
         records = _collect_scoped_computer_records(
+            content_version=content_version,
             current_user=current_user,
             db_id_selected=db_id_selected,
             scope=scope,
@@ -2881,14 +3343,20 @@ def search_computers(
     offset: int = Query(0, ge=0),
     include_summary: bool = Query(False),
     mobile_safe: bool = Query(False),
+    view: str = Query(""),
 ):
-    """Return paginated collected computers with fielded server-side search."""
-    etag = _inventory_data_etag()
+    """Return paginated collected computers with fielded server-side search.
+
+    view=card — облегчённая проекция строки списка (без CPU/RAM/профилей), см. _project_card_computer.
+    """
+    content_version = _inventory_content_version()
+    etag = _inventory_data_etag(content_version)
     request_id = request.headers.get("x-request-id", "") if request is not None else ""
     if etag and request is not None and request.headers.get("if-none-match") == etag:
         return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": etag})
     started_at = time.perf_counter()
     payload = _build_computers_search_payload(
+        content_version=content_version,
         current_user=current_user,
         db_id_selected=db_id_selected,
         scope=scope,
@@ -2928,6 +3396,8 @@ def search_computers(
             for item in payload.get("items", [])
             if isinstance(item, dict)
         ]
+    elif _normalize_text(view).lower() == "card":
+        payload["items"] = [_project_card_computer(item) for item in payload.get("items", []) if isinstance(item, dict)]
     return payload
 
 
@@ -2953,10 +3423,12 @@ def get_computers(
     """
     Return all collected computers from the active inventory store.
     """
-    etag = _inventory_data_etag()
+    content_version = _inventory_content_version()
+    etag = _inventory_data_etag(content_version)
     if etag and request is not None and request.headers.get("if-none-match") == etag:
         return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": etag})
     payload = _build_computers_search_payload(
+        content_version=content_version,
         current_user=current_user,
         db_id_selected=db_id_selected,
         scope=scope,

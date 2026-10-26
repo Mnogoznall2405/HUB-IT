@@ -16,6 +16,8 @@ inventory = importlib.util.module_from_spec(SPEC)
 assert SPEC is not None and SPEC.loader is not None
 SPEC.loader.exec_module(inventory)
 
+from backend.services import inventory_binding  # noqa: E402
+
 TEST_AGENT_API_KEY = "test-inventory-agent-key"
 
 
@@ -114,6 +116,26 @@ def test_inventory_endpoints_support_app_db_backend(temp_dir, monkeypatch):
     assert changes["latest_events"][0]["mac_address"] == "AA-BB-CC-DD-EE-01"
     assert "before_signature" in changes["latest_events"][0]
     assert "after_signature" in changes["latest_events"][0]
+
+    # Список только читает привязки: карточку ITINVENT связывает фоновый цикл, а не запрос списка.
+    card = {
+        "inv_no": "101795",
+        "mac_address": "AA-BB-CC-DD-EE-01",
+        "network_name": "PC-01",
+        "domain_name": "",
+        "ip_address": "10.10.1.11",
+        "model_name": "Dell OptiPlex 7090",
+        "branch_no": "101",
+        "branch_name": "РўСЋРјРµРЅСЊ",
+        "location_name": "РљР°Р±РёРЅРµС‚ 12",
+        "employee_name": "РџРµС‚СЂРѕРІ Рђ.Рђ.",
+    }
+    binding_stats = inventory_binding.run_binding_cycle(
+        inventory.AppInventoryStore(database_url=database_url),
+        db_ids=["DB1"],
+        pull=lambda db_id: [card],
+    )
+    assert binding_stats["bound_mac"] == 1
 
     computers = inventory.get_computers(
         current_user=_user(),

@@ -44,6 +44,7 @@ from backend.services.mail_notification_service import mail_notification_service
 from backend.services.mfu_monitor_service import mfu_runtime_monitor
 from backend.api.v1 import monitoring
 from backend.services.network_monitor_service import network_monitor_service
+from backend.services import inventory_binding
 from backend.services.my_files_service import my_files_worker
 from backend.services.task_due_notification_worker import (
     background_enabled as task_due_notification_background_enabled,
@@ -206,6 +207,8 @@ async def lifespan(app: FastAPI):
     if MFU_RUNTIME_MONITOR_ENABLED:
         await mfu_runtime_monitor.start()
     await network_monitor_service.start()
+    inventory_binding.start_background_worker()
+    inventory.start_list_warmup()
     if MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED:
         await mail_notification_service.start()
     print(f"Starting {config.app.app_name} v{config.app.version}")
@@ -378,6 +381,8 @@ async def lifespan(app: FastAPI):
     await my_files_worker.stop()
     if MFU_RUNTIME_MONITOR_ENABLED:
         await mfu_runtime_monitor.stop()
+    inventory.stop_list_warmup()
+    inventory_binding.stop_background_worker()
     await network_monitor_service.stop()
     if hub_realtime_started:
         try:
