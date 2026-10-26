@@ -71,7 +71,7 @@ def upgrade() -> None:
             f"SELECT c.id, c.pinned_message_id, c.pinned_by_user_id, COALESCE(c.pinned_at, CURRENT_TIMESTAMP) "
             f"FROM {prefix}chat_conversations c "
             f"JOIN {prefix}chat_messages m ON m.id = c.pinned_message_id AND m.conversation_id = c.id "
-            f"WHERE c.pinned_message_id IS NOT NULL AND m.is_deleted = {'false' if schema else '0'}"
+            f"WHERE c.pinned_message_id IS NOT NULL AND m.is_deleted = {'false' if op.get_bind().dialect.name == 'postgresql' else '0'}"
         )
     )
 
