@@ -265,6 +265,7 @@ _HUB_REQUIRED_COLUMNS = {
         "department_id",
         "visibility_scope",
         "observer_user_ids",
+        "parent_task_id",
     },
     "hub_task_projects": {"id", "name", "code", "description", "is_active", "created_at", "updated_at"},
     "hub_task_objects": {"id", "project_id", "name", "code", "description", "is_active", "created_at", "updated_at"},
@@ -427,6 +428,7 @@ _TASK_LIST_SELECT_COLUMNS = (
     "department_id",
     "visibility_scope",
     "observer_user_ids",
+    "parent_task_id",
 )
 # Stable public list contract — every item always has exactly these keys
 # (plus optional integration_* from API enrich). No conditional key omission.
@@ -466,6 +468,9 @@ _TASK_LIST_PUBLIC_KEYS = frozenset({
     "department_name",
     "visibility_scope",
     "observer_user_ids",
+    "parent_task_id",
+    "subtasks_total",
+    "subtasks_done",
     "is_overdue",
     "attachments_count",
     "reports_count",
@@ -547,6 +552,7 @@ _HUB_REQUIRED_INDEXES = {
         "idx_hub_tasks_protocol_date",
         "idx_hub_tasks_completed_at",
         "idx_hub_tasks_department",
+        "idx_hub_tasks_parent",
     },
     "hub_task_projects": {"idx_hub_task_projects_active"},
     "hub_task_objects": {"idx_hub_task_objects_project"},
@@ -578,6 +584,14 @@ class TaskCanvasRevisionConflict(RuntimeError):
     def __init__(self, current_revision: int) -> None:
         self.current_revision = max(0, int(current_revision))
         super().__init__("Task canvas revision conflict")
+
+
+class TaskHasSubtasks(ValueError):
+    """Raised when a task with subtasks is about to be deleted."""
+
+    def __init__(self, subtasks_total: int) -> None:
+        self.subtasks_total = int(subtasks_total)
+        super().__init__("Task has subtasks: delete or complete them first")
 
 
 class TaskCanvasTooLarge(ValueError):
@@ -1181,6 +1195,11 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN email_deadline_remind_hours INTEGER NULL")
         if "observer_user_ids" not in columns:
             conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN observer_user_ids TEXT NOT NULL DEFAULT '[]'")
+        if "parent_task_id" not in columns:
+            conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN parent_task_id TEXT NULL")
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{self._TASKS_TABLE}_parent ON {self._TASKS_TABLE}(parent_task_id)"
+        )
         conn.execute(
             f"""
             UPDATE {self._TASKS_TABLE}
@@ -2341,6 +2360,41 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         previous_task: dict[str, Any] | None = None,
         actor_user_id: int = 0,
     ) -> int:
+        delivered = self._publish_task_realtime_single(
+            task=task,
+            operation=operation,
+            previous_task=previous_task,
+            actor_user_id=actor_user_id,
+        )
+        # A subtask change moves the parent's progress counters, so the parent's viewers refresh too.
+        # The parent's updated_at is deliberately left untouched (it would reorder their lists).
+        task_payload = task if isinstance(task, dict) else previous_task
+        parent_task_id = _normalize_text((task_payload or {}).get("parent_task_id"))
+        if parent_task_id:
+            try:
+                with self._db_conn(write=False) as conn:
+                    parent_row = conn.execute(
+                        f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?",
+                        (parent_task_id,),
+                    ).fetchone()
+                if parent_row is not None:
+                    delivered += self._publish_task_realtime_single(
+                        task=dict(parent_row),
+                        operation="updated",
+                        actor_user_id=actor_user_id,
+                    )
+            except Exception:
+                logger.warning("hub.task.parent_realtime_failed parent_task_id=%s", parent_task_id, exc_info=True)
+        return delivered
+
+    def _publish_task_realtime_single(
+        self,
+        *,
+        task: dict[str, Any] | None,
+        operation: str,
+        previous_task: dict[str, Any] | None = None,
+        actor_user_id: int = 0,
+    ) -> int:
         task_payload = task if isinstance(task, dict) else previous_task
         task_id = _normalize_text((task_payload or {}).get("id"))
         if not task_id:
@@ -2593,6 +2647,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 "latest_comments": {},
                 "last_seen_at": {},
                 "checklist_counts": {},
+                "subtask_counts": {},
                 "viewer_user_id": self._as_int(viewer_user_id),
             }
         placeholders = ", ".join(["?"] * len(normalized_ids))
@@ -2671,7 +2726,41 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             },
             "last_seen_at": last_seen_at,
             "checklist_counts": self._task_checklist_counts_by_ids(conn, normalized_ids),
+            "subtask_counts": self._task_subtask_counts_by_ids(conn, normalized_ids),
             "viewer_user_id": normalized_viewer_id,
+        }
+
+    def _task_subtask_counts_by_ids(
+        self,
+        conn,
+        task_ids: list[str],
+    ) -> dict[str, dict[str, int]]:
+        """Subtask totals per parent in one grouped query (no N+1 in the task list).
+
+        Counts cover every child, regardless of the viewer's access to it: only
+        numbers are exposed here, the child records themselves go through
+        ``_list_task_subtasks`` which filters by access.
+        """
+        if not task_ids:
+            return {}
+        placeholders = ", ".join(["?"] * len(task_ids))
+        rows = conn.execute(
+            f"""
+            SELECT parent_task_id AS parent_id,
+                   COUNT(*) AS c_total,
+                   SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS c_done
+            FROM {self._TASKS_TABLE}
+            WHERE parent_task_id IN ({placeholders})
+            GROUP BY parent_task_id
+            """,
+            tuple(task_ids),
+        ).fetchall()
+        return {
+            _normalize_text(row["parent_id"]): {
+                "subtasks_total": self._as_int(row["c_total"]),
+                "subtasks_done": self._as_int(row["c_done"]),
+            }
+            for row in rows
         }
 
     def _comment_summary_from_batch(
@@ -2803,6 +2892,10 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             task_id,
             {"checklist_total": 0, "checklist_done": 0},
         )
+        subtask_counts = batch_ctx.get("subtask_counts", {}).get(
+            task_id,
+            {"subtasks_total": 0, "subtasks_done": 0},
+        )
         completed_at, completed_at_source = self._derive_completed_tracking(raw)
         comment_summary = self._comment_summary_from_batch(task_id=task_id, batch_ctx=batch_ctx)
         item = {
@@ -2855,6 +2948,9 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 default=VISIBILITY_PRIVATE,
             ),
             "observer_user_ids": self._normalize_observer_user_ids(raw.get("observer_user_ids")),
+            "parent_task_id": _normalize_text(raw.get("parent_task_id")) or None,
+            "subtasks_total": int(subtask_counts.get("subtasks_total") or 0),
+            "subtasks_done": int(subtask_counts.get("subtasks_done") or 0),
             "is_overdue": self._is_task_overdue(raw.get("due_at"), raw.get("status")),
             "attachments_count": self._as_int(batch_ctx.get("attachment_counts", {}).get(task_id, 0)),
             "reports_count": self._as_int(batch_ctx.get("report_counts", {}).get(task_id, 0)),
@@ -2975,8 +3071,92 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             and self._parse_iso_datetime(item.get("due_at")) is None
         )
         item["observer_user_ids"] = self._normalize_observer_user_ids(item.get("observer_user_ids"))
+        item.update(self._task_subtask_detail_fields(conn, item, viewer_user_id=viewer_user_id))
         self._enrich_task_assignee_fields(item)
         return self._enrich_task_observer_fields(item)
+
+    def _task_subtask_detail_fields(
+        self,
+        conn: sqlite3.Connection,
+        task: dict[str, Any],
+        *,
+        viewer_user_id: Optional[int],
+    ) -> dict[str, Any]:
+        """``parent`` / ``subtasks`` blocks of the task detail, filtered by the viewer's access."""
+        task_id = _normalize_text(task.get("id"))
+        parent_task_id = _normalize_text(task.get("parent_task_id")) or None
+        counts = self._task_subtask_counts_by_ids(conn, [task_id]).get(task_id, {})
+        subtasks_total = int(counts.get("subtasks_total") or 0)
+        if not parent_task_id and not subtasks_total:
+            return {
+                "parent_task_id": None,
+                "parent": None,
+                "subtasks": [],
+                "subtasks_total": 0,
+                "subtasks_done": 0,
+            }
+        viewer_id = self._as_int(viewer_user_id)
+        viewer = (user_service.get_by_id(viewer_id) or {"id": viewer_id, "role": "viewer"}) if viewer_id > 0 else None
+        delegate_cache: dict[int, list[int]] = {}
+
+        def _viewable(row_dict: dict[str, Any]) -> bool:
+            if viewer is None:
+                return False
+            return self._task_user_can_view(
+                row_dict,
+                user_id=viewer_id,
+                viewer=viewer,
+                delegate_user_ids_by_assignee=delegate_cache,
+            )
+
+        parent: Optional[dict[str, Any]] = None
+        if parent_task_id:
+            parent_row = conn.execute(
+                f"{self._task_list_select_sql()} WHERE id = ?",
+                (parent_task_id,),
+            ).fetchone()
+            if parent_row is not None:
+                parent_dict = dict(parent_row)
+                can_view = _viewable(parent_dict)
+                parent = {"id": parent_task_id, "can_view": can_view}
+                if can_view:
+                    parent["title"] = _normalize_text(parent_dict.get("title"))
+                    parent["status"] = _normalize_text(parent_dict.get("status"))
+
+        subtasks: list[dict[str, Any]] = []
+        if subtasks_total:
+            users_by_id = self._users_by_id()
+            child_rows = conn.execute(
+                f"{self._task_list_select_sql()} WHERE parent_task_id = ? ORDER BY created_at ASC, id ASC",
+                (task_id,),
+            ).fetchall()
+            for child_row in child_rows:
+                child = dict(child_row)
+                if not _viewable(child):
+                    continue
+                subtasks.append(
+                    self._enrich_task_assignee_fields(
+                        {
+                            "id": _normalize_text(child.get("id")),
+                            "title": _normalize_text(child.get("title")),
+                            "status": _normalize_text(child.get("status")),
+                            "priority": _normalize_text(child.get("priority"), "normal"),
+                            "due_at": _normalize_text(child.get("due_at")) or None,
+                            "is_overdue": self._is_task_overdue(child.get("due_at"), child.get("status")),
+                            "assignee_user_id": self._as_int(child.get("assignee_user_id")),
+                            "assignee_user_ids": child.get("assignee_user_ids"),
+                            "created_by_user_id": self._as_int(child.get("created_by_user_id")),
+                        },
+                        users_by_id=users_by_id,
+                    )
+                )
+        return {
+            "parent_task_id": parent_task_id,
+            "parent": parent,
+            "subtasks": subtasks,
+            "subtasks_total": subtasks_total,
+            "subtasks_done": int(counts.get("subtasks_done") or 0),
+        }
 
     def _announcement_users_for_roles(self, roles: list[str]) -> list[dict[str, Any]]:
         allowed_roles = {item for item in self._unique_texts(roles) if item}
@@ -6835,6 +7015,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         visibility_scope: Optional[str] = None,
         email_deadline_remind_hours: int | None = None,
         observer_user_ids: Optional[list[int]] = None,
+        parent_task_id: Optional[str] = None,
         actor: dict[str, Any],
         initial_status: str = "new",
     ) -> dict[str, Any]:
@@ -6862,12 +7043,20 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 raise ValueError("Controller must have tasks.review permission or be department manager")
         if normalized_department_id:
             for target_assignee in assignees:
-                if not can_create_task_for_department(
+                if can_create_task_for_department(
                     actor,
                     department_id=normalized_department_id,
                     assignee=target_assignee,
                 ):
-                    raise PermissionError("Task cannot be assigned in the selected department")
+                    continue
+                # A participant of the parent (checked by create_subtask) may hand a subtask to any
+                # member of the parent's department, not only to themselves.
+                if parent_task_id and (
+                    user_is_department_member(target_assignee, normalized_department_id)
+                    or user_is_department_manager(target_assignee, normalized_department_id)
+                ):
+                    continue
+                raise PermissionError("Task cannot be assigned in the selected department")
 
         now_iso = _utc_now_iso()
         task_id = str(uuid.uuid4())
@@ -6918,8 +7107,9 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                  department_id, visibility_scope, observer_user_ids,
                  assignee_user_id, assignee_user_ids, assignee_username, assignee_full_name,
                  controller_user_id, controller_username, controller_full_name,
-                 created_by_user_id, created_by_username, created_by_full_name, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 created_by_user_id, created_by_username, created_by_full_name, created_at, updated_at,
+                 parent_task_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -6950,6 +7140,7 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                     _normalize_text(actor.get("full_name")) or _normalize_text(actor.get("username")),
                     now_iso,
                     now_iso,
+                    _normalize_text(parent_task_id) or None,
                 ),
             )
             self._log_status_change(
@@ -7021,6 +7212,107 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             actor_user_id=actor_id,
         )
         return result
+
+    def subtask_creation_block_reason(
+        self,
+        parent: dict[str, Any],
+        *,
+        actor_user_id: int,
+        is_admin: bool = False,
+    ) -> Optional[str]:
+        """Why ``actor_user_id`` cannot add a subtask to ``parent``; ``None`` when allowed.
+
+        Returns ``"forbidden"`` (not a participant of the parent), ``"nested"`` (the parent is already a
+        subtask: one level only) or ``"done"`` (the parent is closed).
+        """
+        actor_id = self._as_int(actor_user_id)
+        if not is_admin:
+            actor = user_service.get_by_id(actor_id) or {"id": actor_id, "role": "viewer"}
+            participants = self._task_participant_user_ids(parent, include_delegates=True)
+            if actor_id not in participants and not user_is_department_manager(actor, parent.get("department_id")):
+                return "forbidden"
+        if _normalize_text(parent.get("parent_task_id")):
+            return "nested"
+        if _normalize_text(parent.get("status")).lower() == "done":
+            return "done"
+        return None
+
+    def create_subtask(
+        self,
+        *,
+        parent_task_id: str,
+        title: str,
+        description: str = "",
+        assignee_user_ids: Optional[list[int]] = None,
+        controller_user_id: Optional[int] = None,
+        due_at: Optional[str] = None,
+        priority: Optional[str] = "normal",
+        checklist_items: Optional[list[dict[str, Any]]] = None,
+        observer_user_ids: Optional[list[int]] = None,
+        email_deadline_remind_hours: int | None = None,
+        protocol_date: Optional[str] = None,
+        actor: dict[str, Any],
+        is_admin: bool = False,
+    ) -> dict[str, Any]:
+        """Create a task linked to ``parent_task_id`` (one level of nesting).
+
+        Any participant of the parent may create it, even without ``tasks.create``. Project, object, department
+        and visibility come from the parent; the controller defaults to the parent's. The parent's participants
+        become observers of the subtask, so everybody who sees the parent also sees its breakdown.
+        """
+        actor_id = self._as_int(actor.get("id"))
+        with self._db_conn(write=False) as conn:
+            parent = self._task_access_or_raise(
+                conn,
+                task_id=parent_task_id,
+                user_id=actor_id,
+                is_admin=is_admin,
+            )
+        reason = self.subtask_creation_block_reason(parent, actor_user_id=actor_id, is_admin=is_admin)
+        if reason == "forbidden":
+            raise PermissionError("Only participants of the parent task can add subtasks")
+        if reason == "nested":
+            raise ValueError("A subtask cannot have its own subtasks")
+        if reason == "done":
+            raise ValueError("Cannot add subtasks to a completed task")
+
+        resolved_controller_id = (
+            self._as_int(controller_user_id)
+            if controller_user_id is not None
+            else self._as_int(parent.get("controller_user_id"))
+        )
+        parent_participant_ids = self._task_participant_user_ids(parent, include_delegates=False)
+        created = self.create_task(
+            title=title,
+            description=description,
+            assignee_user_id=0,
+            assignee_user_ids=assignee_user_ids,
+            controller_user_id=resolved_controller_id,
+            due_at=due_at,
+            project_id=_normalize_text(parent.get("project_id")) or None,
+            object_id=_normalize_text(parent.get("object_id")) or None,
+            protocol_date=protocol_date,
+            priority=priority,
+            checklist_items=checklist_items,
+            department_id=_normalize_text(parent.get("department_id")) or None,
+            visibility_scope=_normalize_text(parent.get("visibility_scope")) or None,
+            email_deadline_remind_hours=email_deadline_remind_hours,
+            observer_user_ids=[*(observer_user_ids or []), *sorted(parent_participant_ids)],
+            parent_task_id=_normalize_text(parent.get("id")),
+            actor=actor,
+        )
+        # The parent may have been deleted between the check and the insert (delete is guarded only
+        # against already existing subtasks): do not leave an orphan behind.
+        with self._lock, self._connect() as conn:
+            parent_still_exists = conn.execute(
+                f"SELECT 1 FROM {self._TASKS_TABLE} WHERE id = ?",
+                (_normalize_text(parent.get("id")),),
+            ).fetchone()
+        if parent_still_exists is None:
+            self.delete_task(task_id=created["id"], actor_user_id=actor_id, is_admin=True)
+            raise LookupError("Task not found")
+        self._invalidate_tasks_list_cache(None)
+        return created
 
     def update_task(
         self,
@@ -7558,6 +7850,11 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             if not is_admin and self._as_int(row["created_by_user_id"]) != actor_id:
                 raise PermissionError("Only task creator or admin can delete it")
             task = dict(row)
+            subtasks_total = self._task_subtask_counts_by_ids(conn, [normalized_id]).get(normalized_id, {}).get(
+                "subtasks_total", 0
+            )
+            if subtasks_total:
+                raise TaskHasSubtasks(subtasks_total)
 
             # Keep reminder deletion in the task transaction. Standalone SQLite
             # Hub stores may not have the optional transfer-reminder tables yet.
@@ -8399,6 +8696,8 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         limit: int = 100,
         offset: int = 0,
         allow_all_scope: bool = False,
+        parent_task_id: Optional[str] = None,
+        top_level_only: bool = False,
     ) -> dict[str, Any]:
         safe_limit = self._coerce_limit(limit, default=100, minimum=1, maximum=500)
         safe_offset = max(0, self._as_int(offset, 0))
@@ -8415,9 +8714,12 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         normalized_sort_dir = "desc" if _normalize_text(sort_dir).lower() == "desc" else "asc"
         normalized_status = _normalize_text(status_filter).lower()
         normalized_focus_mode = _normalize_text(focus_mode).lower()
+        normalized_parent_task_id = _normalize_text(parent_task_id)
         cacheable_default = (
             normalized_scope == "my"
             and normalized_role_scope == "both"
+            and not normalized_parent_task_id
+            and not bool(top_level_only)
             and not normalized_status
             and not normalized_query
             and assignee_user_id is None
@@ -8477,6 +8779,11 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         if normalized_status:
             where_clauses.append("status = ?")
             params.append(normalized_status)
+        if normalized_parent_task_id:
+            where_clauses.append("parent_task_id = ?")
+            params.append(normalized_parent_task_id)
+        elif top_level_only:
+            where_clauses.append("(parent_task_id IS NULL OR parent_task_id = '')")
         if normalized_query:
             # Leading-wildcard LIKE; PostgreSQL can use idx_hub_tasks_title_trgm (pg_trgm) when present.
             where_clauses.append("(LOWER(title) LIKE ? OR LOWER(description) LIKE ?)")
@@ -8625,6 +8932,8 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 "due_state": normalized_due_state,
                 "unread_comments_only": bool(unread_comments_only),
                 "focus_mode": normalized_focus_mode or None,
+                "parent_task_id": normalized_parent_task_id or None,
+                "top_level_only": bool(top_level_only),
                 "sort_by": normalized_sort_by,
                 "sort_dir": normalized_sort_dir,
             },

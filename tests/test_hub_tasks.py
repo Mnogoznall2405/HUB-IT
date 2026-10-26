@@ -507,6 +507,7 @@ def test_create_task_detail_access_and_role_scopes(task_env):
         "can_reopen": False,
         "can_upload_files": True,
         "can_update_checklist": True,
+        "can_create_subtask": True,
         "can_open_discussion": False,
     }
 
@@ -2131,6 +2132,7 @@ def test_task_observer_can_view_list_and_chat_capabilities(task_env):
         "can_reopen": False,
         "can_upload_files": False,
         "can_update_checklist": False,
+        "can_create_subtask": False,
         "can_open_discussion": False,
     }
 

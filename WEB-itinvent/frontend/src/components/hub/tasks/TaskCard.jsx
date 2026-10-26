@@ -28,6 +28,7 @@ import {
 import { buildMobileTaskCardMenuItems } from '../../../pages/tasks/taskCardModel';
 import { formatTaskAssigneesSummary } from '../../../pages/tasks/taskUserUtils';
 import { stripMarkdownForPreview } from '../../../pages/tasks/taskRichText';
+import { buildTaskTagChips } from '../../../pages/tasks/taskTagModel';
 import {
   formatShortDate,
   getInitials,
@@ -63,6 +64,8 @@ const TaskCard = memo(function TaskCard({
   const latestComment = getTaskCommentPreview(task);
   const descriptionPreview = stripMarkdownForPreview(task?.description_preview || task?.description);
   const attachCount = Number(task?.attachments_count || 0);
+  const subtaskChips = buildTaskTagChips(task, { ui, taskDiscussionChatEnabled: false, alpha })
+    .filter((chip) => chip.key === 'subtask' || chip.key === 'subtasks');
   const isTransferReminder = isTransferActUploadTask(task);
   const priority = priorityMeta(task?.priority);
   const canOpenTransferAct = canOpenTransferActUpload(task);
@@ -217,6 +220,9 @@ const TaskCard = memo(function TaskCard({
               {task?.has_unread_comments ? (
                 <Chip size="small" label="Новый комментарий" sx={{ height: 19, fontSize: '0.64rem', fontWeight: 850, bgcolor: 'rgba(37,99,235,0.12)', color: '#2563eb', border: 'none', maxWidth: 136 }} />
               ) : null}
+              {subtaskChips.map((chip) => (
+                <Chip key={chip.key} size="small" label={chip.label} sx={{ height: 19, fontSize: '0.64rem', fontWeight: 800, bgcolor: chip.bg, color: chip.color, border: 'none' }} />
+              ))}
               {priority.value !== 'normal' ? (
                 <Chip
                   size="small"
@@ -405,6 +411,9 @@ const TaskCard = memo(function TaskCard({
         {task?.has_unread_comments && (
           <Chip size="small" label="Новый комментарий" sx={{ height: 19, fontSize: '0.62rem', fontWeight: 800, bgcolor: 'rgba(37,99,235,0.12)', color: '#2563eb', border: 'none' }} />
         )}
+        {subtaskChips.map((chip) => (
+          <Chip key={chip.key} size="small" label={chip.label} sx={{ height: 19, fontSize: '0.62rem', fontWeight: 800, bgcolor: chip.bg, color: chip.color, border: 'none' }} />
+        ))}
         {priority.value !== 'normal' && (
           <Chip
             size="small"

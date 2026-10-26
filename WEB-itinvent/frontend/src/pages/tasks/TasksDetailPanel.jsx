@@ -85,6 +85,8 @@ export default function TasksDetailPanel() {
       onOpenReviewTask={detail.setReviewTask}
       onOpenCloseTask={detail.setCloseTask}
       renderChecklist={detail.renderTaskChecklist}
+      onOpenTask={detail.openTaskById}
+      onCreateSubtask={detail.openSubtaskDialog}
     />
   );
 }

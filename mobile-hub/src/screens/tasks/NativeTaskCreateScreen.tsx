@@ -9,6 +9,7 @@ import { listDepartments, type DepartmentRecord } from '../../api/departmentsApi
 import {
   createTaskObject,
   createTaskProject,
+  createSubtask,
   createTask,
   getTaskProjects,
   getTaskObjects,
@@ -76,11 +77,13 @@ function findDefaultProject(items: TaskProject[]): TaskProject | null {
   )) || items[0] || null;
 }
 
-export function NativeTaskCreateScreen() {
+export function NativeTaskCreateScreen({ parentTaskId = '', parentTitle = '' }: { parentTaskId?: string; parentTitle?: string } = {}) {
   const { user, hasPermission, offlineMode } = useAuth();
+  // Подзадачу создаёт участник родителя, даже без tasks.create: доступ проверяет сервер.
+  const isSubtask = Boolean(parentTaskId);
   const { preferences } = usePreferences();
   const tokens = useFluentTokens(preferences.theme_mode);
-  const allowed = hasPermission('tasks.create') || hasPermission('tasks.write');
+  const allowed = isSubtask || hasPermission('tasks.create') || hasPermission('tasks.write');
   const canReadDepartments = hasPermission('settings.read') || hasPermission('departments.manage');
   const canCreateObject = hasPermission('tasks.write');
   const titleRef = useRef<HubTextFieldHandle>(null);
@@ -132,14 +135,14 @@ export function NativeTaskCreateScreen() {
   const [protocolDate, setProtocolDate] = useState(() => todayProtocolDate());
   const [uploadRecovery, setUploadRecovery] = useState<{ taskIds: string[]; pending: Array<{ taskId: string; file: TaskUploadFile }>; creating?: boolean } | null>(null);
   const localState = { title, description, dueDate, emailReminder, priority, selectedAssigneeIds, projectId, controllerId, observerIds, objectId, departmentId, visibility, checklistText, checklistItems, files, protocolDate, newProjectName, newObjectName, uploadRecovery };
-  const draft = useNativeFormDraft({ userId: Number(user?.id || 0), scope: 'task-create', state: localState, ready: allowed && !loadingRefs, paused: saving, restore: (saved) => { setTitle(saved.title); setDescription(saved.description); setDueDate(saved.dueDate); setEmailReminder(saved.emailReminder); setPriority(saved.priority); setSelectedAssigneeIds(saved.selectedAssigneeIds); setProjectId(saved.projectId); setControllerId(saved.controllerId); setObserverIds(saved.observerIds); setObjectId(saved.objectId); setDepartmentId(saved.departmentId); setVisibility(saved.visibility); setChecklistText(saved.checklistText); setChecklistItems(saved.checklistItems); setFiles(saved.files); setProtocolDate(saved.protocolDate); setNewProjectName(saved.newProjectName); setNewObjectName(saved.newObjectName); setUploadRecovery(saved.uploadRecovery); } });
+  const draft = useNativeFormDraft({ userId: Number(user?.id || 0), scope: isSubtask ? `task-subtask-${parentTaskId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 96)}` : 'task-create', state: localState, ready: allowed && !loadingRefs, paused: saving, restore: (saved) => { setTitle(saved.title); setDescription(saved.description); setDueDate(saved.dueDate); setEmailReminder(saved.emailReminder); setPriority(saved.priority); setSelectedAssigneeIds(saved.selectedAssigneeIds); setProjectId(saved.projectId); setControllerId(saved.controllerId); setObserverIds(saved.observerIds); setObjectId(saved.objectId); setDepartmentId(saved.departmentId); setVisibility(saved.visibility); setChecklistText(saved.checklistText); setChecklistItems(saved.checklistItems); setFiles(saved.files); setProtocolDate(saved.protocolDate); setNewProjectName(saved.newProjectName); setNewObjectName(saved.newObjectName); setUploadRecovery(saved.uploadRecovery); } });
   const visibleObjects = useMemo(
     () => objects.filter((item) => String(item.project_id) === projectId),
     [objects, projectId],
   );
 
   useEffect(() => {
-    if (incomingShareAppliedRef.current) return;
+    if (incomingShareAppliedRef.current || isSubtask) return;
     incomingShareAppliedRef.current = true;
     const share = consumeIncomingShare('task');
     if (!share) return;
@@ -151,7 +154,7 @@ export function NativeTaskCreateScreen() {
       setFiles(accepted.map((file) => ({ uri: file.uri, name: file.name, mimeType: file.mimeType, size: file.size })));
       if (accepted.length < share.copiedFiles.length) setError('Часть файлов не добавлена: к задаче можно прикрепить файлы до 20 МБ.');
     }
-  }, []);
+  }, [isSubtask]);
 
   const goBack = useCallback(() => {
     requestLeave(() => {
@@ -165,6 +168,24 @@ export function NativeTaskCreateScreen() {
     if (offlineMode) { setLoadingRefs(false); return; }
     let active = true;
     setLoadingRefs(true);
+    if (isSubtask) {
+      Promise.all([
+        searchTaskAssignees('', 50),
+        searchTaskControllers('', 50).catch(() => [] as TaskAssignee[]),
+      ])
+        .then(([nextAssignees, nextControllers]) => {
+          if (!active) return;
+          setAssignees(nextAssignees);
+          setControllers(nextControllers);
+        })
+        .catch((cause) => {
+          if (active) setError(formatApiError(cause, 'Не удалось загрузить справочники задачи.'));
+        })
+        .finally(() => {
+          if (active) setLoadingRefs(false);
+        });
+      return () => { active = false; };
+    }
     Promise.all([
       getTaskProjects(),
       searchTaskAssignees('', 50),
@@ -189,7 +210,7 @@ export function NativeTaskCreateScreen() {
         if (active) setLoadingRefs(false);
       });
     return () => { active = false; };
-  }, [allowed, canReadDepartments, offlineMode]);
+  }, [allowed, canReadDepartments, isSubtask, offlineMode]);
 
   useEffect(() => {
     if (!allowed || loadingRefs || offlineMode) return;
@@ -316,7 +337,7 @@ export function NativeTaskCreateScreen() {
       setError('Выберите хотя бы одного исполнителя.');
       return;
     }
-    if (!projectId) {
+    if (!isSubtask && !projectId) {
       setError('Выберите проект задачи.');
       return;
     }
@@ -338,24 +359,29 @@ export function NativeTaskCreateScreen() {
       if (!recovery) {
         await draft.write({ ...savedDraft, uploadRecovery: { taskIds: [], pending: [], creating: true } });
         setUploadRecovery({ taskIds: [], pending: [], creating: true });
-        const created = await createTask({
-        title: normalizedTitle,
-        description: description.trim(),
-        assignee_user_ids: selectedAssigneeIds,
-        project_id: projectId,
-        protocol_date: protocolDate,
-        due_at: normalizedDueAt,
-        ...(normalizedDueAt && emailReminder !== 'default' ? {
-          email_deadline_remind_hours: emailReminder === 'off' ? 0 : Number(emailReminder),
-        } : {}),
-        priority,
-        department_id: departmentId || null,
-        visibility_scope: departmentId ? visibility : 'private',
-        observer_user_ids: observerIds,
-        controller_user_id: controllerId,
-        object_id: objectId || null,
-        checklist_items: checklistItems,
-      });
+        const common = {
+          title: normalizedTitle,
+          description: description.trim(),
+          assignee_user_ids: selectedAssigneeIds,
+          protocol_date: protocolDate,
+          due_at: normalizedDueAt,
+          ...(normalizedDueAt && emailReminder !== 'default' ? {
+            email_deadline_remind_hours: emailReminder === 'off' ? 0 : Number(emailReminder),
+          } : {}),
+          priority,
+          observer_user_ids: observerIds,
+          controller_user_id: controllerId,
+          checklist_items: checklistItems,
+        };
+        const created = isSubtask
+          ? [await createSubtask(parentTaskId, common)]
+          : await createTask({
+            ...common,
+            project_id: projectId,
+            department_id: departmentId || null,
+            visibility_scope: departmentId ? visibility : 'private',
+            object_id: objectId || null,
+          });
         const taskIds = created.map((task) => String(task.id || '').trim()).filter(Boolean);
         recovery = { taskIds, pending: taskIds.flatMap((taskId) => savedDraft.files.map((file) => ({ taskId, file }))) };
         setUploadRecovery(recovery);
@@ -375,7 +401,11 @@ export function NativeTaskCreateScreen() {
       const firstId = recovery.taskIds[0] || '';
       await draft.clear();
       leaveSaved(() => {
-        if (firstId) {
+        if (isSubtask) {
+          // Родитель уже открыт под формой: возвращаемся к нему, список подзадач обновит realtime.
+          if (router.canGoBack()) router.back();
+          else router.replace({ pathname: '/(shell)/tasks/[taskId]', params: { taskId: parentTaskId } } as never);
+        } else if (firstId) {
           router.replace({
             pathname: '/(shell)/tasks/[taskId]',
             params: { taskId: firstId },
@@ -389,11 +419,11 @@ export function NativeTaskCreateScreen() {
     } finally {
       setSaving(false);
     }
-  }, [draft, uploadRecovery, leaveSaved, checklistItems, controllerId, departmentId, description, dueDate, emailReminder, files, objectId, observerIds, offlineMode, priority, projectId, protocolDate, saving, selectedAssigneeIds, title, visibility]);
+  }, [draft, uploadRecovery, leaveSaved, isSubtask, parentTaskId, checklistItems, controllerId, departmentId, description, dueDate, emailReminder, files, objectId, observerIds, offlineMode, priority, projectId, protocolDate, saving, selectedAssigneeIds, title, visibility]);
 
   if (!allowed) {
     return (
-      <AccountScreenScaffold title="Новая задача" tokens={tokens} onBack={goBack}>
+      <AccountScreenScaffold title={isSubtask ? 'Новая подзадача' : 'Новая задача'} tokens={tokens} onBack={goBack}>
         <AccountSectionCard
           tokens={tokens}
           title="Нет доступа"
@@ -407,11 +437,11 @@ export function NativeTaskCreateScreen() {
 
   return (
     <AccountScreenScaffold
-      title="Новая задача"
+      title={isSubtask ? 'Новая подзадача' : 'Новая задача'}
       footer={(<AccountPrimaryButton
         tokens={tokens}
         testID="native-task-create-submit"
-        label={saving ? 'Сохранение…' : uploadRecovery?.taskIds.length ? 'Повторить загрузку' : 'Создать задачу'}
+        label={saving ? 'Сохранение…' : uploadRecovery?.taskIds.length ? 'Повторить загрузку' : isSubtask ? 'Создать подзадачу' : 'Создать задачу'}
         disabled={saving || offlineMode || !draft.restored || Boolean(uploadRecovery?.creating)}
         onPress={() => { void submit(); }}
       />)}
@@ -439,7 +469,9 @@ export function NativeTaskCreateScreen() {
       <AccountSectionCard
         tokens={tokens}
         title="Основное"
-        description="Поля со звёздочкой обязательны."
+        description={isSubtask
+          ? `К задаче: ${parentTitle || parentTaskId}. Проект, объект и видимость наследуются от родителя.`
+          : 'Поля со звёздочкой обязательны.'}
       >
         <HubTextField
           ref={titleRef}
@@ -504,6 +536,7 @@ export function NativeTaskCreateScreen() {
         </View>
       </AccountSectionCard>
 
+      {!isSubtask ? (
       <AccountSectionCard tokens={tokens} title="Проект *">
         {loadingRefs ? <AccountLoading tokens={tokens} /> : projects.length === 0 ? (
           <Text style={{ color: tokens.error }}>Нет доступных проектов. Обратитесь к администратору.</Text>
@@ -541,6 +574,7 @@ export function NativeTaskCreateScreen() {
           </View>
         </View>
       </AccountSectionCard>
+      ) : null}
 
       <AccountSectionCard tokens={tokens} title="Описание и срок">
         <HubTextField
@@ -605,7 +639,7 @@ export function NativeTaskCreateScreen() {
         </View>
       </AccountSectionCard>
 
-      {projectId && (visibleObjects.length > 0 || canCreateObject) ? (
+      {!isSubtask && projectId && (visibleObjects.length > 0 || canCreateObject) ? (
         <AccountSectionCard tokens={tokens} collapsible title="Объект">
           <View style={styles.choiceWrap}>
             <ChoiceChip label="Без объекта" selected={!objectId} tokens={tokens} onPress={() => setObjectId('')} />
@@ -638,7 +672,7 @@ export function NativeTaskCreateScreen() {
         </AccountSectionCard>
       ) : null}
 
-      {canReadDepartments ? (
+      {!isSubtask && canReadDepartments ? (
         <AccountSectionCard tokens={tokens} collapsible title="Отдел" description="Доступность списка определяется серверными правами на справочник отделов.">
           {departments.length ? (
             <View style={styles.choiceWrap}>
@@ -674,7 +708,7 @@ export function NativeTaskCreateScreen() {
         </View>
       </AccountSectionCard>
 
-      {departmentId ? (
+      {!isSubtask && departmentId ? (
         <AccountSectionCard tokens={tokens} collapsible title="Видимость">
           <View style={styles.choiceWrap}>
             {([

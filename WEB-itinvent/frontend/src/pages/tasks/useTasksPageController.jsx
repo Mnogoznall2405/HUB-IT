@@ -53,6 +53,7 @@ import useTasksListQuery from './hooks/useTasksListQuery';
 import useTasksAnalyticsPanel from './hooks/useTasksAnalyticsPanel';
 import useTaskDetails from './hooks/useTaskDetails.jsx';
 import useTaskCreate from './hooks/useTaskCreate.jsx';
+import useTaskSubtasks from './hooks/useTaskSubtasks';
 
 export default function useTasksPageController() {
   const theme = useTheme();
@@ -399,6 +400,14 @@ export default function useTasksPageController() {
     setEditOpen,
   });
 
+  const subtasks = useTaskSubtasks({
+    setNotice,
+    loadTasks: list.loadTasks,
+    loadTaskDetails: details.loadTaskDetails,
+    getAssigneeById,
+    resolveAssigneesByIds,
+  });
+
   const analytics = useTasksAnalyticsPanel({
     enabled: filters.pageMode === 'analytics',
     activeTaskObjects: list.activeTaskObjects,
@@ -507,6 +516,10 @@ export default function useTasksPageController() {
     }
     details.openTaskDetails(task);
   }, [details.openTaskDetails]);
+
+  const openTaskById = useCallback((taskId) => {
+    onOpenTaskDetails({ id: taskId });
+  }, [onOpenTaskDetails]);
 
   const onCloseTaskDetails = useCallback(() => {
     const shouldRestoreListFocus = !details.taskReturnTo;
@@ -946,6 +959,17 @@ export default function useTasksPageController() {
     setCompletedTasksOpen: filters.setCompletedTasksOpen,
     activeTaskProjects: list.activeTaskProjects,
     openTaskDetails: onOpenTaskDetails,
+    openTaskById,
+    subtaskParent: subtasks.subtaskParent,
+    subtaskDraft: subtasks.subtaskDraft,
+    setSubtaskDraft: subtasks.setSubtaskDraft,
+    subtaskSaving: subtasks.subtaskSaving,
+    subtaskFormError: subtasks.subtaskFormError,
+    selectedSubtaskAssignees: subtasks.selectedSubtaskAssignees,
+    openSubtaskDialog: subtasks.openSubtaskDialog,
+    closeSubtaskDialog: subtasks.closeSubtaskDialog,
+    handleChangeSubtaskAssigneeIds: subtasks.handleChangeSubtaskAssigneeIds,
+    handleCreateSubtask: subtasks.handleCreateSubtask,
     deadlineBuckets: list.deadlineBuckets,
     openCreateTaskWithPreset: create.openCreateTaskWithPreset,
     renderTaskCard,

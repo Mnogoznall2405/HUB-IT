@@ -18,6 +18,7 @@ import {
 } from './detail';
 import TaskDetailShell from './TaskDetailShell';
 import TaskDetailChecklist from './TaskDetailChecklist';
+import TaskSubtasksSection from './TaskSubtasksSection';
 import TaskAttachmentPreviewDialog, { useTaskAttachmentPreview } from './TaskAttachmentPreviewDialog';
 import TaskPresenceIndicator from './TaskPresenceIndicator';
 import { getOfficeSubtlePanelSx } from '../../../theme/officeUiTokens';
@@ -33,6 +34,9 @@ function TaskDetailOverviewSections({
   formatDateTime,
   onDownloadReport,
   renderChecklist,
+  statusMeta,
+  onOpenTask,
+  onCreateSubtask,
 }) {
   if (!task) return null;
 
@@ -59,6 +63,14 @@ function TaskDetailOverviewSections({
       </Box>
 
       {renderChecklist(task)}
+
+      <TaskSubtasksSection
+        task={task}
+        ui={ui}
+        statusMeta={statusMeta}
+        onOpenTask={onOpenTask}
+        onCreateSubtask={onCreateSubtask}
+      />
 
       {task.latest_report && (
         <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '14px' }) }}>
@@ -154,6 +166,8 @@ export default function TasksDetailWorkspace({
   onOpenSubmitTask,
   onOpenReviewTask,
   onOpenCloseTask,
+  onOpenTask,
+  onCreateSubtask,
   renderChecklist,
 }) {
   const attachmentPreview = useTaskAttachmentPreview();
@@ -271,6 +285,7 @@ export default function TasksDetailWorkspace({
       compactHeader={fillSelected}
       contentMode={fillSelected ? 'fill' : 'scroll'}
       archiveComments={taskDiscussionChatEnabled}
+      onOpenParent={onOpenTask}
       actionMenuItems={actionMenuItems}
       onActionMenuSelect={(key) => {
         if (key === 'edit') {
@@ -394,6 +409,9 @@ export default function TasksDetailWorkspace({
                 ui={ui}
                 theme={theme}
                 actions={mobilePrimaryActions}
+                statusMeta={statusMeta}
+                onOpenTask={onOpenTask}
+                onCreateSubtask={onCreateSubtask}
               />
             )
           ) : (
@@ -412,6 +430,9 @@ export default function TasksDetailWorkspace({
                   formatDateTime={formatDateTime}
                   onDownloadReport={onDownloadReport}
                   renderChecklist={checklistRenderer}
+                  statusMeta={statusMeta}
+                  onOpenTask={onOpenTask}
+                  onCreateSubtask={onCreateSubtask}
                 />
 
                 <TaskActivityTabs

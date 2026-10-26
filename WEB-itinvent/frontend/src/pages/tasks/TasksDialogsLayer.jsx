@@ -11,6 +11,7 @@ import {
 
 const TasksCreateDialog = lazy(() => import('../../components/hub/tasks/TasksCreateDialog'));
 const TasksTaxonomyDialog = lazy(() => import('../../components/hub/tasks/TasksTaxonomyDialog'));
+const TaskSubtaskDialog = lazy(() => import('../../components/hub/tasks/TaskSubtaskDialog'));
 const TasksCreateMobileSheet = lazy(() => import('../../components/hub/tasks/TasksCreateMobileSheet'));
 const TaskReviewDialog = lazy(() => import('../../components/hub/TaskActionDialogs').then((module) => ({ default: module.TaskReviewDialog })));
 const TaskReopenDialog = lazy(() => import('../../components/hub/TaskActionDialogs').then((module) => ({ default: module.TaskReopenDialog })));
@@ -278,6 +279,28 @@ export default function TasksDialogsLayer() {
           taskObjects={list.activeTaskObjects}
           activeTaskProjects={list.activeTaskProjects}
         />
+
+        {create.subtaskParent ? (
+          <TaskSubtaskDialog
+            open
+            parent={create.subtaskParent}
+            draft={create.subtaskDraft}
+            onChangeDraft={create.setSubtaskDraft}
+            saving={create.subtaskSaving}
+            error={create.subtaskFormError}
+            isMobile={ui.isMobile}
+            ui={ui.ui}
+            selectedAssignees={create.selectedSubtaskAssignees}
+            getAssigneePickerOptions={list.getAssigneePickerOptions}
+            onChangeAssigneeIds={create.handleChangeSubtaskAssigneeIds}
+            renderTaskUserOptionMultiple={ui.renderTaskUserOptionMultiple}
+            renderTaskUserTags={ui.renderTaskUserTags}
+            assigneeAutocompleteProps={ui.assigneeAutocompleteProps}
+            taskUserAutocompleteSlotProps={ui.taskUserAutocompleteSlotProps}
+            onClose={create.closeSubtaskDialog}
+            onSubmit={() => void create.handleCreateSubtask()}
+          />
+        ) : null}
 
         <TaskReviewDialog
           open={Boolean(create.reviewTask)}

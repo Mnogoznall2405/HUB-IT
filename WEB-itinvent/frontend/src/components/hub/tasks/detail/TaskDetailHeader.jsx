@@ -65,6 +65,7 @@ import {
   TaskMobilePersonRow,
   TaskMobileRailButton,
 } from './taskDetailShared';
+import { TaskParentLink } from '../TaskSubtasksSection';
 
 export function TaskDetailHeader({
   task,
@@ -81,6 +82,7 @@ export function TaskDetailHeader({
   archiveComments = false,
   actionMenuItems = [],
   onActionMenuSelect,
+  onOpenParent,
   ui,
   theme,
 }) {
@@ -309,6 +311,11 @@ export function TaskDetailHeader({
             ) : null}
           </Stack>
         </Stack>
+        {task?.parent ? (
+          <Box sx={{ pb: 0.25, pl: 0.25 }}>
+            <TaskParentLink parent={task.parent} onOpenParent={onOpenParent} ui={ui} dense />
+          </Box>
+        ) : null}
       </Box>
     );
   }
@@ -345,6 +352,11 @@ export function TaskDetailHeader({
               <Typography variant="body2" sx={{ color: ui.mutedText, mt: 0.25 }}>
                 Полная карточка задачи с обсуждением, файлами и историей статусов.
               </Typography>
+              {task?.parent ? (
+                <Box sx={{ mt: 0.5 }}>
+                  <TaskParentLink parent={task.parent} onOpenParent={onOpenParent} ui={ui} />
+                </Box>
+              ) : null}
             </Box>
           </Stack>
           <Stack direction="row" spacing={0.8} alignItems="center" sx={{ flexShrink: 0, flexWrap: 'wrap' }}>

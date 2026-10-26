@@ -91,3 +91,9 @@ export function taskDiscussionConversationId(value: unknown): string {
   };
   return String(payload.conversation_id || payload.conversation?.id || payload.id || '').trim();
 }
+
+export function taskSubtaskProgress(task: Pick<HubTask, 'subtasks_total' | 'subtasks_done'>): { total: number; done: number; open: number } {
+  const total = Math.max(0, Number(task.subtasks_total) || 0);
+  const done = Math.min(Math.max(0, Number(task.subtasks_done) || 0), total);
+  return { total, done, open: total - done };
+}

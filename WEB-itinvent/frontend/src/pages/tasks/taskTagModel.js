@@ -8,6 +8,9 @@ export const buildTaskTagChips = (task, { ui, taskDiscussionChatEnabled, alpha }
   const checklistTotal = Number(task?.checklist_total ?? (Array.isArray(task?.checklist_items) ? task.checklist_items.length : 0));
   const checklistDone = Number(task?.checklist_done ?? (Array.isArray(task?.checklist_items) ? task.checklist_items.filter((item) => item?.done).length : 0));
 
+  const subtasksTotal = Math.max(0, Number(task?.subtasks_total) || 0);
+  const subtasksDone = Math.min(Math.max(0, Number(task?.subtasks_done) || 0), subtasksTotal);
+
   return [
     { key: 'status', label: status.label, color: status.color, bg: status.bg },
     priority.value !== 'normal' ? { key: 'priority', label: priority.label, color: priority.dotColor, bg: alpha(priority.dotColor, 0.12) } : null,
@@ -20,5 +23,7 @@ export const buildTaskTagChips = (task, { ui, taskDiscussionChatEnabled, alpha }
       bg: task?.has_unread_comments ? 'rgba(37,99,235,0.12)' : ui.actionBg,
     } : null,
     checklistTotal > 0 ? { key: 'checklist', label: `Чек-лист ${checklistDone}/${checklistTotal}`, color: '#0f766e', bg: 'rgba(15,118,110,0.12)' } : null,
+    task?.parent_task_id ? { key: 'subtask', label: 'Подзадача', color: '#4f46e5', bg: 'rgba(79,70,229,0.12)' } : null,
+    subtasksTotal > 0 ? { key: 'subtasks', label: `Подзадачи ${subtasksDone}/${subtasksTotal}`, color: '#4f46e5', bg: 'rgba(79,70,229,0.12)' } : null,
   ].filter(Boolean);
 };

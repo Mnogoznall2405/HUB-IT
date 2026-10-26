@@ -71,6 +71,7 @@ import {
   taskPriorityLabel,
 } from '../../tasks/taskFormat';
 import { downloadNativeTaskAttachment, pickNativeTaskFile } from '../../tasks/nativeTaskFiles';
+import { NativeTaskParentLink, NativeTaskSubtasksCard, openSubtasksWarning } from '../../components/tasks/NativeTaskSubtasks';
 import { useFluentTokens, type FluentTokens } from '../../theme/fluentTokens';
 import {
   AccountField,
@@ -716,6 +717,18 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
     }
   }, [discussionBusy, offlineMode, task]);
 
+  const openRelatedTask = (relatedTaskId: string) => {
+    router.push({ pathname: '/(shell)/tasks/[taskId]', params: { taskId: relatedTaskId } } as never);
+  };
+
+  const openSubtaskCreate = () => {
+    if (!task || offlineMode) return;
+    router.push({
+      pathname: '/(shell)/tasks/create',
+      params: { parentTaskId: task.id, parentTitle: String(task.title || '') },
+    } as never);
+  };
+
   if (!allowed) {
     return (
       <AccountScreenScaffold title="Задача" tokens={tokens} onBack={goBack}>
@@ -823,6 +836,9 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
             ) : null}
 
             <View style={styles.hero}>
+              {task.parent ? (
+                <NativeTaskParentLink parent={task.parent} tokens={tokens} onOpen={openRelatedTask} />
+              ) : null}
               <Text accessibilityRole="header" style={[styles.title, { color: tokens.textPrimary }]}>
                 {task.title || 'Задача'}
               </Text>
@@ -925,6 +941,14 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
                 </View>
               ) : null}
             </AccountSectionCard>
+
+            <NativeTaskSubtasksCard
+              task={task}
+              tokens={tokens}
+              offlineMode={offlineMode}
+              onOpenTask={openRelatedTask}
+              onCreate={openSubtaskCreate}
+            />
 
             <AccountSectionCard tokens={tokens} collapsible title={`История статусов (${statusLog.length})`}>
               {statusLogError ? (
@@ -1385,6 +1409,11 @@ function NativeTaskDetailContent({ taskId }: { taskId: string }) {
                 title={pendingAction.label}
                 description="Подтвердите изменение состояния задачи."
               >
+                {['submit', 'approve', 'complete'].includes(pendingAction.key) && task && openSubtasksWarning(task) ? (
+                  <Text testID="native-task-open-subtasks-warning" accessibilityRole="alert" style={[styles.error, { color: tokens.warning }]}>
+                    {openSubtasksWarning(task)}
+                  </Text>
+                ) : null}
                 {['submit', 'approve', 'reject', 'complete'].includes(pendingAction.key) ? (
                   <TextInput
                     testID="native-task-action-comment"

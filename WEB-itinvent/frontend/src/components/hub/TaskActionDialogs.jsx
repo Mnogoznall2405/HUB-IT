@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Alert,
   Autocomplete,
   Avatar,
   Box,
@@ -24,6 +25,7 @@ import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import MarkdownEditor from './MarkdownEditor';
 import CreateDuePickerPanel from './CreateDuePickerPanel';
 import TasksCreateDialog from './tasks/TasksCreateDialog';
+import { getOpenSubtasksWarning } from './tasks/TaskSubtasksSection';
 import { getOfficeDialogPaperSx, getOfficeHeaderBandSx } from '../../theme/officeUiTokens';
 import { hubAPI } from '../../api/client';
 import useDebounce from '../../hooks/useDebounce';
@@ -626,6 +628,12 @@ export function TaskEditDialog({
   );
 }
 
+function OpenSubtasksAlert({ task }) {
+  const warning = getOpenSubtasksWarning(task);
+  if (!warning) return null;
+  return <Alert severity="warning" data-testid="task-open-subtasks-warning">{warning}</Alert>;
+}
+
 export function TaskReviewDialog({ task, open, saving = false, onClose, onSubmit, ui }) {
   const theme = useTheme();
   const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
@@ -642,6 +650,7 @@ export function TaskReviewDialog({ task, open, saving = false, onClose, onSubmit
       <DialogContent sx={{ px: 2.2, py: 1.6 }}>
         <Stack spacing={1.2}>
           <Typography sx={{ fontWeight: 700 }}>{task?.title || '-'}</Typography>
+          <OpenSubtasksAlert task={task} />
           <TextField label="Комментарий проверки" value={comment} onChange={(event) => setComment(event.target.value)} multiline minRows={3} fullWidth />
         </Stack>
       </DialogContent>
@@ -670,6 +679,7 @@ export function TaskCloseDialog({ task, open, saving = false, onClose, onSubmit,
       <DialogContent sx={{ px: 2.2, py: 1.6 }}>
         <Stack spacing={1.2}>
           <Typography sx={{ fontWeight: 700 }}>{task?.title || '-'}</Typography>
+          <OpenSubtasksAlert task={task} />
           <Typography variant="body2" sx={{ color: ui?.mutedText }}>
             Задача будет сразу переведена в статус «Готово», без сдачи исполнителем.
           </Typography>
@@ -708,6 +718,7 @@ export function TaskSubmitDialog({ task, open, saving = false, onClose, onSubmit
       <DialogContent sx={{ px: 2.2, py: 1.6 }}>
         <Stack spacing={1.2}>
           <Typography sx={{ fontWeight: 700 }}>{task?.title || '-'}</Typography>
+          <OpenSubtasksAlert task={task} />
           <TextField label="Комментарий к проверке" value={comment} onChange={(event) => setComment(event.target.value)} multiline minRows={3} fullWidth />
           <Button component="label" size="small" variant="outlined" startIcon={<AttachFileIcon />} sx={{ alignSelf: 'flex-start' }}>
             {fileLabel}

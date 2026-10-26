@@ -66,6 +66,7 @@ import {
   TaskMobilePersonRow,
   TaskMobileRailButton,
 } from './taskDetailShared';
+import TaskSubtasksSection, { TaskParentLink } from '../TaskSubtasksSection';
 
 export function TaskMobileDetailScreen({
   task,
@@ -82,6 +83,9 @@ export function TaskMobileDetailScreen({
   ui,
   theme,
   actions,
+  statusMeta,
+  onOpenTask,
+  onCreateSubtask,
 }) {
   const isDark = theme.palette.mode === 'dark';
   const description = String(task?.description || '').trim();
@@ -141,6 +145,11 @@ export function TaskMobileDetailScreen({
       }}
     >
       <Box data-testid="task-mobile-content">
+        {task?.parent ? (
+          <Box sx={{ mb: 0.9 }}>
+            <TaskParentLink parent={task.parent} onOpenParent={onOpenTask} ui={ui} />
+          </Box>
+        ) : null}
         <Typography sx={{ fontWeight: 900, fontSize: '1.45rem', lineHeight: 1.08, letterSpacing: '-0.035em', mb: 1.35, overflowWrap: 'anywhere' }}>
           {task?.title || 'Задача'}
         </Typography>
@@ -359,6 +368,14 @@ export function TaskMobileDetailScreen({
           </Stack>
         </Box>
       ) : null}
+
+      <TaskSubtasksSection
+        task={task}
+        ui={ui}
+        statusMeta={statusMeta}
+        onOpenTask={onOpenTask}
+        onCreateSubtask={onCreateSubtask}
+      />
     </Stack>
   );
 }

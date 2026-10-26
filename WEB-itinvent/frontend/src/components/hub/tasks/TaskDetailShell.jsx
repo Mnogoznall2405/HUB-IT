@@ -19,6 +19,7 @@ export default function TaskDetailShell({
   archiveComments = false,
   actionMenuItems = [],
   onActionMenuSelect,
+  onOpenParent,
   loading = false,
   children,
 }) {
@@ -39,6 +40,7 @@ export default function TaskDetailShell({
         archiveComments={archiveComments}
         actionMenuItems={actionMenuItems}
         onActionMenuSelect={onActionMenuSelect}
+        onOpenParent={onOpenParent}
         ui={ui}
         theme={theme}
       />

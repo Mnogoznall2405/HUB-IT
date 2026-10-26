@@ -179,4 +179,37 @@ describe('TaskCloseDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Закрыть' }));
     expect(onSubmit).toHaveBeenCalledWith({ comment: 'Больше не актуально' });
   });
+
+  it('warns about open subtasks without blocking the closure', () => {
+    const onSubmit = vi.fn();
+    renderWithTheme(
+      <TaskCloseDialog
+        open
+        task={{ ...task, subtasks_total: 3, subtasks_done: 1 }}
+        saving={false}
+        onClose={vi.fn()}
+        onSubmit={onSubmit}
+        ui={ui}
+      />,
+    );
+
+    expect(screen.getByTestId('task-open-subtasks-warning')).toHaveTextContent('невыполненные подзадачи: 2');
+    fireEvent.click(screen.getByRole('button', { name: 'Закрыть' }));
+    expect(onSubmit).toHaveBeenCalledWith({ comment: '' });
+  });
+
+  it('shows no warning when all subtasks are done', () => {
+    renderWithTheme(
+      <TaskCloseDialog
+        open
+        task={{ ...task, subtasks_total: 2, subtasks_done: 2 }}
+        saving={false}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        ui={ui}
+      />,
+    );
+
+    expect(screen.queryByTestId('task-open-subtasks-warning')).not.toBeInTheDocument();
+  });
 });

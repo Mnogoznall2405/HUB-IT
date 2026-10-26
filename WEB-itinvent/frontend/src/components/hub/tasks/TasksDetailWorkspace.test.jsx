@@ -196,6 +196,38 @@ describe('TasksDetailWorkspace', () => {
     expect(screen.getByTestId('task-detail-mobile-title')).toHaveTextContent('Чек-лист');
   });
 
+  it('shows the parent link in the header and opens the parent task', () => {
+    const onOpenTask = vi.fn();
+    renderWorkspace({
+      task: { ...baseTask, parent_task_id: 'parent-1', parent: { id: 'parent-1', can_view: true, title: 'Большая задача' } },
+      onOpenTask,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Большая задача' }));
+
+    expect(onOpenTask).toHaveBeenCalledWith('parent-1');
+  });
+
+  it('renders the subtasks section on desktop and mobile and creates a subtask from it', () => {
+    const onCreateSubtask = vi.fn();
+    const task = {
+      ...baseTask,
+      subtasks_total: 1,
+      subtasks_done: 0,
+      capabilities: { can_create_subtask: true },
+      subtasks: [{ id: 'sub-1', title: 'Первая часть', status: 'new', assignee_user_id: 6, assignee_full_name: 'Иванов Иван' }],
+    };
+    const { unmount } = renderWorkspace({ task, onCreateSubtask, onOpenTask: vi.fn() });
+
+    expect(screen.getByText('Подзадачи · 0/1')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Подзадача' }));
+    expect(onCreateSubtask).toHaveBeenCalledWith(task);
+    unmount();
+
+    renderWorkspace({ task, isMobile: true, onCreateSubtask, onOpenTask: vi.fn() });
+    expect(screen.getByTestId('task-mobile-detail-screen')).toContainElement(screen.getByTestId('task-subtasks-section'));
+  });
+
   it('offers Android share in the task action menu when the native callback is available', () => {
     const onShareLink = vi.fn();
     renderWorkspace({

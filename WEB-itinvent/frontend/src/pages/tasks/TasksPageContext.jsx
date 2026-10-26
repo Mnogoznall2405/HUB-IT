@@ -58,7 +58,7 @@ export function TasksPageProvider({ controller, children }) {
       'handleDownloadAttachment', 'handleDownloadReport', 'setTaskDetailTab', 'setTaskDetailView', 'setDetailsCommentBody',
       'handleAddTaskComment', 'openMobileTaskChecklist', 'openTransferActReminder', 'handleStartTask',
       'handleOpenReopenTask', 'setSubmitTask', 'setReviewTask', 'setCloseTask', 'renderTaskChecklist', 'openTaskDetails',
-      'getTaskActionMenuItems', 'handleTaskMenuAction',
+      'getTaskActionMenuItems', 'handleTaskMenuAction', 'openTaskById', 'openSubtaskDialog',
     ]),
     create: pick(controller, [
       'createOpen', 'setCreateOpen', 'handleCloseCreateDialog', 'createData', 'setCreateData',
@@ -87,6 +87,8 @@ export function TasksPageProvider({ controller, children }) {
       'reopenTargetTask', 'setReopenTargetTask', 'handleConfirmReopenTask', 'submitTask', 'submitSaving',
       'setSubmitTask', 'handleSubmitTask', 'closeTask', 'setCloseTask', 'closeSaving', 'handleCloseTask',
       'openCreateTaskWithPreset', 'prefetchCreateMeta',
+      'subtaskParent', 'subtaskDraft', 'setSubtaskDraft', 'subtaskSaving', 'subtaskFormError',
+      'selectedSubtaskAssignees', 'closeSubtaskDialog', 'handleChangeSubtaskAssigneeIds', 'handleCreateSubtask',
     ]),
     analytics: pick(controller, [
       'analyticsFiltersVisible', 'toggleAnalyticsFilters', 'handleExportTaskAnalytics',

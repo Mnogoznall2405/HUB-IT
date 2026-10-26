@@ -42,6 +42,7 @@ from backend.services.access_policy_service import (
 from backend.services.hub_service import (
     TaskCanvasRevisionConflict,
     TaskCanvasTooLarge,
+    TaskHasSubtasks,
     _normalize_email_deadline_remind_hours,
     hub_service,
 )
@@ -197,6 +198,20 @@ def _coerce_bool(value: object, default: bool = False) -> bool:
     return text in {"1", "true", "yes", "on"}
 
 
+def _int_list(value: object) -> list[int]:
+    """Unique ints from a JSON list, silently skipping non-numeric items."""
+    result: list[int] = []
+    if isinstance(value, list):
+        for item in value:
+            try:
+                parsed = int(item)
+            except (TypeError, ValueError):
+                continue
+            if parsed not in result:
+                result.append(parsed)
+    return result
+
+
 def _coerce_json_list(value: object) -> list:
     if isinstance(value, list):
         return value
@@ -271,6 +286,7 @@ def _enrich_task_payload_for_user(item: Optional[dict], current_user: User) -> O
             "can_reopen": False,
             "can_upload_files": False,
             "can_update_checklist": False,
+            "can_create_subtask": False,
             "can_open_discussion": bool(is_task_discussion_chat_enabled()),
         }
         return enriched
@@ -304,6 +320,15 @@ def _enrich_task_payload_for_user(item: Optional[dict], current_user: User) -> O
                 or actor_id in participant_ids
                 or is_department_manager
             )
+        ),
+        "can_create_subtask": bool(
+            not is_transfer_reminder
+            and hub_service.subtask_creation_block_reason(
+                enriched,
+                actor_user_id=actor_id,
+                is_admin=is_admin,
+            )
+            is None
         ),
         "can_open_discussion": bool(is_task_discussion_chat_enabled()),
     }
@@ -1446,6 +1471,8 @@ async def get_tasks(
     sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    parent_task_id: str = Query("", min_length=0),
+    top_level_only: bool = Query(False),
     current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
     allow_all = str(getattr(current_user, "role", "") or "").lower() == "admin" or _has_permission(current_user, PERM_TASKS_MANAGE_ALL)
@@ -1470,6 +1497,8 @@ async def get_tasks(
         limit=int(limit),
         offset=int(offset),
         allow_all_scope=allow_all,
+        parent_task_id=_normalize_text(parent_task_id) or None,
+        top_level_only=bool(top_level_only),
     )
     return await run_in_threadpool(_enrich_task_collection, payload)
 
@@ -1708,6 +1737,59 @@ async def get_task(
     return await run_in_threadpool(_enrich_task_payload_for_user, item, current_user)
 
 
+@router.post("/tasks/{task_id}/subtasks")
+async def create_subtask(
+    task_id: str,
+    payload: dict = Body(...),
+    current_user: User = Depends(require_permission(PERM_TASKS_READ)),
+):
+    """Create a subtask of ``task_id``: allowed to the parent's participants, no ``tasks.create`` needed."""
+    try:
+        assignee_ids = _int_list(payload.get("assignee_user_ids"))
+        if not assignee_ids and payload.get("assignee_user_id") is not None:
+            try:
+                assignee_ids = [int(payload.get("assignee_user_id"))]
+            except (TypeError, ValueError):
+                raise ValueError("assignee_user_id must be an integer") from None
+        if not assignee_ids:
+            raise ValueError("At least one assignee is required")
+        controller_user_id = None
+        if "controller_user_id" in payload:
+            controller_raw = payload.get("controller_user_id")
+            try:
+                controller_user_id = 0 if controller_raw in (None, "", 0, "0") else int(controller_raw)
+            except (TypeError, ValueError):
+                raise ValueError("controller_user_id must be an integer") from None
+        due_at_value = _normalize_text(payload.get("due_at")) or None
+        email_deadline_remind_hours = None
+        if due_at_value and "email_deadline_remind_hours" in payload:
+            email_deadline_remind_hours = _normalize_email_deadline_remind_hours(payload.get("email_deadline_remind_hours"))
+        created = await run_in_threadpool(
+            hub_service.create_subtask,
+            parent_task_id=task_id,
+            title=_normalize_text(payload.get("title")),
+            description=_normalize_text(payload.get("description")),
+            assignee_user_ids=assignee_ids,
+            controller_user_id=controller_user_id,
+            due_at=due_at_value,
+            priority=_normalize_text(payload.get("priority"), "normal"),
+            checklist_items=payload.get("checklist_items") if isinstance(payload.get("checklist_items"), list) else [],
+            observer_user_ids=_int_list(payload.get("observer_user_ids")),
+            email_deadline_remind_hours=email_deadline_remind_hours,
+            protocol_date=_normalize_text(payload.get("protocol_date")) or None,
+            actor=_actor_dict(current_user),
+            is_admin=_is_admin_user(current_user),
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _safe_provision_task_discussion(task=created, actor_user_id=int(current_user.id))
+    return await run_in_threadpool(_enrich_task_payload_for_user, created, current_user)
+
+
 @router.get("/tasks/{task_id}/canvas", response_model=TaskCanvasResponse)
 async def get_task_canvas(
     task_id: str,
@@ -1796,6 +1878,15 @@ async def delete_task(
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except TaskHasSubtasks as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "task_has_subtasks",
+                "message": str(exc),
+                "subtasks_total": exc.subtasks_total,
+            },
+        ) from exc
     if not ok:
         raise HTTPException(status_code=404, detail="Task not found")
     await delete_task_discussion(task_id=task_id)

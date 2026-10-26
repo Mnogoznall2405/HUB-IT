@@ -53,6 +53,7 @@ jest.mock('../../api/taskApi', () => ({
   searchTaskAssignees: jest.fn(),
   searchTaskControllers: jest.fn(),
   createTask: jest.fn(),
+  createSubtask: jest.fn(),
   createTaskProject: jest.fn(),
   createTaskObject: jest.fn(),
   updateTask: jest.fn(),
@@ -715,6 +716,129 @@ describe('Native Tasks screens', () => {
       project_id: 'general-tasks', name: 'Новая серверная', code: '', description: '', is_active: true,
     }));
     expect(writer.getByTestId('native-task-object-object-2')).toBeTruthy();
+  });
+
+  describe('subtasks', () => {
+    const parentTask = {
+      ...detailTask,
+      subtasks_total: 3,
+      subtasks_done: 1,
+      capabilities: { ...detailTask.capabilities, can_create_subtask: true },
+      subtasks: [
+        { id: 'sub-1', title: 'Собрать сборку', status: 'done', assignees: [{ user_id: 7, full_name: 'Иван Петров' }] },
+        { id: 'sub-2', title: 'Проверить на стенде', status: 'new', assignees: [{ user_id: 8, full_name: 'Анна Смирнова' }] },
+      ],
+    };
+
+    it('lists subtasks, opens one and starts creating a new one for the parent', async () => {
+      (taskApi.getTask as jest.Mock).mockResolvedValue(parentTask);
+      const view = await render(<NativeTaskDetailScreen taskId="task-1" />);
+      await waitFor(() => expect(view.getByText('Подзадачи · 1/3')).toBeTruthy());
+      expect(view.getByText('Собрать сборку')).toBeTruthy();
+      expect(view.getByTestId('native-task-subtasks-hidden')).toHaveTextContent('и ещё 1 недоступных вам');
+
+      await act(async () => { fireEvent.press(view.getByTestId('native-task-subtask-sub-2')); });
+      expect(router.push).toHaveBeenCalledWith({ pathname: '/(shell)/tasks/[taskId]', params: { taskId: 'sub-2' } });
+
+      await act(async () => { fireEvent.press(view.getByTestId('native-task-subtask-create')); });
+      expect(router.push).toHaveBeenCalledWith({
+        pathname: '/(shell)/tasks/create',
+        params: { parentTaskId: 'task-1', parentTitle: 'Настроить сервер' },
+      });
+    });
+
+    it('hides creation without the server capability and links a subtask to its parent', async () => {
+      (taskApi.getTask as jest.Mock).mockResolvedValue({
+        ...detailTask,
+        parent_task_id: 'parent-1',
+        parent: { id: 'parent-1', can_view: true, title: 'Большая задача' },
+      });
+      const view = await render(<NativeTaskDetailScreen taskId="task-1" />);
+      await waitFor(() => expect(view.getByTestId('native-task-parent-link')).toBeTruthy());
+      expect(view.queryByTestId('native-task-subtask-create')).toBeNull();
+
+      await act(async () => { fireEvent.press(view.getByTestId('native-task-parent-link')); });
+      expect(router.push).toHaveBeenCalledWith({ pathname: '/(shell)/tasks/[taskId]', params: { taskId: 'parent-1' } });
+    });
+
+    it('does not make an inaccessible parent clickable', async () => {
+      (taskApi.getTask as jest.Mock).mockResolvedValue({
+        ...detailTask,
+        parent_task_id: 'parent-1',
+        parent: { id: 'parent-1', can_view: false },
+      });
+      const view = await render(<NativeTaskDetailScreen taskId="task-1" />);
+      await waitFor(() => expect(view.getByText(/Родительская задача недоступна/)).toBeTruthy());
+
+      await act(async () => { fireEvent.press(view.getByTestId('native-task-parent-link')); });
+      expect(router.push).not.toHaveBeenCalled();
+    });
+
+    it('disables adding a subtask in the offline copy', async () => {
+      await writeNativeEntitySnapshot('task-details', 1, 'task-1', { task: parentTask, comments: [], statusLog: [] });
+      mockAuth = { ...mockAuth, offlineMode: true };
+      const view = await render(<NativeTaskDetailScreen taskId="task-1" />);
+      await waitFor(() => expect(view.getByTestId('native-task-subtask-create')).toBeTruthy());
+
+      await act(async () => { fireEvent.press(view.getByTestId('native-task-subtask-create')); });
+      expect(router.push).not.toHaveBeenCalled();
+      expect(view.getByTestId('native-task-subtask-create').props.accessibilityState).toMatchObject({ disabled: true });
+    });
+
+    it('warns about open subtasks when a parent goes to review, without blocking it', async () => {
+      (taskApi.getTask as jest.Mock).mockResolvedValue({
+        ...parentTask,
+        status: 'in_progress',
+        capabilities: { can_submit: true, can_open_discussion: false },
+      });
+      const view = await render(<NativeTaskDetailScreen taskId="task-1" />);
+      await waitFor(() => expect(view.getByText('Подзадачи · 1/3')).toBeTruthy());
+      await act(async () => { fireEvent.press(view.getByTestId('native-task-primary-submit')); });
+
+      await waitFor(() => expect(view.getByTestId('native-task-open-subtasks-warning')).toHaveTextContent(/невыполненные подзадачи: 2/));
+    });
+
+    it('shows subtask progress and the subtask mark in the task list', async () => {
+      (taskApi.getTasksPage as jest.Mock).mockResolvedValue({
+        items: [
+          { ...listTask, subtasks_total: 3, subtasks_done: 1 },
+          { ...listTask, id: 'task-2', title: 'Часть работы', has_unread_comments: false, parent_task_id: 'task-1' },
+        ],
+        total: 2,
+        limit: 40,
+        offset: 0,
+      });
+      const view = await render(<NativeTasksInboxScreen />);
+
+      await waitFor(() => expect(view.getByTestId('native-task-row-subtasks-task-1')).toHaveTextContent('Подзадачи 1/3'));
+      expect(view.getByText('Подзадача')).toBeTruthy();
+    });
+
+    it('creates a subtask for the parent with only tasks.read and no project selection', async () => {
+      setAuth(['tasks.read']);
+      (taskApi.createSubtask as jest.Mock).mockResolvedValue({ id: 'sub-9', parent_task_id: 'task-1' });
+      const view = await render(<NativeTaskCreateScreen parentTaskId="task-1" parentTitle="Настроить сервер" />);
+      await waitFor(() => expect(view.getByTestId('native-task-assignee-7')).toBeTruthy());
+      expect(taskApi.getTaskProjects).not.toHaveBeenCalled();
+      expect(view.queryByText('Проект *')).toBeNull();
+
+      await act(async () => {
+        fireEvent.changeText(view.getByTestId('native-task-create-title'), 'Подготовить стенд');
+        fireEvent.press(view.getByTestId('native-task-assignee-7'));
+      });
+      await act(async () => { fireEvent.press(view.getByTestId('native-task-create-submit')); });
+
+      await waitFor(() => expect(taskApi.createSubtask).toHaveBeenCalledWith('task-1', expect.objectContaining({
+        title: 'Подготовить стенд',
+        assignee_user_ids: [7],
+      })));
+      const payload = (taskApi.createSubtask as jest.Mock).mock.calls[0][1];
+      expect(payload).not.toHaveProperty('project_id');
+      expect(taskApi.createTask).not.toHaveBeenCalled();
+      // Родитель уже открыт под формой: возвращаемся к нему, а не открываем второй экземпляр.
+      expect(router.back).toHaveBeenCalled();
+      expect(router.replace).not.toHaveBeenCalled();
+    });
   });
 
   it('does not load task data without tasks.read', async () => {

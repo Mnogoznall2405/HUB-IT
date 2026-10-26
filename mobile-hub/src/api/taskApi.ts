@@ -10,6 +10,27 @@ export type TaskCapabilities = {
   can_upload_files?: boolean;
   can_update_checklist?: boolean;
   can_open_discussion?: boolean;
+  can_create_subtask?: boolean;
+};
+
+export type TaskSubtask = {
+  id: string;
+  title?: string;
+  status?: string;
+  priority?: string | null;
+  due_at?: string | null;
+  is_overdue?: boolean;
+  assignee_full_name?: string | null;
+  assignee_username?: string | null;
+  assignees?: Array<{ user_id: number; username?: string | null; full_name?: string | null }>;
+};
+
+/** Родитель подзадачи; без `can_view` заголовок и статус скрыты от пользователя. */
+export type TaskParentRef = {
+  id: string;
+  can_view: boolean;
+  title?: string;
+  status?: string;
 };
 
 export type TaskChecklistItem = {
@@ -72,6 +93,11 @@ export type HubTask = {
   checklist_items?: TaskChecklistItem[];
   comments_count?: number;
   has_unread_comments?: boolean;
+  parent_task_id?: string | null;
+  parent?: TaskParentRef | null;
+  subtasks?: TaskSubtask[];
+  subtasks_total?: number;
+  subtasks_done?: number;
   capabilities?: TaskCapabilities;
   [key: string]: unknown;
 };
@@ -235,7 +261,21 @@ export type TaskCreatePayload = {
   checklist_items?: TaskChecklistItem[];
 };
 
-export type TaskUpdatePayload = Partial<Pick<HubTask,
+/** Проект, объект, отдел и видимость подзадача наследует от родителя. */
+export type SubtaskCreatePayload = Pick<TaskCreatePayload,
+  | 'title'
+  | 'description'
+  | 'assignee_user_ids'
+  | 'protocol_date'
+  | 'due_at'
+  | 'email_deadline_remind_hours'
+  | 'priority'
+  | 'observer_user_ids'
+  | 'controller_user_id'
+  | 'checklist_items'
+>;
+
+export type TaskUpdatePayload =Partial<Pick<HubTask,
   | 'title'
   | 'description'
   | 'due_at'
@@ -399,6 +439,11 @@ export async function createTask(payload: TaskCreatePayload): Promise<HubTask[]>
     return data.items;
   }
   return data && typeof data === 'object' && 'id' in data ? [data as HubTask] : [];
+}
+
+export async function createSubtask(parentTaskId: string, payload: SubtaskCreatePayload): Promise<HubTask> {
+  const { data } = await apiClient.post<HubTask>(`${taskPath(parentTaskId)}/subtasks`, payload);
+  return data;
 }
 
 export async function getTask(taskId: string): Promise<HubTask> {

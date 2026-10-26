@@ -34,4 +34,16 @@ describe('taskTagModel', () => {
     expect(chips.find((item) => item.key === 'comments')?.label).toBe('Архив 3');
     expect(chips.find((item) => item.key === 'checklist')?.label).toBe('Чек-лист 1/4');
   });
+
+  it('marks a parent with its subtask progress and a subtask with its own badge', () => {
+    const options = { ui, taskDiscussionChatEnabled: false, alpha };
+    const parentChips = buildTaskTagChips({ status: 'new', subtasks_total: 3, subtasks_done: 1 }, options);
+    const childChips = buildTaskTagChips({ status: 'new', parent_task_id: 'parent-1' }, options);
+    const plainChips = buildTaskTagChips({ status: 'new', subtasks_total: 0 }, options);
+
+    expect(parentChips.find((item) => item.key === 'subtasks')?.label).toBe('Подзадачи 1/3');
+    expect(parentChips.some((item) => item.key === 'subtask')).toBe(false);
+    expect(childChips.find((item) => item.key === 'subtask')?.label).toBe('Подзадача');
+    expect(plainChips.map((item) => item.key)).toEqual(['status']);
+  });
 });

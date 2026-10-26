@@ -21,6 +21,8 @@ const TASK_DETAIL_ONLY_KEYS = [
   'reviewer_full_name',
   'observers',
   'status_history',
+  'parent',
+  'subtasks',
 ];
 
 export const stripTaskDetailOnlyKeys = (task) => {

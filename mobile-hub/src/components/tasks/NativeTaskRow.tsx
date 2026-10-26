@@ -3,7 +3,7 @@ import { memo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { HubTask } from '../../api/taskApi';
 import { taskStatusLabel } from '../../tasks/taskActions';
-import { formatTaskDate, taskPerson, taskPriorityLabel } from '../../tasks/taskFormat';
+import { formatTaskDate, taskPerson, taskPriorityLabel, taskSubtaskProgress } from '../../tasks/taskFormat';
 import type { FluentTokens } from '../../theme/fluentTokens';
 
 export const NativeTaskRow = memo(function NativeTaskRow({ task, tokens, personRole = 'assignee', onPress }: {
@@ -20,6 +20,8 @@ export const NativeTaskRow = memo(function NativeTaskRow({ task, tokens, personR
   const title = String(task.title || '').trim() || 'Задача';
   const personLabel = personRole === 'created_by' ? 'Поставил' : 'Исполнители';
   const hasAttachments = Boolean(task.has_attachments) || Boolean(task.attachments?.length);
+  const subtasks = taskSubtaskProgress(task);
+  const isSubtask = Boolean(task.parent_task_id);
 
   return (
     <Pressable
@@ -44,8 +46,22 @@ export const NativeTaskRow = memo(function NativeTaskRow({ task, tokens, personR
         <Text numberOfLines={1} style={[styles.metaText, { color: tokens.textSecondary }]}>
           {personLabel}: {taskPerson(task, personRole)} · {priority}
         </Text>
-        {task.has_unread_comments || hasAttachments ? (
+        {task.has_unread_comments || hasAttachments || subtasks.total > 0 || isSubtask ? (
           <View style={styles.signalRow}>
+            {isSubtask ? (
+              <View style={styles.signalItem}>
+                <MaterialCommunityIcons name="subdirectory-arrow-right" size={14} color={tokens.iconMuted} />
+                <Text style={[styles.signalText, { color: tokens.textSecondary }]}>Подзадача</Text>
+              </View>
+            ) : null}
+            {subtasks.total > 0 ? (
+              <View style={styles.signalItem}>
+                <MaterialCommunityIcons name="source-branch" size={14} color={tokens.primary} />
+                <Text testID={`native-task-row-subtasks-${task.id}`} style={[styles.signalText, { color: tokens.primary }]}>
+                  Подзадачи {subtasks.done}/{subtasks.total}
+                </Text>
+              </View>
+            ) : null}
             {task.has_unread_comments ? (
               <View style={styles.signalItem}>
                 <MaterialCommunityIcons name="message-badge-outline" size={14} color={tokens.primary} />
