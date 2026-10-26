@@ -24,6 +24,8 @@ import {
   Typography,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
+import ChatSearchFilters from './ChatSearchFilters';
+import { hasSearchFilters } from './useChatMessageSearch';
 import Slide from '@mui/material/Slide';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import CheckCircleOutlineRoundedIcon from '@mui/icons-material/CheckCircleOutlineRounded';
@@ -229,6 +231,8 @@ export default function ChatDialogs({
   onCloseSearch,
   messageSearch,
   onMessageSearchChange,
+  messageSearchFilters,
+  onMessageSearchFiltersChange,
   messageSearchResults,
   messageSearchLoading,
   messageSearchHasMore,
@@ -1061,11 +1065,19 @@ export default function ChatDialogs({
               onChange={(event) => onMessageSearchChange(event.target.value)}
               placeholder="Например: акт, договор, Иванов"
             />
+            <ChatSearchFilters
+              conversation={activeConversation}
+              open={searchOpen}
+              filters={messageSearchFilters}
+              onChange={onMessageSearchFiltersChange}
+            />
             {messageSearchLoading ? (
               <DialogListSkeleton ui={ui} rows={4} />
             ) : messageSearchResults.length === 0 ? (
               <Alert severity="info" sx={{ borderRadius: 2 }}>
-                {String(messageSearch || '').trim() ? 'Совпадения не найдены.' : 'Введите запрос, чтобы найти сообщения в этом чате.'}
+                {String(messageSearch || '').trim() || hasSearchFilters(messageSearchFilters)
+                  ? 'Совпадения не найдены.'
+                  : 'Введите запрос или выберите фильтр, чтобы найти сообщения в этом чате.'}
               </Alert>
             ) : (
               <Stack spacing={1}>

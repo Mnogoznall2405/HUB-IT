@@ -288,9 +288,11 @@ def test_settings_app_endpoint_reads_and_updates_default_controller(temp_dir, mo
         json={
             "transfer_act_reminder_controller_username": "backup.admin",
             "admin_login_allowed_ips": ["10.105.0.42", "10.105.0.43", "10.105.0.42"],
+            "support_chat_username": " Helpdesk.Lead ",
         },
     )
     assert patch_response.status_code == 200
+    assert patch_response.json()["support_chat_username"] == "helpdesk.lead"
     assert patch_response.json()["transfer_act_reminder_controller_username"] == "backup.admin"
     assert patch_response.json()["admin_login_allowed_ips"] == ["10.105.0.42", "10.105.0.43"]
     assert patch_response.json()["resolved_controller"]["username"] == "backup.admin"

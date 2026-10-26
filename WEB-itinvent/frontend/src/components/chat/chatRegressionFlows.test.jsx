@@ -16,7 +16,7 @@ import { chatScheduledAPI } from '../../api/chatScheduled';
 import { chatSocket, CHAT_SOCKET_CONVERSATION_UPDATED_EVENT, CHAT_SOCKET_AI_RUN_UPDATED_EVENT } from '../../lib/chatSocket';
 
 vi.mock('../../api/client', () => ({ chatAPI: {
-  sendMessage: vi.fn(), editChatMessage: vi.fn(), setPinnedMessage: vi.fn(),
+  sendMessage: vi.fn(), editChatMessage: vi.fn(), setPinnedMessage: vi.fn(), pinMessage: vi.fn(), unpinMessage: vi.fn(),
 } }));
 vi.mock('../../api/chatScheduled', () => ({ chatScheduledAPI: { list: vi.fn(), create: vi.fn() } }));
 vi.mock('../../api/chatConfig', () => ({ getChatConfigCached: async () => ({ scheduled_messages_enabled: true }) }));
@@ -167,10 +167,11 @@ function UnpinProbe() {
   const [notice, setNotice] = useState('');
   const activeConversationIdRef = useRef(conversationId); activeConversationIdRef.current = conversationId;
   const pinnedMessageMutationRef = useRef(0);
-  const api = useChatReactionAndPinController({ activeConversationIdRef, pinnedMessageMutationRef,
+  const applyPinnedMessages = items => setPin(items?.[0] ? { id: items[0].id } : null);
+  const api = useChatReactionAndPinController({ activeConversationIdRef, pinnedMessageMutationRef, applyPinnedMessages,
     notifyApiError: (_error, message) => setNotice(message), notifyInfo: vi.fn(),
     persistPinnedMessage: setPin, pinnedMessage: pin, revealMessage: vi.fn(), setMessages: vi.fn() });
-  const menu = useChatMessageMenuActions({ activeConversationIdRef, pinnedMessageMutationRef,
+  const menu = useChatMessageMenuActions({ activeConversationIdRef, pinnedMessageMutationRef, applyPinnedMessages,
     buildPinnedMessagePayload: message => ({ id: message.id, preview: message.body }),
     persistPinnedMessage: setPin, pinnedMessage: pin, notifyWarning: setNotice,
     setMessageMenuAnchor: vi.fn(), setMessageMenuMessage: vi.fn(),
@@ -182,7 +183,7 @@ function UnpinProbe() {
   </>;
 }
 it('P2: rejected unpin must restore the actually pinned message', async () => {
-  chatAPI.setPinnedMessage.mockRejectedValueOnce(new Error('403'));
+  chatAPI.unpinMessage.mockRejectedValueOnce(new Error('403'));
   render(<UnpinProbe />); fireEvent.click(screen.getByText('Unpin'));
   await act(async () => { await Promise.resolve(); });
   expect(screen.getByLabelText('pin')).toHaveTextContent('pinned-1');
@@ -247,7 +248,7 @@ it('ignores a background AI completion when the active AI run is still typing', 
 });
 
 it('keeps the original pin until a replacement is confirmed and preserves it on rejection', async () => {
-  const replacement = deferred(); chatAPI.setPinnedMessage.mockReturnValueOnce(replacement.promise);
+  const replacement = deferred(); chatAPI.pinMessage.mockReturnValueOnce(replacement.promise);
   render(<UnpinProbe />); fireEvent.click(screen.getByText('Pin next'));
   expect(screen.getByLabelText('pin')).toHaveTextContent('pinned-1');
   await act(async () => { replacement.reject(new Error('503')); });
@@ -256,20 +257,20 @@ it('keeps the original pin until a replacement is confirmed and preserves it on 
 });
 
 it('a delayed pin response never replaces the pin of a different conversation', async () => {
-  const replacement = deferred(); chatAPI.setPinnedMessage.mockReturnValueOnce(replacement.promise);
+  const replacement = deferred(); chatAPI.pinMessage.mockReturnValueOnce(replacement.promise);
   render(<UnpinProbe />); fireEvent.click(screen.getByText('Pin next'));
   fireEvent.click(screen.getByText('Switch pin to B'));
-  await act(async () => { replacement.resolve({ pinned_message: { id: 'pinned-2' } }); });
+  await act(async () => { replacement.resolve({ items: [{ id: 'pinned-2' }] }); });
   expect(screen.getByLabelText('pin')).toHaveTextContent('pin-in-B');
 });
 
 it('the menu and header share ordering so an older pin response cannot undo a newer unpin', async () => {
   const replacement = deferred(); const removal = deferred();
-  chatAPI.setPinnedMessage.mockReturnValueOnce(replacement.promise).mockReturnValueOnce(removal.promise);
+  chatAPI.pinMessage.mockReturnValueOnce(replacement.promise); chatAPI.unpinMessage.mockReturnValueOnce(removal.promise);
   render(<UnpinProbe />); fireEvent.click(screen.getByText('Pin next')); fireEvent.click(screen.getByText('Unpin'));
-  await act(async () => { removal.resolve({ pinned_message: null }); });
+  await act(async () => { removal.resolve({ items: [] }); });
   expect(screen.getByLabelText('pin')).toBeEmptyDOMElement();
-  await act(async () => { replacement.resolve({ pinned_message: { id: 'pinned-2' } }); });
+  await act(async () => { replacement.resolve({ items: [{ id: 'pinned-2' }] }); });
   expect(screen.getByLabelText('pin')).toBeEmptyDOMElement();
 });
 

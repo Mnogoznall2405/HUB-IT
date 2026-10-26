@@ -20,6 +20,7 @@ from sqlalchemy import select
 
 from backend.chat.chat_formatting import _display_user_name, _utc_now
 from backend.chat.chat_group_admin import ACTION_INVITE_CREATED, ACTION_INVITE_REVOKED, record_group_action
+from backend.chat.chat_group_join_requests import approval_required, find_request, submit_request
 from backend.chat.db import chat_session
 from backend.chat.models import ChatConversation, ChatGroupInvite, ChatMember
 from backend.chat.utils import normalize_text as _normalize_text
@@ -92,6 +93,55 @@ class ChatGroupInviteService:
             # One generic answer: an unknown, revoked or expired link must not be told apart.
             raise LookupError("Invite link not found or expired")
         return invite
+
+    def add_member_from_link(
+        self,
+        *,
+        session,
+        conversation: ChatConversation,
+        user_id: int,
+        user: Any,
+        body: str,
+        now,
+        affected_user_ids: set[int],
+    ) -> None:
+        """Make the person a plain member who starts at the end of the history, and tell the group.
+
+        Shared by the open link and by the approval of a join request; the caller holds the
+        conversation write lock and has checked the member limit.
+        """
+        session.add(
+            ChatMember(
+                conversation_id=conversation.id,
+                user_id=int(user_id),
+                member_role="member",
+                joined_at=now,
+            )
+        )
+        state = self._service._get_or_create_conversation_state(
+            session=session,
+            conversation_id=conversation.id,
+            current_user_id=int(user_id),
+        )
+        state.is_archived = False
+        state.last_read_message_id = conversation.last_message_id
+        state.last_read_seq = max(0, int(conversation.last_message_seq or 0))
+        state.last_read_at = conversation.last_message_at
+        state.unread_count = 0
+        state.unread_mention_count = 0
+        state.updated_at = now
+        session.flush()
+        member_ids_after = self._service._conversation_member_ids(session, conversation.id)
+        self._service._append_system_message(
+            session=session,
+            conversation=conversation,
+            actor_user_id=int(user_id),
+            body=body,
+            member_user_ids=member_ids_after,
+            now=now,
+        )
+        affected_user_ids.update(member_ids_after)
+        session.flush()
 
     def create_invite(self, *, current_user_id: int, conversation_id: str) -> dict:
         with chat_session() as session:
@@ -175,7 +225,11 @@ class ChatGroupInviteService:
             if conversation is None or _normalize_text(conversation.kind) != "group":
                 raise LookupError("Invite link not found or expired")
             members = self._service._conversation_member_ids(session, conversation.id)
+            is_member = int(current_user_id) in {int(item) for item in members}
+            pending = None if is_member else find_request(session, conversation.id, int(current_user_id))
             return {
+                "requires_approval": (not is_member) and approval_required(session, conversation.id),
+                "request_status": pending.status if pending is not None else None,
                 "title": _normalize_text(conversation.title),
                 "avatar_url": _normalize_text(conversation.avatar_url) or None,
                 "member_count": len(members),
@@ -213,45 +267,26 @@ class ChatGroupInviteService:
                 raise PermissionError(
                     "Вы уже выходили из этой группы: попросите владельца или модератора добавить вас"
                 )
+            if approval_required(session, conversation.id):
+                # The group lets people in by approval: the link only leaves a request.
+                request = submit_request(session, conversation.id, int(current_user_id))
+                session.flush()
+                return {"joined": False, "requested": True, "request_status": request.status, "conversation": None}
             member_ids = self._service._conversation_member_ids(session, conversation.id)
             if len(member_ids) + 1 > self._service.group_max_members:
                 raise ValueError(f"Group member limit exceeded ({self._service.group_max_members})")
 
-            now = _utc_now()
-            session.add(
-                ChatMember(
-                    conversation_id=conversation.id,
-                    user_id=int(current_user_id),
-                    member_role="member",
-                    joined_at=now,
-                )
-            )
             invite.use_count = int(invite.use_count or 0) + 1
-            state = self._service._get_or_create_conversation_state(
-                session=session,
-                conversation_id=conversation.id,
-                current_user_id=int(current_user_id),
-            )
-            state.is_archived = False
-            state.last_read_message_id = conversation.last_message_id
-            state.last_read_seq = max(0, int(conversation.last_message_seq or 0))
-            state.last_read_at = conversation.last_message_at
-            state.unread_count = 0
-            state.unread_mention_count = 0
-            state.updated_at = now
-            session.flush()
-            member_ids_after = self._service._conversation_member_ids(session, conversation.id)
-            self._service._append_system_message(
+            self.add_member_from_link(
                 session=session,
                 conversation=conversation,
-                actor_user_id=int(current_user_id),
+                user_id=int(current_user_id),
+                user=user,
                 body=f"{_display_user_name(user)} присоединился(ась) по ссылке",
-                member_user_ids=member_ids_after,
-                now=now,
+                now=_utc_now(),
+                affected_user_ids=affected_user_ids,
             )
-            affected_user_ids.update(member_ids_after)
             joined = True
-            session.flush()
             payload = self._service._build_conversation_detail_payload(
                 session, conversation, int(current_user_id)
             )

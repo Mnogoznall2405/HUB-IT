@@ -1396,6 +1396,9 @@ export function ChatBubble({
     animateAppear: Boolean(message?.animateAppear),
   });
   const [reactionPickerOpen, setReactionPickerOpen] = useState(false);
+  // The thread scroller clips anything above its top edge: for the first visible message the
+  // picker opens below the button instead of above it.
+  const [reactionPickerBelow, setReactionPickerBelow] = useState(false);
   const reactionPickerRef = useRef(null);
   useEffect(() => {
     if (!reactionPickerOpen) return undefined;
@@ -1974,11 +1977,20 @@ export function ChatBubble({
           >
             {typeof effectiveToggleReaction === 'function' ? (
               <Box ref={reactionPickerRef} sx={{ position: 'relative' }}>
-                <Tooltip title="Реакция">
+                <Tooltip title={reactionPickerOpen ? '' : 'Реакция'}>
                   <button
                     type="button"
                     aria-label="Реакция"
-                    onClick={(event) => { event.stopPropagation(); setReactionPickerOpen((v) => !v); }}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (!reactionPickerOpen) {
+                        const scroller = event.currentTarget.closest('[data-testid="chat-thread-scroll"]');
+                        const roomAbove = event.currentTarget.getBoundingClientRect().top
+                          - (scroller ? scroller.getBoundingClientRect().top : 0);
+                        setReactionPickerBelow(roomAbove < 56);
+                      }
+                      setReactionPickerOpen((v) => !v);
+                    }}
                     className="inline-flex h-7 w-7 items-center justify-center rounded-full transition duration-100 active:scale-[0.96]"
                     style={{
                       color: ui.textPrimary,
@@ -1994,10 +2006,14 @@ export function ChatBubble({
                   <Box
                     sx={{
                       position: 'absolute',
-                      top: -44,
+                      top: reactionPickerBelow ? 32 : -44,
                       ...(message?.is_own ? { right: 0 } : { left: 0 }),
                       zIndex: 10,
                       display: 'flex',
+                      // The wrapper is only as wide as the 28px button: without this the pill is
+                      // shrink-wrapped into it and every emoji button is squeezed to a few pixels.
+                      width: 'max-content',
+                      '& > button': { flexShrink: 0 },
                       gap: '4px',
                       bgcolor: alpha(ui.surfaceStrong || '#fff', theme.palette.mode === 'dark' ? 0.96 : 0.98),
                       borderRadius: 999,

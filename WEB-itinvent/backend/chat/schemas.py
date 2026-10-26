@@ -153,9 +153,12 @@ class ChatConversationSummary(BaseModel):
     muted_until: Optional[datetime] = None
     is_archived: bool = False
     pinned_message_id: Optional[str] = None
+    pinned_at: Optional[str] = None
     viewer_member_role: Optional[str] = None
     member_preview: list[ChatMemberResponse] = Field(default_factory=list)
     direct_peer: Optional[ChatUserSummary] = None
+    # Direct dialog with the technical-support user, as seen by a regular user.
+    is_support: bool = False
 
 
 class ChatConversationListResponse(BaseModel):
@@ -193,6 +196,28 @@ class ChatThreadBootstrapResponse(ChatMessageListResponse):
     initial_anchor_message_id: Optional[str] = None
     pinned_message_id: Optional[str] = None
     pinned_message: Optional[ChatPinnedMessagePreview] = None
+    pinned_messages: list[ChatPinnedMessagePreview] = Field(default_factory=list)
+
+
+class ChatMessageReportRequest(BaseModel):
+    reason: Literal["spam", "abuse", "illegal", "other"]
+    comment: Optional[str] = Field(None, max_length=500)
+
+
+class ChatMessageReportResolveRequest(BaseModel):
+    resolution: Literal["dismissed", "resolved"]
+
+
+class ChatJoinApprovalRequest(BaseModel):
+    approval_required: bool
+
+
+class ChatJoinRequestDecision(BaseModel):
+    decision: Literal["approve", "reject"]
+
+
+class ChatPinnedMessagesResponse(BaseModel):
+    items: list[ChatPinnedMessagePreview] = Field(default_factory=list)
 
 
 class ChatThreadHydrateItem(BaseModel):
@@ -645,6 +670,8 @@ class ChatUnreadSummaryResponse(BaseModel):
 class ChatConfigResponse(BaseModel):
     group_max_members: int = 128
     scheduled_messages_enabled: bool = False
+    # Id of the technical-support user for the viewer; None if absent or the viewer is that user.
+    support_user_id: Optional[int] = None
 
 
 class ChatScheduledMessageCreateRequest(BaseModel):

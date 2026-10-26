@@ -4,6 +4,32 @@ import { chatAPI } from '../../api/client';
 
 const DEFAULT_SEARCH_DEBOUNCE_MS = 250;
 
+export const EMPTY_SEARCH_FILTERS = Object.freeze({ senderUserId: '', createdFrom: '', createdTo: '', kind: '' });
+
+export function hasSearchFilters(filters) {
+  return Boolean(filters && (filters.senderUserId || filters.createdFrom || filters.createdTo || filters.kind));
+}
+
+// A picked calendar day covers the whole local day: from its first to its last millisecond.
+function dayBoundary(value, endOfDay) {
+  const text = String(value || '').trim();
+  if (!text) return undefined;
+  const parsed = new Date(`${text}T${endOfDay ? '23:59:59.999' : '00:00:00'}`);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+}
+
+export function buildSearchParams({ query, filters, limit, beforeMessageId }) {
+  return {
+    q: query,
+    limit,
+    before_message_id: beforeMessageId || undefined,
+    sender_user_id: filters?.senderUserId ? Number(filters.senderUserId) : undefined,
+    created_from: dayBoundary(filters?.createdFrom, false),
+    created_to: dayBoundary(filters?.createdTo, true),
+    kind: filters?.kind || undefined,
+  };
+}
+
 export default function useChatMessageSearch({
   activeConversationId,
   activeConversationIdRef,
@@ -21,6 +47,7 @@ export default function useChatMessageSearch({
   const notifyApiErrorRef = useRef(notifyApiError);
   const [searchOpen, setSearchOpen] = useState(false);
   const [messageSearch, setMessageSearchState] = useState('');
+  const [messageSearchFilters, setMessageSearchFiltersState] = useState(EMPTY_SEARCH_FILTERS);
   const [messageSearchResults, setMessageSearchResults] = useState([]);
   const [messageSearchLoading, setMessageSearchLoading] = useState(false);
   const [messageSearchHasMore, setMessageSearchHasMore] = useState(false);
@@ -39,6 +66,14 @@ export default function useChatMessageSearch({
     messageSearchBeforeIdRef.current = '';
   }, [invalidateSearch]);
 
+  const setMessageSearchFilters = useCallback((patch) => {
+    invalidateSearch();
+    setMessageSearchFiltersState((current) => ({ ...current, ...patch }));
+    setMessageSearchResults([]);
+    setMessageSearchHasMore(false);
+    messageSearchBeforeIdRef.current = '';
+  }, [invalidateSearch]);
+
   useLayoutEffect(() => {
     invalidateSearch();
     setMessageSearchResults([]);
@@ -51,6 +86,7 @@ export default function useChatMessageSearch({
     invalidateSearch();
     setSearchOpen(false);
     setMessageSearch('');
+    setMessageSearchFiltersState(EMPTY_SEARCH_FILTERS);
     setMessageSearchResults([]);
     setMessageSearchHasMore(false);
     messageSearchBeforeIdRef.current = '';
@@ -59,7 +95,7 @@ export default function useChatMessageSearch({
   const runMessageSearch = useCallback(async ({ reset = false } = {}) => {
     const conversationId = String(activeConversationIdRef.current || activeConversationId || '').trim();
     const query = String(messageSearch || '').trim();
-    if (!conversationId || !query) {
+    if (!conversationId || (!query && !hasSearchFilters(messageSearchFilters))) {
       setMessageSearchResults([]);
       setMessageSearchHasMore(false);
       messageSearchBeforeIdRef.current = '';
@@ -70,11 +106,12 @@ export default function useChatMessageSearch({
     setMessageSearchLoading(true);
     try {
       const beforeMessageId = reset ? '' : String(messageSearchBeforeIdRef.current || '').trim();
-      const data = await chatAPI.searchMessages(conversationId, {
-        q: query,
+      const data = await chatAPI.searchMessages(conversationId, buildSearchParams({
+        query,
+        filters: messageSearchFilters,
         limit: 20,
-        before_message_id: beforeMessageId || undefined,
-      });
+        beforeMessageId,
+      }));
       if (reqSeq !== requestSeqRef.current) return;
 
       const items = Array.isArray(data?.items) ? data.items : [];
@@ -95,7 +132,7 @@ export default function useChatMessageSearch({
         setMessageSearchLoading(false);
       }
     }
-  }, [activeConversationId, activeConversationIdRef, messageSearch]);
+  }, [activeConversationId, activeConversationIdRef, messageSearch, messageSearchFilters]);
 
   useEffect(() => {
     if (!searchOpen || !activeConversationId) return undefined;
@@ -103,7 +140,7 @@ export default function useChatMessageSearch({
       void runMessageSearch({ reset: true });
     }, searchDebounceMs);
     return () => window.clearTimeout(timeoutId);
-  }, [activeConversationId, messageSearch, runMessageSearch, searchDebounceMs, searchOpen]);
+  }, [activeConversationId, messageSearch, messageSearchFilters, runMessageSearch, searchDebounceMs, searchOpen]);
 
   const openSearchDialog = useCallback(() => {
     void loadChatDialogsModule();
@@ -142,6 +179,7 @@ export default function useChatMessageSearch({
     closeSearchDialog,
     loadMoreSearchResults,
     messageSearch,
+    messageSearchFilters,
     messageSearchHasMore,
     messageSearchLoading,
     messageSearchResults,
@@ -150,5 +188,6 @@ export default function useChatMessageSearch({
     resetMessageSearch,
     searchOpen,
     setMessageSearch,
+    setMessageSearchFilters,
   };
 }

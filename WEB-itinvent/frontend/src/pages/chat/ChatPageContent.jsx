@@ -23,6 +23,7 @@ import ChatPageMessageChrome from './ChatPageMessageChrome';
 import useChatMessageActionsController from './useChatMessageActionsController';
 import useChatGroupActionsController from './useChatGroupActionsController';
 import useChatReadReceiptsBridge from './useChatReadReceiptsBridge';
+import useChatPinnedMessages from './useChatPinnedMessages';
 import useChatReactionAndPinController from './useChatReactionAndPinController';
 import useChatNavigationController from './useChatNavigationController';
 import useChatConversationActionsController from './useChatConversationActionsController';
@@ -87,6 +88,7 @@ import useChatPageLayoutContext from './useChatPageLayoutContext';
 import { pickChatPageLayoutSections } from './pickChatPageLayoutSections';
 import useChatMessageChromeController from './useChatMessageChromeController';
 import useChatPageRealtimeEffects from './useChatPageRealtimeEffects';
+import ChatReportMessageHost from '../../components/chat/ChatReportMessageHost';
 import { syncChatPageCollectionRefs } from './syncChatPageCollectionRefs';
 import { persistChatRightPanelWidth, readStoredChatRightPanelWidth } from './chatRightPanelLayout';
 import { resolveActiveThreadRenderState } from './chatThreadMessages';
@@ -419,6 +421,7 @@ export function ChatPageContent({
     messageReadsOpen, setMessageReadsOpen, messageReadsLoading, setMessageReadsLoading,
     messageReadsItems, setMessageReadsItems, messageReadsMessage, setMessageReadsMessage,
     closeSearchDialog, loadMoreSearchResults, messageSearch, messageSearchHasMore, messageSearchLoading,
+    messageSearchFilters, setMessageSearchFilters,
     messageSearchResults, openSearchDialog, openSearchResult, resetMessageSearch, searchOpen, setMessageSearch,
   } = overlays;
   const [highlightedMessageId, setHighlightedMessageId] = useState('');
@@ -961,6 +964,13 @@ export function ChatPageContent({
     scrollToMessage,
   });
 
+  const { pinnedMessages, applyPinnedMessages } = useChatPinnedMessages({
+    activeConversationId,
+    serverPinnedMessageId: activeConversation?.pinned_message_id,
+    serverPinnedAt: activeConversation?.pinned_at,
+    persistPinnedMessage,
+  });
+
   const {
     handleOpenPinnedMessage,
     handlePollClose,
@@ -969,6 +979,7 @@ export function ChatPageContent({
     handleUnpinPinnedMessage,
   } = useChatReactionAndPinController({
     activeConversationIdRef,
+    applyPinnedMessages,
     notifyApiError,
     notifyInfo,
     persistPinnedMessage,
@@ -1451,9 +1462,11 @@ export function ChatPageContent({
     openTaskFromChat,
     openConversation,
     patchThreadMessage,
+    applyPinnedMessages,
     persistPinnedMessage,
     pinnedMessageMutationRef,
     pinnedMessage,
+    pinnedMessages,
     promoteConversationToTop,
     queueAutoScroll,
     selectedMessages,
@@ -1739,7 +1752,7 @@ export function ChatPageContent({
         handleOpenEmojiPicker, handleCloseEmojiPicker, handleComposerFocusChange, handleComposerSend, handleComposerPaste,
         handleComposerDrop, handleComposerDragOver, handleComposerDragLeave, mentionCandidates, searchMentionPeople,
         fileDragActive, showJumpToLatest, jumpToLatest, replyMessage, clearReplyMessage, editingMessage,
-        clearEditingMessage, aiTypingStatus, activeAiStatus, activeAiBot, stopActiveAiRun, retryActiveAiRun, pinnedMessage, handleOpenPinnedMessage,
+        clearEditingMessage, aiTypingStatus, activeAiStatus, activeAiBot, stopActiveAiRun, retryActiveAiRun, pinnedMessage, pinnedMessages, handleOpenPinnedMessage,
         handleUnpinPinnedMessage, highlightedMessageId, conversationMetaSubtitle, aiAwareTypingLine,
         renderDesktopRightPanel, selectedFiles, fileCaption, openFilePicker, clearSelectedFiles, preparingFiles,
         sendingFiles, fileUploadProgress, selectedFilesSummary, getReadTargetRef, handleToggleReaction, scrollToMessage,
@@ -1766,6 +1779,7 @@ export function ChatPageContent({
         handleDownloadDocumentPreview, handleDownloadDocumentPreviewPdf, messageReadsOpen, setMessageReadsOpen,
         messageReadsMessage, messageReadsLoading, messageReadsItems, closeMobileInfoView,
         requestConversationRemoval, searchOpen, closeSearchDialog, messageSearch, setMessageSearch,
+        messageSearchFilters, setMessageSearchFilters,
         messageSearchResults, messageSearchLoading, messageSearchHasMore, loadMoreSearchResults, openSearchResult,
       }),
       [
@@ -1796,7 +1810,7 @@ export function ChatPageContent({
         handleOpenEmojiPicker, handleCloseEmojiPicker, handleComposerFocusChange, handleComposerSend, handleComposerPaste,
         handleComposerDrop, handleComposerDragOver, handleComposerDragLeave, mentionCandidates, searchMentionPeople,
         fileDragActive, showJumpToLatest, jumpToLatest, replyMessage, clearReplyMessage, editingMessage,
-        clearEditingMessage, aiTypingStatus, activeAiStatus, activeAiBot, stopActiveAiRun, retryActiveAiRun, pinnedMessage, handleOpenPinnedMessage,
+        clearEditingMessage, aiTypingStatus, activeAiStatus, activeAiBot, stopActiveAiRun, retryActiveAiRun, pinnedMessage, pinnedMessages, handleOpenPinnedMessage,
         handleUnpinPinnedMessage, highlightedMessageId, conversationMetaSubtitle, aiAwareTypingLine,
         renderDesktopRightPanel, selectedFiles, fileCaption, openFilePicker, clearSelectedFiles, preparingFiles,
         sendingFiles, fileUploadProgress, selectedFilesSummary, getReadTargetRef, handleToggleReaction, scrollToMessage,
@@ -1823,6 +1837,7 @@ export function ChatPageContent({
         handleDownloadDocumentPreview, handleDownloadDocumentPreviewPdf, messageReadsOpen, setMessageReadsOpen,
         messageReadsMessage, messageReadsLoading, messageReadsItems, closeMobileInfoView,
         requestConversationRemoval, searchOpen, closeSearchDialog, messageSearch, setMessageSearch,
+        messageSearchFilters, setMessageSearchFilters,
         messageSearchResults, messageSearchLoading, messageSearchHasMore, loadMoreSearchResults, openSearchResult,
       ],
     ),
@@ -1904,6 +1919,8 @@ export function ChatPageContent({
           open={shouldRenderChatDialogs}
           {...chatPageDialogsLayerProps}
         />
+        {/* Вне ленивого ChatDialogs: тот размонтируется, как только закрывается меню сообщения. */}
+        <ChatReportMessageHost conversation={activeConversation} />
 
         <ChatPageConversationActionDialog
           open={Boolean(conversationActionTarget)}

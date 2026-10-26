@@ -130,6 +130,7 @@ export default function buildChatPagePanesBags(input) {
       stopActiveAiRun: input.stopActiveAiRun,
       retryActiveAiRun: input.retryActiveAiRun,
       pinnedMessage: input.pinnedMessage,
+      pinnedMessages: input.pinnedMessages,
       handleOpenPinnedMessage: input.handleOpenPinnedMessage,
       handleUnpinPinnedMessage: input.handleUnpinPinnedMessage,
       highlightedMessageId: input.highlightedMessageId,

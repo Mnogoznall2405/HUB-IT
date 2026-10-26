@@ -59,7 +59,10 @@ import MailOutlineRoundedIcon from '@mui/icons-material/MailOutlineRounded';
 import ChatBrokenMediaThumb from './ChatBrokenMediaThumb';
 import ChatRightPanelHeader from './ChatRightPanelHeader';
 import { chatAPI } from '../../api/client';
+import chatConversationDetailsAPI from '../../api/chatConversationDetails';
 import ChatGroupActivityDialog from './ChatGroupActivityDialog';
+import ChatGroupJoinRequestsDialog from './ChatGroupJoinRequestsDialog';
+import ChatGroupReportsDialog from './ChatGroupReportsDialog';
 import ChatGroupRestrictDialog from './ChatGroupRestrictDialog';
 import ChatGroupSlowModeDialog, { describeSlowMode } from './ChatGroupSlowModeDialog';
 import { findAddressBookEntryForChatUser, pickAddressBookWorkplace } from '../../lib/addressBookChat';
@@ -1647,6 +1650,11 @@ export default function ChatContextPanel({
   const [participantSearch, setParticipantSearch] = useState('');
   const [participantProfile, setParticipantProfile] = useState(null);
   const [infoMenuAnchorEl, setInfoMenuAnchorEl] = useState(null);
+  const [exportMenuAnchorEl, setExportMenuAnchorEl] = useState(null);
+  const [reportsOpen, setReportsOpen] = useState(false);
+  const [openReportsCount, setOpenReportsCount] = useState(0);
+  const [joinRequestsOpen, setJoinRequestsOpen] = useState(false);
+  const [joinRequestsInfo, setJoinRequestsInfo] = useState({ count: 0, approvalRequired: false });
   const [memberActionAnchorEl, setMemberActionAnchorEl] = useState(null);
   const [memberActionTarget, setMemberActionTarget] = useState(null);
   const [groupActionBusy, setGroupActionBusy] = useState(false);
@@ -2125,6 +2133,59 @@ export default function ChatContextPanel({
     if (targetUserId <= 0) return;
     void runGroupAction(() => onSetGroupMemberRestriction?.(targetUserId, { restricted: true, durationSeconds }));
   }, [onSetGroupMemberRestriction, restrictTarget, runGroupAction]);
+  // Owner and moderators see how many complaints wait for them; others never ask for the list.
+  useEffect(() => {
+    if (!panelVisible || !conversationId || !isGroup || !canManageMembers) {
+      setOpenReportsCount(0);
+      return undefined;
+    }
+    let cancelled = false;
+    chatConversationDetailsAPI.listMessageReports(conversationId)
+      .then((data) => { if (!cancelled) setOpenReportsCount(Number(data?.open_count || 0)); })
+      .catch(() => { if (!cancelled) setOpenReportsCount(0); });
+    return () => { cancelled = true; };
+  }, [panelVisible, conversationId, isGroup, canManageMembers]);
+  // Owner and moderators also see how many join requests wait for them.
+  useEffect(() => {
+    if (!panelVisible || !conversationId || !isGroup || !canManageMembers) {
+      setJoinRequestsInfo({ count: 0, approvalRequired: false });
+      return undefined;
+    }
+    let cancelled = false;
+    chatConversationDetailsAPI.listJoinRequests(conversationId)
+      .then((data) => {
+        if (!cancelled) {
+          setJoinRequestsInfo({
+            count: Number(data?.open_count || 0),
+            approvalRequired: Boolean(data?.approval_required),
+          });
+        }
+      })
+      .catch(() => { if (!cancelled) setJoinRequestsInfo({ count: 0, approvalRequired: false }); });
+    return () => { cancelled = true; };
+  }, [panelVisible, conversationId, isGroup, canManageMembers]);
+  // Any participant exports a personal chat; the history of a group goes only to owner and moderators.
+  const canExportHistory = Boolean(conversationId) && (!isGroup || canManageMembers);
+  const handleExportHistory = useCallback(async (format) => {
+    setInfoMenuAnchorEl(null);
+    setExportMenuAnchorEl(null);
+    try {
+      const { blob, fileName, truncated } = await chatConversationDetailsAPI.exportConversation(conversationId, { format });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      if (truncated) {
+        notifications?.notifyInfo?.('В файл попали только первые 20 000 сообщений.', { title: 'История выгружена не полностью' });
+      }
+    } catch (error) {
+      if (typeof notifyApiError === 'function') notifyApiError(error, 'Не удалось выгрузить историю.');
+    }
+  }, [conversationId, notifications, notifyApiError]);
   // Absent means allowed (older servers, or the permissions table is not migrated yet).
   const membersSendFiles = activeConversation?.members_send_files !== false;
   const handleToggleMembersFiles = useCallback(() => {
@@ -3076,6 +3137,36 @@ export default function ChatContextPanel({
               Журнал действий
             </MenuItem>
           ) : null}
+          {isGroup && canManageMembers ? (
+            <MenuItem
+              onClick={() => {
+                setInfoMenuAnchorEl(null);
+                setReportsOpen(true);
+              }}
+            >
+              {openReportsCount > 0 ? `Жалобы (${openReportsCount})` : 'Жалобы'}
+            </MenuItem>
+          ) : null}
+          {isGroup && canManageMembers ? (
+            <MenuItem
+              onClick={() => {
+                setInfoMenuAnchorEl(null);
+                setJoinRequestsOpen(true);
+              }}
+            >
+              {joinRequestsInfo.count > 0 ? `Заявки (${joinRequestsInfo.count})` : 'Заявки на вступление'}
+            </MenuItem>
+          ) : null}
+          {canExportHistory ? (
+            <MenuItem onClick={() => void handleExportHistory('txt')} data-testid="chat-export-history-txt">
+              Выгрузить историю (текст)
+            </MenuItem>
+          ) : null}
+          {canExportHistory ? (
+            <MenuItem onClick={() => void handleExportHistory('json')} data-testid="chat-export-history-json">
+              Выгрузить историю (JSON)
+            </MenuItem>
+          ) : null}
           {isGroup && canManageOwners && !groupClosed ? (
             <MenuItem onClick={handleToggleMembersFiles}>
               {membersSendFiles ? 'Запретить файлы участникам' : 'Разрешить файлы участникам'}
@@ -3103,6 +3194,22 @@ export default function ChatContextPanel({
             open={activityOpen}
             conversationId={activeConversation?.id}
             onClose={() => setActivityOpen(false)}
+          />
+        ) : null}
+        {isGroup && canManageMembers ? (
+          <ChatGroupReportsDialog
+            open={reportsOpen}
+            conversationId={activeConversation?.id}
+            onClose={() => setReportsOpen(false)}
+            onChanged={setOpenReportsCount}
+          />
+        ) : null}
+        {isGroup && canManageMembers ? (
+          <ChatGroupJoinRequestsDialog
+            open={joinRequestsOpen}
+            conversationId={activeConversation?.id}
+            onClose={() => setJoinRequestsOpen(false)}
+            onChanged={setJoinRequestsInfo}
           />
         ) : null}
         {isGroup && canManageOwners ? (
@@ -3294,6 +3401,30 @@ export default function ChatContextPanel({
                 Журнал
               </Button>
             ) : null}
+            {canManageMembers ? (
+              <Button
+                size="small"
+                variant="outlined"
+                color={openReportsCount > 0 ? 'warning' : 'primary'}
+                onClick={() => setReportsOpen(true)}
+                data-testid="chat-group-reports-button"
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                {openReportsCount > 0 ? `Жалобы (${openReportsCount})` : 'Жалобы'}
+              </Button>
+            ) : null}
+            {canManageMembers ? (
+              <Button
+                size="small"
+                variant="outlined"
+                color={joinRequestsInfo.count > 0 ? 'warning' : 'primary'}
+                onClick={() => setJoinRequestsOpen(true)}
+                data-testid="chat-group-join-requests-button"
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                {joinRequestsInfo.count > 0 ? `Заявки (${joinRequestsInfo.count})` : 'Заявки'}
+              </Button>
+            ) : null}
             {canManageOwners && !groupClosed ? (
               <Button
                 size="small"
@@ -3316,6 +3447,31 @@ export default function ChatContextPanel({
               >
                 {slowModeSeconds > 0 ? `Медленно: ${describeSlowMode(slowModeSeconds)}` : 'Медленный режим'}
               </Button>
+            ) : null}
+            {canExportHistory ? (
+              <>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={(event) => setExportMenuAnchorEl(event.currentTarget)}
+                  data-testid="chat-export-history-button"
+                  sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+                >
+                  Выгрузить
+                </Button>
+                <Menu
+                  anchorEl={exportMenuAnchorEl}
+                  open={Boolean(exportMenuAnchorEl)}
+                  onClose={() => setExportMenuAnchorEl(null)}
+                >
+                  <MenuItem onClick={() => void handleExportHistory('txt')} data-testid="chat-export-history-txt">
+                    История в текстовом файле
+                  </MenuItem>
+                  <MenuItem onClick={() => void handleExportHistory('json')} data-testid="chat-export-history-json">
+                    История в JSON
+                  </MenuItem>
+                </Menu>
+              </>
             ) : null}
             {canManageOwners && !groupClosed ? (
               <Button
@@ -3778,6 +3934,22 @@ export default function ChatContextPanel({
           open={activityOpen}
           conversationId={activeConversation?.id}
           onClose={() => setActivityOpen(false)}
+        />
+      ) : null}
+      {isGroup && canManageMembers ? (
+        <ChatGroupReportsDialog
+          open={reportsOpen}
+          conversationId={activeConversation?.id}
+          onClose={() => setReportsOpen(false)}
+          onChanged={setOpenReportsCount}
+        />
+      ) : null}
+      {isGroup && canManageMembers ? (
+        <ChatGroupJoinRequestsDialog
+          open={joinRequestsOpen}
+          conversationId={activeConversation?.id}
+          onClose={() => setJoinRequestsOpen(false)}
+          onChanged={setJoinRequestsInfo}
         />
       ) : null}
       {isGroup && canManageMembers ? (

@@ -32,18 +32,33 @@ export default function useChatInviteJoin({
       try {
         const preview = await chatAPI.previewGroupInvite(token);
         let conversation = null;
+        const title = String(preview?.title || 'без названия').trim();
         if (preview?.already_member && preview?.conversation_id) {
           conversation = await chatAPI.getConversation(preview.conversation_id);
+        } else if (preview?.requires_approval && preview?.request_status === 'pending') {
+          callbacksRef.current.notifyInfo?.(
+            `Заявка в беседу «${title}» уже отправлена: дождитесь решения владельца или модератора.`,
+            { title: 'Беседа' },
+          );
         } else {
+          const requiresApproval = Boolean(preview?.requires_approval);
           const confirmed = await callbacksRef.current.confirmDialog?.({
-            title: `Вступить в беседу «${String(preview?.title || 'без названия').trim()}»?`,
-            message: `Участников: ${Number(preview?.member_count || 0)}. Вы увидите историю беседы.`,
-            confirmLabel: 'Вступить',
+            title: requiresApproval ? `Отправить заявку в беседу «${title}»?` : `Вступить в беседу «${title}»?`,
+            message: requiresApproval
+              ? `Участников: ${Number(preview?.member_count || 0)}. Войти можно после одобрения владельца или модератора.`
+              : `Участников: ${Number(preview?.member_count || 0)}. Вы увидите историю беседы.`,
+            confirmLabel: requiresApproval ? 'Отправить заявку' : 'Вступить',
           });
           if (!confirmed) return;
           const joined = await chatAPI.joinGroupByInvite(token);
           conversation = joined?.conversation || null;
           if (joined?.joined) callbacksRef.current.notifyInfo?.('Вы вступили в беседу.', { title: 'Беседа' });
+          if (joined?.requested) {
+            callbacksRef.current.notifyInfo?.(
+              'Заявка отправлена. Беседа появится в списке, когда её одобрят.',
+              { title: 'Беседа' },
+            );
+          }
         }
         if (conversation?.id) callbacksRef.current.onJoined?.(conversation);
       } catch (error) {

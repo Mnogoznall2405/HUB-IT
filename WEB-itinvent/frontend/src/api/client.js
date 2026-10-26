@@ -749,6 +749,15 @@ export const chatAPI = {
   get setPinnedMessage() {
     return chatConversationDetailsAPI.setPinnedMessage;
   },
+  get getPinnedMessages() {
+    return chatConversationDetailsAPI.getPinnedMessages;
+  },
+  get pinMessage() {
+    return chatConversationDetailsAPI.pinMessage;
+  },
+  get unpinMessage() {
+    return chatConversationDetailsAPI.unpinMessage;
+  },
 
   get deleteConversation() {
     return chatConversationDetailsAPI.deleteConversation;

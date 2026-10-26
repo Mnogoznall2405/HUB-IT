@@ -24,6 +24,7 @@ from PIL import UnidentifiedImageError
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import aliased
 
+from backend.chat import chat_message_pins
 from backend.chat.attachment_media import ChatAttachmentMedia
 from backend.chat.chat_cache import ChatCache
 from backend.chat.chat_formatting import CHAT_UNKNOWN_SENDER_NAME, usable_chat_username
@@ -37,6 +38,9 @@ from backend.chat.chat_delivery_state import (
     insert_message_read_receipt_once as _insert_message_read_receipt_once_impl,
     mark_sender_message_seen as _mark_sender_message_seen_impl,
 )
+from backend.chat.chat_export import ChatExport
+from backend.chat.chat_group_join_requests import ChatGroupJoinRequests
+from backend.chat.chat_message_reports import ChatMessageReports
 from backend.chat.chat_folder_service import ChatFolderService
 from backend.chat.chat_forward_materializer import ChatForwardMaterializer
 from backend.chat.chat_group_service import ChatGroupService
@@ -88,6 +92,7 @@ from backend.chat.notification_dispatcher import ChatNotificationDispatcher
 from backend.chat.notification_planner import build_chat_notification_recipient_plans
 from backend.chat.push_service import chat_push_service
 from backend.chat.upload_session_completion import UploadSessionCompletionMaterializer
+from backend.chat.support_chat import get_support_user_id
 from backend.chat.upload_sessions import ChatUploadSessionStore
 from backend.chat.upload_session_transfer import plan_upload_session_chunk
 from backend.chat.utils import normalize_text as _normalize_text
@@ -463,6 +468,9 @@ class ChatService:
         self._membership = ChatMembership(self)
         self._group_service = ChatGroupService(self)
         self._group_admin_service = ChatGroupAdminService(self)
+        self._export = ChatExport(self)
+        self._message_reports = ChatMessageReports(self)
+        self._group_join_requests = ChatGroupJoinRequests(self)
         self._group_invite_service = ChatGroupInviteService(self)
         self._presence_service = ChatPresenceService(self)
         self._folder_service = ChatFolderService(self)
@@ -1448,10 +1456,14 @@ class ChatService:
             ChatCallParticipant,
             ChatGroupAdminAudit,
             ChatGroupInvite,
+            ChatGroupJoinRequest,
+            ChatGroupJoinSettings,
             ChatGroupLimits,
             ChatGroupPermissions,
             ChatGroupRestriction,
             ChatGroupSettings,
+            ChatMessagePin,
+            ChatMessageReport,
             ChatScheduledMessage,
         )
 
@@ -1465,8 +1477,12 @@ class ChatService:
             (ChatGroupSettings, ChatGroupSettings.conversation_id == conversation_id),
             (ChatGroupLimits, ChatGroupLimits.conversation_id == conversation_id),
             (ChatGroupPermissions, ChatGroupPermissions.conversation_id == conversation_id),
+            (ChatMessagePin, ChatMessagePin.conversation_id == conversation_id),
+            (ChatMessageReport, ChatMessageReport.conversation_id == conversation_id),
             (ChatGroupRestriction, ChatGroupRestriction.conversation_id == conversation_id),
             (ChatGroupInvite, ChatGroupInvite.conversation_id == conversation_id),
+            (ChatGroupJoinRequest, ChatGroupJoinRequest.conversation_id == conversation_id),
+            (ChatGroupJoinSettings, ChatGroupJoinSettings.conversation_id == conversation_id),
             (ChatGroupAdminAudit, ChatGroupAdminAudit.conversation_id == conversation_id),
         )
         for model, condition in statements:
@@ -1867,6 +1883,10 @@ class ChatService:
         q: str,
         limit: int = 20,
         before_message_id: Optional[str] = None,
+        sender_user_id: Optional[int] = None,
+        created_from: Optional[str] = None,
+        created_to: Optional[str] = None,
+        kind: Optional[str] = None,
     ) -> dict:
         self._ensure_available()
         return self._thread_reads.search_messages(
@@ -1875,6 +1895,10 @@ class ChatService:
             q=q,
             limit=limit,
             before_message_id=before_message_id,
+            sender_user_id=sender_user_id,
+            created_from=created_from,
+            created_to=created_to,
+            kind=kind,
         )
 
     def search_messages_global(
@@ -2527,6 +2551,18 @@ class ChatService:
         self._ensure_available()
         return self._group_service.create_direct_conversation(current_user_id=current_user_id, peer_user_id=peer_user_id)
 
+    def create_support_conversation(self, *, current_user_id: int) -> dict:
+        self._ensure_available()
+        support_user_id = get_support_user_id()
+        if not support_user_id:
+            raise LookupError("Support user is not available")
+        if int(support_user_id) == int(current_user_id):
+            raise ValueError("Support user cannot open the support chat with themselves")
+        return self._group_service.create_direct_conversation(
+            current_user_id=current_user_id,
+            peer_user_id=int(support_user_id),
+        )
+
     def get_or_create_notes_conversation(self, *, current_user_id: int) -> dict:
         self._ensure_available()
         return self._group_service.get_or_create_notes_conversation(current_user_id=current_user_id)
@@ -3028,6 +3064,138 @@ class ChatService:
         conversation_id: str,
         message_id: Optional[str] = None,
     ) -> dict:
+        """Legacy single-pin call: a message id adds a pin, an empty id removes the newest one."""
+        return self._change_pinned_messages(
+            current_user_id=current_user_id,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            unpin=not _normalize_text(message_id),
+        )
+
+    def pin_message(self, *, current_user_id: int, conversation_id: str, message_id: str) -> dict:
+        return self._change_pinned_messages(
+            current_user_id=current_user_id,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            unpin=False,
+        )
+
+    def unpin_message(self, *, current_user_id: int, conversation_id: str, message_id: str) -> dict:
+        return self._change_pinned_messages(
+            current_user_id=current_user_id,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            unpin=True,
+        )
+
+    def export_conversation(
+        self,
+        *,
+        current_user_id: int,
+        conversation_id: str,
+        export_format: str = "txt",
+        created_from: Optional[str] = None,
+        created_to: Optional[str] = None,
+    ) -> dict:
+        self._ensure_available()
+        return self._export.export_conversation(
+            current_user_id=int(current_user_id),
+            conversation_id=conversation_id,
+            export_format=export_format,
+            created_from=created_from,
+            created_to=created_to,
+        )
+
+    def report_message(
+        self,
+        *,
+        current_user_id: int,
+        conversation_id: str,
+        message_id: str,
+        reason: str,
+        comment: Optional[str] = None,
+    ) -> dict:
+        self._ensure_available()
+        return self._message_reports.report_message(
+            current_user_id=int(current_user_id),
+            conversation_id=conversation_id,
+            message_id=message_id,
+            reason=reason,
+            comment=comment,
+        )
+
+    def list_message_reports(self, *, current_user_id: int, conversation_id: str) -> dict:
+        self._ensure_available()
+        return self._message_reports.list_reports(
+            current_user_id=int(current_user_id),
+            conversation_id=conversation_id,
+        )
+
+    def resolve_message_report(
+        self,
+        *,
+        current_user_id: int,
+        conversation_id: str,
+        report_id: str,
+        resolution: str,
+    ) -> dict:
+        self._ensure_available()
+        return self._message_reports.resolve_report(
+            current_user_id=int(current_user_id),
+            conversation_id=conversation_id,
+            report_id=report_id,
+            resolution=resolution,
+        )
+
+    def list_group_join_requests(self, *, current_user_id: int, conversation_id: str) -> dict:
+        self._ensure_available()
+        return self._group_join_requests.list_requests(
+            current_user_id=int(current_user_id),
+            conversation_id=conversation_id,
+        )
+
+    def set_group_join_approval(self, *, current_user_id: int, conversation_id: str, approval_required: bool) -> dict:
+        self._ensure_available()
+        return self._group_join_requests.set_approval_required(
+            current_user_id=int(current_user_id),
+            conversation_id=conversation_id,
+            approval_required=bool(approval_required),
+        )
+
+    def resolve_group_join_request(
+        self,
+        *,
+        current_user_id: int,
+        conversation_id: str,
+        request_id: str,
+        decision: str,
+    ) -> dict:
+        self._ensure_available()
+        return self._group_join_requests.resolve_request(
+            current_user_id=int(current_user_id),
+            conversation_id=conversation_id,
+            request_id=request_id,
+            decision=decision,
+        )
+
+    def list_pinned_messages(self, *, current_user_id: int, conversation_id: str) -> dict:
+        self._ensure_available()
+        with chat_session() as session:
+            conversation = self._require_membership(
+                session=session,
+                conversation_id=conversation_id,
+                current_user_id=int(current_user_id),
+            )
+            return {"items": self._serialize_pinned_message_previews(session, conversation)}
+
+    def _change_pinned_messages(
+        self,
+        *,
+        current_user_id: int,
+        conversation_id: str,
+        message_id: Optional[str] = None,
+        unpin: bool = False,
+    ) -> dict:
         self._ensure_available()
         normalized_message_id = _normalize_text(message_id)
         member_user_ids: list[int] = [int(current_user_id)]
@@ -3048,26 +3216,24 @@ class ChatService:
                     )
                 except PermissionError as exc:
                     raise PermissionError("Закреплять сообщения могут только владелец и модераторы группы") from exc
-            if normalized_message_id:
-                message = session.get(ChatMessage, normalized_message_id)
+            now = _utc_now()
+            if unpin:
+                chat_message_pins.apply_unpin(session, conversation, normalized_message_id, now)
+            else:
+                message = session.get(ChatMessage, normalized_message_id) if normalized_message_id else None
                 if message is None or message.conversation_id != conversation.id:
                     raise LookupError("Message not found")
                 if bool(getattr(message, "is_deleted", False)):
                     raise ValueError("Cannot pin a deleted message")
                 if self._normalize_message_kind(getattr(message, "kind", "text")) == "system":
                     raise ValueError("System messages cannot be pinned")
-                conversation.pinned_message_id = message.id
-                conversation.pinned_at = _utc_now()
-                conversation.pinned_by_user_id = int(current_user_id)
-            else:
-                conversation.pinned_message_id = None
-                conversation.pinned_at = None
-                conversation.pinned_by_user_id = None
-            conversation.updated_at = _utc_now()
+                chat_message_pins.apply_pin(session, conversation, message.id, int(current_user_id), now)
+            conversation.updated_at = now
             session.flush()
             member_user_ids = self._conversation_member_ids(session, conversation.id)
             payload = self._build_conversation_payload(session, conversation, int(current_user_id))
             payload["pinned_message"] = self._serialize_pinned_message_preview(session, conversation)
+            payload["pinned_messages"] = self._serialize_pinned_message_previews(session, conversation)
         self._invalidate_conversation_views_for_users(
             conversation_id=_normalize_text(conversation_id),
             user_ids=sorted({int(user_id) for user_id in member_user_ids if int(user_id) > 0}),
@@ -3121,10 +3287,7 @@ class ChatService:
                 message.deleted_at = now
                 message.deleted_by_user_id = int(current_user_id)
                 message.deleted_reason = "self" if is_own_message else "moderated"
-                if _normalize_text(getattr(conversation, "pinned_message_id", None)) == normalized_message_id:
-                    conversation.pinned_message_id = None
-                    conversation.pinned_at = None
-                    conversation.pinned_by_user_id = None
+                chat_message_pins.apply_unpin(session, conversation, normalized_message_id, now)
 
                 # Mention counters are absolute — recount affected viewers so a
                 # deleted message stops contributing to their mention badge.
@@ -3389,6 +3552,13 @@ class ChatService:
 
     def _serialize_pinned_message_preview(self, session, conversation: ChatConversation, *, users_by_id=None):
         return self._serialization._serialize_pinned_message_preview(
+            session,
+            conversation,
+            users_by_id=users_by_id,
+        )
+
+    def _serialize_pinned_message_previews(self, session, conversation: ChatConversation, *, users_by_id=None):
+        return self._serialization._serialize_pinned_message_previews(
             session,
             conversation,
             users_by_id=users_by_id,

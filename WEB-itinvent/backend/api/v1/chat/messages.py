@@ -4,7 +4,7 @@ from backend.api.v1.chat._shim import chat_api
 import asyncio
 import json
 import time
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 
@@ -374,6 +374,10 @@ async def search_chat_messages(
     q: str = Query("", min_length=0),
     limit: int = Query(20, ge=1, le=100),
     before_message_id: Optional[str] = Query(None),
+    sender_user_id: Optional[int] = Query(None, gt=0),
+    created_from: Optional[str] = Query(None, max_length=40),
+    created_to: Optional[str] = Query(None, max_length=40),
+    kind: Optional[Literal["image", "video", "file", "audio", "link"]] = Query(None),
     current_user: User = Depends(require_permission(PERM_CHAT_READ)),
 ):
     started_at = time.perf_counter()
@@ -387,6 +391,10 @@ async def search_chat_messages(
             q=q,
             limit=int(limit),
             before_message_id=before_message_id,
+            sender_user_id=sender_user_id,
+            created_from=created_from,
+            created_to=created_to,
+            kind=kind,
         )
         return response
     except Exception as exc:

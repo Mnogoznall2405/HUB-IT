@@ -20,6 +20,7 @@ from backend.chat.models import (
 from datetime import datetime
 
 from backend.chat.chat_constants import CHAT_DELETED_MESSAGE_BODY, NOTES_CONVERSATION_TITLE
+from backend.chat import chat_message_pins
 from backend.chat.chat_formatting import (
     _display_user_name,
     _iso,
@@ -28,6 +29,7 @@ from backend.chat.chat_formatting import (
     _strip_markdown_preview,
     _truncate_text,
 )
+from backend.chat.support_chat import SUPPORT_CHAT_TITLE, get_support_user_id
 from backend.chat.utils import normalize_text as _normalize_text
 
 if TYPE_CHECKING:
@@ -277,6 +279,7 @@ class ChatSerialization:
         task_due_at = None
         task_completed_at = None
         task_missing = False
+        is_support = False
         if task_id_value:
             if task_exists_map is not None:
                 task_missing = not bool(task_exists_map.get(task_id_value))
@@ -287,6 +290,15 @@ class ChatSerialization:
         if conversation.kind == "direct":
             peer_name = _normalize_text((direct_peer or {}).get("full_name")) or _normalize_text((direct_peer or {}).get("username"))
             title = peer_name or "Личный диалог"
+            support_user_id = get_support_user_id()
+            if (
+                support_user_id
+                and direct_peer is not None
+                and int(direct_peer.get("id") or 0) == support_user_id
+                and int(current_user_id) != support_user_id
+            ):
+                is_support = True
+                title = SUPPORT_CHAT_TITLE
         elif conversation.kind == "notes":
             title = NOTES_CONVERSATION_TITLE
         elif conversation.kind == "ai":
@@ -396,9 +408,12 @@ class ChatSerialization:
             "muted_until": _iso(getattr(state, "muted_until", None)) or None,
             "is_archived": bool(getattr(state, "is_archived", False)),
             "pinned_message_id": _normalize_text(getattr(conversation, "pinned_message_id", None)) or None,
+            # Time of the last pin change: clients refetch the pinned list when it moves.
+            "pinned_at": _iso(getattr(conversation, "pinned_at", None)) or None,
             "viewer_member_role": viewer_member_role,
             "member_preview": member_preview,
             "direct_peer": direct_peer,
+            "is_support": is_support,
             "ai_bot_id": _normalize_text(ai_bot_id) or None,
         }
 
@@ -409,9 +424,35 @@ class ChatSerialization:
         *,
         users_by_id: Optional[dict[int, dict]] = None,
     ) -> Optional[dict[str, Any]]:
-        pinned_id = _normalize_text(getattr(conversation, "pinned_message_id", None))
-        if not pinned_id:
-            return None
+        """The newest pinned message (what the legacy single-pin clients show)."""
+        previews = self._serialize_pinned_message_previews(session, conversation, users_by_id=users_by_id)
+        return previews[0] if previews else None
+
+    def _serialize_pinned_message_previews(
+        self,
+        session,
+        conversation: ChatConversation,
+        *,
+        users_by_id: Optional[dict[int, dict]] = None,
+    ) -> list[dict[str, Any]]:
+        """All pinned messages of the conversation, newest pin first."""
+        return [
+            preview
+            for preview in (
+                self._serialize_one_pinned_preview(session, conversation, pinned_id, users_by_id=users_by_id)
+                for pinned_id in chat_message_pins.list_pin_ids(session, conversation)
+            )
+            if preview is not None
+        ]
+
+    def _serialize_one_pinned_preview(
+        self,
+        session,
+        conversation: ChatConversation,
+        pinned_id: str,
+        *,
+        users_by_id: Optional[dict[int, dict]] = None,
+    ) -> Optional[dict[str, Any]]:
         message = session.get(ChatMessage, pinned_id)
         if message is None or message.conversation_id != conversation.id or bool(getattr(message, "is_deleted", False)):
             return None

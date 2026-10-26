@@ -52,7 +52,9 @@ const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
 const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'webm', 'm4v']);
 const AUDIO_EXTENSIONS = new Set(['ogg', 'webm', 'mp3', 'wav', 'aac', 'm4a', 'opus', 'flac']);
 const EMPTY_URL_LIST = [];
-const STICKER_PACK_FILE_NAME_RE = /^sticker-([A-Za-z0-9_]{1,128})\.(?:webp|webm|tgs)$/i;
+// Old messages: sticker-<pack>.webp. Current ones (the server names the copy it stores):
+// sticker-<sticker uuid>--<pack>.webp.
+const STICKER_PACK_FILE_NAME_RE = /^sticker-(?:[0-9a-f-]{36}--)?([A-Za-z0-9_]{1,128})\.(?:webp|webm|tgs)$/i;
 
 export const getStickerPackShortName = (attachment) => {
   const directValue = String(

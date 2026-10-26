@@ -130,6 +130,29 @@ class ChatGroupPermissions(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
 
 
+class ChatMessagePin(Base):
+    """A pinned message of a conversation; the newest ``pinned_at`` is shown first."""
+
+    __tablename__ = "chat_message_pins"
+    __table_args__ = _table_args(
+        Index("ix_chat_message_pins_conversation_id_pinned_at", "conversation_id", "pinned_at"),
+        schema=CHAT_SCHEMA,
+    )
+
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        primary_key=True,
+    )
+    message_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_messages"), ondelete="CASCADE"),
+        primary_key=True,
+    )
+    pinned_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pinned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class ChatGroupRestriction(Base):
     """A member barred from writing in a group; ``restricted_until`` NULL means until lifted."""
 
@@ -148,6 +171,36 @@ class ChatGroupRestriction(Base):
     restricted_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     restricted_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatMessageReport(Base):
+    """A member's complaint about a message of a group; one per (message, reporter)."""
+
+    __tablename__ = "chat_message_reports"
+    __table_args__ = _table_args(
+        UniqueConstraint("message_id", "reporter_user_id", name="uq_chat_message_reports_message_reporter"),
+        Index("ix_chat_message_reports_conversation_id_status", "conversation_id", "status"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+    )
+    message_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_messages"), ondelete="CASCADE"),
+        nullable=False,
+    )
+    reporter_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(String(16), nullable=False)
+    comment: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    resolved_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ChatGroupInvite(Base):
@@ -171,6 +224,45 @@ class ChatGroupInvite(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     use_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class ChatGroupJoinSettings(Base):
+    """Per-group switch: people who come through the invite link wait for a manager's approval."""
+
+    __tablename__ = "chat_group_join_settings"
+    __table_args__ = _table_args(schema=CHAT_SCHEMA)
+
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        primary_key=True,
+    )
+    approval_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatGroupJoinRequest(Base):
+    """A request to join a group through its invite link; one row per (group, person)."""
+
+    __tablename__ = "chat_group_join_requests"
+    __table_args__ = _table_args(
+        UniqueConstraint("conversation_id", "user_id", name="uq_chat_group_join_requests_conversation_user"),
+        Index("ix_chat_group_join_requests_conversation_id_status", "conversation_id", "status"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    resolved_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ChatGroupAdminAudit(Base):

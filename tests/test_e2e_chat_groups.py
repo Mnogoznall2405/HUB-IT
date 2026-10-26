@@ -71,6 +71,205 @@ def test_group_pinning_is_limited_to_owner_and_moderators(chat_env):  # noqa: F8
     assert not cleared.json().get("pinned_message_id")
 
 
+def test_several_pinned_messages_keep_order_limit_and_legacy_pin(chat_env):  # noqa: F811
+    client, set_user, _drain_background = chat_env
+    conversation_id = _create_group(client)
+    base = f"/chat/conversations/{conversation_id}"
+    ids = []
+    for index in range(11):
+        sent = client.post(f"{base}/messages", json={"body": f"pin target {index}", "client_message_id": f"mp-{index}"})
+        assert sent.status_code == 200, sent.text
+        ids.append(sent.json()["id"])
+
+    def pinned() -> list[str]:
+        response = client.get(f"{base}/pinned-messages")
+        assert response.status_code == 200, response.text
+        return [item["id"] for item in response.json()["items"]]
+
+    # Pins are listed newest first; the legacy single field follows the newest one.
+    for message_id in ids[:3]:
+        assert client.put(f"{base}/pinned-messages/{message_id}").status_code == 200
+    assert pinned() == [ids[2], ids[1], ids[0]]
+    assert client.get(base).json()["pinned_message_id"] == ids[2]
+    # Pinning again changes nothing; unpinning the middle one keeps the others.
+    assert client.put(f"{base}/pinned-messages/{ids[1]}").status_code == 200
+    assert pinned() == [ids[2], ids[1], ids[0]]
+    unpinned = client.delete(f"{base}/pinned-messages/{ids[1]}")
+    assert unpinned.status_code == 200, unpinned.text
+    assert [item["id"] for item in unpinned.json()["items"]] == [ids[2], ids[0]]
+    # Removing the newest pin makes the previous one the legacy pin again.
+    assert client.delete(f"{base}/pinned-messages/{ids[2]}").status_code == 200
+    assert client.get(base).json()["pinned_message_id"] == ids[0]
+    # The old single-pin call: an id adds a pin, an empty id removes the newest.
+    legacy = client.put(f"{base}/pinned-message", json={"message_id": ids[3]})
+    assert legacy.status_code == 200, legacy.text
+    assert pinned() == [ids[3], ids[0]]
+    assert client.put(f"{base}/pinned-message", json={"message_id": None}).status_code == 200
+    assert pinned() == [ids[0]]
+
+    # A deleted message leaves the pins.
+    assert client.put(f"{base}/pinned-messages/{ids[4]}").status_code == 200
+    assert client.delete(f"{base}/messages/{ids[4]}").status_code == 200
+    assert pinned() == [ids[0]]
+
+    # A plain member reads the pins but cannot change them.
+    set_user(3)
+    assert pinned() == [ids[0]]
+    assert client.put(f"{base}/pinned-messages/{ids[5]}").status_code == 403
+    assert client.delete(f"{base}/pinned-messages/{ids[0]}").status_code == 403
+    set_user(1)
+
+    # At most ten pins.
+    for message_id in ids[1:4] + ids[5:11]:
+        assert client.put(f"{base}/pinned-messages/{message_id}").status_code == 200
+    assert len(pinned()) == 10
+    refused = client.put(f"{base}/pinned-messages/{ids[4]}")
+    assert refused.status_code in (400, 404), refused.text
+    over = client.post(f"{base}/messages", json={"body": "one too many", "client_message_id": "mp-over"})
+    refused = client.put(f"{base}/pinned-messages/{over.json()['id']}")
+    assert refused.status_code == 400, refused.text
+    assert "10" in refused.text
+
+
+def test_pins_table_missing_keeps_a_single_pin(chat_env):  # noqa: F811
+    client, _set_user, _drain_background = chat_env
+    conversation_id = _create_group(client)
+    base = f"/chat/conversations/{conversation_id}"
+    first = client.post(f"{base}/messages", json={"body": "first", "client_message_id": "sp-1"}).json()["id"]
+    second = client.post(f"{base}/messages", json={"body": "second", "client_message_id": "sp-2"}).json()["id"]
+
+    with chat_db_module.chat_session() as session:
+        session.execute(chat_db_module.text("DROP TABLE chat_message_pins"))
+    message_pins_module.reset_runtime_state()
+
+    # Before the migration a new pin replaces the old one, as it always did.
+    assert client.put(f"{base}/pinned-messages/{first}").status_code == 200
+    assert client.put(f"{base}/pinned-messages/{second}").status_code == 200
+    listed = client.get(f"{base}/pinned-messages")
+    assert listed.status_code == 200, listed.text
+    assert [item["id"] for item in listed.json()["items"]] == [second]
+    assert client.delete(f"{base}/pinned-messages/{second}").status_code == 200
+    assert client.get(f"{base}/pinned-messages").json()["items"] == []
+
+
+def test_history_export_is_for_managers_skips_deleted_and_is_audited(chat_env):  # noqa: F811
+    client, set_user, _drain_background = chat_env
+    conversation_id = _create_group(client)
+    base = f"/chat/conversations/{conversation_id}"
+    kept = client.post(f"{base}/messages", json={"body": "export keep me", "client_message_id": "ex-1"})
+    gone = client.post(f"{base}/messages", json={"body": "export delete me", "client_message_id": "ex-2"})
+    assert kept.status_code == 200 and gone.status_code == 200
+    assert client.delete(f"{base}/messages/{gone.json()['id']}").status_code == 200
+    set_user(2)
+    assert client.post(f"{base}/messages", json={"body": "from member", "client_message_id": "ex-3"}).status_code == 200
+    assert _send_file(client, conversation_id, "ex-4").status_code == 200
+
+    # A plain member cannot take the history of a group away.
+    denied = client.get(f"{base}/export")
+    assert denied.status_code == 403, denied.text
+
+    set_user(1)
+    exported = client.get(f"{base}/export")
+    assert exported.status_code == 200, exported.text
+    assert exported.headers["content-type"].startswith("text/plain")
+    assert "attachment" in exported.headers["content-disposition"]
+    text = exported.content.decode("utf-8")
+    assert "export keep me" in text and "from member" in text
+    assert "export delete me" not in text
+    assert "note.txt" in text
+    assert exported.headers["x-chat-export-truncated"] == "0"
+
+    as_json = client.get(f"{base}/export", params={"format": "json"})
+    assert as_json.status_code == 200, as_json.text
+    messages = as_json.json()["messages"]
+    assert [item["text"] for item in messages if item["text"] and item["kind"] != "system"] == ["export keep me", "from member"]
+    assert any(item["attachments"] for item in messages)
+
+    # A period with nothing in it gives an empty file, a bad period or format is refused.
+    empty = client.get(f"{base}/export", params={"format": "json", "created_to": "2000-01-01T00:00:00Z"})
+    assert empty.status_code == 200 and empty.json()["messages"] == []
+    assert client.get(f"{base}/export", params={"created_from": "nope"}).status_code in (400, 422)
+    assert client.get(f"{base}/export", params={"format": "pdf"}).status_code == 422
+
+    # The owner sees the export in the group action journal (no message text in it).
+    activity = client.get(f"{base}/activity")
+    assert activity.status_code == 200, activity.text
+    actions = [item.get("action") for item in activity.json().get("items", [])]
+    assert "history_exported" in actions, activity.text
+
+
+def test_message_reports_reach_managers_and_close_together(chat_env):  # noqa: F811
+    client, set_user, _drain_background = chat_env
+    conversation_id = _create_group(client)
+    base = f"/chat/conversations/{conversation_id}"
+    own = client.post(f"{base}/messages", json={"body": "owner words", "client_message_id": "rp-0"}).json()["id"]
+    set_user(2)
+    bad = client.post(f"{base}/messages", json={"body": "bad words", "client_message_id": "rp-1"}).json()["id"]
+    report_url = f"{base}/messages/{bad}/report"
+
+    # A member reports another member's message; the same report twice changes nothing.
+    set_user(3)
+    first = client.post(report_url, json={"reason": "abuse", "comment": "rude"})
+    assert first.status_code == 200, first.text
+    assert first.json()["already_reported"] is False
+    again = client.post(report_url, json={"reason": "spam"})
+    assert again.status_code == 200 and again.json()["already_reported"] is True
+    assert again.json()["id"] == first.json()["id"]
+
+    # Own messages, unknown reasons and a plain member's reading of the list are refused.
+    set_user(2)
+    assert client.post(report_url, json={"reason": "spam"}).status_code == 400
+    set_user(3)
+    assert client.post(f"{base}/messages/{bad}/report", json={"reason": "weird"}).status_code == 422
+    assert client.get(f"{base}/reports").status_code == 403
+
+    # A second reporter adds a second open report about the same message.
+    set_user(1)
+    assert client.post(report_url, json={"reason": "spam"}).status_code == 200
+    listed = client.get(f"{base}/reports")
+    assert listed.status_code == 200, listed.text
+    body = listed.json()
+    assert body["open_count"] == 2 and len(body["items"]) == 2
+    assert {item["message_id"] for item in body["items"]} == {bad}
+    assert body["items"][0]["message_preview"] == "bad words"
+    assert own not in {item["message_id"] for item in body["items"]}
+
+    # Closing one report closes every open report about that message and leaves a journal row.
+    closed = client.put(f"{base}/reports/{body['items'][0]['id']}", json={"resolution": "dismissed"})
+    assert closed.status_code == 200, closed.text
+    assert client.get(f"{base}/reports").json()["open_count"] == 0
+    actions = [item.get("action") for item in client.get(f"{base}/activity").json().get("items", [])]
+    assert "message_reported" in actions and "report_closed" in actions, actions
+
+    # A deleted message drops out of the open list by itself.
+    set_user(3)
+    other = client.post(f"{base}/messages", json={"body": "to be removed", "client_message_id": "rp-2"})
+    set_user(2)
+    assert client.post(f"{base}/messages/{other.json()['id']}/report", json={"reason": "spam"}).status_code == 200
+    set_user(1)
+    assert client.get(f"{base}/reports").json()["open_count"] == 1
+    assert client.delete(f"{base}/messages/{other.json()['id']}").status_code == 200
+    assert client.get(f"{base}/reports").json()["open_count"] == 0
+
+
+def test_reports_table_missing_answers_with_a_reason(chat_env):  # noqa: F811
+    client, set_user, _drain_background = chat_env
+    conversation_id = _create_group(client)
+    base = f"/chat/conversations/{conversation_id}"
+    set_user(2)
+    sent = client.post(f"{base}/messages", json={"body": "words", "client_message_id": "rm-1"}).json()["id"]
+
+    with chat_db_module.chat_session() as session:
+        session.execute(chat_db_module.text("DROP TABLE chat_message_reports"))
+    message_reports_module.reset_runtime_state()
+
+    set_user(3)
+    refused = client.post(f"{base}/messages/{sent}/report", json={"reason": "spam"})
+    assert refused.status_code == 400, refused.text
+    set_user(1)
+    assert client.get(f"{base}/reports").json() == {"items": [], "open_count": 0}
+
+
 def test_owner_can_remove_a_deactivated_member(chat_env, monkeypatch):  # noqa: F811
     client, _set_user, _drain_background = chat_env
     conversation_id = _create_group(client)
@@ -101,6 +300,9 @@ group_settings_module = importlib.import_module("backend.chat.chat_group_setting
 group_limits_module = importlib.import_module("backend.chat.chat_group_limits")
 group_restrictions_module = importlib.import_module("backend.chat.chat_group_restrictions")
 group_permissions_module = importlib.import_module("backend.chat.chat_group_permissions")
+message_pins_module = importlib.import_module("backend.chat.chat_message_pins")
+message_reports_module = importlib.import_module("backend.chat.chat_message_reports")
+join_requests_module = importlib.import_module("backend.chat.chat_group_join_requests")
 
 
 @pytest.fixture(autouse=True)
@@ -109,7 +311,13 @@ def _reset_group_settings_runtime():
     group_limits_module.reset_runtime_state()
     group_restrictions_module.reset_runtime_state()
     group_permissions_module.reset_runtime_state()
+    message_pins_module.reset_runtime_state()
+    message_reports_module.reset_runtime_state()
+    join_requests_module.reset_runtime_state()
     yield
+    join_requests_module.reset_runtime_state()
+    message_reports_module.reset_runtime_state()
+    message_pins_module.reset_runtime_state()
     group_settings_module.reset_runtime_state()
     group_limits_module.reset_runtime_state()
     group_restrictions_module.reset_runtime_state()
@@ -439,6 +647,50 @@ def test_forbidden_files_stop_plain_members_only(chat_env):  # noqa: F811
     assert _send_file(client, conversation_id, "f-4").status_code == 200
 
 
+def test_message_search_filters_by_person_period_and_type(chat_env):  # noqa: F811
+    client, set_user, _drain_background = chat_env
+    conversation_id = _create_group(client)
+    base = f"/chat/conversations/{conversation_id}"
+    search_url = f"{base}/messages/search"
+
+    assert client.post(f"{base}/messages", json={"body": "alpha report", "client_message_id": "q-1"}).status_code == 200
+    set_user(2)
+    assert client.post(f"{base}/messages", json={"body": "beta report", "client_message_id": "q-2"}).status_code == 200
+    link = client.post(
+        f"{base}/messages", json={"body": "see https://example.com/page", "client_message_id": "q-3"}
+    )
+    assert link.status_code == 200, link.text
+    assert _send_file(client, conversation_id, "q-4").status_code == 200
+
+    def found(**params) -> list[str]:
+        response = client.get(search_url, params=params)
+        assert response.status_code == 200, response.text
+        return [item["body"] for item in response.json()["items"]]
+
+    # Nothing to look for: no text and no filter stay empty; text alone behaves as before.
+    assert found() == []
+    assert sorted(found(q="report")) == ["alpha report", "beta report"]
+
+    # A person alone lists his messages, and combines with the text.
+    assert sorted(found(sender_user_id=2)) == ["", "beta report", "see https://example.com/page"]
+    assert found(sender_user_id=1) == ["alpha report"]
+    assert found(q="report", sender_user_id=2) == ["beta report"]
+
+    # Type: a file needs a real attachment (text-only messages never match), a link needs http(s).
+    assert found(kind="file") == [""]
+    assert found(kind="link") == ["see https://example.com/page"]
+    assert found(kind="image") == []
+
+    # Period: everything is inside a wide range and nothing inside a past or a future one.
+    assert len(found(created_from="2000-01-01T00:00:00Z", created_to="2100-01-01T00:00:00Z")) == 4
+    assert found(created_to="2000-01-01T00:00:00Z") == []
+    assert found(created_from="2100-01-01T00:00:00Z") == []
+
+    # Bad input is refused instead of being ignored.
+    assert client.get(search_url, params={"created_from": "not-a-date"}).status_code in (400, 422)
+    assert client.get(search_url, params={"kind": "poll"}).status_code == 422
+
+
 def test_permissions_table_missing_keeps_groups_working(chat_env):  # noqa: F811
     client, set_user, _drain_background = chat_env
     conversation_id = _create_group(client)
@@ -680,6 +932,103 @@ def test_invite_link_lifecycle(chat_env, _reset_invites_runtime):  # noqa: F811
     assert client.delete(invite_url).status_code == 200
     set_user(3)
     assert client.get(f"/chat/invite-links/{second_token}").status_code == 404
+
+
+def test_invite_link_with_approval_leaves_a_request_managers_decide(chat_env, _reset_invites_runtime):  # noqa: F811
+    client, set_user, _drain_background = chat_env
+    conversation_id = _create_group(client, member_ids=(2,))  # owner 1, member 2; users 3 and 4 are outside
+    base = f"/chat/conversations/{conversation_id}"
+    token = client.post(f"{base}/invite-link").json()["token"]
+
+    # Only managers switch the group to approval and read the requests.
+    set_user(2)
+    assert client.put(f"{base}/join-approval", json={"approval_required": True}).status_code == 403
+    assert client.get(f"{base}/join-requests").status_code == 403
+    set_user(1)
+    switched = client.put(f"{base}/join-approval", json={"approval_required": True})
+    assert switched.status_code == 200, switched.text
+    assert client.get(f"{base}/join-requests").json()["approval_required"] is True
+
+    # The link now only leaves a request; asking twice changes nothing and the person stays outside.
+    set_user(3)
+    preview = client.get(f"/chat/invite-links/{token}").json()
+    assert preview["requires_approval"] is True and preview["request_status"] is None
+    first = client.post(f"/chat/invite-links/{token}/join")
+    assert first.status_code == 200, first.text
+    assert first.json()["joined"] is False and first.json()["requested"] is True
+    again = client.post(f"/chat/invite-links/{token}/join")
+    assert again.json()["requested"] is True
+    assert client.get(f"/chat/invite-links/{token}").json()["request_status"] == "pending"
+    assert client.get(f"{base}/messages").status_code in (403, 404)
+
+    set_user(1)
+    listed = client.get(f"{base}/join-requests").json()
+    assert listed["open_count"] == 1 and len(listed["items"]) == 1
+    request_id = listed["items"][0]["id"]
+    assert listed["items"][0]["user_id"] == 3
+
+    # Approval makes the person a member; deciding again reports the outcome and adds nobody twice.
+    approved = client.put(f"{base}/join-requests/{request_id}", json={"decision": "approve"})
+    assert approved.status_code == 200, approved.text
+    assert approved.json() == {"id": request_id, "status": "approved", "added": True}
+    repeated = client.put(f"{base}/join-requests/{request_id}", json={"decision": "reject"})
+    assert repeated.json()["status"] == "approved" and repeated.json()["added"] is False
+    assert client.get(f"{base}/join-requests").json()["open_count"] == 0
+    set_user(3)
+    assert client.get(f"{base}/messages").status_code == 200
+    assert client.post(
+        f"{base}/messages", json={"body": "thanks for letting me in", "client_message_id": "jr-1"}
+    ).status_code == 200
+
+    # In another group a rejected person is not let back through the link; a plain member cannot decide.
+    set_user(1)
+    other_id = _create_group(client, member_ids=(2,))
+    other = f"/chat/conversations/{other_id}"
+    other_token = client.post(f"{other}/invite-link").json()["token"]
+    assert client.put(f"{other}/join-approval", json={"approval_required": True}).status_code == 200
+    set_user(3)
+    assert client.post(f"/chat/invite-links/{other_token}/join").json()["requested"] is True
+    set_user(2)
+    assert client.put(f"{other}/join-requests/anything", json={"decision": "reject"}).status_code == 403
+    set_user(1)
+    pending = client.get(f"{other}/join-requests").json()["items"][0]["id"]
+    assert client.put(f"{other}/join-requests/{pending}", json={"decision": "reject"}).json()["status"] == "rejected"
+    set_user(3)
+    assert client.post(f"/chat/invite-links/{other_token}/join").status_code == 403
+    assert client.get(f"/chat/invite-links/{other_token}").json()["request_status"] == "rejected"
+
+    # Switching approval off opens the link again; the journal keeps the decisions.
+    set_user(1)
+    assert client.put(f"{other}/join-approval", json={"approval_required": False}).json() == {
+        "approval_required": False
+    }
+    set_user(3)
+    joined = client.post(f"/chat/invite-links/{other_token}/join")
+    assert joined.status_code == 200 and joined.json()["joined"] is True
+    set_user(1)
+    actions = [item.get("action") for item in client.get(f"{other}/activity").json().get("items", [])]
+    for expected in ("join_policy_changed", "join_request_rejected"):
+        assert expected in actions, actions
+    approved_actions = [item.get("action") for item in client.get(f"{base}/activity").json().get("items", [])]
+    assert "join_request_approved" in approved_actions, approved_actions
+
+
+def test_join_approval_table_missing_keeps_the_link_open(chat_env, _reset_invites_runtime):  # noqa: F811
+    client, set_user, _drain_background = chat_env
+    conversation_id = _create_group(client, member_ids=(2,))
+    base = f"/chat/conversations/{conversation_id}"
+    token = client.post(f"{base}/invite-link").json()["token"]
+
+    with chat_db_module.chat_session() as session:
+        session.execute(chat_db_module.text("DROP TABLE chat_group_join_requests"))
+        session.execute(chat_db_module.text("DROP TABLE chat_group_join_settings"))
+    join_requests_module.reset_runtime_state()
+
+    assert client.put(f"{base}/join-approval", json={"approval_required": True}).status_code == 400
+    assert client.get(f"{base}/join-requests").json() == {"items": [], "open_count": 0, "approval_required": False}
+    set_user(3)
+    joined = client.post(f"/chat/invite-links/{token}/join")
+    assert joined.status_code == 200 and joined.json()["joined"] is True
 
 
 def test_invite_link_is_refused_without_table(chat_env, _reset_invites_runtime):  # noqa: F811

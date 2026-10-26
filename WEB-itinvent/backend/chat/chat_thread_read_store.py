@@ -19,6 +19,23 @@ from backend.chat.models import (
 )
 from backend.chat.utils import normalize_text as _normalize_text
 
+# Message types offered by the in-conversation search filter ("link": a body with http(s)://).
+SEARCH_KINDS = ("image", "video", "file", "audio", "link")
+
+
+def _parse_search_moment(value: Optional[str]):
+    """An ISO date or date-time of a search filter as an aware UTC datetime (None when absent)."""
+    from datetime import datetime, timezone
+
+    text = _normalize_text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("Некорректная дата в фильтре поиска") from exc
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
 if TYPE_CHECKING:
     from backend.chat.service import ChatService
 
@@ -591,10 +608,11 @@ class ChatThreadReadStore:
             payload["initial_anchor_mode"] = initial_anchor_mode
             payload["initial_anchor_message_id"] = initial_anchor_message_id
             payload["pinned_message_id"] = _normalize_text(getattr(conversation, "pinned_message_id", None)) or None
-            payload["pinned_message"] = self._service._serialize_pinned_message_preview(
+            payload["pinned_messages"] = self._service._serialize_pinned_message_previews(
                 session,
                 conversation,
             )
+            payload["pinned_message"] = payload["pinned_messages"][0] if payload["pinned_messages"] else None
             self._service._cache_set(
                 user_id=int(current_user_id),
                 bucket="thread_bootstrap",
@@ -749,12 +767,24 @@ class ChatThreadReadStore:
         q: str,
         limit: int = 20,
         before_message_id: Optional[str] = None,
+        sender_user_id: Optional[int] = None,
+        created_from: Optional[str] = None,
+        created_to: Optional[str] = None,
+        kind: Optional[str] = None,
     ) -> dict:
         normalized_conversation_id = _normalize_text(conversation_id)
         normalized_query = _normalize_text(q).lower()
         normalized_before = _normalize_text(before_message_id)
         page_size = max(1, min(int(limit), 100))
-        if not normalized_query:
+        normalized_kind = _normalize_text(kind).lower()
+        if normalized_kind and normalized_kind not in SEARCH_KINDS:
+            raise ValueError("Недопустимый тип сообщений для поиска")
+        sender_filter = int(sender_user_id) if sender_user_id else 0
+        from_dt = _parse_search_moment(created_from)
+        to_dt = _parse_search_moment(created_to)
+        has_filters = bool(sender_filter or from_dt or to_dt or normalized_kind)
+        # Filters alone (a person, a period, a type) are a search too: no text is required then.
+        if not normalized_query and not has_filters:
             return {"items": [], "has_more": False}
 
         with chat_session() as session:
@@ -800,12 +830,35 @@ class ChatThreadReadStore:
                 .where(
                     ChatMessage.conversation_id == conversation.id,
                     ChatMessage.is_deleted.is_(False),
+                )
+            )
+            if normalized_query:
+                search_query = search_query.where(
                     or_(
                         func.lower(ChatMessage.body).contains(normalized_query),
                         func.lower(ChatMessageAttachment.file_name).contains(normalized_query),
-                    ),
+                    )
                 )
-                .distinct()
+            if sender_filter:
+                search_query = search_query.where(ChatMessage.sender_user_id == sender_filter)
+            if from_dt is not None:
+                search_query = search_query.where(ChatMessage.created_at >= from_dt)
+            if to_dt is not None:
+                search_query = search_query.where(ChatMessage.created_at <= to_dt)
+            if normalized_kind == "link":
+                lowered_body = func.lower(ChatMessage.body)
+                search_query = search_query.where(
+                    or_(lowered_body.contains("http://"), lowered_body.contains("https://"))
+                )
+            elif normalized_kind:
+                # The outer join yields NULL attachment columns for text-only messages, which the
+                # "file" branch of the kind filter would accept: require a real attachment.
+                search_query = self._service._apply_attachment_kind_filter(
+                    query=search_query.where(ChatMessageAttachment.id.is_not(None)),
+                    kind=normalized_kind,
+                )
+            search_query = (
+                search_query.distinct()
                 .order_by(*self._service._message_order_desc())
                 .limit(page_size + 1)
             )

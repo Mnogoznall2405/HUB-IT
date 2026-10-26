@@ -47,6 +47,9 @@ ACTION_INVITE_CREATED = "invite_created"
 ACTION_INVITE_REVOKED = "invite_revoked"
 ACTION_MEMBER_RESTRICTED = "member_restricted"
 ACTION_RESTRICTION_LIFTED = "restriction_lifted"
+ACTION_JOIN_POLICY_CHANGED = "join_policy_changed"
+ACTION_JOIN_REQUEST_APPROVED = "join_request_approved"
+ACTION_JOIN_REQUEST_REJECTED = "join_request_rejected"
 
 _AUTO_SCAN_CAP = 500
 _auto_run_lock = threading.Lock()

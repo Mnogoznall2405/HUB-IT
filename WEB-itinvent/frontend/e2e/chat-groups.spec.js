@@ -168,6 +168,58 @@ test('invite link: a third user joins through /chat?join= and the group opens', 
   }
 });
 
+test('join requests: the link leaves a request, the owner approves it in the group panel', async ({
+  browser,
+}) => {
+  const contextA = await newContext(browser);
+  const contextB = await newContext(browser);
+  const pageA = await contextA.newPage();
+  const pageB = await contextB.newPage();
+
+  try {
+    await login(pageA, U1, P1);
+    await login(pageB, U2, P2);
+
+    const insiderId = await findUserId(pageA, U3);
+    const title = `E2E заявки ${Date.now()}`;
+    const group = await createGroup(pageA, title, [insiderId]);
+    const invite = await pageA.request.post(`/api/v1/chat/conversations/${group.id}/invite-link`);
+    expect(invite.ok()).toBeTruthy();
+    const { token } = await invite.json();
+
+    // Owner: switch the group to join by approval.
+    await openGroup(pageA, group.id);
+    await pageA.getByRole('button', { name: 'Информация о чате' }).first().click();
+    await pageA.getByTestId('chat-group-join-requests-button').click();
+    await pageA.getByTestId('chat-join-approval-switch').click();
+    await expect(pageA.getByTestId('chat-join-approval-switch')).toBeChecked({ timeout: 15_000 });
+    await pageA.keyboard.press('Escape');
+
+    // Outsider: the link asks for a request, the group does not open.
+    await pageB.goto(`/chat?join=${encodeURIComponent(token)}`);
+    await expect(pageB.getByText(`Отправить заявку в беседу «${title}»?`)).toBeVisible({ timeout: 30_000 });
+    await pageB.getByRole('button', { name: 'Отправить заявку', exact: true }).click();
+    await expect(pageB.getByText('Заявка отправлена.')).toBeVisible({ timeout: 30_000 });
+    await expect(pageB.getByTestId('chat-composer-textarea')).toHaveCount(0);
+
+    // Owner: the request waits in the panel; approving lets the person in.
+    await openGroup(pageA, group.id);
+    await pageA.getByRole('button', { name: 'Информация о чате' }).first().click();
+    const requestsButton = pageA.getByTestId('chat-group-join-requests-button');
+    await expect(requestsButton).toContainText('Заявки (1)', { timeout: 30_000 });
+    await requestsButton.click();
+    await expect(pageA.getByTestId('chat-group-join-request-item')).toHaveCount(1);
+    await pageA.getByTestId('chat-join-request-approve').click();
+    await expect(pageA.getByText('Заявок нет.')).toBeVisible({ timeout: 15_000 });
+
+    await openGroup(pageB, group.id);
+    await expect(pageB.getByTestId('chat-composer-textarea')).toBeVisible({ timeout: 30_000 });
+  } finally {
+    await contextA.close();
+    await contextB.close();
+  }
+});
+
 test('slow mode: the owner turns it on in the group panel, a member waits between messages', async ({
   browser,
 }) => {
@@ -307,5 +359,216 @@ test('file permission: the owner forbids files, a member is refused with the rea
   } finally {
     await contextA.close();
     await contextB.close();
+  }
+});
+
+test('search filters: the author and the message type narrow the in-chat search without any text', async ({
+  browser,
+}) => {
+  const contextA = await newContext(browser);
+  const contextB = await newContext(browser);
+  const pageA = await contextA.newPage();
+  const pageB = await contextB.newPage();
+
+  try {
+    await login(pageA, U1, P1);
+    await login(pageB, U2, P2);
+
+    const memberId = await findUserId(pageA, U2);
+    const users = await (await pageA.request.get('/api/v1/chat/users')).json();
+    const memberUser = (users.items || users).find((item) => item.id === memberId);
+    const memberName = memberUser.full_name || memberUser.username;
+    const group = await createGroup(pageA, `E2E поиск ${Date.now()}`, [memberId]);
+    const stamp = Date.now();
+    const send = async (page, body, id) => {
+      const response = await page.request.post(`/api/v1/chat/conversations/${group.id}/messages`, {
+        data: { body, client_message_id: `${id}-${stamp}` },
+      });
+      expect(response.ok()).toBeTruthy();
+    };
+    await send(pageA, `owner note ${stamp}`, 'sf-1');
+    await send(pageB, `member note ${stamp}`, 'sf-2');
+    await send(pageB, `member link https://example.com/${stamp}`, 'sf-3');
+
+    await openGroup(pageA, group.id);
+    await pageA.getByRole('button', { name: 'Поиск по сообщениям' }).first().click();
+    const dialog = pageA.getByRole('dialog', { name: 'Поиск по сообщениям' });
+    await expect(dialog.getByText(/Введите запрос или выберите фильтр/)).toBeVisible({ timeout: 15_000 });
+
+    // Type alone: only the message with a link.
+    await dialog.getByTestId('chat-search-kind-link').click();
+    await expect(dialog.getByText(`member link https://example.com/${stamp}`)).toBeVisible({ timeout: 15_000 });
+    await expect(dialog.getByText(`member note ${stamp}`)).toHaveCount(0);
+
+    // Author alone (type off): everything the member wrote, nothing of the owner.
+    await dialog.getByTestId('chat-search-kind-link').click();
+    await dialog.getByLabel('Автор').click();
+    await pageA.getByRole('option', { name: memberName, exact: true }).click();
+    await expect(dialog.getByText(`member note ${stamp}`)).toBeVisible({ timeout: 15_000 });
+    await expect(dialog.getByText(`owner note ${stamp}`)).toHaveCount(0);
+  } finally {
+    await contextA.close();
+    await contextB.close();
+  }
+});
+
+test('several pins: the bar counts them, a tap moves to the older one, unpin removes the shown one', async ({
+  browser,
+}) => {
+  const contextA = await newContext(browser);
+  const pageA = await contextA.newPage();
+
+  try {
+    await login(pageA, U1, P1);
+    const memberId = await findUserId(pageA, U2);
+    const group = await createGroup(pageA, `E2E закрепы ${Date.now()}`, [memberId]);
+    const stamp = Date.now();
+    const ids = [];
+    for (const index of [1, 2, 3]) {
+      const response = await pageA.request.post(`/api/v1/chat/conversations/${group.id}/messages`, {
+        data: { body: `pin text ${index} ${stamp}`, client_message_id: `pn-${index}-${stamp}` },
+      });
+      expect(response.ok()).toBeTruthy();
+      ids.push((await response.json()).id);
+    }
+    for (const id of ids.slice(0, 2)) {
+      const response = await pageA.request.put(`/api/v1/chat/conversations/${group.id}/pinned-messages/${id}`);
+      expect(response.ok()).toBeTruthy();
+    }
+
+    await openGroup(pageA, group.id);
+    const counter = pageA.getByTestId('chat-pinned-message-counter');
+    await expect(counter).toContainText('1 из 2', { timeout: 30_000 });
+    await expect(pageA.getByTestId('chat-pinned-message-open')).toContainText(`pin text 2 ${stamp}`);
+
+    // A tap shows the older pin next.
+    await pageA.getByTestId('chat-pinned-message-open').click();
+    await expect(counter).toContainText('2 из 2');
+    await expect(pageA.getByTestId('chat-pinned-message-open')).toContainText(`pin text 1 ${stamp}`);
+
+    // Unpin removes the shown (older) pin only; the other one stays as the single pin.
+    await pageA.getByTestId('chat-pinned-message-close').click();
+    await expect(counter).toHaveText('Закрепленное сообщение', { timeout: 15_000 });
+    await expect(pageA.getByTestId('chat-pinned-message-open')).toContainText(`pin text 2 ${stamp}`);
+  } finally {
+    await contextA.close();
+  }
+});
+
+test('history export: the owner downloads the group history from the info panel, a member has no such button', async ({
+  browser,
+}) => {
+  const contextA = await newContext(browser);
+  const contextB = await newContext(browser);
+  const pageA = await contextA.newPage();
+  const pageB = await contextB.newPage();
+
+  try {
+    await login(pageA, U1, P1);
+    await login(pageB, U2, P2);
+    const memberId = await findUserId(pageA, U2);
+    const group = await createGroup(pageA, `E2E выгрузка ${Date.now()}`, [memberId]);
+    const text = `export me ${Date.now()}`;
+    const sent = await pageA.request.post(`/api/v1/chat/conversations/${group.id}/messages`, {
+      data: { body: text, client_message_id: `ex-${Date.now()}` },
+    });
+    expect(sent.ok()).toBeTruthy();
+
+    await openGroup(pageA, group.id);
+    await pageA.getByRole('button', { name: 'Информация о чате' }).first().click();
+    await pageA.getByTestId('chat-export-history-button').click();
+    const downloadPromise = pageA.waitForEvent('download', { timeout: 30_000 });
+    await pageA.getByTestId('chat-export-history-txt').click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(/\.txt$/);
+    const stream = await download.createReadStream();
+    const chunks = [];
+    for await (const chunk of stream) chunks.push(chunk);
+    expect(Buffer.concat(chunks).toString('utf-8')).toContain(text);
+
+    await openGroup(pageB, group.id);
+    await pageB.getByRole('button', { name: 'Информация о чате' }).first().click();
+    await expect(pageB.getByText('Информация', { exact: true }).first()).toBeVisible({ timeout: 15_000 });
+    await expect(pageB.getByTestId('chat-export-history-button')).toHaveCount(0);
+  } finally {
+    await contextA.close();
+    await contextB.close();
+  }
+});
+
+test('reports: a member complains about a message, the owner sees it in the group panel and dismisses it', async ({
+  browser,
+}) => {
+  const contextA = await newContext(browser);
+  const contextB = await newContext(browser);
+  const pageA = await contextA.newPage();
+  const pageB = await contextB.newPage();
+
+  try {
+    await login(pageA, U1, P1);
+    await login(pageB, U2, P2);
+    const memberId = await findUserId(pageA, U2);
+    const group = await createGroup(pageA, `E2E жалобы ${Date.now()}`, [memberId]);
+    const text = `bad words ${Date.now()}`;
+    const sent = await pageA.request.post(`/api/v1/chat/conversations/${group.id}/messages`, {
+      data: { body: text, client_message_id: `rp-${Date.now()}` },
+    });
+    expect(sent.ok()).toBeTruthy();
+
+    // Member: the message menu opens the complaint dialog.
+    await openGroup(pageB, group.id);
+    await pageB.getByText(text).last().click({ button: 'right' });
+    await pageB.getByRole('menuitem', { name: 'Пожаловаться' }).click();
+    await pageB.getByTestId('chat-report-submit').click();
+    await expect(pageB.getByTestId('chat-report-sent')).toBeVisible({ timeout: 15_000 });
+
+    // Owner: the panel shows the waiting complaint; dismissing it clears the counter.
+    await openGroup(pageA, group.id);
+    await pageA.getByRole('button', { name: 'Информация о чате' }).first().click();
+    const reportsButton = pageA.getByTestId('chat-group-reports-button');
+    await expect(reportsButton).toContainText('Жалобы (1)', { timeout: 30_000 });
+    await reportsButton.click();
+    const item = pageA.getByTestId('chat-group-report-item');
+    await expect(item).toContainText(text);
+    await pageA.getByTestId('chat-report-dismiss').click();
+    await expect(pageA.getByText('Открытых жалоб нет.')).toBeVisible({ timeout: 15_000 });
+  } finally {
+    await contextA.close();
+    await contextB.close();
+  }
+});
+
+test('reaction picker: the emoji are visible for the first message and a click adds the reaction', async ({
+  browser,
+}) => {
+  const context = await newContext(browser);
+  const page = await context.newPage();
+
+  try {
+    await login(page, U1, P1);
+    const memberId = await findUserId(page, U2);
+    const group = await createGroup(page, `E2E реакции ${Date.now()}`, [memberId]);
+    const body = `первое сообщение ${Date.now()}`;
+    const sent = await page.request.post(`/api/v1/chat/conversations/${group.id}/messages`, {
+      data: { body, client_message_id: `react-${Date.now()}` },
+    });
+    expect(sent.ok()).toBeTruthy();
+
+    // The only message sits at the very top of the thread: the picker must not be clipped there
+    // and its emoji buttons must keep their size.
+    await openGroup(page, group.id);
+    await page.getByText(body).first().hover();
+    await page.getByRole('button', { name: 'Реакция', exact: true }).first().click();
+    const thumbsUp = page.getByRole('button', { name: 'Реакция 👍' });
+    await expect(thumbsUp).toBeVisible();
+    const box = await thumbsUp.boundingBox();
+    expect(box.width).toBeGreaterThan(16);
+    const scroller = await page.getByTestId('chat-thread-scroll').boundingBox();
+    expect(box.y).toBeGreaterThanOrEqual(scroller.y);
+
+    await thumbsUp.click();
+    await expect(page.getByTestId('chat-reactions-bar')).toBeVisible({ timeout: 15_000 });
+  } finally {
+    await context.close();
   }
 });

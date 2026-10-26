@@ -79,6 +79,7 @@ class AppSettingsControllerUser(BaseModel):
 class AppSettingsResponse(BaseModel):
     transfer_act_reminder_controller_username: Optional[str] = None
     admin_login_allowed_ips: list[str] = Field(default_factory=list)
+    support_chat_username: Optional[str] = None
     available_controllers: list[AppSettingsControllerUser] = Field(default_factory=list)
     resolved_controller: Optional[AppSettingsControllerUser] = None
     resolved_controller_source: Literal["configured", "fallback", "none"] = "none"
@@ -89,6 +90,7 @@ class AppSettingsResponse(BaseModel):
 class AppSettingsPatchRequest(BaseModel):
     transfer_act_reminder_controller_username: Optional[str] = None
     admin_login_allowed_ips: Optional[list[str]] = None
+    support_chat_username: Optional[str] = None
 
 
 class NotificationPushConfigResponse(BaseModel):

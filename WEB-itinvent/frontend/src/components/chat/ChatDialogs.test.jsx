@@ -649,8 +649,8 @@ describe('ChatDialogs attachment preview', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Переслать' }));
     expect(onForwardMessageFromMenu).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-1' }));
 
-    // Пункт «Пожаловаться» убран из контекстного меню (автоотправка жалоб не подключена).
-    expect(screen.queryByRole('menuitem', { name: 'Пожаловаться' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Пожаловаться' }));
+    expect(onReportMessageFromMenu).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-1' }));
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Выделить' }));
     expect(onSelectMessageFromMenu).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-1' }));

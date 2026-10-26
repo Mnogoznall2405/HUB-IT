@@ -375,3 +375,86 @@ def test_conversation_listing_respects_optional_audit_gate(chat_env, monkeypatch
         assert {"conversations_cache_hit", "conversations_cache_miss"} <= stages
     else:
         assert not log_path.exists()
+
+
+def test_support_chat_is_a_relabelled_direct_dialog_with_the_configured_user(chat_env, monkeypatch):
+    client, set_user, _drain = chat_env
+    support_chat = importlib.import_module("backend.chat.support_chat")
+    # bob (id 2) plays the support user; the lookup goes by the configured username.
+    monkeypatch.setattr(
+        support_chat.app_settings_service, "get_settings", lambda: {"support_chat_username": "bob"}
+    )
+    monkeypatch.setattr(
+        support_chat.user_service,
+        "get_by_username",
+        lambda username: chat_service_module.user_service.get_by_id(2) if username == "bob" else None,
+    )
+    support_chat.reset_support_user_cache()
+    try:
+        assert client.get("/chat/config").json()["support_user_id"] == 2
+
+        opened = client.post("/chat/conversations/support")
+        assert opened.status_code == 200, opened.text
+        assert opened.json()["title"] == "Техподдержка HUB"
+        assert opened.json()["is_support"] is True
+        again = client.post("/chat/conversations/support")
+        assert again.json()["id"] == opened.json()["id"]
+
+        set_user(2)
+        assert client.get("/chat/config").json()["support_user_id"] is None
+        assert client.post("/chat/conversations/support").status_code in (400, 409)
+        seen = {
+            item["id"]: item for item in client.get("/chat/conversations").json()["items"]
+        }[opened.json()["id"]]
+        assert seen["title"] == "Alice Sender"
+        assert seen["is_support"] is False
+    finally:
+        support_chat.reset_support_user_cache()
+
+
+def test_existing_dialog_with_the_support_user_is_relabelled_and_stays_writable(chat_env, monkeypatch):
+    client, set_user, drain_background = chat_env
+    support_chat = importlib.import_module("backend.chat.support_chat")
+
+    # alice and bob already talk before bob becomes the support user.
+    existing = client.post("/chat/conversations/direct", json={"peer_user_id": 2}).json()
+    first = client.post(
+        f"/chat/conversations/{existing['id']}/messages",
+        json={"body": "before support", "client_message_id": "pre-1"},
+    )
+    assert first.status_code == 200, first.text
+
+    monkeypatch.setattr(
+        support_chat.app_settings_service, "get_settings", lambda: {"support_chat_username": "bob"}
+    )
+    monkeypatch.setattr(
+        support_chat.user_service,
+        "get_by_username",
+        lambda username: chat_service_module.user_service.get_by_id(2) if username == "bob" else None,
+    )
+    support_chat.reset_support_user_cache()
+    try:
+        listed = {item["id"]: item for item in client.get("/chat/conversations").json()["items"]}
+        assert listed[existing["id"]]["title"] == "Техподдержка HUB"
+        assert listed[existing["id"]]["is_support"] is True
+
+        # The support entry opens that very dialog instead of creating a second one.
+        assert client.post("/chat/conversations/support").json()["id"] == existing["id"]
+
+        after = client.post(
+            f"/chat/conversations/{existing['id']}/messages",
+            json={"body": "after support", "client_message_id": "post-1"},
+        )
+        assert after.status_code == 200, after.text
+        drain_background()
+
+        set_user(2)
+        reply = client.post(
+            f"/chat/conversations/{existing['id']}/messages",
+            json={"body": "support reply", "client_message_id": "post-2"},
+        )
+        assert reply.status_code == 200, reply.text
+        bodies = [m["body"] for m in client.get(f"/chat/conversations/{existing['id']}/messages").json()["items"]]
+        assert bodies == ["before support", "after support", "support reply"]
+    finally:
+        support_chat.reset_support_user_cache()

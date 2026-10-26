@@ -83,6 +83,7 @@ export default function useChatThreadSection(ctx) {
     stopActiveAiRun,
     retryActiveAiRun,
     pinnedMessage,
+    pinnedMessages,
     handleOpenPinnedMessage,
     handleUnpinPinnedMessage,
     highlightedMessageId,
@@ -229,6 +230,7 @@ export default function useChatThreadSection(ctx) {
         onStopAiRun={stopActiveAiRun}
         onRetryAiRun={retryActiveAiRun}
         pinnedMessage={pinnedMessage}
+        pinnedMessages={pinnedMessages}
         onOpenPinnedMessage={handleOpenPinnedMessage}
         onUnpinPinnedMessage={handleUnpinPinnedMessage}
         highlightedMessageId={highlightedMessageId}
@@ -337,6 +339,7 @@ export default function useChatThreadSection(ctx) {
       openSearchDialog,
       openTaskFromChat,
       pinnedMessage,
+      pinnedMessages,
       prependScrollRestoreRef,
       preparingFiles,
       replyMessage,

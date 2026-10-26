@@ -169,6 +169,24 @@ describe('ChatSidebar', () => {
     expect(screen.getByText(/Черновик: Незавершённый ответ/i)).toBeInTheDocument();
   });
 
+  it('pins the support entry until the support dialog exists, then leaves it to the list', () => {
+    const onOpen = vi.fn();
+    const supportEntry = { title: 'Техподдержка HUB', opening: false, onOpen };
+    const { unmount } = renderWithTheme(buildProps({ activeFolderKey: 'personal', supportEntry }));
+
+    fireEvent.click(screen.getByRole('button', { name: /Техподдержка HUB/ }));
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    unmount();
+
+    renderWithTheme(buildProps({
+      activeFolderKey: 'personal',
+      supportEntry,
+      conversations: [{ ...baseConversation, is_support: true, kind: 'direct', title: 'Техподдержка HUB' }],
+    }));
+    expect(screen.queryByText('Задать вопрос специалисту поддержки')).toBeNull();
+    expect(screen.getAllByRole('button', { name: /Техподдержка HUB/ })).toHaveLength(1);
+  });
+
   it('marks the opened conversation as the active chat row', () => {
     renderWithTheme(buildProps());
 

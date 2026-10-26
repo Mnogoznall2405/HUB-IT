@@ -4,6 +4,7 @@ import { chatAPI } from '../../api/client';
 
 export default function useChatReactionAndPinController({
   activeConversationIdRef,
+  applyPinnedMessages,
   notifyApiError,
   notifyInfo,
   persistPinnedMessage,
@@ -64,8 +65,8 @@ export default function useChatReactionAndPinController({
     }
   }, [activeConversationIdRef, notifyApiError, setMessages]);
 
-  const handleOpenPinnedMessage = useCallback(async () => {
-    const normalizedMessageId = String(pinnedMessage?.id || '').trim();
+  const handleOpenPinnedMessage = useCallback(async (messageId) => {
+    const normalizedMessageId = String(messageId || pinnedMessage?.id || '').trim();
     if (!normalizedMessageId) return;
     const found = await revealMessage(normalizedMessageId);
     if (!found) {
@@ -76,11 +77,19 @@ export default function useChatReactionAndPinController({
     }
   }, [notifyInfo, pinnedMessage?.id, revealMessage]);
 
-  const handleUnpinPinnedMessage = useCallback(async () => {
+  const handleUnpinPinnedMessage = useCallback(async (messageId) => {
     const conversationId = String(activeConversationIdRef.current || '').trim();
     if (!conversationId) return;
+    const normalizedMessageId = String(messageId || pinnedMessage?.id || '').trim();
     const request = ++pinMutationRef.current;
     try {
+      if (normalizedMessageId) {
+        const result = await chatAPI.unpinMessage(conversationId, normalizedMessageId);
+        if (request === pinMutationRef.current && conversationId === activeConversationIdRef.current) {
+          applyPinnedMessages(result?.items);
+        }
+        return;
+      }
       const result = await chatAPI.setPinnedMessage(conversationId, null);
       if (request === pinMutationRef.current && conversationId === activeConversationIdRef.current) {
         persistPinnedMessage(result?.pinned_message !== undefined ? result.pinned_message : null);
@@ -88,7 +97,7 @@ export default function useChatReactionAndPinController({
     } catch (error) {
       notifyApiError(error, 'Не удалось открепить сообщение.');
     }
-  }, [activeConversationIdRef, notifyApiError, persistPinnedMessage, pinMutationRef]);
+  }, [activeConversationIdRef, applyPinnedMessages, notifyApiError, persistPinnedMessage, pinMutationRef, pinnedMessage?.id]);
 
   return {
     handleOpenPinnedMessage,

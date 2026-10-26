@@ -54,9 +54,14 @@ def _client(permissions):
 
 def test_chat_config_returns_group_limit_from_backend(monkeypatch):
     monkeypatch.setenv("CHAT_GROUP_MAX_MEMBERS", "64")
+    monkeypatch.setattr(importlib.import_module("backend.chat.support_chat"), "get_support_user_id", lambda: None)
     response = _client(["chat.read"]).get("/chat/config")
     assert response.status_code == 200
-    assert response.json() == {"group_max_members": 64, "scheduled_messages_enabled": False}
+    assert response.json() == {
+        "group_max_members": 64,
+        "scheduled_messages_enabled": False,
+        "support_user_id": None,
+    }
 
 
 def test_chat_config_default_limit_is_128(monkeypatch):

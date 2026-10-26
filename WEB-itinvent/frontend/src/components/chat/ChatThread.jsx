@@ -236,14 +236,26 @@ const PinnedMessageBar = memo(function PinnedMessageBar({
   compactMobile,
   fullWidth = false,
   pinnedMessage,
+  pinnedMessages,
   onOpenPinnedMessage,
   onUnpinPinnedMessage,
 }) {
-  if (!pinnedMessage?.id) return null;
+  const items = Array.isArray(pinnedMessages) && pinnedMessages.length > 0
+    ? pinnedMessages
+    : (pinnedMessage?.id ? [pinnedMessage] : []);
+  // Like in Telegram the bar shows one pin and a tap moves on to the next (older) one.
+  const [shownIndex, setShownIndex] = useState(0);
+  const newestId = items[0]?.id || '';
+  useEffect(() => { setShownIndex(0); }, [newestId, items.length]);
+  if (items.length === 0) return null;
   const density = ui.density || {};
+  const current = items[shownIndex < items.length ? shownIndex : 0];
 
-  const previewText = String(pinnedMessage?.preview || '').trim() || 'Сообщение';
-  const senderName = String(pinnedMessage?.senderName || '').trim();
+  const previewText = String(current?.preview || '').trim() || 'Сообщение';
+  const senderName = String(current?.senderName || '').trim();
+  const counterLabel = items.length > 1
+    ? `Закрепленное сообщение · ${(shownIndex < items.length ? shownIndex : 0) + 1} из ${items.length}`
+    : 'Закрепленное сообщение';
 
   return (
     <Box
@@ -270,7 +282,10 @@ const PinnedMessageBar = memo(function PinnedMessageBar({
           type="button"
           data-testid="chat-pinned-message-open"
           aria-label="Открыть закрепленное сообщение"
-          onClick={() => void onOpenPinnedMessage?.()}
+          onClick={() => {
+            void onOpenPinnedMessage?.(current.id);
+            if (items.length > 1) setShownIndex((shownIndex + 1) % items.length);
+          }}
           sx={{
             display: 'flex',
             alignItems: 'center',
@@ -311,8 +326,13 @@ const PinnedMessageBar = memo(function PinnedMessageBar({
           </Box>
 
           <Box sx={{ minWidth: 0, flex: 1 }}>
-            <Typography variant="caption" sx={{ color: ui.accentText, fontWeight: 800, lineHeight: 1.1 }} noWrap>
-              Закрепленное сообщение
+            <Typography
+              variant="caption"
+              data-testid="chat-pinned-message-counter"
+              sx={{ color: ui.accentText, fontWeight: 800, lineHeight: 1.1 }}
+              noWrap
+            >
+              {counterLabel}
             </Typography>
             <Typography variant="body2" sx={{ color: ui.textSecondary, lineHeight: 1.25 }} noWrap>
               {senderName ? `${senderName}: ${previewText}` : previewText}
@@ -324,7 +344,7 @@ const PinnedMessageBar = memo(function PinnedMessageBar({
           size="small"
           data-testid="chat-pinned-message-close"
           aria-label="Снять закрепленное сообщение"
-          onClick={() => onUnpinPinnedMessage?.()}
+          onClick={() => onUnpinPinnedMessage?.(current.id)}
           sx={{
             width: compactMobile ? 44 : (density.threadPinnedClose || 32),
             height: compactMobile ? 44 : (density.threadPinnedClose || 32),
@@ -428,6 +448,7 @@ function ChatThread({
   onStopAiRun,
   onRetryAiRun,
   pinnedMessage,
+  pinnedMessages,
   onOpenPinnedMessage,
   onUnpinPinnedMessage,
   highlightedMessageId,
@@ -1534,6 +1555,7 @@ function ChatThread({
         compactMobile={compactMobile}
         fullWidth={feedFullWidth}
         pinnedMessage={selectionMode ? null : pinnedMessage}
+        pinnedMessages={selectionMode ? null : pinnedMessages}
         onOpenPinnedMessage={onOpenPinnedMessage}
         onUnpinPinnedMessage={onUnpinPinnedMessage}
       />

@@ -8,6 +8,7 @@ vi.mock('../../api/client', () => ({
   chatAPI: {
     toggleReaction: vi.fn(),
     setPinnedMessage: vi.fn().mockResolvedValue({}),
+    unpinMessage: vi.fn(),
   },
 }));
 
@@ -67,12 +68,13 @@ describe('useChatReactionAndPinController', () => {
 
   it('keeps the pin while unpinning is pending and clears it after server confirmation', async () => {
     let finishUnpin;
-    chatAPI.setPinnedMessage.mockImplementationOnce(() => new Promise(resolve => { finishUnpin = resolve; }));
+    chatAPI.unpinMessage.mockImplementationOnce(() => new Promise(resolve => { finishUnpin = resolve; }));
 
     const { result } = renderHook(() => {
       const [pin, setPin] = useState({ id: 'pin-1' });
       const actions = useChatReactionAndPinController({
         activeConversationIdRef: { current: 'conv-1' },
+        applyPinnedMessages: (items) => setPin(items?.[0] || null),
         notifyApiError: vi.fn(), notifyInfo: vi.fn(), persistPinnedMessage: setPin,
         pinnedMessage: pin, revealMessage: vi.fn(), setMessages: vi.fn(),
       });
@@ -84,8 +86,8 @@ describe('useChatReactionAndPinController', () => {
     });
 
     expect(result.current.pin?.id).toBe('pin-1');
-    await act(async () => { finishUnpin({ pinned_message: null }); });
+    await act(async () => { finishUnpin({ items: [] }); });
     expect(result.current.pin).toBeNull();
-    expect(chatAPI.setPinnedMessage).toHaveBeenCalledWith('conv-1', null);
+    expect(chatAPI.unpinMessage).toHaveBeenCalledWith('conv-1', 'pin-1');
   });
 });

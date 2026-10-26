@@ -2,6 +2,9 @@ import { useMemo } from 'react';
 
 import ChatSidebar from '../../components/chat/ChatSidebar';
 import buildChatPagePanesBags from './buildChatPagePanesBags';
+import useChatSupportUserId from './useChatSupportUserId';
+
+const SUPPORT_ENTRY_TITLE = 'Техподдержка HUB';
 
 export default function useChatSidebarSection(ctx) {
   const { shell, sidebar } = buildChatPagePanesBags(ctx);
@@ -55,6 +58,25 @@ export default function useChatSidebarSection(ctx) {
     openingAiBotId,
     skipRowEnterAnimation,
   } = sidebar;
+
+  const supportUserId = useChatSupportUserId(user?.id);
+  const supportOpening = supportUserId > 0 && String(openingPeerId || '') === String(supportUserId);
+  const supportEntry = useMemo(
+    () => (supportUserId > 0
+      ? {
+        title: SUPPORT_ENTRY_TITLE,
+        opening: supportOpening,
+        onOpen: () => {
+          // Личный диалог живёт в «Личных»: из другой папки он не попал бы в отфильтрованный список.
+          if (!['personal', 'all'].includes(String(conversationFilter || ''))) {
+            handleActiveFolderChange('personal');
+          }
+          return handleOpenPeer({ id: supportUserId });
+        },
+      }
+      : null),
+    [conversationFilter, handleActiveFolderChange, handleOpenPeer, supportOpening, supportUserId],
+  );
 
   return useMemo(
     () => (
@@ -114,9 +136,11 @@ export default function useChatSidebarSection(ctx) {
         // Д2: плавающая кнопка «новый чат» внизу колонки — существующие потоки
         // (групповой диалог в «Чаты», выбор помощника в «ИИ»).
         composeFab={{}}
+        supportEntry={supportEntry}
       />
     ),
     [
+      supportEntry,
       aiBotsError,
       aiBotsLoading,
       aiBots,

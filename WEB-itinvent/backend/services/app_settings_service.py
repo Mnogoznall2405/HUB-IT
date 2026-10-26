@@ -30,6 +30,8 @@ class AppSettingsService:
     DEFAULTS = {
         "transfer_act_reminder_controller_username": "kozlovskii.me",
         "admin_login_allowed_ips": ["10.105.0.42"],
+        # Не админ-учётка kozlovskii.me, а обычная kozlovskii_me (Козловский Максим Евгеньевич).
+        "support_chat_username": "kozlovskii_me",
     }
 
     def __init__(self, file_path: Optional[Path] = None, database_url: Optional[str] = None):
@@ -147,9 +149,13 @@ class AppSettingsService:
             admin_login_allowed_ips = []
         if not admin_login_allowed_ips:
             admin_login_allowed_ips = list(self.DEFAULTS["admin_login_allowed_ips"])
+        support_chat_username = self._normalize_username(raw.get("support_chat_username"))
+        if support_chat_username is None:
+            support_chat_username = self.DEFAULTS["support_chat_username"]
         return {
             "transfer_act_reminder_controller_username": configured_username,
             "admin_login_allowed_ips": admin_login_allowed_ips,
+            "support_chat_username": support_chat_username,
         }
 
     def update_settings(self, patch: dict[str, Any]) -> dict[str, Any]:
@@ -163,6 +169,11 @@ class AppSettingsService:
             current["admin_login_allowed_ips"] = self._normalize_admin_login_allowed_ips(
                 patch.get("admin_login_allowed_ips"),
                 require_non_empty=True,
+            )
+        if "support_chat_username" in patch:
+            current["support_chat_username"] = (
+                self._normalize_username(patch.get("support_chat_username"))
+                or self.DEFAULTS["support_chat_username"]
             )
         data.update(current)
         self._save_all(data)
@@ -243,6 +254,7 @@ class AppSettingsService:
         return {
             "transfer_act_reminder_controller_username": configured_username,
             "admin_login_allowed_ips": list(settings.get("admin_login_allowed_ips") or []),
+            "support_chat_username": settings.get("support_chat_username"),
             "available_controllers": controllers,
             "resolved_controller": resolved,
             "resolved_controller_source": source,

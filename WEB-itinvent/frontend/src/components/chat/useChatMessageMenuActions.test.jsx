@@ -6,7 +6,8 @@ import useChatMessageMenuActions from './useChatMessageMenuActions';
 
 vi.mock('../../api/client', () => ({
   chatAPI: {
-    setPinnedMessage: vi.fn().mockResolvedValue({}),
+    pinMessage: vi.fn(),
+    unpinMessage: vi.fn(),
   },
 }));
 
@@ -17,6 +18,7 @@ function Harness({
   clipboardWriteText = vi.fn().mockResolvedValue(undefined),
   notifyInfo = vi.fn(),
   notifyWarning = vi.fn(),
+  applyPinnedMessages = vi.fn(),
   persistPinnedMessage = vi.fn(),
   pinnedMessage = null,
   setMessageMenuAnchor = vi.fn(),
@@ -39,6 +41,7 @@ function Harness({
     openMediaViewer: vi.fn(),
     openMessageReads: vi.fn(),
     openTaskFromChat: vi.fn(),
+    applyPinnedMessages,
     persistPinnedMessage,
     pinnedMessage,
     setComposerMenuAnchor: vi.fn(),
@@ -108,16 +111,17 @@ describe('useChatMessageMenuActions', () => {
   });
 
   it('commits pinning after the server response, then unpins and opens selection/menu anchors', async () => {
-    const persistPinnedMessage = vi.fn();
+    const applyPinnedMessages = vi.fn();
     const setSelectedMessageIds = vi.fn();
     const setMessageMenuAnchor = vi.fn();
     const setMessageMenuMessage = vi.fn();
     let finishPin;
-    chatAPI.setPinnedMessage.mockImplementationOnce(() => new Promise(resolve => { finishPin = resolve; }));
+    chatAPI.pinMessage.mockImplementationOnce(() => new Promise(resolve => { finishPin = resolve; }));
+    chatAPI.unpinMessage.mockResolvedValueOnce({ items: [] });
 
     const { rerender } = render(
       <Harness
-        persistPinnedMessage={persistPinnedMessage}
+        applyPinnedMessages={applyPinnedMessages}
         setMessageMenuAnchor={setMessageMenuAnchor}
         setMessageMenuMessage={setMessageMenuMessage}
         setSelectedMessageIds={setSelectedMessageIds}
@@ -125,14 +129,14 @@ describe('useChatMessageMenuActions', () => {
     );
 
     fireEvent.click(document.querySelectorAll('button')[1]);
-    expect(persistPinnedMessage).not.toHaveBeenCalled();
-    await act(async () => { finishPin({}); });
-    expect(persistPinnedMessage).toHaveBeenCalledWith({ id: 'msg-2', preview: 'Pinned' });
-    expect(chatAPI.setPinnedMessage).toHaveBeenCalledWith('conv-active', 'msg-2');
+    expect(applyPinnedMessages).not.toHaveBeenCalled();
+    await act(async () => { finishPin({ items: [{ id: 'msg-2' }] }); });
+    expect(applyPinnedMessages).toHaveBeenCalledWith([{ id: 'msg-2' }]);
+    expect(chatAPI.pinMessage).toHaveBeenCalledWith('conv-active', 'msg-2');
 
     rerender(
       <Harness
-        persistPinnedMessage={persistPinnedMessage}
+        applyPinnedMessages={applyPinnedMessages}
         pinnedMessage={{ id: 'msg-2' }}
         setMessageMenuAnchor={setMessageMenuAnchor}
         setMessageMenuMessage={setMessageMenuMessage}
@@ -140,7 +144,8 @@ describe('useChatMessageMenuActions', () => {
       />,
     );
     fireEvent.click(document.querySelectorAll('button')[1]);
-    await waitFor(() => expect(persistPinnedMessage).toHaveBeenLastCalledWith(null));
+    await waitFor(() => expect(applyPinnedMessages).toHaveBeenLastCalledWith([]));
+    expect(chatAPI.unpinMessage).toHaveBeenCalledWith('conv-active', 'msg-2');
 
     fireEvent.click(document.querySelectorAll('button')[2]);
     expect(setSelectedMessageIds).toHaveBeenCalledWith(expect.any(Function));

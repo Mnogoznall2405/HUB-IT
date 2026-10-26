@@ -89,6 +89,7 @@ export default function useChatPageOverlayDialogs({
     closeSearchDialog,
     loadMoreSearchResults,
     messageSearch,
+    messageSearchFilters,
     messageSearchHasMore,
     messageSearchLoading,
     messageSearchResults,
@@ -97,6 +98,7 @@ export default function useChatPageOverlayDialogs({
     resetMessageSearch,
     searchOpen,
     setMessageSearch,
+    setMessageSearchFilters,
   } = useChatMessageSearch({
     activeConversationId,
     activeConversationIdRef,
@@ -172,6 +174,7 @@ export default function useChatPageOverlayDialogs({
     closeSearchDialog,
     loadMoreSearchResults,
     messageSearch,
+    messageSearchFilters,
     messageSearchHasMore,
     messageSearchLoading,
     messageSearchResults,
@@ -180,5 +183,6 @@ export default function useChatPageOverlayDialogs({
     resetMessageSearch,
     searchOpen,
     setMessageSearch,
+    setMessageSearchFilters,
   };
 }

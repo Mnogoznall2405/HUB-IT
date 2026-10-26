@@ -7,11 +7,12 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from backend.api.deps import get_current_admin_user, require_permission
 from backend.chat.schemas import (
@@ -28,7 +29,12 @@ from backend.chat.schemas import (
     ChatUnreadSummaryResponse,
     DirectConversationRequest,
     GroupConversationRequest,
+    ChatJoinApprovalRequest,
+    ChatJoinRequestDecision,
+    ChatMessageReportRequest,
+    ChatMessageReportResolveRequest,
     ChatPinnedMessageRequest,
+    ChatPinnedMessagesResponse,
     UpdateConversationProfileRequest,
     UpdateConversationSettingsRequest,
 )
@@ -96,10 +102,15 @@ async def get_chat_config(
     current_user: User = Depends(require_permission(PERM_CHAT_READ)),
 ):
     from backend.chat.scheduled_messages import scheduled_messages_enabled
+    from backend.chat.support_chat import get_support_user_id
 
+    support_user_id = await run_in_threadpool(get_support_user_id)
     return {
         "group_max_members": int(chat_api().chat_service.group_max_members),
         "scheduled_messages_enabled": bool(scheduled_messages_enabled()),
+        "support_user_id": (
+            int(support_user_id) if support_user_id and int(support_user_id) != int(current_user.id) else None
+        ),
     }
 
 
@@ -173,6 +184,211 @@ async def set_chat_pinned_message(
         chat_api()._raise_chat_http_error(exc)
 
 
+@router.get("/conversations/{conversation_id}/export")
+async def export_chat_conversation(
+    conversation_id: str,
+    format: Literal["txt", "json"] = Query("txt"),
+    created_from: Optional[str] = Query(None, max_length=40),
+    created_to: Optional[str] = Query(None, max_length=40),
+    current_user: User = Depends(require_permission(PERM_CHAT_READ)),
+):
+    try:
+        result = await chat_api()._run_chat_read_call(
+            chat_api().chat_service.export_conversation,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            export_format=format,
+            created_from=created_from,
+            created_to=created_to,
+        )
+    except Exception as exc:
+        chat_api()._raise_chat_http_error(exc)
+    file_name = str(result["file_name"])
+    return Response(
+        content=result["content"],
+        media_type=result["content_type"],
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(file_name)}",
+            "X-Chat-Export-Messages": str(int(result["messages"])),
+            "X-Chat-Export-Truncated": "1" if result["truncated"] else "0",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.post("/conversations/{conversation_id}/messages/{message_id}/report")
+async def report_chat_message(
+    conversation_id: str,
+    message_id: str,
+    payload: ChatMessageReportRequest,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        return await chat_api()._run_chat_write_call(
+            chat_api().chat_service.report_message,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            message_id=message_id,
+            reason=payload.reason,
+            comment=payload.comment,
+        )
+    except Exception as exc:
+        chat_api()._raise_chat_http_error(exc)
+
+
+@router.get("/conversations/{conversation_id}/reports")
+async def list_chat_message_reports(
+    conversation_id: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_READ)),
+):
+    try:
+        return await chat_api()._run_chat_read_call(
+            chat_api().chat_service.list_message_reports,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+        )
+    except Exception as exc:
+        chat_api()._raise_chat_http_error(exc)
+
+
+@router.put("/conversations/{conversation_id}/reports/{report_id}")
+async def resolve_chat_message_report(
+    conversation_id: str,
+    report_id: str,
+    payload: ChatMessageReportResolveRequest,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        return await chat_api()._run_chat_write_call(
+            chat_api().chat_service.resolve_message_report,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            report_id=report_id,
+            resolution=payload.resolution,
+        )
+    except Exception as exc:
+        chat_api()._raise_chat_http_error(exc)
+
+
+@router.get("/conversations/{conversation_id}/join-requests")
+async def list_chat_group_join_requests(
+    conversation_id: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_READ)),
+):
+    try:
+        return await chat_api()._run_chat_read_call(
+            chat_api().chat_service.list_group_join_requests,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+        )
+    except Exception as exc:
+        chat_api()._raise_chat_http_error(exc)
+
+
+@router.put("/conversations/{conversation_id}/join-approval")
+async def set_chat_group_join_approval(
+    conversation_id: str,
+    payload: ChatJoinApprovalRequest,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        return await chat_api()._run_chat_write_call(
+            chat_api().chat_service.set_group_join_approval,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            approval_required=payload.approval_required,
+        )
+    except Exception as exc:
+        chat_api()._raise_chat_http_error(exc)
+
+
+@router.put("/conversations/{conversation_id}/join-requests/{request_id}")
+async def resolve_chat_group_join_request(
+    conversation_id: str,
+    request_id: str,
+    payload: ChatJoinRequestDecision,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        result = await chat_api()._run_chat_write_call(
+            chat_api().chat_service.resolve_group_join_request,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            request_id=request_id,
+            decision=payload.decision,
+        )
+        if result.get("added"):
+            chat_api()._schedule_chat_background_task(
+                chat_api()._publish_group_conversation_change(
+                    conversation_id=conversation_id,
+                    reason="member_added",
+                ),
+                label="publish_group_member_approved",
+            )
+        return result
+    except Exception as exc:
+        chat_api()._raise_chat_http_error(exc)
+
+
+@router.get("/conversations/{conversation_id}/pinned-messages", response_model=ChatPinnedMessagesResponse)
+async def list_chat_pinned_messages(
+    conversation_id: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_READ)),
+):
+    try:
+        return await chat_api()._run_chat_call(
+            chat_api().chat_service.list_pinned_messages,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+        )
+    except Exception as exc:
+        chat_api()._raise_chat_http_error(exc)
+
+
+async def _change_chat_pinned_message(conversation_id: str, message_id: str, current_user: User, *, unpin: bool):
+    try:
+        service_call = chat_api().chat_service.unpin_message if unpin else chat_api().chat_service.pin_message
+        conversation = await chat_api()._run_chat_call(
+            service_call,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            message_id=message_id,
+        )
+        if str(conversation.get("kind") or "").strip().lower() == "group":
+            # Every member sees the pin change, not only the actor.
+            await chat_api()._publish_group_conversation_change(
+                conversation_id=conversation["id"],
+                reason="pinned_message",
+            )
+        else:
+            await chat_api()._publish_conversation_updated(
+                conversation_id=conversation["id"],
+                user_id=int(current_user.id),
+                reason="pinned_message",
+            )
+        return {"items": conversation.get("pinned_messages") or []}
+    except Exception as exc:
+        chat_api()._raise_chat_http_error(exc)
+
+
+@router.put("/conversations/{conversation_id}/pinned-messages/{message_id}", response_model=ChatPinnedMessagesResponse)
+async def pin_chat_message(
+    conversation_id: str,
+    message_id: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    return await _change_chat_pinned_message(conversation_id, message_id, current_user, unpin=False)
+
+
+@router.delete("/conversations/{conversation_id}/pinned-messages/{message_id}", response_model=ChatPinnedMessagesResponse)
+async def unpin_chat_message(
+    conversation_id: str,
+    message_id: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    return await _change_chat_pinned_message(conversation_id, message_id, current_user, unpin=True)
+
+
 @router.delete("/conversations/{conversation_id}")
 async def delete_chat_conversation(
     conversation_id: str,
@@ -207,6 +423,31 @@ async def create_direct_conversation(
             chat_api().chat_service.create_direct_conversation,
             current_user_id=int(current_user.id),
             peer_user_id=int(payload.peer_user_id),
+        )
+        member_user_ids = await chat_api()._run_chat_call(
+            chat_api().chat_service.get_conversation_member_ids,
+            conversation_id=conversation["id"],
+        )
+        for member_user_id in member_user_ids:
+            await chat_api()._publish_conversation_updated(
+                conversation_id=conversation["id"],
+                user_id=int(member_user_id),
+                reason="created",
+            )
+            await chat_api()._publish_unread_summary(int(member_user_id))
+        return conversation
+    except Exception as exc:
+        chat_api()._raise_chat_http_error(exc)
+
+
+@router.post("/conversations/support", response_model=ChatConversationSummary)
+async def create_support_conversation(
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        conversation = await chat_api()._run_chat_call(
+            chat_api().chat_service.create_support_conversation,
+            current_user_id=int(current_user.id),
         )
         member_user_ids = await chat_api()._run_chat_call(
             chat_api().chat_service.get_conversation_member_ids,

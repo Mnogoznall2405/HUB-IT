@@ -28,6 +28,7 @@ export default function useChatPageDialogsLayerProps(source) {
   handleCopyMessage,
   handleTogglePinMessageFromMenu,
   pinnedMessage,
+  pinnedMessages,
   handleCopyMessageLink,
   forwardHookMessageFromMenu,
   handleReportMessageFromMenu,
@@ -128,6 +129,8 @@ export default function useChatPageDialogsLayerProps(source) {
   closeSearchDialog,
   messageSearch,
   setMessageSearch,
+  messageSearchFilters,
+  setMessageSearchFilters,
   messageSearchResults,
   messageSearchLoading,
   messageSearchHasMore,
@@ -152,7 +155,11 @@ export default function useChatPageDialogsLayerProps(source) {
     [handlePollVote],
   );
   const threadInfoOpen = isMobile ? infoOpen : showContextPanel;
-  const messageMenuPinned = String(messageMenuMessage?.id || '').trim() === String(pinnedMessage?.id || '').trim();
+  const menuMessageId = String(messageMenuMessage?.id || '').trim();
+  const messageMenuPinned = Boolean(menuMessageId) && (
+    menuMessageId === String(pinnedMessage?.id || '').trim()
+    || (Array.isArray(pinnedMessages) && pinnedMessages.some((item) => item?.id === menuMessageId))
+  );
   const infoPanelOpen = isMobile && infoOpen;
   const forwardSelectionCount = forwardMessages.length;
 
@@ -282,6 +289,8 @@ export default function useChatPageDialogsLayerProps(source) {
       onCloseSearch: closeSearchDialog,
       messageSearch,
       onMessageSearchChange: setMessageSearch,
+      messageSearchFilters,
+      onMessageSearchFiltersChange: setMessageSearchFilters,
       messageSearchResults,
       messageSearchLoading,
       messageSearchHasMore,
@@ -353,6 +362,7 @@ export default function useChatPageDialogsLayerProps(source) {
       messageReadsMessage,
       messageReadsOpen,
       messageSearch,
+      messageSearchFilters,
       messageSearchHasMore,
       messageSearchLoading,
       messageSearchResults,
@@ -416,6 +426,7 @@ export default function useChatPageDialogsLayerProps(source) {
       setFileCaption,
       setForwardConversationQuery,
       setMessageSearch,
+      setMessageSearchFilters,
       setTaskSearch,
     ],
   );

@@ -172,6 +172,33 @@ describe('FileAttachment', () => {
     }
   });
 
+  it('opens the pack of a sticker the server stored under its current file name', async () => {
+    const previewSpy = vi.spyOn(chatStickersAPI, 'previewPack').mockResolvedValue({
+      id: 'pack-1', short_name: 'Frrl_52', title: 'Funny pack', is_added: false, stickers: [],
+    });
+    try {
+      renderWithTheme(
+        <AttachmentCard
+          messageId="msg-sticker"
+          attachment={{
+            id: 'att-sticker',
+            file_name: 'sticker-3f2b8c1e-1111-4222-8333-444455556666--Frrl_52.webp',
+            mime_type: 'image/webp',
+            media_kind: 'sticker',
+          }}
+          theme={theme}
+          ui={ui}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Открыть набор стикеров' }));
+
+      await waitFor(() => expect(previewSpy).toHaveBeenCalledWith('Frrl_52', expect.any(Object)));
+    } finally {
+      previewSpy.mockRestore();
+    }
+  });
+
   it('autoplays animated sticker messages without a playback button', async () => {
     const previousMatchMedia = window.matchMedia;
     const playSpy = vi.spyOn(window.HTMLMediaElement.prototype, 'play').mockResolvedValue();

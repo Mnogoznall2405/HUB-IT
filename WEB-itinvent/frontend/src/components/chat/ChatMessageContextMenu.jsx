@@ -7,6 +7,7 @@ import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
+import FlagOutlinedIcon from '@mui/icons-material/FlagOutlined';
 import ForwardRoundedIcon from '@mui/icons-material/ForwardRounded';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
@@ -138,6 +139,7 @@ export default function ChatMessageContextMenu({
   onSelectMessageFromMenu,
   onEditMessageFromMenu,
   onDeleteMessageFromMenu,
+  onReportMessageFromMenu,
   onOpenReadsFromMessageMenu,
   onStopPollFromMessageMenu,
   onCancelPollVoteFromMessageMenu,
@@ -175,6 +177,10 @@ export default function ChatMessageContextMenu({
   const canShowReadReceipts = activeConversationKind === 'group'
     && Boolean(message?.is_own)
     && readByCount > 0;
+  // Пожаловаться можно на чужое живое сообщение; в личных чатах диалог объяснит, что жалобы принимают группы.
+  const canReportMessage = typeof onReportMessageFromMenu === 'function'
+    && Boolean(message?.id) && !message?.is_own && !message?.is_deleted
+    && String(message?.kind || '').trim() !== 'system';
   const canToggleReactions = typeof onToggleReactionFromMenu === 'function';
   // R50: действия опроса — только здесь, не в карточке. Остановить может автор своего незакрытого опроса;
   // снять голос — тот, кто проголосовал, пока опрос не закрыт.
@@ -476,6 +482,17 @@ export default function ChatMessageContextMenu({
             activeBg={popupActiveBg}
             compact={isMobile}
           />
+          {canReportMessage ? (
+            <MessageMenuAction
+              icon={FlagOutlinedIcon}
+              label="Пожаловаться"
+              onClick={() => { onReportMessageFromMenu?.(message); handleClose(); }}
+              textColor={popupTextColor}
+              hoverBg={popupHoverBg}
+              activeBg={popupActiveBg}
+              compact={isMobile}
+            />
+          ) : null}
           {canDeleteMessage ? (
             <MessageMenuAction
               icon={DeleteOutlineIcon}

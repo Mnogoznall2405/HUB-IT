@@ -63,6 +63,13 @@ _CHAT_SCHEMA_CHECK_EXCLUDED_TABLES: frozenset[str] = frozenset({
     "chat_group_restrictions",
     # Group permission flags (files) arrive with 20261013_0133 in the same way.
     "chat_group_permissions",
+    # Several pinned messages arrive with 20261023_0144 in the same way.
+    "chat_message_pins",
+    # Message complaints arrive with 20261026_0145 in the same way.
+    "chat_message_reports",
+    # Join requests of invite links arrive with 20261027_0146 in the same way.
+    "chat_group_join_settings",
+    "chat_group_join_requests",
 })
 
 _CHAT_REQUIRED_COLUMNS = {

@@ -2,6 +2,7 @@ import { useCallback, useLayoutEffect, useRef } from 'react';
 
 import { chatAPI } from '../../api/client';
 import { getMessagePreview } from './chatHelpers';
+import { requestMessageReport } from './chatReportRequest';
 
 /**
  * Общий вход в режим редактирования: пункт «Изменить» меню сообщения и ↑ в пустом композере.
@@ -31,9 +32,11 @@ export default function useChatMessageMenuActions({
   openMediaViewer,
   openMessageReads,
   openTaskFromChat,
+  applyPinnedMessages,
   persistPinnedMessage,
   pinnedMessageMutationRef,
   pinnedMessage,
+  pinnedMessages,
   setComposerMenuAnchor,
   setMessageMenuAnchor,
   setMessageMenuMessage,
@@ -174,51 +177,32 @@ export default function useChatMessageMenuActions({
     closeMessageMenu();
     const nextPinnedMessage = buildPinnedMessagePayload(message);
     if (!nextPinnedMessage) return;
-    const currentPinnedMessageId = String(pinnedMessage?.id || '').trim();
     const conversationId = String(activeConversationIdRef.current || '').trim();
     if (!conversationId) return;
-    const nextPin = currentPinnedMessageId === nextPinnedMessage.id ? null : nextPinnedMessage;
+    const alreadyPinned = String(pinnedMessage?.id || '').trim() === nextPinnedMessage.id
+      || (Array.isArray(pinnedMessages) && pinnedMessages.some((item) => item?.id === nextPinnedMessage.id));
     const request = ++pinMutationRef.current;
     try {
-      const result = await chatAPI.setPinnedMessage(conversationId, nextPin?.id || null);
+      const result = alreadyPinned
+        ? await chatAPI.unpinMessage(conversationId, nextPinnedMessage.id)
+        : await chatAPI.pinMessage(conversationId, nextPinnedMessage.id);
       if (request === pinMutationRef.current && conversationId === activeConversationIdRef.current) {
-        persistPinnedMessage(result?.pinned_message !== undefined ? result.pinned_message : nextPin);
+        applyPinnedMessages(result?.items);
       }
-    } catch {
-      notifyWarning(nextPin ? 'Не удалось закрепить сообщение на сервере.' : 'Не удалось открепить сообщение на сервере.');
+    } catch (error) {
+      const reason = String(error?.response?.data?.detail || '').trim();
+      notifyWarning(reason || (alreadyPinned ? 'Не удалось открепить сообщение на сервере.' : 'Не удалось закрепить сообщение на сервере.'));
     }
-  }, [activeConversationIdRef, buildPinnedMessagePayload, closeMessageMenu, notifyWarning, persistPinnedMessage, pinMutationRef, pinnedMessage?.id]);
+  }, [activeConversationIdRef, applyPinnedMessages, buildPinnedMessagePayload, closeMessageMenu, notifyWarning, pinMutationRef, pinnedMessage?.id, pinnedMessages]);
 
-  const handleReportMessageFromMenu = useCallback(async (message) => {
+  // The report dialog (mounted with the chat dialogs) sends the complaint to the group managers.
+  const handleReportMessageFromMenu = useCallback((message) => {
     closeMessageMenu();
-    const messageId = String(message?.id || '').trim();
-    const conversationId = String(message?.conversation_id || activeConversationIdRef.current || '').trim();
-    if (!messageId || !conversationId || typeof window === 'undefined') {
-      notifyInfo('Автоматическая отправка жалоб пока не подключена.', { title: 'Пожаловаться' });
-      return;
-    }
-    const link = new URL('/chat', window.location.origin);
-    link.searchParams.set('conversation', conversationId);
-    link.searchParams.set('message', messageId);
-    const preview = String(getMessagePreview(message) || '').trim();
-    const senderName = String(message?.sender?.full_name || message?.sender?.username || '').trim();
-    const reportPayload = [
-      'Жалоба на сообщение',
-      senderName ? `Отправитель: ${senderName}` : '',
-      preview ? `Текст: ${preview}` : '',
-      `Ссылка: ${link.toString()}`,
-    ].filter(Boolean).join('\n');
-    if (navigator?.clipboard?.writeText) {
-      try {
-        await navigator.clipboard.writeText(reportPayload);
-        notifyInfo('Данные сообщения скопированы. Жалобу можно передать модератору вручную.', { title: 'Пожаловаться' });
-        return;
-      } catch {
-        // Fall through to the generic hint below.
-      }
-    }
-    notifyInfo('Автоматическая отправка жалоб пока не подключена.', { title: 'Пожаловаться' });
-  }, [activeConversationIdRef, closeMessageMenu, notifyInfo]);
+    requestMessageReport({
+      ...message,
+      conversation_id: message?.conversation_id || activeConversationIdRef.current,
+    });
+  }, [activeConversationIdRef, closeMessageMenu]);
 
   const handleSelectMessageFromMenu = useCallback((message) => {
     closeMessageMenu();

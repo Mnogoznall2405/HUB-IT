@@ -13,6 +13,7 @@ import MoreHorizRoundedIcon from '@mui/icons-material/MoreHorizRounded';
 import NotificationsOffOutlinedIcon from '@mui/icons-material/NotificationsOffOutlined';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
 import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
+import SupportAgentRoundedIcon from '@mui/icons-material/SupportAgentRounded';
 import { motion } from 'framer-motion';
 
 import { AiConversationAvatar, ConversationAvatar, PresenceAvatar } from './ChatCommon';
@@ -607,6 +608,47 @@ function PersonSearchRow({
   );
 }
 
+// Закреплённая строка «Техподдержка HUB»: личный диалог создаётся только по клику.
+function SupportEntryRow({ title, opening = false, onOpen, compactMobile = false, ui }) {
+  const density = getDensity(ui);
+  return (
+    <button
+      type="button"
+      onClick={() => void onOpen?.()}
+      disabled={opening}
+      className={joinClasses(
+        'flex w-full items-center gap-3 text-left transition duration-100 active:opacity-90 disabled:opacity-60',
+        compactMobile
+          ? 'border-b border-[color:var(--chat-sidebar-divider)] px-3 py-3'
+          : 'mx-2 my-1 rounded-[14px] border border-transparent px-3.5 py-3 hover:bg-[var(--chat-sidebar-row-hover)]',
+      )}
+      style={compactMobile ? undefined : { minHeight: density.sidebarRowMinHeight }}
+    >
+      <span
+        aria-hidden="true"
+        className="flex shrink-0 items-center justify-center rounded-full"
+        style={{
+          width: density.sidebarAvatar,
+          height: density.sidebarAvatar,
+          backgroundColor: 'var(--chat-accent-text)',
+          color: '#fff',
+        }}
+      >
+        <SupportAgentRoundedIcon />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className={joinClasses('truncate font-semibold tracking-[-0.01em] text-[color:var(--chat-text-primary)]', compactMobile ? 'text-[17px]' : 'text-[16px]')}>
+          {title}
+        </p>
+        <p className="truncate text-[13px] text-[color:var(--chat-text-secondary)]">
+          Задать вопрос специалисту поддержки
+        </p>
+      </div>
+      {opening ? <CircularProgress size={18} /> : null}
+    </button>
+  );
+}
+
 function AiBotRow({
   bot,
   openingAiBotId,
@@ -886,6 +928,7 @@ export {
   SidebarActionButton,
   ConversationRow,
   PersonSearchRow,
+  SupportEntryRow,
   AiBotRow,
   AiConversationRow,
   InfoCard,

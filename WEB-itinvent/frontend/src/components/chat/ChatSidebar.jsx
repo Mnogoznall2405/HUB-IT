@@ -64,6 +64,7 @@ import {
   SidebarActionButton,
   SidebarLoadingSkeleton,
   SidebarSkeletonRow,
+  SupportEntryRow,
   TaskSectionHeader,
 } from './ChatSidebarRows';
 import { useMainLayoutShell } from '../layout/MainLayoutShellContext';
@@ -181,6 +182,8 @@ function ChatSidebar({
   workspace: controlledWorkspace,
   onWorkspaceChange,
   composeFab = null,
+  // { title, opening, onOpen } — закреплённая строка «Техподдержка HUB»; null, если поддержка недоступна.
+  supportEntry = null,
   // Д2-9: поток «карандаш» — { mode: '' | 'direct' | 'group', ... } из useChatGroupDialog.
   compose = null,
 }) {
@@ -341,6 +344,10 @@ function ChatSidebar({
       completed: summarize(completed),
     };
   }, [activeFolderKey, conversations]);
+  // Диалог с поддержкой уже есть в списке (is_support) — отдельная строка не нужна.
+  const showSupportEntry = Boolean(supportEntry)
+    && ['personal', 'all'].includes(String(activeFolderKey || '').trim())
+    && !(Array.isArray(conversations) ? conversations : []).some((item) => item?.is_support);
 
   useEffect(() => {
     const activeId = String(activeConversationId || '').trim();
@@ -1075,6 +1082,16 @@ function ChatSidebar({
             ) : null}
           </>
         ) : (
+          <>
+          {showSupportEntry ? (
+            <SupportEntryRow
+              title={supportEntry.title}
+              opening={supportEntry.opening}
+              onOpen={supportEntry.onOpen}
+              compactMobile={compactMobile}
+              ui={ui}
+            />
+          ) : null}
           <AnimatePresence mode="wait" initial={!reducedMotion}>
             {conversationsLoading ? (
               <motion.div
@@ -1175,6 +1192,7 @@ function ChatSidebar({
               </motion.div>
             )}
           </AnimatePresence>
+          </>
         )}
         </div>
       </div>
