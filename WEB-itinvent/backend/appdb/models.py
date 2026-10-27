@@ -2106,6 +2106,29 @@ class AppMaxProbeChat(AppBase):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
+class AppFeedbackSuggestion(AppBase):
+    """Improvement suggestion sent by a portal user; the author sees its status, admins change it."""
+
+    __tablename__ = "feedback_suggestions"
+    __table_args__ = _table_args(
+        Index("ix_app_feedback_suggestions_user_created", "user_id", "created_at"),
+        Index("ix_app_feedback_suggestions_status_created", "status", "created_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str] = mapped_column(String(120), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    section: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="new")
+    admin_note: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    handled_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class AppMaxProbeMedia(AppBase):
     __tablename__ = "max_probe_media"
     __table_args__ = _table_args(

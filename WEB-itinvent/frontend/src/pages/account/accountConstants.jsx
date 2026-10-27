@@ -220,6 +220,12 @@ const permissionGroups = [
     ],
   },
   {
+    group: 'Предложения',
+    permissions: [
+      { value: 'feedback.manage', label: 'Предложения по улучшению: просмотр и смена статуса' },
+    ],
+  },
+  {
     group: 'Настройки',
     permissions: [
       { value: 'settings.read', label: 'Настройки: просмотр' },

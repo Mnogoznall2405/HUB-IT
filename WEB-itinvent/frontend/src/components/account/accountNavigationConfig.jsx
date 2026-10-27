@@ -11,6 +11,7 @@ import SettingsApplicationsOutlinedIcon from '@mui/icons-material/SettingsApplic
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import CloudOutlinedIcon from '@mui/icons-material/CloudOutlined';
 import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
+import LightbulbOutlinedIcon from '@mui/icons-material/LightbulbOutlined';
 
 export const ADMIN_AREA_PERMISSIONS = [
   'departments.manage',
@@ -21,6 +22,7 @@ export const ADMIN_AREA_PERMISSIONS = [
   'ad_users.manage',
   'my_files.stats.read',
   'database.references.manage',
+  'feedback.manage',
 ];
 
 export const PERSONAL_SETTINGS_SECTIONS = [
@@ -114,6 +116,13 @@ const ADMIN_SECTION_DEFINITIONS = [
     icon: <CloudOutlinedIcon />,
     permission: 'my_files.stats.read',
     adminOnlyFallback: true,
+  },
+  {
+    key: 'feedback',
+    label: 'Предложения',
+    description: 'Идеи и замечания пользователей по порталу',
+    icon: <LightbulbOutlinedIcon />,
+    permission: 'feedback.manage',
   },
   {
     key: 'chat-groups',

@@ -43,6 +43,7 @@ from backend.services.app_push_outbox_service import app_push_outbox_service
 from backend.services.mail_notification_service import mail_notification_service
 from backend.services.mfu_monitor_service import mfu_runtime_monitor
 from backend.api.v1 import monitoring
+from backend.api.v1 import feedback
 from backend.services.network_monitor_service import network_monitor_service
 from backend.services import inventory_binding
 from backend.services.my_files_service import my_files_worker
@@ -593,6 +594,7 @@ app.include_router(fs_egress.router, prefix="/api/v1/inventory", tags=["File Egr
 app.include_router(kb.router, prefix="/api/v1/kb", tags=["Knowledge Base"])
 app.include_router(mfu.router, prefix="/api/v1/mfu", tags=["MFU"])
 app.include_router(monitoring.router, prefix="/api/v1/monitoring", tags=["Monitoring"])
+app.include_router(feedback.router, prefix="/api/v1/feedback", tags=["Feedback"])
 app.include_router(hub.router, prefix="/api/v1/hub", tags=["Hub"])
 app.include_router(departments.router, prefix="/api/v1/departments", tags=["Departments"])
 app.include_router(ad_users.router, prefix="/api/v1/ad-users", tags=["AD Users"])

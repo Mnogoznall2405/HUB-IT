@@ -23,6 +23,7 @@ import About from '../About';
 import AdUsers from '../AdUsers';
 import { AiBotsAdminSection } from './admin/AiBotsAdminSection';
 import { ChatGroupsAdminSection } from './admin/ChatGroupsAdminSection';
+import { FeedbackAdminSection } from './admin/FeedbackAdminSection';
 import DepartmentsTab from './admin/DepartmentsTab';
 import ItinventReferencesTab from './admin/ItinventReferencesTab';
 import MyFilesAdminTab from './admin/MyFilesAdminTab';
@@ -151,6 +152,9 @@ function AccountWorkspace({ area = 'settings' }) {
           dbOptions={data.dbOptions}
         />
       );
+    } else if (data.activeSection === 'feedback') {
+      // Раздел уже отфильтрован по право feedback.manage (getAvailableAdminSections).
+      adminContent = <FeedbackAdminSection />;
     } else if (data.activeSection === 'chat-groups' && data.isAdmin) {
       adminContent = <ChatGroupsAdminSection />;
     } else if (data.activeSection === 'my-files' && data.canReadMyFilesAudit) {

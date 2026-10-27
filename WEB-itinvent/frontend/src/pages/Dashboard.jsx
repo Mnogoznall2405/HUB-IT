@@ -40,7 +40,9 @@ import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import RestartAltRoundedIcon from '@mui/icons-material/RestartAltRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 import AssignmentTurnedInOutlinedIcon from '@mui/icons-material/AssignmentTurnedInOutlined';
+import LightbulbOutlinedIcon from '@mui/icons-material/LightbulbOutlined';
 import MainLayout from '../components/layout/MainLayout';
+import FeedbackDialog from '../components/feedback/FeedbackDialog';
 import PageShell from '../components/layout/PageShell';
 import PageTopBar from '../components/layout/PageTopBar';
 import AboutHubPromoCard from '../components/about/AboutHubPromoCard';
@@ -664,6 +666,7 @@ export default function Dashboard() {
   const [error, setError] = useState('');
   const [customizeOpen, setCustomizeOpen] = useState(false);
   const [customizeSaving, setCustomizeSaving] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
 
   const announcementId = useMemo(
     () => String(new URLSearchParams(location.search || '').get('announcement') || '').trim(),
@@ -1384,7 +1387,27 @@ export default function Dashboard() {
                     {todayLabel}
                   </Typography>
                 </Box>
-                <Stack direction="row" spacing={0.5}>
+                <Stack direction="row" spacing={0.5} alignItems="center">
+                  {isMobile ? (
+                    <Tooltip title="Предложить идею">
+                      <IconButton
+                        aria-label="Предложить идею"
+                        onClick={() => setFeedbackOpen(true)}
+                        sx={{ width: 48, height: 48 }}
+                      >
+                        <LightbulbOutlinedIcon />
+                      </IconButton>
+                    </Tooltip>
+                  ) : (
+                    <Button
+                      variant="outlined"
+                      startIcon={<LightbulbOutlinedIcon />}
+                      onClick={() => setFeedbackOpen(true)}
+                      sx={{ minHeight: 48, px: 1.5, borderRadius: '12px', fontWeight: 700, whiteSpace: 'nowrap' }}
+                    >
+                      Предложить идею
+                    </Button>
+                  )}
                   <IconButton
                     aria-label="Обновить главную"
                     onClick={() => void loadDashboard()}
@@ -1493,6 +1516,7 @@ export default function Dashboard() {
           onClose={() => setCustomizeOpen(false)}
           onSave={(next) => { void handleSaveSections(next); }}
         />
+        <FeedbackDialog open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
       </PageShell>
     </MainLayout>
   );
