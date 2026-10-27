@@ -1,6 +1,6 @@
 import apiClient from './client';
 
-// Предложения по улучшению портала («Предложить идею»). Контракт бэкенда: /api/v1/feedback.
+// Предложения по улучшению HUB («Предложить улучшение HUB»). Контракт бэкенда: /api/v1/feedback.
 export const FEEDBACK_CATEGORY_OPTIONS = [
   { value: 'idea', label: 'Идея' },
   { value: 'inconvenience', label: 'Неудобство' },

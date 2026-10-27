@@ -198,7 +198,7 @@ export function FeedbackAdminSection() {
   return (
     <Stack spacing={1.5} data-testid="feedback-admin-section">
       <Box>
-        <Typography variant="h6">Предложения по улучшению</Typography>
+        <Typography variant="h6">Предложения по улучшению HUB</Typography>
         <Typography variant="body2" color="text.secondary">
           Идеи и замечания пользователей по порталу. Статус и комментарий видит автор предложения.
         </Typography>

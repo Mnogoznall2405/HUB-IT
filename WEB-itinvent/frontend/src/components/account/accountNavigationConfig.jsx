@@ -119,7 +119,7 @@ const ADMIN_SECTION_DEFINITIONS = [
   },
   {
     key: 'feedback',
-    label: 'Предложения',
+    label: 'Предложения по HUB',
     description: 'Идеи и замечания пользователей по порталу',
     icon: <LightbulbOutlinedIcon />,
     permission: 'feedback.manage',

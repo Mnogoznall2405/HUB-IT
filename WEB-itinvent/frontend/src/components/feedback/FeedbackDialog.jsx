@@ -37,6 +37,18 @@ import FeedbackStatusChip from './FeedbackStatusChip';
 const EMPTY_DRAFT = { category: 'idea', title: '', message: '', section: '' };
 const FORM_ID = 'feedback-suggestion-form';
 
+// Однострочные поля: подпись в покое центрируется по высоте поля. Тема плотности сжимает поле
+// (--app-density-input-small-height на десктопе), а на мобильном инпут имеет min-height 44px из index.css,
+// поэтому фиксированное смещение MUI (9px/16px) не совпадает с полем. 19px = (61px поля - 23px строки подписи) / 2.
+const SINGLE_LINE_LABEL_SX = {
+  '& .MuiInputLabel-outlined:not(.MuiInputLabel-shrink)': {
+    transform: {
+      xs: 'translate(14px, 19px) scale(1)',
+      sm: 'translate(14px, calc((var(--app-density-input-small-height) - 1.4375em) / 2)) scale(1)',
+    },
+  },
+};
+
 function fallbackSubmitMessage(status) {
   if (status === 429) return 'Достигнут дневной лимит предложений. Попробуйте завтра.';
   if (status === 503) return 'Раздел предложений пока не подключён. Попробуйте позже.';
@@ -49,6 +61,7 @@ function SuggestionForm({ draft, errors, submitting, onFieldChange, onSubmit }) 
       <Stack spacing={1.5}>
         <TextField
           select
+          size="small"
           label="Категория"
           value={draft.category}
           onChange={onFieldChange('category')}
@@ -62,6 +75,7 @@ function SuggestionForm({ draft, errors, submitting, onFieldChange, onSubmit }) 
           ))}
         </TextField>
         <TextField
+          size="small"
           label="Заголовок"
           value={draft.title}
           onChange={onFieldChange('title')}
@@ -71,8 +85,10 @@ function SuggestionForm({ draft, errors, submitting, onFieldChange, onSubmit }) 
           disabled={submitting}
           required
           fullWidth
+          sx={SINGLE_LINE_LABEL_SX}
         />
         <TextField
+          size="small"
           label="Описание"
           value={draft.message}
           onChange={onFieldChange('message')}
@@ -86,6 +102,7 @@ function SuggestionForm({ draft, errors, submitting, onFieldChange, onSubmit }) 
           fullWidth
         />
         <TextField
+          size="small"
           label="Раздел портала (необязательно)"
           placeholder="Например: Задачи, Почта, Чат"
           value={draft.section}
@@ -95,6 +112,7 @@ function SuggestionForm({ draft, errors, submitting, onFieldChange, onSubmit }) 
           inputProps={{ maxLength: FEEDBACK_SECTION_MAX }}
           disabled={submitting}
           fullWidth
+          sx={SINGLE_LINE_LABEL_SX}
         />
       </Stack>
     </Box>
@@ -300,7 +318,7 @@ export function FeedbackDialog({ open, onClose }) {
       fullScreen={isPhone}
       aria-labelledby="feedback-dialog-title"
     >
-      <DialogTitle id="feedback-dialog-title" sx={{ pb: 1 }}>Что улучшить в Hub?</DialogTitle>
+      <DialogTitle id="feedback-dialog-title" sx={{ pb: 1 }}>Что улучшить в HUB?</DialogTitle>
       <Tabs
         value={mode}
         onChange={handleModeChange}

@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-// «Предложить идею» на главной: отправка формы, список «Мои предложения» и лимит сервера.
+// «Предложить улучшение HUB» на главной: отправка формы, список «Мои предложения» и лимит сервера.
 // Админский раздел «Предложения» в «Настройках»: смена статуса. Все API-ответы — изолированные фикстуры.
 test.skip(process.env.E2E_LOCAL !== '1', 'Feedback suggestions run against isolated API fixtures (E2E_LOCAL=1)');
 test.use({ serviceWorkers: 'block' });
@@ -75,9 +75,9 @@ async function prepare(page, identity, { postError = null } = {}) {
 
 async function openSuggestionDialog(page) {
   await page.goto('/dashboard');
-  await page.getByRole('button', { name: 'Предложить идею', exact: true }).click();
+  await page.getByRole('button', { name: 'Предложить улучшение HUB', exact: true }).click();
   const dialog = page.getByRole('dialog');
-  await expect(dialog.getByRole('heading', { name: 'Что улучшить в Hub?' })).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: 'Что улучшить в HUB?' })).toBeVisible();
   return dialog;
 }
 
@@ -131,7 +131,7 @@ test('daily limit from the server is shown in the dialog and the draft is kept',
   expect(ctrl.posted).toHaveLength(1);
 });
 
-test('admin changes the status of a suggestion in «Настройки → Администрирование → Предложения»', async ({ page }) => {
+test('admin changes the status of a suggestion in «Настройки → Администрирование → Предложения по HUB»', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   const ctrl = await prepare(page, adminUser);
   ctrl.adminItems = [{

@@ -1389,9 +1389,9 @@ export default function Dashboard() {
                 </Box>
                 <Stack direction="row" spacing={0.5} alignItems="center">
                   {isMobile ? (
-                    <Tooltip title="Предложить идею">
+                    <Tooltip title="Предложить улучшение HUB">
                       <IconButton
-                        aria-label="Предложить идею"
+                        aria-label="Предложить улучшение HUB"
                         onClick={() => setFeedbackOpen(true)}
                         sx={{ width: 48, height: 48 }}
                       >
@@ -1405,7 +1405,7 @@ export default function Dashboard() {
                       onClick={() => setFeedbackOpen(true)}
                       sx={{ minHeight: 48, px: 1.5, borderRadius: '12px', fontWeight: 700, whiteSpace: 'nowrap' }}
                     >
-                      Предложить идею
+                      Предложить улучшение HUB
                     </Button>
                   )}
                   <IconButton
