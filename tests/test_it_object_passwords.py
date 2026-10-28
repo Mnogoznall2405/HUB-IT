@@ -79,6 +79,7 @@ def vault(tmp_path, monkeypatch):
     monkeypatch.setattr(service, "require_unlocked", lambda **kwargs: "2099-01-01T00:00:00+00:00")
     monkeypatch.setattr(service, "_throttle_reveal", lambda **kwargs: None)
     monkeypatch.setattr(passwords_api, "password_vault_service", service)
+    monkeypatch.setattr(vault_module, "password_vault_service", service)
     monkeypatch.setattr(passwords_api, "get_it_objects_service", lambda: objects)
     monkeypatch.setattr(vault_module, "get_it_objects_service", lambda database_url=None: objects)
     monkeypatch.setattr(it_objects_api, "get_it_objects_service", lambda: objects)
@@ -218,6 +219,30 @@ def test_manage_grant_edits_entries_of_the_object_but_cannot_unlink_or_touch_oth
 
     archived = client.post(f"{VAULT}/{entry_id}/archive", headers=_as(COLLEAGUE))
     assert archived.status_code == 200, archived.text
+
+
+def test_object_owners_see_who_opened_the_passwords_and_nobody_else_does(client):
+    _assign_owner(client)
+    entry_id = _create(client, OWNER, login="rega-admin", object_ref=OBJECT_REF).json()["id"]
+    _grant(client, COLLEAGUE, level="view")
+    assert _reveal(client, COLLEAGUE, entry_id).status_code == 200
+    audit_url = f"{IT_OBJECTS}/{OBJECT_REF}/passwords/audit"
+
+    owner_view = client.get(audit_url, headers=_as(OWNER))
+    assert owner_view.status_code == 200, owner_view.text
+    events = [(row["action"], row["actor_username"], row["entry_login"]) for row in owner_view.json()["items"]]
+    assert ("reveal.show", "colleague_user", "rega-admin") in events
+    assert ("create", "owner_user", "rega-admin") in events
+    assert all("ip_address" not in row and "user_agent" not in row for row in owner_view.json()["items"])
+
+    # View-only grantees, the admin and global vault users cannot read the object's journal.
+    for outsider in (COLLEAGUE, ADMIN, VAULT_USER):
+        assert client.get(audit_url, headers=_as(outsider)).status_code == 403
+    _grant(client, COLLEAGUE, level="manage")
+    assert client.get(audit_url, headers=_as(COLLEAGUE)).status_code == 200
+
+    general = client.get(f"{VAULT}/audit", headers=_as(ADMIN))
+    assert entry_id not in {row["entry_id"] for row in general.json()["items"]}
 
 
 def test_vault_keeps_working_before_the_links_migration_and_refuses_to_link(client, vault):

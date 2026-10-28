@@ -68,6 +68,47 @@ function OverviewTab({ object }) {
   );
 }
 
+const AUDIT_ACTIONS = {
+  create: 'создал(а)',
+  update: 'изменил(а)',
+  archive: 'архивировал(а)',
+  'reveal.show': 'открыл(а) пароль',
+  'reveal.copy': 'скопировал(а) пароль',
+};
+
+function PasswordsAudit({ objectRef }) {
+  const [state, setState] = useState({ loading: true, items: [], error: '' });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setState({ loading: true, items: [], error: '' });
+    itObjectsAPI.passwordsAudit(objectRef, { signal: controller.signal })
+      .then((payload) => setState({ loading: false, items: Array.isArray(payload?.items) ? payload.items : [], error: '' }))
+      .catch((requestError) => {
+        if (isItObjectsRequestCancelled(requestError)) return;
+        setState({ loading: false, items: [], error: getItObjectsErrorMessage(requestError, 'Не удалось загрузить журнал') });
+      });
+    return () => controller.abort();
+  }, [objectRef]);
+
+  return (
+    <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+      <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 1 }}>Журнал: кто работал с паролями объекта</Typography>
+      {state.loading ? <LinearProgress aria-label="Загрузка журнала" /> : null}
+      {state.error ? <Alert severity="warning">{state.error}</Alert> : null}
+      {!state.loading && !state.error && !state.items.length ? (
+        <Typography color="text.secondary">Событий пока нет.</Typography>
+      ) : null}
+      {state.items.map((row) => (
+        <Typography key={row.id} variant="body2" sx={{ py: 0.25 }}>
+          {row.created_at ? `${new Date(row.created_at).toLocaleString('ru-RU')} · ` : ''}
+          <b>{row.actor_username}</b> {AUDIT_ACTIONS[row.action] || row.action} · {row.entry_login}
+        </Typography>
+      ))}
+    </Paper>
+  );
+}
+
 function PasswordsTab({ objectRef, level }) {
   const [state, setState] = useState({ loading: true, items: [], error: '' });
 
@@ -120,6 +161,7 @@ function PasswordsTab({ objectRef, level }) {
           Сами пароли открываются в разделе «Пароли» после подтверждения вторым фактором.
         </Typography>
       </Paper>
+      {level === 'manage' ? <PasswordsAudit objectRef={objectRef} /> : null}
     </Stack>
   );
 }

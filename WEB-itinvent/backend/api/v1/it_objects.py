@@ -121,14 +121,36 @@ async def get_it_object(
     )
 
 
+def _section_service(object_ref: str, *, user_id: int, section: str, level: str = "view", label: str):
+    try:
+        service = get_it_objects_service()
+    except (RuntimeError, AppDatabaseConfigurationError, SQLAlchemyError) as exc:
+        raise ItObjectError("Объекты ИТ временно недоступны", 503) from exc
+    if not service.can_access(object_ref, user_id=user_id, section=section, level=level):
+        raise ItObjectError(f"Раздел «{label}» этого объекта вам не выдан", 403)
+    return service
+
+
+def _read_external(description: str, read):
+    """Reads of Inventory / ITINVENT: any failure of those sources is an answer 502, not a bare 500."""
+    try:
+        return read()
+    except (ItObjectError, ItObjectSourceError):
+        raise
+    except Exception as exc:  # noqa: BLE001 - driver, configuration and store errors alike
+        logger.warning("IT object %s read failed: %s", description, type(exc).__name__)
+        raise ItObjectSourceError(f"{description}: источник данных недоступен") from exc
+
+
 def _load_object_computers(object_ref: str, *, user_id: int) -> dict[str, Any]:
     from backend.api.v1 import inventory  # heavy module: loaded only when the section is opened
 
-    service = get_it_objects_service()
-    if not service.can_access(object_ref, user_id=user_id, section="computers"):
-        raise ItObjectError("Раздел «Компьютеры» этого объекта вам не выдан", 403)
+    service = _section_service(object_ref, user_id=user_id, section="computers", label="Компьютеры")
     binding = service.source_binding(object_ref)
-    items = inventory.list_object_computers(database_id=binding["database_id"], branch_no=binding["branch_no"])
+    items = _read_external(
+        "Компьютеры объекта",
+        lambda: inventory.list_object_computers(database_id=binding["database_id"], branch_no=binding["branch_no"]),
+    )
     return {"object_ref": object_ref, "database_id": binding["database_id"], "items": items}
 
 
@@ -143,15 +165,16 @@ async def list_it_object_computers(
 def _load_object_inventory(object_ref: str, *, user_id: int, page: int, limit: int) -> dict[str, Any]:
     from backend.database import equipment_db
 
-    service = get_it_objects_service()
-    if not service.can_access(object_ref, user_id=user_id, section="inventory"):
-        raise ItObjectError("Раздел «Инвентарь» этого объекта вам не выдан", 403)
+    service = _section_service(object_ref, user_id=user_id, section="inventory", label="Инвентарь")
     binding = service.source_binding(object_ref)
     try:
         branch_no = int(binding["branch_no"])
     except ValueError as exc:
         raise ItObjectError("Объект не найден", 404) from exc
-    result = equipment_db.get_equipment_by_branch_no(branch_no, page=page, limit=limit, db_id=binding["database_id"])
+    result = _read_external(
+        "Инвентарь объекта",
+        lambda: equipment_db.get_equipment_by_branch_no(branch_no, page=page, limit=limit, db_id=binding["database_id"]),
+    )
     items = [{str(key).lower(): value for key, value in row.items()} for row in result["equipment"]]
     return {
         "object_ref": object_ref,
@@ -172,6 +195,26 @@ async def list_it_object_inventory(
     current_user: User = Depends(require_permission(PERM_IT_OBJECTS_READ)),
 ) -> dict[str, Any]:
     return await _run(_load_object_inventory, object_ref, user_id=int(current_user.id), page=page, limit=limit)
+
+
+def _load_object_passwords_audit(object_ref: str, *, user_id: int, limit: int) -> dict[str, Any]:
+    from backend.services.password_vault_service import PasswordVaultError, password_vault_service
+
+    _section_service(object_ref, user_id=user_id, section="passwords", level="manage", label="Пароли (управление)")
+    try:
+        items = password_vault_service.list_object_audit(object_ref, limit=limit)
+    except PasswordVaultError as exc:
+        raise ItObjectError("Журнал паролей объекта временно недоступен", 503) from exc
+    return {"object_ref": object_ref, "items": items}
+
+
+@router.get("/{object_ref}/passwords/audit", response_model=dict[str, Any])
+async def list_it_object_passwords_audit(
+    object_ref: str,
+    limit: int = Query(100, ge=1, le=500),
+    current_user: User = Depends(require_permission(PERM_IT_OBJECTS_READ)),
+) -> dict[str, Any]:
+    return await _run(_load_object_passwords_audit, object_ref, user_id=int(current_user.id), limit=limit)
 
 
 @router.put("/{object_ref}/owner", response_model=dict[str, Any])

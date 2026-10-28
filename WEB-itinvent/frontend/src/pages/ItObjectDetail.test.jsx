@@ -11,6 +11,7 @@ const { api, passwordsApi } = vi.hoisted(() => ({
     get: vi.fn(),
     computers: vi.fn(),
     inventory: vi.fn(),
+    passwordsAudit: vi.fn(),
     userOptions: vi.fn(),
     assignOwner: vi.fn(),
     clearOwner: vi.fn(),
@@ -115,6 +116,25 @@ describe('ItObjectDetail', () => {
     api.get.mockResolvedValue({ ...adminView, can_manage_grants: false });
     fireEvent.click(screen.getByRole('button', { name: 'Обновить' }));
     await waitFor(() => expect(screen.queryByRole('tab', { name: 'Пароли' })).toBeNull());
+  });
+
+  it('shows the passwords journal to managers only', async () => {
+    api.get.mockResolvedValue({ ...adminView, my_access: { is_owner: true, sections: { passwords: 'manage' } }, can_manage_grants: true });
+    passwordsApi.getEntries.mockResolvedValue({ items: [] });
+    api.passwordsAudit.mockResolvedValue({
+      items: [{ id: 1, action: 'reveal.show', actor_username: 'colleague_user', entry_login: 'rega-admin', created_at: '2026-10-28T10:00:00+00:00' }],
+    });
+    const { unmount } = renderPage('?tab=passwords');
+    expect(await screen.findByText(/открыл\(а\) пароль/)).toBeTruthy();
+    expect(api.passwordsAudit).toHaveBeenCalledTimes(1);
+    unmount();
+
+    api.passwordsAudit.mockClear();
+    api.get.mockResolvedValue({ ...adminView, my_access: { is_owner: false, sections: { passwords: 'view' } }, can_manage_grants: false });
+    renderPage('?tab=passwords');
+    expect(await screen.findByText('Паролей у этого объекта пока нет.')).toBeTruthy();
+    expect(screen.queryByText(/Журнал: кто работал/)).toBeNull();
+    expect(api.passwordsAudit).not.toHaveBeenCalled();
   });
 
   it('lists the object computers on the computers tab only when that section is granted', async () => {

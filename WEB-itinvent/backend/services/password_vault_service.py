@@ -1103,5 +1103,28 @@ class PasswordVaultService:
             ).all()
             return [self._audit_to_response(row) for row in rows]
 
+    def list_object_audit(self, object_ref: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        """Who created, changed, archived or opened the passwords of one IT object (caller checks access)."""
+        database_url = self._database_url_or_raise()
+        safe_limit = max(1, min(500, int(limit or 100)))
+        with app_session(database_url) as session:
+            if not self._links_available(session):
+                return []
+            rows = session.scalars(
+                select(AppPasswordVaultAudit)
+                .join(AppItObjectPasswordLink, AppItObjectPasswordLink.entry_id == AppPasswordVaultAudit.entry_id)
+                .where(AppItObjectPasswordLink.object_ref == _normalize_text(object_ref))
+                .order_by(AppPasswordVaultAudit.created_at.desc(), AppPasswordVaultAudit.id.desc())
+                .limit(safe_limit)
+            ).all()
+            items = []
+            for row in rows:
+                item = self._audit_to_response(row)
+                # Network details of colleagues stay out of the object owners' view.
+                item.pop("ip_address", None)
+                item.pop("user_agent", None)
+                items.append(item)
+            return items
+
 
 password_vault_service = PasswordVaultService()

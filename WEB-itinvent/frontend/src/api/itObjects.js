@@ -20,6 +20,10 @@ export const itObjectsAPI = {
     const { data } = await apiClient.get(`/it-objects/${refPath(objectRef)}/inventory`, { params: { page, limit }, signal });
     return data;
   },
+  passwordsAudit: async (objectRef, { limit = 20, signal } = {}) => {
+    const { data } = await apiClient.get(`/it-objects/${refPath(objectRef)}/passwords/audit`, { params: { limit }, signal });
+    return data;
+  },
   userOptions: async (query = '', { signal } = {}) => {
     const { data } = await apiClient.get('/it-objects/user-options', { params: { q: query }, signal });
     return data;

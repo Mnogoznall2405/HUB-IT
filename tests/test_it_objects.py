@@ -319,3 +319,19 @@ def test_object_inventory_is_the_equipment_of_its_branch_number_and_needs_the_in
     assert client.get(url, headers=_as(COLLEAGUE)).status_code == 200
     assert client.get(url, params={"limit": 5000}, headers=_as(OWNER)).status_code == 422
     assert len(calls) == 2
+
+
+def test_unavailable_inventory_or_computers_source_answers_502_not_500(client, monkeypatch):
+    from backend.api.v1 import inventory
+    from backend.database import equipment_db
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("source is down")
+
+    monkeypatch.setattr(inventory, "_collect_scoped_computer_records", boom)
+    monkeypatch.setattr(equipment_db, "get_equipment_by_branch_no", boom)
+    assert _assign_owner(client).status_code == 200
+
+    assert client.get(f"{BASE}/{OBJECT_REF}/computers", headers=_as(OWNER)).status_code == 502
+    assert client.get(f"{BASE}/{OBJECT_REF}/inventory", headers=_as(OWNER)).status_code == 502
+    assert client.get(f"{BASE}/{OBJECT_REF}/computers", headers=_as(ADMIN)).status_code == 403
