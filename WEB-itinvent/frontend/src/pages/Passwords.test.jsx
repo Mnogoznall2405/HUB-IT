@@ -27,7 +27,9 @@ const {
   mockSetSearchParams,
   mockAuthUser,
   mockRefreshSession,
+  mockListObjects,
 } = vi.hoisted(() => ({
+  mockListObjects: vi.fn(),
   mockGetEntries: vi.fn(),
   mockGetGroups: vi.fn(),
   mockCreateEntry: vi.fn(),
@@ -78,6 +80,10 @@ vi.mock('../api/passwords', () => ({
     revealEntry: mockRevealEntry,
     getAudit: mockGetAudit,
   },
+}));
+
+vi.mock('../api/itObjects', () => ({
+  itObjectsAPI: { list: mockListObjects },
 }));
 
 vi.mock('../lib/useWebAuthnAvailability', () => ({
@@ -239,6 +245,8 @@ describe('Passwords page', () => {
     mockAuthUser.is_2fa_enabled = true;
     mockAuthUser.trusted_devices_count = 1;
     mockRefreshSession.mockReset();
+    mockListObjects.mockReset();
+    mockListObjects.mockResolvedValue({ items: [] });
     mockGetEntries.mockResolvedValue(vaultPayload);
     mockGetGroups.mockResolvedValue({ items: [{ id: 'group-1', name: 'VPN', is_active: true, sort_order: 0 }] });
     mockGetAudit.mockResolvedValue({ items: [] });
@@ -464,6 +472,40 @@ describe('Passwords page', () => {
         tags: ['prod', 'infra'],
       }));
     });
+  });
+
+  it('binds a new entry to an object the user manages and filters the list by object', async () => {
+    mockListObjects.mockResolvedValue({
+      items: [
+        { object_ref: 'OBJ-ITINVENT:12', name: 'Объект Альфа', my_access: { is_owner: true, sections: { passwords: 'manage' } } },
+        { object_ref: 'OBJ-ITINVENT:13', name: 'Объект Бета', my_access: { is_owner: false, sections: { passwords: 'view' } } },
+      ],
+    });
+    mockCreateEntry.mockResolvedValue({ id: 'entry-2' });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('svc-vpn')).toBeInTheDocument());
+    expect(await screen.findByTestId('password-object-OBJ-ITINVENT:13')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('password-object-OBJ-ITINVENT:13'));
+    await waitFor(() => expect(mockGetEntries).toHaveBeenLastCalledWith(expect.objectContaining({ object_ref: 'OBJ-ITINVENT:13' })));
+    fireEvent.click(screen.getByTestId('password-object-OBJ-ITINVENT:12'));
+
+    fireEvent.click(screen.getByText('Новая запись'));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('combobox', { name: 'Объект' })).toHaveTextContent('Объект Альфа');
+    expect(within(dialog).queryByRole('option', { name: 'Объект Бета' })).toBeNull();
+
+    fireEvent.mouseDown(within(dialog).getByRole('combobox', { name: 'Группа' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'VPN' }));
+    fireEvent.change(within(dialog).getByTestId('password-form-login'), { target: { value: 'rega-admin' } });
+    fireEvent.change(within(dialog).getByTestId('password-form-password'), { target: { value: 's3cret-pass' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => expect(mockCreateEntry).toHaveBeenCalledWith(expect.objectContaining({
+      login: 'rega-admin',
+      object_ref: 'OBJ-ITINVENT:12',
+    })));
   });
 
   it('opens 2FA setup with QR when user has no 2FA enabled', async () => {

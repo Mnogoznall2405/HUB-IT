@@ -68,6 +68,7 @@ import {
   writeStoredVaultUnlockUntil,
 } from '../components/passwords/passwordVaultUtils';
 import { passwordsAPI } from '../api/passwords';
+import { itObjectsAPI } from '../api/itObjects';
 import { hideScrollbarSx } from '../lib/hideScrollbarSx';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
@@ -86,6 +87,8 @@ const emptyForm = {
   login: '',
   password: '',
   description: '',
+  object_ref: '',
+  original_object_ref: '',
 };
 
 const emptyGeneratorOptions = {
@@ -200,6 +203,8 @@ function Passwords() {
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [selectedGroup, setSelectedGroup] = useState('');
   const [selectedTag, setSelectedTag] = useState('');
+  const [selectedObject, setSelectedObject] = useState(() => normalizeText(searchParams.get('object')));
+  const [objectOptions, setObjectOptions] = useState([]);
   const [includeArchived, setIncludeArchived] = useState(false);
   const [unlockedUntil, setUnlockedUntil] = useState(() => readStoredVaultUnlockUntil(user?.id));
   const [loading, setLoading] = useState(true);
@@ -237,7 +242,23 @@ function Passwords() {
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const { webAuthnReady } = useWebAuthnAvailability();
   const isAdmin = String(user?.role || '').toLowerCase() === 'admin';
-  const canWrite = isAdmin || hasPermission('passwords.write');
+  const canObjects = isAdmin || hasPermission('it_objects.read');
+  const globalWrite = isAdmin || hasPermission('passwords.write');
+  const passwordObjects = useMemo(
+    () => objectOptions.filter((item) => item?.my_access?.sections?.passwords),
+    [objectOptions],
+  );
+  const manageObjects = useMemo(
+    () => passwordObjects.filter((item) => item.my_access.sections.passwords === 'manage'),
+    [passwordObjects],
+  );
+  const manageObjectRefs = useMemo(() => new Set(manageObjects.map((item) => item.object_ref)), [manageObjects]);
+  const canWrite = globalWrite || manageObjects.length > 0;
+  const canWriteEntry = useCallback(
+    (entry) => Boolean(entry) && !entry.is_archived
+      && (entry.object_ref ? manageObjectRefs.has(entry.object_ref) : globalWrite),
+    [globalWrite, manageObjectRefs],
+  );
   const passkeyUnlockAvailable = webAuthnReady && Number(user?.trusted_devices_count || 0) > 0;
   const isUnlocked = isUnlockedUntilActive(unlockedUntil);
   const unlockedRemainingMs = useMemo(() => {
@@ -302,7 +323,33 @@ function Passwords() {
     }
   }, [isAdmin, notifyApiError]);
 
-  const beginEntries = useRequestGuard(JSON.stringify([query, selectedGroup, selectedTag, includeArchived]));
+  useEffect(() => {
+    if (!canObjects) return undefined;
+    let cancelled = false;
+    itObjectsAPI.list({ mine: true })
+      .then((payload) => {
+        if (!cancelled) setObjectOptions(Array.isArray(payload?.items) ? payload.items : []);
+      })
+      .catch(() => {
+        if (!cancelled) setObjectOptions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canObjects]);
+
+  const handleSelectObject = useCallback((objectRef) => {
+    setSelectedObject(objectRef);
+    const params = new URLSearchParams(searchParams);
+    if (objectRef) {
+      params.set('object', objectRef);
+    } else {
+      params.delete('object');
+    }
+    setSearchParams(params, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  const beginEntries = useRequestGuard(JSON.stringify([query, selectedGroup, selectedTag, selectedObject, includeArchived]));
 
   const loadEntries = useCallback(async ({ offset = 0, append = false } = {}) => {
     const isCurrent = beginEntries();
@@ -317,6 +364,7 @@ function Passwords() {
           q: debouncedQuery,
           group: selectedGroup,
           tag: selectedTag,
+          object_ref: selectedObject,
           include_archived: includeArchived,
           limit: ENTRIES_PAGE_SIZE,
           offset,
@@ -349,7 +397,7 @@ function Passwords() {
         setLoadingMore(false);
       }
     }
-  }, [beginEntries, debouncedQuery, includeArchived, notifyApiError, selectedGroup, selectedTag, syncUnlockedUntil]);
+  }, [beginEntries, debouncedQuery, includeArchived, notifyApiError, selectedGroup, selectedObject, selectedTag, syncUnlockedUntil]);
 
   useEffect(() => {
     loadEntries();
@@ -433,7 +481,11 @@ function Passwords() {
 
   const openCreateDialog = () => {
     setFormMode('create');
-    setForm(emptyForm);
+    const preferred = manageObjectRefs.has(selectedObject) ? selectedObject : '';
+    setForm({
+      ...emptyForm,
+      object_ref: preferred || (globalWrite ? '' : (manageObjects[0]?.object_ref || '')),
+    });
     setGeneratedPassword('');
     resetTagInput();
     setEntryDialogOpen(true);
@@ -448,6 +500,8 @@ function Passwords() {
       login: entry.login,
       password: '',
       description: entry.description,
+      object_ref: entry.object_ref || '',
+      original_object_ref: entry.object_ref || '',
     });
     setGeneratedPassword('');
     resetTagInput();
@@ -464,6 +518,11 @@ function Passwords() {
     };
     if (formMode === 'create' || form.password) {
       payload.password = form.password;
+    }
+    if (formMode === 'create') {
+      if (form.object_ref) payload.object_ref = form.object_ref;
+    } else if (form.object_ref !== form.original_object_ref) {
+      payload.object_ref = form.object_ref || null;
     }
     setSaving(true);
     try {
@@ -974,6 +1033,9 @@ function Passwords() {
                     groupCounts={groupCounts}
                     selectedGroup={selectedGroup}
                     selectedTag={selectedTag}
+                    objects={passwordObjects}
+                    selectedObject={selectedObject}
+                    onSelectObject={handleSelectObject}
                     totalCount={entriesTotal}
                     onSelectGroup={setSelectedGroup}
                     onSelectTag={setSelectedTag}
@@ -1056,7 +1118,7 @@ function Passwords() {
                     revealBusy={selectedRevealBusy}
                     watermark={secretWatermark}
                     revealRemainingMs={selectedRevealRemainingMs}
-                    canWrite={canWrite && selectedEntry && !selectedEntry.is_archived}
+                    canWrite={canWriteEntry(selectedEntry)}
                     onCopyPassword={(entry) => requestReveal(entry, 'copy')}
                     onCopyLogin={handleCopyLogin}
                     onShow={(entry) => requestReveal(entry, 'show')}
@@ -1138,6 +1200,24 @@ function Passwords() {
                     </Tooltip>
                   ) : null}
                 </Stack>
+                {manageObjects.length ? (
+                  <FormControl fullWidth>
+                    <InputLabel id="password-object-label" shrink>Объект</InputLabel>
+                    <Select
+                      labelId="password-object-label"
+                      label="Объект"
+                      value={form.object_ref}
+                      displayEmpty
+                      onChange={(event) => setForm((prev) => ({ ...prev, object_ref: String(event.target.value || '') }))}
+                      data-testid="password-form-object-select"
+                    >
+                      <MenuItem value="" disabled={!globalWrite}>Общий пароль (без объекта)</MenuItem>
+                      {manageObjects.map((item) => (
+                        <MenuItem key={item.object_ref} value={item.object_ref}>{item.name || item.object_ref}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                ) : null}
                 {!groups.length ? (
                   <Alert severity="warning">
                     {isAdmin
@@ -1413,6 +1493,9 @@ function Passwords() {
               groupCounts={groupCounts}
               selectedGroup={selectedGroup}
               selectedTag={selectedTag}
+              objects={passwordObjects}
+              selectedObject={selectedObject}
+              onSelectObject={handleSelectObject}
               totalCount={entriesTotal}
               onSelectGroup={(group) => {
                 setSelectedGroup(group);
@@ -1444,7 +1527,7 @@ function Passwords() {
         revealBusy={selectedRevealBusy}
         watermark={secretWatermark}
         revealRemainingMs={selectedRevealRemainingMs}
-        canWrite={canWrite && selectedEntry && !selectedEntry.is_archived}
+        canWrite={canWriteEntry(selectedEntry)}
         onClose={() => setMobileSheetOpen(false)}
         onCopyPassword={(entry) => requestReveal(entry, 'copy')}
         onCopyLogin={handleCopyLogin}

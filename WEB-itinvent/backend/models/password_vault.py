@@ -48,6 +48,7 @@ class PasswordVaultEntryBase(BaseModel):
 
 class PasswordVaultEntryCreate(PasswordVaultEntryBase):
     password: str = Field(..., min_length=1, max_length=4096)
+    object_ref: Optional[str] = Field(default=None, max_length=128)
 
     @field_validator("password", mode="before")
     @classmethod
@@ -63,6 +64,7 @@ class PasswordVaultEntryUpdate(BaseModel):
     login: Optional[str] = Field(default=None, min_length=1, max_length=255)
     description: Optional[str] = Field(default=None, max_length=4000)
     password: Optional[str] = Field(default=None, min_length=1, max_length=4096)
+    object_ref: Optional[str] = Field(default=None, max_length=128)
 
     @field_validator("group", "login", "description", mode="before")
     @classmethod
@@ -104,6 +106,8 @@ class PasswordVaultEntryResponse(PasswordVaultEntryBase):
     created_by: Optional[str] = None
     updated_by: Optional[str] = None
     password_configured: bool = True
+    object_ref: Optional[str] = None
+    object_name: Optional[str] = None
 
 
 class PasswordVaultListResponse(BaseModel):

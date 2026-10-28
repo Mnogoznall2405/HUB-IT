@@ -19,6 +19,9 @@ export default function PasswordFiltersPanel({
   groupCounts = new Map(),
   selectedGroup = '',
   selectedTag = '',
+  objects = [],
+  selectedObject = '',
+  onSelectObject,
   onSelectGroup,
   onSelectTag,
   totalCount = 0,
@@ -60,6 +63,35 @@ export default function PasswordFiltersPanel({
         ))}
       </List>
       <Divider />
+      {objects.length ? (
+        <>
+          <Box sx={{ p: 2 }} data-testid="password-object-filter">
+            <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 1 }}>Объекты</Typography>
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+              <Chip
+                size="small"
+                label="Все"
+                color={!selectedObject ? 'primary' : 'default'}
+                variant={!selectedObject ? 'filled' : 'outlined'}
+                onClick={() => onSelectObject?.('')}
+              />
+              {objects.map((item) => (
+                <Chip
+                  key={item.object_ref}
+                  size="small"
+                  label={item.name || item.object_ref}
+                  color={selectedObject === item.object_ref ? 'primary' : 'default'}
+                  variant={selectedObject === item.object_ref ? 'filled' : 'outlined'}
+                  onClick={() => onSelectObject?.(item.object_ref)}
+                  data-testid={`password-object-${item.object_ref}`}
+                  sx={{ borderColor: theme.palette.divider }}
+                />
+              ))}
+            </Stack>
+          </Box>
+          <Divider />
+        </>
+      ) : null}
       <Box sx={{ p: 2 }}>
         <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 1 }}>Теги</Typography>
         <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">

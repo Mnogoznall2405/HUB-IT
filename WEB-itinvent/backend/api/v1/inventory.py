@@ -3231,6 +3231,42 @@ def _build_computer_detail_payload(
     return page_items[0]
 
 
+_OBJECT_COMPUTER_FIELDS = _MOBILE_COMPUTER_DETAIL_FIELDS
+# Server-side reader of one database: access is decided by the caller (IT object section grant),
+# so the per-user database scoping of the web list must not hide hosts from it.
+_OBJECT_COMPUTERS_ACTOR = User(
+    id=0,
+    username="it-objects",
+    full_name="IT objects",
+    role="admin",
+    is_active=True,
+)
+
+
+def list_object_computers(*, database_id: str, branch_no: Any) -> List[Dict[str, Any]]:
+    """Agent computers bound to one ITINVENT branch of ``database_id`` (the computers of an IT object)."""
+    target_db = _normalize_text(database_id)
+    target_branch = _normalize_text(branch_no)
+    if not target_db or not target_branch:
+        return []
+    records = _collect_scoped_computer_records(
+        current_user=_OBJECT_COMPUTERS_ACTOR,
+        db_id_selected=target_db,
+        scope="selected",
+        branch=None,
+        status_filter=None,
+        outlook_status=None,
+        q=None,
+    )
+    return [
+        {field: item.get(field) for field in _OBJECT_COMPUTER_FIELDS}
+        for item in records
+        if _normalize_text(item.get("database_id")) == target_db
+        and _normalize_text(item.get("branch_no")) == target_branch
+        and _normalize_text(item.get("assignment_source")) == "sql"
+    ]
+
+
 @router.get("/computers/summary")
 def get_computers_summary(
     request: Request = None,

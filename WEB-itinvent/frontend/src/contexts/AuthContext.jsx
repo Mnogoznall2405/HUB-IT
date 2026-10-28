@@ -68,6 +68,7 @@ const rolePermissionFallback = {
     'settings.read',
     'vcs.read',
     'company_structure.read',
+    'it_objects.read',
   ],
   admin: [
     'dashboard.read',
@@ -121,6 +122,8 @@ const rolePermissionFallback = {
     'company_structure.write',
     'construction.read',
     'construction.write',
+    'it_objects.read',
+    'it_objects.manage',
   ],
 };
 

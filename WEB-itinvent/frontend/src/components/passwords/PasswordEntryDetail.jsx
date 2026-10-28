@@ -114,9 +114,18 @@ export default function PasswordEntryDetail({
           ) : null}
         </Stack>
 
-        {entry.tags?.length ? (
+        {entry.tags?.length || entry.object_ref ? (
           <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
-            {entry.tags.map((tag) => (
+            {entry.object_ref ? (
+              <Chip
+                size="small"
+                color="primary"
+                variant="outlined"
+                label={`Объект: ${entry.object_name || entry.object_ref}`}
+                data-testid="password-entry-object-chip"
+              />
+            ) : null}
+            {(entry.tags || []).map((tag) => (
               <Chip key={tag} size="small" label={tag} variant="outlined" />
             ))}
           </Stack>

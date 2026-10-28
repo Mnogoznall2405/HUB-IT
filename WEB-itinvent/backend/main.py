@@ -28,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.config import config
-from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, fs_egress, kb, mfu, hub, mail, mailbox_quota, ad_users, vcs, ai_bots, departments, tickets, address_book, warehouse_1c, construction, docflow, system, passwords, my_files, debug_client_log, groups_access, company_structure, desktop_presence, itinvent_references
+from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, fs_egress, kb, mfu, hub, mail, mailbox_quota, ad_users, vcs, ai_bots, departments, tickets, address_book, warehouse_1c, construction, docflow, system, passwords, my_files, debug_client_log, groups_access, company_structure, desktop_presence, itinvent_references, it_objects
 from backend.api.v1.auth import handle_safari_password_beacon_form
 from backend.runtime_role import chat_routes_enabled, get_runtime_role, heavy_api_routes_enabled
 from backend.services.ad_sync_service import background_ad_sync_loop
@@ -613,6 +613,7 @@ app.include_router(system.router, prefix="/api/v1/system", tags=["System"])
 app.include_router(passwords.router, prefix="/api/v1/passwords", tags=["Passwords"])
 app.include_router(my_files.router, prefix="/api/v1/my-files", tags=["My Files"])
 app.include_router(debug_client_log.router, prefix="/api/v1/debug", tags=["Debug"])
+app.include_router(it_objects.router, prefix="/api/v1/it-objects", tags=["IT objects"])
 if config.chat.enabled and chat_routes_enabled():
     try:
         from backend.api.v1 import chat

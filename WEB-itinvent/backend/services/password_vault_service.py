@@ -2,19 +2,32 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from sqlalchemy import case, cast, func, or_, select
+from sqlalchemy import case, cast, false, func, inspect as sa_inspect, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.exc import SQLAlchemyError
 
 from backend.appdb.db import AppDatabaseConfigurationError, app_session, ensure_app_schema_initialized
-from backend.appdb.models import AppPasswordVaultAudit, AppPasswordVaultEntry, AppPasswordVaultGroup
+from backend.appdb.models import (
+    AppItObjectPasswordLink,
+    AppPasswordVaultAudit,
+    AppPasswordVaultEntry,
+    AppPasswordVaultGroup,
+)
 from backend.config import config
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.auth_security_service import auth_security_service
+from backend.services.authorization_service import (
+    PERM_PASSWORDS_READ,
+    PERM_PASSWORDS_WRITE,
+    authorization_service,
+)
 from backend.services.mobile_biometric_session_service import (
     MobileBiometricSessionError,
     mobile_biometric_session_service,
@@ -24,6 +37,7 @@ from backend.services.secret_crypto_service import (
     decrypt_password_vault_secret,
     encrypt_password_vault_secret,
 )
+from backend.services.it_objects_service import get_it_objects_service
 from backend.services.twofa_service import twofa_service
 from backend.services.user_service import user_service
 
@@ -41,6 +55,8 @@ PASSWORD_VAULT_2FA_SETUP_NAMESPACE = "password_vault_2fa_setup"
 PASSWORD_VAULT_2FA_SETUP_TTL_SECONDS = 600
 PASSWORD_VAULT_LIST_LIMIT_DEFAULT = 100
 PASSWORD_VAULT_LIST_LIMIT_MAX = 500
+OBJECT_LINKS_TABLE = "it_object_password_links"
+OBJECT_LINKS_RECHECK_SECONDS = 30.0
 
 
 class PasswordVaultError(RuntimeError):
@@ -125,6 +141,46 @@ def _actor_id(actor: Any) -> int:
 
 def _actor_username(actor: Any) -> str:
     return _normalize_text(getattr(actor, "username", "") if actor is not None else "")
+
+
+def _has_global_permission(actor: Any, permission: str) -> bool:
+    """Global vault permission of the caller.
+
+    Callers without an authorization context (no role/permissions on the actor, e.g. internal
+    jobs) keep the pre-object behaviour for unlinked entries; entries linked to an object are
+    gated by the caller's object access regardless.
+    """
+    if actor is None:
+        return True
+    role = getattr(actor, "role", None)
+    permissions = getattr(actor, "permissions", None)
+    if role is None and permissions is None:
+        return True
+    if str(role or "").strip().lower() == "admin":
+        return True
+    if permission in set(permissions or []):
+        return True
+    return authorization_service.has_permission(
+        role,
+        permission,
+        use_custom_permissions=bool(getattr(actor, "use_custom_permissions", False)),
+        custom_permissions=getattr(actor, "custom_permissions", []),
+    )
+
+
+@dataclass(frozen=True)
+class _ObjectAccess:
+    """What the caller may do with entries bound to IT objects (links=False: feature not migrated)."""
+
+    links: bool
+    global_read: bool
+    global_write: bool
+    view_refs: frozenset = frozenset()
+    manage_refs: frozenset = frozenset()
+
+
+_links_state: dict[str, tuple[bool, float]] = {}
+_links_state_lock = threading.Lock()
 
 
 def _session_key(*, user_id: int, session_id: str | None) -> str:
@@ -244,6 +300,113 @@ class PasswordVaultService:
             )
         )
 
+    # ----- IT object links -----
+
+    def _links_available(self, session) -> bool:
+        """Present table is cached for good; an absent one is re-checked every few seconds."""
+        bind = session.get_bind()
+        key = bind.url.render_as_string(hide_password=True)
+        now = time.monotonic()
+        with _links_state_lock:
+            state = _links_state.get(key)
+        if state is not None and (state[0] or now - state[1] < OBJECT_LINKS_RECHECK_SECONDS):
+            return state[0]
+        schema = "app" if bind.dialect.name == "postgresql" else None
+        try:
+            present = bool(sa_inspect(bind).has_table(OBJECT_LINKS_TABLE, schema=schema))
+        except SQLAlchemyError as exc:
+            # Fail closed: an unreadable catalog must never be taken for "no entry is linked".
+            raise PasswordVaultConfigurationError("Не удалось проверить привязку паролей к объектам") from exc
+        with _links_state_lock:
+            _links_state[key] = (present, now)
+        return present
+
+    def _object_service(self):
+        return get_it_objects_service(self._database_url)
+
+    def _access_context(self, session, *, actor: Any, user_id: int = 0) -> _ObjectAccess:
+        uid = _actor_id(actor) if actor is not None else _normalize_user_id(user_id)
+        global_read = _has_global_permission(actor, PERM_PASSWORDS_READ)
+        global_write = _has_global_permission(actor, PERM_PASSWORDS_WRITE)
+        if not self._links_available(session):
+            return _ObjectAccess(False, global_read, global_write)
+        try:
+            service = self._object_service()
+            view_refs = service.accessible_object_refs(user_id=uid, section="passwords", level="view")
+            manage_refs = service.accessible_object_refs(user_id=uid, section="passwords", level="manage")
+        except (SQLAlchemyError, RuntimeError, AppDatabaseConfigurationError) as exc:
+            raise PasswordVaultConfigurationError("Права на пароли объектов временно недоступны") from exc
+        return _ObjectAccess(True, global_read, global_write, frozenset(view_refs), frozenset(manage_refs))
+
+    @staticmethod
+    def _visibility_clause(access: _ObjectAccess):
+        """SQL predicate on entries; None means everything is visible."""
+        if not access.links:
+            return None if access.global_read else false()
+        link_ids = select(AppItObjectPasswordLink.entry_id)
+        refs = sorted(access.view_refs)
+        if access.global_read:
+            hidden = link_ids.where(AppItObjectPasswordLink.object_ref.notin_(refs)) if refs else link_ids
+            return AppPasswordVaultEntry.id.notin_(hidden)
+        if not refs:
+            return false()
+        return AppPasswordVaultEntry.id.in_(link_ids.where(AppItObjectPasswordLink.object_ref.in_(refs)))
+
+    @staticmethod
+    def _entry_object_ref(session, access: _ObjectAccess, entry_id: str) -> str | None:
+        if not access.links:
+            return None
+        return session.scalar(
+            select(AppItObjectPasswordLink.object_ref).where(AppItObjectPasswordLink.entry_id == entry_id)
+        )
+
+    @staticmethod
+    def _authorize_entry(access: _ObjectAccess, object_ref: str | None, *, manage: bool) -> None:
+        if object_ref is None:
+            if not manage:
+                if not access.global_read:
+                    raise PasswordVaultNotFoundError("Entry not found")
+                return
+            if access.global_write:
+                return
+            if not access.global_read:
+                raise PasswordVaultNotFoundError("Entry not found")
+            raise PasswordVaultAccessError("Недостаточно прав на изменение паролей")
+        if object_ref not in access.view_refs:
+            raise PasswordVaultNotFoundError("Entry not found")
+        if manage and object_ref not in access.manage_refs:
+            raise PasswordVaultAccessError("Недостаточно прав на управление паролями этого объекта")
+
+    @staticmethod
+    def _require_links_for_write(access: _ObjectAccess, object_ref: str) -> None:
+        if not access.links:
+            raise PasswordVaultConfigurationError(
+                "Привязка паролей к объектам временно недоступна: миграция базы ещё не применена"
+            )
+        if object_ref not in access.manage_refs:
+            raise PasswordVaultAccessError("Недостаточно прав на управление паролями этого объекта")
+
+    def _decorate_entries(self, session, access: _ObjectAccess, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        links: dict[str, str] = {}
+        if access.links and items:
+            rows = session.execute(
+                select(AppItObjectPasswordLink.entry_id, AppItObjectPasswordLink.object_ref).where(
+                    AppItObjectPasswordLink.entry_id.in_([item["id"] for item in items])
+                )
+            ).all()
+            links = {entry_id: ref for entry_id, ref in rows}
+        names: dict[str, str] = {}
+        if links:
+            try:
+                names = self._object_service().object_names(set(links.values()))
+            except (SQLAlchemyError, RuntimeError, AppDatabaseConfigurationError):
+                names = {}
+        for item in items:
+            ref = links.get(item["id"])
+            item["object_ref"] = ref
+            item["object_name"] = (names.get(ref) or ref) if ref else None
+        return items
+
     @staticmethod
     def _tag_exact_filter(session, tag_name: str):
         """Case-insensitive exact tag match inside the tags_json array.
@@ -287,15 +450,33 @@ class PasswordVaultService:
         offset: int = 0,
         session_id: str | None = None,
         user_id: int = 0,
+        actor: Any = None,
+        object_ref: str = "",
     ) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
         query_text = _normalize_text(q)
+        object_ref_filter = _normalize_text(object_ref)
         group_name = _normalize_text(group)
         tag_name = _normalize_text(tag)
         effective_limit = max(1, min(int(limit or PASSWORD_VAULT_LIST_LIMIT_DEFAULT), PASSWORD_VAULT_LIST_LIMIT_MAX))
         effective_offset = max(0, int(offset or 0))
         with app_session(database_url) as session:
+            access = self._access_context(session, actor=actor, user_id=user_id)
+            visibility = self._visibility_clause(access)
             stmt = select(AppPasswordVaultEntry)
+            if visibility is not None:
+                stmt = stmt.where(visibility)
+            if object_ref_filter:
+                if access.links:
+                    stmt = stmt.where(
+                        AppPasswordVaultEntry.id.in_(
+                            select(AppItObjectPasswordLink.entry_id).where(
+                                AppItObjectPasswordLink.object_ref == object_ref_filter
+                            )
+                        )
+                    )
+                else:
+                    stmt = stmt.where(false())
             if not include_archived:
                 stmt = stmt.where(AppPasswordVaultEntry.is_archived.is_(False))
             if query_text:
@@ -322,7 +503,7 @@ class PasswordVaultService:
                 .limit(effective_limit)
                 .offset(effective_offset)
             ).all()
-            items = [self._entry_to_response(row) for row in rows]
+            items = self._decorate_entries(session, access, [self._entry_to_response(row) for row in rows])
 
             group_rows = session.scalars(
                 select(AppPasswordVaultGroup)
@@ -331,9 +512,10 @@ class PasswordVaultService:
             ).all()
             groups = [_normalize_text(item.name) for item in group_rows if _normalize_text(item.name)]
             tag_values: set[str] = set()
-            for row in session.scalars(
-                select(AppPasswordVaultEntry.tags_json).where(AppPasswordVaultEntry.is_archived.is_(False))
-            ).all():
+            tag_stmt = select(AppPasswordVaultEntry.tags_json).where(AppPasswordVaultEntry.is_archived.is_(False))
+            if visibility is not None:
+                tag_stmt = tag_stmt.where(visibility)
+            for row in session.scalars(tag_stmt).all():
                 tag_values.update(_load_tags(row))
 
         return {
@@ -439,6 +621,7 @@ class PasswordVaultService:
         group_name = _normalize_text(payload.get("group"))
         login = _normalize_text(payload.get("login"))
         password = str(payload.get("password") or "")
+        object_ref = _normalize_text(payload.get("object_ref")) or None
         if not group_name:
             raise PasswordVaultValidationError("group is required")
         if not login:
@@ -454,6 +637,11 @@ class PasswordVaultService:
         actor_id = _actor_id(actor)
         actor_username = _actor_username(actor)
         with app_session(database_url) as session:
+            access = self._access_context(session, actor=actor)
+            if object_ref is not None:
+                self._require_links_for_write(access, object_ref)
+            elif not access.global_write:
+                raise PasswordVaultAccessError("Недостаточно прав на создание паролей")
             self._require_active_group(session, group_name)
             row = AppPasswordVaultEntry(
                 id=uuid.uuid4().hex,
@@ -472,8 +660,15 @@ class PasswordVaultService:
             )
             session.add(row)
             session.flush()
+            if object_ref is not None:
+                session.add(
+                    AppItObjectPasswordLink(
+                        entry_id=row.id, object_ref=object_ref, created_by_user_id=actor_id, created_at=now
+                    )
+                )
+                session.flush()
             self._write_audit(session, action="create", actor=actor, entry=row, meta=meta)
-            return self._entry_to_response(row)
+            return self._decorate_entries(session, access, [self._entry_to_response(row)])[0]
 
     def update_entry(self, entry_id: str, payload: dict[str, Any], *, actor: Any, meta: PasswordVaultRequestMeta) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
@@ -484,6 +679,33 @@ class PasswordVaultService:
             row = session.get(AppPasswordVaultEntry, normalized_id)
             if row is None:
                 raise PasswordVaultNotFoundError("Entry not found")
+            access = self._access_context(session, actor=actor)
+            current_ref = self._entry_object_ref(session, access, row.id)
+            self._authorize_entry(access, current_ref, manage=True)
+            if "object_ref" in payload:
+                new_ref = _normalize_text(payload.get("object_ref")) or None
+                if new_ref != current_ref:
+                    if new_ref is not None:
+                        self._require_links_for_write(access, new_ref)
+                    elif not access.global_write:
+                        raise PasswordVaultAccessError(
+                            "Снять привязку к объекту может только пользователь с правом записи паролей"
+                        )
+                    link = session.get(AppItObjectPasswordLink, row.id) if access.links else None
+                    if new_ref is None:
+                        if link is not None:
+                            session.delete(link)
+                    elif link is None:
+                        session.add(
+                            AppItObjectPasswordLink(
+                                entry_id=row.id,
+                                object_ref=new_ref,
+                                created_by_user_id=_actor_id(actor),
+                                created_at=_utc_now(),
+                            )
+                        )
+                    else:
+                        link.object_ref = new_ref
             if "group" in payload and payload.get("group") is not None:
                 group_name = _normalize_text(payload.get("group"))
                 self._require_active_group(session, group_name)
@@ -510,7 +732,7 @@ class PasswordVaultService:
             row.updated_at = _utc_now()
             session.flush()
             self._write_audit(session, action="update", actor=actor, entry=row, meta=meta)
-            return self._entry_to_response(row)
+            return self._decorate_entries(session, access, [self._entry_to_response(row)])[0]
 
     def archive_entry(self, entry_id: str, *, actor: Any, meta: PasswordVaultRequestMeta) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
@@ -519,13 +741,15 @@ class PasswordVaultService:
             row = session.get(AppPasswordVaultEntry, normalized_id)
             if row is None:
                 raise PasswordVaultNotFoundError("Entry not found")
+            access = self._access_context(session, actor=actor)
+            self._authorize_entry(access, self._entry_object_ref(session, access, row.id), manage=True)
             row.is_archived = True
             row.updated_by_user_id = _actor_id(actor)
             row.updated_by_username = _actor_username(actor)[:50]
             row.updated_at = _utc_now()
             session.flush()
             self._write_audit(session, action="archive", actor=actor, entry=row, meta=meta)
-            return self._entry_to_response(row)
+            return self._decorate_entries(session, access, [self._entry_to_response(row)])[0]
 
     def _unlock_rate_key(self, *, user_id: int, ip_address: str) -> str:
         return f"{int(user_id)}:{_normalize_text(ip_address) or 'unknown'}"
@@ -848,6 +1072,8 @@ class PasswordVaultService:
             row = session.get(AppPasswordVaultEntry, _normalize_text(entry_id))
             if row is None or bool(row.is_archived):
                 raise PasswordVaultNotFoundError("Entry not found")
+            access = self._access_context(session, actor=actor)
+            self._authorize_entry(access, self._entry_object_ref(session, access, row.id), manage=False)
             try:
                 password = decrypt_password_vault_secret(row.password_enc)
             except SecretCryptoError as exc:
@@ -863,10 +1089,17 @@ class PasswordVaultService:
         database_url = self._database_url_or_raise()
         safe_limit = max(1, min(500, int(limit or 100)))
         with app_session(database_url) as session:
+            stmt = select(AppPasswordVaultAudit)
+            if self._links_available(session):
+                # Entries of IT objects are audited for their owners, not in the general admin log.
+                stmt = stmt.where(
+                    or_(
+                        AppPasswordVaultAudit.entry_id.is_(None),
+                        AppPasswordVaultAudit.entry_id.notin_(select(AppItObjectPasswordLink.entry_id)),
+                    )
+                )
             rows = session.scalars(
-                select(AppPasswordVaultAudit)
-                .order_by(AppPasswordVaultAudit.created_at.desc(), AppPasswordVaultAudit.id.desc())
-                .limit(safe_limit)
+                stmt.order_by(AppPasswordVaultAudit.created_at.desc(), AppPasswordVaultAudit.id.desc()).limit(safe_limit)
             ).all()
             return [self._audit_to_response(row) for row in rows]
 

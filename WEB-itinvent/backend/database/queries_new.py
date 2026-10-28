@@ -236,6 +236,37 @@ QUERY_COUNT_BY_BRANCH = """
     WHERE i.CI_TYPE = 1 AND b.BRANCH_NAME = ?
 """
 
+# Equipment of one branch by its number (names of branches are not unique); slim list contract.
+QUERY_GET_EQUIPMENT_BY_BRANCH_NO = """
+    SELECT
+        i.ID,
+        i.INV_NO,
+        i.SERIAL_NO,
+        i.IP_ADDRESS as ip_address,
+        t.TYPE_NAME as type_name,
+        m.MODEL_NAME as model_name,
+        v.VENDOR_NAME as vendor_name,
+        s.DESCR as status,
+        o.OWNER_DISPLAY_NAME as employee_name,
+        l.DESCR as location
+    FROM ITEMS i
+    LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
+    LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+    LEFT JOIN VENDORS v ON m.VENDOR_NO = v.VENDOR_NO
+    LEFT JOIN STATUS s ON i.STATUS_NO = s.STATUS_NO
+    LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
+    LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+    WHERE i.CI_TYPE = 1 AND i.BRANCH_NO = ?
+    ORDER BY l.DESCR, i.INV_NO, i.ID
+    OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+"""
+
+QUERY_COUNT_BY_BRANCH_NO = """
+    SELECT COUNT(*) as total
+    FROM ITEMS i
+    WHERE i.CI_TYPE = 1 AND i.BRANCH_NO = ?
+"""
+
 QUERY_GET_ALL_EQUIPMENT_TYPES = """
     SELECT
         t.CI_TYPE,

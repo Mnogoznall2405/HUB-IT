@@ -73,6 +73,8 @@ export const loadAddressBookRoute = defineRouteLoader(() => import('../pages/Add
 export const loadCompanyStructureRoute = defineRouteLoader(() => import('../pages/CompanyStructure'));
 export const loadWarehouse1CRoute = defineRouteLoader(() => import('../pages/Warehouse1C'));
 export const loadItPurchaseRequestsRoute = defineRouteLoader(() => import('../pages/ItPurchaseRequests'));
+export const loadItObjectsRoute = defineRouteLoader(() => import('../pages/ItObjects'));
+export const loadItObjectDetailRoute = defineRouteLoader(() => import('../pages/ItObjectDetail'));
 export const loadConstructionObjectsRoute = defineRouteLoader(() => import('../pages/ConstructionObjects'));
 export const loadConstructionObjectDetailRoute = defineRouteLoader(() => import('../pages/ConstructionObjectDetail'));
 export const loadConstructionDirectionDetailRoute = defineRouteLoader(() => import('../pages/ConstructionDirectionDetail'));
@@ -119,6 +121,8 @@ const ROUTE_LOADERS = new Map([
   ['/address-book', loadAddressBookRoute],
   ['/warehouse-1c', loadWarehouse1CRoute],
   ['/it/requests', loadItPurchaseRequestsRoute],
+  ['/it/objects', loadItObjectsRoute],
+  ['/it/objects/detail', loadItObjectDetailRoute],
   ['/construction', loadConstructionObjectsRoute],
   ['/construction/objects', loadConstructionObjectDetailRoute],
   ['/construction/objects/directions', loadConstructionDirectionDetailRoute],
@@ -146,6 +150,9 @@ export const normalizeRouteLoaderPath = (path) => {
   }
   if (normalized === '/it/requests' || normalized.startsWith('/it/requests/')) {
     return '/it/requests';
+  }
+  if (normalized.startsWith('/it/objects/')) {
+    return '/it/objects/detail';
   }
   if (normalized === '/construction/objects' || normalized.startsWith('/construction/objects/')) {
     return '/construction/objects';

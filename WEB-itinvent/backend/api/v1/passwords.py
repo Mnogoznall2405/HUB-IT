@@ -7,7 +7,13 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
 
-from backend.api.deps import get_current_admin_user, get_current_session_id, require_permission
+from backend.api.deps import (
+    ensure_user_permission,
+    get_current_active_user,
+    get_current_admin_user,
+    get_current_session_id,
+    require_permission,
+)
 from backend.config import config
 from backend.models.auth import User
 from backend.models.password_vault import (
@@ -32,6 +38,7 @@ from backend.models.password_vault import (
 )
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.authorization_service import PERM_PASSWORDS_READ, PERM_PASSWORDS_WRITE
+from backend.services.it_objects_service import get_it_objects_service
 from backend.services.password_vault_service import (
     PasswordVaultAccessError,
     PasswordVaultConfigurationError,
@@ -93,6 +100,33 @@ def _service_error_to_http(exc: Exception) -> HTTPException:
     return HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Password vault request failed")
 
 
+def _has_object_passwords_access(user_id: int, permission: str) -> bool:
+    level = "manage" if permission == PERM_PASSWORDS_WRITE else "view"
+    try:
+        return bool(
+            get_it_objects_service().accessible_object_refs(user_id=user_id, section="passwords", level=level)
+        )
+    except Exception:  # noqa: BLE001 - storage trouble must fall back to the plain permission denial
+        return False
+
+
+def _vault_access(permission: str):
+    """Global vault permission, or a passwords grant / IT-owner role on at least one object.
+
+    Which entries the caller can actually see or change is decided per entry in the service.
+    """
+
+    async def _dependency(current_user: User = Depends(get_current_active_user)) -> User:
+        try:
+            ensure_user_permission(current_user, permission)
+        except HTTPException:
+            if not await run_in_threadpool(_has_object_passwords_access, int(current_user.id), permission):
+                raise
+        return current_user
+
+    return _dependency
+
+
 def _payload(model: Any, *, exclude_unset: bool = False) -> dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump(exclude_unset=exclude_unset)
@@ -105,10 +139,11 @@ async def list_passwords(
     q: str = Query(default=""),
     group: str = Query(default=""),
     tag: str = Query(default=""),
+    object_ref: str = Query(default="", max_length=128),
     include_archived: bool = Query(default=False),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-    current_user: User = Depends(require_permission(PERM_PASSWORDS_READ)),
+    current_user: User = Depends(_vault_access(PERM_PASSWORDS_READ)),
     session_id: str | None = Depends(get_current_session_id),
 ) -> dict[str, Any]:
     try:
@@ -117,11 +152,13 @@ async def list_passwords(
             q=q,
             group=group,
             tag=tag,
+            object_ref=object_ref,
             include_archived=include_archived,
             limit=limit,
             offset=offset,
             user_id=int(current_user.id),
             session_id=session_id,
+            actor=current_user,
         )
     except Exception as exc:
         raise _service_error_to_http(exc) from exc
@@ -132,7 +169,7 @@ async def list_passwords(
 async def create_password(
     payload: PasswordVaultEntryCreate,
     request: Request,
-    current_user: User = Depends(require_permission(PERM_PASSWORDS_WRITE)),
+    current_user: User = Depends(_vault_access(PERM_PASSWORDS_WRITE)),
 ) -> dict[str, Any]:
     try:
         return await run_in_threadpool(
@@ -150,7 +187,7 @@ async def update_password(
     entry_id: str,
     payload: PasswordVaultEntryUpdate,
     request: Request,
-    current_user: User = Depends(require_permission(PERM_PASSWORDS_WRITE)),
+    current_user: User = Depends(_vault_access(PERM_PASSWORDS_WRITE)),
     session_id: str | None = Depends(get_current_session_id),
 ) -> dict[str, Any]:
     try:
@@ -181,7 +218,7 @@ async def update_password(
 async def archive_password(
     entry_id: str,
     request: Request,
-    current_user: User = Depends(require_permission(PERM_PASSWORDS_WRITE)),
+    current_user: User = Depends(_vault_access(PERM_PASSWORDS_WRITE)),
 ) -> dict[str, Any]:
     try:
         return await run_in_threadpool(
@@ -197,7 +234,7 @@ async def archive_password(
 @router.get("/groups", response_model=PasswordVaultGroupListResponse)
 async def list_password_groups(
     include_inactive: bool = Query(default=False),
-    _: User = Depends(require_permission(PERM_PASSWORDS_READ)),
+    _: User = Depends(_vault_access(PERM_PASSWORDS_READ)),
 ) -> dict[str, Any]:
     try:
         items = await run_in_threadpool(
@@ -260,7 +297,7 @@ async def archive_password_group(
 async def unlock_password_vault(
     payload: PasswordVaultUnlockRequest,
     request: Request,
-    current_user: User = Depends(require_permission(PERM_PASSWORDS_READ)),
+    current_user: User = Depends(_vault_access(PERM_PASSWORDS_READ)),
     session_id: str | None = Depends(get_current_session_id),
 ) -> dict[str, str]:
     try:
@@ -279,7 +316,7 @@ async def unlock_password_vault(
 @router.delete("/unlock")
 async def lock_password_vault(
     request: Request,
-    current_user: User = Depends(require_permission(PERM_PASSWORDS_READ)),
+    current_user: User = Depends(_vault_access(PERM_PASSWORDS_READ)),
     session_id: str | None = Depends(get_current_session_id),
 ) -> dict[str, bool]:
     try:
@@ -297,7 +334,7 @@ async def lock_password_vault(
 async def unlock_password_vault_mobile_biometric(
     payload: PasswordVaultUnlockMobileBiometricRequest,
     request: Request,
-    current_user: User = Depends(require_permission(PERM_PASSWORDS_READ)),
+    current_user: User = Depends(_vault_access(PERM_PASSWORDS_READ)),
     session_id: str | None = Depends(get_current_session_id),
 ) -> dict[str, str]:
     client_device_id = _require_mobile_client_device_id(request)
@@ -317,7 +354,7 @@ async def unlock_password_vault_mobile_biometric(
 @router.post("/unlock/setup-2fa", response_model=PasswordVaultUnlockSetup2faResponse)
 async def unlock_password_vault_setup_2fa(
     request: Request,
-    current_user: User = Depends(require_permission(PERM_PASSWORDS_READ)),
+    current_user: User = Depends(_vault_access(PERM_PASSWORDS_READ)),
 ) -> dict[str, Any]:
     try:
         return await run_in_threadpool(
@@ -333,7 +370,7 @@ async def unlock_password_vault_setup_2fa(
 async def unlock_password_vault_verify_2fa_setup(
     payload: PasswordVaultUnlockVerify2faSetupRequest,
     request: Request,
-    current_user: User = Depends(require_permission(PERM_PASSWORDS_READ)),
+    current_user: User = Depends(_vault_access(PERM_PASSWORDS_READ)),
     session_id: str | None = Depends(get_current_session_id),
 ) -> dict[str, Any]:
     try:
@@ -352,7 +389,7 @@ async def unlock_password_vault_verify_2fa_setup(
 @router.post("/unlock/webauthn/options")
 async def unlock_password_vault_webauthn_options(
     request: Request,
-    current_user: User = Depends(require_permission(PERM_PASSWORDS_READ)),
+    current_user: User = Depends(_vault_access(PERM_PASSWORDS_READ)),
     session_id: str | None = Depends(get_current_session_id),
 ) -> dict[str, Any]:
     meta = _request_meta(request)
@@ -398,7 +435,7 @@ async def unlock_password_vault_webauthn_options(
 async def unlock_password_vault_webauthn_verify(
     payload: PasswordVaultUnlockWebAuthnVerifyRequest,
     request: Request,
-    current_user: User = Depends(require_permission(PERM_PASSWORDS_READ)),
+    current_user: User = Depends(_vault_access(PERM_PASSWORDS_READ)),
     session_id: str | None = Depends(get_current_session_id),
 ) -> dict[str, str]:
     meta = _request_meta(request)
@@ -471,7 +508,7 @@ async def reveal_password(
     entry_id: str,
     payload: PasswordVaultRevealRequest,
     request: Request,
-    current_user: User = Depends(require_permission(PERM_PASSWORDS_READ)),
+    current_user: User = Depends(_vault_access(PERM_PASSWORDS_READ)),
     session_id: str | None = Depends(get_current_session_id),
 ) -> dict[str, str]:
     try:

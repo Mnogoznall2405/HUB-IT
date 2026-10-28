@@ -304,6 +304,27 @@ def get_equipment_by_branch(branch_name: str, page: int = 1, limit: int = 10000,
         raise
 
 
+def get_equipment_by_branch_no(
+    branch_no: int, page: int = 1, limit: int = 200, db_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Get CI_TYPE=1 equipment of one branch by number (slim rows, paginated)."""
+    from backend.database.queries_new import QUERY_COUNT_BY_BRANCH_NO, QUERY_GET_EQUIPMENT_BY_BRANCH_NO
+
+    safe_limit = max(1, min(int(limit), 500))
+    safe_page = max(1, int(page))
+    db = get_db(db_id)
+    count_rows = db.execute_query(QUERY_COUNT_BY_BRANCH_NO, (int(branch_no),))
+    total = int(count_rows[0]["total"]) if count_rows else 0
+    rows = db.execute_query(QUERY_GET_EQUIPMENT_BY_BRANCH_NO, (int(branch_no), (safe_page - 1) * safe_limit, safe_limit))
+    return {
+        "equipment": rows or [],
+        "total": total,
+        "page": safe_page,
+        "limit": safe_limit,
+        "pages": (total + safe_limit - 1) // safe_limit,
+    }
+
+
 def get_all_branches(db_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Get all branches."""
     cache_key = _build_equipment_cache_key("dict_branches_list", db_id)

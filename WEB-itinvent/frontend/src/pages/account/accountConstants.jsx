@@ -194,6 +194,13 @@ const permissionGroups = [
     ],
   },
   {
+    group: 'Объекты ИТ',
+    permissions: [
+      { value: 'it_objects.read', label: 'Объекты ИТ: просмотр карточек' },
+      { value: 'it_objects.manage', label: 'Объекты ИТ: назначение айтишников' },
+    ],
+  },
+  {
     group: 'Документооборот 1С',
     permissions: [
       { value: 'docflow.read', label: 'Документооборот 1С: просмотр' },

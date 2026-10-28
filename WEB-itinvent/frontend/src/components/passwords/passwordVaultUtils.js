@@ -83,6 +83,8 @@ export const normalizeEntry = (entry) => ({
   created_by: entry?.created_by || '',
   updated_by: entry?.updated_by || '',
   password_configured: entry?.password_configured !== false,
+  object_ref: normalizeText(entry?.object_ref),
+  object_name: normalizeText(entry?.object_name),
 });
 
 export const isUnlockedUntilActive = (value) => {

@@ -70,6 +70,8 @@ import {
   loadWarehouse1CRoute,
   loadItPurchaseRequestsRoute,
   loadConstructionObjectsRoute,
+  loadItObjectsRoute,
+  loadItObjectDetailRoute,
   loadConstructionObjectDetailRoute,
   loadConstructionDirectionDetailRoute,
   loadFileEgressRoute,
@@ -105,6 +107,8 @@ const Warehouse1C = lazy(loadWarehouse1CRoute);
 const ItPurchaseRequests = lazy(loadItPurchaseRequestsRoute);
 const ConstructionObjects = lazy(loadConstructionObjectsRoute);
 const ConstructionObjectDetail = lazy(loadConstructionObjectDetailRoute);
+const ItObjects = lazy(loadItObjectsRoute);
+const ItObjectDetail = lazy(loadItObjectDetailRoute);
 const ConstructionDirectionDetail = lazy(loadConstructionDirectionDetailRoute);
 const Docflow = lazy(loadDocflowRoute);
 const Passwords = lazy(loadPasswordsRoute);
@@ -138,6 +142,7 @@ const routePermissions = [
   { path: '/it/requests', permissions: ['warehouse_1c.it_requests.read'] },
   { path: '/construction', permissions: ['construction.read'] },
   { path: '/docflow', permissions: ['docflow.read'] },
+  { path: '/it/objects', permissions: ['it_objects.read'] },
   { path: '/passwords', permissions: ['passwords.read'] },
   { path: '/groups-access', permissions: ['groups_access.read'] },
   { path: '/my-files', permissions: ['my_files.read'] },
@@ -708,6 +713,14 @@ function AuthenticatedAppShell() {
                   element={<PermissionRoute permission="construction.read"><ConstructionDirectionDetail /></PermissionRoute>}
                 />
                 <Route
+                <Route
+                  path="/it/objects"
+                  element={<PermissionRoute permission="it_objects.read"><ItObjects /></PermissionRoute>}
+                />
+                <Route
+                  path="/it/objects/:objectRef"
+                  element={<PermissionRoute permission="it_objects.read"><ItObjectDetail /></PermissionRoute>}
+                />
                   path="/construction/objects/:objectId/requests/:requestRef"
                   element={<PermissionRoute permission="construction.read"><ConstructionObjectDetail /></PermissionRoute>}
                 />
@@ -717,7 +730,7 @@ function AuthenticatedAppShell() {
                 />
                 <Route
                   path="/passwords"
-                  element={<PermissionRoute permission="passwords.read"><Passwords /></PermissionRoute>}
+                  element={<PermissionRoute permissions={['passwords.read', 'it_objects.read']}><Passwords /></PermissionRoute>}
                 />
                 <Route
                   path="/groups-access"

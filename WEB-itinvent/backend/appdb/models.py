@@ -363,6 +363,112 @@ class AppConstructionDirectionRoleAssignment(AppBase):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
+class AppItObject(AppBase):
+    """Registry entry for an object (e.g. an OBJ-ITINVENT branch) that carries IT access rules."""
+
+    __tablename__ = "it_objects"
+    __table_args__ = _table_args(
+        UniqueConstraint("source_type", "source_ref", name="uq_app_it_objects_source"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppItObjectOwner(AppBase):
+    """Versioned IT owner of an object: one active row (valid_to IS NULL) per object."""
+
+    __tablename__ = "it_object_owners"
+    __table_args__ = _table_args(
+        Index(
+            "uq_app_it_object_active_owner",
+            "object_id",
+            unique=True,
+            postgresql_where=text("valid_to IS NULL"),
+            sqlite_where=text("valid_to IS NULL"),
+        ),
+        Index("ix_app_it_object_owners_user", "user_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    user_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    assigned_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class AppItObjectGrant(AppBase):
+    """Per-section access to an object; revoked rows are kept (revoked_at) for history."""
+
+    __tablename__ = "it_object_grants"
+    __table_args__ = _table_args(
+        CheckConstraint("level IN ('view', 'manage')", name="ck_app_it_object_grants_level"),
+        Index(
+            "uq_app_it_object_active_grant",
+            "object_id",
+            "user_id",
+            "section",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+            sqlite_where=text("revoked_at IS NULL"),
+        ),
+        Index("ix_app_it_object_grants_user", "user_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    user_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    section: Mapped[str] = mapped_column(String(32), nullable=False)
+    level: Mapped[str] = mapped_column(String(16), nullable=False)
+    granted_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class AppItObjectPasswordLink(AppBase):
+    """Binds a password vault entry to one IT object (kept out of the entries table on purpose)."""
+
+    __tablename__ = "it_object_password_links"
+    __table_args__ = _table_args(
+        Index("ix_app_it_object_password_links_object", "object_ref"),
+        schema=APP_SCHEMA,
+    )
+
+    entry_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    object_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppItObjectAudit(AppBase):
+    __tablename__ = "it_object_audit"
+    __table_args__ = _table_args(
+        Index("ix_app_it_object_audit_object_created", "object_id", "created_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    action: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    section: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    level: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class AppUserMailbox(AppBase):
     __tablename__ = "user_mailboxes"
     __table_args__ = _table_args(
