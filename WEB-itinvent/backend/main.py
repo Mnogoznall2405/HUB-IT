@@ -608,12 +608,12 @@ app.include_router(address_book.router, prefix="/api/v1/address-book", tags=["Ad
 app.include_router(company_structure.router, prefix="/api/v1/company-structure", tags=["Company Structure"])
 app.include_router(warehouse_1c.router, prefix="/api/v1/warehouse-1c", tags=["Warehouse 1C"])
 app.include_router(construction.router, prefix="/api/v1/construction", tags=["Construction"])
+app.include_router(it_objects.router, prefix="/api/v1/it-objects", tags=["IT objects"])
 app.include_router(docflow.router, prefix="/api/v1/docflow", tags=["1C Document Management"])
 app.include_router(system.router, prefix="/api/v1/system", tags=["System"])
 app.include_router(passwords.router, prefix="/api/v1/passwords", tags=["Passwords"])
 app.include_router(my_files.router, prefix="/api/v1/my-files", tags=["My Files"])
 app.include_router(debug_client_log.router, prefix="/api/v1/debug", tags=["Debug"])
-app.include_router(it_objects.router, prefix="/api/v1/it-objects", tags=["IT objects"])
 if config.chat.enabled and chat_routes_enabled():
     try:
         from backend.api.v1 import chat
