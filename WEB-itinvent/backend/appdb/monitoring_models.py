@@ -49,7 +49,6 @@ class MonitoringSample(AppBase):
     __tablename__ = "monitoring_samples"
     __table_args__ = (
         UniqueConstraint("target_id", "interface_id", "observed_at", name="uq_monitoring_sample"),
-        Index("ix_monitoring_samples_series", "target_id", "interface_id", "observed_at"),
         Index("ix_monitoring_samples_retention", "observed_at"),
         {"schema": APP_SCHEMA},
     )
@@ -65,7 +64,6 @@ class MonitoringAggregate(AppBase):
     __tablename__ = "monitoring_aggregates"
     __table_args__ = (
         UniqueConstraint("target_id", "interface_id", "resolution", "bucket_at", name="uq_monitoring_aggregate"),
-        Index("ix_monitoring_aggregates_series", "target_id", "interface_id", "resolution", "bucket_at"),
         Index("ix_monitoring_aggregates_retention", "resolution", "bucket_at"),
         {"schema": APP_SCHEMA},
     )
