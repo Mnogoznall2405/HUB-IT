@@ -1,6 +1,8 @@
 """Monitoring HTTP scenarios on an isolated app DB; only network IO is replaced."""
 from __future__ import annotations
 
+import asyncio
+import time
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
@@ -831,6 +833,46 @@ def test_fast_state_flapping_invalidates_counter_baseline(environment):
     device.value = snapshot(7_500_000, uptime=124000)
     result = client.post(path + "/probe").json()
     assert next(i for i in result["interfaces"] if i["id"] == wan["id"])["current"]["rx_bps"] is None
+
+
+def test_idle_port_row_is_rewritten_once_a_minute_while_active_port_follows_every_poll(environment):
+    client, svc, device, now, user = environment
+    target = create_target(client)
+    path = f"/api/v1/monitoring/targets/{target['id']}"
+
+    def stored_checks():
+        detail = client.post(path + "/probe").json()
+        return {i["name"]: i["current"]["checked_at"] for i in detail["interfaces"]}
+
+    first = stored_checks()
+    now[0] += timedelta(seconds=30)
+    second = stored_checks()
+    now[0] += timedelta(seconds=30)
+    third = stored_checks()
+
+    assert second["ether8"] == first["ether8"]
+    assert second["ether1_wan"] != first["ether1_wan"]
+    assert third["ether8"] != first["ether8"]
+
+
+@pytest.mark.asyncio
+async def test_record_writes_are_capped_while_database_is_slow(environment, monkeypatch):
+    client, svc, device, now, user = environment
+    monkeypatch.setenv("MONITORING_RECORD_CONCURRENCY", "2")
+    running, peak = 0, 0
+
+    def slow_record(*args, **kwargs):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        time.sleep(0.05)
+        running -= 1
+        return True
+
+    monkeypatch.setattr(svc.store, "record", slow_record)
+    await asyncio.gather(*(svc._record({}, {}, now[0]) for _ in range(8)))
+
+    assert peak == 2
 
 
 def test_pinned_interface_persists_switches_and_stays_selected_when_link_is_down(environment):

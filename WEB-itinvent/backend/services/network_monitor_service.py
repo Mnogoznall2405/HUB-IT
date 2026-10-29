@@ -9,7 +9,7 @@ import threading
 import time
 from contextlib import AsyncExitStack, contextmanager
 from datetime import datetime, timedelta, timezone
-from weakref import WeakValueDictionary
+from weakref import WeakKeyDictionary, WeakValueDictionary
 
 from sqlalchemy import text
 
@@ -26,6 +26,13 @@ _local_leases_guard = threading.Lock()
 
 def background_enabled():
     return os.getenv("MONITORING_BACKGROUND_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def record_concurrency():
+    try:
+        return max(1, int(os.getenv("MONITORING_RECORD_CONCURRENCY", "3")))
+    except ValueError:
+        return 3
 
 
 def schedule_phase(target_id, interval, target_ids):
@@ -101,8 +108,18 @@ class NetworkMonitorService:
         self.clock = lambda: datetime.now(timezone.utc)
         self.monotonic = time.monotonic
         self._locks = {}
+        self._record_gates = WeakKeyDictionary()
         self._task = None
         self._stopping = asyncio.Event()
+
+    async def _record(self, *args, **kwargs):
+        # A stalled database must not let every in-flight probe hold an app-pool connection at once.
+        loop = asyncio.get_running_loop()
+        gate = self._record_gates.get(loop)
+        if gate is None:
+            gate = self._record_gates[loop] = asyncio.Semaphore(record_concurrency())
+        async with gate:
+            return await asyncio.to_thread(self.store.record, *args, **kwargs)
 
     def catalog(self):
         # Existing network registry, not a second equipment catalog or SQL Server.
@@ -161,7 +178,7 @@ class NetworkMonitorService:
                 for guard in guards:
                     if not await asyncio.to_thread(guard):
                         raise MonitoringBusy("Владение опросом утрачено; результат не записан")
-                recording = asyncio.create_task(asyncio.to_thread(self.store.record, target, result, now, return_current=not detail))
+                recording = asyncio.create_task(self._record(target, result, now, return_current=not detail))
                 try:
                     current = await asyncio.shield(recording)
                 except asyncio.CancelledError:

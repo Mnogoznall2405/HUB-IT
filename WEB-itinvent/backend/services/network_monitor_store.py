@@ -18,6 +18,10 @@ from backend.services.network_monitor_calculations import aggregate_values, char
 from backend.services.secret_crypto_service import decrypt_secret, encrypt_secret
 
 
+INTERFACE_POLL_KEYS = frozenset({"checked_at", "counter_checked_at", "counter_uptime"})
+INTERFACE_IDLE_WRITE_SECONDS = 60
+
+
 class MonitoringNotReady(RuntimeError):
     pass
 
@@ -359,6 +363,22 @@ class MonitoringStore:
                 aggregate.values = combined
 
     @staticmethod
+    def _interface_write_needed(item, before, updated, config, data, now):
+        """A port that is not up differs from its stored row only by poll timestamps: rewrite it once a minute.
+
+        Pinned, critical and WAN interfaces feed the device summary, so they keep a write per poll.
+        """
+        if config.get("pinned") or config.get("critical") or config.get("role") == "wan":
+            return True
+        if before.get("oper") == 1 or updated.get("oper") == 1 or item.snmp_index != data["snmp_index"]:
+            return True
+        stored_at = timestamp(before.get("checked_at"))
+        if stored_at is None or (now - stored_at).total_seconds() >= INTERFACE_IDLE_WRITE_SECONDS:
+            return True
+        return {k: v for k, v in before.items() if k not in INTERFACE_POLL_KEYS} != {
+            k: v for k, v in updated.items() if k not in INTERFACE_POLL_KEYS}
+
+    @staticmethod
     def _icmp_sample(session, target_id, ping, now, scheduled_at=None, backoff_until=None):
         # Six bounded slots share the existing minute row; no new table or row rate.
         session.flush()
@@ -560,7 +580,6 @@ class MonitoringStore:
                     capacity = number(config.get(f"capacity_{direction}_bps")) or number(data.get("speed_bps"))
                     traffic = updated.get(f"{direction}_bps")
                     updated[f"{direction}_util_pct"] = 100 * traffic / capacity if capacity and traffic is not None else None
-                item.snmp_index, item.current = data["snmp_index"], updated
                 valid_state = data.get("oper") is not None and data.get("admin") is not None
                 critical = config.get("critical", False)
                 changes = [at for at in before.get("link_changes", []) if timestamp(at) and (now - timestamp(at)).total_seconds() <= 300]
@@ -568,6 +587,8 @@ class MonitoringStore:
                     changes.append(now.isoformat())
                     updated["state_changed_at"] = now.isoformat()
                 updated["link_changes"] = changes[-20:]
+                if self._interface_write_needed(item, before, updated, config, data, now):
+                    item.snmp_index, item.current = data["snmp_index"], updated
                 rule(item.id, "flapping", len(changes) >= 5 if valid_state and critical and data.get("admin") == 1 else (False if valid_state else None), f"{name}: частые изменения состояния линка", delay=0)
                 rule(item.id, "link", data["oper"] == 2 and data["admin"] == 1 if valid_state and critical else (False if valid_state else None), f"{name}: потеря линка", delay=30, severity="critical")
                 expected = number(config.get("expected_link_bps")) or reference
