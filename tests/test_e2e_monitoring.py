@@ -835,24 +835,37 @@ def test_fast_state_flapping_invalidates_counter_baseline(environment):
     assert next(i for i in result["interfaces"] if i["id"] == wan["id"])["current"]["rx_bps"] is None
 
 
-def test_idle_port_row_is_rewritten_once_a_minute_while_active_port_follows_every_poll(environment):
+def test_only_the_port_shown_on_the_device_card_is_saved_on_every_poll(environment):
     client, svc, device, now, user = environment
     target = create_target(client)
     path = f"/api/v1/monitoring/targets/{target['id']}"
 
-    def stored_checks():
-        detail = client.post(path + "/probe").json()
-        return {i["name"]: i["current"]["checked_at"] for i in detail["interfaces"]}
+    def rows():
+        return {i["name"]: i["current"] for i in client.post(path + "/probe").json()["interfaces"]}
 
-    first = stored_checks()
+    first = rows()
     now[0] += timedelta(seconds=30)
-    second = stored_checks()
-    now[0] += timedelta(seconds=30)
-    third = stored_checks()
+    second = rows()
+    # Nothing is pinned, so the WAN port is the one the card shows.
+    assert second["ether1_wan"]["checked_at"] != first["ether1_wan"]["checked_at"]
+    assert second["ether8"]["checked_at"] == first["ether8"]["checked_at"]
 
-    assert second["ether8"] == first["ether8"]
-    assert second["ether1_wan"] != first["ether1_wan"]
-    assert third["ether8"] != first["ether8"]
+    detail = client.get(path).json()
+    pinned = next(row for row in detail["interfaces"] if row["name"] == "ether8")
+    assert client.put(path + f"/interfaces/{pinned['id']}", json={**pinned["settings"], "pinned": True}).status_code == 200
+    now[0] += timedelta(seconds=30)
+    third = rows()
+    assert third["ether8"]["checked_at"] != second["ether8"]["checked_at"]
+    assert third["ether1_wan"]["checked_at"] == second["ether1_wan"]["checked_at"]
+
+    device.value = {**snapshot(oper=2), "protocol": "snmp"}  # A state change is saved at once.
+    now[0] += timedelta(seconds=30)
+    fourth = rows()
+    assert fourth["ether1_wan"]["oper"] == 2
+    assert fourth["ether1_wan"]["checked_at"] != third["ether1_wan"]["checked_at"]
+
+    now[0] += timedelta(seconds=300)  # An unchanged port is saved again once the period has passed.
+    assert rows()["ether1_wan"]["checked_at"] != fourth["ether1_wan"]["checked_at"]
 
 
 @pytest.mark.asyncio

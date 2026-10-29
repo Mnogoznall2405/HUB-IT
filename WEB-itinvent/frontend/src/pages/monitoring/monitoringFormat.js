@@ -87,7 +87,8 @@ export function targetStatus(target) {
 }
 export function interfaceStatus(item) {
   const value = item?.current || {};
-  if (isStale(value.checked_at)) return { label: 'Нет свежих данных', color: 'default' };
+  // A port the device card does not show is saved every few minutes (MONITORING_UNPINNED_WRITE_SECONDS, 300 s by default).
+  if (isStale(value.checked_at, 480)) return { label: 'Нет свежих данных', color: 'default' };
   if (value.admin === 2) return { label: 'Выключен', color: 'default' };
   if (value.oper === 1) return { label: 'Up', color: 'success' };
   if (value.oper === 2) return { label: 'Нет линка', color: item.settings?.critical ? 'error' : 'default' };

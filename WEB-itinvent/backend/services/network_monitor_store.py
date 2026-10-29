@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 import threading
 import time
 from collections import OrderedDict
@@ -18,8 +19,32 @@ from backend.services.network_monitor_calculations import aggregate_values, char
 from backend.services.secret_crypto_service import decrypt_secret, encrypt_secret
 
 
-INTERFACE_POLL_KEYS = frozenset({"checked_at", "counter_checked_at", "counter_uptime"})
-INTERFACE_IDLE_WRITE_SECONDS = 60
+# A change of any of these is written at once; the rest of a port row is only counters and poll timestamps.
+INTERFACE_STATE_KEYS = ("admin", "oper", "speed_bps", "mac", "type", "last_change_ticks", "state_changed_at")
+INTERFACE_WRITE_TOLERANCE_SECONDS = 15
+
+
+def unpinned_write_seconds() -> int:
+    """How often a port that the device card does not show is persisted (0 = on every poll)."""
+    try:
+        return max(0, min(900, int(os.getenv("MONITORING_UNPINNED_WRITE_SECONDS", "300"))))
+    except ValueError:
+        return 300
+
+
+def summary_priority(interface):
+    """Which port a device card shows: pinned, else WAN, else critical, else the first LAN port that is up."""
+    settings, current = interface.settings or {}, interface.current or {}
+    return (bool(settings.get("pinned")), settings.get("role") == "wan", bool(settings.get("critical")),
+            current.get("oper") == 1 and current.get("type") == 6, current.get("oper") == 1)
+
+
+def summary_interface(interfaces):
+    chosen = None
+    for item in interfaces:
+        if chosen is None or summary_priority(item) > summary_priority(chosen):
+            chosen = item
+    return chosen
 
 
 class MonitoringNotReady(RuntimeError):
@@ -191,12 +216,8 @@ class MonitoringStore:
     def _attach_summaries(self, session, targets, interfaces, now):
         chosen = {}
         for item in interfaces:
-            def priority(interface):
-                settings, current = interface.settings or {}, interface.current or {}
-                return (bool(settings.get("pinned")), settings.get("role") == "wan", bool(settings.get("critical")),
-                        current.get("oper") == 1 and current.get("type") == 6, current.get("oper") == 1)
             previous = chosen.get(item.target_id)
-            if previous is None or priority(item) > priority(previous):
+            if previous is None or summary_priority(item) > summary_priority(previous):
                 chosen[item.target_id] = item
         since = datetime.fromtimestamp(int((utc(now) - timedelta(hours=6)).timestamp()) // 300 * 300, timezone.utc)
         rows = list(session.scalars(select(MonitoringAggregate).where(
@@ -363,20 +384,19 @@ class MonitoringStore:
                 aggregate.values = combined
 
     @staticmethod
-    def _interface_write_needed(item, before, updated, config, data, now):
-        """A port that is not up differs from its stored row only by poll timestamps: rewrite it once a minute.
+    def _interface_write_needed(item, before, updated, shown, data, now):
+        """Only the port the device card shows (pinned, else WAN/critical/first up) is persisted on every poll.
 
-        Pinned, critical and WAN interfaces feed the device summary, so they keep a write per poll.
+        Other ports are persisted when their state changes and otherwise every ``unpinned_write_seconds()``;
+        their rates are then averaged over that period.
         """
-        if config.get("pinned") or config.get("critical") or config.get("role") == "wan":
+        interval = unpinned_write_seconds()
+        if shown or interval <= 0 or not before or item.snmp_index != data["snmp_index"]:
             return True
-        if before.get("oper") == 1 or updated.get("oper") == 1 or item.snmp_index != data["snmp_index"]:
+        if any(before.get(key) != updated.get(key) for key in INTERFACE_STATE_KEYS):
             return True
         stored_at = timestamp(before.get("checked_at"))
-        if stored_at is None or (now - stored_at).total_seconds() >= INTERFACE_IDLE_WRITE_SECONDS:
-            return True
-        return {k: v for k, v in before.items() if k not in INTERFACE_POLL_KEYS} != {
-            k: v for k, v in updated.items() if k not in INTERFACE_POLL_KEYS}
+        return stored_at is None or (now - stored_at).total_seconds() >= interval - INTERFACE_WRITE_TOLERANCE_SECONDS
 
     @staticmethod
     def _icmp_sample(session, target_id, ping, now, scheduled_at=None, backoff_until=None):
@@ -538,6 +558,9 @@ class MonitoringStore:
                                         title="Изменился uptime устройства", severity="info", opened_at=now, closed_at=now)
                 session.add(event)
             known = {item.name: item for item in session.scalars(select(MonitoringInterface).where(MonitoringInterface.target_id == row.id))} if has_snmp else {}
+            shown_item = summary_interface(sorted(known.values(), key=lambda interface: interface.snmp_index or 0))
+            # Other ports are persisted rarely, so their counters are compared over that longer period.
+            rate_window = max(180, unpinned_write_seconds() + 90)
             series = {"": {**{key: number(device.get(key)) for key in ("cpu_pct", "memory_pct", "temperature_c", "storage_pct")},
                            "latency_ms": number(ping.get("latency_ms")) if has_ping else None, "loss_pct": number(ping.get("loss_pct")) if has_ping else None,
                            "snmp_up": (1 if snmp_ok else (None if current.get("snmp_quality") == "unknown" else 0)) if has_snmp else None,
@@ -572,7 +595,8 @@ class MonitoringStore:
                 if not full and (changed or data.get("oper") != 1):
                     updated.update({key: None for key in ("counter_uptime", "rx_bps", "tx_bps", "rx_bytes", "tx_bytes", "rx_seconds", "tx_seconds", "rx_errors_pps", "tx_errors_pps", "rx_discards_pps", "tx_discards_pps")})
                 if full:
-                    updated.update(interface_rates(before, data, now, uptime, before.get("counter_uptime", old_uptime)))
+                    updated.update(interface_rates(before, data, now, uptime, before.get("counter_uptime", old_uptime),
+                                                   max_elapsed=180 if item is shown_item else rate_window))
                     updated.update(counter_checked_at=now.isoformat(), counter_uptime=uptime)
                 reference = number(before.get("reference_speed_bps")) or number(before.get("speed_bps")) or 0
                 updated["reference_speed_bps"] = max(reference, number(data.get("speed_bps")) or 0)
@@ -587,7 +611,8 @@ class MonitoringStore:
                     changes.append(now.isoformat())
                     updated["state_changed_at"] = now.isoformat()
                 updated["link_changes"] = changes[-20:]
-                if self._interface_write_needed(item, before, updated, config, data, now):
+                persisted = self._interface_write_needed(item, before, updated, item is shown_item, data, now)
+                if persisted:
                     item.snmp_index, item.current = data["snmp_index"], updated
                 rule(item.id, "flapping", len(changes) >= 5 if valid_state and critical and data.get("admin") == 1 else (False if valid_state else None), f"{name}: частые изменения состояния линка", delay=0)
                 rule(item.id, "link", data["oper"] == 2 and data["admin"] == 1 if valid_state and critical else (False if valid_state else None), f"{name}: потеря линка", delay=30, severity="critical")
@@ -601,7 +626,8 @@ class MonitoringStore:
                 errors = [updated[k] for k in ("rx_errors_pps", "tx_errors_pps", "rx_discards_pps", "tx_discards_pps") if updated.get(k) is not None]
                 if full:
                     rule(item.id, "errors", max(errors) > config.get("errors_warn_pps", 2) if errors else None, f"{name}: ошибки или отбрасывания пакетов", delay=300)
-                if full and config.get("history_enabled", True) and (data.get("oper") == 1 or critical):
+                # A history point is the persisted row, so a port written rarely gets a point per write.
+                if full and persisted and config.get("history_enabled", True) and (data.get("oper") == 1 or critical):
                     series[item.id] = {key: number(updated.get(key)) for key in ("rx_bps", "tx_bps", "rx_bytes", "tx_bytes", "rx_seconds", "tx_seconds", "rx_util_pct", "tx_util_pct", "speed_bps", "rx_errors_pps", "tx_errors_pps", "rx_discards_pps", "tx_discards_pps", "oper")}
             current["rules"] = rules
             current["open_events"] = len(opened)

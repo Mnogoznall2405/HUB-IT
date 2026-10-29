@@ -24,7 +24,8 @@ def number(value):
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
 
 
-def interface_rates(previous: dict, current: dict, now: datetime, uptime: int | None, previous_uptime: int | None) -> dict:
+def interface_rates(previous: dict, current: dict, now: datetime, uptime: int | None, previous_uptime: int | None,
+                    max_elapsed: float = 180) -> dict:
     result = {key: None for key in ("rx_bps", "tx_bps", "rx_bytes", "tx_bytes", "rx_seconds", "tx_seconds", "rx_errors_pps", "tx_errors_pps", "rx_discards_pps", "tx_discards_pps")}
     previous_at = timestamp(previous.get("counter_checked_at") or previous.get("checked_at"))
     elapsed = (utc(now) - previous_at).total_seconds() if previous_at else 0
@@ -33,7 +34,7 @@ def interface_rates(previous: dict, current: dict, now: datetime, uptime: int | 
     reset |= current.get("oper") != 1 or previous.get("oper") != 1
     before_disc, after_disc = previous.get("discontinuity"), current.get("discontinuity")
     reset |= before_disc is not None and after_disc is not None and before_disc != after_disc
-    if reset or not 1 <= elapsed <= 180:
+    if reset or not 1 <= elapsed <= max_elapsed:
         return result
     fields = (("rx_octets", "rx_bps", 8), ("tx_octets", "tx_bps", 8),
               ("rx_errors", "rx_errors_pps", 1), ("tx_errors", "tx_errors_pps", 1),
