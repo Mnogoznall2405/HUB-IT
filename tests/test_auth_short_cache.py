@@ -6,6 +6,9 @@ HTTP boundary on sqlite, so they are pinned here."""
 from __future__ import annotations
 
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +67,38 @@ def test_refresh_rotation_revokes_the_old_token_at_once(monkeypatch):
     assert service.is_jti_revoked("old-jti") is False
     service.revoke_jti("old-jti", 60)
     assert service.is_jti_revoked("old-jti") is True
+
+
+def test_parallel_cache_misses_share_one_lookup_but_never_join_a_pre_revocation_lookup(monkeypatch):
+    # A DB stall makes every parallel miss hold its own pool connection; a revocation made in
+    # this process must still beat a lookup that began earlier. Neither is visible over HTTP.
+    _install_clock(monkeypatch)
+    service = AuthRuntimeStoreService()
+    release = threading.Event()
+    started = threading.Event()
+    reads: list[str] = []
+
+    def slow_get_text(namespace, key):
+        reads.append(key)
+        started.set()
+        release.wait(timeout=10)
+        return None
+
+    monkeypatch.setattr(service, "get_text", slow_get_text)
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        first = pool.submit(service.is_jti_revoked, "jti-flight")
+        assert started.wait(timeout=5)
+        joined = [pool.submit(service.is_jti_revoked, "jti-flight") for _ in range(4)]
+        time.sleep(0.2)
+        assert reads == ["jti-flight"]  # four followers wait on the leader's lookup
+
+        service.revoke_jti("jti-flight", 60)
+        monkeypatch.setattr(service, "get_text", lambda namespace, key: "1")
+        assert service.is_jti_revoked("jti-flight") is True  # fresh lookup, not the pre-revocation one
+
+        release.set()
+        assert [first.result(timeout=5), *(f.result(timeout=5) for f in joined)] == [False] * 5
 
 
 def test_ttl_zero_disables_the_cache(monkeypatch):

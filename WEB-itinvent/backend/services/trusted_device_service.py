@@ -13,7 +13,7 @@ from sqlalchemy import select
 from backend.appdb.db import app_session, initialize_app_schema, is_app_database_configured
 from backend.appdb.models import AppTrustedDevice
 from backend.config import config
-from backend.services.auth_short_cache import AllowCache
+from backend.services.auth_short_cache import AllowCache, SingleFlight
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,7 @@ class TrustedDeviceService:
         self._use_app_db = bool(self._database_url) or is_app_database_configured()
         # Per-request validity check (see auth_short_cache): valid devices only, a few seconds.
         self._device_valid = AllowCache()
+        self._device_flight = SingleFlight()
         if self._use_app_db:
             initialize_app_schema(self._database_url)
 
@@ -294,7 +295,9 @@ class TrustedDeviceService:
         cache_key = (int(user_id), device_id)
         if self._device_valid.is_allowed(cache_key):
             return True
-        device = self.get_device(device_id)
+        device = self._device_flight.do(
+            (cache_key, self._device_valid.generation), lambda: self.get_device(device_id)
+        )
         valid = bool(device and int(device.get("user_id", 0)) == int(user_id) and device.get("is_active"))
         if valid:
             self._device_valid.remember(cache_key)

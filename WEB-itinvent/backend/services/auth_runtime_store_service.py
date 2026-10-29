@@ -14,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from backend.appdb.db import app_session, initialize_app_schema, is_app_database_configured
 from backend.appdb.models import AppAuthRuntimeItem
 from backend.config import config
-from backend.services.auth_short_cache import AllowCache
+from backend.services.auth_short_cache import AllowCache, SingleFlight
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,7 @@ class AuthRuntimeStoreService:
     def __init__(self, *, database_url: str | None = None) -> None:
         self._lock = threading.RLock()
         self._jti_not_revoked = AllowCache()
+        self._jti_flight = SingleFlight()
         self._memory: dict[str, tuple[float | None, str]] = {}
         self._redis_client = None  # Kept for old tests/monkeypatches; Redis is no longer used.
         self._database_url = str(database_url or "").strip() or None
@@ -492,7 +493,10 @@ class AuthRuntimeStoreService:
         # Hot path of every authenticated request: only "not revoked" is remembered, briefly.
         if self._jti_not_revoked.is_allowed(normalized):
             return False
-        revoked = self.get_text("revoked_jti", normalized) is not None
+        revoked = self._jti_flight.do(
+            (normalized, self._jti_not_revoked.generation),
+            lambda: self.get_text("revoked_jti", normalized) is not None,
+        )
         if not revoked:
             self._jti_not_revoked.remember(normalized)
         return revoked

@@ -29,12 +29,67 @@ def revocation_cache_ttl_sec() -> float:
     return max(0.0, min(_MAX_TTL_SEC, value))
 
 
+_FOLLOWER_WAIT_SEC = 35.0
+
+
+class _Call:
+    __slots__ = ("done", "value", "error")
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.value: object = None
+        self.error: BaseException | None = None
+
+
+class SingleFlight:
+    """Concurrent callers asking the same question share one lookup.
+
+    A client fires several requests at once (poll, counters, heartbeat), and after a cache miss each
+    would hold its own pool connection for the same query; during a database stall that fills the
+    pool. Callers key the flight with the cache generation, so a request made after an in-process
+    revocation never joins a lookup that started before it.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._calls: dict[object, _Call] = {}
+
+    def do(self, key: object, lookup):
+        with self._lock:
+            call = self._calls.get(key)
+            leader = call is None
+            if leader:
+                call = self._calls[key] = _Call()
+        if not leader:
+            if not call.done.wait(_FOLLOWER_WAIT_SEC):
+                return lookup()
+            if call.error is not None:
+                raise call.error
+            return call.value
+        try:
+            call.value = lookup()
+        except BaseException as exc:
+            call.error = exc
+            raise
+        finally:
+            with self._lock:
+                self._calls.pop(key, None)
+            call.done.set()
+        return call.value
+
+
 class AllowCache:
     """Remembers "this key is allowed" for a short, fixed time."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._expires: dict[object, float] = {}
+        self._generation = 0
+
+    @property
+    def generation(self) -> int:
+        """Changes on every forget/clear; lookups started under an older value are stale."""
+        return self._generation
 
     def is_allowed(self, key: object) -> bool:
         with self._lock:
@@ -60,8 +115,10 @@ class AllowCache:
 
     def forget(self, key: object) -> None:
         with self._lock:
+            self._generation += 1
             self._expires.pop(key, None)
 
     def clear(self) -> None:
         with self._lock:
+            self._generation += 1
             self._expires.clear()

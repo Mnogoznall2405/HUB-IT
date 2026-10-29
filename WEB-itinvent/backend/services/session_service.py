@@ -17,6 +17,7 @@ from backend.appdb.db import app_session, initialize_app_schema, is_app_database
 from backend.appdb.models import AppSessionRecord, AppUser
 from backend.config import config
 from backend.services.auth_session_metrics import note_session_expired
+from backend.services.auth_short_cache import SingleFlight
 from backend.services.trusted_device_service import trusted_device_service
 from backend.utils.request_network import classify_network_zone
 from local_store import SQLiteLocalStore, get_local_store
@@ -144,6 +145,9 @@ class SessionService:
         self._active_cache_lock = Lock()
         # session_id -> (expires_mono, is_active, last_touch_mono)
         self._active_cache: dict[str, tuple[float, bool, float]] = {}
+        self._active_flight = SingleFlight()
+        # Bumped whenever this process closes/invalidates a session, so no request joins an older lookup.
+        self._flight_generation = 0
 
     def _ensure_file(self) -> None:
         if self._use_app_database:
@@ -447,12 +451,15 @@ class SessionService:
         now_mono = monotonic()
         ttl = self.ACTIVE_CACHE_TTL_SEC if is_active else self.INACTIVE_CACHE_TTL_SEC
         with self._active_cache_lock:
+            if not is_active:
+                self._flight_generation += 1
             prev = self._active_cache.get(key)
             last_touch_mono = now_mono if touched else (prev[2] if prev else 0.0)
             self._active_cache[key] = (now_mono + ttl, bool(is_active), float(last_touch_mono))
 
     def _cache_invalidate(self, session_id: Optional[str] = None) -> None:
         with self._active_cache_lock:
+            self._flight_generation += 1
             if session_id is None:
                 self._active_cache.clear()
                 return
@@ -773,6 +780,13 @@ class SessionService:
         cached = self._cache_get_active(str(session_id))
         if cached is not None:
             return bool(cached)
+        # One client's parallel requests miss the cache together; a single lookup answers them all.
+        return self._active_flight.do(
+            (str(session_id), self._flight_generation),
+            lambda: self._is_session_active_uncached(session_id),
+        )
+
+    def _is_session_active_uncached(self, session_id: str) -> bool:
         # This is the hot authentication path used by every REST request and
         # WebSocket revalidation. Validating one session below is sufficient
         # to enforce its expiry; a global cleanup here scanned all sessions
