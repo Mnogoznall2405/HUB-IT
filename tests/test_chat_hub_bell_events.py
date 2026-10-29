@@ -336,12 +336,13 @@ def test_flags_file_ignores_partial_json(tmp_path, monkeypatch):
         }
     )
 
+    lp._reload_flags_file()
     assert lp.hub_ordinary_write_enabled() is False
 
     # Partial / invalid JSON must keep previous good snapshot.
     flags_path.write_text('{"CHAT_HUB_ORDINARY_WRITE_ENABLED":', encoding="utf-8")
-    lp._FLAGS_CACHE["checked_at"] = 0.0
     lp._FLAGS_CACHE["mtime"] = None
+    lp._reload_flags_file()
     assert lp.hub_ordinary_write_enabled() is False
 
     # Do not leak file-flag cache into subsequent tests.

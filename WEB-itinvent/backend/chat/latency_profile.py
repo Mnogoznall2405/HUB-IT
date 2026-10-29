@@ -97,8 +97,11 @@ _FLAGS_CACHE: dict[str, Any] = {
     "source": "env",
     "last_ordinary_snapshot": None,
 }
-# Never Path.stat() on every request — that itself stalls the event loop under load.
+# Callers never touch the filesystem: a stalled disk would freeze the event loop on a plain stat().
+# A daemon thread re-reads the file and swaps the cached snapshot.
 _FLAGS_RELOAD_INTERVAL_SEC = 1.0
+_FLAGS_REFRESHER_LOCK = threading.Lock()
+_flags_refresher_started = False
 _LEGACY_ORDINARY_COMBINED_FLAG = "CHAT_HUB_ORDINARY_NOTIFICATIONS_ENABLED"
 _ORDINARY_WRITE_FLAG = "CHAT_HUB_ORDINARY_WRITE_ENABLED"
 _ORDINARY_READ_FLAG = "CHAT_HUB_ORDINARY_READ_VISIBLE"
@@ -112,18 +115,14 @@ def _parse_bool_flag(value: Any, *, default: bool = True) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _flags_file_data() -> dict[str, Any]:
-    """Hot-reloadable profile flags (no PM2 restart required for disable tests).
+def _reload_flags_file() -> dict[str, Any]:
+    """Re-read the profile flags file; runs on the refresher thread, never on a request path.
 
     Partially-written JSON is ignored: keep the previous good snapshot.
     Prefer writing the flags file via atomic replace (tmp + os.replace) so all
     workers observe the same complete document after mtime changes.
     """
-    now = time.monotonic()
-    checked_at = float(_FLAGS_CACHE.get("checked_at") or 0.0)
-    if (now - checked_at) < _FLAGS_RELOAD_INTERVAL_SEC:
-        return dict(_FLAGS_CACHE.get("data") or {})
-    _FLAGS_CACHE["checked_at"] = now
+    _FLAGS_CACHE["checked_at"] = time.monotonic()
     try:
         if not _FLAGS_FILE.exists():
             _FLAGS_CACHE["mtime"] = None
@@ -151,6 +150,31 @@ def _flags_file_data() -> dict[str, Any]:
     except Exception:
         # Keep last good snapshot on parse/IO errors (partial write / race).
         return dict(_FLAGS_CACHE.get("data") or {})
+
+
+def _flags_refresher_loop() -> None:
+    while True:
+        time.sleep(_FLAGS_RELOAD_INTERVAL_SEC)
+        _reload_flags_file()
+
+
+def start_flags_refresher() -> None:
+    global _flags_refresher_started
+    if _flags_refresher_started:
+        return
+    with _FLAGS_REFRESHER_LOCK:
+        if _flags_refresher_started:
+            return
+        # Flag first: the initial reload may log through the flag getters, which re-enter here.
+        _flags_refresher_started = True
+        _reload_flags_file()
+        threading.Thread(target=_flags_refresher_loop, name="chat-profile-flags", daemon=True).start()
+
+
+def _flags_file_data() -> dict[str, Any]:
+    """Hot-reloadable profile flags (no PM2 restart required for disable tests)."""
+    start_flags_refresher()
+    return dict(_FLAGS_CACHE.get("data") or {})
 
 
 def _flag(name: str, default: str = "1") -> bool:

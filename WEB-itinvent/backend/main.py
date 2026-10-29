@@ -197,6 +197,11 @@ async def lifespan(app: FastAPI):
         ad_groups_access_sync_task = asyncio.create_task(background_ad_groups_access_sync_loop())
     # Parse the address book and build its search index before the first user search (cold ≈ 2.8 s).
     address_book_warmup_task = asyncio.create_task(asyncio.to_thread(address_book_service.warm_search_index))
+    from backend.chat.latency_profile import start_flags_refresher
+    from backend.services.zup_user_profile_service import zup_user_profile_service
+
+    await asyncio.to_thread(start_flags_refresher)
+    zup_profile_warmup_task = asyncio.create_task(asyncio.to_thread(zup_user_profile_service.warm))
     if ADDRESS_BOOK_SYNC_ENABLED:
         address_book_sync_task = asyncio.create_task(background_address_book_sync_loop())
     if WAREHOUSE_1C_CATALOG_SYNC_ENABLED:

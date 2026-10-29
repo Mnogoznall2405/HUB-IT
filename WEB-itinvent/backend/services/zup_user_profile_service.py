@@ -17,6 +17,8 @@ from backend.services.address_book_service import (
 
 logger = logging.getLogger(__name__)
 
+_REFRESH_RETRY_SEC = 30.0
+
 
 class ZupUserProfileService:
     """Resolve only non-personal workplace fields from the ZUP address cache.
@@ -30,7 +32,9 @@ class ZupUserProfileService:
         self._source_service = source_service or address_book_service
         self._cache_ttl_sec = max(float(cache_ttl_sec), 1.0)
         self._cache_lock = threading.Lock()
+        self._refresh_lock = threading.Lock()
         self._cached_index: tuple[float, dict[str, Any]] | None = None
+        self._indexed_items: Any = None
 
     @staticmethod
     def _account_login(value: Any) -> str:
@@ -65,15 +69,7 @@ class ZupUserProfileService:
                 return value
         return None
 
-    def _build_index(self) -> dict[str, Any]:
-        try:
-            cache = self._source_service.load_cache()
-        except Exception:
-            logger.exception("Unable to load ZUP address-book cache for chat profiles")
-            cache = {}
-        if not isinstance(cache, dict):
-            cache = {}
-
+    def _build_index(self, cache: dict[str, Any]) -> dict[str, Any]:
         updated_at = normalize_text(cache.get("updated_at")) or None
         email_index: dict[str, list[dict[str, Any]]] = defaultdict(list)
         login_index: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -116,18 +112,62 @@ class ZupUserProfileService:
             "name": dict(name_index),
         }
 
+    def _load_source(self) -> dict[str, Any]:
+        cache = self._source_service.load_cache()
+        return cache if isinstance(cache, dict) else {}
+
+    def _store_index(self, index: dict[str, Any], ttl_sec: float) -> None:
+        self._cached_index = (time.monotonic() + ttl_sec, index)
+
+    def _refresh_index(self) -> None:
+        """Rebuild off the request path; the stale index stays in service until the swap."""
+        try:
+            stale = self._cached_index[1]
+            try:
+                cache = self._load_source()
+                items = cache.get("items")
+                if items is not None and items is self._indexed_items:
+                    self._store_index(stale, self._cache_ttl_sec)
+                    return
+                index = self._build_index(cache)
+            except Exception:
+                logger.exception("Unable to refresh ZUP address-book cache for chat profiles")
+                self._store_index(stale, _REFRESH_RETRY_SEC)
+                return
+            self._indexed_items = items
+            self._store_index(index, self._cache_ttl_sec)
+        finally:
+            self._refresh_lock.release()
+
     def _get_index(self) -> dict[str, Any]:
-        now = time.monotonic()
         cached = self._cached_index
-        if cached is not None and cached[0] > now:
+        if cached is not None:
+            if cached[0] <= time.monotonic() and self._refresh_lock.acquire(blocking=False):
+                try:
+                    threading.Thread(target=self._refresh_index, name="zup-profile-index", daemon=True).start()
+                except Exception:
+                    self._refresh_lock.release()
+                    raise
             return cached[1]
         with self._cache_lock:
             cached = self._cached_index
-            if cached is not None and cached[0] > now:
+            if cached is not None:
                 return cached[1]
-            index = self._build_index()
-            self._cached_index = (now + self._cache_ttl_sec, index)
+            ttl_sec = self._cache_ttl_sec
+            try:
+                cache = self._load_source()
+            except Exception:
+                logger.exception("Unable to load ZUP address-book cache for chat profiles")
+                cache = {}
+                ttl_sec = _REFRESH_RETRY_SEC
+            index = self._build_index(cache)
+            self._indexed_items = cache.get("items")
+            self._store_index(index, ttl_sec)
             return index
+
+    def warm(self) -> None:
+        """Build the first index ahead of the first chat request."""
+        self._get_index()
 
     def resolve_user(self, user: dict[str, Any] | None) -> dict[str, Any] | None:
         if not isinstance(user, dict):

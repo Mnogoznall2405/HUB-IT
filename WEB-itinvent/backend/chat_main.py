@@ -137,6 +137,15 @@ async def lifespan(app: FastAPI):
     chat_status = chat_service.initialize_runtime()
     ai_chat_service.initialize_runtime()
     try:
+        from backend.chat.latency_profile import start_flags_refresher
+        from backend.services.zup_user_profile_service import zup_user_profile_service
+
+        # Filesystem and address-book reads stay off the request path from the first request on.
+        await asyncio.to_thread(start_flags_refresher)
+        zup_profile_warmup_task = asyncio.create_task(asyncio.to_thread(zup_user_profile_service.warm))
+    except Exception as exc:
+        print(f"[chat] warmup warning: {exc}")
+    try:
         from backend.chat.db import log_chat_pool_budget
 
         budget = log_chat_pool_budget(processes=int(os.getenv("CHAT_PROCESS_COUNT", "1") or 1))

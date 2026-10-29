@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -112,6 +115,44 @@ def test_does_not_expose_personal_contacts_as_corporate() -> None:
     assert profile is not None
     assert profile["corporate_email"] is None
     assert profile["corporate_phone"] is None
+
+
+def test_expired_index_is_served_stale_while_one_rebuild_runs() -> None:
+    # A request-path rebuild queued every chat thread behind one slow address-book parse;
+    # a boundary test cannot make that parse slow, so the contention is reproduced directly.
+    release = threading.Event()
+    loads = []
+
+    class SlowAddressBookService(StubAddressBookService):
+        def load_cache(self) -> dict:
+            loads.append(time.monotonic())
+            if len(loads) > 1:
+                release.wait(timeout=10)
+                return {"updated_at": "2026-08-21T08:00:00+00:00", "items": [
+                    employee(code="010", name="Новый Сотрудник Иванович", email="new@zsgp.ru")]}
+            return super().load_cache()
+
+    resolver = ZupUserProfileService(
+        SlowAddressBookService([employee(code="009", name="Старый Сотрудник Иванович", email="old@zsgp.ru")]),
+        cache_ttl_sec=1,
+    )
+    assert resolver.resolve_user({"email": "old@zsgp.ru"}) is not None
+
+    resolver._cached_index = (0.0, resolver._cached_index[1])  # TTL expired
+    started = time.monotonic()
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _: resolver.resolve_user({"email": "old@zsgp.ru"}), range(8)))
+    elapsed = time.monotonic() - started
+
+    assert all(item is not None for item in results)
+    assert elapsed < 2
+    assert len(loads) == 2  # first build + exactly one background rebuild
+
+    release.set()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and resolver.resolve_user({"email": "new@zsgp.ru"}) is None:
+        time.sleep(0.05)
+    assert resolver.resolve_user({"email": "new@zsgp.ru"}) is not None
 
 
 def test_does_not_resolve_ambiguous_full_name_without_account_match() -> None:
