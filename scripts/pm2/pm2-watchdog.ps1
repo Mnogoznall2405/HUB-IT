@@ -1,6 +1,10 @@
 ﻿param(
     [int]$BootGraceMinutes = 10,
     [int]$FailureThreshold = 3,
+    # An online chat node that stops answering health is usually a host/storage pause of 2-4 minutes that
+    # ends by itself; a restart in the middle of it only adds a second outage. Crashed (not online) nodes
+    # still use FailureThreshold.
+    [int]$ChatFailureThreshold = 6,
     [int]$CooldownSeconds = 600,
     [switch]$CheckOnly,
     # Leftovers of a dead PM2 daemon (see Get-HubitOrphanProcesses) are stopped by default. -ReportOnlyOrphans
@@ -106,7 +110,8 @@ try {
     $stage = 'recovery_state'
     $recover = @($failed | Where-Object {
         $entry = $state[$_]
-        $decision = Get-HubitRecoveryDecision -Failures $entry.Failures -Now $now -LastAttempt ([datetime]$entry.LastAttempt) -Attempts @($entry.Attempts | ForEach-Object { [datetime]$_ }) -Threshold $FailureThreshold -CooldownSeconds $CooldownSeconds
+        $threshold = if ($_ -match '^itinvent-chat(-[ab])?$' -and $notOnline -notcontains $_) { [Math]::Max($FailureThreshold, $ChatFailureThreshold) } else { $FailureThreshold }
+        $decision = Get-HubitRecoveryDecision -Failures $entry.Failures -Now $now -LastAttempt ([datetime]$entry.LastAttempt) -Attempts @($entry.Attempts | ForEach-Object { [datetime]$_ }) -Threshold $threshold -CooldownSeconds $CooldownSeconds
         Write-WatchdogLog "health failure: $_, count=$($entry.Failures), decision=$decision"
         $decision -eq 'recover'
     })
