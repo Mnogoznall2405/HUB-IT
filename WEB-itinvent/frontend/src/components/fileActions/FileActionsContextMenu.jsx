@@ -4,7 +4,10 @@ import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import DriveFileMoveOutlinedIcon from '@mui/icons-material/DriveFileMoveOutlined';
 import DriveFileRenameOutlineRoundedIcon from '@mui/icons-material/DriveFileRenameOutlineRounded';
+import EditNoteRoundedIcon from '@mui/icons-material/EditNoteRounded';
+import GroupAddOutlinedIcon from '@mui/icons-material/GroupAddOutlined';
 import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
+import RestoreRoundedIcon from '@mui/icons-material/RestoreRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import PrintRoundedIcon from '@mui/icons-material/PrintRounded';
 import SelectAllRoundedIcon from '@mui/icons-material/SelectAllRounded';
@@ -61,6 +64,9 @@ export default function FileActionsContextMenu({
   paperSx = null,
   onClose,
   onPreview,
+  onEditOnline,
+  onCollaborators,
+  onVersions,
   onDownload,
   onSaveAll,
   onRename,
@@ -146,6 +152,39 @@ export default function FileActionsContextMenu({
         >
           <ListItemIcon><VisibilityOutlinedIcon fontSize="small" /></ListItemIcon>
           <ListItemText>Просмотр</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onEditOnline === 'function' ? (
+        <MenuItem
+          data-testid="file-action-edit-online"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onEditOnline)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><EditNoteRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Редактировать онлайн</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onCollaborators === 'function' ? (
+        <MenuItem
+          data-testid="file-action-collaborators"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onCollaborators)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><GroupAddOutlinedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Совместный доступ</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onVersions === 'function' ? (
+        <MenuItem
+          data-testid="file-action-versions"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onVersions)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><RestoreRoundedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Предыдущие версии</ListItemText>
         </MenuItem>
       ) : null}
       {canOpenInApplication ? (

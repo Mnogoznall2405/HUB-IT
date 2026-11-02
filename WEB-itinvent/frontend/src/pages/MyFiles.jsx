@@ -42,6 +42,7 @@ import DriveFileMoveOutlinedIcon from '@mui/icons-material/DriveFileMoveOutlined
 import DriveFileRenameOutlineRoundedIcon from '@mui/icons-material/DriveFileRenameOutlineRounded';
 import DriveFolderUploadOutlinedIcon from '@mui/icons-material/DriveFolderUploadOutlined';
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
+import GroupOutlinedIcon from '@mui/icons-material/GroupOutlined';
 import LinkOutlinedIcon from '@mui/icons-material/LinkOutlined';
 import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
 import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
@@ -53,7 +54,11 @@ import ShareOutlinedIcon from '@mui/icons-material/ShareOutlined';
 import ViewListOutlinedIcon from '@mui/icons-material/ViewListOutlined';
 import MainLayout from '../components/layout/MainLayout';
 import MyFileAuditDialog from '../components/myFiles/MyFileAuditDialog';
+import MyFilesCollaboratorsDialog from '../components/myFiles/MyFilesCollaboratorsDialog';
+import MyFilesOfficeEditorDialog from '../components/myFiles/MyFilesOfficeEditorDialog';
+import MyFilesSharedForEditingDialog from '../components/myFiles/MyFilesSharedForEditingDialog';
 import MyFilesShareDialog from '../components/myFiles/MyFilesShareDialog';
+import MyFilesVersionsDialog from '../components/myFiles/MyFilesVersionsDialog';
 import DocumentPreviewDialog from '../components/documentPreview/DocumentPreviewDialog';
 import FileActionsContextMenu, {
   getFileActionsAnchorPosition,
@@ -66,6 +71,7 @@ import {
   myFilesAPI,
   myFilesRetentionOptions,
 } from '../api/myFiles';
+import { myFilesOfficeAPI } from '../api/myFilesOffice';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
 import {
@@ -164,6 +170,11 @@ export default function MyFiles() {
   const [refreshing, setRefreshing] = useState(false);
   const [fileActionsMenu, setFileActionsMenu] = useState({ item: null, anchorPosition: null });
   const [auditDialogFile, setAuditDialogFile] = useState(null);
+  const [officeStatus, setOfficeStatus] = useState({ enabled: false, editable_extensions: [] });
+  const [officeEditorFile, setOfficeEditorFile] = useState(null);
+  const [collaboratorsFile, setCollaboratorsFile] = useState(null);
+  const [versionsFile, setVersionsFile] = useState(null);
+  const [sharedEditingOpen, setSharedEditingOpen] = useState(false);
   const [confirmState, setConfirmState] = useState(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const { notifySuccess, notifyWarning, notifyApiError } = useNotification();
@@ -220,6 +231,30 @@ export default function MyFiles() {
       }
     }
   }, [beginLoad, currentFolderId, debouncedSearchQuery, isTrashView, listView, notifyApiError]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    myFilesOfficeAPI.getStatus({ signal: controller.signal })
+      .then((status) => {
+        if (!controller.signal.aborted && status) setOfficeStatus(status);
+      })
+      .catch(() => {
+        // Online editing is optional: without the status endpoint the actions simply stay hidden.
+      });
+    return () => controller.abort();
+  }, []);
+
+  const isOfficeEditable = useCallback((item) => {
+    if (!officeStatus.enabled || !item) return false;
+    if (!READY_STATUSES.has(String(item.status || '').toLowerCase())) return false;
+    const name = String(getMyFileName(item) || '').toLowerCase();
+    return (officeStatus.editable_extensions || []).some((extension) => name.endsWith(extension));
+  }, [officeStatus]);
+
+  const closeOfficeEditor = useCallback(() => {
+    setOfficeEditorFile(null);
+    void loadData({ silent: true });
+  }, [loadData]);
 
   const refreshQuota = useCallback(async () => {
     try {
@@ -1223,6 +1258,14 @@ export default function MyFiles() {
                   onClick: navigateToTrash,
                   testId: 'my-files-nav-trash',
                 },
+                ...(officeStatus.enabled ? [{
+                  key: 'shared-editing',
+                  icon: <GroupOutlinedIcon fontSize="small" />,
+                  label: 'Доступно мне',
+                  active: false,
+                  onClick: () => setSharedEditingOpen(true),
+                  testId: 'my-files-nav-shared-editing',
+                }] : []),
               ].map((item) => (
                 <Box
                   key={item.key}
@@ -1876,6 +1919,15 @@ export default function MyFiles() {
             onPreview={fileActionsMenu.item && isMyFilePreviewSupported(fileActionsMenu.item)
               ? () => { void openDocumentPreview(fileActionsMenu.item, { forcePreview: true }); }
               : undefined}
+            onEditOnline={isOfficeEditable(fileActionsMenu.item) && canWrite
+              ? () => setOfficeEditorFile(fileActionsMenu.item)
+              : undefined}
+            onCollaborators={isOfficeEditable(fileActionsMenu.item) && canShare
+              ? () => setCollaboratorsFile(fileActionsMenu.item)
+              : undefined}
+            onVersions={isOfficeEditable(fileActionsMenu.item) && canWrite
+              ? () => setVersionsFile(fileActionsMenu.item)
+              : undefined}
             onDownload={fileActionsMenu.item
               ? () => { void handleDownload(fileActionsMenu.item); }
               : undefined}
@@ -1908,6 +1960,39 @@ export default function MyFiles() {
             open={Boolean(auditDialogFile)}
             file={auditDialogFile}
             onClose={() => setAuditDialogFile(null)}
+          />
+
+          <MyFilesOfficeEditorDialog
+            open={Boolean(officeEditorFile)}
+            file={officeEditorFile}
+            onClose={closeOfficeEditor}
+          />
+          <MyFilesCollaboratorsDialog
+            open={Boolean(collaboratorsFile)}
+            file={collaboratorsFile}
+            onClose={(saved) => {
+              setCollaboratorsFile(null);
+              if (saved) notifySuccess('Совместный доступ обновлён.', { source: 'my-files-collaborators', dedupeMode: 'none' });
+            }}
+          />
+          <MyFilesVersionsDialog
+            open={Boolean(versionsFile)}
+            file={versionsFile}
+            onClose={(restored) => {
+              setVersionsFile(null);
+              if (restored) {
+                notifySuccess('Версия возвращена.', { source: 'my-files-versions', dedupeMode: 'none' });
+                void loadData({ silent: true });
+              }
+            }}
+          />
+          <MyFilesSharedForEditingDialog
+            open={sharedEditingOpen}
+            onClose={() => setSharedEditingOpen(false)}
+            onOpenFile={(file) => {
+              setSharedEditingOpen(false);
+              setOfficeEditorFile(file);
+            }}
           />
 
           <Menu

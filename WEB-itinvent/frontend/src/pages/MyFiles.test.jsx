@@ -107,6 +107,12 @@ vi.mock('../api/myFiles', () => ({
   },
 }));
 
+vi.mock('../api/myFilesOffice', () => ({
+  myFilesOfficeAPI: {
+    getStatus: vi.fn().mockResolvedValue({ enabled: false, editable_extensions: [] }),
+  },
+}));
+
 vi.mock('../contexts/NotificationContext', () => ({
   useNotification: () => ({
     notifySuccess: mockNotifySuccess,

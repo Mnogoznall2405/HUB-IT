@@ -1173,6 +1173,49 @@ class AppNativePushToken(AppBase):
     last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+class AppMyFileCollaborator(AppBase):
+    """Portal user allowed to co-edit a My Files document (owner is implicit)."""
+
+    __tablename__ = "my_file_collaborators"
+    __table_args__ = _table_args(
+        Index("ix_app_my_file_collaborators_user", "user_id"),
+        schema=APP_SCHEMA,
+    )
+
+    file_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    added_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMyFileVersion(AppBase):
+    """Content of a My Files document before an editing session changed it; each row owns one blob reference.
+
+    ``created_by_*`` is the editor whose save retired this content and ``session_key`` the
+    Document Server key of the editing session that did it (later saves of that session replace
+    the current content in place instead of adding versions).
+    """
+
+    __tablename__ = "my_file_versions"
+    __table_args__ = _table_args(
+        UniqueConstraint("file_id", "version_no", name="uq_app_my_file_versions_file_no"),
+        Index("ix_app_my_file_versions_file", "file_id", "version_no"),
+        Index("ix_app_my_file_versions_blob", "blob_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    file_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    blob_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    original_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    original_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    session_key: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 
 class AppPushOutbox(AppBase):
     __tablename__ = "push_outbox"

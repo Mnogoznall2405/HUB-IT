@@ -20,12 +20,22 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable
 
 from sqlalchemy import case, delete, func, or_, select, text, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from backend.appdb.db import AppDatabaseConfigurationError, app_session, ensure_app_schema_initialized, is_app_database_configured
 from backend.config import config
 from backend.services.my_files_recovery import cleanup_tmp_blob_files
-from backend.appdb.models import AppMyFile, AppMyFileAudit, AppMyFileBlob, AppMyFileDownloadGrant, AppMyFileFolder, AppMyFilePreview, AppUser
+from backend.appdb.models import (
+    AppMyFile,
+    AppMyFileAudit,
+    AppMyFileBlob,
+    AppMyFileCollaborator,
+    AppMyFileDownloadGrant,
+    AppMyFileFolder,
+    AppMyFilePreview,
+    AppMyFileVersion,
+    AppUser,
+)
 from backend.services.hubit_storage import HubitStorageError
 from backend.services.my_files_antivirus_service import (
     POLICY_SKIP_ENGINES,
@@ -401,6 +411,9 @@ class MyFilesRequestMeta:
 class MyFilesService:
     """App DB-backed personal file storage."""
 
+    _collab_tables_ready = False
+    _collab_tables_checked_at = -60.0
+
     def __init__(
         self,
         *,
@@ -641,7 +654,52 @@ class MyFilesService:
                 AppMyFile.expires_at > _utc_now(),
             )
         ).scalar()
-        return int(rows or 0)
+        used = int(rows or 0)
+        if self._collab_tables_present(session):
+            used += int(
+                session.execute(
+                    select(func.coalesce(func.sum(AppMyFileVersion.original_size_bytes), 0))
+                    .join(AppMyFile, AppMyFile.id == AppMyFileVersion.file_id)
+                    .where(
+                        AppMyFile.owner_user_id == int(user_id),
+                        AppMyFile.deleted_at.is_(None),
+                        AppMyFile.status == STATUS_READY,
+                        AppMyFile.expires_at > _utc_now(),
+                    )
+                ).scalar()
+                or 0
+            )
+        return used
+
+    def _collab_tables_present(self, session) -> bool:
+        """Co-editing tables come from an explicit release migration; stay inert until applied."""
+        if self._collab_tables_ready:
+            return True
+        now = time.monotonic()
+        if now - self._collab_tables_checked_at < 60:
+            return False
+        self._collab_tables_checked_at = now
+        try:
+            with session.begin_nested():
+                session.execute(select(AppMyFileVersion.id).limit(1))
+                session.execute(select(AppMyFileCollaborator.file_id).limit(1))
+        except SQLAlchemyError:
+            return False
+        self._collab_tables_ready = True
+        return True
+
+    def _release_file_collab_locked(self, session, file_id: str, blob_paths: list[Path]) -> None:
+        """Drop version history and collaborators of a file that is being purged."""
+        if not self._collab_tables_present(session):
+            return
+        normalized = _normalize_text(file_id)
+        versions = session.scalars(
+            select(AppMyFileVersion).where(AppMyFileVersion.file_id == normalized)
+        ).all()
+        for version in versions:
+            self._release_blob_locked(session, version.blob_id, blob_paths)
+            session.delete(version)
+        session.execute(delete(AppMyFileCollaborator).where(AppMyFileCollaborator.file_id == normalized))
 
     @staticmethod
     def _advisory_lock_key(scope: str) -> int:
@@ -1361,6 +1419,7 @@ class MyFilesService:
                     spool_paths.append(Path(_normalize_text(file_row.spool_path)))
                 if file_row.status == STATUS_READY:
                     self._release_blob_locked(session, file_row.blob_id, blob_paths)
+                self._release_file_collab_locked(session, file_row.id, blob_paths)
                 file_row.status = STATUS_DELETED
                 file_row.folder_id = None
                 file_row.updated_at = now
@@ -3049,6 +3108,7 @@ class MyFilesService:
             spool_path = Path(_normalize_text(row.spool_path)) if _normalize_text(row.spool_path) else None
             if row.status == STATUS_READY:
                 self._release_blob_locked(session, row.blob_id, blob_paths)
+            self._release_file_collab_locked(session, row.id, blob_paths)
             row.status = STATUS_DELETED
             self._clear_share(row)
             session.execute(delete(AppMyFileDownloadGrant).where(AppMyFileDownloadGrant.file_id == row.id))
@@ -3979,6 +4039,7 @@ class MyFilesService:
                     with session.begin_nested():
                         if row.status == STATUS_READY:
                             self._release_blob_locked(session, row.blob_id, row_blob_paths)
+                        self._release_file_collab_locked(session, row.id, row_blob_paths)
                         if _normalize_text(row.spool_path):
                             spool_paths.append(Path(_normalize_text(row.spool_path)))
                         row.status = STATUS_DELETED
