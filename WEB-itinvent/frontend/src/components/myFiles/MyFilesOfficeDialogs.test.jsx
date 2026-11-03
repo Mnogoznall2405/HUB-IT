@@ -8,6 +8,7 @@ const {
   mockSetCollaborators,
   mockListVersions,
   mockRestoreVersion,
+  mockDownloadVersion,
   mockGetUsers,
 } = vi.hoisted(() => ({
   mockGetEditorConfig: vi.fn(),
@@ -15,6 +16,7 @@ const {
   mockSetCollaborators: vi.fn(),
   mockListVersions: vi.fn(),
   mockRestoreVersion: vi.fn(),
+  mockDownloadVersion: vi.fn(),
   mockGetUsers: vi.fn(),
 }));
 
@@ -25,6 +27,7 @@ vi.mock('../../api/myFilesOffice', () => ({
     setCollaborators: mockSetCollaborators,
     listVersions: mockListVersions,
     restoreVersion: mockRestoreVersion,
+    downloadVersion: mockDownloadVersion,
   },
 }));
 
@@ -79,6 +82,29 @@ describe('My Files co-editing dialogs', () => {
     expect(await screen.findByText('Файл занят')).toBeTruthy();
     expect(mockRestoreVersion).toHaveBeenCalledWith('f1', 'v1');
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('saves a retired version under the file name sent by the server', async () => {
+    mockListVersions.mockResolvedValue({
+      items: [{ id: 'v1', version_no: 1, size_bytes: 2048, replaced_by: 'petrov', replaced_at: '2026-11-02T10:00:00Z' }],
+    });
+    mockDownloadVersion.mockResolvedValue({
+      data: new Blob(['old']),
+      headers: { 'content-disposition': "attachment; filename*=UTF-8''plan%20(%D0%B2%D0%B5%D1%80%D1%81%D0%B8%D1%8F%201).docx" },
+    });
+    URL.createObjectURL = vi.fn(() => 'blob:version');
+    URL.revokeObjectURL = vi.fn();
+    const saved = [];
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function recordDownload() {
+      saved.push(this.download);
+    });
+
+    render(<MyFilesVersionsDialog open file={{ id: 'f1', original_file_name: 'plan.docx' }} onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('my-files-version-download-1'));
+
+    await waitFor(() => expect(saved).toEqual(['plan (версия 1).docx']));
+    expect(mockDownloadVersion).toHaveBeenCalledWith('f1', 'v1');
+    click.mockRestore();
   });
 
   it('starts the editor with the server config and destroys it when the dialog closes', async () => {

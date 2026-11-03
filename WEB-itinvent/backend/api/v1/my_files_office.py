@@ -264,6 +264,25 @@ async def list_office_versions(
     return {"items": items}
 
 
+@router.get("/{file_id}/office/versions/{version_id}/download")
+async def download_office_version(
+    file_id: str,
+    version_id: str,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
+):
+    try:
+        payload = await run_in_threadpool(
+            my_files_collab_service.get_version_download,
+            file_id=file_id,
+            version_id=version_id,
+            user_id=int(current_user.id),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+    return _download_response(payload, request)
+
+
 @router.post("/{file_id}/office/versions/{version_id}/restore", status_code=status.HTTP_204_NO_CONTENT)
 async def restore_office_version(
     file_id: str,

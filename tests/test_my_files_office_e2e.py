@@ -21,6 +21,7 @@ from backend.appdb.models import AppMyFile, AppMyFileBlob, AppMyFileCollaborator
 from backend.models.auth import User
 from backend.services import onlyoffice_service as oo
 from backend.services.my_files_antivirus_service import SecurityScanResult
+from backend.services import my_files_collab_service as collab_module
 from backend.services.my_files_collab_service import MyFilesCollabService
 from backend.services.my_files_service import STORAGE_ZSTD, MyFilesService
 
@@ -40,6 +41,18 @@ def _onlyoffice_env(monkeypatch):
     monkeypatch.setenv("ONLYOFFICE_JWT_SECRET", SECRET)
     monkeypatch.setenv("ONLYOFFICE_INTERNAL_URL", "http://ds.internal:8080")
     monkeypatch.setenv("ONLYOFFICE_APP_BASE_URL", "https://hub.example")
+
+
+@pytest.fixture(autouse=True)
+def invites(monkeypatch):
+    """Invitations go to the hub notification store; record them instead of writing there."""
+    sent: list[tuple[int, str, str]] = []
+    monkeypatch.setattr(
+        collab_module,
+        "_notify_invited",
+        lambda user_id, *, file_id, file_name, owner_label: sent.append((user_id, file_id, file_name)),
+    )
+    return sent
 
 
 def _user(user_id: int) -> User:
@@ -157,6 +170,54 @@ def test_collaborator_edits_are_saved_as_versions_and_can_be_restored(env):
     assert restored.status_code == 204
     assert env.content(file_id) == b"original"
     assert len(env.client.get(f"/api/v1/my-files/{file_id}/office/versions").json()["items"]) == 1
+
+
+def test_a_collaborator_is_notified_only_when_newly_added(env, invites):
+    file_id = env.upload("plan.docx", b"original")
+    share = f"/api/v1/my-files/{file_id}/office/collaborators"
+
+    env.client.put(share, json={"user_ids": [COLLAB]})
+    env.client.put(share, json={"user_ids": [COLLAB]})
+    env.client.put(share, json={"user_ids": [COLLAB, STRANGER]})
+
+    assert invites == [(COLLAB, file_id, "plan.docx"), (STRANGER, file_id, "plan.docx")]
+
+
+def test_edits_of_a_removed_collaborator_are_rejected(env):
+    file_id = env.upload("plan.docx", b"original")
+    share = f"/api/v1/my-files/{file_id}/office/collaborators"
+    env.client.put(share, json={"user_ids": [COLLAB]})
+    env.as_user(COLLAB)
+    config = env.editor_config(file_id)
+
+    env.as_user(OWNER)
+    env.client.put(share, json={"user_ids": []})
+    assert env.callback(config, status_code=2, document=b"late edit", users=[str(COLLAB)]).json() == {"error": 0}
+
+    assert env.content(file_id) == b"original"
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/versions").json()["items"] == []
+    # A session whose last editor may still edit is saved as usual.
+    assert env.callback(config, status_code=2, document=b"owner edit", users=[str(OWNER)]).json() == {"error": 0}
+    assert env.content(file_id) == b"owner edit"
+
+
+def test_retired_versions_can_be_downloaded_by_participants_only(env):
+    file_id = env.upload("plan.docx", b"original")
+    env.client.put(f"/api/v1/my-files/{file_id}/office/collaborators", json={"user_ids": [COLLAB]})
+    config = env.editor_config(file_id)
+    env.callback(config, status_code=2, document=b"edited", users=[str(OWNER)])
+    version = env.client.get(f"/api/v1/my-files/{file_id}/office/versions").json()["items"][0]
+    path = f"/api/v1/my-files/{file_id}/office/versions/{version['id']}/download"
+
+    env.as_user(COLLAB)
+    downloaded = env.client.get(path)
+    assert downloaded.status_code == 200 and downloaded.content == b"original"
+    assert "plan" in downloaded.headers["content-disposition"] and "docx" in downloaded.headers["content-disposition"]
+
+    env.as_user(STRANGER)
+    assert env.client.get(path).status_code == 404
+    env.as_user(OWNER)
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/versions/{'0' * 32}/download").status_code == 404
 
 
 def test_callbacks_must_be_signed_and_addressed_to_the_file(env):

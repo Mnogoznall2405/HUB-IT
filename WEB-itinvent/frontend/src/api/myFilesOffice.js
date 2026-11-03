@@ -29,6 +29,9 @@ export const myFilesOfficeAPI = {
     const response = await apiClient.get(fileUrl(fileId, '/versions'), { signal });
     return response.data;
   },
+  downloadVersion: async (fileId, versionId) => (
+    apiClient.get(fileUrl(fileId, `/versions/${encodeURIComponent(versionId)}/download`), { responseType: 'blob' })
+  ),
   restoreVersion: async (fileId, versionId) => {
     await apiClient.post(fileUrl(fileId, `/versions/${encodeURIComponent(versionId)}/restore`));
   },

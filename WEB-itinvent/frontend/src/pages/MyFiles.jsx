@@ -244,6 +244,15 @@ export default function MyFiles() {
     return () => controller.abort();
   }, []);
 
+  // The invitation notification links here: open "available to me" once and drop the parameter.
+  useEffect(() => {
+    if (searchParams.get('shared') !== '1' || !officeStatus.enabled) return;
+    setSharedEditingOpen(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete('shared');
+    setSearchParams(next, { replace: true });
+  }, [officeStatus.enabled, searchParams, setSearchParams]);
+
   const isOfficeEditable = useCallback((item) => {
     if (!officeStatus.enabled || !item) return false;
     if (!READY_STATUSES.has(String(item.status || '').toLowerCase())) return false;

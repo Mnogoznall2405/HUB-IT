@@ -26,6 +26,27 @@ const formatTime = (value) => {
 
 const errorMessage = (err, fallback) => String(err?.response?.data?.detail || err?.message || fallback);
 
+const fileNameFromDisposition = (header, fallback) => {
+  const value = String(header || '');
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(value);
+  if (encoded) {
+    try { return decodeURIComponent(encoded[1]); } catch { /* fall through to the plain name */ }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(value);
+  return plain ? plain[1] : fallback;
+};
+
+const saveBlob = (blob, fileName) => {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
 export default function MyFilesVersionsDialog({ open, file, onClose }) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
@@ -33,7 +54,7 @@ export default function MyFilesVersionsDialog({ open, file, onClose }) {
   const fileName = String(file?.original_file_name || 'файл');
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [restoringId, setRestoringId] = useState('');
+  const [busyId, setBusyId] = useState('');
   const [error, setError] = useState('');
 
   const load = useCallback(async (signal) => {
@@ -56,8 +77,24 @@ export default function MyFilesVersionsDialog({ open, file, onClose }) {
     return () => controller.abort();
   }, [fileId, load, open]);
 
+  const download = async (version) => {
+    setBusyId(version.id);
+    setError('');
+    try {
+      const response = await myFilesOfficeAPI.downloadVersion(fileId, version.id);
+      saveBlob(
+        response.data,
+        fileNameFromDisposition(response.headers?.['content-disposition'], `${fileName} (версия ${version.version_no})`),
+      );
+    } catch (err) {
+      setError(errorMessage(err, 'Не удалось скачать версию'));
+    } finally {
+      setBusyId('');
+    }
+  };
+
   const restore = async (version) => {
-    setRestoringId(version.id);
+    setBusyId(version.id);
     setError('');
     try {
       await myFilesOfficeAPI.restoreVersion(fileId, version.id);
@@ -65,7 +102,7 @@ export default function MyFilesVersionsDialog({ open, file, onClose }) {
     } catch (err) {
       setError(errorMessage(err, 'Не удалось вернуть версию'));
     } finally {
-      setRestoringId('');
+      setBusyId('');
     }
   };
 
@@ -89,12 +126,17 @@ export default function MyFilesVersionsDialog({ open, file, onClose }) {
                 key={item.id}
                 divider
                 secondaryAction={(
-                  <Button size="small" disabled={Boolean(restoringId)} onClick={() => restore(item)} data-testid={`my-files-version-restore-${item.version_no}`}>
-                    Вернуть
-                  </Button>
+                  <Stack direction="row" spacing={0.5}>
+                    <Button size="small" disabled={Boolean(busyId)} onClick={() => download(item)} data-testid={`my-files-version-download-${item.version_no}`}>
+                      Скачать
+                    </Button>
+                    <Button size="small" disabled={Boolean(busyId)} onClick={() => restore(item)} data-testid={`my-files-version-restore-${item.version_no}`}>
+                      Вернуть
+                    </Button>
+                  </Stack>
                 )}
               >
-                <Stack spacing={0.25} sx={{ minWidth: 0, pr: 10 }}>
+                <Stack spacing={0.25} sx={{ minWidth: 0, pr: 22 }}>
                   <Typography variant="body2" sx={{ fontWeight: 600 }}>
                     Версия {item.version_no} · {formatFileSize(item.size_bytes)}
                   </Typography>

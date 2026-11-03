@@ -217,11 +217,15 @@ export function getHubNotificationNavigateTo(item) {
     }
     return '/database';
   }
+  if (entityType === 'my_file') {
+    return '/my-files?shared=1';
+  }
   return '/dashboard';
 }
 
 export function getHubNotificationActionLabel(item) {
   const entityType = String(item?.entity_type || '').trim().toLowerCase();
+  if (entityType === 'my_file') return 'Открыть файлы';
   if (entityType === 'equipment_photo') return 'Открыть фото';
   if (entityType === 'task') return 'Открыть задачу';
   if (entityType === 'announcement') return 'Открыть публикацию';

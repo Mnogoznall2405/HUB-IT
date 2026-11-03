@@ -26,6 +26,8 @@ from backend.appdb.models import (
 from backend.services import onlyoffice_service as oo
 from backend.services.my_files_service import (
     STATUS_READY,
+    STORAGE_OPTIMIZED_MEDIA,
+    STORAGE_STORED,
     DownloadPayload,
     MyFilesNotFoundError,
     MyFilesRequestMeta,
@@ -41,6 +43,26 @@ from backend.services.my_files_service import (
 logger = logging.getLogger("backend.services.my_files_collab_service")
 
 MAX_COLLABORATORS = 50
+
+INVITE_EVENT_TYPE = "my_files.collab_invited"
+INVITE_ENTITY_TYPE = "my_file"
+
+
+def _notify_invited(user_id: int, *, file_id: str, file_name: str, owner_label: str) -> None:
+    """Best effort: the access is already stored, a failed notification must not undo it."""
+    try:
+        from backend.services.hub_service import hub_service
+
+        hub_service.create_user_notification(
+            recipient_user_id=int(user_id),
+            event_type=INVITE_EVENT_TYPE,
+            title="Вам открыт документ для совместной правки",
+            body=f"{owner_label or 'Пользователь'} открыл(а) вам «{file_name}»"[:300],
+            entity_type=INVITE_ENTITY_TYPE,
+            entity_id=file_id,
+        )
+    except Exception:
+        logger.warning("office.invite_notification_failed user_id=%s file_id=%s", user_id, file_id, exc_info=True)
 
 
 class MyFilesCollabService:
@@ -149,7 +171,12 @@ class MyFilesCollabService:
             self.files._release_blob_locked(session, version.blob_id, pending_deletes)
             session.delete(version)
 
-    def _resolve_editor(self, session, row: AppMyFile, editor_user_ids: list[int]) -> tuple[int, str]:
+    def _resolve_editor(self, session, row: AppMyFile, editor_user_ids: list[int]) -> tuple[int, str, bool]:
+        """Editor to credit and whether the save is allowed.
+
+        Document Server reports the last editor of the session; when it names users and none of them
+        may edit the file any more (a collaborator removed mid-session), the save is rejected.
+        """
         allowed = {int(row.owner_user_id)} | {
             int(item.user_id)
             for item in session.scalars(
@@ -157,8 +184,9 @@ class MyFilesCollabService:
             ).all()
         }
         editor_id = next((uid for uid in reversed(editor_user_ids) if uid in allowed), int(row.owner_user_id))
+        authorised = not editor_user_ids or any(uid in allowed for uid in editor_user_ids)
         user = session.get(AppUser, editor_id)
-        return editor_id, _normalize_text(getattr(user, "username", "")) or f"user-{editor_id}"
+        return editor_id, _normalize_text(getattr(user, "username", "")) or f"user-{editor_id}", authorised
 
     def save_version(
         self,
@@ -169,7 +197,7 @@ class MyFilesCollabService:
         editor_user_ids: list[int],
         meta: MyFilesRequestMeta | None = None,
     ) -> str:
-        """Store edited content as the new current version: ``saved``, ``unchanged`` or ``stale``."""
+        """Store edited content as the new current version: ``saved``, ``unchanged``, ``stale`` or ``forbidden``."""
         files = self.files
         database_url = files._database_url_or_raise()
         normalized_id = _normalize_text(file_id)
@@ -181,7 +209,10 @@ class MyFilesCollabService:
             file_name = _normalize_text(row.original_file_name)
             mime_type = _normalize_text(row.mime_type) or "application/octet-stream"
             current_sha = _normalize_text(row.original_sha256).lower()
-            editor_id, editor_name = self._resolve_editor(session, row, editor_user_ids)
+            editor_id, editor_name, authorised = self._resolve_editor(session, row, editor_user_ids)
+        if not authorised:
+            logger.warning("office.save_forbidden file_id=%s users=%s", normalized_id, editor_user_ids)
+            return "forbidden"
 
         files._scan_spool_payload(normalized_id, spool_path, file_name)
         new_sha, new_size = _sha256_file(spool_path)
@@ -320,6 +351,36 @@ class MyFilesCollabService:
                 }
                 for version in versions
             ]
+
+    def get_version_download(self, *, file_id: str, version_id: str, user_id: int) -> DownloadPayload:
+        """Content of a retired version for the owner or a collaborator."""
+        files = self.files
+        database_url = files._database_url_or_raise()
+        with app_session(database_url) as session:
+            row, _role = self._access_locked(session, file_id, user_id)
+            version = session.get(AppMyFileVersion, _normalize_text(version_id))
+            if version is None or version.file_id != row.id:
+                raise MyFilesNotFoundError("Version not found")
+            blob = session.get(AppMyFileBlob, _normalize_text(version.blob_id))
+            if blob is None:
+                raise MyFilesNotFoundError("Version not found")
+            path = files._resolve_stored_path(blob.storage_path)
+            if not path.exists() or not path.is_file():
+                raise MyFilesNotFoundError("Version not found")
+            download_size = int(version.original_size_bytes or 0)
+            if blob.storage_mode == STORAGE_OPTIMIZED_MEDIA:
+                download_size = int(blob.stored_size_bytes or 0)
+            base_name = _normalize_text(row.download_file_name) or _normalize_text(row.original_file_name) or "file"
+            stem, dot, extension = base_name.rpartition(".")
+            versioned_name = f"{stem} (версия {int(version.version_no)}).{extension}" if dot and stem else f"{base_name} (версия {int(version.version_no)})"
+            return DownloadPayload(
+                path=path,
+                mode=_normalize_text(blob.storage_mode) or STORAGE_STORED,
+                file_name=versioned_name,
+                media_type=_normalize_text(row.download_mime_type) or "application/octet-stream",
+                download_size_bytes=download_size,
+                file_id=row.id,
+            )
 
     def restore_version(
         self,
@@ -461,10 +522,21 @@ class MyFilesCollabService:
                         )
                     )
             session.flush()
-            if removed or set(wanted) - existing:
+            added = [uid for uid in wanted if uid not in existing]
+            if removed or added:
                 files = self.files
                 files._write_audit(session, action="collaborators_changed", row=row, actor=actor, meta=meta)
-            return self._collaborators_locked(session, row.id)
+            result = self._collaborators_locked(session, row.id)
+            file_name = _normalize_text(row.original_file_name)
+            owner_label = (
+                _normalize_text(getattr(actor, "full_name", ""))
+                or _normalize_text(getattr(actor, "username", ""))
+                or _normalize_text(row.owner_username)
+            )
+            shared_file_id = row.id
+        for uid in added:
+            _notify_invited(uid, file_id=shared_file_id, file_name=file_name, owner_label=owner_label)
+        return result
 
     def list_shared_with_me(self, *, user_id: int) -> list[dict[str, Any]]:
         database_url = self.files._database_url_or_raise()
