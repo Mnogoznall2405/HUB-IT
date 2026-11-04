@@ -110,6 +110,10 @@ def _build_device_label(user_agent: str) -> str:
     return f"{browser} on {platform}"
 
 
+class SessionCredentialRevokedError(ValueError):
+    """The credential was revoked between authentication and session creation."""
+
+
 class SessionService:
     """Manages web auth sessions in JSON storage."""
 
@@ -590,7 +594,10 @@ class SessionService:
         trusted_device_id: str | None = None,
         login_network_zone: str | None = None,
         client_device_id: str | None = None,
+        biometric_credential_id: str | None = None,
     ) -> dict:
+        if biometric_credential_id and not self._use_app_database:
+            raise SessionCredentialRevokedError("Biometric credential storage is unavailable")
         self._run_maintenance()
         now_iso = _utc_now_iso()
         client_device_key_hash = hash_client_device_id(client_device_id)
@@ -626,6 +633,14 @@ class SessionService:
                 # Lock the stable user row before counting sessions. This
                 # serializes concurrent logins for one user across workers.
                 session.get(AppUser, int(user_id), with_for_update=True)
+                if biometric_credential_id:
+                    from backend.appdb.models import AppMobileBiometricCredential
+
+                    credential = session.get(AppMobileBiometricCredential, biometric_credential_id)
+                    if (credential is None or credential.user_id != int(user_id)
+                            or not credential.is_active or credential.revoked_at is not None
+                            or credential.client_device_key_hash != client_device_key_hash):
+                        raise SessionCredentialRevokedError("Biometric credential has been revoked")
                 row = None
                 if client_device_key_hash:
                     row = session.scalars(
@@ -799,7 +814,9 @@ class SessionService:
                     return False
                 item = self._normalize_db_row(row, now=_utc_now(), db_session=session)
                 active = item.get("status") == "active" and bool(item.get("is_active", True))
-                self._cache_put_active(str(session_id), is_active=active, touched=active)
+                # A read must not mark the session as touched: touch_session() would
+                # then skip the write and last_seen_at (idle anchor) would never move.
+                self._cache_put_active(str(session_id), is_active=active)
                 return active
         sessions = self._load_sessions()
         changed = False
@@ -812,7 +829,7 @@ class SessionService:
             if changed:
                 self._save_sessions(sessions)
             active = session.get("status") == "active" and bool(session.get("is_active", True))
-            self._cache_put_active(str(session_id), is_active=active, touched=active)
+            self._cache_put_active(str(session_id), is_active=active)
             return active
 
         self._cache_put_active(str(session_id), is_active=False)

@@ -12,9 +12,9 @@ import { isValidEmailRecipient } from '../mail/mailComposeState';
 import { isPhoneDeepLinkReady } from '../../lib/messengerLinks';
 import { EmailActions, PhoneActions } from './AddressBookContactActions';
 import HighlightText from './HighlightText';
+import DocflowAbsencesPanel from '../docflow/DocflowAbsencesPanel';
+import AddressBookAbsenceMarks from './AddressBookAbsenceMarks';
 import {
-  absenceChipColor,
-  formatAbsenceLabel,
   formatAge,
   formatDate,
   getInitials,
@@ -125,7 +125,6 @@ export default function AddressBookEntryDetail({
 
   const primaryPhone = pickPrimaryPhone(item);
   const primaryEmail = pickPrimaryEmail(item);
-  const absenceLabel = formatAbsenceLabel(item?.absence);
   const ageLabel = formatAge(item?.age);
   const hireDateLabel = formatDate(item?.hire_date);
   const dismissalDateLabel = dismissed ? formatDate(item?.dismissal_date) : '';
@@ -197,15 +196,7 @@ export default function AddressBookEntryDetail({
                 {item.position ? <HighlightText value={item.position} query={query} /> : 'Должность не указана'}
                 {ageLabel ? ` · ${ageLabel}` : null}
               </Typography>
-              {absenceLabel ? (
-                <Chip
-                  size="small"
-                  color={absenceChipColor(item.absence)}
-                  label={absenceLabel}
-                  sx={{ mt: 0.5, fontWeight: 700 }}
-                  data-testid="address-book-absence-chip"
-                />
-              ) : null}
+              <AddressBookAbsenceMarks item={item} />
               {dismissedLabel ? (
                 <Chip
                   size="small"
@@ -482,6 +473,7 @@ export default function AddressBookEntryDetail({
             </Stack>
           </Stack>
         ) : null}
+        {!dismissed ? <DocflowAbsencesPanel employee employeeCode={item.employee_code || ''} /> : null}
       </Stack>
     </Box>
   );

@@ -7,7 +7,7 @@ import threading
 import uuid
 from typing import Any, Optional
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from backend.appdb.db import app_session
 from backend.appdb.models import AppUser2FABackupCode
@@ -399,11 +399,17 @@ class AuthSecurityService:
             )
             if not match:
                 return False
-            for row in rows:
-                if int(row.id) == int(match.get("id") or 0):
-                    row.used_at = _now_utc()
-                    return True
-        return False
+            # Atomic compare-and-set: two parallel logins must not both spend one code.
+            claimed = session.execute(
+                update(AppUser2FABackupCode)
+                .where(
+                    AppUser2FABackupCode.id == int(match.get("id") or 0),
+                    AppUser2FABackupCode.user_id == int(user_id),
+                    AppUser2FABackupCode.used_at.is_(None),
+                )
+                .values(used_at=_now_utc())
+            )
+            return int(claimed.rowcount or 0) == 1
 
     def finalize_totp_enrollment(
         self,
@@ -592,6 +598,8 @@ class AuthSecurityService:
             trusted_device_id=trusted_device_id,
             login_network_zone=str(challenge.get("network_zone") or "").strip().lower() or None,
             client_device_id=effective_client_device_id or None,
+            biometric_credential_id=(raw_device_id.split(":", 1)[1]
+                                     if raw_device_id.startswith("mobile-biometric:") else None),
         )
         session_reused = False
         if isinstance(created_session, dict):

@@ -245,3 +245,117 @@ def test_finished_upload_stays_finished_when_the_client_resends_a_different_size
     assert again.status_code == 200
     assert again.json()["status"] == "complete" and again.json()["file_no"] == 101
     assert len(ctx.inserted) == 1
+
+
+def test_stale_lock_owner_cannot_release_a_lock_taken_over_after_it_went_stale(tmp_path):
+    import os
+    import time
+
+    first = uploads._acquire_complete_lock(tmp_path)
+    assert first and uploads._acquire_complete_lock(tmp_path) is None  # held and fresh
+
+    old = time.time() - uploads.COMPLETE_LOCK_STALE_SECONDS - 5
+    os.utime(tmp_path / "complete.lock", (old, old))
+    second = uploads._acquire_complete_lock(tmp_path)  # takeover of a stale lock
+    assert second and second != first
+
+    uploads._release_complete_lock(tmp_path, first)  # the slow first caller finishes late
+    assert (tmp_path / "complete.lock").exists()
+    assert uploads._acquire_complete_lock(tmp_path) is None  # still owned by the second caller
+
+    uploads._release_complete_lock(tmp_path, second)
+    assert not (tmp_path / "complete.lock").exists()
+
+
+@pytest.fixture
+def ledger(monkeypatch, tmp_path):
+    """The real insert ledger on a throw-away SQLite app database."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from backend.appdb.models import AppEquipmentPhotoUploadLedger
+    from backend.services import equipment_photo_upload_ledger as module
+
+    engine = create_engine(
+        f"sqlite+pysqlite:///{(tmp_path / 'ledger.db').as_posix()}"
+    ).execution_options(schema_translate_map={"app": None})
+    AppEquipmentPhotoUploadLedger.__table__.create(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def session_scope(*args, **kwargs):
+        session = factory()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    monkeypatch.setattr(module, "app_session", session_scope)
+    monkeypatch.setattr(module, "is_available", lambda: True)
+    return module
+
+
+def _upload_all_chunks(ctx, upload_id):
+    for index in range(3):
+        put_chunk(ctx, upload_id, index)
+
+
+def test_crash_between_insert_and_checkpoint_does_not_duplicate_the_photo(ctx, ledger, monkeypatch):
+    upload_id = open_session(ctx).json()["upload_id"]
+    _upload_all_chunks(ctx, upload_id)
+
+    # The photo row is committed, then the checkpoint write fails (disk error / process killed).
+    real_write = uploads._write_json_atomic
+    monkeypatch.setattr(uploads, "_write_json_atomic", lambda *a, **k: (_ for _ in ()).throw(OSError("disk")))
+    with pytest.raises(OSError):
+        ctx.client.post(f"{BASE}/photo-uploads/{upload_id}/complete")
+    assert len(ctx.inserted) == 1
+
+    monkeypatch.setattr(uploads, "_write_json_atomic", real_write)
+    retry = ctx.client.post(f"{BASE}/photo-uploads/{upload_id}/complete")
+    assert retry.status_code == 200 and retry.json()["file_no"] == 101
+    assert len(ctx.inserted) == 1
+
+
+def test_ledger_entry_left_unfinished_by_a_crash_adopts_the_row_found_in_files(ctx, ledger, monkeypatch):
+    upload_id = open_session(ctx).json()["upload_id"]
+    _upload_all_chunks(ctx, upload_id)
+    # The process died inside the insert: the ledger says "inserting" and FILES already has the row.
+    ledger.begin(upload_id, item_id=7, created_by="mobile-user")
+    ctx.stored.add(555)
+    monkeypatch.setattr(
+        equipment.equipment_photos, "find_recent_photo_file_nos", lambda *a, **k: [555]
+    )
+    done = ctx.client.post(f"{BASE}/photo-uploads/{upload_id}/complete")
+    assert done.status_code == 200 and done.json()["file_no"] == 555
+    assert ctx.inserted == []
+    assert ledger.get(upload_id)["state"] == "done"
+
+
+def test_ambiguous_recovery_inserts_instead_of_adopting_someone_elses_photo(ctx, ledger, monkeypatch):
+    upload_id = open_session(ctx).json()["upload_id"]
+    _upload_all_chunks(ctx, upload_id)
+    ledger.begin(upload_id, item_id=7, created_by="mobile-user")
+    monkeypatch.setattr(
+        equipment.equipment_photos, "find_recent_photo_file_nos", lambda *a, **k: [555, 556]
+    )
+    done = ctx.client.post(f"{BASE}/photo-uploads/{upload_id}/complete")
+    assert done.status_code == 200 and done.json()["file_no"] == 101
+    assert len(ctx.inserted) == 1
+
+
+def test_photo_deleted_after_a_finished_ledger_entry_can_be_uploaded_again(ctx, ledger):
+    upload_id = open_session(ctx).json()["upload_id"]
+    _upload_all_chunks(ctx, upload_id)
+    assert ctx.client.post(f"{BASE}/photo-uploads/{upload_id}/complete").json()["file_no"] == 101
+    ctx.stored.discard(101)
+    reopened = open_session(ctx).json()
+    _upload_all_chunks(ctx, reopened["upload_id"])
+    assert ctx.client.post(f"{BASE}/photo-uploads/{reopened['upload_id']}/complete").json()["file_no"] == 102
+    assert len(ctx.inserted) == 2

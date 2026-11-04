@@ -67,6 +67,13 @@ export const invalidateSWRCacheByPrefix = (...prefixParts) => {
       cacheStore.delete(key);
     }
   });
+  // A read already in flight started before the invalidation (usually before a mutation):
+  // detach it so a forced refetch does not join it and it cannot re-cache stale data.
+  [...inFlightStore.keys()].forEach((key) => {
+    if (isKeyPrefixMatch(key, normalizedPrefixParts)) {
+      inFlightStore.delete(key);
+    }
+  });
 };
 
 const setCacheEntry = (cacheKey, data) => {
@@ -113,7 +120,11 @@ const runDedupedFetch = async (cacheKey, fetcher) => {
   const requestPromise = Promise.resolve()
     .then(fetcher)
     .then((data) => {
-      if (generation === cacheGeneration) setCacheEntry(cacheKey, data);
+      // Publish only while still the registered read for this key: invalidation or a newer
+      // fetch detaches this one.
+      if (generation === cacheGeneration && inFlightStore.get(cacheKey) === requestPromise) {
+        setCacheEntry(cacheKey, data);
+      }
       return data;
     })
     .finally(() => {

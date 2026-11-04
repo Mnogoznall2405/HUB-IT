@@ -27,6 +27,33 @@ class MailSendPipelineError(Exception):
         self.code = code
 
 
+MAIL_SEND_OUTCOME_UNKNOWN = "MAIL_SEND_OUTCOME_UNKNOWN"
+
+# Server answers that do not prove the message was left unsent.
+_AMBIGUOUS_EWS_ERRORS = frozenset({
+    "ErrorInternalServerError",
+    "ErrorInternalServerTransientError",
+    "ErrorTimeoutExpired",
+})
+
+
+def send_error_code(exc: BaseException) -> str:
+    """``MAIL_SEND_FAILED`` only when the send provably did not happen.
+
+    A transport failure (timeout, dropped connection, unreadable reply) after the request
+    went out may hide an accepted message, so it must not be retried like a plain failure.
+    """
+    try:
+        from exchangelib.errors import ResponseMessageError
+    except Exception:
+        return MAIL_SEND_OUTCOME_UNKNOWN
+    if isinstance(exc, (ValueError, TypeError, AttributeError, KeyError)):
+        return "MAIL_SEND_FAILED"  # local problem before the request was made
+    if isinstance(exc, ResponseMessageError) and type(exc).__name__ not in _AMBIGUOUS_EWS_ERRORS:
+        return "MAIL_SEND_FAILED"  # Exchange answered with a definitive refusal
+    return MAIL_SEND_OUTCOME_UNKNOWN
+
+
 REPLY_SOURCE_FIELDS = ("message_id", "references")
 FORWARD_SOURCE_FIELDS = ("message_id", "attachments")
 DRAFT_SOURCE_FIELDS = ("attachments",)
@@ -199,7 +226,7 @@ class MailSendPipeline:
         except MailSendPipelineError:
             raise
         except Exception as exc:
-            raise MailSendPipelineError(str(exc), code="MAIL_SEND_FAILED") from exc
+            raise MailSendPipelineError(str(exc), code=send_error_code(exc)) from exc
 
     def _send_threaded_reply(
         self,
@@ -244,4 +271,4 @@ class MailSendPipeline:
         except MailSendPipelineError:
             raise
         except Exception as exc:
-            raise MailSendPipelineError(str(exc), code="MAIL_SEND_FAILED") from exc
+            raise MailSendPipelineError(str(exc), code=send_error_code(exc)) from exc

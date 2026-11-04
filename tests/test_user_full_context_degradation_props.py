@@ -213,7 +213,7 @@ def test_graceful_degradation_under_partial_failures(
             return_value=[equip],
         ),
         patch(
-            "backend.api.v1.inventory._get_inventory_host",
+            "backend.services.inventory_read.get_inventory_host",
             **agent_patch_kwargs,
         ),
         patch(

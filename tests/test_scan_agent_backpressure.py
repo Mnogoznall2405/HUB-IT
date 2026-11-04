@@ -147,3 +147,25 @@ def test_note_server_queue_from_429_detail(tmp_path, monkeypatch):
     agent._note_server_queue_from_response(_Resp())
     assert agent._server_queue_pending == 2105
     assert agent._outbox_mode() == "slow"
+
+
+def test_failed_dead_letter_write_keeps_the_pending_document(monkeypatch, tmp_path):
+    """DSCAN-01: a full disk while writing dead-letter must not delete the unsent document."""
+    agent = _make_agent(monkeypatch, tmp_path)
+    path = agent._outbox_enqueue({"event_id": "event-1", "file_path": "a.pdf"})
+    assert path is not None
+    original = path.read_bytes()
+    item = agent._outbox_read(path)
+
+    def disk_full(target, payload):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(agent, "_outbox_write", disk_full)
+    assert agent._outbox_move_to_dead(path, item, "OUTBOX_MAX_AGE") is False
+    assert path.read_bytes() == original
+
+    monkeypatch.undo()
+    monkeypatch.setattr(scan_agent_module, "OUTBOX_DEAD_PATH", tmp_path / "outbox" / "dead")
+    assert agent._outbox_move_to_dead(path, item, "OUTBOX_MAX_AGE") is True
+    assert not path.exists()
+    assert len(list((tmp_path / "outbox" / "dead").glob("*.json"))) == 1

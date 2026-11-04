@@ -50,6 +50,8 @@ const PHOTO = {
 beforeEach(() => {
   vi.clearAllMocks();
   resetPhotoUploadQueue();
+  // The queue sends only under the signed-in owner of a shot, as in a real session.
+  localStorage.setItem('user', JSON.stringify({ id: 15 }));
   window.URL.createObjectURL = vi.fn(() => 'blob:mock-url');
   window.URL.revokeObjectURL = vi.fn();
   fetchContent.mockResolvedValue({ data: new Blob(['x'], { type: 'image/jpeg' }) });

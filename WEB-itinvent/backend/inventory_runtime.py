@@ -680,10 +680,11 @@ def _get_inventory_host(mac_address: str) -> Optional[Dict[str, Any]]:
 def _save_inventory_host(
     record: Dict[str, Any],
     current_data: Optional[Dict[str, Dict[str, Any]]] = None,
+    change_events: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[bool]:
     app_store = _get_inventory_app_store()
     if app_store is not None:
-        return app_store.upsert_host(record)
+        return app_store.upsert_host(record, change_events=change_events)
 
     store = get_local_store()
     payload = current_data if isinstance(current_data, dict) else store.load_json(INVENTORY_FILE, default_content={})
@@ -924,7 +925,19 @@ def process_inventory_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     elif not merged.get("last_full_snapshot_at"):
         merged["last_full_snapshot_at"] = current_ts
 
-    save_result = _save_inventory_host(merged, current_data=current_data)
+    if app_store is not None and new_change_events:
+        # Bounded retention prune runs before the write, as it did before the events joined the snapshot
+        # transaction (events older than the window must not be pruned right after being stored).
+        try:
+            app_store.prune_change_events(int(time.time()) - HISTORY_RETENTION_DAYS * 24 * 60 * 60)
+        except Exception as exc:
+            logger.warning("Failed to prune inventory change history: %s", exc)
+
+    save_result = _save_inventory_host(
+        merged,
+        current_data=current_data,
+        change_events=new_change_events if app_store is not None else None,
+    )
     if save_result is False:
         return {
             "success": True,
@@ -937,10 +950,7 @@ def process_inventory_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         logger.error("Failed to save inventory snapshot")
         raise RuntimeError("Failed to save data")
 
-    if app_store is not None:
-        if new_change_events and not _append_change_events(new_change_events):
-            logger.warning("Failed to append inventory change history")
-    else:
+    if app_store is None:
         changes = _prune_old_changes(_load_changes(), current_ts)
         if new_change_events:
             changes.extend(new_change_events)

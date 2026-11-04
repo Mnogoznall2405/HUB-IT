@@ -822,6 +822,7 @@ def test_process_job_requeues_ocr_error_until_attempt_limit(monkeypatch, temp_di
         "job_id": "job-retry",
         "error_text": "Превышено время OCR",
         "summary": "Повтор OCR запланирован (1/2)",
+        "claim_attempt": 1,
     }
     assert "finalize" not in calls
     assert "deleted" not in calls
@@ -870,6 +871,7 @@ def test_process_job_fails_ocr_error_after_attempt_limit(monkeypatch, temp_dir):
         "status": "analysis_incomplete",
         "summary": "Совпадений нет (ошибка OCR)",
         "error_text": "Превышено время OCR",
+        "claim_attempt": 2,
     }
     assert calls["deleted"] == "job-final"
 
@@ -1153,3 +1155,47 @@ def test_worker_persists_incomplete_incident_atomically(temp_dir, source_kind, e
     assert job_row["finished_at"] is not None
     assert findings == 1
     assert incidents == 1
+
+
+def test_ocr_task_over_deadline_does_not_block_the_next_job_and_shutdown_is_bounded(monkeypatch, temp_dir):
+    """A hung OCR call keeps its pool slot; the pool is recycled so later jobs still run (1-slot pool)."""
+    import scan_server.worker as worker_module
+
+    worker = _make_worker(temp_dir)
+    worker._ocr_future_timeout_sec = lambda: 0.3
+    hang = threading.Event()
+    calls = []
+
+    def fake_ocr(pdf_bytes, lang, tesseract_cmd, timeout_sec, dpi):
+        calls.append(pdf_bytes)
+        if pdf_bytes == b"hung":
+            hang.wait(10)
+        return {"text": "ok " + pdf_bytes.decode(), "metrics": {}}
+
+    monkeypatch.setattr(worker_module, "IS_WINDOWS", True)  # thread pool: a timed-out task cannot be killed
+    monkeypatch.setattr(worker_module, "_ocr_pdf_job", fake_ocr)
+    try:
+        first = worker._ocr_text_from_pdf_bytes(b"hung")
+        assert first[1] == "ocr_error"
+        second = worker._ocr_text_from_pdf_bytes(b"next")
+        assert second[1] != "ocr_error" and "ok next" in second[0]
+    finally:
+        hang.set()
+        worker._shutdown_ocr_pool()
+
+
+def test_shutdown_gives_up_on_a_task_that_never_finishes():
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from scan_server.worker import _shutdown_executor_bounded
+
+    release = threading.Event()
+    pool = ThreadPoolExecutor(max_workers=1)
+    pool.submit(release.wait, 10)
+    started = time.monotonic()
+    try:
+        assert _shutdown_executor_bounded(pool, name="test", grace_sec=0.3) is False
+        assert time.monotonic() - started < 3
+    finally:
+        release.set()

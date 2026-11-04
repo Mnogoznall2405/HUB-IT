@@ -36,6 +36,26 @@ public sealed class DesktopDownloadCoordinatorTests
     }
 
     [Fact]
+    public void SessionLimitEvictsOnlyFinishedItemsAndKeepsPausedOnesCancelable()
+    {
+        var coordinator = CreateCoordinator();
+        var canceled = 0;
+        var paused = coordinator.BeginDownload("paused.zip", requestCancel: () => canceled++);
+        coordinator.PauseDownload(paused.Id);
+        Assert.Equal(DesktopDownloadState.Paused, paused.State);
+
+        for (var i = 0; i < 150; i++)
+        {
+            var item = coordinator.BeginDownload($"file{i}.pdf");
+            coordinator.CompleteDownload(item.Id, $"C:\\Downloads\\file{i}.pdf");
+        }
+
+        Assert.Contains(paused, coordinator.Items);
+        Assert.True(coordinator.TryRequestCancel(paused.Id));
+        Assert.Equal(1, canceled);
+    }
+
+    [Fact]
     public void ExpiresAnUnclaimedIntentAfterItsShortTtl()
     {
         var now = new DateTimeOffset(2026, 8, 11, 12, 0, 0, TimeSpan.Zero);

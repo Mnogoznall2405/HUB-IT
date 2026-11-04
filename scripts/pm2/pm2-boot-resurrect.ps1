@@ -252,7 +252,7 @@ if ($coldStart -and $resurrected -and $resolvedChatMode -eq 'dual' -and -not $No
     # as early as possible to stop the 502.4 handshake storm.
     $deferredWorkers = @(
         'itinvent-scan', 'itinvent-scan-worker', 'itinvent-inventory',
-        'itinvent-mail-notification-worker', 'itinvent-my-files-worker',
+        'itinvent-monitoring-worker', 'itinvent-mail-notification-worker', 'itinvent-my-files-worker',
         'itinvent-ai-chat-worker', 'itinvent-bot'
     )
     $presentNames = @((Get-Pm2SnapshotWithRetry) | ForEach-Object { $_.Name })

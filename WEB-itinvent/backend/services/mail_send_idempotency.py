@@ -413,6 +413,10 @@ class MailSendIdempotencyStore:
     def complete_failed(self, row_id: str, error_code: str | None = None) -> None:
         self._finish(row_id, status=STATUS_FAILED, result=None, error_code=error_code)
 
+    def complete_unknown(self, row_id: str, error_code: str | None = None) -> None:
+        """The send may have been accepted: later claims get ``unknown`` and never ``proceed``."""
+        self._finish(row_id, status=STATUS_UNKNOWN, result=None, error_code=error_code)
+
     def _finish(
         self,
         row_id: str,

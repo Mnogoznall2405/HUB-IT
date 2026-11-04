@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from sqlalchemy import and_, func, or_, select
 
 from backend.chat.db import chat_session
+from backend.chat.message_persistence import FileMessageCommittedError
 from backend.chat.models import (
     ChatConversation,
     ChatConversationUserState,
@@ -358,6 +359,9 @@ class ChatUploadOrchestrator:
             )
             payload = persisted_file.payload
             self._service._set_request_meta(conversation_kind=persisted_file.conversation_kind)
+        except FileMessageCommittedError:
+            # The committed message owns these files; deleting them would leave dead attachments.
+            raise
         except Exception:
             for path in written_paths:
                 try:

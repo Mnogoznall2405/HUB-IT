@@ -1,6 +1,18 @@
 import apiClient from './client';
 
 const root = '/monitoring';
+// Чтение мониторинга в рамках объекта ИТ: те же ответы, но только устройства этого объекта
+// и по праву на раздел «Мониторинг» объекта, а не на весь модуль.
+export const createObjectMonitoringAPI = (objectRef) => {
+  const base = `/it-objects/${encodeURIComponent(objectRef)}/monitoring`;
+  return {
+    overview: async (signal) => (await apiClient.get(base, { signal })).data,
+    detail: async (id, signal) => (await apiClient.get(`${base}/targets/${id}`, { signal })).data,
+    history: async (id, { interfaceId = '', hours = 24, start, end, signal } = {}) => (await apiClient.get(`${base}/targets/${id}/history`, { params: { interface_id: interfaceId, hours, start, end }, signal })).data,
+    latencyHistory: async (id, { hours = 24, start, end, after, signal } = {}) => (await apiClient.get(`${base}/targets/${id}/latency-history`, { params: { hours, start, end, after }, signal })).data,
+  };
+};
+
 export const monitoringAPI = {
   overview: async (signal) => (await apiClient.get(`${root}/overview`, { signal })).data,
   profiles: async () => (await apiClient.get(`${root}/profiles`)).data,

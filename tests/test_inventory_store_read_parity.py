@@ -154,3 +154,29 @@ def test_list_sql_contexts_core_select_matches_orm_for_bound_rows_only(temp_dir)
     contexts = store.list_sql_contexts(hosts=hosts, db_ids=["DB1"])
     assert ("AABBCCDDEE01", "pc-01", "DB1") in contexts
     assert ("AABBCCDDEE04", "pc-04", "DB1") not in contexts, "контекст без inv_no не привязка"
+
+
+def test_snapshot_and_change_events_commit_together_or_not_at_all(temp_dir):
+    # A snapshot accepted without its diff cannot be repaired later: the next report diffs against it.
+    url = f"sqlite:///{Path(temp_dir).as_posix()}/snapshot_events.db"
+    store = AppInventoryStore(database_url=url)
+    mac = "AA-BB-CC-DD-EE-77"
+    event = {
+        "event_id": "evt-1",
+        "detected_at": 1_710_000_100,
+        "mac_address": mac,
+        "hostname": "PC-77",
+        "change_types": ["cpu"],
+    }
+
+    broken = {**event, "event_id": "evt-bad", "detected_at": "not-a-number"}
+    try:
+        store.upsert_host(_host_payload(7, mac=mac, hostname="PC-77"), change_events=[event, broken])
+    except (TypeError, ValueError):
+        pass
+    assert store.list_change_events() == []
+    assert store.get_host(mac) is None  # the snapshot was rolled back with the failed events
+
+    assert store.upsert_host(_host_payload(7, mac=mac, hostname="PC-77"), change_events=[event]) is True
+    assert [row["event_id"] for row in store.list_change_events()] == ["evt-1"]
+    assert store.get_host(mac) is not None

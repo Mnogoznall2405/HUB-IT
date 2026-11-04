@@ -9,6 +9,7 @@ develop-eggs/
 dist/
 dist-debug/
 downloads/
+!desktop/Hub.Desktop/Downloads/
 eggs/
 .eggs/
 lib/

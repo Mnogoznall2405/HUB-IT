@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
+import threading
+import uuid
 import logging
 import math
 import re
@@ -1005,6 +1008,9 @@ def meeting_web_meta(base_filename: str) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+_WEB_META_REPLACE_LOCK = threading.Lock()
+
+
 def save_meeting_web_meta(
     base_filename: str, *, tags: List[str], project: str
 ) -> Optional[Dict[str, Any]]:
@@ -1020,10 +1026,21 @@ def save_meeting_web_meta(
         "updated_at": datetime.now(tz=timezone.utc).isoformat(),
     }
     target = mdir / _WEB_META_NAME
-    tmp = mdir / f"{_WEB_META_NAME}.tmp"
+    # Unique staging file: parallel edits of one meeting must not write into (or replace from)
+    # each other's temp file.  Last writer still wins on content (no version contract here).
+    tmp = mdir / f"{_WEB_META_NAME}.{uuid.uuid4().hex}.tmp"
     try:
         tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
-        tmp.replace(target)
+        with _WEB_META_REPLACE_LOCK:
+            for attempt in range(5):
+                try:
+                    tmp.replace(target)
+                    break
+                except PermissionError:
+                    # Windows: the target is briefly locked by a concurrent reader/replacer.
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.02 * (attempt + 1))
     except OSError as exc:
         logger.warning("Cannot write %s: %s", target, exc)
         tmp.unlink(missing_ok=True)

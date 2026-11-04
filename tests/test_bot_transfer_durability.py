@@ -89,15 +89,13 @@ class _ResolveBeforeWriteDb:
         self.closed = True
 
 
-def test_bot_operation_journal_rejects_reused_id_and_persists_checkpoints(monkeypatch):
+def test_bot_operation_journal_rejects_reused_id_and_persists_checkpoints(monkeypatch, tmp_path):
+    from local_store import SQLiteLocalStore
+
     module = importlib.import_module("bot.services.transfer_operation_store")
-    persisted: dict[str, dict] = {}
-    monkeypatch.setattr(module, "load_json_data", lambda filename, default_content: copy.deepcopy(persisted or default_content))
-    monkeypatch.setattr(
-        module,
-        "save_json_data",
-        lambda filename, data: persisted.clear() or persisted.update(copy.deepcopy(data)) or True,
-    )
+    real = SQLiteLocalStore(data_dir=tmp_path, db_path=tmp_path / "journal.db")
+    monkeypatch.setattr(module, "load_json_entry", real.get_entry)
+    monkeypatch.setattr(module, "save_json_entry", real.set_entry)
     store = module.BotTransferOperationStore("test_bot_transfer_operations.json")
     payload = _operation_payload()
 
@@ -113,6 +111,32 @@ def test_bot_operation_journal_rejects_reused_id_and_persists_checkpoints(monkey
     checkpoint = store.checkpoint("bot-journal-001", status="acts_ready", acts=[{"delivery_status": "pending"}])
     assert checkpoint["status"] == "acts_ready"
     assert store.get("bot-journal-001")["acts"] == [{"delivery_status": "pending"}]
+
+
+def test_bot_operation_checkpoint_rewrites_only_its_own_record(monkeypatch, tmp_path):
+    from local_store import SQLiteLocalStore
+
+    module = importlib.import_module("bot.services.transfer_operation_store")
+    real = SQLiteLocalStore(data_dir=tmp_path, db_path=tmp_path / "journal.db")
+    monkeypatch.setattr(module, "load_json_entry", real.get_entry)
+    monkeypatch.setattr(module, "save_json_entry", real.set_entry)
+    store = module.BotTransferOperationStore("test_bot_transfer_operations.json")
+    payload = _operation_payload()
+    store.create_or_get("old-op", payload)
+    with real._connect() as conn:
+        old_row_id = conn.execute("SELECT id FROM local_records WHERE entry_key = 'old-op'").fetchone()["id"]
+
+    other = copy.deepcopy(payload)
+    other["chat_id"] = 78
+    store.create_or_get("new-op", other)
+    store.checkpoint("new-op", status="acts_ready")
+    store.checkpoint("new-op", status="completed")
+
+    with real._connect() as conn:
+        # The history of earlier operations is untouched (same row, not deleted and re-inserted).
+        assert conn.execute("SELECT id FROM local_records WHERE entry_key = 'old-op'").fetchone()["id"] == old_row_id
+    assert store.get("old-op")["status"] == "resolved"
+    assert store.get("new-op")["status"] == "completed"
 
 
 def _operation_payload() -> dict:
@@ -285,3 +309,43 @@ async def test_bot_does_not_resend_ambiguous_sending_checkpoint_or_write_ledger(
 
     assert sent_documents == []
     assert ledger == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("module_name", ["bot.handlers.transfer", "bot.handlers.database"])
+async def test_timed_out_document_is_not_resent_but_flood_control_is_retried(tmp_path, monkeypatch, module_name):
+    from telegram.error import RetryAfter, TimedOut
+
+    handler = importlib.import_module(module_name)
+    pdf = tmp_path / "act.pdf"
+    pdf.write_bytes(b"%PDF")
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(handler.asyncio, "sleep", no_sleep)
+
+    class _FlakyBot:
+        def __init__(self, first_error):
+            self.first_error = first_error
+            self.calls = 0
+
+        async def send_document(self, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise self.first_error
+
+    async def send(bot):
+        return await handler.send_document_with_retry(
+            context=SimpleNamespace(bot=bot), chat_id=1, document_path=str(pdf), filename="act.pdf", caption="c"
+        )
+
+    # TimedOut: Telegram may already hold the document, so a second send would deliver the act twice.
+    timed_out = _FlakyBot(TimedOut())
+    assert await send(timed_out) is False
+    assert timed_out.calls == 1
+
+    # RetryAfter: the message was rejected, retrying is safe and delivers exactly once.
+    flood = _FlakyBot(RetryAfter(1))
+    assert await send(flood) is True
+    assert flood.calls == 2

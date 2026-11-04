@@ -8,6 +8,7 @@ import ImageOutlinedIcon from '@mui/icons-material/ImageOutlined';
 import InsertDriveFileOutlinedIcon from '@mui/icons-material/InsertDriveFileOutlined';
 import MovieOutlinedIcon from '@mui/icons-material/MovieOutlined';
 import PictureAsPdfOutlinedIcon from '@mui/icons-material/PictureAsPdfOutlined';
+import SlideshowOutlinedIcon from '@mui/icons-material/SlideshowOutlined';
 import TableChartOutlinedIcon from '@mui/icons-material/TableChartOutlined';
 import { getFileExtension } from '../../lib/myFilesPreview';
 export const READY_STATUSES = new Set(['ready']);
@@ -34,6 +35,7 @@ export const FILE_TYPE_META = {
   pdf: { label: 'PDF', icon: PictureAsPdfOutlinedIcon, palette: 'error' },
   document: { label: 'Документ', icon: DescriptionOutlinedIcon, palette: 'primary' },
   sheet: { label: 'Таблица', icon: TableChartOutlinedIcon, palette: 'success' },
+  slides: { label: 'Презентация', icon: SlideshowOutlinedIcon, palette: 'warning' },
   archive: { label: 'Архив', icon: ArchiveOutlinedIcon, palette: 'warning' },
   code: { label: 'Код', icon: CodeOutlinedIcon, palette: 'info' },
   text: { label: 'Текст', icon: ArticleOutlinedIcon, palette: 'info' },
@@ -50,13 +52,19 @@ export const getFileVisualMeta = (item) => {
   if (mimeType.includes('pdf') || extension === 'pdf') return FILE_TYPE_META.pdf;
   if (['doc', 'docx', 'rtf', 'odt'].includes(extension)) return FILE_TYPE_META.document;
   if (['xls', 'xlsx', 'csv', 'ods'].includes(extension)) return FILE_TYPE_META.sheet;
+  if (['ppt', 'pptx', 'odp'].includes(extension)) return FILE_TYPE_META.slides;
   if (['zip', 'rar', '7z', 'tar', 'gz', 'zst'].includes(extension)) return FILE_TYPE_META.archive;
   if (['js', 'jsx', 'ts', 'tsx', 'py', 'ps1', 'sql', 'json', 'xml', 'html', 'css', 'md'].includes(extension)) return FILE_TYPE_META.code;
   if (mimeType.startsWith('text/') || ['txt', 'log'].includes(extension)) return FILE_TYPE_META.text;
   return FILE_TYPE_META.file;
 };
 
-export const getFileVisualColors = (theme, meta) => {
+export const getFileTypeKey = (item) => {
+  const meta = getFileVisualMeta(item);
+  return Object.keys(FILE_TYPE_META).find((key) => FILE_TYPE_META[key] === meta) || 'file';
+};
+
+export const getFileVisualColors =(theme, meta) => {
   const palette = theme.palette[meta.palette] || theme.palette.primary;
   const main = palette.main || theme.palette.text.secondary;
   return {

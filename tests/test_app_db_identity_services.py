@@ -234,6 +234,41 @@ def test_session_service_throttles_app_db_touch_writes(temp_dir):
     assert service._load_sessions()[0]["last_seen_at"] == before
 
 
+def test_external_password_session_stays_alive_while_user_is_active(temp_dir, monkeypatch):
+    # The per-request order of get_current_user (is_session_active, then touch_session)
+    # must keep moving last_seen_at; otherwise the 30-minute idle window never slides.
+    # A boundary test cannot fake 40 minutes of activity, hence the controlled clock.
+    from datetime import datetime, timedelta, timezone
+
+    import backend.services.session_service as session_module
+
+    clock = {"now": datetime(2026, 11, 3, 10, 0, 0, tzinfo=timezone.utc), "mono": 1000.0}
+    monkeypatch.setattr(session_module, "_utc_now", lambda: clock["now"])
+    monkeypatch.setattr(session_module, "monotonic", lambda: clock["mono"])
+
+    service = SessionService(file_path=Path(temp_dir) / "web_sessions.json", database_url=_sqlite_url(temp_dir))
+    service.create_session(
+        session_id="external-active",
+        user_id=7,
+        username="demo",
+        role="viewer",
+        ip_address="203.0.113.5",
+        user_agent="Mozilla/5.0 Chrome/142.0.0.0",
+        expires_at="2030-03-21T10:00:00+00:00",
+        login_network_zone="external",
+    )
+
+    for _ in range(120):  # one authenticated request every 20 s for 40 minutes
+        clock["now"] += timedelta(seconds=20)
+        clock["mono"] += 20
+        assert service.is_session_active("external-active") is True
+        service.touch_session("external-active")
+
+    stored = service._load_sessions()[0]
+    assert stored["status"] == "active"
+    assert stored["last_seen_at"] > "2026-11-03T10:39"
+
+
 def test_session_service_stale_app_db_snapshot_does_not_delete_concurrent_login(temp_dir):
     service = SessionService(file_path=Path(temp_dir) / "web_sessions.json", database_url=_sqlite_url(temp_dir))
     common = {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { LegacyUploadRequired, RETRY_DELAYS_MS, uploadPhotoResumable } from './resumablePhotoUpload';
+import { LegacyUploadRequired, RETRY_DELAYS_MS, makeClientId, uploadPhotoResumable } from './resumablePhotoUpload';
 
 const CHUNK = 4;
 const SIZE = 10; // 3 куска: 4 + 4 + 2
@@ -116,5 +116,23 @@ describe('uploadPhotoResumable', () => {
 
     await expect(uploadPhotoResumable(7, photo(), {}, server.deps)).rejects.toBeInstanceOf(LegacyUploadRequired);
     expect(server.sentChunks).toEqual([]);
+  });
+
+  it('gives different upload ids to different files with the same name, size and date', async () => {
+    const make = (text) => new File([text], 'shot.jpg', { type: 'image/jpeg', lastModified: 5 });
+    const a = await makeClientId(7, 'main', make('AAAA'));
+    const b = await makeClientId(7, 'main', make('BBBB'));
+    expect(a).not.toBe(b);
+    expect(a).toBe(await makeClientId(7, 'main', make('AAAA')));
+    expect(a.startsWith('w2-')).toBe(true);
+  });
+
+  it('keeps the metadata-based id for jobs queued before the content digest format', async () => {
+    const file = new File(['AAAA'], 'shot.jpg', { type: 'image/jpeg', lastModified: 5 });
+    const legacy = await makeClientId(7, 'main', file, { legacyId: true });
+    expect(legacy.startsWith('w-')).toBe(true);
+    const server = fakeServer();
+    await uploadPhotoResumable(7, file, { dbId: 'main', legacyId: true }, server.deps);
+    expect(server.deps.api.create.mock.calls[0][1].client_id).toBe(legacy);
   });
 });

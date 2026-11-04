@@ -77,10 +77,15 @@ python scripts/migrate_identity_sqlite_to_postgres.py --database-url postgresql+
 
 To apply schema migrations for the internal PostgreSQL database (run from `WEB-itinvent/`, not `backend/` — `script_location` in `alembic.ini` is relative to that directory):
 
+The target URL is never read from `.env` (see `backend/alembic/env.py`); pass it through the protected `ALEMBIC_DATABASE_URL` environment variable instead of the command line:
+
 ```bash
 cd WEB-itinvent
+# ALEMBIC_DATABASE_URL must already be set in the operator's protected environment
 python -m alembic -c backend/alembic.ini upgrade head
 ```
+
+See the [release runbook](../scripts/pm2/README.md#миграции-бд-при-релизе) for the full procedure.
 
 To migrate built-in chat data from a legacy SQLite database into PostgreSQL:
 
@@ -88,10 +93,11 @@ To migrate built-in chat data from a legacy SQLite database into PostgreSQL:
 python scripts/migrate_chat_sqlite_to_postgres.py --source-db-path data/chat.sqlite3 --target-database-url postgresql+psycopg://user:pass@host:5432/itinvent
 ```
 
-To migrate hub data from the internal SQLite database into PostgreSQL:
+To migrate hub data from the internal SQLite database into PostgreSQL (the target URL comes from `APP_DATABASE_URL` in the protected environment). The script is a dry-run by default; `--execute` applies it, and a non-empty target is refused without `--overwrite`:
 
 ```bash
-python scripts/migrate_hub_sqlite_to_postgres.py --source-db-path data/local_store.db --target-database-url postgresql+psycopg://user:pass@host:5432/itinvent
+python scripts/migrate_hub_sqlite_to_postgres.py --source-db-path data/local_store.db
+python scripts/migrate_hub_sqlite_to_postgres.py --source-db-path data/local_store.db --execute
 ```
 
 To migrate network data from the internal SQLite database into PostgreSQL:
@@ -99,6 +105,10 @@ To migrate network data from the internal SQLite database into PostgreSQL:
 ```bash
 python scripts/migrate_network_sqlite_to_postgres.py --source-db-path data/local_store.db --target-database-url postgresql+psycopg://user:pass@host:5432/itinvent
 ```
+
+The network, mail, MFU, reminders and env-audit migrators share one safety contract: dry-run by default
+(`--execute` applies), a non-empty target needs `--overwrite`, an incomplete or empty source aborts, and
+DELETE + INSERT run in one transaction that is rolled back on any failure.
 
 To migrate transfer act reminders from the internal SQLite database into PostgreSQL:
 

@@ -288,10 +288,16 @@ def _raise_chat_http_error(exc: Exception) -> None:
             current = original
             continue
         current = current.__cause__ if isinstance(current.__cause__, BaseException) else None
-    from backend.ai_chat.service import AiRunConflictError
+    from backend.ai_chat.service import AiRunConflictError, AiRunQueueFullError
 
     if isinstance(exc, AiRunConflictError):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if isinstance(exc, AiRunQueueFullError):
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(int(exc.retry_after_sec))},
+        ) from exc
     from backend.chat.chat_group_limits import ChatSlowModeError
     from backend.chat.chat_group_service import ChatGroupRateLimitedError
 

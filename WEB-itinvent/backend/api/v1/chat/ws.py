@@ -18,6 +18,7 @@ from backend.api.deps import (
     get_current_active_user,
     get_current_session_id,
     get_current_user_from_websocket,
+    reload_active_user,
 )
 from backend.chat.ws_auth import WsSessionLease
 from backend.chat.ws_commands import dispatch_chat_ws_command
@@ -332,6 +333,24 @@ async def chat_websocket(websocket: WebSocket):
                     close_code = 4400
                     close_reason = "inactive user"
                     await websocket.close(code=4400, reason="inactive user")
+                    break
+                # DCHAT-01: the handshake User is a snapshot; pick up role/permission changes.
+                try:
+                    refreshed_user = await run_in_threadpool(reload_active_user, int(current_user.id))
+                except Exception:
+                    refreshed_user = current_user  # store hiccup: keep the last known rights
+                if refreshed_user is None:
+                    close_code = 4400
+                    close_reason = "inactive user"
+                    await websocket.close(code=4400, reason="inactive user")
+                    break
+                current_user = refreshed_user
+                try:
+                    ensure_user_permission(current_user, PERM_CHAT_READ)
+                except HTTPException:
+                    close_code = 1008
+                    close_reason = "chat access revoked"
+                    await websocket.close(code=1008, reason="chat access revoked")
                     break
 
             message_type = str((envelope or {}).get("type") or "").strip()

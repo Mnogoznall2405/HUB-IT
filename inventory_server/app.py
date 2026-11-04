@@ -38,7 +38,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("inventory-server")
 
-store = InventoryQueueStore(db_path=config.db_path)
+store = InventoryQueueStore(db_path=config.db_path, recover_interrupted=True)
 
 
 def _get_egress_store():

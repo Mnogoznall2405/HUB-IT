@@ -109,7 +109,7 @@ def _my_hosts(identity: SelfIdentity, equipment_rows: list[dict[str, Any]]) -> l
     Sources: the computer in the AD "Notes" field (written by the logon script, exact host name), hosts where
     the employee is logged in under the own AD login, and own ITinvent equipment.
     """
-    from backend.api.v1.inventory import _get_inventory_app_store, _get_inventory_host, _normalize_mac
+    from backend.services.inventory_read import get_inventory_app_store as _get_inventory_app_store, get_inventory_host as _get_inventory_host, normalize_mac as _normalize_mac
     from backend.ai_chat.tools.itinvent import _row_value
 
     hosts: dict[str, dict[str, Any]] = {}

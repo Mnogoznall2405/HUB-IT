@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from backend.api.v1.database import get_all_db_configs
+from backend.services.database_catalog import get_all_db_configs
 from backend.config import config
 from backend.services.settings_service import settings_service
 from backend.services.user_db_selection_service import user_db_selection_service

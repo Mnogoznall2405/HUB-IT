@@ -1,5 +1,4 @@
 import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
-import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, BackHandler, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { fetchMonitoringOverview, type MonitoringOverview } from '../../api/monitoringApi';
@@ -19,6 +18,7 @@ import {
   targetStatus,
   type MonitoringFilter,
 } from '../../monitoring/monitoringModel';
+import { useMonitoringActive } from '../../monitoring/useMonitoringActive';
 import { usePreferences } from '../../preferences/PreferencesContext';
 import { useFluentTokens } from '../../theme/fluentTokens';
 import { AccountScreenScaffold } from '../account/AccountChrome';
@@ -44,10 +44,15 @@ function MonitoringContent() {
   const [selectedId, setSelectedId] = useState('');
   const generation = useRef(0);
   const abort = useRef<AbortController | null>(null);
-  const loadRef = useRef<(silent: boolean) => Promise<void>>(async () => {});
+  const inFlight = useRef(false);
+  const loadRef = useRef<(silent: boolean, poll?: boolean) => Promise<void>>(async () => {});
 
-  const load = useCallback(async (silent: boolean) => {
+  const load = useCallback(async (silent: boolean, poll = false) => {
     if (!canView || offlineMode) return;
+    // A tick must not cancel a slow request: with a 16-29 s response every poll would abort
+    // the previous one and the data would never arrive. Manual/initial loads still supersede.
+    if (poll && inFlight.current) return;
+    inFlight.current = true;
     const current = ++generation.current;
     abort.current?.abort();
     const controller = new AbortController();
@@ -63,17 +68,19 @@ function MonitoringContent() {
       if (controller.signal.aborted || current !== generation.current) return;
       setError(formatApiError(cause, 'Не удалось загрузить мониторинг'));
     } finally {
-      if (current === generation.current) { setLoading(false); setRefreshing(false); }
+      if (current === generation.current) { inFlight.current = false; setLoading(false); setRefreshing(false); }
     }
   }, [canView, offlineMode]);
   useEffect(() => { loadRef.current = load; }, [load]);
 
-  useFocusEffect(useCallback(() => {
+  const active = useMonitoringActive();
+  useEffect(() => {
     if (!canView || offlineMode) { setLoading(false); return undefined; }
+    if (!active) return undefined;
     void loadRef.current(false);
-    const timer = setInterval(() => { void loadRef.current(true); }, MONITORING_REFRESH_MS);
-    return () => { clearInterval(timer); generation.current += 1; abort.current?.abort(); };
-  }, [canView, offlineMode]));
+    const timer = setInterval(() => { void loadRef.current(true, true); }, MONITORING_REFRESH_MS);
+    return () => { clearInterval(timer); generation.current += 1; inFlight.current = false; abort.current?.abort(); };
+  }, [active, canView, offlineMode]);
 
   useEffect(() => {
     if (!selectedId) return undefined;

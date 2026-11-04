@@ -6,6 +6,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from _migration_safety import add_safety_args, safe_replace
+
 
 TABLE_NAME = "env_settings_audit"
 
@@ -14,6 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Migrate env settings audit data from SQLite into PostgreSQL system schema.")
     parser.add_argument("--source-db-path", required=True, help="Path to the source env audit SQLite database.")
     parser.add_argument("--target-database-url", help="Target APP_DATABASE_URL. Defaults to current env.")
+    add_safety_args(parser)
     return parser.parse_args()
 
 
@@ -43,41 +46,37 @@ def main() -> int:
     from backend.db_schema import schema_name
 
     database_url = ensure_app_database_configured()
-    initialize_app_schema(database_url)
 
-    source = sqlite3.connect(str(source_db_path), timeout=30, check_same_thread=False)
-    source.row_factory = sqlite3.Row
-    target = SqlAlchemyCompatConnection(
-        get_app_engine(database_url),
-        table_names={TABLE_NAME},
-        schema=schema_name("system", database_url),
-        returning_id_tables={TABLE_NAME},
+    def init_target() -> None:
+        initialize_app_schema(database_url)
+
+    def open_target() -> SqlAlchemyCompatConnection:
+        return SqlAlchemyCompatConnection(
+            get_app_engine(database_url),
+            table_names={TABLE_NAME},
+            schema=schema_name("system", database_url),
+            returning_id_tables={TABLE_NAME},
+        )
+
+    source = sqlite3.connect(
+        f"file:{source_db_path.as_posix()}?mode=ro", uri=True, timeout=30, check_same_thread=False
     )
-
+    source.row_factory = sqlite3.Row
     try:
-        exists = source.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
-            (TABLE_NAME,),
-        ).fetchone()
-        target.execute(f"DELETE FROM {TABLE_NAME}")
-        target.commit()
-
-        count = 0
-        if exists:
-            rows = source.execute(f"SELECT * FROM {TABLE_NAME}").fetchall()
-            count = len(rows)
-            for row in rows:
-                payload = dict(row)
-                columns = list(payload.keys())
-                placeholders = ", ".join(["?"] * len(columns))
-                sql = f"INSERT INTO {TABLE_NAME} ({', '.join(columns)}) VALUES ({placeholders})"
-                target.execute(sql, tuple(payload[column] for column in columns))
-            target.commit()
+        counts = safe_replace(
+            source=source,
+            tables=[TABLE_NAME],
+            args=args,
+            open_target=open_target,
+            init_target=init_target,
+            sync_sequences=False,
+        )
     finally:
         source.close()
-        target.close()
+    if counts is None:
+        return 0
 
-    print(f"Env audit migration completed: {TABLE_NAME}={count}")
+    print(f"Env audit migration completed: {TABLE_NAME}={counts[TABLE_NAME]}")
     return 0
 
 

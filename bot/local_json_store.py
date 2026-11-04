@@ -21,6 +21,14 @@ def save_json_data(filename: str, data: Any) -> bool:
     return _store.save_json(Path(filename).name, data)
 
 
+def load_json_entry(filename: str, entry_key: str) -> Any:
+    return _store.get_entry(Path(filename).name, entry_key)
+
+
+def save_json_entry(filename: str, entry_key: str, payload: Any) -> bool:
+    return _store.set_entry(Path(filename).name, entry_key, payload)
+
+
 def append_json_data(filename: str, record: Any) -> bool:
     return _store.append_to_json(Path(filename).name, record)
 

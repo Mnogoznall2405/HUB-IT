@@ -14,7 +14,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from bot.local_json_store import load_json_data, save_json_data
+from bot.local_json_store import load_json_entry, save_json_entry
 
 
 TRANSFER_OPERATION_JOURNAL_FILE = "bot_transfer_operations.json"
@@ -74,24 +74,19 @@ class BotTransferOperationStore:
         self.journal_file = str(journal_file)
         self._lock = threading.RLock()
 
-    def _load(self) -> dict[str, dict[str, Any]]:
-        payload = load_json_data(self.journal_file, default_content={})
-        if not isinstance(payload, dict):
-            return {}
-        return {
-            str(key): dict(value)
-            for key, value in payload.items()
-            if isinstance(value, Mapping)
-        }
+    def _load_one(self, operation_id: str) -> dict[str, Any] | None:
+        # One keyed row: the cost of a checkpoint does not grow with the journal's history.
+        value = load_json_entry(self.journal_file, operation_id)
+        return dict(value) if isinstance(value, Mapping) else None
 
-    def _save(self, records: Mapping[str, Mapping[str, Any]]) -> None:
-        if not save_json_data(self.journal_file, dict(records)):
+    def _save_one(self, operation_id: str, record: Mapping[str, Any]) -> None:
+        if not save_json_entry(self.journal_file, operation_id, dict(record)):
             raise RuntimeError("Не удалось сохранить checkpoint операции перемещения")
 
     def get(self, operation_id: str) -> dict[str, Any] | None:
         normalized_id = _normalized_operation_id(operation_id)
         with self._lock:
-            record = self._load().get(normalized_id)
+            record = self._load_one(normalized_id)
             return copy.deepcopy(record) if record is not None else None
 
     def create_or_get(self, operation_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -100,8 +95,7 @@ class BotTransferOperationStore:
         safe_payload = copy.deepcopy(dict(payload or {}))
         fingerprint = _request_fingerprint(safe_payload)
         with self._lock:
-            records = self._load()
-            existing = records.get(normalized_id)
+            existing = self._load_one(normalized_id)
             if existing is not None:
                 if str(existing.get("request_fingerprint") or "") != fingerprint:
                     raise TransferOperationConflict(
@@ -123,8 +117,7 @@ class BotTransferOperationStore:
                 "ledger_written": False,
                 "events": [{"at": now, "status": "resolved", "note": "immutable items resolved"}],
             }
-            records[normalized_id] = record
-            self._save(records)
+            self._save_one(normalized_id, record)
             return copy.deepcopy(record)
 
     def checkpoint(
@@ -138,8 +131,7 @@ class BotTransferOperationStore:
         """Atomically persist the next locally observable operation state."""
         normalized_id = _normalized_operation_id(operation_id)
         with self._lock:
-            records = self._load()
-            record = records.get(normalized_id)
+            record = self._load_one(normalized_id)
             if record is None:
                 raise KeyError(f"Операция {normalized_id} не найдена в checkpoint store")
 
@@ -162,6 +154,5 @@ class BotTransferOperationStore:
                 }
             )
             record["events"] = events
-            records[normalized_id] = record
-            self._save(records)
+            self._save_one(normalized_id, record)
             return copy.deepcopy(record)

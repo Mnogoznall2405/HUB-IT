@@ -147,6 +147,15 @@ class _PyodbcConnectionPool:
         conn, _released_at = self._pool.get(timeout=30)
         return conn
 
+    def discard(self, conn: pyodbc.Connection) -> None:
+        """Drop a connection that is not known to be usable (failed rollback/disconnect)."""
+        try:
+            conn.close()
+        except Exception:
+            pass
+        with self._lock:
+            self._created = max(0, self._created - 1)
+
     def release(self, conn: pyodbc.Connection) -> None:
         try:
             self._pool.put_nowait((conn, time.monotonic()))
@@ -207,17 +216,26 @@ class DatabaseConnectionManager:
                 cursor.execute("SELECT * FROM ITEMS")
         """
         conn = None
+        broken = False
         try:
             conn = self._pool.acquire()
             yield conn
             conn.commit()
         except Exception:
             if conn:
-                conn.rollback()
+                try:
+                    conn.rollback()
+                except Exception:
+                    # A connection that cannot roll back is in an unknown state: never pool it,
+                    # and keep the original error as the cause the caller sees (DOPS-02).
+                    broken = True
             raise
         finally:
             if conn:
-                self._pool.release(conn)
+                if broken:
+                    self._pool.discard(conn)
+                else:
+                    self._pool.release(conn)
 
     def test_connection(self) -> bool:
         """Test if database connection is working."""

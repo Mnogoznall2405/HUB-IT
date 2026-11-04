@@ -28,6 +28,12 @@ def background_enabled():
     return os.getenv("MONITORING_BACKGROUND_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def worker_expected():
+    """True when a collector runs: in this process, or in the standalone monitoring worker."""
+    external = os.getenv("MONITORING_WORKER_EXTERNAL", "0").strip().lower() in {"1", "true", "yes", "on"}
+    return background_enabled() or external
+
+
 def record_concurrency():
     try:
         return max(1, int(os.getenv("MONITORING_RECORD_CONCURRENCY", "3")))
@@ -129,14 +135,17 @@ class NetworkMonitorService:
             return [{"id": int(r["id"]), "name": r["device_code"], "model": r["model"], "address": r["mgmt_ip"], "branch_name": r["branch_name"]} for r in rows]
 
     def save_target(self, payload, target_id=None):
-        if payload.get("network_device_id") is not None and payload["network_device_id"] not in {row["id"] for row in self.catalog()}:
+        card_id = payload.get("network_device_id")
+        # A card that is already stored on the target may have left the registry since; only a new link must exist there.
+        stored_card = self.store.probe_target(target_id, include_interfaces=False)["network_device_id"] if target_id else None
+        if card_id is not None and card_id != stored_card and card_id not in {row["id"] for row in self.catalog()}:
             raise ValueError("Выберите устройство существующего сетевого реестра")
         saved = self.store.save_target(payload, target_id)
         return self.store.detail(saved["id"])
 
-    def overview(self):
+    def overview(self, object_ref=None):
         self.store.ready()
-        return {"targets": self.store.overview_targets(self.clock()), "worker": {"enabled": background_enabled(), **self.store.worker_state()},
+        return {"targets": self.store.overview_targets(self.clock(), object_ref), "worker": {"enabled": worker_expected(), **self.store.worker_state()},
                 "checked_at": self.clock().isoformat()}
 
     async def collect(self, target_id, *, full=True, protocol=None, detail=True, queue_seconds=0, scheduled_at=None):
@@ -196,6 +205,11 @@ class NetworkMonitorService:
         await asyncio.to_thread(self.store.ready)
         self._stopping = asyncio.Event()
         self._task = asyncio.create_task(self._loop(), name="network-monitoring")
+
+    async def wait(self):
+        """Block until the collection loop ends; for the standalone worker process."""
+        if self._task is not None:
+            await self._task
 
     async def stop(self):
         self._stopping.set()

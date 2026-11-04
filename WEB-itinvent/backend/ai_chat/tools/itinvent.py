@@ -287,7 +287,7 @@ def _coerce_int(value: Any) -> int | None:
 
 def _calculate_agent_status(last_seen_at: int) -> str:
     """Determine agent status based on last heartbeat timestamp."""
-    from backend.api.v1.inventory import ONLINE_MAX_AGE_SECONDS, STALE_MAX_AGE_SECONDS
+    from backend.services.inventory_read import ONLINE_MAX_AGE_SECONDS, STALE_MAX_AGE_SECONDS
 
     if not last_seen_at:
         return "unknown"
@@ -2212,7 +2212,7 @@ class UserFullContextTool(AiTool):
 
                 if mac_address or hostname:
                     try:
-                        from backend.api.v1.inventory import _get_inventory_host, _get_inventory_app_store
+                        from backend.services.inventory_read import get_inventory_host as _get_inventory_host, get_inventory_app_store as _get_inventory_app_store
                         host = None
                         # 1. Try by MAC address (most reliable)
                         if mac_address:
@@ -2269,7 +2269,7 @@ class UserFullContextTool(AiTool):
             # Step 2b: Find active sessions for this employee (hosts where they are logged in)
             active_sessions = []
             try:
-                from backend.api.v1.inventory import _get_inventory_host, _get_inventory_app_store
+                from backend.services.inventory_read import get_inventory_host as _get_inventory_host, get_inventory_app_store as _get_inventory_app_store
                 app_store = _get_inventory_app_store()
                 if app_store is not None and (login or name):
                     # Try login variants first, then surname

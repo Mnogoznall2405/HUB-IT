@@ -153,8 +153,8 @@ class PortalUserExportService:
                     normalize_text(employee.get("department_code")),
                     normalize_text(employee.get("office_room")),
                     normalize_text(employee.get("department_location")),
-                    _first_contact_value(contact_phones.get("work"))
-                    or _first_contact_value(contact_phones.get("personal")),
+                    # Keep empty work phones empty; personal contacts are not public.
+                    _first_contact_value(contact_phones.get("work")),
                     email,
                     normalize_text(employee.get("office_address")),
                     normalize_text(employee.get("workplace_number")),

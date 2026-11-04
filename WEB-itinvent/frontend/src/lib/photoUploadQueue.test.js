@@ -177,3 +177,68 @@ describe('photo upload queue', () => {
     }
   });
 });
+
+describe('photo upload queue and the signed-in user', () => {
+  it('does not send a shot of user A under the session of user B, and sends it once A is back', async () => {
+    let signedIn = 15;
+    const upload = vi.fn().mockResolvedValue({ file_no: 1 });
+    const { queue } = makeQueue({ upload, sessionUserId: () => signedIn });
+    queue.setUser(15);
+    await queue.enqueue({ itemId: 10, userId: 15, files: [photo('a.jpg')] });
+    await flush();
+    expect(upload).toHaveBeenCalledTimes(1);
+
+    signedIn = 0; // logged out
+    await queue.enqueue({ itemId: 10, userId: 15, files: [photo('b.jpg')] });
+    await flush();
+    signedIn = 22; // user B logs in on the same browser
+    queue.resume();
+    await flush();
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(queue.getJobs()).toHaveLength(1);
+
+    signedIn = 15;
+    queue.resume();
+    await flush();
+    expect(upload.mock.calls.map((call) => call[1].name)).toEqual(['a.jpg', 'b.jpg']);
+  });
+
+  it('stops the chunks of a running upload when the user changes and keeps the shot for its owner', async () => {
+    let signedIn = 15;
+    let capturedSignal;
+    const upload = vi.fn().mockImplementation(async (_item, _blob, options) => {
+      capturedSignal = options.signal;
+      signedIn = 22; // the session changes while the first chunk is on the wire
+      options.onProgress(1, 4);
+      throw new Error('Загрузка отменена');
+    });
+    const { queue, timers } = makeQueue({ upload, sessionUserId: () => signedIn });
+    queue.setUser(15);
+    await queue.enqueue({ itemId: 10, userId: 15, files: [photo('a.jpg')] });
+    await flush();
+
+    expect(capturedSignal.aborted).toBe(true);
+    const [job] = queue.getJobs();
+    expect(job.status).toBe(STATUS.QUEUED);
+    expect(job.attempts).toBe(0);
+    expect(timers).toHaveLength(0);
+  });
+});
+
+describe('photo upload queue durability', () => {
+  it('tells the person when shots live only in this tab', async () => {
+    const volatile = { ...createMemoryStore(), isDurable: () => false };
+    const { queue } = makeQueue({ store: volatile, upload: vi.fn().mockRejectedValue(networkError()) });
+    queue.setUser(15);
+    await queue.enqueue({ itemId: 10, userId: 15, files: [photo('a.jpg')] });
+    await flush();
+    expect(queue.getJobs()[0].durable).toBe(false);
+
+    const durable = { ...createMemoryStore(), isDurable: () => true };
+    const second = makeQueue({ store: durable, upload: vi.fn().mockRejectedValue(networkError()) }).queue;
+    second.setUser(15);
+    await second.enqueue({ itemId: 10, userId: 15, files: [photo('a.jpg')] });
+    await flush();
+    expect(second.getJobs()[0].durable).toBe(true);
+  });
+});

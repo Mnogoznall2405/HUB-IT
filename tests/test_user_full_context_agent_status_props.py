@@ -48,11 +48,11 @@ def test_agent_status_online_when_age_within_threshold(age: int):
 
     with (
         patch(
-            "backend.api.v1.inventory.ONLINE_MAX_AGE_SECONDS",
+            "backend.services.inventory_read.ONLINE_MAX_AGE_SECONDS",
             MOCK_ONLINE_MAX_AGE,
         ),
         patch(
-            "backend.api.v1.inventory.STALE_MAX_AGE_SECONDS",
+            "backend.services.inventory_read.STALE_MAX_AGE_SECONDS",
             MOCK_STALE_MAX_AGE,
         ),
         patch("time.time", return_value=float(FIXED_NOW)),
@@ -78,11 +78,11 @@ def test_agent_status_stale_when_age_between_thresholds(age: int):
 
     with (
         patch(
-            "backend.api.v1.inventory.ONLINE_MAX_AGE_SECONDS",
+            "backend.services.inventory_read.ONLINE_MAX_AGE_SECONDS",
             MOCK_ONLINE_MAX_AGE,
         ),
         patch(
-            "backend.api.v1.inventory.STALE_MAX_AGE_SECONDS",
+            "backend.services.inventory_read.STALE_MAX_AGE_SECONDS",
             MOCK_STALE_MAX_AGE,
         ),
         patch("time.time", return_value=float(FIXED_NOW)),
@@ -109,11 +109,11 @@ def test_agent_status_offline_when_age_exceeds_stale_threshold(age: int):
 
     with (
         patch(
-            "backend.api.v1.inventory.ONLINE_MAX_AGE_SECONDS",
+            "backend.services.inventory_read.ONLINE_MAX_AGE_SECONDS",
             MOCK_ONLINE_MAX_AGE,
         ),
         patch(
-            "backend.api.v1.inventory.STALE_MAX_AGE_SECONDS",
+            "backend.services.inventory_read.STALE_MAX_AGE_SECONDS",
             MOCK_STALE_MAX_AGE,
         ),
         patch("time.time", return_value=float(FIXED_NOW)),
@@ -137,11 +137,11 @@ def test_agent_status_unknown_when_last_seen_is_null_or_zero(value):
     """
     with (
         patch(
-            "backend.api.v1.inventory.ONLINE_MAX_AGE_SECONDS",
+            "backend.services.inventory_read.ONLINE_MAX_AGE_SECONDS",
             MOCK_ONLINE_MAX_AGE,
         ),
         patch(
-            "backend.api.v1.inventory.STALE_MAX_AGE_SECONDS",
+            "backend.services.inventory_read.STALE_MAX_AGE_SECONDS",
             MOCK_STALE_MAX_AGE,
         ),
         patch("time.time", return_value=float(FIXED_NOW)),

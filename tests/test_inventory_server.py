@@ -474,3 +474,20 @@ def test_inventory_post_starts_dead_worker_without_lifespan(temp_dir, monkeypatc
     assert response.json()["queued"] is True
     assert fake_worker.start_count == 1
     assert fake_worker.is_alive() is True
+
+
+def test_opening_a_second_store_does_not_requeue_rows_a_worker_is_processing(temp_dir):
+    # Cleanup/vacuum open their own store next to the live worker: a claimed row must stay claimed.
+    db_path = Path(temp_dir) / "queue.db"
+    worker_store = InventoryQueueStore(db_path=db_path)
+    worker_store.enqueue({"host": "a"}, "dedupe-a")
+    claimed = worker_store.claim_next_batch(limit=10)
+    assert len(claimed) == 1
+
+    InventoryQueueStore(db_path=db_path)  # maintenance open
+
+    assert worker_store.claim_next_batch(limit=10) == []
+
+    # After a real restart the owner recovers the interrupted row explicitly.
+    restarted = InventoryQueueStore(db_path=db_path, recover_interrupted=True)
+    assert [row["id"] for row in restarted.claim_next_batch(limit=10)] == [claimed[0]["id"]]

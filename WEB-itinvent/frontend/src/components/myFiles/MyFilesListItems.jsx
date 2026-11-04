@@ -16,7 +16,10 @@ import DeleteForeverOutlinedIcon from '@mui/icons-material/DeleteForeverOutlined
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
 import DriveFileRenameOutlineRoundedIcon from '@mui/icons-material/DriveFileRenameOutlineRounded';
+import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
+import GroupOutlinedIcon from '@mui/icons-material/GroupOutlined';
+import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
 import LinkOutlinedIcon from '@mui/icons-material/LinkOutlined';
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
 import RestoreOutlinedIcon from '@mui/icons-material/RestoreOutlined';
@@ -37,6 +40,41 @@ import {
   VIRTUALIZED_CARD_SX,
   VIRTUALIZED_ROW_SX,
 } from './myFilesVisual';
+
+const ROLE_CHIP_LABELS = { edit: 'правка', comment: 'комментарии', view: 'просмотр' };
+
+export const sharedOpenLabel = (item) => (
+  item?.my_role === 'view' ? 'Открыть' : item?.my_role === 'comment' ? 'Комментировать' : 'Редактировать'
+);
+
+const coEditTitle = (item) => (
+  item?.shared_with_me
+    ? `Совместный доступ: владелец ${item.owner_username || '—'}, у вас ${ROLE_CHIP_LABELS[item.my_role] || ROLE_CHIP_LABELS.edit}. Открывается в онлайн-редакторе; чтобы работать у себя, скачайте копию`
+    : `Совместный доступ: ${Number(item?.collaborators_count || 0)} чел. Открывается в онлайн-редакторе; чтобы работать у себя, скачайте копию`
+);
+
+export const hasCoEditing = (item) => Boolean(item?.shared_with_me || Number(item?.collaborators_count || 0) > 0);
+
+function CoEditChip({ item, overlay = false }) {
+  if (!hasCoEditing(item)) return null;
+  return (
+    <Tooltip title={coEditTitle(item)}>
+      <Chip
+        size="small"
+        color="primary"
+        variant={overlay ? 'filled' : 'outlined'}
+        icon={<GroupOutlinedIcon sx={{ fontSize: 13 }} />}
+        label={item.shared_with_me ? (ROLE_CHIP_LABELS[item.my_role] || ROLE_CHIP_LABELS.edit) : 'совместно'}
+        data-testid={`my-files-coedit-${item.id}`}
+        sx={{
+          height: 18,
+          fontSize: '0.68rem',
+          ...(overlay ? { position: 'absolute', left: 14, top: 92, zIndex: 1 } : {}),
+        }}
+      />
+    </Tooltip>
+  );
+}
 
 const formatDateShort = (value) => {
   const parsed = new Date(String(value || ''));
@@ -67,9 +105,36 @@ const getRetentionTitle = (item) => {
   if (Number(item?.retention_days) === 0) return 'Хранится бессрочно, пока не удалите';
   return `Загружен на ${item?.retention_days} дн. · хранится до ${formatDateTime(item?.expires_at)}`;
 };
+// One grid for the header and every row: checkbox, name, owner, modified, size, actions (the trash drops the owner).
+export const rowGridColumns = (isTrashView) => (isTrashView
+  ? { xs: 'minmax(0,1fr) auto', md: 'minmax(0,1fr) 170px 110px 176px' }
+  : { xs: '40px minmax(0,1fr) auto', md: '40px minmax(0,1fr) 140px 160px 96px 176px' });
+
+export const ownerLabel = (entry, currentUsername) => {
+  if (entry?.library_name) return entry.library_name;
+  const owner = String(entry?.owner_username || '').trim();
+  return owner && owner !== String(currentUsername || '') ? owner : 'Я';
+};
+
+function OwnerCell({ entry, currentUsername }) {
+  const label = ownerLabel(entry, currentUsername);
+  return (
+    <Typography
+      variant="body2"
+      color="text.secondary"
+      title={label}
+      noWrap
+      sx={{ display: { xs: 'none', md: 'block' } }}
+    >
+      {label}
+    </Typography>
+  );
+}
+
 export const FolderRow = memo(function FolderRow({
   folder,
   isTrashView,
+  currentUsername,
   canWrite,
   canShare,
   isSelected,
@@ -80,6 +145,7 @@ export const FolderRow = memo(function FolderRow({
   openFolderActionsMenu,
   openRenameDialog,
   handleFolderShare,
+  onFolderCollaborators,
   handleDeleteFolder,
   handleRestoreEntry,
   handlePurgeEntry,
@@ -89,25 +155,24 @@ export const FolderRow = memo(function FolderRow({
   const theme = useTheme();
   const folderColors = getFileVisualColors(theme, { palette: 'warning' });
   const rowKey = `folder:${folder.id}`;
+  const sharedWithMe = Boolean(folder.shared_with_me);
   return (
     <Box
       data-testid={`my-files-folder-${folder.id}`}
-      {...(isTrashView ? {} : folderDropProps(folder))}
-      {...(isTrashView ? {} : folderDragProps(folder))}
-      onClick={() => { if (!isTrashView) navigateToFolder(folder.id); }}
+      {...(isTrashView || sharedWithMe ? {} : folderDropProps(folder))}
+      {...(isTrashView || sharedWithMe ? {} : folderDragProps(folder))}
+      onClick={() => { if (!isTrashView) navigateToFolder(folder.id, folder.library_id); }}
       onContextMenu={(event) => { if (!isTrashView) openFolderActionsMenu(event, folder); }}
       onKeyDown={(event) => {
         if (isTrashView) return;
-        if (event.key === 'Enter') navigateToFolder(folder.id);
+        if (event.key === 'Enter') navigateToFolder(folder.id, folder.library_id);
         if (isFileActionsKeyboardShortcut(event)) openFolderActionsMenu(event, folder);
       }}
       tabIndex={0}
       sx={{
         ...VIRTUALIZED_ROW_SX,
         display: 'grid',
-        gridTemplateColumns: isTrashView
-          ? { xs: 'minmax(0,1fr) auto', md: 'minmax(0,1fr) 170px 110px 176px' }
-          : { xs: '40px minmax(0,1fr) auto', md: '40px minmax(0,1fr) 170px 110px 176px' },
+        gridTemplateColumns: rowGridColumns(isTrashView),
         gap: 1,
         alignItems: 'center',
         px: 1,
@@ -128,7 +193,7 @@ export const FolderRow = memo(function FolderRow({
         },
       }}
     >
-      {isTrashView ? null : (
+      {isTrashView ? null : sharedWithMe ? <Box /> : (
         <Checkbox
           size="small"
           checked={isSelected}
@@ -160,7 +225,9 @@ export const FolderRow = memo(function FolderRow({
           {folder.name}
         </Typography>
         {folder.is_favorite ? <StarRoundedIcon sx={{ fontSize: 15, color: 'warning.main', flex: '0 0 auto' }} /> : null}
+        <CoEditChip item={folder} />
       </Stack>
+      {isTrashView ? null : <OwnerCell entry={folder} currentUsername={currentUsername} />}
       <Typography variant="body2" color="text.secondary" sx={{ display: { xs: 'none', md: 'block' } }}>
         {formatDateTime(folder.updated_at)}
       </Typography>
@@ -194,30 +261,42 @@ export const FolderRow = memo(function FolderRow({
               </IconButton>
             </Tooltip>
           </>
+        ) : sharedWithMe ? (
+          <Tooltip title="Открыть">
+            <IconButton
+              size="small"
+              aria-label={`Открыть папку ${folder.name}`}
+              onClick={(event) => { event.stopPropagation(); navigateToFolder(folder.id, folder.library_id); }}
+            >
+              <FolderOutlinedIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
         ) : (
           <>
             <Tooltip title="Открыть">
               <IconButton
                 size="small"
                 aria-label={`Открыть папку ${folder.name}`}
-                onClick={(event) => { event.stopPropagation(); navigateToFolder(folder.id); }}
+                onClick={(event) => { event.stopPropagation(); navigateToFolder(folder.id, folder.library_id); }}
               >
                 <FolderOutlinedIcon fontSize="small" />
               </IconButton>
             </Tooltip>
-            <Tooltip title={folder.is_favorite ? 'Убрать из избранного' : 'В избранное'}>
-              <IconButton
-                size="small"
-                disabled={!canWrite}
-                aria-label={folder.is_favorite ? `Убрать «${folder.name}» из избранного` : `Добавить «${folder.name}» в избранное`}
-                data-testid={`my-files-favorite-folder-${folder.id}`}
-                onClick={(event) => { event.stopPropagation(); void onToggleFavorite(folder, 'folder'); }}
-              >
-                {folder.is_favorite
-                  ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
-                  : <StarOutlineRoundedIcon fontSize="small" />}
-              </IconButton>
-            </Tooltip>
+            {onToggleFavorite ? (
+              <Tooltip title={folder.is_favorite ? 'Убрать из избранного' : 'В избранное'}>
+                <IconButton
+                  size="small"
+                  disabled={!canWrite}
+                  aria-label={folder.is_favorite ? `Убрать «${folder.name}» из избранного` : `Добавить «${folder.name}» в избранное`}
+                  data-testid={`my-files-favorite-folder-${folder.id}`}
+                  onClick={(event) => { event.stopPropagation(); void onToggleFavorite(folder, 'folder'); }}
+                >
+                  {folder.is_favorite
+                    ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
+                    : <StarOutlineRoundedIcon fontSize="small" />}
+                </IconButton>
+              </Tooltip>
+            ) : null}
             <Tooltip title="Поделиться папкой">
               <IconButton
                 size="small"
@@ -232,6 +311,19 @@ export const FolderRow = memo(function FolderRow({
                 <ShareOutlinedIcon fontSize="small" />
               </IconButton>
             </Tooltip>
+            {onFolderCollaborators ? (
+              <Tooltip title="Совместный доступ">
+                <IconButton
+                  size="small"
+                  disabled={!canShare}
+                  aria-label={`Совместный доступ к папке ${folder.name}`}
+                  data-testid={`my-files-collab-folder-${folder.id}`}
+                  onClick={(event) => { event.stopPropagation(); onFolderCollaborators(folder); }}
+                >
+                  <GroupOutlinedIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            ) : null}
             <Tooltip title="Переименовать">
               <IconButton
                 size="small"
@@ -269,6 +361,7 @@ export const FolderRow = memo(function FolderRow({
 export const FileRow = memo(function FileRow({
   item,
   isTrashView,
+  currentUsername,
   canWrite,
   canShare,
   isSelected,
@@ -282,12 +375,19 @@ export const FileRow = memo(function FileRow({
   handleShare,
   handleDelete,
   onToggleFavorite,
+  onOpenSharedFile,
+  onOpenVersions,
+  officeEditable,
+  opensInEditor,
   toggleSelected,
 }) {
   const theme = useTheme();
   const chip = statusChip(item.status, item.error_text);
   const ready = READY_STATUSES.has(String(item.status || '').toLowerCase());
-  const previewSupported = ready && isMyFilePreviewSupported(item);
+  const sharedWithMe = Boolean(item.shared_with_me);
+  // A shared document is edited online by everyone: a click opens the editor, never a local application.
+  const editorOpen = sharedWithMe || Boolean(opensInEditor);
+  const previewSupported = !editorOpen && ready && isMyFilePreviewSupported(item);
   const meta = getFileVisualMeta(item);
   const Icon = meta.icon;
   const colors = getFileVisualColors(theme, meta);
@@ -296,13 +396,17 @@ export const FileRow = memo(function FileRow({
   return (
     <Box
       data-testid={`my-files-card-${item.id}`}
-      {...(isTrashView ? {} : fileDragProps(item))}
-      onClick={() => { if (!isTrashView && previewSupported) void openDocumentPreview(item); }}
+      {...(isTrashView || sharedWithMe ? {} : fileDragProps(item))}
+      onClick={() => {
+        if (editorOpen) { if (!isTrashView && ready) onOpenSharedFile?.(item); }
+        else if (!isTrashView && previewSupported) void openDocumentPreview(item);
+      }}
       onContextMenu={(event) => { if (!isTrashView) openFileActionsMenu(event, item); }}
       onKeyDown={(event) => {
         if (isTrashView) return;
         if (event.key === 'Enter') {
-          if (previewSupported) void openDocumentPreview(item);
+          if (editorOpen) { if (ready) onOpenSharedFile?.(item); }
+          else if (previewSupported) void openDocumentPreview(item);
           else openFileActionsMenu(event, item);
         }
         if (isFileActionsKeyboardShortcut(event)) openFileActionsMenu(event, item);
@@ -311,14 +415,12 @@ export const FileRow = memo(function FileRow({
       sx={{
         ...VIRTUALIZED_ROW_SX,
         display: 'grid',
-        gridTemplateColumns: isTrashView
-          ? { xs: 'minmax(0,1fr) auto', md: 'minmax(0,1fr) 170px 110px 176px' }
-          : { xs: '40px minmax(0,1fr) auto', md: '40px minmax(0,1fr) 170px 110px 176px' },
+        gridTemplateColumns: rowGridColumns(isTrashView),
         gap: 1,
         alignItems: 'center',
         px: 1,
         py: 0.5,
-        cursor: !isTrashView && previewSupported ? 'pointer' : 'default',
+        cursor: !isTrashView && (previewSupported || sharedWithMe) ? 'pointer' : 'default',
         borderBottom: `1px solid ${theme.palette.divider}`,
         bgcolor: isSelected ? 'action.selected' : 'transparent',
         transition: 'background-color 0.15s ease',
@@ -330,7 +432,7 @@ export const FileRow = memo(function FileRow({
         },
       }}
     >
-      {isTrashView ? null : (
+      {isTrashView ? null : sharedWithMe ? <Box /> : (
         <Checkbox
           size="small"
           checked={isSelected}
@@ -369,7 +471,8 @@ export const FileRow = memo(function FileRow({
             {String(item.status || '').toLowerCase() !== 'ready' ? (
               <Chip size="small" label={chip.label} color={chip.color} sx={{ height: 18, fontSize: '0.68rem' }} />
             ) : null}
-            {item.is_shared ? (
+            <CoEditChip item={item} />
+            {item.is_shared && !sharedWithMe ? (
               <Chip size="small" icon={<LinkOutlinedIcon sx={{ fontSize: 12 }} />} label="ссылка" variant="outlined" sx={{ height: 18, fontSize: '0.68rem' }} />
             ) : null}
             <Typography
@@ -389,6 +492,7 @@ export const FileRow = memo(function FileRow({
           </Stack>
         </Box>
       </Stack>
+      {isTrashView ? null : <OwnerCell entry={item} currentUsername={currentUsername} />}
       <Typography variant="body2" color="text.secondary" sx={{ display: { xs: 'none', md: 'block' } }}>
         {formatDateTime(item.updated_at || item.created_at)}
       </Typography>
@@ -422,23 +526,70 @@ export const FileRow = memo(function FileRow({
               </IconButton>
             </Tooltip>
           </>
-        ) : (
+        ) : sharedWithMe ? (
           <>
-            <Tooltip title={item.is_favorite ? 'Убрать из избранного' : 'В избранное'}>
+            {officeEditable !== false ? (
+              <Tooltip title={sharedOpenLabel(item)}>
+                <span>
+                  <IconButton
+                    size="small"
+                    aria-label={`${sharedOpenLabel(item)} ${fileName}`}
+                    data-testid={`my-files-shared-edit-${item.id}`}
+                    disabled={!ready}
+                    onClick={(event) => { event.stopPropagation(); onOpenSharedFile?.(item); }}
+                  >
+                    <EditOutlinedIcon fontSize="small" />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            ) : null}
+            <Tooltip title="Скачать">
               <span>
                 <IconButton
                   size="small"
-                  disabled={!canWrite}
-                  aria-label={item.is_favorite ? `Убрать «${fileName}» из избранного` : `Добавить «${fileName}» в избранное`}
-                  data-testid={`my-files-favorite-${item.id}`}
-                  onClick={(event) => { event.stopPropagation(); void onToggleFavorite(item, 'file'); }}
+                  aria-label={`Скачать ${fileName}`}
+                  data-testid={`my-files-shared-download-${item.id}`}
+                  disabled={!ready || downloading}
+                  onClick={(event) => { event.stopPropagation(); void handleDownload?.(item); }}
                 >
-                  {item.is_favorite
-                    ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
-                    : <StarOutlineRoundedIcon fontSize="small" />}
+                  {downloading ? <CircularProgress size={18} /> : <DownloadOutlinedIcon fontSize="small" />}
                 </IconButton>
               </span>
             </Tooltip>
+            {officeEditable !== false ? (
+              <Tooltip title="Предыдущие версии">
+                <span>
+                  <IconButton
+                    size="small"
+                    aria-label={`Версии ${fileName}`}
+                    disabled={!ready}
+                    onClick={(event) => { event.stopPropagation(); onOpenVersions?.(item); }}
+                  >
+                    <HistoryOutlinedIcon fontSize="small" />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            ) : null}
+          </>
+        ) : (
+          <>
+            {onToggleFavorite ? (
+              <Tooltip title={item.is_favorite ? 'Убрать из избранного' : 'В избранное'}>
+                <span>
+                  <IconButton
+                    size="small"
+                    disabled={!canWrite}
+                    aria-label={item.is_favorite ? `Убрать «${fileName}» из избранного` : `Добавить «${fileName}» в избранное`}
+                    data-testid={`my-files-favorite-${item.id}`}
+                    onClick={(event) => { event.stopPropagation(); void onToggleFavorite(item, 'file'); }}
+                  >
+                    {item.is_favorite
+                      ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
+                      : <StarOutlineRoundedIcon fontSize="small" />}
+                  </IconButton>
+                </span>
+              </Tooltip>
+            ) : null}
             <Tooltip title={previewSupported ? 'Просмотреть' : 'Предпросмотр недоступен'}>
               <span>
                 <IconButton
@@ -516,17 +667,18 @@ export const FolderCard = memo(function FolderCard({
 }) {
   const theme = useTheme();
   const rowKey = `folder:${folder.id}`;
+  const sharedWithMe = Boolean(folder.shared_with_me);
   return (
     <Paper
       variant="outlined"
       data-testid={`my-files-folder-${folder.id}`}
-      {...(isTrashView ? {} : folderDropProps(folder))}
-      {...(isTrashView ? {} : folderDragProps(folder))}
-      onClick={() => { if (!isTrashView) navigateToFolder(folder.id); }}
+      {...(isTrashView || sharedWithMe ? {} : folderDropProps(folder))}
+      {...(isTrashView || sharedWithMe ? {} : folderDragProps(folder))}
+      onClick={() => { if (!isTrashView) navigateToFolder(folder.id, folder.library_id); }}
       onContextMenu={(event) => { if (!isTrashView) openFolderActionsMenu(event, folder); }}
       onKeyDown={(event) => {
         if (isTrashView) return;
-        if (event.key === 'Enter') navigateToFolder(folder.id);
+        if (event.key === 'Enter') navigateToFolder(folder.id, folder.library_id);
         if (isFileActionsKeyboardShortcut(event)) openFolderActionsMenu(event, folder);
       }}
       tabIndex={0}
@@ -553,7 +705,7 @@ export const FolderCard = memo(function FolderCard({
         },
       }}
     >
-      {isTrashView ? null : (
+      {isTrashView || sharedWithMe ? null : (
         <Checkbox
           size="small"
           checked={isSelected}
@@ -572,30 +724,35 @@ export const FolderCard = memo(function FolderCard({
         >
           {folder.name}
         </Typography>
-        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-          {Number(folder.file_count || 0) > 0 ? `${folder.file_count} шт.` : 'Пусто'}
-        </Typography>
+        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+            {Number(folder.file_count || 0) > 0 ? `${folder.file_count} шт.` : 'Пусто'}
+          </Typography>
+          <CoEditChip item={folder} />
+        </Stack>
       </Box>
-      {isTrashView ? null : (
+      {isTrashView || sharedWithMe ? null : (
         <>
-          <IconButton
-            size="small"
-            disabled={!canWrite}
-            aria-label={folder.is_favorite ? `Убрать «${folder.name}» из избранного` : `Добавить «${folder.name}» в избранное`}
-            data-testid={`my-files-favorite-folder-${folder.id}`}
-            data-folder-fav
-            onClick={(event) => { event.stopPropagation(); void onToggleFavorite(folder, 'folder'); }}
-            sx={{
-              p: 0.5,
-              opacity: { xs: 1, md: folder.is_favorite ? 1 : 0 },
-              transition: 'opacity 0.15s',
-              '@media (hover: none)': { opacity: 1 },
-            }}
-          >
-            {folder.is_favorite
-              ? <StarRoundedIcon sx={{ fontSize: 18, color: 'warning.main' }} />
-              : <StarOutlineRoundedIcon sx={{ fontSize: 18 }} />}
-          </IconButton>
+          {onToggleFavorite ? (
+            <IconButton
+              size="small"
+              disabled={!canWrite}
+              aria-label={folder.is_favorite ? `Убрать «${folder.name}» из избранного` : `Добавить «${folder.name}» в избранное`}
+              data-testid={`my-files-favorite-folder-${folder.id}`}
+              data-folder-fav
+              onClick={(event) => { event.stopPropagation(); void onToggleFavorite(folder, 'folder'); }}
+              sx={{
+                p: 0.5,
+                opacity: { xs: 1, md: folder.is_favorite ? 1 : 0 },
+                transition: 'opacity 0.15s',
+                '@media (hover: none)': { opacity: 1 },
+              }}
+            >
+              {folder.is_favorite
+                ? <StarRoundedIcon sx={{ fontSize: 18, color: 'warning.main' }} />
+                : <StarOutlineRoundedIcon sx={{ fontSize: 18 }} />}
+            </IconButton>
+          ) : null}
           <IconButton
             size="small"
             aria-label={`Действия с папкой ${folder.name}`}
@@ -655,12 +812,17 @@ export const FileCard = memo(function FileCard({
   handleRestoreEntry,
   handlePurgeEntry,
   onToggleFavorite,
+  onOpenSharedFile,
+  opensInEditor,
   toggleSelected,
 }) {
   const theme = useTheme();
   const chip = statusChip(item.status, item.error_text);
   const ready = READY_STATUSES.has(String(item.status || '').toLowerCase());
-  const previewSupported = ready && isMyFilePreviewSupported(item);
+  const sharedWithMe = Boolean(item.shared_with_me);
+  // A shared document is edited online by everyone: a click opens the editor, never a local application.
+  const editorOpen = sharedWithMe || Boolean(opensInEditor);
+  const previewSupported = !editorOpen && ready && isMyFilePreviewSupported(item);
   const meta = getFileVisualMeta(item);
   const Icon = meta.icon;
   const colors = getFileVisualColors(theme, meta);
@@ -670,18 +832,22 @@ export const FileCard = memo(function FileCard({
     <Paper
       variant="outlined"
       data-testid={`my-files-card-${item.id}`}
-      {...(isTrashView ? {} : fileDragProps(item))}
+      {...(isTrashView || sharedWithMe ? {} : fileDragProps(item))}
       ref={(node) => {
         if (node && !thumbUrl && !isTrashView && String(item.preview_kind || '') === 'image' && item.preview_available) {
           observeThumbTarget(node, item);
         }
       }}
-      onClick={() => { if (!isTrashView && previewSupported) void openDocumentPreview(item); }}
+      onClick={() => {
+        if (editorOpen) { if (!isTrashView && ready) onOpenSharedFile?.(item); }
+        else if (!isTrashView && previewSupported) void openDocumentPreview(item);
+      }}
       onContextMenu={(event) => { if (!isTrashView) openFileActionsMenu(event, item); }}
       onKeyDown={(event) => {
         if (isTrashView) return;
         if (event.key === 'Enter') {
-          if (previewSupported) void openDocumentPreview(item);
+          if (editorOpen) { if (ready) onOpenSharedFile?.(item); }
+          else if (previewSupported) void openDocumentPreview(item);
           else openFileActionsMenu(event, item);
         }
         if (isFileActionsKeyboardShortcut(event)) openFileActionsMenu(event, item);
@@ -693,7 +859,7 @@ export const FileCard = memo(function FileCard({
         p: 1,
         pb: 1.25,
         textAlign: 'center',
-        cursor: !isTrashView && previewSupported ? 'pointer' : 'default',
+        cursor: !isTrashView && (previewSupported || sharedWithMe) ? 'pointer' : 'default',
         bgcolor: isSelected ? 'action.selected' : undefined,
         transition: 'box-shadow 0.15s ease, background-color 0.15s ease',
         '&:hover': { bgcolor: 'action.hover', boxShadow: 2 },
@@ -704,7 +870,7 @@ export const FileCard = memo(function FileCard({
         },
       }}
     >
-      {isTrashView ? null : (
+      {isTrashView || sharedWithMe ? null : (
         <Checkbox
           size="small"
           checked={isSelected}
@@ -723,7 +889,7 @@ export const FileCard = memo(function FileCard({
           }}
         />
       )}
-      {isTrashView ? null : (
+      {isTrashView || sharedWithMe || !onToggleFavorite ? null : (
         <IconButton
           size="small"
           disabled={!canWrite}
@@ -780,6 +946,7 @@ export const FileCard = memo(function FileCard({
           <Icon sx={{ fontSize: 44 }} />
         </Box>
       )}
+      <CoEditChip item={item} overlay />
       <Stack direction="row" spacing={0.75} alignItems="center" sx={{ px: 0.5, textAlign: 'left' }}>
         <Icon sx={{ fontSize: 16, color: colors.color, flex: '0 0 auto' }} />
         <Box sx={{ minWidth: 0, flex: 1 }}>

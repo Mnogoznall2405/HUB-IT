@@ -8,7 +8,7 @@ import asyncio
 import logging
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
-from telegram.error import TimedOut
+from telegram.error import RetryAfter, TimedOut
 
 from bot.config import States, Messages
 from bot.utils.decorators import require_user_access, handle_errors
@@ -52,7 +52,10 @@ async def send_document_with_retry(
     max_retries: int = 5
 ) -> bool:
     """
-    Отправляет документ с автоматическим повтором при timed out ошибке
+    Отправляет документ; повторяет только заведомо не доставленные попытки.
+
+    TimedOut неоднозначен: Telegram мог принять документ, потеряв лишь ответ, поэтому
+    после него повтора нет (иначе файл придёт дважды). Повторяется только RetryAfter.
 
     Параметры:
         context: Контекст выполнения бота
@@ -64,7 +67,7 @@ async def send_document_with_retry(
         max_retries: Максимальное количество попыток (по умолчанию 5)
 
     Возвращает:
-        bool: True если успешно отправлено, False иначе
+        bool: True если отправка подтверждена, False если не отправлено или исход неизвестен
     """
     for attempt in range(max_retries):
         try:
@@ -79,16 +82,18 @@ async def send_document_with_retry(
             logger.info(f"Документ {filename} успешно отправлен с попытки {attempt + 1}")
             return True
 
-        except TimedOut as e:
-            wait_time = (attempt + 1) * 3  # 3, 6, 9, 12, 15 секунд
-            logger.warning(
-                f"Попытка {attempt + 1}/{max_retries}: Таймаут отправки документа {filename}. "
-                f"Ждем {wait_time} сек. перед следующей попыткой..."
-            )
+        except RetryAfter as e:
+            logger.warning(f"Попытка {attempt + 1}/{max_retries}: flood control при отправке {filename}")
             if attempt < max_retries - 1:
-                await asyncio.sleep(wait_time)
+                retry_after = e.retry_after
+                wait_time = retry_after.total_seconds() if hasattr(retry_after, "total_seconds") else float(retry_after)
+                await asyncio.sleep(min(max(wait_time, 1.0), 60.0))
             else:
                 logger.error(f"Не удалось отправить документ {filename} после {max_retries} попыток")
+
+        except TimedOut:
+            logger.error(f"Таймаут отправки документа {filename}: исход неизвестен, повтор не выполняется")
+            break
 
         except Exception as e:
             logger.error(f"Ошибка отправки документа {filename}: {e}")
@@ -880,7 +885,8 @@ async def handle_export_database_callback(update: Update, context: ContextTypes.
             if not sent:
                 await context.bot.send_message(
                     chat_id=query.message.chat_id,
-                    text="❌ Не удалось отправить файл после нескольких попыток. Попробуйте позже."
+                    text="❌ Не удалось подтвердить отправку файла. Проверьте чат: файл мог прийти. "
+                         "Если его нет, повторите экспорт."
                 )
         else:
             await context.bot.send_message(

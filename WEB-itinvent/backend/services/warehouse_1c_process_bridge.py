@@ -242,6 +242,34 @@ def _preload_system_cpp_runtime() -> None:
             pass
 
 
+_FAULT_LOG_KEEPER: Any = None
+
+
+def _enable_native_crash_log() -> None:
+    """Record Python stacks of all threads when the COM worker dies natively.
+
+    The worker runs under ``pythonw`` without stderr and the parent only sees the exit code
+    (0xC0000005), so the Python call that was on the stack — import, DB driver or COM — is
+    otherwise lost.  ``WAREHOUSE_1C_WORKER_FAULT_LOG`` overrides the path; ``0`` disables it.
+    """
+
+    global _FAULT_LOG_KEEPER
+    setting = str(os.getenv("WAREHOUSE_1C_WORKER_FAULT_LOG") or "").strip()
+    if setting == "0":
+        return
+    try:
+        import faulthandler
+
+        path = Path(setting) if setting else Path(__file__).resolve().parents[3] / "logs" / "warehouse1c_worker_fault.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.open("a", encoding="utf-8", buffering=1)
+        handle.write(f"--- worker pid={os.getpid()} started {_utc_now_iso()}\n")
+        faulthandler.enable(file=handle, all_threads=True)
+        _FAULT_LOG_KEEPER = handle  # faulthandler keeps only the descriptor: the file object must stay alive
+    except Exception:
+        pass
+
+
 def _worker_exit_message(process: Any) -> str:
     code = getattr(process, "exitcode", None)
     if not isinstance(code, int):
@@ -283,6 +311,7 @@ def _worker_main(
 ) -> None:
     """Child process entry point; never executes a non-allowlisted request."""
 
+    _enable_native_crash_log()
     _preload_system_cpp_runtime()
     pythoncom = _co_initialize()
     dispatcher: Warehouse1CReadDispatcher | None = None

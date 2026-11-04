@@ -127,7 +127,10 @@ async def create_target(payload: TargetCreate, svc=Depends(service)):
 @router.put("/targets/{target_id}", dependencies=manage)
 @guarded
 async def update_target(target_id: str, payload: TargetUpdate, svc=Depends(service)):
-    return await asyncio.to_thread(svc.save_target, payload.model_dump(), target_id)
+    data = payload.model_dump()
+    if "object_ref" not in payload.model_fields_set:
+        data.pop("object_ref")  # a client that does not know the field must not detach the device
+    return await asyncio.to_thread(svc.save_target, data, target_id)
 
 
 @router.get("/targets/{target_id}")

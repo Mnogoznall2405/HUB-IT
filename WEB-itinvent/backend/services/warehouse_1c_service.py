@@ -28,6 +28,7 @@ import base64
 import binascii
 from bisect import insort
 import gc
+import json
 import logging
 import math
 import os
@@ -117,6 +118,12 @@ BALANCES_MAX_LIMIT = 500
 DISMISSED_WAREHOUSE_BALANCES_DEFAULT_LIMIT = 1000
 DISMISSED_WAREHOUSE_BALANCES_MAX_LIMIT = 5000
 DISMISSED_WAREHOUSE_REFS_MAX = 2000
+# The employee compare summary loads 1C balances in warehouse chunks: one call is capped at
+# DISMISSED_WAREHOUSE_BALANCES_MAX_LIMIT rows, which all employee warehouses together exceed.
+EMPLOYEE_COMPARE_BALANCES_CHUNK = 300
+EMPLOYEE_COMPARE_BALANCES_MAX_CALLS = 64
+# Balances of owners without Hub equipment are best effort: they must not stall the summary.
+EMPLOYEE_COMPARE_REST_BALANCES_TIMEOUT_SECONDS = 30
 DISMISSED_WAREHOUSE_REFS_BATCH = 100
 MOVEMENTS_DEFAULT_LIMIT = 500
 MOVEMENTS_MAX_LIMIT = 2000
@@ -132,11 +139,15 @@ MAX_CONCURRENT_1C_CALLS = 2
 # Employee↔1C list-badge summary: one batched 1C call costs ~5-10 s, so the
 # result is cached briefly — repeat page loads stay instant, data stays fresh
 # enough for a reconciliation indicator.
-EMPLOYEE_COMPARE_SUMMARY_TTL_SECONDS = 120
+EMPLOYEE_COMPARE_SUMMARY_TTL_SECONDS = 600
 # Past the TTL a snapshot is still served (and rebuilt in the background) up to this age.
 EMPLOYEE_COMPARE_SUMMARY_STALE_SECONDS = 1800
 # After a failed build 1C is not called again for this long; the last good snapshot is served marked stale.
 EMPLOYEE_COMPARE_FAILURE_BACKOFF_SECONDS = 60
+# The last good snapshot is also kept in the app DB, so a restart does not leave the first
+# users waiting for 1C; one older than this is not trusted and is rebuilt synchronously.
+EMPLOYEE_COMPARE_SNAPSHOT_MAX_AGE_SECONDS = 24 * 3600
+EMPLOYEE_COMPARE_SNAPSHOT_DOCUMENT = "one_c_employee_compare_summary"
 MAX_QUEUED_1C_CALLS = 16
 COM_CIRCUIT_BREAKER_FAILURES = 4
 COM_CIRCUIT_BREAKER_COOLDOWN_SECONDS = 60
@@ -190,6 +201,9 @@ PROCESS_BRIDGE_OPERATIONS = (
     "movements",
     "warehouse_movements",
 )
+# Reads that take tens of seconds (the employee compare summary) get their own COM child, so
+# they cannot hold the shared worker while ordinary requests (IT requests, balances) wait.
+PROCESS_BRIDGE_HEAVY_OPERATIONS = frozenset({"balances_by_warehouses"})
 _PROCESS_BRIDGE_DISABLED = object()
 WAREHOUSE_1C_FAILURE_CODES = frozenset({
     "queue_full", "queue_timeout", "unavailable", "worker_lost", "timeout", "circuit_open",
@@ -344,6 +358,9 @@ def decode_it_request_cursor(value: str | None) -> int:
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_SNAPSHOT_STORE_UNSET = object()
 
 
 def max_attached_file_bytes() -> int:
@@ -981,6 +998,7 @@ class Warehouse1CService:
         )
         self._process_bridge: Any | None = None
         self._catalog_process_bridge: Any | None = None
+        self._heavy_process_bridge: Any | None = None
         self._process_bridge_error = ""
         if self._process_bridge_enabled:
             try:
@@ -1013,13 +1031,29 @@ class Warehouse1CService:
                         1024,
                     ),
                 }
+                heavy_operations = {
+                    op for op in operations if op in PROCESS_BRIDGE_HEAVY_OPERATIONS
+                } if os.getenv("WAREHOUSE_1C_HEAVY_BRIDGE_ENABLED", "1").strip().lower() not in {
+                    "0", "false", "no", "off",
+                } else set()
                 self._process_bridge = Warehouse1CProcessBridge(
                     dispatcher_path,
-                    allowed_operations=[op for op in operations if op != "catalog_sync"],
+                    allowed_operations=[
+                        op for op in operations if op != "catalog_sync" and op not in heavy_operations
+                    ],
                     queue_limit=env_positive_int("WAREHOUSE_1C_BRIDGE_QUEUE_LIMIT", MAX_QUEUED_1C_CALLS, 0),
                     queue_wait_seconds=env_positive_int("WAREHOUSE_1C_BRIDGE_QUEUE_WAIT_SECONDS", 15, 0),
                     **bridge_options,
                 )
+                if heavy_operations:
+                    self._heavy_process_bridge = Warehouse1CProcessBridge(
+                        dispatcher_path,
+                        allowed_operations=heavy_operations,
+                        queue_limit=env_positive_int("WAREHOUSE_1C_HEAVY_BRIDGE_QUEUE_LIMIT", 2, 0),
+                        queue_wait_seconds=env_positive_int("WAREHOUSE_1C_HEAVY_BRIDGE_QUEUE_WAIT_SECONDS", 60, 0),
+                        process_name="warehouse1c-heavy-bridge",
+                        **bridge_options,
+                    )
                 if "catalog_sync" in operations:
                     self._catalog_process_bridge = Warehouse1CProcessBridge(
                         dispatcher_path,
@@ -1063,6 +1097,7 @@ class Warehouse1CService:
         self._employee_compare_lock = asyncio.Lock()
         self._employee_compare_rebuilds: set[str] = set()
         self._employee_compare_failures: dict[str, tuple[float, BaseException]] = {}
+        self._employee_compare_snapshot_store: Any = _SNAPSHOT_STORE_UNSET
         self._employee_compare_cap_logged_at = float("-inf")
         self._catalog_leader_status: dict[str, Any] = {
             "mode": "not_checked",
@@ -1211,7 +1246,12 @@ class Warehouse1CService:
     ) -> Any:
         if not self._process_bridge_enabled:
             return _PROCESS_BRIDGE_DISABLED
-        bridge = self._catalog_process_bridge if operation == "catalog_sync" else self._process_bridge
+        if operation == "catalog_sync":
+            bridge = self._catalog_process_bridge
+        elif operation in PROCESS_BRIDGE_HEAVY_OPERATIONS and self._heavy_process_bridge is not None:
+            bridge = self._heavy_process_bridge
+        else:
+            bridge = self._process_bridge
         if bridge is None:
             detail = self._process_bridge_error or "не настроен"
             raise Warehouse1CQueryError(f"Process bridge 1С недоступен: {detail}", reason_code="configuration_error")
@@ -1227,7 +1267,7 @@ class Warehouse1CService:
             raise Warehouse1CQueryError(f"Process bridge 1С: {exc}") from exc
 
     def shutdown(self) -> None:
-        for bridge in (self._process_bridge, self._catalog_process_bridge):
+        for bridge in (self._process_bridge, self._catalog_process_bridge, self._heavy_process_bridge):
             if bridge is None:
                 continue
             try:
@@ -1481,6 +1521,7 @@ class Warehouse1CService:
             "catalog_leader": dict(self._catalog_leader_status),
             "bridge": bridge,
             "catalog_bridge": self._catalog_process_bridge.get_status() if self._catalog_process_bridge else None,
+            "heavy_bridge": self._heavy_process_bridge.get_status() if self._heavy_process_bridge else None,
             "as_of": utc_now_iso(),
         }
 
@@ -2680,16 +2721,32 @@ class Warehouse1CService:
         observed_entry = self._employee_compare_cache.get(cache_key)
         if observed_entry and not refresh:
             age = time.monotonic() - observed_entry["at"]
-            if (
-                EMPLOYEE_COMPARE_SUMMARY_TTL_SECONDS <= age < EMPLOYEE_COMPARE_SUMMARY_STALE_SECONDS
-            ):
+            if EMPLOYEE_COMPARE_SUMMARY_TTL_SECONDS <= age < EMPLOYEE_COMPARE_SNAPSHOT_MAX_AGE_SECONDS:
                 # Stale-while-revalidate: the badges are advisory, so answer from the previous
                 # snapshot at once and rebuild in the background instead of making the user
-                # wait for the 1C call.
+                # wait for the 1C call. Past the STALE window the answer is marked stale (same
+                # contract as the restored snapshot and the failure fallback); only a snapshot
+                # older than a day makes the caller wait for a fresh build.
                 self._schedule_employee_compare_rebuild(cache_key, db_id)
-                return dict(observed_entry["payload"])
+                payload = dict(observed_entry["payload"])
+                if age >= EMPLOYEE_COMPARE_SUMMARY_STALE_SECONDS:
+                    payload["stale"] = True
+                    payload["stale_age_seconds"] = int(age)
+                return payload
         async with self._employee_compare_lock:
             entry = self._employee_compare_cache.get(cache_key)
+            if entry is None:
+                # Cold process (restart): the last good snapshot survives in the app DB.
+                entry = await self._restore_employee_compare_snapshot(cache_key)
+                if entry is not None and not refresh:
+                    age = time.monotonic() - entry["at"]
+                    if age >= EMPLOYEE_COMPARE_SUMMARY_TTL_SECONDS:
+                        self._schedule_employee_compare_rebuild(cache_key, db_id)
+                    payload = dict(entry["payload"])
+                    if age >= EMPLOYEE_COMPARE_SUMMARY_STALE_SECONDS:
+                        payload["stale"] = True
+                        payload["stale_age_seconds"] = int(age)
+                    return payload
             if (
                 entry
                 and (time.monotonic() - entry["at"]) < EMPLOYEE_COMPARE_SUMMARY_TTL_SECONDS
@@ -2708,10 +2765,12 @@ class Warehouse1CService:
                     exc,
                 )
                 # Logged once per back-off window (the window itself suppresses repeat builds).
+                # Bridge/COM error text may carry connection details: log only the type and code.
                 logger.warning(
-                    "Employee compare summary build failed (%s): %s",
+                    "Employee compare summary build failed (%s): error_type=%s reason_code=%s",
                     "serving stale snapshot" if entry else "no snapshot",
-                    exc,
+                    type(exc).__name__,
+                    getattr(exc, "reason_code", None),
                 )
                 return self._employee_compare_fallback(entry, exc)
             self._employee_compare_failures.pop(cache_key, None)
@@ -2719,7 +2778,72 @@ class Warehouse1CService:
                 "at": time.monotonic(),
                 "payload": payload,
             }
+            await asyncio.to_thread(self._save_employee_compare_snapshot, cache_key, payload)
             return payload
+
+    def _employee_compare_snapshot_document(self, cache_key: str) -> str:
+        return f"{EMPLOYEE_COMPARE_SNAPSHOT_DOCUMENT}.{cache_key}.json"
+
+    def _employee_compare_snapshots(self) -> Any | None:
+        """App-DB JSON store for the snapshot, or None when it is not available."""
+        store = self._employee_compare_snapshot_store
+        if store is _SNAPSHOT_STORE_UNSET:
+            store = None
+            if self._uses_shared_catalog:
+                try:
+                    from backend.appdb.json_store import AppJsonDataStore
+
+                    store = AppJsonDataStore()
+                except Exception as exc:
+                    # The in-memory cache keeps working; only the restart survival is lost.
+                    logger.warning("Employee compare snapshot store is unavailable: %s", exc)
+            self._employee_compare_snapshot_store = store
+        return store
+
+    def _save_employee_compare_snapshot(self, cache_key: str, payload: dict[str, Any]) -> None:
+        store = self._employee_compare_snapshots()
+        if store is None:
+            return
+        record = {"saved_at": utc_now_iso(), "payload": payload}
+        try:
+            json.dumps(record, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            # A silently converted value would corrupt the badges after a restart: do not persist.
+            logger.warning("Employee compare snapshot is not JSON-safe and was not saved: %s", exc)
+            return
+        try:
+            store.save_json(self._employee_compare_snapshot_document(cache_key), record)
+        except Exception as exc:
+            logger.warning("Employee compare snapshot save failed: %s", exc)
+
+    def _load_employee_compare_snapshot(self, cache_key: str) -> tuple[dict[str, Any], float] | None:
+        store = self._employee_compare_snapshots()
+        if store is None:
+            return None
+        try:
+            record = store.load_json(self._employee_compare_snapshot_document(cache_key), None)
+            payload = record.get("payload") if isinstance(record, dict) else None
+            saved_at = datetime.fromisoformat(str(record.get("saved_at") or "")) if payload else None
+        except Exception as exc:
+            logger.warning("Employee compare snapshot load failed: %s", exc)
+            return None
+        if not isinstance(payload, dict) or saved_at is None:
+            return None
+        if saved_at.tzinfo is None:
+            saved_at = saved_at.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - saved_at).total_seconds()
+        if age < 0 or age > EMPLOYEE_COMPARE_SNAPSHOT_MAX_AGE_SECONDS:
+            return None
+        return payload, age
+
+    async def _restore_employee_compare_snapshot(self, cache_key: str) -> dict[str, Any] | None:
+        loaded = await asyncio.to_thread(self._load_employee_compare_snapshot, cache_key)
+        if loaded is None:
+            return None
+        payload, age = loaded
+        entry = {"at": time.monotonic() - age, "payload": payload}
+        self._employee_compare_cache[cache_key] = entry
+        return entry
 
     @staticmethod
     def _employee_compare_fallback(entry, exc: BaseException) -> dict[str, Any]:
@@ -2787,123 +2911,220 @@ class Warehouse1CService:
         warehouse_entries, catalog_meta = await asyncio.to_thread(
             self._list_warehouse_catalog_entries
         )
-        warehouses_by_surname: dict[str, list[dict[str, str]]] = {}
-        for entry in warehouse_entries:
-            ref = normalize_1c_ref(entry.get("ref"))
-            name = normalize_text(entry.get("name"))
-            if not ref or not name:
-                continue
-            # An object warehouse reads «<object> <FIO>», so the surname is not the first
-            # token: index under every token and let the FIO scorer pick the real matches.
-            for token in dict.fromkeys(person_name_tokens(name)):
-                warehouses_by_surname.setdefault(token, []).append(
-                    {"ref": ref, "name": name}
+
+        def _match_owner_warehouses() -> list[dict[str, Any]]:
+            # CPU-bound FIO scoring over thousands of owners: keep it off the event loop.
+            warehouses_by_surname: dict[str, list[dict[str, str]]] = {}
+            for entry in warehouse_entries:
+                ref = normalize_1c_ref(entry.get("ref"))
+                name = normalize_text(entry.get("name"))
+                if not ref or not name:
+                    continue
+                # An object warehouse reads «<object> <FIO>», so the surname is not the first
+                # token: index under every token and let the FIO scorer pick the real matches.
+                for token in dict.fromkeys(person_name_tokens(name)):
+                    warehouses_by_surname.setdefault(token, []).append(
+                        {"ref": ref, "name": name}
+                    )
+
+            owner_rows: list[dict[str, Any]] = []
+            for owner in owners or []:
+                try:
+                    owner_no = int(owner.get("OWNER_NO") or owner.get("owner_no") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if owner_no <= 0:
+                    continue
+                employee_name = str(
+                    owner.get("OWNER_DISPLAY_NAME") or owner.get("owner_display_name") or ""
+                ).strip()
+                has_hub_items = (
+                    owner_no in hub_counts
+                    or owner_no in no_part_counts
+                    or owner_no in sentinel_counts
                 )
+                tokens = person_name_tokens(employee_name)
+                candidates = warehouses_by_surname.get(tokens[0], []) if tokens else []
+                match = self._match_employee_warehouse_entries(employee_name, candidates)
+                # One person may own several 1C warehouses (e.g. one per object).  The FIO
+                # scorer returns all best-scored ones as «ambiguous» candidates: their balances
+                # are summed.  A full candidate list may be truncated, so it stays ambiguous.
+                owner_warehouses: list[dict[str, str]] = []
+                if match.get("status") == "matched" and match.get("warehouse"):
+                    owner_warehouses = [match["warehouse"]]
+                elif match.get("status") == "ambiguous":
+                    candidates = match.get("candidates") or []
+                    if 0 < len(candidates) < EMPLOYEE_WAREHOUSE_MATCH_LIMIT:
+                        owner_warehouses = list(candidates)
+                ambiguous = not owner_warehouses and match.get("status") == "ambiguous"
+                if not has_hub_items and not owner_warehouses and not ambiguous:
+                    continue
+                owner_rows.append({
+                    "owner_no": owner_no,
+                    "employee_name": employee_name,
+                    "has_hub_items": has_hub_items,
+                    "warehouses": owner_warehouses,
+                    "ambiguous": ambiguous,
+                    "summed": match.get("status") == "ambiguous" and bool(owner_warehouses),
+                })
+            return owner_rows
 
-        owner_rows: list[dict[str, Any]] = []
-        for owner in owners or []:
-            try:
-                owner_no = int(owner.get("OWNER_NO") or owner.get("owner_no") or 0)
-            except (TypeError, ValueError):
-                continue
-            if owner_no <= 0:
-                continue
-            employee_name = str(
-                owner.get("OWNER_DISPLAY_NAME") or owner.get("owner_display_name") or ""
-            ).strip()
-            has_hub_items = (
-                owner_no in hub_counts
-                or owner_no in no_part_counts
-                or owner_no in sentinel_counts
-            )
-            tokens = person_name_tokens(employee_name)
-            candidates = warehouses_by_surname.get(tokens[0], []) if tokens else []
-            match = self._match_employee_warehouse_entries(employee_name, candidates)
-            # One person may own several 1C warehouses (e.g. one per object).  The FIO
-            # scorer returns all best-scored ones as «ambiguous» candidates: their balances
-            # are summed.  A full candidate list may be truncated, so it stays ambiguous.
-            owner_warehouses: list[dict[str, str]] = []
-            if match.get("status") == "matched" and match.get("warehouse"):
-                owner_warehouses = [match["warehouse"]]
-            elif match.get("status") == "ambiguous":
-                candidates = match.get("candidates") or []
-                if 0 < len(candidates) < EMPLOYEE_WAREHOUSE_MATCH_LIMIT:
-                    owner_warehouses = list(candidates)
-            ambiguous = not owner_warehouses and match.get("status") == "ambiguous"
-            if not has_hub_items and not owner_warehouses and not ambiguous:
-                continue
-            owner_rows.append({
-                "owner_no": owner_no,
-                "employee_name": employee_name,
-                "warehouses": owner_warehouses,
-                "ambiguous": ambiguous,
-                "summed": match.get("status") == "ambiguous" and bool(owner_warehouses),
-            })
+        owner_rows = await asyncio.to_thread(_match_owner_warehouses)
 
-        def _collect_refs() -> list[str]:
-            return list(dict.fromkeys(
-                w["ref"] for row in owner_rows for w in row["warehouses"] if w.get("ref")
-            ))
+        def _prepare_refs(rows: list[dict[str, Any]]) -> list[str]:
+            def _collect() -> list[str]:
+                return list(dict.fromkeys(
+                    w["ref"] for row in rows for w in row["warehouses"] if w.get("ref")
+                ))
 
-        refs = _collect_refs()
-        if len(refs) > DISMISSED_WAREHOUSE_REFS_MAX:
-            # One batched call is capped: keep exact matches and show summed (ambiguous)
-            # owners as «ambiguous» again rather than failing the whole summary with 400.
-            now_mono = time.monotonic()
-            if now_mono - self._employee_compare_cap_logged_at >= 600:
-                self._employee_compare_cap_logged_at = now_mono
-                logger.warning(
-                    "Employee compare summary: %s warehouse refs exceed %s, summed candidates dropped",
-                    len(refs),
-                    DISMISSED_WAREHOUSE_REFS_MAX,
-                )
-            for row in owner_rows:
-                if row.get("summed"):
-                    row["warehouses"] = []
-                    row["ambiguous"] = True
-            refs = _collect_refs()
-        if refs:
-            balance_payload = await self.get_balances_for_warehouses(
-                warehouse_refs=refs,
-                limit=DISMISSED_WAREHOUSE_BALANCES_MAX_LIMIT,
-            )
-        else:
-            balance_payload = {
-                "items": [],
-                "status": "ok",
-                "truncated": False,
-                "as_of": utc_now_iso(),
+            refs = _collect()
+            if len(refs) > DISMISSED_WAREHOUSE_REFS_MAX:
+                # One batched call is capped: keep exact matches and show summed (ambiguous)
+                # owners as «ambiguous» again rather than failing the whole summary with 400.
+                now_mono = time.monotonic()
+                if now_mono - self._employee_compare_cap_logged_at >= 600:
+                    self._employee_compare_cap_logged_at = now_mono
+                    logger.warning(
+                        "Employee compare summary: %s warehouse refs exceed %s, summed candidates dropped",
+                        len(refs),
+                        DISMISSED_WAREHOUSE_REFS_MAX,
+                    )
+                for row in rows:
+                    if row.get("summed"):
+                        row["warehouses"] = []
+                        row["ambiguous"] = True
+                refs = _collect()
+            return refs
+
+        def _merge_balance_parts(parts: list[dict[str, Any]]) -> dict[str, Any]:
+            statuses = {(normalize_text(part.get("status")).lower() or "unknown") for part in parts}
+            truncated = any(part.get("truncated") or part.get("has_more") for part in parts)
+            return {
+                "items": [row for part in parts for row in part.get("items") or []],
+                "truncated": truncated,
+                "has_more": truncated,
+                "status": "ok" if statuses == {"ok"} and not truncated else "incomplete",
+                "as_of": min(
+                    (str(part.get("as_of")) for part in parts if part.get("as_of")),
+                    default=utc_now_iso(),
+                ),
                 "source": "live_1c",
             }
 
-        qty_by_warehouse: dict[str, dict[str, float]] = {}
-        names_by_warehouse: dict[str, dict[str, str]] = {}
-        invalid_quantity = False
-        for row in balance_payload.get("items") or []:
-            ref = normalize_1c_ref(row.get("warehouse_ref"))
-            code = db_queries._normalize_hub_part_no_text(row.get("nomenclature_code"))
-            if not ref or not code:
-                continue
-            try:
-                raw_qty = row.get("qty_balance")
-                if raw_qty is None or isinstance(raw_qty, bool):
-                    raise ValueError("Missing or boolean balance quantity")
-                qty = float(raw_qty)
-            except (TypeError, ValueError, OverflowError):
-                invalid_quantity = True
-                continue
-            if not math.isfinite(qty) or qty < 0:
-                invalid_quantity = True
-                continue
-            bucket = qty_by_warehouse.setdefault(ref, {})
-            aggregated_qty = bucket.get(code, 0.0) + qty
-            if not math.isfinite(aggregated_qty):
-                invalid_quantity = True
-                continue
-            bucket[code] = aggregated_qty
-            name = normalize_text(row.get("nomenclature_name"))
-            if name:
-                names_by_warehouse.setdefault(ref, {})[code] = name
+        async def _load_balances(refs: list[str]) -> dict[str, Any]:
+            if not refs:
+                return {
+                    "items": [],
+                    "status": "ok",
+                    "truncated": False,
+                    "as_of": utc_now_iso(),
+                    "source": "live_1c",
+                }
+            chunk_size = max(1, min(EMPLOYEE_COMPARE_BALANCES_CHUNK, DISMISSED_WAREHOUSE_REFS_MAX))
+            chunks = [refs[i:i + chunk_size] for i in range(0, len(refs), chunk_size)]
+            semaphore = asyncio.Semaphore(MAX_CONCURRENT_1C_CALLS)
+            calls_left = [EMPLOYEE_COMPARE_BALANCES_MAX_CALLS]
+
+            async def _load_chunk(chunk: list[str]) -> dict[str, Any]:
+                async with semaphore:
+                    calls_left[0] -= 1
+                    payload = await self.get_balances_for_warehouses(
+                        warehouse_refs=chunk,
+                        limit=DISMISSED_WAREHOUSE_BALANCES_MAX_LIMIT,
+                    )
+                # A chunk that hit the per-call row cap is split in half and re-read, so one
+                # busy warehouse group does not make the whole summary «incomplete».
+                if (
+                    (payload.get("truncated") or payload.get("has_more"))
+                    and len(chunk) > 1
+                    and calls_left[0] >= 2
+                ):
+                    middle = len(chunk) // 2
+                    halves = await asyncio.gather(
+                        _load_chunk(chunk[:middle]),
+                        _load_chunk(chunk[middle:]),
+                    )
+                    return _merge_balance_parts(list(halves))
+                return payload
+
+            parts = await asyncio.gather(*(_load_chunk(chunk) for chunk in chunks))
+            if len(parts) == 1:
+                return parts[0]
+            return _merge_balance_parts(list(parts))
+
+        def _index_balances(payload: dict[str, Any]):
+            qty_index: dict[str, dict[str, float]] = {}
+            name_index: dict[str, dict[str, str]] = {}
+            invalid = False
+            for row in payload.get("items") or []:
+                ref = normalize_1c_ref(row.get("warehouse_ref"))
+                code = db_queries._normalize_hub_part_no_text(row.get("nomenclature_code"))
+                if not ref or not code:
+                    continue
+                try:
+                    raw_qty = row.get("qty_balance")
+                    if raw_qty is None or isinstance(raw_qty, bool):
+                        raise ValueError("Missing or boolean balance quantity")
+                    qty = float(raw_qty)
+                except (TypeError, ValueError, OverflowError):
+                    invalid = True
+                    continue
+                if not math.isfinite(qty) or qty < 0:
+                    invalid = True
+                    continue
+                bucket = qty_index.setdefault(ref, {})
+                aggregated_qty = bucket.get(code, 0.0) + qty
+                if not math.isfinite(aggregated_qty):
+                    invalid = True
+                    continue
+                bucket[code] = aggregated_qty
+                name = normalize_text(row.get("nomenclature_name"))
+                if name:
+                    name_index.setdefault(ref, {})[code] = name
+            return qty_index, name_index, invalid
+
+        # Badges are for owners that hold Hub equipment, so their balances are the authoritative
+        # part of the summary. Owners without Hub equipment (a 1C warehouse only) are loaded
+        # alongside, best effort: a failure or truncation there marks only those owners
+        # «unknown» and must not discard the badges of everyone else.
+        primary_rows = [row for row in owner_rows if row["has_hub_items"]]
+        rest_rows = [row for row in owner_rows if not row["has_hub_items"]]
+        primary_payload = await _load_balances(_prepare_refs(primary_rows))
+        balance_payload = primary_payload
+        try:
+            rest_payload = await asyncio.wait_for(
+                _load_balances(_prepare_refs(rest_rows)),
+                timeout=EMPLOYEE_COMPARE_REST_BALANCES_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:  # best effort: only warehouse-only owners are affected
+            rest_payload = exc
+        qty_by_warehouse, names_by_warehouse, invalid_quantity = _index_balances(primary_payload)
+
+        rest_qty: dict[str, dict[str, float]] = {}
+        rest_names: dict[str, dict[str, str]] = {}
+        rest_incomplete = False
+        if isinstance(rest_payload, BaseException):
+            rest_incomplete = True
+            logger.warning(
+                "Employee compare summary: balances of owners without Hub equipment unavailable: %s",
+                rest_payload,
+            )
+        else:
+            rest_qty, rest_names, rest_invalid = _index_balances(rest_payload)
+            rest_incomplete = bool(
+                rest_invalid
+                or rest_payload.get("truncated")
+                or rest_payload.get("has_more")
+                or (normalize_text(rest_payload.get("status")).lower() or "unknown") != "ok"
+            )
+            if rest_incomplete:
+                logger.warning(
+                    "Employee compare summary: balances of owners without Hub equipment incomplete "
+                    "(status=%s truncated=%s invalid_quantity=%s)",
+                    rest_payload.get("status"),
+                    bool(rest_payload.get("truncated") or rest_payload.get("has_more")),
+                    rest_invalid,
+                )
 
         items: list[dict[str, Any]] = []
         for owner_row in owner_rows:
@@ -2913,10 +3134,12 @@ class Warehouse1CService:
             counts_map = hub_counts.get(owner_no, {})
             qty_map: dict[str, float] = {}
             part_names: dict[str, str] = {}
+            row_qty = qty_by_warehouse if owner_row["has_hub_items"] else rest_qty
+            row_names = names_by_warehouse if owner_row["has_hub_items"] else rest_names
             for owner_warehouse in owner_warehouses:
-                for code, qty in qty_by_warehouse.get(owner_warehouse["ref"], {}).items():
+                for code, qty in row_qty.get(owner_warehouse["ref"], {}).items():
                     qty_map[code] = qty_map.get(code, 0.0) + qty
-                part_names.update(names_by_warehouse.get(owner_warehouse["ref"], {}))
+                part_names.update(row_names.get(owner_warehouse["ref"], {}))
             match_cnt = diff = only_hub = only_1c = 0
             part_status: dict[str, str] = {}
             part_quantities: dict[str, dict[str, Any]] = {}
@@ -2991,6 +3214,26 @@ class Warehouse1CService:
             or catalog_meta.get("truncated")
         )
         if incomplete:
+            logger.warning(
+                "Employee compare summary incomplete: balances_status=%s balances_truncated=%s "
+                "invalid_quantity=%s catalog_truncated=%s",
+                balances_status,
+                balances_truncated,
+                invalid_quantity,
+                bool(catalog_meta.get("truncated")),
+            )
+        if rest_incomplete and not incomplete:
+            hub_owner_nos = {row["owner_no"] for row in primary_rows}
+            for item in items:
+                if item["owner_no"] in hub_owner_nos:
+                    continue
+                item["status"] = "unknown"
+                item["part_status"] = {}
+                item["part_quantities"] = {}
+                counts = item.get("counts") or {}
+                for key in ("match", "diff", "only_hub", "only_1c"):
+                    counts[key] = 0
+        if incomplete:
             for item in items:
                 item["status"] = "unknown"
                 item["part_status"] = {}
@@ -3007,6 +3250,7 @@ class Warehouse1CService:
                 "catalog_truncated": bool(catalog_meta.get("truncated")),
                 "warehouses_count": len(warehouse_entries),
                 "owners_count": len(items),
+                "no_hub_owners_status": "incomplete" if rest_incomplete else "ok",
                 "as_of": balance_payload.get("as_of") or utc_now_iso(),
                 "source": balance_payload.get("source") or "live_1c",
                 **({"reason_code": "invalid_quantity"} if invalid_quantity else {}),
@@ -3727,6 +3971,13 @@ class Warehouse1CService:
         # failed contributor must not report hub_count=0 as a fact.
         warehouse_owner_dbs: dict[str, set[str]] = {}
         count_failed_db_ids: set[str] = set()
+        # Required HUB contributors that could not be read at all.  A missing
+        # contributor is not "no equipment": the whole answer becomes incomplete.
+        owners_failed_db_ids: set[str] = set()
+        hub_only_failed_db_ids: set[str] = set()
+        # (db_id, owner_no) pairs already represented by a 1C warehouse row.  OWNER_NO is
+        # only unique inside one SQL Server database (DWH-01).
+        covered_owner_keys: set[tuple[str, int]] = set()
 
         for cfg in db_configs:
             one_db_id = str(cfg.get("id") or "").strip() or None
@@ -3739,6 +3990,7 @@ class Warehouse1CService:
                 owners = await asyncio.to_thread(db_queries.list_owners_compact, db_id=one_db_id)
             except Exception as exc:
                 logger.warning("list_owners_compact failed for db=%s: %s", one_db_id, exc)
+                owners_failed_db_ids.add(str(one_db_id or "default"))
                 continue
 
             # Explicit warehouse-owner links are authoritative.  FIO matching
@@ -3802,6 +4054,7 @@ class Warehouse1CService:
                     if owner_no <= 0:
                         continue
                     resolved.append((owner, owner_no))
+                    covered_owner_keys.add((str(one_db_id or "default"), owner_no))
                     if owner_no not in matched_owner_nos:
                         matched_owner_nos.append(owner_no)
                 if not resolved:
@@ -3856,7 +4109,6 @@ class Warehouse1CService:
                         owner_by_warehouse[cache_key] = (owner, score)
 
         enriched: list[dict[str, Any]] = []
-        covered_owner_nos: set[int] = set()
         covered_name_keys: set[str] = set()
         for row in balances:
             payload = dict(row)
@@ -3890,18 +4142,15 @@ class Warehouse1CService:
                 # unless a contributing HUB database failed its count — an
                 # unverifiable count must not be presented as a confirmed zero.
                 hub_count_unknown = bool(
-                    (warehouse_owner_dbs.get(cache_key) or set()) & count_failed_db_ids
+                    owners_failed_db_ids
+                    or (warehouse_owner_dbs.get(cache_key) or set()) & count_failed_db_ids
                 )
                 hub_count = None if hub_count_unknown else int(hub_count_by_warehouse.get(cache_key, 0))
             elif cache_key in hub_count_by_warehouse:
                 # Matched only in a non-current DB and owner_by_warehouse missed —
                 # still expose the aggregated count.
-                hub_count = int(hub_count_by_warehouse.get(cache_key, 0))
+                hub_count = None if owners_failed_db_ids else int(hub_count_by_warehouse.get(cache_key, 0))
 
-            if hub_owner_no is not None:
-                covered_owner_nos.add(hub_owner_no)
-            for owner_no in (owner_count_by_warehouse.get(cache_key) or {}):
-                covered_owner_nos.add(int(owner_no))
             if hub_employee_name:
                 covered_name_keys.add(hub_employee_name.casefold())
 
@@ -3945,7 +4194,7 @@ class Warehouse1CService:
             enriched.append(payload)
 
         # Also surface Hub owners who hold this PART_NO/model but have no 1C balance row.
-        hub_only_by_owner: dict[int, dict[str, Any]] = {}
+        hub_only_by_owner: dict[tuple[str, int], dict[str, Any]] = {}
         hub_only_limit = max(1, min(int(limit or 200), 500))
         for cfg in db_configs:
             one_db_id = str(cfg.get("id") or "").strip() or None
@@ -3967,7 +4216,9 @@ class Warehouse1CService:
                 )
             except Exception as exc:
                 logger.warning("count_all_owners_by_hub_query failed for db=%s: %s", one_db_id, exc)
+                hub_only_failed_db_ids.add(str(one_db_id or "default"))
                 continue
+            one_db_key = str(one_db_id or "default")
             for item in hub_owners or []:
                 try:
                     owner_no = int(item.get("owner_no") or 0)
@@ -3976,15 +4227,16 @@ class Warehouse1CService:
                     continue
                 if owner_no <= 0 or hub_count <= 0:
                     continue
-                if owner_no in covered_owner_nos:
+                if (one_db_key, owner_no) in covered_owner_keys:
                     continue
                 display_name = str(item.get("owner_display_name") or "").strip() or f"OWNER {owner_no}"
                 if display_name.casefold() in covered_name_keys:
                     continue
-                prev = hub_only_by_owner.get(owner_no)
+                prev = hub_only_by_owner.get((one_db_key, owner_no))
                 if prev is None:
-                    hub_only_by_owner[owner_no] = {
+                    hub_only_by_owner[(one_db_key, owner_no)] = {
                         "owner_no": owner_no,
+                        "hub_db_id": one_db_key,
                         "hub_count": hub_count,
                         "owner_display_name": display_name,
                         "owner_dept": str(item.get("owner_dept") or "").strip(),
@@ -3996,6 +4248,21 @@ class Warehouse1CService:
                         prev["owner_display_name"] = display_name
                         prev["owner_dept"] = str(item.get("owner_dept") or "").strip()
                         prev["prefer_current"] = True
+
+        hub_incomplete_db_ids = sorted(
+            owners_failed_db_ids | count_failed_db_ids | hub_only_failed_db_ids
+        )
+        hub_incomplete = bool(hub_incomplete_db_ids)
+        if hub_incomplete:
+            # A required HUB contributor is missing: never present the aggregate as a
+            # complete reconciliation or the absent data as zero.
+            if row_status == "ok":
+                row_status = "incomplete"
+            for payload in enriched:
+                payload["status"] = row_status
+                payload["exact_linked_count"] = None
+                payload["hub_incomplete_db_ids"] = hub_incomplete_db_ids
+        exact_unknown = balance_incomplete or hub_incomplete
 
         if hub_only_by_owner:
             hub_only_names = [
@@ -4025,6 +4292,7 @@ class Warehouse1CService:
                         "qty_balance": 0.0,
                         "qty_1c_total": 0.0,
                         "hub_owner_no": int(item["owner_no"]),
+                        "hub_db_id": item.get("hub_db_id") or "",
                         "hub_employee_name": display_name,
                         "hub_employee_dept": str(item.get("owner_dept") or "").strip(),
                         "hub_count": hub_count,
@@ -4034,12 +4302,13 @@ class Warehouse1CService:
                         "employment_status": employment.get("status"),
                         "employment_label": employment.get("label") or "",
                         "employment_matched_name": employment.get("matched_name"),
-                        "exact_linked_count": None if balance_incomplete else 0,
+                        "exact_linked_count": None if exact_unknown else 0,
                         "unlinked_candidate_count": hub_count,
                         "source_row_count": 0,
                         "as_of": as_of,
                         "source": "hub_only",
                         "status": row_status,
+                        **({"hub_incomplete_db_ids": hub_incomplete_db_ids} if hub_incomplete else {}),
                     }
                 )
 
@@ -4054,7 +4323,8 @@ class Warehouse1CService:
             "as_of": as_of,
             "source": balance_meta.get("source") or "live_1c",
             "status": row_status,
-            "exact": not balance_incomplete,
+            "exact": not exact_unknown,
+            **({"hub_incomplete_db_ids": hub_incomplete_db_ids} if hub_incomplete else {}),
         }
 
     def _resolve_prefer_owner_no_for_db(

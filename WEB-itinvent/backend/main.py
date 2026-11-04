@@ -28,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.config import config
-from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, fs_egress, kb, mfu, hub, mail, mailbox_quota, ad_users, vcs, ai_bots, departments, tickets, address_book, warehouse_1c, construction, docflow, system, passwords, my_files, my_files_office, debug_client_log, groups_access, company_structure, desktop_presence, itinvent_references, it_objects
+from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, fs_egress, kb, mfu, hub, mail, mailbox_quota, ad_users, vcs, ai_bots, departments, tickets, address_book, warehouse_1c, construction, docflow, system, passwords, my_files, my_files_office, my_files_libraries, debug_client_log, groups_access, company_structure, desktop_presence, itinvent_references, it_objects
 from backend.api.v1.auth import handle_safari_password_beacon_form
 from backend.runtime_role import chat_routes_enabled, get_runtime_role, heavy_api_routes_enabled
 from backend.services.ad_sync_service import background_ad_sync_loop
@@ -83,6 +83,8 @@ WAREHOUSE_1C_CATALOG_SYNC_ENABLED = _env_flag("WAREHOUSE_1C_CATALOG_SYNC_ENABLED
 TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED = _env_flag("TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED", "1")
 DOCFLOW_NOTIFICATION_BACKGROUND_ENABLED = _env_flag("DOCFLOW_NOTIFICATION_BACKGROUND_ENABLED", "1")
 SUPPRESS_NOISY_ACCESS_LOGS = _env_flag("SUPPRESS_NOISY_ACCESS_LOGS", "1")
+EVENT_LOOP_WATCHDOG_ENABLED = _env_flag("EVENT_LOOP_WATCHDOG_ENABLED", "1")
+EVENT_LOOP_WATCHDOG_THRESHOLD_MS = _env_positive_int("EVENT_LOOP_WATCHDOG_THRESHOLD_MS", 1000, 200)
 ANYIO_THREAD_TOKENS = _env_positive_int("ANYIO_THREAD_TOKENS", 200, 40)
 
 
@@ -180,6 +182,12 @@ async def lifespan(app: FastAPI):
     _install_uvicorn_access_noise_filter()
     _install_application_logger_bridge()
     thread_tokens = _configure_anyio_thread_limiter()
+    loop_watchdog = None
+    if EVENT_LOOP_WATCHDOG_ENABLED:
+        from backend.services.event_loop_watchdog import EventLoopWatchdog
+
+        loop_watchdog = EventLoopWatchdog(threshold_ms=EVENT_LOOP_WATCHDOG_THRESHOLD_MS)
+        await loop_watchdog.start()
     sync_task: asyncio.Task | None = None
     ad_app_user_sync_task: asyncio.Task | None = None
     ad_groups_access_sync_task: asyncio.Task | None = None
@@ -365,6 +373,8 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown
     print("Shutting down...")
+    if loop_watchdog is not None:
+        await loop_watchdog.stop()
     if sync_task is not None:
         sync_task.cancel()
     if ad_app_user_sync_task is not None:
@@ -449,6 +459,12 @@ async def lifespan(app: FastAPI):
         await docflow_service.aclose()
     except Exception:
         logging.getLogger(__name__).exception("Docflow 1C process bridge shutdown failed")
+    try:
+        from backend.services.docflow_absence_service import docflow_absence_service
+
+        await asyncio.to_thread(docflow_absence_service.shutdown)
+    except Exception:
+        logging.getLogger(__name__).exception("Docflow absence process bridge shutdown failed")
 
 
 # Strong references to fire-and-forget background tasks (asyncio keeps only weak ones).
@@ -617,6 +633,8 @@ app.include_router(it_objects.router, prefix="/api/v1/it-objects", tags=["IT obj
 app.include_router(docflow.router, prefix="/api/v1/docflow", tags=["1C Document Management"])
 app.include_router(system.router, prefix="/api/v1/system", tags=["System"])
 app.include_router(passwords.router, prefix="/api/v1/passwords", tags=["Passwords"])
+app.include_router(my_files_office.router, prefix="/api/v1/my-files", tags=["My Files"])
+app.include_router(my_files_libraries.router, prefix="/api/v1/my-files", tags=["My Files"])
 app.include_router(my_files.router, prefix="/api/v1/my-files", tags=["My Files"])
 app.include_router(debug_client_log.router, prefix="/api/v1/debug", tags=["Debug"])
 if config.chat.enabled and chat_routes_enabled():
@@ -633,7 +651,6 @@ elif config.chat.enabled:
 if not heavy_api_routes_enabled():
     print(
         "WARNING: backend.main loaded with non-api runtime role; "
-app.include_router(my_files_office.router, prefix="/api/v1/my-files", tags=["My Files"])
         "prefer backend.chat_main for the Chat process"
     )
 

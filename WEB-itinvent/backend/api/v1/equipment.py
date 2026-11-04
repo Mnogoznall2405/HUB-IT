@@ -109,6 +109,7 @@ from backend.services.equipment_transfer_execution_service import (
 )
 from backend.services.equipment_recent_cards_service import equipment_recent_cards_service
 from backend.services import equipment_photo_check_service
+from backend.services import equipment_photo_upload_ledger
 from backend.services import equipment_photo_upload_service
 from backend.services import equipment_photo_notification_service
 from backend.services import equipment_photo_ocr_service
@@ -3947,6 +3948,7 @@ async def create_equipment_photo_upload(
                 await run_in_threadpool(
                     equipment_photo_upload_service.discard_completed, state["upload_id"], int(current_user.id)
                 )
+                await run_in_threadpool(equipment_photo_upload_ledger.discard, state["upload_id"])
                 state = await run_in_threadpool(equipment_photo_upload_service.create_session, **session_args)
         return state
     except Exception as exc:
@@ -3987,6 +3989,45 @@ async def put_equipment_photo_upload_chunk(
         _raise_photo_upload_error(exc)
 
 
+def _recover_photo_insert(upload_id: str, session: dict, user_name: str, db_id: Optional[str]) -> Optional[int]:
+    """FILE_NO of a photo this upload already inserted before a crash, or None when it must be inserted.
+
+    A finished ledger entry whose photo still exists answers directly. An unfinished one is matched
+    against recent FILES rows of the same item and author; only an unambiguous match is adopted,
+    otherwise inserting again is safer than attaching somebody else's photo.
+    """
+    entry = equipment_photo_upload_ledger.get(upload_id)
+    if entry is None or entry["item_id"] != int(session["item_id"]):
+        return None
+    try:
+        if entry["state"] == equipment_photo_upload_ledger.STATE_DONE and entry["file_no"] is not None:
+            if equipment_photos.get_equipment_photo_meta(
+                session["item_id"], entry["file_no"], db_id, get_db_fn=queries.get_db
+            ):
+                return int(entry["file_no"])
+            return None
+        claimed = equipment_photo_upload_ledger.claimed_file_nos(int(session["item_id"]))
+        candidates = [
+            file_no
+            for file_no in equipment_photos.find_recent_photo_file_nos(
+                session["item_id"], user_name, entry["age_seconds"] + 30, db_id, get_db_fn=queries.get_db
+            )
+            if file_no not in claimed
+        ]
+    except Exception:
+        logger.warning("Photo upload recovery lookup failed upload_id=%s", upload_id, exc_info=True)
+        return None
+    if len(candidates) != 1:
+        if candidates:
+            logger.warning(
+                "Photo upload recovery is ambiguous upload_id=%s candidates=%s: inserting again", upload_id, len(candidates)
+            )
+        return None
+    equipment_photo_upload_ledger.finish(upload_id, file_no=candidates[0])
+    logger.info("Photo upload %s adopted existing FILE_NO=%s after an interrupted completion", upload_id, candidates[0])
+    return candidates[0]
+
+
 @router.post("/photo-uploads/{upload_id}/complete", response_model=EquipmentPhotoUploadResponse)
 async def complete_equipment_photo_upload(
     upload_id: str,
@@ -4005,20 +4046,33 @@ async def complete_equipment_photo_upload(
         db_id = manifest.get("db_id")
 
         def _commit(session: dict, data: bytes) -> dict:
-            inserted = equipment_photos.insert_equipment_photo(
-                item_id=session["item_id"],
-                file_name=session.get("file_name") or "",
-                file_bytes=data,
-                created_by=user_name,
-                description=session.get("description") or "",
-                mime_type=session.get("mime_type"),
-                db_id=db_id,
-            )
-            return {
-                "file_no": inserted["file_no"],
-                "item_id": inserted["item_id"],
+            result = {
+                "item_id": session["item_id"],
                 "file_name": session.get("file_name") or "",
             }
+            # FILES (SQL Server) and the upload checkpoint cannot share a transaction: the ledger
+            # remembers the insert so a retry after a crash does not add the same photo twice.
+            known_file_no = _recover_photo_insert(upload_id, session, user_name, db_id)
+            if known_file_no is not None:
+                return {**result, "file_no": known_file_no}
+            equipment_photo_upload_ledger.begin(
+                upload_id, item_id=int(session["item_id"]), created_by=user_name
+            )
+            try:
+                inserted = equipment_photos.insert_equipment_photo(
+                    item_id=session["item_id"],
+                    file_name=session.get("file_name") or "",
+                    file_bytes=data,
+                    created_by=user_name,
+                    description=session.get("description") or "",
+                    mime_type=session.get("mime_type"),
+                    db_id=db_id,
+                )
+            except (equipment_photos.EquipmentNotFoundError, equipment_photos.PhotoValidationError):
+                equipment_photo_upload_ledger.discard(upload_id)  # rejected before any row was written
+                raise
+            equipment_photo_upload_ledger.finish(upload_id, file_no=int(inserted["file_no"]))
+            return {**result, "file_no": inserted["file_no"], "item_id": inserted["item_id"]}
 
         result, created = await run_in_threadpool(
             equipment_photo_upload_service.complete,

@@ -222,8 +222,17 @@ def put_chunk(upload_id: str, user_id: int, index: int, payload: bytes) -> dict[
     return _state(directory, manifest)
 
 
-def _acquire_complete_lock(directory: Path) -> bool:
+def _read_lock_token(lock: Path) -> str:
+    try:
+        return lock.read_text(encoding="ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def _acquire_complete_lock(directory: Path) -> Optional[str]:
+    """Take the completion lock; returns the owner token, or None when someone else holds it."""
     lock = directory / _LOCK
+    token = uuid.uuid4().hex
     for _ in range(2):
         try:
             fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -233,22 +242,46 @@ def _acquire_complete_lock(directory: Path) -> bool:
             except OSError:
                 continue
             if age < COMPLETE_LOCK_STALE_SECONDS:
-                return False
+                return None
+            seen = _read_lock_token(lock)
+            # Take over only the lock we judged stale: if its owner changed meanwhile, it is fresh.
+            if _read_lock_token(lock) != seen:
+                return None
             try:
                 lock.unlink()
             except OSError:
-                return False
+                return None
             continue
-        os.close(fd)
-        return True
-    return False
+        try:
+            os.write(fd, token.encode("ascii"))
+        finally:
+            os.close(fd)
+        return token
+    return None
 
 
-def _release_complete_lock(directory: Path) -> None:
+def _release_complete_lock(directory: Path, token: str) -> None:
+    """Remove the lock only if it is still ours (it may have been taken over after going stale)."""
+    lock = directory / _LOCK
+    if _read_lock_token(lock) != token:
+        return
     try:
-        (directory / _LOCK).unlink()
+        lock.unlink()
     except OSError:
         pass
+
+
+def _heartbeat_complete_lock(directory: Path, token: str, stop: threading.Event) -> None:
+    """Keep a long commit's lock fresh so another caller does not take it over mid-flight."""
+    lock = directory / _LOCK
+    interval = max(1.0, COMPLETE_LOCK_STALE_SECONDS / 4)
+    while not stop.wait(interval):
+        if _read_lock_token(lock) != token:
+            return
+        try:
+            os.utime(lock, None)
+        except OSError:
+            return
 
 
 def complete(
@@ -266,8 +299,16 @@ def complete(
     done = _read_json(directory / _RESULT)
     if done is not None:
         return done, False
-    if not _acquire_complete_lock(directory):
+    lock_token = _acquire_complete_lock(directory)
+    if lock_token is None:
         raise UploadConflictError("upload is being completed, retry shortly")
+    heartbeat_stop = threading.Event()
+    threading.Thread(
+        target=_heartbeat_complete_lock,
+        args=(directory, lock_token, heartbeat_stop),
+        name="photo-complete-lock-heartbeat",
+        daemon=True,
+    ).start()
     try:
         done = _read_json(directory / _RESULT)
         if done is not None:
@@ -289,7 +330,8 @@ def complete(
         shutil.rmtree(directory / "chunks", ignore_errors=True)
         return result, True
     finally:
-        _release_complete_lock(directory)
+        heartbeat_stop.set()
+        _release_complete_lock(directory, lock_token)
 
 
 def discard_completed(upload_id: str, user_id: int) -> None:

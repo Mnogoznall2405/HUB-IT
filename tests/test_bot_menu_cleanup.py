@@ -9,6 +9,12 @@ import pytest
 from bot.config import States
 
 
+
+@pytest.fixture(autouse=True)
+def _allow_work_access(monkeypatch):
+    """Access policy has its own tests (test_work_access_gate.py); these exercise the flow itself."""
+    monkeypatch.setattr("bot.handlers.work.check_user_access", AsyncMock(return_value=True))
+
 def _build_message_update() -> AsyncMock:
     update = AsyncMock()
     update.effective_user = Mock()
@@ -49,6 +55,8 @@ def _extract_callback_data(reply_markup) -> list[str]:
 
 
 @pytest.mark.asyncio
+
+
 async def test_work_menu_has_no_mfu_button():
     from bot.handlers.work import start_work
 

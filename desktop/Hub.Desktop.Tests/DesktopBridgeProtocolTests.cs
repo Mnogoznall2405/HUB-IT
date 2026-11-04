@@ -328,6 +328,7 @@ public sealed class DesktopBridgeProtocolTests
                 "quick-routes",
                 "shell-status",
                 "vnc-preflight",
+                "workspace-window",
             },
             root.GetProperty("capabilities")
                 .EnumerateArray()
@@ -358,6 +359,39 @@ public sealed class DesktopBridgeProtocolTests
         Assert.False(DesktopBridgeProtocol.TryParseInbound(
             """{"type":"mail.composeWindow.open","version":1,"requestId":"req-5","route":"/mail/compose?draft_id=draft%0A1"}""",
             out _));
+    }
+
+    [Fact]
+    public void ParsesOnlyTheEditorRouteForTheWorkspaceWindow()
+    {
+        Assert.True(DesktopBridgeProtocol.TryParseInbound(
+            """{"type":"workspace.window.open","version":1,"requestId":"req-1","route":"/my-files/edit/9f8a-7b_c"}""",
+            out var message));
+        Assert.Equal(DesktopInboundMessageType.OpenWorkspaceWindow, message.Type);
+        Assert.Equal("req-1", message.WorkspaceWindow?.RequestId);
+        Assert.Equal("/my-files/edit/9f8a-7b_c", message.WorkspaceWindow?.Route);
+
+        foreach (var route in new[]
+        {
+            "/my-files",
+            "/my-files/edit/",
+            "/my-files/edit/abc?x=1",
+            "/my-files/edit/abc#frag",
+            "/my-files/edit/abc/def",
+            "/my-files/edit/%2e%2e",
+            "/mail/compose?draft_id=d1",
+            "//evil.example/my-files/edit/abc",
+            "/my-files/edit/" + new string('a', 65),
+        })
+        {
+            var json = "{\"type\":\"workspace.window.open\",\"version\":1,\"requestId\":\"req-2\",\"route\":\"" + route + "\"}";
+            Assert.False(DesktopBridgeProtocol.TryParseInbound(json, out _), route);
+        }
+
+        using var result = JsonDocument.Parse(
+            DesktopBridgeProtocol.CreateWorkspaceWindowResultMessage("req-1", "activated"));
+        Assert.Equal("workspace.window.result", result.RootElement.GetProperty("type").GetString());
+        Assert.Equal("activated", result.RootElement.GetProperty("status").GetString());
     }
 
     [Fact]

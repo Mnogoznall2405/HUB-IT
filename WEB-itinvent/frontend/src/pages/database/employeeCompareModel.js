@@ -244,7 +244,16 @@ export function isEmployeeCompareSummaryComplete(meta = null) {
       || String(balancesStatus || '').trim().toLowerCase() === 'ok');
 }
 
-export const EMPLOYEE_COMPARE_MAX_AGE_MS = 120_000;
+// Значки сверки справочные: снимок годен 30 минут (как окно stale-while-revalidate на бэкенде),
+// а обновляется в фоне раз в 10 минут — медленный мост 1С не должен гасить значки.
+export const EMPLOYEE_COMPARE_MAX_AGE_MS = 30 * 60_000;
+export const EMPLOYEE_COMPARE_REFRESH_INTERVAL_MS = 10 * 60_000;
+
+export function formatEmployeeCompareSnapshotTime(asOf) {
+  const stamp = typeof asOf === 'number' ? asOf : Date.parse(asOf);
+  if (!Number.isFinite(stamp)) return '';
+  return new Date(stamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+}
 
 export function isEmployeeCompareSnapshotFresh(asOf, now = Date.now()) {
   if (asOf === null || asOf === undefined || asOf === '') return false;

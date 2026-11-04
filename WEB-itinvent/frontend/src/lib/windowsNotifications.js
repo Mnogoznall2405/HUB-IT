@@ -218,7 +218,15 @@ export function getHubNotificationNavigateTo(item) {
     return '/database';
   }
   if (entityType === 'my_file') {
-    return '/my-files?shared=1';
+    return '/my-files?view=shared';
+  }
+  if (entityType === 'my_file_folder') {
+    const query = new URLSearchParams({ view: 'shared' });
+    if (entityId) query.set('folder', entityId);
+    return `/my-files?${query.toString()}`;
+  }
+  if (entityType === 'my_file_library') {
+    return entityId ? `/my-files?library=${encodeURIComponent(entityId)}` : '/my-files';
   }
   return '/dashboard';
 }
@@ -226,6 +234,8 @@ export function getHubNotificationNavigateTo(item) {
 export function getHubNotificationActionLabel(item) {
   const entityType = String(item?.entity_type || '').trim().toLowerCase();
   if (entityType === 'my_file') return 'Открыть файлы';
+  if (entityType === 'my_file_folder') return 'Открыть папку';
+  if (entityType === 'my_file_library') return 'Открыть общую папку';
   if (entityType === 'equipment_photo') return 'Открыть фото';
   if (entityType === 'task') return 'Открыть задачу';
   if (entityType === 'announcement') return 'Открыть публикацию';

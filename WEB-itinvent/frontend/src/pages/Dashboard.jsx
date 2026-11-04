@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import DocflowAbsencesPanel from '../components/docflow/DocflowAbsencesPanel';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import {
   Alert,
@@ -1243,7 +1244,7 @@ export default function Dashboard() {
                         {absenceInitials(item.display_name)}
                       </Box>
                     )}
-                    label={`${item.display_name} · ${item.kind_label || item.kind}`}
+                    label={`${item.source === 'zup' ? 'ЗУП' : 'HUB'} · ${item.display_name} · ${item.kind_label || item.kind}`}
                     variant="outlined"
                     sx={{ maxWidth: 260 }}
                   />
@@ -1281,7 +1282,7 @@ export default function Dashboard() {
                     <Box sx={{ minWidth: 0, flex: 1 }}>
                       <Typography variant="body2" fontWeight={800} noWrap>{item.display_name}</Typography>
                       <Typography variant="caption" color="text.secondary" noWrap>
-                        {[item.department, formatAbsenceRange(item)].filter(Boolean).join(' · ')}
+                        {[item.source === 'zup' ? 'ЗУП' : 'HUB', item.department, formatAbsenceRange(item)].filter(Boolean).join(' · ')}
                       </Typography>
                     </Box>
                     <Chip size="small" label={item.kind_label || item.kind} variant="outlined" />
@@ -1290,8 +1291,9 @@ export default function Dashboard() {
               </Stack>
             )
           ) : (
-            <EmptySection title="Сегодня все на месте" text="Записи об отпусках и неявках появятся здесь." />
+            <EmptySection title="Нет записей ЗУП и HUB" text="Записи об отпусках и неявках появятся здесь." />
           )}
+          <DocflowAbsencesPanel />
         </SectionSurface>
       );
     })(),

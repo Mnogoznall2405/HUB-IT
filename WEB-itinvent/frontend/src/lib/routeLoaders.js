@@ -87,6 +87,7 @@ export const loadMyFilesRoute = defineRouteLoader(() => {
   }
   return import('../pages/MyFiles');
 });
+export const loadMyFilesEditorRoute = defineRouteLoader(() => import('../pages/MyFilesEditor'));
 export const loadSharedFileRoute = defineRouteLoader(() => import('../pages/SharedFile'));
 export const loadSharedFolderRoute = defineRouteLoader(() => import('../pages/SharedFolder'));
 export const loadHelpRoute = defineRouteLoader(() => import('../pages/Help'));

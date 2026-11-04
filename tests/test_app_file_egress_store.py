@@ -108,3 +108,22 @@ def test_web_service_prefers_postgres_when_configured(app_db_url: str):
             }
         ]
     ) == 1
+
+
+def test_egress_store_does_not_silently_fall_back_to_sqlite(monkeypatch, tmp_path):
+    """DINT-04: a PostgreSQL outage fails closed (and is retried), SQLite needs an explicit flag."""
+    from backend.appdb import db as appdb_db
+    from backend.services import fs_egress_store_service as svc
+
+    svc.get_egress_store.cache_clear()
+    monkeypatch.setattr(appdb_db, "is_app_database_configured", lambda: False)
+    monkeypatch.delenv("FS_EGRESS_ALLOW_SQLITE_FALLBACK", raising=False)
+    monkeypatch.setenv("FS_EGRESS_DB_PATH", str(tmp_path / "fallback.db"))
+
+    with pytest.raises(svc.EgressStoreUnavailableError):
+        svc.get_egress_store()
+    assert not (tmp_path / "fallback.db").exists()
+
+    monkeypatch.setenv("FS_EGRESS_ALLOW_SQLITE_FALLBACK", "1")
+    assert svc.get_egress_store() is not None  # explicit dev/test policy; earlier failure not cached
+    svc.get_egress_store.cache_clear()

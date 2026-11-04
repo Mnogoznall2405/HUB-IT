@@ -1858,3 +1858,41 @@ def test_sticker_send_retry_reuses_message_and_drops_duplicate_file(chat_env, te
         rows = session.execute(select(func.count()).select_from(chat_models_module.ChatMessage).where(
             chat_models_module.ChatMessage.conversation_id == conversation["id"])).scalar_one()
         assert rows == 1
+
+
+def test_failure_after_commit_keeps_attachment_bytes_and_retry_returns_same_message(chat_env, monkeypatch):
+    """DCHAT-05: the response read fails after the message committed; files must survive."""
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    persistence = service._file_message_persistence
+    real_builder = persistence._build_message_payload_for_members
+    calls = {"count": 0}
+
+    def failing_once(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("synthetic read-session failure")
+        return real_builder(*args, **kwargs)
+
+    monkeypatch.setattr(persistence, "_build_message_payload_for_members", failing_once)
+    with pytest.raises(Exception):
+        service.send_files(
+            current_user_id=1, conversation_id=conversation["id"], body="doc",
+            uploads=[_upload("kept.pdf", b"%PDF-1.4 kept", "application/pdf")],
+            client_message_id="client-msg-1",
+        )
+
+    stored = [path for path in chat_env["attachments_root"].rglob("*") if path.is_file()]
+    assert stored and all(path.read_bytes() == b"%PDF-1.4 kept" for path in stored)
+
+    retried = service.send_files(
+        current_user_id=1, conversation_id=conversation["id"], body="doc",
+        uploads=[_upload("kept.pdf", b"%PDF-1.4 kept", "application/pdf")],
+        client_message_id="client-msg-1",
+    )
+    messages = service.get_messages(current_user_id=2, conversation_id=conversation["id"], limit=20)["items"]
+    assert [item["id"] for item in messages] == [retried["id"]]
+    download = service.get_attachment_for_download(
+        current_user_id=2, message_id=retried["id"], attachment_id=retried["attachments"][0]["id"],
+    )
+    assert Path(download["path"]).read_bytes() == b"%PDF-1.4 kept"

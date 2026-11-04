@@ -1,6 +1,11 @@
 import { Platform } from 'react-native';
 import { downloadAuthenticatedFile } from './authenticatedFileDownload';
-import { clearAttachmentCache, cleanupAttachmentCache, downloadTrustedChatMedia } from './nativeAttachmentDownloads';
+import {
+  clearAttachmentCache,
+  cleanupAttachmentCache,
+  downloadChatAttachment,
+  downloadTrustedChatMedia,
+} from './nativeAttachmentDownloads';
 import { getSessionGeneration } from '../auth/tokenStore';
 
 const mockFiles = new Map<string, { size: number; modifiedAt: number }>();
@@ -291,4 +296,33 @@ it('does not start queued media transfers after their cache generation is cleare
   expect(results.every((result) => result.status === 'rejected')).toBe(true);
   expect(mockedDownload).toHaveBeenCalledTimes(3);
   expect(mockFiles.size).toBe(0);
+});
+
+it('removes a plain attachment that finishes downloading after the cache was cleared (logout)', async () => {
+  jest.spyOn(Date, 'now').mockReturnValue(6_000_000_000_000);
+  let finish: () => void = () => undefined;
+  mockedDownload.mockImplementation((_url, destination) => new Promise((resolve) => {
+    finish = () => {
+      mockFiles.set(destination.uri, { size: 1024, modifiedAt: Date.now() });
+      resolve(destination);
+    };
+  }));
+
+  const pending = downloadChatAttachment({
+    id: 'a-9',
+    kind: 'file',
+    file_name: 'secret.pdf',
+    mime_type: 'application/pdf',
+    download_url: '/api/v1/chat/messages/m-1/attachments/a-9/file',
+  } as never);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(mockedDownload).toHaveBeenCalledTimes(1);
+
+  clearAttachmentCache();
+  finish();
+
+  await expect(pending).rejects.toBeDefined();
+  expect([...mockFiles.keys()].filter((uri) => uri.includes('secret.pdf'))).toEqual([]);
 });

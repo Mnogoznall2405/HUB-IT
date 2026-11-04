@@ -46,6 +46,7 @@
 - API приема (`/ingest`, `/ingest/pdf-slice`, `/ingest/document`, `/heartbeat`), очереди задач
   (`/tasks/poll`, `/tasks/{id}/result`), UI (`/incidents`, `/review-items`, `/dashboard`, `/agents`).
 - Хранилище: PostgreSQL schema `scan` при `SCAN_DATABASE_URL`, иначе SQLite `data/scan_server/scan_server.db`.
+- Схема PostgreSQL создаётся только Alembic (`scan_server/alembic`, текущий head `20261102_0003`); при старте Scan не выполняет DDL, а лишь сверяет `scan.alembic_version` с head и пишет `schema_migration_check` при расхождении. Применять явной командой при релизе: `$env:SCAN_DATABASE_URL = '<url>'; python -m alembic -c scan_server/alembic.ini upgrade head`. Для пустой одноразовой БД (разработка, тесты) есть `SCAN_SCHEMA_DEV_AUTO_CREATE=1` (по умолчанию `0`).
   План/cutover: [SCAN_POSTGRES_MIGRATION.md](./SCAN_POSTGRES_MIGRATION.md).
 - Worker обрабатывает задания и создает инциденты (`FOR UPDATE SKIP LOCKED` на PostgreSQL).
 - OCR: `rus`, 300 DPI для страницы и усиленная проверка верхней/нижней области в масштабе 400 DPI. Для русскоязычных грифов это снижает путаницу похожих кириллических и латинских букв; типовые OCR-подмены дополнительно нормализуются правилами.

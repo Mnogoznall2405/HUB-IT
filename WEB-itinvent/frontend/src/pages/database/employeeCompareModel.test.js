@@ -173,6 +173,7 @@ describe('isEmployeeCompareSnapshotFresh', () => {
 
   it('accepts a recent parseable timestamp', () => {
     expect(isEmployeeCompareSnapshotFresh('2026-05-27T11:59:30.000Z', now)).toBe(true);
+    expect(isEmployeeCompareSnapshotFresh('2026-05-27T11:45:00.000Z', now)).toBe(true);
     expect(isEmployeeCompareSnapshotFresh(now - EMPLOYEE_COMPARE_MAX_AGE_MS + 1, now)).toBe(true);
   });
 
@@ -181,7 +182,7 @@ describe('isEmployeeCompareSnapshotFresh', () => {
     expect(isEmployeeCompareSnapshotFresh(undefined, now)).toBe(false);
     expect(isEmployeeCompareSnapshotFresh('', now)).toBe(false);
     expect(isEmployeeCompareSnapshotFresh('not-a-date', now)).toBe(false);
-    expect(isEmployeeCompareSnapshotFresh('2026-05-27T11:58:00.000Z', now)).toBe(false);
+    expect(isEmployeeCompareSnapshotFresh('2026-05-27T11:20:00.000Z', now)).toBe(false);
     expect(isEmployeeCompareSnapshotFresh(now - EMPLOYEE_COMPARE_MAX_AGE_MS, now)).toBe(false);
     expect(isEmployeeCompareSnapshotFresh('2026-05-27T12:00:01.000Z', now)).toBe(false);
     expect(isEmployeeCompareSnapshotFresh(now + 1, now)).toBe(false);

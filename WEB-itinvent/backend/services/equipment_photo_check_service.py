@@ -238,8 +238,11 @@ def list_states(
         return None
 
 
-def _load_row(session, db_id: Any, item_id: int, file_no: int, with_reject: bool):
-    return session.scalar(
+def _row_select(db_id: Any, item_id: int, file_no: int, with_reject: bool):
+    # FOR UPDATE: every caller changes the row from what it just read. Without the lock,
+    # concurrent verify/reject both read NULL marks, each clears the other's field on a stale
+    # NULL (an unchanged value, so no UPDATE is emitted) and both marks survive (DEQP-04).
+    return (
         select(AppEquipmentPhotoCheck)
         .options(*_deferred(with_reject))
         .where(
@@ -247,7 +250,12 @@ def _load_row(session, db_id: Any, item_id: int, file_no: int, with_reject: bool
             AppEquipmentPhotoCheck.item_id == int(item_id),
             AppEquipmentPhotoCheck.file_no == int(file_no),
         )
+        .with_for_update()
     )
+
+
+def _load_row(session, db_id: Any, item_id: int, file_no: int, with_reject: bool):
+    return session.scalar(_row_select(db_id, item_id, file_no, with_reject))
 
 
 def record_upload(

@@ -6,6 +6,7 @@ import {
   countSelectedVisible,
   getSelectedItemsCapabilities,
   getVisibleLocationKeys,
+  hasCollapsedVisible as getHasCollapsedVisible,
   hasExpandedVisible as getHasExpandedVisible,
 } from './databaseListModel';
 import { toInvNo } from './equipmentModel';
@@ -51,10 +52,25 @@ export function useDatabaseListNavigation({
     [visibleBranchNames, visibleLocationKeys, expandedBranches, expandedLocations]
   );
 
+  const hasCollapsedVisible = useMemo(
+    () => getHasCollapsedVisible({
+      branchNames: visibleBranchNames,
+      locationKeys: visibleLocationKeys,
+      expandedBranches,
+      expandedLocations,
+    }),
+    [visibleBranchNames, visibleLocationKeys, expandedBranches, expandedLocations]
+  );
+
   const handleCollapseAll = useCallback(() => {
     setExpandedBranches(new Set());
     setExpandedLocations(new Set());
   }, []);
+
+  const handleExpandAll = useCallback(() => {
+    setExpandedBranches(new Set(visibleBranchNames));
+    setExpandedLocations(new Set(visibleLocationKeys));
+  }, [visibleBranchNames, visibleLocationKeys]);
 
   const toggleBranch = useCallback((branchName) => {
     setExpandedBranches((prev) => {
@@ -144,6 +160,7 @@ export function useDatabaseListNavigation({
     mobileSelectionMode,
     visibleLocationKeys,
     hasExpandedVisible,
+    hasCollapsedVisible,
     selectedItemsSet,
     visibleInvNoSet,
     selectedVisibleCount,
@@ -154,6 +171,7 @@ export function useDatabaseListNavigation({
     setSelectedItems,
     setMobileSelectionMode,
     handleCollapseAll,
+    handleExpandAll,
     toggleBranch,
     toggleLocation,
     handleCheckboxChange,

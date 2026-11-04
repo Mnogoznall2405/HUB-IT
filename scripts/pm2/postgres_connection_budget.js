@@ -3,6 +3,7 @@
  * Other applications are counted by the live server-wide check, not guessed.
  */
 const ecosystem = require('./ecosystem.all.config.js');
+const { RESERVE } = require('./db-pools');
 
 function asNonNegativeInt(value, fallback = 0) {
   const parsed = Number.parseInt(String(value ?? fallback), 10);
@@ -73,7 +74,7 @@ function buildBudget() {
   }
   return {
     mode: 'dual_chat_postgres',
-    reserve_target: 20,
+    reserve_target: RESERVE,
     configured_managed_capacity: processes.reduce((total, item) => total + item.total_capacity, 0),
     managed_application_names: [...names].sort(),
     processes,

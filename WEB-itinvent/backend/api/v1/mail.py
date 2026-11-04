@@ -10,6 +10,7 @@ import os
 import re
 import time
 import atexit
+import contextvars
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 from typing import Any, Optional
@@ -177,7 +178,10 @@ atexit.register(_shutdown_mail_executor)
 
 async def _run_in_mail_executor(func, /, *args, **kwargs):
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_MAIL_EXECUTOR, lambda: func(*args, **kwargs))
+    # run_in_executor does not copy ContextVars (unlike asyncio.to_thread): without this the
+    # worker loses the request session id that primary_session mail auth depends on.
+    ctx = contextvars.copy_context()
+    return await loop.run_in_executor(_MAIL_EXECUTOR, lambda: ctx.run(func, *args, **kwargs))
 
 
 async def get_current_mail_user(
@@ -430,16 +434,32 @@ def _run_mail_call_timed_sync(func, args, kwargs, submitted_at: float):
 async def _run_mail_instrumented(func, /, *args, **kwargs):
     wait_started = time.perf_counter()
     try:
-        async with _get_mail_call_limiter():
+        limiter = _get_mail_call_limiter()
+        await limiter.acquire()
+        # The permit belongs to the EWS call itself, not to this request: it is returned when
+        # the worker thread finishes (or the queued job is cancelled before it starts).  A
+        # client abort therefore cannot let new calls run on top of a still-running SOAP
+        # exchange (DMAIL-03).
+        loop = asyncio.get_running_loop()
+        try:
             semaphore_wait_ms = (time.perf_counter() - wait_started) * 1000.0
             submitted_at = time.perf_counter()
-            result, metrics, error, executor_wait_ms, call_ms = await _run_in_mail_executor(
-                _run_mail_call_timed_sync,
-                func,
-                args,
-                kwargs,
-                submitted_at,
+            ctx = contextvars.copy_context()
+            job = _MAIL_EXECUTOR.submit(
+                lambda: ctx.run(_run_mail_call_timed_sync, func, args, kwargs, submitted_at)
             )
+        except BaseException:
+            limiter.release()
+            raise
+
+        def _release_permit(_future) -> None:
+            try:
+                loop.call_soon_threadsafe(limiter.release)
+            except RuntimeError:
+                pass  # loop already closed: the semaphore dies with it
+
+        job.add_done_callback(_release_permit)
+        result, metrics, error, executor_wait_ms, call_ms = await asyncio.wrap_future(job)
         record_mail_call(
             op=mail_op_name(func),
             semaphore_wait_ms=semaphore_wait_ms,

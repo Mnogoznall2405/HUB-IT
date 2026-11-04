@@ -186,7 +186,7 @@ class ScanIncident(Base):
         Index("idx_scan_incidents_hostname_status_created", "hostname", "status", created_at.desc()),
         Index("idx_scan_incidents_status_hostname_created", "status", "hostname", created_at.desc()),
         Index("idx_scan_incidents_job", "job_id"),
-        # Functional index also ensured in db.ensure_scan_schema for existing DBs.
+        # Also added to existing DBs by Alembic 20261102_0003 (Scan startup runs no DDL).
         Index(
             "idx_scan_incidents_hostname_lower_created",
             text("lower(hostname)"),

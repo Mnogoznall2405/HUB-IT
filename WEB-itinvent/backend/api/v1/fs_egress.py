@@ -47,7 +47,11 @@ async def ingest_fs_egress(request: Request, x_api_key: Optional[str] = Header(N
     events = body.get("events") if isinstance(body, dict) else None
     if not isinstance(events, list):
         raise HTTPException(status_code=400, detail="events list required")
-    inserted = await run_in_threadpool(store.ingest_events, events)
+    try:
+        inserted = await run_in_threadpool(store.ingest_events, events)
+    except store.EgressStoreUnavailableError as exc:
+        # 503 keeps the agent's events queued for retry instead of losing them.
+        raise HTTPException(status_code=503, detail="Egress store unavailable", headers={"Retry-After": "30"}) from exc
     return {"success": True, "inserted": inserted}
 
 
@@ -58,12 +62,15 @@ def list_fs_egress(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ) -> Dict[str, Any]:
-    items = store.list_events(
-        computer_name=computer_name,
-        channel=channel,
-        limit=limit,
-        offset=offset,
-    )
+    try:
+        items = store.list_events(
+            computer_name=computer_name,
+            channel=channel,
+            limit=limit,
+            offset=offset,
+        )
+    except store.EgressStoreUnavailableError as exc:
+        raise HTTPException(status_code=503, detail="Egress store unavailable", headers={"Retry-After": "30"}) from exc
     return {"success": True, "items": items, "total": len(items)}
 
 

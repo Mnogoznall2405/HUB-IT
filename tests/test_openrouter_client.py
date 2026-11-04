@@ -583,3 +583,43 @@ def test_act_parser_prefers_vision_for_scan_then_falls_back(monkeypatch):
     assert isinstance(calls[1]["user_content"], str)
     assert any("vision OCR" in w or "\u0441\u043a\u0430\u043d" in w for w in warnings)
     assert calls[0]["response_healing"] is True
+
+
+def test_sdk_retries_are_disabled_so_gateway_owns_the_retry_policy(monkeypatch):
+    """DAI-06: SDK-level retries would multiply with the gateway's own attempts."""
+    import shared.llm.client as llm_client
+    from backend.ai_chat.openrouter_client import OpenRouterClient
+
+    seen = {}
+
+    class _CapturingOpenAI:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    monkeypatch.setattr(llm_client, "OpenAI", _CapturingOpenAI)
+    client = OpenRouterClient()
+    monkeypatch.setattr(client, "_resolve_api_key", lambda: "test-key")
+    client._build_client(timeout=7.0)
+
+    assert seen["max_retries"] == 0
+
+
+@pytest.mark.parametrize("budget, expected_calls", [(1.0, 1), (600.0, 3)])
+def test_transient_retries_stop_when_the_wall_clock_budget_cannot_cover_the_backoff(
+    monkeypatch, budget, expected_calls
+):
+    import shared.llm.client as llm_client
+    from backend.ai_chat.openrouter_client import OpenRouterClient
+
+    monkeypatch.setattr(llm_client, "DEFAULT_RETRY_WALL_BUDGET_SEC", budget)
+    monkeypatch.setattr(llm_client, "DEFAULT_RETRY_BASE_DELAY_SEC", 2.0)
+    monkeypatch.setattr(llm_client, "DEFAULT_MAX_TRANSIENT_RETRIES", 3)
+    monkeypatch.setattr(llm_client.time, "sleep", lambda _s: None)
+    fake_client = _FakeClient([RuntimeError("request timeout")] * 3)
+    client = OpenRouterClient()
+    _patch_build_client(monkeypatch, client, fake_client)
+
+    with pytest.raises(Exception):
+        client.complete_text(user_prompt="hi", model="m")
+
+    assert len(fake_client.chat.completions.calls) == expected_calls

@@ -88,7 +88,7 @@ def _query_runtime_connection_counts() -> tuple[int, dict[str, int]]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Check PostgreSQL connection reserve before Hub/Chat rollout.")
-    parser.add_argument("--reserve", type=int, default=20, help="Required currently free PostgreSQL connections")
+    parser.add_argument("--reserve", type=int, default=None, help="Required free PostgreSQL connections (default: RESERVE from scripts/pm2/db-pools.js)")
     parser.add_argument(
         "--enforce",
         action="store_true",
@@ -115,7 +115,7 @@ def main() -> int:
         total_connections=total,
         managed_connections=managed,
         configured_managed_capacity=int(budget.get("configured_managed_capacity") or 0),
-        reserve=max(0, int(args.reserve)),
+        reserve=max(0, int(budget.get("reserve_target") if args.reserve is None else args.reserve)),
     )
     payload = {
         "mode": budget.get("mode"),

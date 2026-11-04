@@ -48,6 +48,9 @@ if __name__ == "__main__":
         host=backend_host,
         port=backend_port,
         workers=1,
+        # IIS ARR reuses idle upstream connections; with uvicorn's default 5 s the server closes
+        # them first (and after an event-loop stall closes ones with a pending request) -> 502.3/12030.
+        timeout_keep_alive=int(os.getenv("UVICORN_TIMEOUT_KEEP_ALIVE", "120")),
         ws_per_message_deflate=False,
         loop="backend.uvicorn_loops:windows_selector_loop_factory",
         reload=False,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+
+import pytest
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -474,3 +476,111 @@ def test_get_balances_with_hub_marks_unknown_when_count_query_fails(monkeypatch)
     assert rows[0]["hub_count"] is None
     assert rows[0]["hub_count_kind"] == "unknown"
     assert rows[0]["unlinked_candidate_count"] is None
+
+
+def _two_db_service(monkeypatch, *, owners, counts, hub_only):
+    service = Warehouse1CService()
+    monkeypatch.setenv("WAREHOUSE_1C_RECONCILE_ALLOWED_DB_IDS", "ITINVENT,MSK-ITINVENT")
+
+    async def fake_get_balances(**kwargs):
+        return [{"warehouse_ref": "w1", "warehouse_name": "Alice Covered", "qty_balance": 1}]
+
+    monkeypatch.setattr(service, "get_balances", fake_get_balances)
+    monkeypatch.setattr(
+        "backend.api.v1.database.get_all_db_configs",
+        lambda: [{"id": "ITINVENT", "name": "ITINVENT"}, {"id": "MSK-ITINVENT", "name": "MSK"}],
+    )
+    import backend.database.queries as db_queries
+
+    monkeypatch.setattr(db_queries, "list_owners_compact", owners)
+    monkeypatch.setattr(db_queries, "count_equipment_by_owners_hub_query", counts)
+    monkeypatch.setattr(db_queries, "count_all_owners_by_hub_query", hub_only)
+    monkeypatch.setattr(
+        "backend.services.employment_status_service.resolve_employment_status_batch",
+        lambda names, cache=None: {},
+    )
+    return service
+
+
+def _run_all_scope(service):
+    return asyncio.run(
+        service.get_balances_with_hub(
+            nomenclature_ref="n1",
+            part_no="PN-1",
+            db_id="ITINVENT",
+            scope="all",
+            include_meta=True,
+        )
+    )
+
+
+def test_same_owner_no_in_another_database_is_a_different_person(monkeypatch):
+    """DWH-01: OWNER_NO is unique only inside one DB; a covered owner 7 in A must not hide
+    a different person with OWNER_NO 7 in B, and hub-only rows say which DB they came from."""
+
+    def owners(db_id=None):
+        if db_id == "ITINVENT":
+            return [{"OWNER_NO": 7, "OWNER_DISPLAY_NAME": "Alice Covered"}]
+        return []
+
+    def hub_only(**kwargs):
+        if kwargs.get("db_id") == "ITINVENT":
+            return [{"owner_no": 7, "hub_count": 2, "owner_display_name": "Alice Covered"}]
+        return [{"owner_no": 7, "hub_count": 3, "owner_display_name": "Bob Other"}]
+
+    service = _two_db_service(
+        monkeypatch, owners=owners, counts=lambda owner_nos, **kw: {7: 2}, hub_only=hub_only
+    )
+    payload = _run_all_scope(service)
+
+    hub_only_rows = [r for r in payload["items"] if r["owner_link_method"] == "hub_only"]
+    assert [(r["hub_employee_name"], r["hub_count"], r["hub_db_id"]) for r in hub_only_rows] == [
+        ("Bob Other", 3, "MSK-ITINVENT")
+    ]
+
+
+def test_same_owner_no_in_two_databases_stays_two_hub_only_rows(monkeypatch):
+    def owners(db_id=None):
+        return []
+
+    def hub_only(**kwargs):
+        if kwargs.get("db_id") == "ITINVENT":
+            return [{"owner_no": 7, "hub_count": 2, "owner_display_name": "Alice"}]
+        return [{"owner_no": 7, "hub_count": 3, "owner_display_name": "Bob"}]
+
+    service = _two_db_service(
+        monkeypatch, owners=owners, counts=lambda owner_nos, **kw: {}, hub_only=hub_only
+    )
+    rows = [r for r in _run_all_scope(service)["items"] if r["owner_link_method"] == "hub_only"]
+    assert sorted((r["hub_employee_name"], r["hub_count"], r["hub_db_id"]) for r in rows) == [
+        ("Alice", 2, "ITINVENT"),
+        ("Bob", 3, "MSK-ITINVENT"),
+    ]
+
+
+@pytest.mark.parametrize("failing", ["owners", "hub_only"])
+def test_unavailable_hub_database_makes_the_answer_incomplete(monkeypatch, failing):
+    """DWH-03: a contributor that cannot be read is not 'no equipment'."""
+
+    def owners(db_id=None):
+        if failing == "owners" and db_id == "MSK-ITINVENT":
+            raise RuntimeError("db down")
+        return [{"OWNER_NO": 7, "OWNER_DISPLAY_NAME": "Alice Covered"}] if db_id == "ITINVENT" else []
+
+    def hub_only(**kwargs):
+        if failing == "hub_only" and kwargs.get("db_id") == "MSK-ITINVENT":
+            raise RuntimeError("db down")
+        return []
+
+    service = _two_db_service(
+        monkeypatch, owners=owners, counts=lambda owner_nos, **kw: {7: 0}, hub_only=hub_only
+    )
+    payload = _run_all_scope(service)
+
+    assert payload["exact"] is False
+    assert payload["status"] == "incomplete"
+    assert payload["hub_incomplete_db_ids"] == ["MSK-ITINVENT"]
+    row = payload["items"][0]
+    assert row["status"] == "incomplete" and row["exact_linked_count"] is None
+    if failing == "owners":
+        assert row["hub_count"] is None  # not a confirmed zero

@@ -21,6 +21,7 @@ class ProfileUpdate(StrictModel):
 
 class TargetSettings(StrictModel):
     failure_polls: int = Field(default=3, ge=2, le=10)
+    icmp_timeout_ms: int = Field(default=800, ge=200, le=5000)
     cpu_warn: float = Field(default=85, ge=1, le=100)
     memory_warn: float = Field(default=90, ge=1, le=100)
     temperature_warn: float = Field(default=75, ge=1, le=150)
@@ -31,6 +32,8 @@ class TargetSettings(StrictModel):
 class TargetCreate(StrictModel):
     # Optional legacy link to a «Сети» registry card; new devices are connected by name and address only.
     network_device_id: int | None = Field(default=None, gt=0)
+    # IT object the device belongs to (shown on the object's «Мониторинг» tab); null - not assigned.
+    object_ref: str | None = Field(default=None, max_length=128)
     name: str = Field(min_length=1, max_length=160)
     address: IPv4Address
     port: int = Field(default=161, ge=1, le=65535)

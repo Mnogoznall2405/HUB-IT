@@ -101,7 +101,7 @@ def test_mark_task_email_failed_requeues_until_max_attempts(hub_service_instance
         )
         conn.commit()
 
-    service._mark_task_email_failed({'id': 'outbox-2', 'attempt_count': 1}, 'smtp down')
+    service._mark_task_email_failed({'id': 'outbox-2', 'claim_token': 1}, 'smtp down')
 
     with service._lock, service._connect() as conn:
         row = conn.execute(
@@ -111,7 +111,12 @@ def test_mark_task_email_failed_requeues_until_max_attempts(hub_service_instance
     assert dict(row)['status'] == 'pending'
     assert 'smtp down' in dict(row)['last_error']
 
-    service._mark_task_email_failed({'id': 'outbox-2', 'attempt_count': 3}, 'smtp down again')
+    with service._lock, service._connect() as conn:
+        conn.execute(
+            f"UPDATE {service._TASK_EMAIL_OUTBOX_TABLE} SET status = 'sending', attempt_count = 3 WHERE id = 'outbox-2'"
+        )
+        conn.commit()
+    service._mark_task_email_failed({'id': 'outbox-2', 'claim_token': 3}, 'smtp down again')
 
     with service._lock, service._connect() as conn:
         row = conn.execute(
@@ -208,3 +213,26 @@ def test_dispatch_claims_row_once_and_recovers_only_stale_sending_rows(hub_servi
     assert _outbox_status(service, "stale")["status"] == "sent"
     assert _outbox_status(service, "poison")["status"] == "failed"
     assert _outbox_status(service, "fresh")["status"] == "sending"
+
+
+def test_stale_owner_cannot_touch_or_fail_a_reclaimed_row(hub_service_instance, monkeypatch):
+    service = hub_service_instance
+    monkeypatch.setattr(outbox_module.task_email_service, "max_attempts", lambda: 5)
+    # Row was recovered and re-claimed: the new owner holds token 2, the old worker still holds 1.
+    _insert_outbox_row(service, "reclaimed", status="sending", attempt_count=2, updated_at="2026-01-01T00:00:00+00:00")
+
+    assert service._touch_task_email_claim("reclaimed", 1) is False
+    service._mark_task_email_failed({"id": "reclaimed", "claim_token": 1}, "old worker failed")
+    assert _outbox_status(service, "reclaimed")["status"] == "sending"
+
+    assert service._touch_task_email_claim("reclaimed", 2) is True
+    service._mark_task_email_failed({"id": "reclaimed", "claim_token": 2}, "new owner failed")
+    assert _outbox_status(service, "reclaimed")["status"] == "pending"
+
+
+def test_late_sent_ack_from_stale_owner_is_kept_to_prevent_a_resend(hub_service_instance):
+    # Deliberate departure from a full token guard: the stale worker really sent the mail.
+    service = hub_service_instance
+    _insert_outbox_row(service, "late-ack", status="pending", attempt_count=1, updated_at="2026-01-01T00:00:00+00:00")
+    service._mark_task_email_sent("late-ack")
+    assert _outbox_status(service, "late-ack")["status"] == "sent"

@@ -88,6 +88,18 @@ def _attachment_file_url(*, message_id: str, attachment_id: str, inline: bool = 
     return f"{url}?inline=1" if inline else url
 
 
+class FileMessageCommittedError(RuntimeError):
+    """The message and its attachment rows are committed, but a later step failed.
+
+    Callers must not delete the attachment files: the committed message owns them, and a
+    client retry resolves to the same message (DCHAT-05).
+    """
+
+    def __init__(self, message_id: str, cause: BaseException) -> None:
+        super().__init__(f"File message {message_id} was committed but its response could not be built: {cause}")
+        self.message_id = message_id
+
+
 @dataclass(frozen=True)
 class TextMessagePersistenceResult:
     payload: dict[str, Any]
@@ -777,21 +789,25 @@ class ChatFileMessagePersistence:
         payload: dict[str, Any] = {}
         if serialize_context is not None:
             conv_id, serialized_message_id, serialized_member_user_ids, serialized_user_id, serialized_attachments = serialize_context
-            with self._session_factory() as read_session:
-                conversation = read_session.get(ChatConversation, conv_id)
-                if conversation is None:
-                    raise LookupError("Conversation not found")
-                message = read_session.get(ChatMessage, serialized_message_id)
-                if message is None:
-                    raise LookupError("Message not found")
-                payload = self._build_message_payload_for_members(
-                    session=read_session,
-                    conversation=conversation,
-                    message=message,
-                    current_user_id=serialized_user_id,
-                    member_user_ids=serialized_member_user_ids,
-                    attachments=serialized_attachments,
-                )
+            try:
+                with self._session_factory() as read_session:
+                    conversation = read_session.get(ChatConversation, conv_id)
+                    if conversation is None:
+                        raise LookupError("Conversation not found")
+                    message = read_session.get(ChatMessage, serialized_message_id)
+                    if message is None:
+                        raise LookupError("Message not found")
+                    payload = self._build_message_payload_for_members(
+                        session=read_session,
+                        conversation=conversation,
+                        message=message,
+                        current_user_id=serialized_user_id,
+                        member_user_ids=serialized_member_user_ids,
+                        attachments=serialized_attachments,
+                    )
+            except Exception as exc:
+                # The write session above already committed the message and attachments.
+                raise FileMessageCommittedError(str(serialized_message_id), exc) from exc
         return FileMessagePersistenceResult(
             payload=payload,
             message_id=message_id,

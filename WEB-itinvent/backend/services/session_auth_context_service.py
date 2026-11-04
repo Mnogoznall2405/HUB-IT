@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from backend.appdb.db import app_session, initialize_app_schema, is_app_database_configured
 from backend.appdb.models import AppSessionAuthContext
@@ -156,6 +156,15 @@ class SessionAuthContextService:
             "created_at": _utc_now_iso(),
             "updated_at": _utc_now_iso(),
         }
+        if self._use_app_database:
+            # Targeted upsert: a concurrent login of another session must not be touched.
+            with app_session(self._database_url) as session:
+                row = session.get(AppSessionAuthContext, normalized_session_id)
+                if row is None:
+                    row = AppSessionAuthContext(session_id=normalized_session_id)
+                    session.add(row)
+                self._apply_payload(row, payload)
+            return dict(payload)
         items = [item for item in self._load_items() if str(item.get("session_id") or "").strip() != normalized_session_id]
         items.append(payload)
         self._save_items(items)
@@ -165,6 +174,19 @@ class SessionAuthContextService:
         normalized_session_id = str(session_id or "").strip()
         if not normalized_session_id:
             return None
+        if self._use_app_database:
+            with app_session(self._database_url) as session:
+                row = session.get(AppSessionAuthContext, normalized_session_id)
+                if row is None:
+                    return None
+                item = self._row_to_dict(row)
+                expires_at = _parse_datetime(item.get("expires_at"))
+                if expires_at is not None and expires_at <= _utc_now():
+                    session.delete(row)
+                    return None
+                if user_id is not None and int(item.get("user_id", 0) or 0) != int(user_id):
+                    return None
+                return item
         items = self._load_items()
         now = _utc_now()
         changed = False
@@ -200,13 +222,32 @@ class SessionAuthContextService:
         normalized_session_id = str(session_id or "").strip()
         if not normalized_session_id:
             return
+        if self._use_app_database:
+            with app_session(self._database_url) as session:
+                session.execute(
+                    delete(AppSessionAuthContext).where(AppSessionAuthContext.session_id == normalized_session_id)
+                )
+            return
         items = self._load_items()
         kept = [item for item in items if str(item.get("session_id") or "").strip() != normalized_session_id]
         if len(kept) != len(items):
             self._save_items(kept)
 
+    # Sessions younger than this are never pruned as "inactive": the active-ID snapshot is taken
+    # before the prune and may predate a login that completed in between.
+    PRUNE_GRACE_SECONDS = 60
+
     def prune_active_sessions(self, active_session_ids: list[str] | set[str] | tuple[str, ...]) -> None:
         active_ids = {str(item or "").strip() for item in (active_session_ids or []) if str(item or "").strip()}
+        if self._use_app_database:
+            now = _utc_now()
+            inactive = AppSessionAuthContext.created_at <= now - timedelta(seconds=self.PRUNE_GRACE_SECONDS)
+            if active_ids:
+                inactive = inactive & AppSessionAuthContext.session_id.not_in(active_ids)
+            condition = (AppSessionAuthContext.expires_at <= now) | inactive
+            with app_session(self._database_url) as session:
+                session.execute(delete(AppSessionAuthContext).where(condition))
+            return
         items = self._load_items()
         now = _utc_now()
         kept: list[dict] = []
@@ -235,6 +276,19 @@ class SessionAuthContextService:
             if str(item or "").strip()
         }
         now = _utc_now()
+        if self._use_app_database:
+            query = select(AppSessionAuthContext).where(
+                AppSessionAuthContext.user_id == int(user_id),
+                AppSessionAuthContext.expires_at > now,
+            )
+            if normalized_active_ids:
+                query = query.where(AppSessionAuthContext.session_id.in_(normalized_active_ids))
+            query = query.order_by(
+                AppSessionAuthContext.updated_at.desc(), AppSessionAuthContext.created_at.desc()
+            ).limit(1)
+            with app_session(self._database_url) as session:
+                row = session.scalars(query).first()
+                return self._row_to_dict(row) if row is not None else None
         candidates: list[dict] = []
         changed = False
         kept: list[dict] = []

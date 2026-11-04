@@ -24,6 +24,7 @@ import {
   Typography,
 } from '@mui/material';
 import {
+  ArrowBackRounded as ArrowBackRoundedIcon,
   ExpandLess as ExpandLessIcon,
   ExpandMore as ExpandMoreIcon,
   Refresh as RefreshIcon,
@@ -37,7 +38,7 @@ import PageShell from '../components/layout/PageShell';
 import PageTopBar from '../components/layout/PageTopBar';
 import { equipmentAPI } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
-import { Link as RouterLink, useSearchParams } from 'react-router-dom';
+import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTheme } from '@mui/material/styles';
 import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
 
@@ -854,6 +855,12 @@ function Computers() {
   const [open, setOpen] = useState(false);
 
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  // Ссылка из карточки объекта ИТ: ?open=<MAC> сразу открывает карточку ПК, ?back=<путь> даёт кнопку «Назад».
+  const openMacParam = String(searchParams.get('open') || '').trim();
+  const backParam = String(searchParams.get('back') || '');
+  const backTo = backParam.startsWith('/it/objects/') ? backParam : '';
+  const pinnedKeyRef = useRef('');
   const initialQ = normalizeComputersSearchInput(searchParams.get('q') || '');
   const [q, setQ] = useState(initialQ);
   const [debouncedQuery, setDebouncedQuery] = useState(initialQ);
@@ -1418,6 +1425,8 @@ function Computers() {
     const currentKey = pcChangeKey(selected);
     const listItem = computers.find((pc) => pcChangeKey(pc) === currentKey);
     if (!listItem) {
+      // ПК, открытый по ссылке из объекта, может не попасть в отфильтрованный список — не закрывать его.
+      if (pinnedKeyRef.current === currentKey) return;
       setSelected(null);
       setOpen(false);
       return;
@@ -1474,6 +1483,14 @@ function Computers() {
     setExpandedUserProfiles({});
     void openComputerDetail(pc);
   }, [markPcChangesSeen, openComputerDetail]);
+
+  const deepLinkOpenedRef = useRef(false);
+  useEffect(() => {
+    if (!openMacParam || deepLinkOpenedRef.current) return;
+    deepLinkOpenedRef.current = true;
+    pinnedKeyRef.current = pcChangeKey({ mac_address: openMacParam });
+    void openComputerDetail({ mac_address: openMacParam, hostname: searchParams.get('q') || '' });
+  }, [openMacParam, openComputerDetail, searchParams]);
 
   const branches = useMemo(() => {
     const uniq = new Set(knownBranches);
@@ -1936,6 +1953,7 @@ function Computers() {
           onClose={() => {
             setOpen(false);
             setSelected(null);
+            pinnedKeyRef.current = '';
             if (detailAbortRef.current) {
               detailAbortRef.current.abort();
             }
@@ -1944,6 +1962,13 @@ function Computers() {
           <Box sx={{ width: { xs: '100vw', sm: 560 }, maxWidth: '100vw', p: { xs: 2, sm: 2.5 }, bgcolor: 'background.default', height: '100%', overflowY: 'auto' }}>
             {!selected ? null : (
               <Stack spacing={1.4}>
+                {backTo ? (
+                  <Box>
+                    <Button size="small" startIcon={<ArrowBackRoundedIcon />} onClick={() => navigate(backTo)}>
+                      Назад
+                    </Button>
+                  </Box>
+                ) : null}
                 {detailLoading ? <LinearProgress sx={{ mb: 0.5 }} /> : null}
                 <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1.5 }}>
                   <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.6 }}>

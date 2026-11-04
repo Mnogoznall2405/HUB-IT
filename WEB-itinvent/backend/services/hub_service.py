@@ -7448,8 +7448,16 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
                 updates.append("visibility_scope = ?")
                 params.append(next_scope)
             if "checklist_items" in payload:
+                next_checklist = self._serialize_checklist_items(payload.get("checklist_items"))
+                # Same contract as capabilities.can_update_checklist (false once done): a late
+                # checklist save must not change a finished task (DTASK-03).  Re-sending the
+                # unchanged list stays harmless for full edits of a done task.
+                if _normalize_text(task.get("status")) == "done" and next_checklist != self._serialize_checklist_items(
+                    task.get("checklist_items")
+                ):
+                    raise ValueError("Checklist cannot be changed after the task is done")
                 updates.append("checklist_items = ?")
-                params.append(self._serialize_checklist_items(payload.get("checklist_items")))
+                params.append(next_checklist)
             if assignees_changed:
                 effective_department_id = _normalize_text(payload.get("department_id")) or _normalize_text(task.get("department_id"))
                 if effective_department_id and not is_admin:

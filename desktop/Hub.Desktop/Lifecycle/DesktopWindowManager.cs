@@ -143,6 +143,33 @@ public sealed class DesktopWindowManager
         MailComposeSent?.Invoke(this, EventArgs.Empty);
     }
 
+    /// <summary>
+    /// Shows a page in the second HUB window (opening it when needed), so the first window stays free to work in.
+    /// A second window that is already open is taken over by the new page.
+    /// </summary>
+    public DesktopSecondaryWindowOpenResult OpenSecondaryRoute(string route)
+    {
+        if (_primary is null || _secondaryFactory is null || !DesktopBridgeProtocol.IsValidWorkspaceEditorRoute(route))
+        {
+            return DesktopSecondaryWindowOpenResult.Unavailable;
+        }
+
+        if (_secondary is not null)
+        {
+            _secondary.ShowAndNavigate(route);
+            return DesktopSecondaryWindowOpenResult.ActivatedExisting;
+        }
+
+        var secondary = _secondaryFactory(route)
+            ?? throw new InvalidOperationException("The secondary window factory returned null.");
+        _secondary = secondary;
+        _lastActive = secondary;
+        Subscribe(secondary);
+        WindowAvailabilityChanged?.Invoke(this, EventArgs.Empty);
+        secondary.ShowAndActivate();
+        return DesktopSecondaryWindowOpenResult.Opened;
+    }
+
     public DesktopSecondaryWindowOpenResult OpenSecondaryFrom(IDesktopHubWindow source)
     {
         ArgumentNullException.ThrowIfNull(source);

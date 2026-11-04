@@ -1,6 +1,6 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -25,6 +25,12 @@ vi.mock('../api/myFiles', () => ({
     buildPublicDownloadUrl: mockBuildPublicDownloadUrl,
     buildPublicPreviewContentUrl: mockBuildPublicPreviewContentUrl,
   },
+}));
+
+const { mockGetPublicAccess } = vi.hoisted(() => ({ mockGetPublicAccess: vi.fn() }));
+
+vi.mock('../api/myFilesOffice', () => ({
+  myFilesOfficeAPI: { getPublicAccess: mockGetPublicAccess },
 }));
 
 vi.mock('../components/mail/MailPdfPreviewSurface', () => ({
@@ -56,11 +62,18 @@ vi.mock('../lib/excelPreview', () => ({ parseExcelWorkbookFromBlob: vi.fn().mock
 
 import SharedFile from './SharedFile';
 
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location">{location.pathname}{location.search}</div>;
+}
+
 function renderPublicPage(token = 'public-token') {
   return render(
     <MemoryRouter initialEntries={[`/shared-files/${token}`]}>
       <Routes>
         <Route path="/shared-files/:token" element={<SharedFile />} />
+        <Route path="/my-files" element={<LocationProbe />} />
+        <Route path="/login" element={<LocationProbe />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -78,6 +91,9 @@ describe('SharedFile page', () => {
     expect(await screen.findByText('public.txt')).toBeInTheDocument();
   });
   beforeEach(() => {
+    mockGetPublicAccess.mockReset();
+    mockGetPublicAccess.mockResolvedValue({ signed_in: false, editable: false, collaborative: false, can_open: false, role: '', file_id: '' });
+    window.sessionStorage.clear();
     mockGetPublicFile.mockReset();
     mockGetPublicPreviewMeta.mockReset();
     mockDownloadPublicFile.mockReset();
@@ -117,6 +133,36 @@ describe('SharedFile page', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('lets a signed-in collaborator open the same link in the editor', async () => {
+    mockGetPublicAccess.mockResolvedValue({ signed_in: true, editable: true, collaborative: true, can_open: true, role: 'comment', file_id: 'file-9' });
+    renderPublicPage();
+
+    expect(await screen.findByRole('link', { name: 'Скачать' })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: 'Комментировать' }));
+
+    expect(await screen.findByTestId('location')).toHaveTextContent('/my-files?edit=file-9');
+  });
+
+  it('asks a guest to sign in before editing and returns to the same link afterwards', async () => {
+    mockGetPublicAccess.mockResolvedValue({ signed_in: false, editable: true, collaborative: true, can_open: false, role: '', file_id: '' });
+    renderPublicPage('guest-token');
+
+    fireEvent.click(await screen.findByTestId('shared-file-login-to-edit'));
+
+    expect(await screen.findByTestId('location')).toHaveTextContent('/login');
+    expect(window.sessionStorage.getItem('hubit.auth.return-to')).toBe('/shared-files/guest-token');
+  });
+
+  it('keeps a plain link download-only for everybody else', async () => {
+    mockGetPublicAccess.mockResolvedValue({ signed_in: true, editable: true, collaborative: true, can_open: false, role: '', file_id: '' });
+    renderPublicPage();
+
+    expect(await screen.findByRole('link', { name: 'Скачать' })).toBeInTheDocument();
+    await waitFor(() => expect(mockGetPublicAccess).toHaveBeenCalledWith('public-token', expect.anything()));
+    expect(screen.queryByTestId('shared-file-edit')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('shared-file-login-to-edit')).not.toBeInTheDocument();
   });
 
   it('shows expiration countdown timer', async () => {

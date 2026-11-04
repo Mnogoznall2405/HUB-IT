@@ -564,3 +564,49 @@ def test_smart_replies_returns_429_when_mail_ai_rate_limited(monkeypatch):
     assert second.status_code == 429
     assert second.headers.get("x-mail-error-code") == "MAIL_AI_RATE_LIMITED"
     assert len(get_message_calls) == 1
+
+
+def test_mail_executor_keeps_request_session_id():
+    # ContextVar loss in the worker left primary_session mail auth without the AD session.
+    token = mail_api_module.push_request_session_id("session-a")
+    try:
+        seen = asyncio.run(mail_api_module._run_in_mail_executor(mail_api_module.get_request_session_id))
+    finally:
+        mail_api_module.pop_request_session_id(token)
+    assert seen == "session-a"
+
+
+def test_cancelled_requests_keep_the_exchange_permit_until_the_call_finishes(monkeypatch):
+    """DMAIL-03: aborting the HTTP request must not release the Exchange permit while the
+    worker thread is still inside the EWS call."""
+    monkeypatch.setenv("MAIL_EXCHANGE_MAX_CONCURRENCY", "1")
+    monkeypatch.setattr(mail_api_module, "_MAIL_CALL_LIMITER", None)
+    running = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def slow_call():
+        nonlocal running, peak
+        with lock:
+            running += 1
+            peak = max(peak, running)
+        time.sleep(0.3)
+        with lock:
+            running -= 1
+        return "done"
+
+    async def scenario():
+        tasks = [asyncio.create_task(mail_api_module._run_mail_instrumented(slow_call)) for _ in range(4)]
+        await asyncio.sleep(0.1)  # first call is inside the worker thread
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        # A fresh request must wait for the abandoned call to finish before it may start.
+        started = time.perf_counter()
+        result, _metrics = await mail_api_module._run_mail_instrumented(slow_call)
+        return result, time.perf_counter() - started
+
+    result, waited = asyncio.run(scenario())
+    assert result == "done"
+    assert peak == 1
+    assert waited >= 0.3  # waited out the still-running abandoned call, then ran its own

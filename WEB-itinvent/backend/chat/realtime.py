@@ -647,6 +647,8 @@ class ChatRealtimeManager:
         self._connections: dict[str, ChatRealtimeConnection] = {}
         self._user_connection_ids: dict[int, set[str]] = {}
         self._last_seen_by_user_id: dict[int, datetime] = {}
+        # Bumped on every room eviction; lets a subscribe detect that it raced one (DCHAT-02).
+        self._room_eviction_epoch = 0
         self._slow_consumer_disconnects = 0
         self._ws_rate_limited_count = 0
         self._ws_rate_limited_connection_ids: set[str] = set()
@@ -1133,6 +1135,10 @@ class ChatRealtimeManager:
             if connection is not None:
                 connection.inbox_subscribed = False
 
+    def room_eviction_epoch(self) -> int:
+        with self._lock:
+            return self._room_eviction_epoch
+
     def subscribe_conversation(self, connection_id: str, conversation_id: str) -> None:
         normalized_conversation_id = str(conversation_id or "").strip()
         if not normalized_conversation_id:
@@ -1168,6 +1174,7 @@ class ChatRealtimeManager:
             return 0
         evicted = 0
         with self._lock:
+            self._room_eviction_epoch += 1
             for user_id in normalized_user_ids:
                 for connection_id in list(self._user_connection_ids.get(user_id, set())):
                     connection = self._connections.get(connection_id)

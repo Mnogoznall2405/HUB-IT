@@ -139,6 +139,24 @@ def _load_user_from_token(token: Optional[str]) -> User:
     return User(**public_user)
 
 
+def reload_active_user(user_id: int) -> Optional[User]:
+    """Current public user with effective permissions, or None when missing/inactive.
+
+    Long-lived connections use this to pick up role/permission changes made after
+    the handshake (same source as the per-request path).
+    """
+    user_raw = user_service.get_by_id(int(user_id))
+    if not user_raw or not bool(user_raw.get("is_active", True)):
+        return None
+    public_user = user_service.to_public_user(user_raw)
+    public_user["permissions"] = authorization_service.get_effective_permissions(
+        public_user.get("role"),
+        use_custom_permissions=bool(public_user.get("use_custom_permissions", False)),
+        custom_permissions=public_user.get("custom_permissions"),
+    )
+    return User(**public_user)
+
+
 def _load_session_id_from_token(token: Optional[str]) -> Optional[str]:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

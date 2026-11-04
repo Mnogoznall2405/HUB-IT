@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import MyDevices from './MyDevices';
 import {
   Alert,
   Box,
@@ -42,6 +44,8 @@ export default function SecurityTab({
   onRevokeTrustedDevice,
   onResetTwoFactor,
 }) {
+  const [revokeDevice, setRevokeDevice] = useState(null);
+  const [revoking, setRevoking] = useState(false);
 
   const twofaPolicyLabel = user?.twofa_policy === 'external_only'
     ? 'Только для внешней сети'
@@ -50,6 +54,10 @@ export default function SecurityTab({
       : 'Отключен';
   const networkZoneLabel = user?.network_zone === 'internal' ? 'Внутренняя сеть' : 'Внешняя сеть';
   const twofaRequestLabel = user?.twofa_required_for_current_request ? 'Да' : 'Нет';
+  const activeKeys = trustedDevices.filter(device => device.is_active && !device.is_expired);
+  const passkeyUnavailableReason = user?.network_zone === 'internal'
+    ? 'Для этого входа определена внутренняя сеть. Действующая политика разрешает привязку passkey только из внешней сети.'
+    : 'Этот браузер или приложение не поддерживает привязку passkey. Откройте портал по HTTPS в браузере с поддержкой WebAuthn.';
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.1, minHeight: 0 }}>
@@ -64,13 +72,12 @@ export default function SecurityTab({
         contentSx={{ p: 1.5 }}
       >
         <Grid container spacing={1.25}>
-          <Grid item xs={12} md={3}><ProfileField label="2FA" value={user?.is_2fa_enabled ? 'Включен' : 'Не включен'} /></Grid>
-          <Grid item xs={12} md={3}><ProfileField label="Политика 2FA" value={twofaPolicyLabel} /></Grid>
-          <Grid item xs={12} md={3}><ProfileField label="Текущий вход" value={networkZoneLabel} /></Grid>
-          <Grid item xs={12} md={3}><ProfileField label="2FA нужен сейчас" value={twofaRequestLabel} /></Grid>
-          <Grid item xs={12} md={3}><ProfileField label="Доверенные устройства" value={String(user?.trusted_devices_count || 0)} /></Grid>
+          <Grid item xs={12} sm={6} xl={3}><ProfileField label="2FA" value={user?.is_2fa_enabled ? 'Включен' : 'Не включен'} /></Grid>
+          <Grid item xs={12} sm={6} xl={3}><ProfileField label="Политика 2FA" value={twofaPolicyLabel} /></Grid>
+          <Grid item xs={12} sm={6} xl={3}><ProfileField label="Текущий вход" value={networkZoneLabel} /></Grid>
+          <Grid item xs={12} sm={6} xl={3}><ProfileField label="2FA нужен сейчас" value={twofaRequestLabel} /></Grid>
         </Grid>
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 1.5 }}>
+        <Stack direction="row" useFlexGap flexWrap="wrap" gap={1} sx={{ mt: 1.5 }}>
           <Button variant="contained" startIcon={<GetAppOutlinedIcon />} onClick={onRegenerateBackupCodes}>
             Сгенерировать новые backup-коды
           </Button>
@@ -86,38 +93,40 @@ export default function SecurityTab({
         </Stack>
       </SectionCard>
 
+      <MyDevices />
       <SectionCard
-        title="Доверенные устройства"
-        description="Эти устройства могут подтверждать вход через WebAuthn без ручного ввода TOTP-кода. Привязка доступна только при входе из внешней сети."
+        title="Ключи входа (passkey)"
+        description="Ключ может синхронизироваться между устройствами. Его отзыв отключает вход с этим ключом. Привязка доступна только из внешней сети."
+        action={<Chip size="small" label={`Активных ключей: ${activeKeys.length}`} />}
       >
         <Stack spacing={1}>
-          {passkeyLinkAvailable ? (
-            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }}>
+            <Stack direction={{ xs: 'column', lg: 'row' }} spacing={1} alignItems={{ lg: 'center' }}>
               <Button
                 variant="contained"
                 startIcon={linkingTrustedDevice ? <CircularProgress size={16} color="inherit" /> : <AddOutlinedIcon />}
                 onClick={onOpenLinkTrustedDevice}
-                disabled={loading || linkingTrustedDevice}
+                disabled={loading || linkingTrustedDevice || !passkeyLinkAvailable}
+                aria-describedby={!passkeyLinkAvailable ? 'passkey-unavailable-reason' : undefined}
+                sx={{ flexShrink: 0, alignSelf: { xs: 'flex-start', lg: 'center' } }}
               >
                 Привязать это устройство
               </Button>
-              <Typography variant="body2" color="text.secondary">
-                Добавьте passkey на этом телефоне или ПК для входа без TOTP.
+              <Typography id="passkey-unavailable-reason" variant="body2" color="text.secondary">
+                {passkeyLinkAvailable ? 'Добавьте passkey на этом телефоне или ПК для входа без TOTP.' : passkeyUnavailableReason}
               </Typography>
             </Stack>
-          ) : null}
           {loading ? (
             <Stack direction="row" spacing={1} alignItems="center">
               <CircularProgress size={18} />
               <Typography variant="body2" color="text.secondary">Загружаю список устройств...</Typography>
             </Stack>
-          ) : trustedDevices.length === 0 ? (
-            <Alert severity="info">Доверенные устройства пока не зарегистрированы.</Alert>
-          ) : trustedDevices.map((device) => (
+          ) : activeKeys.length === 0 ? (
+            <Alert severity="info">Активных ключей входа нет.</Alert>
+          ) : activeKeys.map((device) => (
             <Paper
               key={device.id}
               variant="outlined"
-              sx={{ p: 1.25, borderRadius: 2, display: 'flex', flexDirection: { xs: 'column', md: 'row' }, gap: 1.2, alignItems: { md: 'center' }, justifyContent: 'space-between' }}
+              sx={{ p: 1.25, borderRadius: '6px', display: 'flex', flexDirection: { xs: 'column', md: 'row' }, gap: 1.2, alignItems: { md: 'center' }, justifyContent: 'space-between' }}
             >
               <Stack spacing={0.35}>
                 <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
@@ -138,9 +147,9 @@ export default function SecurityTab({
                   variant="outlined"
                   startIcon={<DeleteOutlineOutlinedIcon />}
                   disabled={!device.is_active}
-                  onClick={() => onRevokeTrustedDevice(device.id)}
+                  onClick={() => setRevokeDevice(device)}
                 >
-                  Отозвать
+                  Отозвать ключ
                 </Button>
               </Stack>
             </Paper>
@@ -148,6 +157,21 @@ export default function SecurityTab({
         </Stack>
       </SectionCard>
 
+      <Dialog open={Boolean(revokeDevice)} onClose={() => { if (!revoking) setRevokeDevice(null); }} fullWidth maxWidth="sm">
+        <DialogTitle>Отозвать ключ входа?</DialogTitle>
+        <DialogContent><DialogContentText>
+          Ключ «{revokeDevice?.label || 'Passkey'}» перестанет работать на всех устройствах, где он используется.
+          Запись в менеджере паролей телефона или компьютера нужно удалить вручную.
+        </DialogContentText></DialogContent>
+        <DialogActions>
+          <Button disabled={revoking} onClick={() => setRevokeDevice(null)}>Отмена</Button>
+          <Button color="error" disabled={revoking} onClick={async () => {
+            setRevoking(true);
+            try { await onRevokeTrustedDevice(revokeDevice.id); setRevokeDevice(null); }
+            finally { setRevoking(false); }
+          }}>Отозвать ключ</Button>
+        </DialogActions>
+      </Dialog>
       <Dialog open={linkTrustedDeviceOpen} onClose={onCloseLinkTrustedDevice} fullWidth maxWidth="sm">
         <DialogTitle>Привязать это устройство</DialogTitle>
         <DialogContent>

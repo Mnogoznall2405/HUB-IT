@@ -81,6 +81,29 @@ Read-only COM bridge прогревается в фоне при запуске 
 настроен `APP_DATABASE_URL`. Значение `0`/`false` оставляет JSON cache как
 контролируемый rollback/fallback, не меняя read-only границу 1С.
 
+### Сводка сверки для списков (`/warehouse-1c/employee-compare-summary`)
+
+Сборка стоит один батч-вызов 1С (5–10 с и больше), поэтому ответ кэшируется:
+свежий до 10 минут, до 30 минут отдаётся из кэша с фоновой пересборкой.
+Последний удачный снимок дополнительно хранится в app-БД
+(`app.json_documents`, документ `one_c_employee_compare_summary.<db_id>.json`,
+без отдельной миграции), чтобы рестарт backend не заставлял первых
+пользователей ждать 1С: холодный процесс берёт снимок моложе 24 часов, отдаёт
+его сразу и пересобирает в фоне. Снимок старше 30 минут помечается `stale`,
+а AI-инструмент сверки считает его неполным по `meta.as_of`. Если запись в БД
+недоступна или данные не сериализуются в JSON без потерь, сводка работает
+только из памяти.
+
+### Диагностика падений процесса 1С
+
+Процесс COM-моста (`pythonw.exe`) изредка падает нативно (`0xC0000005` в
+`msvcp140.dll`). Родитель видит только код выхода, поэтому процесс пишет
+Python-стеки всех потоков через `faulthandler` в
+`logs/warehouse1c_worker_fault.log` (путь меняет
+`WAREHOUSE_1C_WORKER_FAULT_LOG`, значение `0` отключает). Запись с
+`Windows fatal exception: access violation` показывает, на каком вызове
+(импорт, драйвер БД или COM) произошло падение.
+
 ## Права и подтверждение
 
 - Чтение требует `warehouse_1c.read`.
@@ -182,6 +205,19 @@ lease удерживается в AUTOCOMMIT, без открытой транз
 `bridge.queue_length`, `bridge.timed_out`, `catalog_bridge` и состояние breaker.
 Readiness process-режима также требует `bridge.ready=true`. При `stale`,
 `error` или открытом breaker UI показывает недоступность вместо нулевого остатка.
+
+Долгое чтение `balances_by_warehouses` (сводка сравнения сотрудников, 30–60 с) идёт
+через отдельный COM-child `warehouse1c-heavy-bridge` (`heavy_bridge` в status), чтобы
+не занимать общий worker заявок и остатков. Переменные:
+`WAREHOUSE_1C_HEAVY_BRIDGE_ENABLED` (по умолчанию `1`; `0` возвращает операцию на
+общий bridge), `WAREHOUSE_1C_HEAVY_BRIDGE_QUEUE_LIMIT` (2),
+`WAREHOUSE_1C_HEAVY_BRIDGE_QUEUE_WAIT_SECONDS` (60). Это ещё одно подключение к 1С:
+перед включением на production проверить лицензии и память.
+
+Отсутствия Документооборота (`/api/v1/docflow/absences`) читаются отдельным
+worker-ом `docflow-absences-com-bridge`: очередь `DOCFLOW_ABSENCES_QUEUE_LIMIT` (6),
+ожидание `DOCFLOW_ABSENCES_QUEUE_WAIT_SECONDS` (45); одинаковые одновременные
+запросы одной учётной записи делят один вызов 1С.
 
 Вложения отдаются без physical path, с лимитом размера и через HTTP stream;
 детальная карточка документа доступна только для явно поддержанных типов

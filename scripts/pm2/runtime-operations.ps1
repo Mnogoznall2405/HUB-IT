@@ -261,7 +261,7 @@ function Restart-HubitSimpleService {
 }
 
 function Restart-HubitWorker {
-    param([ValidateSet('itinvent-my-files-worker','itinvent-mail-notification-worker','itinvent-preview-worker','itinvent-chat-push-worker')][string]$Name, [string]$Pm2Command, [string]$ProjectRoot)
+    param([ValidateSet('itinvent-my-files-worker','itinvent-mail-notification-worker','itinvent-preview-worker','itinvent-chat-push-worker','itinvent-monitoring-worker')][string]$Name, [string]$Pm2Command, [string]$ProjectRoot)
     $result = Invoke-HubitPm2 -Pm2Command $Pm2Command -Arguments @('jlist') -TimeoutSeconds 30
     if ($result.ExitCode -ne 0) { throw 'Cannot inspect worker ownership.' }
     $row = @((Convert-HubitPm2Snapshot -Json $result.Output) | Where-Object { $_.Name -eq $Name })

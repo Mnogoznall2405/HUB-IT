@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import date
 from typing import Literal
 from urllib.parse import quote
 
@@ -10,7 +11,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.background import BackgroundTask
 
-from backend.api.deps import require_permission
+from backend.api.deps import ensure_user_permission, require_permission
 from backend.models.auth import User
 from backend.models.docflow import (
     DocflowAssignmentAssigneeList,
@@ -33,6 +34,7 @@ from backend.services.authorization_service import (
     PERM_DOCFLOW_ADMIN,
     PERM_DOCFLOW_CREATE,
     PERM_DOCFLOW_READ,
+    PERM_ADDRESS_BOOK_READ,
     authorization_service,
 )
 from backend.services.docflow_service import DocflowServiceError, docflow_service
@@ -40,6 +42,30 @@ from backend.realtime.hub import HUB_DOCFLOW_TASK_CHANGED_EVENT, hub_realtime_pu
 
 
 router = APIRouter()
+
+
+@router.get("/absences")
+async def get_docflow_absences(
+    request: Request,
+    response: Response,
+    on: date | None = Query(None),
+    employee_code: str = Query("", max_length=128),
+    current_user: User = Depends(require_permission(PERM_DOCFLOW_READ)),
+):
+    from starlette.concurrency import run_in_threadpool
+    from backend.services.docflow_absence_service import docflow_absence_service
+
+    ensure_user_permission(current_user, PERM_ADDRESS_BOOK_READ)
+    _no_store(response)
+    try:
+        return await run_in_threadpool(
+            docflow_absence_service.list_absences,
+            user_id=int(current_user.id),
+            on=on or date.today(),
+            employee_code=employee_code.strip(),
+        )
+    except DocflowServiceError as exc:
+        _raise_service_error(exc, _correlation_id(request))
 
 
 def _correlation_id(request: Request) -> str:

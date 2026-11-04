@@ -201,3 +201,34 @@ def test_friendly_run_error_text_maps_provider_failures():
     assert 'перегружен' in friendly(Exception('HTTP 429 rate limit exceeded'))
     assert 'временно недоступен' in friendly(Exception('HTTP 503 service unavailable'))
     assert friendly(Exception('some raw failure')) == 'some raw failure'
+
+
+def test_full_queue_keeps_the_prompt_as_a_visible_failed_run_and_rejects_retry(database, monkeypatch):
+    """DAI-07: backlog is bounded; the accepted prompt is not lost and the refusal is visible."""
+    svc = database
+    monkeypatch.setenv('AI_RUN_QUEUE_MAX_PER_USER', '2')
+    monkeypatch.setattr(svc, '_record_conversation_activity', lambda **kwargs: None)  # chat tables are not in this fixture
+    _add_run(svc, 'q1', 'm-q1', 'queued', created_ago=timedelta(minutes=10), updated_ago=timedelta(seconds=5))
+    _add_run(svc, 'q2', 'm-q2', 'queued', created_ago=timedelta(minutes=9), updated_ago=timedelta(seconds=5))
+    _add_run(svc, 'done', 'm-done', 'completed', created_ago=timedelta(minutes=1))
+
+    refused = svc._enqueue_run(
+        conversation_id='conv', trigger_message_id='m-new', current_user_id=2,
+        effective_database_id=None, force_new_run=False, retry=False,
+    )
+    assert refused['status'] == 'failed'
+    assert service_module.AI_RUN_QUEUE_FULL_TEXT in str(refused)
+    assert ('m-new', 'failed') in [(trigger, status) for _id, trigger, status in _runs(svc)]
+
+    with pytest.raises(service_module.AiRunQueueFullError):
+        svc.retry_conversation_run(conversation_id='conv', current_user_id=2)
+
+    # Once the queue drains, the same user is admitted again.
+    with svc.session() as db:
+        for row in db.execute(select(AppAiBotRun).where(AppAiBotRun.status == 'queued')).scalars():
+            row.status = 'completed'
+    admitted = svc._enqueue_run(
+        conversation_id='conv', trigger_message_id='m-next', current_user_id=2,
+        effective_database_id=None, force_new_run=False, retry=False,
+    )
+    assert admitted['status'] == 'queued'

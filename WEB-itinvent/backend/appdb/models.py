@@ -377,6 +377,8 @@ class AppItObject(AppBase):
     source_ref: Mapped[str] = mapped_column(String(128), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # For objects created in HUB-IT: the ITINVENT branch whose inventory and computers they show.
+    linked_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
@@ -404,6 +406,41 @@ class AppItObjectOwner(AppBase):
     valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     assigned_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class AppItObjectRoleAssignment(AppBase):
+    """Versioned project role of an IT object backed by a stable ZUP employee code (same roles as construction objects)."""
+
+    __tablename__ = "it_object_role_assignments"
+    __table_args__ = _table_args(
+        CheckConstraint(
+            "role_key IN ('project_lead', 'pto_manager', 'umto_coordinator', 'chief_project_engineer')",
+            name="ck_app_it_object_role_key",
+        ),
+        Index("ix_app_it_object_roles_object", "object_id", "role_key"),
+        Index(
+            "uq_app_it_object_active_role",
+            "object_id",
+            "role_key",
+            unique=True,
+            postgresql_where=text("valid_to IS NULL"),
+            sqlite_where=text("valid_to IS NULL"),
+        ),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    object_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    role_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    employee_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    employee_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    employee_position: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    employee_department: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    employee_department_location: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    assigned_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 class AppItObjectGrant(AppBase):
@@ -1066,6 +1103,7 @@ class AppMyFile(AppBase):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     owner_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     owner_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    uploaded_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     original_file_name: Mapped[str] = mapped_column(String(512), nullable=False, default="file.bin")
     download_file_name: Mapped[str] = mapped_column(String(512), nullable=False, default="file.bin")
     mime_type: Mapped[str] = mapped_column(String(255), nullable=False, default="application/octet-stream")
@@ -1114,6 +1152,7 @@ class AppMyFileAudit(AppBase):
     actor_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
     ip_address: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     user_agent: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    details: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
@@ -1133,6 +1172,105 @@ class AppMyFileDownloadGrant(AppBase):
     owner_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMyFileCollaborator(AppBase):
+    """Portal user allowed to co-edit a My Files document (owner is implicit)."""
+
+    __tablename__ = "my_file_collaborators"
+    __table_args__ = _table_args(
+        Index("ix_app_my_file_collaborators_user", "user_id"),
+        schema=APP_SCHEMA,
+    )
+
+    file_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    added_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default="edit", server_default="edit")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMyFileFolderCollaborator(AppBase):
+    """Portal user with a role on a whole folder: its files and subfolders, present and future."""
+
+    __tablename__ = "my_file_folder_collaborators"
+    __table_args__ = _table_args(
+        Index("ix_app_my_file_folder_collaborators_user", "user_id"),
+        schema=APP_SCHEMA,
+    )
+
+    folder_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    added_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default="edit", server_default="edit")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMyFileLibrary(AppBase):
+    """Shared library: files and folders owned by ``owner_user_id`` (always negative), outside any person's quota.
+
+    ``quota_bytes`` of 0 means no limit.
+    """
+
+    __tablename__ = "my_file_libraries"
+    __table_args__ = _table_args(
+        UniqueConstraint("owner_user_id", name="uq_app_my_file_libraries_owner"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    owner_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    quota_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AppMyFileLibraryMember(AppBase):
+    """Role in a library for one portal user or one whole department (resolved live)."""
+
+    __tablename__ = "my_file_library_members"
+    __table_args__ = _table_args(
+        Index("ix_app_my_file_library_members_principal", "principal_type", "principal_id"),
+        schema=APP_SCHEMA,
+    )
+
+    library_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    principal_type: Mapped[str] = mapped_column(String(16), primary_key=True)
+    principal_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default="edit", server_default="edit")
+    added_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMyFileVersion(AppBase):
+    """Content of a My Files document before an editing session changed it; each row owns one blob reference.
+
+    ``created_by_*`` is the editor whose save retired this content and ``session_key`` the
+    Document Server key of the editing session that did it (later saves of that session replace
+    the current content in place instead of adding versions).
+    """
+
+    __tablename__ = "my_file_versions"
+    __table_args__ = _table_args(
+        UniqueConstraint("file_id", "version_no", name="uq_app_my_file_versions_file_no"),
+        Index("ix_app_my_file_versions_file", "file_id", "version_no"),
+        Index("ix_app_my_file_versions_blob", "blob_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    file_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    blob_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    original_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    original_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    session_key: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
@@ -1172,49 +1310,6 @@ class AppNativePushToken(AppBase):
     last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-class AppMyFileCollaborator(AppBase):
-    """Portal user allowed to co-edit a My Files document (owner is implicit)."""
-
-    __tablename__ = "my_file_collaborators"
-    __table_args__ = _table_args(
-        Index("ix_app_my_file_collaborators_user", "user_id"),
-        schema=APP_SCHEMA,
-    )
-
-    file_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    added_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-
-
-class AppMyFileVersion(AppBase):
-    """Content of a My Files document before an editing session changed it; each row owns one blob reference.
-
-    ``created_by_*`` is the editor whose save retired this content and ``session_key`` the
-    Document Server key of the editing session that did it (later saves of that session replace
-    the current content in place instead of adding versions).
-    """
-
-    __tablename__ = "my_file_versions"
-    __table_args__ = _table_args(
-        UniqueConstraint("file_id", "version_no", name="uq_app_my_file_versions_file_no"),
-        Index("ix_app_my_file_versions_file", "file_id", "version_no"),
-        Index("ix_app_my_file_versions_blob", "blob_id"),
-        schema=APP_SCHEMA,
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    file_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    blob_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    original_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    original_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
-    session_key: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    created_by_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-
 
 
 class AppPushOutbox(AppBase):
@@ -2292,3 +2387,22 @@ class AppMaxProbeMedia(AppBase):
     content: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     content_type: Mapped[str] = mapped_column(String(128), nullable=False, default="application/octet-stream")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppEquipmentPhotoUploadLedger(AppBase):
+    """Insert intent of one resumable equipment photo upload (FILES lives in SQL Server, so the
+    upload checkpoint on disk and the legacy row cannot share a transaction)."""
+
+    __tablename__ = "equipment_photo_upload_ledger"
+    __table_args__ = _table_args(
+        Index("ix_app_equipment_photo_upload_ledger_item", "item_id", "state"),
+        schema=APP_SCHEMA,
+    )
+
+    upload_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    item_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="inserting")
+    file_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)

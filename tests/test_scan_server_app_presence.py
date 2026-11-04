@@ -27,8 +27,18 @@ def _make_store(temp_dir: str) -> ScanStore:
     )
 
 
-def _fake_request(ip_address: str):
-    return SimpleNamespace(client=SimpleNamespace(host=ip_address))
+def _fake_request(ip_address: str, payload: IngestPayload | None = None):
+    async def body() -> bytes:
+        dump = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+        return json.dumps(dump).encode("utf-8")
+
+    request = SimpleNamespace(client=SimpleNamespace(host=ip_address), body=body, headers={})
+
+    async def stream():
+        yield await request.body()  # looked up late so tests can wrap request.body
+
+    request.stream = stream
+    return request
 
 
 def test_health_exposes_ocr_capacity_and_large_page_limits():
@@ -60,8 +70,7 @@ def test_ingest_touches_agent_presence_and_exposes_active_work(temp_dir, monkeyp
 
     result = asyncio.run(
         scan_app.ingest(
-            payload,
-            _fake_request("10.105.0.18"),
+            _fake_request("10.105.0.18", payload),
             x_api_key=scan_app.config.api_keys[0],
         )
     )
@@ -100,8 +109,7 @@ def test_ingest_returns_429_when_pdf_backpressure_is_active(temp_dir, monkeypatc
     try:
         asyncio.run(
             scan_app.ingest(
-                payload,
-                _fake_request("10.105.0.18"),
+                _fake_request("10.105.0.18", payload),
                 x_api_key=scan_app.config.api_keys[0],
             )
         )
@@ -140,8 +148,7 @@ def test_ingest_returns_429_when_total_backpressure_is_active_for_non_pdf(temp_d
     try:
         asyncio.run(
             scan_app.ingest(
-                payload,
-                _fake_request("10.105.0.18"),
+                _fake_request("10.105.0.18", payload),
                 x_api_key=scan_app.config.api_keys[0],
             )
         )
@@ -687,3 +694,77 @@ def test_listener_death_handler_delegates_other_errors(monkeypatch):
     asyncio.run(_run())
 
     assert exits == []
+
+
+def test_json_ingest_reads_body_only_after_admission_and_rejects_bad_json(temp_dir, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    store = _make_store(temp_dir)
+    monkeypatch.setattr(scan_app, "store", store)
+    api_key = scan_app.config.api_keys[0]
+
+    with TestClient(scan_app.app) as client:
+        bad = client.post("/api/v1/scan/ingest", content=b"{not json", headers={"x-api-key": api_key})
+        assert bad.status_code == 422
+        missing = client.post("/api/v1/scan/ingest", json={"agent_id": "a"}, headers={"x-api-key": api_key})
+        assert missing.status_code == 422
+
+    # A request waiting for an ingest slot must not have materialized its (base64) body yet.
+    read_calls = []
+    payload = IngestPayload(agent_id="a", hostname="H", file_path=r"C:\Scan\x.txt", event_id="evt-adm")
+
+    async def scenario():
+        semaphore = scan_app._get_ingest_semaphore()
+        request = _fake_request("10.105.0.18", payload)
+        original_body = request.body
+
+        async def tracked_body():
+            read_calls.append(True)
+            return await original_body()
+
+        request.body = tracked_body
+        slots = max(1, int(scan_app.config.ingest_max_concurrency))
+        for _ in range(slots):
+            await semaphore.acquire()
+        waiting = asyncio.create_task(scan_app.ingest(request, x_api_key=api_key))
+        await asyncio.sleep(0.05)
+        waited_unread = not read_calls
+        for _ in range(slots):
+            semaphore.release()
+        result = await waiting
+        return waited_unread, result
+
+    waited_unread, result = asyncio.run(scenario())
+    assert waited_unread is True
+    assert result["success"] is True
+
+
+def test_json_ingest_rejects_oversized_body_before_buffering_it(temp_dir, monkeypatch):
+    """DSCAN-02: an oversized inline-base64 body gets 413 and is never parsed or processed."""
+    from fastapi.testclient import TestClient
+
+    store = _make_store(temp_dir)
+    monkeypatch.setattr(scan_app, "store", store)
+    monkeypatch.setenv("SCAN_INGEST_JSON_MAX_BYTES", "4096")
+    processed: list[dict] = []
+
+    async def _never(data, **_kwargs):
+        processed.append(data)
+        return {}
+
+    monkeypatch.setattr(scan_app, "_run_ingest_admitted", _never)
+    api_key = scan_app.config.api_keys[0]
+    body = json.dumps({"agent_id": "a", "hostname": "h", "file_path": "f", "document_b64": "A" * 20000}).encode()
+
+    client = TestClient(scan_app.app)  # no lifespan: the scan worker thread starts once per process
+    declared = client.post("/api/v1/scan/ingest", content=body, headers={"x-api-key": api_key})
+    # No Content-Length: a chunked upload must be cut off while streaming as well.
+    chunked = client.post(
+        "/api/v1/scan/ingest",
+        content=(body[i:i + 1024] for i in range(0, len(body), 1024)),
+        headers={"x-api-key": api_key},
+    )
+
+    assert declared.status_code == 413
+    assert chunked.status_code == 413
+    assert processed == []

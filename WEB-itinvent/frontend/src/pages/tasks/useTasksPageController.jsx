@@ -296,7 +296,11 @@ export default function useTasksPageController() {
               const isCurrent = () => active && latestTaskChanges.get(id) === change;
               try {
                 const task = await hubTasksAPI.getTask(id);
-                if (isCurrent()) list.patchTaskItem(id, stripTaskDetailOnlyKeys(task || {}));
+                if (isCurrent()) {
+                  // Remote change may move the task in/out of the server-filtered list.
+                  const action = list.reconcileRealtimeTask(id, stripTaskDetailOnlyKeys(task || {}));
+                  if (action === 'reload') needsFullListReload = true;
+                }
               } catch {
                 if (isCurrent()) setError('Не удалось обновить часть задач. Обновите список, чтобы получить актуальные данные.');
               } finally {
@@ -360,7 +364,7 @@ export default function useTasksPageController() {
       window.removeEventListener(HUB_REALTIME_CONNECTED_EVENT, handleConnected);
     };
   }, [
-    list.patchTaskItem,
+    list.reconcileRealtimeTask,
     list.reloadTasks,
     setError,
     user?.id,

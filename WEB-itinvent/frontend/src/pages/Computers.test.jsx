@@ -1,6 +1,6 @@
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Computers from './Computers';
 import { equipmentAPI } from '../api/client';
@@ -320,6 +320,33 @@ describe('Computers page', () => {
     expect(screen.getByText('Intel Wireless Bluetooth')).toBeInTheDocument();
     expect(screen.getByText('Сетевые устройства: 3')).toBeInTheDocument();
     expect(screen.getAllByText('Отключён')).toHaveLength(2);
+  }, 15000);
+
+  it('opens the full card from an IT object link even when the list does not show it, and goes back to the object', async () => {
+    equipmentAPI.searchAgentComputers.mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0, has_more: false, next_offset: null, summary: { total: 0, statuses: {}, branches: {}, outlook: {} } });
+    const back = encodeURIComponent('/it/objects/OBJ-ITINVENT%3A12?tab=computers');
+    render(
+      <MemoryRouter initialEntries={[`/computers?open=${encodeURIComponent(sampleComputer.mac_address)}&q=${sampleComputer.hostname}&back=${back}`]}>
+        <Routes>
+          <Route path="/computers" element={<Computers />} />
+          <Route path="/it/objects/:ref" element={<div>Карточка объекта</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(equipmentAPI.getAgentComputer).toHaveBeenCalledWith(sampleComputer.mac_address, expect.anything()));
+    expect(await screen.findByText(new RegExp(`Филиал: ${sampleComputer.branch_name}`))).toBeInTheDocument();
+    expect(screen.getByText(/Загрузка CPU:/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Назад' }));
+    expect(await screen.findByText('Карточка объекта')).toBeInTheDocument();
+  }, 15000);
+
+  it('ignores a back link that leads outside the IT objects', async () => {
+    renderComputers(`/computers?open=${encodeURIComponent(sampleComputer.mac_address)}&back=${encodeURIComponent('https://evil.example/')}`);
+
+    expect(await screen.findByText(new RegExp(`Филиал: ${sampleComputer.branch_name}`))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Назад' })).not.toBeInTheDocument();
   }, 15000);
 
   it('keeps unassigned agents visible and shows their count', async () => {

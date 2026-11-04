@@ -42,7 +42,7 @@ def _run(monkeypatch, **args):
     }
     monkeypatch.setattr(mfu, "_persisted_ping_states", lambda: states)
     monkeypatch.setattr(
-        "backend.api.v1.mfu._normalize_device_row",
+        "backend.services.mfu_device_rows.normalize_device_row",
         lambda row, db_id: {"key": key(row["inv_no"])},
     )
     return mfu.MfuDevicesListTool().execute(context=_ctx(), args=mfu.MfuDevicesListArgs(**args))

@@ -80,6 +80,9 @@ IMAGE_UNSUPPORTED_MARKERS = (
 DEFAULT_MAX_TRANSIENT_RETRIES = int(os.environ.get("AI_OPENROUTER_MAX_RETRIES", "3"))
 DEFAULT_RETRY_BASE_DELAY_SEC = float(os.environ.get("AI_OPENROUTER_RETRY_BASE_DELAY", "0.8"))
 DEFAULT_RETRY_MAX_DELAY_SEC = float(os.environ.get("AI_OPENROUTER_RETRY_MAX_DELAY", "8.0"))
+# One logical completion (all attempts, the strict-JSON fallback, backoff sleeps) must finish
+# inside this wall-clock budget; per-request timeouts alone multiply with the retry count.
+DEFAULT_RETRY_WALL_BUDGET_SEC = float(os.environ.get("AI_OPENROUTER_RETRY_WALL_BUDGET", "90"))
 
 UserContent = Union[str, list[dict[str, Any]]]
 
@@ -471,6 +474,9 @@ class OpenRouterClient:
         )
         if provider_http_client is not None:
             client_kwargs["http_client"] = provider_http_client
+        # Retries belong to ``_with_transient_retry`` alone: SDK-level retries would multiply
+        # with it (up to 3 x 3 attempts) and ignore the wall-clock budget.
+        client_kwargs["max_retries"] = 0
         client = OpenAI(
             **client_kwargs,
         )
@@ -478,9 +484,11 @@ class OpenRouterClient:
         self._thread_local.client_key = cache_key
         return client
 
-    def _with_transient_retry(self, *, model: str, call):
+    def _with_transient_retry(self, *, model: str, call, deadline: float | None = None):
         last_exc: Exception | None = None
         attempts = max(1, DEFAULT_MAX_TRANSIENT_RETRIES)
+        if deadline is None:
+            deadline = time.monotonic() + max(1.0, DEFAULT_RETRY_WALL_BUDGET_SEC)
         for attempt in range(1, attempts + 1):
             try:
                 return call()
@@ -489,6 +497,15 @@ class OpenRouterClient:
                 if not _is_transient_error(exc) or attempt >= attempts:
                     raise
                 delay = _retry_delay_seconds(attempt)
+                if time.monotonic() + delay >= deadline:
+                    logger.warning(
+                        "RouterAI retry budget exhausted: model=%s attempt=%s/%s error=%s",
+                        model,
+                        attempt,
+                        attempts,
+                        exc,
+                    )
+                    raise
                 logger.warning(
                     "RouterAI transient error; retrying in %.2fs: model=%s attempt=%s/%s error=%s",
                     delay,
@@ -645,10 +662,14 @@ class OpenRouterClient:
                 request_kwargs["extra_body"] = extra_body
             return client.chat.completions.create(**request_kwargs)
 
+        # The strict-JSON fallback below shares this budget with the first cycle.
+        retry_deadline = time.monotonic() + max(1.0, DEFAULT_RETRY_WALL_BUDGET_SEC)
+
         def _request_with_transient_retry(*, use_schema: bool, use_response_healing: bool):
             return self._with_transient_retry(
                 model=resolved_model,
                 call=lambda: _request(use_schema=use_schema, use_response_healing=use_response_healing),
+                deadline=retry_deadline,
             )
 
         # Claude requires closed objects in structured output. RouterAI silently

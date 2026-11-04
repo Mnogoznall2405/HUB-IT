@@ -82,15 +82,15 @@ class FakeMyFilesService:
             download_size_bytes=len(b"grant-payload"),
         )
 
-    def list_files(self, *, user_id: int, folder_id=None, view: str = "", query: str = ""):
+    def list_files(self, *, user_id: int, folder_id=None, view: str = "", query: str = "", library_id=None):
         self.seen_user_id = user_id
         self.seen_folder_id = folder_id
         return {"items": [], "folders": [], "breadcrumbs": [], "folder": None}
 
-    def list_folders(self, *, user_id: int):
+    def list_folders(self, *, user_id: int, library_id=None):
         return [f for f in self.folders.values()]
 
-    def create_folder(self, *, actor, name, parent_id=None, meta=None):
+    def create_folder(self, *, actor, name, parent_id=None, meta=None, library_id=None):
         self.folder_calls.append(("create", name, parent_id))
         folder = {
             "id": f"folder-{len(self.folders) + 1}",
@@ -159,6 +159,7 @@ class FakeMyFilesService:
         original_size_bytes: int,
         retention_days: int,
         folder_id: str | None = None,
+        library_id: str | None = None,
     ):
         self.upload = {
             "actor_id": actor.id,
@@ -196,6 +197,7 @@ class FakeMyFilesService:
         folder_id: str | None = None,
         meta=None,
         reuse_existing: bool = False,
+        library_id: str | None = None,
     ):
         self.upload = {
             "actor_id": actor.id,

@@ -136,7 +136,7 @@ try {
         Write-WatchdogLog "recovered ${name}; health check passed"
         exit 0
     }
-    if ($name -in @('itinvent-my-files-worker','itinvent-mail-notification-worker','itinvent-preview-worker','itinvent-chat-push-worker') -and $online.Count -gt 0) {
+    if ($name -in @('itinvent-my-files-worker','itinvent-mail-notification-worker','itinvent-preview-worker','itinvent-chat-push-worker','itinvent-monitoring-worker') -and $online.Count -gt 0) {
         Write-WatchdogLog "recovering $name via worker restart"
         Restart-HubitWorker -Name $name -Pm2Command $pm2Cmd -ProjectRoot $ProjectRoot
         Write-WatchdogLog "restarted $name"

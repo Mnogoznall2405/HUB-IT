@@ -129,7 +129,8 @@ class ComputersChangesTool(AiTool):
     stage = "checking_itinvent"
 
     def execute(self, *, context: AiToolExecutionContext, args: ComputersChangesArgs) -> AiToolResult:
-        from backend.api.v1.inventory import _load_changes, _normalize_mac
+        from backend.api.v1.inventory import _load_changes
+        from backend.services.inventory_read import normalize_mac as _normalize_mac
 
         since_ts = int(time.time()) - int(args.days) * 86400
         try:
@@ -189,7 +190,7 @@ class SoftwareSearchTool(AiTool):
     stage = "checking_itinvent"
 
     def execute(self, *, context: AiToolExecutionContext, args: SoftwareSearchArgs) -> AiToolResult:
-        from backend.api.v1.inventory import _get_inventory_app_store, _normalize_mac
+        from backend.services.inventory_read import get_inventory_app_store as _get_inventory_app_store, normalize_mac as _normalize_mac
 
         needle = args.query.lower()
         try:

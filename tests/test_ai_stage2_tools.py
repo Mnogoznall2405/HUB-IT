@@ -20,6 +20,7 @@ directory = importlib.import_module("backend.ai_chat.tools.directory")
 self_service = importlib.import_module("backend.ai_chat.tools.self_service")
 it_reports = importlib.import_module("backend.ai_chat.tools.it_reports")
 inventory_api = importlib.import_module("backend.api.v1.inventory")
+inventory_read = importlib.import_module("backend.services.inventory_read")
 queries = importlib.import_module("backend.database.queries")
 user_service_module = importlib.import_module("backend.services.user_service")
 address_book_module = importlib.import_module("backend.services.address_book_service")
@@ -245,7 +246,7 @@ def test_software_search_respects_visibility_and_version(monkeypatch):
     ]
     requested = {}
     store = SimpleNamespace(list_hosts=lambda keys: requested.setdefault("keys", set(keys)) and hosts)
-    monkeypatch.setattr(inventory_api, "_get_inventory_app_store", lambda: store)
+    monkeypatch.setattr(inventory_read, "get_inventory_app_store", lambda: store)
     result = it_reports.SoftwareSearchTool().execute(
         context=_ctx(), args=it_reports.SoftwareSearchArgs(query="7-zip", version_below="22")
     )

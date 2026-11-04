@@ -47,6 +47,14 @@ class _EgressStoreProto(Protocol):
     def get_report(self, computer_name: str) -> Optional[Dict[str, Any]]: ...
 
 
+class EgressStoreUnavailableError(RuntimeError):
+    """The primary (PostgreSQL) egress store cannot be used and no fallback is allowed."""
+
+
+def _sqlite_fallback_allowed() -> bool:
+    return str(os.getenv("FS_EGRESS_ALLOW_SQLITE_FALLBACK", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _sqlite_db_path() -> Path:
     override = str(os.getenv("FS_EGRESS_DB_PATH", "") or "").strip()
     if override:
@@ -57,7 +65,11 @@ def _sqlite_db_path() -> Path:
 
 @lru_cache(maxsize=1)
 def get_egress_store() -> _EgressStoreProto:
-    """Prefer APP_DATABASE_URL (PostgreSQL). SQLite only if app DB is unavailable."""
+    """APP_DATABASE_URL (PostgreSQL) is the store.  SQLite only when explicitly allowed
+    (``FS_EGRESS_ALLOW_SQLITE_FALLBACK=1``, dev/tests): a silent fallback splits ingest and read
+    across processes and, being cached, outlives a short PostgreSQL outage (DINT-04).  A failure
+    raises and is NOT cached (lru_cache does not store exceptions), so the next call retries."""
+    primary_error: Exception | None = None
     try:
         from backend.appdb.db import is_app_database_configured
         from backend.appdb.file_egress_store import AppFileEgressStore
@@ -66,7 +78,11 @@ def get_egress_store() -> _EgressStoreProto:
             logger.info("file egress store: PostgreSQL (APP_DATABASE_URL)")
             return AppFileEgressStore()
     except Exception as exc:
+        primary_error = exc
         logger.warning("file egress PostgreSQL store unavailable: %s", exc)
+
+    if not _sqlite_fallback_allowed():
+        raise EgressStoreUnavailableError("file egress store is unavailable") from primary_error
 
     from inventory_server.egress_store import EgressEventStore
 

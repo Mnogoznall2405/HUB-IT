@@ -1245,6 +1245,7 @@ class ChatService:
         current_user_id: int,
         email: str = "",
         full_name: str = "",
+        strict_email: bool = False,
     ) -> dict:
         self._ensure_available()
         email_norm = _normalize_text(email).lower()
@@ -1274,6 +1275,16 @@ class ChatService:
         def _serialize_match(item: dict[str, Any]) -> dict:
             presence_map = self._get_presence_map(user_ids=[int(item.get("id", 0) or 0)])
             return self._serialize_user(item, presence_map=presence_map)
+
+        if strict_email:
+            if len(email_norm) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email_norm):
+                raise ValueError("Укажите корректный рабочий e-mail сотрудника.")
+            matches = [item for item in candidates if email_norm in _email_fields(item)]
+            if len(matches) == 1:
+                return _serialize_match(matches[0])
+            if len(matches) > 1:
+                raise LookupError("По этому e-mail найдено несколько учётных записей HUB. Обратитесь в техническую поддержку.")
+            raise LookupError("Сотрудник с таким рабочим e-mail не найден в HUB. Возможно, у него ещё нет доступа.")
 
         if email_norm:
             for item in candidates:

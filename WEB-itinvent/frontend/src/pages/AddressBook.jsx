@@ -34,6 +34,7 @@ import AddressBookEntrySheet from '../components/addressBook/AddressBookEntryShe
 import AddressBookListModes from '../components/addressBook/AddressBookListModes';
 import AddressBookFilters from '../components/addressBook/AddressBookFilters';
 import AddressBookMobileToolbar from '../components/addressBook/AddressBookMobileToolbar';
+import useDocflowAbsenceMarks from '../components/addressBook/useDocflowAbsenceMarks';
 import {
   addressBookScrollbarSx,
   dedupeNamedOptions,
@@ -168,7 +169,12 @@ const AddressBook = () => {
   // frozen on mode entry so clicks (e.g. pushRecentEmployee) never refetch.
   const [listMode, setListMode] = useState('all');
   const [modeCodes, setModeCodes] = useState([]);
-  const [items, setItems] = useState([]);
+  const [rawItems, setItems] = useState([]);
+  const { decorate: decorateAbsences, refresh: refreshAbsenceMarks, status: absenceMarksStatus } = useDocflowAbsenceMarks({
+    userKey,
+    enabled: Boolean(user?.id && !dismissed && hasPermission('docflow.read') && hasPermission('address_book.read')),
+  });
+  const items = useMemo(() => rawItems.map(decorateAbsences), [rawItems, decorateAbsences]);
   const [total, setTotal] = useState(0);
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -316,6 +322,7 @@ const AddressBook = () => {
   }, [selectedItem]);
 
   const handleSync = useCallback(async () => {
+    refreshAbsenceMarks();
     setSyncing(true);
     setError(null);
     try {
@@ -331,11 +338,12 @@ const AddressBook = () => {
     } finally {
       setSyncing(false);
     }
-  }, [cityFilter, debouncedQuery, departmentFilter, dismissed, items.length, loadItems, loadStatus]);
+  }, [cityFilter, debouncedQuery, departmentFilter, dismissed, items.length, loadItems, loadStatus, refreshAbsenceMarks]);
 
   const handleRetrySearch = useCallback(() => {
+    refreshAbsenceMarks();
     void loadItems(debouncedQuery, dismissed, 0, SEARCH_LIMIT, departmentFilter, cityFilter);
-  }, [cityFilter, debouncedQuery, departmentFilter, dismissed, loadItems]);
+  }, [cityFilter, debouncedQuery, departmentFilter, dismissed, loadItems, refreshAbsenceMarks]);
 
   const handleClearQuery = useCallback(() => {
     setQuery('');
@@ -871,6 +879,11 @@ const AddressBook = () => {
               }}
               data-testid="address-book-entry-list-scroll"
             >
+              {absenceMarksStatus === 'error' ? (
+                <Alert severity="info" action={<Button size="small" onClick={refreshAbsenceMarks}>Повторить</Button>}>
+                  Не удалось загрузить отметки отсутствий Документооборота.
+                </Alert>
+              ) : null}
               <AddressBookEntryList
                 items={items}
                 selectedEntryKey={selectedEntryKey}
@@ -984,7 +997,7 @@ const AddressBook = () => {
 
         <AddressBookEntrySheet
           open={mobileSheetOpen && Boolean(sheetItem)}
-          item={sheetItem}
+          item={decorateAbsences(sheetItem)}
           query={query}
           enableTelLinks={isMobile}
           dismissed={dismissed}

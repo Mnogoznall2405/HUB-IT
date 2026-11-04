@@ -38,13 +38,24 @@ def _ping_result(output, *, complete, error=None):
             "sent": 3 if complete else None, "received": replies, "error": error}
 
 
-def _ping(address):
+DEFAULT_ICMP_TIMEOUT_MS = 800
+
+
+def _ping(address, timeout_ms=DEFAULT_ICMP_TIMEOUT_MS):
+    # Slow links (satellite/radio) answer after the default wait; a per-target timeout stops them looking offline.
+    try:
+        timeout_ms = int(timeout_ms)
+    except (TypeError, ValueError):
+        timeout_ms = DEFAULT_ICMP_TIMEOUT_MS
+    timeout_ms = min(max(timeout_ms, 200), 5000)
     windows = platform.system().lower() == "windows"
-    command = ["ping", "-n", "3", "-w", "800", address] if windows else ["ping", "-n", "-c", "3", "-W", "1", address]
+    command = ["ping", "-n", "3", "-w", str(timeout_ms), address] if windows else ["ping", "-n", "-c", "3", "-W", str(-(-timeout_ms // 1000)), address]
+    # Three silent attempts plus the one-second spacing must still finish inside the process bound.
+    process_timeout = max(5, 3 * timeout_ms / 1000 + 3)
     started = datetime.now(timezone.utc)
     timer = time.monotonic()
     try:
-        result = subprocess.run(command, capture_output=True, timeout=5, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if windows else 0)
+        result = subprocess.run(command, capture_output=True, timeout=process_timeout, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if windows else 0)
         value = _ping_result(result.stdout, complete=result.returncode in (0, 1), error=None if result.returncode in (0, 1) else "process_error")
     except subprocess.TimeoutExpired as exc:
         value = _ping_result(exc.stdout, complete=False, error="collector_timeout")
@@ -62,7 +73,7 @@ class NetworkMonitorProbe:
         # Network waits must not occupy the executor used by DB reads/commits.
         if self._ping_executor is None:
             self._ping_executor = ThreadPoolExecutor(max_workers=12, thread_name_prefix="monitor-icmp")
-        task = asyncio.get_running_loop().run_in_executor(self._ping_executor, _ping, target["address"])
+        task = asyncio.get_running_loop().run_in_executor(self._ping_executor, _ping, target["address"], (target.get("settings") or {}).get("icmp_timeout_ms", DEFAULT_ICMP_TIMEOUT_MS))
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:

@@ -38,6 +38,7 @@ $patterns = @(
     @{ Re = 'start_server\.py'; Reason = 'backend start_server.py' },
     @{ Re = 'start_chat_server\.py'; Reason = 'chat start_chat_server.py' },
     @{ Re = 'start_preview_worker\.py'; Reason = 'shared preview worker' },
+    @{ Re = 'start_monitoring_worker\.py'; Reason = 'network monitoring worker' },
     @{ Re = '(^|\s)-m\s+scan_server(\s|$)'; Reason = 'scan_server API' },
     @{ Re = 'scan_server\.worker_main'; Reason = 'scan worker' },
     @{ Re = '(^|\s)-m\s+inventory_server(\s|$)'; Reason = 'inventory_server' },

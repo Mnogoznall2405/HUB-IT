@@ -34,6 +34,7 @@ async def get_chat_users(
 async def resolve_chat_user_for_address_book(
     email: str = Query("", min_length=0),
     full_name: str = Query("", min_length=0),
+    strict_email: bool = Query(False),
     current_user: User = Depends(require_permission(PERM_CHAT_READ)),
 ):
     if not str(email or "").strip() and not str(full_name or "").strip():
@@ -44,6 +45,7 @@ async def resolve_chat_user_for_address_book(
             current_user_id=int(current_user.id),
             email=email,
             full_name=full_name,
+            strict_email=strict_email,
         )
     except Exception as exc:
         chat_api()._raise_chat_http_error(exc)

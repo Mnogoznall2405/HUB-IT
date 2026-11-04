@@ -80,9 +80,9 @@ def test_current_computer_from_ad_goes_first_and_old_machines_are_dropped(monkey
                 return {m for m, h in hosts.items() if h["hostname"].lower() == query.lower()}
             return {"AABBCCDDEE02", "AABBCCDDEE03"}
 
-    inventory = importlib.import_module("backend.api.v1.inventory")
-    monkeypatch.setattr(inventory, "_get_inventory_app_store", lambda: _Store())
-    monkeypatch.setattr(inventory, "_get_inventory_host", lambda mac: hosts.get(mac))
+    inventory_read = importlib.import_module("backend.services.inventory_read")
+    monkeypatch.setattr(inventory_read, "get_inventory_app_store", lambda: _Store())
+    monkeypatch.setattr(inventory_read, "get_inventory_host", lambda mac: hosts.get(mac))
     monkeypatch.setattr(self_service, "_ad_last_logon_hostnames", lambda identity: ["TMN-IT-0009"])
     identity = identity_module.SelfIdentity(
         user_id=5, full_name="Козловский", emails=(), ad_login="kozlovskii.me",

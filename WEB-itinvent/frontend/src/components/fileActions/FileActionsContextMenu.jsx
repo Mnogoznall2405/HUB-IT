@@ -5,6 +5,7 @@ import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import DriveFileMoveOutlinedIcon from '@mui/icons-material/DriveFileMoveOutlined';
 import DriveFileRenameOutlineRoundedIcon from '@mui/icons-material/DriveFileRenameOutlineRounded';
 import EditNoteRoundedIcon from '@mui/icons-material/EditNoteRounded';
+import FileCopyOutlinedIcon from '@mui/icons-material/FileCopyOutlined';
 import GroupAddOutlinedIcon from '@mui/icons-material/GroupAddOutlined';
 import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
 import RestoreRoundedIcon from '@mui/icons-material/RestoreRounded';
@@ -65,12 +66,14 @@ export default function FileActionsContextMenu({
   onClose,
   onPreview,
   onEditOnline,
+  editOnlineLabel = 'Редактировать онлайн',
   onCollaborators,
   onVersions,
   onDownload,
   onSaveAll,
   onRename,
   onMove,
+  onCopyTo,
   onDelete,
   onSelectAll,
   onToggleFavorite,
@@ -162,7 +165,7 @@ export default function FileActionsContextMenu({
           sx={{ minHeight: 40 }}
         >
           <ListItemIcon><EditNoteRoundedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText>Редактировать онлайн</ListItemText>
+          <ListItemText>{editOnlineLabel}</ListItemText>
         </MenuItem>
       ) : null}
       {typeof onCollaborators === 'function' ? (
@@ -306,6 +309,17 @@ export default function FileActionsContextMenu({
         >
           <ListItemIcon><DriveFileMoveOutlinedIcon fontSize="small" /></ListItemIcon>
           <ListItemText>Переместить</ListItemText>
+        </MenuItem>
+      ) : null}
+      {typeof onCopyTo === 'function' ? (
+        <MenuItem
+          data-testid="file-action-copy-to"
+          disabled={actionBusy}
+          onClick={() => runDirectAction(onCopyTo)}
+          sx={{ minHeight: 40 }}
+        >
+          <ListItemIcon><FileCopyOutlinedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText>Копировать в…</ListItemText>
         </MenuItem>
       ) : null}
       {canCopyFile || typeof onDelete === 'function' || typeof onSelectAll === 'function' ? <Divider /> : null}

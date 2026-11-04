@@ -251,6 +251,7 @@ const MY_FILES_PERMISSION_GROUP = {
     { value: 'my_files.share', label: 'Мой диск: публичные ссылки' },
     { value: 'my_files.audit.read', label: 'Мой диск: журнал аудита' },
     { value: 'my_files.stats.read', label: 'Мой диск: статистика пользователей (админ)' },
+    { value: 'my_files.libraries.manage', label: 'Мой диск: общие папки (админ)' },
   ],
 };
 

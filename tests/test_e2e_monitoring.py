@@ -573,6 +573,17 @@ def test_existing_outage_without_observation_metadata_keeps_unknown_beginning(en
     assert current["outages"][0]["opened_at"] == opened.isoformat()
 
 
+def test_overview_expects_collector_when_it_runs_in_the_standalone_worker(environment, monkeypatch):
+    client, *_ = environment
+    monkeypatch.delenv("MONITORING_WORKER_EXTERNAL", raising=False)
+    monkeypatch.setenv("MONITORING_BACKGROUND_ENABLED", "0")
+    assert client.get("/api/v1/monitoring/overview").json()["worker"]["enabled"] is False
+
+    # The API runs with the loop off; the worker process owns it, so the page must still watch the heartbeat.
+    monkeypatch.setenv("MONITORING_WORKER_EXTERNAL", "1")
+    assert client.get("/api/v1/monitoring/overview").json()["worker"]["enabled"] is True
+
+
 def test_individual_section_permission_and_write_only_profile(environment):
     client, svc, device, now, user = environment
     target = create_target(client)
@@ -703,6 +714,19 @@ def test_devices_connect_without_registry_card_and_edit_keeps_existing_card(envi
     assert renamed.json()["network_device_id"] == carded["network_device_id"]
     unknown = client.post("/api/v1/monitoring/targets", json={"network_device_id": 999999, "name": "X", "address": "172.16.250.99", "profile_id": profile["id"]})
     assert unknown.status_code == 400
+
+
+def test_existing_target_is_editable_after_its_registry_card_left_the_registry(environment, monkeypatch):
+    client, svc, device, now, user = environment
+    target = create_target(client)
+    monkeypatch.setattr(svc, "catalog", lambda: [])
+    update = {key: target[key] for key in ("network_device_id", "name", "address", "port", "profile_id", "enabled", "settings")}
+    update["settings"] = {**update["settings"], "icmp_timeout_ms": 2000}
+    saved = client.put(f"/api/v1/monitoring/targets/{target['id']}", json=update)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["settings"]["icmp_timeout_ms"] == 2000
+    other = client.post("/api/v1/monitoring/targets", json={**update, "network_device_id": 424242, "address": "172.16.250.77"})
+    assert other.status_code == 400
 
 
 def test_one_registry_card_cannot_be_connected_twice_and_address_change_resets_baseline(environment):

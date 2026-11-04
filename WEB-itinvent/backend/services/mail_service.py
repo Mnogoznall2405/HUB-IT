@@ -4790,6 +4790,8 @@ class MailService:
         try:
             if status == "sent":
                 store.complete_sent(claim.row_id, result)
+            elif status == "unknown":
+                store.complete_unknown(claim.row_id, error_code=error_code)
             else:
                 store.complete_failed(claim.row_id, error_code=error_code)
         except Exception:
@@ -4914,7 +4916,12 @@ class MailService:
             )
         except MailSendPipelineError as exc:
             error_code = _normalize_text(getattr(exc, "code", None), "MAIL_SEND_FAILED")
-            self._complete_send_idempotency(send_claim, status="failed", error_code=error_code)
+            outcome_unknown = error_code == "MAIL_SEND_OUTCOME_UNKNOWN"
+            self._complete_send_idempotency(
+                send_claim,
+                status="unknown" if outcome_unknown else "failed",
+                error_code=error_code,
+            )
             if error_code == "MAIL_EXCHANGELIB_MISSING":
                 raise MailServiceError("exchangelib package is not installed") from exc
             self._log_message(
@@ -4925,9 +4932,13 @@ class MailService:
                 folder_hint="sent",
                 subject=final_subject,
                 recipients=recipients,
-                status="failed",
+                status="unknown" if outcome_unknown else "failed",
                 error_text=str(exc),
             )
+            if outcome_unknown:
+                raise MailServiceError(
+                    f"Failed to confirm message delivery (the message may have been sent; check Sent items): {exc}"
+                ) from exc
             raise MailServiceError(f"Failed to send message: {exc}") from exc
 
         try:
@@ -4964,7 +4975,21 @@ class MailService:
             self._complete_send_idempotency(send_claim, status="sent", result=result)
             return result
         except Exception as exc:
-            self._complete_send_idempotency(send_claim, status="failed", error_code="MAIL_SEND_FAILED")
+            # Exchange already accepted the message: a local bookkeeping error here must never
+            # release the idempotency key for a second send (DMAIL-02).
+            self._complete_send_idempotency(
+                send_claim,
+                status="sent",
+                result={
+                    "ok": True,
+                    "message_id": message_id,
+                    "subject": final_subject,
+                    "recipients": recipients,
+                    "cc": cc_recipients,
+                    "bcc": bcc_recipients,
+                    "post_send_error": True,
+                },
+            )
             self._log_message(
                 message_id=message_id,
                 user_id=int(profile["user"]["id"]),

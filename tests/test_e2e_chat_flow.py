@@ -168,6 +168,42 @@ def chat_env(temp_dir, monkeypatch):
     chat_db_module._session_factory = None
 
 
+def test_employee_link_resolves_exact_unique_email_and_reuses_dialog(chat_env, monkeypatch):
+    client, _, drain_background = chat_env
+    directory = chat_service_module.user_service.list_users()
+    directory[0]['email'] = 'alice@example.com'
+    directory[1]['email'] = 'bob@example.com'
+    monkeypatch.setattr(chat_service_module.user_service, 'list_users', lambda: directory)
+
+    found = client.get('/chat/users/resolve', params={'email': ' BOB@EXAMPLE.COM ', 'strict_email': True})
+    assert found.status_code == 200, found.text
+    assert found.json()['id'] == 2
+    for email in ['bob@other.example', 'missing@example.com', 'alice@example.com']:
+        missing = client.get('/chat/users/resolve', params={
+            'email': email, 'full_name': 'Bob Peer', 'strict_email': True,
+        })
+        assert missing.status_code == 404, missing.text
+    legacy = client.get('/chat/users/resolve', params={'email': 'bob@other.example'})
+    assert legacy.status_code == 200 and legacy.json()['id'] == 2
+
+    directory.append({**directory[1], 'id': 4, 'username': 'duplicate'})
+    ambiguous = client.get('/chat/users/resolve', params={'email': 'bob@example.com', 'strict_email': True})
+    assert ambiguous.status_code == 404 and 'несколько' in ambiguous.json()['detail']
+    directory.pop()
+    directory[1]['is_active'] = False
+    assert client.get('/chat/users/resolve', params={'email': 'bob@example.com', 'strict_email': True}).status_code == 404
+    directory[1]['is_active'] = True
+    assert client.get('/chat/users/resolve', params={'email': 'not-an-email', 'strict_email': True}).status_code == 400
+
+    opened = client.post('/chat/conversations/direct', json={'peer_user_id': found.json()['id']})
+    repeated = client.post('/chat/conversations/direct', json={'peer_user_id': found.json()['id']})
+    assert opened.status_code == repeated.status_code == 200
+    assert opened.json()['id'] == repeated.json()['id']
+    messages = client.get(f"/chat/conversations/{opened.json()['id']}/messages")
+    assert messages.status_code == 200 and messages.json()['items'] == []
+    drain_background()
+
+
 def test_chat_send_read_and_access_denial_flow(chat_env):
     client, set_user, drain_background = chat_env
 

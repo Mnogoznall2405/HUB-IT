@@ -360,7 +360,13 @@ def test_comparison_respects_warehouse_access_without_breaking_itinvent_list(com
 
 
 def test_ambiguous_warehouse_is_not_automatically_selected(compare):
-    compare.catalog.append({"ref": "warehouse-duplicate", "name": FIO})
+    # One person may own a few warehouses (their balances are summed), but a candidate list that
+    # reaches the match limit may be truncated and must never be picked automatically.
+    from backend.services.warehouse_1c_service import EMPLOYEE_WAREHOUSE_MATCH_LIMIT
+
+    compare.catalog.extend(
+        {"ref": f"warehouse-duplicate-{n}", "name": FIO} for n in range(EMPLOYEE_WAREHOUSE_MATCH_LIMIT)
+    )
     request_comparison(compare)
     actual = comparison_payload(compare)["data"]["comparison_1c"]
     assert actual["status"] == "ambiguous" and actual["matches_all"] is None
@@ -498,6 +504,8 @@ def test_comparison_keeps_safe_bridge_reason_and_recovers_on_next_request(compar
 
     compare.svc._process_bridge_enabled = True
     compare.svc._process_bridge = SimpleNamespace(call=invoke)
+    # balances_by_warehouses is a heavy operation: it goes through the heavy bridge when configured.
+    compare.svc._heavy_process_bridge = SimpleNamespace(call=invoke)
     monkeypatch.setattr(compare.svc, "get_balances_for_warehouses",
                         Warehouse1CService.get_balances_for_warehouses.__get__(compare.svc))
     compare.agent.steps.extend([
@@ -515,6 +523,8 @@ def test_comparison_keeps_safe_bridge_reason_and_recovers_on_next_request(compar
     assert any(f"reason_code={failure}" in record.message and "run_id=" in record.message
                for record in caplog.records)
     compare.agent.steps.clear()
+    # After a bridge failure the service backs off for a minute; simulate the window elapsing.
+    compare.svc._employee_compare_failures.clear()
     second = request_comparison(compare)
     assert second["tool_traces"][0]["comparison_snapshot"]["comparison_1c"]["complete"]
     assert len(calls) == 2

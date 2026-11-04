@@ -46,7 +46,7 @@ const settingsPayload = (name, groups, roles) => ({
   roles: OBJECT_TEAM_ROLES.map(({ key }) => ({ role_key: key, employee_code: roles[key]?.employee_code || null })),
 });
 
-function EmployeeSelect({ label, value, onChange, disabled }) {
+export function EmployeeSelect({ label, value, onChange, disabled, search = constructionAPI.searchEmployees }) {
   const [inputValue, setInputValue] = useState(value?.full_name || '');
   const [options, setOptions] = useState(value ? [value] : []);
   const [loading, setLoading] = useState(false);
@@ -69,7 +69,7 @@ function EmployeeSelect({ label, value, onChange, disabled }) {
     const timeout = window.setTimeout(async () => {
       setLoading(true);
       try {
-        const response = await constructionAPI.searchEmployees(normalizedQuery, {
+        const response = await search(normalizedQuery, {
           limit: 30,
           signal: controller.signal,
         });
@@ -93,7 +93,7 @@ function EmployeeSelect({ label, value, onChange, disabled }) {
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [disabled, inputValue, value]);
+  }, [disabled, inputValue, search, value]);
 
   return (
     <Autocomplete

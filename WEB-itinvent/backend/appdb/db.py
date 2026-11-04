@@ -26,6 +26,9 @@ class AppDatabaseConfigurationError(RuntimeError):
 
 _engines: dict[str, object] = {}
 _session_factories: dict[str, object] = {}
+# Re-entrant: get_app_session_factory builds the engine while holding it.  Only the cache
+# lookup/creation is serialized, never the transactions themselves (DOPS-03).
+_engine_cache_lock = threading.RLock()
 _initialized_schema_urls: set[str] = set()
 _schema_init_lock = threading.Lock()
 logger = logging.getLogger("backend.appdb.db")
@@ -145,8 +148,12 @@ def get_app_engine(database_url: str | None = None):
     resolved_url = ensure_app_database_configured(database_url)
     engine = _engines.get(resolved_url)
     if engine is None:
-        engine = _build_engine(resolved_url)
-        _engines[resolved_url] = engine
+        with _engine_cache_lock:
+            engine = _engines.get(resolved_url)
+            if engine is None:
+                # A failing builder raises before the assignment: no broken cache entry.
+                engine = _build_engine(resolved_url)
+                _engines[resolved_url] = engine
     return engine
 
 
@@ -154,13 +161,16 @@ def get_app_session_factory(database_url: str | None = None):
     resolved_url = ensure_app_database_configured(database_url)
     session_factory = _session_factories.get(resolved_url)
     if session_factory is None:
-        session_factory = sessionmaker(
-            bind=get_app_engine(resolved_url),
-            autoflush=False,
-            autocommit=False,
-            expire_on_commit=False,
-        )
-        _session_factories[resolved_url] = session_factory
+        with _engine_cache_lock:
+            session_factory = _session_factories.get(resolved_url)
+            if session_factory is None:
+                session_factory = sessionmaker(
+                    bind=get_app_engine(resolved_url),
+                    autoflush=False,
+                    autocommit=False,
+                    expire_on_commit=False,
+                )
+                _session_factories[resolved_url] = session_factory
     return session_factory
 
 

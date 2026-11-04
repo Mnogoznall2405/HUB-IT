@@ -1447,3 +1447,95 @@ def test_delete_spool_payload_survives_permission_error(tmp_path, monkeypatch):
         UserService._validate_my_files_quota_bytes(500 * (1024**3))
     with pytest.raises(ValueError):
         UserService._validate_my_files_quota_bytes("not-a-number")
+
+
+def test_conflicting_parallel_chunks_for_one_range_cannot_overwrite_acknowledged_bytes(tmp_path, monkeypatch):
+    """DFILE-01: two requests for the same range with different bytes; the loser must not write."""
+    import threading
+    import time
+
+    from backend.services import my_files_service as module
+
+    service = _new_service(tmp_path)
+    spool_path = service.new_spool_path("race.bin")
+    reserved = service.reserve_upload(
+        actor=_user(), original_file_name="race.bin", mime_type="application/octet-stream",
+        spool_path=spool_path, expected_size_bytes=4, retention_days=1,
+    )
+    real_write = module.os.write
+    slow_once = threading.Lock()
+
+    def slow_first_write(fd, data):
+        if slow_once.acquire(blocking=False):
+            time.sleep(0.6)  # the second request arrives while the first write is in flight
+        return real_write(fd, data)
+
+    monkeypatch.setattr(module.os, "write", slow_first_write)
+    outcomes: dict[bytes, object] = {}
+
+    def send(payload: bytes):
+        try:
+            outcomes[payload] = service.append_upload_chunk(
+                file_id=reserved["id"], user_id=7, offset=0, payload=payload,
+            )
+        except Exception as exc:  # noqa: BLE001 - the outcome itself is asserted below
+            outcomes[payload] = exc
+
+    first = threading.Thread(target=send, args=(b"AAAA",))
+    first.start()
+    time.sleep(0.2)
+    second = threading.Thread(target=send, args=(b"BBBB",))
+    second.start()
+    first.join(timeout=20)
+    second.join(timeout=20)
+
+    assert isinstance(outcomes[b"BBBB"], module.MyFilesValidationError)
+    assert outcomes[b"AAAA"]["complete"] is True
+    assert spool_path.read_bytes() == b"AAAA"
+
+
+def test_losing_dedup_candidate_never_deletes_the_canonical_blob_file(tmp_path):
+    """DFILE-02: the candidate path is deterministic, so it can be the winner's registered file."""
+    service = _new_service(tmp_path)
+    canonical = service.storage_root / "owner-7" / "blob.bin"
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_bytes(b"shared bytes")
+    registered = AppMyFileBlob(
+        id="b1", owner_user_id=7, original_sha256="a" * 64, storage_path=str(canonical.relative_to(service.storage_root)),
+        storage_mode="original", stored_sha256="a" * 64, original_size_bytes=12, stored_size_bytes=12,
+        output_mime_type="application/octet-stream", output_extension=".bin", ref_count=1,
+    )
+    stray = service.storage_root / "owner-7" / "stray-candidate.bin"
+    stray.write_bytes(b"shared bytes")
+
+    service._discard_unregistered_candidate(canonical, registered)
+    service._discard_unregistered_candidate(stray, registered)
+
+    assert canonical.read_bytes() == b"shared bytes"
+    assert not stray.exists()
+
+
+def test_parallel_blob_reference_changes_keep_an_exact_count(tmp_path):
+    """DFILE-03: attaches and detaches on one shared blob row must not lose updates."""
+    service = _new_service(tmp_path)
+    url = _sqlite_url(tmp_path / "app.db")
+    with app_session(url) as session:
+        session.add(AppMyFileBlob(
+            id="b-count", owner_user_id=7, original_sha256="b" * 64, storage_path="owner-7/count.bin",
+            storage_mode="original", stored_sha256="b" * 64, original_size_bytes=1, stored_size_bytes=1,
+            output_mime_type="application/octet-stream", output_extension=".bin", ref_count=1,
+        ))
+
+    def attach(_):
+        with app_session(url) as session:
+            service._add_blob_reference_locked(session, session.get(AppMyFileBlob, "b-count"))
+
+    def detach(_):
+        with app_session(url) as session:
+            service._release_blob_locked(session, "b-count", [])
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(attach, range(24)))
+        list(executor.map(detach, range(10)))
+    with app_session(url) as session:
+        assert session.get(AppMyFileBlob, "b-count").ref_count == 15

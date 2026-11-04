@@ -63,6 +63,9 @@ from backend.models.auth import (
 from backend.utils.security import decode_access_token, token_ttl_seconds
 from backend.services.authorization_service import authorization_service
 from backend.services.session_service import new_client_device_id, normalize_client_device_id, session_service
+from backend.services.session_service import SessionCredentialRevokedError
+from backend.models.user_devices import OwnDeviceInfo, OwnDeviceActionResult
+from backend.services.user_device_service import user_device_service, UserDeviceNotFoundError
 from backend.services.session_auth_context_service import session_auth_context_service
 from backend.services.settings_service import settings_service
 from backend.services.user_db_selection_service import user_db_selection_service
@@ -1337,7 +1340,7 @@ async def renew_mobile_biometric_session(
             user_agent=request.headers.get("user-agent", ""),
             network_zone=network_context.network_zone,
         )
-    except (MobileBiometricSessionError, AuthSecurityError) as exc:
+    except (MobileBiometricSessionError, AuthSecurityError, SessionCredentialRevokedError) as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     await run_in_threadpool(_apply_default_database, result["user"])
     return _build_login_response(request, response, result)
@@ -1394,6 +1397,12 @@ async def refresh_auth_tokens(
         request=request,
     )
     async def _deliver_refresh_payload(payload: dict[str, Any], *, metric_name: str) -> RefreshResponse:
+        # Rotation grace must never restore credentials for a remotely closed session.
+        session_row = await run_in_threadpool(session_service.get_session, str(token_data.session_id))
+        if (not session_row or not session_row.get("is_active")
+                or session_row.get("status") != "active"
+                or int(session_row.get("user_id") or 0) != int(token_data.user_id)):
+            raise HTTPException(status_code=401, detail="Session is not active")
         body_access, body_refresh = _apply_auth_delivery(
             request,
             response,
@@ -2042,6 +2051,49 @@ async def reset_own_twofa(
             await run_in_threadpool(auth_runtime_store_service.consume_refresh_token, refresh_data.jti)
     _clear_auth_cookies(response)
     return result
+
+
+@router.get("/my-devices", response_model=list[OwnDeviceInfo])
+async def get_my_devices(
+    current_user: User = Depends(get_current_active_user),
+    session_id: str = Depends(get_current_session_id),
+):
+    return await run_in_threadpool(user_device_service.list_devices,
+                                  user_id=int(current_user.id), current_session_id=session_id)
+
+
+async def _manage_own_device(current_user: User, current_session_id: str, **action):
+    try:
+        return await run_in_threadpool(user_device_service.revoke,
+                                      user_id=int(current_user.id), current_session_id=current_session_id, **action)
+    except UserDeviceNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/my-devices/terminate-others", response_model=OwnDeviceActionResult)
+async def terminate_my_other_devices(
+    current_user: User = Depends(get_current_active_user),
+    session_id: str = Depends(get_current_session_id),
+):
+    return await _manage_own_device(current_user, session_id, others=True)
+
+
+@router.delete("/my-devices/sessions/{target_session_id}", response_model=OwnDeviceActionResult)
+async def terminate_my_session(
+    target_session_id: str,
+    current_user: User = Depends(get_current_active_user),
+    session_id: str = Depends(get_current_session_id),
+):
+    return await _manage_own_device(current_user, session_id, session_id=target_session_id)
+
+
+@router.delete("/my-devices/{device_id}", response_model=OwnDeviceActionResult)
+async def remove_my_device(
+    device_id: str,
+    current_user: User = Depends(get_current_active_user),
+    session_id: str = Depends(get_current_session_id),
+):
+    return await _manage_own_device(current_user, session_id, device_id=device_id)
 
 
 @router.get("/sessions", response_model=list[SessionInfo])

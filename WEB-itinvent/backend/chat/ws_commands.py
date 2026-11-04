@@ -56,12 +56,25 @@ async def dispatch_chat_ws_command(
     if message_type == "chat.subscribe_conversation":
         if not conversation_id:
             raise ValueError("conversation_id is required")
+        epoch_before_check = chat_api.chat_realtime.room_eviction_epoch()
         await chat_api._run_chat_call(
             chat_api.chat_service.verify_conversation_access,
             current_user_id=int(current_user.id),
             conversation_id=conversation_id,
         )
         chat_api.chat_realtime.subscribe_conversation(connection_id, conversation_id)
+        if chat_api.chat_realtime.room_eviction_epoch() != epoch_before_check:
+            # An eviction ran between the access check and registration: it could not drop a
+            # room that was not yet joined, so confirm membership again or leave.
+            try:
+                await chat_api._run_chat_call(
+                    chat_api.chat_service.verify_conversation_access,
+                    current_user_id=int(current_user.id),
+                    conversation_id=conversation_id,
+                )
+            except Exception:
+                chat_api.chat_realtime.unsubscribe_conversation(connection_id, conversation_id)
+                raise
         await chat_api.chat_realtime.send_command_ok(
             connection_id,
             request_id=request_id,

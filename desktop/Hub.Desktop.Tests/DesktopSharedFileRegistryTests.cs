@@ -37,6 +37,59 @@ public sealed class DesktopSharedFileRegistryTests
     }
 
     [Fact]
+    public void ExpiredTokensStopResolvingAndClearForgetsEverything()
+    {
+        var directory = CreateTempDirectory();
+        var file = Path.Combine(directory, "old.txt");
+        File.WriteAllText(file, "x");
+        var clock = new ManualTimeProvider();
+        var registry = new DesktopSharedFileRegistry(TrustedBaseUri, clock, TimeSpan.FromMinutes(10));
+
+        var url = new Uri(registry.Register(new[] { file }).Single().Url);
+        clock.Advance(TimeSpan.FromMinutes(9));
+        Assert.True(registry.TryGetFilePath(url, out _));
+
+        clock.Advance(TimeSpan.FromMinutes(2));
+        Assert.False(registry.TryGetFilePath(url, out _));
+
+        var fresh = new Uri(registry.Register(new[] { file }).Single().Url);
+        Assert.True(registry.TryGetFilePath(fresh, out _));
+        registry.Clear();
+        Assert.False(registry.TryGetFilePath(fresh, out _));
+    }
+
+    [Fact]
+    public void TotalRegisteredFilesAreBoundedByDroppingTheOldest()
+    {
+        var directory = CreateTempDirectory();
+        var clock = new ManualTimeProvider();
+        var registry = new DesktopSharedFileRegistry(TrustedBaseUri, clock);
+        Uri? first = null;
+        Uri? last = null;
+        for (var index = 0; index < DesktopSharedFileRegistry.MaximumRegisteredFiles + 1; index++)
+        {
+            var file = Path.Combine(directory, $"f{index}.txt");
+            File.WriteAllText(file, "x");
+            clock.Advance(TimeSpan.FromSeconds(1));
+            var url = new Uri(registry.Register(new[] { file }).Single().Url);
+            first ??= url;
+            last = url;
+        }
+
+        Assert.False(registry.TryGetFilePath(first, out _));
+        Assert.True(registry.TryGetFilePath(last, out _));
+    }
+
+    private sealed class ManualTimeProvider : TimeProvider
+    {
+        private DateTimeOffset _now = new(2026, 11, 2, 12, 0, 0, TimeSpan.Zero);
+
+        public override DateTimeOffset GetUtcNow() => _now;
+
+        public void Advance(TimeSpan delta) => _now += delta;
+    }
+
+    [Fact]
     public void RegisterIsIdempotentPerPath()
     {
         var directory = CreateTempDirectory();

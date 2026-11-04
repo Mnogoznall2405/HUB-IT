@@ -21,6 +21,10 @@ function isUnauthorizedDownloadError(error: unknown): boolean {
     || message.includes('unauthorized (401)');
 }
 
+// Each operation stages into its own file: two callers fetching the same destination
+// (open + voice note, double tap) must not delete or overwrite each other's partial data.
+let stagingSequence = 0;
+
 function deletePartialFile(destination: File): void {
   if (destination.exists) destination.delete();
 }
@@ -30,7 +34,8 @@ export async function downloadAuthenticatedFile(
   destination: File,
   options: AuthenticatedFileDownloadOptions = {},
 ): Promise<File> {
-  const pending = new File(`${destination.uri}.part`);
+  stagingSequence = (stagingSequence + 1) % Number.MAX_SAFE_INTEGER;
+  const pending = new File(`${destination.uri}.${Date.now().toString(36)}-${stagingSequence}.part`);
   if (pending.exists) pending.delete();
   const attempt = async (forceRefresh: boolean): Promise<File> => {
     const authHeaders = await getAuthenticatedRequestHeaders(options.preserveSessionOnAuthFailure

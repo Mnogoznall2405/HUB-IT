@@ -4,6 +4,8 @@ import { Alert, AppState, type AppStateStatus } from 'react-native';
 import * as securityApi from '../../api/authSecurityApi';
 import { NativeSecuritySettingsScreen } from './NativeSecuritySettingsScreen';
 
+jest.mock('../../api/authDevicesApi', () => ({ listOwnDevices: jest.fn(async () => []) }));
+
 const mockExecute = jest.fn(async (command: string) => {
   if (command === 'appLock.getState') {
     return { enabled: false, timeoutSeconds: 60, biometricEnabled: false };

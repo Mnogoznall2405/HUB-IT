@@ -10,6 +10,10 @@ const {
   mockRestoreVersion,
   mockDownloadVersion,
   mockGetUsers,
+  mockListGroups,
+  mockListGroupMembers,
+  mockListFolderCollaborators,
+  mockSetFolderCollaborators,
 } = vi.hoisted(() => ({
   mockGetEditorConfig: vi.fn(),
   mockListCollaborators: vi.fn(),
@@ -18,6 +22,10 @@ const {
   mockRestoreVersion: vi.fn(),
   mockDownloadVersion: vi.fn(),
   mockGetUsers: vi.fn(),
+  mockListGroups: vi.fn(),
+  mockListGroupMembers: vi.fn(),
+  mockListFolderCollaborators: vi.fn(),
+  mockSetFolderCollaborators: vi.fn(),
 }));
 
 vi.mock('../../api/myFilesOffice', () => ({
@@ -28,6 +36,10 @@ vi.mock('../../api/myFilesOffice', () => ({
     listVersions: mockListVersions,
     restoreVersion: mockRestoreVersion,
     downloadVersion: mockDownloadVersion,
+    listGroups: mockListGroups,
+    listGroupMembers: mockListGroupMembers,
+    listFolderCollaborators: mockListFolderCollaborators,
+    setFolderCollaborators: mockSetFolderCollaborators,
   },
 }));
 
@@ -42,30 +54,112 @@ import MyFilesVersionsDialog from './MyFilesVersionsDialog';
 describe('My Files co-editing dialogs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockListGroups.mockResolvedValue({ items: [] });
   });
 
   afterEach(() => {
     delete window.DocsAPI;
   });
 
+  it('grants a whole folder to a colleague with a chosen role and saves it through the folder endpoint', async () => {
+    mockListFolderCollaborators.mockResolvedValue({ items: [] });
+    mockGetUsers.mockResolvedValue({ items: [{ id: 9, username: 'petrov', full_name: 'Петров Пётр' }] });
+    mockSetFolderCollaborators.mockResolvedValue({ items: [] });
+    const onClose = vi.fn();
+
+    render(<MyFilesCollaboratorsDialog open folder={{ id: 'fo1', name: 'Проект' }} onClose={onClose} onShareLink={vi.fn()} />);
+
+    await screen.findByText('Пока доступ есть только у вас.');
+    expect(screen.getByText(/в том числе добавленные позже/)).toBeInTheDocument();
+    expect(screen.queryByTestId('my-files-collaborators-copy-link')).not.toBeInTheDocument();
+    const input = screen.getByLabelText('Добавить пользователя');
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'петр' } });
+    fireEvent.click(await screen.findByText('Петров Пётр (petrov)', {}, { timeout: 2000 }));
+    fireEvent.click(screen.getByTestId('my-files-collaborators-save'));
+
+    await waitFor(() => expect(mockSetFolderCollaborators).toHaveBeenCalledWith('fo1', [{ user_id: 9, role: 'edit' }]));
+    expect(mockSetCollaborators).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledWith(true);
+  });
+
   it('adds a found colleague to the existing collaborators and saves the whole list', async () => {
-    mockListCollaborators.mockResolvedValue({ items: [{ user_id: 5, username: 'ivanov', full_name: 'Иванов Иван' }] });
+    mockListCollaborators.mockResolvedValue({ items: [{ user_id: 5, username: 'ivanov', full_name: 'Иванов Иван', role: 'comment' }] });
     mockGetUsers.mockResolvedValue({ items: [{ id: 9, username: 'petrov', full_name: 'Петров Пётр' }] });
     mockSetCollaborators.mockResolvedValue({ items: [] });
     const onClose = vi.fn();
 
     render(<MyFilesCollaboratorsDialog open file={{ id: 'f1', original_file_name: 'plan.docx' }} onClose={onClose} />);
 
-    await screen.findByText('Иванов Иван (ivanov)');
-    const input = screen.getByLabelText('Добавить пользователей');
+    await screen.findByText('Иванов Иван');
+    const input = screen.getByLabelText('Добавить пользователя');
     fireEvent.focus(input);
     fireEvent.change(input, { target: { value: 'петр' } });
     await waitFor(() => expect(mockGetUsers).toHaveBeenCalledWith({ q: 'петр', limit: 20 }));
     fireEvent.click(await screen.findByText('Петров Пётр (petrov)', {}, { timeout: 2000 }));
     fireEvent.click(screen.getByTestId('my-files-collaborators-save'));
 
-    await waitFor(() => expect(mockSetCollaborators).toHaveBeenCalledWith('f1', [5, 9]));
+    await waitFor(() => expect(mockSetCollaborators).toHaveBeenCalledWith('f1', [
+      { user_id: 5, role: 'comment' },
+      { user_id: 9, role: 'edit' },
+    ]));
     expect(onClose).toHaveBeenCalledWith(true);
+  });
+
+  it('adds the members of a chosen group once and keeps people already on the list', async () => {
+    mockListCollaborators.mockResolvedValue({ items: [{ user_id: 5, username: 'ivanov', full_name: 'Иванов Иван' }] });
+    mockListGroups.mockResolvedValue({ items: [{ id: 'it', name: 'ИТ-отдел', members_count: 2 }] });
+    mockListGroupMembers.mockResolvedValue({ items: [
+      { user_id: 5, username: 'ivanov', full_name: 'Иванов Иван' },
+      { user_id: 7, username: 'sidorov', full_name: 'Сидоров Сидор' },
+    ] });
+    mockSetCollaborators.mockResolvedValue({ items: [] });
+
+    render(<MyFilesCollaboratorsDialog open file={{ id: 'f1', original_file_name: 'plan.docx' }} onClose={vi.fn()} />);
+
+    await screen.findByText('Иванов Иван');
+    fireEvent.mouseDown(await screen.findByLabelText('Добавить группу целиком'));
+    fireEvent.click(await screen.findByText('ИТ-отдел (2)'));
+    fireEvent.click(screen.getByTestId('my-files-collaborators-add-group'));
+    await screen.findByText('Сидоров Сидор');
+    fireEvent.click(screen.getByTestId('my-files-collaborators-save'));
+
+    await waitFor(() => expect(mockSetCollaborators).toHaveBeenCalledWith('f1', [
+      { user_id: 5, role: 'edit' },
+      { user_id: 7, role: 'edit' },
+    ]));
+  });
+
+  it('hands the file to the page when the owner asks for the one shared link', async () => {
+    mockListCollaborators.mockResolvedValue({ items: [] });
+    const onShareLink = vi.fn();
+    const file = { id: 'f1', original_file_name: 'plan.docx' };
+
+    render(<MyFilesCollaboratorsDialog open file={file} onClose={vi.fn()} onShareLink={onShareLink} />);
+
+    fireEvent.click(await screen.findByTestId('my-files-collaborators-copy-link'));
+    expect(onShareLink).toHaveBeenCalledWith(file);
+  });
+
+  it('lists the history like Google Docs: the current version first, grouped by day, with the author of each', async () => {
+    const now = new Date();
+    const earlier = new Date(now.getFullYear() - 1, 2, 5, 9, 30).toISOString();
+    mockListVersions.mockResolvedValue({
+      items: [{
+        id: 'v1', version_no: 1, size_bytes: 2048, replaced_by: 'petrov', replaced_at: now.toISOString(), author: 'ivanov', authored_at: earlier,
+      }],
+      current: { author: 'petrov', authored_at: now.toISOString(), size_bytes: 4096 },
+    });
+
+    render(<MyFilesVersionsDialog open file={{ id: 'f1', original_file_name: 'plan.docx' }} onClose={vi.fn()} />);
+
+    const current = await screen.findByTestId('my-files-version-current');
+    expect(current).toHaveTextContent('Текущая версия');
+    expect(current).toHaveTextContent('petrov');
+    expect(screen.getByText('Сегодня')).toBeTruthy();
+    expect(screen.getByTestId('my-files-version-1')).toHaveTextContent('ivanov');
+    expect(screen.getByText(/5 марта \d{4}/)).toBeTruthy();
+    expect(screen.queryByTestId('my-files-version-download-current')).toBeNull();
   });
 
   it('shows the server reason when a version cannot be restored and keeps the dialog open', async () => {

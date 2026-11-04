@@ -37,6 +37,8 @@ const MAIL_COMPOSE_WINDOW_CLOSE_REQUESTED_MESSAGE_TYPE = 'mail.composeWindow.clo
 const MAIL_COMPOSE_WINDOW_CLOSE_RESULT_MESSAGE_TYPE = 'mail.composeWindow.closeResult';
 const MAIL_COMPOSE_WINDOW_SENT_MESSAGE_TYPE = 'mail.composeWindow.sent';
 const MAIL_COMPOSE_WINDOW_COMPLETED_MESSAGE_TYPE = 'mail.composeWindow.completed';
+const WORKSPACE_WINDOW_OPEN_MESSAGE_TYPE = 'workspace.window.open';
+const WORKSPACE_WINDOW_RESULT_MESSAGE_TYPE = 'workspace.window.result';
 const FILE_SHARED_MESSAGE_TYPE = 'file.shared';
 const MICROPHONE_DIAGNOSE_MESSAGE_TYPE = 'media.microphoneDiagnose';
 const MICROPHONE_DIAGNOSIS_MESSAGE_TYPE = 'media.microphoneDiagnosis';
@@ -85,6 +87,7 @@ let pendingPreparedDownloadRequest = null;
 let pendingVncPreflightRequest = null;
 let pendingEquipmentQrPrintRequest = null;
 let pendingMailComposeWindowRequest = null;
+let pendingWorkspaceWindowRequest = null;
 let pendingMicrophoneDiagnosisRequest = null;
 let pendingDesktopSharedFiles = [];
 const mailComposeCloseListeners = new Set();
@@ -508,6 +511,25 @@ const isValidMailComposeRoute = (route) => {
   }
 };
 
+const isValidWorkspaceEditorRoute = (route) => (
+  isValidRoute(route) && /^\/my-files\/edit\/[A-Za-z0-9_-]{1,64}$/u.test(route)
+);
+
+const isValidWorkspaceWindowResult = (message) => {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
+  const keys = Object.keys(message);
+  return keys.length === 4
+    && keys.includes('type')
+    && keys.includes('version')
+    && keys.includes('requestId')
+    && keys.includes('status')
+    && message.type === WORKSPACE_WINDOW_RESULT_MESSAGE_TYPE
+    && message.version === DESKTOP_BRIDGE_PROTOCOL_VERSION
+    && isValidBoundedText(message.requestId, 64)
+    && MAIL_COMPOSE_REQUEST_ID_PATTERN.test(message.requestId)
+    && ['opened', 'activated', 'failed'].includes(message.status);
+};
+
 const isValidMailComposeWindowResult = (message) => {
   if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
   const keys = Object.keys(message);
@@ -740,6 +762,16 @@ export function initializeDesktopBridge({ timeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_
             available: message.status === 'available',
             status: message.status,
           });
+        }
+        return;
+      }
+
+      if (bridgeReady && isValidWorkspaceWindowResult(message)) {
+        const pending = pendingWorkspaceWindowRequest;
+        if (pending && pending.requestId === message.requestId) {
+          pendingWorkspaceWindowRequest = null;
+          window.clearTimeout(pending.timeoutId);
+          pending.resolve({ status: message.status });
         }
         return;
       }
@@ -1205,6 +1237,39 @@ export function requestDesktopMailComposeWindow(route) {
       });
     } catch {
       pendingMailComposeWindowRequest = null;
+      resolve({ status: 'failed' });
+    }
+  });
+}
+
+/** Opens the online editor of a file in the second HUB Desktop window, so the first one stays free to work in. */
+export function requestDesktopEditorWindow(route) {
+  if (!isDesktopCapabilityAvailable('workspace-window') || !isValidWorkspaceEditorRoute(route)) {
+    return Promise.resolve({ status: 'unavailable' });
+  }
+  if (pendingWorkspaceWindowRequest) return Promise.resolve({ status: 'busy' });
+  return new Promise((resolve) => {
+    const requestId = globalThis.crypto?.randomUUID?.() || `workspace-${Date.now()}`;
+    try {
+      const transport = getWebViewTransport();
+      if (!transport) {
+        resolve({ status: 'failed' });
+        return;
+      }
+      const timeoutId = window.setTimeout(() => {
+        if (pendingWorkspaceWindowRequest?.requestId !== requestId) return;
+        pendingWorkspaceWindowRequest = null;
+        resolve({ status: 'failed' });
+      }, 2000);
+      pendingWorkspaceWindowRequest = { requestId, resolve, timeoutId };
+      transport.postMessage({
+        type: WORKSPACE_WINDOW_OPEN_MESSAGE_TYPE,
+        version: DESKTOP_BRIDGE_PROTOCOL_VERSION,
+        requestId,
+        route,
+      });
+    } catch {
+      pendingWorkspaceWindowRequest = null;
       resolve({ status: 'failed' });
     }
   });

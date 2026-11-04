@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy import and_, case, delete, func, or_, select
+from sqlalchemy.orm import Session
 
 from backend.appdb.db import app_session, ensure_app_schema_initialized
 from backend.appdb.models import (
@@ -941,7 +942,9 @@ class AppInventoryStore:
             row.ip_address = _normalize_text(context.get("ip_address")) or None
             row.updated_at = now
 
-    def upsert_host(self, payload: dict[str, Any]) -> bool:
+    def upsert_host(self, payload: dict[str, Any], change_events: list[dict[str, Any]] | None = None) -> bool:
+        """Store the snapshot; ``change_events`` ride in the same transaction, so the diff history can
+        never be lost after a snapshot was accepted (a later report would diff against the new snapshot)."""
         host_key = _payload_host_key(payload)
         if not host_key:
             return False
@@ -991,6 +994,9 @@ class AppInventoryStore:
             # Soft-hide flags are operator-owned; agent ingest must not clear them.
             if row.report_type != "heartbeat":
                 self._replace_search_indexes(session, host_key, stored_payload, now)
+            for event in sorted(change_events or [], key=lambda item: _to_int(item.get("detected_at"), 0)):
+                if isinstance(event, dict):
+                    self._apply_change_event(session, event)
         return True
 
     def set_host_hidden(
@@ -1154,24 +1160,30 @@ class AppInventoryStore:
             result.append(event)
         return result
 
-    def append_change_event(self, event: dict[str, Any]) -> None:
+    @staticmethod
+    def _apply_change_event(session: Session, event: dict[str, Any]) -> None:
         event_id = str(event.get("event_id") or "").strip()
         if not event_id:
             return
+        row = session.get(AppInventoryChangeEvent, event_id)
+        if row is None:
+            row = AppInventoryChangeEvent(event_id=event_id)
+            session.add(row)
+        row.mac_address = str(event.get("mac_address") or "").strip() or None
+        row.hostname = str(event.get("hostname") or "").strip() or None
+        row.detected_at = int(event.get("detected_at") or 0)
+        row.report_type = str(event.get("report_type") or "full_snapshot").strip() or "full_snapshot"
+        row.change_types_json = json.dumps(event.get("change_types") or [], ensure_ascii=False)
+        row.diff_json = json.dumps(event.get("diff") or {}, ensure_ascii=False)
+        row.before_json = json.dumps(event.get("before_signature") or {}, ensure_ascii=False)
+        row.after_json = json.dumps(event.get("after_signature") or {}, ensure_ascii=False)
+        row.created_at = _utcnow()
+
+    def append_change_event(self, event: dict[str, Any]) -> None:
+        if not str(event.get("event_id") or "").strip():
+            return
         with app_session(self._database_url) as session:
-            row = session.get(AppInventoryChangeEvent, event_id)
-            if row is None:
-                row = AppInventoryChangeEvent(event_id=event_id)
-                session.add(row)
-            row.mac_address = str(event.get("mac_address") or "").strip() or None
-            row.hostname = str(event.get("hostname") or "").strip() or None
-            row.detected_at = int(event.get("detected_at") or 0)
-            row.report_type = str(event.get("report_type") or "full_snapshot").strip() or "full_snapshot"
-            row.change_types_json = json.dumps(event.get("change_types") or [], ensure_ascii=False)
-            row.diff_json = json.dumps(event.get("diff") or {}, ensure_ascii=False)
-            row.before_json = json.dumps(event.get("before_signature") or {}, ensure_ascii=False)
-            row.after_json = json.dumps(event.get("after_signature") or {}, ensure_ascii=False)
-            row.created_at = _utcnow()
+            self._apply_change_event(session, event)
 
     # Pruning runs on every agent write; deleting an unbounded backlog in one statement would hold a long
     # lock on the write path, so each call removes at most one batch and later calls finish the backlog.

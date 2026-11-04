@@ -1251,8 +1251,76 @@ def test_worker_startup_requeues_interrupted_jobs_without_losing_spool(temp_dir)
 
     recovered = _get_job(store, queued["job_id"])
     assert recovered["status"] == "queued"
-    assert recovered["attempt_count"] == 0
+    assert recovered["attempt_count"] == 1  # never lowered: it is the claim generation and the retry cap
     assert store.read_job_pdf_spool(job_id=queued["job_id"]) == b"%PDF-1.4 interrupted"
+
+
+def _queue_pdf_job(store: ScanStore, name: str) -> str:
+    return store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": rf"C:\Docs\{name}.pdf",
+            "file_name": f"{name}.pdf",
+            "file_hash": f"hash-{name}",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": f"event-{name}",
+            "pdf_slice_b64": _pdf_b64(f"%PDF-1.4 {name}".encode()),
+        }
+    )["job_id"]
+
+
+def test_repeated_crash_recovery_ends_in_failed_instead_of_retrying_forever(temp_dir):
+    store = _make_store(temp_dir)
+    job_id = _queue_pdf_job(store, "crashy")
+
+    for expected_attempt in (1, 2, 3):
+        claimed = store.claim_next_job()
+        assert claimed is not None and claimed["attempt_count"] == expected_attempt
+        assert store.requeue_interrupted_processing_jobs(max_attempts=3) == (1 if expected_attempt < 3 else 0)
+
+    final = _get_job(store, job_id)
+    assert final["status"] == "failed"
+    assert final["attempt_count"] == 3
+    assert store.claim_next_job() is None
+
+
+def test_stale_owner_cannot_finish_or_record_findings_for_a_reclaimed_job(temp_dir):
+    store = _make_store(temp_dir)
+    job_id = _queue_pdf_job(store, "reclaimed")
+
+    old_claim = store.claim_next_job()
+    assert store.requeue_interrupted_processing_jobs(max_attempts=3) == 1
+    new_claim = store.claim_next_job()
+    assert new_claim["attempt_count"] == old_claim["attempt_count"] + 1
+
+    # The old worker finally finishes: nothing may change and the new attempt's PDF must survive.
+    assert store.finalize_job(
+        job_id=job_id, status="done_clean", claim_attempt=old_claim["attempt_count"]
+    ) is False
+    stale_result = store.create_finding_and_incident(
+        job=old_claim,
+        severity="high",
+        category="policy_match",
+        matched_patterns=[{"pattern": "p"}],
+        short_reason="p",
+        finalize_status="done_with_incident",
+    )
+    assert stale_result["incident_id"] == ""
+    store.requeue_job_for_retry(job_id=job_id, error_text="x", claim_attempt=old_claim["attempt_count"])
+
+    current = _get_job(store, job_id)
+    assert current["status"] == "processing"
+    assert store.read_job_pdf_spool(job_id=job_id) == b"%PDF-1.4 reclaimed"
+    with store._lock, store._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM scan_incidents").fetchone()[0] == 0
+
+    # The current owner finishes normally.
+    assert store.finalize_job(job_id=job_id, status="done_clean", claim_attempt=new_claim["attempt_count"]) is True
+    assert _get_job(store, job_id)["status"] == "done_clean"
+    assert store.read_job_pdf_spool(job_id=job_id) == b""
 
 
 def test_queue_job_dedupes_stable_event_id_without_new_incident(temp_dir):
@@ -2808,3 +2876,19 @@ def test_list_incident_inbox_groups_batches_file_previews(temp_dir):
     assert expand["has_more"] is False
     assert len(expand["items"]) == 1
     assert len(expand["items"][0]["files"]) == 3
+
+
+def test_reconcile_spares_a_fresh_pdf_that_has_no_job_row_yet(temp_dir):
+    # queue_job writes the PDF first and inserts the job afterwards: reconcile must not eat it in between.
+    import os
+
+    store = _make_store(temp_dir)
+    path = store.write_job_pdf_spool(job_id="a" * 32, pdf_bytes=b"%PDF-1.4 in flight")
+
+    assert store.reconcile_job_pdf_spool()["removed_orphan_files"] == 0
+    assert path.exists()
+
+    old = time.time() - store.ORPHAN_SPOOL_GRACE_SEC - 60
+    os.utime(path, (old, old))
+    assert store.reconcile_job_pdf_spool()["removed_orphan_files"] == 1
+    assert not path.exists()

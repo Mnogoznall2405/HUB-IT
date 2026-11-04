@@ -311,6 +311,50 @@ describe('ChatDialogs attachment preview', () => {
     await waitFor(() => expect(within(dialog).getByRole('img')).toHaveAttribute('src', buildAttachmentUrl('msg-3', 'att-2')));
   });
 
+  it('steps through media items with the arrow keys in the preview viewer', async () => {
+    const attachmentPreview = {
+      messageId: 'msg-keys',
+      attachment: { id: 'att-1', file_name: 'photo-1.png', file_size: 4096 },
+      fileUrl: buildAttachmentUrl('msg-keys', 'att-1'),
+      items: [
+        { id: 'att-1', file_name: 'photo-1.png', file_size: 4096, mime_type: 'image/png', fileUrl: buildAttachmentUrl('msg-keys', 'att-1') },
+        { id: 'att-2', file_name: 'photo-2.png', file_size: 5120, mime_type: 'image/png', fileUrl: buildAttachmentUrl('msg-keys', 'att-2') },
+      ],
+      activeIndex: 0,
+    };
+
+    renderWithTheme(buildProps({ attachmentPreview }));
+
+    fireEvent.keyDown(window, { key: 'ArrowRight' });
+    await waitFor(() => expect(screen.getByText('Фотография 2 из 2')).toBeInTheDocument());
+
+    fireEvent.keyDown(window, { key: 'ArrowLeft' });
+    await waitFor(() => expect(screen.getByText('Фотография 1 из 2')).toBeInTheDocument());
+  });
+
+  it('closes image preview when clicking the dark margin beside the photo but not the photo itself', () => {
+    const onCloseAttachmentPreview = vi.fn();
+    const attachmentPreview = {
+      messageId: 'msg-margin-click',
+      attachment: { id: 'att-margin', file_name: 'wide.png', file_size: 2048, mime_type: 'image/png' },
+      fileUrl: buildAttachmentUrl('msg-margin-click', 'att-margin'),
+    };
+
+    renderWithTheme(buildProps({ attachmentPreview, onCloseAttachmentPreview }));
+
+    // The <img> box spans 1000x500 while the picture (2:1 square-ish 400x400) is letterboxed in the middle.
+    const image = screen.getByRole('img', { name: 'wide.png' });
+    Object.defineProperty(image, 'naturalWidth', { value: 400 });
+    Object.defineProperty(image, 'naturalHeight', { value: 400 });
+    image.getBoundingClientRect = () => ({ left: 0, top: 0, width: 1000, height: 500, right: 1000, bottom: 500 });
+
+    fireEvent.click(image, { clientX: 500, clientY: 250 });
+    expect(onCloseAttachmentPreview).not.toHaveBeenCalled();
+
+    fireEvent.click(image, { clientX: 100, clientY: 250 });
+    expect(onCloseAttachmentPreview).toHaveBeenCalledTimes(1);
+  });
+
   it('supports touch swipe between media items in the preview viewer', async () => {
     const attachmentPreview = {
       messageId: 'msg-6',

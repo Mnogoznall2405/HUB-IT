@@ -1,7 +1,7 @@
 import { Alert, Box, ButtonBase, Paper, Stack, Typography } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import RouterOutlinedIcon from '@mui/icons-material/RouterOutlined';
-import { displayTargetName, formatBps, isCentralTarget, isNumber, isStale, targetStatus } from './monitoringFormat';
+import { displayTargetName, formatBps, formatNumber, isCentralTarget, isNumber, isStale, targetStatus } from './monitoringFormat';
 import MonitoringConnectionState from './MonitoringConnectionState';
 
 function Sparkline({ points, color, secondary }) {
@@ -36,6 +36,7 @@ export default function MonitoringDeviceGrid({ visible, onSelect }) {
           <Stack direction="row" gap={1.25} alignItems="center"><Box sx={{ width: 34, height: 34, flexShrink: 0, borderRadius: '10px', bgcolor: alpha(color, 0.09), color, display: 'grid', placeItems: 'center' }}><RouterOutlinedIcon aria-hidden="true" fontSize="small" /></Box><Box sx={{ minWidth: 0 }}><Typography component="h2" variant="body2" fontWeight={700} title={target.name} sx={{ lineHeight: 1.4, overflowWrap: 'anywhere' }}>{displayTargetName(target)}</Typography><Typography variant="caption" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }}>{target.address}</Typography></Box></Stack>
           {model && <Typography variant="caption" color="text.secondary" noWrap title={model} sx={{ mt: 0.75, fontSize: 10 }}>{model}</Typography>}
           <Box sx={{ mt: 1 }}><MonitoringConnectionState target={target} compact /></Box>
+          {isNumber(target.current?.ping?.latency_ms) && !isStale(target.current?.icmp_checked_at || target.current?.checked_at, 20) && <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, fontVariantNumeric: 'tabular-nums' }}>Задержка: {formatNumber(target.current.ping.latency_ms, 0)} мс</Typography>}
           <Box sx={{ mt: 'auto' }}><Sparkline points={summary?.points || []} color={issue ? color : theme.palette.mode === 'dark' ? '#8aa4c7' : '#849ab8'} secondary={color} /><Stack direction="row" justifyContent="space-between" gap={0.75} sx={{ fontVariantNumeric: 'tabular-nums' }}><Typography variant="caption" color="text.secondary">↓ {formatBps(stale ? undefined : summary?.rx_bps)}</Typography><Typography variant="caption" color="text.secondary">↑ {formatBps(stale ? undefined : summary?.tx_bps)}</Typography></Stack><Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75, fontSize: 10 }}>Трафик · 6 ч{summary?.name ? ` · ${summary.name}` : ''}{summary?.pinned ? ' · закреплён' : ''}</Typography></Box>
 
         </Paper>;

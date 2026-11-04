@@ -168,4 +168,27 @@ describe('useDatabaseListNavigation', () => {
     expect(result.current.expandedLocations).toEqual(new Set());
     expect(result.current.hasExpandedVisible).toBe(false);
   });
+
+  it('expands every visible branch and location, keeping the collapse button available', () => {
+    const { result } = renderHook(() => useDatabaseListNavigation(createProps()));
+
+    expect(result.current.hasCollapsedVisible).toBe(true);
+
+    act(() => {
+      result.current.toggleBranch('HQ');
+    });
+
+    expect(result.current.hasCollapsedVisible).toBe(true);
+
+    act(() => {
+      result.current.handleExpandAll();
+    });
+
+    expect(result.current.expandedBranches).toEqual(new Set(['HQ', 'Remote']));
+    expect(result.current.expandedLocations).toEqual(
+      new Set(['HQ::Office', 'HQ::Stock', 'Remote::Warehouse'])
+    );
+    expect(result.current.hasCollapsedVisible).toBe(false);
+    expect(result.current.hasExpandedVisible).toBe(true);
+  });
 });

@@ -20,6 +20,8 @@ from backend.appdb.models import (
     AppMyFile,
     AppMyFileBlob,
     AppMyFileCollaborator,
+    AppMyFileFolder,
+    AppMyFileFolderCollaborator,
     AppMyFileVersion,
     AppUser,
 )
@@ -42,13 +44,21 @@ from backend.services.my_files_service import (
 
 logger = logging.getLogger("backend.services.my_files_collab_service")
 
-MAX_COLLABORATORS = 50
+MAX_COLLABORATORS = 200
 
 INVITE_EVENT_TYPE = "my_files.collab_invited"
 INVITE_ENTITY_TYPE = "my_file"
 
 
-def _notify_invited(user_id: int, *, file_id: str, file_name: str, owner_label: str) -> None:
+ROLE_LABELS = {oo.ROLE_EDIT: "правка", oo.ROLE_COMMENT: "комментарии", oo.ROLE_VIEW: "просмотр"}
+_INVITE_TITLES = {
+    oo.ROLE_EDIT: "Вам открыт документ для совместной правки",
+    oo.ROLE_COMMENT: "Вам открыт документ для комментирования",
+    oo.ROLE_VIEW: "Вам открыт документ для просмотра",
+}
+
+
+def _notify_invited(user_id: int, *, file_id: str, file_name: str, owner_label: str, role: str = oo.ROLE_EDIT) -> None:
     """Best effort: the access is already stored, a failed notification must not undo it."""
     try:
         from backend.services.hub_service import hub_service
@@ -56,13 +66,68 @@ def _notify_invited(user_id: int, *, file_id: str, file_name: str, owner_label: 
         hub_service.create_user_notification(
             recipient_user_id=int(user_id),
             event_type=INVITE_EVENT_TYPE,
-            title="Вам открыт документ для совместной правки",
+            title=_INVITE_TITLES.get(role, _INVITE_TITLES[oo.ROLE_EDIT]),
             body=f"{owner_label or 'Пользователь'} открыл(а) вам «{file_name}»"[:300],
             entity_type=INVITE_ENTITY_TYPE,
             entity_id=file_id,
         )
     except Exception:
         logger.warning("office.invite_notification_failed user_id=%s file_id=%s", user_id, file_id, exc_info=True)
+
+
+FOLDER_INVITE_EVENT_TYPE = "my_files.folder_invited"
+FOLDER_INVITE_ENTITY_TYPE = "my_file_folder"
+_FOLDER_INVITE_TITLES = {
+    oo.ROLE_EDIT: "Вам открыта папка для совместной правки",
+    oo.ROLE_COMMENT: "Вам открыта папка для комментирования",
+    oo.ROLE_VIEW: "Вам открыта папка для просмотра",
+}
+
+
+def _notify_folder_invited(
+    user_id: int, *, folder_id: str, folder_name: str, owner_label: str, role: str = oo.ROLE_EDIT
+) -> None:
+    """Best effort, like :func:`_notify_invited`: the grant is already stored."""
+    try:
+        from backend.services.hub_service import hub_service
+
+        hub_service.create_user_notification(
+            recipient_user_id=int(user_id),
+            event_type=FOLDER_INVITE_EVENT_TYPE,
+            title=_FOLDER_INVITE_TITLES.get(role, _FOLDER_INVITE_TITLES[oo.ROLE_EDIT]),
+            body=f"{owner_label or 'Пользователь'} открыл(а) вам папку «{folder_name}»"[:300],
+            entity_type=FOLDER_INVITE_ENTITY_TYPE,
+            entity_id=folder_id,
+        )
+    except Exception:
+        logger.warning("office.folder_invite_notification_failed user_id=%s folder_id=%s", user_id, folder_id, exc_info=True)
+
+
+def _size_label(value: int) -> str:
+    size = float(max(0, int(value or 0)))
+    for unit in ("Б", "КБ", "МБ", "ГБ"):
+        if size < 1024 or unit == "ГБ":
+            return f"{int(size)} {unit}" if unit == "Б" else f"{size:.1f} {unit}"
+        size /= 1024
+    return ""
+
+
+def _user_labels(session, user_ids) -> list[str]:
+    """``Full Name (login)`` for each id, ordered by name; unknown ids keep a numeric placeholder."""
+    ids = sorted({int(uid) for uid in user_ids})
+    if not ids:
+        return []
+    found = {
+        int(uid): (_normalize_text(full_name), _normalize_text(username))
+        for uid, username, full_name in session.execute(
+            select(AppUser.id, AppUser.username, AppUser.full_name).where(AppUser.id.in_(ids))
+        ).all()
+    }
+    labels = []
+    for uid in ids:
+        full_name, username = found.get(uid, ("", f"user-{uid}"))
+        labels.append(f"{full_name} ({username})" if full_name and full_name != username else username)
+    return sorted(labels, key=str.casefold)
 
 
 class MyFilesCollabService:
@@ -89,12 +154,10 @@ class MyFilesCollabService:
         return row
 
     def _access_locked(self, session, file_id: str, user_id: int) -> tuple[AppMyFile, str]:
+        """The live file and the caller's role: ``owner`` or the collaborator's ``edit``/``comment``/``view``."""
         row = self._live_row_locked(session, file_id)
-        if int(row.owner_user_id) == int(user_id):
-            role = "owner"
-        elif session.get(AppMyFileCollaborator, (row.id, int(user_id))) is not None:
-            role = "collaborator"
-        else:
+        role = self.files.effective_role_locked(session, row, user_id)
+        if not role:
             raise MyFilesNotFoundError("File not found")
         return row, role
 
@@ -137,7 +200,40 @@ class MyFilesCollabService:
                 "blob_id": _normalize_text(row.blob_id),
                 "revision": self._revision(session, row.id),
                 "role": role,
+                "is_owner": int(row.owner_user_id) == int(user_id),
             }
+
+    def rename_document(self, *, settings: oo.OnlyOfficeSettings, file_id: str, name: str,
+                        actor: Any, meta: MyFilesRequestMeta | None = None) -> dict[str, Any]:
+        user_id = int(actor.id)
+        current = self.get_editor_session(file_id=file_id, user_id=user_id)
+        if current["role"] != oo.ROLE_OWNER:
+            raise MyFilesNotFoundError("File not found")
+        suffix = Path(current["file_name"]).suffix
+        title = str(name or "").strip()
+        if title.lower().endswith(suffix.lower()):
+            title = title[:-len(suffix)].strip()
+        if not title or any(char in title for char in ("/", "\\", "\x00")):
+            raise MyFilesValidationError("Укажите имя файла без пути")
+        updated = self.files.update_file(actor=actor, file_id=file_id, name=title + suffix, meta=meta)
+        # Each DB transaction has ended before any HTTP request. Re-read after delivery so a delayed
+        # notification cannot leave the old title behind a concurrent rename in HUB.
+        notified = False
+        for _ in range(3):
+            try:
+                latest = self.get_editor_session(file_id=file_id, user_id=user_id)
+                key = oo.build_document_key(file_id, latest["revision"])
+                notified = oo.notify_document_title(settings, key=key, title=latest["file_name"])
+                after = self.get_editor_session(file_id=file_id, user_id=user_id)
+            except MyFilesNotFoundError:
+                notified = False
+                break
+            updated["original_file_name"] = after["file_name"]
+            updated["download_file_name"] = after["file_name"]
+            if (latest["file_name"], latest["revision"]) == (after["file_name"], after["revision"]):
+                break
+            notified = False
+        return {"file": updated, "editor_notified": notified}
 
     def resolve_source(self, *, file_id: str, blob_id: str) -> DownloadPayload:
         """Current content for Document Server; a token for superseded content stops working."""
@@ -177,12 +273,8 @@ class MyFilesCollabService:
         Document Server reports the last editor of the session; when it names users and none of them
         may edit the file any more (a collaborator removed mid-session), the save is rejected.
         """
-        allowed = {int(row.owner_user_id)} | {
-            int(item.user_id)
-            for item in session.scalars(
-                select(AppMyFileCollaborator).where(AppMyFileCollaborator.file_id == row.id)
-            ).all()
-        }
+        # a viewer cannot change the file; folder grants count like the file's own collaborators
+        allowed = self.files.writer_ids_locked(session, row, oo.WRITING_ROLES)
         editor_id = next((uid for uid in reversed(editor_user_ids) if uid in allowed), int(row.owner_user_id))
         authorised = not editor_user_ids or any(uid in allowed for uid in editor_user_ids)
         user = session.get(AppUser, editor_id)
@@ -212,6 +304,18 @@ class MyFilesCollabService:
             editor_id, editor_name, authorised = self._resolve_editor(session, row, editor_user_ids)
         if not authorised:
             logger.warning("office.save_forbidden file_id=%s users=%s", normalized_id, editor_user_ids)
+            with app_session(database_url) as session:
+                row = session.get(AppMyFile, normalized_id)
+                if row is not None:
+                    files._write_audit(
+                        session,
+                        action="office_save_denied",
+                        row=row,
+                        actor_user_id=int(editor_user_ids[-1]),
+                        actor_username=", ".join(_user_labels(session, editor_user_ids))[:50],
+                        meta=meta,
+                        details="Правки не сохранены: у автора больше нет доступа к файлу.",
+                    )
             return "forbidden"
 
         files._scan_spool_payload(normalized_id, spool_path, file_name)
@@ -292,6 +396,7 @@ class MyFilesCollabService:
                     except IntegrityError as exc:
                         raise MyFilesValidationError("Failed to persist the edited content") from exc
                 previous_blob_id = _normalize_text(row.blob_id)
+                old_size = int(row.original_size_bytes or 0)
                 if mode == "new":
                     # The file's reference to the old content moves into the history row.
                     session.add(
@@ -311,10 +416,18 @@ class MyFilesCollabService:
                     session.flush()
                     self._point_row_at_blob(row, blob, size=new_size)
                     self._prune_versions_locked(session, normalized_id, pending_deletes)
+                    detail = (
+                        f"Изменения сохранены, прежнее содержимое осталось как версия №{revision + 1}. "
+                        f"Размер: {_size_label(old_size)} → {_size_label(new_size)}."
+                    )
                 else:
                     # Autosave of an open session: replace the content saved earlier in that session.
                     self._point_row_at_blob(row, blob, size=new_size)
                     files._release_blob_locked(session, previous_blob_id, pending_deletes)
+                    detail = (
+                        f"Дополнены изменения той же сессии редактирования. "
+                        f"Размер: {_size_label(old_size)} → {_size_label(new_size)}."
+                    )
                 files._queue_preview_for_row_locked(session, row)
                 files._write_audit(
                     session,
@@ -323,6 +436,7 @@ class MyFilesCollabService:
                     actor_user_id=editor_id,
                     actor_username=editor_name,
                     meta=meta,
+                    details=detail,
                 )
         finally:
             if final_path is not None and not persisted_new_blob:
@@ -332,25 +446,49 @@ class MyFilesCollabService:
 
     # -- version history --------------------------------------------------------------------
 
-    def list_versions(self, *, file_id: str, user_id: int) -> list[dict[str, Any]]:
+    def list_versions(self, *, file_id: str, user_id: int) -> dict[str, Any]:
+        """Retired versions (newest first) with who wrote each one, plus the current content.
+
+        A version row stores the editor whose save retired it, so the author of a version is the editor
+        recorded on the previous row (the uploader for the first one) and the author of the current
+        content is the editor on the newest row.
+        """
         database_url = self.files._database_url_or_raise()
         with app_session(database_url) as session:
             row, _role = self._access_locked(session, file_id, user_id)
             versions = session.scalars(
                 select(AppMyFileVersion)
                 .where(AppMyFileVersion.file_id == row.id)
-                .order_by(AppMyFileVersion.version_no.desc())
+                .order_by(AppMyFileVersion.version_no.asc())
             ).all()
-            return [
-                {
-                    "id": version.id,
-                    "version_no": int(version.version_no),
-                    "size_bytes": int(version.original_size_bytes or 0),
-                    "replaced_by": _normalize_text(version.created_by_username),
-                    "replaced_at": _coerce_utc(version.created_at),
-                }
-                for version in versions
-            ]
+            uploader = _normalize_text(row.owner_username)
+            if row.uploaded_by_user_id:
+                uploader_user = session.get(AppUser, int(row.uploaded_by_user_id))
+                uploader = _normalize_text(getattr(uploader_user, "username", "")) or uploader
+            created_at = _coerce_utc(row.created_at)
+            author, authored_at = uploader, created_at
+            items: list[dict[str, Any]] = []
+            for version in versions:
+                items.append(
+                    {
+                        "id": version.id,
+                        "version_no": int(version.version_no),
+                        "size_bytes": int(version.original_size_bytes or 0),
+                        "replaced_by": _normalize_text(version.created_by_username),
+                        "replaced_at": _coerce_utc(version.created_at),
+                        "author": author,
+                        "authored_at": authored_at,
+                    }
+                )
+                author = _normalize_text(version.created_by_username) or author
+                authored_at = _coerce_utc(version.created_at)
+            items.reverse()
+            current = {
+                "author": author,
+                "authored_at": _coerce_utc(row.updated_at) or authored_at,
+                "size_bytes": int(row.original_size_bytes or 0),
+            }
+            return {"items": items, "current": current}
 
     def get_version_download(self, *, file_id: str, version_id: str, user_id: int) -> DownloadPayload:
         """Content of a retired version for the owner or a collaborator."""
@@ -395,7 +533,9 @@ class MyFilesCollabService:
         database_url = files._database_url_or_raise()
         pending_deletes: list[Path] = []
         with app_session(database_url) as session:
-            row, _role = self._access_locked(session, file_id, user_id)
+            row, role = self._access_locked(session, file_id, user_id)
+            if role not in oo.EDITING_ROLES:
+                raise MyFilesValidationError("Your access level does not allow restoring versions")
             row = session.scalars(select(AppMyFile).where(AppMyFile.id == row.id).with_for_update()).first()
             version = session.get(AppMyFileVersion, _normalize_text(version_id))
             if version is None or version.file_id != row.id:
@@ -424,6 +564,7 @@ class MyFilesCollabService:
                 )
             )
             restored_size = int(version.original_size_bytes or 0)
+            restored_no = int(version.version_no)
             session.delete(version)
             session.flush()
             self._point_row_at_blob(row, blob, size=restored_size)
@@ -435,6 +576,10 @@ class MyFilesCollabService:
                 row=row,
                 actor=actor,
                 meta=meta,
+                details=(
+                    f"Возвращена версия №{restored_no} ({_size_label(restored_size)}); "
+                    f"текущее содержимое сохранено как версия №{revision + 1}."
+                ),
             )
         files._delete_physical_files(pending_deletes)
 
@@ -455,7 +600,7 @@ class MyFilesCollabService:
     @staticmethod
     def _collaborators_locked(session, file_id: str) -> list[dict[str, Any]]:
         rows = session.execute(
-            select(AppMyFileCollaborator.user_id, AppUser.username, AppUser.full_name)
+            select(AppMyFileCollaborator.user_id, AppUser.username, AppUser.full_name, AppMyFileCollaborator.role)
             .join(AppUser, AppUser.id == AppMyFileCollaborator.user_id)
             .where(AppMyFileCollaborator.file_id == file_id)
             .order_by(AppUser.username.asc())
@@ -465,44 +610,181 @@ class MyFilesCollabService:
                 "user_id": int(user_id),
                 "username": _normalize_text(username),
                 "full_name": _normalize_text(full_name),
+                "role": oo.normalize_role(role),
             }
-            for user_id, username, full_name in rows
+            for user_id, username, full_name, role in rows
         ]
+
+    @staticmethod
+    def _change_details(session, wanted: dict[int, str], added, changed, removed) -> str:
+        """Journal text: who got which role, whose role changed, who lost access."""
+        parts = []
+        for role in oo.COLLABORATOR_ROLES:
+            names = _user_labels(session, [uid for uid in added if wanted[uid] == role])
+            if names:
+                parts.append(f"Добавлены ({ROLE_LABELS[role]}): " + ", ".join(names))
+        for role in oo.COLLABORATOR_ROLES:
+            names = _user_labels(session, [uid for uid in changed if wanted[uid] == role])
+            if names:
+                parts.append(f"Доступ изменён на «{ROLE_LABELS[role]}»: " + ", ".join(names))
+        if removed:
+            parts.append("Убраны: " + ", ".join(_user_labels(session, removed)))
+        return ". ".join(parts) + "."
+
+    def _wanted_members(self, members: list[tuple[int, str]], owner_user_id: int) -> dict[int, str]:
+        wanted: dict[int, str] = {}
+        for raw_id, raw_role in members:
+            uid = int(raw_id)
+            if uid != int(owner_user_id):
+                wanted[uid] = oo.normalize_role(raw_role)
+        if len(wanted) > MAX_COLLABORATORS:
+            raise MyFilesValidationError(f"At most {MAX_COLLABORATORS} collaborators are allowed")
+        return wanted
+
+    @staticmethod
+    def _require_active_users(session, wanted: dict[int, str]) -> None:
+        if not wanted:
+            return
+        active = set(
+            session.scalars(select(AppUser.id).where(AppUser.id.in_(list(wanted)), AppUser.is_active.is_(True))).all()
+        )
+        if active != set(wanted):
+            raise MyFilesValidationError("Unknown or inactive user")
+
+    # -- folder access ----------------------------------------------------------------------
+
+    def _owned_folder_locked(self, session, folder_id: str, owner_user_id: int) -> AppMyFileFolder:
+        folder = session.get(AppMyFileFolder, _normalize_text(folder_id))
+        if folder is None or folder.deleted_at is not None or int(folder.owner_user_id) != int(owner_user_id):
+            raise MyFilesNotFoundError("Folder not found")
+        return folder
+
+    @staticmethod
+    def _folder_members_locked(session, folder_id: str) -> list[dict[str, Any]]:
+        rows = session.execute(
+            select(
+                AppMyFileFolderCollaborator.user_id,
+                AppUser.username,
+                AppUser.full_name,
+                AppMyFileFolderCollaborator.role,
+            )
+            .join(AppUser, AppUser.id == AppMyFileFolderCollaborator.user_id)
+            .where(AppMyFileFolderCollaborator.folder_id == folder_id)
+            .order_by(AppUser.username.asc())
+        ).all()
+        return [
+            {
+                "user_id": int(user_id),
+                "username": _normalize_text(username),
+                "full_name": _normalize_text(full_name),
+                "role": oo.normalize_role(role),
+            }
+            for user_id, username, full_name, role in rows
+        ]
+
+    def list_folder_collaborators(self, *, folder_id: str, owner_user_id: int) -> list[dict[str, Any]]:
+        database_url = self.files._database_url_or_raise()
+        with app_session(database_url) as session:
+            folder = self._owned_folder_locked(session, folder_id, owner_user_id)
+            if not self.files._folder_shares_present(session):
+                return []
+            return self._folder_members_locked(session, folder.id)
+
+    def set_folder_collaborators(
+        self,
+        *,
+        folder_id: str,
+        owner_user_id: int,
+        members: list[tuple[int, str]],
+        actor: Any = None,
+        meta: MyFilesRequestMeta | None = None,
+    ) -> list[dict[str, Any]]:
+        """Replace the access list of a folder: every file inside, now and later, gets the member's role."""
+        wanted = self._wanted_members(members, owner_user_id)
+        database_url = self.files._database_url_or_raise()
+        with app_session(database_url) as session:
+            folder = self._owned_folder_locked(session, folder_id, owner_user_id)
+            if not self.files._folder_shares_present(session):
+                raise MyFilesValidationError("Folder sharing is not available yet")
+            self._require_active_users(session, wanted)
+            current = {
+                int(item.user_id): item
+                for item in session.scalars(
+                    select(AppMyFileFolderCollaborator).where(AppMyFileFolderCollaborator.folder_id == folder.id)
+                ).all()
+            }
+            removed = [uid for uid in current if uid not in wanted]
+            if removed:
+                session.execute(
+                    delete(AppMyFileFolderCollaborator).where(
+                        AppMyFileFolderCollaborator.folder_id == folder.id,
+                        AppMyFileFolderCollaborator.user_id.in_(removed),
+                    )
+                )
+            added = [uid for uid in wanted if uid not in current]
+            changed = [
+                uid for uid, item in current.items() if uid in wanted and oo.normalize_role(item.role) != wanted[uid]
+            ]
+            for uid in changed:
+                current[uid].role = wanted[uid]
+            now = _utc_now()
+            for uid in added:
+                session.add(
+                    AppMyFileFolderCollaborator(
+                        folder_id=folder.id,
+                        user_id=uid,
+                        added_by_user_id=int(owner_user_id),
+                        role=wanted[uid],
+                        created_at=now,
+                    )
+                )
+            session.flush()
+            folder_name = _normalize_text(folder.name)
+            if removed or added or changed:
+                self.files._write_audit(
+                    session,
+                    action="folder_access_changed",
+                    row=None,
+                    actor=actor,
+                    meta=meta,
+                    details=f"Папка «{folder_name}». " + self._change_details(session, wanted, added, changed, removed),
+                )
+            result = self._folder_members_locked(session, folder.id)
+            owner_label = (
+                _normalize_text(getattr(actor, "full_name", ""))
+                or _normalize_text(getattr(actor, "username", ""))
+                or _normalize_text(session.scalar(select(AppUser.username).where(AppUser.id == int(owner_user_id))))
+            )
+            shared_folder_id = folder.id
+            to_notify = [(uid, wanted[uid]) for uid in added + changed]
+        for uid, role in to_notify:
+            _notify_folder_invited(
+                uid, folder_id=shared_folder_id, folder_name=folder_name, owner_label=owner_label, role=role
+            )
+        return result
 
     def set_collaborators(
         self,
         *,
         file_id: str,
         owner_user_id: int,
-        user_ids: list[int],
+        members: list[tuple[int, str]],
         actor: Any = None,
         meta: MyFilesRequestMeta | None = None,
     ) -> list[dict[str, Any]]:
-        wanted = []
-        for raw in user_ids:
-            uid = int(raw)
-            if uid != int(owner_user_id) and uid not in wanted:
-                wanted.append(uid)
-        if len(wanted) > MAX_COLLABORATORS:
-            raise MyFilesValidationError(f"At most {MAX_COLLABORATORS} collaborators are allowed")
+        """Replace the whole list: ``members`` are ``(user_id, role)`` pairs, the last pair of a user wins."""
+        wanted = self._wanted_members(members, owner_user_id)
         database_url = self.files._database_url_or_raise()
         with app_session(database_url) as session:
             row = self._owned_row_locked(session, file_id, owner_user_id)
-            if wanted:
-                active = set(
-                    session.scalars(
-                        select(AppUser.id).where(AppUser.id.in_(wanted), AppUser.is_active.is_(True))
-                    ).all()
-                )
-                if active != set(wanted):
-                    raise MyFilesValidationError("Unknown or inactive user")
-            existing = {
-                int(item.user_id)
+            self._require_active_users(session, wanted)
+            current = {
+                int(item.user_id): item
                 for item in session.scalars(
                     select(AppMyFileCollaborator).where(AppMyFileCollaborator.file_id == row.id)
                 ).all()
             }
-            removed = existing - set(wanted)
+            removed = [uid for uid in current if uid not in wanted]
             if removed:
                 session.execute(
                     delete(AppMyFileCollaborator).where(
@@ -511,21 +793,34 @@ class MyFilesCollabService:
                     )
                 )
             now = _utc_now()
-            for uid in wanted:
-                if uid not in existing:
-                    session.add(
-                        AppMyFileCollaborator(
-                            file_id=row.id,
-                            user_id=uid,
-                            added_by_user_id=int(owner_user_id),
-                            created_at=now,
-                        )
+            added = [uid for uid in wanted if uid not in current]
+            changed = [
+                uid for uid, item in current.items()
+                if uid in wanted and oo.normalize_role(item.role) != wanted[uid]
+            ]
+            previous_roles = {uid: oo.normalize_role(current[uid].role) for uid in changed}
+            for uid in changed:
+                current[uid].role = wanted[uid]
+            for uid in added:
+                session.add(
+                    AppMyFileCollaborator(
+                        file_id=row.id,
+                        user_id=uid,
+                        added_by_user_id=int(owner_user_id),
+                        role=wanted[uid],
+                        created_at=now,
                     )
+                )
             session.flush()
-            added = [uid for uid in wanted if uid not in existing]
-            if removed or added:
-                files = self.files
-                files._write_audit(session, action="collaborators_changed", row=row, actor=actor, meta=meta)
+            if removed or added or changed:
+                self.files._write_audit(
+                    session,
+                    action="collaborators_changed",
+                    row=row,
+                    actor=actor,
+                    meta=meta,
+                    details=self._change_details(session, wanted, added, changed, removed),
+                )
             result = self._collaborators_locked(session, row.id)
             file_name = _normalize_text(row.original_file_name)
             owner_label = (
@@ -534,36 +829,105 @@ class MyFilesCollabService:
                 or _normalize_text(row.owner_username)
             )
             shared_file_id = row.id
-        for uid in added:
-            _notify_invited(uid, file_id=shared_file_id, file_name=file_name, owner_label=owner_label)
+            to_notify = [(uid, wanted[uid]) for uid in added + changed]
+        for uid, role in to_notify:
+            _notify_invited(uid, file_id=shared_file_id, file_name=file_name, owner_label=owner_label, role=role)
         return result
+
+    # -- one link ---------------------------------------------------------------------------
+
+    def public_editor_access(self, *, token: str, user_id: int | None) -> dict[str, Any]:
+        """What the visitor of a public link may do besides downloading.
+
+        Guests (and users who are not on the list) only download; a collaborator or the owner who
+        is signed in gets ``can_open`` with the file id and the role.
+        """
+        database_url = self.files._database_url_or_raise()
+        settings = oo.load_settings()
+        ready = bool(settings.enabled and settings.jwt_secret and settings.internal_url and settings.app_base_url)
+        with app_session(database_url) as session:
+            row = self.files._public_row_locked(session, token)
+            editable = ready and bool(oo.document_type_for(row.original_file_name))
+            collaborative = False
+            role = ""
+            if editable and self.files._collab_tables_present(session):
+                collaborative = session.execute(
+                    select(AppMyFileCollaborator.user_id).where(AppMyFileCollaborator.file_id == row.id).limit(1)
+                ).first() is not None or bool(
+                    self.files.folder_grant_user_ids_locked(session, row.folder_id, row.owner_user_id)
+                )
+                if user_id:
+                    role = self.files.effective_role_locked(session, row, int(user_id))
+            return {
+                "signed_in": bool(user_id),
+                "editable": editable,
+                "collaborative": collaborative,
+                "can_open": bool(role),
+                "role": role,
+                "file_id": row.id if role else "",
+            }
+
+    # -- groups -----------------------------------------------------------------------------
+
+    @staticmethod
+    def list_groups() -> list[dict[str, Any]]:
+        """Departments that can be added to a file at once (members are copied, not linked)."""
+        from backend.services.department_service import department_service
+
+        return [
+            {
+                "id": str(item.get("id") or ""),
+                "name": _normalize_text(item.get("name")),
+                "members_count": int(item.get("members_count") or 0) + int(item.get("managers_count") or 0),
+            }
+            for item in department_service.list_departments()
+            if str(item.get("id") or "")
+        ]
+
+    def list_group_members(self, *, group_id: str) -> list[dict[str, Any]]:
+        from backend.services.department_service import department_service
+
+        if not department_service.get_department(group_id):
+            raise MyFilesNotFoundError("Group not found")
+        member_ids = {int(item["user_id"]) for item in department_service.list_memberships(department_id=group_id)}
+        if not member_ids:
+            return []
+        database_url = self.files._database_url_or_raise()
+        with app_session(database_url) as session:
+            rows = session.execute(
+                select(AppUser.id, AppUser.username, AppUser.full_name)
+                .where(AppUser.id.in_(member_ids), AppUser.is_active.is_(True))
+                .order_by(AppUser.username.asc())
+            ).all()
+        return [
+            {"user_id": int(uid), "username": _normalize_text(username), "full_name": _normalize_text(full_name)}
+            for uid, username, full_name in rows
+        ]
 
     def list_shared_with_me(self, *, user_id: int) -> list[dict[str, Any]]:
         database_url = self.files._database_url_or_raise()
         now = _utc_now()
         with app_session(database_url) as session:
-            rows = session.execute(
-                select(AppMyFile, AppUser.username)
-                .join(AppMyFileCollaborator, AppMyFileCollaborator.file_id == AppMyFile.id)
-                .outerjoin(AppUser, AppUser.id == AppMyFile.owner_user_id)
-                .where(
-                    AppMyFileCollaborator.user_id == int(user_id),
-                    AppMyFile.deleted_at.is_(None),
-                    AppMyFile.status == STATUS_READY,
-                    AppMyFile.expires_at > now,
-                )
-                .order_by(AppMyFile.updated_at.desc())
-            ).all()
+            shared = self.files.shared_rows_locked(session, int(user_id), now)
+            owners = {
+                int(uid): _normalize_text(username)
+                for uid, username in session.execute(
+                    select(AppUser.id, AppUser.username).where(
+                        AppUser.id.in_({int(file_row.owner_user_id) for file_row, _role in shared} or {0})
+                    )
+                ).all()
+            }
             return [
                 {
                     "id": file_row.id,
                     "file_name": _normalize_text(file_row.original_file_name),
-                    "owner_username": _normalize_text(owner_username) or _normalize_text(file_row.owner_username),
+                    "owner_username": owners.get(int(file_row.owner_user_id)) or _normalize_text(file_row.owner_username),
                     "size_bytes": int(file_row.original_size_bytes or 0),
                     "updated_at": _coerce_utc(file_row.updated_at),
                     "editable": bool(oo.document_type_for(file_row.original_file_name)),
+                    "role": oo.normalize_role(role),
                 }
-                for file_row, owner_username in rows
+                for file_row, role in shared
             ]
 
 

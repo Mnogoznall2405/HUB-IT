@@ -28,7 +28,9 @@ export default function DatabaseScopeContent({
   selectedBranch,
   onBranchChange,
   hasExpandedVisible,
+  hasCollapsedVisible,
   onCollapseAll,
+  onExpandAll,
   onOpenQrScanner,
   onIdentifyWorkspace,
   identifyPCLoading,
@@ -94,7 +96,9 @@ export default function DatabaseScopeContent({
           selectedBranch={selectedBranch}
           onBranchChange={onBranchChange}
           hasExpandedVisible={hasExpandedVisible}
+          hasCollapsedVisible={hasCollapsedVisible}
           onCollapseAll={onCollapseAll}
+          onExpandAll={onExpandAll}
           onOpenQrScanner={onOpenQrScanner}
           onOpenUploadAct={onOpenUploadAct}
           onOpenAddEquipment={onOpenAddEquipment}
@@ -172,7 +176,9 @@ export default function DatabaseScopeContent({
                 selectedBranch={selectedBranch}
                 onBranchChange={onBranchChange}
                 hasExpandedVisible={hasExpandedVisible}
+                hasCollapsedVisible={hasCollapsedVisible}
                 onCollapseAll={onCollapseAll}
+                onExpandAll={onExpandAll}
               />
               {!isConsumablesMode && (
                 <DatabaseRecentCards
@@ -209,8 +215,10 @@ export default function DatabaseScopeContent({
               onOpenAdSync={onOpenAdSync}
               identifyWorkspaceLoading={identifyPCLoading}
               hasExpandedVisible={hasExpandedVisible}
+              hasCollapsedVisible={hasCollapsedVisible}
               onIdentifyWorkspace={onIdentifyWorkspace}
               onCollapseAll={onCollapseAll}
+              onExpandAll={onExpandAll}
               onEnterSelectionMode={onEnterSelectionMode}
             />
             </Suspense>

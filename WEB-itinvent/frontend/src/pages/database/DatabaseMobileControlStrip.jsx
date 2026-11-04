@@ -25,7 +25,9 @@ function DatabaseMobileControlStrip({
   selectedBranch = '',
   onBranchChange = noop,
   hasExpandedVisible = false,
+  hasCollapsedVisible = false,
   onCollapseAll = noop,
+  onExpandAll = noop,
   onOpenQrScanner = noop,
   onOpenUploadAct = noop,
   onOpenAddEquipment = noop,
@@ -165,6 +167,14 @@ function DatabaseMobileControlStrip({
             }}
           >
             <AddIcon sx={{ fontSize: 18 }} />
+          </IconButton>
+        </Tooltip>
+      )}
+
+      {hasCollapsedVisible && (
+        <Tooltip title="Раскрыть разделы">
+          <IconButton size="small" aria-label="Раскрыть разделы" onClick={onExpandAll} sx={iconButtonSx}>
+            <ExpandMoreIcon sx={{ fontSize: 18 }} />
           </IconButton>
         </Tooltip>
       )}

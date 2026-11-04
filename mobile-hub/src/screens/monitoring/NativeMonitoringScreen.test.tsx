@@ -1,4 +1,5 @@
-import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
+import { MONITORING_REFRESH_MS } from '../../monitoring/monitoringModel';
 import * as monitoringApi from '../../api/monitoringApi';
 import { NativeMonitoringScreen } from './NativeMonitoringScreen';
 
@@ -54,6 +55,26 @@ beforeEach(() => {
 });
 
 describe('NativeMonitoringScreen', () => {
+  it('lets a slow overview response finish instead of cancelling it on every poll tick', async () => {
+    jest.useFakeTimers();
+    try {
+      let release: (value: monitoringApi.MonitoringOverview) => void = () => {};
+      api.fetchMonitoringOverview.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+      const screen = await render(<NativeMonitoringScreen />);
+      await act(async () => {});
+      expect(api.fetchMonitoringOverview).toHaveBeenCalledTimes(1);
+      await act(async () => { jest.advanceTimersByTime(MONITORING_REFRESH_MS * 3); });
+      expect(api.fetchMonitoringOverview).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        release({ targets: targets(), worker: { enabled: true, heartbeat_at: recent() }, checked_at: recent() });
+      });
+      expect(screen.getByTestId('native-monitoring-target-ok')).toBeTruthy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('lists devices with live status and narrows to problems only', async () => {
     const screen = await render(<NativeMonitoringScreen />);
     expect(await screen.findByTestId('native-monitoring-target-ok')).toHaveTextContent(/В сети/);

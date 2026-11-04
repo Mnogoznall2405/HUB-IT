@@ -11,6 +11,7 @@ import {
 } from '../taskViewModes';
 import { KANBAN_COLUMNS, TASKS_QUERY_MIN_CHARS } from '../taskConstants';
 import { getOrFetchSWR, invalidateSWRCacheByPrefix } from '../../../lib/swrCache';
+import { classifyRealtimeTaskChange } from '../taskRealtimeMembership';
 
 // Append buffer ceiling: keep at most ~3 pages in memory/DOM. Beyond that the
 // next page replaces the buffer (sliding window) instead of growing it forever.
@@ -267,6 +268,8 @@ export default function useTasksListQuery({
   const taskItems = useMemo(() => (
     Array.isArray(tasksPayload?.items) ? tasksPayload.items : []
   ), [tasksPayload]);
+  const taskItemsRef = useRef(taskItems);
+  taskItemsRef.current = taskItems;
 
   // Backend handles assignee_user_id (admin scope), controller_user_id, unread_comments_only, focus_mode.
   const assigneeFilteredOnServer = canManageAllTasks && viewMode === 'all' && Boolean(assigneeFilter);
@@ -280,6 +283,57 @@ export default function useTasksListQuery({
     }
     return true;
   }), [assigneeFilter, assigneeFilteredOnServer, taskItems]);
+
+  // Applies a freshly fetched task to the server-filtered list (DTASK-04): patches the row,
+  // removes it when it left the active filters, or asks the caller to refetch when a task may
+  // have entered the result or a "my tasks" relation changed. Returns the action taken.
+  const reconcileRealtimeTask = useCallback((taskId, task) => {
+    const targetId = String(taskId || '').trim();
+    const existingItem = taskItemsRef.current.find((item) => String(item?.id || '') === targetId) || null;
+    const action = classifyRealtimeTaskChange({
+      task,
+      existingItem,
+      filters: {
+        statusFilter,
+        controllerFilter,
+        departmentFilter,
+        assigneeFilter,
+        assigneeFilteredOnServer,
+        viewMode,
+        serverOnlyFilterActive: Boolean(
+          dueState
+          || hasAttachments
+          || unreadCommentsOnly
+          || (focusMode && focusMode !== 'all')
+          || String(debouncedQ || '').trim(),
+        ),
+      },
+    });
+    if (action === 'patch') {
+      patchTaskItem(targetId, task);
+    } else if (action === 'remove') {
+      setTasksPayload((prev) => ({
+        ...(prev || {}),
+        items: (Array.isArray(prev?.items) ? prev.items : [])
+          .filter((item) => String(item?.id || '') !== targetId),
+        total: Math.max(0, Number(prev?.total || 0) - 1),
+      }));
+    }
+    return action;
+  }, [
+    assigneeFilter,
+    assigneeFilteredOnServer,
+    controllerFilter,
+    debouncedQ,
+    departmentFilter,
+    dueState,
+    focusMode,
+    hasAttachments,
+    patchTaskItem,
+    statusFilter,
+    unreadCommentsOnly,
+    viewMode,
+  ]);
 
   const columnData = useMemo(() => {
     const map = {};
@@ -399,6 +453,7 @@ export default function useTasksListQuery({
     tasksTotal,
     listTruncated,
     patchTaskItem,
+    reconcileRealtimeTask,
     taskItems,
     visibleTaskItems,
     columnData,

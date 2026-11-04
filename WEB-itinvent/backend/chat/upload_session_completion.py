@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from backend.chat.message_persistence import FileMessageCommittedError
 from backend.chat.upload_session_transfer import validate_upload_session_file_complete
 from backend.chat.utils import normalize_text as _normalize_text
 
@@ -44,6 +45,10 @@ class UploadSessionCompletionMaterializer:
         try:
             yield prepared
             committed = True
+        except FileMessageCommittedError:
+            # Message rows are committed and own the materialized files; only the response failed.
+            committed = True
+            raise
         finally:
             if not committed:
                 self.cleanup_prepared_files(prepared)

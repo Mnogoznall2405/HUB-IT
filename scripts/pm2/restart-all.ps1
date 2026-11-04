@@ -10,7 +10,7 @@ $projectRoot = 'C:\Project\Image_scan'
 $ecosystemAll = Join-Path $projectRoot 'scripts\pm2\ecosystem.all.config.js'
 . (Join-Path $projectRoot 'scripts\pm2\chat-runtime-mode.ps1')
 $resolvedChatMode = Get-ChatRuntimeMode -ProjectRoot $projectRoot -Override $ChatMode
-$processNames = @('itinvent-backend') + (Get-ChatProcessNames -Mode $resolvedChatMode) + @('itinvent-preview-worker', 'itinvent-mail-notification-worker', 'itinvent-chat-push-worker', 'itinvent-ai-chat-worker', 'itinvent-my-files-worker', 'itinvent-hub-notifications-retention-worker', 'itinvent-chat-push-outbox-retention-worker', 'itinvent-inventory', 'itinvent-scan', 'itinvent-scan-worker', 'itinvent-scan-system-metrics-retention-worker', 'itinvent-bot', 'itinvent-livekit', 'itinvent-voice', 'itinvent-voice-worker', 'itinvent-voice-archiver')
+$processNames = @('itinvent-backend') + (Get-ChatProcessNames -Mode $resolvedChatMode) + @('itinvent-preview-worker', 'itinvent-monitoring-worker', 'itinvent-mail-notification-worker', 'itinvent-chat-push-worker', 'itinvent-ai-chat-worker', 'itinvent-my-files-worker', 'itinvent-hub-notifications-retention-worker', 'itinvent-chat-push-outbox-retention-worker', 'itinvent-inventory', 'itinvent-scan', 'itinvent-scan-worker', 'itinvent-scan-system-metrics-retention-worker', 'itinvent-bot', 'itinvent-livekit', 'itinvent-voice', 'itinvent-voice-worker', 'itinvent-voice-archiver')
 
 if ($WhatIf) {
     Write-Host "[WhatIf] chat mode: $resolvedChatMode" -ForegroundColor Cyan

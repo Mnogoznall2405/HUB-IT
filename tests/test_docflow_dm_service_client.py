@@ -765,6 +765,52 @@ async def test_write_timeout_is_not_retried():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply",
+    [
+        lambda: httpx.Response(502, content=b"<html>Bad gateway</html>"),
+        lambda: httpx.Response(200, content=b"<not-xml"),
+        lambda: httpx.Response(200, content=b""),
+    ],
+    ids=["html-502", "malformed-xml", "empty-body"],
+)
+async def test_unreadable_reply_after_write_is_unknown_not_a_refusal(reply):
+    """DDOC-03: the write may have been applied; only a proven business rejection is a refusal."""
+    updates = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal updates
+        request_type = _request_type(request)
+        if request_type == "DMGetVersionRequest":
+            return httpx.Response(200, content=_soap_response("DMGetVersionResponse", "<tns:versionNumber>2.1.37.5.CORP</tns:versionNumber>"))
+        if request_type == "DMGetObjectListRequest":
+            return httpx.Response(200, content=_soap_response("DMGetObjectListResponse", f"<tns:items>{_task()}</tns:items><tns:tooManyObjects>false</tns:tooManyObjects>"))
+        if request_type == "DMRetrieveRequest":
+            task_xml = _task().replace("<tns:object", "<tns:objects", 1).replace("</tns:object>", "</tns:objects>", 1)
+            return httpx.Response(200, content=_soap_response("DMRetrieveResponse", task_xml))
+        if request_type == "DMUpdateRequest":
+            updates += 1
+            return reply()
+        raise AssertionError(request_type)
+
+    client = DocflowDMServiceClient(
+        service_url="https://docflow.example/ws/DMService",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        from backend.services.docflow_1c_client import Docflow1COutcomeUnknownError
+
+        with pytest.raises(Docflow1COutcomeUnknownError):
+            await client.apply_task_action(
+                login="user", password="secret",
+                task_ref="d045ebcb-8b37-11f1-8cfb-5cba2c62eea8", action="approve",
+            )
+    finally:
+        await client.aclose()
+    assert updates == 1
+
+
+@pytest.mark.asyncio
 async def test_file_export_accepts_wrapped_base64_and_removes_no_security_checks(monkeypatch):
     file_ref = "33333333-3333-3333-3333-333333333333"
 

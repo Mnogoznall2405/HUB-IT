@@ -30,6 +30,7 @@ public enum DesktopInboundMessageType
     OpenMailComposeWindow,
     MailComposeWindowCloseResult,
     MailComposeWindowSent,
+    OpenWorkspaceWindow,
     ClearNotificationGroup,
     DiagnoseMicrophone,
     OpenMediaSettings,
@@ -44,6 +45,7 @@ public enum DesktopThemeMode
 
 public sealed record DesktopNotificationRequest(string Id, string Title, string Body, string Route);
 public sealed record DesktopMailComposeWindowCommand(string RequestId, string Route = "", string Status = "");
+public sealed record DesktopWorkspaceWindowCommand(string RequestId, string Route);
 public sealed record DesktopEquipmentQrPrintCommand(
     string RequestId,
     DesktopEquipmentQrPrintMode Mode);
@@ -61,6 +63,7 @@ public sealed record DesktopInboundMessage(
     IReadOnlyList<DesktopQuickRoute>? QuickRoutes = null,
     DesktopDownloadedFileAction DownloadedFileAction = DesktopDownloadedFileAction.None,
     DesktopMailComposeWindowCommand? MailComposeWindow = null,
+    DesktopWorkspaceWindowCommand? WorkspaceWindow = null,
     DesktopEquipmentQrPrintCommand? EquipmentQrPrint = null,
     DesktopOpenFileDialogCommand? OpenFileDialog = null,
     string? NotificationGroup = null,
@@ -121,6 +124,8 @@ public static class DesktopBridgeProtocol
     private const string MailComposeWindowCloseResultMessageType = "mail.composeWindow.closeResult";
     private const string MailComposeWindowSentMessageType = "mail.composeWindow.sent";
     private const string MailComposeWindowCompletedMessageType = "mail.composeWindow.completed";
+    private const string WorkspaceWindowOpenMessageType = "workspace.window.open";
+    private const string WorkspaceWindowResultMessageType = "workspace.window.result";
     private const string MicrophoneDiagnoseMessageType = "media.microphoneDiagnose";
     private const string MicrophoneDiagnosisMessageType = "media.microphoneDiagnosis";
     private const string OpenMediaSettingsMessageType = "media.openSettings";
@@ -187,6 +192,7 @@ public static class DesktopBridgeProtocol
                     DesktopInboundMessageType.VncPreflight,
                     out message),
                 MailComposeWindowOpenMessageType => TryParseMailComposeWindowOpen(root, out message),
+                WorkspaceWindowOpenMessageType => TryParseWorkspaceWindowOpen(root, out message),
                 MailComposeWindowCloseResultMessageType => TryParseMailComposeWindowCloseResult(root, out message),
                 MailComposeWindowSentMessageType => TryParseExactCommand(
                     root,
@@ -269,6 +275,7 @@ public static class DesktopBridgeProtocol
             "quick-routes",
             "shell-status",
             "vnc-preflight",
+            "workspace-window",
         });
 
         return JsonSerializer.Serialize(new
@@ -458,6 +465,21 @@ public static class DesktopBridgeProtocol
         });
     }
 
+    public static string CreateWorkspaceWindowResultMessage(string requestId, string status)
+    {
+        if (!IsValidRequestId(requestId) || status is not ("opened" or "activated" or "failed"))
+        {
+            throw new ArgumentException("Invalid workspace window result.");
+        }
+        return JsonSerializer.Serialize(new
+        {
+            type = WorkspaceWindowResultMessageType,
+            version = CurrentVersion,
+            requestId,
+            status,
+        });
+    }
+
     public static string CreateMailComposeWindowResultMessage(string requestId, string status)
     {
         if (!IsValidRequestId(requestId)
@@ -611,6 +633,23 @@ public static class DesktopBridgeProtocol
         }
 
         message = new DesktopInboundMessage(DesktopInboundMessageType.Ready);
+        return true;
+    }
+
+    private static bool TryParseWorkspaceWindowOpen(JsonElement root, out DesktopInboundMessage message)
+    {
+        message = default!;
+        if (!HasExactProperties(root, "type", "version", "requestId", "route")
+            || !TryGetBoundedString(root, "requestId", 64, out var requestId)
+            || !TryGetBoundedString(root, "route", MaximumRouteLength, out var route)
+            || !IsValidRequestId(requestId)
+            || !IsValidWorkspaceEditorRoute(route))
+        {
+            return false;
+        }
+        message = new DesktopInboundMessage(
+            DesktopInboundMessageType.OpenWorkspaceWindow,
+            WorkspaceWindow: new DesktopWorkspaceWindowCommand(requestId, route));
         return true;
     }
 
@@ -1116,6 +1155,20 @@ public static class DesktopBridgeProtocol
             && !value.StartsWith("//", StringComparison.Ordinal)
             && !value.Contains('\\')
             && Uri.TryCreate(value, UriKind.Relative, out _);
+    }
+
+    /// <summary>The only route the page may ask to open in the second window: the online editor of one file.</summary>
+    public static bool IsValidWorkspaceEditorRoute([NotNullWhen(true)] string? value)
+    {
+        const string prefix = "/my-files/edit/";
+        if (!IsValidInternalRoute(value)
+            || !value.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+        var fileId = value[prefix.Length..];
+        return fileId.Length is > 0 and <= 64
+            && fileId.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
     }
 
     public static bool IsValidMailComposeRoute([NotNullWhen(true)] string? value)

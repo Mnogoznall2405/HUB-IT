@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Alert, Box, Button, Chip, CircularProgress, IconButton, LinearProgress, List, ListItemButton, MenuItem, Paper, Skeleton, Stack, Tab, Tabs, TextField, Tooltip, Typography } from '@mui/material';
+import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
 import PushPinRoundedIcon from '@mui/icons-material/PushPinRounded';
 import { useTheme } from '@mui/material/styles';
@@ -13,7 +15,7 @@ import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { useConfirmDialog } from '../components/feedback/ConfirmDialogProvider';
 import { useAuth } from '../contexts/AuthContext';
-import { monitoringAPI } from '../api/monitoring';
+import { createObjectMonitoringAPI, monitoringAPI } from '../api/monitoring';
 import { buildOfficeUiTokens } from '../theme/officeUiTokens';
 import MonitoringChart from './monitoring/MonitoringChart';
 import MonitoringEvents from './monitoring/MonitoringEvents';
@@ -42,8 +44,13 @@ export default function Monitoring() {
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const { user, hasPermission } = useAuth();
   const { confirm } = useConfirmDialog();
-  const canRead = hasPermission('monitoring.read');
-  const canManage = canRead && hasPermission('monitoring.manage');
+  // «/monitoring?object=<ref>» — мониторинг одного объекта ИТ: доступ по разделу объекта, без управления.
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const objectRef = searchParams.get('object') || '';
+  const api = useMemo(() => (objectRef ? createObjectMonitoringAPI(objectRef) : monitoringAPI), [objectRef]);
+  const canRead = Boolean(objectRef) || hasPermission('monitoring.read');
+  const canManage = !objectRef && canRead && hasPermission('monitoring.manage');
   const currentAccess = useRef(null);
   currentAccess.current = { userId: user?.id, canManage };
   const overviewRequest = useRef(null);
@@ -52,7 +59,9 @@ export default function Monitoring() {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [detailError, setDetailError] = useState('');
-  const [selectedId, setSelectedId] = useState('');
+  // «/monitoring?device=<id>» открывает устройство сразу (ссылка с вкладки «Мониторинг» объекта ИТ).
+  const linkedDevice = useRef(searchParams.get('device') || '');
+  const [selectedId, setSelectedId] = useState(linkedDevice.current);
   const [detail, setDetail] = useState(null);
   const [interfaceId, setInterfaceId] = useState('');
   const [loading, setLoading] = useState(true);
@@ -85,10 +94,10 @@ export default function Monitoring() {
   const selectedInterface = interfaces.find((row) => row.id === interfaceId);
   const current = selected?.current || {};
   const device = current.device || {};
-  const accessKey = JSON.stringify([user?.id, user?.role, user?.permissions, user?.use_custom_permissions, user?.custom_permissions, canRead]);
+  const accessKey = JSON.stringify([user?.id, user?.role, user?.permissions, user?.use_custom_permissions, user?.custom_permissions, canRead, objectRef]);
   const historyVersion = `${String(current.history_revision || current.sample_at || current.checked_at || '').slice(0, 16)}:${historyRefresh}`;
   const historyEnabled = canRead && Boolean(selectedId) && (tab === 'overview' || tab === 'graphs') && Boolean(hours || customValid);
-  const historyParams = { accessKey, targetId: selectedId, hours, enabled: historyEnabled, version: historyVersion,
+  const historyParams = { api, accessKey, targetId: selectedId, hours, enabled: historyEnabled, version: historyVersion,
     start: !hours && customValid ? customStart.toISOString() : undefined, end: !hours && customValid ? customEnd.toISOString() : undefined };
   const systemHistory = useMonitoringHistory(historyParams);
   const portHistory = useMonitoringHistory({ ...historyParams, interfaceId, enabled: historyEnabled && detail?.id === selectedId && Boolean(interfaceId) });
@@ -104,6 +113,12 @@ export default function Monitoring() {
     setData((old) => ({ ...(old || {}), targets: old?.targets?.some((row) => row.id === target.id) ? old.targets.map((row) => row.id === target.id ? { ...row, ...target } : row) : [...(old?.targets || []), target] }));
   }, []);
 
+  useEffect(() => {
+    if (!data || !linkedDevice.current) return;
+    const known = data.targets?.some((row) => row.id === linkedDevice.current);
+    if (!known && selectedIdRef.current === linkedDevice.current) setSelectedId('');
+    linkedDevice.current = '';
+  }, [data]);
   useLayoutEffect(() => { window.scrollTo({ top: 0, left: 0, behavior: 'instant' }); }, [selectedId, user?.id]);
   useLayoutEffect(() => {
     probeRequest.current = null;
@@ -130,9 +145,9 @@ export default function Monitoring() {
     if (!canRead) { setData(null); setDetail(null); return undefined; }
     const controller = new AbortController();
     overviewRequest.current = controller;
-    monitoringAPI.overview(controller.signal).then((result) => { if (controller.signal.aborted) return; const next = { ...result, targets: result.targets.filter((row) => !deletedIds.current.has(row.id)) }; setData(next); setError(''); setSelectedId((id) => next.targets.some((row) => row.id === id) ? id : ''); }).catch((err) => { if (!controller.signal.aborted) setError(errorMessage(err)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    api.overview(controller.signal).then((result) => { if (controller.signal.aborted) return; const next = { ...result, targets: result.targets.filter((row) => !deletedIds.current.has(row.id)) }; setData(next); setError(''); setSelectedId((id) => next.targets.some((row) => row.id === id) ? id : ''); }).catch((err) => { if (!controller.signal.aborted) setError(errorMessage(err)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [canRead, user?.id, revision]);
+  }, [api, canRead, user?.id, revision]);
   useEffect(() => {
     const refresh = () => { if (document.visibilityState === 'visible') setRevision((value) => value + 1); };
     const timer = window.setInterval(refresh, 10000);
@@ -146,13 +161,13 @@ export default function Monitoring() {
     if (!selectedId || !canRead) return undefined;
     const controller = new AbortController();
     detailRequest.current = controller;
-    monitoringAPI.detail(selectedId, controller.signal).then((result) => {
+    api.detail(selectedId, controller.signal).then((result) => {
       if (controller.signal.aborted || deletedIds.current.has(result.id)) return;
       setDetail(result); setDetailError('');
       setInterfaceId((id) => result.interfaces.some((row) => row.id === id) ? id : defaultInterfaceId(result.interfaces));
     }).catch((err) => { if (!controller.signal.aborted) setDetailError(errorMessage(err)); });
     return () => controller.abort();
-  }, [selectedId, canRead, revision]);
+  }, [api, selectedId, canRead, revision]);
 
   const probe = async () => {
     if (!selectedId || !canManage || probeRequest.current) return;
@@ -233,6 +248,7 @@ export default function Monitoring() {
       onBack={() => setSelectedId('')} onRefresh={() => { setRevision((v) => v + 1); setHistoryRefresh((v) => v + 1); }} onConnect={() => setTargetDialog({ open: true, target: null })} onProbe={probe}
       onSettings={() => setTargetDialog({ open: true, target: selected })} onPortControl={selectedInterface && canManage ? () => setInterfaceDialog(selectedInterface) : undefined} />
     <PageShell sx={{ p: { xs: 1.5, sm: 2, lg: 2 }, minWidth: 0, '& .MuiButton-root': { textTransform: 'none', fontWeight: 600 }, '& .MuiPaper-outlined:not(.monitoring-device-card)': { boxShadow: 'none', border: '1px solid', borderColor: 'divider' }, '& input': { fontSize: { xs: 16, sm: 14 } } }}>
+      {objectRef ? <Button startIcon={<ArrowBackRoundedIcon />} onClick={() => navigate(`/it/objects/${encodeURIComponent(objectRef)}?tab=monitoring`)} sx={{ mb: 1.5, alignSelf: 'flex-start' }}>К объекту</Button> : null}
     <Stack spacing={2.5} sx={{ maxWidth: 1680, mx: 'auto' }}>
       {error && <Alert severity="error">{error}</Alert>}
       {data?.worker?.enabled && isStale(data.worker.heartbeat_at, 30) && <Alert severity="warning">Сборщик мониторинга не обновляет данные. Состояние связи в пропущенных интервалах неизвестно.</Alert>}
@@ -250,7 +266,7 @@ export default function Monitoring() {
             <Typography component="h2" variant="h6" fontWeight={750} sx={{ overflowWrap: 'anywhere' }}>{displayTargetName(selected)}</Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 1.5, overflowWrap: 'anywhere' }}>{selected.address}:{selected.port} · {device.description || 'SNMPv2c'}</Typography>
             <MonitoringConnectionState target={selected} />
-            <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center" sx={{ mt: 2 }}><Chip size="small" label={`ICMP: ${isStale(current.icmp_checked_at || current.checked_at, 20) ? 'данные устарели' : current.ping?.status === 'online' ? 'отвечает' : current.ping?.status === 'offline' ? 'нет ответа' : 'не проверен'}`} variant="outlined" color={current.ping?.status === 'online' && !isStale(current.icmp_checked_at || current.checked_at, 20) ? 'success' : 'default'} /><Chip size="small" label={`SNMP: ${current.snmp_status === 'ok' ? stale ? 'данные устарели' : 'отвечает' : current.snmp_status === 'error' ? 'ошибка' : 'не проверен'}`} variant="outlined" color={current.snmp_status === 'ok' && !stale ? 'success' : current.snmp_status === 'error' ? 'warning' : 'default'} /><Typography variant="caption" color="text.secondary" sx={{ marginInlineStart: { md: 'auto' } }}>Последний успех SNMP: {formatTime(current.last_success_at)}</Typography></Stack>
+            <Stack direction="row" gap={1} flexWrap="wrap" alignItems="center" sx={{ mt: 2 }}><Chip size="small" label={`ICMP: ${isStale(current.icmp_checked_at || current.checked_at, 20) ? 'данные устарели' : current.ping?.status === 'online' ? `отвечает${isNumber(current.ping?.latency_ms) ? ` · ${formatNumber(current.ping.latency_ms, 0)} мс` : ''}` : current.ping?.status === 'offline' ? 'нет ответа' : 'не проверен'}`} variant="outlined" color={current.ping?.status === 'online' && !isStale(current.icmp_checked_at || current.checked_at, 20) ? 'success' : 'default'} /><Chip size="small" label={`SNMP: ${current.snmp_status === 'ok' ? stale ? 'данные устарели' : 'отвечает' : current.snmp_status === 'error' ? 'ошибка' : 'не проверен'}`} variant="outlined" color={current.snmp_status === 'ok' && !stale ? 'success' : current.snmp_status === 'error' ? 'warning' : 'default'} /><Typography variant="caption" color="text.secondary" sx={{ marginInlineStart: { md: 'auto' } }}>Последний успех SNMP: {formatTime(current.last_success_at)}</Typography></Stack>
             {current.snmp_error && <Typography variant="caption" color="warning.main" display="block" sx={{ mt: 1 }}>{current.snmp_error}. Последние известные значения сохранены.</Typography>}
             <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2,minmax(0,1fr))', sm: 'repeat(4,minmax(0,1fr))' }, gap: 2.5, mt: 2.5 }}>{[['CPU', device.cpu_pct, '%'], ['Память', device.memory_pct, '%'], ['Температура платы', device.temperature_c, '°C'], ['Задержка HUB', current.ping?.latency_ms, 'мс']].map(([label, value, unit]) => <Box key={label}><Typography variant="caption" color="text.secondary">{label}</Typography><Typography variant="h6" sx={{ fontVariantNumeric: 'tabular-nums', color: stale ? 'text.secondary' : 'text.primary' }}>{formatNumber(value)}{isNumber(value) ? ` ${unit}` : ''}</Typography>{unit === '%' && isNumber(value) && <LinearProgress variant="determinate" value={Math.max(0, Math.min(100, value))} sx={{ height: 3, borderRadius: '10px', mt: 0.5 }} />}</Box>)}</Box>
             {device.resources_at && isStale(device.resources_at) && <Typography variant="caption" color="warning.main" display="block" sx={{ mt: 1.5 }}>Измерения ресурсов устарели: {formatTime(device.resources_at)}.</Typography>}

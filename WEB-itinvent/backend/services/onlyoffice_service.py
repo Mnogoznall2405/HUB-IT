@@ -12,7 +12,21 @@ import httpx
 from jose import JWTError, jwt
 
 
-EDITABLE_DOCUMENT_TYPES = {".docx": "word", ".xlsx": "cell"}
+EDITABLE_DOCUMENT_TYPES = {".docx": "word", ".xlsx": "cell", ".pptx": "slide"}
+
+ROLE_OWNER = "owner"
+ROLE_EDIT = "edit"
+ROLE_COMMENT = "comment"
+ROLE_VIEW = "view"
+COLLABORATOR_ROLES = (ROLE_EDIT, ROLE_COMMENT, ROLE_VIEW)
+# Roles whose changes Document Server may save: editing and comments both live inside the file.
+WRITING_ROLES = frozenset({ROLE_OWNER, ROLE_EDIT, ROLE_COMMENT})
+EDITING_ROLES = frozenset({ROLE_OWNER, ROLE_EDIT})
+
+
+def normalize_role(value: str) -> str:
+    role = str(value or "").strip().lower()
+    return role if role in COLLABORATOR_ROLES else ROLE_EDIT
 
 STATUS_EDITING = 1
 STATUS_READY_TO_SAVE = 2
@@ -97,6 +111,25 @@ def build_document_key(file_id: str, revision: int) -> str:
     return hashlib.sha256(f"{file_id}:{int(revision)}".encode("utf-8")).hexdigest()[:40]
 
 
+def notify_document_title(settings: OnlyOfficeSettings, *, key: str, title: str) -> bool:
+    """Notify live editors only; a failure does not undo a name already saved in HUB."""
+    command = {"c": "meta", "key": key, "meta": {"title": title}}
+    try:
+        with httpx.Client(timeout=min(settings.fetch_timeout_sec, 5.0), follow_redirects=False) as client:
+            response = client.post(
+                f"{settings.internal_url}/command",
+                params={"shardkey": key},
+                json={**command, "token": _sign(command, settings.jwt_secret)},
+            )
+        if response.status_code != 200:
+            return False
+        result = response.json()
+        return (isinstance(result, dict) and type(result.get("error")) is int
+                and result["error"] == 0 and result.get("key") == key)
+    except (httpx.HTTPError, ValueError):
+        return False
+
+
 def _sign(claims: dict, secret: str) -> str:
     return jwt.encode(claims, secret, algorithm="HS256")
 
@@ -138,8 +171,10 @@ def build_editor_config(
     revision: int,
     user_id: int,
     user_name: str,
-    can_edit: bool = True,
+    role: str = ROLE_EDIT,
 ) -> dict:
+    can_edit = role in EDITING_ROLES
+    can_comment = role in WRITING_ROLES
     source_token = make_source_token(settings, file_id=file_id, blob_id=blob_id)
     callback_token = make_callback_token(settings, file_id=file_id)
     base = f"{settings.app_base_url}/api/v1/my-files/office"
@@ -150,10 +185,11 @@ def build_editor_config(
             "key": build_document_key(file_id, revision),
             "title": file_name,
             "url": f"{base}/source?t={quote(source_token)}",
-            "permissions": {"edit": can_edit, "download": True, "print": True, "comment": can_edit},
+            "permissions": {"edit": can_edit, "download": True, "print": True, "comment": can_comment},
         },
         "editorConfig": {
-            "mode": "edit" if can_edit else "view",
+            # A commenter opens the editor in "edit" mode with edit=false/comment=true: Document Server limits it to comments.
+            "mode": "edit" if can_comment else "view",
             "lang": "ru",
             "callbackUrl": f"{base}/callback?t={quote(callback_token)}",
             "user": {"id": str(int(user_id)), "name": str(user_name or f"user-{user_id}")[:120]},

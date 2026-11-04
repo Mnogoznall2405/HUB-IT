@@ -21,6 +21,7 @@ from backend.services.authorization_service import (
 from backend.services.settings_service import settings_service
 from backend.services.user_db_selection_service import user_db_selection_service
 from backend.config import config
+from backend.services.database_catalog import _DB_CATALOG, _is_db_configured, get_all_db_configs  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -35,70 +36,6 @@ _DATABASE_ACCESS_PERMISSIONS = (
 router = APIRouter(
     dependencies=[Depends(require_any_permission(_DATABASE_ACCESS_PERMISSIONS))]
 )
-
-
-_DB_CATALOG: List[dict] = [
-    {
-        "id": "ITINVENT",
-        "name": "ITINVENT",
-        "access": "read-only",
-    },
-    {
-        "id": "MSK-ITINVENT",
-        "name": "MSK-ITINVENT (Москва)",
-        "access": "read-only",
-    },
-    {
-        "id": "OBJ-ITINVENT",
-        "name": "OBJ-ITINVENT (Объекты)",
-        "access": "read-write",
-    },
-    {
-        "id": "SPB-ITINVENT",
-        "name": "SPB-ITINVENT (Санкт-Петербург)",
-        "access": "read-only",
-    },
-]
-
-
-def _is_db_configured(db_id: str) -> bool:
-    cfg = get_database_config(db_id)
-    return all(
-        str(cfg.get(key) or "").strip()
-        for key in ("host", "database", "username", "password")
-    )
-
-
-def get_all_db_configs() -> List[dict]:
-    """Get configured databases from AVAILABLE_DATABASES and env DB_* settings."""
-    available_raw = os.getenv("AVAILABLE_DATABASES", "")
-    if available_raw.strip():
-        allowed_ids = {
-            part.strip()
-            for part in available_raw.split(",")
-            if part.strip()
-        }
-    else:
-        allowed_ids = {item["id"] for item in _DB_CATALOG}
-
-    databases: List[dict] = []
-    for item in _DB_CATALOG:
-        db_id = str(item.get("id") or "").strip()
-        if not db_id or db_id not in allowed_ids:
-            continue
-        if not _is_db_configured(db_id):
-            logger.debug("Skipping database %s: incomplete configuration", db_id)
-            continue
-        databases.append(dict(item))
-
-    if databases:
-        return databases
-
-    default_id = str(config.database.database or "ITINVENT").strip() or "ITINVENT"
-    fallback = next((item for item in _DB_CATALOG if item["id"] == default_id), _DB_CATALOG[0])
-    if _is_db_configured(fallback["id"]):
-        return [dict(fallback)]
-    return []
 
 
 class DatabaseInfo(BaseModel):

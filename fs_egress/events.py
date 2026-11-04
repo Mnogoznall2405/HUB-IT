@@ -136,14 +136,24 @@ def build_file_left(
     sha = ""
     resolved_size = size
     path = Path(dest) if dest else None
-    if path is not None and path.is_file():
+    event_details = dict(details or {})
+    try:
+        is_regular_file = path is not None and path.is_file()
+    except OSError:
+        # Network shares can refuse or drop the metadata call; the event is still reported,
+        # flagged so the missing size/hash is not read as an empty file.
+        is_regular_file = False
+        event_details["metadata_unavailable"] = True
+    if is_regular_file:
         try:
             if resolved_size is None:
                 resolved_size = int(path.stat().st_size)
         except OSError:
-            pass
+            event_details["metadata_unavailable"] = True
         if compute_hash:
             sha = maybe_sha256(path)
+            if not sha:
+                event_details["metadata_unavailable"] = True
     return FileLeftEvent(
         event_id=new_event_id(),
         ts=int(time.time()),
@@ -155,5 +165,5 @@ def build_file_left(
         sha256=sha,
         windows_user=user,
         computer_name=host,
-        details=dict(details or {}),
+        details=event_details,
     )

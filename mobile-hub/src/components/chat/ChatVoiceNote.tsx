@@ -38,6 +38,10 @@ export function ChatVoiceNote({
   const [elapsed, setElapsed] = useState(0);
   const playerRef = useRef<AudioPlayer | null>(null);
   const pendingSeekRef = useRef<number | null>(null);
+  // Bumped when the row unmounts or switches attachment: every await in togglePlayback
+  // re-checks it, so a late download/continuation never creates or starts a player.
+  const lifeRef = useRef(0);
+  const downloadAbortRef = useRef<AbortController | null>(null);
   const duration = Number(attachment.duration_seconds || playerRef.current?.duration || 0);
   const effectiveDuration = duration > 0 ? duration : 0;
   const progress = voicePlaybackProgress(elapsed, effectiveDuration);
@@ -48,6 +52,9 @@ export function ChatVoiceNote({
   );
 
   useEffect(() => () => {
+    lifeRef.current += 1;
+    downloadAbortRef.current?.abort();
+    downloadAbortRef.current = null;
     if (activeVoice?.id === attachment.id) activeVoice = null;
     playerRef.current?.pause();
     playerRef.current?.remove();
@@ -88,14 +95,21 @@ export function ChatVoiceNote({
       return;
     }
     releaseOtherVoice(attachment.id);
+    const life = lifeRef.current;
+    const stale = () => lifeRef.current !== life;
     setBusy(true);
     try {
       if (!playerRef.current) {
-        const file = await downloadChatAttachment(attachment);
+        const controller = new AbortController();
+        downloadAbortRef.current = controller;
+        const file = await downloadChatAttachment(attachment, { signal: controller.signal });
+        if (downloadAbortRef.current === controller) downloadAbortRef.current = null;
+        if (stale()) return;
         await setAudioModeAsync({
           allowsRecording: false,
           playsInSilentMode: true,
         });
+        if (stale()) return;
         const player = createAudioPlayer({ uri: file.uri });
         player.addListener('playbackStatusUpdate', (status: AudioStatus) => {
           setElapsed(Math.max(0, Number(status.currentTime || 0)));
@@ -105,15 +119,22 @@ export function ChatVoiceNote({
         if (pendingSeekRef.current != null) {
           await player.seekTo(pendingSeekRef.current);
           pendingSeekRef.current = null;
+          if (stale()) {
+            // Unmounted during the seek: the cleanup already ran, so release this player here.
+            player.pause();
+            player.remove();
+            if (playerRef.current === player) playerRef.current = null;
+            return;
+          }
         }
       }
       activeVoice = { id: attachment.id, stop: stopPlayback };
       playerRef.current.play();
       setPlaying(true);
     } catch {
-      stopPlayback();
+      if (!stale()) stopPlayback();
     } finally {
-      setBusy(false);
+      if (!stale()) setBusy(false);
     }
   };
 

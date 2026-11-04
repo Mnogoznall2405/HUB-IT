@@ -7,6 +7,15 @@ const noStore = {
 };
 
 export const docflowAPI = {
+  listAbsences: async ({ employeeCode = '', signal } = {}) => {
+    const { data } = await apiClient.get('/docflow/absences', {
+      ...noStore,
+      params: employeeCode ? { employee_code: employeeCode } : {},
+      timeout: DOCFLOW_1C_QUERY_TIMEOUT_MS,
+      signal,
+    });
+    return data;
+  },
   getProfile: async () => {
     const { data } = await apiClient.get('/docflow/profile', noStore);
     return data;

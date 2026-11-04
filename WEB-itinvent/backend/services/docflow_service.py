@@ -1519,6 +1519,10 @@ class DocflowService:
             return row
         if not bool(state.get("exists")):
             return row
+        if not str(state.get("task_ref") or "").strip():
+            # The process object exists, but nothing shows it was launched (no task for the
+            # assignee): a draft left between DMUpdate and DMLaunch is not "applied" (DDOC-02).
+            return row
         return await asyncio.to_thread(
             self._command_store.finish,
             command_id=str(row.id),
@@ -1928,6 +1932,7 @@ class DocflowService:
                     "correlation_id": correlation,
                     "error_code": None,
                 }
+            existing = await self._expire_stale_pending(existing)
             if str(existing.status) == "state_unknown":
                 existing, detail = await self._reconcile_command(
                     user_id=int(user_id),
@@ -1999,6 +2004,7 @@ class DocflowService:
                     "correlation_id": correlation,
                     "error_code": None,
                 }
+            row = await self._expire_stale_pending(row)
             if str(row.status) == "state_unknown":
                 row, detail = await self._reconcile_command(
                     user_id=int(user_id),
@@ -2133,6 +2139,34 @@ class DocflowService:
             "error_code": None,
         }
 
+    async def _expire_stale_pending(self, row: AppDocflowCommand) -> AppDocflowCommand:
+        """A command stuck in ``pending`` (process crash, cancelled request) becomes ``state_unknown``.
+
+        Nothing else would ever move it, and reconciliation only runs for unknown outcomes. The
+        external action may still have been applied, so it is verified read-only, never repeated.
+        """
+        if str(row.status) != "pending":
+            return row
+        try:
+            stale_after = float(os.getenv("DOCFLOW_PENDING_STALE_SECONDS", "180") or 180)
+        except ValueError:
+            stale_after = 180.0
+        updated_at = getattr(row, "updated_at", None)
+        if updated_at is None:
+            return row
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        if (_utcnow() - updated_at).total_seconds() < max(60.0, stale_after):
+            return row
+        return await asyncio.to_thread(
+            self._command_store.finish,
+            command_id=str(row.id),
+            status="state_unknown",
+            outcome=None,
+            error_code="DOCFLOW_PENDING_ABANDONED",
+            remote_after_json=str(row.remote_after_json or "{}"),
+        )
+
     async def get_command(
         self,
         *,
@@ -2148,6 +2182,7 @@ class DocflowService:
         if row is None or str(row.action) == "create_assignment":
             raise DocflowNotFound("Команда документооборота не найдена")
         detail = None
+        row = await self._expire_stale_pending(row)
         if str(row.status) == "state_unknown":
             row, detail = await self._reconcile_command(
                 user_id=int(user_id),

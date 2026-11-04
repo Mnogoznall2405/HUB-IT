@@ -1,5 +1,6 @@
 const path = require('path');
 const { resolvePython } = require('./python-path');
+const { dbPool } = require('./db-pools');
 
 const PROJECT_ROOT = 'C:\\Project\\Image_scan';
 const WEB_ROOT = path.join(PROJECT_ROOT, 'WEB-itinvent');
@@ -20,6 +21,7 @@ function buildChatNode(name, port, nodeId) {
     kill_timeout: 15000,
     exp_backoff_restart_delay: 200,
     env: {
+      ...dbPool(name),
       HUBIT_RUNTIME_ROLE: 'chat',
       BACKEND_HOST: '127.0.0.1',
       BACKEND_PORT: String(port),
@@ -33,27 +35,12 @@ function buildChatNode(name, port, nodeId) {
       CHAT_PROCESS_COUNT: '2',
       ANYIO_THREAD_TOKENS: '64',
 
-      // Every authenticated request reads the auth tables (revoked tokens, trusted device,
-      // session). A pool of 2 was fully checked out during DB latency spikes and every
-      // request queued behind it (observed 2026-10-06). Give auth a separate
-      // 10+5 envelope; the two nodes add 18 connections to the former 5+1 profile.
-      APP_DB_POOL_SIZE: '10',
-      APP_DB_MAX_OVERFLOW: '5',
+      // Pool sizes (auth 10+5, chat write/read) live in db-pools.js.
       APP_DB_POOL_TIMEOUT: '30',
       APP_DB_APPLICATION_NAME: `${name}-auth`,
 
-      // Per node: write 6+1 + read 5 = 12 pooled data connections plus
-      // three dedicated PostgreSQL publisher/LISTEN/presence connections.
-      // Two nodes use at most 30 chat-domain connections.
-      CHAT_DB_WRITE_POOL_SIZE: '6',
-      CHAT_DB_WRITE_MAX_OVERFLOW: '1',
-      CHAT_DB_READ_POOL_SIZE: '5',
-      CHAT_DB_READ_MAX_OVERFLOW: '0',
       CHAT_POSTGRES_REALTIME_DEDICATED_CONNECTIONS: '3',
-      CHAT_DB_CONNECTION_BUDGET: '30',
       CHAT_DB_CONNECTION_BUDGET_FAIL_START: '1',
-      CHAT_DB_POOL_SIZE: '6',
-      CHAT_DB_MAX_OVERFLOW: '1',
       CHAT_DB_POOL_TIMEOUT: '30',
       CHAT_DB_APPLICATION_NAME: `${name}-write`,
       CHAT_DB_READ_APPLICATION_NAME: `${name}-read`,
@@ -121,25 +108,16 @@ module.exports = {
       max_restarts: 10,
       restart_delay: 5000,
       env: {
+        ...dbPool('itinvent-preview-worker'),
         MAIL_OFFICE_PREVIEW_ENABLED: '1',
         PREVIEW_WORKER_CONCURRENCY: '4',
         PREVIEW_MAX_ATTEMPTS: '3',
         PREVIEW_LEASE_SEC: '240',
         PREVIEW_POLL_INTERVAL_MS: '500',
         MAIL_OFFICE_PREVIEW_MAX_CONCURRENCY: '4',
-        // 3 APP + 3 write + 1 read = 7 maximum connections for preview jobs.
-        APP_DB_POOL_SIZE: '3',
-        APP_DB_MAX_OVERFLOW: '0',
         APP_DB_APPLICATION_NAME: 'itinvent-preview-worker',
-        CHAT_DB_WRITE_POOL_SIZE: '2',
-        CHAT_DB_WRITE_MAX_OVERFLOW: '1',
-        CHAT_DB_READ_POOL_SIZE: '1',
-        CHAT_DB_READ_MAX_OVERFLOW: '0',
-        CHAT_DB_CONNECTION_BUDGET: '4',
         CHAT_DB_CONNECTION_BUDGET_FAIL_START: '1',
         CHAT_PROCESS_COUNT: '1',
-        CHAT_DB_POOL_SIZE: '2',
-        CHAT_DB_MAX_OVERFLOW: '1',
         CHAT_DB_APPLICATION_NAME: 'itinvent-preview-worker-chat',
         CHAT_DB_READ_APPLICATION_NAME: 'itinvent-preview-worker-read',
         PYTHONUNBUFFERED: '1',
@@ -157,6 +135,7 @@ module.exports = {
       max_restarts: 10,
       restart_delay: 5000,
       env: {
+        ...dbPool('itinvent-chat-push-worker'),
         CHAT_PUSH_OUTBOX_ENABLED: '1',
         CHAT_AUDIT_ENABLED: '0',
         CHAT_PROFILE_STACK_ENABLED: '0',
@@ -168,14 +147,7 @@ module.exports = {
         CHAT_PUSH_OUTBOX_RETRY_BASE_SEC: '15',
         CHAT_PUSH_OUTBOX_PROCESSING_TIMEOUT_SEC: '300',
         CHAT_PUSH_OUTBOX_HEARTBEAT_SEC: '60',
-        APP_DB_POOL_SIZE: '1',
-        APP_DB_MAX_OVERFLOW: '0',
         APP_DB_APPLICATION_NAME: 'itinvent-chat-push',
-        CHAT_DB_POOL_SIZE: '2',
-        CHAT_DB_MAX_OVERFLOW: '1',
-        CHAT_DB_READ_POOL_SIZE: '1',
-        CHAT_DB_READ_MAX_OVERFLOW: '0',
-        CHAT_DB_CONNECTION_BUDGET: '4',
         CHAT_DB_CONNECTION_BUDGET_FAIL_START: '1',
         CHAT_DB_APPLICATION_NAME: 'itinvent-chat-push-chat',
         CHAT_DB_READ_APPLICATION_NAME: 'itinvent-chat-push-chat-read',

@@ -31,6 +31,7 @@ import { hasAnyAppPushPermission } from './lib/appPushPermissions';
 import { syncAppBadge } from './lib/appBadge';
 import {
   needsAboutOnboarding,
+  peekPostAuthReturnPath,
   rememberPostAuthReturnPath,
   resolvePostAuthenticationPath,
 } from './lib/aboutOnboarding';
@@ -51,6 +52,7 @@ import {
   loadMfuRoute,
   loadMonitoringRoute,
   loadMyFilesRoute,
+  loadMyFilesEditorRoute,
   loadNetworksRoute,
   loadKnowledgeBaseRoute,
   loadProfileRoute,
@@ -85,6 +87,7 @@ const Feed = lazy(loadFeedRoute);
 const Tasks = lazy(loadTasksRoute);
 const Tickets = lazy(loadTicketsRoute);
 const Chat = lazy(loadChatRoute);
+const ChatOpen = lazy(() => import('./pages/ChatOpen'));
 const Database = lazy(loadDatabaseRoute);
 const Networks = lazy(loadNetworksRoute);
 const Settings = lazy(loadSettingsRoute);
@@ -114,6 +117,7 @@ const Docflow = lazy(loadDocflowRoute);
 const Passwords = lazy(loadPasswordsRoute);
 const GroupsAccess = lazy(loadGroupsAccessRoute);
 const MyFiles = lazy(loadMyFilesRoute);
+const MyFilesEditor = lazy(loadMyFilesEditorRoute);
 const SharedFile = lazy(loadSharedFileRoute);
 const SharedFolder = lazy(loadSharedFolderRoute);
 const Help = lazy(loadHelpRoute);
@@ -214,7 +218,16 @@ const RootRoute = () => {
     if (needsAboutOnboarding(user)) {
       return <Navigate to="/about" replace />;
     }
-    return <Navigate to={resolveFirstAccessiblePath(hasPermission, user)} replace />;
+    // AD FS returns to /. Keep a portal chat recipient through that redirect;
+    // ChatOpen consumes it after mounting, so StrictMode cannot lose it here.
+    let portalChatReturn = '';
+    try {
+      const pending = peekPostAuthReturnPath();
+      if (pending.startsWith('/chat/open#')) portalChatReturn = pending;
+    } catch {
+      // Ordinary routing remains available when browser storage is blocked.
+    }
+    return <Navigate to={portalChatReturn || resolveFirstAccessiblePath(hasPermission, user)} replace />;
   }
 
   return <Navigate to="/login" replace />;
@@ -259,6 +272,14 @@ const PermissionRoute = ({ permission, permissions, adminOnly = false, children 
   }
 
   return <Navigate to={resolveFirstAccessiblePath(hasPermission, user)} replace />;
+};
+
+// «/monitoring?object=<ref>» открывает мониторинг одного объекта: сервер проверяет раздел объекта,
+// поэтому достаточно права на «Объекты ИТ»; без параметра нужно право на весь мониторинг.
+const MonitoringRoute = ({ children }) => {
+  const location = useLocation();
+  const objectScoped = new URLSearchParams(location.search).has('object');
+  return <PermissionRoute permission={objectScoped ? 'it_objects.read' : 'monitoring.read'}>{children}</PermissionRoute>;
 };
 
 const AdminAreaRoute = ({ children }) => {
@@ -615,6 +636,12 @@ function AuthenticatedAppShell() {
                 />
                 {CHAT_FEATURE_ENABLED ? (
                   <Route
+                    path="/chat/open"
+                    element={<PermissionRoute permission="chat.read"><ChatOpen /></PermissionRoute>}
+                  />
+                ) : null}
+                {CHAT_FEATURE_ENABLED ? (
+                  <Route
                     path="/chat"
                     element={<PermissionRoute permission="chat.read"><Chat /></PermissionRoute>}
                   />
@@ -642,7 +669,7 @@ function AuthenticatedAppShell() {
                 />
                 <Route
                   path="/monitoring"
-                  element={<PermissionRoute permission="monitoring.read"><Monitoring /></PermissionRoute>}
+                  element={<MonitoringRoute><Monitoring /></MonitoringRoute>}
                 />
                 <Route
                   path="/computers"
@@ -739,6 +766,10 @@ function AuthenticatedAppShell() {
                 <Route
                   path="/my-files"
                   element={<PermissionRoute permission="my_files.read"><MyFiles /></PermissionRoute>}
+                />
+                <Route
+                  path="/my-files/edit/:fileId"
+                  element={<PermissionRoute permission="my_files.read"><MyFilesEditor /></PermissionRoute>}
                 />
                 <Route path="/kb" element={<Navigate to="/help" replace />} />
                 <Route

@@ -32,9 +32,12 @@ import {
   type MonitoringTone,
 } from '../../monitoring/monitoringModel';
 import type { FluentTokens } from '../../theme/fluentTokens';
+import { useMonitoringActive } from '../../monitoring/useMonitoringActive';
 import { AccountSectionCard } from '../account/AccountChrome';
 
 const HISTORY_REFRESH_MS = 60_000;
+
+type KeyedHistory = { key: string; history: MonitoringHistory };
 
 type DetailTab = 'graphs' | 'interfaces' | 'events';
 const DETAIL_TABS = [
@@ -74,9 +77,12 @@ export function NativeMonitoringDetail({ target, tokens }: { target: MonitoringT
   const [tab, setTab] = useState<DetailTab>('graphs');
   const [hours, setHours] = useState<number>(24);
   const [interfaceId, setInterfaceId] = useState('');
-  const [portHistory, setPortHistory] = useState<MonitoringHistory | null>(null);
-  const [deviceHistory, setDeviceHistory] = useState<MonitoringHistory | null>(null);
-  const [latency, setLatency] = useState<MonitoringHistory | null>(null);
+  // Each history is stored with the target/interface/period it was loaded for and shown only while
+  // that still matches the selection; otherwise an old chart would sit under the new title.
+  const [portHistory, setPortHistory] = useState<KeyedHistory | null>(null);
+  const [deviceHistory, setDeviceHistory] = useState<KeyedHistory | null>(null);
+  const [latency, setLatency] = useState<KeyedHistory | null>(null);
+  const active = useMonitoringActive();
   const [historyError, setHistoryError] = useState('');
   const [historyLoading, setHistoryLoading] = useState(false);
   const detailGeneration = useRef(0);
@@ -87,6 +93,7 @@ export function NativeMonitoringDetail({ target, tokens }: { target: MonitoringT
   }, [targetId]);
 
   useEffect(() => {
+    if (!active) return undefined;
     const controller = new AbortController();
     const load = async () => {
       const generation = ++detailGeneration.current;
@@ -105,7 +112,7 @@ export function NativeMonitoringDetail({ target, tokens }: { target: MonitoringT
     void load();
     const timer = setInterval(() => { void load(); }, MONITORING_REFRESH_MS);
     return () => { controller.abort(); clearInterval(timer); };
-  }, [targetId]);
+  }, [targetId, active]);
 
   const loadHistory = useCallback(async (signal: AbortSignal, silent: boolean) => {
     const generation = ++historyGeneration.current;
@@ -117,21 +124,22 @@ export function NativeMonitoringDetail({ target, tokens }: { target: MonitoringT
     ]);
     if (signal.aborted || generation !== historyGeneration.current) return;
     const [device, port, ping] = settled;
-    if (device.status === 'fulfilled') setDeviceHistory(device.value);
-    if (port.status === 'fulfilled') setPortHistory(port.value);
-    if (ping.status === 'fulfilled') setLatency(ping.value);
+    const deviceKey = `${targetId}|${hours}`;
+    if (device.status === 'fulfilled' && device.value) setDeviceHistory({ key: deviceKey, history: device.value });
+    if (port.status === 'fulfilled' && port.value) setPortHistory({ key: `${targetId}|${interfaceId}|${hours}`, history: port.value });
+    if (ping.status === 'fulfilled' && ping.value) setLatency({ key: deviceKey, history: ping.value });
     const failed = settled.find((item) => item.status === 'rejected') as PromiseRejectedResult | undefined;
     setHistoryError(failed ? formatApiError(failed.reason, 'Не удалось загрузить графики') : '');
     setHistoryLoading(false);
   }, [targetId, hours, interfaceId]);
 
   useEffect(() => {
-    if (tab !== 'graphs' || !detail) return undefined;
+    if (!active || tab !== 'graphs' || !detail) return undefined;
     const controller = new AbortController();
     void loadHistory(controller.signal, false);
     const timer = setInterval(() => { void loadHistory(controller.signal, true); }, HISTORY_REFRESH_MS);
     return () => { controller.abort(); clearInterval(timer); };
-  }, [tab, loadHistory, Boolean(detail)]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [active, tab, loadHistory, Boolean(detail)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const merged = detail ?? target;
   const status = targetStatus(merged);
@@ -141,9 +149,14 @@ export function NativeMonitoringDetail({ target, tokens }: { target: MonitoringT
   const notice = outageNotice(merged);
   const interfaces = detail?.interfaces ?? [];
   const selectedInterface = interfaces.find((row) => row.id === interfaceId);
-  const devicePoints = deviceHistory?.points ?? [];
-  const portPoints = portHistory?.points ?? [];
-  const latencyPoints = latency?.points ?? [];
+  const deviceKey = `${targetId}|${hours}`;
+  const portKey = `${targetId}|${interfaceId}|${hours}`;
+  const currentDeviceHistory = deviceHistory?.key === deviceKey ? deviceHistory.history : null;
+  const currentPortHistory = portHistory?.key === portKey ? portHistory.history : null;
+  const currentLatency = latency?.key === deviceKey ? latency.history : null;
+  const devicePoints = currentDeviceHistory?.points ?? [];
+  const portPoints = currentPortHistory?.points ?? [];
+  const latencyPoints = currentLatency?.points ?? [];
   const mbps = (value: number) => formatBps(value);
   const percent = (value: number) => `${formatNumber(value)} %`;
   const color = toneColor(tokens, status.tone);
@@ -209,7 +222,7 @@ export function NativeMonitoringDetail({ target, tokens }: { target: MonitoringT
             />
           ) : null}
           {historyError ? <Text accessibilityRole="alert" style={[styles.note, { color: tokens.warning }]}>{historyError}</Text> : null}
-          {historyLoading && !portHistory && !deviceHistory ? <ActivityIndicator color={tokens.primary} style={styles.loader} /> : null}
+          {historyLoading && !currentPortHistory && !currentDeviceHistory ? <ActivityIndicator color={tokens.primary} style={styles.loader} /> : null}
           <View style={styles.charts}>
             <NativeMonitoringChart testID="native-monitoring-chart-rx" title={`Приём${selectedInterface ? ` · ${selectedInterface.name}` : ''}`} values={bucketSeries(portPoints, 'rx_bps')} format={mbps} color={tokens.primary} tokens={tokens} />
             <NativeMonitoringChart testID="native-monitoring-chart-tx" title="Передача" values={bucketSeries(portPoints, 'tx_bps')} format={mbps} color={tokens.secondary} tokens={tokens} />

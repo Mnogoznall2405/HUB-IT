@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   Alert,
   Box,
@@ -15,7 +15,10 @@ import AccessTimeOutlinedIcon from '@mui/icons-material/AccessTimeOutlined';
 import CheckOutlinedIcon from '@mui/icons-material/CheckOutlined';
 import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
 import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
+import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import { myFilesAPI } from '../api/myFiles';
+import { myFilesOfficeAPI } from '../api/myFilesOffice';
+import { rememberPostAuthReturnPath } from '../lib/aboutOnboarding';
 import { formatFileSize } from '../lib/myFilesPreview';
 import DocumentPreviewDialog from '../components/documentPreview/DocumentPreviewDialog';
 import { getMailAttachmentVisual } from '../components/mail/mailAttachmentVisuals';
@@ -38,6 +41,8 @@ const PAGE_BOTTOM = '#e8eef5';
 
 const RATE_LIMIT_MESSAGE = 'Слишком много запросов. Попробуйте скачать через несколько минут.';
 const PREVIEW_UNAVAILABLE_MESSAGE = 'Предпросмотр не удалось подготовить. Файл можно скачать.';
+
+const hasPreviewForAction = (payload) => Boolean(payload?.preview_available);
 
 const isRateLimitedError = (error) => Number(error?.response?.status) === 429;
 
@@ -125,6 +130,50 @@ function BrandHeader() {
   );
 }
 
+// One link for everybody: guests only download; a collaborator edits after signing in.
+function EditAction({ access, onEdit, onLogin, fullWidth = false }) {
+  if (!access?.editable) return null;
+  if (access.can_open) {
+    const label = access.role === 'view' ? 'Открыть' : access.role === 'comment' ? 'Комментировать' : 'Редактировать';
+    return (
+      <Button
+        onClick={onEdit}
+        variant="contained"
+        color="success"
+        startIcon={<EditOutlinedIcon />}
+        fullWidth={fullWidth}
+        data-testid="shared-file-edit"
+        sx={{ ...pressableSx, minHeight: fullWidth ? 48 : 40, borderRadius: '14px', fontWeight: 800 }}
+      >
+        {label}
+      </Button>
+    );
+  }
+  if (access.collaborative && !access.signed_in) {
+    return (
+      <Button
+        onClick={onLogin}
+        variant="outlined"
+        startIcon={<EditOutlinedIcon />}
+        fullWidth={fullWidth}
+        data-testid="shared-file-login-to-edit"
+        sx={{
+          ...pressableSx,
+          minHeight: fullWidth ? 44 : 40,
+          borderRadius: '14px',
+          fontWeight: 700,
+          borderColor: alpha('#0f172a', 0.12),
+          color: TEXT,
+          bgcolor: PANEL_BG,
+        }}
+      >
+        Войти, чтобы редактировать
+      </Button>
+    );
+  }
+  return null;
+}
+
 function SharedDownloadCard({
   payload,
   downloadUrl,
@@ -132,6 +181,7 @@ function SharedDownloadCard({
   countdownExpired,
   copyState,
   onCopyLink,
+  editAction = null,
 }) {
   const attachmentVisual = useMemo(
     () => getMailAttachmentVisual({ name: payload?.file_name, content_type: payload?.mime_type }),
@@ -239,6 +289,7 @@ function SharedDownloadCard({
           >
             Скачать
           </Button>
+          {editAction}
           <Button
             onClick={onCopyLink}
             variant="outlined"
@@ -518,6 +569,9 @@ export default function SharedFile() {
   const [error, setError] = useState('');
   const [copyState, setCopyState] = useState('idle');
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [access, setAccess] = useState(null);
+  const navigate = useNavigate();
+  const location = useLocation();
 
   useEffect(() => {
     const timerId = window.setInterval(() => setNowMs(Date.now()), 1000);
@@ -545,6 +599,25 @@ export default function SharedFile() {
       cancelled = true;
     };
   }, [token, retryEpoch]);
+
+  useEffect(() => {
+    if (!payload) return undefined;
+    const controller = new AbortController();
+    setAccess(null);
+    myFilesOfficeAPI.getPublicAccess(token, { signal: controller.signal })
+      .then((data) => { if (!controller.signal.aborted) setAccess(data); })
+      .catch(() => {
+        // Editing is optional: without the answer the page stays a plain download link.
+      });
+    return () => controller.abort();
+  }, [payload, token]);
+
+  const handleEdit = () => navigate(`/my-files?edit=${encodeURIComponent(access?.file_id || '')}`);
+  const handleLogin = () => {
+    rememberPostAuthReturnPath(`${location.pathname}${location.search}`);
+    navigate('/login');
+  };
+  const editAction = <EditAction access={access} onEdit={handleEdit} onLogin={handleLogin} fullWidth={!hasPreviewForAction(payload)} />;
 
   const countdownLabel = useMemo(
     () => formatCountdown(payload?.expires_at, nowMs),
@@ -650,6 +723,7 @@ export default function SharedFile() {
             >
               Скачать
             </Button>
+            {editAction}
           </Stack>
         </Box>
       ) : null}
@@ -712,6 +786,7 @@ export default function SharedFile() {
             countdownExpired={countdownExpired}
             copyState={copyState}
             onCopyLink={handleCopyLink}
+            editAction={editAction}
           />
         ) : null}
 

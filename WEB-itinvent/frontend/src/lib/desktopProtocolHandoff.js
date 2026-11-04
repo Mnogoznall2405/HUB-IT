@@ -261,3 +261,52 @@ export function canOfferDesktopHandoff(options) {
   if (isDesktopHandoffSkippedThisSession(options?.sessionStorage)) return false;
   return true;
 }
+
+// Browsers cannot query installed protocol handlers. A hidden page is only a
+// handoff signal; keep explicit browser/retry actions available to the user.
+export function launchDesktopConversation(route, { onFallback, onHandoff }) {
+  const href = buildHubitProtocolHref(route);
+  if (!href) {
+    onFallback();
+    return () => {};
+  }
+  let timer;
+  let finished = false;
+  let blurred = false;
+  const cleanup = () => {
+    finished = true;
+    window.clearTimeout(timer);
+    window.removeEventListener('blur', blur);
+    window.removeEventListener('focus', focus);
+    window.removeEventListener('pagehide', handedOff);
+    document.removeEventListener('visibilitychange', visibility);
+  };
+  const handedOff = () => {
+    if (finished) return;
+    cleanup();
+    onHandoff();
+  };
+  const fallback = () => {
+    if (finished) return;
+    if (document.visibilityState === 'hidden') return handedOff();
+    // Do not race the browser's external-protocol confirmation dialog.
+    if (blurred) return;
+    cleanup();
+    onFallback();
+  };
+  const blur = () => { blurred = true; window.clearTimeout(timer); };
+  const focus = () => { blurred = false; window.clearTimeout(timer); timer = window.setTimeout(fallback, 2500); };
+  const visibility = () => { if (document.visibilityState === 'hidden') handedOff(); };
+  window.addEventListener('blur', blur);
+  window.addEventListener('focus', focus);
+  window.addEventListener('pagehide', handedOff);
+  document.addEventListener('visibilitychange', visibility);
+  timer = window.setTimeout(fallback, 2500);
+  try {
+    if (!launchHubitProtocol(href)) fallback();
+  } catch {
+    cleanup();
+    onFallback();
+  }
+  return cleanup;
+}

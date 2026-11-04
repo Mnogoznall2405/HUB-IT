@@ -32,6 +32,7 @@ const UPLOAD_STALL_MARK_MS = 90_000;
 export function useMyFilesUpload({
   canWrite,
   currentFolderId,
+  libraryId = null,
   isSpecialView,
   allFolders,
   loadData,
@@ -62,8 +63,8 @@ export function useMyFilesUpload({
   const [accountEpoch, setAccountEpoch] = useState(0);
   const accountSession = useMemo(() => captureBrowserAccountSession(), [userKey, accountEpoch]);
   const dropContext = useMemo(
-    () => ({ accountSession, canWrite, currentFolderId, isSpecialView, uploading }),
-    [accountSession, canWrite, currentFolderId, isSpecialView, uploading],
+    () => ({ accountSession, canWrite, currentFolderId, libraryId, isSpecialView, uploading }),
+    [accountSession, canWrite, currentFolderId, libraryId, isSpecialView, uploading],
   );
   const dropContextRef = useRef(dropContext);
   dropContextRef.current = dropContext;
@@ -157,6 +158,7 @@ export function useMyFilesUpload({
                 file,
                 retentionDays: selectedRetentionDays,
                 folderId: targetFolderId,
+                libraryId,
                 parallelChunks,
                 signal,
                 accountSession,
@@ -236,7 +238,7 @@ export function useMyFilesUpload({
         resetFileInputs();
       }
     }
-  }, [accountSession, currentFolderId, loadData, notifyApiError, notifySuccess, notifyWarning, quota, quotaLimitBytes, resetFileInputs, retentionDays, uploadTargetFolderId]);
+  }, [accountSession, currentFolderId, libraryId, loadData, notifyApiError, notifySuccess, notifyWarning, quota, quotaLimitBytes, resetFileInputs, retentionDays, uploadTargetFolderId]);
 
   const openUploadDialog = useCallback((files, { asFolder = false, targetFolderId = null } = {}) => {
     if (!canWrite || !accountSession.isCurrent()) return;
@@ -336,7 +338,7 @@ export function useMyFilesUpload({
             if (existing.has(key)) {
               dirToId.set(dirPath, existing.get(key));
             } else {
-              const created = await myFilesAPI.createFolder({ name, parentId });
+              const created = await myFilesAPI.createFolder(libraryId ? { name, parentId, libraryId } : { name, parentId });
               if (!accountSession.isCurrent()) return;
               dirToId.set(dirPath, String(created.id));
               existing.set(key, String(created.id));
@@ -375,6 +377,7 @@ export function useMyFilesUpload({
     notifyApiError,
     allFolders,
     currentFolderId,
+    libraryId,
     pendingFolderFiles,
     pendingUploadFiles,
     queueUploads,

@@ -296,7 +296,7 @@ describe('EquipmentTable', () => {
   });
 
   it('does not render any badge for stale, unknown or incomplete summaries', () => {
-    const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const stale = new Date(Date.now() - 40 * 60 * 1000).toISOString();
     const { unmount } = renderTable({
       items: [philipsItem({ INV_NO: '100021', ID: 21 })],
     }, {

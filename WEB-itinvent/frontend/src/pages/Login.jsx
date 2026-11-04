@@ -13,7 +13,8 @@ import {
 } from '../lib/passkeyWebAuthn';
 import { emitAgentDebugLog, isAgentDebugLoggingEnabled } from '../lib/debugClientLog';
 import { getDesktopWindowsUsername, isDesktopBridgeReady } from '../lib/desktopBridge';
-import { resolvePostAuthenticationPath } from '../lib/aboutOnboarding';
+import { peekPostAuthReturnPath, resolvePostAuthenticationPath } from '../lib/aboutOnboarding';
+import { isWindowsDesktopBrowser } from '../lib/desktopProtocolHandoff';
 import {
   auditLoginPageOverlays,
   resetLoginPagePresentation,
@@ -992,7 +993,20 @@ function Login() {
   }, [loginModeLoading, step, networkZone, biometricLoginEnabled, webAuthnReady]);
 
   const windowsSsoAvailable = windowsSsoEnabled && networkZone === 'internal';
-  const windowsSsoAutoStart = windowsSsoAvailable && isDesktopBridgeReady();
+  let portalChatReturn = false;
+  try {
+    const returnPath = peekPostAuthReturnPath();
+    const target = new URL(returnPath || '/', window.location.origin);
+    const params = new URLSearchParams(target.hash.slice(1));
+    const email = params.getAll('email');
+    portalChatReturn = target.pathname === '/chat/open'
+      && email.length === 1 && email[0].trim().length <= 254
+      && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email[0].trim());
+  } catch {
+    // Unavailable storage must not make ordinary password login fail.
+  }
+  const windowsSsoAutoStart = windowsSsoAvailable
+    && (isDesktopBridgeReady() || (portalChatReturn && isWindowsDesktopBrowser()));
 
   const startWindowsSso = useCallback(() => {
     window.location.assign('/api/v1/auth/sso/begin');

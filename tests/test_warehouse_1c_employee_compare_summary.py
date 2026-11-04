@@ -21,6 +21,8 @@ def _run():
 
 def _patch_inputs(monkeypatch, *, owners, counts, warehouses, balances, balance_status="ok"):
     warehouse_1c_service._employee_compare_cache.clear()
+    # The persisted snapshot lives in the shared app DB; tests opt in with their own store.
+    monkeypatch.setattr(warehouse_1c_service, "_employee_compare_snapshot_store", None)
     monkeypatch.setattr(db_queries, "list_owners_compact", lambda db_id=None: owners)
     monkeypatch.setattr(db_queries, "get_owner_part_no_counts", lambda db_id=None: counts)
     monkeypatch.setattr(
@@ -386,6 +388,44 @@ def test_compare_summary_serves_stale_snapshot_and_rebuilds_in_background(monkey
     assert len(builds) == 2, "the background rebuild ran exactly once"
 
 
+def test_compare_summary_past_stale_window_is_served_marked_stale_without_waiting(monkeypatch):
+    from backend.services import warehouse_1c_service as service_module
+
+    _patch_inputs(
+        monkeypatch,
+        owners=[{"OWNER_NO": 7, "OWNER_DISPLAY_NAME": "Рябов Александр Сергеевич"}],
+        counts=[{"owner_no": 7, "part_no": "PN-1", "item_count": 3}],
+        warehouses=[{"ref": "wh-1", "name": "Рябов А.С."}],
+        balances=[{"warehouse_ref": "wh-1", "nomenclature_code": "pn-1", "qty_balance": 3}],
+    )
+    builds: list[int] = []
+    original_build = warehouse_1c_service._build_employee_compare_summary
+
+    async def slow_build(db_id=None):
+        builds.append(1)
+        await asyncio.sleep(0.05)
+        return await original_build(db_id)
+
+    monkeypatch.setattr(warehouse_1c_service, "_build_employee_compare_summary", slow_build)
+
+    async def scenario():
+        await warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT")
+        for entry in warehouse_1c_service._employee_compare_cache.values():
+            entry["at"] -= service_module.EMPLOYEE_COMPARE_SUMMARY_STALE_SECONDS + 60.0
+        started = time.perf_counter()
+        old = await warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT")
+        answered_in = time.perf_counter() - started
+        await asyncio.sleep(0.3)
+        fresh = await warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT")
+        return old, answered_in, fresh
+
+    old, answered_in, fresh = asyncio.run(scenario())
+    assert old["items"] and old["stale"] is True and old["stale_age_seconds"] >= 1800
+    assert answered_in < 0.04, "a snapshot older than the stale window must not make the user wait for 1C"
+    assert len(builds) == 2, "the background rebuild ran exactly once"
+    assert not fresh.get("stale"), "the rebuilt snapshot replaces the old one"
+
+
 def test_compare_summary_serves_last_good_snapshot_when_1c_fails_and_backs_off(monkeypatch, caplog):
     from backend.services import warehouse_1c_service as service_module
 
@@ -406,7 +446,7 @@ def test_compare_summary_serves_last_good_snapshot_when_1c_fails_and_backs_off(m
     async def scenario():
         good = await warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT")
         for entry in warehouse_1c_service._employee_compare_cache.values():
-            entry["at"] -= service_module.EMPLOYEE_COMPARE_SUMMARY_STALE_SECONDS + 5.0
+            entry["at"] -= service_module.EMPLOYEE_COMPARE_SNAPSHOT_MAX_AGE_SECONDS + 5.0
         monkeypatch.setattr(warehouse_1c_service, "_build_employee_compare_summary", failing_build)
         first = await warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT")
         second = await warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT")
@@ -436,3 +476,244 @@ def test_compare_summary_failure_without_snapshot_still_raises(monkeypatch):
     with pytest.raises(RuntimeError):
         _run()
     warehouse_1c_service._employee_compare_failures.clear()
+
+
+class _MemorySnapshotStore:
+    """Stands in for the app-DB JSON store that outlives a backend restart."""
+
+    def __init__(self):
+        self.documents: dict[str, dict] = {}
+
+    def load_json(self, name, default=None):
+        return self.documents.get(name, default)
+
+    def save_json(self, name, data):
+        self.documents[name] = data
+        return True
+
+
+def _persisting_service(monkeypatch):
+    _patch_inputs(
+        monkeypatch,
+        owners=[{"OWNER_NO": 7, "OWNER_DISPLAY_NAME": "Рябов Александр Сергеевич"}],
+        counts=[{"owner_no": 7, "part_no": "PN-1", "item_count": 3}],
+        warehouses=[{"ref": "wh-1", "name": "Рябов А.С."}],
+        balances=[{"warehouse_ref": "wh-1", "nomenclature_code": "pn-1", "qty_balance": 3}],
+    )
+    store = _MemorySnapshotStore()
+    monkeypatch.setattr(warehouse_1c_service, "_employee_compare_snapshot_store", store)
+    warehouse_1c_service._employee_compare_failures.clear()
+    return store
+
+
+def _age_stored_snapshot(store, seconds):
+    from datetime import datetime, timedelta, timezone
+
+    for record in store.documents.values():
+        record["saved_at"] = (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
+
+
+def test_compare_summary_survives_restart_without_calling_1c(monkeypatch):
+    store = _persisting_service(monkeypatch)
+    built = asyncio.run(warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT"))
+    assert store.documents, "the good snapshot is persisted"
+
+    # Backend restart: the in-memory cache is gone, 1C is down.
+    warehouse_1c_service._employee_compare_cache.clear()
+    calls: list[int] = []
+
+    async def unreachable_build(db_id=None):
+        calls.append(1)
+        raise RuntimeError("1C bridge timed out")
+
+    monkeypatch.setattr(warehouse_1c_service, "_build_employee_compare_summary", unreachable_build)
+    restored = asyncio.run(warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT"))
+
+    assert restored["items"] == built["items"]
+    assert not restored.get("stale")
+    assert calls == [], "a fresh persisted snapshot needs no 1C call"
+
+
+def test_compare_summary_after_restart_serves_old_snapshot_at_once_and_rebuilds_in_background(monkeypatch):
+    from backend.services import warehouse_1c_service as service_module
+
+    store = _persisting_service(monkeypatch)
+    asyncio.run(warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT"))
+    _age_stored_snapshot(store, service_module.EMPLOYEE_COMPARE_SUMMARY_STALE_SECONDS + 60)
+    warehouse_1c_service._employee_compare_cache.clear()
+
+    builds: list[int] = []
+    original_build = warehouse_1c_service._build_employee_compare_summary
+
+    async def slow_build(db_id=None):
+        builds.append(1)
+        await asyncio.sleep(0.05)
+        return await original_build(db_id)
+
+    monkeypatch.setattr(warehouse_1c_service, "_build_employee_compare_summary", slow_build)
+
+    async def scenario():
+        started = time.perf_counter()
+        served = await warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT")
+        answered_in = time.perf_counter() - started
+        await asyncio.sleep(0.3)
+        return served, answered_in
+
+    served, answered_in = asyncio.run(scenario())
+    assert served["items"] and served["stale"] is True
+    assert answered_in < 0.04, "the first user after a restart must not wait for 1C"
+    assert builds == [1], "one background rebuild refreshes the snapshot"
+    assert all(
+        service_module.datetime.fromisoformat(record["saved_at"]).timestamp() > time.time() - 60
+        for record in store.documents.values()
+    ), "the rebuilt snapshot replaces the old one in the DB"
+
+
+def test_compare_summary_ignores_persisted_snapshot_older_than_a_day(monkeypatch):
+    from backend.services import warehouse_1c_service as service_module
+
+    store = _persisting_service(monkeypatch)
+    asyncio.run(warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT"))
+    _age_stored_snapshot(store, service_module.EMPLOYEE_COMPARE_SNAPSHOT_MAX_AGE_SECONDS + 60)
+    warehouse_1c_service._employee_compare_cache.clear()
+
+    async def failing_build(db_id=None):
+        raise RuntimeError("1C bridge timed out")
+
+    monkeypatch.setattr(warehouse_1c_service, "_build_employee_compare_summary", failing_build)
+    import pytest
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(warehouse_1c_service.get_employee_compare_summary(db_id="ITINVENT"))
+    warehouse_1c_service._employee_compare_failures.clear()
+
+
+def test_compare_summary_truncated_balances_of_owners_without_hub_items_keep_hub_owners_ok(monkeypatch):
+    # Owners holding Hub equipment must keep their badges when the best-effort load of
+    # warehouse-only owners is truncated; only those owners become «unknown».
+    _patch_inputs(
+        monkeypatch,
+        owners=[
+            {"OWNER_NO": 7, "OWNER_DISPLAY_NAME": "Рябов Александр Сергеевич"},
+            {"OWNER_NO": 8, "OWNER_DISPLAY_NAME": "Нетехники Иван Петрович"},
+        ],
+        counts=[{"owner_no": 7, "part_no": "PN-1", "item_count": 2}],
+        warehouses=[
+            {"ref": "wh-1", "name": "Рябов А.С."},
+            {"ref": "wh-2", "name": "Нетехники И.П."},
+        ],
+        balances=[],
+    )
+
+    async def split_balances(*, warehouse_refs, limit=None):
+        if "wh-2" in warehouse_refs:
+            return {
+                "items": [{"warehouse_ref": "wh-2", "nomenclature_code": "x", "qty_balance": 1}],
+                "status": "incomplete",
+                "truncated": True,
+                "as_of": "2025-01-01T00:00:00",
+                "source": "live_1c",
+            }
+        return {
+            "items": [{"warehouse_ref": "wh-1", "nomenclature_code": "pn-1", "qty_balance": 2}],
+            "status": "ok",
+            "truncated": False,
+            "as_of": "2025-01-01T00:00:00",
+            "source": "live_1c",
+        }
+
+    monkeypatch.setattr(warehouse_1c_service, "get_balances_for_warehouses", split_balances)
+
+    payload = _run()
+    by_owner = {item["owner_no"]: item for item in payload["items"]}
+    assert payload["meta"]["status"] == "ok"
+    assert payload["meta"]["no_hub_owners_status"] == "incomplete"
+    assert by_owner[7]["status"] == "match"
+    assert by_owner[7]["part_quantities"]["pn-1"] == {"hub_count": 2, "qty_1c": 2.0}
+    assert by_owner[8]["status"] == "unknown"
+    assert by_owner[8]["part_quantities"] == {}
+
+
+def test_compare_summary_loads_balances_in_chunks_so_a_per_call_cap_does_not_truncate(monkeypatch):
+    from backend.services import warehouse_1c_service as service_module
+
+    surnames = ["Аксёнов", "Бобров", "Волков", "Громов", "Дроздов"]
+    _patch_inputs(
+        monkeypatch,
+        owners=[
+            {"OWNER_NO": index + 1, "OWNER_DISPLAY_NAME": f"{surname} Иван Петрович"}
+            for index, surname in enumerate(surnames)
+        ],
+        counts=[{"owner_no": index + 1, "part_no": "PN-1", "item_count": 1} for index in range(5)],
+        warehouses=[
+            {"ref": f"wh-{index + 1}", "name": f"{surname} И.П."}
+            for index, surname in enumerate(surnames)
+        ],
+        balances=[],
+    )
+    monkeypatch.setattr(service_module, "EMPLOYEE_COMPARE_BALANCES_CHUNK", 2)
+    calls: list[int] = []
+
+    async def capped_balances(*, warehouse_refs, limit=None):
+        calls.append(len(warehouse_refs))
+        # Like 1C: one call returns at most 2 rows and reports the rest as truncated.
+        rows = [
+            {"warehouse_ref": ref, "nomenclature_code": "pn-1", "qty_balance": 1}
+            for ref in warehouse_refs
+        ]
+        return {
+            "items": rows[:2],
+            "status": "incomplete" if len(rows) > 2 else "ok",
+            "truncated": len(rows) > 2,
+            "as_of": "2025-01-01T00:00:00",
+            "source": "live_1c",
+        }
+
+    monkeypatch.setattr(warehouse_1c_service, "get_balances_for_warehouses", capped_balances)
+
+    payload = _run()
+    assert sorted(calls) == [1, 2, 2]
+    assert payload["meta"]["status"] == "ok"
+    assert [item["status"] for item in payload["items"]] == ["match"] * 5
+
+
+def test_compare_summary_splits_a_truncated_chunk_in_half_instead_of_going_incomplete(monkeypatch):
+    from backend.services import warehouse_1c_service as service_module
+
+    surnames = ["Аксёнов", "Бобров", "Волков", "Громов", "Дроздов"]
+    _patch_inputs(
+        monkeypatch,
+        owners=[
+            {"OWNER_NO": index + 1, "OWNER_DISPLAY_NAME": f"{surname} Иван Петрович"}
+            for index, surname in enumerate(surnames)
+        ],
+        counts=[{"owner_no": index + 1, "part_no": "PN-1", "item_count": 1} for index in range(5)],
+        warehouses=[
+            {"ref": f"wh-{index + 1}", "name": f"{surname} И.П."}
+            for index, surname in enumerate(surnames)
+        ],
+        balances=[],
+    )
+    monkeypatch.setattr(service_module, "EMPLOYEE_COMPARE_BALANCES_CHUNK", 4)
+    calls: list[int] = []
+
+    async def capped_balances(*, warehouse_refs, limit=None):
+        calls.append(len(warehouse_refs))
+        rows = [
+            {"warehouse_ref": ref, "nomenclature_code": "pn-1", "qty_balance": 1}
+            for ref in warehouse_refs
+        ]
+        return {
+            "items": rows[:2],
+            "status": "incomplete" if len(rows) > 2 else "ok",
+            "truncated": len(rows) > 2,
+            "as_of": "2025-01-01T00:00:00",
+            "source": "live_1c",
+        }
+
+    monkeypatch.setattr(warehouse_1c_service, "get_balances_for_warehouses", capped_balances)
+
+    payload = _run()
+    assert sorted(calls) == [1, 2, 2, 4]
+    assert payload["meta"]["status"] == "ok"
+    assert [item["status"] for item in payload["items"]] == ["match"] * 5

@@ -35,7 +35,10 @@ const ACTION_LABELS = {
   public_download_started: 'Скачивание по публичной ссылке',
   office_saved: 'Сохранено в редакторе',
   office_restored: 'Возвращена предыдущая версия',
+  office_save_denied: 'Правки отклонены',
   collaborators_changed: 'Изменён совместный доступ',
+  folder_access_changed: 'Изменён доступ к папке',
+  shared_download_started: 'Скачивание участником',
   security_scan_clean: 'Проверка безопасности: чисто',
   security_scan_blocked: 'Проверка безопасности: заблокировано',
   security_scan_error: 'Проверка безопасности: ошибка',
@@ -146,6 +149,11 @@ export default function MyFileAuditDialog({ open, file, onClose }) {
                       <Typography variant="body2" sx={{ fontWeight: 600 }}>
                         {auditActionLabel(item.action)}
                       </Typography>
+                      {item.details ? (
+                        <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }} data-testid={`my-files-audit-details-${item.id}`}>
+                          {item.details}
+                        </Typography>
+                      ) : null}
                       <Typography variant="caption" color="text.secondary">
                         {formatAuditTime(item.created_at)} · {auditActorLabel(item)}
                         {auditSourceLabel(item) ? ` · ${auditSourceLabel(item)}` : ''}

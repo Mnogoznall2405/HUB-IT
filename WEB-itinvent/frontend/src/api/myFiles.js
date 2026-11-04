@@ -230,11 +230,11 @@ const capacityRetryDelayMs = (error) => {
   return Math.min(Math.max(suggested, 2000), UPLOAD_SESSION_CAPACITY_MAX_DELAY_MS);
 };
 
-const createUploadSessionWithCapacityRetry = async ({ file, retentionDays, folderId, signal, assertCurrent }) => {
+const createUploadSessionWithCapacityRetry = async ({ file, retentionDays, folderId, libraryId, signal, assertCurrent }) => {
   for (let attempt = 0; ; attempt += 1) {
     try {
       assertCurrent();
-      const session = await myFilesAPI.createUploadSession({ file, retentionDays, folderId, signal });
+      const session = await myFilesAPI.createUploadSession({ file, retentionDays, folderId, libraryId, signal });
       assertCurrent();
       return session;
     } catch (error) {
@@ -251,22 +251,24 @@ const createUploadSessionWithCapacityRetry = async ({ file, retentionDays, folde
 export const myFilesRetentionOptions = RETENTION_OPTIONS;
 
 export const myFilesAPI = {
-  listFiles: async ({ folderId = null, view = '', q = '', signal } = {}) => {
+  listFiles: async ({ folderId = null, view = '', q = '', libraryId = null, signal } = {}) => {
     const params = {};
     if (folderId) params.folder_id = folderId;
+    if (libraryId) params.library_id = libraryId;
     if (view) params.view = view;
     if (q) params.q = q;
     const response = await apiClient.get('/my-files', { params, signal });
     return response.data;
   },
-  listFolders: async ({ signal } = {}) => {
-    const response = await apiClient.get('/my-files/folders', { signal });
+  listFolders: async ({ libraryId = null, signal } = {}) => {
+    const response = await apiClient.get('/my-files/folders', { params: libraryId ? { library_id: libraryId } : {}, signal });
     return response.data;
   },
-  createFolder: async ({ name, parentId = null } = {}) => {
+  createFolder: async ({ name, parentId = null, libraryId = null } = {}) => {
     const response = await apiClient.post('/my-files/folders', {
       name: String(name || '').trim(),
       parent_id: parentId || null,
+      library_id: libraryId || null,
     });
     return response.data;
   },
@@ -309,8 +311,16 @@ export const myFilesAPI = {
     );
     return response.data;
   },
-  listTrash: async ({ signal } = {}) => {
-    const response = await apiClient.get('/my-files/trash', { signal });
+  // A copy goes to a folder (of the disk or of a library), to a library's root, or to the disk root.
+  copyFile: async (fileId, { folderId = null, libraryId = null } = {}) => {
+    const response = await apiClient.post(`/my-files/${encodeURIComponent(fileId)}/copy`, {
+      folder_id: folderId || null,
+      library_id: libraryId || null,
+    });
+    return response.data;
+  },
+  listTrash: async ({ libraryId = null, signal } = {}) => {
+    const response = await apiClient.get('/my-files/trash', { params: libraryId ? { library_id: libraryId } : {}, signal });
     return response.data;
   },
   restoreFile: async (fileId) => {
@@ -325,8 +335,8 @@ export const myFilesAPI = {
   purgeFolder: async (folderId) => {
     await apiClient.delete(`/my-files/trash/folders/${encodeURIComponent(folderId)}`);
   },
-  emptyTrash: async () => {
-    await apiClient.post('/my-files/trash/empty');
+  emptyTrash: async ({ libraryId = null } = {}) => {
+    await apiClient.post('/my-files/trash/empty', undefined, { params: libraryId ? { library_id: libraryId } : {} });
   },
   createFolderShare: async (folderId, { rotate = false } = {}) => {
     const response = await apiClient.post(
@@ -382,13 +392,14 @@ export const myFilesAPI = {
     const response = await apiClient.get('/my-files/quota');
     return response.data;
   },
-  createUploadSession: async ({ file, retentionDays = 1, folderId = null, signal } = {}) => {
+  createUploadSession: async ({ file, retentionDays = 1, folderId = null, libraryId = null, signal } = {}) => {
     const response = await apiClient.post('/my-files/upload-sessions', {
       file_name: String(file?.name || 'file.bin'),
       file_size: Number(file?.size || 0),
       retention_days: normalizeRetentionDays(retentionDays),
       mime_type: file?.type || 'application/octet-stream',
       folder_id: folderId || null,
+      library_id: libraryId || null,
     }, { signal });
     return response.data;
   },
@@ -431,7 +442,7 @@ export const myFilesAPI = {
     );
     return response.data;
   },
-  uploadFile: async ({ file, retentionDays = 1, folderId = null, onUploadProgress, signal: outerSignal, parallelChunks = UPLOAD_PARALLEL_CHUNKS, accountSession = captureBrowserAccountSession() } = {}) => {
+  uploadFile: async ({ file, retentionDays = 1, folderId = null, libraryId = null, onUploadProgress, signal: outerSignal, parallelChunks = UPLOAD_PARALLEL_CHUNKS, accountSession = captureBrowserAccountSession() } = {}) => {
     if (!accountSession.isCurrent()) throw sessionChangedError();
     const accountController = new AbortController();
     const operationController = new AbortController();
@@ -450,18 +461,20 @@ export const myFilesAPI = {
       if (signal.aborted) throw new DOMException('Upload aborted', 'AbortError');
     };
     const totalBytes = Math.max(0, Number(file?.size || 0));
+    // A resumable session belongs to the place it uploads into: a folder, or the root of a shared library.
+    const resumeScope = folderId || (libraryId ? `library:${libraryId}` : null);
     let fileId = '';
     emitUploadProgress(onUploadProgress, 0, totalBytes);
     try {
-      const session = (await findResumableSession({ file, folderId, signal, account: accountSession, assertCurrent }))
-        || await createUploadSessionWithCapacityRetry({ file, retentionDays, folderId, signal, assertCurrent });
+      const session = (await findResumableSession({ file, folderId: resumeScope, signal, account: accountSession, assertCurrent }))
+        || await createUploadSessionWithCapacityRetry({ file, retentionDays, folderId, libraryId, signal, assertCurrent });
       assertCurrent();
       fileId = String(session?.file_id || '').trim();
       const chunkSizeBytes = Number(session?.chunk_size_bytes || 0);
       if (!fileId || !Number.isFinite(chunkSizeBytes) || chunkSizeBytes <= 0) {
         throw new Error('My files upload session response is invalid');
       }
-      saveUploadResume(file, folderId, fileId, accountSession);
+      saveUploadResume(file, resumeScope, fileId, accountSession);
 
       const coveredRanges = normalizeUploadRanges(session?.ranges, totalBytes)
         || (Number(session?.uploaded_bytes || 0) > 0
@@ -573,14 +586,14 @@ export const myFilesAPI = {
       const completed = await myFilesAPI.completeUploadSession(fileId, { signal });
       assertCurrent();
       emitUploadProgress(onUploadProgress, totalBytes, totalBytes);
-      clearUploadResume(file, folderId, accountSession, fileId);
+      clearUploadResume(file, resumeScope, accountSession, fileId);
       return completed;
     } catch (error) {
       if (!accountSession.isCurrent()) throw sessionChangedError();
       const aborted = Boolean(signal?.aborted) || error?.name === 'AbortError' || error?.code === 'ERR_CANCELED';
       if (fileId && (aborted || !isRetriableUploadError(error))) {
         // Отменяем только точные провалы; сетевые сбои оставляем на resume в течение TTL сессии.
-        clearUploadResume(file, folderId, accountSession, fileId);
+        clearUploadResume(file, resumeScope, accountSession, fileId);
         try {
           await myFilesAPI.cancelUploadSession(fileId, {
             reason: describeUploadFailure(error, { aborted }),

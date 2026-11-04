@@ -180,7 +180,17 @@ export async function downloadChatAttachment(
   const sourceUrl = resolveTrustedAttachmentUrl(
     attachment.download_url || attachment.url || attachment.original_url,
   );
+  // Same fencing as trusted media: logout/clear while the download is in flight must not
+  // leave the old session's plaintext file behind after the cache was wiped (DMOB-04).
+  const cacheGeneration = attachmentCacheGeneration;
+  const sessionGeneration = getSessionGeneration();
+  const assertCurrent = () => {
+    if (cacheGeneration !== attachmentCacheGeneration || sessionGeneration !== getSessionGeneration() || options.signal?.aborted) {
+      throw chatMediaAbortError();
+    }
+  };
   const destination = await attachmentCacheFile(downloadFileName(attachment));
+  assertCurrent();
   const metadataSize = Math.max(0, Number(attachment.file_size || 0));
   if (destination.exists && destination.size > 0) {
     options.onProgress?.({ loaded: destination.size, total: destination.size, progress: 1 });
@@ -205,6 +215,7 @@ export async function downloadChatAttachment(
         });
       },
     });
+    assertCurrent();
     if (!isDownloadedAttachmentSizeValid(downloaded.size, responseTotalBytes)) {
       if (downloaded.exists) downloaded.delete();
       throw new Error('Скачанный файл имеет неверный размер');

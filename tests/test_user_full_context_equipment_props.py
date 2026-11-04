@@ -181,7 +181,7 @@ def test_equipment_items_contain_all_required_fields(emp: dict, equip: dict):
             return_value=[equip],
         ),
         patch(
-            "backend.api.v1.inventory._get_inventory_host",
+            "backend.services.inventory_read.get_inventory_host",
             return_value=None,
         ),
         patch(

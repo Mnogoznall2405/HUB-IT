@@ -165,3 +165,90 @@ def test_ws_command_error_codes_for_mixed_failures_in_one_session():
         "command_failed",
     ]
     assert [call.kwargs["request_id"] for call in calls] == ["req-0", "req-1", "req-2", "req-3"]
+
+
+def _run_with_permission_change(revoked_perm):
+    """DCHAT-01: rights changed after the handshake; revalidation fires on every command."""
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from fastapi import HTTPException
+
+    source, module = _compile_chat_websocket()
+
+    async def run():
+        incoming = [json.dumps({
+            "type": "chat.send_message", "request_id": "req-0",
+            "conversation_id": "conv-1", "payload": {"body": "x"},
+        })]
+
+        class Disconnect(Exception):
+            def __init__(self):
+                self.code = 1006
+
+        async def receive_text():
+            if incoming:
+                return incoming.pop(0)
+            raise Disconnect()
+
+        socket = SimpleNamespace(receive_text=receive_text, close=AsyncMock())
+
+        async def watchdog(*args, **kwargs):
+            await asyncio.Event().wait()
+
+        handshake_user = SimpleNamespace(id=1, is_active=True, permissions={"chat.read", "chat.write"})
+        # What the identity store returns now: the permission was removed by an administrator.
+        current_rights = {"chat.read", "chat.write"} - {revoked_perm}
+        reloaded = SimpleNamespace(id=1, is_active=True, permissions=current_rights)
+
+        def ensure_permission(user, permission):
+            if permission not in user.permissions:
+                raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        async def passthrough(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        limiter = SimpleNamespace(violations=0)
+        runtime = SimpleNamespace(
+            connect=AsyncMock(return_value=("conn-1", False)), send_to_connection=AsyncMock(),
+            send_error=AsyncMock(), send_control=AsyncMock(), touch_presence=Mock(),
+            is_connection_registered=lambda _cid: True,
+            disconnect=Mock(return_value={"last_connection": False, "user_id": 1}),
+            record_rate_limited=Mock(), allow_ws_command=lambda _uid: (True, 0, limiter),
+        )
+        api = SimpleNamespace(
+            chat_realtime=runtime, _ws_is_connected=lambda _ws: True,
+            CHAT_WS_SESSION_REVALIDATE_SEC=30, CHAT_WS_SESSION_REVALIDATE_COMMAND_INTERVAL=1,
+            CHAT_WS_RATE_LIMIT_MAX_VIOLATIONS=3,
+            logger=SimpleNamespace(warning=Mock(), exception=Mock(), info=Mock()),
+        )
+        dispatch = AsyncMock()
+        namespace = {
+            "asyncio": asyncio, "time": __import__("time"), "json": json,
+            "HTTPException": HTTPException, "WebSocketDisconnect": Disconnect,
+            "get_current_user_from_websocket": AsyncMock(return_value=handshake_user),
+            "ensure_user_permission": ensure_permission, "PERM_CHAT_READ": "chat.read",
+            "chat_api": lambda: api, "extract_websocket_access_token": lambda _ws: "tok",
+            "WsSessionLease": lambda *a, **k: SimpleNamespace(revalidate=lambda: "ok", grace_remaining_ms=lambda: 0),
+            "_ws_post_connect_bootstrap": AsyncMock(), "_ws_session_watchdog": watchdog,
+            "dispatch_chat_ws_command": dispatch, "run_in_threadpool": passthrough,
+            "reload_active_user": lambda _uid: reloaded, "_WS_AUTH_REQUIRED_HINT_MS": 5000,
+        }
+        exec(compile(module, str(source), "exec"), namespace)
+        await asyncio.wait_for(namespace["chat_websocket"](socket), 2)
+        return dispatch, socket.close
+
+    return asyncio.run(run())
+
+
+def test_ws_closes_when_chat_read_is_revoked_after_handshake():
+    dispatch, close = _run_with_permission_change("chat.read")
+    dispatch.assert_not_awaited()
+    assert close.await_args_list[0].kwargs["code"] == 1008
+
+
+def test_ws_command_sees_chat_write_revoked_after_handshake():
+    dispatch, close = _run_with_permission_change("chat.write")
+    dispatch.assert_awaited_once()
+    assert dispatch.await_args.kwargs["current_user"].permissions == {"chat.read"}

@@ -749,6 +749,37 @@ def test_assignee_can_update_task_checklist_only(task_env):
     assert denied.status_code == 403
 
 
+def test_checklist_cannot_be_changed_after_the_task_is_done(task_env):
+    """DTASK-03: the API follows capabilities.can_update_checklist (false once done)."""
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(1)
+    task = _create_task(client, title="Checklist After Done")
+    task_id = task["id"]
+    seeded = client.patch(
+        f"/hub/tasks/{task_id}",
+        json={"checklist_items": [{"id": "step-1", "text": "Check workstation", "done": False}]},
+    )
+    assert seeded.status_code == 200, seeded.text
+
+    set_user(2)
+    _submit_task(client, task_id, comment="Finished")
+    set_user(3)
+    assert _approve_task(client, task_id)["status"] == "done"
+
+    set_user(2)
+    late = client.patch(
+        f"/hub/tasks/{task_id}",
+        json={"checklist_items": [{"id": "step-1", "text": "Check workstation", "done": True}]},
+    )
+    assert late.status_code == 400, late.text
+
+    detail = client.get(f"/hub/tasks/{task_id}").json()
+    assert detail["checklist_items"][0]["done"] is False
+    assert detail["capabilities"]["can_update_checklist"] is False
+
+
 def test_existing_tasks_without_project_are_backfilled_to_general_project(task_env):
     client = task_env["client"]
     set_user = task_env["set_user"]

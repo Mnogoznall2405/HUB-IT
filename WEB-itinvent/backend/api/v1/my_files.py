@@ -28,6 +28,7 @@ from backend.config import config
 from backend.models.auth import User
 from backend.models.my_files import (
     MyFileAuditResponse,
+    MyFileCopyRequest,
     MyFileDownloadGrantResponse,
     MyFileFolderCreateRequest,
     MyFileFolderListResponse,
@@ -53,6 +54,7 @@ from backend.services.authorization_service import (
     PERM_MY_FILES_STATS_READ,
     PERM_MY_FILES_WRITE,
 )
+from backend.services.my_files_copy_service import my_files_copy_service
 from backend.services.my_files_service import (
     _UNSET,
     DEFAULT_RETENTION_DAYS,
@@ -272,6 +274,7 @@ async def list_my_files(
     folder_id: str | None = Query(default=None, max_length=64),
     view: str = Query(default="", max_length=16),
     q: str = Query(default="", max_length=128),
+    library_id: str | None = Query(default=None, max_length=64),
     current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
 ) -> dict:
     try:
@@ -281,6 +284,7 @@ async def list_my_files(
             folder_id=folder_id,
             view=view,
             query=q,
+            library_id=library_id,
         )
     except Exception as exc:
         raise _service_error_to_http(exc) from exc
@@ -288,10 +292,15 @@ async def list_my_files(
 
 @router.get("/folders", response_model=MyFileFolderListResponse)
 async def list_my_file_folders(
+    library_id: str | None = Query(default=None, max_length=64),
     current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
 ) -> dict:
     try:
-        return {"items": await run_in_threadpool(my_files_service.list_folders, user_id=int(current_user.id))}
+        return {
+            "items": await run_in_threadpool(
+                my_files_service.list_folders, user_id=int(current_user.id), library_id=library_id
+            )
+        }
     except Exception as exc:
         raise _service_error_to_http(exc) from exc
 
@@ -309,6 +318,7 @@ async def create_my_file_folder(
             actor=current_user,
             name=payload.name,
             parent_id=payload.parent_id,
+            library_id=payload.library_id,
             meta=_request_meta(request),
         )
     except Exception as exc:
@@ -525,10 +535,13 @@ async def create_public_folder_archive_grant(
 
 @router.get("/trash", response_model=MyFileTrashResponse)
 async def list_my_files_trash(
+    library_id: str | None = Query(default=None, max_length=64),
     current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
 ) -> dict:
     try:
-        return await run_in_threadpool(my_files_service.list_trash, user_id=int(current_user.id))
+        return await run_in_threadpool(
+            my_files_service.list_trash, user_id=int(current_user.id), library_id=library_id
+        )
     except Exception as exc:
         raise _service_error_to_http(exc) from exc
 
@@ -536,6 +549,7 @@ async def list_my_files_trash(
 @router.post("/trash/empty", status_code=status.HTTP_204_NO_CONTENT)
 async def empty_my_files_trash(
     request: Request,
+    library_id: str | None = Query(default=None, max_length=64),
     current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
 ) -> Response:
     _enforce_trusted_browser_origin(request)
@@ -544,6 +558,7 @@ async def empty_my_files_trash(
             my_files_service.empty_trash,
             actor=current_user,
             meta=_request_meta(request),
+            library_id=library_id,
         )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except Exception as exc:
@@ -691,6 +706,7 @@ async def upload_my_file(
     file_size: int = Query(..., gt=0, le=MAX_FILE_SIZE_BYTES),
     retention_days: int = Query(DEFAULT_RETENTION_DAYS),
     folder_id: str | None = Query(default=None, max_length=64),
+    library_id: str | None = Query(default=None, max_length=64),
     current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
 ) -> dict:
     _enforce_trusted_browser_origin(request)
@@ -707,6 +723,7 @@ async def upload_my_file(
             expected_size_bytes=file_size,
             retention_days=retention_days,
             folder_id=folder_id,
+            library_id=library_id,
             meta=_request_meta(request),
         )
         reserved_file_id = str(reserved["id"])
@@ -764,6 +781,7 @@ async def create_my_file_upload_session(
             expected_size_bytes=payload.file_size,
             retention_days=payload.retention_days,
             folder_id=payload.folder_id,
+            library_id=payload.library_id,
             meta=_request_meta(request),
             reuse_existing=True,
         )
@@ -1105,6 +1123,28 @@ async def update_my_file(
             name=payload.name if "name" in fields_set else _UNSET,
             folder_id=payload.folder_id if "folder_id" in fields_set else _UNSET,
             is_favorite=payload.is_favorite if "is_favorite" in fields_set else _UNSET,
+            meta=_request_meta(request),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.post("/{file_id}/copy", response_model=MyFileResponse, status_code=status.HTTP_201_CREATED)
+async def copy_my_file(
+    file_id: str,
+    payload: MyFileCopyRequest,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
+) -> dict:
+    _enforce_trusted_browser_origin(request)
+    await run_in_threadpool(enforce_upload_limits, request, user_id=int(current_user.id))
+    try:
+        return await run_in_threadpool(
+            my_files_copy_service.copy_file,
+            actor=current_user,
+            file_id=file_id,
+            folder_id=payload.folder_id,
+            library_id=payload.library_id,
             meta=_request_meta(request),
         )
     except Exception as exc:

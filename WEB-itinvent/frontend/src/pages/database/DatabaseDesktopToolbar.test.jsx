@@ -91,4 +91,29 @@ describe('DatabaseDesktopToolbar', () => {
 
     expect(screen.getByRole('button', { name: 'Свернуть разделы' })).toBeInTheDocument();
   });
+
+  it('shows expand button only while sections are collapsed and calls the handler', () => {
+    const { rerender } = render(
+      <ThemeProvider theme={createTheme()}>
+        <DatabaseDesktopToolbar theme={createTheme()} ui={buildOfficeUiTokens(createTheme())} hasCollapsedVisible={false} />
+      </ThemeProvider>
+    );
+
+    expect(screen.queryByRole('button', { name: 'Раскрыть разделы' })).not.toBeInTheDocument();
+
+    const onExpandAll = vi.fn();
+    rerender(
+      <ThemeProvider theme={createTheme()}>
+        <DatabaseDesktopToolbar
+          theme={createTheme()}
+          ui={buildOfficeUiTokens(createTheme())}
+          hasCollapsedVisible
+          onExpandAll={onExpandAll}
+        />
+      </ThemeProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Раскрыть разделы' }));
+    expect(onExpandAll).toHaveBeenCalledTimes(1);
+  });
 });

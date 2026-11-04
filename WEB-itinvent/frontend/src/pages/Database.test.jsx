@@ -4,6 +4,10 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { clearSWRCache } from '../lib/swrCache';
+import {
+  EMPLOYEE_COMPARE_MAX_AGE_MS,
+  EMPLOYEE_COMPARE_REFRESH_INTERVAL_MS,
+} from './database/employeeCompareModel';
 
 const mockApi = vi.hoisted(() => ({
   equipmentAPI: {
@@ -1765,7 +1769,7 @@ describe('Database inventory 1C compare badges', () => {
       }
       expect(document.querySelectorAll('[data-compare-status="match"]')).toHaveLength(2);
 
-      await act(async () => { await vi.advanceTimersByTimeAsync(121_000); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(EMPLOYEE_COMPARE_REFRESH_INTERVAL_MS + 1_000); });
       expect(document.querySelectorAll('[data-compare-status="match"]')).toHaveLength(0);
       expect(screen.queryByText('1С ✓')).not.toBeInTheDocument();
 
@@ -1786,7 +1790,7 @@ describe('Database inventory 1C compare badges', () => {
         call += 1;
         if (call === 1) {
           return Promise.resolve({
-            meta: { status: 'ok', as_of: new Date(Date.now() - 110_000).toISOString() },
+            meta: { status: 'ok', as_of: new Date(Date.now() - (EMPLOYEE_COMPARE_MAX_AGE_MS - 10_000)).toISOString() },
             items: [philipsSummaryItem()],
           });
         }
@@ -1901,7 +1905,7 @@ describe('Database inventory 1C compare badges', () => {
       }
       expect(document.querySelectorAll('[data-compare-status="match"]')).toHaveLength(2);
 
-      await act(async () => { await vi.advanceTimersByTimeAsync(121_000); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(EMPLOYEE_COMPARE_REFRESH_INTERVAL_MS + 1_000); });
       expect(document.querySelectorAll('[data-compare-status="match"]')).toHaveLength(2);
     } finally {
       vi.useRealTimers();

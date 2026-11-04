@@ -185,6 +185,22 @@ def _set_expired_if_needed(row: AppAiPendingAction, *, now: datetime | None = No
     return False
 
 
+def _transition_pending(session, row: AppAiPendingAction, **values: Any) -> AppAiPendingAction:
+    """Compare-and-set ``pending`` -> new state; the authoritative row is re-read afterwards.
+
+    A plain ORM assignment would write over a concurrent confirm that already claimed the
+    action (``executing``) and had its side effect executed (DAI-02).
+    """
+    session.execute(
+        update(AppAiPendingAction)
+        .where(AppAiPendingAction.id == row.id, AppAiPendingAction.status == ACTION_STATUS_PENDING)
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    session.expire_all()
+    return session.get(AppAiPendingAction, row.id) or row
+
+
 def _action_to_card(row: AppAiPendingAction) -> dict[str, Any]:
     return {
         "id": row.id,
@@ -203,8 +219,39 @@ def _action_to_card(row: AppAiPendingAction) -> dict[str, Any]:
     }
 
 
+def _mark_abandoned_executing_actions(session, rows: list[AppAiPendingAction]) -> None:
+    """Non-mail actions stuck in ``executing`` (process died after the claim) get an explicit unknown outcome.
+
+    Nothing records what the domain service did, so the action is never re-run; the user is told to
+    verify the result themselves instead of seeing a card that stays "executing" forever (DAI-08).
+    """
+    now = _utc_now()
+    for row in rows:
+        if row.status != ACTION_STATUS_EXECUTING or row.action_type in {ACTION_OFFICE_MAIL_SEND, ACTION_OFFICE_MAIL_REPLY}:
+            continue
+        touched = row.updated_at
+        if touched is None:
+            continue
+        if touched.tzinfo is None:
+            touched = touched.replace(tzinfo=timezone.utc)
+        if (now - touched).total_seconds() < 300:
+            continue
+        text = "Результат действия неизвестен. Проверьте результат вручную; повторное выполнение заблокировано."
+        session.execute(update(AppAiPendingAction).where(
+            AppAiPendingAction.id == row.id, AppAiPendingAction.status == ACTION_STATUS_EXECUTING,
+            AppAiPendingAction.updated_at == row.updated_at,
+        ).values(
+            status=ACTION_STATUS_FAILED,
+            result_json=_json_dumps({"success": False, "outcome": "unknown", "message": text}),
+            error_text=text,
+            updated_at=now,
+        ).execution_options(synchronize_session=False))
+        session.refresh(row)
+
+
 def _reconcile_mail_action_results(session, rows: list[AppAiPendingAction]) -> None:
     """Recover only ledger-proven outcomes; never call Exchange or resend here."""
+    _mark_abandoned_executing_actions(session, rows)
     candidates = [row for row in rows if row.action_type in {ACTION_OFFICE_MAIL_SEND, ACTION_OFFICE_MAIL_REPLY}
                   and (row.status == ACTION_STATUS_EXECUTING or (
                       row.status == ACTION_STATUS_FAILED and (_json_loads(row.result_json, {}) or {}).get("send_outcome") == "unknown"))]
@@ -2348,7 +2395,12 @@ def cancel_action(*, action_id: str, current_user: Any) -> dict[str, Any]:
         current_user_id = int(_user_attr(current_user, "id", 0) or 0)
         if int(row.requester_user_id or 0) != current_user_id and not _is_admin_user(current_user):
             raise PermissionError("Only the action initiator can cancel it")
-        _set_expired_if_needed(row)
+        current_now = _utc_now()
+        expires_at = row.expires_at
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if row.status == ACTION_STATUS_PENDING and expires_at is not None and expires_at <= current_now:
+            row = _transition_pending(session, row, status=ACTION_STATUS_EXPIRED, updated_at=current_now)
         if row.status == ACTION_STATUS_PENDING:
             if row.action_type == ACTION_SANDBOX_PERMISSION:
                 _require_permission(current_user, PERM_CHAT_AI_USE)
@@ -2357,9 +2409,13 @@ def cancel_action(*, action_id: str, current_user: Any) -> dict[str, Any]:
                 if not sandbox_permission_id:
                     raise ValueError("Sandbox permission id is missing")
             else:
-                row.status = ACTION_STATUS_CANCELLED
-                row.executed_by_user_id = int(_user_attr(current_user, "id", 0) or 0) or None
-                row.updated_at = _utc_now()
+                row = _transition_pending(
+                    session,
+                    row,
+                    status=ACTION_STATUS_CANCELLED,
+                    executed_by_user_id=int(_user_attr(current_user, "id", 0) or 0) or None,
+                    updated_at=_utc_now(),
+                )
         session.flush()
         if not sandbox_permission_id:
             return _action_to_card(row)

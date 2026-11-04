@@ -12,6 +12,19 @@ def test_qmark_to_named_binds_in_order():
     assert params == {"p0": 1, "p1": "x"}
 
 
+
+def _scan_test_database_url() -> str:
+    """Fail-closed: these tests write and claim jobs, so only a dedicated test DB qualifies."""
+    import os
+    from urllib.parse import urlparse
+
+    url = str(os.getenv("SCAN_TEST_DATABASE_URL") or "").strip()
+    if not url:
+        return ""
+    database_name = urlparse(url).path.rsplit("/", 1)[-1].lower()
+    return url if "test" in database_name else ""
+
+
 def test_qmark_to_named_rejects_mismatch():
     with pytest.raises(ValueError):
         qmark_to_named("SELECT ?", (1, 2))
@@ -25,8 +38,8 @@ def test_null_lock_context():
 
 
 @pytest.mark.skipif(
-    not __import__("os").getenv("SCAN_DATABASE_URL"),
-    reason="SCAN_DATABASE_URL not configured",
+    not _scan_test_database_url(),
+    reason="SCAN_TEST_DATABASE_URL not configured or not a dedicated test database",
 )
 def test_postgres_atomic_finding_finalize(tmp_path):
     import os
@@ -39,7 +52,7 @@ def test_postgres_atomic_finding_finalize(tmp_path):
         db_path=tmp_path / "unused.db",
         archive_dir=tmp_path / "archive",
         task_ack_timeout_sec=300,
-        database_url=os.environ["SCAN_DATABASE_URL"],
+        database_url=_scan_test_database_url(),
     )
     job_id = uuid.uuid4().hex
     now = int(time.time())
@@ -94,8 +107,8 @@ def test_postgres_atomic_finding_finalize(tmp_path):
 
 
 @pytest.mark.skipif(
-    not __import__("os").getenv("SCAN_DATABASE_URL"),
-    reason="SCAN_DATABASE_URL not configured",
+    not _scan_test_database_url(),
+    reason="SCAN_TEST_DATABASE_URL not configured or not a dedicated test database",
 )
 def test_postgres_claim_skip_locked_roundtrip(tmp_path):
     import os
@@ -108,7 +121,7 @@ def test_postgres_claim_skip_locked_roundtrip(tmp_path):
         db_path=tmp_path / "unused.db",
         archive_dir=tmp_path / "archive",
         task_ack_timeout_sec=300,
-        database_url=os.environ["SCAN_DATABASE_URL"],
+        database_url=_scan_test_database_url(),
     )
     assert store.is_postgres
     job_id = uuid.uuid4().hex

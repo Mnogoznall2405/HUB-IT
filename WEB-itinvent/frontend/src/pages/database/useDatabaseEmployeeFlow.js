@@ -8,6 +8,7 @@ import { deserializeDatabaseUiSnapshot } from './databaseReturnContext';
 import { useDatabaseEmployeeFallback } from './useDatabaseEmployeeFallback';
 import {
   EMPLOYEE_COMPARE_MAX_AGE_MS,
+  EMPLOYEE_COMPARE_REFRESH_INTERVAL_MS,
   isEmployeeCompareSnapshotFresh,
   isEmployeeCompareSummaryComplete,
 } from './employeeCompareModel';
@@ -210,7 +211,7 @@ export function useDatabaseEmployeeFlow({
     const intervalId = window.setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       void fetchCompareSummaries();
-    }, EMPLOYEE_COMPARE_MAX_AGE_MS);
+    }, EMPLOYEE_COMPARE_REFRESH_INTERVAL_MS);
 
     const handleWindowFocus = () => { void fetchCompareSummaries(); };
     const handleVisibilityChange = () => {

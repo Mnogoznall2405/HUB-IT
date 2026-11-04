@@ -217,7 +217,7 @@ def search_computers(
 
 
 def load_host(mac_address: str) -> Optional[dict[str, Any]]:
-    from backend.api.v1.inventory import _get_inventory_host
+    from backend.services.inventory_read import get_inventory_host as _get_inventory_host
 
     host = _get_inventory_host(mac_address)
     return host if isinstance(host, dict) else None
@@ -332,7 +332,7 @@ class ComputersGetTool(AiTool):
                 payload = search_computers(context=context, query=mac, fields="identity", limit=5)
             except Exception as exc:
                 return AiToolResult(tool_id=self.tool_id, ok=False, error=f"Поиск компьютеров недоступен: {exc}")
-            from backend.api.v1.inventory import _normalize_mac
+            from backend.services.inventory_read import normalize_mac as _normalize_mac
 
             visible = {
                 _normalize_mac(item.get("mac_address"))

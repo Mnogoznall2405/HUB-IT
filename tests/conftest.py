@@ -48,6 +48,15 @@ if not _PYTEST_USE_LIVE_APP_DB:
     os.environ["INVENTORY_SERVER_DB_PATH"] = str(_pytest_inventory_runtime / "queue.sqlite3")
 
 
+# Scan runtime URL (from the root .env otherwise) must never reach tests: the PG
+# tests INSERT/DELETE and claim_next_jobs() takes any queued job. Only an explicit
+# SCAN_TEST_DATABASE_URL (guarded in test_scan_pg_compat) is passed through.
+# load_dotenv does not override existing keys, even an empty one.
+os.environ["SCAN_DATABASE_URL"] = str(os.getenv("SCAN_TEST_DATABASE_URL") or "").strip()
+# The test database is disposable: let Scan create its schema there (production only checks the version).
+os.environ["SCAN_SCHEMA_DEV_AUTO_CREATE"] = "1" if os.environ["SCAN_DATABASE_URL"] else "0"
+
+
 @pytest.fixture
 def temp_dir():
     """Временная директория для тестов"""

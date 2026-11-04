@@ -42,6 +42,10 @@ def dispatch(operation: str, payload: dict[str, Any]) -> Any:
     """Run one typed operation; never accept query text or connection targets."""
     login, password = _credentials(payload)
     client = _get_client()
+    if operation == "absences":
+        from backend.services.docflow_absence_reader import read_absences
+
+        return read_absences(client, login=login, password=password, on=str(payload.get("on") or ""))
     if operation == "test_connection":
         return client.test_connection(login=login, password=password)
     if operation == "metadata":

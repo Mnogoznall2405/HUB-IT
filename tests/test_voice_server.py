@@ -1014,3 +1014,73 @@ def test_cut_media_range_removes_incomplete_output_on_validation_failure(tmp_pat
     with pytest.raises((RuntimeError, subprocess.TimeoutExpired)):
         pipeline.cut_media_range(src, dst, 1, 4)
     assert not dst.exists() and src.read_bytes() == b"unchanged source"
+
+
+# ---------------------------------------------------------------------------
+# runner: supervisor deadline/cancel independent of child output (DINT-01)
+# ---------------------------------------------------------------------------
+
+
+def _supervise(monkeypatch, tmp_path, code, *, timeout=30.0, cancel_after=None):
+    import time as _time
+
+    started = _time.monotonic()
+    tail = []
+    monkeypatch.setattr(
+        runner,
+        "config",
+        SimpleNamespace(voicevideo_root=tmp_path, job_timeout_sec=timeout, log_tail_lines=50),
+    )
+    monkeypatch.setattr(runner.store, "append_log_tail", lambda job_id, line, n: tail.append(line))
+    monkeypatch.setattr(runner.store, "update_job", lambda *a, **k: None)
+    monkeypatch.setattr(
+        runner.store,
+        "is_cancel_requested",
+        lambda job_id: cancel_after is not None and _time.monotonic() - started >= cancel_after,
+    )
+    with open(tmp_path / "job.log", "w", encoding="utf-8") as log:
+        rc = runner._run_subprocess("job12345", [sys.executable, "-u", "-c", code], log)
+    return rc, _time.monotonic() - started, tail
+
+
+def test_silent_child_is_stopped_at_the_deadline_not_when_it_finally_speaks(monkeypatch, tmp_path):
+    rc, elapsed, _ = _supervise(monkeypatch, tmp_path, "import time; time.sleep(30)", timeout=0.5)
+    assert rc == -9
+    assert elapsed < 10
+
+
+def test_partial_line_without_newline_does_not_block_cancel(monkeypatch, tmp_path):
+    code = "import sys,time; sys.stdout.write('no newline yet'); sys.stdout.flush(); time.sleep(30)"
+    rc, elapsed, _ = _supervise(monkeypatch, tmp_path, code, cancel_after=0.5)
+    assert rc == -15
+    assert elapsed < 10
+
+
+def test_stdout_flood_is_bounded_and_child_still_finishes(monkeypatch, tmp_path):
+    code = "for i in range(20000): print('line', i)"
+    rc, _, tail = _supervise(monkeypatch, tmp_path, code)
+    assert rc == 0
+    assert 0 < len(tail) <= 20000
+    assert (tmp_path / "job.log").read_text(encoding="utf-8").strip()
+
+
+def test_parallel_meeting_meta_saves_do_not_share_a_staging_file(monkeypatch, tmp_path):
+    """DINT-05: every writer gets its own temp file, so parallel edits neither fail nor leave junk."""
+    meeting = tmp_path / "m1"
+    meeting.mkdir()
+    monkeypatch.setattr(pipeline, "meeting_dir", lambda base: meeting)
+    results = []
+
+    def worker(index):
+        results.append(pipeline.save_meeting_web_meta("m1", tags=[f"t{index}"], project=f"p{index}"))
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(20)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert all(result is not None for result in results)
+    assert not list(meeting.glob("*.tmp"))
+    saved = json.loads((meeting / pipeline._WEB_META_NAME).read_text(encoding="utf-8"))
+    assert saved["project"].startswith("p") and len(saved["tags"]) == 1

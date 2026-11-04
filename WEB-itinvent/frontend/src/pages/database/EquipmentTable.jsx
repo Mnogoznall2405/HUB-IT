@@ -90,6 +90,7 @@ const EquipmentRow = memo(function EquipmentRow({
   canWrite = true,
   canDelete = false,
   canDeleteEquipment = false,
+  showExtraColumns = true,
 }) {
   const invNo = String(item.INV_NO || item.inv_no || '');
   const itemId = toItemId(item);
@@ -259,38 +260,42 @@ const EquipmentRow = memo(function EquipmentRow({
           ) : null}
         </Box>
       </TableCell>
-      <TableCell
-        align="center"
-        sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.compare : TABLE_WIDTHS.equipment.compare }}
-      >
-        <EmployeeCompareBadge
-          summary={compareSummary}
-          partNo={item.PART_NO || item.part_no || ''}
-          invNo={invNo}
-          modelName={item.MODEL_NAME ?? item.model_name}
-        />
-      </TableCell>
-      <TableCell
-        align="center"
-        sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.act : TABLE_WIDTHS.equipment.act }}
-      >
-        <EquipmentCurrentActIndicator
-          item={item}
-          onOpenAct={onOpenCurrentAct}
-          openingDocNo={openingCurrentActDocNo}
-        />
-      </TableCell>
-      <TableCell
-        align="center"
-        sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.photo : TABLE_WIDTHS.equipment.photo }}
-      >
-        <Box sx={{ display: 'flex', justifyContent: 'center' }}>
-          <EquipmentPhotoIndicator
-            item={item}
-            onOpen={onAction ? () => onAction('photos', item) : null}
-          />
-        </Box>
-      </TableCell>
+      {showExtraColumns && (
+        <>
+          <TableCell
+            align="center"
+            sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.compare : TABLE_WIDTHS.equipment.compare }}
+          >
+            <EmployeeCompareBadge
+              summary={compareSummary}
+              partNo={item.PART_NO || item.part_no || ''}
+              invNo={invNo}
+              modelName={item.MODEL_NAME ?? item.model_name}
+            />
+          </TableCell>
+          <TableCell
+            align="center"
+            sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.act : TABLE_WIDTHS.equipment.act }}
+          >
+            <EquipmentCurrentActIndicator
+              item={item}
+              onOpenAct={onOpenCurrentAct}
+              openingDocNo={openingCurrentActDocNo}
+            />
+          </TableCell>
+          <TableCell
+            align="center"
+            sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.photo : TABLE_WIDTHS.equipment.photo }}
+          >
+            <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+              <EquipmentPhotoIndicator
+                item={item}
+                onOpen={onAction ? () => onAction('photos', item) : null}
+              />
+            </Box>
+          </TableCell>
+        </>
+      )}
       <TableCell sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.status : TABLE_WIDTHS.equipment.status }}>
         <StatusChip
           status={item.DESCR || item.status_name || item.status}
@@ -324,6 +329,8 @@ const EquipmentTable = memo(function EquipmentTable({
   canWrite = true,
   canDelete = false,
   canDeleteEquipment = false,
+  fillHeight = 0,
+  showExtraColumns = true,
 }) {
   const [scrollTop, setScrollTop] = useState(0);
   const pendingScrollTopRef = useRef(0);
@@ -338,8 +345,11 @@ const EquipmentTable = memo(function EquipmentTable({
 
   const useVirtualization = sortedItems.length >= TABLE_VIRTUALIZE_THRESHOLD;
   const rowHeight = ROW_HEIGHT;
+  // fillHeight (px) — растянуть таблицу до низа экрана; без него высота ограничена 12 строками.
   const viewportHeight = useVirtualization
-    ? Math.min(TABLE_MAX_HEIGHT, Math.max(rowHeight * 6, rowHeight * Math.min(14, sortedItems.length)))
+    ? (fillHeight > 0
+      ? Math.min(fillHeight, rowHeight * sortedItems.length + 48)
+      : Math.min(TABLE_MAX_HEIGHT, Math.max(rowHeight * 6, rowHeight * Math.min(14, sortedItems.length))))
     : undefined;
   const overscanRows = 8;
 
@@ -356,7 +366,8 @@ const EquipmentTable = memo(function EquipmentTable({
   const visibleItems = useVirtualization ? sortedItems.slice(startIndex, endIndex) : sortedItems;
   const topSpacerHeight = useVirtualization ? startIndex * rowHeight : 0;
   const bottomSpacerHeight = useVirtualization ? Math.max(0, (sortedItems.length - endIndex) * rowHeight) : 0;
-  const colSpan = isConsumablesMode ? 5 : (isMobile ? 6 : (allowSelection ? 9 : 8));
+  const extraCols = showExtraColumns ? 3 : 0;
+  const colSpan = isConsumablesMode ? 5 : (isMobile ? 3 + extraCols : (allowSelection ? 6 : 5) + extraCols);
   const tableMinWidth = isConsumablesMode
     ? (TABLE_WIDTHS.consumables.inv
       + TABLE_WIDTHS.consumables.type
@@ -366,18 +377,18 @@ const EquipmentTable = memo(function EquipmentTable({
     : isMobile
       ? (TABLE_WIDTHS.equipmentMobile.inv
         + TABLE_WIDTHS.equipmentMobile.employee
-        + TABLE_WIDTHS.equipmentMobile.compare
-        + TABLE_WIDTHS.equipmentMobile.act
-        + TABLE_WIDTHS.equipmentMobile.photo
+        + (showExtraColumns
+          ? TABLE_WIDTHS.equipmentMobile.compare + TABLE_WIDTHS.equipmentMobile.act + TABLE_WIDTHS.equipmentMobile.photo
+          : 0)
         + TABLE_WIDTHS.equipmentMobile.status)
       : ((allowSelection ? TABLE_WIDTHS.equipment.select : 0)
         + TABLE_WIDTHS.equipment.inv
         + TABLE_WIDTHS.equipment.serial
         + TABLE_WIDTHS.equipment.typeModel
         + TABLE_WIDTHS.equipment.employee
-        + TABLE_WIDTHS.equipment.compare
-        + TABLE_WIDTHS.equipment.act
-        + TABLE_WIDTHS.equipment.photo
+        + (showExtraColumns
+          ? TABLE_WIDTHS.equipment.compare + TABLE_WIDTHS.equipment.act + TABLE_WIDTHS.equipment.photo
+          : 0)
         + TABLE_WIDTHS.equipment.status);
 
   // rAF-throttle: scroll events fire per tick, but the table only needs one
@@ -537,26 +548,30 @@ const EquipmentTable = memo(function EquipmentTable({
                     Сотрудник
                   </TableSortLabel>
                 </TableCell>
-                <TableCell
-                  align="center"
-                  sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.compare : TABLE_WIDTHS.equipment.compare }}
-                >
-                  1С
-                </TableCell>
-                <TableCell
-                  align="center"
-                  sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.act : TABLE_WIDTHS.equipment.act }}
-                >
-                  Акт
-                </TableCell>
-                <TableCell
-                  align="center"
-                  sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.photo : TABLE_WIDTHS.equipment.photo }}
-                >
-                  <Tooltip title="Есть фото" arrow>
-                    <PhotoCameraOutlinedIcon sx={{ fontSize: 18, verticalAlign: 'middle' }} aria-label="Фото" />
-                  </Tooltip>
-                </TableCell>
+                {showExtraColumns && (
+                  <>
+                    <TableCell
+                      align="center"
+                      sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.compare : TABLE_WIDTHS.equipment.compare }}
+                    >
+                      1С
+                    </TableCell>
+                    <TableCell
+                      align="center"
+                      sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.act : TABLE_WIDTHS.equipment.act }}
+                    >
+                      Акт
+                    </TableCell>
+                    <TableCell
+                      align="center"
+                      sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.photo : TABLE_WIDTHS.equipment.photo }}
+                    >
+                      <Tooltip title="Есть фото" arrow>
+                        <PhotoCameraOutlinedIcon sx={{ fontSize: 18, verticalAlign: 'middle' }} aria-label="Фото" />
+                      </Tooltip>
+                    </TableCell>
+                  </>
+                )}
                 <TableCell sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.status : TABLE_WIDTHS.equipment.status }}>
                   <TableSortLabel
                     active={tableSort.field === 'status'}
@@ -602,6 +617,7 @@ const EquipmentTable = memo(function EquipmentTable({
                 canWrite={canWrite}
                 canDelete={canDelete}
                 canDeleteEquipment={canDeleteEquipment}
+                showExtraColumns={showExtraColumns}
               />
             );
           })}

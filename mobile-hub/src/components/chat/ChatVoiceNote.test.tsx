@@ -1,5 +1,6 @@
 import { fireEvent, render, waitFor } from '@testing-library/react-native';
 import { createAudioPlayer } from 'expo-audio';
+import { downloadChatAttachment } from '../../files/nativeAttachmentDownloads';
 import { ChatVoiceNote } from './ChatVoiceNote';
 
 jest.mock('../../files/nativeAttachmentDownloads', () => ({
@@ -48,5 +49,30 @@ describe('ChatVoiceNote', () => {
       nativeEvent: { locationX: 40 },
     });
     await waitFor(() => expect(player.seekTo).toHaveBeenCalledWith(6));
+  });
+  it('creates no player and plays nothing when the row unmounts during the download', async () => {
+    let finishDownload: (file: { uri: string }) => void = () => undefined;
+    let downloadSignal: AbortSignal | undefined;
+    (downloadChatAttachment as jest.Mock).mockImplementationOnce((_attachment, options) => {
+      downloadSignal = options?.signal;
+      return new Promise((resolve) => { finishDownload = resolve; });
+    });
+    const createPlayer = createAudioPlayer as jest.Mock;
+    createPlayer.mockClear();
+
+    const screen = await render(
+      <ChatVoiceNote
+        isOwn={false}
+        attachment={{ id: 'voice-2', kind: 'audio', file_name: 'v.m4a', mime_type: 'audio/mp4', duration_seconds: 5 }}
+      />,
+    );
+    await fireEvent.press(screen.getByLabelText('Воспроизвести голосовое сообщение 0:05'));
+    await screen.unmount();
+
+    expect(downloadSignal?.aborted).toBe(true);
+    await finishDownload({ uri: 'file:///cache/late.m4a' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(createPlayer).not.toHaveBeenCalled();
   });
 });

@@ -35,6 +35,19 @@ const clampPreviewIndex = (value, length) => {
   return Math.min(normalizedLength - 1, Math.max(0, Math.trunc(numericValue)));
 };
 
+const isPointInsideRenderedImage = (image, clientX, clientY) => {
+  const naturalWidth = Number(image?.naturalWidth || 0);
+  const naturalHeight = Number(image?.naturalHeight || 0);
+  const rect = image?.getBoundingClientRect?.();
+  if (!rect || !naturalWidth || !naturalHeight || !rect.width || !rect.height) return true;
+  const scale = Math.min(rect.width / naturalWidth, rect.height / naturalHeight);
+  const width = naturalWidth * scale;
+  const height = naturalHeight * scale;
+  const left = rect.left + (rect.width - width) / 2;
+  const top = rect.top + (rect.height - height) / 2;
+  return clientX >= left && clientX <= left + width && clientY >= top && clientY <= top + height;
+};
+
 const isPreviewVideo = (item) => String(item?.mime_type || item?.mimeType || '').toLowerCase().startsWith('video/');
 
 export default function ChatMediaPreviewDialog({
@@ -234,30 +247,6 @@ export default function ChatMediaPreviewDialog({
     };
   }, [attachmentPreview, safePreviewIndex, bumpPreviewChromeVisibility, clearPreviewChromeTimer]);
 
-  const previewOpen = Boolean(attachmentPreview);
-  useEffect(() => {
-    // Просмотр фото открывается на весь экран монитора; выходим из полноэкранного режима при закрытии.
-    if (!previewOpen || typeof document === 'undefined') return undefined;
-    const root = document.documentElement;
-    if (document.fullscreenElement || typeof root?.requestFullscreen !== 'function') return undefined;
-    let entered = false;
-    let closed = false;
-    try {
-      Promise.resolve(root.requestFullscreen()).then(() => {
-        entered = true;
-        if (closed && document.fullscreenElement) document.exitFullscreen().catch(() => {});
-      }).catch(() => {});
-    } catch {
-      return undefined;
-    }
-    return () => {
-      closed = true;
-      if (entered && document.fullscreenElement) {
-        try { Promise.resolve(document.exitFullscreen()).catch(() => {}); } catch { /* ignore */ }
-      }
-    };
-  }, [previewOpen]);
-
   useEffect(() => {
     if (!attachmentPreview || !canStepPreview) return undefined;
     const handlePreviewKeyDown = (event) => {
@@ -386,7 +375,14 @@ export default function ChatMediaPreviewDialog({
           if (interactiveTarget) return;
           const mediaTarget = event.target?.closest?.('img, video');
           if (mediaTarget) {
-            if (!activePreviewIsVideo) togglePreviewChrome();
+            if (activePreviewIsVideo) return;
+            // The <img> box fills the viewport (object-fit: contain), so the dark
+            // margins around the picture are part of it: close on those.
+            if (!isPointInsideRenderedImage(mediaTarget, event.clientX, event.clientY)) {
+              onClose?.();
+              return;
+            }
+            togglePreviewChrome();
             return;
           }
           onClose?.();

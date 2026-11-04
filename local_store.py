@@ -421,6 +421,32 @@ class SQLiteLocalStore:
             logger.warning("Could not hydrate SQLite from JSON fallback (%s): %s", normalized_name, exc)
         return fallback_data
 
+    def get_entry(self, file_name: str, entry_key: str) -> Any:
+        """One keyed record of a dict-like document (None if absent), without reading the whole document."""
+        normalized_name = _normalize_filename(file_name)
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM local_records WHERE file_name = ? AND entry_key = ?",
+                (normalized_name, str(entry_key)),
+            ).fetchone()
+        return json.loads(row["payload_json"]) if row else None
+
+    def set_entry(self, file_name: str, entry_key: str, payload: Any) -> bool:
+        """Replace one keyed record of a dict-like document; the other records are not touched."""
+        normalized_name = _normalize_filename(file_name)
+        try:
+            with self._lock, self._connect() as conn:
+                conn.execute(
+                    "DELETE FROM local_records WHERE file_name = ? AND entry_key = ?",
+                    (normalized_name, str(entry_key)),
+                )
+                self._insert_record(conn, file_name=normalized_name, entry_key=str(entry_key), payload=payload)
+                conn.commit()
+            return True
+        except Exception as exc:
+            logger.error("SQLite entry save failed for %s/%s: %s", normalized_name, entry_key, exc)
+            return False
+
     def get_document_version(self, file_name: str) -> Optional[str]:
         """Cheap per-document version marker (latest row timestamp) without decoding payloads."""
         normalized_name = _normalize_filename(file_name)

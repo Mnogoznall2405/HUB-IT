@@ -21,6 +21,7 @@ self_service = importlib.import_module("backend.ai_chat.tools.self_service")
 computers = importlib.import_module("backend.ai_chat.tools.computers")
 action_cards = importlib.import_module("backend.ai_chat.action_cards")
 inventory_api = importlib.import_module("backend.api.v1.inventory")
+inventory_read = importlib.import_module("backend.services.inventory_read")
 queries = importlib.import_module("backend.database.queries")
 user_service_module = importlib.import_module("backend.services.user_service")
 permissions_module = importlib.import_module("backend.ai_chat.tool_permissions")
@@ -174,8 +175,8 @@ def _host(mac, *, user_login, profiles=(), stores=(), pending=False):
 
 def _patch_inventory(monkeypatch, hosts: dict[str, dict], user_keys: set[str]):
     store = SimpleNamespace(search_host_keys=lambda query, fields, **kw: set(user_keys))
-    monkeypatch.setattr(inventory_api, "_get_inventory_app_store", lambda: store)
-    monkeypatch.setattr(inventory_api, "_get_inventory_host", lambda mac: hosts.get(inventory_api._normalize_mac(mac)))
+    monkeypatch.setattr(inventory_read, "get_inventory_app_store", lambda: store)
+    monkeypatch.setattr(inventory_read, "get_inventory_host", lambda mac: hosts.get(inventory_read.normalize_mac(mac)))
 
 
 def test_me_computer_health_keeps_only_own_hosts_and_data(monkeypatch, portal_user):

@@ -203,7 +203,7 @@ class MfuDevicesListTool(AiTool):
         items = [_build_device_preview(row, database_id) for row in filtered[: max(1, min(args.limit, MAX_LIMIT))]]
         states = _persisted_ping_states()
         counts = {"online": 0, "offline": 0, "unknown": 0}
-        from backend.api.v1.mfu import _normalize_device_row
+        from backend.services.mfu_device_rows import normalize_device_row as _normalize_device_row
 
         by_preview: list[tuple[dict[str, Any], dict[str, Any]]] = list(zip(items, filtered[: len(items)]))
         for row in filtered:
@@ -273,7 +273,7 @@ class MfuDeviceStatusTool(AiTool):
                     resolved_ip = _normalize_text(row.get("ip_address") or row.get("IP_ADDRESS"))
                     resolved_mac = _normalize_text(row.get("mac_address") or row.get("MAC_ADDRESS"))
                     if resolved_ip or resolved_mac:
-                        from backend.api.v1.mfu import _normalize_device_row
+                        from backend.services.mfu_device_rows import normalize_device_row as _normalize_device_row
                         nd = _normalize_device_row(row, database_id)
                         device_key = nd.get("key")
             except Exception:
@@ -342,7 +342,7 @@ class MfuPagesMonthlyTool(AiTool):
                 from backend.database import queries
                 row = queries.get_equipment_by_inv(inv_no, database_id)
                 if isinstance(row, dict):
-                    from backend.api.v1.mfu import _normalize_device_row
+                    from backend.services.mfu_device_rows import normalize_device_row as _normalize_device_row
                     nd = _normalize_device_row(row, database_id)
                     device_key = nd.get("key")
             except Exception:
@@ -415,7 +415,7 @@ class MfuLowTonerTool(AiTool):
         if not database_id:
             return AiToolResult(tool_id=self.tool_id, ok=False, error="ITinvent database is not configured.")
         try:
-            from backend.api.v1.mfu import _normalize_device_row
+            from backend.services.mfu_device_rows import normalize_device_row as _normalize_device_row
             from backend.services.mfu_monitor_service import mfu_runtime_monitor
 
             rows = get_all_equipment_flat(db_id=database_id, limit=5000) or []

@@ -25,7 +25,8 @@ $expectedPolicies = @(
     'UpdatesEnabled',
     'UpdateDeferralHours',
     'DiagnosticsExportEnabled',
-    'NotificationFallbackEnabled'
+    'NotificationFallbackEnabled',
+    'ScreenCaptureProtectionEnabled'
 )
 $actualPolicies = @($policyNodes | ForEach-Object { $_.name })
 if (@(Compare-Object $expectedPolicies $actualPolicies).Count -ne 0) {

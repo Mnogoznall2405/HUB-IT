@@ -70,6 +70,7 @@ import { databaseAPI } from '../api/database';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
 import { buildCacheKey, getOrFetchSWR, invalidateSWRCacheByPrefix } from '../lib/swrCache';
+import { POINT_POSITION_PARTS, loadBranchContextParts } from '../lib/networksBranchContext';
 import { createNavigateToastAction } from '../components/feedback/toastActions';
 import {
   buildMapExportFileName,
@@ -876,6 +877,24 @@ function Networks() {
     setAllBranchPorts(Array.isArray(data) ? data : []);
   }, []);
 
+  const partialRefreshSeq = useRef(0);
+
+  // Re-read only the parts a mutation can change (see networksBranchContext). The cached full context
+  // is dropped so the next full read is fresh; a full load that started meanwhile wins over this one.
+  const refreshBranchContextParts = useCallback(async (parts) => {
+    if (!branchIdNum) return;
+    invalidateSWRCacheByPrefix('networks', 'branch-context', branchIdNum);
+    const contextSeq = branchContextRequestSeq.current;
+    const partialSeq = ++partialRefreshSeq.current;
+    const { patch, errors } = await loadBranchContextParts(networksAPI, branchIdNum, parts);
+    Object.entries(errors).forEach(([part, reason]) => console.error(`Failed to refresh ${part}:`, reason));
+    if (contextSeq !== branchContextRequestSeq.current || partialSeq !== partialRefreshSeq.current) return;
+    if ('points' in patch) setMapPoints(patch.points);
+    if ('audit' in patch) setAudit(patch.audit);
+    if ('overview' in patch) setOverview(patch.overview);
+    if ('sockets' in patch) setSockets(patch.sockets);
+  }, [branchIdNum]);
+
   const refreshBranchContext = useCallback(async () => {
     if (!branchIdNum) return;
     invalidateSWRCacheByPrefix('networks', 'branch-context', branchIdNum);
@@ -1304,8 +1323,8 @@ function Networks() {
     );
     const failed = results.filter((item) => item.status === 'rejected').length;
     try {
-      // Always re-read the context so the screen shows what the server actually stored.
-      await refreshBranchContext();
+      // Always re-read so the screen shows what the server actually stored; a drag changes only points.
+      await refreshBranchContextParts(POINT_POSITION_PARTS);
     } catch {
       // The save result below is still reported.
     }
@@ -1316,7 +1335,7 @@ function Networks() {
     } else {
       notifyError('Ошибка перемещения маркера.');
     }
-  }, [notifyError, notifySuccess, refreshBranchContext]);
+  }, [notifyError, notifySuccess, refreshBranchContextParts]);
 
   const applySocketPointDraft = useCallback((socketLike) => {
     const socketCode = String(socketLike?.socket_code || socketLike?.patch_panel_port || '').trim();

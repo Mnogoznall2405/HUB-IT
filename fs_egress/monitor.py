@@ -92,6 +92,7 @@ class FsEgressMonitor:
         self._recent_ts: Deque[float] = deque()
         self._watched: Dict[str, object] = {}
         self._dropped = 0
+        self._flush_failures: Dict[str, int] = {}
         self._stop = threading.Event()
 
     @property
@@ -148,14 +149,29 @@ class FsEgressMonitor:
                 resolved_channel = classify_path(path)
                 if resolved_channel in {"local", "unknown"}:
                     continue
-            event = build_file_left(
-                channel=resolved_channel,
-                dest_path=path if resolved_channel != "deleted" else path,
-                src_path=src_path,
-                compute_hash=resolved_channel in {"usb", "network"},
-                details={"kind": "fs_watch"},
-            )
-            self.spool.enqueue(event.to_dict())
+            try:
+                event = build_file_left(
+                    channel=resolved_channel,
+                    dest_path=path if resolved_channel != "deleted" else path,
+                    src_path=src_path,
+                    compute_hash=resolved_channel in {"usb", "network"},
+                    details={"kind": "fs_watch"},
+                )
+                self.spool.enqueue(event.to_dict())
+            except Exception as exc:
+                # One failing event (spool disk, odd path) must not kill the loop or lose the others.
+                key = f"{channel}|{path.lower()}"
+                attempts = self._flush_failures.get(key, 0) + 1
+                if attempts < 3:
+                    self._flush_failures[key] = attempts
+                    with self._lock:
+                        self._pending.setdefault(key, (time.monotonic(), channel, src_path))
+                else:
+                    self._flush_failures.pop(key, None)
+                    self._dropped += 1
+                logger.warning("fs-egress event %s not recorded (attempt %s): %s", path, attempts, exc)
+                continue
+            self._flush_failures.pop(f"{channel}|{path.lower()}", None)
             count += 1
         return count
 

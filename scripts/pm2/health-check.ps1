@@ -439,56 +439,6 @@ function Test-ChatFarmServers {
     }
 }
 
-function Test-SandboxControlRuntime {
-    param($Snapshot)
-
-    if ((@($Snapshot).Count -eq 0) -and $script:Pm2SnapshotError) {
-        return [pscustomobject]@{
-            Name    = 'sandbox-control'
-            Status  = 'warn'
-            Details = "PM2 snapshot unavailable: $script:Pm2SnapshotError"
-        }
-    }
-
-    $control = $Snapshot | Where-Object { $_.Name -eq 'itinvent-ai-sandbox-control' } | Select-Object -First 1
-    if (-not $control) {
-        return [pscustomobject]@{
-            Name    = 'sandbox-control'
-            Status  = 'fail'
-            Details = 'process not found in PM2; OpenCode jobs cannot fetch manifests or upload results'
-        }
-    }
-    if ($control.Status -ne 'online') {
-        return [pscustomobject]@{
-            Name    = 'sandbox-control'
-            Status  = 'fail'
-            Details = "PM2 status=$($control.Status) pid=$($control.PID) restarts=$($control.Restarts)"
-        }
-    }
-
-    $listeners = Get-PortListenerPids -ListenPort 8443
-    if ($listeners.Count -eq 0) {
-        return [pscustomobject]@{
-            Name    = 'sandbox-control'
-            Status  = 'fail'
-            Details = "PM2 online pid=$($control.PID) but port 8443 has no listener"
-        }
-    }
-    if ([int]$control.Restarts -gt 10 -and [int]$control.UptimeSec -lt 120) {
-        return [pscustomobject]@{
-            Name    = 'sandbox-control'
-            Status  = 'warn'
-            Details = "possible restart storm (restarts=$($control.Restarts), short uptime) on port 8443"
-        }
-    }
-
-    return [pscustomobject]@{
-        Name    = 'sandbox-control'
-        Status  = 'ok'
-        Details = "online pid=$($control.PID), port 8443 held by PID $($listeners -join ', ')"
-    }
-}
-
 function Test-LiveKitRuntime {
     # Звонки чата опциональны (CALLS_ENABLED=false по умолчанию): отсутствие процесса — только 'warn', никогда 'fail'.
     param($Snapshot)
@@ -708,10 +658,10 @@ $pm2RuntimeRows = @(
         Get-Pm2ProcessStatus -Snapshot $snapshot -Name $chatName
     }
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-preview-worker'
+    Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-monitoring-worker'
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-mail-notification-worker'
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-chat-push-worker'
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-ai-chat-worker'
-    Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-ai-sandbox-control'
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-my-files-worker'
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-hub-notifications-retention-worker'
 )
@@ -723,14 +673,6 @@ $pm2RuntimeRows | Format-Table Name, Status, Details -AutoSize
 
 Write-Host 'Chat farm checks:' -ForegroundColor Cyan
 @(Test-ChatFarmServers) | Format-Table Name, Status, Details -AutoSize
-
-Write-Host 'Sandbox control checks:' -ForegroundColor Cyan
-$sandboxControlRow = Test-SandboxControlRuntime -Snapshot $snapshot
-@($sandboxControlRow | Where-Object { $_ }) | Format-Table Name, Status, Details -AutoSize
-if ($sandboxControlRow -and $sandboxControlRow.Status -ne 'ok') {
-    Write-Host 'Sandbox control is not healthy: OpenCode jobs stall after enqueue.' -ForegroundColor Red
-    Write-Host 'Run: powershell -File scripts\pm2\restart-ai-agents.ps1' -ForegroundColor Yellow
-}
 
 Write-Host 'Auxiliary workers, warn-only:' -ForegroundColor Cyan
 $auxiliaryRows = foreach ($auxName in @(
@@ -798,7 +740,6 @@ $healthFailures = @(
     @($chatRuntimeRows | Where-Object { $_ -and $_.Status -eq 'fail' }).Count
     @($pm2RuntimeRows | Where-Object { $_ -and $_.Status -eq 'fail' }).Count
     @($scanRuntimeRows | Where-Object { $_ -and $_.Status -eq 'fail' }).Count
-    @(if ($sandboxControlRow -and $sandboxControlRow.Status -eq 'fail') { 1 } else { 0 })
     @(if ($portMismatch -and $portMismatch.Mismatch) { 1 } else { 0 })
 ) | Measure-Object -Sum | Select-Object -ExpandProperty Sum
 Write-Host "Health check failures: $healthFailures" -ForegroundColor $(if ($healthFailures -gt 0) { 'Red' } else { 'Green' })

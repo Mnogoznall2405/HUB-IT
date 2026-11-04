@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import openpyxl
+from sqlalchemy import update as sa_update
 from openpyxl.workbook import Workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
@@ -423,7 +424,17 @@ class TicketsImportService:
                 )
             file_path = job.file_path
             file_name = job.file_name
-            job.status = "running"
+            # Atomic claim (DBIZ-03): two concurrent executes both saw 'previewed' above;
+            # only the one whose conditional UPDATE matches a row may start importing.
+            claimed = session.execute(
+                sa_update(TicketImportJob)
+                .where(TicketImportJob.id == job_id, TicketImportJob.status == "previewed")
+                .values(status="running")
+            )
+            if claimed.rowcount != 1:
+                raise ValueError(
+                    f"Import job {job_id} is already being executed or is no longer 'previewed'"
+                )
 
         result = ImportResult()
         total_rows_in_file = 0

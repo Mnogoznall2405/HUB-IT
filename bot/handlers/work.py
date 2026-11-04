@@ -16,7 +16,9 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 
 from bot.config import States, Messages
-from bot.utils.decorators import handle_errors
+from functools import wraps
+
+from bot.utils.decorators import check_user_access, handle_errors
 from bot.utils.keyboards import create_main_menu_keyboard
 from bot.services.input_identifier_service import (
     detect_identifiers_from_image,
@@ -28,6 +30,31 @@ from bot.universal_database import UniversalInventoryDB
 from bot.local_json_store import append_json_data, load_json_data
 
 logger = logging.getLogger(__name__)
+
+
+def require_work_access(func):
+    """Access gate for every step of the work flow (DBOT-01).
+
+    The menu text can be sent directly, and access can be revoked between preview and
+    confirmation, so each step re-checks it and ends the conversation when denied.
+    """
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        if not await check_user_access(update, context):
+            clear_work_data(context)
+            query = getattr(update, "callback_query", None)
+            try:
+                if query is not None:
+                    await query.answer(Messages.ACCESS_DENIED, show_alert=True)
+                elif update.message is not None:
+                    await update.message.reply_text(Messages.ACCESS_DENIED)
+            except Exception:
+                logger.warning("Не удалось сообщить об отказе в доступе к работам", exc_info=True)
+            return ConversationHandler.END
+        return await func(update, context, *args, **kwargs)
+
+    return wrapper
+
 
 
 def _normalize_equipment_identifier(value) -> str:
@@ -283,6 +310,10 @@ async def handle_serial_input_with_ocr(
                 or ''
             )
             context.user_data[user_data_serial_key] = serial_to_save
+            # Bind the resolved record to the database it came from: ids are only unique per
+            # database, so a later confirm must act on this scope, not on the user's current one.
+            equipment = dict(equipment)
+            equipment["_hubit_db_name"] = db_name
             context.user_data[user_data_equipment_key] = equipment
 
             # Показываем информацию для подтверждения
@@ -303,6 +334,7 @@ async def handle_serial_input_with_ocr(
 
 
 @handle_errors
+@require_work_access
 async def start_work(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
     Начало процесса регистрации работы
@@ -344,6 +376,7 @@ async def start_work(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 @handle_errors
+@require_work_access
 async def handle_work_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
     Обработчик выбора типа работы
@@ -441,6 +474,7 @@ async def handle_back_to_main_external(update: Update, context: ContextTypes.DEF
 
 
 @handle_errors
+@require_work_access
 async def handle_restart_work(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Обработчик для кнопки "Обработать ещё" - запускает новую работу после завершения предыдущей
@@ -488,6 +522,7 @@ async def handle_restart_work(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 @handle_errors
+@require_work_access
 async def work_battery_serial_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
     Обработчик ввода серийного номера ИБП с поддержкой OCR
@@ -553,6 +588,7 @@ async def show_battery_confirmation(update: Update, context: ContextTypes.DEFAUL
 
 
 @handle_errors
+@require_work_access
 async def work_pc_cleaning_serial_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
     Обработчик ввода серийного номера ПК с поддержкой OCR
@@ -589,7 +625,7 @@ async def show_pc_cleaning_confirmation(update: Update, context: ContextTypes.DE
         if not isinstance(cleanings, list):
             cleanings = []
 
-        db_name = database_manager.get_user_database(update.effective_user.id)
+        db_name = (equipment or {}).get('_hubit_db_name') or database_manager.get_user_database(update.effective_user.id)
         pc_cleanings = _select_pc_cleaning_records(cleanings, equipment, db_name=db_name)
 
         if pc_cleanings:
@@ -660,6 +696,7 @@ async def show_pc_cleaning_confirmation(update: Update, context: ContextTypes.DE
 
 
 @handle_errors
+@require_work_access
 async def handle_work_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
     Обработчик подтверждения сохранения работы
@@ -747,6 +784,7 @@ async def handle_work_confirmation(update: Update, context: ContextTypes.DEFAULT
 
 
 @handle_errors
+@require_work_access
 async def handle_work_success_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
     Обработчик действий из состояния успеха (кнопки "Обработать еще" и "Главное меню")
@@ -832,6 +870,7 @@ async def save_battery_replacement(context: ContextTypes.DEFAULT_TYPE) -> bool:
 
         # Получаем данные об ИБП
         equipment = context.user_data.get('battery_equipment', {})
+        db_name = equipment.get('_hubit_db_name') or db_name
         equipment_id = equipment.get('ID')
         current_description = equipment.get('DESCRIPTION') or ''
 
@@ -842,6 +881,9 @@ async def save_battery_replacement(context: ContextTypes.DEFAULT_TYPE) -> bool:
         # Обновляем описание в базе данных
         if equipment_id:
             config = database_manager.get_database_config(db_name)
+            if not config:
+                logger.error("Нет конфигурации БД %s: описание ID=%s не обновлено", db_name, equipment_id)
+                return False
             if config:
                 db = UniversalInventoryDB(config)
 
@@ -865,11 +907,18 @@ async def save_battery_replacement(context: ContextTypes.DEFAULT_TYPE) -> bool:
                             UPDATE ITEMS
                             SET DESCR = ?, CH_DATE = GETDATE(), CH_USER = 'IT-BOT'
                             WHERE ID = ?
-                        """, (new_description, equipment_id))
+                              AND ISNULL(CAST(DESCR AS NVARCHAR(MAX)), '') = ?
+                        """, (new_description, equipment_id, current_description))
+                        if cursor.rowcount == 0:
+                            # Compare-and-set on the snapshot shown in the preview: a changed or
+                            # missing record must not be overwritten from stale data.
+                            logger.error("Описание не обновлено: ID=%s в %s изменено или не найдено", equipment_id, db_name)
+                            return False
                         conn.commit()
                         logger.info(f"Обновлено описание для ID={equipment_id}: добавлена замена батареи от {replacement_date}")
                 except Exception as e:
                     logger.error(f"Ошибка обновления описания: {e}")
+                    return False
 
         # Создаем запись для JSON
         record = {
@@ -912,6 +961,7 @@ async def save_pc_cleaning(context: ContextTypes.DEFAULT_TYPE) -> bool:
 
         # Получаем данные о ПК
         equipment = context.user_data.get('pc_cleaning_equipment', {})
+        db_name = equipment.get('_hubit_db_name') or db_name
         equipment_id = equipment.get('ID')
         current_description = equipment.get('DESCRIPTION') or ''
 
@@ -922,6 +972,9 @@ async def save_pc_cleaning(context: ContextTypes.DEFAULT_TYPE) -> bool:
         # Обновляем описание в базе данных
         if equipment_id:
             config = database_manager.get_database_config(db_name)
+            if not config:
+                logger.error("Нет конфигурации БД %s: описание ID=%s не обновлено", db_name, equipment_id)
+                return False
             if config:
                 db = UniversalInventoryDB(config)
 
@@ -946,11 +999,18 @@ async def save_pc_cleaning(context: ContextTypes.DEFAULT_TYPE) -> bool:
                             UPDATE ITEMS
                             SET DESCR = ?, CH_DATE = GETDATE(), CH_USER = 'IT-BOT'
                             WHERE ID = ?
-                        """, (new_description, equipment_id))
+                              AND ISNULL(CAST(DESCR AS NVARCHAR(MAX)), '') = ?
+                        """, (new_description, equipment_id, current_description))
+                        if cursor.rowcount == 0:
+                            # Compare-and-set on the snapshot shown in the preview: a changed or
+                            # missing record must not be overwritten from stale data.
+                            logger.error("Описание не обновлено: ID=%s в %s изменено или не найдено", equipment_id, db_name)
+                            return False
                         conn.commit()
                         logger.info(f"Обновлено описание для ID={equipment_id}: добавлена чистка от {cleaning_date}")
                 except Exception as e:
                     logger.error(f"Ошибка обновления описания: {e}")
+                    return False
 
         # Создаем запись для JSON
         record = {
@@ -999,6 +1059,7 @@ def clear_work_data(context: ContextTypes.DEFAULT_TYPE):
 
 
 @handle_errors
+@require_work_access
 async def work_component_serial_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
     Обработчик ввода серийного номера ПК для замены компонента с поддержкой OCR
@@ -1063,6 +1124,7 @@ async def show_component_selection_pc(update: Update, context: ContextTypes.DEFA
 
 
 @handle_errors
+@require_work_access
 async def handle_pc_component_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
     Обработчик выбора компонента ПК для замены
@@ -1101,6 +1163,7 @@ async def handle_pc_component_selection(update: Update, context: ContextTypes.DE
     return States.WORK_COMPONENT_SELECTION
 
 @handle_errors
+@require_work_access
 async def show_component_confirmation_pc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
     Показывает подтверждение для замены компонента ПК
@@ -1212,6 +1275,7 @@ async def save_component_replacement_pc(context: ContextTypes.DEFAULT_TYPE) -> b
 
         # Получаем данные о ПК
         equipment = context.user_data.get('component_replacement_equipment', {})
+        db_name = equipment.get('_hubit_db_name') or db_name
         equipment_id = equipment.get('ID')
         current_description = equipment.get('DESCRIPTION') or ''
 
@@ -1225,6 +1289,9 @@ async def save_component_replacement_pc(context: ContextTypes.DEFAULT_TYPE) -> b
         # Обновляем описание в базе данных
         if equipment_id:
             config = database_manager.get_database_config(db_name)
+            if not config:
+                logger.error("Нет конфигурации БД %s: описание ID=%s не обновлено", db_name, equipment_id)
+                return False
             if config:
                 db = UniversalInventoryDB(config)
 
@@ -1250,11 +1317,18 @@ async def save_component_replacement_pc(context: ContextTypes.DEFAULT_TYPE) -> b
                             UPDATE ITEMS
                             SET DESCR = ?, CH_DATE = GETDATE(), CH_USER = 'IT-BOT'
                             WHERE ID = ?
-                        """, (new_description, equipment_id))
+                              AND ISNULL(CAST(DESCR AS NVARCHAR(MAX)), '') = ?
+                        """, (new_description, equipment_id, current_description))
+                        if cursor.rowcount == 0:
+                            # Compare-and-set on the snapshot shown in the preview: a changed or
+                            # missing record must not be overwritten from stale data.
+                            logger.error("Описание не обновлено: ID=%s в %s изменено или не найдено", equipment_id, db_name)
+                            return False
                         conn.commit()
                         logger.info(f"Обновлено описание для ID={equipment_id}: добавлена замена {component_name} от {replacement_date}")
                 except Exception as e:
                     logger.error(f"Ошибка обновления описания: {e}")
+                    return False
 
         # Создаем запись для JSON
         record = {

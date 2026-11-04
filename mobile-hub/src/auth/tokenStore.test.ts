@@ -125,3 +125,42 @@ it('continues processing after a rejected write and lets a later logout win', as
   expect(await getAccessToken()).toBeNull();
   expect(await getRefreshToken()).toBeNull();
 });
+
+it('keeps credentials unusable when their deletion is rejected, until the wipe is retried', async () => {
+  await setTokens('old-access', 'old-refresh');
+  const remove = jest.mocked(SecureStore.deleteItemAsync).getMockImplementation()!;
+  jest.mocked(SecureStore.deleteItemAsync).mockImplementation(async (key, options) => {
+    if (key === 'hubit_access_token') throw new Error('Synthetic delete failure');
+    return remove(key, options);
+  });
+  try {
+    await clearTokens({ clearOfflineData: true });
+    expect(await getAccessToken()).toBeNull();
+    expect(await getRefreshToken()).toBeNull();
+    expect(await SecureStore.getItemAsync('hubit_credentials_revoked')).toBe('1');
+  } finally {
+    jest.mocked(SecureStore.deleteItemAsync).mockImplementation(remove);
+  }
+
+  // A later login replaces the pair and lifts the marker.
+  await setTokens('fresh-access', 'fresh-refresh');
+  expect(await getAccessToken()).toBe('fresh-access');
+  expect(await getRefreshToken()).toBe('fresh-refresh');
+  expect(await SecureStore.getItemAsync('hubit_credentials_revoked')).toBeNull();
+});
+
+it('does not leave a usable half-written pair when the second key cannot be stored', async () => {
+  await clearTokens();
+  const write = jest.mocked(SecureStore.setItemAsync).getMockImplementation()!;
+  jest.mocked(SecureStore.setItemAsync).mockImplementation(async (key, value, options) => {
+    if (key === 'hubit_refresh_token') throw new Error('Synthetic write failure');
+    return write(key, value, options);
+  });
+  try {
+    await expect(setTokens('half-access', 'half-refresh')).rejects.toThrow('Synthetic write failure');
+  } finally {
+    jest.mocked(SecureStore.setItemAsync).mockImplementation(write);
+  }
+  expect(await SecureStore.getItemAsync('hubit_access_token')).toBeNull();
+  expect(await getAccessToken()).toBeNull();
+});

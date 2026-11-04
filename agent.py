@@ -3354,11 +3354,28 @@ def _post_payload(payload: Dict[str, Any], config: AgentConfig) -> bool:
                 verify=verify_arg,
             )
             response.raise_for_status()
+            if not _inventory_ack_is_valid(response):
+                # A 2xx that is not the server's ACK (proxy page, wrong target, error JSON)
+                # must not make the agent drop its only copy of the report.
+                logging.warning(
+                    "Inventory send got status=%s without a valid server ACK on attempt=%s",
+                    response.status_code,
+                    attempt,
+                )
+                continue
             logging.info("Inventory sent successfully, status=%s", response.status_code)
             return True
         except requests.exceptions.RequestException as exc:
             logging.warning("Inventory send failed on attempt=%s: %s", attempt, exc)
     return False
+
+
+def _inventory_ack_is_valid(response: Any) -> bool:
+    try:
+        body = response.json()
+    except Exception:
+        return False
+    return isinstance(body, dict) and body.get("success") is True
 
 
 def _inventory_queue_paths() -> List[Path]:
@@ -3392,7 +3409,7 @@ def _inventory_queue_dead_path(path: Path) -> Path:
     return get_inventory_queue_dead_dir() / path.name
 
 
-def _inventory_queue_move_to_dead(path: Path, item: Optional[Dict[str, Any]], reason: str) -> None:
+def _inventory_queue_move_to_dead(path: Path, item: Optional[Dict[str, Any]], reason: str) -> bool:
     payload: Dict[str, Any] = item or {}
     payload["dropped_reason"] = str(reason or "unknown")
     payload["dropped_at"] = int(time.time())
@@ -3400,12 +3417,15 @@ def _inventory_queue_move_to_dead(path: Path, item: Optional[Dict[str, Any]], re
     try:
         _inventory_queue_write(dead_path, payload)
     except Exception as exc:
-        logging.warning("Inventory dead-letter write failed (%s): %s", dead_path, exc)
+        # Keep the pending report: deleting it now would lose a report the server never acknowledged.
+        logging.warning("Inventory dead-letter write failed, report kept in queue (%s): %s", dead_path, exc)
+        return False
     try:
         if path.exists():
             path.unlink()
     except Exception as exc:
         logging.warning("Inventory queue delete failed (%s): %s", path, exc)
+    return True
 
 
 def _inventory_queue_enqueue(payload: Dict[str, Any]) -> Path:

@@ -77,8 +77,10 @@ class EgressSpool:
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
-                self._move(path, self.dead)
-                stats["dead"] += 1
+                if self._move(path, self.dead):
+                    stats["dead"] += 1
+                else:
+                    stats["failed"] += 1
                 continue
             if isinstance(payload, dict):
                 events.append(payload)
@@ -88,10 +90,12 @@ class EgressSpool:
         ok = self._post_batch(events)
         if ok:
             for path in paths:
-                self._move(path, self.sent)
+                if not self._move(path, self.sent):
+                    # The server already has the event; keeping it pending would only resend it.
+                    path.unlink(missing_ok=True)
                 stats["sent"] += 1
         else:
-            stats["failed"] = len(paths)
+            stats["failed"] += len(paths)
         return stats
 
     def _post_batch(self, events: List[Dict[str, Any]]) -> bool:
@@ -115,18 +119,22 @@ class EgressSpool:
             logger.warning("fs-egress POST failed: %s", exc)
             return False
 
-    def _move(self, src: Path, dest_dir: Path) -> None:
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        target = dest_dir / src.name
+    def _move(self, src: Path, dest_dir: Path) -> bool:
+        """Hand ``src`` over to ``dest_dir``; the source is removed only after a verified move.
+
+        On any failure the pending file stays where it is, so the event is retried instead of
+        being lost together with its only durable copy.
+        """
         try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            target = dest_dir / src.name
             if target.exists():
                 target.unlink()
             shutil.move(str(src), str(target))
-        except Exception:
-            try:
-                src.unlink(missing_ok=True)
-            except Exception:
-                pass
+            return target.exists() and not src.exists()
+        except Exception as exc:
+            logger.warning("fs-egress move %s -> %s failed, event kept: %s", src, dest_dir, exc)
+            return False
 
     def _prune(self) -> None:
         pending = sorted(self.pending.glob("*.json"), key=lambda p: p.stat().st_mtime)

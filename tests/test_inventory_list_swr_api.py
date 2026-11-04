@@ -326,3 +326,37 @@ def test_warmup_does_not_register_keys_as_hot(app_env):
         track_hot=False,
     )
     assert not inventory._computers_hot_keys
+
+
+def test_search_after_list_filters_cached_records_without_rebuilding(app_env, monkeypatch):
+    _receive("AA-BB-CC-DD-EE-01", "PC-01", ip="10.10.1.11")
+    _bind(app_env, "AA-BB-CC-DD-EE-01", "PC-01")
+    _receive("AA-BB-CC-DD-EE-02", "PC-02", ip="10.20.2.22")
+    _bind(app_env, "AA-BB-CC-DD-EE-02", "PC-02")
+    cold = _by_host(_search(q="10.20", search_fields="identity"))
+    assert list(cold) == ["PC-02"]
+
+    # Свежий список в кэше: поиск не должен собирать записи заново (SQL-скан payload).
+    _search(search_fields="identity")
+    calls = []
+    original = inventory._compute_scoped_records
+
+    def counting(**kwargs):
+        calls.append(kwargs["q"])
+        return original(**kwargs)
+
+    monkeypatch.setattr(inventory, "_compute_scoped_records", counting)
+    inventory._computers_records_cache.pop(
+        next(key for key in inventory._computers_records_cache if key[7] == "10.20"), None
+    )
+    derived = _by_host(_search(q="10.20", search_fields="identity"))
+    assert list(derived) == ["PC-02"]
+    assert derived["PC-02"]["ip_primary"] == cold["PC-02"]["ip_primary"]
+    assert calls == []
+
+    # Новый хост меняет версию содержимого: поиск обязан его увидеть, а не отдать производную от старого списка.
+    _receive("AA-BB-CC-DD-EE-03", "PC-03", ip="10.20.3.33")
+    _bind(app_env, "AA-BB-CC-DD-EE-03", "PC-03")
+    fresh = _by_host(_search(q="10.20", search_fields="identity"))
+    assert sorted(fresh) == ["PC-02", "PC-03"]
+    assert calls == ["10.20"]

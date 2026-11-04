@@ -213,7 +213,7 @@ def test_agent_enrichment_when_snapshot_returns_data(
             return_value=[equip],
         ),
         patch(
-            "backend.api.v1.inventory._get_inventory_host",
+            "backend.services.inventory_read.get_inventory_host",
             return_value=snapshot,
         ),
         patch(
@@ -322,7 +322,7 @@ def test_agent_enrichment_when_snapshot_unavailable(
             return_value=[equip],
         ),
         patch(
-            "backend.api.v1.inventory._get_inventory_host",
+            "backend.services.inventory_read.get_inventory_host",
             **patch_kwargs,
         ),
         patch(

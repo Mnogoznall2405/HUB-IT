@@ -75,8 +75,8 @@ export default function AccountCategoryLayout({
           pb: { xs: 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 10px)', md: 2 },
         }}
       >
-        {isPhone ? null : <PageTopBar title={title} sx={{ maxWidth: 1180, mx: 'auto', width: '100%' }} />}
-        <Stack spacing={1.25} sx={{ maxWidth: 1180, mx: 'auto', width: '100%' }}>
+        {isPhone ? null : <PageTopBar title={title} />}
+        <Stack spacing={1.25} sx={{ width: '100%', minWidth: 0 }}>
           <Paper
             sx={{
               p: { xs: 1.35, md: 1.6 },
@@ -114,7 +114,7 @@ export default function AccountCategoryLayout({
             <Box
               sx={{
                 display: 'grid',
-                gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: '244px minmax(0, 1fr)' },
+                gridTemplateColumns: { xs: 'minmax(0, 1fr)', md: '208px minmax(0, 1fr)', xl: '224px minmax(0, 1fr)' },
                 gap: 1.25,
                 minHeight: 0,
               }}

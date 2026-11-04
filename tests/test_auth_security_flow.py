@@ -1092,6 +1092,9 @@ def test_refresh_rejects_replayed_refresh_token(monkeypatch):
 
 
 def test_refresh_grace_reuses_rotated_tokens(monkeypatch):
+    monkeypatch.setattr(auth.session_service, "get_session", lambda sid: {
+        "session_id": sid, "user_id": 7, "is_active": True, "status": "active",
+    })
     monkeypatch.setattr(
         auth,
         "decode_access_token",

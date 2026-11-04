@@ -17,6 +17,12 @@ const SESSION_USER_CACHE_KEY = 'hubit_session_user_cache_v1';
 const ACCOUNT_DEACTIVATED_KEY = 'hubit_account_deactivated';
 let deactivationMarked = false;
 
+// Set when a logout/expiry could not delete the stored credentials. While it is
+// present the stored pair is treated as absent, so an interrupted wipe never
+// resurrects a session on the next read or cold start. undefined = not loaded.
+const CREDENTIALS_REVOKED_KEY = 'hubit_credentials_revoked';
+let credentialsRevoked: boolean | undefined;
+
 export function isSessionDeactivationMarked(): boolean {
   return deactivationMarked;
 }
@@ -102,11 +108,28 @@ async function deleteItem(key: string): Promise<void> {
   await SecureStore.deleteItemAsync(key);
 }
 
+async function isCredentialsRevoked(): Promise<boolean> {
+  if (credentialsRevoked === undefined) {
+    credentialsRevoked = (await getItem(CREDENTIALS_REVOKED_KEY).catch(() => null)) === '1';
+    if (credentialsRevoked) {
+      // Finish the interrupted wipe; the marker stays until both keys are really gone.
+      const retried = await Promise.allSettled([deleteItem(ACCESS_KEY), deleteItem(REFRESH_KEY)]);
+      if (retried.every((result) => result.status === 'fulfilled')) {
+        credentialsRevoked = false;
+        await deleteItem(CREDENTIALS_REVOKED_KEY).catch(() => undefined);
+      }
+    }
+  }
+  return credentialsRevoked;
+}
+
 async function getAccessTokenInternal(): Promise<string | null> {
+  if (await isCredentialsRevoked()) return null;
   return getItem(ACCESS_KEY);
 }
 
 async function getRefreshTokenInternal(): Promise<string | null> {
+  if (await isCredentialsRevoked()) return null;
   return getItem(REFRESH_KEY);
 }
 
@@ -145,16 +168,26 @@ export async function setClientDeviceId(clientDeviceId: string | null | undefine
 }
 
 async function setTokensInternal(accessToken: string, refreshToken: string): Promise<void> {
-  await setItem(ACCESS_KEY, accessToken);
-  await setItem(REFRESH_KEY, refreshToken);
+  if (await isCredentialsRevoked()) {
+    // The old pair could not be deleted earlier: a new login is only usable once the marker is gone.
+    await deleteItem(CREDENTIALS_REVOKED_KEY);
+    credentialsRevoked = false;
+  }
+  try {
+    await setItem(ACCESS_KEY, accessToken);
+    await setItem(REFRESH_KEY, refreshToken);
+  } catch (error) {
+    // Never leave a half-written pair that could pass for a usable login.
+    await Promise.allSettled([deleteItem(ACCESS_KEY), deleteItem(REFRESH_KEY)]);
+    throw error;
+  }
   notifyAccessTokenChanges(accessToken);
 }
 
 async function clearTokensInternal(options: { clearOfflineData?: boolean } = {}): Promise<void> {
   const sessionUserId = await getSessionUserIdInternal().catch(() => null);
+  const credentialDeletes = Promise.allSettled([deleteItem(ACCESS_KEY), deleteItem(REFRESH_KEY)]);
   const cleanup: Promise<unknown>[] = [
-    deleteItem(ACCESS_KEY),
-    deleteItem(REFRESH_KEY),
     deleteItem(SESSION_USER_ID_KEY),
     deleteItem(SESSION_USER_CACHE_KEY),
   ];
@@ -167,6 +200,15 @@ async function clearTokensInternal(options: { clearOfflineData?: boolean } = {})
     );
   }
   await Promise.allSettled(cleanup);
+  const deleted = await credentialDeletes;
+  if (deleted.every((result) => result.status === 'fulfilled')) {
+    credentialsRevoked = false;
+    await deleteItem(CREDENTIALS_REVOKED_KEY).catch(() => undefined);
+  } else {
+    // Deletion failed: remember it durably (and in memory) so the pair stays unusable.
+    credentialsRevoked = true;
+    await setItem(CREDENTIALS_REVOKED_KEY, '1').catch(() => undefined);
+  }
   notifyAccessTokenChanges(null);
 }
 

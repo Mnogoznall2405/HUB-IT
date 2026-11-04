@@ -608,3 +608,17 @@ def test_review_queue_needs_the_photo_check_right(review_env):
     assert env.queue(EDITOR, "rejected").status_code == 403
     assert env.summary(EDITOR).status_code == 403
     assert env.queue(CHECKER, "rejected").status_code == 200
+
+
+def test_photo_check_row_read_takes_a_row_lock_on_postgres():
+    """DEQP-04: concurrent verify/reject must serialize on the row, not on stale NULL marks.
+
+    A two-session race needs real PostgreSQL row locks; here we pin that every
+    read-modify-write goes through a FOR UPDATE select (SQLite ignores the clause).
+    """
+    from sqlalchemy.dialects import postgresql
+
+    from backend.services import equipment_photo_check_service as service
+
+    sql = str(service._row_select("db", 1, 1, True).compile(dialect=postgresql.dialect()))
+    assert "FOR UPDATE" in sql

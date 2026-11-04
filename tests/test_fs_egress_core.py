@@ -117,3 +117,54 @@ def test_profile_delete_offer_enqueues(tmp_path: Path):
     payload = json.loads(pending[0].read_text(encoding="utf-8"))
     assert payload["channel"] == "deleted"
 
+
+
+def test_failed_dead_letter_move_keeps_the_pending_event(tmp_path: Path, monkeypatch):
+    """DINT-02: a refused move must not delete the only durable copy."""
+    import shutil
+
+    spool = EgressSpool(tmp_path / "spool", server_url="", api_key="")
+    pending = spool.enqueue({"event_id": "e1", "ts": 1, "channel": "network", "file_name": "a.pdf", "dest_path": "x"})
+    original = pending.read_bytes()
+
+    def refuse(*args, **kwargs):
+        raise OSError("access denied")
+
+    monkeypatch.setattr(shutil, "move", refuse)
+    assert spool._move(pending, spool.dead) is False
+    assert pending.read_bytes() == original
+    assert list(spool.dead.glob("*.json")) == []
+
+    monkeypatch.undo()
+    assert spool._move(pending, spool.dead) is True
+    assert not pending.exists() and (spool.dead / pending.name).read_bytes() == original
+
+
+def test_unreadable_network_file_does_not_stop_other_due_events(tmp_path: Path, monkeypatch):
+    """DINT-03: PermissionError on one path's metadata must not break the flush or drop the rest."""
+    from fs_egress.monitor import FsEgressMonitor
+
+    spool = EgressSpool(tmp_path / "spool", server_url="", api_key="")
+    monitor = FsEgressMonitor(spool, debounce_sec=0.0, rate_limit_per_sec=100, roots_refresh_sec=1000.0,
+                              watch_profile_deletes=False)
+    good = tmp_path / "good.docx"
+    good.write_bytes(b"data")
+    bad = tmp_path / "locked.docx"
+    bad.write_bytes(b"data")
+    real_is_file = Path.is_file
+
+    def is_file(self):
+        if self.name == "locked.docx":
+            raise PermissionError(5, "Access is denied")
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    monitor._pending[f"usb|{str(bad).lower()}"] = (0.0, "usb", "")
+    monitor._pending[f"usb|{str(good).lower()}"] = (0.0, "usb", "")
+
+    assert monitor.flush_due() == 2
+    events = [json.loads(path.read_text(encoding="utf-8")) for path in spool.pending.glob("*.json")]
+    by_name = {event["file_name"]: event for event in events}
+    assert by_name["locked.docx"]["details"]["metadata_unavailable"] is True
+    assert not by_name["locked.docx"]["sha256"]
+    assert by_name["good.docx"]["sha256"]

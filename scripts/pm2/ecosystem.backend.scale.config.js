@@ -1,5 +1,6 @@
 const path = require('path');
 const { resolvePython } = require('./python-path');
+const { dbPool } = require('./db-pools');
 
 const PROJECT_ROOT = 'C:\\Project\\Image_scan';
 const WEB_ROOT = path.join(PROJECT_ROOT, 'WEB-itinvent');
@@ -17,11 +18,10 @@ function buildBackendInstance(name, port, nodeId) {
     max_restarts: 10,
     restart_delay: 5000,
     env: {
+      ...dbPool(name),
       BACKEND_HOST: '127.0.0.1',
       BACKEND_PORT: String(port),
       CHAT_REALTIME_NODE_ID: String(nodeId),
-      APP_DB_POOL_SIZE: '10',
-      APP_DB_MAX_OVERFLOW: '20',
       REQUEST_METRICS_ENABLED: '1',
       REQUEST_METRICS_SLOW_MS: '1000',
       REQUEST_METRICS_MAX_ROUTES: '300',
@@ -121,11 +121,9 @@ module.exports = {
       max_restarts: 10,
       restart_delay: 5000,
       env: {
+        ...dbPool('itinvent-my-files-worker'),
         MY_FILES_INLINE_WORKER_ENABLED: '0',
-        APP_DB_POOL_SIZE: '4',
-        APP_DB_MAX_OVERFLOW: '2',
         APP_DB_APPLICATION_NAME: 'itinvent-my-files-worker',
-        APP_DB_DEDICATED_CONNECTIONS: '1',
         APP_DB_DEDICATED_APPLICATION_NAME: 'itinvent-my-files-worker-lock',
         PYTHONUNBUFFERED: '1',
       },

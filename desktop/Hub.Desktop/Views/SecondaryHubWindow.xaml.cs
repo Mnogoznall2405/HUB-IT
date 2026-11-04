@@ -286,6 +286,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         _desktopBridge.CheckForUpdatesRequested += DesktopBridge_CheckForUpdatesRequested;
         _desktopBridge.OpenCurrentInBrowserRequested += DesktopBridge_OpenCurrentInBrowserRequested;
         _desktopBridge.MailComposeWindowRequested += DesktopBridge_MailComposeWindowRequested;
+        _desktopBridge.WorkspaceWindowRequested += DesktopBridge_WorkspaceWindowRequested;
         ApplyWebViewMemoryUsageTarget(core);
     }
 
@@ -515,6 +516,18 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
 
     private void DesktopBridge_OpenCurrentInBrowserRequested(object? sender, EventArgs e) =>
         OpenCurrentPageInBrowser();
+
+    private void DesktopBridge_WorkspaceWindowRequested(
+        object? sender,
+        DesktopWorkspaceWindowRequestedEventArgs e)
+    {
+        e.Status = _windowManager.OpenSecondaryRoute(e.Route) switch
+        {
+            DesktopSecondaryWindowOpenResult.Opened => "opened",
+            DesktopSecondaryWindowOpenResult.ActivatedExisting => "activated",
+            _ => "failed",
+        };
+    }
 
     private void DesktopBridge_MailComposeWindowRequested(
         object? sender,
@@ -1124,6 +1137,7 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
         _desktopBridge.CheckForUpdatesRequested -= DesktopBridge_CheckForUpdatesRequested;
         _desktopBridge.OpenCurrentInBrowserRequested -= DesktopBridge_OpenCurrentInBrowserRequested;
         _desktopBridge.MailComposeWindowRequested -= DesktopBridge_MailComposeWindowRequested;
+        _desktopBridge.WorkspaceWindowRequested -= DesktopBridge_WorkspaceWindowRequested;
         _desktopBridge.Dispose();
         _desktopBridge = null;
     }

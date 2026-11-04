@@ -6,6 +6,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from _migration_safety import add_safety_args, safe_replace
+
 
 TABLES_IN_ORDER = [
     "mfu_runtime_state",
@@ -18,6 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Migrate MFU runtime state from SQLite into PostgreSQL system schema.")
     parser.add_argument("--source-db-path", required=True, help="Path to the source internal SQLite database.")
     parser.add_argument("--target-database-url", help="Target APP_DATABASE_URL. Defaults to current env.")
+    add_safety_args(parser)
     return parser.parse_args()
 
 
@@ -56,40 +59,34 @@ def main() -> int:
     from backend.services.mfu_monitor_service import MfuRuntimeMonitor
 
     database_url = ensure_app_database_configured()
-    initialize_app_schema(database_url)
-    MfuRuntimeMonitor(database_url=database_url)
 
-    source = sqlite3.connect(str(source_db_path), timeout=30, check_same_thread=False)
-    source.row_factory = sqlite3.Row
-    target = SqlAlchemyCompatConnection(
-        get_app_engine(database_url),
-        table_names=set(TABLES_IN_ORDER),
-        schema=schema_name("system", database_url),
+    def init_target() -> None:
+        initialize_app_schema(database_url)
+        MfuRuntimeMonitor(database_url=database_url)
+
+    def open_target() -> SqlAlchemyCompatConnection:
+        return SqlAlchemyCompatConnection(
+            get_app_engine(database_url),
+            table_names=set(TABLES_IN_ORDER),
+            schema=schema_name("system", database_url),
+        )
+
+    source = sqlite3.connect(
+        f"file:{source_db_path.as_posix()}?mode=ro", uri=True, timeout=30, check_same_thread=False
     )
-
-    counts: dict[str, int] = {}
+    source.row_factory = sqlite3.Row
     try:
-        for table_name in reversed(TABLES_IN_ORDER):
-            target.execute(f"DELETE FROM {table_name}")
-        target.commit()
-
-        for table_name in TABLES_IN_ORDER:
-            if not _table_exists(source, table_name):
-                counts[table_name] = 0
-                continue
-            rows = source.execute(f"SELECT * FROM {table_name}").fetchall()
-            counts[table_name] = len(rows)
-            for row in rows:
-                payload = dict(row)
-                columns = list(payload.keys())
-                placeholders = ", ".join(["?"] * len(columns))
-                sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})"
-                target.execute(sql, tuple(payload[column] for column in columns))
-        target.sync_identity_sequences()
-        target.commit()
+        counts = safe_replace(
+            source=source,
+            tables=TABLES_IN_ORDER,
+            args=args,
+            open_target=open_target,
+            init_target=init_target,
+        )
     finally:
         source.close()
-        target.close()
+    if counts is None:
+        return 0
 
     print("MFU runtime migration completed:")
     for table_name in TABLES_IN_ORDER:

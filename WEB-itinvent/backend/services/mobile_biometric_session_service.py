@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy import select
 
 from backend.appdb.db import app_session, initialize_app_schema, is_app_database_configured
-from backend.appdb.models import AppMobileBiometricCredential, AppUser
+from backend.appdb.models import AppMobileBiometricCredential, AppUser, AppSessionRecord
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.session_service import hash_client_device_id, normalize_client_device_id
 
@@ -105,6 +105,11 @@ class MobileBiometricSessionService:
             user = session.get(AppUser, int(user_id), with_for_update=True)
             if user is None or not bool(user.is_active) or not bool(user.is_2fa_enabled):
                 raise MobileBiometricSessionError("Active 2FA is required for biometric login")
+            source_session = session.get(AppSessionRecord, str(challenge.get("session_id") or ""))
+            if (source_session is None or source_session.user_id != int(user_id)
+                    or not source_session.is_active or source_session.status != "active"
+                    or source_session.client_device_key_hash != device_hash):
+                raise MobileBiometricSessionError("Biometric enrollment session is no longer active")
             row = session.scalars(
                 select(AppMobileBiometricCredential)
                 .where(
@@ -150,7 +155,7 @@ class MobileBiometricSessionService:
         denied = False
         result: dict[str, Any] | None = None
         with app_session(self._database_url) as session:
-            row = session.get(AppMobileBiometricCredential, credential_id, with_for_update=True)
+            row = session.get(AppMobileBiometricCredential, credential_id)
             if (
                 row is None
                 or not bool(row.is_active)
@@ -160,6 +165,11 @@ class MobileBiometricSessionService:
             ):
                 raise MobileBiometricSessionError("Biometric session is invalid or revoked")
             user = session.get(AppUser, int(row.user_id), with_for_update=True)
+            # Lock in the same order as enrollment and remote device removal:
+            # user first, credential second. Re-read after waiting for the user.
+            session.refresh(row, with_for_update=True)
+            if not row.is_active or row.revoked_at is not None or not hmac.compare_digest(str(row.token_hash or ""), token_hash):
+                raise MobileBiometricSessionError("Biometric session is invalid or revoked")
             if user is None or not bool(user.is_active) or not bool(user.is_2fa_enabled):
                 row.is_active = False
                 row.revoked_at = _utc_now()

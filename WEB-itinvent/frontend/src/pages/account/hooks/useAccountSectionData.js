@@ -361,11 +361,14 @@ export function useAccountSectionData(area = 'settings') {
   }, [user?.id]);
 
   useEffect(() => {
-    const needsDatabases = tab === 'profile' || (tab === 'users' && canManageUsers) || (tab === 'ai-bots' && canManageAiBots);
+    const needsDatabases = tab === 'profile'
+      || (tab === 'users' && canManageUsers)
+      || (tab === 'ai-bots' && canManageAiBots)
+      || (tab === 'references' && canManageReferences);
     if (user && needsDatabases && !databasesAttempted && !databasesLoaded && !databasesLoading) {
       loadDatabases();
     }
-  }, [canManageAiBots, canManageUsers, databasesAttempted, databasesLoaded, databasesLoading, loadDatabases, tab, user]);
+  }, [canManageAiBots, canManageReferences, canManageUsers, databasesAttempted, databasesLoaded, databasesLoading, loadDatabases, tab, user]);
 
   useEffect(() => {
     setBlockingError('');

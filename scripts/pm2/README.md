@@ -76,6 +76,7 @@ powershell -File scripts\pm2\register-pm2-autostart.ps1 -Mode Enable
 
 Результат — `scripts\pm2\_boot_resurrect.log` (предыдущий запуск — `_boot_resurrect.prev.log`).
 
+- **Пулы PostgreSQL задаются в одном месте — `scripts/pm2/db-pools.js`.** Размеры `APP_DB_*`/`CHAT_DB_*` процессов нельзя писать в `ecosystem.*.config.js` (тест `test_pool_sizes_are_defined_only_in_db_pools_js` это ловит): конфиги берут их через `dbPool(name)`, а `postgres_connection_budget.js` и `scripts/check_postgres_connection_budget.py` считают потолок по тому же файлу, запас `RESERVE` тоже там. `max_connections` в репозитории не хранится: он на DB-06 (сейчас 300 в `/etc/postgresql/16/main/conf.d/hubit.conf`, значение 100 в `postgresql.conf` перекрыто), живое значение читает `python scripts\check_postgres_connection_budget.py`. После правки чисел запускать его: `projected_ok` должен остаться `True`.
 - **Источник истины автозапуска — `ecosystem.all.config.js`.** Новый постоянный процесс добавлять в один из подключённых в него ecosystem-файлов (backend/inventory/scan/voice/bot/chat.scale). Процессы, запускаемые отдельным конфигом (например `itinvent-ai-sandbox-control`), попадают в автозапуск только через `dump.pm2`: после их старта обязателен `pm2 save`.
 - `register-pm2-autostart.ps1 -Mode Enable` также отключает устаревшую SYSTEM-задачу `HUB-IT PM2 resurrect` (`resurrect-if-empty.ps1`): она конкурирует за `\\.\pipe\rpc.sock` и стартовала бы процессы от SYSTEM.
 - Отключение без удаления: `register-pm2-autostart.ps1 -Mode Disable`; полный откат — `-Mode Remove`.
@@ -114,6 +115,7 @@ Windows / no-Redis baseline for AI chat:
 
 - `itinvent-chat-push-worker` processes only `chat_push_outbox` (Web Push);
 - `itinvent-mail-notification-worker` polls mail notifications once per cluster and sends them through the shared Web Push subscription table;
+- `itinvent-monitoring-worker` is the only owner of the network monitoring ICMP/SNMP loop (`start_monitoring_worker.py`, `MONITORING_BACKGROUND_ENABLED=1`, retention flag stays there); `itinvent-backend` runs with `MONITORING_BACKGROUND_ENABLED=0` and `MONITORING_WORKER_EXTERNAL=1`, so probing no longer blocks the API event loop. Restart it with `restart-monitoring-worker.ps1` after changes in `network_monitor_*.py` (a backend restart does not restart it); it is also in `ecosystem.all.config.js` (autostart), `start-all/restart-all/stop-all`, the watchdog worker set, boot staging and `health-check.ps1`. A second copy stays idle: the DB advisory lease allows one owner;
 - cross-process AI realtime uses DB-backed `chat_event_outbox` dispatched by `itinvent-backend`;
 - `backend-chat-runtime` is healthy in local mode only when `event_dispatcher_active=True`, even if Redis is not configured;
 - if `event_dispatcher_active=False`, websocket delivery for AI and degraded cross-process chat realtime must be treated as broken.

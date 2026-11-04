@@ -2,6 +2,8 @@ import { render, waitFor } from '@testing-library/react-native';
 import { NativeSecuritySettingsScreen } from './NativeSecuritySettingsScreen';
 import { listTrustedDevices } from '../../api/authSecurityApi';
 
+jest.mock('../../api/authDevicesApi', () => ({ listOwnDevices: jest.fn(async () => []) }));
+
 const mockExecute = jest.fn(async () => ({ enabled: true, timeoutSeconds: 900, biometricEnabled: true }));
 jest.mock('../../auth/AuthContext', () => ({ useAuth: () => ({
   offlineMode: true, biometricEnrollmentAvailable: false,

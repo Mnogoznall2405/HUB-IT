@@ -1,0 +1,18 @@
+{
+  "web-apps/apps/api/documents/api.js": "ac9f6597629e8702ebe2fbe7b90852c8c0108c2d9df2c376a5915961886113c4",
+  "web-apps/apps/common/main/lib/view/About.js": "9d06b82577ccc5393eccaa1f5443f6cd4cd5ca471c413bc18f003a1ba6c9d65a",
+  "web-apps/apps/common/main/resources/img/about/logo-white_s.svg": "2d856c73255c2b6798b3ccdf725139bbdf74647752c86b552ad07a868e62c337",
+  "web-apps/apps/common/main/resources/img/about/logo_s.svg": "601a25e4c0f2e9529c19712f68e60fb09c0216fe0798fc509c5b796405ef493e",
+  "web-apps/apps/common/main/resources/img/header/dark-logo_s.svg": "bb2227a743a9a4a5d84edeb799615c0e30d63edacd362f2c33a6b07eab9a9471",
+  "web-apps/apps/common/main/resources/img/header/header-logo_s.svg": "29a8929a2bc7586e9753d71ae1aca8adacde73a80834ab00881fddaab8e4b957",
+  "web-apps/apps/documenteditor/main/app/controller/Main.js": "ecbad0538b6aa663f86f541161ead108e884099dd0cb5fa99e340795917d0aa1",
+  "web-apps/apps/documenteditor/main/index.html": "b33ed101b28245abc6213ee8ffcc47a9889656cf77d36227cf25429155d0ecbe",
+  "web-apps/apps/pdfeditor/main/app/controller/Main.js": "3b830197eb4d2a52a2faaa387d8d8fa2d35f3bbe303e5918afb76a6ceccf12a6",
+  "web-apps/apps/pdfeditor/main/index.html": "a5c1adb6430f302ca4f1791662589438d97c466b6a7ddb24ce33ece83b8af26a",
+  "web-apps/apps/presentationeditor/main/app/controller/Main.js": "5de1d720c0e2d19fe315bdb35d6bd4d73daa58a41350566df746e90655e28841",
+  "web-apps/apps/presentationeditor/main/index.html": "fee2748df216cc554b58febecab7d565c8b7d668161bb39b29541ead46b97f84",
+  "web-apps/apps/spreadsheeteditor/main/app/controller/Main.js": "d8eb08d199f44e534da999e19d9e066e08633b2f2373491f35abb7f8b1e06bcc",
+  "web-apps/apps/spreadsheeteditor/main/index.html": "0105b1182528c676fd64dcef17512aa75e2f24a1922698b2cd2d8c929da99a79",
+  "web-apps/apps/visioeditor/main/app/controller/Main.js": "1ccf41ff96d01262670f5a0e229db9119341eb028967c5e249063116bbca89b9",
+  "web-apps/apps/visioeditor/main/index.html": "d86361ce69865bb52cbbfe48b6d8ee2d0864078a749fcc097ec69a8e793f160c"
+}

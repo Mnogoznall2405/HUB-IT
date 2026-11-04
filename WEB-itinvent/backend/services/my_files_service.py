@@ -32,8 +32,13 @@ from backend.appdb.models import (
     AppMyFileCollaborator,
     AppMyFileDownloadGrant,
     AppMyFileFolder,
+    AppMyFileFolderCollaborator,
+    AppMyFileLibrary,
+    AppMyFileLibraryMember,
     AppMyFilePreview,
     AppMyFileVersion,
+    AppDepartment,
+    AppDepartmentMembership,
     AppUser,
 )
 from backend.services.hubit_storage import HubitStorageError
@@ -112,6 +117,14 @@ ZSTD_SKIP_EXTENSIONS = {
 PREVIEW_UNAVAILABLE_MESSAGE = "Preview is temporarily unavailable. Download is still available."
 
 _UNSET = object()
+
+# What a collaborator may do with a file or folder: higher rank includes the lower ones.
+_ACCESS_ROLE_RANK = {"view": 1, "comment": 2, "edit": 3}
+_FOLDER_CHAIN_LIMIT = 64
+# Library roles: ``manage`` adds access control, trash restore/purge and public links on top of ``edit``.
+_LIBRARY_ROLE_RANK = {"view": 1, "comment": 2, "edit": 3, "manage": 4}
+# A library without its own quota is bounded only by the disk.
+LIBRARY_UNLIMITED_BYTES = 1 << 60
 
 
 class MyFilesError(RuntimeError):
@@ -413,6 +426,10 @@ class MyFilesService:
 
     _collab_tables_ready = False
     _collab_tables_checked_at = -60.0
+    _folder_shares_ready = False
+    _folder_shares_checked_at = -60.0
+    _libraries_ready = False
+    _libraries_checked_at = -60.0
 
     def __init__(
         self,
@@ -443,6 +460,9 @@ class MyFilesService:
         self._antivirus_scanner = antivirus_scanner or scan_my_file
         self._reservation_lock = threading.RLock()
         self._upload_locks = [threading.RLock() for _ in range(64)]
+        # Byte ranges whose disk write is in flight, per upload: (start, end, done-event).
+        self._chunk_inflight: dict[str, list[tuple[int, int, threading.Event]]] = {}
+        self._chunk_inflight_lock = threading.Lock()
         self._legacy_share_migration_disabled = False
         self._last_stale_cleanup_at = float("-inf")
         self._last_tmp_cleanup_at = float("-inf")
@@ -487,6 +507,7 @@ class MyFilesService:
         meta: MyFilesRequestMeta | None = None,
         actor_user_id: int | None = None,
         actor_username: str | None = None,
+        details: str = "",
     ) -> None:
         safe_meta = meta or MyFilesRequestMeta()
         resolved_user_id = (
@@ -507,6 +528,7 @@ class MyFilesService:
                 actor_username=resolved_username,
                 ip_address=_normalize_text(safe_meta.ip_address)[:128],
                 user_agent=_normalize_text(safe_meta.user_agent)[:1024],
+                details=_normalize_text(details)[:1000],
                 created_at=_utc_now(),
             )
         )
@@ -559,6 +581,7 @@ class MyFilesService:
             "actor_username": _normalize_text(row.actor_username),
             "ip_address": _normalize_text(row.ip_address),
             "user_agent": _normalize_text(row.user_agent),
+            "details": _normalize_text(row.details),
             "created_at": _coerce_utc(row.created_at),
         }
 
@@ -607,7 +630,17 @@ class MyFilesService:
             "preview_max_bytes": preview_max_bytes,
         }
 
-    def _response(self, row: AppMyFile, session=None, *, preview: Any = _UNSET, folder_name: str = "") -> dict[str, Any]:
+    def _response(
+        self,
+        row: AppMyFile,
+        session=None,
+        *,
+        preview: Any = _UNSET,
+        folder_name: str = "",
+        collaborators_count: int = 0,
+        shared_with_me: bool = False,
+        my_role: str = "",
+    ) -> dict[str, Any]:
         original_size = int(row.original_size_bytes or 0)
         stored_size = int(row.stored_size_bytes or 0)
         preview_summary = (
@@ -638,6 +671,10 @@ class MyFilesService:
             **preview_summary,
             "is_shared": bool(_normalize_text(row.share_token_hash)),
             "is_favorite": bool(getattr(row, "is_favorite", False)),
+            "collaborators_count": int(collaborators_count or 0),
+            "shared_with_me": bool(shared_with_me),
+            "my_role": _normalize_text(my_role),
+            "owner_username": _normalize_text(row.owner_username) if shared_with_me else "",
             "folder_name": _normalize_text(folder_name),
             "share_expires_at": _coerce_utc(row.expires_at),
             "created_at": _coerce_utc(row.created_at),
@@ -682,11 +719,560 @@ class MyFilesService:
         try:
             with session.begin_nested():
                 session.execute(select(AppMyFileVersion.id).limit(1))
-                session.execute(select(AppMyFileCollaborator.file_id).limit(1))
+                session.execute(select(AppMyFileCollaborator.file_id, AppMyFileCollaborator.role).limit(1))
         except SQLAlchemyError:
             return False
         self._collab_tables_ready = True
         return True
+
+    def _collab_counts_locked(
+        self,
+        session,
+        file_ids,
+        *,
+        inherited_user_ids: frozenset[int] = frozenset(),
+    ) -> dict[str, int]:
+        """People with access per file, for the "co-editing" mark on file rows.
+
+        ``inherited_user_ids`` are the users who reach every listed file through a folder grant.
+        """
+        ids = [_normalize_text(item) for item in file_ids if _normalize_text(item)]
+        if not ids or not self._collab_tables_present(session):
+            return {}
+        direct: dict[str, set[int]] = {}
+        for file_id, member_id in session.execute(
+            select(AppMyFileCollaborator.file_id, AppMyFileCollaborator.user_id).where(
+                AppMyFileCollaborator.file_id.in_(ids)
+            )
+        ).all():
+            direct.setdefault(_normalize_text(file_id), set()).add(int(member_id))
+        counts: dict[str, int] = {}
+        for file_id in ids:
+            total = len(direct.get(file_id, set()) | set(inherited_user_ids))
+            if total:
+                counts[file_id] = total
+        return counts
+
+    # -- shared libraries -------------------------------------------------------------------
+
+    def _libraries_present(self, session) -> bool:
+        """Library tables come from their own release migration; stay inert until applied."""
+        if self._libraries_ready:
+            return True
+        now = time.monotonic()
+        if now - self._libraries_checked_at < 60:
+            return False
+        self._libraries_checked_at = now
+        try:
+            with session.begin_nested():
+                session.execute(select(AppMyFileLibrary.id, AppMyFileLibrary.quota_bytes).limit(1))
+                session.execute(select(AppMyFileLibraryMember.library_id, AppMyFileLibraryMember.role).limit(1))
+                session.execute(select(AppMyFile.uploaded_by_user_id).limit(1))
+        except SQLAlchemyError:
+            return False
+        self._libraries_ready = True
+        return True
+
+    @staticmethod
+    def _norm_library_role(value: Any) -> str:
+        role = _normalize_text(value).lower()
+        return role if role in _LIBRARY_ROLE_RANK else "view"
+
+    def _library_by_owner_locked(self, session, owner_user_id: int) -> AppMyFileLibrary | None:
+        if int(owner_user_id) >= 0 or not self._libraries_present(session):
+            return None
+        return session.scalars(
+            select(AppMyFileLibrary).where(
+                AppMyFileLibrary.owner_user_id == int(owner_user_id),
+                AppMyFileLibrary.deleted_at.is_(None),
+            )
+        ).first()
+
+    @staticmethod
+    def _user_department_ids_locked(session, user_id: int) -> set[str]:
+        """Active departments the user belongs to (library membership follows them live)."""
+        return {
+            _normalize_text(department_id)
+            for department_id in session.scalars(
+                select(AppDepartmentMembership.department_id)
+                .join(AppDepartment, AppDepartment.id == AppDepartmentMembership.department_id)
+                .where(
+                    AppDepartmentMembership.user_id == int(user_id),
+                    AppDepartmentMembership.is_active.is_(True),
+                    AppDepartment.is_active.is_(True),
+                )
+            ).all()
+        }
+
+    def library_role_locked(self, session, library: AppMyFileLibrary, user_id: int) -> str:
+        """Best role of the user in the library: own entry or through any of the user's departments."""
+        condition = (AppMyFileLibraryMember.principal_type == "user") & (
+            AppMyFileLibraryMember.principal_id == str(int(user_id))
+        )
+        department_ids = self._user_department_ids_locked(session, user_id)
+        if department_ids:
+            condition = condition | (
+                (AppMyFileLibraryMember.principal_type == "department")
+                & AppMyFileLibraryMember.principal_id.in_(department_ids)
+            )
+        roles = session.scalars(
+            select(AppMyFileLibraryMember.role).where(AppMyFileLibraryMember.library_id == library.id, condition)
+        ).all()
+        best = ""
+        for role in roles:
+            role = self._norm_library_role(role)
+            if _LIBRARY_ROLE_RANK[role] > _LIBRARY_ROLE_RANK.get(best, 0):
+                best = role
+        return best
+
+    def library_member_user_ids_locked(self, session, library_id: str, roles) -> set[int]:
+        """Users whose library role is in ``roles``, departments expanded to their current members."""
+        members = session.scalars(
+            select(AppMyFileLibraryMember).where(AppMyFileLibraryMember.library_id == _normalize_text(library_id))
+        ).all()
+        user_ids: set[int] = set()
+        department_ids: set[str] = set()
+        for member in members:
+            if self._norm_library_role(member.role) not in roles:
+                continue
+            if member.principal_type == "user":
+                try:
+                    user_ids.add(int(member.principal_id))
+                except (TypeError, ValueError):
+                    continue
+            elif member.principal_type == "department":
+                department_ids.add(_normalize_text(member.principal_id))
+        if department_ids:
+            user_ids |= {
+                int(user_id)
+                for user_id in session.scalars(
+                    select(AppDepartmentMembership.user_id).where(
+                        AppDepartmentMembership.department_id.in_(department_ids),
+                        AppDepartmentMembership.is_active.is_(True),
+                    )
+                ).all()
+            }
+        return user_ids
+
+    def may_act_locked(self, session, actor_id: int, owner_user_id: int, need: str = "edit") -> bool:
+        """True when the actor may change things owned by ``owner_user_id``.
+
+        A person acts on their own files; a library (negative owner) needs a member role of at least ``need``
+        (``edit`` for content, ``manage`` for trash restore/purge and public links).
+        """
+        owner = int(owner_user_id)
+        actor = int(actor_id)
+        if actor > 0 and owner == actor:
+            return True
+        library = self._library_by_owner_locked(session, owner)
+        if library is None or actor <= 0:
+            return False
+        role = self.library_role_locked(session, library, actor)
+        return _LIBRARY_ROLE_RANK.get(role, 0) >= _LIBRARY_ROLE_RANK[need]
+
+    def library_access_role_locked(self, session, owner_user_id: int, user_id: int) -> str:
+        """Library role of the user for a library-owned item, ``""`` for a personal item or no access."""
+        library = self._library_by_owner_locked(session, owner_user_id)
+        if library is None:
+            return ""
+        return self.library_role_locked(session, library, user_id)
+
+    # -- folder-level access ----------------------------------------------------------------
+
+    def _folder_shares_present(self, session) -> bool:
+        """The folder-access table comes from its own release migration; stay inert until applied."""
+        if self._folder_shares_ready:
+            return True
+        now = time.monotonic()
+        if now - self._folder_shares_checked_at < 60:
+            return False
+        self._folder_shares_checked_at = now
+        try:
+            with session.begin_nested():
+                session.execute(
+                    select(AppMyFileFolderCollaborator.folder_id, AppMyFileFolderCollaborator.role).limit(1)
+                )
+        except SQLAlchemyError:
+            return False
+        self._folder_shares_ready = True
+        return True
+
+    @staticmethod
+    def _norm_access_role(value: Any) -> str:
+        role = _normalize_text(value).lower()
+        return role if role in _ACCESS_ROLE_RANK else "edit"
+
+    @staticmethod
+    def _best_access_role(*roles: str) -> str:
+        best = ""
+        for role in roles:
+            if _ACCESS_ROLE_RANK.get(role, 0) > _ACCESS_ROLE_RANK.get(best, 0):
+                best = role
+        return best
+
+    @staticmethod
+    def _folder_chain_locked(session, folder_id: str | None, owner_user_id: int) -> list[str]:
+        """Folder ids from ``folder_id`` up to the root; empty when any link is deleted or foreign.
+
+        A deleted folder anywhere above revokes inherited access, and the length is capped so a
+        broken parent link cannot loop forever.
+        """
+        chain: list[str] = []
+        current = _normalize_text(folder_id)
+        while current and current not in chain:
+            if len(chain) >= _FOLDER_CHAIN_LIMIT:
+                break
+            folder = session.get(AppMyFileFolder, current)
+            if folder is None or folder.deleted_at is not None or int(folder.owner_user_id) != int(owner_user_id):
+                return []
+            chain.append(folder.id)
+            current = _normalize_text(folder.parent_id)
+        return chain
+
+    def _folder_role_locked(self, session, folder_id: str | None, owner_user_id: int, user_id: int) -> str:
+        """Best role a user holds on a folder through grants on it or on any parent."""
+        if not _normalize_text(folder_id) or not self._folder_shares_present(session):
+            return ""
+        chain = self._folder_chain_locked(session, folder_id, owner_user_id)
+        if not chain:
+            return ""
+        roles = session.scalars(
+            select(AppMyFileFolderCollaborator.role).where(
+                AppMyFileFolderCollaborator.folder_id.in_(chain),
+                AppMyFileFolderCollaborator.user_id == int(user_id),
+            )
+        ).all()
+        return self._best_access_role(*[self._norm_access_role(role) for role in roles])
+
+    def effective_role_locked(self, session, row: AppMyFile, user_id: int) -> str:
+        """``owner``, the best of the file's own role and the roles of its folders, or ``""`` for no access."""
+        if int(row.owner_user_id) == int(user_id):
+            return "owner"
+        if int(row.owner_user_id) < 0:
+            # Library files: the library role decides; a manager has the owner's powers.
+            library_role = self.library_access_role_locked(session, row.owner_user_id, user_id)
+            return "owner" if library_role == "manage" else library_role
+        direct = ""
+        if self._collab_tables_present(session):
+            member = session.get(AppMyFileCollaborator, (row.id, int(user_id)))
+            if member is not None:
+                direct = self._norm_access_role(member.role)
+        inherited = self._folder_role_locked(session, row.folder_id, row.owner_user_id, user_id)
+        return self._best_access_role(direct, inherited)
+
+    def writer_ids_locked(self, session, row: AppMyFile, writing_roles) -> set[int]:
+        """Owner plus everyone whose own or folder-inherited role lets them change the file."""
+        allowed = {int(row.owner_user_id)}
+        if int(row.owner_user_id) < 0:
+            library = self._library_by_owner_locked(session, row.owner_user_id)
+            if library is not None:
+                library_roles = {role for role in writing_roles if role in _LIBRARY_ROLE_RANK} | {"manage"}
+                allowed |= self.library_member_user_ids_locked(session, library.id, library_roles)
+            return allowed
+        if self._collab_tables_present(session):
+            allowed |= {
+                int(item.user_id)
+                for item in session.scalars(
+                    select(AppMyFileCollaborator).where(AppMyFileCollaborator.file_id == row.id)
+                ).all()
+                if self._norm_access_role(item.role) in writing_roles
+            }
+        chain = (
+            self._folder_chain_locked(session, row.folder_id, row.owner_user_id)
+            if _normalize_text(row.folder_id) and self._folder_shares_present(session)
+            else []
+        )
+        if chain:
+            allowed |= {
+                int(item.user_id)
+                for item in session.scalars(
+                    select(AppMyFileFolderCollaborator).where(AppMyFileFolderCollaborator.folder_id.in_(chain))
+                ).all()
+                if self._norm_access_role(item.role) in writing_roles
+            }
+        return allowed
+
+    def folder_grant_user_ids_locked(self, session, folder_id: str | None, owner_user_id: int) -> set[int]:
+        """Everyone holding a grant on the folder or on one of its parents."""
+        if not _normalize_text(folder_id) or not self._folder_shares_present(session):
+            return set()
+        chain = self._folder_chain_locked(session, folder_id, owner_user_id)
+        if not chain:
+            return set()
+        return {
+            int(user_id)
+            for user_id in session.scalars(
+                select(AppMyFileFolderCollaborator.user_id).where(AppMyFileFolderCollaborator.folder_id.in_(chain))
+            ).all()
+        }
+
+    def _folder_grants_for_user_locked(self, session, user_id: int) -> list[tuple[AppMyFileFolder, str]]:
+        """Live folders the user was granted directly, with the granted role."""
+        if not self._folder_shares_present(session):
+            return []
+        rows = session.execute(
+            select(AppMyFileFolder, AppMyFileFolderCollaborator.role)
+            .join(AppMyFileFolderCollaborator, AppMyFileFolderCollaborator.folder_id == AppMyFileFolder.id)
+            .where(
+                AppMyFileFolderCollaborator.user_id == int(user_id),
+                AppMyFileFolder.deleted_at.is_(None),
+            )
+        ).all()
+        return [
+            (folder, self._norm_access_role(role))
+            for folder, role in rows
+            if self._folder_chain_locked(session, folder.id, folder.owner_user_id)
+        ]
+
+    def shared_rows_locked(self, session, user_id: int, now: datetime) -> list[tuple[AppMyFile, str]]:
+        """Every live file the user may open: shared on its own or through a folder (best role wins)."""
+        found: dict[str, tuple[AppMyFile, str]] = {}
+        if self._collab_tables_present(session):
+            for row, role in session.execute(
+                select(AppMyFile, AppMyFileCollaborator.role)
+                .join(AppMyFileCollaborator, AppMyFileCollaborator.file_id == AppMyFile.id)
+                .where(
+                    AppMyFileCollaborator.user_id == int(user_id),
+                    AppMyFile.deleted_at.is_(None),
+                    AppMyFile.status == STATUS_READY,
+                    AppMyFile.expires_at > now,
+                )
+            ).all():
+                found[row.id] = (row, self._norm_access_role(role))
+        for folder, role in self._folder_grants_for_user_locked(session, user_id):
+            folder_ids = [
+                folder.id,
+                *self._folder_descendant_ids_locked(session, owner_user_id=folder.owner_user_id, folder_id=folder.id),
+            ]
+            for row in session.scalars(
+                select(AppMyFile).where(
+                    AppMyFile.owner_user_id == int(folder.owner_user_id),
+                    AppMyFile.folder_id.in_(folder_ids),
+                    AppMyFile.deleted_at.is_(None),
+                    AppMyFile.status == STATUS_READY,
+                    AppMyFile.expires_at > now,
+                )
+            ).all():
+                previous = found.get(row.id)
+                found[row.id] = (row, self._best_access_role(previous[1], role) if previous else role)
+        return sorted(found.values(), key=lambda item: _coerce_utc(item[0].updated_at) or now, reverse=True)
+
+    def _shared_folder_response(
+        self,
+        folder: AppMyFileFolder,
+        *,
+        role: str,
+        owner_username: str,
+        collaborators_count: int,
+        file_count: int = 0,
+    ) -> dict[str, Any]:
+        payload = self._folder_response(
+            folder,
+            collaborators_count=collaborators_count,
+            shared_with_me=True,
+            my_role=role,
+            owner_username=owner_username,
+        )
+        payload["file_count"] = int(file_count)
+        return payload
+
+    def _folder_grant_counts_locked(self, session, folder_ids) -> dict[str, int]:
+        ids = [_normalize_text(item) for item in folder_ids if _normalize_text(item)]
+        if not ids or not self._folder_shares_present(session):
+            return {}
+        return {
+            _normalize_text(folder_id): int(count)
+            for folder_id, count in session.execute(
+                select(AppMyFileFolderCollaborator.folder_id, func.count(AppMyFileFolderCollaborator.user_id))
+                .where(AppMyFileFolderCollaborator.folder_id.in_(ids))
+                .group_by(AppMyFileFolderCollaborator.folder_id)
+            ).all()
+        }
+
+    def _owner_username_locked(self, session, owner_user_id: int) -> str:
+        if int(owner_user_id) < 0:
+            library = self._library_by_owner_locked(session, owner_user_id)
+            return _normalize_text(getattr(library, "name", "")) or f"library-{abs(int(owner_user_id))}"
+        user = session.get(AppUser, int(owner_user_id))
+        return _normalize_text(getattr(user, "username", "")) or f"user-{int(owner_user_id)}"
+
+    def _list_shared_with_me_locked(
+        self,
+        session,
+        user_id: int,
+        now: datetime,
+        folder_id: str | None = None,
+    ) -> dict[str, Any]:
+        if _normalize_text(folder_id):
+            return self._list_shared_folder_locked(session, int(user_id), _normalize_text(folder_id), now)
+        direct: list[tuple[AppMyFile, str]] = []
+        if self._collab_tables_present(session):
+            direct = [
+                (row, self._norm_access_role(role))
+                for row, role in session.execute(
+                    select(AppMyFile, AppMyFileCollaborator.role)
+                    .join(AppMyFileCollaborator, AppMyFileCollaborator.file_id == AppMyFile.id)
+                    .where(
+                        AppMyFileCollaborator.user_id == int(user_id),
+                        AppMyFile.deleted_at.is_(None),
+                        AppMyFile.status == STATUS_READY,
+                        AppMyFile.expires_at > now,
+                    )
+                    .order_by(AppMyFile.updated_at.desc())
+                ).all()
+            ]
+        counts = self._collab_counts_locked(session, [row.id for row, _role in direct])
+        grants = self._folder_grants_for_user_locked(session, user_id)
+        granted_ids = {folder.id for folder, _role in grants}
+        top = [
+            (folder, role)
+            for folder, role in grants
+            if not any(
+                ancestor in granted_ids
+                for ancestor in self._folder_chain_locked(session, folder.parent_id, folder.owner_user_id)
+            )
+        ]
+        grant_counts = self._folder_grant_counts_locked(session, [folder.id for folder, _role in top])
+        folder_payloads = [
+            self._shared_folder_response(
+                folder,
+                role=role,
+                owner_username=self._owner_username_locked(session, folder.owner_user_id),
+                collaborators_count=grant_counts.get(folder.id, 0),
+                file_count=self._folder_subtree_file_count_locked(session, folder, now),
+            )
+            for folder, role in sorted(top, key=lambda item: _normalize_text(item[0].name).casefold())
+        ]
+        return {
+            "items": [
+                self._response(
+                    row,
+                    session=session,
+                    collaborators_count=counts.get(_normalize_text(row.id), 0),
+                    shared_with_me=True,
+                    my_role=role,
+                )
+                for row, role in direct
+            ],
+            "folders": folder_payloads,
+            "breadcrumbs": [],
+            "folder": None,
+        }
+
+    def _folder_subtree_file_count_locked(self, session, folder: AppMyFileFolder, now: datetime) -> int:
+        folder_ids = [
+            folder.id,
+            *self._folder_descendant_ids_locked(session, owner_user_id=folder.owner_user_id, folder_id=folder.id),
+        ]
+        return int(
+            session.execute(
+                select(func.count(AppMyFile.id)).where(
+                    AppMyFile.owner_user_id == int(folder.owner_user_id),
+                    AppMyFile.folder_id.in_(folder_ids),
+                    AppMyFile.deleted_at.is_(None),
+                    AppMyFile.status == STATUS_READY,
+                    AppMyFile.expires_at > now,
+                )
+            ).scalar()
+            or 0
+        )
+
+    def _list_shared_folder_locked(self, session, user_id: int, folder_id: str, now: datetime) -> dict[str, Any]:
+        """Content of a folder opened through a grant; only folders inside a shared subtree qualify."""
+        folder = session.get(AppMyFileFolder, folder_id)
+        if folder is None or folder.deleted_at is not None or int(folder.owner_user_id) == int(user_id):
+            raise MyFilesNotFoundError("Folder not found")
+        role = self._folder_role_locked(session, folder.id, folder.owner_user_id, user_id)
+        if not role:
+            raise MyFilesNotFoundError("Folder not found")
+        owner_id = int(folder.owner_user_id)
+        owner_name = self._owner_username_locked(session, owner_id)
+        chain = self._folder_chain_locked(session, folder.id, owner_id)  # folder first, root last
+        granted = {
+            _normalize_text(item)
+            for item in session.scalars(
+                select(AppMyFileFolderCollaborator.folder_id).where(
+                    AppMyFileFolderCollaborator.folder_id.in_(chain),
+                    AppMyFileFolderCollaborator.user_id == int(user_id),
+                )
+            ).all()
+        }
+        top_index = max(index for index, item in enumerate(chain) if item in granted)
+        breadcrumbs = []
+        for crumb_id in reversed(chain[: top_index + 1]):
+            crumb = session.get(AppMyFileFolder, crumb_id)
+            breadcrumbs.append(
+                self._shared_folder_response(crumb, role=role, owner_username=owner_name, collaborators_count=0)
+            )
+        files = session.scalars(
+            select(AppMyFile)
+            .where(
+                AppMyFile.owner_user_id == owner_id,
+                AppMyFile.folder_id == folder.id,
+                AppMyFile.deleted_at.is_(None),
+                AppMyFile.status == STATUS_READY,
+                AppMyFile.expires_at > now,
+            )
+            .order_by(AppMyFile.created_at.desc())
+        ).all()
+        direct_roles: dict[str, str] = {}
+        if files and self._collab_tables_present(session):
+            direct_roles = {
+                _normalize_text(file_id): self._norm_access_role(file_role)
+                for file_id, file_role in session.execute(
+                    select(AppMyFileCollaborator.file_id, AppMyFileCollaborator.role).where(
+                        AppMyFileCollaborator.file_id.in_([row.id for row in files]),
+                        AppMyFileCollaborator.user_id == int(user_id),
+                    )
+                ).all()
+            }
+        children = session.scalars(
+            select(AppMyFileFolder)
+            .where(AppMyFileFolder.owner_user_id == owner_id, AppMyFileFolder.parent_id == folder.id, AppMyFileFolder.deleted_at.is_(None))
+            .order_by(AppMyFileFolder.name.asc())
+        ).all()
+        child_roles: dict[str, str] = {}
+        if children:
+            child_roles = {
+                _normalize_text(child_id): self._norm_access_role(child_role)
+                for child_id, child_role in session.execute(
+                    select(AppMyFileFolderCollaborator.folder_id, AppMyFileFolderCollaborator.role).where(
+                        AppMyFileFolderCollaborator.folder_id.in_([child.id for child in children]),
+                        AppMyFileFolderCollaborator.user_id == int(user_id),
+                    )
+                ).all()
+            }
+        return {
+            "items": [
+                self._response(
+                    row,
+                    session=session,
+                    shared_with_me=True,
+                    my_role=self._best_access_role(role, direct_roles.get(row.id, "")),
+                )
+                for row in files
+            ],
+            "folders": [
+                self._shared_folder_response(
+                    child,
+                    role=self._best_access_role(role, child_roles.get(child.id, "")),
+                    owner_username=owner_name,
+                    collaborators_count=0,
+                    file_count=self._folder_subtree_file_count_locked(session, child, now),
+                )
+                for child in children
+            ],
+            "breadcrumbs": breadcrumbs,
+            "folder": self._shared_folder_response(folder, role=role, owner_username=owner_name, collaborators_count=0),
+        }
+
+    def _release_folder_shares_locked(self, session, folder_ids) -> None:
+        """Drop the access grants of folders that are being removed for good."""
+        ids = [_normalize_text(item) for item in folder_ids if _normalize_text(item)]
+        if ids and self._folder_shares_present(session):
+            session.execute(
+                delete(AppMyFileFolderCollaborator).where(AppMyFileFolderCollaborator.folder_id.in_(ids))
+            )
 
     def _release_file_collab_locked(self, session, file_id: str, blob_paths: list[Path]) -> None:
         """Drop version history and collaborators of a file that is being purged."""
@@ -728,6 +1314,10 @@ class MyFilesService:
         return int(session.execute(query).scalar() or 0)
 
     def _user_quota_limit_locked(self, session, user_id: int) -> int:
+        if int(user_id) < 0:
+            library = self._library_by_owner_locked(session, user_id)
+            limit = int(library.quota_bytes or 0) if library is not None else 0
+            return limit if limit > 0 else LIBRARY_UNLIMITED_BYTES
         row = session.get(AppUser, int(user_id))
         override = int(row.my_files_quota_bytes or 0) if row is not None else 0
         if override <= 0:
@@ -757,6 +1347,7 @@ class MyFilesService:
         folder_id: str | None = None,
         meta: MyFilesRequestMeta | None = None,
         reuse_existing: bool = False,
+        library_id: str | None = None,
     ) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
         now_monotonic = time.monotonic()
@@ -765,8 +1356,8 @@ class MyFilesService:
             # not run for every chunk-session open. The worker sweeps too.
             self._last_stale_cleanup_at = now_monotonic
             self.cleanup_stale_uploads(limit=100)
-        owner_user_id = _actor_id(actor)
-        if owner_user_id <= 0:
+        actor_id = _actor_id(actor)
+        if actor_id <= 0:
             raise MyFilesValidationError("Authenticated user is required")
         safe_name = _safe_file_name(original_file_name)
         safe_mime = _guess_mime(safe_name, mime_type)
@@ -776,13 +1367,20 @@ class MyFilesService:
             raise MyFilesValidationError("File is empty")
 
         now = _utc_now()
-        if safe_days == FOREVER_RETENTION_DAYS:
-            expires_at = now + timedelta(days=FOREVER_EXPIRES_DAYS)
-        else:
-            expires_at = now + timedelta(days=safe_days)
         limits = config.my_files_security
         with self._reservation_lock:
             with app_session(database_url) as session:
+                owner_user_id = self._upload_owner_locked(
+                    session, actor_id=actor_id, folder_id=folder_id, library_id=library_id
+                )
+                in_library = owner_user_id < 0
+                if in_library:
+                    # Library files are kept until someone deletes them.
+                    safe_days = FOREVER_RETENTION_DAYS
+                if safe_days == FOREVER_RETENTION_DAYS:
+                    expires_at = now + timedelta(days=FOREVER_EXPIRES_DAYS)
+                else:
+                    expires_at = now + timedelta(days=safe_days)
                 self._lock_reservation_locked(session, owner_user_id)
                 if reuse_existing:
                     # Atomic find-or-create: a concurrent retried upload of the
@@ -800,6 +1398,8 @@ class MyFilesService:
                         AppMyFile.original_size_bytes == size,
                         AppMyFile.updated_at > resume_cutoff,
                     )
+                    if in_library:
+                        resume_query = resume_query.where(AppMyFile.uploaded_by_user_id == actor_id)
                     if normalized_folder:
                         resume_query = resume_query.where(AppMyFile.folder_id == normalized_folder)
                     else:
@@ -812,12 +1412,14 @@ class MyFilesService:
                 used = self._quota_used_locked(session, owner_user_id)
                 if used + size > self._user_quota_limit_locked(session, owner_user_id):
                     raise MyFilesValidationError("User storage quota exceeded")
-                if self._count_statuses_locked(session, [STATUS_UPLOADING], user_id=owner_user_id) >= limits.max_uploading_per_user:
+                # Per-person caps follow the uploader; a library is shared by many people, so only the
+                # global caps bound it.
+                if not in_library and self._count_statuses_locked(session, [STATUS_UPLOADING], user_id=owner_user_id) >= limits.max_uploading_per_user:
                     raise MyFilesCapacityError("Too many concurrent uploads for this user")
                 if self._count_statuses_locked(session, [STATUS_UPLOADING]) >= limits.max_uploading_global:
                     raise MyFilesCapacityError("Upload capacity is temporarily exhausted")
                 active_statuses = [STATUS_UPLOADING, STATUS_QUEUED, STATUS_SCANNING, STATUS_PROCESSING]
-                if self._count_statuses_locked(session, active_statuses, user_id=owner_user_id) >= limits.max_active_jobs_per_user:
+                if not in_library and self._count_statuses_locked(session, active_statuses, user_id=owner_user_id) >= limits.max_active_jobs_per_user:
                     raise MyFilesCapacityError("Too many files are already queued for this user")
                 if self._count_statuses_locked(session, active_statuses) >= limits.max_active_jobs_global:
                     raise MyFilesCapacityError("File processing queue is full")
@@ -827,7 +1429,10 @@ class MyFilesService:
                 row = AppMyFile(
                     id=uuid.uuid4().hex,
                     owner_user_id=owner_user_id,
-                    owner_username=_actor_username(actor),
+                    owner_username=(
+                        self._owner_username_locked(session, owner_user_id)[:50] if in_library else _actor_username(actor)
+                    ),
+                    uploaded_by_user_id=actor_id if in_library else None,
                     folder_id=target_folder.id if target_folder else None,
                     original_file_name=safe_name,
                     download_file_name=safe_name,
@@ -849,18 +1454,51 @@ class MyFilesService:
                 self._write_audit(session, action="upload_reserved", row=row, actor=actor, meta=meta)
                 return self._response(row, session=session)
 
+    def _upload_owner_locked(
+        self,
+        session,
+        *,
+        actor_id: int,
+        folder_id: str | None,
+        library_id: str | None,
+    ) -> int:
+        """Owner namespace an upload lands in: the actor's own files, or a library the actor may write to."""
+        owner = int(actor_id)
+        normalized_folder = _normalize_text(folder_id)
+        normalized_library = _normalize_text(library_id)
+        if normalized_folder:
+            folder = session.get(AppMyFileFolder, normalized_folder)
+            if folder is None or folder.deleted_at is not None:
+                raise MyFilesNotFoundError("Folder not found")
+            owner = int(folder.owner_user_id)
+        elif normalized_library:
+            library = session.get(AppMyFileLibrary, normalized_library) if self._libraries_present(session) else None
+            if library is None or library.deleted_at is not None:
+                raise MyFilesNotFoundError("Library not found")
+            owner = int(library.owner_user_id)
+        if not self.may_act_locked(session, actor_id, owner, "edit"):
+            raise MyFilesNotFoundError("Folder not found" if normalized_folder else "Library not found")
+        return owner
+
+    @staticmethod
+    def _upload_belongs_to(row: AppMyFile, user_id: int) -> bool:
+        """Chunks, completion and abort belong to the person who reserved the upload."""
+        uid = int(user_id)
+        if int(row.owner_user_id) == uid:
+            return True
+        return int(row.owner_user_id) < 0 and int(row.uploaded_by_user_id or 0) == uid
+
     @staticmethod
     def _active_upload_locked(session, *, file_id: str, user_id: int) -> AppMyFile:
         row = session.scalars(
             select(AppMyFile)
             .where(
                 AppMyFile.id == _normalize_text(file_id),
-                AppMyFile.owner_user_id == int(user_id),
                 AppMyFile.deleted_at.is_(None),
             )
             .with_for_update()
         ).first()
-        if row is None:
+        if row is None or not MyFilesService._upload_belongs_to(row, user_id):
             raise MyFilesNotFoundError("File not found")
         if row.status != STATUS_UPLOADING:
             raise MyFilesValidationError("Upload reservation is not active")
@@ -932,65 +1570,91 @@ class MyFilesService:
         if len(chunk) > UPLOAD_CHUNK_MAX_SIZE_BYTES:
             raise MyFilesValidationError("Upload chunk exceeds size limit")
 
-        with self._upload_lock(file_id), app_session(database_url) as session:
-            row = self._active_upload_locked(session, file_id=file_id, user_id=user_id)
-            spool_path = Path(_normalize_text(row.spool_path))
-            if not _normalize_text(row.spool_path):
-                raise MyFilesValidationError("Upload payload path is missing")
-            try:
-                ensure_storage_ready(spool_path)
-            except HubitStorageError as exc:
-                raise MyFilesCapacityError(str(exc)) from exc
-            spool_path.parent.mkdir(parents=True, exist_ok=True)
-            expected_size = int(row.original_size_bytes or 0)
-            end_offset = requested_offset + len(chunk)
-
-            if end_offset > expected_size:
-                raise MyFilesValidationError("Upload chunk exceeds reservation")
-
-            parts_path = self._spool_parts_path(spool_path)
-            ranges = self._spool_ranges(spool_path)
-            if _spool_range_covered(ranges, requested_offset, end_offset):
-                with spool_path.open("rb") as source:
-                    source.seek(requested_offset)
-                    if source.read(len(chunk)) != chunk:
-                        raise MyFilesValidationError("Upload chunk retry does not match stored data")
-                return self._upload_session_response(row, spool_path)
-            if _spool_range_overlaps(ranges, requested_offset, end_offset):
-                raise MyFilesValidationError("Upload chunk overlaps partially stored data")
-
-        # Chunk ranges are disjoint by the journal check above, so the slow
-        # SMB write runs outside the per-file lock; parallel chunk workers
-        # then actually overlap instead of serializing on one handle.
-        fd = os.open(spool_path, os.O_RDWR | os.O_CREAT | os.O_BINARY, 0o666)
+        reservation: tuple[int, int, threading.Event] | None = None
         try:
-            os.lseek(fd, requested_offset, os.SEEK_SET)
-            view = memoryview(chunk)
-            while view:
-                view = view[os.write(fd, view):]
-            try:
-                os.fsync(fd)
-            except OSError:
-                pass
-        finally:
-            os.close(fd)
+            while reservation is None:
+                with self._upload_lock(file_id), app_session(database_url) as session:
+                    row = self._active_upload_locked(session, file_id=file_id, user_id=user_id)
+                    spool_path = Path(_normalize_text(row.spool_path))
+                    if not _normalize_text(row.spool_path):
+                        raise MyFilesValidationError("Upload payload path is missing")
+                    try:
+                        ensure_storage_ready(spool_path)
+                    except HubitStorageError as exc:
+                        raise MyFilesCapacityError(str(exc)) from exc
+                    spool_path.parent.mkdir(parents=True, exist_ok=True)
+                    expected_size = int(row.original_size_bytes or 0)
+                    end_offset = requested_offset + len(chunk)
 
-        with self._upload_lock(file_id), app_session(database_url) as session:
-            row = self._active_upload_locked(session, file_id=file_id, user_id=user_id)
-            ranges = self._spool_ranges(spool_path)
-            if _spool_range_covered(ranges, requested_offset, end_offset):
-                # A duplicate writer committed the same range first.
-                with spool_path.open("rb") as source:
-                    source.seek(requested_offset)
-                    if source.read(len(chunk)) != chunk:
-                        raise MyFilesValidationError("Upload chunk retry does not match stored data")
-                return self._upload_session_response(row, spool_path)
-            if _spool_range_overlaps(ranges, requested_offset, end_offset):
-                raise MyFilesValidationError("Upload chunk overlaps partially stored data")
-            merged = _merge_spool_range(ranges, requested_offset, end_offset)
-            _store_spool_ranges(parts_path, merged)
-            row.updated_at = _utc_now()
-            return self._upload_session_response(row, spool_path, ranges=merged)
+                    if end_offset > expected_size:
+                        raise MyFilesValidationError("Upload chunk exceeds reservation")
+
+                    parts_path = self._spool_parts_path(spool_path)
+                    ranges = self._spool_ranges(spool_path)
+                    if _spool_range_covered(ranges, requested_offset, end_offset):
+                        with spool_path.open("rb") as source:
+                            source.seek(requested_offset)
+                            if source.read(len(chunk)) != chunk:
+                                raise MyFilesValidationError("Upload chunk retry does not match stored data")
+                        return self._upload_session_response(row, spool_path)
+                    if _spool_range_overlaps(ranges, requested_offset, end_offset):
+                        raise MyFilesValidationError("Upload chunk overlaps partially stored data")
+                    # Claim the range before writing: a second request for the same bytes must
+                    # wait and then verify against what was stored, never write over it.
+                    with self._chunk_inflight_lock:
+                        pending = next(
+                            (
+                                event
+                                for start, end, event in self._chunk_inflight.get(file_id, ())
+                                if start < end_offset and end > requested_offset
+                            ),
+                            None,
+                        )
+                        if pending is None:
+                            reservation = (requested_offset, end_offset, threading.Event())
+                            self._chunk_inflight.setdefault(file_id, []).append(reservation)
+                if reservation is None:
+                    pending.wait(timeout=120)
+
+            # Claimed ranges are disjoint, so the slow SMB write runs outside the
+            # per-file lock and parallel chunk workers still overlap.
+            fd = os.open(spool_path, os.O_RDWR | os.O_CREAT | os.O_BINARY, 0o666)
+            try:
+                os.lseek(fd, requested_offset, os.SEEK_SET)
+                view = memoryview(chunk)
+                while view:
+                    view = view[os.write(fd, view):]
+                try:
+                    os.fsync(fd)
+                except OSError:
+                    pass
+            finally:
+                os.close(fd)
+
+            with self._upload_lock(file_id), app_session(database_url) as session:
+                row = self._active_upload_locked(session, file_id=file_id, user_id=user_id)
+                ranges = self._spool_ranges(spool_path)
+                if _spool_range_covered(ranges, requested_offset, end_offset):
+                    with spool_path.open("rb") as source:
+                        source.seek(requested_offset)
+                        if source.read(len(chunk)) != chunk:
+                            raise MyFilesValidationError("Upload chunk retry does not match stored data")
+                    return self._upload_session_response(row, spool_path)
+                if _spool_range_overlaps(ranges, requested_offset, end_offset):
+                    raise MyFilesValidationError("Upload chunk overlaps partially stored data")
+                merged = _merge_spool_range(ranges, requested_offset, end_offset)
+                _store_spool_ranges(parts_path, merged)
+                row.updated_at = _utc_now()
+                return self._upload_session_response(row, spool_path, ranges=merged)
+        finally:
+            if reservation is not None:
+                with self._chunk_inflight_lock:
+                    claimed = self._chunk_inflight.get(file_id, [])
+                    if reservation in claimed:
+                        claimed.remove(reservation)
+                    if not claimed:
+                        self._chunk_inflight.pop(file_id, None)
+                reservation[2].set()
 
     def complete_upload(
         self,
@@ -1005,7 +1669,7 @@ class MyFilesService:
         size = int(actual_size_bytes or 0)
         with self._upload_lock(file_id), app_session(database_url) as session:
             row = session.get(AppMyFile, _normalize_text(file_id))
-            if row is None or row.owner_user_id != int(user_id) or row.deleted_at is not None:
+            if row is None or not self._upload_belongs_to(row, user_id) or row.deleted_at is not None:
                 raise MyFilesNotFoundError("File not found")
             if row.status != STATUS_UPLOADING:
                 raise MyFilesValidationError("Upload reservation is not active")
@@ -1035,7 +1699,7 @@ class MyFilesService:
         with self._upload_lock(file_id):
             with app_session(database_url) as session:
                 row = session.get(AppMyFile, _normalize_text(file_id))
-                if row is None or row.owner_user_id != int(user_id) or row.deleted_at is not None:
+                if row is None or not self._upload_belongs_to(row, user_id) or row.deleted_at is not None:
                     return
                 if _normalize_text(row.spool_path):
                     spool_path = Path(_normalize_text(row.spool_path))
@@ -1060,6 +1724,8 @@ class MyFilesService:
         original_size_bytes: int,
         retention_days: int,
         folder_id: str | None = None,
+        library_id: str | None = None,
+        meta: MyFilesRequestMeta | None = None,
     ) -> dict[str, Any]:
         reserved = self.reserve_upload(
             actor=actor,
@@ -1069,25 +1735,40 @@ class MyFilesService:
             expected_size_bytes=original_size_bytes,
             retention_days=retention_days,
             folder_id=folder_id,
+            library_id=library_id,
+            meta=meta,
         )
         try:
             return self.complete_upload(
                 file_id=reserved["id"],
                 user_id=_actor_id(actor),
                 actual_size_bytes=original_size_bytes,
+                actor=actor,
+                meta=meta,
             )
         except Exception:
             self.abort_upload(file_id=reserved["id"], user_id=_actor_id(actor))
             raise
 
     @staticmethod
-    def _folder_response(row: AppMyFileFolder) -> dict[str, Any]:
+    def _folder_response(
+        row: AppMyFileFolder,
+        *,
+        collaborators_count: int = 0,
+        shared_with_me: bool = False,
+        my_role: str = "",
+        owner_username: str = "",
+    ) -> dict[str, Any]:
         return {
             "id": _normalize_text(row.id),
             "name": _normalize_text(row.name),
             "parent_id": _normalize_text(row.parent_id) or None,
-            "is_shared": bool(_normalize_text(getattr(row, "share_token_hash", ""))),
-            "is_favorite": bool(getattr(row, "is_favorite", False)),
+            "is_shared": bool(_normalize_text(getattr(row, "share_token_hash", ""))) and not shared_with_me,
+            "is_favorite": bool(getattr(row, "is_favorite", False)) and not shared_with_me,
+            "collaborators_count": int(collaborators_count or 0),
+            "shared_with_me": bool(shared_with_me),
+            "my_role": _normalize_text(my_role),
+            "owner_username": _normalize_text(owner_username),
             "created_at": _coerce_utc(row.created_at),
             "updated_at": _coerce_utc(row.updated_at),
         }
@@ -1152,13 +1833,43 @@ class MyFilesService:
                 stack.append(child)
         return descendants
 
-    def list_folders(self, *, user_id: int) -> list[dict[str, Any]]:
+    def _read_owner_locked(
+        self,
+        session,
+        *,
+        user_id: int,
+        library_id: str | None = None,
+        folder_id: str | None = None,
+        need: str = "view",
+    ) -> int:
+        """Owner namespace to read: the user's own, or a library the user has at least ``need`` in.
+
+        A folder id wins over the library id, so item routes need nothing but the id.
+        """
+        normalized_folder = _normalize_text(folder_id)
+        normalized_library = _normalize_text(library_id)
+        owner = int(user_id)
+        if normalized_folder:
+            folder = session.get(AppMyFileFolder, normalized_folder)
+            if folder is not None and int(folder.owner_user_id) < 0:
+                owner = int(folder.owner_user_id)
+        elif normalized_library:
+            library = session.get(AppMyFileLibrary, normalized_library) if self._libraries_present(session) else None
+            if library is None or library.deleted_at is not None:
+                raise MyFilesNotFoundError("Library not found")
+            owner = int(library.owner_user_id)
+        if owner < 0 and not self.may_act_locked(session, user_id, owner, need):
+            raise MyFilesNotFoundError("Library not found")
+        return owner
+
+    def list_folders(self, *, user_id: int, library_id: str | None = None) -> list[dict[str, Any]]:
         database_url = self._database_url_or_raise()
         with app_session(database_url) as session:
+            owner = self._read_owner_locked(session, user_id=user_id, library_id=library_id)
             rows = session.scalars(
                 select(AppMyFileFolder)
                 .where(
-                    AppMyFileFolder.owner_user_id == int(user_id),
+                    AppMyFileFolder.owner_user_id == owner,
                     AppMyFileFolder.deleted_at.is_(None),
                 )
                 .order_by(AppMyFileFolder.name.asc())
@@ -1178,10 +1889,11 @@ class MyFilesService:
         database_url = self._database_url_or_raise()
         with app_session(database_url) as session:
             chain: list[dict[str, Any]] = []
-            current = self._folder_row_locked(session, owner_user_id=user_id, folder_id=folder_id)
+            owner = self._read_owner_locked(session, user_id=user_id, folder_id=folder_id)
+            current = self._folder_row_locked(session, owner_user_id=owner, folder_id=folder_id)
             if current is None:
                 return chain
-            ancestors = self._folder_map_locked(session, owner_user_id=user_id)
+            ancestors = self._folder_map_locked(session, owner_user_id=owner)
             seen: set[str] = set()
             while current is not None and current.id not in seen:
                 seen.add(current.id)
@@ -1197,10 +1909,11 @@ class MyFilesService:
         name: str,
         parent_id: str | None = None,
         meta: MyFilesRequestMeta | None = None,
+        library_id: str | None = None,
     ) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
-        owner_user_id = _actor_id(actor)
-        if owner_user_id <= 0:
+        actor_id = _actor_id(actor)
+        if actor_id <= 0:
             raise MyFilesValidationError("Authenticated user is required")
         safe_name = _normalize_text(name)[:255]
         if not safe_name:
@@ -1208,7 +1921,10 @@ class MyFilesService:
         if any(ch in safe_name for ch in '<>:"/\\|?*') or safe_name in {".", ".."}:
             raise MyFilesValidationError("Folder name contains invalid characters")
         with app_session(database_url) as session:
-            parent = self._folder_row_locked(session, owner_user_id=owner_user_id, folder_id=parent_id)
+            owner_user_id = self._upload_owner_locked(
+                session, actor_id=actor_id, folder_id=parent_id, library_id=library_id
+            )
+            parent =self._folder_row_locked(session, owner_user_id=owner_user_id, folder_id=parent_id)
             self._assert_folder_name_free_locked(
                 session,
                 owner_user_id=owner_user_id,
@@ -1240,11 +1956,12 @@ class MyFilesService:
         meta: MyFilesRequestMeta | None = None,
     ) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
-        owner_user_id = _actor_id(actor)
+        actor_id = _actor_id(actor)
         with app_session(database_url) as session:
             row = session.get(AppMyFileFolder, _normalize_text(folder_id))
-            if row is None or row.owner_user_id != owner_user_id or row.deleted_at is not None:
+            if row is None or row.deleted_at is not None or not self.may_act_locked(session, actor_id, row.owner_user_id):
                 raise MyFilesNotFoundError("Folder not found")
+            owner_user_id = int(row.owner_user_id)
 
             new_parent_id = row.parent_id
             if parent_id is not _UNSET:
@@ -1295,12 +2012,13 @@ class MyFilesService:
         meta: MyFilesRequestMeta | None = None,
     ) -> int:
         database_url = self._database_url_or_raise()
-        owner_user_id = _actor_id(actor)
+        actor_id = _actor_id(actor)
         spool_paths: list[Path] = []
         with app_session(database_url) as session:
             row = session.get(AppMyFileFolder, _normalize_text(folder_id))
-            if row is None or row.owner_user_id != owner_user_id or row.deleted_at is not None:
+            if row is None or row.deleted_at is not None or not self.may_act_locked(session, actor_id, row.owner_user_id):
                 raise MyFilesNotFoundError("Folder not found")
+            owner_user_id = int(row.owner_user_id)
             folder_ids = [row.id, *self._folder_descendant_ids_locked(session, owner_user_id=owner_user_id, folder_id=row.id)]
             now = _utc_now()
 
@@ -1349,11 +2067,16 @@ class MyFilesService:
         meta: MyFilesRequestMeta | None = None,
     ) -> int:
         database_url = self._database_url_or_raise()
-        owner_user_id = _actor_id(actor)
+        actor_id = _actor_id(actor)
         with app_session(database_url) as session:
             row = session.get(AppMyFileFolder, _normalize_text(folder_id))
-            if row is None or row.owner_user_id != owner_user_id or row.deleted_at is None:
+            if (
+                row is None
+                or row.deleted_at is None
+                or not self.may_act_locked(session, actor_id, row.owner_user_id, "manage")
+            ):
                 raise MyFilesNotFoundError("Folder not found")
+            owner_user_id = int(row.owner_user_id)
             if row.parent_id:
                 parent = session.get(AppMyFileFolder, row.parent_id)
                 if parent is None or parent.deleted_at is not None:
@@ -1392,13 +2115,18 @@ class MyFilesService:
         meta: MyFilesRequestMeta | None = None,
     ) -> int:
         database_url = self._database_url_or_raise()
-        owner_user_id = _actor_id(actor)
+        actor_id = _actor_id(actor)
         spool_paths: list[Path] = []
         blob_paths: list[Path] = []
         with app_session(database_url) as session:
             row = session.get(AppMyFileFolder, _normalize_text(folder_id))
-            if row is None or row.owner_user_id != owner_user_id or row.deleted_at is None:
+            if (
+                row is None
+                or row.deleted_at is None
+                or not self.may_act_locked(session, actor_id, row.owner_user_id, "manage")
+            ):
                 raise MyFilesNotFoundError("Folder not found")
+            owner_user_id = int(row.owner_user_id)
             folder_ids = [
                 row.id,
                 *self._folder_descendant_ids_locked(
@@ -1431,6 +2159,7 @@ class MyFilesService:
                         AppMyFileDownloadGrant.file_id.in_([f.id for f in files])
                     )
                 )
+            self._release_folder_shares_locked(session, folder_ids)
             session.execute(delete(AppMyFileFolder).where(AppMyFileFolder.id.in_(folder_ids)))
             self._write_audit(session, action="folder_purged", row=None, actor=actor, meta=meta)
             purged_count = len(files)
@@ -1440,11 +2169,12 @@ class MyFilesService:
             self._delete_spool_payload(path)
         return purged_count
 
-    def list_trash(self, *, user_id: int) -> dict[str, Any]:
+    def list_trash(self, *, user_id: int, library_id: str | None = None) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
-        owner = int(user_id)
         now = _utc_now()
         with app_session(database_url) as session:
+            # A library's trash is for its managers: restoring and purging need that role too.
+            owner = self._read_owner_locked(session, user_id=user_id, library_id=library_id, need="manage")
             trashed_folders = session.scalars(
                 select(AppMyFileFolder)
                 .where(
@@ -1475,9 +2205,17 @@ class MyFilesService:
                 "items": [self._response(file_row) for file_row in visible_files],
             }
 
-    def empty_trash(self, *, actor: Any, meta: MyFilesRequestMeta | None = None) -> int:
+    def empty_trash(
+        self,
+        *,
+        actor: Any,
+        meta: MyFilesRequestMeta | None = None,
+        library_id: str | None = None,
+    ) -> int:
         database_url = self._database_url_or_raise()
-        owner_user_id = _actor_id(actor)
+        actor_id = _actor_id(actor)
+        with app_session(database_url) as session:
+            owner_user_id = self._read_owner_locked(session, user_id=actor_id, library_id=library_id, need="manage")
         purged_files = 0
         while True:
             with app_session(database_url) as session:
@@ -1493,7 +2231,7 @@ class MyFilesService:
                 if file_row is None:
                     break
                 file_id = file_row.id
-            self.purge_file(file_id=file_id, user_id=owner_user_id, actor=actor, meta=meta)
+            self.purge_file(file_id=file_id, user_id=actor_id, actor=actor, meta=meta)
             purged_files += 1
             if purged_files >= 500:
                 break
@@ -1505,6 +2243,7 @@ class MyFilesService:
                 )
             ).all()
             if folder_rows:
+                self._release_folder_shares_locked(session, folder_rows)
                 session.execute(delete(AppMyFileFolder).where(AppMyFileFolder.id.in_(folder_rows)))
                 self._write_audit(session, action="trash_emptied", row=None, actor=actor, meta=meta)
         return purged_files
@@ -1520,11 +2259,12 @@ class MyFilesService:
         meta: MyFilesRequestMeta | None = None,
     ) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
-        owner_user_id = _actor_id(actor)
+        actor_id = _actor_id(actor)
         with app_session(database_url) as session:
             row = session.get(AppMyFile, _normalize_text(file_id))
-            if row is None or row.owner_user_id != owner_user_id or row.deleted_at is not None:
+            if row is None or row.deleted_at is not None or not self.may_act_locked(session, actor_id, row.owner_user_id):
                 raise MyFilesNotFoundError("File not found")
+            owner_user_id = int(row.owner_user_id)
             changed = False
             if folder_id is not _UNSET:
                 target = _normalize_text(folder_id) or None
@@ -1553,12 +2293,81 @@ class MyFilesService:
         folder_id: str | None = None,
         view: str = "",
         query: str = "",
+        library_id: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_view = _normalize_text(view).lower()
+        if normalized_view != "library":
+            result = self._list_files_impl(user_id=user_id, folder_id=folder_id, view=view, query=query)
+            if normalized_view != "shared" and (normalized_view == "recent" or _normalize_text(query)):
+                self._merge_library_results(result, user_id=user_id, view=normalized_view, query=query)
+            return result
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            owner = self._read_owner_locked(session, user_id=user_id, library_id=library_id, folder_id=folder_id)
+            library = self._library_by_owner_locked(session, owner)
+            if library is None:
+                raise MyFilesNotFoundError("Library not found")
+            role = self.library_role_locked(session, library, user_id)
+            library_info = {"id": library.id, "name": _normalize_text(library.name), "my_role": role}
+        result = self._list_files_impl(user_id=owner, folder_id=folder_id, view="", query=query)
+        for entry in [*result.get("items", []), *result.get("folders", []), *result.get("breadcrumbs", [])]:
+            entry["my_role"] = role
+        if result.get("folder"):
+            result["folder"]["my_role"] = role
+        result["library"] = library_info
+        return result
+
+    def _merge_library_results(self, result: dict[str, Any], *, user_id: int, view: str, query: str) -> None:
+        """Add what the user may see in shared libraries to a cross-folder listing (recent files, search).
+
+        Every row names its library and carries the user's role there, so the page can gate actions per row
+        and open the right library. Favourites are left out: that flag lives on the row, not per person.
+        """
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            if not self._libraries_present(session):
+                return
+            libraries = []
+            for library in session.scalars(
+                select(AppMyFileLibrary).where(AppMyFileLibrary.deleted_at.is_(None))
+            ).all():
+                role = self.library_role_locked(session, library, user_id)
+                if role:
+                    libraries.append((library.id, _normalize_text(library.name), int(library.owner_user_id), role))
+        if not libraries:
+            return
+        recent = view == "recent"
+        items = list(result.get("items", []))
+        folders = list(result.get("folders", []))
+        for library_id, library_name, owner_user_id, role in libraries:
+            part = self._list_files_impl(user_id=owner_user_id, view="recent" if recent else "", query=query)
+            for entry in [*part.get("items", []), *part.get("folders", [])]:
+                entry["library_id"] = library_id
+                entry["library_name"] = library_name
+                entry["my_role"] = role
+            items.extend(part.get("items", []))
+            folders.extend(part.get("folders", []))
+        stamp = lambda entry: str(entry.get("updated_at") or "")  # noqa: E731
+        items.sort(key=stamp, reverse=True)
+        limit = 50 if recent else 500
+        result["items"] = items[:limit]
+        result["folders"] = folders
+
+    def _list_files_impl(
+        self,
+        *,
+        user_id: int,
+        folder_id: str | None = None,
+        view: str = "",
+        query: str = "",
     ) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
         now = _utc_now()
         normalized_view = _normalize_text(view).lower()
         normalized_query = _normalize_text(query)
         with app_session(database_url) as session:
+            if normalized_view == "shared" and not normalized_query:
+                return self._list_shared_with_me_locked(session, int(user_id), now, folder_id)
             if normalized_query:
                 # Global search across every folder — the client-side filter can
                 # only see the currently loaded folder, which makes deep trees
@@ -1589,6 +2398,7 @@ class MyFilesService:
                 ).all()
                 all_folders = self._folder_map_locked(session, owner_user_id=user_id)
                 rows = session.scalars(file_query).all()
+                collab_counts = self._collab_counts_locked(session, [row.id for row in rows])
                 blob_ids = [
                     _normalize_text(row.blob_id)
                     for row in rows
@@ -1607,6 +2417,7 @@ class MyFilesService:
                             session=session,
                             preview=preview_map.get(_normalize_text(row.blob_id)),
                             folder_name=(all_folders.get(row.folder_id).name if all_folders.get(row.folder_id) else ""),
+                            collaborators_count=collab_counts.get(_normalize_text(row.id), 0),
                         )
                         for row in rows
                     ],
@@ -1636,6 +2447,7 @@ class MyFilesService:
                     flat_folders = []
                 all_folders = self._folder_map_locked(session, owner_user_id=user_id)
                 rows = session.scalars(file_query).all()
+                collab_counts = self._collab_counts_locked(session, [row.id for row in rows])
                 blob_ids = [
                     _normalize_text(row.blob_id)
                     for row in rows
@@ -1654,6 +2466,7 @@ class MyFilesService:
                             session=session,
                             preview=preview_map.get(_normalize_text(row.blob_id)),
                             folder_name=(all_folders.get(row.folder_id).name if all_folders.get(row.folder_id) else ""),
+                            collaborators_count=collab_counts.get(_normalize_text(row.id), 0),
                         )
                         for row in rows
                     ],
@@ -1719,9 +2532,12 @@ class MyFilesService:
                         stack.append(child_id)
                 return total
 
+            folder_grant_counts = self._folder_grant_counts_locked(session, [folder_row.id for folder_row in folders])
             folder_payloads: list[dict[str, Any]] = []
             for folder_row in folders:
-                payload = self._folder_response(folder_row)
+                payload = self._folder_response(
+                    folder_row, collaborators_count=folder_grant_counts.get(folder_row.id, 0)
+                )
                 payload["file_count"] = subtree_file_count(folder_row.id)
                 folder_payloads.append(payload)
             blob_ids = [
@@ -1735,9 +2551,20 @@ class MyFilesService:
                     select(AppMyFilePreview).where(AppMyFilePreview.blob_id.in_(set(blob_ids)))
                 ).all()
             } if blob_ids else {}
+            inherited_users = (
+                frozenset(self.folder_grant_user_ids_locked(session, folder.id, user_id)) if folder is not None else frozenset()
+            )
+            collab_counts = self._collab_counts_locked(
+                session, [row.id for row in rows], inherited_user_ids=inherited_users
+            )
             return {
                 "items": [
-                    self._response(row, session=session, preview=preview_map.get(_normalize_text(row.blob_id)))
+                    self._response(
+                        row,
+                        session=session,
+                        preview=preview_map.get(_normalize_text(row.blob_id)),
+                        collaborators_count=collab_counts.get(_normalize_text(row.id), 0),
+                    )
                     for row in rows
                 ],
                 "folders": folder_payloads,
@@ -1765,7 +2592,7 @@ class MyFilesService:
         database_url = self._database_url_or_raise()
         with app_session(database_url) as session:
             row = session.get(AppMyFile, _normalize_text(file_id))
-            if row is None or row.owner_user_id != int(user_id) or row.deleted_at is not None:
+            if row is None or row.deleted_at is not None or not self.may_act_locked(session, user_id, row.owner_user_id, "manage"):
                 raise MyFilesNotFoundError("File not found")
             rows = session.scalars(
                 select(AppMyFileAudit)
@@ -2870,9 +3697,7 @@ class MyFilesService:
                     except Exception:
                         resolved = None
                     if resolved is not None and resolved.exists():
-                        blob.ref_count = int(blob.ref_count or 0) + 1
-                        blob.last_used_at = _utc_now()
-                        blob.updated_at = _utc_now()
+                        self._add_blob_reference_locked(session, blob)
                         row.status = STATUS_READY
                         row.original_sha256 = original_sha256
                         row.blob_id = blob.id
@@ -2950,15 +3775,11 @@ class MyFilesService:
                             raise MyFilesValidationError(
                                 "Failed to persist blob after concurrent upload"
                             )
-                        existing_blob.ref_count = int(existing_blob.ref_count or 0) + 1
-                        existing_blob.last_used_at = now
-                        existing_blob.updated_at = now
-                        self._delete_physical_file(final_path)
+                        self._add_blob_reference_locked(session, existing_blob)
+                        self._discard_unregistered_candidate(final_path, existing_blob)
                 else:
-                    existing_blob.ref_count = int(existing_blob.ref_count or 0) + 1
-                    existing_blob.last_used_at = now
-                    existing_blob.updated_at = now
-                    self._delete_physical_file(final_path)
+                    self._add_blob_reference_locked(session, existing_blob)
+                    self._discard_unregistered_candidate(final_path, existing_blob)
                 row.status = STATUS_READY
                 row.original_size_bytes = actual_size
                 row.original_sha256 = original_sha256
@@ -2985,6 +3806,35 @@ class MyFilesService:
                     row.updated_at = _utc_now()
             self._delete_spool_payload(spool_path)
             return None
+
+    @staticmethod
+    def _add_blob_reference_locked(session, blob: AppMyFileBlob) -> None:
+        """Atomic ``ref_count + 1`` in SQL: several files share one blob row (DFILE-03)."""
+        now = _utc_now()
+        session.execute(
+            update(AppMyFileBlob)
+            .where(AppMyFileBlob.id == blob.id)
+            .values(ref_count=AppMyFileBlob.ref_count + 1, last_used_at=now, updated_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        session.expire(blob)
+
+    def _discard_unregistered_candidate(self, candidate_path: Path, existing_blob: AppMyFileBlob) -> None:
+        """Delete a private upload candidate, never the canonical file another blob row owns (DFILE-02).
+
+        The blob path is derived from owner/hash/extension, so the losing worker's candidate can be
+        the very file the winning blob already points at.
+        """
+        try:
+            registered = self._resolve_stored_path(existing_blob.storage_path)
+            if Path(registered) == Path(candidate_path) or (
+                registered.exists() and candidate_path.exists() and registered.samefile(candidate_path)
+            ):
+                return
+        except Exception:
+            # Unknown ownership: keeping a stray file is safe, deleting a shared blob is not.
+            return
+        self._delete_physical_file(candidate_path)
 
     @staticmethod
     def _delete_physical_file(path: Path) -> None:
@@ -3021,14 +3871,34 @@ class MyFilesService:
         blob = session.get(AppMyFileBlob, normalized)
         if blob is None:
             return
-        next_count = max(0, int(blob.ref_count or 0) - 1)
-        if next_count > 0:
-            blob.ref_count = next_count
-            blob.updated_at = _utc_now()
+        # Atomic decrement (DFILE-03): the shared row is changed in SQL, not from a stale Python value.
+        decremented = session.execute(
+            update(AppMyFileBlob)
+            .where(AppMyFileBlob.id == normalized, AppMyFileBlob.ref_count > 1)
+            .values(ref_count=AppMyFileBlob.ref_count - 1, updated_at=_utc_now())
+            .execution_options(synchronize_session=False)
+        )
+        if int(decremented.rowcount or 0) == 1:
+            session.expire(blob)
             return
         path = self._resolve_stored_path(blob.storage_path)
         self._delete_preview_artifact_locked(session, normalized, pending_deletes)
-        session.delete(blob)
+        removed = session.execute(
+            delete(AppMyFileBlob)
+            .where(AppMyFileBlob.id == normalized, AppMyFileBlob.ref_count <= 1)
+            .execution_options(synchronize_session=False)
+        )
+        if int(removed.rowcount or 0) != 1:
+            # A reference was added after the decrement check: the blob is still in use.
+            session.execute(
+                update(AppMyFileBlob)
+                .where(AppMyFileBlob.id == normalized, AppMyFileBlob.ref_count > 1)
+                .values(ref_count=AppMyFileBlob.ref_count - 1, updated_at=_utc_now())
+                .execution_options(synchronize_session=False)
+            )
+            session.expire(blob)
+            return
+        session.expire(blob)
         pending_deletes.append(path)
 
     def delete_file(
@@ -3043,7 +3913,7 @@ class MyFilesService:
         spool_path: Path | None = None
         with app_session(database_url) as session:
             row = session.get(AppMyFile, _normalize_text(file_id))
-            if row is None or row.owner_user_id != int(user_id) or row.deleted_at is not None:
+            if row is None or row.deleted_at is not None or not self.may_act_locked(session, user_id, row.owner_user_id):
                 raise MyFilesNotFoundError("File not found")
             now = _utc_now()
             spool_path = Path(_normalize_text(row.spool_path)) if _normalize_text(row.spool_path) else None
@@ -3071,9 +3941,9 @@ class MyFilesService:
             row = session.get(AppMyFile, _normalize_text(file_id))
             if (
                 row is None
-                or row.owner_user_id != int(user_id)
                 or row.deleted_at is None
                 or row.status == STATUS_DELETED
+                or not self.may_act_locked(session, user_id, row.owner_user_id, "manage")
             ):
                 raise MyFilesNotFoundError("File not found")
             if row.folder_id:
@@ -3099,9 +3969,9 @@ class MyFilesService:
             row = session.get(AppMyFile, _normalize_text(file_id))
             if (
                 row is None
-                or row.owner_user_id != int(user_id)
                 or row.deleted_at is None
                 or row.status == STATUS_DELETED
+                or not self.may_act_locked(session, user_id, row.owner_user_id, "manage")
             ):
                 raise MyFilesNotFoundError("File not found")
             now = _utc_now()
@@ -3131,7 +4001,7 @@ class MyFilesService:
         database_url = self._database_url_or_raise()
         with app_session(database_url) as session:
             row = session.get(AppMyFile, _normalize_text(file_id))
-            if row is None or row.owner_user_id != int(user_id) or row.deleted_at is not None:
+            if row is None or row.deleted_at is not None or not self.may_act_locked(session, user_id, row.owner_user_id, "manage"):
                 raise MyFilesNotFoundError("File not found")
             if row.status != STATUS_READY:
                 raise MyFilesValidationError("Only ready files can be shared")
@@ -3179,7 +4049,7 @@ class MyFilesService:
         database_url = self._database_url_or_raise()
         with app_session(database_url) as session:
             row = session.get(AppMyFile, _normalize_text(file_id))
-            if row is None or row.owner_user_id != int(user_id) or row.deleted_at is not None:
+            if row is None or row.deleted_at is not None or not self.may_act_locked(session, user_id, row.owner_user_id, "manage"):
                 raise MyFilesNotFoundError("File not found")
             self._clear_share(row)
             row.updated_at = _utc_now()
@@ -3194,10 +4064,10 @@ class MyFilesService:
         meta: MyFilesRequestMeta | None = None,
     ) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
-        owner_user_id = _actor_id(actor)
+        actor_id = _actor_id(actor)
         with app_session(database_url) as session:
             row = session.get(AppMyFileFolder, _normalize_text(folder_id))
-            if row is None or row.owner_user_id != owner_user_id or row.deleted_at is not None:
+            if row is None or row.deleted_at is not None or not self.may_act_locked(session, actor_id, row.owner_user_id, "manage"):
                 raise MyFilesNotFoundError("Folder not found")
 
             existing_token = self._existing_share_token_locked(row)
@@ -3235,10 +4105,10 @@ class MyFilesService:
         meta: MyFilesRequestMeta | None = None,
     ) -> None:
         database_url = self._database_url_or_raise()
-        owner_user_id = _actor_id(actor)
+        actor_id = _actor_id(actor)
         with app_session(database_url) as session:
             row = session.get(AppMyFileFolder, _normalize_text(folder_id))
-            if row is None or row.owner_user_id != owner_user_id or row.deleted_at is not None:
+            if row is None or row.deleted_at is not None or not self.may_act_locked(session, actor_id, row.owner_user_id, "manage"):
                 raise MyFilesNotFoundError("Folder not found")
             self._clear_share(row)
             row.updated_at = _utc_now()
@@ -3529,7 +4399,11 @@ class MyFilesService:
 
     def _owned_preview_context_locked(self, session, *, file_id: str, user_id: int) -> tuple[AppMyFile, DownloadPayload]:
         row = session.get(AppMyFile, _normalize_text(file_id))
-        if row is None or row.owner_user_id != int(user_id):
+        if row is None:
+            raise MyFilesNotFoundError("File not found")
+        if row.owner_user_id != int(user_id) and (
+            row.deleted_at is not None or not self.effective_role_locked(session, row, user_id)
+        ):
             raise MyFilesNotFoundError("File not found")
         payload = self._download_payload_for_row_locked(session, row)
         return row, payload
@@ -3735,7 +4609,9 @@ class MyFilesService:
         database_url = self._database_url_or_raise()
         with app_session(database_url) as session:
             row = session.get(AppMyFile, _normalize_text(file_id))
-            if row is None or row.owner_user_id != int(user_id):
+            if row is None:
+                raise MyFilesNotFoundError("File not found")
+            if row.owner_user_id != int(user_id) and not self.effective_role_locked(session, row, user_id):
                 raise MyFilesNotFoundError("File not found")
             return self._download_payload_for_row_locked(session, row)
 
@@ -3775,7 +4651,9 @@ class MyFilesService:
         now = _utc_now()
         with app_session(database_url) as session:
             row = session.get(AppMyFile, normalized_file_id)
-            if row is None or row.owner_user_id != int(user_id) or row.deleted_at is not None:
+            if row is None or row.deleted_at is not None:
+                raise MyFilesNotFoundError("File not found")
+            if row.owner_user_id != int(user_id) and not self.effective_role_locked(session, row, user_id):
                 raise MyFilesNotFoundError("File not found")
             if row.status != STATUS_READY:
                 raise MyFilesValidationError("Only ready files can be downloaded")
@@ -3816,7 +4694,8 @@ class MyFilesService:
         token = secrets.token_urlsafe(32)
         now = _utc_now()
         with app_session(database_url) as session:
-            folder = self._folder_row_locked(session, owner_user_id=int(user_id), folder_id=folder_id)
+            owner = self._read_owner_locked(session, user_id=user_id, folder_id=folder_id)
+            folder = self._folder_row_locked(session, owner_user_id=owner, folder_id=folder_id)
             self._purge_stale_download_grants_locked(session)
             grant = AppMyFileDownloadGrant(
                 token_hash=_hash_token(token),
@@ -3961,7 +4840,11 @@ class MyFilesService:
             owner_user_id = int(grant.owner_user_id or 0)
             if folder_id:
                 folder = session.get(AppMyFileFolder, folder_id)
-                if folder is None or folder.owner_user_id != owner_user_id or folder.deleted_at is not None:
+                if (
+                    folder is None
+                    or folder.deleted_at is not None
+                    or not self.may_act_locked(session, owner_user_id, folder.owner_user_id, "view")
+                ):
                     raise MyFilesNotFoundError("Folder not found")
                 folder_name = _normalize_text(folder.name) or "folder"
                 # Only the plan is built under the transaction: the multi-GB ZIP
@@ -3970,10 +4853,25 @@ class MyFilesService:
                 archive_plan = self._folder_archive_plan_locked(session, folder=folder)
             else:
                 row = session.get(AppMyFile, file_id)
-                if row is None or row.owner_user_id != owner_user_id or row.deleted_at is not None:
+                if row is None or row.deleted_at is not None:
+                    raise MyFilesNotFoundError("File not found")
+                is_owner = row.owner_user_id == owner_user_id
+                # Access is checked again at redemption, so a revoked collaborator's grant is useless.
+                if not is_owner and not self.effective_role_locked(session, row, owner_user_id):
                     raise MyFilesNotFoundError("File not found")
                 payload = self._download_payload_for_row_locked(session, row)
-                self._write_audit(session, action="owner_download_started", row=row, meta=meta)
+                if is_owner:
+                    self._write_audit(session, action="owner_download_started", row=row, meta=meta)
+                else:
+                    downloader = session.get(AppUser, owner_user_id)
+                    self._write_audit(
+                        session,
+                        action="shared_download_started",
+                        row=row,
+                        meta=meta,
+                        actor_user_id=owner_user_id,
+                        actor_username=_normalize_text(getattr(downloader, "username", "")) or f"user-{owner_user_id}",
+                    )
                 return payload
 
         # A .zip in the spool is only ever a folder archive: the orphan sweeper

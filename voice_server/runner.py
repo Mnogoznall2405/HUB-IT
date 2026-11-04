@@ -9,9 +9,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
 import re
 import shutil
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -204,6 +206,9 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
             pass
 
 
+_LINE_QUEUE_MAX = 2000
+
+
 def _run_subprocess(
     job_id: str,
     argv: List[str],
@@ -228,39 +233,77 @@ def _run_subprocess(
         env=env,
     )
     started = time.monotonic()
-    while True:
-        if proc.stdout is not None:
-            line = proc.stdout.readline()
-            if line:
+
+    # stdout is read on its own thread: readline() blocks until a full line arrives, and a
+    # silent or newline-less child would otherwise keep the supervisor from ever checking
+    # cancel/timeout (DINT-01).  The queue is bounded; when the supervisor falls behind lines
+    # are dropped (counted) instead of stalling the pipe, so the child never blocks on a full pipe.
+    lines: "queue.Queue[str]" = queue.Queue(maxsize=_LINE_QUEUE_MAX)
+    dropped = [0]
+
+    def _pump() -> None:
+        stream = proc.stdout
+        if stream is None:
+            return
+        try:
+            for line in iter(stream.readline, ""):
                 try:
-                    log_file.write(line)
-                    log_file.flush()
-                except Exception:
-                    pass
-                store.append_log_tail(job_id, line, config.log_tail_lines)
-                for marker, (stage, progress) in _STAGE_MARKERS:
-                    if marker.search(line):
-                        store.update_job(job_id, stage=stage, progress=progress)
-                        break
+                    lines.put_nowait(line)
+                except queue.Full:
+                    dropped[0] += 1
+        except Exception:
+            pass
+
+    reader = threading.Thread(target=_pump, name=f"voice-stdout-{job_id[:8]}", daemon=True)
+    reader.start()
+
+    def _drain() -> None:
+        for _ in range(_LINE_QUEUE_MAX):
+            try:
+                line = lines.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                log_file.write(line)
+                log_file.flush()
+            except Exception:
+                pass
+            store.append_log_tail(job_id, line, config.log_tail_lines)
+            for marker, (stage, progress) in _STAGE_MARKERS:
+                if marker.search(line):
+                    store.update_job(job_id, stage=stage, progress=progress)
+                    break
+
+    def _finish_output() -> None:
+        reader.join(timeout=5)
+        _drain()
+        if dropped[0]:
+            try:
+                log_file.write(f"[voice] {dropped[0]} output line(s) dropped (supervisor backlog)\n")
+            except Exception:
+                pass
+
+    while True:
+        _drain()
 
         rc = proc.poll()
         if rc is not None:
+            _finish_output()
             return int(rc)
 
         if store.is_cancel_requested(job_id):
             logger.info("Job %s: cancel requested -> killing pid %s", job_id, proc.pid)
             _kill_process_tree(proc)
+            _finish_output()
             return -15
 
         if time.monotonic() - started > config.job_timeout_sec:
             logger.error("Job %s: timeout after %ss -> killing pid %s", job_id, config.job_timeout_sec, proc.pid)
             _kill_process_tree(proc)
+            _finish_output()
             return -9
 
-        if proc.stdout is None:
-            time.sleep(0.5)
-        else:
-            time.sleep(0.05)
+        time.sleep(0.05)
 
 
 def _purge_voice_reference(name: str, log_file) -> None:

@@ -198,11 +198,14 @@ class TaskEmailOutboxMixin:
                     f"""
                     UPDATE {self._TASK_EMAIL_OUTBOX_TABLE}
                     SET status = 'sending', attempt_count = attempt_count + 1, updated_at = ?
-                    WHERE id = ? AND status = 'pending'
+                    WHERE id = ? AND status = 'pending' AND attempt_count = ?
                     """,
-                    (now_iso, _normalize_text(payload.get("id"))),
+                    (now_iso, _normalize_text(payload.get("id")), self._as_int(payload.get("attempt_count"))),
                 )
                 if self._rowcount(result) == 1:
+                    # attempt_count only grows on claim, so its post-claim value is this claim's token:
+                    # a worker whose row was recovered and re-claimed holds a stale one.
+                    payload["claim_token"] = self._as_int(payload.get("attempt_count")) + 1
                     claimed.append(payload)
             conn.commit()
 
@@ -210,7 +213,8 @@ class TaskEmailOutboxMixin:
         failed = 0
         for row in claimed:
             outbox_id = _normalize_text(row.get("id"))
-            if not self._touch_task_email_claim(outbox_id):
+            claim_token = self._as_int(row.get("claim_token"))
+            if not self._touch_task_email_claim(outbox_id, claim_token):
                 # Claim was recovered/taken over while earlier rows of this batch were sending.
                 continue
             try:
@@ -231,7 +235,7 @@ class TaskEmailOutboxMixin:
                 self._mark_task_email_failed(row, str(exc))
         return {"claimed": len(claimed), "sent": sent, "failed": failed}
 
-    def _touch_task_email_claim(self, outbox_id: str) -> bool:
+    def _touch_task_email_claim(self, outbox_id: str, claim_token: int) -> bool:
         """Refresh the claim heartbeat right before sending; False if the row is no longer ours."""
         normalized_id = _normalize_text(outbox_id)
         if not normalized_id:
@@ -241,14 +245,16 @@ class TaskEmailOutboxMixin:
                 f"""
                 UPDATE {self._TASK_EMAIL_OUTBOX_TABLE}
                 SET updated_at = ?
-                WHERE id = ? AND status = 'sending'
+                WHERE id = ? AND status = 'sending' AND attempt_count = ?
                 """,
-                (_utc_now_iso(), normalized_id),
+                (_utc_now_iso(), normalized_id, int(claim_token)),
             )
             conn.commit()
             return self._rowcount(result) == 1
 
     def _mark_task_email_sent(self, outbox_id: str) -> None:
+        # Deliberately not claim-token guarded (unlike heartbeat/failed): a "sent" ack from a worker
+        # that lost its claim is still true, and recording it stops the new owner from re-sending.
         normalized_id = _normalize_text(outbox_id)
         if not normalized_id:
             return
@@ -258,7 +264,7 @@ class TaskEmailOutboxMixin:
                 f"""
                 UPDATE {self._TASK_EMAIL_OUTBOX_TABLE}
                 SET status = 'sent', sent_at = ?, updated_at = ?, last_error = ''
-                WHERE id = ?
+                WHERE id = ? AND status <> 'sent'
                 """,
                 (now_iso, now_iso, normalized_id),
             )
@@ -268,7 +274,7 @@ class TaskEmailOutboxMixin:
         outbox_id = _normalize_text(row.get("id"))
         if not outbox_id:
             return
-        attempt_count = self._as_int(row.get("attempt_count")) + 1
+        attempt_count = self._as_int(row.get("claim_token")) or self._as_int(row.get("attempt_count")) + 1
         max_attempts = task_email_service.max_attempts()
         now = datetime.now(timezone.utc)
         status = "failed" if attempt_count >= max_attempts else "pending"
@@ -280,8 +286,8 @@ class TaskEmailOutboxMixin:
                 f"""
                 UPDATE {self._TASK_EMAIL_OUTBOX_TABLE}
                 SET status = ?, available_at = ?, updated_at = ?, last_error = ?
-                WHERE id = ? AND status <> 'sent'
+                WHERE id = ? AND status = 'sending' AND attempt_count = ?
                 """,
-                (status, available_at, now_iso, _normalize_text(error)[:1000], outbox_id),
+                (status, available_at, now_iso, _normalize_text(error)[:1000], outbox_id, attempt_count),
             )
             conn.commit()

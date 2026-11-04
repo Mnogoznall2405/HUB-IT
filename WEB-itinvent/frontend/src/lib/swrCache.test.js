@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   clearSWRCache,
   getOrFetchSWR,
+  invalidateSWRCacheByPrefix,
   peekSWRCache,
   setSWRCache,
   trimSWRCache,
@@ -83,5 +84,26 @@ describe('swrCache session boundaries', () => {
     }
     expect(peekSWRCache('shared-key').data).toBe('user-B');
     clearSWRCache();
+  });
+});
+
+describe('swrCache invalidation vs in-flight reads', () => {
+  beforeEach(() => clearSWRCache());
+  afterEach(() => clearSWRCache());
+
+  it('refetches after invalidation instead of joining a read that started before the mutation', async () => {
+    let resolveOld;
+    const oldFetcher = vi.fn(() => new Promise((resolve) => { resolveOld = resolve; }));
+    const newFetcher = vi.fn(async () => 'NEW');
+
+    const oldRead = getOrFetchSWR(['networks', 'ctx', 1], oldFetcher);
+    invalidateSWRCacheByPrefix('networks', 'ctx', 1);
+    const afterMutation = await getOrFetchSWR(['networks', 'ctx', 1], newFetcher, { force: true });
+    resolveOld('OLD');
+    await oldRead;
+
+    expect(afterMutation.data).toBe('NEW');
+    expect(newFetcher).toHaveBeenCalledTimes(1);
+    expect(peekSWRCache(['networks', 'ctx', 1])?.data).toBe('NEW');
   });
 });

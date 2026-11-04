@@ -8,12 +8,23 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
-from backend.api.deps import require_permission
-from backend.api.v1.my_files import _download_response, _enforce_trusted_browser_origin, _request_meta, _service_error_to_http
+from backend.api.deps import get_current_user_optional, require_permission
+from backend.api.v1.my_files import (
+    _download_response,
+    _enforce_trusted_browser_origin,
+    _request_meta,
+    _service_error_to_http,
+    _service_error_to_secure_http,
+    _set_public_response_headers,
+)
+from backend.api.v1.my_files_public_rate_limit import enforce_public_meta_limits, enforce_public_miss_limit
+from backend.api.v1.my_files_upload_rate_limit import enforce_upload_limits
 from backend.models.auth import User
+from backend.models.my_files import MyFileBlankDocumentRequest, MyFileResponse
 from backend.services import onlyoffice_service as oo
-from backend.services.authorization_service import PERM_MY_FILES_READ, PERM_MY_FILES_SHARE
+from backend.services.authorization_service import PERM_MY_FILES_READ, PERM_MY_FILES_SHARE, PERM_MY_FILES_WRITE
 from backend.services.my_files_collab_service import my_files_collab_service
+from backend.services.my_files_copy_service import my_files_copy_service
 from backend.services.my_files_service import MyFilesNotFoundError, MyFilesRequestMeta, my_files_service
 
 
@@ -34,20 +45,58 @@ class OfficeEditorConfigResponse(BaseModel):
     config: dict
     role: str
     public_path: str
+    can_rename: bool = False
+    can_manage_access: bool = False
+
+
+class OfficeRenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class OfficeRenameResponse(BaseModel):
+    file: MyFileResponse
+    editor_notified: bool
 
 
 class OfficeCollaborator(BaseModel):
     user_id: int
     username: str
     full_name: str = ""
+    role: str = oo.ROLE_EDIT
+
+
+class OfficeMember(BaseModel):
+    user_id: int
+    role: str = oo.ROLE_EDIT
 
 
 class OfficeCollaboratorsRequest(BaseModel):
-    user_ids: list[int] = Field(default_factory=list, max_length=50)
+    # ``members`` carries roles; ``user_ids`` is the older form and means full editing rights.
+    members: list[OfficeMember] = Field(default_factory=list, max_length=200)
+    user_ids: list[int] = Field(default_factory=list, max_length=200)
 
 
 class OfficeCollaboratorsResponse(BaseModel):
     items: list[OfficeCollaborator] = Field(default_factory=list)
+
+
+class OfficePublicAccess(BaseModel):
+    signed_in: bool = False
+    editable: bool = False
+    collaborative: bool = False
+    can_open: bool = False
+    role: str = ""
+    file_id: str = ""
+
+
+class OfficeGroup(BaseModel):
+    id: str
+    name: str
+    members_count: int = 0
+
+
+class OfficeGroupsResponse(BaseModel):
+    items: list[OfficeGroup] = Field(default_factory=list)
 
 
 class OfficeSharedFile(BaseModel):
@@ -57,6 +106,7 @@ class OfficeSharedFile(BaseModel):
     size_bytes: int = 0
     updated_at: datetime | None = None
     editable: bool = True
+    role: str = oo.ROLE_EDIT
 
 
 class OfficeSharedFilesResponse(BaseModel):
@@ -69,10 +119,19 @@ class OfficeVersion(BaseModel):
     size_bytes: int = 0
     replaced_by: str = ""
     replaced_at: datetime | None = None
+    author: str = ""
+    authored_at: datetime | None = None
+
+
+class OfficeCurrentVersion(BaseModel):
+    author: str = ""
+    authored_at: datetime | None = None
+    size_bytes: int = 0
 
 
 class OfficeVersionsResponse(BaseModel):
     items: list[OfficeVersion] = Field(default_factory=list)
+    current: OfficeCurrentVersion | None = None
 
 
 def _settings_or_503() -> oo.OnlyOfficeSettings:
@@ -80,6 +139,30 @@ def _settings_or_503() -> oo.OnlyOfficeSettings:
         return oo.require_enabled()
     except oo.OnlyOfficeDisabledError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Совместное редактирование не настроено") from exc
+
+
+@router.post("/office/new", response_model=MyFileResponse, status_code=status.HTTP_201_CREATED)
+async def create_blank_document(
+    payload: MyFileBlankDocumentRequest,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
+) -> dict:
+    """Empty .docx / .xlsx / .pptx in the given folder; it becomes editable once the worker marks it ready."""
+    _enforce_trusted_browser_origin(request)
+    _settings_or_503()
+    await run_in_threadpool(enforce_upload_limits, request, user_id=int(current_user.id))
+    try:
+        return await run_in_threadpool(
+            my_files_copy_service.create_blank_document,
+            actor=current_user,
+            kind=payload.kind,
+            name=payload.name,
+            folder_id=payload.folder_id,
+            library_id=payload.library_id,
+            meta=_request_meta(request),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
 
 
 @router.get("/office/status", response_model=OfficeStatusResponse)
@@ -100,6 +183,47 @@ async def list_office_shared_with_me(current_user: User = Depends(require_permis
     except Exception as exc:
         raise _service_error_to_http(exc) from exc
     return {"items": items}
+
+
+@router.get("/office/groups", response_model=OfficeGroupsResponse)
+async def list_office_groups(current_user: User = Depends(require_permission(PERM_MY_FILES_SHARE))) -> dict:
+    items = await run_in_threadpool(my_files_collab_service.list_groups)
+    return {"items": items}
+
+
+@router.get("/office/groups/{group_id}/members", response_model=OfficeCollaboratorsResponse)
+async def list_office_group_members(
+    group_id: str,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_SHARE)),
+) -> dict:
+    try:
+        items = await run_in_threadpool(my_files_collab_service.list_group_members, group_id=group_id)
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+    return {"items": items}
+
+
+@router.get("/public/{token}/editor", response_model=OfficePublicAccess)
+async def get_public_link_editor_access(
+    token: str,
+    request: Request,
+    response: Response,
+    current_user: User | None = Depends(get_current_user_optional),
+) -> dict:
+    """One link for everybody: guests download, signed-in collaborators may also edit."""
+    enforce_public_meta_limits(request, token)
+    _set_public_response_headers(response)
+    try:
+        return await run_in_threadpool(
+            my_files_collab_service.public_editor_access,
+            token=token,
+            user_id=int(current_user.id) if current_user else None,
+        )
+    except MyFilesNotFoundError as exc:
+        enforce_public_miss_limit(request)
+        raise _service_error_to_secure_http(exc) from exc
+    except Exception as exc:
+        raise _service_error_to_secure_http(exc) from exc
 
 
 @router.get("/office/source")
@@ -210,8 +334,65 @@ async def get_office_editor_config(
         revision=session["revision"],
         user_id=int(current_user.id),
         user_name=str(getattr(current_user, "full_name", "") or current_user.username or ""),
+        role=session["role"],
     )
-    return {"config": config, "role": session["role"], "public_path": settings.public_path}
+    return {"config": config, "role": session["role"], "public_path": settings.public_path,
+            "can_rename": session["role"] == oo.ROLE_OWNER, "can_manage_access": session["is_owner"]}
+
+
+@router.post("/{file_id}/office/rename", response_model=OfficeRenameResponse)
+async def rename_office_document(
+    file_id: str,
+    payload: OfficeRenameRequest,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_WRITE)),
+) -> dict:
+    settings = _settings_or_503()
+    _enforce_trusted_browser_origin(request)
+    try:
+        return await run_in_threadpool(
+            my_files_collab_service.rename_document, settings=settings, file_id=file_id,
+            name=payload.name, actor=current_user, meta=_request_meta(request),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.get("/office/folders/{folder_id}/collaborators", response_model=OfficeCollaboratorsResponse)
+async def list_office_folder_collaborators(
+    folder_id: str,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_SHARE)),
+) -> dict:
+    try:
+        items = await run_in_threadpool(
+            my_files_collab_service.list_folder_collaborators, folder_id=folder_id, owner_user_id=int(current_user.id)
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+    return {"items": items}
+
+
+@router.put("/office/folders/{folder_id}/collaborators", response_model=OfficeCollaboratorsResponse)
+async def set_office_folder_collaborators(
+    folder_id: str,
+    payload: OfficeCollaboratorsRequest,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_SHARE)),
+) -> dict:
+    _enforce_trusted_browser_origin(request)
+    try:
+        items = await run_in_threadpool(
+            my_files_collab_service.set_folder_collaborators,
+            folder_id=folder_id,
+            owner_user_id=int(current_user.id),
+            members=[(item.user_id, item.role) for item in payload.members]
+            + [(uid, oo.ROLE_EDIT) for uid in payload.user_ids if uid not in {m.user_id for m in payload.members}],
+            actor=current_user,
+            meta=_request_meta(request),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+    return {"items": items}
 
 
 @router.get("/{file_id}/office/collaborators", response_model=OfficeCollaboratorsResponse)
@@ -241,7 +422,8 @@ async def set_office_collaborators(
             my_files_collab_service.set_collaborators,
             file_id=file_id,
             owner_user_id=int(current_user.id),
-            user_ids=payload.user_ids,
+            members=[(item.user_id, item.role) for item in payload.members]
+            + [(uid, oo.ROLE_EDIT) for uid in payload.user_ids if uid not in {m.user_id for m in payload.members}],
             actor=current_user,
             meta=_request_meta(request),
         )
@@ -256,12 +438,12 @@ async def list_office_versions(
     current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
 ) -> dict:
     try:
-        items = await run_in_threadpool(
+        payload = await run_in_threadpool(
             my_files_collab_service.list_versions, file_id=file_id, user_id=int(current_user.id)
         )
     except Exception as exc:
         raise _service_error_to_http(exc) from exc
-    return {"items": items}
+    return payload
 
 
 @router.get("/{file_id}/office/versions/{version_id}/download")

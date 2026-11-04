@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 
 class InventoryQueueStore:
-    def __init__(self, *, db_path: Path) -> None:
+    def __init__(self, *, db_path: Path, recover_interrupted: bool = False) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -18,6 +18,8 @@ class InventoryQueueStore:
         self._stats_cache: tuple = (0.0, {})
         self._stats_cache_ttl_sec = 8.0
         self._initialize()
+        if recover_interrupted:
+            self.recover_interrupted()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=30, check_same_thread=False)
@@ -46,10 +48,20 @@ class InventoryQueueStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_inventory_ingest_queue_status_next_attempt ON inventory_ingest_queue(status, next_attempt_at, created_at)"
             )
-            conn.execute(
+            conn.commit()
+
+    def recover_interrupted(self) -> int:
+        """Requeue rows left in 'processing' by a previous worker instance.
+
+        Only the process that owns the worker may call this (at startup): opening a store for
+        maintenance (cleanup/vacuum) must not reset rows a live worker is processing."""
+        with self._lock, self._conn as conn:
+            cursor = conn.execute(
                 "UPDATE inventory_ingest_queue SET status = 'queued' WHERE status = 'processing'"
             )
             conn.commit()
+            self._invalidate_stats_cache()
+            return int(cursor.rowcount or 0)
 
     def _invalidate_stats_cache(self) -> None:
         self._stats_cache = (0.0, {})

@@ -70,14 +70,43 @@ const fallbackHash = (text) => {
   return (hash >>> 0).toString(16).padStart(8, '0');
 };
 
-export async function makeClientId(itemId, dbId, file) {
+const toHex = (buffer) => [...new Uint8Array(buffer)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+
+const fallbackBytesHash = (bytes, seed) => {
+  let hash = seed;
+  for (let index = 0; index < bytes.length; index += 1) {
+    hash ^= bytes[index];
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+};
+
+// Идентификатор загрузки. Формат w2 включает дайджест байт файла: два разных снимка с одинаковыми
+// именем, размером и датой больше не получают один id (и сервер не вернёт чужой file_no).
+// Формат w (legacyId) — прежний, по метаданным: им дозагружаются задания, поставленные в очередь
+// до обновления, чтобы уже принятые сервером куски не пропали.
+export async function makeClientId(itemId, dbId, file, { legacyId = false } = {}) {
   const seed = `${itemId}|${dbId || ''}|${file.name}|${file.size}|${file.lastModified || 0}`;
+  if (legacyId) {
+    try {
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(seed));
+      return `w-${toHex(digest).slice(0, 40)}`;
+    } catch {
+      return `w-${fallbackHash(seed)}${fallbackHash(seed.split('').reverse().join(''))}`;
+    }
+  }
+  const bytes = await readBlob(file);
   try {
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(seed));
-    return `w-${[...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('').slice(0, 40)}`;
+    const content = new Uint8Array(bytes);
+    const joined = new Uint8Array(new TextEncoder().encode(`${seed}|`).length + content.length);
+    const head = new TextEncoder().encode(`${seed}|`);
+    joined.set(head, 0);
+    joined.set(content, head.length);
+    return `w2-${toHex(await crypto.subtle.digest('SHA-256', joined)).slice(0, 48)}`;
   } catch {
-    // Страница без защищённого контекста: стабильно для одного файла, этого достаточно.
-    return `w-${fallbackHash(seed)}${fallbackHash(seed.split('').reverse().join(''))}`;
+    // Страница без защищённого контекста: тот же вход, но быстрый несекретный хеш.
+    const content = new Uint8Array(bytes);
+    return `w2-${fallbackBytesHash(content, 2166136261)}${fallbackBytesHash(content, 84696351)}${fallbackHash(seed)}`;
   }
 }
 
@@ -126,12 +155,12 @@ async function withRetry(run, deps, signal, { conflictIsFinal = false } = {}) {
 
 export async function uploadPhotoResumable(itemId, file, options = {}, overrides = {}) {
   const deps = { ...defaultDeps, ...overrides };
-  const { dbId, description = '', onProgress, signal } = options;
+  const { dbId, description = '', onProgress, signal, legacyId = false } = options;
   const prepared = await deps.shrink(file);
   const { size } = prepared;
   if (!size) throw new PermanentUploadError('Файл пуст');
 
-  const baseId = await makeClientId(itemId, dbId, file);
+  const baseId = await makeClientId(itemId, dbId, file, { legacyId });
   const params = dbId ? { db_id: dbId } : {};
   let state = null;
   // Сжатие дало другой размер, чем в прошлый раз: сервер просит новый идентификатор.

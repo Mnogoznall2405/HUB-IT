@@ -27,7 +27,14 @@ class MyFileResponse(BaseModel):
     preview_max_bytes: int = 0
     is_shared: bool = False
     is_favorite: bool = False
+    collaborators_count: int = 0
+    shared_with_me: bool = False
+    my_role: str = ""
+    owner_username: str = ""
     folder_name: str = ""
+    # Set only on rows that come from a shared library but are listed outside it (recent files, search).
+    library_id: str | None = None
+    library_name: str = ""
     share_expires_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -41,13 +48,34 @@ class MyFileFolderResponse(BaseModel):
     file_count: int = 0
     is_shared: bool = False
     is_favorite: bool = False
+    collaborators_count: int = 0
+    shared_with_me: bool = False
+    my_role: str = ""
+    owner_username: str = ""
+    library_id: str | None = None
+    library_name: str = ""
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+class MyFileCopyRequest(BaseModel):
+    """Where the copy goes: a folder (of the disk or of a library), a library root, or the disk root."""
+
+    folder_id: str | None = Field(default=None, max_length=64)
+    library_id: str | None = Field(default=None, max_length=64)
+
+
+class MyFileBlankDocumentRequest(BaseModel):
+    kind: str = Field(min_length=1, max_length=8)
+    name: str | None = Field(default=None, max_length=255)
+    folder_id: str | None = Field(default=None, max_length=64)
+    library_id: str | None = Field(default=None, max_length=64)
 
 
 class MyFileFolderCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     parent_id: str | None = Field(default=None, max_length=64)
+    library_id: str | None = Field(default=None, max_length=64)
 
 
 class MyFileFolderUpdateRequest(BaseModel):
@@ -62,11 +90,18 @@ class MyFileUpdateRequest(BaseModel):
     is_favorite: bool | None = None
 
 
+class MyFileLibraryInfo(BaseModel):
+    id: str
+    name: str
+    my_role: str = ""
+
+
 class MyFileListResponse(BaseModel):
     items: list[MyFileResponse] = Field(default_factory=list)
     folders: list[MyFileFolderResponse] = Field(default_factory=list)
     breadcrumbs: list[MyFileFolderResponse] = Field(default_factory=list)
     folder: MyFileFolderResponse | None = None
+    library: MyFileLibraryInfo | None = None
 
 
 class MyFileFolderListResponse(BaseModel):
@@ -90,6 +125,7 @@ class MyFileUploadSessionCreateRequest(BaseModel):
     retention_days: int = 1
     mime_type: str = Field(default="application/octet-stream", max_length=255)
     folder_id: str | None = Field(default=None, max_length=64)
+    library_id: str | None = Field(default=None, max_length=64)
 
 
 class MyFileUploadSessionResponse(BaseModel):
@@ -158,6 +194,7 @@ class MyFileAuditItemResponse(BaseModel):
     actor_username: str
     ip_address: str
     user_agent: str
+    details: str = ""
     created_at: datetime | None = None
 
 

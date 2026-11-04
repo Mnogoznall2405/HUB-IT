@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react';
 import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, MenuItem, Stack, Switch, TextField, Typography } from '@mui/material';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import AddRoundedIcon from '@mui/icons-material/AddRounded';
+import { itObjectsAPI } from '../../api/itObjects';
 import { monitoringAPI } from '../../api/monitoring';
 import { errorMessage } from './monitoringFormat';
 
 const grid = { display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 2 };
-const deviceDefaults = { failure_polls: 3, cpu_warn: 85, memory_warn: 90, temperature_warn: 75, latency_warn_ms: 150, loss_warn_pct: 20 };
+const deviceDefaults = { failure_polls: 3, icmp_timeout_ms: 800, cpu_warn: 85, memory_warn: 90, temperature_warn: 75, latency_warn_ms: 150, loss_warn_pct: 20 };
 
 function ProfileDialog({ open, profile, onClose, onSaved }) {
   const [name, setName] = useState('');
@@ -43,10 +44,13 @@ export function MonitoringTargetDialog({ open, target, onClose, onSaved }) {
   const [error, setError] = useState('');
   const [profileDialog, setProfileDialog] = useState({ open: false, profile: null });
   const [form, setForm] = useState({});
+  const [objects, setObjects] = useState([]);
   useEffect(() => {
     if (!open) return undefined;
     let active = true;
-    setForm({ network_device_id: target?.network_device_id ?? null, name: target?.name || '', address: target?.address || '', port: target?.port || 161, profile_id: target?.profile_id || '', enabled: target?.enabled ?? true, settings: { ...deviceDefaults, ...target?.settings } });
+    // Список объектов нужен только для привязки; без права «Объекты ИТ» поле просто остаётся пустым.
+    itObjectsAPI.list().then((result) => { if (active) setObjects(result?.items || []); }).catch(() => {});
+    setForm({ network_device_id: target?.network_device_id ?? null, object_ref: target?.object_ref ?? null, name: target?.name || '', address: target?.address || '', port: target?.port || 161, profile_id: target?.profile_id || '', enabled: target?.enabled ?? true, settings: { ...deviceDefaults, ...target?.settings } });
     setError(''); setLoading(true);
     monitoringAPI.profiles().then((profileList) => { if (active) setProfiles(profileList); }).catch((err) => { if (active) setError(errorMessage(err)); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
@@ -68,6 +72,7 @@ export function MonitoringTargetDialog({ open, target, onClose, onSaved }) {
         {error && <Alert severity="error">{error}</Alert>}
         {loading && <Alert severity="info" icon={<CircularProgress size={18} />}>Загрузка профилей…</Alert>}
         <TextField autoFocus={!target} label="Название в мониторинге" required value={form.name || ''} onChange={(e) => field('name', e.target.value)} inputProps={{ maxLength: 160 }} />
+        {(objects.length > 0 || form.object_ref) && <TextField select label="Объект ИТ" value={form.object_ref || ''} onChange={(e) => field('object_ref', e.target.value || null)} helperText="Устройство появится на вкладке «Мониторинг» этого объекта"><MenuItem value="">Не привязано</MenuItem>{form.object_ref && !objects.some((item) => item.object_ref === form.object_ref) && <MenuItem value={form.object_ref}>{form.object_ref}</MenuItem>}{objects.map((item) => <MenuItem key={item.object_ref} value={item.object_ref}>{item.name}</MenuItem>)}</TextField>}
         <Box sx={grid}><TextField required label="IP для опроса" value={form.address || ''} onChange={(e) => field('address', e.target.value)} autoComplete="off" inputProps={{ maxLength: 45 }} /><TextField label="Порт SNMP" type="number" required value={form.port ?? 161} onChange={(e) => field('port', e.target.value)} inputProps={{ min: 1, max: 65535 }} /></Box>
         <Stack direction="row" alignItems="flex-start" gap={1.5} flexWrap="wrap">
           <TextField select label="Профиль SNMPv2c" required value={form.profile_id || ''} onChange={(e) => field('profile_id', e.target.value)} sx={{ minWidth: 180, flex: 1 }}>{profiles.map((profile) => <MenuItem key={profile.id} value={profile.id}>{profile.name}</MenuItem>)}</TextField>
@@ -77,7 +82,7 @@ export function MonitoringTargetDialog({ open, target, onClose, onSaved }) {
         <FormControlLabel control={<Switch checked={Boolean(form.enabled)} onChange={(e) => field('enabled', e.target.checked)} />} label="Собирать данные устройства" />
         <Accordion elevation={0} disableGutters sx={{ '&:before': { display: 'none' }, border: 1, borderColor: 'divider', borderRadius: '12px !important' }}>
           <AccordionSummary expandIcon={<ExpandMoreRoundedIcon />}><Typography variant="body2" fontWeight={600}>Пороги устройства</Typography></AccordionSummary>
-          <AccordionDetails><Box sx={grid}>{[['failure_polls', 'Неуспешных проверок подряд', 2, 10], ['latency_warn_ms', 'Задержка, мс', 1, 30000], ['loss_warn_pct', 'Потери ICMP, %', 1, 100], ['cpu_warn', 'CPU, %', 1, 100], ['memory_warn', 'Память, %', 1, 100], ['temperature_warn', 'Температура, °C', 1, 150]].map(([key, label, min, max]) => <TextField key={key} label={label} type="number" required value={form.settings?.[key] ?? deviceDefaults[key]} onChange={(e) => setForm((old) => ({ ...old, settings: { ...old.settings, [key]: e.target.value } }))} inputProps={{ min, max }} />)}</Box></AccordionDetails>
+          <AccordionDetails><Box sx={grid}>{[['failure_polls', 'Неуспешных проверок подряд', 2, 10], ['latency_warn_ms', 'Задержка, мс', 1, 30000], ['icmp_timeout_ms', 'Ожидание ответа ping, мс', 200, 5000], ['loss_warn_pct', 'Потери ICMP, %', 1, 100], ['cpu_warn', 'CPU, %', 1, 100], ['memory_warn', 'Память, %', 1, 100], ['temperature_warn', 'Температура, °C', 1, 150]].map(([key, label, min, max]) => <TextField key={key} label={label} type="number" required value={form.settings?.[key] ?? deviceDefaults[key]} onChange={(e) => setForm((old) => ({ ...old, settings: { ...old.settings, [key]: e.target.value } }))} inputProps={{ min, max }} />)}</Box></AccordionDetails>
         </Accordion>
       </Stack></DialogContent>
       <DialogActions sx={{ px: 3, pb: 2 }}><Button onClick={onClose} disabled={saving}>Отмена</Button><Button type="submit" variant="contained" disabled={saving || loading} startIcon={saving ? <CircularProgress size={16} color="inherit" /> : null}>{target ? 'Сохранить устройство' : 'Подключить'}</Button></DialogActions>

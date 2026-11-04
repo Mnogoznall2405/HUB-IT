@@ -242,12 +242,15 @@ QUERY_GET_EQUIPMENT_BY_BRANCH_NO = """
         i.ID,
         i.INV_NO,
         i.SERIAL_NO,
+        i.PART_NO as part_no,
         i.IP_ADDRESS as ip_address,
+        i.DESCR as description,
         t.TYPE_NAME as type_name,
         m.MODEL_NAME as model_name,
         v.VENDOR_NAME as vendor_name,
         s.DESCR as status,
         o.OWNER_DISPLAY_NAME as employee_name,
+        o.OWNER_DEPT as employee_dept,
         l.DESCR as location
     FROM ITEMS i
     LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO

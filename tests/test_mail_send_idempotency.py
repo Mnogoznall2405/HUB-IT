@@ -519,3 +519,59 @@ def test_send_message_conflict_does_not_call_exchange(tmp_path, monkeypatch):
             idempotency_key="compose-key-xyz",
         )
     assert len(created_messages) == 1
+
+
+def test_transport_failure_after_send_started_is_unknown_and_never_sent_twice(tmp_path, monkeypatch):
+    """DMAIL-01: Exchange may have accepted the message when the reply was lost."""
+    monkeypatch.setenv("MAIL_SEND_IDEMPOTENCY", "1")
+    database_url = f"sqlite+pysqlite:///{(tmp_path / 'mail-send-unknown.db').as_posix()}"
+    initialize_app_schema(database_url)
+    created_messages = []
+    _install_fake_exchangelib(monkeypatch, created_messages)
+    attempts = []
+
+    def accepted_then_connection_lost(self):
+        attempts.append(self)
+        raise ConnectionError("connection reset before the response")
+
+    sys.modules["exchangelib"].Message.send_and_save = accepted_then_connection_lost
+
+    class Service(MailService):
+        def __init__(self) -> None:
+            self._database_url = database_url
+
+        def _validate_outgoing_attachments_dynamic(self, attachments):
+            return None
+
+        def _resolve_outbound_mailbox_id(self, **kwargs):
+            return kwargs.get("mailbox_id") or "mb-1"
+
+        def _resolve_mail_profile(self, **kwargs):
+            return {
+                "mailbox_id": "mb-1", "email": "user@example.com", "login": "user@example.com",
+                "password": "secret", "signature": "", "user": {"id": 100, "username": "mail-user"},
+            }
+
+        def _create_account(self, **kwargs):
+            return SimpleNamespace(sent="sent-folder", protocol=object())
+
+        @staticmethod
+        def _log_message(**kwargs):
+            return None
+
+        @staticmethod
+        def invalidate_user_cache(**kwargs):
+            return None
+
+    service = Service()
+    kwargs = dict(
+        user_id=100, mailbox_id="mb-1", to=["target@example.com"], cc=[], bcc=[],
+        subject="Hello", body="<p>Hi</p>", is_html=True, idempotency_key="lost-reply-key",
+        require_idempotency=False,
+    )
+    with pytest.raises(Exception):
+        service.send_message(**kwargs)
+    with pytest.raises(Exception):
+        service.send_message(**kwargs)
+
+    assert len(attempts) == 1

@@ -1,15 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { getPhotoUploadQueue, STATUS } from '../../lib/photoUploadQueue';
-
-// Владелец очереди: пользователь, чей вход сохранён в браузере (тот же ключ, что у AuthContext).
-const readStoredUserId = () => {
-  try {
-    return Number(JSON.parse(localStorage.getItem('user') || 'null')?.id) || 0;
-  } catch {
-    return 0;
-  }
-};
+import { getPhotoUploadQueue, readStoredUserId, STATUS } from '../../lib/photoUploadQueue';
 
 // Очередь загрузки фото для карточки оборудования: задания этой позиции и этой базы,
 // действия над ними и сигнал «фото доехало» (чтобы перечитать список).
@@ -47,6 +38,8 @@ export function usePhotoUploadQueue({ itemId, dbId, onUploaded }) {
     [queue, itemId, dbId],
   );
 
+  // Снимки лежат только в памяти вкладки (IndexedDB недоступна): закрытие вкладки их потеряет.
+  const unsaved = jobs.filter((job) => job.durable === false).length;
   const stuck = jobs.filter((job) => job.status === STATUS.FAILED || job.status === STATUS.WAITING).length;
   // Сколько ещё уходит по другим позициям: человек уже перешёл дальше, но фото ещё едут.
   const elsewhere = allJobs.length - jobs.length;
@@ -54,6 +47,7 @@ export function usePhotoUploadQueue({ itemId, dbId, onUploaded }) {
   return {
     jobs,
     stuck,
+    unsaved,
     elsewhere,
     enqueue,
     retryAll,

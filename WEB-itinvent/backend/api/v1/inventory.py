@@ -27,6 +27,7 @@ from backend import inventory_runtime
 from backend.models.auth import User
 from backend.services.user_db_selection_service import user_db_selection_service
 from backend.services import inventory_binding
+from backend.services import inventory_read
 from backend.services.inventory_binding import EMPTY_BRANCH_LABEL, UNASSIGNED_BRANCH_LABEL
 from backend.services.authorization_service import (
     PERM_COMPUTERS_MANAGE,
@@ -46,13 +47,13 @@ def _env_positive_int(name: str, default: int, minimum: int) -> int:
     except Exception:
         return max(int(default), int(minimum))
 
-INVENTORY_FILE = "agent_inventory_cache.json"
+INVENTORY_FILE = inventory_read.INVENTORY_FILE
 CHANGES_FILE = "agent_inventory_changes.json"
 HISTORY_RETENTION_DAYS = 90
 CHANGES_WINDOW_DAYS = 30
 
-ONLINE_MAX_AGE_SECONDS = 12 * 60
-STALE_MAX_AGE_SECONDS = 60 * 60
+ONLINE_MAX_AGE_SECONDS = inventory_read.ONLINE_MAX_AGE_SECONDS
+STALE_MAX_AGE_SECONDS = inventory_read.STALE_MAX_AGE_SECONDS
 OUTLOOK_ALLOWED_STATUS = {"ok", "warning", "critical", "unknown"}
 OUTLOOK_ALLOWED_CONFIDENCE = {"high", "medium", "low"}
 OUTLOOK_ALLOWED_SOURCE = {"user_helper_com", "system_scan", "none"}
@@ -100,6 +101,8 @@ _computers_list_counters_lock = threading.Lock()
 # Без них каждый запрос списка заново читал 90 дней событий и весь сетевой индекс.
 _derived_cache_lock = threading.Lock()
 _changes_index_cache: Optional[Tuple[float, tuple, Dict[str, Dict[str, Any]]]] = None
+# Ответ /changes (сводка за окно хранения): строится сканом всех событий, поэтому кэш по версии данных и TTL.
+_changes_summary_cache: Optional[Tuple[float, tuple, Dict[str, Any]]] = None
 _network_lookup_index_cache: Optional[Tuple[float, tuple, Dict[str, Dict[str, Dict[str, Any]]]]] = None
 
 # Native clients intentionally receive only the fields rendered by the native
@@ -463,8 +466,7 @@ def _to_float(value: Any, default: Optional[float] = None) -> Optional[float]:
         return default
 
 
-def _normalize_text(value: Any) -> str:
-    return str(value or "").replace("\x00", "").strip()
+_normalize_text = inventory_read.normalize_text
 
 
 def _cyrillic_score(value: str) -> int:
@@ -493,8 +495,7 @@ def _normalize_person_name(value: Any) -> str:
     return _repair_cp866_mojibake(value)
 
 
-def _normalize_mac(value: Any) -> str:
-    return re.sub(r"[^0-9A-Fa-f]", "", _normalize_text(value)).upper()
+_normalize_mac = inventory_read.normalize_mac
 
 
 def _normalize_serial_token(value: Any) -> str:
@@ -2176,27 +2177,30 @@ def _collect_scoped_computer_records(
         except Exception:
             content_version = None
 
+    def _make_cache_key(query_text: Optional[str]) -> tuple:
+        # Ключ без версии: версия хранится в записи, поэтому устаревшая запись остаётся доступна.
+        return (
+            requested_scope,
+            bool(can_read_all),
+            tuple(db_candidates),
+            tuple(context_db_ids),
+            _normalize_text(branch).lower(),
+            _normalize_text(status_filter).lower(),
+            _normalize_text(outlook_status).lower(),
+            _normalize_text(query_text).lower(),
+            tuple(sorted(fields)),
+            _normalize_text(sort_by).lower() or "hostname",
+            _normalize_text(sort_dir).lower() == "desc",
+            bool(changed_only),
+            bool(include_hidden),
+            bool(hidden_only),
+            bool(hide_vm_172),
+        )
+
     cache_key: Optional[tuple] = None
     if app_store is not None and content_version is not None:
         try:
-            # Ключ без версии: версия хранится в записи, поэтому устаревшая запись остаётся доступна.
-            cache_key = (
-                requested_scope,
-                bool(can_read_all),
-                tuple(db_candidates),
-                tuple(context_db_ids),
-                _normalize_text(branch).lower(),
-                _normalize_text(status_filter).lower(),
-                _normalize_text(outlook_status).lower(),
-                _normalize_text(q).lower(),
-                tuple(sorted(fields)),
-                _normalize_text(sort_by).lower() or "hostname",
-                _normalize_text(sort_dir).lower() == "desc",
-                bool(changed_only),
-                bool(include_hidden),
-                bool(hidden_only),
-                bool(hide_vm_172),
-            )
+            cache_key = _make_cache_key(q)
         except Exception:
             cache_key = None
 
@@ -2267,6 +2271,18 @@ def _collect_scoped_computer_records(
             _schedule_computers_rebuild(cache_key, content_version, lambda: _build_now(None))
             return _serve_cached_computer_records(entry[2], status_filter)
 
+    derived = _derive_search_records_from_base(
+        _make_cache_key(None),
+        cache_key,
+        content_version,
+        fields,
+        q,
+        network_lookup,
+    )
+    if derived is not None:
+        _count_computers_list("derived")
+        return _serve_cached_computer_records(derived, status_filter)
+
     _count_computers_list("miss")
     flight, owner = _claim_computers_flight(cache_key, content_version)
     if not owner:
@@ -2294,6 +2310,57 @@ def _serve_cached_computer_records(
     if target_status:
         served = [item for item in served if _normalize_text(item.get("status")).lower() == target_status]
     return served
+
+
+def _derive_search_records_from_base(
+    base_key: tuple,
+    cache_key: tuple,
+    content_version: Any,
+    fields: set[str],
+    q: Optional[str],
+    network_lookup: Optional[Dict[str, Dict[str, Dict[str, Any]]]],
+) -> Optional[tuple]:
+    """Поиск по свежему кэшу того же списка без запроса: фильтр в памяти вместо SQL-скана payload.
+
+    Базовая запись — тот же ключ с пустым q и той же версией содержимого, моложе TTL. Записи
+    уже обогащены, поэтому Python-фильтр даёт тот же результат, что и сборка с SQL-кандидатами
+    (кандидаты — лишь надмножество). Сетевые совпадения привязываются позже, в
+    _build_computers_search_payload, поэтому при поиске по сети здесь остаётся надмножество:
+    токен совпал в остальных полях либо mac есть среди сетевых совпадений токена.
+    Результат кладётся в кэш с меткой времени базы: он устаревает вместе с ней.
+    """
+    tokens = _search_tokens(q)
+    if not tokens or base_key == cache_key:
+        return None
+    with _computers_records_cache_lock:
+        base = _computers_records_cache.get(base_key)
+        if base is not None:
+            _computers_records_cache.move_to_end(base_key)
+    if base is None or base[1] != content_version:
+        return None
+    if time.monotonic() - base[0] > COMPUTERS_RECORDS_CACHE_TTL_SEC:
+        return None
+    records = base[2]
+    if "network" in fields:
+        if not isinstance(network_lookup, dict):
+            return None
+        other_fields = fields - {"network"}
+        network_keys = _search_network_mac_key_sets(network_lookup, tokens)
+        matched = []
+        for item in records:
+            text = " ".join(_record_search_field_texts(item, other_fields).values()) if other_fields else ""
+            mac_key = _normalize_mac(item.get("mac_address")) or _normalize_text(item.get("mac_address"))
+            if all(token in text or mac_key in network_keys.get(token, ()) for token in tokens):
+                matched.append(item)
+    else:
+        matched = _apply_search_filter(list(records), q, fields)
+    derived = tuple(matched)
+    with _computers_records_cache_lock:
+        _computers_records_cache[cache_key] = (base[0], content_version, derived)
+        _computers_records_cache.move_to_end(cache_key)
+        while len(_computers_records_cache) > COMPUTERS_RECORDS_CACHE_MAX_ENTRIES:
+            _computers_records_cache.popitem(last=False)
+    return derived
 
 
 def _count_computers_list(name: str, value: float = 1.0) -> None:
@@ -2800,7 +2867,32 @@ def get_inventory_changes(
     limit: int = Query(50, ge=1, le=200),
     current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
 ):
+    global _changes_summary_cache
     now_ts = int(time.time())
+    app_store = _get_inventory_app_store()
+    summary_key: Optional[tuple] = None
+    if app_store is not None:
+        content_version = _inventory_content_version()
+        if content_version is not None:
+            summary_key = (getattr(app_store, "_database_url", None), content_version)
+    if summary_key is not None:
+        with _derived_cache_lock:
+            cached = _changes_summary_cache
+        if (
+            cached is not None
+            and cached[1] == summary_key
+            and time.monotonic() - cached[0] <= COMPUTERS_RECORDS_CACHE_TTL_SEC
+        ):
+            return {**cached[2], "latest_events": cached[2]["latest_events"][: int(limit)]}
+    response = _build_inventory_changes_summary(now_ts)
+    if summary_key is not None:
+        with _derived_cache_lock:
+            _changes_summary_cache = (time.monotonic(), summary_key, response)
+    return {**response, "latest_events": response["latest_events"][: int(limit)]}
+
+
+def _build_inventory_changes_summary(now_ts: int) -> Dict[str, Any]:
+    """Сводка изменений за окно хранения; latest_events — максимальные 200 (лимит эндпоинта)."""
     changes = _prune_old_changes(
         _load_changes(since_ts=now_ts - HISTORY_RETENTION_DAYS * 24 * 60 * 60),
         now_ts,
@@ -2840,7 +2932,7 @@ def get_inventory_changes(
             "changed_30d": _unique_hosts_since(30 * 24 * 60 * 60),
         },
         "daily": daily_rows,
-        "latest_events": sorted_changes[: int(limit)],
+        "latest_events": sorted_changes[:200],
     }
 
 
@@ -3265,6 +3357,28 @@ def list_object_computers(*, database_id: str, branch_no: Any) -> List[Dict[str,
         and _normalize_text(item.get("branch_no")) == target_branch
         and _normalize_text(item.get("assignment_source")) == "sql"
     ]
+
+
+def get_object_computer_detail(*, database_id: str, branch_no: Any, mac_address: str) -> Optional[Dict[str, Any]]:
+    """Bounded detail of one agent computer of an IT object; ``None`` when the host is not one of its computers."""
+    normalized_mac = _normalize_mac(mac_address)
+    if not normalized_mac:
+        return None
+    members = list_object_computers(database_id=database_id, branch_no=branch_no)
+    if not any(_normalize_mac(item.get("mac_address")) == normalized_mac for item in members):
+        return None
+    try:
+        payload = _build_computer_detail_payload(
+            current_user=_OBJECT_COMPUTERS_ACTOR,
+            mac_address=mac_address,
+            db_id_selected=_normalize_text(database_id),
+            scope="selected",
+        )
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_404_NOT_FOUND:
+            return None
+        raise
+    return _project_mobile_computer(payload, detail=True)
 
 
 @router.get("/computers/summary")

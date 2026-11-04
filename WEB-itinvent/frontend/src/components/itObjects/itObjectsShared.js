@@ -2,6 +2,7 @@ export const SECTION_LABELS = {
   passwords: 'Пароли',
   computers: 'Компьютеры',
   inventory: 'Инвентарь',
+  monitoring: 'Мониторинг',
 };
 
 export const SECTION_KEYS = Object.keys(SECTION_LABELS);

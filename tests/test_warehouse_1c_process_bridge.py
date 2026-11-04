@@ -299,6 +299,42 @@ def test_catalog_sync_cannot_block_interactive_service_read(monkeypatch, tmp_pat
         service.shutdown()
 
 
+def test_slow_employee_compare_read_cannot_starve_it_requests(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from backend.services.warehouse_1c_service import Warehouse1CService
+
+    monkeypatch.setenv("WAREHOUSE_1C_BRIDGE_DISPATCHER", DISPATCHER_PATH)
+    service = Warehouse1CService(
+        data_manager=SimpleNamespace(load_json=lambda _name, default_content=None: default_content),
+        enable_process_bridge=True,
+    )
+    started = tmp_path / "heavy-started"
+    errors = []
+
+    def heavy_read():
+        try:
+            service._run_process_bridge_sync(
+                "balances_by_warehouses", {"sleep": 1.5, "started_marker": str(started)}, timeout=10
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=heavy_read)
+    try:
+        service._run_process_bridge_sync("warmup", {}, timeout=10)
+        thread.start()
+        assert _wait_until(started.exists, timeout=10)
+        service._run_process_bridge_sync("balances", {"warehouse_ref": "wh-1"}, timeout=0.4)
+        assert thread.is_alive(), "an ordinary read must finish while the heavy read is still running"
+        thread.join(timeout=10)
+        assert not errors
+        assert service._process_bridge.get_status()["pid"] != service._heavy_process_bridge.get_status()["pid"]
+    finally:
+        if thread.ident:
+            thread.join(timeout=10)
+        service.shutdown()
+
+
 def test_startup_failure_is_distinct_from_worker_crash_and_can_be_retried():
     bridge = Warehouse1CProcessBridge(
         "tests.test_warehouse_1c_process_bridge:missing_startup_dispatcher", allowed_operations={"health"},

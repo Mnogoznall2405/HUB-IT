@@ -1,6 +1,5 @@
 import useRequestGuard from '../lib/useRequestGuard';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { buildOfficeUiTokens, getOfficeCodeBlockSx } from '../theme/officeUiTokens';
 import {
   Alert,
@@ -46,26 +45,15 @@ import PasswordFiltersPanel from '../components/passwords/PasswordFiltersPanel';
 import PasswordMobileToolbar from '../components/passwords/PasswordMobileToolbar';
 import PasswordUnlockBanner from '../components/passwords/PasswordUnlockBanner';
 import PasswordUnlockDialog from '../components/passwords/PasswordUnlockDialog';
+import VaultPrivacyCover from '../components/passwords/VaultPrivacyCover';
+import usePasswordVaultAccess from '../components/passwords/usePasswordVaultAccess';
 import PasswordUnlockStrip from '../components/passwords/PasswordUnlockStrip';
 import PasswordSectionTabs from '../components/passwords/PasswordSectionTabs';
 import PasswordAdExpiryView from '../components/passwords/PasswordAdExpiryView';
-import { getPasskeyAssertion } from '../lib/passkeyWebAuthn';
-import { extractWebAuthnErrorMessage } from '../lib/trustedDeviceEnrollment';
-import { useWebAuthnAvailability } from '../lib/useWebAuthnAvailability';
 import {
-  PASSWORD_HIDE_MS,
   buildGroupCounts,
-  buildSecretWatermark,
-  copyPasswordWithAutoClear,
-  isUnlockedUntilActive,
-  isVaultDecryptError,
-  isVaultUnlockRequiredError,
   normalizeEntry,
   normalizeText,
-  pickActiveUnlockedUntil,
-  readStoredVaultUnlockUntil,
-  retryPendingClipboardClear,
-  writeStoredVaultUnlockUntil,
 } from '../components/passwords/passwordVaultUtils';
 import { passwordsAPI } from '../api/passwords';
 import { itObjectsAPI } from '../api/itObjects';
@@ -191,8 +179,29 @@ function Passwords() {
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const [searchParams, setSearchParams] = useSearchParams();
   const activeSection = searchParams.get('section') === 'ad-expiry' ? 'ad-expiry' : 'vault';
-  const { user, hasPermission, refreshSession } = useAuth();
-  const { notifySuccess, notifyInfo, notifyWarning, notifyApiError } = useNotification();
+  const { user, hasPermission } = useAuth();
+  const { notifySuccess, notifyWarning, notifyApiError } = useNotification();
+  // Журнал админа обновляется после каждого раскрытия пароля; loadAudit объявлен ниже.
+  const loadAuditRef = useRef(null);
+  const {
+    isUnlocked,
+    unlockedUntil,
+    unlockedRemainingMs,
+    isUnlockExpiringSoon,
+    nowTs,
+    revealBusyId,
+    revealedPasswords,
+    revealExpiresAt,
+    privacyCoverActive,
+    secretWatermark,
+    syncUnlockedUntil,
+    openUnlockDialog,
+    requestReveal,
+    hidePassword,
+    copyPassword,
+    handleCopyLogin,
+    unlockDialogProps,
+  } = usePasswordVaultAccess({ onActivity: () => loadAuditRef.current?.() });
   const [entries, setEntries] = useState([]);
   const [entriesTotal, setEntriesTotal] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -206,13 +215,8 @@ function Passwords() {
   const [selectedObject, setSelectedObject] = useState(() => normalizeText(searchParams.get('object')));
   const [objectOptions, setObjectOptions] = useState([]);
   const [includeArchived, setIncludeArchived] = useState(false);
-  const [unlockedUntil, setUnlockedUntil] = useState(() => readStoredVaultUnlockUntil(user?.id));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [revealBusyId, setRevealBusyId] = useState('');
-  const [revealedPasswords, setRevealedPasswords] = useState({});
-  const [revealExpiresAt, setRevealExpiresAt] = useState({});
-  const [privacyCoverActive, setPrivacyCoverActive] = useState(false);
   const [entryDialogOpen, setEntryDialogOpen] = useState(false);
   const [formMode, setFormMode] = useState('create');
   const [form, setForm] = useState(emptyForm);
@@ -220,27 +224,16 @@ function Passwords() {
   const [newGroupName, setNewGroupName] = useState('');
   const [groupSaving, setGroupSaving] = useState(false);
   const [tagInputValue, setTagInputValue] = useState('');
-  const [unlockDialogOpen, setUnlockDialogOpen] = useState(false);
-  const [unlockMode, setUnlockMode] = useState('verify');
-  const [unlockCode, setUnlockCode] = useState('');
-  const [unlockSetupCode, setUnlockSetupCode] = useState('');
-  const [unlockSetupData, setUnlockSetupData] = useState(null);
-  const [unlockSetupLoading, setUnlockSetupLoading] = useState(false);
-  const [unlocking, setUnlocking] = useState(false);
-  const [pendingReveal, setPendingReveal] = useState(null);
   const [generatorOptions, setGeneratorOptions] = useState(emptyGeneratorOptions);
   const [generatedPassword, setGeneratedPassword] = useState('');
-  const [nowTs, setNowTs] = useState(Date.now());
   const [selectedEntryId, setSelectedEntryId] = useState('');
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
   const [filtersDrawerOpen, setFiltersDrawerOpen] = useState(false);
   const [auditExpanded, setAuditExpanded] = useState(false);
   const [auditLoading, setAuditLoading] = useState(false);
-  const hideTimersRef = useRef({});
   const searchInputRef = useRef(null);
 
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
-  const { webAuthnReady } = useWebAuthnAvailability();
   const isAdmin = String(user?.role || '').toLowerCase() === 'admin';
   const canObjects = isAdmin || hasPermission('it_objects.read');
   const globalWrite = isAdmin || hasPermission('passwords.write');
@@ -259,16 +252,6 @@ function Passwords() {
       && (entry.object_ref ? manageObjectRefs.has(entry.object_ref) : globalWrite),
     [globalWrite, manageObjectRefs],
   );
-  const passkeyUnlockAvailable = webAuthnReady && Number(user?.trusted_devices_count || 0) > 0;
-  const isUnlocked = isUnlockedUntilActive(unlockedUntil);
-  const unlockedRemainingMs = useMemo(() => {
-    const parsed = new Date(unlockedUntil || '');
-    if (Number.isNaN(parsed.getTime())) return 0;
-    return Math.max(0, parsed.getTime() - nowTs);
-  }, [nowTs, unlockedUntil]);
-
-  const isUnlockExpiringSoon = isUnlocked && unlockedRemainingMs > 0 && unlockedRemainingMs <= 30_000;
-
   const handleSectionChange = useCallback((next) => {
     const params = new URLSearchParams(searchParams);
     if (next === 'ad-expiry') {
@@ -279,36 +262,10 @@ function Passwords() {
     setSearchParams(params, { replace: true });
   }, [searchParams, setSearchParams]);
 
-  const syncUnlockedUntil = useCallback((...candidates) => {
-    const resolved = pickActiveUnlockedUntil(
-      readStoredVaultUnlockUntil(user?.id),
-      ...candidates,
-    );
-    setUnlockedUntil(resolved);
-    writeStoredVaultUnlockUntil(user?.id, resolved);
-    return resolved;
-  }, [user?.id]);
-
-  useEffect(() => {
-    syncUnlockedUntil(unlockedUntil);
-  }, [user?.id, syncUnlockedUntil]);
-
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(query), 250);
     return () => window.clearTimeout(timer);
   }, [query]);
-
-  useEffect(() => () => {
-    Object.values(hideTimersRef.current).forEach((timerId) => window.clearTimeout(timerId));
-  }, []);
-
-  const hasRevealedSecrets = Object.keys(revealedPasswords).length > 0;
-
-  useEffect(() => {
-    if (!isUnlocked && !hasRevealedSecrets) return undefined;
-    const timer = window.setInterval(() => setNowTs(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [hasRevealedSecrets, isUnlocked]);
 
   const loadAudit = useCallback(async () => {
     if (!isAdmin) return;
@@ -322,6 +279,7 @@ function Passwords() {
       setAuditLoading(false);
     }
   }, [isAdmin, notifyApiError]);
+  loadAuditRef.current = loadAudit;
 
   useEffect(() => {
     if (!canObjects) return undefined;
@@ -452,7 +410,6 @@ function Passwords() {
     const expiresAt = revealExpiresAt[selectedEntry.id] || 0;
     return Math.max(0, expiresAt - nowTs);
   }, [nowTs, revealExpiresAt, selectedEntry]);
-  const secretWatermark = buildSecretWatermark(user?.username, nowTs);
 
   const resetTagInput = useCallback(() => {
     setTagInputValue('');
@@ -583,168 +540,6 @@ function Passwords() {
     }
   };
 
-  const hidePassword = (entryId) => {
-    window.clearTimeout(hideTimersRef.current[entryId]);
-    delete hideTimersRef.current[entryId];
-    setRevealedPasswords((prev) => {
-      const next = { ...prev };
-      delete next[entryId];
-      return next;
-    });
-    setRevealExpiresAt((prev) => {
-      const next = { ...prev };
-      delete next[entryId];
-      return next;
-    });
-  };
-
-  const scheduleHide = (entryId) => {
-    window.clearTimeout(hideTimersRef.current[entryId]);
-    hideTimersRef.current[entryId] = window.setTimeout(() => hidePassword(entryId), PASSWORD_HIDE_MS);
-    setRevealExpiresAt((prev) => ({ ...prev, [entryId]: Date.now() + PASSWORD_HIDE_MS }));
-  };
-
-  const hideAllPasswords = useCallback(() => {
-    Object.values(hideTimersRef.current).forEach((timerId) => window.clearTimeout(timerId));
-    hideTimersRef.current = {};
-    setRevealedPasswords({});
-    setRevealExpiresAt({});
-  }, []);
-
-  useEffect(() => {
-    const cover = () => {
-      document.documentElement.classList.add('vault-privacy-blur');
-      hideAllPasswords();
-      setPrivacyCoverActive(true);
-    };
-    const uncover = () => {
-      if (document.hidden || !document.hasFocus()) return;
-      document.documentElement.classList.remove('vault-privacy-blur');
-      setPrivacyCoverActive(false);
-      retryPendingClipboardClear({
-        onCleared: () => notifyInfo('Буфер обмена очищен.', { source: 'passwords', dedupeMode: 'none' }),
-        onClearFailed: () => notifyWarning(
-          'Буфер обмена не очищен — вернитесь на вкладку для очистки.',
-          { source: 'passwords', dedupeMode: 'recent' },
-        ),
-      });
-    };
-    const handleVisibilityChange = () => {
-      if (document.hidden) {
-        cover();
-      } else {
-        uncover();
-      }
-    };
-    const handlePrint = () => hideAllPasswords();
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('blur', cover);
-    window.addEventListener('focus', uncover);
-    window.addEventListener('beforeprint', handlePrint);
-    window.addEventListener('afterprint', handlePrint);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('blur', cover);
-      window.removeEventListener('focus', uncover);
-      window.removeEventListener('beforeprint', handlePrint);
-      window.removeEventListener('afterprint', handlePrint);
-      document.documentElement.classList.remove('vault-privacy-blur');
-    };
-  }, [hideAllPasswords, notifyInfo, notifyWarning]);
-
-  const copyPassword = async (value) => {
-    const copied = await copyPasswordWithAutoClear(value, {
-      onCleared: () => notifyInfo('Буфер обмена очищен.', { source: 'passwords', dedupeMode: 'none' }),
-      onClearFailed: () => notifyWarning(
-        'Буфер обмена не очищен — вернитесь на вкладку для очистки.',
-        { source: 'passwords', dedupeMode: 'none' },
-      ),
-    });
-    if (!copied) {
-      notifyWarning('Буфер обмена недоступен в этом браузере.', { source: 'passwords', dedupeMode: 'none' });
-    }
-    return copied;
-  };
-
-  const loadUnlockSetup = useCallback(async () => {
-    setUnlockSetupLoading(true);
-    try {
-      const setup = await passwordsAPI.unlockSetup2fa();
-      setUnlockSetupData(setup);
-      return setup;
-    } catch (error) {
-      notifyApiError(error, 'Не удалось подготовить настройку 2FA.', { dedupeMode: 'none' });
-      setUnlockDialogOpen(false);
-      return null;
-    } finally {
-      setUnlockSetupLoading(false);
-    }
-  }, [notifyApiError]);
-
-  const openUnlockDialog = useCallback(() => {
-    setUnlockCode('');
-    setUnlockSetupCode('');
-    if (!user?.is_2fa_enabled) {
-      setUnlockMode('setup');
-      setUnlockSetupData(null);
-      setUnlockDialogOpen(true);
-      void loadUnlockSetup();
-      return;
-    }
-    setUnlockMode('verify');
-    setUnlockDialogOpen(true);
-  }, [loadUnlockSetup, user?.is_2fa_enabled]);
-
-  const revealEntry = async (entry, purpose, { allowUnlockPrompt = false } = {}) => {
-    setRevealBusyId(`${entry.id}:${purpose}`);
-    try {
-      const payload = await passwordsAPI.revealEntry(entry.id, { purpose });
-      syncUnlockedUntil(payload?.unlocked_until);
-      if (purpose === 'copy') {
-        const copied = await copyPassword(payload.password || '');
-        if (copied) {
-          notifySuccess('Пароль скопирован.', { source: 'passwords', dedupeMode: 'none', durationMs: 1800 });
-        }
-      } else {
-        setRevealedPasswords((prev) => ({ ...prev, [entry.id]: payload.password || '' }));
-        scheduleHide(entry.id);
-      }
-      await loadAudit();
-      return true;
-    } catch (error) {
-      if (allowUnlockPrompt && isVaultUnlockRequiredError(error)) {
-        setPendingReveal({ entry, purpose });
-        openUnlockDialog();
-        return false;
-      }
-      notifyApiError(
-        error,
-        isVaultDecryptError(error)
-          ? 'Пароль зашифрован старым ключом и не читается. Пересохраните запись или обратитесь к администратору.'
-          : 'Не удалось раскрыть пароль.',
-        { dedupeMode: 'none' },
-      );
-      return false;
-    } finally {
-      setRevealBusyId('');
-    }
-  };
-
-  const requestReveal = (entry, purpose) => {
-    revealEntry(entry, purpose, { allowUnlockPrompt: true });
-  };
-
-  const handleCopyLogin = async (entry) => {
-    try {
-      const copied = await copyPassword(entry.login);
-      if (copied) {
-        notifySuccess('Логин скопирован.', { source: 'passwords', dedupeMode: 'none', durationMs: 1800 });
-      }
-    } catch {
-      notifyWarning('Не удалось скопировать логин.', { source: 'passwords', dedupeMode: 'none' });
-    }
-  };
-
   const handleSelectEntry = (entry) => {
     setSelectedEntryId(entry.id);
     if (isMobile) {
@@ -764,83 +559,6 @@ function Passwords() {
     await handleArchive(entry);
     if (selectedEntryId === entry.id) {
       setSelectedEntryId('');
-    }
-  };
-
-  const completeUnlock = useCallback(async (unlockedUntilValue, { notifyMessage } = {}) => {
-    const resolvedUnlock = syncUnlockedUntil(unlockedUntilValue);
-    setUnlockDialogOpen(false);
-    setUnlockCode('');
-    setUnlockSetupCode('');
-    setUnlockSetupData(null);
-    setUnlockMode('verify');
-    notifySuccess(
-      notifyMessage || 'Доступ к раскрытию паролей открыт на 5 минут.',
-      { source: 'passwords', dedupeMode: 'none' },
-    );
-    const nextReveal = pendingReveal;
-    setPendingReveal(null);
-    if (nextReveal?.entry) {
-      await revealEntry(nextReveal.entry, nextReveal.purpose);
-    }
-    syncUnlockedUntil(resolvedUnlock);
-    await loadAudit();
-  }, [loadAudit, notifySuccess, pendingReveal, revealEntry, syncUnlockedUntil]);
-
-  const handleUnlock = async () => {
-    const code = unlockCode.trim();
-    if (!code) return;
-    setUnlocking(true);
-    try {
-      const payload = /^\d+$/.test(code) ? { totp_code: code } : { backup_code: code };
-      const result = await passwordsAPI.unlock(payload);
-      await completeUnlock(result?.unlocked_until || null);
-    } catch (error) {
-      notifyApiError(error, 'Не удалось подтвердить 2FA.', { dedupeMode: 'none' });
-    } finally {
-      setUnlocking(false);
-    }
-  };
-
-  const handleUnlockWithPasskey = async () => {
-    setUnlocking(true);
-    try {
-      const optionsResult = await passwordsAPI.unlockWebAuthnOptions();
-      const credential = await getPasskeyAssertion(optionsResult.public_key);
-      const result = await passwordsAPI.unlockWebAuthnVerify({
-        challenge_id: optionsResult.challenge_id,
-        credential,
-      });
-      await completeUnlock(result?.unlocked_until || null);
-    } catch (error) {
-      notifyWarning(
-        extractWebAuthnErrorMessage(error, 'Не удалось подтвердить passkey.'),
-        { source: 'passwords', dedupeMode: 'none' },
-      );
-    } finally {
-      setUnlocking(false);
-    }
-  };
-
-  const handleVerify2faSetup = async () => {
-    const code = unlockSetupCode.trim();
-    if (code.length < 6 || !unlockSetupData?.setup_challenge_id) return;
-    setUnlocking(true);
-    try {
-      const result = await passwordsAPI.unlockVerify2faSetup({
-        setup_challenge_id: unlockSetupData.setup_challenge_id,
-        totp_code: code,
-      });
-      await refreshSession();
-      const backupCodes = Array.isArray(result?.backup_codes) ? result.backup_codes : [];
-      const notifyMessage = backupCodes.length
-        ? `2FA подключён. Сохраните backup-коды: ${backupCodes.join(', ')}`
-        : '2FA подключён. Хранилище разблокировано.';
-      await completeUnlock(result?.unlocked_until || null, { notifyMessage });
-    } catch (error) {
-      notifyApiError(error, 'Не удалось подтвердить настройку 2FA.', { dedupeMode: 'none' });
-    } finally {
-      setUnlocking(false);
     }
   };
 
@@ -1145,17 +863,7 @@ function Passwords() {
         </>
         )}
 
-        {privacyCoverActive ? createPortal(
-          <Box
-            className="vault-blur-overlay"
-            data-testid="vault-blur-overlay"
-            role="status"
-          >
-            <Typography variant="h6" fontWeight={800}>Скрыто</Typography>
-            <Typography variant="body2">Вернитесь на вкладку, чтобы продолжить работу с паролями.</Typography>
-          </Box>,
-          document.body,
-        ) : null}
+        <VaultPrivacyCover active={privacyCoverActive} />
       </PageShell>
 
       <Dialog
@@ -1435,30 +1143,7 @@ function Passwords() {
         </DialogActions>
       </Dialog>
 
-      <PasswordUnlockDialog
-        open={unlockDialogOpen}
-        isMobile={isMobile}
-        mode={unlockMode}
-        accountName={user?.username || ''}
-        unlockCode={unlockCode}
-        setupCode={unlockSetupCode}
-        setupData={unlockSetupData}
-        setupLoading={unlockSetupLoading}
-        unlocking={unlocking}
-        passkeyAvailable={passkeyUnlockAvailable && unlockMode === 'verify'}
-        onClose={() => {
-          setUnlockDialogOpen(false);
-          setUnlockSetupCode('');
-          setUnlockSetupData(null);
-          setUnlockMode('verify');
-        }}
-        onCodeChange={(event) => setUnlockCode(event.target.value)}
-        onSetupCodeChange={(event) => setUnlockSetupCode(event.target.value)}
-        onSubmit={handleUnlock}
-        onSetupSubmit={handleVerify2faSetup}
-        onReloadSetup={loadUnlockSetup}
-        onPasskeyUnlock={handleUnlockWithPasskey}
-      />
+      <PasswordUnlockDialog isMobile={isMobile} {...unlockDialogProps} />
       <Drawer
         anchor="left"
         open={filtersDrawerOpen}

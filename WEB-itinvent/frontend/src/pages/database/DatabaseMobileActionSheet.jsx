@@ -17,8 +17,10 @@ function DatabaseMobileActionSheet({
   onOpenAdSync = noop,
   identifyWorkspaceLoading = false,
   hasExpandedVisible = false,
+  hasCollapsedVisible = false,
   onIdentifyWorkspace = noop,
   onCollapseAll = noop,
+  onExpandAll = noop,
   onEnterSelectionMode = noop,
 }) {
   const runAndClose = (callback) => {
@@ -76,6 +78,15 @@ function DatabaseMobileActionSheet({
             description="Найти компьютер по сети"
             onClick={() => runAndClose(onIdentifyWorkspace)}
             loading={identifyWorkspaceLoading}
+          />
+        )}
+
+        {hasCollapsedVisible && (
+          <EnhancedFabAction
+            icon={<ExpandMoreIcon />}
+            label="Раскрыть разделы"
+            description="Показать все группы"
+            onClick={() => runAndClose(onExpandAll)}
           />
         )}
 

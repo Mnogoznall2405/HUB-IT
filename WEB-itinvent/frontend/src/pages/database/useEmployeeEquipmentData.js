@@ -49,6 +49,10 @@ export default function useEmployeeEquipmentData({
   // Ambiguous match: balances of every candidate warehouse, loaded on expand.
   const [candidateBalances, setCandidateBalances] = useState({});
   const candidateSessionRef = useRef(0);
+  // Movements request identity: bumped on every new load and on every employee/warehouse
+  // reset, so a late answer for a previous employee/period never writes into the current view.
+  const movementsSeqRef = useRef(0);
+  const movementsInFlightRef = useRef(false);
   const candidateRequestedRef = useRef(new Set());
   const [employmentStatus, setEmploymentStatus] = useState('');
   const [employmentLabel, setEmploymentLabel] = useState('');
@@ -72,6 +76,8 @@ export default function useEmployeeEquipmentData({
     setMovementsDateTo('');
     setWarehouseLoaded(false);
     candidateSessionRef.current += 1;
+    movementsSeqRef.current += 1;
+    movementsInFlightRef.current = false;
     candidateRequestedRef.current = new Set();
     setCandidateBalances({});
     setEmploymentStatus('');
@@ -209,7 +215,13 @@ export default function useEmployeeEquipmentData({
   const loadWarehouseMovements = useCallback(async (cursor = '', dateFrom, dateTo) => {
     const ref = warehouseInfo?.ref;
     if (!canViewWarehouse1C || !ref) return;
+    // "Load more" appends to the current page: a second click while one is in flight would
+    // either duplicate or reorder pages, so it is ignored until the first one lands.
+    if (cursor && movementsInFlightRef.current) return;
 
+    movementsSeqRef.current += 1;
+    const seq = movementsSeqRef.current;
+    movementsInFlightRef.current = true;
     setMovementsLoading(true);
     setMovementsError('');
     try {
@@ -220,16 +232,21 @@ export default function useEmployeeEquipmentData({
         dateFrom: dateFrom ?? movementsDateFrom,
         dateTo: dateTo ?? movementsDateTo,
       });
+      if (seq !== movementsSeqRef.current) return;
       const items = Array.isArray(data?.items) ? data.items : [];
       setWarehouseMovements((prev) => (cursor ? [...prev, ...items] : items));
       setWarehouseMovementsMeta(data || null);
       setMovementsLoaded(true);
     } catch (err) {
+      if (seq !== movementsSeqRef.current) return;
       console.error('Failed to load warehouse movements from 1C:', err);
       setMovementsError(resolveWarehouseErrorMessage(err, 'Не удалось загрузить перемещения склада из 1С.'));
       setMovementsLoaded(true);
     } finally {
-      setMovementsLoading(false);
+      if (seq === movementsSeqRef.current) {
+        movementsInFlightRef.current = false;
+        setMovementsLoading(false);
+      }
     }
   }, [canViewWarehouse1C, warehouseInfo?.ref, movementsDateFrom, movementsDateTo]);
 

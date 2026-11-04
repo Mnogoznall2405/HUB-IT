@@ -196,6 +196,7 @@ export default function DatabasePageView({ vm }) {
     handleCloseEmployeeEquipmentDialog,
     handleCloseEquipmentDetail,
     handleCollapseAll,
+    handleExpandAll,
     handleCombinedSearchKeyDown,
     handleDataModeChange,
     handleDatabaseSelectChange,
@@ -231,6 +232,7 @@ export default function DatabasePageView({ vm }) {
     handleUploadActInvNosChange,
     handleUploadActParse,
     hasExpandedVisible,
+    hasCollapsedVisible,
     identifyPCLoading,
     initialLoading,
     isActsScope,
@@ -679,7 +681,9 @@ export default function DatabasePageView({ vm }) {
           selectedBranch={selectedBranch}
           onBranchChange={handleBranchChange}
           hasExpandedVisible={hasExpandedVisible}
+          hasCollapsedVisible={hasCollapsedVisible}
           onCollapseAll={handleCollapseAll}
+          onExpandAll={handleExpandAll}
           onOpenQrScanner={handleQrScannerOpen}
           onIdentifyWorkspace={handleIdentifyWorkspace}
           identifyPCLoading={identifyPCLoading}

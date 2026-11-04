@@ -7,6 +7,7 @@ import {
   Breadcrumbs,
   Button,
   Checkbox,
+  Chip,
   CircularProgress,
   Dialog,
   DialogActions,
@@ -36,7 +37,12 @@ import AddRoundedIcon from '@mui/icons-material/AddRounded';
 import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
 import CloudUploadOutlinedIcon from '@mui/icons-material/CloudUploadOutlined';
 import CreateNewFolderOutlinedIcon from '@mui/icons-material/CreateNewFolderOutlined';
+import ArrowDropDownRoundedIcon from '@mui/icons-material/ArrowDropDownRounded';
+import ClearRoundedIcon from '@mui/icons-material/ClearRounded';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
+import SlideshowOutlinedIcon from '@mui/icons-material/SlideshowOutlined';
+import TableChartOutlinedIcon from '@mui/icons-material/TableChartOutlined';
 import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
 import DriveFileMoveOutlinedIcon from '@mui/icons-material/DriveFileMoveOutlined';
 import DriveFileRenameOutlineRoundedIcon from '@mui/icons-material/DriveFileRenameOutlineRounded';
@@ -45,7 +51,9 @@ import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import GroupOutlinedIcon from '@mui/icons-material/GroupOutlined';
 import LinkOutlinedIcon from '@mui/icons-material/LinkOutlined';
 import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
+import FolderSharedOutlinedIcon from '@mui/icons-material/FolderSharedOutlined';
 import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
+import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import StarOutlineRoundedIcon from '@mui/icons-material/StarOutlineRounded';
 import StarRoundedIcon from '@mui/icons-material/StarRounded';
 import GridViewOutlinedIcon from '@mui/icons-material/GridViewOutlined';
@@ -55,8 +63,9 @@ import ViewListOutlinedIcon from '@mui/icons-material/ViewListOutlined';
 import MainLayout from '../components/layout/MainLayout';
 import MyFileAuditDialog from '../components/myFiles/MyFileAuditDialog';
 import MyFilesCollaboratorsDialog from '../components/myFiles/MyFilesCollaboratorsDialog';
+import MyFilesCopyDialog from '../components/myFiles/MyFilesCopyDialog';
+import MyFilesLibraryDialog from '../components/myFiles/MyFilesLibraryDialog';
 import MyFilesOfficeEditorDialog from '../components/myFiles/MyFilesOfficeEditorDialog';
-import MyFilesSharedForEditingDialog from '../components/myFiles/MyFilesSharedForEditingDialog';
 import MyFilesShareDialog from '../components/myFiles/MyFilesShareDialog';
 import MyFilesVersionsDialog from '../components/myFiles/MyFilesVersionsDialog';
 import DocumentPreviewDialog from '../components/documentPreview/DocumentPreviewDialog';
@@ -71,6 +80,7 @@ import {
   myFilesAPI,
   myFilesRetentionOptions,
 } from '../api/myFiles';
+import { myFilesLibrariesAPI } from '../api/myFilesLibraries';
 import { myFilesOfficeAPI } from '../api/myFilesOffice';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
@@ -79,6 +89,9 @@ import {
   getMyFileName,
   isMyFilePreviewSupported,
 } from '../lib/myFilesPreview';
+import { isNativeShellRuntime } from '../lib/platform';
+import { buildEditorRoute, buildEditorUrl } from '../lib/myFilesEditorLink';
+import { requestDesktopEditorWindow } from '../lib/desktopBridge';
 import { useMyFilesDownload } from './myFiles/useMyFilesDownload';
 
 const MY_FILES_RENDER_CHUNK = 200;
@@ -92,7 +105,18 @@ import {
   FileRow,
   FolderCard,
   FolderRow,
+  ownerLabel,
+  rowGridColumns,
+  sharedOpenLabel,
 } from '../components/myFiles/MyFilesListItems';
+import {
+  DATE_FILTERS,
+  TYPE_FILTERS,
+  dateFilterLabel,
+  matchesDateFilter,
+  matchesTypeFilter,
+  typeFilterLabel,
+} from '../lib/myFilesFilters';
 import {
   ACTIVE_PROCESSING_STATUSES,
   getFileVisualColors,
@@ -100,6 +124,9 @@ import {
   READY_STATUSES,
 } from '../components/myFiles/myFilesVisual';
 import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
+
+const LIBRARY_ROLE_RANK = { view: 1, comment: 2, edit: 3, manage: 4 };
+const LIBRARY_ROLE_LABELS = { manage: 'Управление', edit: 'Правка', comment: 'Комментарии', view: 'Просмотр' };
 
 const reconcileById = (previous, next) => {
   const previousById = new Map(previous.map((entry) => [String(entry?.id), entry]));
@@ -122,17 +149,53 @@ const reconcileById = (previous, next) => {
 export default function MyFiles() {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
-  const { hasPermission } = useAuth();
-  const canWrite = hasPermission('my_files.write');
-  const canShare = hasPermission('my_files.share');
+  const { hasPermission, user: authUser } = useAuth();
+  const currentUsername = String(authUser?.username || '');
   const [searchParams, setSearchParams] = useSearchParams();
   const viewParam = String(searchParams.get('view') || '');
   const isTrashView = viewParam === 'trash';
   const isRecentView = viewParam === 'recent';
   const isFavoritesView = viewParam === 'favorites';
-  const isSpecialView = isTrashView || isRecentView || isFavoritesView;
-  const listView = isRecentView ? 'recent' : isFavoritesView ? 'favorites' : '';
-  const currentFolderId = isSpecialView ? null : (searchParams.get('folder') || null);
+  const isSharedView = viewParam === 'shared';
+  const isSpecialView = isTrashView || isRecentView || isFavoritesView || isSharedView;
+  const listView = isRecentView ? 'recent' : isFavoritesView ? 'favorites' : isSharedView ? 'shared' : '';
+  // A folder opened through "Доступно мне" belongs to somebody else: it is only browsed, never written to.
+  const currentFolderId = isSharedView || !isSpecialView ? (searchParams.get('folder') || null) : null;
+  // A shared library ("Общие папки") is opened with ?library=<id>; its trash is ?view=trash&library=<id>.
+  const libraryId = !isRecentView && !isFavoritesView && !isSharedView ? (searchParams.get('library') || null) : null;
+  const isLibraryView = Boolean(libraryId);
+  const [libraries, setLibraries] = useState([]);
+  const [canManageLibraries, setCanManageLibraries] = useState(false);
+  const [libraryDialog, setLibraryDialog] = useState({ open: false, library: null });
+  const [libraryInfo, setLibraryInfo] = useState(null);
+  const activeLibrary = useMemo(
+    () => (libraryId ? libraries.find((entry) => String(entry.id) === String(libraryId)) || null : null),
+    [libraries, libraryId],
+  );
+  const libraryRole = isLibraryView
+    ? String((libraryInfo && String(libraryInfo.id) === String(libraryId) ? libraryInfo.my_role : activeLibrary?.my_role) || '')
+    : '';
+  const libraryRank = LIBRARY_ROLE_RANK[libraryRole] || 0;
+  const canManageLibrary = isLibraryView && libraryRank >= LIBRARY_ROLE_RANK.manage;
+  // In a library the role decides: edit may change content, manage also owns the trash, links and the journal.
+  const canWrite = hasPermission('my_files.write')
+    && (!isLibraryView || libraryRank >= (isTrashView ? LIBRARY_ROLE_RANK.manage : LIBRARY_ROLE_RANK.edit));
+  const canShare = hasPermission('my_files.share') && (!isLibraryView || canManageLibrary);
+  const libraryName = String(activeLibrary?.name || (libraryInfo && String(libraryInfo.id) === String(libraryId) ? libraryInfo.name : '') || 'Общая папка');
+  // "Недавние" and search results mix in rows of libraries the user belongs to: each one is gated by its own role.
+  const entryAccess = (entry) => {
+    const entryLibraryId = entry?.library_id ? String(entry.library_id) : '';
+    if (!entryLibraryId || entryLibraryId === String(libraryId || '')) {
+      return { library: isLibraryView, canWrite, canShare, canManage: canManageLibrary };
+    }
+    const rank = LIBRARY_ROLE_RANK[String(entry.my_role || '')] || 0;
+    return {
+      library: true,
+      canWrite: hasPermission('my_files.write') && rank >= LIBRARY_ROLE_RANK.edit,
+      canShare: hasPermission('my_files.share') && rank >= LIBRARY_ROLE_RANK.manage,
+      canManage: rank >= LIBRARY_ROLE_RANK.manage,
+    };
+  };
   const [items, setItems] = useState([]);
   const [folders, setFolders] = useState([]);
   const [breadcrumbs, setBreadcrumbs] = useState([]);
@@ -147,6 +210,9 @@ export default function MyFiles() {
   const [sortField, setSortField] = useState('name');
   const [sortDir, setSortDir] = useState('asc');
   const [searchQuery, setSearchQuery] = useState('');
+  const [typeFilter, setTypeFilter] = useState('');
+  const [dateFilter, setDateFilter] = useState('');
+  const [filterMenu, setFilterMenu] = useState({ kind: '', anchor: null });
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   useEffect(() => {
     const timer = window.setTimeout(
@@ -173,8 +239,8 @@ export default function MyFiles() {
   const [officeStatus, setOfficeStatus] = useState({ enabled: false, editable_extensions: [] });
   const [officeEditorFile, setOfficeEditorFile] = useState(null);
   const [collaboratorsFile, setCollaboratorsFile] = useState(null);
+  const [collaboratorsFolder, setCollaboratorsFolder] = useState(null);
   const [versionsFile, setVersionsFile] = useState(null);
-  const [sharedEditingOpen, setSharedEditingOpen] = useState(false);
   const [confirmState, setConfirmState] = useState(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const { notifySuccess, notifyWarning, notifyApiError } = useNotification();
@@ -200,14 +266,21 @@ export default function MyFiles() {
     if (!silent) setLoading(true);
     setRefreshing(true);
     try {
-      const [filesPayload, quotaPayload, foldersPayload] = await Promise.all([
+      // A library has its own limit: its usage comes with the library list instead of the personal quota.
+      const [filesPayload, quotaPayload, foldersPayload, librariesPayload] = await Promise.all([
         isTrashView && myFilesAPI.listTrash
-          ? myFilesAPI.listTrash()
-          : myFilesAPI.listFiles({ folderId: currentFolderId, view: listView, q: debouncedSearchQuery }),
-        myFilesAPI.getQuota(),
-        myFilesAPI.listFolders ? myFilesAPI.listFolders() : Promise.resolve({ items: [] }),
+          ? myFilesAPI.listTrash({ libraryId })
+          : myFilesAPI.listFiles({ folderId: currentFolderId, view: listView, q: debouncedSearchQuery, libraryId }),
+        libraryId ? Promise.resolve(null) : myFilesAPI.getQuota(),
+        myFilesAPI.listFolders ? myFilesAPI.listFolders({ libraryId }) : Promise.resolve({ items: [] }),
+        libraryId ? myFilesLibrariesAPI.list().catch(() => null) : Promise.resolve(null),
       ]);
       if (!isCurrent()) return;
+      if (librariesPayload) {
+        setLibraries(Array.isArray(librariesPayload.items) ? librariesPayload.items : []);
+        setCanManageLibraries(Boolean(librariesPayload.can_manage));
+      }
+      setLibraryInfo(libraryId && filesPayload?.library ? filesPayload.library : null);
       const nextItems = Array.isArray(filesPayload?.items) ? filesPayload.items : [];
       const nextFolders = Array.isArray(filesPayload?.folders) ? filesPayload.folders : [];
       const nextAllFolders = Array.isArray(foldersPayload?.items) ? foldersPayload.items : [];
@@ -215,11 +288,13 @@ export default function MyFiles() {
       setFolders((prev) => reconcileById(prev, nextFolders));
       setBreadcrumbs((prev) => reconcileById(prev, Array.isArray(filesPayload?.breadcrumbs) ? filesPayload.breadcrumbs : []));
       setAllFolders((prev) => reconcileById(prev, nextAllFolders));
-      setQuota((prev) => {
-        if (!quotaPayload) return null;
-        if (prev && Object.keys(quotaPayload).every((key) => prev[key] === quotaPayload[key])) return prev;
-        return quotaPayload;
-      });
+      if (!libraryId) {
+        setQuota((prev) => {
+          if (!quotaPayload) return null;
+          if (prev && Object.keys(quotaPayload).every((key) => prev[key] === quotaPayload[key])) return prev;
+          return quotaPayload;
+        });
+      }
     } catch (error) {
       if (!isCurrent()) return;
       notifyApiError(error, 'Не удалось загрузить список файлов.', { dedupeMode: 'recent' });
@@ -230,7 +305,21 @@ export default function MyFiles() {
         setRefreshing(false);
       }
     }
-  }, [beginLoad, currentFolderId, debouncedSearchQuery, isTrashView, listView, notifyApiError]);
+  }, [beginLoad, currentFolderId, debouncedSearchQuery, isTrashView, libraryId, listView, notifyApiError]);
+
+  const loadLibraries = useCallback(async () => {
+    try {
+      const payload = await myFilesLibrariesAPI.list();
+      setLibraries(Array.isArray(payload?.items) ? payload.items : []);
+      setCanManageLibraries(Boolean(payload?.can_manage));
+    } catch {
+      // Libraries are an optional section: without the endpoint it simply stays hidden.
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadLibraries();
+  }, [loadLibraries]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -244,12 +333,19 @@ export default function MyFiles() {
     return () => controller.abort();
   }, []);
 
-  // The invitation notification links here: open "available to me" once and drop the parameter.
+  // Older invitation notifications link to ?shared=1: show the "available to me" section instead.
   useEffect(() => {
-    if (searchParams.get('shared') !== '1' || !officeStatus.enabled) return;
-    setSharedEditingOpen(true);
+    if (searchParams.get('shared') !== '1') return;
+    setSearchParams({ view: 'shared' }, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  // Link for collaborators (?edit=<file id>): open the editor once and drop the parameter.
+  useEffect(() => {
+    const fileId = String(searchParams.get('edit') || '');
+    if (!fileId || !officeStatus.enabled) return;
+    setOfficeEditorFile({ id: fileId });
     const next = new URLSearchParams(searchParams);
-    next.delete('shared');
+    next.delete('edit');
     setSearchParams(next, { replace: true });
   }, [officeStatus.enabled, searchParams, setSearchParams]);
 
@@ -260,12 +356,94 @@ export default function MyFiles() {
     return (officeStatus.editable_extensions || []).some((extension) => name.endsWith(extension));
   }, [officeStatus]);
 
+  // In the browser the editor gets a tab of its own, in HUB Desktop the second window of the app, so the first one stays
+  // free to work in. Without either (an older Desktop, a blocked pop-up) it opens in a window over the list.
+  const editorTabOpenedRef = useRef(false);
+  const openOfficeEditor = useCallback(async (file) => {
+    const fileId = String(file?.id || '');
+    if (!fileId) return;
+    const route = buildEditorRoute(fileId);
+    if (isNativeShellRuntime()) {
+      const result = await requestDesktopEditorWindow(route);
+      if (result.status === 'opened' || result.status === 'activated') {
+        editorTabOpenedRef.current = true;
+        return;
+      }
+    } else {
+      const tab = window.open(buildEditorUrl(fileId), '_blank');
+      if (tab) {
+        editorTabOpenedRef.current = true;
+        return;
+      }
+    }
+    setOfficeEditorFile(file);
+  }, []);
+
+  // The list shows what was saved in the editor tab as soon as the user comes back to it.
+  useEffect(() => {
+    const refresh = () => {
+      if (!editorTabOpenedRef.current || document.visibilityState === 'hidden') return;
+      void loadData({ silent: true });
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [loadData]);
+
+  // A document shared with others (or kept in a shared folder) is edited online by everybody: never in a local application.
+  const opensInEditor = (item) => isOfficeEditable(item)
+    && Boolean(item.shared_with_me || Number(item.collaborators_count || 0) > 0 || item.library_id || isLibraryView);
+
+  // Documents open in the editor; any other file shared with me is simply downloaded.
+  const openSharedFile = useCallback((item) => {
+    if (isOfficeEditable(item)) openOfficeEditor(item);
+    else if (item && READY_STATUSES.has(String(item.status || '').toLowerCase())) void handleDownload(item);
+  }, [handleDownload, isOfficeEditable, openOfficeEditor]);
+
   const closeOfficeEditor = useCallback(() => {
     setOfficeEditorFile(null);
     void loadData({ silent: true });
   }, [loadData]);
 
+  // A blank document is queued like any upload: remember it and open the editor once it becomes ready.
+  const [copyDialogFile, setCopyDialogFile] = useState(null);
+  const [pendingOpenId, setPendingOpenId] = useState('');
+  const [creatingDocument, setCreatingDocument] = useState(false);
+  const handleCreateDocument = useCallback(async (kind) => {
+    setCreateMenuAnchor(null);
+    setCreatingDocument(true);
+    try {
+      const created = await myFilesOfficeAPI.createBlank({ kind, folderId: currentFolderId, libraryId });
+      if (created?.id) setPendingOpenId(String(created.id));
+      await loadData({ silent: true });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось создать документ.');
+    } finally {
+      setCreatingDocument(false);
+    }
+  }, [currentFolderId, libraryId, loadData, notifyApiError]);
+
+  useEffect(() => {
+    if (!pendingOpenId) return;
+    const created = items.find((entry) => String(entry.id) === pendingOpenId);
+    if (!created) return;
+    const status = String(created.status || '').toLowerCase();
+    if (status === 'failed') {
+      setPendingOpenId('');
+    } else if (isOfficeEditable(created)) {
+      setPendingOpenId('');
+      openOfficeEditor(created);
+    }
+  }, [isOfficeEditable, items, openOfficeEditor, pendingOpenId]);
+
   const refreshQuota = useCallback(async () => {
+    if (libraryId) {
+      await loadLibraries();
+      return;
+    }
     try {
       const payload = await myFilesAPI.getQuota();
       setQuota((prev) => {
@@ -276,7 +454,7 @@ export default function MyFiles() {
     } catch {
       // Quota is informational — never surface its refresh as an error.
     }
-  }, []);
+  }, [libraryId, loadLibraries]);
 
   const handleFileShareChanged = useCallback((fileId, isShared) => {
     const id = String(fileId || '');
@@ -311,6 +489,15 @@ export default function MyFiles() {
     return ids;
   }, [allFolders]);
 
+  // The sidebar meter and upload checks follow the library being browsed; limit 0 means "no limit".
+  const activeQuota = useMemo(() => {
+    if (!isLibraryView) return quota;
+    if (!activeLibrary) return null;
+    const limit = Number(activeLibrary.quota_bytes || 0);
+    const used = Number(activeLibrary.used_bytes || 0);
+    return { used_bytes: used, limit_bytes: limit, ...(limit > 0 ? { remaining_bytes: Math.max(0, limit - used) } : {}) };
+  }, [activeLibrary, isLibraryView, quota]);
+
   const {
     uploading,
     readingDrop,
@@ -337,13 +524,14 @@ export default function MyFiles() {
   } = useMyFilesUpload({
     canWrite,
     currentFolderId,
+    libraryId,
     isSpecialView,
     allFolders,
     loadData,
     notifySuccess,
     notifyWarning,
     notifyApiError,
-    quota,
+    quota: activeQuota,
   });
 
   const {
@@ -357,10 +545,13 @@ export default function MyFiles() {
     revokeFolderShare: handleRevokeFolderShare,
   } = useMyFilesShares({ onFileShareChanged: handleFileShareChanged, onFolderShareChanged: handleFolderShareChanged, notifySuccess, notifyWarning, notifyApiError });
 
-  const navigateToFolder = useCallback((folderId) => {
-    const next = folderId ? { folder: folderId } : {};
+  // A folder found by search or in recent files may belong to a library other than the one being browsed.
+  const navigateToFolder = useCallback((folderId, folderLibraryId) => {
+    const targetLibrary = folderLibraryId || libraryId;
+    const base = isSharedView ? { view: 'shared' } : targetLibrary ? { library: targetLibrary } : {};
+    const next = folderId ? { ...base, folder: folderId } : base;
     setSearchParams(next, { replace: false });
-  }, [setSearchParams]);
+  }, [isSharedView, libraryId, setSearchParams]);
 
   const navigateToView = useCallback((view) => {
     setSearchParams(view ? { view } : {}, { replace: false });
@@ -369,6 +560,10 @@ export default function MyFiles() {
   const navigateToTrash = useCallback(() => {
     navigateToView('trash');
   }, [navigateToView]);
+
+  const navigateToLibrary = useCallback((id, { trash = false } = {}) => {
+    setSearchParams(trash ? { view: 'trash', library: id } : { library: id }, { replace: false });
+  }, [setSearchParams]);
 
   useEffect(() => {
     void loadData();
@@ -517,7 +712,7 @@ export default function MyFiles() {
     const name = String(folderNameInput || '').trim();
     if (!name) return;
     try {
-      const created = await myFilesAPI.createFolder({ name, parentId: currentFolderId });
+      const created = await myFilesAPI.createFolder({ name, parentId: currentFolderId, libraryId });
       if (created?.id) {
         setFolders((prev) => [...prev, created]);
         setAllFolders((prev) => [...prev, created]);
@@ -528,7 +723,7 @@ export default function MyFiles() {
     } catch (error) {
       notifyApiError(error, 'Не удалось создать папку.', { dedupeMode: 'none' });
     }
-  }, [currentFolderId, folderNameInput, notifyApiError, notifySuccess]);
+  }, [currentFolderId, folderNameInput, libraryId, notifyApiError, notifySuccess]);
 
   const openRenameDialog = useCallback((kind, id, currentName) => {
     setRenameDialog({ open: true, kind, id, name: String(currentName || '') });
@@ -668,7 +863,7 @@ export default function MyFiles() {
       danger: true,
       action: async () => {
         try {
-          await myFilesAPI.emptyTrash();
+          await myFilesAPI.emptyTrash({ libraryId });
           setItems([]);
           setFolders([]);
           notifySuccess('Корзина очищена.', { source: 'my-files-empty-trash', dedupeMode: 'none' });
@@ -677,7 +872,7 @@ export default function MyFiles() {
         }
       },
     });
-  }, [notifyApiError, notifySuccess]);
+  }, [libraryId, notifyApiError, notifySuccess]);
 
   const handleMoveFileToFolder = useCallback(async (fileId, folderId) => {
     try {
@@ -865,23 +1060,31 @@ export default function MyFiles() {
       result = Number(a.original_size_bytes || 0) - Number(b.original_size_bytes || 0);
     } else if (sortField === 'updated') {
       result = String(a.updated_at || a.created_at || '').localeCompare(String(b.updated_at || b.created_at || ''));
+    } else if (sortField === 'owner') {
+      result = ownerLabel(a, currentUsername).localeCompare(ownerLabel(b, currentUsername), 'ru', { sensitivity: 'base' });
     } else {
       result = String(a.name || a.original_file_name || '').localeCompare(
         String(b.name || b.original_file_name || ''), 'ru', { sensitivity: 'base' },
       );
     }
     return sortDir === 'desc' ? -result : result;
-  }, [sortDir, sortField]);
+  }, [currentUsername, sortDir, sortField]);
 
   const visibleFolders = useMemo(
-    () => folders.filter((folder) => matchesSearch(folder.name)).sort(compareRows),
-    [compareRows, folders, matchesSearch],
+    () => folders.filter((folder) => (
+      matchesSearch(folder.name)
+      && matchesTypeFilter(folder, 'folder', typeFilter)
+      && matchesDateFilter(folder, dateFilter)
+    )).sort(compareRows),
+    [compareRows, dateFilter, folders, matchesSearch, typeFilter],
   );
   const visibleItems = useMemo(
     () => items.filter((item) => (
-      matchesSearch(item.original_file_name) || matchesSearch(item.download_file_name)
+      (matchesSearch(item.original_file_name) || matchesSearch(item.download_file_name))
+      && matchesTypeFilter(item, 'file', typeFilter)
+      && matchesDateFilter(item, dateFilter)
     )).sort(compareRows),
-    [compareRows, items, matchesSearch],
+    [compareRows, dateFilter, items, matchesSearch, typeFilter],
   );
 
   // Progressive render: folders with hundreds of files mount in chunks instead
@@ -890,7 +1093,7 @@ export default function MyFiles() {
   const [renderLimit, setRenderLimit] = useState(MY_FILES_RENDER_CHUNK);
   useEffect(() => {
     setRenderLimit(MY_FILES_RENDER_CHUNK);
-  }, [currentFolderId, isSpecialView, searchQuery, sortField, sortDir]);
+  }, [currentFolderId, isSpecialView, searchQuery, sortField, sortDir, typeFilter, dateFilter]);
   const renderedItems = useMemo(
     () => visibleItems.slice(0, renderLimit),
     [renderLimit, visibleItems],
@@ -1130,8 +1333,8 @@ export default function MyFiles() {
     }
   }, [bulkBusy, clearSelection, currentFolderId, isSpecialView, notifySuccess, notifyWarning, selectedFiles, selectedFolders, selectedKeys.size]);
 
-  const quotaUsed = Number(quota?.used_bytes || 0);
-  const quotaLimit = Number(quota?.limit_bytes || 0);
+  const quotaUsed = Number(activeQuota?.used_bytes || 0);
+  const quotaLimit = Number(activeQuota?.limit_bytes || 0);
   const quotaPercent = quotaLimit > 0 ? Math.min(100, Math.round((quotaUsed / quotaLimit) * 100)) : 0;
 
   const uploadActiveEntries = Object.entries(uploadProgress);
@@ -1143,6 +1346,9 @@ export default function MyFiles() {
   const preparePercent = prepareStats.total > 0
     ? Math.min(100, Math.round((prepareStats.done / prepareStats.total) * 100))
     : 0;
+
+  const fileMenuAccess = entryAccess(fileActionsMenu.item);
+  const folderMenuAccess = entryAccess(folderActionsMenu.folder);
 
   return (
     <MainLayout showDatabaseSelector={false} headerMode="integrated">
@@ -1177,14 +1383,17 @@ export default function MyFiles() {
                 variant="contained"
                 startIcon={<AddRoundedIcon />}
                 onClick={(event) => setCreateMenuAnchor(event.currentTarget)}
-                disabled={!canWrite || uploading || readingDrop || isSpecialView}
+                disabled={!canWrite || uploading || readingDrop || creatingDocument || isSpecialView}
                 data-testid="my-files-create-button"
                 sx={{
-                  borderRadius: '999px',
-                  px: 2.5,
-                  py: 1.1,
-                  fontWeight: 700,
-                  boxShadow: 'none',
+                  alignSelf: 'flex-start',
+                  borderRadius: '16px',
+                  px: 3,
+                  py: 1.6,
+                  fontWeight: 600,
+                  fontSize: '0.95rem',
+                  boxShadow: theme.shadows[3],
+                  '&:hover': { boxShadow: theme.shadows[6] },
                 }}
               >
                 Создать
@@ -1205,6 +1414,21 @@ export default function MyFiles() {
                   <ListItemIcon><CreateNewFolderOutlinedIcon fontSize="small" /></ListItemIcon>
                   <ListItemText>Новая папка</ListItemText>
                 </MenuItem>
+                {officeStatus.enabled ? [
+                  ['docx', 'Документ', DescriptionOutlinedIcon],
+                  ['xlsx', 'Таблица', TableChartOutlinedIcon],
+                  ['pptx', 'Презентация', SlideshowOutlinedIcon],
+                ].map(([kind, label, KindIcon], index) => (
+                  <MenuItem
+                    key={kind}
+                    divider={index === 2}
+                    data-testid={`my-files-create-${kind}`}
+                    onClick={() => void handleCreateDocument(kind)}
+                  >
+                    <ListItemIcon><KindIcon fontSize="small" /></ListItemIcon>
+                    <ListItemText>{label}</ListItemText>
+                  </MenuItem>
+                )) : null}
                 <MenuItem
                   data-testid="my-files-upload-files-menu"
                   onClick={() => {
@@ -1239,8 +1463,8 @@ export default function MyFiles() {
                   key: 'drive',
                   icon: <FolderOutlinedIcon fontSize="small" />,
                   label: 'Мой диск',
-                  active: !currentFolderId && !isSpecialView,
-                  onClick: () => navigateToFolder(null),
+                  active: !currentFolderId && !isSpecialView && !isLibraryView,
+                  onClick: () => navigateToView(null),
                   testId: 'my-files-nav-drive',
                 },
                 {
@@ -1263,7 +1487,7 @@ export default function MyFiles() {
                   key: 'trash',
                   icon: <DeleteOutlineIcon fontSize="small" />,
                   label: 'Корзина',
-                  active: isTrashView,
+                  active: isTrashView && !isLibraryView,
                   onClick: navigateToTrash,
                   testId: 'my-files-nav-trash',
                 },
@@ -1271,8 +1495,8 @@ export default function MyFiles() {
                   key: 'shared-editing',
                   icon: <GroupOutlinedIcon fontSize="small" />,
                   label: 'Доступно мне',
-                  active: false,
-                  onClick: () => setSharedEditingOpen(true),
+                  active: isSharedView,
+                  onClick: () => navigateToView('shared'),
                   testId: 'my-files-nav-shared-editing',
                 }] : []),
               ].map((item) => (
@@ -1308,16 +1532,80 @@ export default function MyFiles() {
               ))}
             </Stack>
 
-            {quota || loading ? (
-              <Box sx={{ minWidth: { xs: '100%', lg: '100%' }, mt: { lg: 1.5 } }}>
+            {libraries.length > 0 || canManageLibraries ? (
+              <Stack spacing={0.5} component="nav" aria-label="Общие папки" sx={{ minWidth: { lg: '100%' }, flex: { xs: 1, lg: 'unset' } }} data-testid="my-files-libraries">
+                <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 1.5 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>Общие папки</Typography>
+                  {canManageLibraries ? (
+                    <Tooltip title="Создать общую папку">
+                      <IconButton
+                        size="small"
+                        aria-label="Создать общую папку"
+                        data-testid="my-files-library-add"
+                        onClick={() => setLibraryDialog({ open: true, library: null })}
+                      >
+                        <AddRoundedIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  ) : null}
+                </Stack>
+                {libraries.map((library) => {
+                  const active = isLibraryView && String(libraryId) === String(library.id);
+                  return (
+                    <Box
+                      key={library.id}
+                      component="button"
+                      type="button"
+                      onClick={() => {
+                        // An administrator who is not a member can only configure the library, not browse it.
+                        if (!library.my_role && canManageLibraries) setLibraryDialog({ open: true, library });
+                        else navigateToLibrary(library.id);
+                      }}
+                      aria-current={active ? 'page' : undefined}
+                      data-testid={`my-files-library-${library.id}`}
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 1.25,
+                        px: 1.5,
+                        py: 1,
+                        border: 'none',
+                        font: 'inherit',
+                        textAlign: 'left',
+                        width: '100%',
+                        borderRadius: '999px',
+                        cursor: 'pointer',
+                        fontWeight: 700,
+                        color: active ? 'primary.main' : 'text.primary',
+                        bgcolor: active ? alpha(theme.palette.primary.main, 0.12) : 'transparent',
+                        '&:hover': { bgcolor: 'action.hover' },
+                        '&:focus-visible': { outline: `2px solid ${theme.palette.primary.main}`, outlineOffset: 2 },
+                      }}
+                    >
+                      <FolderSharedOutlinedIcon fontSize="small" />
+                      <Typography variant="body2" noWrap sx={{ fontWeight: 700, minWidth: 0 }}>{library.name}</Typography>
+                    </Box>
+                  );
+                })}
+              </Stack>
+            ) : null}
+
+            {activeQuota || loading ? (
+              <Box sx={{ minWidth: { xs: '100%', lg: '100%' }, mt: { lg: 1.5 } }} data-testid="my-files-quota">
                 <Stack direction="row" justifyContent="space-between" sx={{ mb: 0.5 }}>
-                  <Typography variant="caption" color="text.secondary">Хранилище</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {isLibraryView ? 'Общая папка' : 'Хранилище'}
+                  </Typography>
                   <Typography variant="caption" sx={{ fontWeight: 600 }}>
-                    {quota ? `${formatFileSize(quotaUsed)} / ${formatFileSize(quotaLimit)}` : '—'}
+                    {activeQuota
+                      ? (quotaLimit > 0 ? `${formatFileSize(quotaUsed)} / ${formatFileSize(quotaLimit)}` : `${formatFileSize(quotaUsed)} · без лимита`)
+                      : '—'}
                   </Typography>
                 </Stack>
-                {quota ? (
-                  <LinearProgress variant="determinate" value={quotaPercent} sx={{ height: 6, borderRadius: 1 }} />
+                {activeQuota ? (
+                  quotaLimit > 0
+                    ? <LinearProgress variant="determinate" value={quotaPercent} sx={{ height: 6, borderRadius: 1 }} />
+                    : null
                 ) : (
                   <Skeleton variant="rounded" height={6} />
                 )}
@@ -1382,8 +1670,8 @@ export default function MyFiles() {
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
                     {breadcrumbs.length > 0
-                      ? `Загрузятся в папку «${breadcrumbs[breadcrumbs.length - 1]?.name || 'Мой диск'}»`
-                      : 'Загрузятся в «Мой диск»'}
+                      ? `Загрузятся в папку «${breadcrumbs[breadcrumbs.length - 1]?.name || (isLibraryView ? libraryName : 'Мой диск')}»`
+                      : `Загрузятся в «${isLibraryView ? libraryName : 'Мой диск'}»`}
                   </Typography>
                 </Box>
               </Box>
@@ -1399,10 +1687,46 @@ export default function MyFiles() {
               onChange={handleFolderInputChange}
             />
 
+            <TextField
+              fullWidth
+              placeholder="Поиск по всему диску"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              inputProps={{ 'data-testid': 'my-files-search-input', 'aria-label': 'Поиск файла или папки по всему диску' }}
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <SearchOutlinedIcon />
+                  </InputAdornment>
+                ),
+                endAdornment: searchQuery ? (
+                  <InputAdornment position="end">
+                    <IconButton size="small" aria-label="Очистить поиск" onClick={() => setSearchQuery('')}>
+                      <ClearRoundedIcon fontSize="small" />
+                    </IconButton>
+                  </InputAdornment>
+                ) : null,
+              }}
+              sx={{
+                mb: 1.5,
+                maxWidth: 720,
+                '& .MuiOutlinedInput-root': {
+                  borderRadius: '999px',
+                  bgcolor: alpha(theme.palette.text.primary, theme.palette.mode === 'dark' ? 0.08 : 0.05),
+                  '& fieldset': { borderColor: 'transparent' },
+                  '&:hover fieldset': { borderColor: 'transparent' },
+                  '&.Mui-focused': { bgcolor: 'background.paper', boxShadow: theme.shadows[3] },
+                  '&.Mui-focused fieldset': { borderColor: theme.palette.primary.main },
+                },
+              }}
+            />
+
             <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" sx={{ mb: 1.5, minHeight: 40 }}>
               {isTrashView ? (
                 <Stack direction="row" spacing={1.5} alignItems="center" sx={{ minWidth: 0 }}>
-                  <Typography variant="h5" sx={{ fontWeight: 700 }}>Корзина</Typography>
+                  <Typography variant="h5" sx={{ fontWeight: 700 }} noWrap>
+                    {isLibraryView ? `Корзина — ${libraryName}` : 'Корзина'}
+                  </Typography>
                   {(items.length > 0 || folders.length > 0) ? (
                     <Button
                       size="small"
@@ -1416,9 +1740,9 @@ export default function MyFiles() {
                     </Button>
                   ) : null}
                 </Stack>
-              ) : isRecentView || isFavoritesView ? (
+              ) : isRecentView || isFavoritesView || (isSharedView && breadcrumbs.length === 0) ? (
                 <Typography variant="h5" sx={{ fontWeight: 700 }}>
-                  {isRecentView ? 'Недавние' : 'Избранное'}
+                  {isRecentView ? 'Недавние' : isSharedView ? 'Доступно мне' : 'Избранное'}
                 </Typography>
               ) : breadcrumbs.length > 0 ? (
                 <Breadcrumbs aria-label="Путь по папкам" data-testid="my-files-breadcrumbs" sx={{ minWidth: 0, flexShrink: 1 }}>
@@ -1429,7 +1753,7 @@ export default function MyFiles() {
                     onClick={() => navigateToFolder(null)}
                     sx={{ fontWeight: 600, cursor: 'pointer', fontSize: '1.05rem' }}
                   >
-                    Мой диск
+                    {isSharedView ? 'Доступно мне' : isLibraryView ? libraryName : 'Мой диск'}
                   </Link>
                   {breadcrumbs.map((crumb, index) => {
                     const isLast = index === breadcrumbs.length - 1;
@@ -1452,24 +1776,41 @@ export default function MyFiles() {
                   })}
                 </Breadcrumbs>
               ) : (
-                <Typography variant="h5" sx={{ fontWeight: 700 }}>Мой диск</Typography>
+                <Typography variant="h5" sx={{ fontWeight: 700 }} noWrap>{isLibraryView ? libraryName : 'Мой диск'}</Typography>
               )}
               <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
-                <TextField
-                  size="small"
-                  placeholder="Поиск по всему диску"
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  inputProps={{ 'data-testid': 'my-files-search-input', 'aria-label': 'Поиск файла или папки по всему диску' }}
-                  InputProps={{
-                    startAdornment: (
-                      <InputAdornment position="start">
-                        <SearchOutlinedIcon fontSize="small" />
-                      </InputAdornment>
-                    ),
-                  }}
-                  sx={{ width: { xs: 140, sm: 220 } }}
-                />
+                {isLibraryView && libraryRole ? (
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    label={LIBRARY_ROLE_LABELS[libraryRole] || libraryRole}
+                    data-testid="my-files-library-role"
+                  />
+                ) : null}
+                {canManageLibrary && !isTrashView ? (
+                  <Tooltip title="Корзина общей папки">
+                    <IconButton
+                      size="small"
+                      aria-label="Корзина общей папки"
+                      data-testid="my-files-library-trash"
+                      onClick={() => navigateToLibrary(libraryId, { trash: true })}
+                    >
+                      <DeleteOutlineIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                ) : null}
+                {isLibraryView && canManageLibraries && activeLibrary ? (
+                  <Tooltip title="Настройки общей папки">
+                    <IconButton
+                      size="small"
+                      aria-label="Настройки общей папки"
+                      data-testid="my-files-library-settings"
+                      onClick={() => setLibraryDialog({ open: true, library: activeLibrary })}
+                    >
+                      <SettingsOutlinedIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                ) : null}
                 <ToggleButtonGroup
                   size="small"
                   exclusive
@@ -1496,20 +1837,68 @@ export default function MyFiles() {
               </Stack>
             </Stack>
 
+            {!isTrashView ? (
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5, flexWrap: 'wrap', rowGap: 1 }} data-testid="my-files-filters">
+                {[
+                  ['type', typeFilter, typeFilterLabel(typeFilter) || 'Тип', TYPE_FILTERS, setTypeFilter],
+                  ['date', dateFilter, dateFilterLabel(dateFilter) || 'Изменено', DATE_FILTERS, setDateFilter],
+                ].map(([kind, value, label, options, setValue]) => (
+                  <Chip
+                    key={kind}
+                    clickable
+                    variant={value ? 'filled' : 'outlined'}
+                    color={value ? 'primary' : 'default'}
+                    label={label}
+                    data-testid={`my-files-filter-${kind}`}
+                    onClick={(event) => setFilterMenu({ kind, anchor: event.currentTarget })}
+                    onDelete={value ? () => setValue('') : undefined}
+                    deleteIcon={value ? <ClearRoundedIcon /> : undefined}
+                    icon={value ? undefined : <ArrowDropDownRoundedIcon />}
+                    sx={{ borderRadius: '8px', flexDirection: 'row-reverse', pl: value ? 0 : 0.5, '& .MuiChip-icon': { ml: -0.5, mr: 0.5 } }}
+                    aria-label={`Фильтр: ${label}`}
+                    aria-haspopup="menu"
+                    aria-controls={options.length ? `my-files-filter-menu-${kind}` : undefined}
+                  />
+                ))}
+                <Menu
+                  id={`my-files-filter-menu-${filterMenu.kind}`}
+                  anchorEl={filterMenu.anchor}
+                  open={Boolean(filterMenu.anchor)}
+                  onClose={() => setFilterMenu({ kind: '', anchor: null })}
+                >
+                  {(filterMenu.kind === 'date' ? DATE_FILTERS : TYPE_FILTERS).map((option) => (
+                    <MenuItem
+                      key={option.value}
+                      selected={(filterMenu.kind === 'date' ? dateFilter : typeFilter) === option.value}
+                      data-testid={`my-files-filter-option-${option.value}`}
+                      onClick={() => {
+                        if (filterMenu.kind === 'date') setDateFilter(option.value);
+                        else setTypeFilter(option.value);
+                        setFilterMenu({ kind: '', anchor: null });
+                      }}
+                    >
+                      {option.label}
+                    </MenuItem>
+                  ))}
+                </Menu>
+              </Stack>
+            ) : null}
+
             {selectedKeys.size > 0 ? (
               <Paper
                 variant="outlined"
                 data-testid="my-files-selection-bar"
                 sx={{
-                  ...getOfficePanelSx(ui),
-                  borderLeft: `3px solid ${theme.palette.primary.main}`,
                   display: 'flex',
                   alignItems: 'center',
                   gap: 1,
-                  px: 1.5,
+                  px: 2,
                   py: 0.75,
                   mb: 1.5,
                   flexWrap: 'wrap',
+                  borderRadius: '999px',
+                  border: 'none',
+                  bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.24 : 0.12),
                 }}
               >
                 <Typography variant="body2" sx={{ fontWeight: 700 }}>
@@ -1550,7 +1939,7 @@ export default function MyFiles() {
               </Paper>
             ) : null}
 
-            {showRetentionNotice ? (
+            {showRetentionNotice && !isLibraryView ? (
               <Alert
                 severity="info"
                 sx={{ mb: 1.5 }}
@@ -1564,7 +1953,22 @@ export default function MyFiles() {
             ) : null}
 
             {uploading || readingDrop ? (
-              <Paper variant="outlined" sx={{ ...getOfficePanelSx(ui), p: 1.5, mb: 1.5 }}>
+              <Paper
+                elevation={8}
+                data-testid="my-files-upload-card"
+                sx={{
+                  position: 'fixed',
+                  right: { xs: 12, sm: 24 },
+                  bottom: { xs: 12, sm: 24 },
+                  left: { xs: 12, sm: 'auto' },
+                  width: { sm: 360 },
+                  maxHeight: '50vh',
+                  overflowY: 'auto',
+                  zIndex: theme.zIndex.snackbar,
+                  borderRadius: 3,
+                  p: 2,
+                }}
+              >
                 <Stack spacing={0.75}>
                   {readingDrop ? (
                     <Typography variant="body2" color="text.secondary">Читаем перетащенную папку…</Typography>
@@ -1631,9 +2035,7 @@ export default function MyFiles() {
               <Box
                 sx={{
                   display: 'grid',
-                  gridTemplateColumns: isTrashView
-                    ? { xs: 'minmax(0,1fr) auto', md: 'minmax(0,1fr) 170px 110px 176px' }
-                    : { xs: '40px minmax(0,1fr) auto', md: '40px minmax(0,1fr) 170px 110px 176px' },
+                  gridTemplateColumns: rowGridColumns(isTrashView),
                   gap: 1,
                   alignItems: 'center',
                   px: 1,
@@ -1663,6 +2065,17 @@ export default function MyFiles() {
                 >
                   Название
                 </TableSortLabel>
+                {isTrashView ? null : (
+                  <TableSortLabel
+                    active={sortField === 'owner'}
+                    direction={sortField === 'owner' ? sortDir : 'asc'}
+                    onClick={() => toggleSort('owner')}
+                    sx={{ fontSize: '0.75rem', fontWeight: 700, color: 'text.secondary', display: { xs: 'none', md: 'flex' } }}
+                    data-testid="my-files-sort-owner"
+                  >
+                    Владелец
+                  </TableSortLabel>
+                )}
                 <TableSortLabel
                   active={sortField === 'updated'}
                   direction={sortField === 'updated' ? sortDir : 'asc'}
@@ -1710,9 +2123,13 @@ export default function MyFiles() {
                       ? 'Корзина пуста.'
                       : isRecentView
                         ? 'Нет недавних файлов.'
-                        : isFavoritesView
-                          ? 'В избранном пока пусто — отметьте файлы звёздочкой.'
-                          : 'Здесь пусто — перетащите файлы или папку, либо создайте папку через «Создать».'}
+                        : isSharedView
+                          ? (currentFolderId ? 'В этой папке пока нет файлов.' : 'Вам пока никто не открыл файлы и папки для совместной работы.')
+                          : isFavoritesView
+                            ? 'В избранном пока пусто — отметьте файлы звёздочкой.'
+                            : isLibraryView && !canWrite
+                              ? 'В этой папке пока нет файлов.'
+                              : 'Здесь пусто — перетащите файлы или папку, либо создайте папку через «Создать».'}
                   </Typography>
                   {!isSpecialView && canWrite ? (
                     <Button
@@ -1733,8 +2150,9 @@ export default function MyFiles() {
                   key={`folder-${folder.id}`}
                   folder={folder}
                   isTrashView={isTrashView}
-                  canWrite={canWrite}
-                  canShare={canShare}
+                  currentUsername={currentUsername}
+                  canWrite={entryAccess(folder).canWrite}
+                  canShare={entryAccess(folder).canShare}
                   isSelected={selectedKeys.has(`folder:${folder.id}`)}
                   isDropTarget={dropTargetFolderId === String(folder.id)}
                   folderDropProps={folderDropProps}
@@ -1743,10 +2161,11 @@ export default function MyFiles() {
                   openFolderActionsMenu={openFolderActionsMenu}
                   openRenameDialog={openRenameDialog}
                   handleFolderShare={handleFolderShare}
+                  onFolderCollaborators={entryAccess(folder).canShare && officeStatus.enabled && !entryAccess(folder).library ? setCollaboratorsFolder : undefined}
                   handleDeleteFolder={handleDeleteFolder}
                   handleRestoreEntry={handleRestoreEntry}
                   handlePurgeEntry={handlePurgeEntry}
-                  onToggleFavorite={handleToggleFavorite}
+                  onToggleFavorite={entryAccess(folder).library ? undefined : handleToggleFavorite}
                   toggleSelected={toggleSelected}
                 />
               ))}
@@ -1756,8 +2175,9 @@ export default function MyFiles() {
                   key={item.id}
                   item={item}
                   isTrashView={isTrashView}
-                  canWrite={canWrite}
-                  canShare={canShare}
+                  currentUsername={currentUsername}
+                  canWrite={entryAccess(item).canWrite}
+                  canShare={entryAccess(item).canShare}
                   isSelected={selectedKeys.has(`file:${item.id}`)}
                   downloading={downloadingFileId === item.id}
                   fileDragProps={fileDragProps}
@@ -1768,7 +2188,11 @@ export default function MyFiles() {
                   handleDownload={handleDownload}
                   handleShare={handleShare}
                   handleDelete={handleDelete}
-                  onToggleFavorite={handleToggleFavorite}
+                  onToggleFavorite={entryAccess(item).library ? undefined : handleToggleFavorite}
+                  onOpenSharedFile={openSharedFile}
+                  onOpenVersions={setVersionsFile}
+                  officeEditable={item.shared_with_me ? isOfficeEditable(item) : undefined}
+                  opensInEditor={opensInEditor(item)}
                   toggleSelected={toggleSelected}
                 />
               ))}
@@ -1792,7 +2216,7 @@ export default function MyFiles() {
                 <Stack spacing={1.5} alignItems="center" sx={{ py: 6 }}>
                   <FolderOutlinedIcon sx={{ fontSize: 44, color: 'text.disabled' }} />
                   <Typography color="text.secondary" align="center">
-                    {isTrashView ? 'Корзина пуста.' : isRecentView ? 'Нет недавних файлов.' : isFavoritesView ? 'В избранном пока пусто — отметьте файлы звёздочкой.' : 'Здесь пусто — перетащите файлы или папку.'}
+                    {isTrashView ? 'Корзина пуста.' : isRecentView ? 'Нет недавних файлов.' : isSharedView ? (currentFolderId ? 'В этой папке пока нет файлов.' : 'Вам пока никто не открыл файлы и папки для совместной работы.') : isFavoritesView ? 'В избранном пока пусто — отметьте файлы звёздочкой.' : isLibraryView && !canWrite ? 'В этой папке пока нет файлов.' : 'Здесь пусто — перетащите файлы или папку.'}
                   </Typography>
                   {!isSpecialView && canWrite ? (
                     <Button
@@ -1829,7 +2253,7 @@ export default function MyFiles() {
                         key={`folder-${folder.id}`}
                         folder={folder}
                         isTrashView={isTrashView}
-                        canWrite={canWrite}
+                        canWrite={entryAccess(folder).canWrite}
                         isSelected={selectedKeys.has(`folder:${folder.id}`)}
                         isDropTarget={dropTargetFolderId === String(folder.id)}
                         folderDropProps={folderDropProps}
@@ -1838,7 +2262,8 @@ export default function MyFiles() {
                         openFolderActionsMenu={openFolderActionsMenu}
                         handleRestoreEntry={handleRestoreEntry}
                         handlePurgeEntry={handlePurgeEntry}
-                        onToggleFavorite={handleToggleFavorite}
+                        onToggleFavorite={entryAccess(folder).library ? undefined : handleToggleFavorite}
+                        onOpenSharedFile={openSharedFile}
                         toggleSelected={toggleSelected}
                       />
                     ))}
@@ -1869,7 +2294,7 @@ export default function MyFiles() {
                         key={item.id}
                         item={item}
                         isTrashView={isTrashView}
-                        canWrite={canWrite}
+                        canWrite={entryAccess(item).canWrite}
                         isSelected={selectedKeys.has(`file:${item.id}`)}
                         thumbUrl={thumbs[String(item.id)] || ''}
                         fileDragProps={fileDragProps}
@@ -1878,7 +2303,9 @@ export default function MyFiles() {
                         openFileActionsMenu={openFileActionsMenu}
                         handleRestoreEntry={handleRestoreEntry}
                         handlePurgeEntry={handlePurgeEntry}
-                        onToggleFavorite={handleToggleFavorite}
+                        onToggleFavorite={entryAccess(item).library ? undefined : handleToggleFavorite}
+                        onOpenSharedFile={openSharedFile}
+                        opensInEditor={opensInEditor(item)}
                         toggleSelected={toggleSelected}
                       />
                     ))}
@@ -1925,44 +2352,75 @@ export default function MyFiles() {
               && downloadingFileId === String(fileActionsMenu.item.id || ''),
             )}
             onClose={closeFileActionsMenu}
-            onPreview={fileActionsMenu.item && isMyFilePreviewSupported(fileActionsMenu.item)
+            onPreview={fileActionsMenu.item && !fileActionsMenu.item.shared_with_me && isMyFilePreviewSupported(fileActionsMenu.item)
               ? () => { void openDocumentPreview(fileActionsMenu.item, { forcePreview: true }); }
               : undefined}
-            onEditOnline={isOfficeEditable(fileActionsMenu.item) && canWrite
-              ? () => setOfficeEditorFile(fileActionsMenu.item)
+            editOnlineLabel={fileActionsMenu.item?.shared_with_me || fileMenuAccess.library ? sharedOpenLabel(fileActionsMenu.item) : undefined}
+            onEditOnline={isOfficeEditable(fileActionsMenu.item) && (fileMenuAccess.canWrite || fileMenuAccess.library || fileActionsMenu.item.shared_with_me)
+              ? () => openOfficeEditor(fileActionsMenu.item)
               : undefined}
-            onCollaborators={isOfficeEditable(fileActionsMenu.item) && canShare
+            onCollaborators={isOfficeEditable(fileActionsMenu.item) && fileMenuAccess.canShare && !fileMenuAccess.library && !fileActionsMenu.item.shared_with_me
               ? () => setCollaboratorsFile(fileActionsMenu.item)
               : undefined}
-            onVersions={isOfficeEditable(fileActionsMenu.item) && canWrite
+            onVersions={isOfficeEditable(fileActionsMenu.item) && (fileMenuAccess.canWrite || fileActionsMenu.item.shared_with_me)
               ? () => setVersionsFile(fileActionsMenu.item)
               : undefined}
             onDownload={fileActionsMenu.item
               ? () => { void handleDownload(fileActionsMenu.item); }
               : undefined}
-            onRename={fileActionsMenu.item && canWrite
+            onRename={fileActionsMenu.item && fileMenuAccess.canWrite && !fileActionsMenu.item.shared_with_me
               ? () => openRenameDialog('file', fileActionsMenu.item.id, fileActionsMenu.item.original_file_name)
               : undefined}
-            onMove={fileActionsMenu.item && canWrite
+            onMove={fileActionsMenu.item && fileMenuAccess.canWrite && !fileActionsMenu.item.shared_with_me
               ? () => openMoveDialog('file', fileActionsMenu.item.id)
               : undefined}
-            onShare={fileActionsMenu.item && canShare && READY_STATUSES.has(String(fileActionsMenu.item.status || '').toLowerCase())
+            onCopyTo={fileActionsMenu.item && hasPermission('my_files.write') && !isTrashView && !fileActionsMenu.item.shared_with_me && READY_STATUSES.has(String(fileActionsMenu.item.status || '').toLowerCase())
+              ? () => setCopyDialogFile(fileActionsMenu.item)
+              : undefined}
+            onShare={fileActionsMenu.item && fileMenuAccess.canShare && !fileActionsMenu.item.shared_with_me && READY_STATUSES.has(String(fileActionsMenu.item.status || '').toLowerCase())
               ? () => { void handleShare(fileActionsMenu.item); }
               : undefined}
-            onRevokeShare={fileActionsMenu.item && canShare && fileActionsMenu.item.is_shared
+            onRevokeShare={fileActionsMenu.item && fileMenuAccess.canShare && !fileActionsMenu.item.shared_with_me && fileActionsMenu.item.is_shared
               ? () => { void handleRevokeShare(fileActionsMenu.item); }
               : undefined}
             isShared={Boolean(fileActionsMenu.item?.is_shared)}
-            onAudit={fileActionsMenu.item
+            onAudit={fileActionsMenu.item && !fileActionsMenu.item.shared_with_me && (!fileMenuAccess.library || fileMenuAccess.canManage)
               ? () => setAuditDialogFile(fileActionsMenu.item)
               : undefined}
-            onToggleFavorite={fileActionsMenu.item && canWrite
+            onToggleFavorite={fileActionsMenu.item && fileMenuAccess.canWrite && !fileMenuAccess.library && !fileActionsMenu.item.shared_with_me
               ? () => { void handleToggleFavorite(fileActionsMenu.item, 'file'); }
               : undefined}
             isFavorite={Boolean(fileActionsMenu.item?.is_favorite)}
-            onDelete={fileActionsMenu.item && canWrite
+            onDelete={fileActionsMenu.item && fileMenuAccess.canWrite && !fileActionsMenu.item.shared_with_me
               ? () => { void handleDelete(fileActionsMenu.item); }
               : undefined}
+          />
+
+          <MyFilesCopyDialog
+            open={Boolean(copyDialogFile)}
+            file={copyDialogFile}
+            libraries={libraries}
+            onClose={() => setCopyDialogFile(null)}
+            onCopied={(_copy, target) => {
+              setCopyDialogFile(null);
+              notifySuccess('Копия создана.', { source: 'my-files-copy', dedupeMode: 'none' });
+              const sameSpace = String(target.libraryId || '') === String(libraryId || '');
+              const sameFolder = String(target.folderId || '') === String(currentFolderId || '');
+              if (sameSpace && sameFolder) void loadData({ silent: true });
+              if (!target.libraryId) void refreshQuota();
+            }}
+          />
+
+          <MyFilesLibraryDialog
+            open={libraryDialog.open}
+            library={libraryDialog.library}
+            onClose={(changed, { removedId } = {}) => {
+              setLibraryDialog({ open: false, library: null });
+              if (!changed) return;
+              void loadLibraries();
+              if (removedId && String(removedId) === String(libraryId)) navigateToView(null);
+              else if (libraryId) void loadData({ silent: true });
+            }}
           />
 
           <MyFileAuditDialog
@@ -1975,18 +2433,32 @@ export default function MyFiles() {
             open={Boolean(officeEditorFile)}
             file={officeEditorFile}
             onClose={closeOfficeEditor}
+            onDownload={handleDownload}
           />
           <MyFilesCollaboratorsDialog
             open={Boolean(collaboratorsFile)}
             file={collaboratorsFile}
+            onShareLink={(file) => { void handleShare(file); }}
             onClose={(saved) => {
               setCollaboratorsFile(null);
               if (saved) notifySuccess('Совместный доступ обновлён.', { source: 'my-files-collaborators', dedupeMode: 'none' });
             }}
           />
+          <MyFilesCollaboratorsDialog
+            open={Boolean(collaboratorsFolder)}
+            folder={collaboratorsFolder}
+            onClose={(saved) => {
+              setCollaboratorsFolder(null);
+              if (saved) {
+                notifySuccess('Доступ к папке обновлён.', { source: 'my-files-collaborators', dedupeMode: 'none' });
+                void loadData({ silent: true });
+              }
+            }}
+          />
           <MyFilesVersionsDialog
             open={Boolean(versionsFile)}
             file={versionsFile}
+            canRestore={!versionsFile?.shared_with_me || versionsFile.my_role === 'edit'}
             onClose={(restored) => {
               setVersionsFile(null);
               if (restored) {
@@ -1995,17 +2467,27 @@ export default function MyFiles() {
               }
             }}
           />
-          <MyFilesSharedForEditingDialog
-            open={sharedEditingOpen}
-            onClose={() => setSharedEditingOpen(false)}
-            onOpenFile={(file) => {
-              setSharedEditingOpen(false);
-              setOfficeEditorFile(file);
-            }}
-          />
 
           <Menu
-            open={Boolean(folderActionsMenu.anchorPosition)}
+            open={Boolean(folderActionsMenu.anchorPosition) && Boolean(folderActionsMenu.folder?.shared_with_me)}
+            onClose={closeFolderActionsMenu}
+            anchorReference="anchorPosition"
+            anchorPosition={folderActionsMenu.anchorPosition || undefined}
+          >
+            <MenuItem
+              data-testid="folder-action-open-shared"
+              onClick={() => {
+                const folder = folderActionsMenu.folder;
+                closeFolderActionsMenu();
+                if (folder) navigateToFolder(folder.id, folder.library_id);
+              }}
+            >
+              <ListItemIcon><FolderOutlinedIcon fontSize="small" /></ListItemIcon>
+              <ListItemText>Открыть</ListItemText>
+            </MenuItem>
+          </Menu>
+          <Menu
+            open={Boolean(folderActionsMenu.anchorPosition) && !folderActionsMenu.folder?.shared_with_me}
             onClose={closeFolderActionsMenu}
             anchorReference="anchorPosition"
             anchorPosition={folderActionsMenu.anchorPosition || undefined}
@@ -2015,7 +2497,7 @@ export default function MyFiles() {
               onClick={() => {
                 const folder = folderActionsMenu.folder;
                 closeFolderActionsMenu();
-                if (folder) navigateToFolder(folder.id);
+                if (folder) navigateToFolder(folder.id, folder.library_id);
               }}
             >
               <ListItemIcon><FolderOutlinedIcon fontSize="small" /></ListItemIcon>
@@ -2023,7 +2505,7 @@ export default function MyFiles() {
             </MenuItem>
             <MenuItem
               data-testid="folder-action-rename"
-              disabled={!canWrite}
+              disabled={!folderMenuAccess.canWrite}
               onClick={() => {
                 const folder = folderActionsMenu.folder;
                 closeFolderActionsMenu();
@@ -2033,22 +2515,24 @@ export default function MyFiles() {
               <ListItemIcon><DriveFileRenameOutlineRoundedIcon fontSize="small" /></ListItemIcon>
               <ListItemText>Переименовать</ListItemText>
             </MenuItem>
-            <MenuItem
-              data-testid="folder-action-favorite"
-              disabled={!canWrite}
-              onClick={() => {
-                const folder = folderActionsMenu.folder;
-                closeFolderActionsMenu();
-                if (folder) void handleToggleFavorite(folder, 'folder');
-              }}
-            >
-              <ListItemIcon>
-                {folderActionsMenu.folder?.is_favorite
-                  ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
-                  : <StarOutlineRoundedIcon fontSize="small" />}
-              </ListItemIcon>
-              <ListItemText>{folderActionsMenu.folder?.is_favorite ? 'Убрать из избранного' : 'В избранное'}</ListItemText>
-            </MenuItem>
+            {folderMenuAccess.library ? null : (
+              <MenuItem
+                data-testid="folder-action-favorite"
+                disabled={!folderMenuAccess.canWrite}
+                onClick={() => {
+                  const folder = folderActionsMenu.folder;
+                  closeFolderActionsMenu();
+                  if (folder) void handleToggleFavorite(folder, 'folder');
+                }}
+              >
+                <ListItemIcon>
+                  {folderActionsMenu.folder?.is_favorite
+                    ? <StarRoundedIcon fontSize="small" sx={{ color: 'warning.main' }} />
+                    : <StarOutlineRoundedIcon fontSize="small" />}
+                </ListItemIcon>
+                <ListItemText>{folderActionsMenu.folder?.is_favorite ? 'Убрать из избранного' : 'В избранное'}</ListItemText>
+              </MenuItem>
+            )}
             <MenuItem
               data-testid="folder-action-archive"
               onClick={() => {
@@ -2062,7 +2546,7 @@ export default function MyFiles() {
             </MenuItem>
             <MenuItem
               data-testid="folder-action-move"
-              disabled={!canWrite}
+              disabled={!folderMenuAccess.canWrite}
               onClick={() => {
                 const folder = folderActionsMenu.folder;
                 closeFolderActionsMenu();
@@ -2074,7 +2558,7 @@ export default function MyFiles() {
             </MenuItem>
             <MenuItem
               data-testid="folder-action-share"
-              disabled={!canShare}
+              disabled={!folderMenuAccess.canShare}
               onClick={() => {
                 const folder = folderActionsMenu.folder;
                 closeFolderActionsMenu();
@@ -2084,10 +2568,24 @@ export default function MyFiles() {
               <ListItemIcon><ShareOutlinedIcon fontSize="small" /></ListItemIcon>
               <ListItemText>Поделиться папкой</ListItemText>
             </MenuItem>
+            {officeStatus.enabled && !folderMenuAccess.library ? (
+              <MenuItem
+                data-testid="folder-action-collaborators"
+                disabled={!folderMenuAccess.canShare}
+                onClick={() => {
+                  const folder = folderActionsMenu.folder;
+                  closeFolderActionsMenu();
+                  if (folder) setCollaboratorsFolder(folder);
+                }}
+              >
+                <ListItemIcon><GroupOutlinedIcon fontSize="small" /></ListItemIcon>
+                <ListItemText>Совместный доступ</ListItemText>
+              </MenuItem>
+            ) : null}
             {folderActionsMenu.folder?.is_shared ? (
               <MenuItem
                 data-testid="folder-action-revoke-share"
-                disabled={!canShare}
+                disabled={!folderMenuAccess.canShare}
                 onClick={() => {
                   const folder = folderActionsMenu.folder;
                   closeFolderActionsMenu();
@@ -2100,7 +2598,7 @@ export default function MyFiles() {
             ) : null}
             <MenuItem
               data-testid="folder-action-delete"
-              disabled={!canWrite}
+              disabled={!folderMenuAccess.canWrite}
               onClick={() => {
                 const folder = folderActionsMenu.folder;
                 closeFolderActionsMenu();
@@ -2117,7 +2615,12 @@ export default function MyFiles() {
           <DialogTitle>{pendingFolderSummary ? 'Загрузка папки' : 'Загрузка файлов'}</DialogTitle>
           <DialogContent>
             <Stack spacing={2} sx={{ pt: 1 }}>
-              {Number(retentionDays) === 0 ? (
+              {isLibraryView ? (
+                <Alert severity="info" data-testid="my-files-library-upload-notice">
+                  Файлы общей папки «{libraryName}» хранятся бессрочно и занимают её лимит, а не ваш личный.
+                  {quotaLimit > 0 ? ` Лимит папки: ${formatFileSize(quotaLimit)}.` : ''}
+                </Alert>
+              ) : Number(retentionDays) === 0 ? (
                 <Alert severity="info">
                   Файлы будут храниться бессрочно, пока вы их не удалите. Они занимают место в квоте.
                   {quotaLimit > 0 ? ` Лимит хранилища: ${formatFileSize(quotaLimit)}.` : ''}
@@ -2140,7 +2643,7 @@ export default function MyFiles() {
                   занять несколько минут. Не закрывайте вкладку до завершения.
                 </Alert>
               ) : null}
-              <Box>
+              <Box sx={isLibraryView ? { display: 'none' } : undefined}>
                 <Typography variant="subtitle2" sx={{ mb: 0.75, fontWeight: 700 }}>Срок хранения</Typography>
                 <Select
                   fullWidth

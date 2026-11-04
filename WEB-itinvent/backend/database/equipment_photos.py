@@ -337,6 +337,34 @@ def lookup_photo_fingerprints(
     return result
 
 
+def find_recent_photo_file_nos(
+    item_id: Any,
+    created_by: str,
+    within_seconds: float,
+    db_id: Optional[str] = None,
+    *,
+    get_db_fn: Optional[GetDbFn] = None,
+) -> list[int]:
+    """FILE_NOs of photo rows of the item added by ``created_by`` in the last ``within_seconds``.
+
+    Used to recognise a photo whose insert committed but whose upload checkpoint was not written.
+    """
+    normalized_id = _normalize_int(item_id, "item_id")
+    window = max(1, int(within_seconds))
+    db = _get_db(db_id, get_db_fn)
+    rows = db.execute_query(
+        """
+        SELECT FILE_NO
+        FROM FILES
+        WHERE FILE_TYPE = 0 AND ITEM_ID = ? AND CREATE_USER = ?
+          AND CREATE_DATE >= DATEADD(SECOND, ?, GETDATE())
+        ORDER BY FILE_NO
+        """,
+        (normalized_id, str(created_by or "")[:64], -window),
+    )
+    return [int(row.get("FILE_NO")) for row in rows or []]
+
+
 def insert_equipment_photo(
     *,
     item_id: Any,

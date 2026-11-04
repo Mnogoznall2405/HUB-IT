@@ -38,6 +38,13 @@ from backend.services.docflow_1c_client import (
 from backend.services.docflow_action_rules import configuration_fingerprint
 
 
+class _UnverifiableDMResponse(Docflow1CUnavailableError):
+    """The reply could not be read as a DMService answer (malformed, unsafe or empty).
+
+    After a write this proves nothing about whether the change was applied (DDOC-03).
+    """
+
+
 SOAP_NS = "http://schemas.xmlsoap.org/soap/envelope/"
 DM_NS = "http://www.1c.ru/dm"
 XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
@@ -426,7 +433,7 @@ class DocflowDMServiceClient:
     def _parse_response(payload: bytes, *, allow_huge: bool = False) -> etree._Element:
         lowered = payload[:4096].lower()
         if b"<!doctype" in lowered or b"<!entity" in lowered:
-            raise Docflow1CUnavailableError("DMService вернул небезопасный XML")
+            raise _UnverifiableDMResponse("DMService вернул небезопасный XML")
         parser = etree.XMLParser(
             resolve_entities=False,
             no_network=True,
@@ -439,9 +446,9 @@ class DocflowDMServiceClient:
         try:
             root = etree.fromstring(payload, parser=parser)
         except (etree.XMLSyntaxError, ValueError):
-            raise Docflow1CUnavailableError("DMService вернул некорректный XML") from None
+            raise _UnverifiableDMResponse("DMService вернул некорректный XML") from None
         if root.getroottree().docinfo.doctype:
-            raise Docflow1CUnavailableError("DMService вернул XML с запрещённым DTD")
+            raise _UnverifiableDMResponse("DMService вернул XML с запрещённым DTD")
         body = _child(root, "Body")
         fault = _child(body, "Fault")
         if fault is not None:
@@ -450,7 +457,7 @@ class DocflowDMServiceClient:
         execute_response = _child(body, "executeResponse")
         returned = _child(execute_response, "return")
         if returned is None:
-            raise Docflow1CUnavailableError("В ответе DMService отсутствует результат")
+            raise _UnverifiableDMResponse("В ответе DMService отсутствует результат")
         if _xsi_type(returned) == "DMError" or _child(returned, "error") is not None:
             message = (
                 _text(returned, "description", maximum=2000)
@@ -498,8 +505,13 @@ class DocflowDMServiceClient:
         )
         response_status = 0
         response_payload = b""
+        sent = False
+        write_unknown = Docflow1COutcomeUnknownError(
+            "DMService не подтвердил результат записи; команда не будет отправлена повторно"
+        )
         try:
             async with self._slot():
+                sent = True
                 async with self._client.stream(
                     "POST",
                     self.service_url,
@@ -534,23 +546,35 @@ class DocflowDMServiceClient:
                             raise Docflow1CUnavailableError("Ответ DMService превышает допустимый размер")
                         chunks.append(chunk)
                     response_payload = b"".join(chunks)
-        except (Docflow1CAuthenticationError, Docflow1CFileTooLargeError, Docflow1CUnavailableError):
+        except (Docflow1CAuthenticationError, Docflow1CFileTooLargeError):
+            raise
+        except Docflow1CUnavailableError:
+            if write and sent:
+                # The request left this process, so an unreadable reply (oversize) is not a refusal.
+                raise write_unknown from None
             raise
         except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError):
             if write:
-                raise Docflow1COutcomeUnknownError(
-                    "DMService не подтвердил результат записи; команда не будет отправлена повторно"
-                ) from None
+                raise write_unknown from None
             raise Docflow1CUnavailableError("DMService временно недоступен") from None
         except (ValueError, OverflowError):
+            if write and sent:
+                raise write_unknown from None
             raise Docflow1CUnavailableError("DMService вернул некорректный размер ответа") from None
-        if response_status >= 400:
-            if response_payload:
-                self._parse_response(response_payload)
-            raise Docflow1CUnavailableError(f"DMService вернул HTTP {response_status}")
-        if file_response and len(response_payload) >= 1024 * 1024:
-            return await asyncio.to_thread(self._parse_response, response_payload, allow_huge=True)
-        return self._parse_response(response_payload, allow_huge=bool(file_response))
+        try:
+            if response_status >= 400:
+                if response_payload:
+                    self._parse_response(response_payload)
+                if write and response_status >= 500:
+                    raise write_unknown
+                raise Docflow1CUnavailableError(f"DMService вернул HTTP {response_status}")
+            if file_response and len(response_payload) >= 1024 * 1024:
+                return await asyncio.to_thread(self._parse_response, response_payload, allow_huge=True)
+            return self._parse_response(response_payload, allow_huge=bool(file_response))
+        except _UnverifiableDMResponse:
+            if write:
+                raise write_unknown from None
+            raise
 
     def _cache_login_key(self, login: str) -> str:
         return str(login or "").strip().casefold()

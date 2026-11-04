@@ -24,6 +24,8 @@ class MonitoringTarget(AppBase):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     # Legacy network registry uses its own SQL store; validated through it. NULL - not linked (migration 0143).
     network_device_id: Mapped[int | None] = mapped_column(Integer, unique=True, nullable=True)
+    # IT object (it_objects.source_ref) the device belongs to; NULL - not assigned (migration 0153).
+    object_ref: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(160))
     address: Mapped[str] = mapped_column(String(45))
     port: Mapped[int] = mapped_column(Integer, default=161)

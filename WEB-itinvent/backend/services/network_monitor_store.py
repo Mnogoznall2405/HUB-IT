@@ -10,7 +10,7 @@ from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4, uuid5, NAMESPACE_URL
 
-from sqlalchemy import delete, func, inspect, or_, select
+from sqlalchemy import delete, func, inspect, or_, select, update
 
 from backend.appdb.db import app_session, get_app_engine
 from backend.appdb.monitoring_models import (MonitoringAggregate, MonitoringEvent, MonitoringInterface,
@@ -85,7 +85,7 @@ class MonitoringStore:
 
     @staticmethod
     def target_data(row):
-        return {"id": row.id, "network_device_id": row.network_device_id, "name": row.name,
+        return {"id": row.id, "network_device_id": row.network_device_id, "object_ref": row.object_ref, "name": row.name,
                 "address": row.address, "port": row.port, "profile_id": row.profile_id,
                 "enabled": row.enabled, "settings": row.settings, "current": row.current,
                 "updated_at": utc(row.updated_at).isoformat()}
@@ -154,6 +154,8 @@ class MonitoringStore:
             reset = row.address is not None and (row.address != str(payload["address"]) or row.profile_id != payload["profile_id"] or row.port != payload["port"])
             for key in ("name", "profile_id", "port", "enabled", "settings"):
                 setattr(row, key, payload[key])
+            if "object_ref" in payload:
+                row.object_ref = str(payload["object_ref"] or "").strip() or None
             if card_id is not None:
                 row.network_device_id = card_id
             row.address = str(payload["address"])
@@ -164,6 +166,30 @@ class MonitoringStore:
                     interface.current = {}
             session.flush()
             return self.target_data(row)
+
+    def target_object_ref(self, target_id):
+        with self.session() as session:
+            return self.target_row(session, target_id).object_ref
+
+    def unassigned_targets(self):
+        """Devices that belong to no IT object yet: the pool an object manager may pick from."""
+        with self.session() as session:
+            rows = session.scalars(select(MonitoringTarget).where(MonitoringTarget.object_ref.is_(None)).order_by(MonitoringTarget.name))
+            return [{"id": row.id, "name": row.name, "address": row.address} for row in rows]
+
+    def move_target_object(self, target_id, object_ref, *, release=False):
+        """Attach a free device to the object, or detach it from that same object, in one conditional UPDATE."""
+        free_or_same = MonitoringTarget.object_ref == object_ref if release else or_(
+            MonitoringTarget.object_ref.is_(None), MonitoringTarget.object_ref == object_ref)
+        with self.session() as session:
+            changed = session.execute(update(MonitoringTarget).where(MonitoringTarget.id == target_id, free_or_same)
+                .values(object_ref=None if release else object_ref, updated_at=datetime.now(timezone.utc))).rowcount
+            if changed:
+                return
+            row = self.target_row(session, target_id)
+            if release and row.object_ref is None:
+                return
+            raise ValueError("Устройство привязано к другому объекту")
 
     def targets(self):
         with self.session() as session:
@@ -200,11 +226,14 @@ class MonitoringStore:
         for target in targets:
             target["outages"] = grouped[target["id"]]
 
-    def overview_targets(self, now):
+    def overview_targets(self, now, object_ref=None):
         """One bounded batch for real card sparklines, no per-card history requests."""
         now = utc(now)
+        query = select(MonitoringTarget).order_by(MonitoringTarget.name)
+        if object_ref is not None:
+            query = query.where(MonitoringTarget.object_ref == object_ref)
         with self.session() as session:
-            targets = [self.target_data(row) for row in session.scalars(select(MonitoringTarget).order_by(MonitoringTarget.name))]
+            targets = [self.target_data(row) for row in session.scalars(query)]
             if not targets:
                 return targets
             interfaces = list(session.scalars(select(MonitoringInterface).where(
@@ -220,11 +249,16 @@ class MonitoringStore:
             if previous is None or summary_priority(item) > summary_priority(previous):
                 chosen[item.target_id] = item
         since = datetime.fromtimestamp(int((utc(now) - timedelta(hours=6)).timestamp()) // 300 * 300, timezone.utc)
-        rows = list(session.scalars(select(MonitoringAggregate).where(
+        # target_id lets the planner use the (target, interface, resolution, bucket) index instead of scanning every interface's window.
+        # Sparklines show only rx/tx: read three columns, not whole entities, and convert just those two series.
+        rows = session.execute(select(MonitoringAggregate.interface_id, MonitoringAggregate.bucket_at,
+            MonitoringAggregate.values.label("series")).where(
+            MonitoringAggregate.target_id.in_([row.target_id for row in chosen.values()]),
             MonitoringAggregate.interface_id.in_([row.id for row in chosen.values()]),
             MonitoringAggregate.resolution == 300, MonitoringAggregate.bucket_at >= since,
-            MonitoringAggregate.bucket_at <= now))) if chosen else []
-        values = {(row.interface_id, utc(row.bucket_at)): chart_values(row.values, True) for row in rows}
+            MonitoringAggregate.bucket_at <= now)).all() if chosen else []
+        values = {(row.interface_id, utc(row.bucket_at)): chart_values({key: row.series[key] for key in ("rx_bps", "tx_bps") if key in row.series}, True)
+                  for row in rows}
         for target in targets:
             item = chosen.get(target["id"])
             target["summary"] = None

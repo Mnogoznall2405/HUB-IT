@@ -46,6 +46,27 @@ describe('desktopBridge', () => {
     expect(onResult).toHaveBeenCalledTimes(1);
   });
 
+  it('asks the second window for the editor of a file and accepts only the editor route', async () => {
+    const transport = installTransport();
+    const { initializeDesktopBridge, requestDesktopEditorWindow } = await import('./desktopBridge');
+    const initialization = initializeDesktopBridge();
+    transport.emit({ type: 'desktop.hostReady', version: 1, capabilities: { notifications: true } });
+    await initialization;
+
+    await expect(requestDesktopEditorWindow('/my-files/edit/abc')).resolves.toEqual({ status: 'unavailable' });
+
+    transport.emit({ type: 'desktop.capabilities', version: 1, capabilities: ['workspace-window'] });
+    await expect(requestDesktopEditorWindow('/my-files?x=1')).resolves.toEqual({ status: 'unavailable' });
+    await expect(requestDesktopEditorWindow('/my-files/edit/abc?x=1')).resolves.toEqual({ status: 'unavailable' });
+
+    const pending = requestDesktopEditorWindow('/my-files/edit/abc');
+    const sent = transport.postMessage.mock.calls.map(([message]) => message).find((message) => message.type === 'workspace.window.open');
+    expect(sent).toMatchObject({ version: 1, route: '/my-files/edit/abc' });
+    transport.emit({ type: 'workspace.window.result', version: 1, requestId: 'other', status: 'opened' });
+    transport.emit({ type: 'workspace.window.result', version: 1, requestId: sent.requestId, status: 'opened' });
+    await expect(pending).resolves.toEqual({ status: 'opened' });
+  });
+
   it('stays disabled in a regular browser', async () => {
     const { initializeDesktopBridge, isDesktopBridgeReady } = await import('./desktopBridge');
 

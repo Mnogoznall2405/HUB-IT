@@ -911,6 +911,12 @@ const EquipmentDetailPhotosPanel = memo(function EquipmentDetailPhotosPanel({
         </Typography>
       ) : null}
 
+      {uploadQueue.unsaved > 0 ? (
+        <Alert severity="warning" data-testid="photo-queue-unsaved" sx={{ py: 0 }}>
+          Браузер не сохраняет очередь на устройстве: не закрывайте вкладку, пока фото не отправлены, иначе они пропадут.
+        </Alert>
+      ) : null}
+
       {uploadQueue.elsewhere > 0 ? (
         <Typography variant="caption" color="text.secondary" data-testid="photo-queue-elsewhere">
           {`Ещё отправляется фото по другой технике: ${uploadQueue.elsewhere}`}

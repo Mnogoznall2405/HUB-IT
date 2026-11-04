@@ -109,5 +109,34 @@ it('does not replace a complete cached file when a new download fails', async ()
     .rejects.toThrow('connection lost');
 
   expect(destination.size).toBe(64);
-  expect(mockFiles.has(`${destination.uri}.part`)).toBe(false);
+  expect([...mockFiles.keys()].some((uri) => uri.endsWith('.part'))).toBe(false);
+});
+
+it('keeps an independent staging file per operation so one failure cannot break another download of the same file', async () => {
+  const { File } = jest.requireMock('expo-file-system') as { File: new (uri: string) => { uri: string } };
+  const destination = new File('file:///cache/voice.m4a');
+  mockHeaders.mockReset().mockResolvedValue({ Authorization: 'Bearer ok' });
+  let finishSecond!: () => void;
+  const secondGate = new Promise<void>((resolve) => { finishSecond = resolve; });
+  const staged: string[] = [];
+  mockDownload
+    .mockImplementationOnce(async (_url, target) => {
+      staged.push(target.uri);
+      throw new Error('connection lost');
+    })
+    .mockImplementationOnce(async (_url, target) => {
+      staged.push(target.uri);
+      mockFiles.set(target.uri, 12);
+      await secondGate;
+      return target;
+    });
+
+  const first = downloadAuthenticatedFile('https://hub.test/api/v1/voice', destination as never);
+  const second = downloadAuthenticatedFile('https://hub.test/api/v1/voice', destination as never);
+  await expect(first).rejects.toThrow('connection lost');
+  finishSecond();
+  await expect(second).resolves.toBe(destination);
+
+  expect(new Set(staged).size).toBe(2);
+  expect(mockFiles.get(destination.uri)).toBe(12);
 });

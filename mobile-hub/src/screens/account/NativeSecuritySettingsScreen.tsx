@@ -24,6 +24,7 @@ import {
   AccountStatusText,
 } from './AccountChrome';
 import { goBackOrReplace } from './accountBack';
+import { MyDevicesCard } from './MyDevicesCard';
 
 type LockState = {
   enabled?: boolean;
@@ -137,7 +138,7 @@ export function NativeSecuritySettingsScreen() {
   }, [load, refreshUser]);
 
   const handleRevoke = useCallback((device: authSecurityApi.TrustedDevice) => {
-    Alert.alert('Отозвать устройство?', device.label || 'Доверенное устройство', [
+    Alert.alert('Отозвать ключ входа?', `Ключ «${device.label || 'Passkey'}» перестанет работать на всех устройствах, где он используется. Запись в менеджере паролей нужно удалить вручную.`, [
       { text: 'Отмена', style: 'cancel' },
       {
         text: 'Отозвать',
@@ -308,10 +309,11 @@ export function NativeSecuritySettingsScreen() {
         ))}
       </AccountSectionCard>
 
-      <AccountSectionCard tokens={tokens} title="Доверенные устройства" description="Регистрация passkey доступна только в браузере.">
-        {loading ? <Text style={{ color: tokens.textSecondary }}>Загрузка…</Text> : devices.length === 0 ? (
-          <Text style={{ color: tokens.textSecondary }}>Доверенные устройства пока не зарегистрированы.</Text>
-        ) : devices.map((device) => (
+      <MyDevicesCard tokens={tokens} />
+      <AccountSectionCard tokens={tokens} title="Ключи входа (passkey)" description="Ключ может синхронизироваться между устройствами. Регистрация доступна в браузере.">
+        {loading ? <Text style={{ color: tokens.textSecondary }}>Загрузка…</Text> : devices.filter(device => device.is_active !== false).length === 0 ? (
+          <Text style={{ color: tokens.textSecondary }}>Активных ключей входа нет.</Text>
+        ) : devices.filter(device => device.is_active !== false).map((device) => (
           <View key={device.id} style={[styles.device, { borderColor: tokens.borderSoft }]}>
             <Text style={{ color: tokens.textPrimary, fontWeight: '800' }}>
               {device.label || 'Доверенное устройство'}
@@ -322,7 +324,7 @@ export function NativeSecuritySettingsScreen() {
             <Text style={{ color: tokens.textSecondary, fontSize: 12 }}>Последнее использование: {formatDateTime(device.last_used_at)}</Text>
             {device.is_active === false ? null : (
               <View style={{ marginTop: 8 }}>
-                <AccountSecondaryButton tokens={tokens} danger label="Отозвать" onPress={() => handleRevoke(device)} />
+                <AccountSecondaryButton tokens={tokens} danger label="Отозвать ключ" onPress={() => handleRevoke(device)} />
               </View>
             )}
           </View>

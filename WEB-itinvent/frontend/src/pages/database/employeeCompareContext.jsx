@@ -9,7 +9,12 @@ import {
   useOneCMarks,
 } from './oneCMarksContext';
 import { isPartNoMissingIn1C } from './partNoCheck';
-import { isEmployeeCompareSnapshotFresh, resolveNoWarehouse, resolvePartCompare } from './employeeCompareModel';
+import {
+  formatEmployeeCompareSnapshotTime,
+  isEmployeeCompareSnapshotFresh,
+  resolveNoWarehouse,
+  resolvePartCompare,
+} from './employeeCompareModel';
 import { formatWarehouseQty } from './warehouse1cShared';
 
 const EmployeeCompareContext = createContext(null);
@@ -43,6 +48,11 @@ const chipSx = {
   height: 18,
   flexShrink: 0,
   '& .MuiChip-label': { px: 0.75, fontSize: '0.68rem' },
+};
+
+const formatSnapshotLine = (asOf) => {
+  const time = formatEmployeeCompareSnapshotTime(asOf);
+  return time ? `Данные 1С на ${time}` : '';
 };
 
 const NO_AUTO_BADGE = { node: null, matched: false };
@@ -85,6 +95,7 @@ function renderAutoCompareBadge({ summary, partNo = null, manualMark = null }) {
       };
     }
     const { matched, hubCount, qty1c } = compare;
+    const snapshotLine = formatSnapshotLine(summary?.as_of);
     const status = matched ? 'match' : 'diff';
     const title = [
       matched
@@ -95,6 +106,7 @@ function renderAutoCompareBadge({ summary, partNo = null, manualMark = null }) {
         ? `${Number(summary.warehouse_count) > 1 ? `Склады (остатки суммируются, ${summary.warehouse_count})` : 'Склад'}: ${summary.warehouse_name}`
         : '',
       matched && manualMark ? `Также отмечено вручную: ${formatManualMarkLine(manualMark)}` : '',
+      snapshotLine,
     ].filter(Boolean).join('\n');
     return {
       matched,

@@ -110,3 +110,67 @@ def test_parallel_connects_of_one_user_respect_the_connection_limit(monkeypatch)
         return len(manager._user_connection_ids.get(7, set()))
 
     assert asyncio.run(scenario()) <= 2
+
+
+def test_subscribe_racing_an_eviction_does_not_rejoin_a_removed_member(monkeypatch):
+    """DCHAT-02: access check passes, member is removed+evicted, then the old subscribe registers the room."""
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    ws_commands = importlib.import_module("backend.chat.ws_commands")
+
+    async def scenario() -> tuple[list[str], list[dict]]:
+        manager = realtime_module.ChatRealtimeManager()
+        socket = _FakeSocket()
+        connection_id, _ = await manager.connect(socket, user_id=3, track_presence=False)
+        state = {"member": True, "checks": 0}
+        first_check_returned = asyncio.Event()
+        release_first_check = asyncio.Event()
+
+        async def run_chat_call(fn, **kwargs):
+            return await fn(**kwargs)
+
+        async def verify_conversation_access(**kwargs):
+            state["checks"] += 1
+            allowed = state["member"]
+            if state["checks"] == 1:
+                first_check_returned.set()
+                await release_first_check.wait()  # the DB answered "member"; the reply is still in flight
+            if not allowed and state["checks"] > 1:
+                raise HTTPException(status_code=403, detail="not a member")
+            return None
+
+        chat_api = SimpleNamespace(
+            chat_realtime=manager,
+            chat_service=SimpleNamespace(verify_conversation_access=verify_conversation_access),
+            _run_chat_call=run_chat_call,
+        )
+        monkeypatch.setattr(ws_commands, "_api", lambda: chat_api)
+
+        subscribe = asyncio.create_task(ws_commands.dispatch_chat_ws_command(
+            current_user=SimpleNamespace(id=3),
+            connection_id=connection_id,
+            message_type="chat.subscribe_conversation",
+            request_id="r1",
+            conversation_id="group-1",
+            payload={},
+        ))
+        await first_check_returned.wait()
+        state["member"] = False
+        await manager.publish_conversation_eviction(conversation_id="group-1", user_ids=[3])
+        release_first_check.set()
+        try:
+            await subscribe
+        except HTTPException:
+            pass
+        await manager.publish_conversation_room_event(
+            conversation_id="group-1", event_type="chat.message.read",
+            payload={"message_id": "m-1"}, distribute=False,
+        )
+        await asyncio.sleep(0.2)
+        return sorted(manager.conversation_room_user_ids(conversation_id="group-1")), _room_events(socket, "chat.message.read")
+
+    room_users, events = asyncio.run(scenario())
+    assert 3 not in room_users
+    assert events == []

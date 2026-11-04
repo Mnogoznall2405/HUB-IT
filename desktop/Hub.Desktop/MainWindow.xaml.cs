@@ -340,7 +340,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
             Visible = false,
         };
         ((System.Collections.Specialized.INotifyCollectionChanged)_downloads.Items)
-            .CollectionChanged += (_, _) => RefreshDownloadsMenuItem();
+            .CollectionChanged += DownloadItems_CollectionChanged;
         _downloads.Changed += Downloads_Changed;
         _updates.StateChanged += Updates_StateChanged;
         _windowManager.WindowAvailabilityChanged += WindowManager_WindowAvailabilityChanged;
@@ -1362,6 +1362,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _desktopBridge.CheckForUpdatesRequested += DesktopBridge_CheckForUpdatesRequested;
         _desktopBridge.OpenCurrentInBrowserRequested += DesktopBridge_OpenCurrentInBrowserRequested;
         _desktopBridge.MailComposeWindowRequested += DesktopBridge_MailComposeWindowRequested;
+        _desktopBridge.WorkspaceWindowRequested += DesktopBridge_WorkspaceWindowRequested;
         _desktopBridge.OpenFileDialogRequested += DesktopBridge_OpenFileDialogRequested;
         _windowManager.MailComposeSent += WindowManager_MailComposeSent;
         ApplyWebViewMemoryUsageTarget(core);
@@ -1711,6 +1712,18 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
 
     private void DesktopBridge_OpenCurrentInBrowserRequested(object? sender, EventArgs e) =>
         OpenCurrentPageInBrowser();
+
+    private void DesktopBridge_WorkspaceWindowRequested(
+        object? sender,
+        DesktopWorkspaceWindowRequestedEventArgs e)
+    {
+        e.Status = _windowManager.OpenSecondaryRoute(e.Route) switch
+        {
+            DesktopSecondaryWindowOpenResult.Opened => "opened",
+            DesktopSecondaryWindowOpenResult.ActivatedExisting => "activated",
+            _ => "failed",
+        };
+    }
 
     private void DesktopBridge_MailComposeWindowRequested(
         object? sender,
@@ -2278,6 +2291,7 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         _desktopBridge.CheckForUpdatesRequested -= DesktopBridge_CheckForUpdatesRequested;
         _desktopBridge.OpenCurrentInBrowserRequested -= DesktopBridge_OpenCurrentInBrowserRequested;
         _desktopBridge.MailComposeWindowRequested -= DesktopBridge_MailComposeWindowRequested;
+        _desktopBridge.WorkspaceWindowRequested -= DesktopBridge_WorkspaceWindowRequested;
         _desktopBridge.OpenFileDialogRequested -= DesktopBridge_OpenFileDialogRequested;
         _windowManager.MailComposeSent -= WindowManager_MailComposeSent;
         _desktopBridge.Dispose();
@@ -3036,8 +3050,14 @@ public partial class MainWindow : Window, IDesktopHubWindow, IDesktopGlobalActio
         DesktopLog.Info($"Files dropped on window; count={paths.Length}");
     }
 
+    private void DownloadItems_CollectionChanged(
+        object? sender,
+        System.Collections.Specialized.NotifyCollectionChangedEventArgs e) => RefreshDownloadsMenuItem();
+
     private void Window_Closed(object? sender, EventArgs e)
     {
+        ((System.Collections.Specialized.INotifyCollectionChanged)_downloads.Items)
+            .CollectionChanged -= DownloadItems_CollectionChanged;
         _performanceTimer.Stop();
         _performanceTimer.Tick -= PerformanceTimer_Tick;
         _downloadFailureTimer.Stop();

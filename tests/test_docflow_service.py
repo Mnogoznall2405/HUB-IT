@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from cryptography.fernet import Fernet
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -737,6 +739,45 @@ def test_unknown_assignment_outcome_is_not_replayed(monkeypatch):
     assert len(command_store.rows) == 1
 
 
+@pytest.mark.parametrize(
+    ("task_ref", "expected_status"),
+    [(None, "state_unknown"), ("55555555-5555-5555-5555-555555555555", "already_applied")],
+    ids=["draft-without-launch", "launched-with-task"],
+)
+def test_unknown_assignment_is_applied_only_when_the_launch_is_visible(monkeypatch, task_ref, expected_status):
+    """DDOC-02: an existing process object alone does not prove the assignee got a task."""
+    service, adapter, _store, _command_store = _assignment_service(monkeypatch)
+    asyncio.run(service.save_credentials(
+        user_id=17, login="owner.login", password="temporary-test-password", correlation_id="save",
+    ))
+    original_call = adapter.call
+
+    async def call(operation, payload):
+        if operation == "assignment_create":
+            raise DocflowActionOutcomeUnknown("unknown")
+        if operation == "assignment_state":
+            return {"exists": True, "process_ref": payload.get("process_ref"), "task_ref": task_ref, "state": "Не запущен"}
+        return await original_call(operation, payload)
+
+    adapter.call = call
+    payload = {
+        "user_id": 17,
+        "document_type": "internal",
+        "document_ref": "33333333-3333-3333-3333-333333333333",
+        "assignee_ref": "44444444-4444-4444-4444-444444444444",
+        "controller_ref": None,
+        "due_at": datetime(2030, 7, 29, 10, 0, tzinfo=timezone.utc),
+        "importance": "normal",
+        "title": "HUB-IT TEST · Сверка запуска",
+        "description": "Тест",
+        "idempotency_key": "assignment-launch-key",
+    }
+    asyncio.run(service.create_assignment(**payload, correlation_id="first"))
+    checked = asyncio.run(service.create_assignment(**payload, correlation_id="second"))
+
+    assert checked["status"] == expected_status
+
+
 def test_bridge_pool_keeps_each_login_on_one_worker_and_parallelizes_users():
     barrier = threading.Barrier(2)
 
@@ -1097,6 +1138,43 @@ def test_explicit_command_check_releases_action_when_1c_state_is_unchanged(monke
     assert checked["error_code"] == "DOCFLOW_ACTION_NOT_APPLIED"
     assert checked["task"]["completed"] is False
     assert [item["code"] for item in checked["task"]["available_actions"]] == ["approve", "reject"]
+    assert [operation for operation, _ in adapter.calls].count("task_action") == 1
+
+
+def test_abandoned_pending_command_is_verified_read_only_and_a_fresh_one_is_left_alone(monkeypatch):
+    """DDOC-01: a crash after begin() must not leave the command pending forever."""
+    service, adapter, _store, command_store = _action_service(monkeypatch)
+    asyncio.run(service.save_credentials(
+        user_id=17, login="owner.login", password="temporary-test-password", correlation_id="save",
+    ))
+    detail = asyncio.run(service.get_task_detail(
+        user_id=17, task_ref="11111111-1111-1111-1111-111111111111", correlation_id="detail", can_act=True,
+    ))
+    original_call = adapter.call
+
+    async def lost_reply(operation, payload):
+        if operation == "task_action":
+            adapter.calls.append((operation, dict(payload)))
+            raise DocflowActionOutcomeUnknown("timeout")
+        return await original_call(operation, payload)
+
+    adapter.call = lost_reply
+    result = asyncio.run(service.apply_task_action(
+        user_id=17, task_ref=detail["ref"], action="approve", comment="",
+        state_token=detail["state_token"], idempotency_key="abandoned-command-1", correlation_id="crash",
+    ))
+    row = command_store.rows[result["command_id"]]
+    row.status = "pending"  # what a process crash between begin() and finish() leaves behind
+    row.updated_at = datetime.now(timezone.utc)
+
+    fresh = asyncio.run(service.get_command(user_id=17, command_id=row.id, correlation_id="check"))
+    assert fresh["status"] == "pending"
+
+    row.updated_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    checked = asyncio.run(service.get_command(user_id=17, command_id=row.id, correlation_id="check"))
+
+    assert checked["status"] == "rejected"
+    assert checked["error_code"] == "DOCFLOW_ACTION_NOT_APPLIED"
     assert [operation for operation, _ in adapter.calls].count("task_action") == 1
 
 

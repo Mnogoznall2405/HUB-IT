@@ -18,7 +18,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from fastapi import UploadFile
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError, TimeoutError as DatabaseTimeoutError
 
 from backend.ai_chat.balance import INSUFFICIENT_FUNDS_USER_TEXT, ai_balance_service
@@ -166,6 +166,24 @@ class AiRunCancelled(RuntimeError):
 
 class AiRunConflictError(RuntimeError):
     """R30: «Повторить» while the conversation's latest run is still active (HTTP 409)."""
+
+
+class AiRunQueueFullError(RuntimeError):
+    """DAI-07: too many queued AI runs for the user / globally (HTTP 429 + Retry-After)."""
+
+    def __init__(self, message: str = "Очередь AI переполнена, повторите запрос позже.", retry_after_sec: int = 30):
+        super().__init__(message)
+        self.retry_after_sec = int(retry_after_sec)
+
+
+AI_RUN_QUEUE_FULL_TEXT = "Очередь AI переполнена, повторите запрос позже."
+
+
+def _ai_queue_limit(env_name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(env_name, str(default)) or default))
+    except (TypeError, ValueError):
+        return default
 
 
 class AiRunUserInactive(RuntimeError):
@@ -3879,16 +3897,42 @@ class AiChatService:
             if mapping.bot_id != locked_bot.id:
                 mapping.bot_id = locked_bot.id
                 mapping.updated_at = now
+            # Admission (DAI-07): a slow provider must not let durable queued rows grow without
+            # bound.  The user's own prompt is kept and shown as failed with a clear reason
+            # ("Повторить" works once the queue drains); an explicit retry gets 429 instead.
+            queued_for_user = int(
+                session.execute(
+                    select(func.count()).select_from(AppAiBotRun).where(
+                        AppAiBotRun.user_id == int(current_user_id), AppAiBotRun.status == "queued"
+                    )
+                ).scalar_one()
+                or 0
+            )
+            queued_global = int(
+                session.execute(
+                    select(func.count()).select_from(AppAiBotRun).where(AppAiBotRun.status == "queued")
+                ).scalar_one()
+                or 0
+            )
+            queue_full = (
+                queued_for_user >= _ai_queue_limit("AI_RUN_QUEUE_MAX_PER_USER", 10)
+                or queued_global >= _ai_queue_limit("AI_RUN_QUEUE_MAX_GLOBAL", 500)
+            )
+            if queue_full and retry:
+                raise AiRunQueueFullError()
+            run_status = "failed" if queue_full else "queued"
+            run_stage = AI_RUN_STAGE_FAILED if queue_full else AI_RUN_STAGE_QUEUED
             run = AppAiBotRun(
                 id=str(uuid4()),
                 bot_id=locked_bot.id,
                 conversation_id=normalized_conversation_id,
                 user_id=int(current_user_id),
                 trigger_message_id=_normalize_text(trigger_message_id),
-                status="queued",
-                stage=AI_RUN_STAGE_QUEUED,
-                status_text=_resolve_run_status_text(status="queued", stage=AI_RUN_STAGE_QUEUED),
-                error_text=None,
+                status=run_status,
+                stage=run_stage,
+                status_text=_resolve_run_status_text(status=run_status, stage=run_stage),
+                error_text=AI_RUN_QUEUE_FULL_TEXT if queue_full else None,
+                completed_at=now if queue_full else None,
                 request_json=_json_dumps(
                     {
                         "effective_database_id": resolved_database_id,
@@ -3920,8 +3964,8 @@ class AiChatService:
             conversation_id=normalized_conversation_id,
             user_id=int(current_user_id),
             bot=published_bot,
-            status="queued",
-            stage=AI_RUN_STAGE_QUEUED,
+            status=run_status,
+            stage=run_stage,
             status_text=payload.get("status_text"),
             run_id=payload["id"],
             run_created_at=payload.get("created_at"),

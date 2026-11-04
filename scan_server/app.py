@@ -21,7 +21,7 @@ from urllib.request import Request as UrlRequest, urlopen
 from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from starlette.middleware.base import BaseHTTPMiddleware
 from agent_version import SCAN_ANALYSIS_VERSION, SCAN_OCR_PAGE_LIMIT, SCAN_TEXT_PAGE_LIMIT
 
@@ -661,7 +661,14 @@ def _get_ingest_semaphore() -> asyncio.Semaphore:
 
 async def _run_ingest(data: Dict[str, Any], *, request_ip: str, pdf_bytes: Optional[bytes] = None) -> Dict[str, Any]:
     async with _get_ingest_semaphore():
-        return await asyncio.to_thread(_queue_ingest_blocking, data, request_ip=request_ip, pdf_bytes=pdf_bytes)
+        return await _run_ingest_admitted(data, request_ip=request_ip, pdf_bytes=pdf_bytes)
+
+
+async def _run_ingest_admitted(
+    data: Dict[str, Any], *, request_ip: str, pdf_bytes: Optional[bytes] = None
+) -> Dict[str, Any]:
+    """Ingest for a caller that already holds the ingest semaphore."""
+    return await asyncio.to_thread(_queue_ingest_blocking, data, request_ip=request_ip, pdf_bytes=pdf_bytes)
 
 
 def _loop_descriptor() -> str:
@@ -1030,15 +1037,52 @@ def heartbeat(
     }
 
 
+def _ingest_json_max_bytes() -> int:
+    """Hard cap for the legacy JSON ingest body (inline base64 PDF/document + excerpt + metadata)."""
+    try:
+        override = int(os.getenv("SCAN_INGEST_JSON_MAX_BYTES", "0") or 0)
+    except ValueError:
+        override = 0
+    if override > 0:
+        return override
+    # Two base64 blobs (pdf slice + document, 4/3 each) plus text/metadata headroom.
+    return int(config.pdf_max_bytes) * 3 + 2 * 1024 * 1024
+
+
+async def _read_body_limited(request: Request, limit: int) -> bytes:
+    """Read the request body but stop at ``limit`` bytes (413) instead of buffering it all."""
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > limit:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Request body too large")
+    chunks: List[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Request body too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @app.post("/api/v1/scan/ingest")
 async def ingest(
-    payload: IngestPayload,
     request: Request,
     x_api_key: Optional[str] = Header(None),
 ) -> Dict[str, Any]:
     _check_agent_key(x_api_key)
-    data = _model_dump(payload)
-    return await _run_ingest(data, request_ip=_request_ip(request))
+    # Admission first: a JSON body may carry base64 of a whole document, so it is read and parsed
+    # only once an ingest slot is free (waiting requests stay unread in the transport buffers).
+    async with _get_ingest_semaphore():
+        try:
+            raw = json.loads(await _read_body_limited(request, _ingest_json_max_bytes()))
+            data = _model_dump(IngestPayload(**raw)) if isinstance(raw, dict) else None
+        except ValidationError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=json.loads(exc.json())) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid JSON body") from exc
+        if data is None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="JSON body must be an object")
+        return await _run_ingest_admitted(data, request_ip=_request_ip(request))
 
 
 @app.post("/api/v1/scan/ingest/pdf-slice")
@@ -1064,18 +1108,21 @@ async def ingest_pdf_slice(
     details.setdefault("pages_in_slice", 0)
     details.setdefault("extraction_outcomes", [])
     metadata["metadata"] = details
-    pdf_bytes = await pdf_slice.read(int(config.pdf_max_bytes) + 1)
-    if not pdf_bytes:
-        raise HTTPException(status_code=400, detail="pdf_slice is empty")
-    if len(pdf_bytes) > int(config.pdf_max_bytes):
-        details["analysis_incomplete_reason"] = "pdf_slice_payload_too_large"
-        outcomes = details.get("extraction_outcomes") if isinstance(details.get("extraction_outcomes"), list) else []
-        outcomes.append({"method": "pdf_slice_upload", "outcome": "too_large"})
-        details["extraction_outcomes"] = outcomes
-        metadata["metadata"] = details
-        metadata["source_kind"] = "analysis_incomplete"
-        return await _run_ingest(metadata, request_ip=_request_ip(request))
-    return await _run_ingest(metadata, request_ip=_request_ip(request), pdf_bytes=pdf_bytes)
+    # Admission first: the body is read into memory only once an ingest slot is free, so queued
+    # requests wait with a spooled file instead of each holding up to pdf_max_bytes in RAM.
+    async with _get_ingest_semaphore():
+        pdf_bytes = await pdf_slice.read(int(config.pdf_max_bytes) + 1)
+        if not pdf_bytes:
+            raise HTTPException(status_code=400, detail="pdf_slice is empty")
+        if len(pdf_bytes) > int(config.pdf_max_bytes):
+            details["analysis_incomplete_reason"] = "pdf_slice_payload_too_large"
+            outcomes = details.get("extraction_outcomes") if isinstance(details.get("extraction_outcomes"), list) else []
+            outcomes.append({"method": "pdf_slice_upload", "outcome": "too_large"})
+            details["extraction_outcomes"] = outcomes
+            metadata["metadata"] = details
+            metadata["source_kind"] = "analysis_incomplete"
+            return await _run_ingest_admitted(metadata, request_ip=_request_ip(request))
+        return await _run_ingest_admitted(metadata, request_ip=_request_ip(request), pdf_bytes=pdf_bytes)
 
 
 @app.post("/api/v1/scan/ingest/document")
@@ -1103,20 +1150,23 @@ async def ingest_document(
     }
     if extension not in supported:
         raise HTTPException(status_code=415, detail="Unsupported document type")
-    document_bytes = await document.read(int(config.pdf_max_bytes) + 1)
-    if not document_bytes:
-        raise HTTPException(status_code=400, detail="document is empty")
-    if len(document_bytes) > int(config.pdf_max_bytes):
-        details = metadata.get("metadata") if isinstance(metadata.get("metadata"), dict) else {}
-        details["analysis_incomplete_reason"] = "document_payload_too_large"
-        outcomes = details.get("extraction_outcomes") if isinstance(details.get("extraction_outcomes"), list) else []
-        outcomes.append({"method": "document_upload", "outcome": "too_large"})
-        details["extraction_outcomes"] = outcomes
-        metadata["metadata"] = details
-        metadata["source_kind"] = "analysis_incomplete"
-        return await _run_ingest(metadata, request_ip=_request_ip(request))
-    metadata["source_kind"] = "image" if extension in {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"} else "office"
-    return await _run_ingest(metadata, request_ip=_request_ip(request), pdf_bytes=document_bytes)
+    # Admission first: the body is read into memory only once an ingest slot is free, so queued
+    # requests wait with a spooled file instead of each holding up to pdf_max_bytes in RAM.
+    async with _get_ingest_semaphore():
+        document_bytes = await document.read(int(config.pdf_max_bytes) + 1)
+        if not document_bytes:
+            raise HTTPException(status_code=400, detail="document is empty")
+        if len(document_bytes) > int(config.pdf_max_bytes):
+            details = metadata.get("metadata") if isinstance(metadata.get("metadata"), dict) else {}
+            details["analysis_incomplete_reason"] = "document_payload_too_large"
+            outcomes = details.get("extraction_outcomes") if isinstance(details.get("extraction_outcomes"), list) else []
+            outcomes.append({"method": "document_upload", "outcome": "too_large"})
+            details["extraction_outcomes"] = outcomes
+            metadata["metadata"] = details
+            metadata["source_kind"] = "analysis_incomplete"
+            return await _run_ingest_admitted(metadata, request_ip=_request_ip(request))
+        metadata["source_kind"] = "image" if extension in {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"} else "office"
+        return await _run_ingest_admitted(metadata, request_ip=_request_ip(request), pdf_bytes=document_bytes)
 
 
 @app.get("/api/v1/scan/tasks/poll")

@@ -851,3 +851,43 @@ def test_worker_finalization_preserves_concurrent_watchdog_failure(agent, monkey
         assert run.error_text == "Watchdog stopped this run"
     assert injected
     assert not any(event["status"] in {"completed", "failed"} for event in published)
+
+
+def test_cancel_that_loses_the_race_to_confirm_does_not_overwrite_the_claim(agent, monkeypatch):
+    """DAI-02: confirm claims the card (executing) between cancel's read and its write."""
+    card = action_cards.build_office_mail_draft(action_type="office.mail.send", conversation_id="agent-conv",
+        run_id="cancel-race", requester_user_id=99,
+        payload={"to": ["recipient@example.test"], "subject": "Example", "body": "Example"})
+    real_now = action_cards._utc_now
+    claimed = []
+
+    def now_after_concurrent_claim():
+        if not claimed:
+            claimed.append(True)
+            with app_session(agent.url) as db:
+                db.get(AppAiPendingAction, card["id"]).status = "executing"
+        return real_now()
+
+    monkeypatch.setattr(action_cards, "_utc_now", now_after_concurrent_claim)
+    result = action_cards.cancel_action(action_id=card["id"], current_user=SimpleNamespace(id=99, role="viewer"))
+
+    assert result["status"] == "executing"
+    with app_session(agent.url) as db:
+        assert db.get(AppAiPendingAction, card["id"]).status == "executing"
+
+
+def test_abandoned_non_mail_execution_becomes_an_explicit_unknown_and_is_not_rerun(agent):
+    """DAI-08: a card left in executing after a crash must not stay executing forever."""
+    with app_session(agent.url) as db:
+        db.add(AppAiPendingAction(
+            id="stuck-transfer", action_type="equipment.transfer", status="executing",
+            conversation_id="agent-conv", run_id="stuck-run", message_id="m-stuck", requester_user_id=99,
+            payload_json="{}", preview_json="{}", result_json="{}",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            updated_at=datetime.now(timezone.utc) - timedelta(minutes=30),
+        ))
+    response = agent.client.post("/api/v1/chat/ai/actions/stuck-transfer/confirm")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["result"]["outcome"] == "unknown"

@@ -8,11 +8,10 @@ import { TelegramBrandIcon } from '../icons/MessengerBrandIcon';
 import { isValidEmailRecipient } from '../mail/mailComposeState';
 import { isPhoneDeepLinkReady } from '../../lib/messengerLinks';
 import HighlightText from './HighlightText';
+import AddressBookAbsenceMarks from './AddressBookAbsenceMarks';
 import {
-  absenceChipColor,
   buildEmployeeSubtitle,
   formatDate,
-  formatAbsenceLabel,
   getInitials,
   pickPrimaryEmail,
   pickQuickActionPhone,
@@ -55,7 +54,6 @@ function AddressBookEntryRow({
   const primaryPhone = pickQuickActionPhone(item);
   const primaryEmail = pickPrimaryEmail(item);
   const subtitle = buildEmployeeSubtitle(item);
-  const absenceLabel = formatAbsenceLabel(item?.absence);
   const dismissalDateLabel = formatDate(item?.dismissal_date);
   const dismissedLabel = dismissed
     ? `Уволен${dismissalDateLabel ? ` ${dismissalDateLabel}` : ''}`
@@ -159,14 +157,7 @@ function AddressBookEntryRow({
               </Typography>
             </Tooltip>
           ) : null}
-          {absenceLabel ? (
-            <Chip
-              size="small"
-              color={absenceChipColor(item.absence)}
-              label={absenceLabel}
-              sx={{ mt: 0.35, maxWidth: '100%', height: 22, '& .MuiChip-label': { px: 0.75, fontSize: '0.7rem', fontWeight: 700 } }}
-            />
-          ) : null}
+          <AddressBookAbsenceMarks item={item} compact />
           {dismissedLabel ? (
             <Chip
               size="small"

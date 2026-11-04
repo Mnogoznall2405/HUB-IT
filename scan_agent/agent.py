@@ -1328,7 +1328,7 @@ class ScanAgent:
     def _outbox_write(self, path: Path, item: Dict[str, Any]) -> None:
         _atomic_write_text(path, json.dumps(item, ensure_ascii=False), encoding="utf-8")
 
-    def _outbox_move_to_dead(self, path: Path, item: Optional[Dict[str, Any]], reason: str) -> None:
+    def _outbox_move_to_dead(self, path: Path, item: Optional[Dict[str, Any]], reason: str) -> bool:
         payload = item or {}
         payload["dropped_reason"] = str(reason or "unknown")
         payload["dropped_at"] = int(time.time())
@@ -1336,11 +1336,14 @@ class ScanAgent:
         try:
             self._outbox_write(dead_path, payload)
         except Exception as exc:
-            logging.warning("Outbox dead-letter write failed (%s): %s", dead_path, exc)
+            # Keep the pending document: deleting it now would lose a scan the server never received.
+            logging.warning("Outbox dead-letter write failed, document kept in outbox (%s): %s", dead_path, exc)
+            return False
         try:
             path.unlink(missing_ok=True)
         except Exception as exc:
             logging.warning("Outbox delete failed (%s): %s", path, exc)
+        return True
 
     def _outbox_has_event(self, event_id: str) -> bool:
         check_id = str(event_id or "").strip()

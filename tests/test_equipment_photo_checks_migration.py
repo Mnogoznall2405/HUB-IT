@@ -97,3 +97,25 @@ def test_reject_columns_upgrade_is_repeatable_and_downgrade_keeps_the_rows():
         columns = {column["name"] for column in sa.inspect(connection).get_columns("equipment_photo_checks")}
         assert "reject_reason" not in columns
         assert connection.execute(sa.text("SELECT count(*) FROM equipment_photo_checks")).scalar() == 1
+
+
+LEDGER_REVISION = (
+    Path(__file__).resolve().parents[1]
+    / "WEB-itinvent/backend/alembic/versions/20261102_0155_equipment_photo_upload_ledger.py"
+)
+
+
+def test_upload_ledger_upgrade_is_repeatable_matches_the_model_and_downgrades_cleanly():
+    namespace_path = str(LEDGER_REVISION)
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        namespace = runpy.run_path(namespace_path)
+        namespace["upgrade"].__globals__["op"] = Operations(MigrationContext.configure(connection))
+        namespace["upgrade"].__globals__["_scope"] = lambda: "app"
+        namespace["upgrade"]()
+        namespace["upgrade"]()
+        migrated = {column["name"] for column in sa.inspect(connection).get_columns("equipment_photo_upload_ledger")}
+        assert migrated == {"upload_id", "item_id", "created_by", "state", "file_no", "started_at", "updated_at"}
+        namespace["downgrade"]()
+        namespace["downgrade"]()
+        assert not sa.inspect(connection).has_table("equipment_photo_upload_ledger")

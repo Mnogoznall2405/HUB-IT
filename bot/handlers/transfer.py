@@ -13,7 +13,7 @@ from typing import Any
 from uuid import uuid4
 from telegram import Update, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
-from telegram.error import TimedOut
+from telegram.error import RetryAfter, TimedOut
 
 from bot.config import States, Messages, StorageKeys
 from bot.utils.decorators import require_user_access, handle_errors
@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 # Глобальный менеджер данных
 equipment_manager = EquipmentDataManager()
 transfer_operation_store = BotTransferOperationStore()
+
+
+async def _journal(method, *args, **kwargs):
+    """Journal storage is blocking SQLite: keep it off the bot's event loop."""
+    return await asyncio.to_thread(method, *args, **kwargs)
 
 
 TRANSFER_OPERATION_ID_KEY = "transfer_operation_id"
@@ -96,18 +101,15 @@ async def send_document_with_retry(
     max_retries: int = 3
 ) -> bool:
     """
-    Отправляет документ с автоматическим повтором при timed out ошибке
+    Отправляет документ; повторяет только заведомо не доставленные попытки.
 
-    Параметры:
-        context: Контекст выполнения бота
-        chat_id: ID чата для отправки
-        document_path: Путь к файлу
-        filename: Имя файла
-        caption: Подпись к документу
-        max_retries: Максимальное количество попыток
+    TimedOut неоднозначен: сервер Telegram мог принять документ, потеряв лишь ответ.
+    Повтор выдал бы акт дважды, поэтому после TimedOut автоматического resend нет —
+    вызывающий код фиксирует delivery_unknown. Повторяется только RetryAfter
+    (flood control): сообщение отклонено и точно не доставлено.
 
     Возвращает:
-        bool: True если успешно отправлено, False иначе
+        bool: True если отправка подтверждена, False если не отправлено или исход неизвестен
     """
     for attempt in range(max_retries):
         try:
@@ -121,15 +123,18 @@ async def send_document_with_retry(
             logger.info(f"Документ успешно отправлен с попытки {attempt + 1}")
             return True
 
-        except TimedOut as e:
-            logger.warning(f"Попытка {attempt + 1}/{max_retries}: Таймаут отправки документа {filename}")
+        except RetryAfter as e:
+            logger.warning(f"Попытка {attempt + 1}/{max_retries}: flood control при отправке {filename}")
             if attempt < max_retries - 1:
-                # Ждем перед следующей попыткой
-                wait_time = (attempt + 1) * 2  # 2, 4, 6 секунд
-                logger.info(f"Ждем {wait_time} сек. перед повторной попыткой...")
-                await asyncio.sleep(wait_time)
+                retry_after = e.retry_after
+                wait_time = retry_after.total_seconds() if hasattr(retry_after, "total_seconds") else float(retry_after)
+                await asyncio.sleep(min(max(wait_time, 1.0), 60.0))
             else:
                 logger.error(f"Не удалось отправить документ после {max_retries} попыток")
+
+        except TimedOut:
+            logger.error(f"Таймаут отправки документа {filename}: исход неизвестен, повтор не выполняется")
+            break
 
         except Exception as e:
             logger.error(f"Ошибка отправки документа {filename}: {e}")
@@ -1118,7 +1123,7 @@ async def handle_transfer_confirmation(update: Update, context: ContextTypes.DEF
             logger.info("Повторное подтверждение уже выполняемой операции %s подавлено", operation_id)
             return ConversationHandler.END
 
-        checkpoint = transfer_operation_store.get(operation_id)
+        checkpoint = await _journal(transfer_operation_store.get, operation_id)
         if checkpoint and str(checkpoint.get("status") or "") == "completed":
             logger.info("Повторное подтверждение завершённой операции %s подавлено", operation_id)
             await query.edit_message_text("ℹ️ Это перемещение уже было завершено. Повторный перенос не выполнен.")
@@ -1256,7 +1261,7 @@ async def handle_transfer_confirmation(update: Update, context: ContextTypes.DEF
                                     new_location=new_location,
                                     new_loc_no=new_loc_no,
                                 )
-                                checkpoint = transfer_operation_store.create_or_get(operation_id, payload)
+                                checkpoint = await _journal(transfer_operation_store.create_or_get, operation_id, payload)
                             for idx, (old_employee, equipment_list) in enumerate(resolved_groups.items(), 1):
                                 await context.bot.send_message(
                                     chat_id=query.message.chat_id,
@@ -1282,14 +1287,14 @@ async def handle_transfer_confirmation(update: Update, context: ContextTypes.DEF
                                 if bool(failure.get("retryable")) and str(failure.get("serial") or "").strip()
                             ]
                             if transfer_confirmed:
-                                checkpoint = transfer_operation_store.checkpoint(
+                                checkpoint = await _journal(transfer_operation_store.checkpoint, 
                                     operation_id,
                                     status="inventory_confirmed",
                                     note="all item ids confirmed in HUB",
                                     outcome={"success_count": len(operation_outcome.successes), "failed": []},
                                 )
                             else:
-                                transfer_operation_store.checkpoint(
+                                await _journal(transfer_operation_store.checkpoint, 
                                     operation_id,
                                     status="partial",
                                     note="inventory command is incomplete; acts and ledger are prohibited",
@@ -1344,7 +1349,7 @@ async def handle_transfer_confirmation(update: Update, context: ContextTypes.DEF
                 )
                 return ConversationHandler.END
 
-            checkpoint = transfer_operation_store.get(operation_id)
+            checkpoint = await _journal(transfer_operation_store.get, operation_id)
             acts = copy.deepcopy(checkpoint.get("acts") or []) if checkpoint else []
             if not acts or checkpoint_status == "acts_failed":
                 from bot.services.pdf_generator import generate_multiple_transfer_acts
@@ -1362,7 +1367,7 @@ async def handle_transfer_confirmation(update: Update, context: ContextTypes.DEF
                     if not act.get("success") or not act.get("pdf_path") or not os.path.exists(str(act.get("pdf_path") or ""))
                 ]
                 if failed_acts:
-                    transfer_operation_store.checkpoint(
+                    await _journal(transfer_operation_store.checkpoint, 
                         operation_id,
                         status="acts_failed",
                         note="all document/ledger delivery is prohibited until every act exists",
@@ -1379,7 +1384,7 @@ async def handle_transfer_confirmation(update: Update, context: ContextTypes.DEF
                     )
                     return ConversationHandler.END
                 acts = [dict(act, delivery_status="pending") for act in generated_acts]
-                checkpoint = transfer_operation_store.checkpoint(
+                checkpoint = await _journal(transfer_operation_store.checkpoint, 
                     operation_id,
                     status="acts_ready",
                     note="all deterministic act files are ready",
@@ -1414,7 +1419,7 @@ async def handle_transfer_confirmation(update: Update, context: ContextTypes.DEF
 
                 updated_acts = copy.deepcopy(acts)
                 updated_acts[index]["delivery_status"] = "sending"
-                transfer_operation_store.checkpoint(
+                await _journal(transfer_operation_store.checkpoint, 
                     operation_id,
                     status="delivery_pending",
                     note=f"document dispatch started for {old_employee}",
@@ -1433,7 +1438,7 @@ async def handle_transfer_confirmation(update: Update, context: ContextTypes.DEF
                 )
                 updated_acts = copy.deepcopy(acts)
                 updated_acts[index]["delivery_status"] = "sent" if sent else "failed"
-                checkpoint = transfer_operation_store.checkpoint(
+                checkpoint = await _journal(transfer_operation_store.checkpoint, 
                     operation_id,
                     status="delivery_pending" if sent else "delivery_unknown",
                     note=("document delivered" if sent else "document delivery failed or is unknown"),
@@ -1459,18 +1464,18 @@ async def handle_transfer_confirmation(update: Update, context: ContextTypes.DEF
                 )
                 return ConversationHandler.END
 
-            checkpoint = transfer_operation_store.get(operation_id)
+            checkpoint = await _journal(transfer_operation_store.get, operation_id)
             ledger_entries = copy.deepcopy(checkpoint.get("ledger_entries") or []) if checkpoint else []
             if not checkpoint or not bool(checkpoint.get("ledger_written")):
                 if not equipment_manager.add_transfer_operation_entries_once(ledger_entries):
                     raise RuntimeError("Не удалось зафиксировать JSON-журнал перемещения")
-                checkpoint = transfer_operation_store.checkpoint(
+                checkpoint = await _journal(transfer_operation_store.checkpoint, 
                     operation_id,
                     status="ledger_recorded",
                     note="all documents delivered; ledger written exactly once",
                     ledger_written=True,
                 )
-            transfer_operation_store.checkpoint(
+            await _journal(transfer_operation_store.checkpoint, 
                 operation_id,
                 status="completed",
                 note="transfer delivery and ledger completed",

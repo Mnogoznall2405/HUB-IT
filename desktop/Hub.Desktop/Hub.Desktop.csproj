@@ -23,7 +23,7 @@
     <SatelliteResourceLanguages>ru;en</SatelliteResourceLanguages>
     <AssemblyName>HUB.Desktop</AssemblyName>
     <RootNamespace>Hub.Desktop</RootNamespace>
-    <Version>0.1.48</Version>
+    <Version>0.1.49</Version>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'PerfBench'">

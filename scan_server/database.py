@@ -28,6 +28,13 @@ from .scan_view import InvalidScanView, normalize_scan_list_view
 
 logger = logging.getLogger(__name__)
 
+
+def _claim_guard(claim_attempt: Optional[int]) -> tuple[str, tuple]:
+    """SQL suffix limiting a job write to its current claim: attempt_count grows only on claim."""
+    if not claim_attempt:
+        return "", ()
+    return " AND status='processing' AND COALESCE(attempt_count, 0)=?", (int(claim_attempt),)
+
 project_root = Path(__file__).resolve().parent.parent
 web_root = project_root / "WEB-itinvent"
 if web_root.exists() and str(web_root) not in sys.path:
@@ -668,7 +675,7 @@ def _get_scan_context_db_ids() -> List[str]:
         ids.append(default_db)
 
     try:
-        from backend.api.v1.database import get_all_db_configs
+        from backend.services.database_catalog import get_all_db_configs
 
         for item in get_all_db_configs():
             db_id = str((item or {}).get("id") or "").strip()
@@ -920,9 +927,9 @@ class ScanStore:
 
     def _ensure_schema(self) -> None:
         if self.is_postgres:
-            from .db import ensure_scan_schema
+            from .db import prepare_scan_schema
 
-            ensure_scan_schema(self._pg_engine)
+            prepare_scan_schema(self._pg_engine)
             with self._lock, self._connect() as conn:
                 cursor_tasks = conn.execute(
                     "UPDATE scan_tasks SET status='queued', delivered_at=NULL WHERE status='delivered'"
@@ -1469,8 +1476,13 @@ class ScanStore:
             "retry_after_sec": retry_after_sec,
         }
 
-    def reconcile_job_pdf_spool(self) -> Dict[str, int]:
+    # queue_job publishes the PDF before the job row commits. A file younger than this may belong
+    # to a job that is about to be inserted (possibly by another process), so it is not an orphan yet.
+    ORPHAN_SPOOL_GRACE_SEC = 900
+
+    def reconcile_job_pdf_spool(self, *, orphan_grace_sec: Optional[int] = None) -> Dict[str, int]:
         now_ts = _now_ts()
+        grace = self.ORPHAN_SPOOL_GRACE_SEC if orphan_grace_sec is None else max(0, int(orphan_grace_sec))
 
         def _write() -> Dict[str, int]:
             removed_orphan = 0
@@ -1501,6 +1513,11 @@ class ScanStore:
                 for path in spool_paths:
                     job_id = path.stem.strip().lower()
                     if job_id not in existing_ids:
+                        try:
+                            if now_ts - int(path.stat().st_mtime) < grace:
+                                continue
+                        except OSError:
+                            continue
                         if self._pdf_spool.delete_path(path, description="orphan"):
                             removed_orphan += 1
                         continue
@@ -3295,117 +3312,143 @@ class ScanStore:
             raise
         return {"job_id": job_id, "status": "queued", "deduped": False}
 
-    def requeue_stale_processing_jobs(self, *, timeout_sec: Optional[int] = None) -> int:
+    def _recover_processing_jobs_locked(
+        self,
+        conn,
+        *,
+        extra_where: str,
+        params: tuple,
+        summary: str,
+        max_attempts: int,
+        now_ts: int,
+    ) -> int:
+        """Requeue (or, when attempts are spent, fail) processing jobs. attempt_count is never lowered:
+        it is the claim generation (SC-02) and the cap that stops an endless crash/recovery loop."""
+        touched_task_ids = [
+            str(row["scan_task_id"] or "").strip()
+            for row in conn.execute(
+                f"""
+                SELECT DISTINCT scan_task_id
+                FROM scan_jobs
+                WHERE status='processing' {extra_where}
+                  AND scan_task_id IS NOT NULL
+                  AND scan_task_id <> ''
+                """,
+                params,
+            ).fetchall()
+        ]
+        exhausted = conn.execute(
+            f"""
+            UPDATE scan_jobs
+            SET status='failed',
+                finished_at=?,
+                summary='Processing attempts exhausted after worker interruptions',
+                error_text='attempts_exhausted'
+            WHERE status='processing' {extra_where}
+              AND COALESCE(attempt_count, 0) >= ?
+            """,
+            (now_ts, *params, max_attempts),
+        )
+        requeued = conn.execute(
+            f"""
+            UPDATE scan_jobs
+            SET status='queued',
+                started_at=NULL,
+                finished_at=NULL,
+                summary=?,
+                error_text=NULL
+            WHERE status='processing' {extra_where}
+            """,
+            (summary, *params),
+        )
+        for task_id in touched_task_ids:
+            self._reconcile_scan_task_progress_locked(conn, task_id)
+        conn.commit()
+        failed_count = int(exhausted.rowcount or 0)
+        if failed_count:
+            logger.warning("Scan jobs failed after exhausting processing attempts: %s", failed_count)
+        return int(requeued.rowcount or 0)
+
+    def requeue_stale_processing_jobs(
+        self, *, timeout_sec: Optional[int] = None, max_attempts: Optional[int] = None
+    ) -> int:
         safe_timeout = max(60, int(timeout_sec or self.job_processing_timeout_sec))
         stale_before = _now_ts() - safe_timeout
+        cap = max(1, int(max_attempts or 3))
+
         def _write() -> int:
             with self._lock, self._connect() as conn:
-                touched_task_ids = [
-                    str(row["scan_task_id"] or "").strip()
-                    for row in conn.execute(
-                        """
-                        SELECT DISTINCT scan_task_id
-                        FROM scan_jobs
-                        WHERE status='processing'
-                          AND COALESCE(started_at, 0) > 0
-                          AND started_at <= ?
-                          AND scan_task_id IS NOT NULL
-                          AND scan_task_id <> ''
-                        """,
-                        (stale_before,),
-                    ).fetchall()
-                ]
-                cursor = conn.execute(
-                    """
-                    UPDATE scan_jobs
-                    SET status='queued',
-                        started_at=NULL,
-                        summary='Requeued stale processing job',
-                        error_text=NULL
-                    WHERE status='processing'
-                      AND COALESCE(started_at, 0) > 0
-                      AND started_at <= ?
-                    """,
-                    (stale_before,),
+                return self._recover_processing_jobs_locked(
+                    conn,
+                    extra_where="AND COALESCE(started_at, 0) > 0 AND started_at <= ?",
+                    params=(stale_before,),
+                    summary="Requeued stale processing job",
+                    max_attempts=cap,
+                    now_ts=_now_ts(),
                 )
-                for task_id in touched_task_ids:
-                    self._reconcile_scan_task_progress_locked(conn, task_id)
-                conn.commit()
-                return int(cursor.rowcount or 0)
 
         return int(self._run_write_transaction("requeue_stale_processing_jobs", _write) or 0)
 
-    def requeue_interrupted_processing_jobs(self) -> int:
+    def requeue_interrupted_processing_jobs(self, *, max_attempts: Optional[int] = None) -> int:
         """Recover jobs owned by the previous worker instance immediately on startup."""
+        cap = max(1, int(max_attempts or 3))
+
         def _write() -> int:
             with self._lock, self._connect() as conn:
-                touched_task_ids = [
-                    str(row["scan_task_id"] or "").strip()
-                    for row in conn.execute(
-                        """
-                        SELECT DISTINCT scan_task_id
-                        FROM scan_jobs
-                        WHERE status='processing'
-                          AND scan_task_id IS NOT NULL
-                          AND scan_task_id <> ''
-                        """
-                    ).fetchall()
-                ]
-                cursor = conn.execute(
-                    """
-                    UPDATE scan_jobs
-                    SET status='queued',
-                        started_at=NULL,
-                        finished_at=NULL,
-                        summary='Recovered after scan worker restart',
-                        error_text=NULL,
-                        attempt_count=CASE
-                            WHEN COALESCE(attempt_count, 0) > 0 THEN attempt_count - 1
-                            ELSE 0
-                        END
-                    WHERE status='processing'
-                    """
+                return self._recover_processing_jobs_locked(
+                    conn,
+                    extra_where="",
+                    params=(),
+                    summary="Recovered after scan worker restart",
+                    max_attempts=cap,
+                    now_ts=_now_ts(),
                 )
-                for task_id in touched_task_ids:
-                    self._reconcile_scan_task_progress_locked(conn, task_id)
-                conn.commit()
-                return int(cursor.rowcount or 0)
 
         return int(self._run_write_transaction("requeue_interrupted_processing_jobs", _write) or 0)
 
-    def requeue_job_for_retry(self, *, job_id: str, error_text: str, summary: str = "") -> None:
+    def requeue_job_for_retry(
+        self, *, job_id: str, error_text: str, summary: str = "", claim_attempt: Optional[int] = None
+    ) -> bool:
+        """Put the job back in the queue. With claim_attempt, only the current claim owner may do it."""
         normalized_job_id = str(job_id or "").strip()
         if not normalized_job_id:
-            return
+            return False
         now_ts = _now_ts()
-        def _write() -> None:
+        guard_sql, guard_params = _claim_guard(claim_attempt)
+
+        def _write() -> bool:
             with self._lock, self._connect() as conn:
                 job_row = conn.execute(
                     "SELECT scan_task_id FROM scan_jobs WHERE id=? LIMIT 1",
                     (normalized_job_id,),
                 ).fetchone()
-                conn.execute(
-                    """
+                updated = conn.execute(
+                    f"""
                     UPDATE scan_jobs
                     SET status='queued',
                         started_at=NULL,
                         finished_at=NULL,
                         error_text=?,
                         summary=?
-                    WHERE id=?
+                    WHERE id=?{guard_sql}
                     """,
                     (
                         str(error_text or "").strip() or None,
                         str(summary or "").strip() or None,
                         normalized_job_id,
+                        *guard_params,
                     ),
                 )
+                if int(updated.rowcount or 0) == 0:
+                    conn.rollback()
+                    return False
                 scan_task_id = str(job_row["scan_task_id"] or "").strip() if job_row is not None else ""
                 if scan_task_id:
                     self._reconcile_scan_task_progress_locked(conn, scan_task_id, now_ts=now_ts)
                 conn.commit()
+                return True
 
-        self._run_write_transaction("requeue_job_for_retry", _write)
+        return bool(self._run_write_transaction("requeue_job_for_retry", _write))
 
     def claim_next_jobs(self, limit: int) -> List[Dict[str, Any]]:
         batch_limit = max(1, min(100, int(limit or 1)))
@@ -3624,21 +3667,25 @@ class ScanStore:
         status: str,
         summary: Optional[str] = None,
         error_text: Optional[str] = None,
-    ) -> None:
+        claim_attempt: Optional[int] = None,
+    ) -> bool:
+        """Finish the job. With claim_attempt, a worker whose claim was recovered and re-issued
+        (stale owner) changes nothing and leaves the new attempt's spool alone; returns False then."""
         now_ts = _now_ts()
         normalized_job_id = str(job_id or "").strip()
+        guard_sql, guard_params = _claim_guard(claim_attempt)
 
-        def _write() -> None:
+        def _write() -> bool:
             with self._lock, self._connect() as conn:
                 job_row = conn.execute(
                     "SELECT scan_task_id FROM scan_jobs WHERE id=? LIMIT 1",
                     (normalized_job_id,),
                 ).fetchone()
-                conn.execute(
-                    """
+                updated = conn.execute(
+                    f"""
                     UPDATE scan_jobs
                     SET status=?, finished_at=?, summary=?, error_text=?
-                    WHERE id=?
+                    WHERE id=?{guard_sql}
                     """,
                     (
                         str(status or "").strip(),
@@ -3646,17 +3693,26 @@ class ScanStore:
                         str(summary or "").strip() or None,
                         str(error_text or "").strip() or None,
                         normalized_job_id,
+                        *guard_params,
                     ),
                 )
+                if int(updated.rowcount or 0) == 0:
+                    conn.rollback()
+                    return False
                 scan_task_id = str(job_row["scan_task_id"] or "").strip() if job_row is not None else ""
                 if scan_task_id:
                     self._reconcile_scan_task_progress_locked(
                         conn, scan_task_id, now_ts=now_ts, force=True
                     )
                 conn.commit()
+                return True
 
-        self._run_write_transaction("finalize_job", _write)
-        self.delete_job_pdf_spool(job_id=job_id)
+        applied = bool(self._run_write_transaction("finalize_job", _write))
+        if applied:
+            self.delete_job_pdf_spool(job_id=job_id)
+        else:
+            logger.warning("Scan finalize ignored: job %s is no longer owned by claim %s", job_id, claim_attempt)
+        return applied
 
     def record_job_metrics(self, *, job_id: str, metrics: Dict[str, Any]) -> None:
         normalized_job_id = str(job_id or "").strip()
@@ -3808,9 +3864,32 @@ class ScanStore:
         incident_id = uuid.uuid4().hex
         job_id = str(job.get("id") or "").strip()
         terminal_status = str(finalize_status or "").strip()
+        claim_attempt = job.get("attempt_count")
+        guard_sql, guard_params = _claim_guard(int(claim_attempt) if claim_attempt else None)
 
-        def _write() -> None:
+        def _write() -> bool:
             with self._lock, self._connect() as conn:
+                if terminal_status:
+                    # The guarded job UPDATE goes first: a stale owner must not create duplicate
+                    # findings/incidents for an attempt another worker now owns.
+                    finalized = conn.execute(
+                        f"""
+                        UPDATE scan_jobs
+                        SET status=?, finished_at=?, summary=?, error_text=?
+                        WHERE id=?{guard_sql}
+                        """,
+                        (
+                            terminal_status,
+                            now_ts,
+                            str(finalize_summary or "").strip() or None,
+                            str(finalize_error_text or "").strip() or None,
+                            job_id,
+                            *guard_params,
+                        ),
+                    )
+                    if int(finalized.rowcount or 0) == 0:
+                        conn.rollback()
+                        return False
                 conn.execute(
                     """
                     INSERT INTO scan_findings(
@@ -3873,28 +3952,16 @@ class ScanStore:
                         severity=severity,
                         created_at=now_ts,
                     )
-                if terminal_status:
-                    conn.execute(
-                        """
-                        UPDATE scan_jobs
-                        SET status=?, finished_at=?, summary=?, error_text=?
-                        WHERE id=?
-                        """,
-                        (
-                            terminal_status,
-                            now_ts,
-                            str(finalize_summary or "").strip() or None,
-                            str(finalize_error_text or "").strip() or None,
-                            job_id,
-                        ),
+                if terminal_status and scan_task_id:
+                    self._reconcile_scan_task_progress_locked(
+                        conn, scan_task_id, now_ts=now_ts, force=True
                     )
-                    if scan_task_id:
-                        self._reconcile_scan_task_progress_locked(
-                            conn, scan_task_id, now_ts=now_ts, force=True
-                        )
                 conn.commit()
+                return True
 
-        self._run_write_transaction("create_finding_and_incident", _write)
+        if not self._run_write_transaction("create_finding_and_incident", _write):
+            logger.warning("Scan finding ignored: job %s is no longer owned by claim %s", job_id, claim_attempt)
+            return {"finding_id": "", "incident_id": ""}
         if terminal_status and job_id:
             self.delete_job_pdf_spool(job_id=job_id)
         return {"finding_id": finding_id, "incident_id": incident_id}

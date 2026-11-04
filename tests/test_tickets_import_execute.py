@@ -574,6 +574,44 @@ class TestDetectDuplicates:
 class TestExecuteImport:
     """Integration tests for execute_import() method."""
 
+    def test_concurrent_execute_loses_the_claim_and_imports_nothing(
+        self, service, db_session_factory, setup_object, setup_job
+    ):
+        """DBIZ-03: a second execute that read 'previewed' before the first one claimed it must
+        get a conflict and write no rows (the claim is a conditional UPDATE, not a status read)."""
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Камчатка"
+        ws["A1"] = "ФИО"
+        ws["C1"] = "Маршрут"
+        ws["D1"] = "Стоимость"
+        ws["A2"] = "Иванов И.И."
+        ws["C2"] = "Москва-Камчатка"
+        ws["D2"] = 25000
+        job_id = setup_job(wb)
+
+        # The competing execute wins the claim right after our status read.
+        engine = db_session_factory.kw["bind"]
+        fired = []
+
+        @event.listens_for(engine, "before_cursor_execute")
+        def _rival_claims_first(conn, cursor, statement, parameters, context, executemany):
+            if statement.lstrip().upper().startswith("UPDATE") and "ticket_import_jobs" in statement and not fired:
+                fired.append(True)
+                with db_session_factory() as rival:
+                    rival.query(TicketImportJob).filter_by(id=job_id).update({"status": "running"})
+                    rival.commit()
+
+        settings = ImportSettings(
+            color_map={}, duplicate_strategy="skip", sheet_object_map={"Камчатка": setup_object}
+        )
+        with pytest.raises(ValueError, match="already being executed"):
+            service.execute_import(job_id, settings, user_id=1)
+
+        assert fired
+        with db_session_factory() as session:
+            assert session.query(TicketRequest).count() == 0
+
     def test_import_simple_working_sheet(self, service, db_session_factory, setup_object, setup_job):
         """Import a simple working sheet creates requests and raw traces."""
         wb = Workbook()

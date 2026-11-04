@@ -16,11 +16,25 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from backend.appdb.db import app_session, initialize_app_schema, is_app_database_configured
-from backend.appdb.models import AppItObject, AppItObjectAudit, AppItObjectGrant, AppItObjectOwner
+from backend.appdb.models import (
+    AppItObject,
+    AppItObjectAudit,
+    AppItObjectGrant,
+    AppItObjectOwner,
+    AppItObjectRoleAssignment,
+)
+from backend.services.construction_management_service import (
+    OBJECT_ROLE_KEYS,
+    _apply_role_updates,
+    _normalize_role_updates,
+    _serialize_role,
+)
 
 
 SOURCE_TYPE_BRANCH = "itinvent_branch"
-SECTIONS = ("passwords", "computers", "inventory")
+SOURCE_TYPE_CUSTOM = "hub_custom"
+CUSTOM_REF_PREFIX = "OBJ-HUB:"
+SECTIONS = ("passwords", "computers", "inventory", "monitoring")
 LEVELS = ("view", "manage")
 _LEVEL_RANK = {"view": 1, "manage": 2}
 _SOURCE_CACHE_TTL_SEC = 60.0
@@ -102,13 +116,33 @@ class ItObjectsService:
             if branch_no in (None, ""):
                 continue
             name = _text(row.get("name", row.get("BRANCH_NAME"))) or f"Объект {branch_no}"
-            items.append({"object_ref": f"{self._source_db_id}:{branch_no}", "branch_no": str(branch_no), "name": name})
+            # branch_name — как в ITINVENT, без нормализации пробелов: по нему фильтруется «Инвентарь».
+            branch_name = str(row.get("name", row.get("BRANCH_NAME")) or "").strip() or name
+            items.append(
+                {"object_ref": f"{self._source_db_id}:{branch_no}", "branch_no": str(branch_no), "name": name, "branch_name": branch_name}
+            )
         with self._source_lock:
             self._source_cache = (time.monotonic() + _SOURCE_CACHE_TTL_SEC, items)
         return items
 
+    def _custom_object(self, ref: str) -> dict[str, str]:
+        with app_session(self._database_url) as session:
+            row = self._registry_row(session, ref)
+            if row is None or row.source_type != SOURCE_TYPE_CUSTOM:
+                raise ItObjectError("РћР±СЉРµРєС‚ РЅРµ РЅР°Р№РґРµРЅ", 404)
+            return {
+                "object_ref": row.source_ref,
+                "name": row.name,
+                "branch_no": "",
+                "branch_name": "",
+                "source_type": SOURCE_TYPE_CUSTOM,
+                "linked_ref": row.linked_ref or "",
+            }
+
     def _find_source_object(self, object_ref: str) -> dict[str, str]:
         ref = _text(object_ref, max_length=128)
+        if ref.startswith(CUSTOM_REF_PREFIX):
+            return self._custom_object(ref)
         for item in self._source_objects():
             if item["object_ref"] == ref:
                 return item
@@ -117,7 +151,22 @@ class ItObjectsService:
     def source_binding(self, object_ref: str) -> dict[str, str]:
         """Where the object lives in ITINVENT: its database and branch number."""
         item = self._find_source_object(object_ref)
-        return {"database_id": self._source_db_id, "branch_no": item["branch_no"], "name": item["name"]}
+        if item.get("source_type") == SOURCE_TYPE_CUSTOM:
+            if not item.get("linked_ref"):
+                raise ItObjectError("РћР±СЉРµРєС‚ РЅРµ РїСЂРёРІСЏР·Р°РЅ Рє С„РёР»РёР°Р»Сѓ ITINVENT", 409)
+            branch = self._find_source_object(item["linked_ref"])
+            return {
+                "database_id": self._source_db_id,
+                "branch_no": branch["branch_no"],
+                "name": item["name"],
+                "branch_name": branch["branch_name"],
+            }
+        return {
+            "database_id": self._source_db_id,
+            "branch_no": item["branch_no"],
+            "name": item["name"],
+            "branch_name": item["branch_name"],
+        }
 
     # ----- reads -----
 
@@ -127,14 +176,14 @@ class ItObjectsService:
             return {section: "manage" for section in SECTIONS}
         return {item.section: item.level for item in grants if item.section in SECTIONS}
 
-    def list_objects(self, *, user_id: int, query: str = "", only_mine: bool = False, limit: int = 500) -> list[dict[str, Any]]:
+    def list_objects(
+        self, *, user_id: int, query: str = "", only_mine: bool = False, only_hidden: bool = False, limit: int = 500
+    ) -> list[dict[str, Any]]:
         needle = _text(query).casefold()
         source = self._source_objects()
         with app_session(self._database_url) as session:
-            registry = {
-                row.source_ref: row
-                for row in session.scalars(select(AppItObject).where(AppItObject.source_type == SOURCE_TYPE_BRANCH)).all()
-            }
+            registry_rows = session.scalars(select(AppItObject)).all()
+            registry = {row.source_ref: row for row in registry_rows}
             owners = {
                 row.object_id: row
                 for row in session.scalars(select(AppItObjectOwner).where(AppItObjectOwner.valid_to.is_(None))).all()
@@ -147,11 +196,22 @@ class ItObjectsService:
             ).all():
                 my_grants.setdefault(grant.object_id, []).append(grant)
 
+            candidates: list[tuple[str, str, AppItObject | None, bool, bool]] = [
+                (item["object_ref"], item["name"], registry.get(item["object_ref"]), False, True) for item in source
+            ]
+            candidates += [
+                (row.source_ref, row.name, row, True, bool(row.linked_ref))
+                for row in registry_rows
+                if row.source_type == SOURCE_TYPE_CUSTOM
+            ]
+
             result: list[dict[str, Any]] = []
-            for item in source:
-                if needle and needle not in item["name"].casefold():
+            for object_ref, name, entry, custom, linked in candidates:
+                hidden = entry is not None and not entry.is_active
+                if hidden != only_hidden:
                     continue
-                entry = registry.get(item["object_ref"])
+                if needle and needle not in name.casefold():
+                    continue
                 owner = owners.get(entry.id) if entry is not None else None
                 is_owner = owner is not None and int(owner.user_id) == int(user_id)
                 sections = self._sections_for(is_owner, my_grants.get(entry.id, []) if entry is not None else [])
@@ -159,10 +219,13 @@ class ItObjectsService:
                     continue
                 result.append(
                     {
-                        "object_ref": item["object_ref"],
-                        "name": item["name"],
+                        "object_ref": object_ref,
+                        "name": name,
                         "owner": self._owner_dict(owner),
                         "my_access": {"is_owner": is_owner, "sections": sections},
+                        "custom": custom,
+                        "linked": linked,
+                        "hidden": hidden,
                     }
                 )
                 if len(result) >= limit:
@@ -179,6 +242,9 @@ class ItObjectsService:
         item = self._find_source_object(object_ref)
         with app_session(self._database_url) as session:
             entry = self._registry_row(session, item["object_ref"])
+            hidden = entry is not None and not entry.is_active
+            if hidden and not can_manage_owner:
+                raise ItObjectError("РћР±СЉРµРєС‚ РЅРµ РЅР°Р№РґРµРЅ", 404)
             owner = self._active_owner(session, entry.id) if entry is not None else None
             is_owner = owner is not None and int(owner.user_id) == int(user_id)
             grants = (
@@ -192,15 +258,29 @@ class ItObjectsService:
             )
             my_grants = [grant for grant in grants if int(grant.user_id) == int(user_id)]
             can_manage_grants = bool(can_manage_owner or is_owner)
+            team_rows = (
+                session.scalars(
+                    select(AppItObjectRoleAssignment)
+                    .where(AppItObjectRoleAssignment.object_id == entry.id)
+                    .order_by(AppItObjectRoleAssignment.valid_from.desc(), AppItObjectRoleAssignment.id.desc())
+                ).all()
+                if entry is not None
+                else []
+            )
             return {
                 "object_ref": item["object_ref"],
                 "name": item["name"],
                 "source_db_id": self._source_db_id,
+                "custom": item.get("source_type") == SOURCE_TYPE_CUSTOM,
+                "linked": item.get("source_type") != SOURCE_TYPE_CUSTOM or bool(item.get("linked_ref")),
+                "hidden": hidden,
                 "owner": self._owner_dict(owner),
                 "my_access": {"is_owner": is_owner, "sections": self._sections_for(is_owner, my_grants)},
                 "can_manage_owner": bool(can_manage_owner),
                 "can_manage_grants": can_manage_grants,
                 "grants": [self._grant_dict(grant) for grant in grants] if can_manage_grants else [],
+                "team": [_serialize_role(row) for row in team_rows if row.valid_to is None],
+                "team_history": [_serialize_role(row) for row in team_rows if row.valid_to is not None] if can_manage_owner else [],
             }
 
     @staticmethod
@@ -219,7 +299,7 @@ class ItObjectsService:
             return False
         with app_session(self._database_url) as session:
             entry = self._registry_row(session, _text(object_ref, max_length=128))
-            if entry is None:
+            if entry is None or not entry.is_active:
                 return False
             owner = self._active_owner(session, entry.id)
             if owner is not None and int(owner.user_id) == int(user_id):
@@ -243,7 +323,11 @@ class ItObjectsService:
                 session.scalars(
                     select(AppItObject.source_ref)
                     .join(AppItObjectOwner, AppItObjectOwner.object_id == AppItObject.id)
-                    .where(AppItObjectOwner.user_id == int(user_id), AppItObjectOwner.valid_to.is_(None))
+                    .where(
+                        AppItObjectOwner.user_id == int(user_id),
+                        AppItObjectOwner.valid_to.is_(None),
+                        AppItObject.is_active.is_(True),
+                    )
                 ).all()
             )
             granted = session.execute(
@@ -253,6 +337,7 @@ class ItObjectsService:
                     AppItObjectGrant.user_id == int(user_id),
                     AppItObjectGrant.section == section,
                     AppItObjectGrant.revoked_at.is_(None),
+                    AppItObject.is_active.is_(True),
                 )
             ).all()
             refs.update(ref for ref, grant_level in granted if _LEVEL_RANK.get(grant_level, 0) >= _LEVEL_RANK[level])
@@ -272,9 +357,7 @@ class ItObjectsService:
 
     @staticmethod
     def _registry_row(session, object_ref: str, *, for_update: bool = False) -> AppItObject | None:
-        query = select(AppItObject).where(
-            AppItObject.source_type == SOURCE_TYPE_BRANCH, AppItObject.source_ref == object_ref
-        )
+        query = select(AppItObject).where(AppItObject.source_ref == object_ref)
         if for_update:
             query = query.with_for_update()
         return session.scalar(query)
@@ -285,9 +368,13 @@ class ItObjectsService:
             select(AppItObjectOwner).where(AppItObjectOwner.object_id == object_id, AppItObjectOwner.valid_to.is_(None))
         )
 
-    def _ensure_registry(self, session, item: dict[str, str]) -> AppItObject:
+    def _ensure_registry(self, session, item: dict[str, str], *, allow_hidden: bool = False) -> AppItObject:
         entry = self._registry_row(session, item["object_ref"], for_update=True)
         now = _utc_now()
+        if entry is None and item.get("source_type") == SOURCE_TYPE_CUSTOM:
+            raise ItObjectError("РћР±СЉРµРєС‚ РЅРµ РЅР°Р№РґРµРЅ", 404)
+        if entry is not None and not entry.is_active and not allow_hidden:
+            raise ItObjectError("РћР±СЉРµРєС‚ СѓРґР°Р»С‘РЅ. РЎРЅР°С‡Р°Р»Р° РІРµСЂРЅРёС‚Рµ РµРіРѕ", 409)
         if entry is None:
             entry = AppItObject(
                 id=f"it-{uuid.uuid4().hex[:20]}",
@@ -341,8 +428,6 @@ class ItObjectsService:
         target_id = int(target.get("id") or 0)
         if target_id <= 0 or not bool(target.get("is_active", True)):
             raise ItObjectError("Пользователь не найден или отключён", 400)
-        if target_id == int(actor_id):
-            raise ItObjectError("Нельзя назначить айтишником самого себя", 403)
         item = self._find_source_object(object_ref)
 
         def _write() -> None:
@@ -382,6 +467,42 @@ class ItObjectsService:
             )
         return {"object_ref": item["object_ref"]}
 
+    def set_team(
+        self, object_ref: str, *, candidates: dict[str, dict[str, Any] | None], actor_id: int
+    ) -> dict[str, Any]:
+        """Assign (or clear with ``None``) project roles; only the listed roles change, history is kept."""
+        try:
+            updates = _normalize_role_updates(candidates, allowed_keys=OBJECT_ROLE_KEYS)
+        except ValueError as exc:
+            raise ItObjectError(str(exc), 400) from exc
+        if not updates:
+            raise ItObjectError("Не указана ни одна должность", 400)
+        item = self._find_source_object(object_ref)
+
+        def _write() -> None:
+            with app_session(self._database_url) as session:
+                entry = self._ensure_registry(session, item)
+                _apply_role_updates(
+                    session=session,
+                    model=AppItObjectRoleAssignment,
+                    scope_filter=(AppItObjectRoleAssignment.object_id == entry.id,),
+                    role_updates=updates,
+                    actor_id=int(actor_id),
+                    now=_utc_now(),
+                    extra_fields={"object_id": entry.id},
+                )
+                for role_key, candidate in updates.items():
+                    self._audit(
+                        session,
+                        object_id=entry.id,
+                        action="team_assigned" if candidate else "team_cleared",
+                        actor_id=int(actor_id),
+                        section=role_key,
+                    )
+
+        self._retry_once(_write)
+        return {"object_ref": item["object_ref"]}
+
     def _require_grant_manager(self, session, entry: AppItObject | None, *, actor_id: int, can_manage_owner: bool) -> None:
         if can_manage_owner:
             return
@@ -406,7 +527,7 @@ class ItObjectsService:
         target_id = int(target.get("id") or 0)
         if target_id <= 0 or not bool(target.get("is_active", True)):
             raise ItObjectError("Пользователь не найден или отключён", 400)
-        if target_id == int(actor_id):
+        if target_id == int(actor_id) and not can_manage_owner:
             raise ItObjectError("Нельзя выдать доступ самому себе", 403)
         item = self._find_source_object(object_ref)
 
@@ -492,6 +613,161 @@ class ItObjectsService:
                 level=grant.level,
             )
         return {"object_ref": item["object_ref"]}
+
+    def set_user_access(
+        self,
+        object_ref: str,
+        *,
+        target: dict[str, Any],
+        sections: dict[str, str | None],
+        actor_id: int,
+        can_manage_owner: bool,
+    ) -> dict[str, Any]:
+        """Set one person's level per section in a single transaction; ``None`` takes the section away.
+
+        Sections missing from ``sections`` stay as they are; only real changes are audited.
+        """
+        wanted: dict[str, str | None] = {}
+        for section, level in (sections or {}).items():
+            if section not in SECTIONS:
+                raise ItObjectError("Неизвестный раздел", 400)
+            if level is not None and level not in _LEVEL_RANK:
+                raise ItObjectError("Неизвестный уровень доступа", 400)
+            wanted[section] = level
+        if not wanted:
+            raise ItObjectError("Не указаны разделы", 400)
+        target_id = int(target.get("id") or 0)
+        if target_id <= 0 or not bool(target.get("is_active", True)):
+            raise ItObjectError("Пользователь не найден или отключён", 400)
+        if target_id == int(actor_id) and not can_manage_owner:
+            raise ItObjectError("Нельзя выдать доступ самому себе", 403)
+        item = self._find_source_object(object_ref)
+
+        def _write() -> None:
+            with app_session(self._database_url) as session:
+                entry = self._registry_row(session, item["object_ref"], for_update=True)
+                self._require_grant_manager(session, entry, actor_id=actor_id, can_manage_owner=can_manage_owner)
+                if entry is None and all(level is None for level in wanted.values()):
+                    return
+                entry = self._ensure_registry(session, item)
+                current = {
+                    grant.section: grant
+                    for grant in session.scalars(
+                        select(AppItObjectGrant).where(
+                            AppItObjectGrant.object_id == entry.id,
+                            AppItObjectGrant.user_id == target_id,
+                            AppItObjectGrant.revoked_at.is_(None),
+                        )
+                    ).all()
+                }
+                for section, level in wanted.items():
+                    existing = current.get(section)
+                    if level is None:
+                        if existing is None:
+                            continue
+                        existing.revoked_at = _utc_now()
+                        existing.revoked_by_user_id = int(actor_id)
+                        self._audit(
+                            session,
+                            object_id=entry.id,
+                            action="grant_revoked",
+                            actor_id=int(actor_id),
+                            target_id=target_id,
+                            section=section,
+                            level=existing.level,
+                        )
+                        continue
+                    if existing is not None:
+                        if existing.level == level:
+                            continue
+                        existing.level = level
+                        existing.granted_by_user_id = int(actor_id)
+                    else:
+                        session.add(
+                            AppItObjectGrant(
+                                object_id=entry.id,
+                                user_id=target_id,
+                                user_name=_person_name(target),
+                                section=section,
+                                level=level,
+                                granted_by_user_id=int(actor_id),
+                                created_at=_utc_now(),
+                            )
+                        )
+                    self._audit(
+                        session,
+                        object_id=entry.id,
+                        action="grant_set",
+                        actor_id=int(actor_id),
+                        target_id=target_id,
+                        section=section,
+                        level=level,
+                    )
+
+        self._retry_once(_write)
+        return {"object_ref": item["object_ref"]}
+
+    # ----- objects list: create, delete (hide), restore -----
+
+    def create_object(self, *, name: str, linked_ref: str | None, actor_id: int) -> dict[str, Any]:
+        title = _text(name)
+        if len(title) < 2:
+            raise ItObjectError("РЈРєР°Р¶РёС‚Рµ РЅР°Р·РІР°РЅРёРµ РѕР±СЉРµРєС‚Р°", 400)
+        linked = _text(linked_ref, max_length=128) or None
+        if linked is not None:
+            if linked.startswith(CUSTOM_REF_PREFIX):
+                raise ItObjectError("РџСЂРёРІСЏР·Р°С‚СЊ РјРѕР¶РЅРѕ С‚РѕР»СЊРєРѕ С„РёР»РёР°Р» ITINVENT", 400)
+            try:
+                self._find_source_object(linked)
+            except ItObjectError as exc:
+                raise ItObjectError("Р¤РёР»РёР°Р» ITINVENT РЅРµ РЅР°Р№РґРµРЅ", 400) from exc
+        object_ref = f"{CUSTOM_REF_PREFIX}{uuid.uuid4().hex[:16]}"
+        with app_session(self._database_url) as session:
+            taken = {
+                _text(row.name).casefold()
+                for row in session.scalars(
+                    select(AppItObject).where(AppItObject.source_type == SOURCE_TYPE_CUSTOM, AppItObject.is_active.is_(True))
+                ).all()
+            }
+            if title.casefold() in taken:
+                raise ItObjectError("РћР±СЉРµРєС‚ СЃ С‚Р°РєРёРј РЅР°Р·РІР°РЅРёРµРј СѓР¶Рµ РµСЃС‚СЊ", 409)
+            now = _utc_now()
+            entry = AppItObject(
+                id=f"it-{uuid.uuid4().hex[:20]}",
+                source_type=SOURCE_TYPE_CUSTOM,
+                source_ref=object_ref,
+                name=title,
+                is_active=True,
+                linked_ref=linked,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(entry)
+            session.flush()
+            self._audit(session, object_id=entry.id, action="object_created", actor_id=int(actor_id))
+        return {"object_ref": object_ref, "name": title}
+
+    def set_object_hidden(self, object_ref: str, *, hidden: bool, actor_id: int) -> dict[str, Any]:
+        """В«РЈРґР°Р»РёС‚СЊВ» РѕР±СЉРµРєС‚ = СЃРєСЂС‹С‚СЊ: РІР»Р°РґРµР»РµС†, РґРѕСЃС‚СѓРїС‹, РїР°СЂРѕР»Рё Рё Р¶СѓСЂРЅР°Р» РѕСЃС‚Р°СЋС‚СЃСЏ, РѕР±СЉРµРєС‚ РјРѕР¶РЅРѕ РІРµСЂРЅСѓС‚СЊ."""
+        item = self._find_source_object(object_ref)
+
+        def _write() -> None:
+            with app_session(self._database_url) as session:
+                entry = self._ensure_registry(session, item, allow_hidden=True)
+                if entry.is_active == (not hidden):
+                    return
+                entry.is_active = not hidden
+                entry.updated_at = _utc_now()
+                self._audit(
+                    session,
+                    object_id=entry.id,
+                    action="object_hidden" if hidden else "object_restored",
+                    actor_id=int(actor_id),
+                )
+
+        self._retry_once(_write)
+        return {"object_ref": item["object_ref"]}
+
 
 _default_service: ItObjectsService | None = None
 _default_lock = threading.Lock()

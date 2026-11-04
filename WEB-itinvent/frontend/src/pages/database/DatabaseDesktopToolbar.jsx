@@ -43,7 +43,9 @@ function DatabaseDesktopToolbar({
   selectedBranch = '',
   onBranchChange = noop,
   hasExpandedVisible = false,
+  hasCollapsedVisible = false,
   onCollapseAll = noop,
+  onExpandAll = noop,
   trailing = null,
   sx = null,
 }) {
@@ -233,6 +235,18 @@ function DatabaseDesktopToolbar({
               ))}
             </Select>
           </FormControl>
+        )}
+
+        {hasCollapsedVisible && (
+          <Button
+            size="small"
+            variant="text"
+            startIcon={<ExpandMoreIcon />}
+            onClick={onExpandAll}
+            sx={secondarySx}
+          >
+            Раскрыть разделы
+          </Button>
         )}
 
         {hasExpandedVisible && (

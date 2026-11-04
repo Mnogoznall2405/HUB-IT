@@ -38,6 +38,7 @@ public sealed class DesktopBridgeHost : IDisposable
     public event EventHandler? CheckForUpdatesRequested;
     public event EventHandler? OpenCurrentInBrowserRequested;
     public event EventHandler<DesktopMailComposeWindowRequestedEventArgs>? MailComposeWindowRequested;
+    public event EventHandler<DesktopWorkspaceWindowRequestedEventArgs>? WorkspaceWindowRequested;
     public event EventHandler<DesktopMailComposeWindowCloseResultEventArgs>? MailComposeWindowCloseResult;
     public event EventHandler? MailComposeWindowSent;
     public event EventHandler<DesktopOpenFileDialogRequestedEventArgs>? OpenFileDialogRequested;
@@ -75,6 +76,7 @@ public sealed class DesktopBridgeHost : IDisposable
         _bridgeReady = false;
         _core.WebMessageReceived -= Core_WebMessageReceived;
         _core.WebResourceRequested -= Core_WebResourceRequested;
+        _sharedFiles.Clear();
     }
 
     public void ResetDocumentReady()
@@ -382,6 +384,21 @@ public sealed class DesktopBridgeHost : IDisposable
             _core.PostWebMessageAsJson(
                 DesktopBridgeProtocol.CreateMailComposeWindowResultMessage(
                     openCompose.RequestId,
+                    eventArgs.Status));
+            return;
+        }
+
+        if (message.Type == DesktopInboundMessageType.OpenWorkspaceWindow
+            && message.WorkspaceWindow is { } openWorkspace)
+        {
+            var eventArgs = new DesktopWorkspaceWindowRequestedEventArgs(openWorkspace.Route);
+            if (_bridgeReady)
+            {
+                WorkspaceWindowRequested?.Invoke(this, eventArgs);
+            }
+            _core.PostWebMessageAsJson(
+                DesktopBridgeProtocol.CreateWorkspaceWindowResultMessage(
+                    openWorkspace.RequestId,
                     eventArgs.Status));
             return;
         }
@@ -741,6 +758,13 @@ public sealed class DesktopQuickRoutesChangedEventArgs(
     IReadOnlyList<DesktopQuickRoute> routes) : EventArgs
 {
     public IReadOnlyList<DesktopQuickRoute> Routes { get; } = routes;
+}
+
+public sealed class DesktopWorkspaceWindowRequestedEventArgs(string route) : EventArgs
+{
+    public string Route { get; } = route;
+
+    public string Status { get; set; } = "failed";
 }
 
 public sealed class DesktopMailComposeWindowRequestedEventArgs(string route) : EventArgs

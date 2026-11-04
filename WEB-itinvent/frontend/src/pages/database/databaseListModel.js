@@ -389,6 +389,17 @@ export const hasExpandedVisible = ({
   return (locationKeys || []).some((locationKey) => expandedLocations.has(locationKey));
 };
 
+export const hasCollapsedVisible = ({
+  branchNames = [],
+  locationKeys = [],
+  expandedBranches = new Set(),
+  expandedLocations = new Set(),
+} = {}) => {
+  const hasCollapsedBranch = (branchNames || []).some((branchName) => !expandedBranches.has(branchName));
+  if (hasCollapsedBranch) return true;
+  return (locationKeys || []).some((locationKey) => !expandedLocations.has(locationKey));
+};
+
 export const buildDatabaseSearchIndex = (groupedData) => {
   const entries = [];
 

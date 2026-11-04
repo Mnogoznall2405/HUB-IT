@@ -25,6 +25,7 @@ export const STATUS = {
 export function createMemoryStore() {
   const rows = new Map();
   return {
+    isDurable: () => false,
     async put(job) { rows.set(job.id, job); },
     async remove(id) { rows.delete(id); },
     async getAll() { return [...rows.values()]; },
@@ -67,18 +68,48 @@ export function createIndexedDbStore() {
 }
 
 // Если IndexedDB не отвечает, очередь работает в памяти вкладки — загрузка не должна ломаться.
-function createDefaultStore() {
-  if (typeof indexedDB === 'undefined') return createMemoryStore();
+// Это не молчаливый и не вечный режим: isDurable() говорит человеку, что закрытие вкладки
+// потеряет снимки, а следующая операция снова пробует IndexedDB (сбой бывает разовым) и
+// возвращает в него то, что успело осесть только в памяти.
+export function createDefaultStore() {
+  if (typeof indexedDB === 'undefined') {
+    const memory = createMemoryStore();
+    return { ...memory, isDurable: () => false };
+  }
   const persistent = createIndexedDbStore();
   const memory = createMemoryStore();
-  let broken = false;
-  const guard = (name) => async (...args) => {
-    if (!broken) {
-      try { return await persistent[name](...args); } catch { broken = true; }
+  let durable = true;
+  const flushMemory = async () => {
+    for (const row of await memory.getAll()) {
+      await persistent.put(row);
+      await memory.remove(row.id);
     }
-    return memory[name](...args);
   };
-  return { put: guard('put'), remove: guard('remove'), getAll: guard('getAll') };
+  return {
+    isDurable: () => durable,
+    async put(job) {
+      try {
+        await persistent.put(job);
+        durable = true;
+        await memory.remove(job.id);
+        await flushMemory().catch(() => {});
+      } catch {
+        durable = false;
+        await memory.put(job);
+      }
+    },
+    async remove(id) {
+      await memory.remove(id);
+      try { await persistent.remove(id); } catch { /* запись останется до следующего удачного обращения */ }
+    },
+    async getAll() {
+      let stored = [];
+      try { stored = await persistent.getAll(); } catch { durable = false; }
+      const byId = new Map(stored.map((row) => [row.id, row]));
+      (await memory.getAll()).forEach((row) => byId.set(row.id, row));
+      return [...byId.values()];
+    },
+  };
 }
 
 const newId = () => (
@@ -88,8 +119,9 @@ const newId = () => (
 );
 
 // Что показываем человеку: без самого файла.
-const publicJob = (job) => ({
+const publicJob = (job, durable = true) => ({
   id: job.id,
+  durable,
   itemId: job.itemId,
   dbId: job.dbId,
   userId: job.userId,
@@ -111,6 +143,10 @@ export function createPhotoUploadQueue({
   setTimer = (fn, ms) => setTimeout(fn, ms),
   clearTimer = (id) => clearTimeout(id),
   onlineNow = () => (typeof navigator === 'undefined' || navigator.onLine !== false),
+  // Кто сейчас вошёл в портал (id). Без функции очередь не проверяет сессию; с ней задание
+  // уходит только под своим владельцем — после выхода/смены пользователя чужие снимки
+  // ждут, а не отправляются с cookie другого человека.
+  sessionUserId = null,
 } = {}) {
   const jobs = new Map();
   const listeners = new Set();
@@ -121,12 +157,15 @@ export function createPhotoUploadQueue({
   let restored = null;
   let snapshot = [];
   const mine = (job) => !userId || job.userId === userId;
+  const sessionOk = (job) => !sessionUserId || (Number(job.userId) > 0 && Number(job.userId) === Number(sessionUserId()));
+  let activeUpload = null;
+  const isDurable = () => store.isDurable?.() !== false;
 
   const rebuild = () => {
     snapshot = [...jobs.values()]
       .filter(mine)
       .sort((a, b) => a.createdAt - b.createdAt)
-      .map(publicJob);
+      .map((job) => publicJob(job, isDurable()));
   };
   const emit = () => {
     rebuild();
@@ -144,9 +183,11 @@ export function createPhotoUploadQueue({
     if (running) return;
     const job = [...jobs.values()]
       .sort((a, b) => a.createdAt - b.createdAt)
-      .find((candidate) => candidate.status === STATUS.QUEUED && mine(candidate));
+      .find((candidate) => candidate.status === STATUS.QUEUED && mine(candidate) && sessionOk(candidate));
     if (!job) return;
     running = true;
+    const controller = new AbortController();
+    activeUpload = { job, controller, handedBack: false };
     job.status = STATUS.UPLOADING;
     job.progress = 0;
     job.error = '';
@@ -157,9 +198,14 @@ export function createPhotoUploadQueue({
         job.blob,
         {
           params: job.dbId ? { db_id: job.dbId } : {},
+          // Задания, поставленные до формата w2, дозагружаются под прежним id (сервер помнит их куски).
+          legacyId: job.idVersion !== 2,
           // Снимок уже уменьшен при постановке в очередь — второй раз не пережимаем.
+          signal: controller.signal,
           onProgress: (done, total) => {
             job.progress = total ? Math.min(1, done / total) : 0;
+            // Смена пользователя посреди загрузки: остальные куски не должны уйти под чужой сессией.
+            if (!sessionOk(job)) { activeUpload.handedBack = true; controller.abort(); }
             emit();
           },
           shrink: async (file) => file,
@@ -172,6 +218,15 @@ export function createPhotoUploadQueue({
         try { listener({ job: publicJob(job), result }); } catch { /* см. выше */ }
       });
     } catch (error) {
+      if (activeUpload?.handedBack) {
+        // Не сбой загрузки: задание дождётся своего владельца (сервер помнит принятые куски).
+        job.status = STATUS.QUEUED;
+        job.progress = 0;
+        job.error = '';
+        await persist(job);
+        emit();
+        return;
+      }
       job.error = readError(error);
       job.attempts = (job.attempts || 0) + 1;
       // Отказ сервера повтором не лечится; обрыв связи — лечится сам.
@@ -182,6 +237,7 @@ export function createPhotoUploadQueue({
       if (job.status === STATUS.WAITING) scheduleRetry();
     } finally {
       running = false;
+      activeUpload = null;
     }
     void runNext();
   }
@@ -239,6 +295,7 @@ export function createPhotoUploadQueue({
           fileName,
           blob,
           createdAt: stamp,
+          idVersion: 2,
           status: STATUS.QUEUED,
           progress: 0,
           error: '',
@@ -311,12 +368,21 @@ export function createPhotoUploadQueue({
   };
 }
 
+// Вошедший пользователь — тот же ключ, что пишет AuthContext.
+export const readStoredUserId = () => {
+  try {
+    return Number(JSON.parse(localStorage.getItem('user') || 'null')?.id) || 0;
+  } catch {
+    return 0;
+  }
+};
+
 // Общая очередь вкладки.
 let sharedQueue = null;
 export function resetPhotoUploadQueue() { sharedQueue = null; }
 export function getPhotoUploadQueue() {
   if (!sharedQueue) {
-    sharedQueue = createPhotoUploadQueue();
+    sharedQueue = createPhotoUploadQueue({ sessionUserId: readStoredUserId });
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => sharedQueue.resume());
       document.addEventListener('visibilitychange', () => {

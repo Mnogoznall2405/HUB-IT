@@ -12,6 +12,8 @@ export default function SectionCard({ title, description, action, children, sx, 
       variant="outlined"
       sx={getOfficePanelSx(ui, {
         borderRadius: '14px',
+        overflow: 'hidden',
+        minWidth: 0,
         display: 'flex',
         flexDirection: 'column',
         minHeight: 0,
@@ -26,6 +28,7 @@ export default function SectionCard({ title, description, action, children, sx, 
               px: 1.35,
               py: 0.95,
               display: 'flex',
+              flexWrap: 'wrap',
               gap: 1,
               alignItems: 'center',
               justifyContent: 'space-between',
@@ -45,7 +48,7 @@ export default function SectionCard({ title, description, action, children, sx, 
                 </Typography>
               ) : null}
             </Box>
-            {action ? <Box sx={{ flexShrink: 0 }}>{action}</Box> : null}
+            {action ? <Box sx={{ flexShrink: 0, maxWidth: '100%' }}>{action}</Box> : null}
           </Box>
           <Divider sx={{ borderColor: ui.borderSoft }} />
         </>

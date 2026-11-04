@@ -19,6 +19,14 @@ sys.path.insert(0, '.')
 from bot.config import States
 
 
+
+
+
+@pytest.fixture(autouse=True)
+def _allow_work_access(monkeypatch):
+    """Access policy has its own tests (test_work_access_gate.py); these exercise the flow itself."""
+    monkeypatch.setattr("bot.handlers.work.check_user_access", AsyncMock(return_value=True))
+
 def test_pc_cleaning_history_prefers_inventory_identity_after_move():
     from bot.handlers.work import _select_pc_cleaning_records
 
@@ -70,8 +78,8 @@ async def test_save_pc_cleaning_persists_equipment_id(context, equipment_mock):
 
     with patch("bot.handlers.work.database_manager") as mock_db:
         mock_db.get_user_database.return_value = "main-db"
-        mock_db.get_database_config.return_value = None
-        with patch("bot.handlers.work.append_json_data", return_value=True) as append_mock:
+        mock_db.get_database_config.return_value = {"db": "main"}
+        with patch("bot.handlers.work.UniversalInventoryDB"),                 patch("bot.handlers.work.append_json_data", return_value=True) as append_mock:
             assert await save_pc_cleaning(context) is True
 
     saved_record = append_mock.call_args.args[1]
@@ -428,3 +436,64 @@ async def test_full_component_replacement_flow(context, equipment_mock):
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
+
+
+# DBOT-02/03: a failed or mis-scoped DB write must not be reported as success.
+def _db_with_cursor(rowcount=1, error=None):
+    cursor = MagicMock()
+    cursor.rowcount = rowcount
+    if error:
+        cursor.execute.side_effect = error
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+    conn.__enter__.return_value = conn
+    db = MagicMock()
+    db._get_connection.return_value = conn
+    return db, cursor
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["sql_error", "no_row", "no_config"])
+async def test_save_battery_failure_is_not_success_and_writes_no_history(kind):
+    from bot.handlers.work import save_battery_replacement
+
+    context = MagicMock()
+    context.user_data = {"battery_equipment": {"ID": 7, "DESCRIPTION": "", "_hubit_db_name": "db-a"}}
+    db, _ = _db_with_cursor(rowcount=0 if kind == "no_row" else 1,
+                            error=RuntimeError("deadlock") if kind == "sql_error" else None)
+    with patch("bot.handlers.work.database_manager") as manager,             patch("bot.handlers.work.UniversalInventoryDB", return_value=db),             patch("bot.handlers.work.append_json_data", return_value=True) as history:
+        manager.get_database_config.return_value = None if kind == "no_config" else {"db": "a"}
+        assert await save_battery_replacement(context) is False
+    history.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_save_battery_uses_database_of_the_lookup_not_current_selection():
+    from bot.handlers.work import save_battery_replacement
+
+    context = MagicMock()
+    context._user_id = 5
+    context.user_data = {"battery_equipment": {"ID": 7, "DESCRIPTION": "", "_hubit_db_name": "db-a"}}
+    db, cursor = _db_with_cursor()
+    with patch("bot.handlers.work.database_manager") as manager,             patch("bot.handlers.work.UniversalInventoryDB", return_value=db),             patch("bot.handlers.work.append_json_data", return_value=True) as history:
+        manager.get_user_database.return_value = "db-b"  # user switched DB after the preview
+        manager.get_database_config.side_effect = lambda name: {"db": name}
+        assert await save_battery_replacement(context) is True
+    manager.get_database_config.assert_called_once_with("db-a")
+    assert cursor.execute.call_args.args[1][1] == 7
+    assert history.call_args.args[1]["db_name"] == "db-a"
+
+
+@pytest.mark.asyncio
+async def test_save_battery_update_is_guarded_by_the_previewed_description():
+    from bot.handlers.work import save_battery_replacement
+
+    context = MagicMock()
+    context.user_data = {"battery_equipment": {"ID": 7, "DESCRIPTION": "old text", "_hubit_db_name": "db-a"}}
+    db, cursor = _db_with_cursor()
+    with patch("bot.handlers.work.database_manager") as manager,             patch("bot.handlers.work.UniversalInventoryDB", return_value=db),             patch("bot.handlers.work.append_json_data", return_value=True):
+        manager.get_database_config.return_value = {"db": "a"}
+        assert await save_battery_replacement(context) is True
+    sql, params = cursor.execute.call_args.args
+    assert "DESCR" in sql and sql.count("?") == 3
+    assert params[1:] == (7, "old text")

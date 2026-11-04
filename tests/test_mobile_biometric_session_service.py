@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from backend.appdb.db import app_session
-from backend.appdb.models import AppUser
+from backend.appdb.models import AppUser, AppSessionRecord
+from backend.services.session_service import hash_client_device_id
 from backend.services.mobile_biometric_session_service import (
     MobileBiometricSessionError,
     MobileBiometricSessionService,
@@ -17,7 +19,8 @@ def _service(temp_dir: str) -> tuple[MobileBiometricSessionService, str]:
     return MobileBiometricSessionService(database_url=database_url), database_url
 
 
-def _add_user(database_url: str, *, user_id: int = 71, active: bool = True, twofa: bool = True) -> None:
+def _add_user(database_url: str, *, user_id: int = 71, active: bool = True, twofa: bool = True,
+              device_id: str = "mobile-test-device-1234567890") -> None:
     with app_session(database_url) as session:
         session.add(
             AppUser(
@@ -28,6 +31,12 @@ def _add_user(database_url: str, *, user_id: int = 71, active: bool = True, twof
                 is_2fa_enabled=twofa,
             )
         )
+        session.add(AppSessionRecord(
+            session_id=f"session-{user_id}" if user_id == 71 else f"s-{user_id}",
+            user_id=user_id, username=f"mobile-{user_id}", role="viewer", status="active",
+            is_active=True, client_device_key_hash=hash_client_device_id(device_id),
+            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+        ))
 
 
 def test_biometric_credential_renews_indefinitely_until_revoked(temp_dir):
@@ -104,7 +113,7 @@ def test_has_active_credential_for_device_matches_enrolled_apk(temp_dir):
     from backend.services.session_service import hash_client_device_id
 
     service, database_url = _service(temp_dir)
-    _add_user(database_url, user_id=81)
+    _add_user(database_url, user_id=81, device_id="mobile-idle-device-1234567890")
     device_id = "mobile-idle-device-1234567890"
     code = service.issue_enrollment_code(user_id=81, client_device_id=device_id, session_id="s-81")
     service.enroll(enrollment_code=code, user_id=81, client_device_id=device_id)
