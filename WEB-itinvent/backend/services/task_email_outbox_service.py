@@ -11,12 +11,15 @@ from datetime import datetime, timedelta, timezone
 from threading import BoundedSemaphore
 from typing import Any
 
-from backend.services.task_email_service import task_email_service
+from backend.services.task_email_service import EmailDeliveryOutcomeUnknownError, task_email_service
 
 logger = logging.getLogger(__name__)
 
 _TASK_EMAIL_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="task-email")
 _TASK_EMAIL_DISPATCH_SLOT = BoundedSemaphore(1)
+# Written by the heartbeat right before the send call: a stale claim carrying it may have sent the mail.
+_SEND_STARTED_MARK = "send_started"
+_UNKNOWN_AFTER_WORKER_LOST = "Unknown delivery outcome: worker lost during send"
 
 
 def _utc_now_iso() -> str:
@@ -154,6 +157,18 @@ class TaskEmailOutboxMixin:
         with self._lock, self._connect() as conn:
             # Rows stuck in 'sending' (worker died after claim) go back to the queue;
             # the claim already counted the attempt, so exhausted rows end as 'failed'.
+            # A claim whose send already started has an unknown outcome (the mail may have left):
+            # never resend it automatically, an operator decides.
+            recovered_unknown = self._rowcount(
+                conn.execute(
+                    f"""
+                    UPDATE {self._TASK_EMAIL_OUTBOX_TABLE}
+                    SET status = 'unknown', updated_at = ?, last_error = ?
+                    WHERE status = 'sending' AND updated_at < ? AND last_error = ?
+                    """,
+                    (now_iso, _UNKNOWN_AFTER_WORKER_LOST, stale_before_iso, _SEND_STARTED_MARK),
+                )
+            )
             recovered_failed = self._rowcount(
                 conn.execute(
                     f"""
@@ -174,11 +189,12 @@ class TaskEmailOutboxMixin:
                     (now_iso, now_iso, stale_before_iso, max_attempts),
                 )
             )
-            if recovered_failed or recovered_pending:
+            if recovered_failed or recovered_pending or recovered_unknown:
                 logger.warning(
-                    "Task email outbox recovered stale claims: requeued=%s failed=%s",
+                    "Task email outbox recovered stale claims: requeued=%s failed=%s unknown=%s",
                     recovered_pending,
                     recovered_failed,
+                    recovered_unknown,
                 )
             rows = conn.execute(
                 f"""
@@ -197,7 +213,7 @@ class TaskEmailOutboxMixin:
                 result = conn.execute(
                     f"""
                     UPDATE {self._TASK_EMAIL_OUTBOX_TABLE}
-                    SET status = 'sending', attempt_count = attempt_count + 1, updated_at = ?
+                    SET status = 'sending', attempt_count = attempt_count + 1, updated_at = ?, last_error = ''
                     WHERE id = ? AND status = 'pending' AND attempt_count = ?
                     """,
                     (now_iso, _normalize_text(payload.get("id")), self._as_int(payload.get("attempt_count"))),
@@ -211,6 +227,7 @@ class TaskEmailOutboxMixin:
 
         sent = 0
         failed = 0
+        unknown = 0
         for row in claimed:
             outbox_id = _normalize_text(row.get("id"))
             claim_token = self._as_int(row.get("claim_token"))
@@ -230,10 +247,13 @@ class TaskEmailOutboxMixin:
                 else:
                     failed += 1
                     self._mark_task_email_failed(row, "Task email sender returned false")
+            except EmailDeliveryOutcomeUnknownError as exc:
+                unknown += 1
+                self._mark_task_email_unknown(row, str(exc))
             except Exception as exc:
                 failed += 1
                 self._mark_task_email_failed(row, str(exc))
-        return {"claimed": len(claimed), "sent": sent, "failed": failed}
+        return {"claimed": len(claimed), "sent": sent, "failed": failed, "unknown": unknown}
 
     def _touch_task_email_claim(self, outbox_id: str, claim_token: int) -> bool:
         """Refresh the claim heartbeat right before sending; False if the row is no longer ours."""
@@ -244,10 +264,10 @@ class TaskEmailOutboxMixin:
             result = conn.execute(
                 f"""
                 UPDATE {self._TASK_EMAIL_OUTBOX_TABLE}
-                SET updated_at = ?
+                SET updated_at = ?, last_error = ?
                 WHERE id = ? AND status = 'sending' AND attempt_count = ?
                 """,
-                (_utc_now_iso(), normalized_id, int(claim_token)),
+                (_utc_now_iso(), _SEND_STARTED_MARK, normalized_id, int(claim_token)),
             )
             conn.commit()
             return self._rowcount(result) == 1
@@ -269,6 +289,24 @@ class TaskEmailOutboxMixin:
                 (now_iso, now_iso, normalized_id),
             )
             conn.commit()
+
+    def _mark_task_email_unknown(self, row: dict[str, Any], error: str) -> None:
+        """Delivery outcome unknown: stop automatic retries (a resend could duplicate the mail)."""
+        outbox_id = _normalize_text(row.get("id"))
+        if not outbox_id:
+            return
+        claim_token = self._as_int(row.get("claim_token")) or self._as_int(row.get("attempt_count")) + 1
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                f"""
+                UPDATE {self._TASK_EMAIL_OUTBOX_TABLE}
+                SET status = 'unknown', updated_at = ?, last_error = ?
+                WHERE id = ? AND status = 'sending' AND attempt_count = ?
+                """,
+                (_utc_now_iso(), ("Unknown delivery outcome: " + _normalize_text(error))[:1000], outbox_id, claim_token),
+            )
+            conn.commit()
+        logger.warning("Task email delivery outcome unknown, not retrying: outbox_id=%s", outbox_id)
 
     def _mark_task_email_failed(self, row: dict[str, Any], error: str) -> None:
         outbox_id = _normalize_text(row.get("id"))

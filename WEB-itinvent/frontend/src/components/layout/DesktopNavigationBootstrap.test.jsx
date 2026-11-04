@@ -33,7 +33,6 @@ describe('DesktopNavigationBootstrap', () => {
     const { unmount } = render(
       <MemoryRouter
         initialEntries={['/dashboard']}
-        future={{ v7_relativeSplatPath: true, v7_startTransition: true }}
       >
         <DesktopNavigationBootstrap />
         <LocationProbe />

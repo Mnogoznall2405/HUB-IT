@@ -447,6 +447,44 @@ class SQLiteLocalStore:
             logger.error("SQLite entry save failed for %s/%s: %s", normalized_name, entry_key, exc)
             return False
 
+    def list_entry_keys_by_status(
+        self, file_name: str, *, status: str, updated_before: str, limit: int
+    ) -> List[str]:
+        """Keys of dict-like records with ``payload.status == status`` last updated before ``updated_before``.
+
+        Oldest first, at most ``limit`` (bounded batch for retention jobs).
+        """
+        normalized_name = _normalize_filename(file_name)
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT entry_key FROM local_records
+                WHERE file_name = ? AND entry_key IS NOT NULL
+                  AND json_extract(payload_json, '$.status') = ?
+                  AND json_extract(payload_json, '$.updated_at') < ?
+                ORDER BY id ASC LIMIT ?
+                """,
+                (normalized_name, str(status), str(updated_before), max(1, int(limit))),
+            ).fetchall()
+        return [str(row["entry_key"]) for row in rows]
+
+    def delete_entries(self, file_name: str, entry_keys: List[str]) -> int:
+        """Delete keyed records in one transaction; returns the number removed."""
+        keys = [str(key) for key in entry_keys]
+        if not keys:
+            return 0
+        normalized_name = _normalize_filename(file_name)
+        removed = 0
+        with self._lock, self._connect() as conn:
+            for key in keys:
+                cursor = conn.execute(
+                    "DELETE FROM local_records WHERE file_name = ? AND entry_key = ?",
+                    (normalized_name, key),
+                )
+                removed += max(0, int(cursor.rowcount or 0))
+            conn.commit()
+        return removed
+
     def get_document_version(self, file_name: str) -> Optional[str]:
         """Cheap per-document version marker (latest row timestamp) without decoding payloads."""
         normalized_name = _normalize_filename(file_name)

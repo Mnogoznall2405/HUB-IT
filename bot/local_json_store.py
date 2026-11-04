@@ -33,6 +33,16 @@ def append_json_data(filename: str, record: Any) -> bool:
     return _store.append_to_json(Path(filename).name, record)
 
 
+def list_json_entry_keys_by_status(filename: str, *, status: str, updated_before: str, limit: int) -> list[str]:
+    return _store.list_entry_keys_by_status(
+        Path(filename).name, status=status, updated_before=updated_before, limit=limit
+    )
+
+
+def delete_json_entries(filename: str, entry_keys: list[str]) -> int:
+    return _store.delete_entries(Path(filename).name, entry_keys)
+
+
 def get_store():
     return _store
 

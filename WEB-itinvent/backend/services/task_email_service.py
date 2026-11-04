@@ -24,6 +24,13 @@ from backend.services.mail_outgoing_html import plain_text_to_html
 
 logger = logging.getLogger(__name__)
 
+
+class EmailDeliveryOutcomeUnknownError(RuntimeError):
+    """The send call failed after the message may already have been accepted (timeout, reset).
+
+    Callers must not resend automatically: the recipient could receive a duplicate.
+    """
+
 _EXCHANGE_HTTP_ADAPTER_LOCK = RLock()
 _EXCHANGE_HTTP_DEFAULT_ADAPTER_CLS: Any = None
 _EXCHANGE_HTTP_ADAPTER_SIGNATURE: tuple[Any, ...] | None = None
@@ -314,14 +321,34 @@ class TaskEmailService:
                 if not content:
                     continue
                 message.attach(FileAttachment(name=filename, content=content))
-            message.send()
+            try:
+                message.send()
+            except Exception as exc:
+                # The request may have reached Exchange before the failure: the outcome is unknown.
+                raise EmailDeliveryOutcomeUnknownError(str(exc)) from exc
             return True
+        except EmailDeliveryOutcomeUnknownError:
+            logger.exception("HUB-IT outgoing Exchange send outcome unknown")
+            raise
         except ExchangeTransportError as exc:
             logger.exception("HUB-IT outgoing Exchange transport failed")
             raise RuntimeError(str(exc)) from exc
         except Exception:
             logger.exception("HUB-IT outgoing Exchange send failed")
             raise
+
+    @staticmethod
+    def _smtp_deliver(server: Any, msg: Any, sender_email: str, recipient_email: str) -> None:
+        """Hand the message to the server; a failure after the data phase starts has an unknown outcome."""
+        try:
+            if isinstance(msg, EmailMessage):
+                server.send_message(msg)
+            else:
+                server.sendmail(sender_email, [recipient_email], msg.as_string())
+        except (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused, smtplib.SMTPHeloError):
+            raise  # refused before the message body was accepted: definitely not delivered
+        except Exception as exc:
+            raise EmailDeliveryOutcomeUnknownError(str(exc)) from exc
 
     def _send_via_smtp(
         self,
@@ -376,19 +403,13 @@ class TaskEmailService:
                     server.ehlo()
                 if self.use_auth() and self.password():
                     server.login(self.username(), self.password())
-                if isinstance(msg, EmailMessage):
-                    server.send_message(msg)
-                else:
-                    server.sendmail(sender_email, [recipient_email], msg.as_string())
+                self._smtp_deliver(server, msg, sender_email, recipient_email)
             return True
         except smtplib.SMTPNotSupportedError as exc:
             logger.warning("HUB-IT outgoing SMTP AUTH/TLS not supported, retrying without auth: %s", exc)
             try:
                 with smtplib.SMTP(self.smtp_server(), self.smtp_port(), timeout=self.smtp_timeout()) as server:
-                    if isinstance(msg, EmailMessage):
-                        server.send_message(msg)
-                    else:
-                        server.sendmail(sender_email, [recipient_email], msg.as_string())
+                    self._smtp_deliver(server, msg, sender_email, recipient_email)
                 return True
             except Exception as retry_exc:
                 logger.warning("HUB-IT outgoing SMTP retry failed: %s", retry_exc)

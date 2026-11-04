@@ -10,14 +10,45 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
+import os
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
-from bot.local_json_store import load_json_entry, save_json_entry
+from bot.local_json_store import (
+    delete_json_entries,
+    list_json_entry_keys_by_status,
+    load_json_entry,
+    save_json_entry,
+)
 
 
 TRANSFER_OPERATION_JOURNAL_FILE = "bot_transfer_operations.json"
+
+
+logger = logging.getLogger(__name__)
+
+
+def retention_settings() -> dict[str, Any]:
+    """Journal retention is off unless explicitly enabled; enabled runs start as dry-runs."""
+
+    def _flag(name: str, default: bool) -> bool:
+        raw = str(os.getenv(name, "")).strip().lower()
+        return default if not raw else raw in {"1", "true", "yes", "on"}
+
+    def _int(name: str, default: int, low: int, high: int) -> int:
+        try:
+            return max(low, min(high, int(os.getenv(name, "") or default)))
+        except ValueError:
+            return default
+
+    return {
+        "enabled": _flag("TRANSFER_OPERATIONS_RETENTION_ENABLED", False),
+        "dry_run": _flag("TRANSFER_OPERATIONS_RETENTION_DRY_RUN", True),
+        "retention_days": _int("TRANSFER_OPERATIONS_RETENTION_DAYS", 365, 30, 3650),
+        "batch_size": _int("TRANSFER_OPERATIONS_RETENTION_BATCH", 200, 10, 1000),
+    }
 
 
 class TransferOperationConflict(ValueError):
@@ -73,6 +104,7 @@ class BotTransferOperationStore:
     def __init__(self, journal_file: str = TRANSFER_OPERATION_JOURNAL_FILE) -> None:
         self.journal_file = str(journal_file)
         self._lock = threading.RLock()
+        self._purge_lock = threading.Lock()
 
     def _load_one(self, operation_id: str) -> dict[str, Any] | None:
         # One keyed row: the cost of a checkpoint does not grow with the journal's history.
@@ -82,6 +114,55 @@ class BotTransferOperationStore:
     def _save_one(self, operation_id: str, record: Mapping[str, Any]) -> None:
         if not save_json_entry(self.journal_file, operation_id, dict(record)):
             raise RuntimeError("Не удалось сохранить checkpoint операции перемещения")
+
+    def purge_completed_operations(
+        self,
+        *,
+        retention_days: int,
+        dry_run: bool = True,
+        batch_size: int = 200,
+        max_batches: int = 50,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Delete ``completed`` operations not updated for ``retention_days``.
+
+        Only the terminal ``completed`` status is eligible: every other status is a command a
+        restart may still have to recover.  Bounded batches, one run at a time.
+        """
+        if not self._purge_lock.acquire(blocking=False):
+            return {"status": "busy", "candidates": 0, "deleted": 0, "dry_run": dry_run}
+        try:
+            cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=max(1, int(retention_days)))).isoformat()
+            candidates = deleted = batches = 0
+            while batches < max(1, int(max_batches)):
+                keys = list_json_entry_keys_by_status(
+                    self.journal_file,
+                    status="completed",
+                    updated_before=cutoff,
+                    limit=max(1, int(batch_size)),
+                )
+                if not keys:
+                    break
+                candidates += len(keys)
+                batches += 1
+                if dry_run:
+                    break  # nothing is deleted, the next batch would repeat: report the first one only
+                with self._lock:
+                    deleted += delete_json_entries(self.journal_file, keys)
+                if len(keys) < batch_size:
+                    break
+            result = {
+                "status": "ok",
+                "candidates": candidates,
+                "deleted": deleted,
+                "batches": batches,
+                "dry_run": dry_run,
+                "cutoff": cutoff,
+            }
+            logger.info("bot transfer journal retention: %s", result)
+            return result
+        finally:
+            self._purge_lock.release()
 
     def get(self, operation_id: str) -> dict[str, Any] | None:
         normalized_id = _normalized_operation_id(operation_id)

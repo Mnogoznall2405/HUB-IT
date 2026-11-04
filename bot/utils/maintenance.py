@@ -103,6 +103,25 @@ def create_json_backup():
         logger.error(f"Ошибка при создании резервной копии: {e}")
 
 
+def purge_transfer_operations():
+    """Retention of completed transfer operations; does nothing unless explicitly enabled."""
+    from bot.handlers.transfer import transfer_operation_store
+    from bot.services.transfer_operation_store import retention_settings
+
+    settings = retention_settings()
+    if not settings["enabled"]:
+        return None
+    try:
+        return transfer_operation_store.purge_completed_operations(
+            retention_days=settings["retention_days"],
+            dry_run=settings["dry_run"],
+            batch_size=settings["batch_size"],
+        )
+    except Exception as e:
+        logger.error(f"Ошибка очистки журнала переводов: {e}")
+        return None
+
+
 class MaintenanceScheduler:
     """
     Планировщик задач обслуживания
@@ -118,6 +137,7 @@ class MaintenanceScheduler:
         # Интервалы в секундах
         self.backup_interval = 6 * 3600  # Каждые 6 часов
         self.cleanup_interval = 2 * 3600  # Каждые 2 часа
+        self.retention_interval = 6 * 3600  # Retention журнала переводов
 
     def _maintenance_loop(self):
         """Основной цикл планировщика"""
@@ -125,6 +145,7 @@ class MaintenanceScheduler:
 
         last_backup = time.time()
         last_cleanup = time.time()
+        last_retention = 0.0
 
         while not self._stop_event.is_set():
             try:
@@ -139,6 +160,11 @@ class MaintenanceScheduler:
                 if current_time - last_cleanup >= self.cleanup_interval:
                     cleanup_old_temp_files(hours=24)
                     last_cleanup = current_time
+
+                # Retention журнала переводов (по умолчанию выключена флагом)
+                if current_time - last_retention >= self.retention_interval:
+                    purge_transfer_operations()
+                    last_retention = current_time
 
                 # Спим между проверками
                 self._stop_event.wait(60)  # Проверка каждую минуту

@@ -807,7 +807,6 @@ function App() {
   return (
     <BrowserRouter
       basename={routerBase === '/' ? undefined : routerBase}
-      future={{ v7_relativeSplatPath: true, v7_startTransition: true }}
     >
       <AppRouterContent />
     </BrowserRouter>

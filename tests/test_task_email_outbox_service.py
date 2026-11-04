@@ -236,3 +236,68 @@ def test_late_sent_ack_from_stale_owner_is_kept_to_prevent_a_resend(hub_service_
     _insert_outbox_row(service, "late-ack", status="pending", attempt_count=1, updated_at="2026-01-01T00:00:00+00:00")
     service._mark_task_email_sent("late-ack")
     assert _outbox_status(service, "late-ack")["status"] == "sent"
+
+
+def test_unknown_delivery_outcome_is_never_resent_automatically(hub_service_instance, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    service = hub_service_instance
+    sends = []
+    monkeypatch.setattr(outbox_module.task_email_service, "is_enabled", lambda: True)
+    monkeypatch.setattr(outbox_module.task_email_service, "max_attempts", lambda: 5)
+
+    def flaky_send(**kwargs):
+        sends.append(kwargs["recipient_email"])
+        raise outbox_module.EmailDeliveryOutcomeUnknownError("read timed out after DATA")
+
+    monkeypatch.setattr(outbox_module.task_email_service, "send_task_email", flaky_send)
+
+    # 1) the sender cannot tell whether the mail left: no retry, row is parked as 'unknown'.
+    _insert_outbox_row(service, "timeout", status="pending", attempt_count=0, updated_at="2026-01-01T00:00:00+00:00")
+    first = service.dispatch_task_email_outbox()
+    assert first["unknown"] == 1 and first["failed"] == 0
+    service.dispatch_task_email_outbox()
+    assert sends == ["timeout@test.local"]
+    assert _outbox_status(service, "timeout")["status"] == "unknown"
+
+    # 2) a worker that died after the send started leaves 'send_started': parked, not requeued.
+    #    A claim that never reached the send is still safely requeued.
+    sends.clear()
+    monkeypatch.setattr(
+        outbox_module.task_email_service, "send_task_email", lambda **kw: sends.append(kw["recipient_email"]) or True
+    )
+    old = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    _insert_outbox_row(service, "died-sending", status="sending", attempt_count=1, updated_at=old)
+    _insert_outbox_row(service, "never-started", status="sending", attempt_count=1, updated_at=old)
+    with service._lock, service._connect() as conn:
+        conn.execute(
+            f"UPDATE {service._TASK_EMAIL_OUTBOX_TABLE} SET last_error = 'send_started' WHERE id = 'died-sending'"
+        )
+        conn.commit()
+
+    service.dispatch_task_email_outbox()
+    assert sends == ["never-started@test.local"]
+    assert _outbox_status(service, "died-sending")["status"] == "unknown"
+    assert _outbox_status(service, "never-started")["status"] == "sent"
+
+
+def test_smtp_failure_after_data_phase_is_unknown_but_refusal_is_definite():
+    import smtplib
+    from email.message import EmailMessage
+
+    from backend.services.task_email_service import EmailDeliveryOutcomeUnknownError, TaskEmailService
+
+    msg = EmailMessage()
+
+    class _Server:
+        def __init__(self, error):
+            self.error = error
+
+        def send_message(self, _msg):
+            raise self.error
+
+    # Not covered by a boundary test: a real server cannot be made to time out mid-DATA here.
+    with pytest.raises(EmailDeliveryOutcomeUnknownError):
+        TaskEmailService._smtp_deliver(_Server(TimeoutError("timed out")), msg, "a@x", "b@x")
+    with pytest.raises(smtplib.SMTPRecipientsRefused):
+        TaskEmailService._smtp_deliver(_Server(smtplib.SMTPRecipientsRefused({"b@x": (550, b"no")})), msg, "a@x", "b@x")
