@@ -261,7 +261,9 @@ module.exports = {
       restart_delay: 5000,
       env: {
         ...dbPool('itinvent-ai-chat-worker'),
-        AI_CHAT_WORKER_CONCURRENCY: '2',
+        AI_CHAT_WORKER_CONCURRENCY: '4',
+        // DoH через 1.1.1.1 падает на проверке сертификата и тратит ~0,5-0,9 с на каждое соединение.
+        ROUTERAI_DNS_PREFER_DOH: '0',
         CHAT_AUDIT_ENABLED: '0',
         CHAT_PROFILE_STACK_ENABLED: '0',
         DEBUG_CLIENT_LOG_ENABLED: '0',
