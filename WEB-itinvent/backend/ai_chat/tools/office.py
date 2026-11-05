@@ -455,9 +455,35 @@ class ContactsResolveTool(AiTool):
         )
 
 
+_OPEN_TASK_STATUSES = ("new", "in_progress", "review")
+_TASK_STATUS_ALIASES = {
+    "new": "new", "новая": "new", "новые": "new", "новый": "new",
+    "in_progress": "in_progress", "в работе": "in_progress",
+    "review": "review", "на проверке": "review", "проверка": "review",
+    "done": "done", "выполнена": "done", "выполненные": "done", "закрыта": "done", "закрытые": "done", "готово": "done",
+}
+_OPEN_TASK_ALIASES = {"open", "opened", "active", "unfinished", "pending", "открытые", "открытая", "открыта", "активные", "незавершённые", "незавершенные"}
+
+
+def _task_status_filters(value: str) -> list[str]:
+    """Hub filters tasks by exact status; map the words an LLM naturally uses to real statuses.
+
+    Returns ``[""]`` for no filter and several statuses for «open» (everything but done).
+    """
+    text = _normalize_text(value).lower()
+    if not text:
+        return [""]
+    if text in _OPEN_TASK_ALIASES:
+        return list(_OPEN_TASK_STATUSES)
+    return [_TASK_STATUS_ALIASES.get(text, text)]
+
+
 class TasksSearchTool(AiTool):
     tool_id = OFFICE_TOOL_TASKS_SEARCH
-    description = "Search Hub tasks visible to the current user by text, status, role, assignee and due state."
+    description = (
+        "Search Hub tasks visible to the current user by text, status, role, assignee and due state. "
+        "Statuses: new, in_progress, review, done; status 'open' means all except done; empty status means any."
+    )
     input_model = TasksSearchArgs
     stage = "checking_office"
 
@@ -468,23 +494,33 @@ class TasksSearchTool(AiTool):
             assignee = _resolve_single_user(query=args.assignee_query, candidates=hub_service.list_assignees(), kind="assignee")
             assignee_user_id = _to_int(assignee.get("id"))
         allow_all = bool(_has_permission(context, PERM_TASKS_REVIEW) or _is_admin(context))
-        payload = hub_service.list_tasks(
-            user_id=int(context.user_id),
-            scope=args.scope,
-            role_scope=args.role_scope,
-            status_filter=args.status,
-            q=args.q,
-            assignee_user_id=assignee_user_id,
-            has_attachments=bool(args.has_attachments),
-            due_state=args.due_state,
-            sort_by=args.sort_by,
-            sort_dir=args.sort_dir,
-            limit=_cap_limit(args.limit),
-            offset=0,
-            allow_all_scope=allow_all,
-        )
-        items = [_task_preview(item) for item in list(payload.get("items") or [])]
-        total = int(payload.get("total") or len(items))
+        limit = _cap_limit(args.limit)
+        payloads = [
+            hub_service.list_tasks(
+                user_id=int(context.user_id),
+                scope=args.scope,
+                role_scope=args.role_scope,
+                status_filter=status,
+                q=args.q,
+                assignee_user_id=assignee_user_id,
+                has_attachments=bool(args.has_attachments),
+                due_state=args.due_state,
+                sort_by=args.sort_by,
+                sort_dir=args.sort_dir,
+                limit=limit,
+                offset=0,
+                allow_all_scope=allow_all,
+            )
+            for status in _task_status_filters(args.status)
+        ]
+        payload = payloads[0]
+        raw_items = [item for part in payloads for item in list(part.get("items") or [])]
+        if len(payloads) > 1:
+            # «Open» spans several statuses: merge, nearest due date first, undated last.
+            raw_items.sort(key=lambda item: (not item.get("due_at"), str(item.get("due_at") or "")))
+            raw_items = raw_items[:limit]
+        items = [_task_preview(item) for item in raw_items]
+        total = sum(int(part.get("total") or len(part.get("items") or [])) for part in payloads)
         return AiToolResult(
             tool_id=self.tool_id,
             ok=True,

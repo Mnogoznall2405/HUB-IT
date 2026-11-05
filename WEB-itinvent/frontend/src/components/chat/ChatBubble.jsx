@@ -1925,16 +1925,19 @@ export function ChatBubble({
         sx={{
           width: hasAudioAttachments && !isAiResponse ? { xs: '72vw', md: '340px' } : bubbleWidth,
           maxWidth: bubbleMaxWidth,
-          flexGrow: isAiResponse ? 1 : undefined,
+          flexGrow: isAiResponse && (hasMarkdownTable || isLongAiReply) ? 1 : undefined,
           minWidth: isAiResponse ? 0 : undefined,
           ml: selectionMode && !message?.is_own ? { xs: 5, md: 4.2 } : 0,
           transform: swipeDx > 0 ? `translateX(-${swipeDx}px)` : undefined,
-          px: isAiResponse ? 0 : cardBubbleless ? 0 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.18 : (density.bubblePx || 1.18),
-          py: isAiResponse ? 0.4 : cardBubbleless ? 0 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.08 : (density.bubblePy || 0.82),
-          borderRadius: emojiOnlyCount || isAiResponse || cardBubbleless ? 0 : getBubbleRadius(Boolean(message?.is_own), groupedWithPrevious, groupedWithNext, compactMobile),
-          bgcolor: emojiOnlyCount || bubblelessMessage || isAiResponse ? 'transparent' : bubbleBg,
+          px: isAiResponse ? 1.4 : cardBubbleless ? 0 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.18 : (density.bubblePx || 1.18),
+          py: isAiResponse ? 1 : cardBubbleless ? 0 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.08 : (density.bubblePy || 0.82),
+          // Ответ ассистента — карточка цвета «чужого» пузыря: без фона текст и таблицы сливались с обоями ленты.
+          borderRadius: isAiResponse ? '6px 18px 18px 18px' : emojiOnlyCount || cardBubbleless ? 0 : getBubbleRadius(Boolean(message?.is_own), groupedWithPrevious, groupedWithNext, compactMobile),
+          bgcolor: isAiResponse ? ui.bubbleOtherBg : emojiOnlyCount || bubblelessMessage ? 'transparent' : bubbleBg,
           color: bubbleText,
-          boxShadow: emojiOnlyCount || pureMediaBubble || cardBubbleless || isAiResponse
+          boxShadow: isAiResponse
+            ? ui.shadowSoft
+            : emojiOnlyCount || pureMediaBubble || cardBubbleless
             ? 'none'
             : (
               compactMobile
