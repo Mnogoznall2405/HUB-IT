@@ -315,11 +315,12 @@ describe('ChatSidebar', () => {
 
     renderWithTheme(buildProps({ ui: compactUi }));
 
+    const density = compactUi.density;
     expect(screen.getByRole('button', { current: 'page' })).toHaveStyle({
-      minHeight: '48px',
-      padding: '4px 8px',
-      margin: '0px 4px',
-      borderRadius: '9px',
+      minHeight: `${density.sidebarRowMinHeight}px`,
+      padding: `${density.sidebarRowPy}px ${density.sidebarRowPx}px`,
+      margin: `0px ${density.sidebarRowMx}px`,
+      borderRadius: `${density.sidebarRowRadius}px`,
     });
   });
 

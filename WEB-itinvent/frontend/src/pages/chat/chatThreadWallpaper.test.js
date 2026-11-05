@@ -19,6 +19,8 @@ describe('buildChatThreadWallpaperSx', () => {
       { threadBg: '#e8f5d8' },
     );
     expect(sx.backgroundColor).toBe('#e8f5d8');
-    expect(String(sx.backgroundImage)).toContain('rgba(246, 234, 161');
+    // The pattern must be the top layer, otherwise the opaque gradients hide it.
+    expect(String(sx.backgroundImage).trim().startsWith('url(')).toBe(true);
+    expect(String(sx.backgroundImage)).toContain('%2389a36a');
   });
 });

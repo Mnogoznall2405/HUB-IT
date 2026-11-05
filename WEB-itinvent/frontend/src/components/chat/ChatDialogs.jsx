@@ -1082,7 +1082,7 @@ export default function ChatDialogs({
             ) : (
               <Stack spacing={1}>
                 {messageSearchResults.map((item) => (
-                  <SearchResultCard key={item.id} item={item} ui={ui} onOpen={onOpenSearchResult} />
+                  <SearchResultCard key={item.id} item={item} ui={ui} onOpen={onOpenSearchResult} query={messageSearch} />
                 ))}
                 {messageSearchHasMore ? (
                   <Stack alignItems="center" sx={{ pt: 0.5 }}>

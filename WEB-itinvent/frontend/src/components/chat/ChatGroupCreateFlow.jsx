@@ -149,6 +149,8 @@ export default function ChatGroupCreateFlow({
                   }}
                 />
               ))}
+              {/* Поле и кнопка очистки — один flex-элемент: иначе «×» при заполненной строке уезжает на новую. */}
+              <Box sx={{ display: 'flex', alignItems: 'center', flex: '1 1 120px', minWidth: 120 }}>
               <input
                 ref={searchInputRef}
                 aria-label="Поиск участников"
@@ -157,7 +159,7 @@ export default function ChatGroupCreateFlow({
                 onChange={(event) => onQueryChange?.(event.target.value)}
                 onKeyDown={handleSearchKeyDown}
                 placeholder="Поиск"
-                className="min-w-[120px] flex-1 bg-transparent outline-none"
+                className="min-w-0 flex-1 bg-transparent outline-none"
                 style={{
                   border: 'none',
                   color: primaryText,
@@ -186,6 +188,7 @@ export default function ChatGroupCreateFlow({
                   <CloseRoundedIcon sx={{ fontSize: 18 }} />
                 </Box>
               ) : null}
+              </Box>
             </Box>
             {limitReached ? (
               <Typography

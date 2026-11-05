@@ -22,7 +22,8 @@ export default function ConversationCallButtons({
   } = useChatCalls();
   const conversationId = String(conversation?.id || '').trim();
   const kind = String(conversation?.kind || '').trim();
-  const available = enabled && Boolean(conversationId) && kind !== 'ai';
+  // A call needs someone on the other side: not with the AI assistant and not in the personal notes chat.
+  const available = enabled && Boolean(conversationId) && kind !== 'ai' && kind !== 'notes';
 
   useEffect(() => {
     if (available) refreshActiveCall(conversationId);

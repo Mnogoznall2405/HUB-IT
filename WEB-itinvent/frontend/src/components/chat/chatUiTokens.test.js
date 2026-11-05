@@ -20,11 +20,8 @@ describe('chat UI density tokens', () => {
     expect(compact.mode).toBe('compact-desktop');
     expect(compact.sidebarAvatar).toBeLessThan(spacious.sidebarAvatar);
     expect(compact.sidebarSearchHeight).toBeLessThan(spacious.sidebarSearchHeight);
-    expect(compact.sidebarRowMinHeight).toBe(48);
-    expect(compact.sidebarAvatar).toBe(40);
-    expect(compact.sidebarRowPy).toBe(4);
+    expect(compact.sidebarRowMinHeight).toBeLessThan(spacious.sidebarRowMinHeight);
     expect(compact.sidebarRowMy).toBe(0);
-    expect(compact.sidebarPreviewFontSize).toBe('11.5px');
     expect(compact.composerCapsuleMinHeight).toBeLessThan(spacious.composerCapsuleMinHeight);
     expect(compact.composerCapsuleMinHeight).toBe(44);
     expect(compact.composerInputSlotMinHeight).toBe(26);

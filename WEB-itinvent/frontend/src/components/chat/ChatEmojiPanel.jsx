@@ -101,6 +101,10 @@ const ChatEmojiPanel = memo(function ChatEmojiPanel({
           '--epr-category-label-height': '26px',
           border: 'none',
           borderRadius: 0,
+          // The picker capitalizes every word of a category label ("Смайлы И Люди")
+          '& .epr-emoji-category-label': {
+            textTransform: 'none !important',
+          },
           // Hide built-in category navigation — we use our own Tabs
           '& .epr-category-nav': {
             display: 'none !important',

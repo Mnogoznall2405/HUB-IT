@@ -676,7 +676,7 @@ const ChatMessageList = memo(function ChatMessageList({
           <Typography variant="h6" sx={{ fontWeight: 800 }}>
             Здесь пока тихо
           </Typography>
-          <Typography variant="body2" sx={{ mt: 1, maxWidth: 420, color: ui.textSecondary }}>
+          <Typography variant="body2" sx={{ mt: 1, maxWidth: 420, color: ui.textPrimary }}>
             Отправьте первое сообщение, задачу или вложение. Диалог уже готов к работе.
           </Typography>
         </Stack>

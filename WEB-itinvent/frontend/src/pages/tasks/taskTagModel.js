@@ -1,6 +1,21 @@
 import { priorityMeta, statusMeta } from './taskFormatters';
 
+// The accent colours are tuned for the dark theme; on a light chip tint they fall below 3:1 (amber 2.7:1).
+// Darken the text only: the chip tint stays the same.
+export const darkenHex = (value, factor = 0.62) => {
+  const match = /^#([0-9a-f]{6})$/i.exec(String(value || ''));
+  if (!match) return value;
+  const channels = [0, 2, 4].map((offset) => Math.round(parseInt(match[1].slice(offset, offset + 2), 16) * factor));
+  return `#${channels.map((channel) => channel.toString(16).padStart(2, '0')).join('')}`;
+};
+
 export const buildTaskTagChips = (task, { ui, taskDiscussionChatEnabled, alpha }) => {
+  const chips = buildRawTaskTagChips(task, { ui, taskDiscussionChatEnabled, alpha });
+  if (ui?.isDark !== false) return chips;
+  return chips.map((chip) => ({ ...chip, color: darkenHex(chip.color) }));
+};
+
+const buildRawTaskTagChips = (task, { ui, taskDiscussionChatEnabled, alpha }) => {
   const status = statusMeta(task?.status);
   const priority = priorityMeta(task?.priority);
   const attachCount = Number(task?.attachments_count || 0);

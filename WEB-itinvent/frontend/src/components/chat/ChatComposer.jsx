@@ -596,26 +596,22 @@ const ChatComposer = memo(function ChatComposer({
       data-testid="chat-composer-dock"
       className="chat-safe-bottom chat-native-shell chat-no-select"
       sx={{
-        px: 0,
+        // Desktop: the input floats over the wallpaper as a rounded pill in the message column
+        // (like Telegram Web); on mobile the dock stays a flat full-width strip.
+        px: compactMobile ? 0 : 'max(16px, calc((100% - 728px) / 2))',
         pt: 0,
         pb: compactMobile
           ? 'max(env(safe-area-inset-bottom, 0px), 0px)'
-          : 0,
-        bgcolor: composerDockBg,
+          : '14px',
+        bgcolor: compactMobile ? composerDockBg : 'transparent',
         position: 'relative',
         bottom: 0,
         transform: safeKeyboardInset > 0 ? `translate3d(0, -${safeKeyboardInset}px, 0)` : 'none',
         transition: safeKeyboardInset > 0 ? 'transform 80ms ease-out' : 'transform 120ms ease-in',
         willChange: compactMobile ? 'transform' : 'auto',
         zIndex: 5,
-        borderTop: compactMobile
-          ? 'none'
-          : theme.palette.mode === 'dark' ? `0.5px solid ${ui.borderSoft}` : 'none',
-        boxShadow: compactMobile
-          ? 'none'
-          : theme.palette.mode === 'dark'
-            ? '0 -1px 0 rgba(255,255,255,0.04)'
-            : `0 -1px 0 ${ui.borderSoft}, 0 -14px 26px rgba(80,104,128,0.08)`,
+        borderTop: 'none',
+        boxShadow: 'none',
         fontFamily: CHAT_FONT_FAMILY,
       }}
     >
@@ -980,10 +976,14 @@ const ChatComposer = memo(function ChatComposer({
             },
             '& > button': { alignSelf: 'center' },
             border: 'none',
-            borderRadius: 0,
+            borderRadius: compactMobile ? 0 : '24px',
             position: 'relative',
             bgcolor: composerStripBg,
-            boxShadow: 'none',
+            boxShadow: compactMobile
+              ? 'none'
+              : theme.palette.mode === 'dark'
+                ? '0 1px 3px rgba(0,0,0,0.35)'
+                : '0 1px 3px rgba(16,35,47,0.18)',
           }}
         >
             {voiceRecording ? (

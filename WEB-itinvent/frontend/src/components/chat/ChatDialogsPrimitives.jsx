@@ -42,7 +42,24 @@ function DialogListSkeleton({ ui, rows = 4, compact = false }) {
   );
 }
 
-function SearchResultCard({ item, ui, onOpen }) {
+// A long message is cut around the first match so the hit is visible in the card, not only its beginning.
+function buildSearchSnippet(text, query, lead = 40) {
+  const source = String(text ?? '').replace(/\s+/g, ' ').trim();
+  const lowered = source.toLocaleLowerCase('ru-RU');
+  const positions = String(query || '')
+    .trim()
+    .toLocaleLowerCase('ru-RU')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((token) => lowered.indexOf(token))
+    .filter((position) => position >= 0);
+  if (!positions.length) return source;
+  const first = Math.min(...positions);
+  if (first <= lead) return source;
+  return `…${source.slice(first - lead)}`;
+}
+
+function SearchResultCard({ item, ui, onOpen, query = '' }) {
   const cardText = ui.textStrong || ui.textPrimary || '#17212b';
   const cardSurface = ui.surfaceMuted || ui.drawerBgSoft || ui.panelBg || '#ffffff';
   const cardHover = ui.surfaceHover || ui.drawerHover || ui.accentSoft || cardSurface;
@@ -81,8 +98,22 @@ function SearchResultCard({ item, ui, onOpen }) {
             {formatFullDate(item?.created_at)}
           </Typography>
         </Stack>
-        <Typography variant="body2" sx={{ color: ui.textSecondary }} noWrap>
-          {getSearchResultPreview(item)}
+        <Typography
+          variant="body2"
+          sx={{
+            color: ui.textSecondary,
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+            overflowWrap: 'anywhere',
+          }}
+        >
+          <HighlightMatch
+            text={buildSearchSnippet(getSearchResultPreview(item), query)}
+            query={query}
+            accent={ui.accentText || '#3390ec'}
+          />
         </Typography>
       </Stack>
     </Paper>

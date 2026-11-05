@@ -890,7 +890,7 @@ export default function CompanyStructureAdmin({
                   <Avatar
                     src={photoPreviewUrl || (!removePhoto ? draft.person_photo_url : '') || undefined}
                     alt=""
-                    sx={{ width: 64, height: 64 }}
+                    sx={{ width: 64, height: 64, bgcolor: 'action.selected', color: 'text.primary' }}
                   >
                     {(draft.person_name || draft.title || '—').trim().slice(0, 1).toUpperCase()}
                   </Avatar>

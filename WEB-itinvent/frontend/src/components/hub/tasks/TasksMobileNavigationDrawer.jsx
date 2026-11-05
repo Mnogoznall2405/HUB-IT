@@ -20,6 +20,7 @@ import { alpha, useTheme } from '@mui/material/styles';
 import { getTaskUnreadFocusLabel } from '../../../lib/taskNavigation';
 import { focusOptions, mobileStatusOptions } from '../../../pages/tasks/taskConstants';
 import { TASKS_MOBILE_COPY } from '../../../pages/tasks/tasksMobileCopy';
+import { darkenHex } from '../../../pages/tasks/taskTagModel';
 import { getOfficeHeaderBandSx, getOfficeSubtlePanelSx } from '../../../theme/officeUiTokens';
 
 export const TASKS_MOBILE_MORE_MODE_OPTIONS = [
@@ -198,7 +199,7 @@ export default function TasksMobileNavigationDrawer({
                         height: 26,
                         fontWeight: 800,
                         bgcolor: alpha(item.color, 0.12),
-                        color: item.color,
+                        color: ui.isDark === false ? darkenHex(item.color) : item.color,
                       }}
                     />
                   ))}

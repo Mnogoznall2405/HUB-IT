@@ -510,7 +510,7 @@ export default function KbHelpSection({ query = '', ui }) {
                                   />
                                 ) : null}
                                 {updated ? (
-                                  <Typography variant="caption" color="text.disabled" sx={{ alignSelf: 'center' }}>
+                                  <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center' }}>
                                     {updated}
                                   </Typography>
                                 ) : null}

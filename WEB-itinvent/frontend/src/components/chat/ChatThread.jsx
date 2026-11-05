@@ -586,9 +586,9 @@ function ChatThread({
   const contentMaxWidth = isAiConversation
     ? AI_THREAD_CONTENT_MAX_WIDTH
     : THREAD_CONTENT_MAX_WIDTH;
-  // Д2-2 (раздел 29): обычные беседы — лента на всю ширину, пузыри по краям;
-  // AI-тред остаётся центрированной колонкой в духе эталона раздела 23.
-  const feedFullWidth = !isAiConversation;
+  // По решению владельца (05.11.2026) лента всех бесед — центрированная колонка как в Telegram Web
+  // (раньше, Д2-2 раздела 29, обычные беседы шли на всю ширину с пузырями у краёв).
+  const feedFullWidth = false;
   const conversationUi = useMemo(() => ({
     ...ui,
     contentMaxWidth,
@@ -1450,7 +1450,7 @@ function ChatThread({
         <Typography variant="h5" sx={{ fontWeight: 800 }}>
           {showConversationLoadingState ? 'Открываем диалог…' : 'Выберите беседу'}
         </Typography>
-        <Typography variant="body2" sx={{ mt: 1, color: ui.textSecondary, maxWidth: 460 }}>
+        <Typography variant="body2" sx={{ mt: 1, color: ui.textPrimary, maxWidth: 460 }}>
           {showConversationLoadingState
             ? 'Загружаем сообщения и карточку собеседника.'
             : 'Выберите диалог в списке слева, чтобы начать переписку.'}
@@ -1497,6 +1497,9 @@ function ChatThread({
         flexDirection: 'column',
         boxSizing: 'border-box',
         bgcolor: compactMobile ? ui.threadBg : (ui.desktopShellBg || ui.threadBg),
+        // Desktop: the wallpaper lies under the whole thread including the floating composer, so a growing
+        // input grows alone (otherwise a white band under the pill grows with it).
+        ...(compactMobile ? {} : threadWallpaperSx),
         position: 'relative',
         overscrollBehaviorY: compactMobile ? 'none' : 'contain',
         borderLeft: compactMobile ? 'none' : `1px solid ${ui.desktopShellBorder || ui.borderSoft}`,
@@ -1514,7 +1517,7 @@ function ChatThread({
         ui={ui}
         isMobile={isMobile}
         compactMobile={compactMobile}
-        fullWidth={feedFullWidth}
+        fullWidth
         activeConversation={activeConversation}
         activeAiBot={activeAiBot}
         aiStatus={aiStatus}
@@ -1543,7 +1546,7 @@ function ChatThread({
       <TaskCompletedBanner
         activeConversation={activeConversation}
         compactMobile={compactMobile}
-        fullWidth={feedFullWidth}
+        fullWidth
         onOpenTask={onOpenTask}
         theme={theme}
         ui={ui}
@@ -1553,7 +1556,7 @@ function ChatThread({
         theme={theme}
         ui={ui}
         compactMobile={compactMobile}
-        fullWidth={feedFullWidth}
+        fullWidth
         pinnedMessage={selectionMode ? null : pinnedMessage}
         pinnedMessages={selectionMode ? null : pinnedMessages}
         onOpenPinnedMessage={onOpenPinnedMessage}
@@ -1578,7 +1581,7 @@ function ChatThread({
           onTouchMove={armHistoryAutoLoadIfNearTop}
           onDrop={onComposerDrop}
           sx={{
-            ...threadWallpaperSx,
+            ...(compactMobile ? threadWallpaperSx : {}),
             width: '100%',
             height: '100%',
             minHeight: 0,

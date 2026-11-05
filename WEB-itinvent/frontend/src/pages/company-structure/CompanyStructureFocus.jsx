@@ -84,7 +84,7 @@ function FocusNodeCard({ node, selected = false, onSelect, onPeople }) {
       >
         <Stack direction="row" spacing={1.5} alignItems="flex-start">
           {leader ? (
-            <Avatar src={node.person_photo_url || undefined} alt="" sx={{ width: selected ? 54 : 42, height: selected ? 54 : 42 }}>
+            <Avatar src={node.person_photo_url || undefined} alt="" sx={{ width: selected ? 54 : 42, height: selected ? 54 : 42, bgcolor: 'action.selected', color: 'text.primary' }}>
               {initials(node.person_name || node.title)}
             </Avatar>
           ) : (

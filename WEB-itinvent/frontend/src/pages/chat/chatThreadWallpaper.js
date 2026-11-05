@@ -20,13 +20,15 @@ export function buildChatThreadWallpaperSx(theme, ui) {
   }
   return {
     backgroundColor: ui.threadBg,
+    // The doodle pattern goes first (on top): below the opaque gradients it was not visible at all.
+    // The gradient is softer and greener than before, closer to the Telegram light wallpaper.
     backgroundImage: `
-      radial-gradient(circle at 0% 0%, rgba(246, 234, 161, 0.82) 0%, rgba(246, 234, 161, 0) 33%),
-      radial-gradient(circle at 100% 100%, rgba(243, 233, 171, 0.62) 0%, rgba(243, 233, 171, 0) 32%),
-      linear-gradient(135deg, rgba(229, 239, 181, 0.82) 0%, rgba(191, 219, 151, 0.9) 44%, rgba(168, 208, 151, 0.94) 100%),
-      ${TELEGRAM_LIGHT_THREAD_PATTERN}
+      ${TELEGRAM_LIGHT_THREAD_PATTERN},
+      radial-gradient(circle at 0% 0%, rgba(236, 240, 170, 0.55) 0%, rgba(236, 240, 170, 0) 36%),
+      radial-gradient(circle at 100% 100%, rgba(210, 230, 160, 0.5) 0%, rgba(210, 230, 160, 0) 34%),
+      linear-gradient(160deg, rgba(222, 236, 186, 0.9) 0%, rgba(184, 214, 154, 0.94) 52%, rgba(152, 196, 140, 0.96) 100%)
     `,
-    backgroundSize: 'auto, auto, auto, 160px 160px',
-    backgroundPosition: '0 0, 100% 100%, 0 0, 0 0',
+    backgroundSize: '160px 160px, auto, auto, auto',
+    backgroundPosition: '0 0, 0 0, 100% 100%, 0 0',
   };
 }

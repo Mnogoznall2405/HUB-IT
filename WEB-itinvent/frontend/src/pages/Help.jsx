@@ -342,7 +342,7 @@ export default function Help() {
                   },
                 }}
               />
-              <Typography variant="caption" color="text.disabled">
+              <Typography variant="caption" color="text.secondary">
                 Обновлено: {HELP_UPDATED_AT}
               </Typography>
             </Stack>

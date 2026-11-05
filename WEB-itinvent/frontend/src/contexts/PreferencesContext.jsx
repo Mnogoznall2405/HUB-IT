@@ -362,7 +362,7 @@ export function PreferencesProvider({ children }) {
         iconPrimary: '#201f1e',
         iconMuted: '#605e5c',
         textSecondary: '#605e5c',
-        textTertiary: '#8a8886',
+        textTertiary: '#6e6c6a',
         headerBandBg: '#f7f6f5',
         headerBandBorder: 'rgba(32, 31, 30, 0.08)',
         emptyStateBg: '#f8f7f6',

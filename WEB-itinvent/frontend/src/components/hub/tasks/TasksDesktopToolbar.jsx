@@ -19,6 +19,7 @@ import PageTopBar from '../../layout/PageTopBar';
 import TaskRoleScopeSwitch from '../TaskRoleScopeSwitch';
 import { getTaskUnreadFocusLabel } from '../../../lib/taskNavigation';
 import { focusOptions } from '../../../pages/tasks/taskConstants';
+import { darkenHex } from '../../../pages/tasks/taskTagModel';
 import { TASK_MODE_OPTIONS } from '../../../pages/tasksViewModel';
 import { getOfficePanelSx, getOfficeSubtlePanelSx } from '../../../theme/officeUiTokens';
 
@@ -138,7 +139,7 @@ export default function TasksDesktopToolbar({
                   fontSize: '0.7rem',
                   borderRadius: '8px',
                   bgcolor: alpha(item.color, 0.12),
-                  color: item.color,
+                  color: ui.isDark === false ? darkenHex(item.color) : item.color,
                 }}
               />
             ))}

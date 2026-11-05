@@ -111,7 +111,7 @@ export const OverviewNode = memo(function OverviewNode({ data, selected }) {
             <Avatar
               src={node.person_photo_url || undefined}
               alt=""
-              sx={{ width: 44, height: 44, flexShrink: 0, outline: '1px solid rgba(255,255,255,0.1)', outlineOffset: -1 }}
+              sx={{ width: 44, height: 44, flexShrink: 0, bgcolor: 'action.selected', color: 'text.primary', outline: '1px solid rgba(255,255,255,0.1)', outlineOffset: -1 }}
             >
               {initials(node.person_name || node.title)}
             </Avatar>
