@@ -154,6 +154,40 @@ def test_touch_session_throttles_recent_last_seen_writes(isolated_session_servic
     assert isolated_session_service._load_sessions()[0]["last_seen_at"] != sessions[0]["last_seen_at"]
 
 
+def test_touch_session_nowait_does_not_hold_the_request_while_the_db_commit_stalls(isolated_session_service, monkeypatch):
+    # A race/stall case no HTTP boundary test can reproduce: the DB host freezes on fsync and the touch
+    # UPDATE commit blocks for 10-30 s. The request must return at once, with one write in flight per session.
+    import threading
+    import time
+
+    release = threading.Event()
+    started = []
+
+    def stalled_touch(session_id):
+        started.append(session_id)
+        release.wait(10)
+        return True
+
+    monkeypatch.setattr(isolated_session_service, "touch_session", stalled_touch)
+
+    begun = time.monotonic()
+    isolated_session_service.touch_session_nowait("sess-stall")
+    isolated_session_service.touch_session_nowait("sess-stall")
+    isolated_session_service.touch_session_nowait("sess-stall")
+    assert time.monotonic() - begun < 1.0
+
+    deadline = time.monotonic() + 3
+    while not started and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert started == ["sess-stall"]
+
+    release.set()
+    deadline = time.monotonic() + 3
+    while isolated_session_service._touch_inflight and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not isolated_session_service._touch_inflight
+
+
 def test_absolute_expired_session_becomes_invalid_even_when_recently_active(isolated_session_service):
     isolated_session_service.create_session(
         session_id="session-absolute",

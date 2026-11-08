@@ -139,7 +139,7 @@ def _load_user_from_token(token: Optional[str]) -> User:
         raise credentials_exception
 
     if token_data.session_id:
-        session_service.touch_session(token_data.session_id)
+        session_service.touch_session_nowait(token_data.session_id)
 
     public_user = user_service.to_public_user(user_raw)
     public_user["permissions"] = effective_public_permissions(public_user)
@@ -215,7 +215,7 @@ def _load_optional_user_from_token(token: Optional[str]) -> Optional[User]:
         return None
 
     if token_data.session_id:
-        session_service.touch_session(token_data.session_id)
+        session_service.touch_session_nowait(token_data.session_id)
 
     public_user = user_service.to_public_user(user_raw)
     public_user["permissions"] = effective_public_permissions(public_user)
@@ -317,7 +317,7 @@ def assert_access_token_still_valid(token: Optional[str], *, touch_session: bool
         raise credentials_exception
     # Chat WS revalidate path: keep idle alive while the socket is active.
     if token_data.session_id and touch_session:
-        session_service.touch_session(token_data.session_id)
+        session_service.touch_session_nowait(token_data.session_id)
 
 
 async def get_current_active_user(

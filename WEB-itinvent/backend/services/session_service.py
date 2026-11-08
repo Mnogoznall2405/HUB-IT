@@ -4,7 +4,9 @@ Session persistence and lifecycle management for web authentication.
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
@@ -21,6 +23,9 @@ from backend.services.auth_short_cache import SingleFlight
 from backend.services.trusted_device_service import trusted_device_service
 from backend.utils.request_network import classify_network_zone
 from local_store import SQLiteLocalStore, get_local_store
+
+
+_logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
@@ -119,6 +124,7 @@ class SessionService:
 
     FILE_NAME = "web_sessions.json"
     TOUCH_THROTTLE_SECONDS = 60
+    TOUCH_BACKGROUND_MAX_INFLIGHT = 64
     # In-process TTL cache: avoids APP DB hit on every authenticated request under load.
     # No Redis required on single-node Windows. Invalidate on logout/close.
     ACTIVE_CACHE_TTL_SEC = 8.0
@@ -150,6 +156,9 @@ class SessionService:
         # session_id -> (expires_mono, is_active, last_touch_mono)
         self._active_cache: dict[str, tuple[float, bool, float]] = {}
         self._active_flight = SingleFlight()
+        self._touch_inflight_lock = Lock()
+        self._touch_inflight: set[str] = set()
+        self._touch_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="session-touch")
         # Bumped whenever this process closes/invalidates a session, so no request joins an older lookup.
         self._flight_generation = 0
 
@@ -718,6 +727,36 @@ class SessionService:
         if closed_ids:
             result["_closed_session_ids"] = closed_ids
         return result
+
+    def touch_session_nowait(self, session_id: str) -> None:
+        """Best-effort `touch_session` that never makes the request wait for the DB commit.
+
+        The touch only moves the idle anchor.  When the DB host stalls on fsync (checkpoint / storage
+        freeze) the UPDATE commit blocks for 10-30 s and, done inside the request, held every
+        authenticated call (chat images, files) behind it.  The write now runs on a small background
+        pool: one in flight per session, bounded in total, errors only logged (the next request retries).
+        """
+        normalized_id = str(session_id or "").strip()
+        if not normalized_id or self._cache_touch_fresh(normalized_id):
+            return
+        with self._touch_inflight_lock:
+            if normalized_id in self._touch_inflight or len(self._touch_inflight) >= self.TOUCH_BACKGROUND_MAX_INFLIGHT:
+                return
+            self._touch_inflight.add(normalized_id)
+        try:
+            self._touch_executor.submit(self._touch_in_background, normalized_id)
+        except Exception:  # executor shut down at process exit
+            with self._touch_inflight_lock:
+                self._touch_inflight.discard(normalized_id)
+
+    def _touch_in_background(self, session_id: str) -> None:
+        try:
+            self.touch_session(session_id)
+        except Exception as exc:
+            _logger.warning("session touch failed in background session_id=%s error=%s", session_id, exc)
+        finally:
+            with self._touch_inflight_lock:
+                self._touch_inflight.discard(session_id)
 
     def touch_session(self, session_id: str) -> bool:
         normalized_id = str(session_id or "").strip()
