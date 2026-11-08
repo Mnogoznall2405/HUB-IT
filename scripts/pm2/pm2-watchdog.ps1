@@ -11,6 +11,12 @@
     # (or HUBIT_WATCHDOG_STOP_ORPHANS=0) keeps them only in the log and in -CheckOnly output.
     [switch]$ReportOnlyOrphans,
     [int]$OrphanMinAgeMinutes = 6,
+    # The watchdog runs every minute. A gap of >= StallGapSeconds means the VM itself was frozen (storage stall):
+    # health failures right after it are the aftermath, so counters are reset and recovery waits StallGraceMinutes.
+    # Runs closer than BurstGapSeconds (queued by the scheduler during the freeze) are not counted as probes.
+    [int]$StallGapSeconds = 240,
+    [int]$StallGraceMinutes = 3,
+    [int]$BurstGapSeconds = 20,
     [string]$ProjectRoot = 'C:\Project\Image_scan'
 )
 $ErrorActionPreference = 'Stop'
@@ -71,14 +77,25 @@ try {
         $stored = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
         foreach ($property in $stored.PSObject.Properties) { $state[$property.Name] = $property.Value }
     }
+    $now = [datetime]::UtcNow
+    $probeGap = if ($state.ContainsKey('_last_probe_utc')) { [int]($now-([datetime]$state['_last_probe_utc']).ToUniversalTime()).TotalSeconds } else { 0 }
+    $graceUntil = if ($state.ContainsKey('_stall_grace_until_utc')) { ([datetime]$state['_stall_grace_until_utc']).ToUniversalTime().ToString('o') } else { '' }
+    $probeKind = Get-HubitProbeClassification -ProbeGapSeconds $probeGap -Now $now -GraceUntilUtc $graceUntil -StallGapSeconds $StallGapSeconds -BurstGapSeconds $BurstGapSeconds
+    # Nothing online at all is a real outage (dead PM2 daemon, crashed stack), never a slow host: recover normally.
+    if ($online.Count -eq 0 -and $probeKind -ne 'burst') { $probeKind = 'normal' }
+    if ($probeKind -eq 'stall') {
+        $state['_stall_grace_until_utc'] = $now.AddMinutes($StallGraceMinutes).ToString('o')
+        Write-WatchdogLog "host stall detected: watchdog did not run for ${probeGap}s; failure counters reset, recovery deferred for ${StallGraceMinutes} min"
+    }
+    $stage = 'recovery_state'
     foreach ($app in $expected) {
         if (-not $state.ContainsKey($app.Name)) {
             $state[$app.Name] = [pscustomobject]@{ Failures=0; LastAttempt='2000-01-01T00:00:00Z'; Attempts=@() }
         }
+        if ($probeKind -eq 'burst') { continue }
+        if ($probeKind -ne 'normal') { $state[$app.Name].Failures=0; continue }
         if ($failed -contains $app.Name) { $state[$app.Name].Failures++ } else { $state[$app.Name].Failures=0 }
     }
-    $now = [datetime]::UtcNow
-    $probeGap = if ($state.ContainsKey('_last_probe_utc')) { [int]($now-([datetime]$state['_last_probe_utc']).ToUniversalTime()).TotalSeconds } else { 0 }
     $state['_last_probe_utc'] = $now.ToString('o')
     $stage = 'orphans'
     $firstSeen = @{}
@@ -108,7 +125,11 @@ try {
     }
     $state['_orphans'] = @($stillSeen.GetEnumerator() | ForEach-Object { '{0}|{1}' -f $_.Key, $_.Value.ToString('o') })
     $stage = 'recovery_state'
+    if ($probeKind -ne 'normal' -and $failed.Count -gt 0) {
+        Write-WatchdogLog "health failures not counted ($probeKind): $($failed -join ', ')"
+    }
     $recover = @($failed | Where-Object {
+        if ($probeKind -ne 'normal') { return $false }
         $entry = $state[$_]
         $threshold = if ($_ -match '^itinvent-chat(-[ab])?$' -and $notOnline -notcontains $_) { [Math]::Max($FailureThreshold, $ChatFailureThreshold) } else { $FailureThreshold }
         $decision = Get-HubitRecoveryDecision -Failures $entry.Failures -Now $now -LastAttempt ([datetime]$entry.LastAttempt) -Attempts @($entry.Attempts | ForEach-Object { [datetime]$_ }) -Threshold $threshold -CooldownSeconds $CooldownSeconds

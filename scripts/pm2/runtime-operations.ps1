@@ -144,6 +144,24 @@ function Get-HubitRecoveryDecision {
     return 'recover'
 }
 
+function Get-HubitProbeClassification {
+    # Tells an independent probe from the aftermath of a frozen host.
+    #   stall  - the watchdog itself did not run for >= StallGapSeconds: the VM/storage was frozen, and health
+    #            failures right after it are the aftermath, not independent failures (counters are reset).
+    #   grace  - still inside the post-stall grace window (services are catching up; no recovery yet).
+    #   burst  - a scheduler run that fired right after another run (queued while the VM was frozen): it is not
+    #            an independent probe and must not add to the failure counters.
+    #   normal - count failures and recover by the usual policy.
+    param([int]$ProbeGapSeconds, [datetime]$Now, [string]$GraceUntilUtc = '', [int]$StallGapSeconds = 240, [int]$BurstGapSeconds = 20)
+    if ($ProbeGapSeconds -ge $StallGapSeconds) { return 'stall' }
+    if ($GraceUntilUtc) {
+        $until = [datetime]::Parse($GraceUntilUtc, $null, [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+        if ($Now.ToUniversalTime() -lt $until) { return 'grace' }
+    }
+    if ($ProbeGapSeconds -gt 0 -and $ProbeGapSeconds -lt $BurstGapSeconds) { return 'burst' }
+    return 'normal'
+}
+
 function Get-HubitFlag {
     param([string]$Name, [bool]$Default = $false)
     foreach ($scope in 'Process', 'User', 'Machine') {

@@ -147,6 +147,28 @@ $old=$now.AddHours(-2)
     assert json.loads(result.stdout) == ["wait", "recover", "cooldown", "circuit_open"]
 
 
+def test_frozen_host_aftermath_is_not_counted_as_independent_failures(tmp_path):
+    # A VM freeze pauses the watchdog itself; the scheduler then fires the queued runs back to back and
+    # every service still looks dead. Counting those runs produced the 00:34 restart storm of all 20 apps.
+    script = tmp_path / "probe.ps1"
+    script.write_text(f"""
+. '{ROOT / 'scripts/pm2/runtime-operations.ps1'}'
+$now=[datetime]::SpecifyKind([datetime]'2026-11-08T00:34:00',[DateTimeKind]::Utc)
+$grace=$now.AddMinutes(3).ToString('o')
+@(
+ Get-HubitProbeClassification -ProbeGapSeconds 60 -Now $now
+ Get-HubitProbeClassification -ProbeGapSeconds 2742 -Now $now
+ Get-HubitProbeClassification -ProbeGapSeconds 5 -Now $now
+ Get-HubitProbeClassification -ProbeGapSeconds 60 -Now $now.AddMinutes(1) -GraceUntilUtc $grace
+ Get-HubitProbeClassification -ProbeGapSeconds 60 -Now $now.AddMinutes(4) -GraceUntilUtc $grace
+ Get-HubitProbeClassification -ProbeGapSeconds 0 -Now $now
+)|ConvertTo-Json
+""", encoding="utf-8-sig")
+    result = run_ps(script)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == ["normal", "stall", "burst", "grace", "normal", "normal"]
+
+
 def test_recovery_cooldown_uses_utc_when_saved_dates_parse_as_local_time(tmp_path):
     script = tmp_path / "utc.ps1"
     script.write_text(f"""
