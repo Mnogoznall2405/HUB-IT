@@ -38,6 +38,7 @@ ENV_FILE_NAME = ".env"
 INSTALL_SCRIPT_NAME = "install_agent_task.ps1"
 INSTALL_TELEGRAM_PROBE_SCRIPT_NAME = "install_telegram_probe_task.ps1"
 INSTALL_MAX_PROBE_SCRIPT_NAME = "install_max_probe_task.ps1"
+UNINSTALL_PROBE_SCRIPT_NAME = "uninstall_probe_task.ps1"
 INSTALL_BROWSER_PROBE_SCRIPT_NAME = "install_browser_probe_task.ps1"
 UNINSTALL_SCRIPT_NAME = "uninstall_agent_task.ps1"
 FULL_UNINSTALL_SCRIPT_NAME = "full_uninstall_agent.ps1"
@@ -65,6 +66,13 @@ FORCED_SCAN_ENV_VALUES = {
     "SCAN_AGENT_SCAN_ON_START": "0",
     "SCAN_AGENT_WATCHDOG_ENABLED": "0",
 }
+# Telegram and MAX probes are switched off for the whole fleet. An existing .env must not keep them on
+# (it normally wins over MSI defaults), so these win over it; only an explicit MSI property
+# (ITINV_*_PROBE_ENABLED=1 on the msiexec command line) can turn them on again.
+FORCED_OFF_PROBE_ENV_VALUES = {
+    "ITINV_TELEGRAM_PROBE_ENABLED": "0",
+    "ITINV_MAX_PROBE_ENABLED": "0",
+}
 MSI_DEFAULT_ENV_VALUES = {
     "ITINV_AGENT_SERVER_URL": "https://hubit.zsgp.ru/api/v1/inventory",
     "ITINV_AGENT_INTERVAL_SEC": "3600",
@@ -72,11 +80,11 @@ MSI_DEFAULT_ENV_VALUES = {
     "ITINV_AGENT_HEARTBEAT_JITTER_SEC": "120",
     "ITINV_SCAN_ENABLED": "1",
     "ITINV_FS_EGRESS_ENABLED": "1",
-    "ITINV_TELEGRAM_PROBE_ENABLED": "1",
+    "ITINV_TELEGRAM_PROBE_ENABLED": "0",
     "ITINV_TELEGRAM_PROBE_SYNC_SEC": "900",
     "ITINV_BROWSER_PROBE_ENABLED": "1",
     "ITINV_BROWSER_PROBE_SYNC_SEC": "120",
-    "ITINV_MAX_PROBE_ENABLED": "1",
+    "ITINV_MAX_PROBE_ENABLED": "0",
     "ITINV_MAX_PROBE_SYNC_SEC": "900",
     "SCAN_AGENT_SERVER_BASE": "https://hubit.zsgp.ru/api/v1/scan",
     "SCAN_AGENT_POLL_INTERVAL_SEC": "60",
@@ -458,6 +466,9 @@ def build_runtime_env_values(existing: Mapping[str, str], overrides: Mapping[str
         if raw_override:
             merged[key] = raw_override
             continue
+        if key in FORCED_OFF_PROBE_ENV_VALUES:
+            merged[key] = FORCED_OFF_PROBE_ENV_VALUES[key]
+            continue
         if key in existing and str(existing.get(key, "") or "").strip():
             merged[key] = str(existing.get(key, "")).strip()
             continue
@@ -631,6 +642,15 @@ def get_msi_helper_log_path() -> Path:
     return Path(tempfile.gettempdir()) / "itinvent_agent_msi_helper.log"
 
 
+def _remove_probe_task(task_name: str, logger) -> None:
+    """Unregister a probe task whose probe is disabled, so an upgrade leaves nothing to start at logon."""
+    try:
+        _run_powershell_script(resolve_script_path(UNINSTALL_PROBE_SCRIPT_NAME), ["-TaskName", task_name])
+        logger.info("Probe disabled: scheduled task '%s' removed (if it existed)", task_name)
+    except Exception as exc:
+        logger.warning("Probe disabled but removing task '%s' failed: %s", task_name, exc)
+
+
 def run_msi_install(namespace, logger) -> int:
     install_dir = resolve_install_dir(getattr(namespace, "install_dir", ""))
     env_file_path = resolve_env_file_path(install_dir, getattr(namespace, "env_file_path", ""))
@@ -712,6 +732,8 @@ def run_msi_install(namespace, logger) -> int:
                 logger.warning("Telegram probe task registration failed: %s", exc)
         else:
             logger.warning("Telegram probe executable missing: %s", telegram_exe)
+    else:
+        _remove_probe_task(TELEGRAM_PROBE_TASK_NAME, logger)
 
     browser_enabled = str(merged.get("ITINV_BROWSER_PROBE_ENABLED", "1") or "1").strip().lower()
     if browser_enabled not in {"0", "false", "no", "off"}:
@@ -764,6 +786,8 @@ def run_msi_install(namespace, logger) -> int:
                 logger.warning("MAX probe task registration failed: %s", exc)
         else:
             logger.warning("MAX probe executable missing: %s", max_exe)
+    else:
+        _remove_probe_task(MAX_PROBE_TASK_NAME, logger)
 
     logger.info("MSI install helper completed successfully. Runtime env written to %s", env_file_path)
     return 0

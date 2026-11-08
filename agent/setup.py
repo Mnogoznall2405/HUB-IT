@@ -267,6 +267,10 @@ build_exe_options = {
             str(REPO_ROOT / "agent" / "scripts" / "uninstall_agent_task.ps1"),
             "scripts/uninstall_agent_task.ps1",
         ),
+        (
+            str(REPO_ROOT / "agent" / "scripts" / "uninstall_probe_task.ps1"),
+            "scripts/uninstall_probe_task.ps1",
+        ),
     ],
     "include_msvcr": True,
     "path": [str(REPO_ROOT), str(AGENT_SRC), str(TELEGRAM_PROBE_SRC), str(BROWSER_PROBE_SRC.parent)] + sys.path,

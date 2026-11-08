@@ -447,6 +447,65 @@ def test_agent_installer_build_runtime_env_values_preserves_existing_and_forces_
     assert values["ITINV_OUTLOOK_SEARCH_ROOTS"] == "D:\\"
 
 
+def test_agent_installer_switches_telegram_and_max_probes_off_even_when_env_had_them_on():
+    # An existing .env normally beats MSI defaults, so changing the default alone would leave every
+    # installed machine with the probes still on after the upgrade.
+    existing = {"ITINV_TELEGRAM_PROBE_ENABLED": "1", "ITINV_MAX_PROBE_ENABLED": "1", "ITINV_BROWSER_PROBE_ENABLED": "1"}
+
+    values = agent_installer.build_runtime_env_values(existing, {})
+    assert values["ITINV_TELEGRAM_PROBE_ENABLED"] == "0"
+    assert values["ITINV_MAX_PROBE_ENABLED"] == "0"
+    assert values["ITINV_BROWSER_PROBE_ENABLED"] == "1"  # not part of this change
+
+    explicit = agent_installer.build_runtime_env_values(existing, {"ITINV_TELEGRAM_PROBE_ENABLED": "1"})
+    assert explicit["ITINV_TELEGRAM_PROBE_ENABLED"] == "1"
+    assert explicit["ITINV_MAX_PROBE_ENABLED"] == "0"
+
+
+def test_agent_installer_upgrade_removes_old_probe_tasks_and_does_not_register_them(monkeypatch, temp_dir):
+    install_dir = Path(temp_dir) / "Agent"
+    install_dir.mkdir(parents=True, exist_ok=True)
+    runtime_root = Path(temp_dir) / "ProgramData" / "HUB-IT" / "Agent"
+    legacy_root = Path(temp_dir) / "ProgramData" / "IT-Invent"
+    env_path = runtime_root / ".env"
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.write_text("ITINV_TELEGRAM_PROBE_ENABLED=1\nITINV_MAX_PROBE_ENABLED=1\n", encoding="utf-8")
+    # Both probe executables are present, as after a real upgrade: the old code would register them again.
+    (install_dir / agent_installer.TELEGRAM_PROBE_EXECUTABLE_NAME).write_bytes(b"x")
+    (install_dir / agent_installer.MAX_PROBE_EXECUTABLE_NAME).write_bytes(b"x")
+    monkeypatch.setattr(agent_installer, "DEFAULT_PROGRAM_DATA_ROOT", runtime_root.parent)
+    monkeypatch.setattr(agent_installer, "DEFAULT_RUNTIME_ROOT", runtime_root)
+    monkeypatch.setattr(agent_installer, "DEFAULT_SCAN_RUNTIME_ROOT", runtime_root.parent / "ScanAgent")
+    monkeypatch.setattr(agent_installer, "DEFAULT_UPGRADE_BACKUP_ROOT", runtime_root.parent / "AgentUpgrade")
+    monkeypatch.setattr(agent_installer, "LEGACY_PROGRAM_DATA_ROOT", legacy_root)
+    monkeypatch.setattr(agent_installer, "LEGACY_UPGRADE_BACKUP_ROOT", legacy_root / "AgentUpgrade")
+    monkeypatch.setattr(agent_installer, "LEGACY_INSTALL_DIR", Path(temp_dir) / "LegacyAgent")
+    monkeypatch.setattr(agent_installer, "resolve_script_path", lambda name: Path(name))
+    monkeypatch.setattr(agent_installer, "resolve_executable_path", lambda _: install_dir / "ITInventAgent.exe")
+    monkeypatch.setattr(agent_installer, "stop_scheduled_task", lambda task_name, logger=None: 0)
+    monkeypatch.setattr(agent_installer, "stop_agent_processes", lambda **kwargs: [])
+
+    calls = []
+    monkeypatch.setattr(agent_installer, "_run_powershell_script", lambda script, args: calls.append((Path(script).name, list(args))))
+
+    args = type("Args", (), {
+        "install_dir": str(install_dir), "env_file_path": "", "task_name": "HUB-IT Agent", "repeat_minutes": 60,
+        "itinv_agent_server_url": "https://hub.example/api/v1/inventory", "itinv_agent_api_key": "secure-token",
+        "scan_agent_server_base": "https://hub.example/api/v1/scan", "scan_agent_api_key": "scan-token",
+    })()
+
+    assert agent_installer.run_msi_install(args, agent.logging) == 0
+
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "ITINV_TELEGRAM_PROBE_ENABLED=0" in env_text
+    assert "ITINV_MAX_PROBE_ENABLED=0" in env_text
+    removed = [call_args[1] for name, call_args in calls if name == "uninstall_probe_task.ps1"]
+    assert removed == [agent_installer.TELEGRAM_PROBE_TASK_NAME, agent_installer.MAX_PROBE_TASK_NAME]
+    registered = {name for name, _ in calls}
+    assert "install_telegram_probe_task.ps1" not in registered
+    assert "install_max_probe_task.ps1" not in registered
+
+
 def test_agent_installer_fresh_install_uses_public_urls_with_embedded_keys():
     values = agent_installer.build_runtime_env_values(
         {},
@@ -553,6 +612,8 @@ def test_agent_installer_run_msi_install_writes_env_and_calls_task_script(monkey
     monkeypatch.setattr(agent_installer, "stop_agent_processes", lambda **kwargs: captured.setdefault("stopped_processes", kwargs) or [222, 333])
 
     def fake_run_ps(script, args):
+        if len(args) == 2 and args[0] == "-TaskName":
+            return  # disabled-probe task removal; this test follows the main agent task script
         captured["script"] = script
         captured["args"] = list(args)
 
