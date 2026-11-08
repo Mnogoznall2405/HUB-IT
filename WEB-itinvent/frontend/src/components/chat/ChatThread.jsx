@@ -4,6 +4,7 @@ import {
   Badge,
   Box,
   Button,
+  ButtonBase,
   CircularProgress,
   IconButton,
   Stack,
@@ -57,6 +58,7 @@ const LazyChatEmojiPanel = lazy(() => import('./ChatEmojiPanel'));
 const COMPOSER_STICK_DISTANCE_PX = CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX;
 // Д3/Д5: центрированная колонка ленты — 728px в чатах, 768px в AI-пространстве.
 const THREAD_CONTENT_MAX_WIDTH = 728;
+const SUGGESTIONS_STRIP_RESERVE_PX = 52;
 const AI_THREAD_CONTENT_MAX_WIDTH = 768;
 // Панель эмодзи/стикеров — всегда поповер над полем ввода, без сжатия ленты.
 const DESKTOP_EMOJI_POPOVER_WIDTH = 'min(384px, calc(100% - 24px))';
@@ -526,6 +528,12 @@ function ChatThread({
     keyboardInset,
     selectionMode,
   });
+  // Чипы подсказок стоят вплотную над доком композера (его высота измеряется), а не на отступе кнопки «вниз».
+  const suggestionsBottomOffset = Math.round(
+    Math.max(Number(composerHeight || 0), compactMobile ? 56 : 52)
+    + (compactMobile ? Math.max(0, Number(keyboardInset || 0)) : 0)
+    + 8,
+  );
   const jumpFabSize = compactMobile
     ? JUMP_TO_LATEST_FAB_SIZE_PX.mobile
     : JUMP_TO_LATEST_FAB_SIZE_PX.desktop;
@@ -613,12 +621,36 @@ function ChatThread({
     else onMessageTextChange?.(value);
     window.requestAnimationFrame(() => composerRef?.current?.focus?.());
   }, [composerRef, composerTextBridge, onMessageTextChange]);
+  // Подсказки следующего шага от ассистента (карточка ai.choice.reply kind=suggestions) — чипы над композером,
+  // пока это последнее сообщение ленты и карточка не использована.
+  const suggestionsMessage = useMemo(() => {
+    const list = Array.isArray(messages) ? messages : [];
+    const last = list[list.length - 1];
+    const card = last?.action_card;
+    if (!isAiConversation || !last || last.is_own || !card || editingMessage) return null;
+    if (card.action_type !== 'ai.choice.reply' || card.status !== 'pending') return null;
+    if (card.preview?.kind !== 'suggestions') return null;
+    const choices = (Array.isArray(card.preview?.choices) ? card.preview.choices : [])
+      .filter((choice) => choice?.id && choice?.label);
+    return choices.length > 0 ? { message: last, card, choices } : null;
+  }, [editingMessage, isAiConversation, messages]);
+  const [suggestionBusyId, setSuggestionBusyId] = useState('');
+  const pickSuggestion = useCallback(async (choice) => {
+    if (!suggestionsMessage || typeof onConfirmAction !== 'function' || suggestionBusyId) return;
+    setSuggestionBusyId(String(choice.id));
+    try {
+      await onConfirmAction(suggestionsMessage.card, suggestionsMessage.message, { choice: choice.id });
+    } finally {
+      setSuggestionBusyId('');
+    }
+  }, [onConfirmAction, suggestionBusyId, suggestionsMessage]);
   const previousAiRunStatusRef = useRef('');
+  // Чипы подсказок лежат поверх ленты: оставляем под ними место, чтобы не закрывать последний ответ.
   const scrollBottomPadding = getChatThreadBottomPadding({
     compactMobile,
     keyboardInset,
     composerHeight,
-  });
+  }) + (suggestionsMessage ? SUGGESTIONS_STRIP_RESERVE_PX : 0);
   const messageCount = Array.isArray(messages) ? messages.length : 0;
 
   // R21: the "Непрочитанные сообщения" divider is pinned to the first unread
@@ -1592,7 +1624,7 @@ function ChatThread({
             pt: { xs: 0.5, md: density.threadScrollPtMd || 1.8 },
             pb: {
               xs: `${scrollBottomPadding}px`,
-              md: `${density.threadScrollPbMd || 18}px`,
+              md: `${(density.threadScrollPbMd || 18) + (suggestionsMessage ? SUGGESTIONS_STRIP_RESERVE_PX : 0)}px`,
             },
             scrollPaddingBottom: {
               xs: `${Math.max(24, scrollBottomPadding + 16)}px`,
@@ -1759,6 +1791,76 @@ function ChatThread({
           </Box>
         </Box>
       ) : null}
+
+      <AnimatePresence initial={false}>
+        {suggestionsMessage && !selectionMode ? (
+          <motion.div
+            key={suggestionsMessage.card.id}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            transition={{ duration: 0.18 }}
+            aria-label="Что дальше?"
+            data-testid="chat-ai-quick-replies"
+            // Плавают над низом ленты и композером (как кнопка «вниз»), а не отдельной полосой, режущей ленту.
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              bottom: `${suggestionsBottomOffset}px`,
+              zIndex: 3,
+              padding: compactMobile ? '0 10px' : '0 16px',
+              pointerEvents: 'none',
+            }}
+          >
+            <Box
+              sx={{
+                pointerEvents: 'auto',
+                // Та же колонка, что у композера, чтобы чипы начинались ровно с его левого края.
+                maxWidth: compactMobile ? '100%' : `${THREAD_CONTENT_MAX_WIDTH}px`,
+                mx: 'auto',
+                display: 'flex',
+                flexWrap: compactMobile ? 'nowrap' : 'wrap',
+                overflowX: compactMobile ? 'auto' : 'visible',
+                gap: 0.8,
+              }}
+            >
+              {suggestionsMessage.choices.map((choice) => (
+                <ButtonBase
+                  key={choice.id}
+                  data-testid="chat-ai-quick-reply"
+                  disabled={Boolean(suggestionBusyId)}
+                  onClick={() => pickSuggestion(choice)}
+                  sx={{
+                    flexShrink: 0,
+                    minHeight: 36,
+                    px: 1.8,
+                    borderRadius: 999,
+                    fontFamily: 'inherit',
+                    fontSize: 13.5,
+                    fontWeight: 500,
+                    lineHeight: 1.2,
+                    color: theme.palette.mode === 'dark' ? '#e6edf5' : '#1f2933',
+                    bgcolor: theme.palette.mode === 'dark' ? '#17212b' : '#ffffff',
+                    boxShadow: '0 1px 3px rgba(15, 23, 42, 0.16)',
+                    transition: 'transform 120ms ease, box-shadow 120ms ease, color 120ms ease',
+                    '&:hover': {
+                      color: ui.accentText || theme.palette.primary.main,
+                      transform: 'translateY(-1px)',
+                      boxShadow: '0 4px 12px rgba(15, 23, 42, 0.22)',
+                    },
+                    '&:active': { transform: 'translateY(0)' },
+                    '&.Mui-disabled': { opacity: 0.55 },
+                    '&.Mui-focusVisible': { outline: `2px solid ${ui.accentText || theme.palette.primary.main}`, outlineOffset: 2 },
+                  }}
+                >
+                  {suggestionBusyId === String(choice.id) ? '…' : choice.label}
+                </ButtonBase>
+              ))}
+            </Box>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
 
       {aiAgentReadOnly || postingRestricted || viewerRestricted ? (
         <Box

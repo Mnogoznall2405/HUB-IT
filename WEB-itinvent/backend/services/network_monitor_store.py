@@ -91,6 +91,11 @@ class MonitoringStore:
                 "updated_at": utc(row.updated_at).isoformat()}
 
     @staticmethod
+    def is_present(row):
+        # A port the device stopped reporting stays stored (settings, history) but leaves lists and polling.
+        return not (row.current or {}).get("absent_since")
+
+    @staticmethod
     def interface_data(row):
         return {"id": row.id, "name": row.name, "snmp_index": row.snmp_index,
                 "settings": row.settings, "current": row.current}
@@ -239,7 +244,7 @@ class MonitoringStore:
             interfaces = list(session.scalars(select(MonitoringInterface).where(
                 MonitoringInterface.target_id.in_([row["id"] for row in targets])).order_by(MonitoringInterface.snmp_index)))
             self._attach_outages(session, targets, interfaces)
-            self._attach_summaries(session, targets, interfaces, now)
+            self._attach_summaries(session, targets, [row for row in interfaces if self.is_present(row)], now)
             return targets
 
     def _attach_summaries(self, session, targets, interfaces, now):
@@ -276,7 +281,7 @@ class MonitoringStore:
         with self.session() as session:
             result = self.target_data(self.target_row(session, target_id))
             result["interfaces"] = [self.interface_data(row) for row in session.scalars(
-                select(MonitoringInterface).where(MonitoringInterface.target_id == target_id).order_by(MonitoringInterface.snmp_index))]
+                select(MonitoringInterface).where(MonitoringInterface.target_id == target_id).order_by(MonitoringInterface.snmp_index)) if self.is_present(row)]
             result["events"] = [self.event_data(row) for row in session.scalars(
                 select(MonitoringEvent).where(MonitoringEvent.target_id == target_id).order_by(MonitoringEvent.opened_at.desc()).limit(50))]
             self._attach_outages(session, [result])
@@ -295,7 +300,7 @@ class MonitoringStore:
         with self.session() as session:
             result = self.target_data(self.target_row(session, target_id))
             result["interfaces"] = [self.interface_data(row) for row in session.scalars(
-                select(MonitoringInterface).where(MonitoringInterface.target_id == target_id))] if include_interfaces else []
+                select(MonitoringInterface).where(MonitoringInterface.target_id == target_id)) if self.is_present(row)] if include_interfaces else []
             return result
 
     def save_interface(self, target_id, interface_id, settings, now=None):
@@ -352,8 +357,11 @@ class MonitoringStore:
         if not new:
             return
         buckets = {resolution: datetime.fromtimestamp(int(sample_at.timestamp()) // resolution * resolution, timezone.utc) for resolution in (300, 3600)}
+        # Full unique-index key (target, interface, resolution, bucket): without interface/resolution Postgres scans
+        # the whole target range of uq_monitoring_aggregate (~1/35 of a 400 MB index) on every recorded sample.
         aggregate_rows = list(session.scalars(select(MonitoringAggregate).where(
-            MonitoringAggregate.target_id == target_id, MonitoringAggregate.bucket_at.in_(list(buckets.values())))))
+            MonitoringAggregate.target_id == target_id, MonitoringAggregate.interface_id.in_([iid for iid, _, _ in new]),
+            MonitoringAggregate.resolution.in_(list(buckets)), MonitoringAggregate.bucket_at.in_(list(buckets.values())))))
         index = {(r.interface_id, r.resolution, utc(r.bucket_at)): r for r in aggregate_rows}
         for iid, values, interval in new:
             for resolution, bucket in buckets.items():
@@ -391,7 +399,7 @@ class MonitoringStore:
         minute5 = sample_at.replace(minute=sample_at.minute // 5 * 5)
         rollups = {(r.resolution, utc(r.bucket_at)): r for r in session.scalars(select(MonitoringAggregate).where(
             MonitoringAggregate.target_id == target_id, MonitoringAggregate.interface_id == "",
-            MonitoringAggregate.bucket_at.in_((hour, minute5))))}
+            MonitoringAggregate.resolution.in_((300, 3600)), MonitoringAggregate.bucket_at.in_((hour, minute5))))}
         for resolution, bucket in ((300, minute5), (3600, hour)):
             aggregate = rollups.get((resolution, bucket))
             if aggregate is None:
@@ -592,7 +600,7 @@ class MonitoringStore:
                                         title="Изменился uptime устройства", severity="info", opened_at=now, closed_at=now)
                 session.add(event)
             known = {item.name: item for item in session.scalars(select(MonitoringInterface).where(MonitoringInterface.target_id == row.id))} if has_snmp else {}
-            shown_item = summary_interface(sorted(known.values(), key=lambda interface: interface.snmp_index or 0))
+            shown_item = summary_interface(sorted((item for item in known.values() if self.is_present(item)), key=lambda interface: interface.snmp_index or 0))
             # Other ports are persisted rarely, so their counters are compared over that longer period.
             rate_window = max(180, unpinned_write_seconds() + 90)
             series = {"": {**{key: number(device.get(key)) for key in ("cpu_pct", "memory_pct", "temperature_c", "storage_pct")},
@@ -624,6 +632,7 @@ class MonitoringStore:
                     continue
                 rule(item.id, "identity", False if data.get("mac") else None, f"{name}: изменился MAC, нужна проверка привязки", delay=0)
                 updated = {**before, **data, "checked_at": now.isoformat()}
+                updated.pop("absent_since", None)
                 changed = (before.get("snmp_index") != data.get("snmp_index") or before.get("oper") != data.get("oper")
                            or (before.get("last_change_ticks") is not None and data.get("last_change_ticks") is not None and before["last_change_ticks"] != data["last_change_ticks"]))
                 if not full and (changed or data.get("oper") != 1):
@@ -645,7 +654,7 @@ class MonitoringStore:
                     changes.append(now.isoformat())
                     updated["state_changed_at"] = now.isoformat()
                 updated["link_changes"] = changes[-20:]
-                persisted = self._interface_write_needed(item, before, updated, item is shown_item, data, now)
+                persisted = bool(before.get("absent_since")) or self._interface_write_needed(item, before, updated, item is shown_item, data, now)
                 if persisted:
                     item.snmp_index, item.current = data["snmp_index"], updated
                 rule(item.id, "flapping", len(changes) >= 5 if valid_state and critical and data.get("admin") == 1 else (False if valid_state else None), f"{name}: частые изменения состояния линка", delay=0)
@@ -663,6 +672,17 @@ class MonitoringStore:
                 # A history point is the persisted row, so a port written rarely gets a point per write.
                 if full and persisted and config.get("history_enabled", True) and (data.get("oper") == 1 or critical):
                     series[item.id] = {key: number(updated.get(key)) for key in ("rx_bps", "tx_bps", "rx_bytes", "tx_bytes", "rx_seconds", "tx_seconds", "rx_util_pct", "tx_util_pct", "speed_bps", "rx_errors_pps", "tx_errors_pps", "rx_discards_pps", "tx_discards_pps", "oper")}
+            if snmp_ok and snapshot.get("discovered_at"):
+                # A complete port discovery is authoritative: ports it no longer lists stop being shown, polled and alerted.
+                reported = {str(data.get("name") or "").strip() for data in snapshot.get("interfaces", [])}
+                for name, item in known.items():
+                    if name in reported or not self.is_present(item):
+                        continue
+                    item.current = {**(item.current or {}), "absent_since": now.isoformat()}
+                    for key in [key for key in opened if key.startswith(f"{item.id}:")]:
+                        opened.pop(key).closed_at = now
+                    for key in [key for key in rules if key.startswith(f"{item.id}:")]:
+                        rules.pop(key)
             current["rules"] = rules
             current["open_events"] = len(opened)
             sample_age = (now - (timestamp(previous.get("sample_at")) or datetime.min.replace(tzinfo=timezone.utc))).total_seconds()

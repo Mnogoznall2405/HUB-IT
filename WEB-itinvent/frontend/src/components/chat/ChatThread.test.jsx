@@ -599,8 +599,9 @@ describe('ChatBubble', () => {
     expect(screen.getByText('Кому: ivanov@example.com')).toBeInTheDocument();
     expect(screen.getByText('Тема: Subject')).toBeInTheDocument();
     expect(screen.getByText('Вложения: 2')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('chat-ai-action-menu-button'));
-    fireEvent.click(screen.getByText('Изменить'));
+    // Почтовый черновик: «Изменить» стоит в карточке прямо, без меню «⋯».
+    expect(screen.queryByTestId('chat-ai-action-menu-button')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Изменить' }));
     expect(onEditAction).toHaveBeenCalledTimes(1);
   });
 
@@ -3115,6 +3116,51 @@ describe('ChatThread composer', () => {
     } finally {
       Element.prototype.getBoundingClientRect = originalGetBoundingClientRect;
     }
+  });
+
+  it('offers the assistant next-step suggestions as chips above the composer and sends the picked one', async () => {
+    const onConfirmAction = vi.fn().mockResolvedValue(undefined);
+    const suggestionCard = {
+      id: 'action-suggest',
+      action_type: 'ai.choice.reply',
+      status: 'pending',
+      preview: {
+        kind: 'suggestions',
+        title: 'Что дальше?',
+        choices: [{ id: '1', label: 'Показать списком' }, { id: '2', label: 'Только в сети' }],
+      },
+    };
+    const props = buildThreadProps({
+      activeConversation: { id: 'conv-ai', title: 'Corp Assistant', kind: 'ai', unread_count: 0 },
+      activeConversationId: 'conv-ai',
+      messages: [{
+        id: 'ai-answer', kind: 'text', body: 'Нашёл 3 устройства.', is_own: false,
+        conversation_id: 'conv-ai', conversation_seq: 2, created_at: '2026-11-06T09:00:00Z',
+        action_card: suggestionCard,
+      }],
+      onConfirmAction,
+    });
+    const { rerender } = renderWithTheme(<ChatThread {...props} />);
+
+    const strip = screen.getByTestId('chat-ai-quick-replies');
+    expect(within(strip).getAllByRole('button').map((button) => button.textContent)).toEqual(['Показать списком', 'Только в сети']);
+    // The bubble itself shows no second copy of the buttons.
+    expect(screen.queryByTestId('chat-ai-action-card')).not.toBeInTheDocument();
+
+    fireEvent.click(within(strip).getByRole('button', { name: 'Только в сети' }));
+    await waitFor(() => expect(onConfirmAction).toHaveBeenCalledTimes(1));
+    expect(onConfirmAction.mock.calls[0][0].id).toBe('action-suggest');
+    expect(onConfirmAction.mock.calls[0][2]).toEqual({ choice: '2' });
+
+    // A newer message from the employee retires the hints.
+    rerender(<ChatThread {...buildThreadProps({
+      ...props,
+      messages: [...props.messages, {
+        id: 'own-follow-up', kind: 'text', body: 'Только в сети', is_own: true,
+        conversation_id: 'conv-ai', conversation_seq: 3, created_at: '2026-11-06T09:01:00Z',
+      }],
+    })} />);
+    await waitFor(() => expect(screen.queryByTestId('chat-ai-quick-replies')).not.toBeInTheDocument());
   });
 
   it('shows the inline AI run status in the feed for queued and failed AI conversations', () => {

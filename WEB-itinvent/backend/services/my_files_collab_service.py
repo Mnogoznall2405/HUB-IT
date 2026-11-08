@@ -26,6 +26,7 @@ from backend.appdb.models import (
     AppUser,
 )
 from backend.services import onlyoffice_service as oo
+from backend.services.my_files_history_service import attach_history_locked, prepare_history
 from backend.services.my_files_service import (
     STATUS_READY,
     STORAGE_OPTIMIZED_MEDIA,
@@ -201,6 +202,7 @@ class MyFilesCollabService:
                 "revision": self._revision(session, row.id),
                 "role": role,
                 "is_owner": int(row.owner_user_id) == int(user_id),
+                "can_manage_access": self.files.may_manage_file_access_locked(session, row, user_id),
             }
 
     def rename_document(self, *, settings: oo.OnlyOfficeSettings, file_id: str, name: str,
@@ -265,6 +267,8 @@ class MyFilesCollabService:
         ).all()
         for version in versions[: max(0, len(versions) - keep)]:
             self.files._release_blob_locked(session, version.blob_id, pending_deletes)
+            if version.office_changes_blob_id:
+                self.files._release_blob_locked(session, version.office_changes_blob_id, pending_deletes)
             session.delete(version)
 
     def _resolve_editor(self, session, row: AppMyFile, editor_user_ids: list[int]) -> tuple[int, str, bool]:
@@ -281,6 +285,45 @@ class MyFilesCollabService:
         return editor_id, _normalize_text(getattr(user, "username", "")) or f"user-{editor_id}", authorised
 
     def save_version(
+        self, *, file_id: str, document_key: str, spool_path: Path, editor_user_ids: list[int],
+        meta: MyFilesRequestMeta | None = None, history=None, changes_path: Path | None = None,
+    ) -> str:
+        prepared = None
+        owner_id = 0
+        try:
+            if history and changes_path:
+                with app_session(self.files._database_url_or_raise()) as session:
+                    row = self._live_row_locked(session, file_id)
+                    owner_id = int(row.owner_user_id)
+                    eligible = (self._session_mode(session, row, document_key) != "stale"
+                                and self._resolve_editor(session, row, editor_user_ids)[2])
+                if eligible:
+                    try:
+                        prepared = prepare_history(self.files, owner_id=owner_id, history=history, changes_path=changes_path)
+                    except Exception as exc:
+                        # The edited document remains more important than optional editing data.
+                        logger.warning("office.history_archive_unavailable file_id=%s reason=%s", file_id, type(exc).__name__)
+            result = self._save_version(file_id=file_id, document_key=document_key, spool_path=spool_path,
+                editor_user_ids=editor_user_ids, meta=meta, prepared_history=prepared)
+            if result == "unchanged" and prepared:
+                pending = []
+                with app_session(self.files._database_url_or_raise()) as session:
+                    row = session.scalars(select(AppMyFile).where(AppMyFile.id == file_id).with_for_update()).first()
+                    row = self._live_row_locked(session, file_id)
+                    if self._session_mode(session, row, document_key) == "same" and self._resolve_editor(session, row, editor_user_ids)[2]:
+                        transition = session.scalars(select(AppMyFileVersion).where(
+                            AppMyFileVersion.file_id == file_id, AppMyFileVersion.session_key == document_key)
+                            .order_by(AppMyFileVersion.version_no.desc())).first()
+                        if transition:
+                            attach_history_locked(self.files, session, row=row, transition=transition,
+                                prepared=prepared, pending_deletes=pending)
+                self.files._delete_physical_files(pending)
+            return result
+        finally:
+            if prepared:
+                prepared.cleanup(self.files, owner_id)
+
+    def _save_version(
         self,
         *,
         file_id: str,
@@ -288,6 +331,7 @@ class MyFilesCollabService:
         spool_path: Path,
         editor_user_ids: list[int],
         meta: MyFilesRequestMeta | None = None,
+        prepared_history=None,
     ) -> str:
         """Store edited content as the new current version: ``saved``, ``unchanged``, ``stale`` or ``forbidden``."""
         files = self.files
@@ -350,12 +394,18 @@ class MyFilesCollabService:
                 ).first()
                 if row is None or row.deleted_at is not None or row.status != STATUS_READY:
                     raise MyFilesNotFoundError("File not found")
+                self._live_row_locked(session, normalized_id)
+                editor_id, editor_name, authorised = self._resolve_editor(session, row, editor_user_ids)
+                if not authorised:
+                    return "forbidden"
                 mode = self._session_mode(session, row, document_key)
                 if mode == "stale":
                     logger.warning("office.save_stale file_id=%s", normalized_id)
                     return "stale"
+                if _normalize_text(row.original_sha256).lower() == new_sha:
+                    return "unchanged"
                 revision = self._revision(session, normalized_id)
-                growth = new_size - int(row.original_size_bytes or 0)
+                growth = new_size if mode == "new" else new_size - int(row.original_size_bytes or 0)
                 if growth > 0 and (
                     files._quota_used_locked(session, owner_user_id) + growth
                     > files._user_quota_limit_locked(session, owner_user_id)
@@ -399,8 +449,7 @@ class MyFilesCollabService:
                 old_size = int(row.original_size_bytes or 0)
                 if mode == "new":
                     # The file's reference to the old content moves into the history row.
-                    session.add(
-                        AppMyFileVersion(
+                    transition = AppMyFileVersion(
                             id=uuid.uuid4().hex,
                             file_id=normalized_id,
                             version_no=revision + 1,
@@ -411,16 +460,18 @@ class MyFilesCollabService:
                             created_by_user_id=editor_id,
                             created_by_username=editor_name[:50],
                             created_at=now,
-                        )
                     )
+                    session.add(transition)
                     session.flush()
                     self._point_row_at_blob(row, blob, size=new_size)
-                    self._prune_versions_locked(session, normalized_id, pending_deletes)
                     detail = (
                         f"Изменения сохранены, прежнее содержимое осталось как версия №{revision + 1}. "
                         f"Размер: {_size_label(old_size)} → {_size_label(new_size)}."
                     )
                 else:
+                    transition = session.scalars(select(AppMyFileVersion).where(
+                        AppMyFileVersion.file_id == normalized_id, AppMyFileVersion.session_key == document_key)
+                        .order_by(AppMyFileVersion.version_no.desc())).first()
                     # Autosave of an open session: replace the content saved earlier in that session.
                     self._point_row_at_blob(row, blob, size=new_size)
                     files._release_blob_locked(session, previous_blob_id, pending_deletes)
@@ -428,6 +479,10 @@ class MyFilesCollabService:
                         f"Дополнены изменения той же сессии редактирования. "
                         f"Размер: {_size_label(old_size)} → {_size_label(new_size)}."
                     )
+                if transition:
+                    attach_history_locked(files, session, row=row, transition=transition,
+                        prepared=prepared_history, pending_deletes=pending_deletes)
+                self._prune_versions_locked(session, normalized_id, pending_deletes)
                 files._queue_preview_for_row_locked(session, row)
                 files._write_audit(
                     session,
@@ -565,6 +620,8 @@ class MyFilesCollabService:
             )
             restored_size = int(version.original_size_bytes or 0)
             restored_no = int(version.version_no)
+            if version.office_changes_blob_id:
+                files._release_blob_locked(session, version.office_changes_blob_id, pending_deletes)
             session.delete(version)
             session.flush()
             self._point_row_at_blob(row, blob, size=restored_size)
@@ -587,9 +644,28 @@ class MyFilesCollabService:
 
     def _owned_row_locked(self, session, file_id: str, owner_user_id: int) -> AppMyFile:
         row = self._live_row_locked(session, file_id)
-        if int(row.owner_user_id) != int(owner_user_id):
+        if not self.files.may_manage_file_access_locked(session, row, owner_user_id):
             raise MyFilesNotFoundError("File not found")
         return row
+
+    def collaborator_settings(self, *, file_id: str, user_id: int) -> dict[str, Any]:
+        with app_session(self.files._database_url_or_raise()) as session:
+            row = self._owned_row_locked(session, file_id, user_id)
+            library = self.files._library_by_owner_locked(session, row.owner_user_id)
+            owner_id = int(row.uploaded_by_user_id or 0) if library else int(row.owner_user_id)
+            owner = session.get(AppUser, owner_id) if owner_id > 0 else None
+            chain = self.files._folder_chain_locked(session, row.folder_id, row.owner_user_id)
+            inherited = bool(library)
+            if chain and self.files._folder_shares_present(session):
+                inherited = inherited or bool(session.scalar(select(AppMyFileFolderCollaborator.user_id)
+                    .where(AppMyFileFolderCollaborator.folder_id.in_(chain)).limit(1)))
+            return {
+                "items": self._collaborators_locked(session, row.id),
+                "owner": {"user_id": owner_id, "username": owner.username, "full_name": owner.full_name or "", "role": "owner"} if owner else None,
+                "owner_kind": "author" if library else "owner",
+                "inherited_access": inherited,
+                "library_name": _normalize_text(library.name) if library else "",
+            }
 
     def list_collaborators(self, *, file_id: str, owner_user_id: int) -> list[dict[str, Any]]:
         database_url = self.files._database_url_or_raise()
@@ -655,7 +731,8 @@ class MyFilesCollabService:
 
     def _owned_folder_locked(self, session, folder_id: str, owner_user_id: int) -> AppMyFileFolder:
         folder = session.get(AppMyFileFolder, _normalize_text(folder_id))
-        if folder is None or folder.deleted_at is not None or int(folder.owner_user_id) != int(owner_user_id):
+        if (folder is None or folder.deleted_at is not None or int(folder.owner_user_id) < 0
+                or (int(folder.owner_user_id) != int(owner_user_id) and not self.files.is_admin_locked(session, owner_user_id))):
             raise MyFilesNotFoundError("Folder not found")
         return folder
 
@@ -700,10 +777,10 @@ class MyFilesCollabService:
         meta: MyFilesRequestMeta | None = None,
     ) -> list[dict[str, Any]]:
         """Replace the access list of a folder: every file inside, now and later, gets the member's role."""
-        wanted = self._wanted_members(members, owner_user_id)
         database_url = self.files._database_url_or_raise()
         with app_session(database_url) as session:
             folder = self._owned_folder_locked(session, folder_id, owner_user_id)
+            wanted = self._wanted_members(members, int(folder.owner_user_id))
             if not self.files._folder_shares_present(session):
                 raise MyFilesValidationError("Folder sharing is not available yet")
             self._require_active_users(session, wanted)
@@ -773,10 +850,11 @@ class MyFilesCollabService:
         meta: MyFilesRequestMeta | None = None,
     ) -> list[dict[str, Any]]:
         """Replace the whole list: ``members`` are ``(user_id, role)`` pairs, the last pair of a user wins."""
-        wanted = self._wanted_members(members, owner_user_id)
         database_url = self.files._database_url_or_raise()
         with app_session(database_url) as session:
             row = self._owned_row_locked(session, file_id, owner_user_id)
+            principal = int(row.owner_user_id) if int(row.owner_user_id) > 0 else int(row.uploaded_by_user_id or 0)
+            wanted = self._wanted_members(members, principal)
             self._require_active_users(session, wanted)
             current = {
                 int(item.user_id): item

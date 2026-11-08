@@ -128,7 +128,7 @@ function MemberRow({ member, isNew, onRole, onRemove }) {
   );
 }
 
-export default function MyFilesCollaboratorsDialog({ open, file, folder, onClose, onShareLink }) {
+export default function MyFilesCollaboratorsDialog({ open, file, folder, onClose, onShareLink, onSaved }) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const isFolder = Boolean(folder);
@@ -141,6 +141,7 @@ export default function MyFilesCollaboratorsDialog({ open, file, folder, onClose
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [accessInfo, setAccessInfo] = useState({});
   const generation = useRef(0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -154,6 +155,7 @@ export default function MyFilesCollaboratorsDialog({ open, file, folder, onClose
     if (!open || !fileId) return undefined;
     const controller = new AbortController();
     setLoaded(false);
+    setAccessInfo({});
     setSaving(false);
     setAddingGroup(false);
     setMembers([]);
@@ -170,6 +172,7 @@ export default function MyFilesCollaboratorsDialog({ open, file, folder, onClose
         if (!Array.isArray(data?.items)) throw new Error('HUB не подтвердил текущий список доступа.');
         const items = data.items.map((item) => toMember(item));
         setMembers(items);
+        setAccessInfo(data);
         setInitialIds(new Set(items.map((item) => item.id)));
         setLoaded(true);
       })
@@ -250,9 +253,12 @@ export default function MyFilesCollaboratorsDialog({ open, file, folder, onClose
     setError('');
     try {
       const payload = members.map((item) => ({ user_id: item.id, role: item.role }));
-      if (isFolder) await myFilesOfficeAPI.setFolderCollaborators(fileId, payload);
-      else await myFilesOfficeAPI.setCollaborators(fileId, payload);
-      if (current === generation.current) onClose?.(true);
+      const result = isFolder ? await myFilesOfficeAPI.setFolderCollaborators(fileId, payload)
+        : await myFilesOfficeAPI.setCollaborators(fileId, payload);
+      if (current === generation.current) {
+        if (Array.isArray(result?.items)) onSaved?.({ ...accessInfo, items: result.items });
+        onClose?.(true);
+      }
     } catch (err) {
       if (current === generation.current) setError(errorMessage(err, 'Не удалось сохранить доступ'));
     } finally {
@@ -397,7 +403,7 @@ export default function MyFilesCollaboratorsDialog({ open, file, folder, onClose
             <Box>
               <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
                 <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Кому открыт доступ</Typography>
-                <Chip size="small" label={members.length + 1} />
+                <Chip size="small" label={`Прямых приглашений: ${members.length}`} />
               </Stack>
               <Stack
                 spacing={0.25}
@@ -405,9 +411,11 @@ export default function MyFilesCollaboratorsDialog({ open, file, folder, onClose
                 sx={{ maxHeight: 300, overflowY: 'auto', mx: -0.5 }}
               >
                 <Stack direction="row" spacing={1.25} alignItems="center" sx={{ px: 1.5, py: 0.75 }}>
-                  <PersonAvatar name="Вы" size={34} />
-                  <Typography variant="body2" sx={{ fontWeight: 600, flex: 1 }}>Вы</Typography>
-                  <Chip size="small" variant="outlined" label="Владелец" />
+                  <PersonAvatar name={accessInfo.owner ? userLabel(accessInfo.owner) : 'Владелец'} size={34} />
+                  <Typography variant="body2" sx={{ fontWeight: 600, flex: 1 }}>
+                    {accessInfo.owner ? userLabel(accessInfo.owner) : accessInfo.owner_kind === 'author' ? 'Автор не указан' : 'Владелец'}
+                  </Typography>
+                  <Chip size="small" variant="outlined" label={accessInfo.owner_kind === 'author' ? 'Автор файла' : 'Владелец'} />
                 </Stack>
                 {members.map((item) => (
                   <MemberRow
@@ -421,12 +429,16 @@ export default function MyFilesCollaboratorsDialog({ open, file, folder, onClose
               </Stack>
               {loaded && members.length === 0 ? (
                 <Typography variant="body2" color="text.secondary" sx={{ px: 1.5, pt: 1 }}>
-                  Пока доступ есть только у вас.
+                  Прямые приглашения не добавлены.
                 </Typography>
               ) : null}
             </Box>
 
             {info ? <Alert severity="info">{info}</Alert> : null}
+            {accessInfo.inherited_access ? <Alert severity="info">
+              Доступ также предоставлен через {accessInfo.library_name ? `общую папку «${accessInfo.library_name}»` : 'родительскую папку'}.
+              Здесь изменяются только прямые приглашения к файлу. Удаление приглашения не отменяет доступ через папку.
+            </Alert> : null}
             {error ? <Alert severity="error">{error}</Alert> : null}
           </Stack>
         )}

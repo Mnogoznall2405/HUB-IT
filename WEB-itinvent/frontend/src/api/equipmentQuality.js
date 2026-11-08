@@ -20,6 +20,16 @@ export const equipmentQualityAPI = {
     return response.data;
   },
 
+  // Правка прямо из строки панели: сервер сам приводит MAC к виду AA:BB:CC:DD:EE:FF.
+  setMac: async ({ invNo, mac, dbId = '' }) => {
+    const response = await apiClient.patch(
+      `/equipment/${encodeURIComponent(String(invNo))}`,
+      { mac_address: mac },
+      dbId ? { headers: { 'X-Database-ID': dbId } } : undefined,
+    );
+    return response.data;
+  },
+
   exportCsv: async ({ rule, q = '', dbId = '' }) => {
     const response = await apiClient.get('/equipment/quality/issues/export', {
       params: { rule, q: q || undefined, db_id: dbId || undefined },

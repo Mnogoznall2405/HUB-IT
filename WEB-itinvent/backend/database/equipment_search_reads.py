@@ -1,7 +1,7 @@
 """
 Read-only equipment search queries for SQL Server inventory data.
 """
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, Sequence
 
 from backend.database.connection import get_db as _default_get_db
 
@@ -190,6 +190,23 @@ def _apply_type_filter(query: str) -> str:
         1,
     )
 
+# Optional branch scope (an IT owner sees only his branches): injects
+# "i.BRANCH_NO IN (?, ...)" right after the CI_TYPE predicate; its params come first.
+def _apply_branch_filter(query: str, branch_nos: Sequence[int]) -> tuple:
+    numbers = tuple(int(number) for number in branch_nos)
+    if not numbers:
+        return query.replace("WHERE i.CI_TYPE = 1 AND ", "WHERE i.CI_TYPE = 1 AND 1 = 0 AND ", 1), ()
+    placeholders = ", ".join("?" for _ in numbers)
+    return (
+        query.replace(
+            "WHERE i.CI_TYPE = 1 AND ",
+            f"WHERE i.CI_TYPE = 1 AND i.BRANCH_NO IN ({placeholders}) AND ",
+            1,
+        ),
+        numbers,
+    )
+
+
 # Single-field search scope for the universal bar ("искать только по …").
 # Values are full WHERE fragments with ? placeholders — an allowlist, never
 # raw column interpolation from the client.
@@ -221,6 +238,7 @@ def search_equipment_by_serial(
     db_id: Optional[str] = None,
     *,
     limit: int = 200,
+    branch_nos: Optional[Sequence[int]] = None,
     get_db_fn: Optional[Callable[[Optional[str]], Any]] = None,
 ) -> List[dict]:
     """
@@ -228,17 +246,17 @@ def search_equipment_by_serial(
     """
     db = _get_db(db_id, get_db_fn)
     term = str(search_term or "").strip()
-    if term.isdigit():
-        pattern = f"%{term}%"
-        return db.execute_query(
-            QUERY_SEARCH_BY_DIGIT.format(limit=int(limit)),
-            (int(term), pattern, pattern, pattern, pattern),
-        )
     pattern = f"%{term}%"
-    return db.execute_query(
-        QUERY_SEARCH_BY_SERIAL.format(limit=int(limit)),
-        (pattern, pattern, pattern),
-    )
+    if term.isdigit():
+        query = QUERY_SEARCH_BY_DIGIT.format(limit=int(limit))
+        params: tuple = (int(term), pattern, pattern, pattern, pattern)
+    else:
+        query = QUERY_SEARCH_BY_SERIAL.format(limit=int(limit))
+        params = (pattern, pattern, pattern)
+    if branch_nos is not None:
+        query, branch_params = _apply_branch_filter(query, branch_nos)
+        params = branch_params + params
+    return db.execute_query(query, params)
 
 
 def search_equipment_universal(
@@ -249,6 +267,7 @@ def search_equipment_universal(
     *,
     type_no: Optional[int] = None,
     field: Optional[str] = None,
+    branch_nos: Optional[Sequence[int]] = None,
     get_db_fn: Optional[Callable[[Optional[str]], Any]] = None,
 ) -> dict:
     """
@@ -309,6 +328,13 @@ def search_equipment_universal(
         count_params = (type_no_int,) + count_params
         select_query = _apply_type_filter(select_query)
         select_params = (type_no_int,) + select_params
+
+    if branch_nos is not None:
+        # Applied last: its predicate and params end up in front of the type/term ones.
+        count_query, count_branch_params = _apply_branch_filter(count_query, branch_nos)
+        select_query, select_branch_params = _apply_branch_filter(select_query, branch_nos)
+        count_params = count_branch_params + count_params
+        select_params = select_branch_params + select_params
 
     # Errors must propagate: a swallowed failure returned HTTP 200 with an
     # empty list, which the UI rendered as "nothing found" instead of the

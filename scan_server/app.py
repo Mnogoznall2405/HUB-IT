@@ -26,6 +26,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from agent_version import SCAN_ANALYSIS_VERSION, SCAN_OCR_PAGE_LIMIT, SCAN_TEXT_PAGE_LIMIT
 
 from .agent_package import package_payload, resolve_agent_package
+from .install_packages import InstallPackageError, install_task_payload, resolve_install_package
 from .config import config
 from .database import ScanStore
 from .memory_guard import get_process_rss_bytes
@@ -659,8 +660,36 @@ def _get_ingest_semaphore() -> asyncio.Semaphore:
     return ingest_semaphore
 
 
+@asynccontextmanager
+async def _ingest_slot():
+    """Ingest admission with a bounded wait.
+
+    Without a cap a request waits for a slot until the agent's HTTP timeout hits and the agent drops the
+    connection (ClientDisconnect) - the server never learns the event was abandoned and the agent counts
+    a failure. A bounded wait answers 429 + Retry-After instead, which the agent handles as backpressure.
+    """
+    semaphore = _get_ingest_semaphore()
+    try:
+        await asyncio.wait_for(semaphore.acquire(), timeout=float(config.ingest_admission_wait_sec))
+    except asyncio.TimeoutError:
+        retry_after = int(config.ingest_retry_after_sec)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "error": "scan_ingest_admission_timeout",
+                "message": "All ingest slots are busy",
+                "retry_after_sec": retry_after,
+            },
+            headers={"Retry-After": str(retry_after)},
+        ) from None
+    try:
+        yield
+    finally:
+        semaphore.release()
+
+
 async def _run_ingest(data: Dict[str, Any], *, request_ip: str, pdf_bytes: Optional[bytes] = None) -> Dict[str, Any]:
-    async with _get_ingest_semaphore():
+    async with _ingest_slot():
         return await _run_ingest_admitted(data, request_ip=request_ip, pdf_bytes=pdf_bytes)
 
 
@@ -1072,7 +1101,7 @@ async def ingest(
     _check_agent_key(x_api_key)
     # Admission first: a JSON body may carry base64 of a whole document, so it is read and parsed
     # only once an ingest slot is free (waiting requests stay unread in the transport buffers).
-    async with _get_ingest_semaphore():
+    async with _ingest_slot():
         try:
             raw = json.loads(await _read_body_limited(request, _ingest_json_max_bytes()))
             data = _model_dump(IngestPayload(**raw)) if isinstance(raw, dict) else None
@@ -1110,7 +1139,7 @@ async def ingest_pdf_slice(
     metadata["metadata"] = details
     # Admission first: the body is read into memory only once an ingest slot is free, so queued
     # requests wait with a spooled file instead of each holding up to pdf_max_bytes in RAM.
-    async with _get_ingest_semaphore():
+    async with _ingest_slot():
         pdf_bytes = await pdf_slice.read(int(config.pdf_max_bytes) + 1)
         if not pdf_bytes:
             raise HTTPException(status_code=400, detail="pdf_slice is empty")
@@ -1152,7 +1181,7 @@ async def ingest_document(
         raise HTTPException(status_code=415, detail="Unsupported document type")
     # Admission first: the body is read into memory only once an ingest slot is free, so queued
     # requests wait with a spooled file instead of each holding up to pdf_max_bytes in RAM.
-    async with _get_ingest_semaphore():
+    async with _ingest_slot():
         document_bytes = await document.read(int(config.pdf_max_bytes) + 1)
         if not document_bytes:
             raise HTTPException(status_code=400, detail="document is empty")
@@ -1243,16 +1272,51 @@ def download_agent_package(
     )
 
 
+def _install_error_status(exc: InstallPackageError) -> int:
+    text = str(exc)
+    if text.startswith("Unknown package"):
+        return status.HTTP_404_NOT_FOUND
+    if text.startswith("Invalid package_id"):
+        return status.HTTP_400_BAD_REQUEST
+    return status.HTTP_503_SERVICE_UNAVAILABLE
+
+
+@app.get("/api/v1/scan/install-package")
+def download_install_package(
+    package_id: str = Query(..., min_length=1, max_length=64),
+    x_api_key: Optional[str] = Header(None),
+) -> FileResponse:
+    """Stream a package from the install manifest to agents (API key auth)."""
+    _check_agent_key(x_api_key)
+    try:
+        info = resolve_install_package(config.install_manifest_path, package_id)
+    except InstallPackageError as exc:
+        raise HTTPException(status_code=_install_error_status(exc), detail=str(exc)) from exc
+    return FileResponse(
+        path=str(info.local_path),
+        filename=info.filename,
+        media_type="application/octet-stream",
+        headers={"X-Install-Package-Sha256": info.sha256},
+    )
+
+
 @app.post("/api/v1/scan/tasks")
 def create_task(
     payload: TaskCreatePayload,
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_TASKS)),
 ) -> Dict[str, Any]:
     command = str(payload.command or "").strip().lower()
-    if command not in {"ping", "scan_now", "self_update"}:
+    if command not in {"ping", "scan_now", "self_update", "install_package", "disable_message_probes"}:
         raise HTTPException(status_code=400, detail="Unsupported command")
 
     task_payload = payload.payload if isinstance(payload.payload, dict) else {}
+    if command == "install_package":
+        # Only the package id is taken from the caller; file, hash, kind and arguments come from the manifest.
+        try:
+            info = resolve_install_package(config.install_manifest_path, str(task_payload.get("package_id") or ""))
+        except InstallPackageError as exc:
+            raise HTTPException(status_code=_install_error_status(exc), detail=str(exc)) from exc
+        task_payload = install_task_payload(info)
     if command == "self_update":
         # Never trust client URL/hash вЂ” only server-side package config.
         try:

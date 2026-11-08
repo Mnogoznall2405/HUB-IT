@@ -100,7 +100,7 @@ async def test_devices_response_omits_credentials_and_debug(monkeypatch) -> None
         recent_limit=8,
         limit=1,
         db_id="main",
-        _=object(),
+        current_user=object(),
     )
 
     device = payload["grouped"]["Не указано"]["Не указано"][0]

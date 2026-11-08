@@ -23,6 +23,7 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import { LoadingSpinner } from '../../components/common';
 import { equipmentQualityAPI } from '../../api/equipmentQuality';
 import { equipmentPhotoOcrAPI } from '../../api/equipmentPhotoOcr';
+import { formatMacInput, isMacComplete } from './detailModel';
 
 const PAGE_SIZE = 50;
 const OCR_BATCH = 100;
@@ -31,6 +32,7 @@ const SUMMARY_ERROR = 'Не удалось загрузить панель ка�
 const ISSUES_ERROR = 'Не удалось загрузить список позиций.';
 const EXPORT_ERROR = 'Не удалось скачать CSV.';
 const OCR_RUN_ERROR = 'Не удалось запустить распознавание фото.';
+const MAC_SAVE_ERROR = 'Не удалось сохранить MAC-адрес.';
 
 // Правила про фото открывают карточку сразу на вкладке «Фото», остальные — на общей.
 const PHOTO_RULES = new Set(['no_photo', 'serial_photo_similar', 'serial_photo_mismatch']);
@@ -81,6 +83,39 @@ function RuleTile({ rule, onOpen }) {
   );
 }
 
+// Быстрая правка MAC прямо в строке: «Есть IP, нет MAC» — вписать; «MAC в неверном формате» — привести к AA:BB:….
+function MacQuickFix({ rule, row, saving, onSave }) {
+  const [value, setValue] = useState('');
+  if (rule === 'mac_invalid') {
+    if (!isMacComplete(row.mac_address)) return null;
+    const fixed = formatMacInput(row.mac_address);
+    return (
+      <Button size="small" variant="outlined" disabled={saving} onClick={() => onSave(row, fixed)}>
+        {`Исправить → ${fixed}`}
+      </Button>
+    );
+  }
+  if (rule !== 'ip_no_mac') return null;
+  return (
+    <Box sx={{ display: 'flex', gap: 0.75, alignItems: 'center' }}>
+      <TextField
+        size="small"
+        placeholder="AA:BB:CC:DD:EE:FF"
+        value={value}
+        onChange={(event) => setValue(formatMacInput(event.target.value))}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && isMacComplete(value) && !saving) onSave(row, value);
+        }}
+        inputProps={{ 'aria-label': 'MAC-адрес', autoCapitalize: 'characters', spellCheck: false }}
+        sx={{ width: 190 }}
+      />
+      <Button size="small" variant="contained" disabled={saving || !isMacComplete(value)} onClick={() => onSave(row, value)}>
+        Сохранить
+      </Button>
+    </Box>
+  );
+}
+
 // Охват распознавания серийников по фото; запуск пакета доступен администратору.
 function PhotoOcrPanel({ ocr, isAdmin, starting, onRun }) {
   if (!ocr || !ocr.store_available) return null;
@@ -123,7 +158,7 @@ function PhotoOcrPanel({ ocr, isAdmin, starting, onRun }) {
 
 // Панель качества данных: плитки правил → список нарушителей с открытием карточки и CSV.
 export default function EquipmentQualityDialog({
-  open, onClose, onOpenEquipment, dbId = '', isAdmin = false,
+  open, onClose, onOpenEquipment, dbId = '', isAdmin = false, canWrite = false,
   // Меняется, когда пользователь вернулся из карточки: данные перечитываются на месте.
   reloadToken = 0,
 }) {
@@ -142,9 +177,11 @@ export default function EquipmentQualityDialog({
   const [exporting, setExporting] = useState(false);
   const [ocr, setOcr] = useState(null);
   const [ocrStarting, setOcrStarting] = useState(false);
+  const [savingRowId, setSavingRowId] = useState(null);
   const summaryRequestRef = useRef(0);
   const issuesRequestRef = useRef(0);
   const ocrRunningRef = useRef(false);
+  const countersStaleRef = useRef(false);
 
   const loadOcr = useCallback(async () => {
     try {
@@ -271,6 +308,28 @@ export default function EquipmentQualityDialog({
   const handleBack = () => {
     setActiveRule(null);
     setError('');
+    // Rows were fixed in place: the tile counters are recounted when the list of rules is shown again.
+    if (countersStaleRef.current) {
+      countersStaleRef.current = false;
+      void loadSummary(true);
+    }
+  };
+
+  const handleSaveMac = async (row, mac) => {
+    if (savingRowId !== null) return;
+    setSavingRowId(row.item_id);
+    setError('');
+    try {
+      await equipmentQualityAPI.setMac({ invNo: row.inv_no || row.item_id, mac, dbId });
+      // The row no longer breaks the rule: drop it instead of reloading the whole page.
+      setRows((prev) => prev.filter((item) => item.item_id !== row.item_id));
+      setTotal((prev) => Math.max(0, prev - 1));
+      countersStaleRef.current = true;
+    } catch (err) {
+      setError(readError(err, MAC_SAVE_ERROR));
+    } finally {
+      setSavingRowId(null);
+    }
   };
 
   const handleExport = async () => {
@@ -391,10 +450,10 @@ export default function EquipmentQualityDialog({
                 <Paper
                   key={`${row.item_id}`}
                   variant="outlined"
-                  sx={{ p: 1, display: 'flex', alignItems: 'center', gap: 1 }}
+                  sx={{ p: 1, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 1 }}
                   data-testid="quality-issue-row"
                 >
-                  <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Box sx={{ minWidth: 0, flex: '1 1 220px' }}>
                     <Typography variant="subtitle2" noWrap title={row.model_name}>
                       {`${row.inv_no || row.item_id} · ${row.model_name || row.type_name || 'Без модели'}`}
                     </Typography>
@@ -412,6 +471,14 @@ export default function EquipmentQualityDialog({
                       </Typography>
                     ) : null}
                   </Box>
+                  {canWrite ? (
+                    <MacQuickFix
+                      rule={activeRule.rule}
+                      row={row}
+                      saving={savingRowId === row.item_id}
+                      onSave={(item, mac) => { void handleSaveMac(item, mac); }}
+                    />
+                  ) : null}
                   <Button
                     size="small"
                     onClick={() => onOpenEquipment?.(row.inv_no || row.item_id, { initialTab: tabForRule(activeRule.rule) })}

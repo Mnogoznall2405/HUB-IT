@@ -640,6 +640,7 @@ class MyFilesService:
         collaborators_count: int = 0,
         shared_with_me: bool = False,
         my_role: str = "",
+        viewer_user_id: int | None = None,
     ) -> dict[str, Any]:
         original_size = int(row.original_size_bytes or 0)
         stored_size = int(row.stored_size_bytes or 0)
@@ -673,6 +674,10 @@ class MyFilesService:
             "is_favorite": bool(getattr(row, "is_favorite", False)),
             "collaborators_count": int(collaborators_count or 0),
             "shared_with_me": bool(shared_with_me),
+            "can_manage_access": (
+                self.may_manage_file_access_locked(session, row, int(viewer_user_id or (0 if shared_with_me else row.owner_user_id)))
+                if session is not None else False
+            ),
             "my_role": _normalize_text(my_role),
             "owner_username": _normalize_text(row.owner_username) if shared_with_me else "",
             "folder_name": _normalize_text(folder_name),
@@ -695,7 +700,7 @@ class MyFilesService:
         if self._collab_tables_present(session):
             used += int(
                 session.execute(
-                    select(func.coalesce(func.sum(AppMyFileVersion.original_size_bytes), 0))
+                    select(func.coalesce(func.sum(AppMyFileVersion.original_size_bytes + AppMyFileVersion.office_changes_size_bytes), 0))
                     .join(AppMyFile, AppMyFile.id == AppMyFileVersion.file_id)
                     .where(
                         AppMyFile.owner_user_id == int(user_id),
@@ -804,8 +809,32 @@ class MyFilesService:
             ).all()
         }
 
+    @staticmethod
+    def is_admin_locked(session, user_id: int) -> bool:
+        """Use the active database identity; a library manager is not a platform administrator."""
+        uid = int(user_id)
+        if uid <= 0:
+            return False
+        key = ("my_files_admin", uid)
+        if key not in session.info:
+            user = session.get(AppUser, uid)
+            session.info[key] = bool(user and user.is_active and _normalize_text(user.role).lower() == "admin")
+        return bool(session.info[key])
+
+    def may_manage_file_access_locked(self, session, row: AppMyFile, user_id: int) -> bool:
+        uid = int(user_id)
+        if self.is_admin_locked(session, uid) or (uid > 0 and int(row.owner_user_id) == uid):
+            return True
+        return bool(int(row.owner_user_id) < 0 and int(row.uploaded_by_user_id or 0) == uid
+                    and self.library_access_role_locked(session, row.owner_user_id, uid))
+
+    def may_manage_folder_access_locked(self, session, row: AppMyFileFolder, user_id: int) -> bool:
+        return self.is_admin_locked(session, user_id) or int(row.owner_user_id) == int(user_id)
+
     def library_role_locked(self, session, library: AppMyFileLibrary, user_id: int) -> str:
         """Best role of the user in the library: own entry or through any of the user's departments."""
+        if self.is_admin_locked(session, user_id):
+            return "manage"
         condition = (AppMyFileLibraryMember.principal_type == "user") & (
             AppMyFileLibraryMember.principal_id == str(int(user_id))
         )
@@ -862,6 +891,8 @@ class MyFilesService:
         """
         owner = int(owner_user_id)
         actor = int(actor_id)
+        if self.is_admin_locked(session, actor):
+            return True
         if actor > 0 and owner == actor:
             return True
         library = self._library_by_owner_locked(session, owner)
@@ -946,29 +977,29 @@ class MyFilesService:
 
     def effective_role_locked(self, session, row: AppMyFile, user_id: int) -> str:
         """``owner``, the best of the file's own role and the roles of its folders, or ``""`` for no access."""
-        if int(row.owner_user_id) == int(user_id):
+        if self.is_admin_locked(session, user_id) or int(row.owner_user_id) == int(user_id):
             return "owner"
-        if int(row.owner_user_id) < 0:
-            # Library files: the library role decides; a manager has the owner's powers.
-            library_role = self.library_access_role_locked(session, row.owner_user_id, user_id)
-            return "owner" if library_role == "manage" else library_role
         direct = ""
         if self._collab_tables_present(session):
             member = session.get(AppMyFileCollaborator, (row.id, int(user_id)))
             if member is not None:
                 direct = self._norm_access_role(member.role)
+        if int(row.owner_user_id) < 0:
+            library_role = self.library_access_role_locked(session, row.owner_user_id, user_id)
+            return "owner" if library_role == "manage" else self._best_access_role(library_role, direct)
         inherited = self._folder_role_locked(session, row.folder_id, row.owner_user_id, user_id)
         return self._best_access_role(direct, inherited)
 
     def writer_ids_locked(self, session, row: AppMyFile, writing_roles) -> set[int]:
         """Owner plus everyone whose own or folder-inherited role lets them change the file."""
-        allowed = {int(row.owner_user_id)}
+        allowed = {int(row.owner_user_id)} | set(session.scalars(
+            select(AppUser.id).where(AppUser.role == "admin", AppUser.is_active.is_(True))
+        ).all())
         if int(row.owner_user_id) < 0:
             library = self._library_by_owner_locked(session, row.owner_user_id)
             if library is not None:
                 library_roles = {role for role in writing_roles if role in _LIBRARY_ROLE_RANK} | {"manage"}
                 allowed |= self.library_member_user_ids_locked(session, library.id, library_roles)
-            return allowed
         if self._collab_tables_present(session):
             allowed |= {
                 int(item.user_id)
@@ -1284,6 +1315,8 @@ class MyFilesService:
         ).all()
         for version in versions:
             self._release_blob_locked(session, version.blob_id, blob_paths)
+            if version.office_changes_blob_id:
+                self._release_blob_locked(session, version.office_changes_blob_id, blob_paths)
             session.delete(version)
         session.execute(delete(AppMyFileCollaborator).where(AppMyFileCollaborator.file_id == normalized))
 
@@ -2309,7 +2342,7 @@ class MyFilesService:
                 raise MyFilesNotFoundError("Library not found")
             role = self.library_role_locked(session, library, user_id)
             library_info = {"id": library.id, "name": _normalize_text(library.name), "my_role": role}
-        result = self._list_files_impl(user_id=owner, folder_id=folder_id, view="", query=query)
+        result = self._list_files_impl(user_id=owner, folder_id=folder_id, view="", query=query, viewer_user_id=user_id)
         for entry in [*result.get("items", []), *result.get("folders", []), *result.get("breadcrumbs", [])]:
             entry["my_role"] = role
         if result.get("folder"):
@@ -2340,7 +2373,7 @@ class MyFilesService:
         items = list(result.get("items", []))
         folders = list(result.get("folders", []))
         for library_id, library_name, owner_user_id, role in libraries:
-            part = self._list_files_impl(user_id=owner_user_id, view="recent" if recent else "", query=query)
+            part = self._list_files_impl(user_id=owner_user_id, view="recent" if recent else "", query=query, viewer_user_id=user_id)
             for entry in [*part.get("items", []), *part.get("folders", [])]:
                 entry["library_id"] = library_id
                 entry["library_name"] = library_name
@@ -2360,6 +2393,7 @@ class MyFilesService:
         folder_id: str | None = None,
         view: str = "",
         query: str = "",
+        viewer_user_id: int | None = None,
     ) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
         now = _utc_now()
@@ -2416,6 +2450,7 @@ class MyFilesService:
                             row,
                             session=session,
                             preview=preview_map.get(_normalize_text(row.blob_id)),
+                            viewer_user_id=viewer_user_id or user_id,
                             folder_name=(all_folders.get(row.folder_id).name if all_folders.get(row.folder_id) else ""),
                             collaborators_count=collab_counts.get(_normalize_text(row.id), 0),
                         )
@@ -2465,6 +2500,7 @@ class MyFilesService:
                             row,
                             session=session,
                             preview=preview_map.get(_normalize_text(row.blob_id)),
+                            viewer_user_id=viewer_user_id or user_id,
                             folder_name=(all_folders.get(row.folder_id).name if all_folders.get(row.folder_id) else ""),
                             collaborators_count=collab_counts.get(_normalize_text(row.id), 0),
                         )
@@ -2563,6 +2599,7 @@ class MyFilesService:
                         row,
                         session=session,
                         preview=preview_map.get(_normalize_text(row.blob_id)),
+                        viewer_user_id=viewer_user_id or user_id,
                         collaborators_count=collab_counts.get(_normalize_text(row.id), 0),
                     )
                     for row in rows
@@ -2592,7 +2629,9 @@ class MyFilesService:
         database_url = self._database_url_or_raise()
         with app_session(database_url) as session:
             row = session.get(AppMyFile, _normalize_text(file_id))
-            if row is None or row.deleted_at is not None or not self.may_act_locked(session, user_id, row.owner_user_id, "manage"):
+            if (row is None or (row.deleted_at is not None and not self.is_admin_locked(session, user_id))
+                    or not (self.may_manage_file_access_locked(session, row, user_id)
+                            or self.may_act_locked(session, user_id, row.owner_user_id, "manage"))):
                 raise MyFilesNotFoundError("File not found")
             rows = session.scalars(
                 select(AppMyFileAudit)
@@ -3395,6 +3434,12 @@ class MyFilesService:
                     )
                 } if blob_ids else {}
                 for row in rows:
+                    existing = previews_by_blob_id.get(_normalize_text(row.blob_id))
+                    if existing is not None and existing.status == PREVIEW_STATUS_QUEUED:
+                        # The claim query above skipped it because another worker holds
+                        # the row lock; rewriting it here would block on that lock and
+                        # pile up every worker thread on one row.
+                        continue
                     if not self._queue_preview_for_row_locked(session, row):
                         continue
                     blob_id = _normalize_text(row.blob_id)
@@ -4001,7 +4046,7 @@ class MyFilesService:
         database_url = self._database_url_or_raise()
         with app_session(database_url) as session:
             row = session.get(AppMyFile, _normalize_text(file_id))
-            if row is None or row.deleted_at is not None or not self.may_act_locked(session, user_id, row.owner_user_id, "manage"):
+            if row is None or row.deleted_at is not None or not self.may_manage_file_access_locked(session, row, user_id):
                 raise MyFilesNotFoundError("File not found")
             if row.status != STATUS_READY:
                 raise MyFilesValidationError("Only ready files can be shared")
@@ -4049,7 +4094,7 @@ class MyFilesService:
         database_url = self._database_url_or_raise()
         with app_session(database_url) as session:
             row = session.get(AppMyFile, _normalize_text(file_id))
-            if row is None or row.deleted_at is not None or not self.may_act_locked(session, user_id, row.owner_user_id, "manage"):
+            if row is None or row.deleted_at is not None or not self.may_manage_file_access_locked(session, row, user_id):
                 raise MyFilesNotFoundError("File not found")
             self._clear_share(row)
             row.updated_at = _utc_now()
@@ -4067,7 +4112,7 @@ class MyFilesService:
         actor_id = _actor_id(actor)
         with app_session(database_url) as session:
             row = session.get(AppMyFileFolder, _normalize_text(folder_id))
-            if row is None or row.deleted_at is not None or not self.may_act_locked(session, actor_id, row.owner_user_id, "manage"):
+            if row is None or row.deleted_at is not None or not self.may_manage_folder_access_locked(session, row, actor_id):
                 raise MyFilesNotFoundError("Folder not found")
 
             existing_token = self._existing_share_token_locked(row)
@@ -4108,7 +4153,7 @@ class MyFilesService:
         actor_id = _actor_id(actor)
         with app_session(database_url) as session:
             row = session.get(AppMyFileFolder, _normalize_text(folder_id))
-            if row is None or row.deleted_at is not None or not self.may_act_locked(session, actor_id, row.owner_user_id, "manage"):
+            if row is None or row.deleted_at is not None or not self.may_manage_folder_access_locked(session, row, actor_id):
                 raise MyFilesNotFoundError("Folder not found")
             self._clear_share(row)
             row.updated_at = _utc_now()

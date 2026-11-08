@@ -2677,6 +2677,11 @@ function Networks() {
 
             <BranchList
               branches={filteredBranches}
+              emptyHint={
+                branches.length > 0 && activeDbId && !String(branchSearch || '').trim()
+                  ? `Для базы ${activeDbId} нет привязанных филиалов. Выберите другую базу в переключателе вверху страницы.`
+                  : ''
+              }
               canEdit={canEdit}
               onBranchClick={(branch) => navigate(`/networks/${branch.id}`)}
               onEditClick={openEditBranchDialog}

@@ -4,8 +4,10 @@ import ctypes
 import logging
 import os
 import string
+import subprocess
+import time
 from pathlib import Path
-from typing import Iterable, List, Set
+from typing import FrozenSet, Iterable, List, Set
 
 logger = logging.getLogger("fs_egress.roots")
 
@@ -31,6 +33,50 @@ IGNORE_NAME_FRAGMENTS = (
     "\\system volume information\\",
     "\\windows\\",
 )
+
+
+CREATE_NO_WINDOW = 0x08000000
+USB_LETTERS_CACHE_SEC = 60.0
+_USB_LETTERS_SCRIPT = (
+    "Get-Disk | Where-Object { $_.BusType -eq 'USB' } | Get-Partition | "
+    "Where-Object { $_.DriveLetter } | ForEach-Object { [string]$_.DriveLetter }"
+)
+_usb_letters_cache: tuple = (0.0, frozenset())
+
+
+def _query_usb_bus_letters() -> FrozenSet[str]:
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", _USB_LETTERS_SCRIPT],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except Exception as exc:
+        logger.warning("USB bus drive lookup failed: %s", exc)
+        return frozenset()
+    if result.returncode != 0:
+        return frozenset()
+    return frozenset(
+        line.strip().upper()[:1] for line in result.stdout.splitlines() if len(line.strip()) == 1 and line.strip().isalpha()
+    )
+
+
+def usb_bus_drive_letters() -> FrozenSet[str]:
+    """Letters of drives on the USB bus.
+
+    Windows reports many external HDD/SSD (and some flash drives) as DRIVE_FIXED, not DRIVE_REMOVABLE,
+    so the drive type alone misses files copied to them. The answer is cached for a minute.
+    """
+    global _usb_letters_cache
+    now = time.monotonic()
+    cached_at, letters = _usb_letters_cache
+    if cached_at and (now - cached_at) < USB_LETTERS_CACHE_SEC:
+        return letters
+    letters = _query_usb_bus_letters()
+    _usb_letters_cache = (now, letters)
+    return letters
 
 
 def _get_drive_type(root: str) -> int:
@@ -92,8 +138,10 @@ def iter_remote_roots(*, depth_fallback: bool = True) -> List[Path]:
 
 def iter_removable_roots() -> List[Path]:
     roots: List[Path] = []
+    usb_letters = usb_bus_drive_letters()
     for drive in _logical_drives():
-        if _get_drive_type(drive) == DRIVE_REMOVABLE:
+        drive_type = _get_drive_type(drive)
+        if drive_type == DRIVE_REMOVABLE or (drive_type == DRIVE_FIXED and drive[:1].upper() in usb_letters):
             path = Path(drive)
             if path.exists():
                 roots.append(path)
@@ -117,7 +165,7 @@ def classify_path(path: str | Path) -> str:
             if dtype == DRIVE_REMOTE:
                 return "network"
             if dtype == DRIVE_FIXED:
-                return "local"
+                return "usb" if drive[:1].upper() in usb_bus_drive_letters() else "local"
     except Exception:
         pass
     return "unknown"

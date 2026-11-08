@@ -4,7 +4,7 @@ All queries use parameterized statements to prevent SQL injection.
 Based on universal_database.py schema
 """
 from datetime import datetime
-from typing import Optional, List, Any, Dict
+from typing import Optional, List, Any, Dict, Sequence
 import mimetypes
 import base64
 import logging
@@ -292,7 +292,9 @@ AVAILABLE_DATABASES = {
 }
 
 
-def search_equipment_by_serial(search_term: str, db_id: Optional[str] = None) -> List[dict]:
+def search_equipment_by_serial(
+    search_term: str, db_id: Optional[str] = None, branch_nos: Optional[Sequence[int]] = None
+) -> List[dict]:
     """
     Search equipment by serial number, hardware serial, or inventory number.
 
@@ -303,7 +305,7 @@ def search_equipment_by_serial(search_term: str, db_id: Optional[str] = None) ->
     Returns:
         List of equipment dictionaries
     """
-    return _search_equipment_by_serial(search_term, db_id, get_db_fn=get_db)
+    return _search_equipment_by_serial(search_term, db_id, branch_nos=branch_nos, get_db_fn=get_db)
 
 
 def search_equipment_universal(
@@ -313,6 +315,7 @@ def search_equipment_universal(
     db_id: Optional[str] = None,
     type_no: Optional[int] = None,
     field: Optional[str] = None,
+    branch_nos: Optional[Sequence[int]] = None,
 ) -> dict:
     """
     Universal search across all equipment fields.
@@ -335,6 +338,7 @@ def search_equipment_universal(
         db_id=db_id,
         type_no=type_no,
         field=field,
+        branch_nos=branch_nos,
         get_db_fn=get_db,
     )
 
@@ -710,12 +714,15 @@ def search_equipment_acts(
     *,
     limit: int = 50,
     db_id: Optional[str] = None,
+    branch_nos: Optional[Sequence[int]] = None,
 ) -> dict:
+    scope = {} if branch_nos is None else {"branch_nos": branch_nos}
     return _act_history_search_equipment_acts(
         q,
         limit=limit,
         db_id=db_id,
         get_db_fn=get_db,
+        **scope,
     )
 
 
@@ -723,11 +730,14 @@ def list_latest_equipment_acts(
     *,
     limit: int = 50,
     db_id: Optional[str] = None,
+    branch_nos: Optional[Sequence[int]] = None,
 ) -> dict:
+    scope = {} if branch_nos is None else {"branch_nos": branch_nos}
     return _act_history_list_latest_equipment_acts(
         limit=limit,
         db_id=db_id,
         get_db_fn=get_db,
+        **scope,
     )
 
 
@@ -4119,6 +4129,8 @@ def create_equipment_item(
     part_no: Optional[str] = None,
     description: Optional[str] = None,
     ip_address: Optional[str] = None,
+    mac_address: Optional[str] = None,
+    network_name: Optional[str] = None,
     changed_by: str = "IT-WEB",
     db_id: Optional[str] = None,
 ) -> dict:
@@ -4142,6 +4154,8 @@ def create_equipment_item(
     normalized_part_no = str(part_no or "").strip() or None
     normalized_descr = _legacy_items_descr_value(description)
     normalized_ip = str(ip_address or "").strip() or None
+    normalized_mac = str(mac_address or "").strip() or None
+    normalized_network_name = str(network_name or "").strip() or None
 
     if not normalized_serial:
         result["message"] = "serial_no is required"
@@ -4215,15 +4229,28 @@ def create_equipment_item(
         next_inv_no = cursor.fetchone()[0]
         inv_no_value = str(next_inv_no)
 
+        # MAC/NETBIOS columns are optional in some ITINVENT snapshots: add them only when the user filled them.
+        extra_columns = ""
+        extra_placeholders = ""
+        extra_values: list = []
+        if normalized_mac:
+            extra_columns += ", MAC_ADDRESS"
+            extra_placeholders += ", ?"
+            extra_values.append(normalized_mac)
+        if normalized_network_name:
+            extra_columns += ", NETBIOS_NAME"
+            extra_placeholders += ", ?"
+            extra_values.append(normalized_network_name)
+
         cursor.execute(
-            """
+            f"""
             INSERT INTO ITEMS (
                 ID, SERIAL_NO, HW_SERIAL_NO, PART_NO, INV_NO,
                 CI_TYPE, TYPE_NO, MODEL_NO, STATUS_NO, EMPL_NO,
                 BRANCH_NO, LOC_NO, QTY, COMP_NO, DESCR, IP_ADDRESS,
-                CREATE_DATE, CH_DATE, CH_USER
+                CREATE_DATE, CH_DATE, CH_USER{extra_columns}
             )
-            VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, GETDATE(), GETDATE(), ?)
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, GETDATE(), GETDATE(), ?{extra_placeholders})
             """,
             (
                 next_id,
@@ -4240,6 +4267,7 @@ def create_equipment_item(
                 normalized_descr,
                 normalized_ip,
                 changed_by or "IT-WEB",
+                *extra_values,
             ),
         )
 
@@ -5256,11 +5284,14 @@ def resolve_pc_context_by_mac_or_hostname(
             LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
             LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
             WHERE i.CI_TYPE = 1
-              AND UPPER(REPLACE(REPLACE(COALESCE(i.MAC_ADDRESS, ''), ':', ''), '-', '')) = ?
+              AND '|' + REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                    UPPER(COALESCE(i.MAC_ADDRESS, '')), ':', ''), '-', ''), '.', ''), ';', '|'), ',', '|'), ' ', '|') + '|'
+                  LIKE ?
             ORDER BY i.ID DESC
         """
         try:
-            rows = db.execute_query(query_mac, (normalized_mac,))
+            # В поле может быть несколько MAC через «;», «,» или пробел: ищем адрес как отдельный элемент списка.
+            rows = db.execute_query(query_mac, (f"%|{normalized_mac}|%",))
             if rows:
                 return rows[0]
         except Exception:

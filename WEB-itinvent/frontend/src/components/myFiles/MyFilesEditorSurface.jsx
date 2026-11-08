@@ -1,4 +1,4 @@
-import { forwardRef, useImperativeHandle } from 'react';
+import { forwardRef, useEffect, useImperativeHandle } from 'react';
 import {
   Alert, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogContentText,
   DialogTitle, Stack,
@@ -7,11 +7,14 @@ import useMyFilesEditorSession from './useMyFilesEditorSession';
 
 /** The same live document surface serves the dialog, browser tab and Desktop workspace. */
 const MyFilesEditorSurface = forwardRef(function MyFilesEditorSurface({
-  fileId, onError, onConfig, onStatusChange, onRequestClose, onTitleChange,
+  fileId, onError, onConfig, onStatusChange, onRequestClose, onTitleChange, onRequestHistory, onRequestRename, onRequestSharingSettings, active = true,
 }, ref) {
-  const session = useMyFilesEditorSession({ fileId, onError, onConfig, onStatusChange, onRequestClose, onTitleChange });
+  const session = useMyFilesEditorSession({ fileId, onError, onConfig, onStatusChange, onRequestClose, onTitleChange, onRequestHistory, onRequestRename, onRequestSharingSettings });
   const { status } = session;
-  useImperativeHandle(ref, () => ({ requestClose: session.requestClose }), [session.requestClose]);
+  useEffect(() => { if (!active) session.cancelDiscard(); }, [active, session.cancelDiscard]);
+  useImperativeHandle(ref, () => ({ requestClose: session.requestClose, setSharingSettings: session.setSharingSettings,
+    focus: () => session.hostRef.current?.querySelector('iframe')?.focus(),
+  }), [session.requestClose, session.setSharingSettings, session.hostRef]);
   const stopped = status.phase === 'blocked' || status.phase === 'error';
   const message = stopped ? status.message : status.offline
     ? 'Нет сети. Не закрывайте документ: правки могут ещё не быть отправлены. После возвращения сети редактор попробует подключиться автоматически.'

@@ -1,5 +1,57 @@
 # Оформление ONLYOFFICE как HUB-IT
 
+Состояние на 2026-11-06: **HUB-IT восстановлен, исправление автоматики и кэша опубликовано**.
+Проверены 38 файлов в том же контейнере и 76 HTTP-ответов напрямую/через HUB, включая gzip и архив исходников.
+MainPID `1470075`, контейнер `4c6d9edbfb57` и время запуска не изменились. Выполнен только `daemon-reload`.
+В HUB атомарно обновлён только `dist/sw.js`: исключён `/onlyoffice/` из офлайн-кэша приложения.
+Открытые документы не перезагружались; обновление worker активируется штатно после закрытия клиентов
+или явного применения обновления пользователем.
+
+5 ноября в 11:41 Asia/Yekaterinburg контейнер был пересоздан. Прежний ExecStartPost оборвался на
+`podman cp` с кодом 125, повторной попытки не было. Точный stderr прежний скрипт не сохранял;
+низкоуровневая причина этого отказа исторически не подтверждена. На работающем контейнере чтение прошло.
+15 из 16 исходников остались прежними; в API изменился только автоматически создаваемый идентификатор кэша,
+что также мешало повторному применению старого строгого manifest.
+
+Редакция автоматики v3:
+
+- Hook ждёт `/healthcheck=true` до 600 секунд. Внешний timeout ограничивает работу 840 секундами
+  с 10 секундами на завершение при сохранённом `TimeoutStartSec=15min`.
+- Чтение и атомарная установка выполняются через `podman exec`; `podman cp` больше не используется.
+  Временные ошибки чтения повторяются трижды; stderr/таймаут становятся понятной ошибкой и `last-run.json`.
+- Меняться может только идентификатор кэша API: после его нормализации весь оставшийся файл обязан
+  совпасть с проверенной SHA-256. Любое другое изменение или неизвестная версия отклоняются до записи.
+- Все операции привязаны к ID конкретного контейнера. Резервные копии оригиналов сохраняются отдельно
+  для каждого варианта API, без перезаписи предыдущих. `restore-backup.json` указывает точный набор для отката.
+- `last-run.json` хранит `status`, UTC, действие и ошибку; метаданные публикуются атомарно.
+- Service worker HUB пропускает все запросы `/onlyoffice/` перед обработкой навигации и статики.
+  Старый API не возвращается из кэша HUB, а HTML редактора не заменяет офлайн-страницу портала.
+
+Проверки: 11 сценариев автоматики на изолированном файловом стенде, 3 браузерных сценария кэша и
+6 существующих проверок жизненного цикла worker — passed. JavaScript в подготовленных ресурсах проверен
+`node --check`, пробная frontend-сборка успешна. Chrome загрузил опубликованные логотипы обеих тем;
+страница входа HUB открылась без JS-ошибок. Реальный авторизованный документ/Desktop и production-пересоздание
+контейнера в этой проверке не выполнялись. Шрифт/геометрия/цвета прежней редакции v2 сохранены.
+
+Артефакты: `output/onlyoffice-branding-repair-20261106/`.
+Резервная копия сервера: `/srv/onlyoffice/branding/releases/repair-20261106-052807-106152/`.
+Резервная копия worker: `deploy_backups/onlyoffice-branding-repair-20261106/frontend/`.
+Быстрый откат worker: `python output/onlyoffice-branding-repair-20261106/publish_sw.py --rollback`.
+Откат серверного изменения:
+
+```sh
+python3 /srv/onlyoffice/branding/releases/repair-20261106-052807-106152/restore_release.py --rollback /srv/onlyoffice/branding/releases/repair-20261106-052807-106152
+```
+
+Оба отката отказываются затирать независимые изменения. Новые файлы атрибуции при откате сохраняются.
+
+Основные файлы изменения: [brand_ui.py](brand_ui.py), [50-hubit-branding.conf](50-hubit-branding.conf),
+[проверки автоматики](../../tests/test_onlyoffice_branding.py),
+[service worker HUB](../../WEB-itinvent/frontend/public/sw.js),
+[браузерные проверки кэша](../../WEB-itinvent/frontend/e2e/onlyoffice-cache.spec.js) и этот runbook.
+
+## Предыдущая публикация
+
 Состояние на 2026-11-03: оформление применено на `10.103.0.11` без рестарта. Проверены 38 файлов
 в контейнере и 32 файла резервной копии; напрямую и через `https://hubit.zsgp.ru/onlyoffice`
 прошли по 35 проверок HTTP (обычные/gzip-ресурсы, лицензия, содержимое архива). Healthcheck — `true`,
@@ -13,7 +65,8 @@ MainPID и ID контейнера не изменились. Сохранени
 Контуры букв сохранены в `wordmark.json`: серверу и браузеру не требуется устанавливать шрифт.
 Шапка — прежний холст 85×20, высота букв 11 px вместо крупного Arial 18 px; серый цвет `#444`
 взят из исходного `dark-logo_s.svg`. Варианты для тёмного фона сохраняют белый цвет.
-Namespace кэша v2: `1bf8232ea81dfcfb3947d2a75de71618`. Для получения новой версии обновить страницу портала
+Прежний namespace v2: `1bf8232ea81dfcfb3947d2a75de71618`.
+Текущий namespace v3: `057546c727559c3342980f435c36c37c`. Для получения новой версии обновить страницу портала
 и заново открыть редактор: уже загруженный `DocsAPI` может хранить предыдущий namespace в памяти вкладки.
 
 `brand_ui.py` поддерживает только проверенный пакет **10.0.0-169**, исходные файлы которого перечислены в
@@ -50,11 +103,12 @@ python scripts/onlyoffice/brand_ui.py stage --source <asset-copy> --destination 
 Разместить `brand_ui.py`, `original-sha256.json` и `wordmark.json` в `/srv/onlyoffice/branding/`, затем:
 
 ```sh
-python3 /srv/onlyoffice/branding/brand_ui.py apply --container onlyoffice --state /srv/onlyoffice/branding
+python3 /srv/onlyoffice/branding/brand_ui.py apply --container onlyoffice --state /srv/onlyoffice/branding --wait-ready 600
 ```
 
 До первой записи скрипт проверяет контрольные суммы всех исходных файлов и их gzip-вариантов. Резервная
-копия 32 заменяемых файлов и `receipt.json` находятся в `/srv/onlyoffice/branding/backup/10.0.0-169/`.
+копия 32 заменяемых файлов и `receipt.json` находятся в подкаталоге `/srv/onlyoffice/branding/backup/10.0.0-169/`;
+текущий путь записан в `/srv/onlyoffice/branding/restore-backup.json`. Старый исходный snapshot сохраняется.
 Публикация выполняется атомарной заменой каждого файла, API с новым namespace меняется последним.
 Перед обновлением уже установленного оформления проверяются все его файлы и сохраняется предыдущая редакция
 в `/srv/onlyoffice/branding/releases/<previous-cache-tag>/`, включая предыдущий сценарий применения.
@@ -70,7 +124,8 @@ python3 /srv/onlyoffice/branding/brand_ui.py apply --container onlyoffice --stat
 
 ```ini
 [Service]
-ExecStartPost=-/usr/bin/python3 /srv/onlyoffice/branding/brand_ui.py apply --container onlyoffice --state /srv/onlyoffice/branding
+TimeoutStartSec=15min
+ExecStartPost=-/usr/bin/timeout --kill-after=10s 840s /usr/bin/python3 /srv/onlyoffice/branding/brand_ui.py apply --container onlyoffice --state /srv/onlyoffice/branding --wait-ready 600
 ```
 
 Предыдущий неработающий файл в `onlyoffice.container.d` сохранён как `.conf.disabled`.

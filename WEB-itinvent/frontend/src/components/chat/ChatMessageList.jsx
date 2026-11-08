@@ -3,6 +3,7 @@ import {
   Avatar,
   Box,
   Button,
+  CircularProgress,
   Collapse,
   Skeleton,
   Stack,
@@ -11,11 +12,15 @@ import {
 import { alpha } from '@mui/material/styles';
 import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import ErrorOutlineRoundedIcon from '@mui/icons-material/ErrorOutlineRounded';
+import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
-import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
+
+import { motion } from 'framer-motion';
 
 import { MemoChatBubble } from './ChatBubble';
-import ChatTypingIndicator, { TypingDots } from './ChatTypingIndicator';
+import { AiConversationAvatar } from './ChatCommon';
+import MarkdownRenderer from '../hub/MarkdownRenderer';
+import ChatTypingIndicator from './ChatTypingIndicator';
 import { AI_RUN_STALE_AFTER_MS, AI_STAGE_LABELS } from './ChatThreadHeader';
 import { CHAT_FONT_FAMILY } from './chatUiTokens';
 import {
@@ -175,6 +180,7 @@ function UnreadSeparator({ label, theme }) {
 }
 
 const AI_RUN_FEED_STALE_TICK_MS = 15 * 1000;
+const AI_PREVIEW_GRACE_MS = 5 * 1000;
 
 const formatAiRunStageCount = (count) => {
   const safeCount = Math.max(1, Number(count || 0));
@@ -183,12 +189,80 @@ const formatAiRunStageCount = (count) => {
   return `${safeCount} шагов`;
 };
 
+const formatAiStepDuration = (value) => {
+  const ms = Number(value);
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  return ms < 1000 ? `${Math.round(ms)} мс` : `${(ms / 1000).toFixed(1)} с`;
+};
+
+// Строки шагов блока «Думает»: инструменты (название, состояние, время) либо,
+// если сервер шагов не прислал, — завершённые этапы.
+function AiRunStepRows({ steps, stages, ui, theme }) {
+  const successColor = ui.successText || theme.palette.success.main;
+  const rowSx = { minHeight: 20 };
+  const labelSx = { fontSize: 12, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY, minWidth: 0 };
+  if (steps.length) {
+    return (
+      <Stack spacing={0.35} data-testid="chat-ai-run-steps">
+        {steps.map((step) => (
+          <Stack
+            key={step.id}
+            component={motion.div}
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.22, ease: 'easeOut' }}
+            direction="row"
+            spacing={0.8}
+            alignItems="center"
+            sx={rowSx}
+          >
+            <Box sx={{ width: 14, height: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              {step.state === 'running' ? (
+                <CircularProgress size={11} thickness={5} sx={{ color: ui.accentText || theme.palette.primary.main }} />
+              ) : step.state === 'error' ? (
+                <ErrorOutlineRoundedIcon sx={{ fontSize: 13, color: theme.palette.error.main }} />
+              ) : (
+                <CheckRoundedIcon sx={{ fontSize: 13, color: successColor }} />
+              )}
+            </Box>
+            <Typography noWrap sx={labelSx}>{step.label || 'Обработка запроса'}</Typography>
+            {step.tool_id ? (
+              <Typography
+                noWrap
+                sx={{ ...labelSx, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', fontSize: 11, opacity: 0.7 }}
+              >
+                {step.tool_id}
+              </Typography>
+            ) : null}
+            <Typography sx={{ ...labelSx, fontSize: 11, opacity: 0.7, ml: 'auto !important', flexShrink: 0 }}>
+              {formatAiStepDuration(step.duration_ms)}
+            </Typography>
+          </Stack>
+        ))}
+      </Stack>
+    );
+  }
+  return (
+    <Stack spacing={0.35}>
+      {stages.map((stage) => (
+        <Stack key={stage} direction="row" spacing={0.8} alignItems="center" sx={rowSx}>
+          <CheckRoundedIcon sx={{ fontSize: 13, color: successColor }} />
+          <Typography sx={labelSx}>{AI_STAGE_LABELS[stage] || 'Обработка запроса'}</Typography>
+        </Stack>
+      ))}
+    </Stack>
+  );
+}
+
 // AI9: статус выполнения живёт внутри ленты под сообщениями — текущий этап с
 // «печатающими» точками, набираемый partial_text, а после завершения —
 // свёрнутая строка «Выполнено N шагов». Заменяет верхнюю плашку у шапки.
 function AiRunFeedStatus({ aiStatus, messages = [], theme, ui, compactMobile, onRetry, onStop }) {
   const status = String(aiStatus?.status || '').trim();
   const [stepsOpen, setStepsOpen] = useState(false);
+  // null — решает автомат: блок «Думает» раскрыт, пока ответ не начал печататься.
+  const [thinkingOpen, setThinkingOpen] = useState(null);
+  const [previewGraceOver, setPreviewGraceOver] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [actionBusy, setActionBusy] = useState(false);
   const runActive = status === 'queued' || status === 'running';
@@ -209,6 +283,13 @@ function AiRunFeedStatus({ aiStatus, messages = [], theme, ui, compactMobile, on
     const timerId = window.setInterval(() => setNowMs(Date.now()), AI_RUN_FEED_STALE_TICK_MS);
     return () => window.clearInterval(timerId);
   }, [runActive]);
+  // Ручное раскрытие «Думает» относится к одному запуску.
+  useEffect(() => { setThinkingOpen(null); setPreviewGraceOver(false); }, [aiStatus?.run_id]);
+  useEffect(() => {
+    if (status !== 'completed') return undefined;
+    const timerId = window.setTimeout(() => setPreviewGraceOver(true), AI_PREVIEW_GRACE_MS);
+    return () => window.clearTimeout(timerId);
+  }, [status, aiStatus?.run_id]);
   if (!status) return null;
 
   const runAction = async (handler) => {
@@ -226,6 +307,7 @@ function AiRunFeedStatus({ aiStatus, messages = [], theme, ui, compactMobile, on
   const runStale = runActive
     && progressAge !== null
     && (progressAge.ageMs + (nowMs - progressAge.receivedAt)) > AI_RUN_STALE_AFTER_MS;
+  const runSteps = Array.isArray(aiStatus?.steps) ? aiStatus.steps : [];
   const partialText = String(aiStatus?.partial_text || '').trim();
   const resultVisible = messages.some((message) => !message.is_deleted && !message.is_own && (
     (aiStatus?.result_message_id && message.id === aiStatus.result_message_id)
@@ -242,9 +324,47 @@ function AiRunFeedStatus({ aiStatus, messages = [], theme, ui, compactMobile, on
     || AI_STAGE_LABELS[String(aiStatus?.stage || '').trim()]
     || (status === 'queued' ? 'Ставлю задачу в очередь' : 'Обрабатываю запрос');
   const accent = ui.accentText || theme.palette.primary.main;
+  const hasThinkingBody = runSteps.length > 0 || completedStages.length > 0;
+  const hasPartialPreview = Boolean(partialText) && !resultVisible && !previewPersisted;
+  const showThinkingBody = hasThinkingBody && (thinkingOpen === null ? !hasPartialPreview : thinkingOpen);
+  const partialBubble = (
+    <Box
+      data-testid="ai-partial-response"
+      sx={{
+        mt: 0.6,
+        px: 1.3,
+        py: 0.9,
+        borderRadius: '14px',
+        bgcolor: ui.bubbleOtherBg || alpha(accent, 0.08),
+        color: ui.bubbleOtherText || 'text.primary',
+        fontSize: compactMobile ? 13.5 : 14,
+        lineHeight: 1.5,
+        fontFamily: CHAT_FONT_FAMILY,
+        wordBreak: 'break-word',
+        overflowX: 'auto',
+        '& .MuiBox-root': { color: ui.bubbleOtherText || 'text.primary', fontFamily: CHAT_FONT_FAMILY },
+      }}
+    >
+      {/* Тот же рендер, что у итогового сообщения: без сырых **, ## и | во время набора. */}
+      <MarkdownRenderer value={partialText} variant="chat" linkColor={ui.bubbleOtherLinkText || accent} />
+    </Box>
+  );
+
+  // Статус «completed» приходит чуть раньше итогового сообщения: пока его нет в ленте,
+  // держим превью на месте, иначе лента проваливается и подпрыгивает (с отсечкой на случай потери).
+  if (status === 'completed' && hasPartialPreview && !previewGraceOver) {
+    return (
+      <Box data-testid="chat-ai-run-status" sx={{ px: compactMobile ? 0.5 : 0, py: 0.8 }}>
+        <Stack direction="row" spacing={1} alignItems="flex-start">
+          <Box sx={{ width: compactMobile ? 28 : 30, flexShrink: 0 }} />
+          <Box sx={{ minWidth: 0, flex: 1 }}>{partialBubble}</Box>
+        </Stack>
+      </Box>
+    );
+  }
 
   if (status === 'completed') {
-    if (!completedStages.length) return null;
+    if (!completedStages.length && !runSteps.length) return null;
     return (
       <Box data-testid="chat-ai-run-completed" sx={{ px: compactMobile ? 0.5 : 0, py: 0.5 }}>
         <Button
@@ -253,28 +373,36 @@ function AiRunFeedStatus({ aiStatus, messages = [], theme, ui, compactMobile, on
           aria-expanded={stepsOpen}
           sx={{
             minHeight: 28,
-            px: 1,
+            px: 1.4,
             textTransform: 'none',
             fontSize: 12,
             fontWeight: 600,
-            color: ui.textSecondary,
+            // Плашка, а не текст на обоях: как у разделителя даты.
+            color: ui.servicePillText || ui.textSecondary,
+            bgcolor: ui.servicePillBg || alpha(theme.palette.background.paper, 0.78),
+            backdropFilter: 'blur(6px)',
             borderRadius: 999,
             fontFamily: CHAT_FONT_FAMILY,
+            '&:hover': { bgcolor: ui.servicePillBg || alpha(theme.palette.background.paper, 0.9) },
           }}
         >
-          {`Выполнено ${formatAiRunStageCount(completedStages.length)}`}
+          {`Выполнено ${formatAiRunStageCount(runSteps.length || completedStages.length)}`}
         </Button>
         <Collapse in={stepsOpen} unmountOnExit>
-          <Stack spacing={0.2} sx={{ pl: 1.2, pb: 0.4 }}>
-            {completedStages.map((stage) => (
-              <Stack key={stage} direction="row" spacing={0.6} alignItems="center">
-                <CheckRoundedIcon sx={{ fontSize: 13, color: ui.successText || theme.palette.success.main }} />
-                <Typography sx={{ fontSize: 12, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
-                  {AI_STAGE_LABELS[stage] || 'Обработка запроса'}
-                </Typography>
-              </Stack>
-            ))}
-          </Stack>
+          <Box
+            sx={{
+              mt: 0.5,
+              px: 1.4,
+              py: 0.9,
+              borderRadius: '12px',
+              bgcolor: ui.servicePillBg || alpha(theme.palette.background.paper, 0.78),
+              backdropFilter: 'blur(6px)',
+              display: 'inline-block',
+              maxWidth: '100%',
+            }}
+          >
+            <AiRunStepRows steps={runSteps} stages={completedStages} ui={ui} theme={theme} />
+          </Box>
         </Collapse>
       </Box>
     );
@@ -346,59 +474,77 @@ function AiRunFeedStatus({ aiStatus, messages = [], theme, ui, compactMobile, on
       role="status"
       aria-live="polite"
       data-testid="chat-ai-run-status"
-      sx={{ px: compactMobile ? 0.5 : 0, py: 0.8 }}
+      sx={{ px: compactMobile ? 0.5 : 0, py: 0.8, minHeight: 56 }}
     >
       <Stack direction="row" spacing={1} alignItems="flex-start">
-        <Box
-          sx={{
-            width: compactMobile ? 28 : 30,
-            height: compactMobile ? 28 : 30,
-            borderRadius: '50%',
-            flexShrink: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            bgcolor: alpha(accent, 0.12),
-            color: accent,
-          }}
-        >
-          <SmartToyOutlinedIcon sx={{ fontSize: compactMobile ? 16 : 17 }} />
-        </Box>
+        <AiConversationAvatar size={compactMobile ? 30 : 32} thinking />
         <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Stack direction="row" spacing={0.9} alignItems="center">
-            <TypingDots color={accent} />
-            <Typography sx={{ fontSize: compactMobile ? 12.5 : 13, fontWeight: 600, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
-              {stageText}
-            </Typography>
-          </Stack>
-          {completedStages.length > 0 ? (
-            <Stack spacing={0.15} sx={{ mt: 0.4 }}>
-              {completedStages.slice(-3).map((stage) => (
-                <Stack key={stage} direction="row" spacing={0.6} alignItems="center">
-                  <CheckRoundedIcon sx={{ fontSize: 12, color: ui.successText || theme.palette.success.main }} />
-                  <Typography sx={{ fontSize: 11.5, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
-                    {AI_STAGE_LABELS[stage] || 'Обработка запроса'}
-                  </Typography>
-                </Stack>
-              ))}
-            </Stack>
-          ) : null}
-          {partialText && !resultVisible && !previewPersisted ? (
+          <Box
+            component="button"
+            type="button"
+            data-testid="chat-ai-thinking-toggle"
+            onClick={() => setThinkingOpen(!showThinkingBody)}
+            aria-expanded={showThinkingBody}
+            disabled={!hasThinkingBody}
+            sx={{
+              all: 'unset',
+              boxSizing: 'border-box',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 0.9,
+              minHeight: 28,
+              maxWidth: '100%',
+              cursor: hasThinkingBody ? 'pointer' : 'default',
+              '&:focus-visible': { outline: `2px solid ${ui.focusRing || accent}`, borderRadius: 1 },
+            }}
+          >
             <Typography
-              data-testid="ai-partial-response"
+              noWrap
+              data-testid="chat-ai-thinking-title"
               sx={{
-                mt: 0.6,
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                color: 'text.primary',
-                fontSize: compactMobile ? 13.5 : 14,
-                lineHeight: 1.5,
+                fontSize: compactMobile ? 13 : 13.5,
+                fontWeight: 600,
                 fontFamily: CHAT_FONT_FAMILY,
+                color: ui.textSecondary,
+                // Мягкий «блик» по тексту, пока ассистент работает.
+                backgroundImage: `linear-gradient(90deg, ${ui.textSecondary} 0%, ${ui.textSecondary} 38%, ${accent} 50%, ${ui.textSecondary} 62%, ${ui.textSecondary} 100%)`,
+                backgroundSize: '250% 100%',
+                WebkitBackgroundClip: 'text',
+                backgroundClip: 'text',
+                WebkitTextFillColor: 'transparent',
+                '@keyframes hubAiShimmer': { from: { backgroundPosition: '125% 0' }, to: { backgroundPosition: '-125% 0' } },
+                animation: 'hubAiShimmer 2.4s linear infinite',
+                '@media (prefers-reduced-motion: reduce)': { animation: 'none', WebkitTextFillColor: 'currentColor' },
               }}
             >
-              {partialText}
+              {stageText}
             </Typography>
+            {hasThinkingBody ? (
+              <ExpandMoreRoundedIcon
+                sx={{
+                  fontSize: 18,
+                  color: ui.textSecondary,
+                  transition: 'transform 160ms ease',
+                  transform: showThinkingBody ? 'rotate(180deg)' : 'none',
+                }}
+              />
+            ) : null}
+          </Box>
+          {hasThinkingBody ? (
+            <Collapse in={showThinkingBody} timeout={160}>
+              <Box
+                sx={{
+                  mt: 0.4,
+                  ml: 0.4,
+                  pl: 1.2,
+                  borderLeft: `2px solid ${alpha(accent, 0.28)}`,
+                }}
+              >
+                <AiRunStepRows steps={runSteps.slice(-8)} stages={completedStages.slice(-4)} ui={ui} theme={theme} />
+              </Box>
+            </Collapse>
           ) : null}
+          {hasPartialPreview ? partialBubble : null}
         </Box>
       </Stack>
     </Box>
@@ -645,15 +791,24 @@ const ChatMessageList = memo(function ChatMessageList({
             data-testid="chat-ai-empty-state"
             sx={{ minHeight: '100%', textAlign: 'center', px: 2 }}
           >
-            <Avatar sx={{ width: 64, height: 64, mb: 2, bgcolor: ui.accentSoft, color: ui.accentText }}>
-              <SmartToyOutlinedIcon sx={{ fontSize: 32 }} />
-            </Avatar>
-            <Typography variant="h6" sx={{ fontWeight: 800 }}>
-              {String(activeConversation?.title || 'HUB Ассистент').trim() || 'HUB Ассистент'}
-            </Typography>
-            <Typography variant="body2" sx={{ mt: 1, maxWidth: 460, color: ui.textSecondary }}>
-              Чем могу помочь? Спросите про оборудование, документы или задачи — отвечу в рамках ваших доступов.
-            </Typography>
+            <Stack
+              alignItems="center"
+              component={motion.div}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.45, ease: 'easeOut' }}
+            >
+              <AiConversationAvatar size={72} sx={{ mb: 2.2 }} />
+              <Typography sx={{ fontSize: 24, fontWeight: 700, letterSpacing: '-0.02em', fontFamily: CHAT_FONT_FAMILY }}>
+                Чем могу помочь?
+              </Typography>
+              <Typography variant="body2" sx={{ mt: 1, maxWidth: 460, color: ui.textSecondary, lineHeight: 1.55 }}>
+                {String(activeConversation?.title || '').trim() && String(activeConversation?.title || '').trim() !== 'HUB Ассистент'
+                  ? `${String(activeConversation.title).trim()} · `
+                  : ''}
+                Спросите про оборудование, документы или задачи — отвечу в рамках ваших доступов.
+              </Typography>
+            </Stack>
             {aiStatus ? (
               <Box sx={{ mt: 2, width: '100%', maxWidth: 460 }}>
                 <AiRunFeedStatus

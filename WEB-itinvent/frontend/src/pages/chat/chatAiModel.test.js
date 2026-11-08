@@ -19,6 +19,32 @@ describe('AI run event ordering', () => {
     expect(mergeAiStatusPayload(state, { conversation_id: 'c', run_id: 'r1', status: 'completed', updated_at: '2026-10-20T05:00:59Z' })).toBe(state);
   });
 
+  it('accumulates tool steps by id, updates them in place and drops them for a new run', () => {
+    const base = { conversation_id: 'c', run_id: 'r1', status: 'running', stage: 'checking_itinvent' };
+    let state = mergeAiStatusPayload({}, { ...base, updated_at: '2026-10-20T05:00:01Z', step: { id: 's1', label: 'Проверяю данные', state: 'running' } });
+    state = mergeAiStatusPayload(state, { ...base, updated_at: '2026-10-20T05:00:02Z', step: { id: 's2', label: 'Ищу оборудование', state: 'running' } });
+    state = mergeAiStatusPayload(state, { ...base, updated_at: '2026-10-20T05:00:03Z', step: { id: 's1', state: 'done', duration_ms: 420 } });
+    expect(state.c.steps).toEqual([
+      { id: 's1', label: 'Проверяю данные', state: 'done', duration_ms: 420 },
+      { id: 's2', label: 'Ищу оборудование', state: 'running' },
+    ]);
+    expect(state.c.step).toBeUndefined();
+    // Сброс превью (раунд с инструментами) не стирает шаги.
+    state = mergeAiStatusPayload(state, { ...base, updated_at: '2026-10-20T05:00:04Z', partial_text: null });
+    expect(state.c.steps).toHaveLength(2);
+    state = mergeAiStatusPayload(state, { conversation_id: 'c', run_id: 'r2', status: 'running', stage: 'analyzing_request', updated_at: '2026-10-20T05:01:00Z' });
+    expect(state.c.steps).toBeUndefined();
+  });
+
+  it('keeps the streamed text through events without partial_text and clears it on an explicit reset', () => {
+    const base = { conversation_id: 'c', run_id: 'r1', status: 'running', stage: 'generating_answer' };
+    let state = mergeAiStatusPayload({}, { ...base, updated_at: '2026-10-20T05:00:01Z', partial_text: 'Нашёл 3' });
+    state = mergeAiStatusPayload(state, { ...base, status: 'completed', updated_at: '2026-10-20T05:00:02Z' });
+    expect(state.c.partial_text).toBe('Нашёл 3');
+    state = mergeAiStatusPayload(state, { ...base, status: 'running', updated_at: '2026-10-20T05:00:00Z', partial_text: '' });
+    expect(state.c.partial_text).toBe('Нашёл 3'); // устаревшее событие не применяется
+  });
+
   it('rejects stale events and never regresses a terminal run to running', () => {
     const state = { c: { run_id: 'r', status: 'completed', updated_at: '2026-10-20T05:00:03Z', result_message_id: 'answer' } };
     for (const updated_at of ['2026-10-20T05:00:01Z', '2026-10-20T05:00:04Z']) {

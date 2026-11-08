@@ -185,6 +185,12 @@ export default function TasksCreateDialog({
   const effectiveCreateProject = isEditing
     ? activeTaskProjects.find((item) => String(item?.id || '') === effectiveCreateProjectId) || null
     : effectiveCreateProjectProp;
+  // Первая причина, из-за которой кнопка сохранения недоступна (показываем текстом рядом с кнопкой).
+  let createBlockReason = '';
+  if (String(createData.title || '').trim().length < 3) createBlockReason = 'Укажите название (минимум 3 символа)';
+  else if (createData.assignee_user_ids.length === 0) createBlockReason = 'Выберите исполнителя';
+  else if (!isEditing && !effectiveCreateProjectId) createBlockReason = 'Выберите проект';
+  else if (!isEditing && !String(createData.protocol_date || '').trim()) createBlockReason = 'Укажите дату протокола';
   const createOptionalSections = isEditing ? editOptionalSections : createOptionalSectionsProp;
   const createDescriptionSummary = isEditing
     ? String(createData?.description || '').trim()
@@ -272,7 +278,10 @@ export default function TasksCreateDialog({
                 <Stack direction="row" alignItems="flex-start" spacing={1}>
                   <TextField
                     value={createData.title}
-                    onChange={(event) => setCreateData((prev) => ({ ...prev, title: event.target.value }))}
+                    onChange={(event) => setCreateData((prev) => ({ ...prev, title: event.target.value.replace(/[\r\n]+/g, ' ') }))}
+                    onKeyDown={(event) => { if (event.key === 'Enter') event.preventDefault(); }}
+                    multiline
+                    maxRows={4}
                     fullWidth
                     required
                     autoFocus={!isMobile}
@@ -794,14 +803,7 @@ export default function TasksCreateDialog({
             <Button
               variant="contained"
               onClick={onCreate}
-              disabled={
-                createSaving
-                || createLoading
-                || String(createData.title || '').trim().length < 3
-                || createData.assignee_user_ids.length === 0
-                || (!isEditing && !effectiveCreateProjectId)
-                || (!isEditing && !String(createData.protocol_date || '').trim())
-              }
+              disabled={Boolean(createBlockReason) || createSaving || createLoading}
               sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}
             >
               {createLoading
@@ -812,6 +814,11 @@ export default function TasksCreateDialog({
                     ? 'Сохранить изменения'
                     : 'Создать задачу'))}
             </Button>
+            {createBlockReason && !createSaving && !createLoading ? (
+              <Typography variant="caption" role="status" sx={{ color: 'text.secondary', order: { xs: 0, sm: -1 }, mr: { sm: 'auto !important' }, textAlign: { xs: 'center', sm: 'left' } }}>
+                {createBlockReason}
+              </Typography>
+            ) : null}
           </DialogActions>
         </Dialog>
   );

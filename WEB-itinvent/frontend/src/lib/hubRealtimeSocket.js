@@ -350,7 +350,8 @@ export class HubRealtimeSocketClient {
       const socket = this.socket;
       if (!socket || socket.readyState !== browserWindow.WebSocket.OPEN) return;
       if (this.missedPongs >= MAX_MISSED_PONGS) {
-        socket.close(1011, 'hub realtime heartbeat timeout');
+        // A client may only close with 1000 or 3000-4999; 1011 throws and leaves a dead socket "open".
+        socket.close(4408, 'hub realtime heartbeat timeout');
         return;
       }
       this.missedPongs += 1;

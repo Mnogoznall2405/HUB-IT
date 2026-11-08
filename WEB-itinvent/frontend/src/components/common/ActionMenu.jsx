@@ -2,6 +2,7 @@
 import { IconButton, Menu, MenuItem, ListItemIcon, ListItemText, Divider, Tooltip } from '@mui/material';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
+import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import MyLocationIcon from '@mui/icons-material/MyLocation';
 import PrintIcon from '@mui/icons-material/Print';
 import BatteryChargingFullIcon from '@mui/icons-material/BatteryChargingFull';
@@ -20,7 +21,7 @@ export function renderActionMenuItems(actions = [], handleAction) {
   if (has('view')) {
     list.push(
       <MenuItem key="view" onClick={() => handleAction('view')}>
-        <ListItemIcon><SwapHorizIcon fontSize="small" /></ListItemIcon>
+        <ListItemIcon><VisibilityOutlinedIcon fontSize="small" /></ListItemIcon>
         <ListItemText>Просмотр</ListItemText>
       </MenuItem>,
     );

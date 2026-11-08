@@ -403,6 +403,33 @@ def _telegram_probe_process_running() -> bool:
     return False
 
 
+_SIDECAR_THREADS: Dict[str, threading.Thread] = {}
+
+
+def collect_sidecar_health() -> Dict[str, Any]:
+    """What the server cannot see otherwise: are the optional modules alive and is their spool draining."""
+    health: Dict[str, Any] = {}
+    fs_enabled = _is_truthy(os.getenv("ITINV_FS_EGRESS_ENABLED", "1"), default=True)
+    fs_thread = _SIDECAR_THREADS.get("fs_egress")
+    fs_info: Dict[str, Any] = {"enabled": fs_enabled, "alive": bool(fs_thread is not None and fs_thread.is_alive())}
+    if fs_enabled:
+        try:
+            from fs_egress.spool import read_spool_stats, spool_root_from_env
+
+            fs_info.update(read_spool_stats(spool_root_from_env()))
+        except Exception as exc:
+            fs_info["stats_error"] = sanitize_text(exc)[:120]
+    health["fs_egress"] = fs_info
+    scan_thread = _SIDECAR_THREADS.get("scan")
+    health["scan"] = {"alive": bool(scan_thread is not None and scan_thread.is_alive())}
+    probe_enabled = _is_truthy(os.getenv("ITINV_TELEGRAM_PROBE_ENABLED", "1"), default=True)
+    health["telegram_probe"] = {
+        "enabled": probe_enabled,
+        "running": _telegram_probe_process_running() if probe_enabled else False,
+    }
+    return health
+
+
 def _ensure_telegram_probe_task(now_ts: int, *, last_check_ts: int) -> int:
     """Best-effort: if probe enabled and not running, kick scheduled task."""
     if not _is_truthy(os.getenv("ITINV_TELEGRAM_PROBE_ENABLED", "1"), default=True):
@@ -2386,15 +2413,8 @@ def _software_inventory_due(now_ts: int) -> bool:
     return (now_ts - last_at) >= interval_hours * 3600
 
 
-def _iter_uninstall_software_items() -> List[Dict[str, str]]:
-    if winreg is None:
-        return []
-    roots = [
-        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
-        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
-    ]
+def _read_uninstall_roots(roots: List[Tuple[Any, str]], scope: str, seen: Set[str]) -> List[Dict[str, str]]:
     items: List[Dict[str, str]] = []
-    seen: Set[str] = set()
     for root, base in roots:
         try:
             with winreg.OpenKey(root, base) as parent:
@@ -2426,10 +2446,68 @@ def _iter_uninstall_software_items() -> List[Dict[str, str]]:
                             "display_version": _read("DisplayVersion"),
                             "publisher": _read("Publisher"),
                             "install_date": _read("InstallDate"),
+                            "scope": scope,
                         }
                     )
             except Exception:
                 continue
+    return items
+
+
+_STORE_APPS_SCRIPT = (
+    "Get-AppxPackage -AllUsers | Where-Object { -not $_.IsFramework -and -not $_.NonRemovable -and $_.SignatureKind -eq 'Store' } | "
+    "Select-Object -Property Name,Version,Publisher -Unique | ConvertTo-Json -Compress"
+)
+
+
+def _publisher_common_name(value: Any) -> str:
+    match = re.search(r"CN=([^,]+)", sanitize_text(value))
+    return sanitize_text(match.group(1)) if match else sanitize_text(value)
+
+
+def _iter_store_apps(seen: Set[str]) -> List[Dict[str, str]]:
+    """Microsoft Store (MSIX) apps: they have no Uninstall registry entry, so the classic list misses them."""
+    if not _is_truthy(os.getenv("ITINV_SOFTWARE_STORE_APPS_ENABLED", "1"), default=True):
+        return []
+    items: List[Dict[str, str]] = []
+    for row in _as_list(_powershell_json(_STORE_APPS_SCRIPT, timeout_sec=90)):
+        if not isinstance(row, dict):
+            continue
+        name = sanitize_text(row.get("Name"))
+        if not name:
+            continue
+        version = sanitize_text(row.get("Version"))
+        publisher = _publisher_common_name(row.get("Publisher"))
+        dedupe_key = f"{name}|{version}|{publisher}".lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        items.append(
+            {"display_name": name, "display_version": version, "publisher": publisher, "install_date": "", "scope": "store"}
+        )
+    return items
+
+
+def _iter_uninstall_software_items() -> List[Dict[str, str]]:
+    """Installed programs: machine-wide, per-user (loaded user hives) and Microsoft Store apps."""
+    if winreg is None:
+        return []
+    seen: Set[str] = set()
+    uninstall = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+    items = _read_uninstall_roots(
+        [
+            (winreg.HKEY_LOCAL_MACHINE, uninstall),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+        ],
+        "machine",
+        seen,
+    )
+    items.extend(
+        _read_uninstall_roots(
+            [(winreg.HKEY_USERS, f"{sid}\\{uninstall}") for sid in _enumerate_hku_user_sids()], "user", seen
+        )
+    )
+    items.extend(_iter_store_apps(seen))
     items.sort(key=lambda row: row.get("display_name", "").lower())
     return items
 
@@ -2926,8 +3004,8 @@ def get_os_info() -> Dict[str, Any]:
     return info
 
 
-def _powershell_json(command: str) -> Any:
-    result = run_cmd(["powershell", "-NoProfile", "-Command", command])
+def _powershell_json(command: str, timeout_sec: Optional[int] = None) -> Any:
+    result = run_cmd(["powershell", "-NoProfile", "-Command", command], timeout_sec=timeout_sec)
     if result.returncode != 0 or not result.stdout.strip():
         return None
     try:
@@ -3237,7 +3315,235 @@ def get_security_info() -> Dict[str, Any]:
         bitlocker["system_drive_protection"] = sanitize_text(bitlocker_data.get("ProtectionStatus")) or "unknown"
         bitlocker["system_drive_status"] = sanitize_text(bitlocker_data.get("VolumeStatus"))
 
-    return {"antivirus": antivirus_items, "bitlocker": bitlocker}
+    security: Dict[str, Any] = {"antivirus": antivirus_items, "bitlocker": bitlocker}
+    security.update(_collect_security_posture())
+    return security
+
+
+_SECURITY_POSTURE_SCRIPT = (
+    "$r=[ordered]@{};"
+    "try{$r.firewall=@(Get-NetFirewallProfile|ForEach-Object{[ordered]@{name=[string]$_.Name;enabled=[bool]$_.Enabled}})}catch{};"
+    "try{$m=Get-MpComputerStatus;$r.defender=[ordered]@{realtime=[bool]$m.RealTimeProtectionEnabled;"
+    "signature_updated=$m.AntivirusSignatureLastUpdated.ToString('o');signature_version=[string]$m.AntivirusSignatureVersion}}catch{};"
+    "try{$r.rdp_enabled=((Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server').fDenyTSConnections -eq 0)}catch{};"
+    "try{$r.local_admins=@(Get-LocalGroupMember -SID S-1-5-32-544|ForEach-Object{[string]$_.Name})}catch{};"
+    "try{$r.secure_boot=[bool](Confirm-SecureBootUEFI)}catch{};"
+    "try{$t=Get-Tpm;$r.tpm=[ordered]@{present=[bool]$t.TpmPresent;ready=[bool]$t.TpmReady}}catch{};"
+    "try{$r.bitlocker_volumes=@(Get-BitLockerVolume|ForEach-Object{[ordered]@{mount=[string]$_.MountPoint;"
+    "protection=[string]$_.ProtectionStatus;status=[string]$_.VolumeStatus}})}catch{};"
+    "$r|ConvertTo-Json -Compress -Depth 4"
+)
+
+
+def _as_list(value: Any) -> List[Any]:
+    if isinstance(value, list):
+        return value
+    if value in (None, ""):
+        return []
+    return [value]
+
+
+def _collect_security_posture() -> Dict[str, Any]:
+    """Firewall, Defender signatures, RDP, local admins, Secure Boot, TPM, BitLocker of all volumes.
+
+    One PowerShell call; every part is optional, a failing cmdlet only drops its own key.
+    """
+    if not _is_truthy(os.getenv("ITINV_SECURITY_POSTURE_ENABLED", "1"), default=True):
+        return {}
+    data = _powershell_json(_SECURITY_POSTURE_SCRIPT, timeout_sec=90)
+    if not isinstance(data, dict):
+        return {}
+    posture: Dict[str, Any] = {}
+    if "firewall" in data:
+        posture["firewall"] = [
+            {"name": sanitize_text(item.get("name")), "enabled": bool(item.get("enabled"))}
+            for item in _as_list(data.get("firewall"))
+            if isinstance(item, dict)
+        ]
+    if isinstance(data.get("defender"), dict):
+        defender = data["defender"]
+        posture["defender"] = {
+            "realtime": bool(defender.get("realtime")),
+            "signature_updated": sanitize_text(defender.get("signature_updated")),
+            "signature_version": sanitize_text(defender.get("signature_version")),
+        }
+    for key in ("rdp_enabled", "secure_boot"):
+        if isinstance(data.get(key), bool):
+            posture[key] = data[key]
+    if "local_admins" in data:
+        posture["local_admins"] = sorted(
+            {sanitize_text(item) for item in _as_list(data.get("local_admins")) if sanitize_text(item)}
+        )
+    if isinstance(data.get("tpm"), dict):
+        posture["tpm"] = {"present": bool(data["tpm"].get("present")), "ready": bool(data["tpm"].get("ready"))}
+    if "bitlocker_volumes" in data:
+        posture["bitlocker_volumes"] = [
+            {
+                "mount": sanitize_text(item.get("mount")),
+                "protection": sanitize_text(item.get("protection")),
+                "status": sanitize_text(item.get("status")),
+            }
+            for item in _as_list(data.get("bitlocker_volumes"))
+            if isinstance(item, dict)
+        ]
+    return posture
+
+
+USBSTOR_ENUM_PATH = r"SYSTEM\CurrentControlSet\Enum\USBSTOR"
+USB_TIMESTAMP_PROPERTIES = r"Properties\{83da6326-97a6-4088-9453-a1923f573b29}"
+_WINDOWS_GENERATED_SERIAL_RE = re.compile(r"^\d&")
+_USB_PRESENT_SCRIPT = (
+    "$d=@(Get-CimInstance Win32_DiskDrive -Filter \"InterfaceType='USB'\"|ForEach-Object{"
+    "[ordered]@{pnp=[string]$_.PNPDeviceID;model=[string]$_.Model;size=[int64]$_.Size}});"
+    "$p=@(Get-CimInstance Win32_PnPEntity -Filter \"PNPClass='WPD' OR PNPClass='Image'\"|ForEach-Object{"
+    "[ordered]@{pnp=[string]$_.PNPDeviceID;name=[string]$_.Name;cls=[string]$_.PNPClass;mfr=[string]$_.Manufacturer}});"
+    "[ordered]@{disks=$d;portable=$p}|ConvertTo-Json -Compress -Depth 4"
+)
+
+
+def filetime_to_epoch(raw: Any) -> int:
+    """Registry FILETIME (100 ns since 1601-01-01 UTC) -> unix seconds; 0 when empty or invalid."""
+    if not isinstance(raw, (bytes, bytearray)) or len(raw) < 8:
+        return 0
+    value = int.from_bytes(bytes(raw[:8]), "little")
+    if value <= 0:
+        return 0
+    seconds = value // 10_000_000 - 11_644_473_600
+    return seconds if seconds > 0 else 0
+
+
+def parse_usbstor_ids(class_key: str, instance_key: str) -> Dict[str, Any]:
+    """Split USBSTOR\\Disk&Ven_X&Prod_Y&Rev_Z\\<serial>&0 into vendor/product/revision/serial.
+
+    Windows invents an id such as ``6&1f4a2b3c&0`` for devices without a serial number: such an id
+    is only stable on one computer, so ``has_unique_serial`` is False and it must not be searched fleet-wide.
+    """
+    vendor = product = revision = device_type = ""
+    for part in sanitize_text(class_key).split("&"):
+        lowered = part.lower()
+        if lowered.startswith("ven_"):
+            vendor = part[4:].replace("_", " ").strip()
+        elif lowered.startswith("prod_"):
+            product = part[5:].replace("_", " ").strip()
+        elif lowered.startswith("rev_"):
+            revision = part[4:].strip()
+        elif not device_type:
+            device_type = part.strip()
+    instance = sanitize_text(instance_key)
+    serial = instance.rsplit("&", 1)[0] if "&" in instance else instance
+    return {
+        "device_type": device_type,
+        "vendor": vendor,
+        "product": product,
+        "revision": revision,
+        "serial": serial,
+        "has_unique_serial": bool(serial) and not _WINDOWS_GENERATED_SERIAL_RE.match(instance),
+    }
+
+
+def _read_registry_filetime(root: Any, key_path: str) -> int:
+    try:
+        with winreg.OpenKey(root, key_path) as key:
+            raw, _kind = winreg.QueryValueEx(key, "")
+        return filetime_to_epoch(raw)
+    except Exception:
+        return 0
+
+
+def _iter_usbstor_history() -> List[Dict[str, Any]]:
+    """Every USB mass-storage device Windows has ever seen on this computer (registry USBSTOR)."""
+    if winreg is None:
+        return []
+    items: List[Dict[str, Any]] = []
+    root = winreg.HKEY_LOCAL_MACHINE
+    try:
+        with winreg.OpenKey(root, USBSTOR_ENUM_PATH) as parent:
+            class_count = winreg.QueryInfoKey(parent)[0]
+            class_keys = [winreg.EnumKey(parent, index) for index in range(class_count)]
+    except Exception:
+        return []
+    for class_key in class_keys:
+        class_path = f"{USBSTOR_ENUM_PATH}\\{class_key}"
+        try:
+            with winreg.OpenKey(root, class_path) as class_handle:
+                instance_keys = [winreg.EnumKey(class_handle, i) for i in range(winreg.QueryInfoKey(class_handle)[0])]
+        except Exception:
+            continue
+        for instance_key in instance_keys:
+            instance_path = f"{class_path}\\{instance_key}"
+            friendly_name = ""
+            try:
+                with winreg.OpenKey(root, instance_path) as instance_handle:
+                    friendly_name = sanitize_text(winreg.QueryValueEx(instance_handle, "FriendlyName")[0])
+            except Exception:
+                pass
+            stamps = f"{instance_path}\\{USB_TIMESTAMP_PROPERTIES}"
+            first_connected = _read_registry_filetime(root, f"{stamps}\\0065") or _read_registry_filetime(
+                root, f"{stamps}\\0064"
+            )
+            row = parse_usbstor_ids(class_key, instance_key)
+            row.update(
+                {
+                    "kind": "storage",
+                    "friendly_name": friendly_name,
+                    "first_connected_at": first_connected or None,
+                    "last_connected_at": _read_registry_filetime(root, f"{stamps}\\0066") or None,
+                    "last_removed_at": _read_registry_filetime(root, f"{stamps}\\0067") or None,
+                    "present": False,
+                    "size_gb": None,
+                    "pnp_device_id": f"USBSTOR\\{class_key}\\{instance_key}",
+                }
+            )
+            items.append(row)
+    return items
+
+
+def collect_usb_devices(*, limit: int = 500) -> Dict[str, Any]:
+    """USB devices of this computer: storage history from the registry plus what is plugged in right now."""
+    history = _iter_usbstor_history()
+    present_data = _powershell_json(_USB_PRESENT_SCRIPT, timeout_sec=60)
+    present_data = present_data if isinstance(present_data, dict) else {}
+    present_by_id: Dict[str, Dict[str, Any]] = {}
+    for disk in _as_list(present_data.get("disks")):
+        if isinstance(disk, dict) and sanitize_text(disk.get("pnp")):
+            present_by_id[sanitize_text(disk.get("pnp")).lower()] = disk
+    for row in history:
+        match = present_by_id.get(sanitize_text(row.get("pnp_device_id")).lower())
+        if match is not None:
+            row["present"] = True
+            size = _to_int_or_none(match.get("size"))
+            row["size_gb"] = round(size / (1024.0 ** 3), 1) if size else None
+    portable_rows: List[Dict[str, Any]] = []
+    for item in _as_list(present_data.get("portable")):
+        if not isinstance(item, dict) or not sanitize_text(item.get("pnp")):
+            continue
+        pnp_id = sanitize_text(item.get("pnp"))
+        if not pnp_id.upper().startswith(("USB\\", "SWD\\WPDBUSENUM")):
+            continue
+        portable_rows.append(
+            {
+                "kind": "portable",
+                "device_type": sanitize_text(item.get("cls")),
+                "vendor": sanitize_text(item.get("mfr")),
+                "product": sanitize_text(item.get("name")),
+                "friendly_name": sanitize_text(item.get("name")),
+                "revision": "",
+                "serial": pnp_id.rsplit("\\", 1)[-1],
+                "has_unique_serial": False,
+                "first_connected_at": None,
+                "last_connected_at": None,
+                "last_removed_at": None,
+                "present": True,
+                "size_gb": None,
+                "pnp_device_id": pnp_id,
+            }
+        )
+    items = (history + portable_rows)[: max(1, int(limit))]
+    items.sort(key=lambda row: (not row.get("present"), -(row.get("last_connected_at") or 0), row.get("product") or ""))
+    digest = hashlib.sha256(
+        json.dumps(items, ensure_ascii=False, sort_keys=True).encode("utf-8", errors="ignore")
+    ).hexdigest()
+    return {"items": items, "count": len(items), "snapshot_hash": digest, "collected_at": int(time.time())}
 
 
 def get_updates_info() -> Dict[str, Any]:
@@ -3294,6 +3600,7 @@ def collect_inventory(report_type: str = "full_snapshot", include_full_snapshot:
             "scan_outbox_depth": _scan_outbox_depth(),
             "scan_dead_letter_depth": _scan_dead_letter_depth(),
             "last_scan_ingest_ok_at": _read_scan_last_ingest_ok_at(),
+            "sidecars": collect_sidecar_health(),
         },
     }
 
@@ -3320,6 +3627,11 @@ def collect_inventory(report_type: str = "full_snapshot", include_full_snapshot:
                 payload["software_inventory"] = collect_software_inventory()
             except Exception as exc:
                 logging.warning("Software inventory collection failed: %s", exc)
+        if _is_truthy(os.getenv("ITINV_USB_INVENTORY_ENABLED", "1"), default=True):
+            try:
+                payload["usb_devices"] = collect_usb_devices()
+            except Exception as exc:
+                logging.warning("USB device inventory collection failed: %s", exc)
 
     payload["ops_health"] = build_ops_health(logical_disks)
 
@@ -3705,6 +4017,7 @@ def run_loop(config: AgentConfig, run_once: bool = False) -> int:
             daemon=True,
             name="scan-sidecar",
         )
+        _SIDECAR_THREADS["scan"] = scan_thread
         scan_thread.start()
         if scan_thread.is_alive():
             logging.info("Scan sidecar thread started (alive=%s)", scan_thread.is_alive())
@@ -3731,6 +4044,7 @@ def run_loop(config: AgentConfig, run_once: bool = False) -> int:
             daemon=True,
             name="fs-egress",
         )
+        _SIDECAR_THREADS["fs_egress"] = fs_egress_thread
         fs_egress_thread.start()
         if fs_egress_thread.is_alive():
             logging.info("fs_egress thread started")

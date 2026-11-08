@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import {
   Alert, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle,
-  IconButton, InputAdornment, Snackbar, TextField, Tooltip,
+  IconButton, InputAdornment, Portal, Snackbar, TextField, Tooltip,
 } from '@mui/material';
 import DriveFileRenameOutlineRoundedIcon from '@mui/icons-material/DriveFileRenameOutlineRounded';
 import GroupAddOutlinedIcon from '@mui/icons-material/GroupAddOutlined';
@@ -10,7 +10,7 @@ import { myFilesOfficeAPI } from '../../api/myFilesOffice';
 import MyFilesCollaboratorsDialog from './MyFilesCollaboratorsDialog';
 
 /** These are HUB actions. They never replace or reload the live document frame. */
-export default function MyFilesEditorActions({ fileId, fileName, canRename, canManageAccess, disabled, isMobile, onRenamed }) {
+const MyFilesEditorActions = forwardRef(function MyFilesEditorActions({ fileId, fileName, canRename, canManageAccess, disabled, isMobile, onRenamed, nativeChrome, onSharingSaved, active = true }, ref) {
   const [renameOpen, setRenameOpen] = useState(false);
   const [sharingOpen, setSharingOpen] = useState(false);
   const [name, setName] = useState('');
@@ -20,6 +20,8 @@ export default function MyFilesEditorActions({ fileId, fileName, canRename, canM
   const request = useRef(null);
   const input = useRef(null);
   const mounted = useRef(false);
+  const isActive = useRef(active);
+  isActive.current = active;
   const canSubmit = useRef(false);
   canSubmit.current = Boolean(canRename && !disabled);
   const suffix = /\.[^.]+$/.exec(fileName)?.[0] || '';
@@ -32,6 +34,7 @@ export default function MyFilesEditorActions({ fileId, fileName, canRename, canM
     if (!canManageAccess || disabled) setSharingOpen(false);
     if (!canRename || disabled) setRenameOpen(false);
   }, [canManageAccess, canRename, disabled]);
+  useEffect(() => { if (!active) { setSharingOpen(false); setRenameOpen(false); } }, [active]);
   useEffect(() => {
     if (error && !saving && renameOpen) input.current?.focus();
   }, [error, saving, renameOpen]);
@@ -43,12 +46,20 @@ export default function MyFilesEditorActions({ fileId, fileName, canRename, canM
     setRenameOpen(true);
   };
   const closeRename = () => { if (!request.current) setRenameOpen(false); };
-  const saveName = async (event) => {
-    event.preventDefault();
+  const saveName = async (event, proposedName = name, fromEditor = false) => {
+    event?.preventDefault();
     if (request.current || !canSubmit.current) return;
-    const trimmed = name.trim();
+    const trimmed = String(proposedName || '').trim();
+    const fail = message => {
+      setError(message);
+      if (fromEditor) {
+        setName(trimmed);
+        if (isActive.current) setRenameOpen(true);
+        else setNotice({ severity: 'error', text: message });
+      }
+    };
     if (!trimmed || /[\\/\u0000]/.test(trimmed)) {
-      setError('Укажите имя файла без пути.');
+      fail('Укажите имя файла без пути.');
       return;
     }
     const controller = new AbortController();
@@ -60,24 +71,29 @@ export default function MyFilesEditorActions({ fileId, fileName, canRename, canM
       if (!mounted.current || controller.signal.aborted || !canSubmit.current) return;
       const title = result?.file?.original_file_name;
       if (String(result?.file?.id) !== String(fileId) || typeof title !== 'string' || !title.trim()) {
-        setError('HUB не подтвердил новое имя. Проверьте файл в разделе «Мои файлы».');
+        fail('HUB не подтвердил новое имя. Проверьте файл в разделе «Мои файлы».');
         return;
       }
       onRenamed?.(title);
       setRenameOpen(false);
-      setNotice(result.editor_notified === true
+      setNotice(result.editor_notified === true && fromEditor ? null : result.editor_notified === true
         ? { severity: 'success', text: 'Имя файла обновлено.' }
         : { severity: 'warning', text: 'Имя сохранено в HUB. Сервер редактора не подтвердил обновление имени в открытых окнах. Текущий документ сохранён на экране.' });
     } catch (err) {
       if (!mounted.current || controller.signal.aborted) return;
       const detail = err?.response?.data?.detail;
-      setError(typeof detail === 'string' ? detail : err?.response
+      fail(typeof detail === 'string' ? detail : err?.response
         ? 'Не удалось переименовать файл.' : 'Ответ HUB не получен. Проверьте имя в «Моих файлах» перед повтором.');
     } finally {
       if (request.current === controller) request.current = null;
       if (mounted.current) setSaving(false);
     }
   };
+
+  useImperativeHandle(ref, () => ({
+    rename: title => { if (active && canSubmit.current) void saveName(null, title, true); },
+    share: () => { if (active && canManageAccess && !disabled) setSharingOpen(true); },
+  }));
 
   return <>
     {canRename ? <Tooltip title="Переименовать файл">
@@ -109,14 +125,16 @@ export default function MyFilesEditorActions({ fileId, fileName, canRename, canM
         </DialogActions>
       </form>
     </Dialog>
-    {sharingOpen ? <MyFilesCollaboratorsDialog open file={{ id: fileId, original_file_name: fileName }}
+    {sharingOpen ? <MyFilesCollaboratorsDialog open file={{ id: fileId, original_file_name: fileName }} onSaved={onSharingSaved}
       onClose={(saved) => {
         setSharingOpen(false);
-        if (saved) setNotice({ severity: 'success', text: 'Совместный доступ обновлён в HUB.' });
+        if (saved && !nativeChrome) setNotice({ severity: 'success', text: 'Совместный доступ обновлён в HUB.' });
       }} /> : null}
-    <Snackbar open={Boolean(notice)} autoHideDuration={notice?.severity === 'success' ? 5000 : null}
+    <Portal><Snackbar open={Boolean(notice) && active} autoHideDuration={notice?.severity === 'success' ? 5000 : null}
       onClose={(_, reason) => { if (reason !== 'clickaway') setNotice(null); }} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
       {notice ? <Alert severity={notice.severity} role={notice.severity === 'success' ? 'status' : 'alert'} onClose={() => setNotice(null)}>{notice.text}</Alert> : undefined}
-    </Snackbar>
+    </Snackbar></Portal>
   </>;
-}
+});
+
+export default MyFilesEditorActions;

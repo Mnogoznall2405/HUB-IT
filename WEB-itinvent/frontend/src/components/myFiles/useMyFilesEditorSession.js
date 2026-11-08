@@ -3,7 +3,8 @@ import AuthContext from '../../contexts/AuthContext';
 import { myFilesOfficeAPI } from '../../api/myFilesOffice';
 
 const docsApiLoads = new Map();
-const loadDocsApi = (publicPath) => {
+let nextTimingId = 0;
+export const loadDocsApi = (publicPath) => {
   if (window.DocsAPI?.DocEditor) return Promise.resolve();
   const src = `${publicPath}/web-apps/apps/api/documents/api.js`;
   if (!docsApiLoads.has(src)) {
@@ -43,13 +44,15 @@ const retryDelay = (attempt, error) => {
 };
 
 /** Retain the live editor; refresh its signed config only when the SDK requests a new version. */
-export default function useMyFilesEditorSession({ fileId, onConfig, onError, onStatusChange, onRequestClose, onTitleChange }) {
+export default function useMyFilesEditorSession({ fileId, onConfig, onError, onStatusChange, onRequestClose, onTitleChange, onRequestHistory, onRequestRename, onRequestSharingSettings }) {
   const auth = useContext(AuthContext);
   const accountKey = String(auth?.user?.id ?? auth?.user?.username ?? '');
   const hostRef = useRef(null);
   const actions = useRef({});
   const callbacks = useRef({});
-  callbacks.current = { onConfig, onError, onStatusChange, onRequestClose, onTitleChange };
+  callbacks.current = { onConfig, onError, onStatusChange, onRequestClose, onTitleChange, onRequestHistory, onRequestRename, onRequestSharingSettings };
+  const permissions = useRef({});
+  permissions.current = { rename: auth?.hasPermission?.('my_files.write') === true, share: auth?.hasPermission?.('my_files.share') === true };
   const [status, setStatus] = useState(initialStatus);
   const [restart, setRestart] = useState(0);
   const [discardAction, setDiscardAction] = useState(null);
@@ -57,9 +60,23 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
   useEffect(() => { callbacks.current.onStatusChange?.(status); }, [status]);
 
   useEffect(() => {
+    const timingId = ++nextTimingId;
+    const startedAt = performance.now();
+    let editorStartedAt = startedAt;
+    let appMeasured = false;
+    let documentMeasured = false;
+    // Local browser diagnostics only: no file IDs, titles, URLs, tokens or content.
+    const measure = (stage, start) => {
+      try {
+        const name = `hub.office.${stage}`;
+        if (performance.getEntriesByName(name).length >= 100) performance.clearMeasures(name);
+        performance.measure(name, { start, end: performance.now(), detail: { load: timingId } });
+      } catch { /* Diagnostics must never interrupt the editor. */ }
+    };
     let disposed = false;
     let editor = null;
     let currentConfig = null;
+    let currentCapabilities = {};
     let currentPublicPath = '';
     let inFlight = false;
     let terminal = false;
@@ -99,11 +116,17 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
     const events = {
       onAppReady: () => {
         if (disposed || terminal) return;
+        if (!appMeasured) { measure('frame', editorStartedAt); appMeasured = true; }
         frameReady = true;
         update({ frameReady: true, phase: refreshRequested ? 'refreshing' : 'opening' });
       },
       onDocumentReady: () => {
         if (disposed || terminal) return;
+        if (!documentMeasured) {
+          measure('document', editorStartedAt);
+          measure('total', startedAt);
+          documentMeasured = true;
+        }
         documentReady = true;
         clearTimeout(readyTimer);
         frameReady = true;
@@ -154,14 +177,18 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
       controller = new AbortController();
       update({ busy: true });
       try {
+        const configStartedAt = performance.now();
         const payload = await myFilesOfficeAPI.getEditorConfig(fileId, { signal: controller.signal });
         const { config, public_path: publicPath } = payload;
-        const capabilities = { canRename: payload.can_rename === true, canManageAccess: payload.can_manage_access === true };
+        const capabilities = { canRename: payload.can_rename === true, canManageAccess: payload.can_manage_access === true, canViewHistory: payload.can_view_history === true,
+          nativeChrome: config?.editorConfig?.customization?.close?.visible === true };
         if (disposed || terminal) return;
+        if (kind === 'initial') measure('config', configStartedAt);
         if (accountKey && String(config?.editorConfig?.user?.id ?? '') !== accountKey) {
           block('Учётная запись изменилась. Откройте документ заново под нужным пользователем.');
           return;
         }
+        currentCapabilities = capabilities;
         if (kind === 'refresh') {
           const oldUser = String(currentConfig?.editorConfig?.user?.id ?? '');
           const newUser = String(config?.editorConfig?.user?.id ?? '');
@@ -198,16 +225,29 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
             block('Для обновления версии нужно переоткрыть документ. Сначала сохраните доступные правки.');
             return;
           }
+          const previousConfig = currentConfig;
           currentConfig = config;
           refreshRequested = false;
+          try {
+            editor.refreshFile(config);
+          } catch (error) {
+            // A failed SDK call did not apply this version; retry it rather than
+            // waiting forever for a newer HUB key while the iframe stays old.
+            currentConfig = previousConfig;
+            refreshRequested = true;
+            throw error;
+          }
+          // SDK callbacks can report a fatal error synchronously during refresh.
+          if (disposed || terminal) return;
           attempt = 0;
-          editor.refreshFile(config);
           // refreshFile does not reload the document: another onDocumentReady is not guaranteed.
           update({ phase: documentReady ? 'ready' : 'opening', message: '', warning: '' });
           return;
         }
+        const sdkStartedAt = performance.now();
         await loadDocsApi(publicPath);
         if (disposed || !hostRef.current) return;
+        measure('sdk', sdkStartedAt);
         currentConfig = config;
         currentPublicPath = publicPath;
         const target = document.createElement('div');
@@ -215,7 +255,17 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
         hostRef.current.replaceChildren(target);
         callbacks.current.onConfig?.(config, capabilities);
         try {
-          editor = new window.DocsAPI.DocEditor(target.id, { ...config, width: '100%', height: '100%', events });
+          editorStartedAt = performance.now();
+          editor = new window.DocsAPI.DocEditor(target.id, { ...config, width: '100%', height: '100%', events: {
+            ...events,
+            ...(capabilities.canViewHistory ? { onRequestHistory: () => { if (!disposed && !terminal) callbacks.current.onRequestHistory?.(); } } : {}),
+            ...(capabilities.canRename && permissions.current.rename ? { onRequestRename: event => {
+              if (!disposed && !terminal && currentCapabilities.canRename && permissions.current.rename && typeof event?.data === 'string') callbacks.current.onRequestRename?.(event.data);
+            } } : {}),
+            ...(capabilities.canManageAccess && permissions.current.share ? { onRequestSharingSettings: () => {
+              if (!disposed && !terminal && currentCapabilities.canManageAccess && permissions.current.share) callbacks.current.onRequestSharingSettings?.();
+            } } : {}),
+          } });
         } catch {
           terminal = true;
           update({ phase: 'error', frameReady: true, message: 'Не удалось открыть документ в редакторе. Попробуйте открыть его заново.' });
@@ -227,7 +277,7 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
         }), 60000);
         attempt = 0;
       } catch (error) {
-        if (disposed || controller?.signal.aborted) return;
+        if (disposed || terminal || controller?.signal.aborted) return;
         if (!retryable(error)) {
           const code = error?.response?.status;
           const denied = [401, 403, 404, 410].includes(code);
@@ -260,6 +310,7 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
     };
     const offline = () => update({ offline: true });
     const visible = () => { if (document.visibilityState === 'visible' && navigator.onLine !== false && refreshRequested) online(); };
+    const checkClose = (event) => { if (dirty) event.preventDefault(); };
     const beforeUnload = (event) => {
       if (!dirty) return;
       event.preventDefault();
@@ -268,8 +319,13 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
     window.addEventListener('online', online);
     window.addEventListener('offline', offline);
     window.addEventListener('beforeunload', beforeUnload);
+    window.addEventListener('hub:before-close', checkClose);
     document.addEventListener('visibilitychange', visible);
     actions.current = {
+      sharingSettings: settings => {
+        if (disposed || terminal || !currentCapabilities.canManageAccess || !permissions.current.share) return;
+        try { editor?.setSharingSettings?.(settings); } catch { /* HUB already confirmed the access change. */ }
+      },
       retry: () => {
         if (terminal || inFlight) return;
         clearTimeout(retryTimer);
@@ -295,6 +351,7 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
       window.removeEventListener('online', online);
       window.removeEventListener('offline', offline);
       window.removeEventListener('beforeunload', beforeUnload);
+      window.removeEventListener('hub:before-close', checkClose);
       document.removeEventListener('visibilitychange', visible);
       actions.current = {};
       try { editor?.destroyEditor?.(); } catch { /* the frame may already be removed */ }
@@ -304,6 +361,7 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
   const requestClose = useCallback(() => actions.current.close?.(), []);
   const retry = useCallback(() => actions.current.retry?.(), []);
   const reopen = useCallback(() => actions.current.reopen?.(), []);
+  const setSharingSettings = useCallback(settings => actions.current.sharingSettings?.(settings), []);
   const cancelDiscard = useCallback(() => setDiscardAction(null), []);
   const confirmDiscard = () => {
     const action = discardAction;
@@ -311,5 +369,5 @@ export default function useMyFilesEditorSession({ fileId, onConfig, onError, onS
     if (action === 'close') callbacks.current.onRequestClose?.();
     else if (action === 'reopen') setRestart((value) => value + 1);
   };
-  return { hostRef, status, requestClose, retry, reopen, discardAction, cancelDiscard, confirmDiscard };
+  return { hostRef, status, requestClose, retry, reopen, discardAction, cancelDiscard, confirmDiscard, setSharingSettings };
 }

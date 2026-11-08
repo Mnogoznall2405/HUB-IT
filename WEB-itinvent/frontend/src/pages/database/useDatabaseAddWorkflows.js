@@ -13,6 +13,8 @@ import {
   buildAddEquipmentPayload,
   buildAddEquipmentSuccessMessage,
   createAddEquipmentInitialForm,
+  findSerialDuplicate,
+  pushAddEquipmentPreset,
 } from './detailModel';
 import {
   buildLocationOptions,
@@ -22,6 +24,25 @@ import {
   usesManualOwner,
 } from './databaseOptionModel';
 import { upsertItemInGrouped } from './equipmentModel';
+
+const RECENT_PRESETS_STORAGE_KEY = 'hubit.addEquipment.recentPresets.v1';
+
+const loadRecentPresets = () => {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(RECENT_PRESETS_STORAGE_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed.filter((item) => item && typeof item === 'object').slice(0, 5) : [];
+  } catch {
+    return [];
+  }
+};
+
+const saveRecentPresets = (presets) => {
+  try {
+    window.localStorage.setItem(RECENT_PRESETS_STORAGE_KEY, JSON.stringify(presets));
+  } catch {
+    // storage may be blocked: presets are a convenience only
+  }
+};
 
 export function useDatabaseAddWorkflows({
   canDatabaseWrite = false,
@@ -73,6 +94,30 @@ export function useDatabaseAddWorkflows({
   const [addConsumableShowAllLocations, setAddConsumableShowAllLocations] = useState(false);
   const [addModels, setAddModels] = useState([]);
   const [addModelsLoading, setAddModelsLoading] = useState(false);
+  const [addSerialDuplicate, setAddSerialDuplicate] = useState(null);
+  const [addRecentPresets, setAddRecentPresets] = useState(loadRecentPresets);
+  const addSerialNumber = String(addEquipmentForm?.serial_number || '').trim();
+
+  // Warn about an already registered serial while typing, not only after "Добавить".
+  useEffect(() => {
+    if (!addEquipmentModalOpen || addSerialNumber.length < 3) {
+      setAddSerialDuplicate(null);
+      return undefined;
+    }
+    let canceled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const response = await equipmentAPI.searchBySerial(addSerialNumber);
+        if (!canceled) setAddSerialDuplicate(findSerialDuplicate(response?.equipment, addSerialNumber));
+      } catch {
+        if (!canceled) setAddSerialDuplicate(null);
+      }
+    }, 450);
+    return () => {
+      canceled = true;
+      clearTimeout(timer);
+    };
+  }, [addEquipmentModalOpen, addSerialNumber]);
 
   const [addConsumableModalOpen, setAddConsumableModalOpen] = useState(false);
   const [addConsumableForm, setAddConsumableForm] = useState(() => createAddConsumableInitialForm());
@@ -190,6 +235,26 @@ export function useDatabaseAddWorkflows({
   const patchAddConsumableForm = useCallback((patch) => {
     setAddConsumableForm((prev) => ({ ...prev, ...patch }));
     setAddConsumableError('');
+  }, []);
+
+  const applyAddEquipmentPreset = useCallback((preset) => {
+    if (!preset) return;
+    setAddEquipmentForm((prev) => ({
+      ...prev,
+      type_no: preset.type_no ?? '',
+      model_name: preset.model_name || '',
+      model_no: preset.model_no ?? null,
+      branch_no: preset.branch_no ?? '',
+      loc_no: preset.loc_no ?? '',
+      status_no: preset.status_no ?? prev.status_no,
+      employee_name: preset.employee_name || '',
+      employee_no: preset.employee_no ?? null,
+      employee_dept: preset.employee_dept || '',
+      part_no: preset.part_no || '',
+    }));
+    setAddEmployeeInput(preset.employee_name || '');
+    setAddModels([]);
+    setAddEquipmentError('');
   }, []);
 
   const resetAddEquipmentModels = useCallback(() => setAddModels([]), []);
@@ -425,10 +490,20 @@ export function useDatabaseAddWorkflows({
       setAddEquipmentSuccess(successMessage);
       notifyDatabaseSuccess?.(successMessage);
       setAddEquipmentError('');
-      setAddEquipmentForm(getAddEquipmentDefaults());
-      setAddEmployeeInput('');
-      setAddEmployeeOptions([]);
-      setAddModels([]);
+      setAddRecentPresets((prev) => {
+        const next = pushAddEquipmentPreset(prev, addEquipmentForm);
+        saveRecentPresets(next);
+        return next;
+      });
+      // Batch entry: keep employee, place, type, model and status; clear only what is unique per item.
+      setAddEquipmentForm((prev) => ({
+        ...prev,
+        serial_number: '',
+        ip_address: '',
+        mac_address: '',
+        network_name: '',
+        description: '',
+      }));
       await refreshCreatedEquipment(response?.inv_no);
     } catch (error) {
       const apiDetail = error?.response?.data?.detail;
@@ -491,6 +566,9 @@ export function useDatabaseAddWorkflows({
     selectedAddEmployeeOption,
     addUsesManualEmployee,
     addUsesManualModel,
+    addSerialDuplicate,
+    addRecentPresets,
+    applyAddEquipmentPreset,
     openAddEquipmentModal,
     closeAddEquipmentModal,
     patchAddEquipmentForm,

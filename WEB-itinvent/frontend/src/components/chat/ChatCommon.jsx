@@ -1,11 +1,10 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Box, Button, CircularProgress } from '@mui/material';
+import { Box, Button, CircularProgress, Menu, MenuItem, ListSubheader } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import PauseRoundedIcon from '@mui/icons-material/PauseRounded';
 import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
 import StickyNote2OutlinedIcon from '@mui/icons-material/StickyNote2Outlined';
-import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import ScheduleRoundedIcon from '@mui/icons-material/ScheduleRounded';
 import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
@@ -27,6 +26,7 @@ import {
 import { isChatDocumentPreviewableAttachment } from './chatAttachmentPreview';
 import { resolveChatTelegramAvatarColor } from '../../theme/chatTelegramTheme';
 import { chatDirectoryAPI } from '../../api/chatDirectory';
+import { formatMyFilesRetentionLabel, myFilesRetentionOptions } from '../../api/myFiles';
 import ChatStickerMedia from './ChatStickerMedia';
 import { buildTaskDetailPath } from '../../lib/taskNavigation';
 import FileActionsContextMenu, {
@@ -247,41 +247,43 @@ export function NotesConversationAvatar({ size = 48, sx = {} }) {
   );
 }
 
-export function AiConversationAvatar({ size = 48, sx = {} }) {
+// Аватар ИИ-ассистента: фирменный знак Хаба в белом круге с мягким кольцом.
+// thinking — пока ассистент работает: кольцо плавно «дышит».
+export function AiConversationAvatar({ size = 48, sx = {}, thinking = false }) {
+  const logoSize = Math.round(size * 0.74);
   return (
     <Box
-      sx={{
+      data-testid="ai-avatar"
+      sx={(muiTheme) => ({
         position: 'relative',
         width: size,
         height: size,
         minWidth: size,
         minHeight: size,
         flexShrink: 0,
+        borderRadius: '50%',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        bgcolor: '#ffffff',
+        boxShadow: `0 0 0 ${size >= 40 ? 2 : 1.5}px ${alpha('#29a9e1', muiTheme.palette.mode === 'dark' ? 0.55 : 0.4)}, 0 2px 8px ${alpha('#0b3b5a', 0.18)}`,
+        '@keyframes hubAiAvatarPulse': {
+          '0%': { boxShadow: `0 0 0 2px ${alpha('#29a9e1', 0.55)}, 0 0 0 2px ${alpha('#29a9e1', 0.35)}` },
+          '70%': { boxShadow: `0 0 0 2px ${alpha('#29a9e1', 0.55)}, 0 0 0 9px ${alpha('#29a9e1', 0)}` },
+          '100%': { boxShadow: `0 0 0 2px ${alpha('#29a9e1', 0.55)}, 0 0 0 9px ${alpha('#29a9e1', 0)}` },
+        },
+        ...(thinking ? { animation: 'hubAiAvatarPulse 1.8s ease-out infinite' } : {}),
+        '@media (prefers-reduced-motion: reduce)': { animation: 'none' },
         ...sx,
-      }}
+      })}
     >
       <Box
-        sx={(muiTheme) => ({
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          width: '100%',
-          height: '100%',
-          borderRadius: '999px',
-          overflow: 'hidden',
-          bgcolor: muiTheme.palette.mode === 'dark'
-            ? alpha(muiTheme.palette.primary.main, 0.22)
-            : alpha(muiTheme.palette.primary.main, 0.12),
-          color: muiTheme.palette.mode === 'dark'
-            ? muiTheme.palette.primary.light
-            : muiTheme.palette.primary.main,
-          boxShadow: muiTheme.palette.mode === 'dark'
-            ? 'inset 0 1px 0 rgba(255,255,255,0.08)'
-            : 'inset 0 1px 0 rgba(255,255,255,0.72)',
-        })}
-      >
-        <SmartToyOutlinedIcon sx={{ fontSize: Math.max(18, Math.round(size * 0.46)) }} />
-      </Box>
+        component="img"
+        src="/favicon.png"
+        alt=""
+        draggable={false}
+        sx={{ width: logoSize, height: logoSize, objectFit: 'contain', userSelect: 'none' }}
+      />
     </Box>
   );
 }
@@ -1375,11 +1377,13 @@ export function AttachmentCard({
       fileType: attachment?.kind || attachment?.media_kind || attachment?.file_type,
     }) === 'video'
     || isChatDocumentPreviewableAttachment(attachment);
-  const handleSaveToMyFiles = async () => {
+  const [retentionMenuAnchor, setRetentionMenuAnchor] = useState(null);
+  const handleSaveToMyFiles = async (retentionDays) => {
     if (!canSaveToMyFiles || !normalizedMessageId || !attachmentId || saveState === 'saving') return;
+    setRetentionMenuAnchor(null);
     setSaveState('saving');
     try {
-      await chatDirectoryAPI.saveAttachmentToMyFiles(normalizedMessageId, attachmentId);
+      await chatDirectoryAPI.saveAttachmentToMyFiles(normalizedMessageId, attachmentId, retentionDays);
       setSaveState('saved');
     } catch {
       setSaveState('error');
@@ -1414,18 +1418,33 @@ export function AttachmentCard({
         fallbackFileUrls={fallbackFileUrls}
       />
       {canSaveToMyFiles && normalizedMessageId && attachmentId ? (
-        <Button
-          size="small"
-          startIcon={saveState === 'saving' ? <CircularProgress size={16} color="inherit" /> : <SaveAltRoundedIcon />}
-          disabled={saveState === 'saving' || saveState === 'saved'}
-          color={saveState === 'error' ? 'error' : 'primary'}
-          onClick={() => void handleSaveToMyFiles()}
-          sx={{ minHeight: 44, mt: 0.5, justifyContent: 'flex-start', textTransform: 'none' }}
-        >
-          {saveState === 'saved'
-            ? 'Файл отправлен на проверку и сохранение в Мои файлы'
-            : (saveState === 'error' ? 'Повторить сохранение' : 'Сохранить в Мои файлы')}
-        </Button>
+        <>
+          <Button
+            size="small"
+            startIcon={saveState === 'saving' ? <CircularProgress size={16} color="inherit" /> : <SaveAltRoundedIcon />}
+            disabled={saveState === 'saving' || saveState === 'saved'}
+            color={saveState === 'error' ? 'error' : 'primary'}
+            aria-haspopup="menu"
+            onClick={(event) => setRetentionMenuAnchor(event.currentTarget)}
+            sx={{ minHeight: 44, mt: 0.5, justifyContent: 'flex-start', textTransform: 'none' }}
+          >
+            {saveState === 'saved'
+              ? 'Файл отправлен на проверку и сохранение в Мои файлы'
+              : (saveState === 'error' ? 'Повторить сохранение' : 'Сохранить в Мои файлы')}
+          </Button>
+          <Menu
+            anchorEl={retentionMenuAnchor}
+            open={Boolean(retentionMenuAnchor)}
+            onClose={() => setRetentionMenuAnchor(null)}
+          >
+            <ListSubheader disableSticky sx={{ lineHeight: '32px' }}>Хранить в «Мои файлы»</ListSubheader>
+            {myFilesRetentionOptions.map((days) => (
+              <MenuItem key={days} onClick={() => void handleSaveToMyFiles(days)}>
+                {formatMyFilesRetentionLabel(days)}
+              </MenuItem>
+            ))}
+          </Menu>
+        </>
       ) : null}
       {stickerPackDialogOpen ? (
         <Suspense fallback={null}>

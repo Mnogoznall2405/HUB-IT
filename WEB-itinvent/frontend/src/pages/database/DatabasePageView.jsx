@@ -793,6 +793,7 @@ export default function DatabasePageView({ vm }) {
             <EquipmentQualityDialog
               open
               dbId={photoReviewDbId}
+              canWrite={canDatabaseWrite}
               canDeleteEquipment={canDeleteEquipment}
               reloadToken={listReloadToken}
               onClose={handleCloseQuality}

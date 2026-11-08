@@ -4,6 +4,9 @@ const fileUrl = (fileId, suffix = '') => `/my-files/${encodeURIComponent(fileId)
 const folderUrl = (folderId) => `/my-files/office/folders/${encodeURIComponent(folderId)}/collaborators`;
 
 export const myFilesOfficeAPI = {
+  getHistoryConfig: async (fileId, { signal } = {}) => (await apiClient.get(fileUrl(fileId, '/history/config'), { signal })).data,
+  getHistory: async (fileId, { signal } = {}) => (await apiClient.get(fileUrl(fileId, '/history'), { signal })).data,
+  getHistoryData: async (fileId, version, { signal } = {}) => (await apiClient.get(fileUrl(fileId, `/history/${encodeURIComponent(version)}`), { signal })).data,
   getStatus: async ({ signal } = {}) => {
     const response = await apiClient.get('/my-files/office/status', { signal });
     return response.data;

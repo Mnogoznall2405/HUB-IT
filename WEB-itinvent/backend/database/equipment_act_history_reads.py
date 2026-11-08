@@ -2,7 +2,7 @@
 Read-only equipment act and transfer history queries for SQL Server inventory data.
 """
 import time
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, Sequence
 
 from backend.database.connection import get_db as _default_get_db
 
@@ -394,10 +394,25 @@ def _group_act_rows(rows: List[dict], *, safe_limit: int) -> tuple[List[dict], L
     return acts_list, doc_order
 
 
+def act_scope_sql(branch_nos: Sequence[int], *, doc_alias: str = "d") -> tuple:
+    """Acts an IT owner may see: the document's own branch or the current branch of any equipment it lists."""
+    numbers = tuple(int(number) for number in branch_nos)
+    if not numbers:
+        return "1 = 0", ()
+    marks = ", ".join("?" for _ in numbers)
+    sql = (
+        f"({doc_alias}.BRANCH_NO IN ({marks}) OR EXISTS ("
+        f"SELECT 1 FROM DOCS_LIST dls INNER JOIN ITEMS iscope ON iscope.ID = dls.ITEM_ID "
+        f"WHERE dls.DOC_NO = {doc_alias}.DOC_NO AND iscope.BRANCH_NO IN ({marks})))"
+    )
+    return sql, numbers + numbers
+
+
 def list_latest_equipment_acts(
     *,
     limit: int = 50,
     db_id: Optional[str] = None,
+    branch_nos: Optional[Sequence[int]] = None,
     get_db_fn: Optional[Callable[[Optional[str]], Any]] = None,
 ) -> dict:
     """
@@ -408,6 +423,10 @@ def list_latest_equipment_acts(
     safe_limit = max(1, min(int(limit or 50), 100))
     act_filter = _act_document_filter_sql(doc_alias="d")
     db = _get_db(db_id, get_db_fn)
+    scope_clause, scope_params = "", ()
+    if branch_nos is not None:
+        scope_sql, scope_params = act_scope_sql(branch_nos)
+        scope_clause = f"AND {scope_sql}"
 
     docs_sql = f"""
         SELECT TOP {safe_limit}
@@ -430,12 +449,13 @@ def list_latest_equipment_acts(
               AND (dl.CI_TYPE = 1 OR dl.CI_TYPE IS NULL)
         )
           AND {act_filter}
+          {scope_clause}
         ORDER BY
             CASE WHEN d.DOC_DATE IS NULL THEN 1 ELSE 0 END,
             d.DOC_DATE DESC,
             d.DOC_NO DESC
     """
-    doc_rows = db.execute_query(docs_sql)
+    doc_rows = db.execute_query(docs_sql, scope_params)
 
     acts_list: List[dict] = []
     doc_order: List[int] = []
@@ -519,6 +539,7 @@ def search_equipment_acts(
     *,
     limit: int = 50,
     db_id: Optional[str] = None,
+    branch_nos: Optional[Sequence[int]] = None,
     get_db_fn: Optional[Callable[[Optional[str]], Any]] = None,
 ) -> dict:
     """
@@ -530,7 +551,7 @@ def search_equipment_acts(
     query_text = str(q or "").strip()
     safe_limit = max(1, min(int(limit or 50), 50))
     if len(query_text) < 2:
-        return list_latest_equipment_acts(limit=safe_limit, db_id=db_id, get_db_fn=get_db_fn)
+        return list_latest_equipment_acts(limit=safe_limit, db_id=db_id, branch_nos=branch_nos, get_db_fn=get_db_fn)
 
     like_pattern = f"%{query_text.lower()}%"
     # Только номер акта и ФИО/фамилия сотрудника (не инв./серийный №).
@@ -545,6 +566,11 @@ def search_equipment_acts(
 
     fetch_limit = safe_limit * 5
     act_filter = _act_document_filter_sql(doc_alias="d")
+    scope_clause = ""
+    if branch_nos is not None:
+        scope_sql, scope_params = act_scope_sql(branch_nos)
+        scope_clause = f"AND {scope_sql}"
+        params.extend(scope_params)
     sql = f"""
         SELECT TOP {fetch_limit}
             d.DOC_NO AS doc_no,
@@ -568,6 +594,7 @@ def search_equipment_acts(
         WHERE (dl.CI_TYPE = 1 OR dl.CI_TYPE IS NULL)
           AND ({' OR '.join(search_conditions)})
           AND {act_filter}
+          {scope_clause}
         ORDER BY
             CASE WHEN d.DOC_DATE IS NULL THEN 1 ELSE 0 END,
             d.DOC_DATE DESC,

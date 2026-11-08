@@ -54,11 +54,20 @@ export const mergeAiStatusPayload = (current, payload, fallbackConversationId = 
     ...(completedPrevious ? [previousStage] : []),
   ].filter((value, index, values) => values.indexOf(value) === index);
   const hasStageHistory = newRun || completedStages.length > 0 || Array.isArray(base.completed_stages);
+  // Шаги инструментов («Думает»): событие несёт один шаг, копим по id и обновляем на месте.
+  const { step: incomingStep, ...payloadWithoutStep } = nextPayload;
+  const steps = Array.isArray(base.steps) ? [...base.steps] : [];
+  if (incomingStep && typeof incomingStep === 'object' && incomingStep.id) {
+    const index = steps.findIndex((item) => item.id === incomingStep.id);
+    if (index >= 0) steps[index] = { ...steps[index], ...incomingStep };
+    else steps.push(incomingStep);
+  }
   return {
     ...nextCurrent,
     [conversationId]: {
       ...base,
-      ...nextPayload,
+      ...payloadWithoutStep,
+      ...(steps.length ? { steps: steps.slice(-20) } : {}),
       ...(hasStageHistory ? { completed_stages: completedStages } : {}),
       ...(newRun ? { _previous_run_ids: [...(previous._previous_run_ids || []), previousRun].slice(-16) } : {}),
     },

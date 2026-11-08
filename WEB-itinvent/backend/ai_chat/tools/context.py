@@ -20,6 +20,7 @@ ITINVENT_TOOL_EQUIPMENT_SEARCH = "itinvent.equipment.search"
 ITINVENT_TOOL_EQUIPMENT_SEARCH_UNIVERSAL = "itinvent.equipment.search_universal"
 ITINVENT_TOOL_EQUIPMENT_GET_CARD = "itinvent.equipment.get_card"
 ITINVENT_TOOL_EQUIPMENT_LIST_BY_BRANCH = "itinvent.equipment.list_by_branch"
+ITINVENT_TOOL_EQUIPMENT_EXPORT = "itinvent.equipment.export"
 ITINVENT_TOOL_EMPLOYEE_SEARCH = "itinvent.employee.search"
 ITINVENT_TOOL_EMPLOYEE_LIST_EQUIPMENT = "itinvent.employee.list_equipment"
 ITINVENT_TOOL_CONSUMABLES_SEARCH = "itinvent.consumables.search"
@@ -151,6 +152,9 @@ DEFAULT_ITINVENT_TOOL_IDS = [
     ITINVENT_TOOL_ACTION_PC_CLEANING_DRAFT,
     ITINVENT_TOOL_USER_BY_NAME,
     ITINVENT_TOOL_USER_FULL_CONTEXT,
+    # Inventory agent hosts (read-only; also gated by computers.read per user)
+    ITINVENT_TOOL_COMPUTERS_SEARCH,
+    ITINVENT_TOOL_COMPUTERS_GET,
     # AD tools (password expiry, rotation status)
     AD_TOOL_USER_PASSWORD_STATUS,
     AD_TOOL_USERS_EXPIRING_SOON,

@@ -69,7 +69,7 @@ describe('My Files co-editing dialogs', () => {
 
     render(<MyFilesCollaboratorsDialog open folder={{ id: 'fo1', name: 'Проект' }} onClose={onClose} onShareLink={vi.fn()} />);
 
-    await screen.findByText('Пока доступ есть только у вас.');
+    await screen.findByText('Прямые приглашения не добавлены.');
     expect(screen.getByText(/в том числе добавленные позже/)).toBeInTheDocument();
     expect(screen.queryByTestId('my-files-collaborators-copy-link')).not.toBeInTheDocument();
     const input = screen.getByLabelText('Добавить пользователя');

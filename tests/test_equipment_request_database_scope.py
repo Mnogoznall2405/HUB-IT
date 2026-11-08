@@ -142,8 +142,8 @@ async def test_threadpool_reads_do_not_block_the_event_loop(monkeypatch):
 
     started = time.monotonic()
     grouped, branches = await asyncio.gather(
-        equipment_api.get_all_equipment_grouped(page=1, limit=10, branch=None, db_id=None, _=None),
-        equipment_api.get_branches_list(response=Response(), db_id=None, _=None),
+        equipment_api.get_all_equipment_grouped(page=1, limit=10, branch=None, db_id=None, current_user=None),
+        equipment_api.get_branches_list(response=Response(), db_id=None, current_user=None),
     )
     elapsed = time.monotonic() - started
 

@@ -120,7 +120,9 @@ export function useAccountSectionData(area = 'settings') {
   const [databasesError, setDatabasesError] = useState('');
   const [users, setUsers] = useState([]);
   const [sessions, setSessions] = useState([]);
-  const [usersLoading, setUsersLoading] = useState(false);
+  // Start as loading for managers: the users effect fires after the first paint, and an initial
+  // `false` renders the short "not found" row first, so the table jumps when the real rows arrive.
+  const [usersLoading, setUsersLoading] = useState(canManageUsers);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [savingUser, setSavingUser] = useState(false);
   const [cleanupResult, setCleanupResult] = useState({ deactivated: 0, deleted: 0 });
@@ -219,7 +221,18 @@ export function useAccountSectionData(area = 'settings') {
     if (!canManageUsers) return;
     setUsersLoading(true);
     try {
-      const data = await authAPI.getUsers();
+      let data;
+      try {
+        data = await authAPI.getUsers();
+      } catch (firstError) {
+        // Первый вход после простоя: запрос мог попасть на обновление токена или рестарт API —
+        // один повтор через 1.5 с вместо красной плашки. Остальные 4xx (права) не повторяем.
+        const status = Number(firstError?.response?.status || 0);
+        if (status >= 400 && status < 500 && ![401, 408, 429].includes(status)) throw firstError;
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        if (!isCurrent()) return;
+        data = await authAPI.getUsers();
+      }
       if (!isCurrent()) return;
       const baseUsers = (Array.isArray(data) ? data : []).map((item) => ({
         ...item,

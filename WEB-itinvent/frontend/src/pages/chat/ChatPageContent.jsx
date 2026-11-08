@@ -1056,6 +1056,7 @@ export function ChatPageContent({
     conversationsLoading,
     setConversations,
     upsertSearchConversation,
+    enabled: !embedded,
   });
 
   useChatActiveConversationSurfaceEffects({

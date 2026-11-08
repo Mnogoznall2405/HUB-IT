@@ -37,6 +37,12 @@ import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import PageTopBar from '../components/layout/PageTopBar';
 import { equipmentAPI } from '../api/client';
+import ComputerSecurityPanel from '../components/computers/ComputerSecurityPanel';
+import ComputerSoftwareList from '../components/computers/ComputerSoftwareList';
+import ComputerUsbList from '../components/computers/ComputerUsbList';
+import SoftwareFleetSearchDialog from '../components/computers/SoftwareFleetSearchDialog';
+import UsbFleetSearchDialog from '../components/computers/UsbFleetSearchDialog';
+import FleetHealthDialog from '../components/computers/FleetHealthDialog';
 import { useAuth } from '../contexts/AuthContext';
 import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTheme } from '@mui/material/styles';
@@ -136,7 +142,7 @@ function MiniBars({ title, rows, color }) {
                   <Typography variant="caption" color="text.secondary">{value}</Typography>
                 </Box>
                 <Box sx={{ height: 7, borderRadius: 4, bgcolor: ui.actionBg, overflow: 'hidden' }}>
-                  <Box sx={{ width: `${width}%`, height: '100%', bgcolor: color }} />
+                  <Box sx={{ width: `${width}%`, height: '100%', bgcolor: row.color || color }} />
                 </Box>
               </Box>
             );
@@ -853,6 +859,9 @@ function Computers() {
   const [hideActionLoading, setHideActionLoading] = useState(false);
   const [selected, setSelected] = useState(null);
   const [open, setOpen] = useState(false);
+  const [softwareSearchOpen, setSoftwareSearchOpen] = useState(false);
+  const [usbSearchOpen, setUsbSearchOpen] = useState(false);
+  const [fleetHealthOpen, setFleetHealthOpen] = useState(false);
 
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -1542,10 +1551,10 @@ function Computers() {
       });
     }
     return [
-      { label: 'В сети', value: map.online || 0 },
-      { label: 'Нет свежих', value: map.stale || 0 },
-      { label: 'Оффлайн', value: map.offline || 0 },
-      { label: 'Неизвестно', value: map.unknown || 0 },
+      { label: 'В сети', value: map.online || 0, color: '#2e7d32' },
+      { label: 'Нет свежих', value: map.stale || 0, color: '#ed6c02' },
+      { label: 'Оффлайн', value: map.offline || 0, color: '#d32f2f' },
+      { label: 'Неизвестно', value: map.unknown || 0, color: '#757575' },
     ];
   }, [filtered, searchSummary]);
 
@@ -1564,8 +1573,12 @@ function Computers() {
   }, [filtered, searchSummary]);
 
   const changeRows = useMemo(() => {
-    const daily = Array.isArray(changes.daily) ? changes.daily : [];
-    return daily.map((row) => ({ label: String(row.date || '').slice(5), value: Number(row.count || 0) }));
+    // MiniBars показывает первые 8 строк, а сервер отдаёт 30 дней по возрастанию — берём последние 8.
+    const daily = Array.isArray(changes.daily) ? changes.daily.slice(-8) : [];
+    return daily.map((row) => {
+      const [, month, day] = String(row.date || '').split('-');
+      return { label: month && day ? `${day}.${month}` : String(row.date || ''), value: Number(row.count || 0) };
+    });
   }, [changes.daily]);
 
   const totals = changes.totals || {};
@@ -1609,18 +1622,27 @@ function Computers() {
             <FormControlLabel
               sx={{ m: 0 }}
               control={<Switch checked={showLocation} onChange={(e) => setShowLocation(e.target.checked)} />}
-              label={showLocation ? 'Скрыть местоположение' : 'Показать местоположение'}
+              label="Показывать местоположение"
             />
             <FormControlLabel
               sx={{ m: 0 }}
               control={<Switch checked={showDashboard} onChange={(e) => setShowDashboard(e.target.checked)} />}
-              label={showDashboard ? 'Скрыть дашборд' : 'Показать дашборд'}
+              label="Показывать дашборд"
             />
             {lastUpdatedAt ? (
               <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
                 Обновлено: {formatUpdatedAgo(lastUpdatedAt)}
               </Typography>
             ) : null}
+            <Button size="small" variant="outlined" onClick={() => setSoftwareSearchOpen(true)}>
+              Поиск ПО
+            </Button>
+            <Button size="small" variant="outlined" onClick={() => setUsbSearchOpen(true)}>
+              Поиск USB
+            </Button>
+            <Button size="small" variant="outlined" onClick={() => setFleetHealthOpen(true)}>
+              Панель парка
+            </Button>
             <Tooltip title="Обновить данные">
               <span>
                 <IconButton aria-label="Обновить данные" size="small" onClick={handleManualRefresh} disabled={loading} color="primary">
@@ -2468,6 +2490,15 @@ function Computers() {
                   </Stack>
                 </Paper>
 
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Установленное ПО</Typography>
+                {detailLoading ? null : <ComputerSoftwareList software={selected.software_inventory} />}
+
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>USB-устройства</Typography>
+                {detailLoading ? null : <ComputerUsbList usb={selected.usb_devices} />}
+
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Безопасность и агент</Typography>
+                {detailLoading ? null : <ComputerSecurityPanel security={selected.security} agentRuntime={selected.agent_runtime} />}
+
                 <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Изменения</Typography>
                 {Array.isArray(selected.recent_changes) && selected.recent_changes.length > 0 ? (
                   selected.recent_changes.map((event, idx) => (
@@ -2493,6 +2524,21 @@ function Computers() {
             )}
           </Box>
         </Drawer>
+        <SoftwareFleetSearchDialog
+          open={softwareSearchOpen}
+          onClose={() => setSoftwareSearchOpen(false)}
+          scope={scope}
+        />
+        <UsbFleetSearchDialog
+          open={usbSearchOpen}
+          onClose={() => setUsbSearchOpen(false)}
+          scope={scope}
+        />
+        <FleetHealthDialog
+          open={fleetHealthOpen}
+          onClose={() => setFleetHealthOpen(false)}
+          scope={scope}
+        />
       </PageShell>
     </MainLayout>
   );

@@ -165,7 +165,8 @@ export class TaskCanvasSocketClient {
     this.heartbeatTimer = browserWindow.setInterval(() => {
       if (!this.socket || this.socket.readyState !== browserWindow.WebSocket.OPEN) return;
       if (this.missedPongs >= MAX_MISSED_PONGS) {
-        this.socket.close(1011, 'task canvas heartbeat timeout');
+        // A client may only close with 1000 or 3000-4999; 1011 throws and leaves a dead socket "open".
+        this.socket.close(4408, 'task canvas heartbeat timeout');
         return;
       }
       this.missedPongs += 1;

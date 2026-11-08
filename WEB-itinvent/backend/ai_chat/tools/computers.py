@@ -118,6 +118,14 @@ def _profiles(profile_sizes: dict[str, Any]) -> list[dict[str, Any]]:
     return rows[:_MAX_LIST_ROWS]
 
 
+COMPUTER_STATUS_RU = {
+    "online": "в сети",
+    "stale": "давно не выходил на связь",
+    "offline": "не в сети",
+    "unknown": "нет данных",
+}
+
+
 def build_computer_view(raw: dict[str, Any], *, detail: bool = False) -> dict[str, Any]:
     """Compact, model-friendly view of one inventory host record."""
     from backend.api.v1.inventory import (
@@ -147,6 +155,8 @@ def build_computer_view(raw: dict[str, Any], *, detail: bool = False) -> dict[st
         "mac_address": _normalize_text(record.get("mac_address")) or None,
         "ip": _normalize_text(record.get("ip_primary")) or None,
         "status": _normalize_text(record.get("status")) or "unknown",
+        # Подпись для ответа пользователю: в таблицах и тексте писать status_ru, а не «online/offline».
+        "status_ru": COMPUTER_STATUS_RU.get(_normalize_text(record.get("status")) or "unknown", "нет данных"),
         "last_seen": _iso(record.get("last_seen_at")),
         "user_login": _normalize_text(record.get("user_login")) or None,
         "current_user": _normalize_text(record.get("current_user")) or None,
@@ -254,7 +264,8 @@ class ComputersSearchTool(AiTool):
         "Search computers reported by the HUB inventory agent by hostname, IP, MAC, logged-in user "
         "(login or surname), Outlook PST/OST file or user profile. Use for 'за каким ПК сидит Иванов', "
         "'где PST kozlovskii.me', 'где профиль Петрова', 'компьютер WS-042'. Returns compact cards with "
-        "online status, user, uptime, pending reboot and Outlook size; open one with itinvent.computers.get."
+        "online status, user, uptime, pending reboot and Outlook size; open one with itinvent.computers.get. "
+        "In the answer show the status as status_ru (в сети / не в сети / давно не выходил на связь), never raw online/offline."
     )
     input_model = ComputersSearchArgs
     stage = "checking_itinvent"
@@ -298,7 +309,8 @@ class ComputersGetTool(AiTool):
     description = (
         "Open one computer from the HUB inventory agent by mac_address (preferred) or exact hostname: "
         "online status, logged-in user, uptime, pending reboot reasons, RAM/CPU, disks, all Outlook "
-        "PST/OST stores with sizes and user profiles with sizes."
+        "PST/OST stores with sizes and user profiles with sizes. "
+        "In the answer show the status as status_ru, never raw online/offline."
     )
     input_model = ComputersGetArgs
     stage = "checking_itinvent"

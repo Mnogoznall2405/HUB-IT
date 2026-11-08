@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import { motion } from 'framer-motion';
 import { Box, Stack, Typography } from '@mui/material';
-import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
+import { AiConversationAvatar } from './ChatCommon';
 
 const TELEGRAM_CHAT_FONT_FAMILY = '"Segoe UI", system-ui, -apple-system, sans-serif';
 
@@ -53,25 +53,7 @@ function ChatTypingIndicator({
         py: 1,
       }}
     >
-      <Box
-        sx={{
-          width: compactMobile ? 32 : 36,
-          height: compactMobile ? 32 : 36,
-          borderRadius: '50%',
-          bgcolor: ui?.surfaceStrong || '#f0f0f0',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          flexShrink: 0,
-        }}
-      >
-        <SmartToyOutlinedIcon
-          sx={{
-            fontSize: compactMobile ? 18 : 20,
-            color: ui?.textSecondary || '#666',
-          }}
-        />
-      </Box>
+      <AiConversationAvatar size={compactMobile ? 32 : 36} thinking />
 
       <Stack spacing={0.3}>
         <Typography

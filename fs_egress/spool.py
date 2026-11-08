@@ -18,6 +18,32 @@ DEFAULT_SPOOL_ROOT = (
 )
 
 
+def spool_root_from_env() -> Path:
+    return Path(os.getenv("ITINV_FS_EGRESS_SPOOL", str(DEFAULT_SPOOL_ROOT)))
+
+
+def read_spool_stats(root: Path) -> Dict[str, Any]:
+    """Pending/dead-letter counts and the newest sent event time, for the agent heartbeat."""
+
+    def _count(folder: Path) -> int:
+        try:
+            return sum(1 for _ in folder.glob("*.json"))
+        except OSError:
+            return 0
+
+    last_sent_at: Optional[int] = None
+    try:
+        newest = max((path.stat().st_mtime for path in (root / "sent").glob("*.json")), default=None)
+        last_sent_at = int(newest) if newest else None
+    except OSError:
+        last_sent_at = None
+    return {
+        "pending": _count(root / "pending"),
+        "dead_letter": _count(root / "dead_letter"),
+        "last_sent_at": last_sent_at,
+    }
+
+
 class EgressSpool:
     def __init__(
         self,

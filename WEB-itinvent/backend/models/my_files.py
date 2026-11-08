@@ -29,6 +29,7 @@ class MyFileResponse(BaseModel):
     is_favorite: bool = False
     collaborators_count: int = 0
     shared_with_me: bool = False
+    can_manage_access: bool = False
     my_role: str = ""
     owner_username: str = ""
     folder_name: str = ""
@@ -233,3 +234,20 @@ class MyFilesAdminStatsResponse(BaseModel):
     items: list[MyFilesAdminUserStat] = Field(default_factory=list)
     total: int = 0
     totals: MyFilesAdminTotals = Field(default_factory=MyFilesAdminTotals)
+
+
+class MyFilesAdminFileResponse(MyFileResponse):
+    owner_user_id: int
+    owner_label: str = ""
+    uploaded_by_user_id: int | None = None
+    uploaded_by_username: str = ""
+    deleted_at: datetime | None = None
+    can_open: bool = False
+    can_restore: bool = False
+
+
+class MyFilesAdminFileListResponse(BaseModel):
+    items: list[MyFilesAdminFileResponse] = Field(default_factory=list)
+    total: int
+    limit: int
+    offset: int

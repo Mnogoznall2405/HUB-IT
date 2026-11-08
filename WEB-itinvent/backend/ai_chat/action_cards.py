@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import re
 from datetime import datetime, timedelta, timezone
@@ -33,6 +34,7 @@ from backend.services.hub_service import hub_service
 from backend.services.mail_service import mail_service
 from backend.services.transfer_service import get_act_record
 
+logger = logging.getLogger(__name__)
 
 ACTION_STATUS_PENDING = "pending"
 ACTION_STATUS_EXECUTING = "executing"
@@ -712,8 +714,11 @@ def build_choice_card(
     title: str,
     summary: str,
     choices: list[dict[str, Any]],
+    kind: str = "",
 ) -> dict[str, Any]:
     """Buttons the employee presses instead of typing an answer (for example which of several namesakes).
+
+    ``kind="suggestions"`` marks optional next-step hints: the web client shows them above the composer, not in the bubble.
 
     Each choice is ``{"label": shown on the button, "reply": text sent to the assistant as the employee's message}``.
     """
@@ -736,8 +741,68 @@ def build_choice_card(
             "title": _normalize_text(title) or "Выберите вариант",
             "summary": _normalize_text(summary),
             "choices": [{"id": item["id"], "label": item["label"]} for item in normalized],
+            **({"kind": kind} if kind else {}),
         },
     )
+
+
+AI_QUICK_REPLIES_MAX = 4
+
+
+def build_quick_replies_card(
+    *,
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+    replies: Any,
+    title: str = "Что дальше?",
+) -> dict[str, Any] | None:
+    """Buttons with the model's suggested next requests; None when there is nothing to show.
+
+    A message carries one card, so a run that already produced another card (a draft, a format choice)
+    keeps it and the suggestions are dropped.
+    """
+    if not isinstance(replies, list):
+        return None
+    choices: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in replies:
+        if not isinstance(item, dict):
+            continue
+        label = _normalize_text(item.get("label"))[:60]
+        reply = _normalize_text(item.get("reply")) or label
+        key = reply.casefold()
+        if not label or not reply or key in seen:
+            continue
+        seen.add(key)
+        choices.append({"label": label, "reply": reply})
+        if len(choices) >= AI_QUICK_REPLIES_MAX:
+            break
+    normalized_run_id = _normalize_text(run_id)
+    if len(choices) < 2 or not normalized_run_id:
+        return None
+    with app_session() as session:
+        existing = session.execute(
+            select(AppAiPendingAction.id)
+            .where(AppAiPendingAction.run_id == normalized_run_id)
+            .where(AppAiPendingAction.message_id.is_(None))
+            .limit(1)
+        ).first()
+    if existing is not None:
+        return None
+    try:
+        return build_choice_card(
+            conversation_id=conversation_id,
+            run_id=normalized_run_id,
+            requester_user_id=requester_user_id,
+            title=title,
+            summary="",
+            choices=choices,
+            kind="suggestions",
+        )
+    except Exception:
+        logger.warning("AI quick replies card was not created: run_id=%s", normalized_run_id, exc_info=True)
+        return None
 
 
 def _execute_ai_choice(*, row: AppAiPendingAction, payload: dict[str, Any], current_user: Any, payload_overrides: dict[str, Any] | None) -> dict[str, Any]:

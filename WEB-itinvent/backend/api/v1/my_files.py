@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -10,7 +11,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 
-from backend.api.deps import require_permission
+from backend.api.deps import get_current_admin_user, require_permission
 from backend.api.v1.my_files_download_grant_rate_limit import (
     enforce_download_grant_consume_limits,
     enforce_download_grant_mint_limits,
@@ -43,6 +44,8 @@ from backend.models.my_files import (
     MyFileUploadSessionCreateRequest,
     MyFileUploadSessionResponse,
     MyFilesAdminStatsResponse,
+    MyFilesAdminFileResponse,
+    MyFilesAdminFileListResponse,
     PublicMyFilePreviewResponse,
     PublicMyFileResponse,
     PublicMyFolderResponse,
@@ -55,6 +58,7 @@ from backend.services.authorization_service import (
     PERM_MY_FILES_WRITE,
 )
 from backend.services.my_files_copy_service import my_files_copy_service
+from backend.services.my_files_admin_service import my_files_admin_service
 from backend.services.my_files_service import (
     _UNSET,
     DEFAULT_RETENTION_DAYS,
@@ -677,6 +681,31 @@ async def list_my_files_admin_user_stats(
             offset=offset,
             query=q,
         )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.get("/admin/files", response_model=MyFilesAdminFileListResponse)
+async def list_admin_files(
+    q: str = Query(default="", max_length=128),
+    owner_user_id: int | None = None,
+    scope: Literal["all", "personal", "library"] = "all",
+    state: Literal["active", "trash", "all"] = "active",
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    current_user: User = Depends(get_current_admin_user),
+) -> dict:
+    try:
+        return await run_in_threadpool(my_files_admin_service.list_files, actor=current_user, query=q,
+                                      owner_user_id=owner_user_id, scope=scope, state=state, limit=limit, offset=offset)
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.get("/admin/files/{file_id}", response_model=MyFilesAdminFileResponse)
+async def get_admin_file(file_id: str, current_user: User = Depends(get_current_admin_user)) -> dict:
+    try:
+        return await run_in_threadpool(my_files_admin_service.get_file, actor=current_user, file_id=file_id)
     except Exception as exc:
         raise _service_error_to_http(exc) from exc
 

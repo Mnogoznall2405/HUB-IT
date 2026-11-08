@@ -30,7 +30,8 @@ NO_RIGHTS = User(
 
 SCHEMA = """
 CREATE TABLE ITEMS (ID INTEGER, CI_TYPE INTEGER, INV_NO TEXT, SERIAL_NO TEXT, PART_NO TEXT,
-    TYPE_NO INTEGER, MODEL_NO INTEGER, EMPL_NO INTEGER, BRANCH_NO INTEGER, LOC_NO INTEGER);
+    TYPE_NO INTEGER, MODEL_NO INTEGER, EMPL_NO INTEGER, BRANCH_NO INTEGER, LOC_NO INTEGER,
+    IP_ADDRESS TEXT, MAC_ADDRESS TEXT);
 CREATE TABLE OWNERS (OWNER_NO INTEGER, OWNER_DISPLAY_NAME TEXT);
 CREATE TABLE FILES (ITEM_ID INTEGER, CI_TYPE INTEGER, FILE_TYPE INTEGER, FILE_NO INTEGER);
 CREATE TABLE CI_TYPES (CI_TYPE INTEGER, TYPE_NO INTEGER, TYPE_NAME TEXT);
@@ -56,6 +57,9 @@ class SqliteSqlServer:
             lambda m: f"{m.group(2)} GLOB '*{m.group(1)}*'",
             sql,
         )
+        # T-SQL LEN() and LIKE with a bracket class (already upper-cased input) -> SQLite.
+        sql = sql.replace("LEN(", "LENGTH(")
+        sql = sql.replace("LIKE '%[^0-9A-F]%'", "GLOB '*[^0-9A-F]*'")
         match = re.search(r"OFFSET \? ROWS FETCH NEXT \? ROWS ONLY", sql)
         if match:
             sql = sql.replace(match.group(0), "LIMIT ? OFFSET ?")
@@ -117,11 +121,12 @@ def quality_env(monkeypatch, prebuilt_app_db):
     env.quality = quality
 
     def add_item(item_id, inv_no, serial="SN-%d", part_no="1C-1", type_no=1, empl_no=10,
-                 branch_no=1, loc_no=1, photo=True, ci_type=1):
+                 branch_no=1, loc_no=1, photo=True, ci_type=1, ip=None, mac=None):
         serial_value = serial % item_id if isinstance(serial, str) and "%d" in serial else serial
         conn.execute(
-            "INSERT INTO ITEMS VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (item_id, ci_type, inv_no, serial_value, part_no, type_no, 1, empl_no, branch_no, loc_no),
+            "INSERT INTO ITEMS (ID, CI_TYPE, INV_NO, SERIAL_NO, PART_NO, TYPE_NO, MODEL_NO, EMPL_NO, "
+            "BRANCH_NO, LOC_NO, IP_ADDRESS, MAC_ADDRESS) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (item_id, ci_type, inv_no, serial_value, part_no, type_no, 1, empl_no, branch_no, loc_no, ip, mac),
         )
         if photo:
             conn.execute("INSERT INTO FILES VALUES (?,?,0,1)", (item_id, ci_type))
@@ -210,6 +215,57 @@ def test_serial_rules_catch_russian_letters_and_stray_characters_but_not_placeho
     odd, _ = _issue_inv_nos(quality_env, "serial_odd_chars")
     assert sorted(cyrillic) == ["C-1", "C-7"]
     assert sorted(odd) == ["C-3", "C-5", "C-6"]
+
+
+def test_network_rules_find_missing_bad_and_duplicate_mac_and_ip(quality_env):
+    add = quality_env.add_item
+    add(1, "N-1", ip="10.0.0.1", mac="AA:BB:CC:DD:EE:01")              # clean
+    add(2, "N-2", ip="10.0.0.2", mac="")                                # IP without MAC
+    add(3, "N-3", mac="AA:BB:CC:DD:EE")                                 # truncated MAC
+    add(4, "N-4", mac="aabbccddeeff")                                   # any separator style is fine
+    add(5, "N-5", mac="AA:BB:CC:DD:EE:02; AA:BB:CC:DD:EE:03")           # several MACs in one field
+    add(6, "N-6", mac="ZZ:BB:CC:DD:EE:04")                              # not hexadecimal
+    add(7, "N-7", mac="11:22:33:44:55:66")
+    add(8, "N-8", mac="11-22-33-44-55-66")                              # same MAC, other style
+    add(9, "N-9", ip="10.0.9.9", mac="AA:00:00:00:00:09")
+    add(10, "N-10", ip=" 10.0.9.9 ", mac="AA:00:00:00:00:10")           # same IP with spaces
+    add(11, "N-11")                                                     # no network data at all: not a defect
+
+    rules = _counts(quality_env)
+
+    expected = {
+        "ip_no_mac": ["N-2"],
+        "mac_invalid": ["N-3", "N-6"],
+        "duplicate_mac": ["N-7", "N-8"],
+        "duplicate_ip": ["N-10", "N-9"],
+    }
+    for rule, inv_nos in expected.items():
+        found, body = _issue_inv_nos(quality_env, rule, limit=200)
+        assert sorted(found) == sorted(inv_nos), rule
+        assert rules[rule]["count"] == len(inv_nos), rule
+
+    _, body = _issue_inv_nos(quality_env, "ip_no_mac")
+    row = body["items"][0]
+    assert row["ip_address"] == "10.0.0.2" and "IP 10.0.0.2" in row["note"]
+    _, body = _issue_inv_nos(quality_env, "mac_invalid", q="N-3")
+    assert body["items"][0]["mac_address"] == "AA:BB:CC:DD:EE"
+
+
+def test_normalize_mac_address_formats_one_mac_and_rejects_garbage():
+    normalize = __import__(
+        "backend.services.equipment_quality_service", fromlist=["normalize_mac_address"]
+    ).normalize_mac_address
+
+    assert normalize(" aa-bb.cc dd:ee:ff ") == "AA:BB:CC:DD:EE:FF"
+    assert normalize("") is None and normalize(None) is None
+    for bad in ("AA:BB:CC", "ZZ:BB:CC:DD:EE:FF", "AA:BB:CC:DD:EE:FF:00"):
+        with pytest.raises(ValueError):
+            normalize(bad)
+    # A field that already holds several MACs is kept as typed when updating.
+    two = "AA:BB:CC:DD:EE:01; AA:BB:CC:DD:EE:02"
+    assert normalize(two, allow_multiple=True) == two
+    with pytest.raises(ValueError):
+        normalize(two)
 
 
 def test_summary_is_cached_and_refreshable(quality_env):

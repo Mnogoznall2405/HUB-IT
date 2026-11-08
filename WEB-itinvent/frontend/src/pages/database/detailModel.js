@@ -48,8 +48,58 @@ export const createAddEquipmentInitialForm = () => ({
   serial_number: '',
   part_no: '',
   ip_address: '',
+  mac_address: '',
+  network_name: '',
   description: '',
 });
+
+// MAC typed in any style (aa-bb.cc, aabbccddeeff, ...) is shown as AA:BB:CC:DD:EE:FF while typing.
+export const formatMacInput = (value) => {
+  const digits = String(value || '').replace(/[^0-9a-fA-F]/g, '').toUpperCase().slice(0, 12);
+  return digits.replace(/(.{2})(?=.)/g, '$1:');
+};
+
+// "As last time" presets: the shared part of a saved item, newest first, one per distinct combination.
+export const ADD_EQUIPMENT_PRESETS_LIMIT = 5;
+
+const PRESET_FIELDS = [
+  'type_no', 'model_name', 'model_no', 'branch_no', 'loc_no', 'status_no',
+  'employee_name', 'employee_no', 'employee_dept', 'part_no',
+];
+
+export const buildAddEquipmentPreset = (form = {}) => {
+  if (!form.type_no || !String(form.model_name || '').trim() || !form.branch_no || !form.loc_no) return null;
+  const preset = {};
+  PRESET_FIELDS.forEach((field) => {
+    preset[field] = form[field] ?? (field.endsWith('_no') ? null : '');
+  });
+  return preset;
+};
+
+const presetKey = (preset) => PRESET_FIELDS.map((field) => String(preset?.[field] ?? '').trim().toLowerCase()).join('|');
+
+export const pushAddEquipmentPreset = (list, form) => {
+  const preset = buildAddEquipmentPreset(form);
+  const current = Array.isArray(list) ? list : [];
+  if (!preset) return current;
+  const key = presetKey(preset);
+  return [preset, ...current.filter((item) => presetKey(item) !== key)].slice(0, ADD_EQUIPMENT_PRESETS_LIMIT);
+};
+
+// Search is a LIKE match; only an exact serial counts as a duplicate (the backend rejects exact serials too).
+export const findSerialDuplicate = (items, serial) => {
+  const wanted = String(serial || '').trim().toLowerCase();
+  if (!wanted || !Array.isArray(items)) return null;
+  const match = items.find((item) => String(item?.serial_no ?? item?.SERIAL_NO ?? '').trim().toLowerCase() === wanted);
+  if (!match) return null;
+  return {
+    inv_no: String(match.inv_no ?? match.INV_NO ?? '').trim(),
+    model_name: String(match.model_name ?? '').trim(),
+    employee_name: String(match.employee_name ?? '').trim(),
+  };
+};
+
+export const isMacComplete =(value) => String(value || '').replace(/[^0-9a-fA-F]/g, '').length === 12;
 
 const toDefaultSelectValue = (value) => (value !== undefined && value !== null ? String(value) : '');
 
@@ -57,8 +107,11 @@ export const buildAddEquipmentDefaults = ({ selectedBranch, branchOptions = [], 
   const defaultBranch = selectedBranch
     ? branchOptions.find((option) => normalizeText(option.branch_name) === normalizeText(selectedBranch))
     : null;
+  // Working statuses first ("В эксплуатации" / "В работе"); falling back to the first status put new items into "АРХИВ".
   const defaultStatus = statusOptions.find((option) =>
     normalizeText(option.status_name).includes('эксплуата')
+  ) || statusOptions.find((option) =>
+    normalizeText(option.status_name) === 'в работе'
   ) || statusOptions[0];
 
   return {
@@ -98,6 +151,10 @@ export const buildAddEquipmentPayload = (form = {}) => {
   if (!locNo) {
     return { error: 'Выберите местоположение.', payload: null };
   }
+  const macAddress = String(form.mac_address || '').trim();
+  if (macAddress && !isMacComplete(macAddress)) {
+    return { error: 'MAC-адрес должен содержать 12 символов (например, AA:BB:CC:DD:EE:FF).', payload: null };
+  }
 
   return {
     error: '',
@@ -115,6 +172,8 @@ export const buildAddEquipmentPayload = (form = {}) => {
       part_no: String(form.part_no || '').trim() || undefined,
       description: String(form.description || '').trim() || undefined,
       ip_address: String(form.ip_address || '').trim() || undefined,
+      mac_address: macAddress || undefined,
+      network_name: String(form.network_name || '').trim() || undefined,
       hw_serial_no: undefined,
     },
   };

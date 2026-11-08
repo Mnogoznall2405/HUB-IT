@@ -992,6 +992,8 @@ self.addEventListener('fetch', (event) => {
   }
 
   if (!isSameOrigin(url) || url.pathname.startsWith('/api/')) return;
+  // Document Server owns its HTML and versioned assets; keep them out of HUB's offline caches.
+  if (url.pathname === '/onlyoffice' || url.pathname.startsWith('/onlyoffice/')) return;
 
   if (request.mode === 'navigate') {
     event.respondWith(handleNavigationRequest(request, event));

@@ -107,7 +107,14 @@ async def list_it_objects(
     can_manage = _can_manage_owner(current_user)
     if hidden and not can_manage:
         raise HTTPException(status_code=403, detail="Удалённые объекты видит только администратор")
-    items = await _run(service.list_objects, user_id=int(current_user.id), query=q, only_mine=mine, only_hidden=hidden)
+    items = await _run(
+        service.list_objects,
+        user_id=int(current_user.id),
+        query=q,
+        only_mine=mine,
+        only_hidden=hidden,
+        see_all=can_manage,
+    )
     return {"items": items, "source_db_id": service.source_db_id, "can_manage": can_manage}
 
 

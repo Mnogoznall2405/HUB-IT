@@ -5,6 +5,7 @@ breaks SSE (`text/event-stream`) and file downloads. This middleware compresses
 only `application/json` responses above `minimum_size`; every other response —
 including all streaming endpoints — passes through untouched.
 """
+import asyncio
 import gzip
 from typing import Any
 
@@ -12,6 +13,8 @@ from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 DEFAULT_MINIMUM_SIZE = 1024
+# Bodies at least this large are gzipped off the event loop (a thread hop costs more than compressing small ones).
+OFFLOAD_MINIMUM_SIZE = 64 * 1024
 
 
 class JsonGzipMiddleware:
@@ -86,7 +89,11 @@ class _JsonGzipResponder:
             headers.add_vary_header("Accept-Encoding")
 
             if len(body) >= self.minimum_size:
-                body = gzip.compress(body, compresslevel=self.compresslevel)
+                if len(body) >= OFFLOAD_MINIMUM_SIZE:
+                    # Large bodies: compress in a worker thread (zlib releases the GIL) so the loop keeps serving.
+                    body = await asyncio.to_thread(gzip.compress, body, compresslevel=self.compresslevel)
+                else:
+                    body = gzip.compress(body, compresslevel=self.compresslevel)
                 headers["Content-Encoding"] = "gzip"
 
             headers["Content-Length"] = str(len(body))

@@ -30,6 +30,8 @@ class MockWebSocket {
   }
 
   close(code = 1000, reason = '') {
+    // Same rule as browsers: a client may only close with 1000 or 3000-4999.
+    if (code !== 1000 && !(code >= 3000 && code <= 4999)) throw new DOMException('invalid close code', 'InvalidAccessError');
     this.readyState = MockWebSocket.CLOSED;
     this.onclose?.({ code, reason });
   }

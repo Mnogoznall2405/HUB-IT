@@ -84,6 +84,7 @@ class InventoryPayload(BaseModel):
     agent_runtime: Optional[Dict[str, Any]] = None
     ops_health: Optional[Dict[str, Any]] = None
     software_inventory: Optional[Dict[str, Any]] = None
+    usb_devices: Optional[Dict[str, Any]] = None
     timestamp: int
 
 

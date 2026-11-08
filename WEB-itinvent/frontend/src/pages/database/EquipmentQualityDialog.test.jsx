@@ -2,17 +2,18 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
-  summary, issues, exportCsv, ocrSummary, ocrRun,
+  summary, issues, exportCsv, setMac, ocrSummary, ocrRun,
 } = vi.hoisted(() => ({
   summary: vi.fn(),
   issues: vi.fn(),
   exportCsv: vi.fn(),
+  setMac: vi.fn(),
   ocrSummary: vi.fn(),
   ocrRun: vi.fn(),
 }));
 
 vi.mock('../../api/equipmentQuality', () => ({
-  equipmentQualityAPI: { summary, issues, exportCsv },
+  equipmentQualityAPI: { summary, issues, exportCsv, setMac },
 }));
 
 vi.mock('../../api/equipmentPhotoOcr', () => ({
@@ -29,6 +30,8 @@ const SUMMARY = {
     { rule: 'no_photo', title: 'Нет фото', description: 'У позиции нет ни одной фотографии.', severity: 'warning', count: 12, total: 200, pct: 6.0, status: 'ok' },
     { rule: 'duplicate_serial', title: 'Дубли серийных номеров', description: 'Один серийный номер у нескольких позиций.', severity: 'error', count: 0, total: 200, pct: 0.0, status: 'ok' },
     { rule: 'dismissed_owner', title: 'Владелец не найден в справочнике', description: 'Вероятно, уволен.', severity: 'error', count: null, total: 200, pct: null, status: 'unknown' },
+    { rule: 'ip_no_mac', title: 'Есть IP, нет MAC', description: 'IP есть, MAC нет.', severity: 'warning', count: 3, total: 200, pct: 1.5, status: 'ok' },
+    { rule: 'mac_invalid', title: 'MAC в неверном формате', description: 'Неверный MAC.', severity: 'error', count: 1, total: 200, pct: 0.5, status: 'ok' },
   ],
 };
 
@@ -151,6 +154,51 @@ describe('EquipmentQualityDialog', () => {
     await waitFor(() => expect(issues).toHaveBeenCalledWith(expect.objectContaining({ rule: 'no_photo', q: 'INV-7' })));
     expect(await screen.findByText(/Всё чисто — позиций с этой проблемой нет/)).toBeTruthy();
     expect(screen.getByPlaceholderText(/Инв. номер/).value).toBe('INV-7');
+  });
+
+  it('fills in a missing MAC right in the row and drops the fixed row', async () => {
+    setMac.mockResolvedValue({});
+    issues.mockResolvedValue({
+      rule: 'ip_no_mac', items: [{ ...ISSUE, ip_address: '10.0.0.7', mac_address: '' }], total: 1, offset: 0, limit: 50, status: 'ok',
+    });
+    render(<EquipmentQualityDialog open canWrite dbId="main" onClose={vi.fn()} />);
+
+    fireEvent.click(await screen.findByTestId('quality-rule-ip_no_mac'));
+    await screen.findByText('INV-7 · ThinkPad');
+    const save = screen.getByRole('button', { name: 'Сохранить' });
+    expect(save.disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText('MAC-адрес'), { target: { value: 'aabbccddeeff' } });
+    fireEvent.click(save);
+
+    await waitFor(() => expect(setMac).toHaveBeenCalledWith({ invNo: 'INV-7', mac: 'AA:BB:CC:DD:EE:FF', dbId: 'main' }));
+    await waitFor(() => expect(screen.queryByText('INV-7 · ThinkPad')).toBeNull());
+  });
+
+  it('offers a one-click format fix only when the MAC has exactly 12 characters, and only to editors', async () => {
+    setMac.mockResolvedValue({});
+    issues.mockResolvedValue({
+      rule: 'mac_invalid',
+      items: [
+        { ...ISSUE, item_id: 7, inv_no: 'INV-7', mac_address: 'aa-bb-cc-dd-ee-ff' },
+        { ...ISSUE, item_id: 8, inv_no: 'INV-8', mac_address: '10.105.0.251' },
+      ],
+      total: 2, offset: 0, limit: 50, status: 'ok',
+    });
+    const { unmount } = render(<EquipmentQualityDialog open onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('quality-rule-mac_invalid'));
+    await screen.findByText('INV-7 · ThinkPad');
+    expect(screen.queryByRole('button', { name: /Исправить/ })).toBeNull();
+    unmount();
+
+    render(<EquipmentQualityDialog open canWrite onClose={vi.fn()} />);
+    fireEvent.click(await screen.findByTestId('quality-rule-mac_invalid'));
+    await screen.findByText('INV-7 · ThinkPad');
+    const fixButtons = screen.getAllByRole('button', { name: /Исправить/ });
+    expect(fixButtons).toHaveLength(1);
+
+    fireEvent.click(fixButtons[0]);
+    await waitFor(() => expect(setMac).toHaveBeenCalledWith(expect.objectContaining({ invNo: 'INV-7', mac: 'AA:BB:CC:DD:EE:FF' })));
   });
 
   it('downloads the CSV of the open rule', async () => {

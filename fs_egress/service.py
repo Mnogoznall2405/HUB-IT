@@ -3,11 +3,10 @@ from __future__ import annotations
 import logging
 import os
 import time
-from pathlib import Path
 from typing import Optional
 
 from .monitor import FsEgressMonitor
-from .spool import EgressSpool
+from .spool import EgressSpool, spool_root_from_env
 
 logger = logging.getLogger("fs_egress")
 
@@ -43,12 +42,7 @@ def run_fs_egress_forever() -> None:
 
     server_url = _resolve_server_url()
     api_key = str(os.getenv("ITINV_AGENT_API_KEY", "") or os.getenv("SCAN_AGENT_API_KEY", "") or "").strip()
-    spool_root = Path(
-        os.getenv(
-            "ITINV_FS_EGRESS_SPOOL",
-            str(Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "HUB-IT" / "Agent" / "Spool" / "fs_egress"),
-        )
-    )
+    spool_root = spool_root_from_env()
     spool = EgressSpool(
         spool_root,
         server_url=server_url,

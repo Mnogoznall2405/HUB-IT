@@ -14,20 +14,45 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
+from datetime import datetime, timezone
 import zipfile
+import uuid
 
 
 PACKAGE_VERSION = "10.0.0-169"
 DOCUMENT_ROOT = "/var/www/onlyoffice/documentserver"
 NOTICE_PATH = "web-apps/apps/common/main/resources/hubit-branding"
-CACHE_TAG = hashlib.sha256(b"HUB-IT branding 2026-11-03 v2").hexdigest()[:32]
+CACHE_TAG = hashlib.sha256(b"HUB-IT branding 2026-11-06 v3").hexdigest()[:32]
 ORIGINAL_TAG = "92ce7466a49981a3223168de7cb6d264"
-MODIFICATION_NOTICE = "HUB-IT: branding modified on 2026-11-03; based on ONLYOFFICE by Ascensio System SIA."
+API_PATH = "web-apps/apps/api/documents/api.js"
+API_NAMESPACE = re.compile(rb"const ver = '/10\.0\.0-([0-9a-f]{31,32})';")
+MODIFICATION_NOTICE = "HUB-IT: branding modified on 2026-11-06; based on ONLYOFFICE by Ascensio System SIA."
 
 
 def digest(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def gzip_bytes(content: bytes) -> bytes:
+    buffer = io.BytesIO()
+    # GzipFile uses a portable header; gzip.compress(mtime=0) can encode the host OS.
+    with gzip.GzipFile(fileobj=buffer, mode="wb", filename="", mtime=0) as compressed:
+        compressed.write(content)
+    return buffer.getvalue()
+
+
+def original_matches(path: str, content: bytes, expected: str) -> bool:
+    if digest(content) == expected:
+        return True
+    if path != API_PATH or len(API_NAMESPACE.findall(content)) != 1:
+        return False
+    # The vendor regenerates only this cache namespace during container initialization.
+    # Hash every other byte against the reviewed original; arbitrary JS changes remain rejected.
+    canonical = API_NAMESPACE.sub(b"const ver = '/10.0.0-" + ORIGINAL_TAG.encode() + b"';", content)
+    return digest(canonical) == expected
 
 
 def replace_once(content: bytes, before: str, after: str, path: str) -> bytes:
@@ -42,7 +67,7 @@ def make_assets(source: Path, license_content: bytes, manifest: dict) -> dict[st
     wordmark = json.loads(Path(__file__).with_name("wordmark.json").read_text())
     for path, expected_hash in manifest.items():
         content = (source / path).read_bytes()
-        if digest(content) != expected_hash:
+        if not original_matches(path, content, expected_hash):
             raise ValueError(f"Original asset checksum mismatch: {path}")
         if path.endswith(".svg"):
             about = "/about/" in path
@@ -70,7 +95,7 @@ def make_assets(source: Path, license_content: bytes, manifest: dict) -> dict[st
             needle = "                '<table id=\"id-about-licensor-info\""
             addition = (
                 "                '<p id=\"hubit-modification-notice\" style=\"text-align:center;margin:16px 24px;line-height:1.6\">',\n"
-                "                    'HUB-IT — изменённая версия ONLYOFFICE от Ascensio System SIA. Изменено 03.11.2026.<br>',\n"
+                "                    'HUB-IT — изменённая версия ONLYOFFICE от Ascensio System SIA. Изменено 06.11.2026.<br>',\n"
                 "                    '<a href=\"../../common/main/resources/hubit-branding/index.html\" target=\"_blank\" rel=\"noopener\">Исходный код изменений и лицензия</a><br>',\n"
                 "                    'ONLYOFFICE is a trademark of Ascensio System SIA.',\n"
                 "                '</p>',\n"
@@ -78,7 +103,7 @@ def make_assets(source: Path, license_content: bytes, manifest: dict) -> dict[st
             content = replace_once(content, needle, addition + needle, path)
             content = ("// " + MODIFICATION_NOTICE + "\n").encode() + content
         elif path.endswith("/api.js"):
-            content = replace_once(content, "const ver = '/10.0.0-" + ORIGINAL_TAG + "';", "const ver = '/10.0.0-" + CACHE_TAG + "';", path)
+            content = API_NAMESPACE.sub(b"const ver = '/10.0.0-" + CACHE_TAG.encode() + b"';", content)
             content = ("// " + MODIFICATION_NOTICE + "\n").encode() + content
         else:
             raise ValueError(f"Asset is outside the branding allowlist: {path}")
@@ -87,7 +112,7 @@ def make_assets(source: Path, license_content: bytes, manifest: dict) -> dict[st
     notice = """<!doctype html><html lang="ru"><meta charset="utf-8"><title>HUB-IT — сведения и исходный код</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>body{font:16px/1.65 system-ui,sans-serif;max-width:900px;margin:40px auto;padding:0 24px;color:#222}a{color:#145abe}li{margin:.5em 0}@media(prefers-color-scheme:dark){body{background:#181a1d;color:#eee}a{color:#8eb8ff}}</style>
-<h1>HUB-IT</h1><p>Изменённая версия ONLYOFFICE Docs Community 10.0.0-169. Изменения оформления: 3 ноября 2026 года.</p>
+<h1>HUB-IT</h1><p>Изменённая версия ONLYOFFICE Docs Community 10.0.0-169. Изменения оформления: 6 ноября 2026 года.</p>
 <p>Основано на ONLYOFFICE, разработанном Ascensio System SIA. Авторские права и исходные лицензионные уведомления сохранены. Изменены только название в интерфейсе, логотипы и идентификатор кэша. Код редактирования и проверки лицензии не изменён.</p>
 <p>Copyright © 2009–2026 Ascensio System SIA. ONLYOFFICE is a trademark of Ascensio System SIA. Этот вариант не является оригинальным продуктом ONLYOFFICE и не подразумевает одобрения разработчика.</p>
 <p>Программа предоставляется по GNU AGPL v3 с дополнительными условиями, без гарантий. <a href="LICENSE.txt">Полный текст поставляемой лицензии</a>.</p>
@@ -100,8 +125,9 @@ def make_assets(source: Path, license_content: bytes, manifest: dict) -> dict[st
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
         def add_source(name: str, content: bytes) -> None:
-            entry = zipfile.ZipInfo(name, date_time=(2026, 11, 3, 0, 0, 0))
+            entry = zipfile.ZipInfo(name, date_time=(2026, 11, 6, 0, 0, 0))
             entry.compress_type = zipfile.ZIP_DEFLATED
+            entry.create_system = 3
             bundle.writestr(entry, content)
 
         for path, content in assets.items():
@@ -118,36 +144,88 @@ def write_assets(destination: Path, assets: dict[str, bytes]) -> None:
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
-        target.with_name(target.name + ".gz").write_bytes(gzip.compress(content, mtime=0))
+        target.with_name(target.name + ".gz").write_bytes(gzip_bytes(content))
 
 
 def run(*args: str) -> str:
-    return subprocess.run(args, check=True, capture_output=True, text=True).stdout.strip()
+    return run_binary(*args).decode("utf-8").strip()
+
+
+def run_binary(*args: str, content: bytes | None = None) -> bytes:
+    try:
+        result = subprocess.run(args, input=content, capture_output=True, timeout=30)
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(f"Container command timed out: {' '.join(args[:4])}") from error
+    if result.returncode:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()[:1500]
+        raise RuntimeError(f"Container command failed ({result.returncode}): {' '.join(args[:4])}; {detail}")
+    return result.stdout
+
+
+def wait_for_ready(container: str, seconds: int) -> None:
+    if not seconds:
+        return
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            if run("podman", "exec", container, "curl", "--fail", "--silent", "--max-time", "5", "http://127.0.0.1/healthcheck") == "true":
+                return
+        except RuntimeError:
+            pass
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Document Server is not ready after {seconds} seconds; no assets changed")
+        time.sleep(min(2, max(0, deadline - time.monotonic())))
+
+
+def save_json(path: Path, value: dict) -> None:
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def copy_from(container: str, relative: str, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    run("podman", "cp", f"{container}:{DOCUMENT_ROOT}/{relative}", str(destination))
+    for attempt in range(3):
+        try:
+            content = run_binary("podman", "exec", container, "cat", "--", f"{DOCUMENT_ROOT}/{relative}")
+        except RuntimeError:
+            if attempt == 2:
+                raise
+            time.sleep(attempt + 1)
+        else:
+            destination.write_bytes(content)
+            return
 
 
 def install_file(container: str, relative: str, source: Path) -> None:
     target = f"{DOCUMENT_ROOT}/{relative}"
     run("podman", "exec", container, "mkdir", "-p", str(Path(target).parent))
-    run("podman", "cp", str(source), f"{container}:{target}.hubit-tmp")
+    run_binary("podman", "exec", "-i", container, "sh", "-c", 'umask 022; cat > "$1"', "sh", target + ".hubit-tmp", content=source.read_bytes())
     run("podman", "exec", container, "chmod", "0644", target + ".hubit-tmp")
     run("podman", "exec", container, "mv", "--", target + ".hubit-tmp", target)
 
 
-def apply(container: str, state: Path, manifest: dict, restore: bool) -> None:
+def apply(container: str, state: Path, manifest: dict, restore: bool, *, wait_ready_seconds: int = 0) -> None:
     import fcntl
 
     state.mkdir(parents=True, exist_ok=True)
     with (state / "apply.lock").open("w") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        wait_for_ready(container, wait_ready_seconds)
+        # All later commands address this exact instance, even if the service recreates its name.
+        container = run("podman", "inspect", "--format", "{{.Id}}", container)
         package = run("podman", "exec", container, "dpkg-query", "-W", "-f=${Version}", "onlyoffice-documentserver")
         if package != PACKAGE_VERSION:
             raise ValueError(f"Unsupported ONLYOFFICE version: {package}; no changes made")
         backup = state / "backup" / PACKAGE_VERSION
+        pointer = state / "restore-backup.json"
+        if pointer.exists():
+            backup = state / json.loads(pointer.read_text())["path"]
+            if not backup.resolve().is_relative_to((state / "backup" / PACKAGE_VERSION).resolve()):
+                raise ValueError("Original backup pointer is outside the reviewed backup directory")
         if restore:
             receipt = json.loads((backup / "receipt.json").read_text())
             for relative, expected in receipt.items():
@@ -162,19 +240,19 @@ def apply(container: str, state: Path, manifest: dict, restore: bool) -> None:
             source = Path(work) / "source"
             for relative in manifest:
                 copy_from(container, relative, source / relative)
-            source_hashes = {relative: digest((source / relative).read_bytes()) for relative in manifest}
             api_path = "web-apps/apps/api/documents/api.js"
+            originals = all(original_matches(relative, (source / relative).read_bytes(), checksum) for relative, checksum in manifest.items())
+            if originals:
+                # Preserve this instance's exact API/gzip bytes, rather than overwriting the original backup.
+                backup = state / "backup" / PACKAGE_VERSION / ("stock-" + digest((source / api_path).read_bytes())[:16])
             rollback_root = backup
             rollback_receipt = None
-            if source_hashes != manifest:
+            if not originals:
                 expected = json.loads((state / "deployed-sha256.json").read_text())
                 for relative in expected:
                     copy_from(container, relative, source / relative)
                 if any(digest((source / relative).read_bytes()) != checksum for relative, checksum in expected.items()):
                     raise ValueError("Previously branded assets changed; manual review required")
-                if CACHE_TAG.encode() in (source / api_path).read_bytes():
-                    print("HUB-IT branding already applied; asset checksums verified")
-                    return
                 previous_tag = re.search(rb"const ver = '/10\.0\.0-([0-9a-f]{32})';", (source / api_path).read_bytes())
                 if previous_tag is None:
                     raise ValueError("Unknown previously branded API; no changes made")
@@ -220,7 +298,10 @@ def apply(container: str, state: Path, manifest: dict, restore: bool) -> None:
                 receipt[relative] = digest(saved.read_bytes())
             (backup / "receipt.json").write_text(json.dumps(receipt, indent=2))
             deployed = {relative: digest(content) for relative, content in assets.items()}
-            deployed.update({relative + ".gz": digest(gzip.compress(content, mtime=0)) for relative, content in assets.items()})
+            deployed.update({relative + ".gz": digest(gzip_bytes(content)) for relative, content in assets.items()})
+            if rollback_receipt == deployed:
+                print("HUB-IT branding already applied; all asset checksums verified")
+                return
             try:
                 # Change the uncached API's cache namespace after its dependencies.
                 for relative in sorted(assets, key=lambda path: ("/api/documents/api.js" in path, path)):
@@ -234,7 +315,8 @@ def apply(container: str, state: Path, manifest: dict, restore: bool) -> None:
                 for relative in sorted(rollback_receipt or receipt, key=lambda path: ("/api/documents/api.js" in path, path)):
                     install_file(container, relative, rollback_root / relative)
                 raise
-            (state / "deployed-sha256.json").write_text(json.dumps(deployed, indent=2))
+            save_json(state / "deployed-sha256.json", deployed)
+            save_json(pointer, {"path": backup.relative_to(state).as_posix()})
             print(f"Applied HUB-IT branding: {len(assets)} assets and gzip variants; backup={backup}; cache={CACHE_TAG}")
 
 
@@ -246,6 +328,7 @@ def main() -> None:
     parser.add_argument("--license-file", type=Path)
     parser.add_argument("--container", default="onlyoffice")
     parser.add_argument("--state", type=Path, default=Path("/srv/onlyoffice/branding"))
+    parser.add_argument("--wait-ready", type=int, default=0, metavar="SECONDS")
     args = parser.parse_args()
     manifest_path = Path(__file__).with_name("original-sha256.json")
     manifest = json.loads(manifest_path.read_text())
@@ -256,7 +339,21 @@ def main() -> None:
         write_assets(args.destination, assets)
         print(f"Staged {len(assets)} assets and gzip variants; cache={CACHE_TAG}")
     else:
-        apply(args.container, args.state, manifest, args.action == "restore")
+        if not 0 <= args.wait_ready <= 600:
+            parser.error("--wait-ready must be between 0 and 600 seconds")
+        args.state.mkdir(parents=True, exist_ok=True)
+        status = {"container": args.container, "action": args.action, "cache_tag": CACHE_TAG,
+                  "utc": datetime.now(timezone.utc).isoformat()}
+        try:
+            apply(args.container, args.state, manifest, args.action == "restore", wait_ready_seconds=args.wait_ready)
+        except Exception as error:
+            status.update(status="failed", error=str(error))
+            save_json(args.state / "last-run.json", status)
+            print("HUBIT_BRANDING_FAILED: " + str(error), file=sys.stderr)
+            raise
+        else:
+            status.update(status="ok")
+            save_json(args.state / "last-run.json", status)
 
 
 if __name__ == "__main__":

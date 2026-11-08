@@ -31,6 +31,7 @@ import {
   isCompletedTaskConversation,
   isTaskConversation,
 } from './chatHelpers';
+import { stripMarkdownForPreview } from '../../pages/tasks/taskRichText';
 
 const joinClasses = (...values) => values.filter(Boolean).join(' ');
 const FALLBACK_DENSITY = {
@@ -325,7 +326,7 @@ const ConversationRow = memo(function ConversationRow({
   const taskMetaLine = getTaskConversationMetaLine(item);
   const [taskStatusLabel, taskStatusColor, taskStatusBg] = getStatusMeta(item?.task_status);
   const previewText = draftPreview || (item?.kind === 'ai'
-    ? `AI • ${String(item?.last_message_preview || '').trim() || 'Готов к диалогу'}`
+    ? `AI • ${stripMarkdownForPreview(item?.last_message_preview).replace(/[`#]/g, '').trim() || 'Готов к диалогу'}`
     : (compactMobile ? getConversationStatusLine(item) : normalizeChatText(item?.last_message_preview || '').trim() || 'Сообщений пока нет'));
   const taskPreviewText = draftPreview
     ? `Черновик: ${draftPreview}`

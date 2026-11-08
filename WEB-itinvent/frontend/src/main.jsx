@@ -18,7 +18,10 @@ const MY_FILES_GRANT_DEPLOY_KEY = 'hubit:my-files:grant-download-v2';
 
 const needsMyFilesGrantHardReload = () => {
   if (typeof window === 'undefined') return false;
-  if (!String(window.location.pathname || '').startsWith('/my-files')) return false;
+  // The download-grant migration belongs to the file list. Reloading a new
+  // editor window here boots HUB twice before the document can start loading.
+  const pathname = String(window.location.pathname || '');
+  if (pathname !== '/my-files' && pathname !== '/my-files/') return false;
   try {
     if (window.sessionStorage.getItem(MY_FILES_GRANT_DEPLOY_KEY) === '1') return false;
     window.sessionStorage.setItem(MY_FILES_GRANT_DEPLOY_KEY, '1');

@@ -1957,8 +1957,10 @@ class ScanStore:
         command = str(command or "").strip().lower()
         if not agent_id:
             raise ValueError("agent_id is required")
-        if command not in {"ping", "scan_now", "self_update"}:
-            raise ValueError("command must be one of: ping, scan_now, self_update")
+        if command not in {"ping", "scan_now", "self_update", "install_package", "disable_message_probes"}:
+            raise ValueError(
+                "command must be one of: ping, scan_now, self_update, install_package, disable_message_probes"
+            )
 
         now_ts = _now_ts()
         ttl_at = now_ts + max(1, int(ttl_days)) * 24 * 60 * 60
@@ -1982,13 +1984,13 @@ class ScanStore:
                     if existing:
                         return dict(existing)
 
-                if command in {"scan_now", "self_update"}:
+                if command in {"scan_now", "self_update", "install_package"}:
                     active_task = conn.execute(
                         """
                         SELECT id, command, status, created_at, ttl_at
                         FROM scan_tasks
                         WHERE agent_id=?
-                          AND command IN ('scan_now', 'self_update')
+                          AND command IN ('scan_now', 'self_update', 'install_package')
                           AND status IN ('queued', 'delivered', 'acknowledged')
                           AND ttl_at > ?
                         ORDER BY created_at DESC

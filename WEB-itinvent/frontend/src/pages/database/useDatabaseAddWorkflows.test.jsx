@@ -8,6 +8,7 @@ vi.mock('../../api/client', () => ({
   equipmentAPI: {
     createEquipment: vi.fn(),
     createConsumable: vi.fn(),
+    searchBySerial: vi.fn(),
   },
 }));
 
@@ -152,6 +153,90 @@ describe('useDatabaseAddWorkflows', () => {
     expect(props.notifyDatabaseSuccess).toHaveBeenCalled();
     expect(props.fetchAllEquipment).toHaveBeenCalledWith({ force: true });
     expect(result.current.addEquipmentLoading).toBe(false);
+    // Batch entry: per-item fields are cleared, shared ones stay for the next unit.
+    expect(result.current.addEquipmentForm).toMatchObject({
+      serial_number: '',
+      employee_name: 'Ivan Petrov',
+      type_no: 3,
+      model_name: 'OptiPlex',
+      status_no: 5,
+      branch_no: 1,
+      loc_no: 10,
+    });
+  });
+
+  it('warns about an already registered serial while typing and clears the warning for a new one', async () => {
+    equipmentAPI.searchBySerial.mockImplementation(async (query) => ({
+      found: true,
+      equipment: [
+        { SERIAL_NO: 'SN-100-B', INV_NO: 9 },
+        ...(query === 'sn-100' ? [{ SERIAL_NO: 'SN-100', INV_NO: 55, model_name: 'OptiPlex', employee_name: 'Ivan Petrov' }] : []),
+      ],
+    }));
+    const props = createProps();
+    const { result } = renderHook(() => useDatabaseAddWorkflows(props));
+
+    act(() => {
+      result.current.openAddEquipmentModal();
+      result.current.patchAddEquipmentForm({ serial_number: 'sn-100' });
+    });
+    await waitFor(() => expect(result.current.addSerialDuplicate).toEqual({
+      inv_no: '55',
+      model_name: 'OptiPlex',
+      employee_name: 'Ivan Petrov',
+    }));
+
+    act(() => {
+      result.current.patchAddEquipmentForm({ serial_number: 'sn-1000' });
+    });
+    await waitFor(() => expect(result.current.addSerialDuplicate).toBeNull());
+  });
+
+  it('remembers the saved combination as a preset and re-applies it in one step', async () => {
+    window.localStorage.clear();
+    const props = createProps({
+      getLocationsCached: vi.fn(async () => [{ LOC_NO: 10, LOCATION_NAME: 'Office' }]),
+    });
+    const { result } = renderHook(() => useDatabaseAddWorkflows(props));
+
+    act(() => {
+      result.current.openAddEquipmentModal();
+      result.current.patchAddEquipmentForm({
+        serial_number: 'SN-200',
+        employee_name: 'Ivan Petrov',
+        employee_no: 77,
+        type_no: '3',
+        model_name: 'OptiPlex',
+        status_no: '5',
+        branch_no: '1',
+        loc_no: '10',
+      });
+    });
+    await act(async () => {
+      await result.current.handleAddEquipmentSubmit();
+    });
+
+    expect(result.current.addRecentPresets).toHaveLength(1);
+    const [preset] = result.current.addRecentPresets;
+    expect(preset).toMatchObject({ type_no: '3', model_name: 'OptiPlex', employee_no: 77, branch_no: '1', loc_no: '10' });
+
+    act(() => {
+      result.current.closeAddEquipmentModal();
+      result.current.openAddEquipmentModal();
+    });
+    expect(result.current.addEquipmentForm.type_no).toBe('');
+
+    act(() => {
+      result.current.applyAddEquipmentPreset(preset);
+    });
+    expect(result.current.addEquipmentForm).toMatchObject({
+      type_no: '3',
+      model_name: 'OptiPlex',
+      employee_name: 'Ivan Petrov',
+      employee_no: 77,
+      loc_no: '10',
+      serial_number: '',
+    });
   });
 
   it('opens and submits add-consumable with location/model lookups', async () => {

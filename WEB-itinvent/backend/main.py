@@ -223,6 +223,8 @@ async def lifespan(app: FastAPI):
     await network_monitor_service.start()
     inventory_binding.start_background_worker()
     inventory.start_list_warmup()
+    # Обзор мониторинга без серверного кэша: раз в минуту греем запрос агрегатов, чтобы первый заход не ждал ~5 с.
+    inventory.register_extra_warmup("monitoring_overview", network_monitor_service.overview, 60.0)
     if MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED:
         await mail_notification_service.start()
     print(f"Starting {config.app.app_name} v{config.app.version}")

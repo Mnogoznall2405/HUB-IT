@@ -134,6 +134,10 @@ def _sign(claims: dict, secret: str) -> str:
     return jwt.encode(claims, secret, algorithm="HS256")
 
 
+def sign_browser_payload(settings: OnlyOfficeSettings, data: dict) -> str:
+    return _sign({**data, "exp": int(time.time()) + SOURCE_TOKEN_TTL_SEC}, settings.jwt_secret)
+
+
 def _decode(token: str, secret: str) -> dict:
     try:
         return jwt.decode(token, secret, algorithms=["HS256"], options={"verify_aud": False})
@@ -194,7 +198,8 @@ def build_editor_config(
             "callbackUrl": f"{base}/callback?t={quote(callback_token)}",
             "user": {"id": str(int(user_id)), "name": str(user_name or f"user-{user_id}")[:120]},
             # No forcesave: its status-6 callbacks would bump the version (and the key) in the middle of a live session.
-            "customization": {"autosave": True, "forcesave": False},
+            "customization": {"autosave": True, "forcesave": False,
+                              "close": {"visible": True, "text": "Закрыть документ"}},
         },
     }
     config["token"] = _sign(config, settings.jwt_secret)

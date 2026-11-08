@@ -70,6 +70,23 @@ class ConversationSummary(BaseModel):
     summary: str = Field(min_length=1, max_length=4500)
 
 
+# Планировщик памяти — вызов LLM на каждый запрос. Он нужен, только если есть что вспоминать (факты
+# пользователя) или сообщение похоже на личное утверждение/просьбу запомнить. Регулярка намеренно широкая:
+# ложное срабатывание стоит одного вызова, пропуск — потерянного факта. Чисто справочные запросы
+# («найди компьютер …») при пустой памяти идут без вызова.
+_WRITE_INTENT_RE = re.compile(
+    r"\b(?:я|мне|меня|мой|мою|моя|моё|мои|моим|мы|наш\w*|использую|использу\w+|предпочита\w*|люблю|нравится|"
+    r"всегда|никогда|впредь|запомн\w*|запоминай|помни|забуд\w*|забывай|удали\w*|по\s+умолчанию|в\s+дальнейшем|"
+    r"на\s+будущее|обращайся|называй|отвечай|пиши|формат\w*|remember|forget|always|never|prefer\w*|my|i|i'm|"
+    r"call\s+me|from\s+now\s+on)\b",
+    re.I | re.UNICODE,
+)
+
+
+def has_write_intent(text: str) -> bool:
+    return bool(_WRITE_INTENT_RE.search(str(text or "")))
+
+
 def _now():
     return datetime.now(timezone.utc)
 
@@ -272,6 +289,26 @@ def prepare(*, user_id, conversation_id, message_id, seq, text, recent, model,
     usage, status, changed_ids = {}, "unavailable", []
     plan = MemoryPlan(changes=[], relevant_ids=[])
     selected_ids = []
+    if not facts and not has_write_intent(text):
+        # Нечего вспоминать и нет личного утверждения: вызов планировщика ничего не изменит.
+        status = "skipped"
+        logger.info("ai_memory_planner_skipped user_id=%s", user_id)
+    else:
+        status, usage, plan, selected_ids, changed_ids = _plan_and_apply(
+            user_id=user_id, conversation_id=conversation_id, message_id=message_id, seq=seq, text=text,
+            recent=recent, model=model, allow_changes=allow_changes, safe=safe, content_hash=content_hash,
+            sent_at=sent_at, revision=revision, facts=facts, processed=processed, old_source=old_source,
+            last_seq=last_seq)
+    # Re-read after planning: deleted facts and old versions must never enter the prompt.
+    return _finish_prepare(user_id=user_id, conversation_id=conversation_id, safe=safe, usage=usage, status=status,
+        plan=plan, selected_ids=selected_ids, changed_ids=changed_ids, max_facts=max_facts, max_tokens=max_tokens)
+
+
+def _plan_and_apply(*, user_id, conversation_id, message_id, seq, text, recent, model, allow_changes, safe,
+                    content_hash, sent_at, revision, facts, processed, old_source, last_seq):
+    usage, status, changed_ids = {}, "unavailable", []
+    plan = MemoryPlan(changes=[], relevant_ids=[])
+    selected_ids = []
     try:
         payload, usage = openrouter_client.complete_json(system_prompt=PLANNER_PROMPT,
             user_prompt=json.dumps({"CURRENT_MESSAGE": text[:4000], "recent_context": recent[-4:],
@@ -293,7 +330,11 @@ def prepare(*, user_id, conversation_id, message_id, seq, text, recent, model,
         logger.warning("ai_memory_plan_failed user_id=%s error_type=%s", user_id, type(exc).__name__)
         words = set(re.findall(r"[\w-]{3,}", text.casefold()))
         selected_ids = [f["id"] for f in facts if words & set(re.findall(r"[\w-]{3,}", f["content"].casefold()))]
-    # Re-read after planning: deleted facts and old versions must never enter the prompt.
+    return status, usage, plan, selected_ids, changed_ids
+
+
+def _finish_prepare(*, user_id, conversation_id, safe, usage, status, plan, selected_ids, changed_ids,
+                    max_facts, max_tokens):
     with app_session() as db:
         settings = db.get(AppUserSetting, user_id)
         mapping = db.execute(select(AppAiBotConversation).where(AppAiBotConversation.user_id == user_id,

@@ -335,6 +335,30 @@ def get_act_record(act_id: str) -> Optional[dict[str, Any]]:
     return _ACT_STORE.get(str(act_id or "").strip())
 
 
+_ACT_ID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def recover_act_record_from_disk(act_id: str) -> Optional[dict[str, Any]]:
+    """Запись для скачивания по файлу на диске: реестр актов живёт в памяти процесса и пустеет при перезапуске.
+
+    Имя файла начинается с transfer_act_<act_id>_, поэтому файл находится по UUID.
+    Возвращается минимальная запись, достаточная для выдачи файла (без данных для почты).
+    """
+    normalized = str(act_id or "").strip()
+    if not _ACT_ID_RE.fullmatch(normalized):
+        return None
+    for suffix in (".pdf", ".docx"):
+        for candidate in sorted(DEFAULT_ACTS_DIR.glob(f"transfer_act_{normalized}_*{suffix}")):
+            if candidate.is_file():
+                return {
+                    "act_id": normalized,
+                    "file_path": str(candidate),
+                    "file_name": candidate.name,
+                    "file_type": suffix.lstrip("."),
+                }
+    return None
+
+
 def register_act_records(records: list[dict[str, Any]]) -> None:
     """Restore generated act records into the process-local download/email registry."""
     for record in records or []:

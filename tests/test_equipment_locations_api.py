@@ -821,6 +821,70 @@ async def test_create_equipment_accepts_existing_location_without_branch_mapping
 
 
 @pytest.mark.asyncio
+async def test_create_equipment_stores_normalized_mac_and_rejects_bad_mac(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(equipment_api.queries, "get_branch_by_no", lambda branch_no, db_id=None: {"BRANCH_NO": branch_no})
+    monkeypatch.setattr(equipment_api.queries, "get_location_by_no", lambda loc_no, db_id=None: {"LOC_NO": loc_no})
+    monkeypatch.setattr(equipment_api.queries, "get_type_by_no", lambda type_no, db_id=None: {"TYPE_NO": type_no})
+    monkeypatch.setattr(equipment_api.queries, "get_status_by_no", lambda status_no, db_id=None: {"STATUS_NO": status_no})
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return {"success": True, "item_id": 7, "inv_no": "7", "created_owner": False, "created_model": False, "message": "ok"}
+
+    monkeypatch.setattr(equipment_api.queries, "create_equipment_item", fake_create)
+
+    def make(mac):
+        return equipment_api.EquipmentCreateRequest(
+            serial_no="SN-MAC",
+            employee_name="Иванов И.И.",
+            branch_no=1,
+            loc_no=5,
+            type_no=10,
+            status_no=1,
+            model_name="Switch",
+            ip_address="10.0.0.5",
+            mac_address=mac,
+            network_name=" SW-01 ",
+        )
+
+    result = await equipment_api.create_equipment(make("aa-bb.cc dd:ee:ff"), db_id="main", current_user=_user())
+    assert result.success is True
+    assert captured["mac_address"] == "AA:BB:CC:DD:EE:FF"
+    assert captured["network_name"] == "SW-01"
+
+    for bad in ("AA:BB:CC", "ZZ:BB:CC:DD:EE:FF"):
+        with pytest.raises(HTTPException) as exc_info:
+            await equipment_api.create_equipment(make(bad), db_id="main", current_user=_user())
+        assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_serial_search_endpoint_returns_rows_the_query_selects_in_upper_case(monkeypatch):
+    # Regression: the query returns INV_NO/SERIAL_NO (numeric INV_NO as float) while the
+    # response model needs inv_no/serial_no — the endpoint answered 500 on any match.
+    async def no_scope(user, db_id):
+        return None
+
+    monkeypatch.setattr(equipment_api, "_branch_scope", no_scope)
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "search_equipment_by_serial",
+        lambda q, db_id=None, **kwargs: [
+            {"INV_NO": 100491.0, "SERIAL_NO": "PF1K0LNY", "HW_SERIAL_NO": None, "PART_NO": "P1",
+             "type_name": "Ноутбук", "employee_name": "Тимошин А.В."},
+        ],
+    )
+
+    result = await equipment_api.search_by_serial(q="PF1K0LNY", db_id="main", current_user=_user())
+
+    assert result.found is True
+    assert result.equipment[0].inv_no == "100491"
+    assert result.equipment[0].serial_no == "PF1K0LNY"
+    assert result.equipment[0].employee_name == "Тимошин А.В."
+
+
+@pytest.mark.asyncio
 async def test_create_consumable_accepts_existing_location_without_branch_mapping(monkeypatch):
     monkeypatch.setattr(equipment_api.queries, "get_branch_by_no", lambda branch_no, db_id=None: {"BRANCH_NO": branch_no})
     monkeypatch.setattr(equipment_api.queries, "get_location_by_no", lambda loc_no, db_id=None: {"LOC_NO": loc_no})
@@ -900,6 +964,31 @@ async def test_update_branch_keeps_existing_location(monkeypatch):
 
     assert captured["fields"] == {"branch_no": 2}
     assert updated["loc_no"] == 777
+
+
+@pytest.mark.asyncio
+async def test_update_normalizes_mac_and_rejects_a_broken_one(monkeypatch):
+    row = {"inv_no": "1001", "branch_no": 1, "loc_no": 5, "type_no": 10}
+    captured = {}
+
+    monkeypatch.setattr(equipment_api.queries, "get_equipment_by_inv", lambda inv_no, db_id=None: row)
+
+    def update_equipment_fields(inv_no, fields, changed_by="IT-WEB", db_id=None):
+        captured["fields"] = dict(fields)
+        return True
+
+    monkeypatch.setattr(equipment_api.queries, "update_equipment_fields", update_equipment_fields)
+
+    await equipment_api.update_equipment_by_inv(
+        "1001", equipment_api.EquipmentUpdateRequest(mac_address="aa-bb-cc-dd-ee-ff"), db_id="main", current_user=_user()
+    )
+    assert captured["fields"] == {"mac_address": "AA:BB:CC:DD:EE:FF"}
+
+    with pytest.raises(HTTPException) as exc_info:
+        await equipment_api.update_equipment_by_inv(
+            "1001", equipment_api.EquipmentUpdateRequest(mac_address="10.105.0.251"), db_id="main", current_user=_user()
+        )
+    assert exc_info.value.status_code == 400
 
 
 @pytest.mark.asyncio

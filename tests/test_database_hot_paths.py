@@ -76,6 +76,51 @@ def test_scan_backpressure_matches_full_counts_and_uses_only_pending_rows(tmp_pa
     ) == expected
 
 
+def test_backfill_does_not_rewrite_preview_already_queued_by_another_worker(tmp_path, monkeypatch):
+    # With SKIP LOCKED the claim query misses a queued row that another worker is
+    # claiming; the backfill pass must then leave it alone instead of updating (and
+    # blocking on) the same row from every worker thread. SQLite has no row locks, so
+    # the claim query is made to miss the queued row by rewriting its status filter.
+    url = f"sqlite:///{(tmp_path / 'queued.db').as_posix()}"
+    service = MyFilesService(database_url=url, storage_root=tmp_path / 'files')
+    service._database_url_or_raise()
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(hours=1)
+    with app_session(url) as session:
+        session.add(AppMyFile(
+            id='file-0', blob_id='blob-0', owner_user_id=7, status='ready',
+            original_file_name='report.pdf', download_file_name='report.pdf',
+            mime_type='application/pdf', download_mime_type='application/pdf',
+            original_size_bytes=10, security_scan_status='clean',
+            created_at=now, expires_at=now + timedelta(days=1),
+        ))
+        session.add(AppMyFilePreview(blob_id='blob-0', status='queued', updated_at=old))
+    processed = []
+    monkeypatch.setattr(service, 'process_preview_blob', processed.append)
+    updates = []
+    engine = get_app_engine(url)
+
+    def hide_queued_from_claim(_conn, _cursor, statement, params, _context, _many):
+        text = statement.lstrip().upper()
+        if text.startswith('UPDATE') and 'MY_FILE_PREVIEWS' in text:
+            updates.append(statement)
+        if text.startswith('SELECT') and 'MY_FILE_PREVIEWS' in text and tuple(params) == ('queued',):
+            params = tuple('not-queued' if p == 'queued' else p for p in params)
+        return statement, params
+
+    event.listen(engine, 'before_cursor_execute', hide_queued_from_claim, retval=True)
+    try:
+        assert service.process_next_preview_job() is False
+    finally:
+        event.remove(engine, 'before_cursor_execute', hide_queued_from_claim)
+    assert updates == []
+    assert processed == []
+    with app_session(url) as session:
+        preview = session.get(AppMyFilePreview, 'blob-0')
+        assert preview.status == 'queued'
+        assert preview.updated_at.replace(tzinfo=None) == old.replace(tzinfo=None)
+
+
 def test_preview_backfill_still_queues_missing_supported_file(tmp_path, monkeypatch):
     url = f"sqlite:///{(tmp_path / 'backfill.db').as_posix()}"
     service = MyFilesService(database_url=url, storage_root=tmp_path / 'files')

@@ -360,3 +360,30 @@ def test_search_after_list_filters_cached_records_without_rebuilding(app_env, mo
     fresh = _by_host(_search(q="10.20", search_fields="identity"))
     assert sorted(fresh) == ["PC-02", "PC-03"]
     assert calls == ["10.20"]
+
+
+def test_warmup_refreshes_requested_changes_summary_but_not_untouched_one(app_env, monkeypatch):
+    _seed_three_hosts(app_env)
+    builds = []
+    original = inventory._build_inventory_changes_summary
+
+    def counting(now_ts):
+        builds.append(now_ts)
+        return original(now_ts)
+
+    monkeypatch.setattr(inventory, "_build_inventory_changes_summary", counting)
+    monkeypatch.setattr(inventory, "_changes_summary_cache", None)
+    monkeypatch.setattr(inventory, "_changes_last_request", None)
+
+    inventory.warm_hot_list_keys()
+    assert builds == [], "сводку, к которой не обращались, не греем"
+
+    inventory.get_inventory_changes(limit=10)
+    assert len(builds) == 1
+    ts, version, payload = inventory._changes_summary_cache
+    inventory._changes_summary_cache = (ts - TTL - 1, version, payload)
+
+    inventory.warm_hot_list_keys()
+    assert len(builds) == 2, "устаревшая запрошенная сводка пересобирается прогревом"
+    assert inventory.get_inventory_changes(limit=10)["totals"] == payload["totals"]
+    assert len(builds) == 2, "следующий запрос попадает в прогретый кэш"

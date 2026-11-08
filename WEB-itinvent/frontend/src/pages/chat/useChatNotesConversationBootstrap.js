@@ -8,11 +8,13 @@ export default function useChatNotesConversationBootstrap({
   conversationsLoading,
   setConversations,
   upsertSearchConversation,
+  enabled = true,
 }) {
   const notesEnsuredRef = useRef(false);
 
   useEffect(() => {
-    if (!CHAT_FEATURE_ENABLED || notesEnsuredRef.current || conversationsLoading) return;
+    // Обсуждение задачи (embedded) не показывает список бесед — «Заметки» там не нужны, лишний POST только тормозит открытие.
+    if (!enabled || !CHAT_FEATURE_ENABLED || notesEnsuredRef.current || conversationsLoading) return;
     notesEnsuredRef.current = true;
     void chatAPI.ensureNotesConversation()
       .then((notes) => {
@@ -32,5 +34,5 @@ export default function useChatNotesConversationBootstrap({
       .catch(() => {
         notesEnsuredRef.current = false;
       });
-  }, [conversationsLoading, setConversations, upsertSearchConversation]);
+  }, [enabled, conversationsLoading, setConversations, upsertSearchConversation]);
 }

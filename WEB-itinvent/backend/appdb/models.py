@@ -1272,6 +1272,11 @@ class AppMyFileVersion(AppBase):
     created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_by_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    # Editing data belongs to the transition from this retired blob to office_result_blob_id.
+    office_history_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    office_changes_blob_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    office_changes_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    office_result_blob_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
 
 
 class AppGlobalSetting(AppBase):

@@ -14,6 +14,7 @@ PM2 используется только для Python-процессов:
 - `scripts/pm2/ecosystem.bot.config.js`
 - `scripts/pm2/ecosystem.all.config.js`
 - `scripts/pm2/restart-backend.ps1` — штатный рестарт backend (+ безопасный reload scan)
+- `scripts/pm2/restart-my-files-worker.ps1` — отдельный restart `itinvent-my-files-worker` после проверки отсутствия недавней обработки файлов; `-WhatIf` выполняет только preflight. Нужен при изменении общего файлового сервиса, в том числе учёта/очистки архивов ONLYOFFICE; другие процессы не перезапускает.
 - `scripts/pm2/enable-chat-postgres.ps1` — валидация, включение и откат двух Chat-узлов
 - `scripts/pm2/restart-chat-scale.ps1` — последовательный restart уже включённых Chat-узлов
 - `scripts/pm2/restart-scan.ps1` — **stop + orphan cleanup + start** для scan (не голый `pm2 restart`)
@@ -349,3 +350,10 @@ DROP INDEX CONCURRENTLY IF EXISTS app.idx_hub_notifications_entity;
   cd WEB-itinvent
   python start_hub_notifications_retention_worker.py --once --dry-run
   ```
+
+## Ротация логов PM2
+
+PM2 не ротирует логи сам (`pm2-logrotate` не установлен). Задача планировщика `HUB-IT PM2 Log Rotate` раз в сутки (04:30)
+запускает `rotate-logs.ps1`: лог крупнее 200 МБ сжимается в `%USERPROFILE%\.pm2\logs\archive\*.gz` и обнуляется
+(copytruncate, процессы не перезапускаются; строки, записанные за время сжатия, теряются). Архивы старше 14 дней удаляются.
+Проверка без изменений: `powershell -File scripts\pm2\rotate-logs.ps1 -DryRun`.

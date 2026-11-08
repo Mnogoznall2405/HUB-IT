@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import runpy
+import io
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -37,11 +39,13 @@ from backend.services import onlyoffice_service as oo
 from backend.services.my_files_antivirus_service import SecurityScanResult
 from backend.services import my_files_collab_service as collab_module
 from backend.services.my_files_collab_service import MyFilesCollabService
+from backend.services.my_files_admin_service import MyFilesAdminService
 from backend.services import my_files_copy_service as copy_module
 from backend.services.my_files_copy_service import MyFilesCopyService
 from backend.services import my_files_library_service as library_module
 from backend.services.my_files_library_service import MyFilesLibraryService
 from backend.services.my_files_service import STORAGE_ZSTD, MyFilesNotFoundError, MyFilesService
+from backend.services.auth_runtime_store_service import auth_runtime_store_service
 
 
 SECRET = "test-onlyoffice-secret"
@@ -81,6 +85,8 @@ class Env:
     def __init__(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setenv("MY_FILES_STORAGE_V2_ENABLED", "0")
         monkeypatch.delenv("HUBIT_STORAGE_UNC", raising=False)
+        monkeypatch.setattr(auth_runtime_store_service, "_redis_client", None)
+        monkeypatch.setattr(auth_runtime_store_service, "_backend", "memory")
         self.database_url = f"sqlite:///{(tmp_path / 'app.db').as_posix()}"
         self.service = MyFilesService(
             database_url=self.database_url,
@@ -96,6 +102,7 @@ class Env:
         monkeypatch.setattr(office_api, "my_files_collab_service", collab)
         self.current = _user(OWNER)
         monkeypatch.setattr(my_files_api, "my_files_service", self.service)
+        monkeypatch.setattr(my_files_api, "my_files_admin_service", MyFilesAdminService(self.service))
         monkeypatch.setattr(libraries_api, "my_files_library_service", MyFilesLibraryService(self.service))
         copy_service = MyFilesCopyService(self.service)
         self.copy_service = copy_service
@@ -108,10 +115,17 @@ class Env:
         app.dependency_overrides[get_current_active_user] = lambda: self.current
         self.client = TestClient(app)
         self.next_document = b""
+        self.next_changes = b""
+        self.fail_changes = False
         self.fetched_urls: list[str] = []
 
         def fake_fetch(settings, url, destination, *, max_bytes):
             self.fetched_urls.append(oo.rewrite_document_url(settings, url))
+            if "changes.zip" in url:
+                if self.fail_changes:
+                    raise oo.OnlyOfficeError("Editing data temporarily unavailable")
+                destination.write_bytes(self.next_changes)
+                return len(self.next_changes)
             destination.write_bytes(self.next_document)
             return len(self.next_document)
 
@@ -146,7 +160,7 @@ class Env:
         assert response.status_code == 200, response.text
         return response.json()["config"]
 
-    def callback(self, config: dict, *, status_code: int, document: bytes, users: list[str], secret: str = SECRET):
+    def callback(self, config: dict, *, status_code: int, document: bytes, users: list[str], secret: str = SECRET, history=None, changes=None):
         self.next_document = document
         event = {
             "status": status_code,
@@ -154,6 +168,10 @@ class Env:
             "url": "https://hub.example/onlyoffice/cache/files/data/abc/output.docx?md5=1",
             "users": users,
         }
+        if history is not None:
+            event["history"] = history
+            event["changesurl"] = "https://hub.example/onlyoffice/cache/files/data/abc/changes.zip"
+            self.next_changes = changes if changes is not None else _changes_archive()
         callback_path = config["editorConfig"]["callbackUrl"].removeprefix("https://hub.example")
         return self.client.post(callback_path, json={"token": jwt.encode(event, secret, algorithm="HS256"), **event})
 
@@ -434,6 +452,8 @@ def test_everyone_opening_a_document_during_a_session_joins_the_same_session(env
 
     assert first["document"]["key"] == joined["document"]["key"] == refreshed["document"]["key"]
     assert first["editorConfig"]["customization"]["forcesave"] is False
+    assert first["editorConfig"]["customization"]["close"] == {"visible": True, "text": "Закрыть документ"}
+    assert jwt.decode(first["token"], SECRET, algorithms=["HS256"])["editorConfig"] == first["editorConfig"]
     env.callback(first, status_code=2, document=b"done", users=[str(OWNER), str(COLLAB)])
     assert env.editor_config(file_id)["document"]["key"] != first["document"]["key"]
 
@@ -531,6 +551,11 @@ def test_collaboration_migration_is_repeatable_matches_the_model_and_downgrades_
         namespace["upgrade"].__globals__["_scope"] = lambda: "app"
         namespace["upgrade"]()
         namespace["upgrade"]()
+        history_ns = runpy.run_path(str(MIGRATION.with_name("20261105_0161_my_file_office_history.py")))
+        history_ns["upgrade"].__globals__["op"] = Operations(MigrationContext.configure(connection))
+        history_ns["upgrade"].__globals__["_scope"] = lambda: "app"
+        history_ns["upgrade"]()
+        history_ns["upgrade"]()
         inspector = sa.inspect(connection)
         assert {c["name"] for c in inspector.get_columns("my_file_versions")} == {
             column.name for column in AppMyFileVersion.__table__.columns
@@ -558,6 +583,8 @@ def test_collaboration_migration_is_repeatable_matches_the_model_and_downgrades_
         assert not sa.inspect(connection).has_table("my_file_folder_collaborators")
         role_ns["downgrade"]()
         assert "role" not in {c["name"] for c in sa.inspect(connection).get_columns("my_file_collaborators")}
+        history_ns["downgrade"]()
+        history_ns["downgrade"]()
         namespace["downgrade"]()
         namespace["downgrade"]()
         assert not sa.inspect(connection).has_table("my_file_versions")
@@ -1351,3 +1378,413 @@ def test_library_migration_is_repeatable_matches_the_model_and_downgrades_cleanl
         inspector = sa.inspect(connection)
         assert not inspector.has_table("my_file_libraries") and not inspector.has_table("my_file_library_members")
         assert "uploaded_by_user_id" not in {c["name"] for c in inspector.get_columns("my_files")}
+
+
+def _as_global_admin(env, user_id=STRANGER):
+    with app_session(env.database_url) as session:
+        session.get(AppUser, user_id).role = "admin"
+    env.current = _admin(user_id)
+
+
+def test_admin_browser_lists_users_and_libraries_with_filters_and_pagination(env):
+    first = env.upload("private-one.docx", b"one")
+    env.upload("private-two.pdf", b"two")
+    library = _make_library(env, members=[_member("user", COLLAB, "edit")])
+    shared = _library_upload(env, COLLAB, library, "shared.docx", b"three")
+    assert env.client.get("/api/v1/my-files/admin/files").status_code == 403
+    _as_global_admin(env)
+    first_page = env.client.get("/api/v1/my-files/admin/files", params={"limit": 2}).json()
+    second_page = env.client.get("/api/v1/my-files/admin/files", params={"limit": 2, "offset": 2}).json()
+    assert first_page["total"] == second_page["total"] == 3
+    assert len({item["id"] for item in first_page["items"] + second_page["items"]}) == 3
+    filtered = env.client.get("/api/v1/my-files/admin/files", params={"owner_user_id": OWNER, "q": "private"}).json()
+    assert filtered["total"] == 2
+    libraries = env.client.get("/api/v1/my-files/admin/files", params={"scope": "library"}).json()
+    assert [item["id"] for item in libraries["items"]] == [shared]
+    assert libraries["items"][0]["uploaded_by_user_id"] == COLLAB
+    assert libraries["items"][0]["uploaded_by_username"] == f"user-{COLLAB}"
+    assert env.client.get(f"/api/v1/my-files/admin/files/{first}").json()["owner_user_id"] == OWNER
+    assert env.client.get("/api/v1/my-files/admin/files", params={"limit": 0}).status_code == 422
+
+
+def test_admin_manages_another_users_file_without_impersonating_its_owner(env, monkeypatch):
+    file_id = env.upload("private.docx", b"private bytes")
+    _as_global_admin(env)
+    settings = env.client.get(f"/api/v1/my-files/{file_id}/office/collaborators").json()
+    assert settings["owner"]["user_id"] == OWNER
+    saved = env.client.put(f"/api/v1/my-files/{file_id}/office/collaborators", json={"members": [{"user_id": COLLAB, "role": "view"}]})
+    assert saved.status_code == 200
+    config = env.client.get(f"/api/v1/my-files/{file_id}/office/config").json()
+    assert config["role"] == "owner" and config["can_manage_access"] is True
+    assert config["config"]["editorConfig"]["user"]["id"] == str(STRANGER)
+    grant = env.client.post(f"/api/v1/my-files/{file_id}/download-grant")
+    assert grant.status_code == 200, grant.text
+    downloaded = env.client.get("/api/v1" + grant.json()["download_path"])
+    assert downloaded.status_code == 200 and downloaded.content == b"private bytes"
+    monkeypatch.setattr(oo, "notify_document_title", lambda *args, **kwargs: True)
+    assert env.client.post(f"/api/v1/my-files/{file_id}/office/rename", json={"name": "Renamed by admin"}).status_code == 200
+    audit = env.client.get(f"/api/v1/my-files/{file_id}/audit").json()["items"]
+    assert any(item["action"] == "collaborators_changed" and item["actor_user_id"] == STRANGER for item in audit)
+    with app_session(env.database_url) as session:
+        assert session.get(AppMyFile, file_id).owner_user_id == OWNER
+
+
+def test_only_the_library_file_author_or_admin_can_share_it(env, monkeypatch):
+    monkeypatch.setenv("MY_FILES_SHARE_TOKEN_KEY", "test-admin-files-share-key")
+    library = _make_library(env, members=[_member("user", COLLAB, "edit")])
+    file_id = _library_upload(env, COLLAB, library, "authored.docx", b"original")
+    env.as_user(COLLAB)
+    config = env.client.get(f"/api/v1/my-files/{file_id}/office/config").json()
+    assert config["role"] == "edit" and config["can_manage_access"] is True
+    listed = env.client.get("/api/v1/my-files", params={"view": "library", "library_id": library}).json()
+    assert listed["items"][0]["can_manage_access"] is True
+    settings = env.client.get(f"/api/v1/my-files/{file_id}/office/collaborators").json()
+    assert settings["owner"]["user_id"] == COLLAB and settings["owner_kind"] == "author"
+    assert settings["inherited_access"] is True
+    assert env.client.put(f"/api/v1/my-files/{file_id}/office/collaborators", json={"user_ids": [STRANGER]}).status_code == 200
+    assert env.client.post(f"/api/v1/my-files/{file_id}/share").status_code == 200
+    env.as_user(OWNER)  # A library manager, but neither this file's author nor a platform admin.
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/config").json()["can_manage_access"] is False
+    assert env.client.put(f"/api/v1/my-files/{file_id}/office/collaborators", json={"user_ids": []}).status_code == 404
+    assert env.client.post(f"/api/v1/my-files/{file_id}/share").status_code == 404
+    folder = env.client.post("/api/v1/my-files/folders", json={"name": "Subfolder", "library_id": library}).json()
+    assert env.client.post(f"/api/v1/my-files/folders/{folder['id']}/share").status_code == 404
+    _as_global_admin(env)
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/collaborators").status_code == 200
+
+
+def test_library_file_invitation_does_not_grant_the_library_and_revocation_stops_download_and_save(env):
+    library = _make_library(env, members=[_member("user", COLLAB, "edit")])
+    file_id = _library_upload(env, COLLAB, library, "one.docx", b"original")
+    other = _library_upload(env, COLLAB, library, "other.docx", b"other")
+    env.as_user(COLLAB)
+    assert env.client.put(f"/api/v1/my-files/{file_id}/office/collaborators", json={"members": [{"user_id": STRANGER, "role": "edit"}]}).status_code == 200
+    env.as_user(STRANGER)
+    assert env.client.get(f"/api/v1/my-files/{other}/office/config").status_code == 404
+    shared = env.client.get("/api/v1/my-files", params={"view": "shared"}).json()["items"]
+    assert [item["id"] for item in shared] == [file_id]
+    config = env.editor_config(file_id)
+    assert env.callback(config, status_code=2, document=b"invited edit", users=[str(STRANGER)]).json() == {"error": 0}
+    assert env.content(file_id) == b"invited edit"
+    grant = env.client.post(f"/api/v1/my-files/{file_id}/download-grant").json()
+    env.as_user(COLLAB)
+    assert env.client.put(f"/api/v1/my-files/{file_id}/office/collaborators", json={"user_ids": []}).status_code == 200
+    env.as_user(STRANGER)
+    assert env.client.get("/api/v1" + grant["download_path"]).status_code == 404
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/config").status_code == 404
+    assert env.callback(config, status_code=2, document=b"revoked edit", users=[str(STRANGER)]).json() == {"error": 0}
+    assert env.content(file_id) == b"invited edit"
+
+
+def test_an_author_removed_from_the_library_cannot_manage_its_file(env):
+    library = _make_library(env, members=[_member("user", COLLAB, "edit")])
+    file_id = _library_upload(env, COLLAB, library, "one.docx", b"original")
+    env.current = _admin(OWNER)
+    assert env.client.put(f"/api/v1/my-files/libraries/{library}/members", json={"members": [_member("user", OWNER, "manage")]}).status_code == 200
+    env.as_user(COLLAB)
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/collaborators").status_code == 404
+
+
+def test_admin_browser_preserves_security_scan_and_trash_guards(env):
+    file_id = env.upload("blocked.docx", b"original")
+    with app_session(env.database_url) as session:
+        session.get(AppMyFile, file_id).security_scan_status = "blocked"
+    _as_global_admin(env)
+    row = env.client.get(f"/api/v1/my-files/admin/files/{file_id}").json()
+    assert row["can_open"] is False and row["can_manage_access"] is False
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/config").status_code == 404
+    assert env.client.post(f"/api/v1/my-files/{file_id}/download-grant").status_code == 400
+    assert env.client.delete(f"/api/v1/my-files/{file_id}").status_code == 204
+    trash = env.client.get("/api/v1/my-files/admin/files", params={"state": "trash"}).json()
+    assert trash["items"][0]["id"] == file_id and trash["items"][0]["can_restore"] is True
+    assert env.client.post(f"/api/v1/my-files/trash/files/{file_id}/restore").status_code == 204
+    assert env.client.get(f"/api/v1/my-files/admin/files/{file_id}").json()["can_open"] is False
+
+
+def test_losing_admin_role_stops_foreign_access_and_pending_editor_saves(env):
+    file_id = env.upload("private.docx", b"original")
+    _as_global_admin(env)
+    config = env.editor_config(file_id)
+    with app_session(env.database_url) as session:
+        session.get(AppUser, STRANGER).role = "viewer"
+    env.as_user(STRANGER)
+    assert env.client.get("/api/v1/my-files/admin/files").status_code == 403
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/config").status_code == 404
+    assert env.callback(config, status_code=2, document=b"old administrator", users=[str(STRANGER)]).json() == {"error": 0}
+    assert env.content(file_id) == b"original"
+
+
+def test_legacy_library_file_without_author_is_managed_only_by_admin(env):
+    library = _make_library(env, members=[_member("user", COLLAB, "edit")])
+    file_id = _library_upload(env, COLLAB, library, "legacy.docx", b"original")
+    with app_session(env.database_url) as session:
+        row = session.get(AppMyFile, file_id)
+        row.uploaded_by_user_id = None
+    for uid in (OWNER, COLLAB):
+        env.as_user(uid)
+        assert env.client.get(f"/api/v1/my-files/{file_id}/office/config").json()["can_manage_access"] is False
+        assert env.client.put(f"/api/v1/my-files/{file_id}/office/collaborators", json={"user_ids": []}).status_code == 404
+    _as_global_admin(env)
+    item = env.client.get(f"/api/v1/my-files/admin/files/{file_id}").json()
+    assert item["uploaded_by_user_id"] is None and item["uploaded_by_username"] == ""
+    assert item["can_open"] is True and item["can_manage_access"] is True
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/collaborators").json()["owner"] is None
+
+
+def test_revoking_direct_invitation_keeps_the_inherited_library_role(env):
+    library = _make_library(env, members=[_member("user", COLLAB, "view")])
+    file_id = _library_upload(env, OWNER, library, "one.docx", b"original")
+    env.as_user(OWNER)
+    assert env.client.put(f"/api/v1/my-files/{file_id}/office/collaborators", json={"members": [{"user_id": COLLAB, "role": "edit"}]}).status_code == 200
+    env.as_user(COLLAB)
+    config = env.client.get(f"/api/v1/my-files/{file_id}/office/config").json()
+    assert config["role"] == "edit" and config["can_manage_access"] is False
+    env.as_user(OWNER)
+    assert env.client.put(f"/api/v1/my-files/{file_id}/office/collaborators", json={"members": []}).status_code == 200
+    env.as_user(COLLAB)
+    config = env.client.get(f"/api/v1/my-files/{file_id}/office/config").json()
+    assert config["role"] == "view" and config["config"]["document"]["permissions"]["edit"] is False
+
+
+def test_admin_browser_rechecks_database_role_and_active_state(env):
+    env.upload("private.docx", b"original")
+    _as_global_admin(env)
+    with app_session(env.database_url) as session:
+        session.get(AppUser, STRANGER).is_active = False
+    assert env.client.get("/api/v1/my-files/admin/files").status_code == 404
+
+
+def _changes_archive(payload=b'{"changes":[]}'):
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("changes/changes0.json", payload)
+    return output.getvalue()
+
+
+def _editing_history():
+    return {"serverVersion": "10.0.0", "changes": [
+        {"created": "2026-11-05 10:00:00", "user": {"id": str(OWNER), "name": "Анна"}},
+        {"created": "2026-11-05 10:01:00", "user": {"id": str(COLLAB), "name": "Борис"}},
+    ]}
+
+
+def _get_asset(env, url):
+    return env.client.get(url.removeprefix("https://hub.example"))
+
+
+def test_native_history_preserves_authors_archives_and_signed_read_only_configuration(env):
+    file_id = env.upload("cells.xlsx", b"original cells")
+    config = env.editor_config(file_id)
+    archive = _changes_archive()
+    assert env.callback(config, status_code=2, document=b"changed cells", users=[str(OWNER)], history=_editing_history(), changes=archive).json() == {"error": 0}
+    history = env.client.get(f"/api/v1/my-files/{file_id}/office/history").json()
+    assert history["currentVersion"] == 2
+    assert [item["version"] for item in history["history"]] == [1, 2]
+    assert history["history"][-1]["changes"] == _editing_history()["changes"]
+    assert history["history"][-1]["serverVersion"] == "10.0.0"
+    assert "changes" not in history["history"][0]
+    result = env.client.get(f"/api/v1/my-files/{file_id}/office/history/2").json()
+    assert result["changes_available"] is True
+    data = result["data"]
+    signed = jwt.decode(data["token"], SECRET, algorithms=["HS256"])
+    assert signed["changesUrl"] == data["changesUrl"] and signed["previous"] == data["previous"]
+    assert _get_asset(env, data["url"]).content == b"changed cells"
+    assert _get_asset(env, data["previous"]["url"]).content == b"original cells"
+    downloaded = _get_asset(env, data["changesUrl"])
+    assert downloaded.content == archive and downloaded.headers["cache-control"] == "private, no-store"
+    viewer = env.client.get(f"/api/v1/my-files/{file_id}/office/history/config")
+    assert viewer.status_code == 200, viewer.text
+    viewer = viewer.json()["config"]
+    assert viewer["editorConfig"]["mode"] == "view" and viewer["document"]["permissions"]["edit"] is False
+    assert viewer["editorConfig"]["customization"]["close"] == {"visible": True, "text": "Вернуться к документу"}
+    assert "callbackUrl" not in viewer["editorConfig"]
+    assert viewer["document"]["key"] != config["document"]["key"]
+    assert jwt.decode(viewer["token"], SECRET, algorithms=["HS256"])["document"] == viewer["document"]
+    assert jwt.decode(viewer["token"], SECRET, algorithms=["HS256"])["editorConfig"] == viewer["editorConfig"]
+    assert env.service.quota(user_id=OWNER)["used_bytes"] == len(b"original cells") + len(b"changed cells") + len(archive)
+
+
+def test_native_history_retries_archive_capture_without_creating_a_duplicate_version(env):
+    file_id = env.upload("cells.xlsx", b"original")
+    config = env.editor_config(file_id)
+    env.fail_changes = True
+    assert env.callback(config, status_code=2, document=b"edited", users=[str(OWNER)], history=_editing_history()).json() == {"error": 0}
+    assert env.content(file_id) == b"edited"
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/history/2").json()["changes_available"] is False
+    env.fail_changes = False
+    for _ in range(2):
+        assert env.callback(config, status_code=2, document=b"edited", users=[str(OWNER)], history=_editing_history()).json() == {"error": 0}
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/history/2").json()["changes_available"] is True
+    with app_session(env.database_url) as session:
+        versions = session.scalars(sa.select(AppMyFileVersion)).all()
+        assert len(versions) == 1
+        assert session.get(AppMyFileBlob, versions[0].office_changes_blob_id).ref_count == 1
+
+
+def test_native_history_keeps_a_retired_versions_own_changes_and_invalidates_superseded_data(env):
+    file_id = env.upload("cells.xlsx", b"A")
+    first = env.editor_config(file_id)
+    env.callback(first, status_code=2, document=b"B", users=[str(OWNER)], history=_editing_history())
+    second = env.editor_config(file_id)
+    env.callback(second, status_code=2, document=b"C", users=[str(OWNER)], history=_editing_history(), changes=_changes_archive(b"C changes"))
+    historical = env.client.get(f"/api/v1/my-files/{file_id}/office/history/2").json()["data"]
+    assert _get_asset(env, historical["url"]).content == b"B"
+    assert _get_asset(env, historical["previous"]["url"]).content == b"A"
+    current = env.client.get(f"/api/v1/my-files/{file_id}/office/history/3").json()["data"]
+    env.callback(second, status_code=6, document=b"C autosave", users=[str(OWNER)])
+    assert _get_asset(env, current["url"]).status_code == 404
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/history/3").json()["changes_available"] is False
+    # Unchanged final bytes can still supply the full history after the interim save.
+    env.callback(second, status_code=2, document=b"C autosave", users=[str(OWNER)], history=_editing_history())
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/history/3").json()["changes_available"] is True
+
+
+def test_native_history_source_links_recheck_access_after_revoke_and_trash(env):
+    file_id = env.upload("cells.xlsx", b"A")
+    env.callback(env.editor_config(file_id), status_code=2, document=b"B", users=[str(OWNER)], history=_editing_history())
+    env.as_user(STRANGER)
+    for suffix in ("", "/config", "/2"):
+        assert env.client.get(f"/api/v1/my-files/{file_id}/office/history{suffix}").status_code == 404
+    env.as_user(OWNER)
+    env.client.put(f"/api/v1/my-files/{file_id}/office/collaborators", json={"members": [{"user_id": COLLAB, "role": "view"}]})
+    env.as_user(COLLAB)
+    data = env.client.get(f"/api/v1/my-files/{file_id}/office/history/2").json()["data"]
+    assert _get_asset(env, data["changesUrl"]).status_code == 200
+    env.as_user(OWNER)
+    env.client.put(f"/api/v1/my-files/{file_id}/office/collaborators", json={"members": []})
+    for url in (data["url"], data["previous"]["url"], data["changesUrl"]):
+        assert _get_asset(env, url).status_code == 404
+    owned = env.client.get(f"/api/v1/my-files/{file_id}/office/history/2").json()["data"]
+    env.client.delete(f"/api/v1/my-files/{file_id}")
+    assert _get_asset(env, owned["url"]).status_code == 404
+
+
+@pytest.mark.parametrize("failure", ["bad_zip", "traversal", "invalid_metadata", "archive_scan"])
+def test_native_history_archive_errors_do_not_lose_the_document(env, failure, monkeypatch):
+    file_id = env.upload("cells.xlsx", b"A")
+    config = env.editor_config(file_id)
+    archive = _changes_archive()
+    history = _editing_history()
+    if failure == "bad_zip":
+        archive = b"not a zip"
+    elif failure == "traversal":
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w") as handle:
+            handle.writestr("../outside.json", b"x")
+        archive = output.getvalue()
+    elif failure == "invalid_metadata":
+        history = {"changes": "invalid"}
+    elif failure == "archive_scan":
+        original_scan = env.service._run_antivirus
+        monkeypatch.setattr(env.service, "_run_antivirus", lambda path, name, *args: SecurityScanResult(status="blocked", engine="test") if name.endswith(".zip") else original_scan(path, name, *args))
+    response = env.callback(config, status_code=2, document=b"B", users=[str(OWNER)], history=history, changes=archive)
+    assert response.json() == {"error": 0}
+    assert env.content(file_id) == b"B"
+    result = env.client.get(f"/api/v1/my-files/{file_id}/office/history/2").json()
+    assert result["changes_available"] is False and "changesUrl" not in result["data"]
+
+
+def test_native_history_pruning_restore_and_purge_release_archive_references(env, monkeypatch):
+    monkeypatch.setenv("ONLYOFFICE_MAX_VERSIONS", "1")
+    file_id = env.upload("cells.xlsx", b"A")
+    env.callback(env.editor_config(file_id), status_code=2, document=b"B", users=[str(OWNER)], history=_editing_history())
+    with app_session(env.database_url) as session:
+        first_archive = session.scalars(sa.select(AppMyFileVersion)).one().office_changes_blob_id
+    env.callback(env.editor_config(file_id), status_code=2, document=b"C", users=[str(OWNER)], history=_editing_history(), changes=_changes_archive(b"new changes"))
+    with app_session(env.database_url) as session:
+        assert session.get(AppMyFileBlob, first_archive) is None
+        version = session.scalars(sa.select(AppMyFileVersion)).one()
+        version_id, archive_id = version.id, version.office_changes_blob_id
+    assert env.client.post(f"/api/v1/my-files/{file_id}/office/versions/{version_id}/restore").status_code == 204
+    assert env.content(file_id) == b"B"
+    with app_session(env.database_url) as session:
+        assert session.get(AppMyFileBlob, archive_id) is None
+    latest = env.client.get(f"/api/v1/my-files/{file_id}/office/history").json()["currentVersion"]
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/history/{latest}").json()["changes_available"] is False
+    env.callback(env.editor_config(file_id), status_code=2, document=b"D", users=[str(OWNER)], history=_editing_history())
+    assert env.client.delete(f"/api/v1/my-files/{file_id}").status_code == 204
+    assert env.client.delete(f"/api/v1/my-files/trash/files/{file_id}").status_code == 204
+    with app_session(env.database_url) as session:
+        assert session.scalars(sa.select(AppMyFileVersion)).all() == []
+        assert session.scalars(sa.select(AppMyFileBlob)).all() == []
+
+
+def test_native_history_migration_preserves_existing_versions_and_downgrades():
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        base = runpy.run_path(str(MIGRATION))
+        base["upgrade"].__globals__.update(op=Operations(MigrationContext.configure(connection)), _scope=lambda: "app")
+        base["upgrade"]()
+        connection.execute(sa.text("INSERT INTO my_file_versions (id,file_id,version_no,blob_id) VALUES ('v','f',1,'b')"))
+        history = runpy.run_path(str(MIGRATION.with_name("20261105_0161_my_file_office_history.py")))
+        history["upgrade"].__globals__.update(op=Operations(MigrationContext.configure(connection)), _scope=lambda: "app")
+        history["upgrade"]()
+        history["upgrade"]()
+        stored = connection.execute(sa.text("SELECT blob_id, office_changes_blob_id, office_changes_size_bytes FROM my_file_versions")).one()
+        assert tuple(stored) == ("b", "", 0)
+        history["downgrade"]()
+        history["downgrade"]()
+        assert connection.scalar(sa.text("SELECT blob_id FROM my_file_versions")) == "b"
+
+
+def test_native_history_parallel_duplicate_callbacks_keep_one_archive_and_version(env, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    file_id = env.upload("cells.xlsx", b"A")
+    config = env.editor_config(file_id)
+    barrier = Barrier(2)
+    original_fetch = oo.fetch_document
+    archive = _changes_archive()
+
+    def parallel_fetch(settings, url, destination, *, max_bytes):
+        result = original_fetch(settings, url, destination, max_bytes=max_bytes)
+        if "changes.zip" not in url:
+            barrier.wait(timeout=15)
+        return result
+
+    monkeypatch.setattr(oo, "fetch_document", parallel_fetch)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda _: env.callback(config, status_code=2, document=b"B", users=[str(OWNER)], history=_editing_history(), changes=archive).json(), range(2)))
+    assert {"error": 0} in outcomes
+    monkeypatch.setattr(oo, "fetch_document", original_fetch)
+    # SQLite may reject a competing writer; retrying that callback must be idempotent.
+    assert env.callback(config, status_code=2, document=b"B", users=[str(OWNER)], history=_editing_history(), changes=archive).json() == {"error": 0}
+    assert env.content(file_id) == b"B"
+    data = env.client.get(f"/api/v1/my-files/{file_id}/office/history/2").json()["data"]
+    assert _get_asset(env, data["changesUrl"]).content == archive
+    with app_session(env.database_url) as session:
+        assert len(session.scalars(sa.select(AppMyFileVersion)).all()) == 1
+        assert all(blob.ref_count == 1 for blob in session.scalars(sa.select(AppMyFileBlob)).all())
+        archives = list(env.service.storage_root.rglob("*-history-*.zip"))
+        assert len(archives) == 1
+
+
+def test_native_history_archive_quota_does_not_discard_the_saved_document(env, monkeypatch):
+    file_id = env.upload("cells.xlsx", b"A")
+    config = env.editor_config(file_id)
+    monkeypatch.setattr(env.service, "_user_quota_limit_locked", lambda *_args: 3)
+    assert env.callback(config, status_code=2, document=b"B", users=[str(OWNER)], history=_editing_history()).json() == {"error": 0}
+    assert env.content(file_id) == b"B"
+    assert env.service.quota(user_id=OWNER)["used_bytes"] == 2
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/history/2").json()["changes_available"] is False
+    assert list(env.service.storage_root.rglob("*-history-*.zip")) == []
+
+
+def test_native_history_source_rejects_expired_tampered_and_wrong_purpose_tokens(env):
+    file_id = env.upload("cells.xlsx", b"A")
+    data = env.client.get(f"/api/v1/my-files/{file_id}/office/history/1").json()["data"]
+    url = data["url"]
+    token = urlsplit(url).query.removeprefix("t=")
+    claims = jwt.decode(token, SECRET, algorithms=["HS256"])
+    claims["exp"] = 1
+    expired = jwt.encode(claims, SECRET, algorithm="HS256")
+    assert _get_asset(env, url.replace(token, expired)).status_code == 403
+    invalid = token.split(".")
+    invalid[-1] = "A" * len(invalid[-1])
+    assert _get_asset(env, url.replace(token, ".".join(invalid))).status_code == 403
+    claims["typ"] = "src"
+    claims.pop("exp")
+    wrong = jwt.encode(claims, SECRET, algorithm="HS256")
+    assert _get_asset(env, url.replace(token, wrong)).status_code == 403
+    assert env.client.get(f"/api/v1/my-files/{file_id}/office/history/0").status_code == 404

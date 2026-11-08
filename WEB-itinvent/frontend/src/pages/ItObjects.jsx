@@ -292,17 +292,19 @@ export default function ItObjects() {
               sx={{ '& .MuiInputBase-root': { minHeight: 44, borderRadius: 2 }, '& input': { fontSize: { xs: 16, sm: 14 } } }}
             />
             <Stack direction="row" alignItems="center" spacing={0.5} useFlexGap flexWrap="wrap">
-              <FormControlLabel
-                control={<Switch checked={mine} onChange={(event) => setMine(event.target.checked)} />}
-                label="Только мои"
-                sx={{ mx: 0.5 }}
-              />
               {canManage ? (
-                <FormControlLabel
-                  control={<Switch checked={showHidden} onChange={(event) => setShowHidden(event.target.checked)} />}
-                  label="Удалённые"
-                  sx={{ mx: 0.5 }}
-                />
+                <>
+                  <FormControlLabel
+                    control={<Switch checked={mine} onChange={(event) => setMine(event.target.checked)} />}
+                    label="Только мои"
+                    sx={{ mx: 0.5 }}
+                  />
+                  <FormControlLabel
+                    control={<Switch checked={showHidden} onChange={(event) => setShowHidden(event.target.checked)} />}
+                    label="Удалённые"
+                    sx={{ mx: 0.5 }}
+                  />
+                </>
               ) : null}
             </Stack>
           </Paper>

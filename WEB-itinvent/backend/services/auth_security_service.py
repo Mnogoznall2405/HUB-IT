@@ -14,6 +14,7 @@ from backend.appdb.models import AppUser2FABackupCode
 from backend.config import config
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.authorization_service import authorization_service
+from backend.services.it_object_owner_access import with_owner_permissions
 from backend.services.secret_crypto_service import decrypt_secret, encrypt_secret
 from backend.services.security_email_service import security_email_service
 from backend.services.session_auth_context_service import normalize_exchange_login, session_auth_context_service
@@ -94,10 +95,13 @@ class AuthSecurityService:
         twofa_required_for_current_request: bool | None = None,
     ) -> dict:
         public_user = user_service.to_public_user(user)
-        public_user["permissions"] = authorization_service.get_effective_permissions(
-            public_user.get("role"),
-            use_custom_permissions=bool(public_user.get("use_custom_permissions", False)),
-            custom_permissions=public_user.get("custom_permissions"),
+        public_user["permissions"] = with_owner_permissions(
+            authorization_service.get_effective_permissions(
+                public_user.get("role"),
+                use_custom_permissions=bool(public_user.get("use_custom_permissions", False)),
+                custom_permissions=public_user.get("custom_permissions"),
+            ),
+            public_user.get("id"),
         )
         trusted_devices_count = user.get("trusted_devices_count")
         if trusted_devices_count in (None, ""):

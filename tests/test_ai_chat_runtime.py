@@ -1241,6 +1241,67 @@ def test_default_bot_backfill_seeds_live_tools_only_once(tmp_path, monkeypatch):
     assert persisted["live_data_enabled"] is False
 
 
+def test_default_bot_gets_computers_tools_once_without_touching_other_tools(tmp_path, monkeypatch):
+    # Prod bot was seeded by v5 before computers.* became default; the one-off seed must add
+    # only these two tools, and a later admin removal must stay removed.
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_default_bot_computers.db")
+
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    temp_ai_service = ai_chat_module.AiChatService()
+    monkeypatch.setattr(ai_chat_module, "user_service", user_service_module.UserService(database_url=database_url))
+    monkeypatch.setattr(
+        ai_chat_module.openrouter_client,
+        "get_status",
+        lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"},
+    )
+
+    appdb_db.initialize_app_schema(database_url)
+    with appdb_db.app_session(database_url) as session:
+        session.add(
+            app_models.AppAiBot(
+                id="seeded-default-bot",
+                slug=ai_chat_module.DEFAULT_BOT_SLUG,
+                title=ai_chat_module.DEFAULT_BOT_TITLE,
+                description=ai_chat_module.DEFAULT_BOT_DESCRIPTION,
+                system_prompt=ai_chat_module.DEFAULT_BOT_PROMPT,
+                model=ai_chat_module.DEFAULT_BOT_MODEL,
+                temperature=0.2,
+                max_tokens=2000,
+                allowed_kb_scope_json="[]",
+                enabled_tools_json=json.dumps(["itinvent.equipment.search"]),
+                tool_settings_json=json.dumps({"multi_db_mode": "single", "allowed_databases": []}),
+                allow_file_input=True,
+                allow_generated_artifacts=True,
+                allow_kb_document_delivery=False,
+                is_enabled=True,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        temp_ai_service._write_bool_setting(session, ai_chat_module.DEFAULT_BOT_LIVE_DATA_SEED_SETTING_KEY, True)
+
+    def _tools():
+        return next(
+            item for item in temp_ai_service.list_admin_bots() if item["slug"] == ai_chat_module.DEFAULT_BOT_SLUG
+        )
+
+    temp_ai_service.ensure_default_bot()
+    bot = _tools()
+    assert bot["enabled_tools"] == [
+        "itinvent.equipment.search",
+        "itinvent.computers.search",
+        "itinvent.computers.get",
+    ]
+
+    temp_ai_service.update_bot(bot["id"], {"enabled_tools": ["itinvent.equipment.search"]})
+    temp_ai_service.ensure_default_bot()
+    assert _tools()["enabled_tools"] == ["itinvent.equipment.search"]
+
+
 def test_itinvent_equipment_search_tool_preserves_extended_payload_fields(monkeypatch):
     tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
 
@@ -3403,7 +3464,7 @@ def test_ai_files_create_tool_sends_generated_attachment_from_runtime(tmp_path, 
     assert "ai.files.create" in first_user_prompt
     assert "Use artifacts only as a legacy fallback" in first_user_prompt
     assert "User request understanding and query coaching" in first_system_prompt
-    assert "ready-to-copy example requests" in first_system_prompt
+    assert "quick_replies" in first_system_prompt
     assert "Live ITinvent tools enabled" not in first_user_prompt
 
 
@@ -4988,3 +5049,111 @@ def test_ai8_conversation_without_main_assistant_has_no_replacement(tmp_path, mo
         )
         is None
     )
+
+
+def test_ai_run_streams_answer_preview_and_resets_it_before_a_tool_round(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_stream.db")
+
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+    from backend.appdb.db import app_session as grant_session
+    from backend.appdb.models import AppAiBotAccess
+
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "get_status", lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"})
+    # Publish every delta: the throttle is not what this test is about.
+    monkeypatch.setattr(ai_chat_module, "AI_PREVIEW_MIN_INTERVAL_SEC", 0.0)
+    monkeypatch.setattr(ai_chat_module, "AI_PREVIEW_MIN_GROWTH_CHARS", 1)
+
+    streamed_calls: list[int] = []
+
+    def fake_complete_json(**kwargs):
+        on_text_delta = kwargs.get("on_text_delta")
+        if on_text_delta is None:  # memory planner and other non-chat calls
+            raise RuntimeError("planner unavailable")
+        streamed_calls.append(len(streamed_calls) + 1)
+        if len(streamed_calls) == 1:
+            # Interim text before a tool round must not survive as the answer.
+            on_text_delta("Сейчас проверю")
+            return ({"answer_markdown": "Сейчас проверю", "tool_calls": [{"tool_id": "ai.unknown.tool", "args": {}}]}, {})
+        for text in ("Нашёл", "Нашёл 3 устройства", "Нашёл 3 устройства."):
+            on_text_delta(text)
+        return ({"answer_markdown": "Нашёл 3 устройства.", "artifacts": [], "quick_replies": [
+            {"label": "Показать списком", "reply": "Покажи эти 3 устройства списком"},
+            {"label": "Только в сети", "reply": "Оставь только устройства в сети"},
+            {"label": "Показать списком", "reply": "покажи эти 3 устройства списком"},
+        ]}, {})
+
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "complete_json", fake_complete_json)
+
+    chat_db.initialize_chat_schema(database_url)
+    actor = temp_user_service.create_user(
+        username="operator", password="secret-pass", role="viewer", auth_source="local",
+        full_name="Operator", is_active=True, use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use", "kb.read"],
+    )
+    bot = temp_ai_service.ensure_default_bot()
+    with grant_session(database_url) as db:
+        db.add(AppAiBotAccess(bot_id=bot["id"], user_id=int(actor["id"]), allowed=True, updated_by=1))
+    opened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+    with chat_db.chat_session(database_url) as session:
+        conversation = session.get(chat_models.ChatConversation, opened["id"])
+        user_message = chat_models.ChatMessage(
+            id="msg-human-1", conversation_id=opened["id"], sender_user_id=int(actor["id"]),
+            body="Найди устройства", body_format="plain", conversation_seq=1,
+            created_at=datetime.now(timezone.utc),
+        )
+        conversation.last_message_id = user_message.id
+        conversation.last_message_seq = 1
+        conversation.last_message_at = user_message.created_at
+        conversation.updated_at = user_message.created_at
+        session.add(user_message)
+    assert temp_ai_service.queue_run_for_message(
+        conversation_id=opened["id"], trigger_message_id="msg-human-1", current_user_id=int(actor["id"]),
+    ) is not None
+
+    assert temp_ai_service.process_next_run() is True
+
+    with chat_db.chat_session(database_url) as session:
+        events = [
+            json.loads(str(item.payload_json or "{}"))
+            for item in session.execute(
+                select(chat_models.ChatEventOutbox)
+                .where(chat_models.ChatEventOutbox.event_type == "chat.ai.run.updated")
+                .order_by(chat_models.ChatEventOutbox.id.asc())
+            ).scalars()
+        ]
+        answer = session.execute(
+            select(chat_models.ChatMessage)
+            .where(chat_models.ChatMessage.conversation_id == opened["id"])
+            .order_by(chat_models.ChatMessage.conversation_seq.desc())
+        ).scalars().first()
+
+    assert len(streamed_calls) == 2
+    # Only preview events carry the key: text -> explicit reset ("") -> cumulative final snapshots.
+    previews = [item["partial_text"] for item in events if "partial_text" in item]
+    assert previews[:3] == ["Сейчас проверю", "", "Нашёл"]
+    assert [v for v in previews if v][-2:] == ["Нашёл 3 устройства", "Нашёл 3 устройства."]
+    assert answer is not None and answer.body.strip() == "Нашёл 3 устройства."
+    assert events[-1]["status"] == "completed"
+    # The model's next-step suggestions become one card of buttons (duplicates dropped).
+    from backend.ai_chat.action_cards import get_action_card_for_message
+
+    card = get_action_card_for_message(answer.id)
+    assert card is not None and card["action_type"] == "ai.choice.reply"
+    assert [item["label"] for item in card["preview"]["choices"]] == ["Показать списком", "Только в сети"]

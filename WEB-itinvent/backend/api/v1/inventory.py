@@ -27,6 +27,7 @@ from backend import inventory_runtime
 from backend.models.auth import User
 from backend.services.user_db_selection_service import user_db_selection_service
 from backend.services import inventory_binding
+from backend.services import it_object_branch_scope
 from backend.services import inventory_read
 from backend.services.inventory_binding import EMPTY_BRANCH_LABEL, UNASSIGNED_BRANCH_LABEL
 from backend.services.authorization_service import (
@@ -72,7 +73,7 @@ COMPUTERS_RECORDS_CACHE_STALE_MAX_SEC = 600.0
 COMPUTERS_RECORDS_FLIGHT_WAIT_SEC = 20.0
 COMPUTERS_RECORDS_REBUILD_WORKERS = 2
 COMPUTERS_LIST_HOT_MAX_KEYS = 8
-COMPUTERS_LIST_HOT_IDLE_SEC = 300.0
+COMPUTERS_LIST_HOT_IDLE_SEC = 1800.0  # после последнего обращения ключ греется ещё 30 мин (перерыв ≤ 30 мин не даёт холодного старта)
 _computers_records_cache: "OrderedDict[tuple, Tuple[float, Any, tuple]]" = OrderedDict()
 _computers_records_cache_lock = threading.Lock()
 # Single-flight: один активный пересчёт на ключ; остальные запросы ждут его результат.
@@ -103,6 +104,7 @@ _derived_cache_lock = threading.Lock()
 _changes_index_cache: Optional[Tuple[float, tuple, Dict[str, Dict[str, Any]]]] = None
 # Ответ /changes (сводка за окно хранения): строится сканом всех событий, поэтому кэш по версии данных и TTL.
 _changes_summary_cache: Optional[Tuple[float, tuple, Dict[str, Any]]] = None
+_changes_last_request: Optional[float] = None  # monotonic последнего запроса /changes: прогрев только для «горячей» сводки
 _network_lookup_index_cache: Optional[Tuple[float, tuple, Dict[str, Dict[str, Dict[str, Any]]]]] = None
 
 # Native clients intentionally receive only the fields rendered by the native
@@ -436,6 +438,7 @@ class InventoryPayload(BaseModel):
     agent_runtime: Optional[Dict[str, Any]] = None
     ops_health: Optional[Dict[str, Any]] = None
     software_inventory: Optional[Dict[str, Any]] = None
+    usb_devices: Optional[Dict[str, Any]] = None
     timestamp: int
 
 
@@ -2123,7 +2126,48 @@ def _resolve_filter_host_keys(
         return None
 
 
-def _collect_scoped_computer_records(
+def _merge_records_of_same_card(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Один ПК с несколькими сетевыми картами приходит строками по каждому MAC: показываем одну.
+
+    Сливаем только строки с одной карточкой ITINVENT (БД + инв. №), одним именем хоста и одним
+    признаком скрытия. Остаётся строка с самым свежим last_seen_at; остальные MAC попадают в
+    alias_macs, число слитых строк в merged_hosts_count. Разные имена на одной карточке не сливаем:
+    это возможная ошибка привязки, её нельзя прятать. Данные агента не удаляются.
+    """
+    groups: Dict[tuple, List[Dict[str, Any]]] = {}
+    for item in records:
+        inv_no = _normalize_text(item.get("inventory_inv_no"))
+        db_id = _normalize_text(item.get("database_id"))
+        hostname = _normalize_text(item.get("hostname")).lower()
+        if not inv_no or not db_id or not hostname:
+            continue
+        groups.setdefault((db_id, inv_no, hostname, bool(item.get("is_hidden"))), []).append(item)
+
+    drop: set = set()
+    for rows in groups.values():
+        if len(rows) < 2:
+            continue
+        keeper = max(rows, key=lambda row: (_to_int(row.get("last_seen_at"), default=0), bool(_normalize_text(row.get("mac_address")))))
+        keeper["alias_macs"] = [
+            _normalize_text(row.get("mac_address")) for row in rows if row is not keeper and _normalize_text(row.get("mac_address"))
+        ]
+        keeper["merged_hosts_count"] = len(rows)
+        drop.update(id(row) for row in rows if row is not keeper)
+    if not drop:
+        return records
+    return [item for item in records if id(item) not in drop]
+
+
+def _collect_scoped_computer_records(**kwargs: Any) -> List[Dict[str, Any]]:
+    """Records visible to the user: an IT owner sees only the computers of his objects' branches."""
+    records = _collect_all_scoped_computer_records(**kwargs)
+    scope = it_object_branch_scope.computer_scope(kwargs.get("current_user"))
+    if scope is None:
+        return records
+    return [item for item in records if it_object_branch_scope.computer_allowed(item, scope)]
+
+
+def _collect_all_scoped_computer_records(
     *,
     current_user: User,
     db_id_selected: Optional[str],
@@ -2470,8 +2514,43 @@ def warm_hot_list_keys(stop_event: Optional[threading.Event] = None) -> int:
         except Exception as exc:
             logger.warning("computers_warmup key failed error=%s", type(exc).__name__)
         done += 1
+    last_changes = _changes_last_request
+    if last_changes is not None and now - last_changes <= COMPUTERS_LIST_HOT_IDLE_SEC and not (
+        stop_event is not None and stop_event.is_set()
+    ):
+        try:
+            _get_changes_summary()
+        except Exception as exc:
+            logger.warning("computers_warmup changes failed error=%s", type(exc).__name__)
     _count_computers_list("warmup_runs")
     return done
+
+
+_extra_warmups: List[Tuple[str, Callable[[], Any], float]] = []
+_extra_warmups_last: Dict[str, float] = {}
+
+
+def register_extra_warmup(name: str, func: Callable[[], Any], min_interval_sec: float = 60.0) -> None:
+    """Дополнительный прогрев в той же фоновой нити (например, обзор мониторинга); идемпотентно по имени."""
+    for index, (existing, _, _) in enumerate(_extra_warmups):
+        if existing == name:
+            _extra_warmups[index] = (name, func, float(min_interval_sec))
+            return
+    _extra_warmups.append((name, func, float(min_interval_sec)))
+
+
+def _run_extra_warmups(stop_event: Optional[threading.Event] = None) -> None:
+    for name, func, min_interval in list(_extra_warmups):
+        if stop_event is not None and stop_event.is_set():
+            return
+        now = time.monotonic()
+        if now - _extra_warmups_last.get(name, -1e9) < min_interval:
+            continue
+        _extra_warmups_last[name] = now
+        try:
+            func()
+        except Exception as exc:
+            logger.warning("extra_warmup %s failed error=%s", name, type(exc).__name__)
 
 
 def _list_warmup_enabled() -> bool:
@@ -2515,6 +2594,7 @@ class _ListWarmupWorker:
         while not self._stop.wait(interval + random.uniform(0, 10)):
             try:
                 warm_hot_list_keys(self._stop)
+                _run_extra_warmups(self._stop)
             except Exception as exc:
                 logger.warning("computers_warmup tick failed error=%s", type(exc).__name__)
 
@@ -2740,6 +2820,8 @@ def _compute_scoped_records(
     finally:
         pass
 
+    records = _merge_records_of_same_card(records)
+
     if branch:
         branch_value = _normalize_text(branch).lower()
         records = [item for item in records if _normalize_text(item.get("branch_name")).lower() == branch_value]
@@ -2867,6 +2949,28 @@ def get_inventory_changes(
     limit: int = Query(50, ge=1, le=200),
     current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
 ):
+    global _changes_last_request
+    _changes_last_request = time.monotonic()
+    scope = it_object_branch_scope.computer_scope(current_user)
+    if scope is None:
+        response = _get_changes_summary()
+    else:
+        visible = _collect_scoped_computer_records(
+            current_user=current_user,
+            db_id_selected=it_object_branch_scope._objects_db_id(),
+            scope="selected",
+            branch=None,
+            status_filter=None,
+            outlook_status=None,
+            q=None,
+        )
+        allowed_macs = {_normalize_mac(item.get("mac_address")) for item in visible}
+        response = _build_inventory_changes_summary(int(time.time()), allowed_macs)
+    return {**response, "latest_events": response["latest_events"][: int(limit)]}
+
+
+def _get_changes_summary() -> Dict[str, Any]:
+    """Сводка изменений через кэш (TTL + версия контента); общая для эндпоинта и прогрева."""
     global _changes_summary_cache
     now_ts = int(time.time())
     app_store = _get_inventory_app_store()
@@ -2883,20 +2987,25 @@ def get_inventory_changes(
             and cached[1] == summary_key
             and time.monotonic() - cached[0] <= COMPUTERS_RECORDS_CACHE_TTL_SEC
         ):
-            return {**cached[2], "latest_events": cached[2]["latest_events"][: int(limit)]}
+            return cached[2]
     response = _build_inventory_changes_summary(now_ts)
     if summary_key is not None:
         with _derived_cache_lock:
             _changes_summary_cache = (time.monotonic(), summary_key, response)
-    return {**response, "latest_events": response["latest_events"][: int(limit)]}
+    return response
 
 
-def _build_inventory_changes_summary(now_ts: int) -> Dict[str, Any]:
-    """Сводка изменений за окно хранения; latest_events — максимальные 200 (лимит эндпоинта)."""
+def _build_inventory_changes_summary(now_ts: int, allowed_macs: Optional[set] = None) -> Dict[str, Any]:
+    """Сводка изменений за окно хранения; latest_events — максимальные 200 (лимит эндпоинта).
+
+    ``allowed_macs`` — только события этих хостов (IT-владелец видит лишь компьютеры своих филиалов).
+    """
     changes = _prune_old_changes(
         _load_changes(since_ts=now_ts - HISTORY_RETENTION_DAYS * 24 * 60 * 60),
         now_ts,
     )
+    if allowed_macs is not None:
+        changes = [item for item in changes if _normalize_mac(item.get("mac_address")) in allowed_macs]
     sorted_changes = sorted(changes, key=lambda item: _to_int(item.get("detected_at"), 0), reverse=True)
 
     def _unique_hosts_since(seconds_back: int) -> int:
@@ -3259,6 +3368,9 @@ def _build_computer_detail_payload(
         record["database_id"] = ""
         record["database_name"] = "Без привязки"
 
+    if not it_object_branch_scope.computer_allowed(record, it_object_branch_scope.computer_scope(current_user)):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Computer not found")
+
     record["monitors"] = _enrich_monitors_with_inventory(
         record.get("monitors"),
         record.get("database_id"),
@@ -3551,6 +3663,318 @@ def search_computers(
     return payload
 
 
+def _visible_host_payloads(
+    *, current_user: User, db_id_selected: Optional[str], scope: str
+) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """Stored agent payloads of the computers the user may see, plus the scoped records keyed by MAC."""
+    if _normalize_scope(scope) == "all":
+        ensure_user_permission(current_user, PERM_COMPUTERS_READ_ALL)
+    records = _collect_scoped_computer_records(
+        current_user=current_user,
+        db_id_selected=db_id_selected,
+        scope=scope,
+        branch=None,
+        status_filter=None,
+        outlook_status=None,
+        q=None,
+    )
+    visible = {_normalize_mac(item.get("mac_address")): item for item in records}
+    visible.pop("", None)
+    app_store = _get_inventory_app_store()
+    hosts = app_store.list_hosts(set(visible)) if app_store is not None and visible else []
+    return hosts, visible
+
+
+@router.get("/computers/usb/search")
+def search_computers_usb(
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
+    db_id_selected: Optional[str] = Depends(get_current_database_id),
+    scope: str = Query("selected"),
+    q: str = Query(..., min_length=2, max_length=120),
+    present_only: bool = Query(False),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    """USB devices ever seen by the agents (storage history of the registry + what is plugged in now).
+
+    q matches vendor, product, name, serial or PNP id: "где подключали флешку с серийным номером X".
+    """
+    needle = _normalize_text(q).lower()
+    if len(needle) < 2:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Query is too short")
+    hosts, visible = _visible_host_payloads(current_user=current_user, db_id_selected=db_id_selected, scope=scope)
+
+    rows: List[Dict[str, Any]] = []
+    hosts_with_usb = 0
+    for host in hosts:
+        usb = host.get("usb_devices") if isinstance(host.get("usb_devices"), dict) else {}
+        items = [item for item in list(usb.get("items") or []) if isinstance(item, dict)]
+        if items:
+            hosts_with_usb += 1
+        mac_value = _normalize_mac(host.get("mac_address"))
+        record = visible.get(mac_value) or {}
+        for item in items:
+            if present_only and not item.get("present"):
+                continue
+            haystack = " ".join(
+                _normalize_text(item.get(key))
+                for key in ("vendor", "product", "friendly_name", "serial", "pnp_device_id")
+            ).lower()
+            if needle not in haystack:
+                continue
+            rows.append(
+                {
+                    "kind": _normalize_text(item.get("kind")),
+                    "vendor": _normalize_text(item.get("vendor")),
+                    "product": _normalize_text(item.get("product")),
+                    "friendly_name": _normalize_text(item.get("friendly_name")),
+                    "serial": _normalize_text(item.get("serial")),
+                    "has_unique_serial": bool(item.get("has_unique_serial")),
+                    "present": bool(item.get("present")),
+                    "size_gb": item.get("size_gb"),
+                    "first_connected_at": item.get("first_connected_at"),
+                    "last_connected_at": item.get("last_connected_at"),
+                    "last_removed_at": item.get("last_removed_at"),
+                    "hostname": _normalize_text(host.get("hostname")),
+                    "mac_address": mac_value,
+                    "user_login": _normalize_text(host.get("user_login")),
+                    "branch_name": _normalize_text(record.get("branch_name")),
+                }
+            )
+    rows.sort(key=lambda row: (-(row["last_connected_at"] or 0), row["hostname"].lower()))
+    return {
+        "items": rows[:limit],
+        "total": len(rows),
+        "truncated": len(rows) > limit,
+        "computers_checked": len(hosts),
+        "computers_with_usb_data": hosts_with_usb,
+    }
+
+
+def _software_version_key(value: Any) -> tuple:
+    parts: List[int] = []
+    for piece in str(value or "").replace("-", ".").split("."):
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
+@router.get("/computers/software/search")
+def search_computers_software(
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
+    db_id_selected: Optional[str] = Depends(get_current_database_id),
+    scope: str = Query("selected"),
+    q: str = Query(..., min_length=2, max_length=120),
+    version_below: Optional[str] = Query(None, max_length=40),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    """Installs of a program across the computers the user can see (software inventory of the agent).
+
+    version_below keeps only installs with an older version ("где устаревший Adobe Reader").
+    """
+    needle = _normalize_text(q).lower()
+    if len(needle) < 2:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Query is too short")
+    below_key = _software_version_key(version_below) if _normalize_text(version_below) else None
+    hosts, visible = _visible_host_payloads(current_user=current_user, db_id_selected=db_id_selected, scope=scope)
+
+    installs: List[Dict[str, Any]] = []
+    hosts_with_software = 0
+    for host in hosts:
+        software = host.get("software_inventory") if isinstance(host.get("software_inventory"), dict) else {}
+        items = [item for item in list(software.get("items") or []) if isinstance(item, dict)]
+        if items:
+            hosts_with_software += 1
+        mac_value = _normalize_mac(host.get("mac_address"))
+        record = visible.get(mac_value) or {}
+        for item in items:
+            name = _normalize_text(item.get("display_name"))
+            if needle not in name.lower():
+                continue
+            version = _normalize_text(item.get("display_version"))
+            if below_key is not None and _software_version_key(version) >= below_key:
+                continue
+            installs.append(
+                {
+                    "program": name,
+                    "version": version,
+                    "publisher": _normalize_text(item.get("publisher")),
+                    "install_date": _normalize_text(item.get("install_date")),
+                    "hostname": _normalize_text(host.get("hostname")),
+                    "mac_address": mac_value,
+                    "user_login": _normalize_text(host.get("user_login")),
+                    "branch_name": _normalize_text(record.get("branch_name")),
+                    "collected_at": software.get("collected_at"),
+                }
+            )
+    installs.sort(
+        key=lambda row: (row["program"].lower(), _software_version_key(row["version"]), row["hostname"].lower())
+    )
+    return {
+        "items": installs[:limit],
+        "total": len(installs),
+        "truncated": len(installs) > limit,
+        "computers_checked": len(hosts),
+        "computers_with_software": hosts_with_software,
+    }
+
+
+FLEET_SILENT_AFTER_SEC = 7 * 24 * 3600
+FLEET_QUEUE_BACKLOG = 50
+FLEET_SPOOL_BACKLOG = 500
+# Порядок = важность: сверху то, что требует действия раньше.
+FLEET_ISSUE_ORDER = (
+    "silent",
+    "fs_dead",
+    "dead_letter",
+    "scan_down",
+    "backlog",
+    "old_version",
+    "no_egress",
+)
+
+
+def _fleet_host_issues(host: Dict[str, Any], *, now_ts: int, latest_key: tuple) -> Dict[str, Any]:
+    runtime = host.get("agent_runtime") if isinstance(host.get("agent_runtime"), dict) else {}
+    sidecars = runtime.get("sidecars") if isinstance(runtime.get("sidecars"), dict) else {}
+    fs_info = sidecars.get("fs_egress") if isinstance(sidecars.get("fs_egress"), dict) else None
+    scan_info = sidecars.get("scan") if isinstance(sidecars.get("scan"), dict) else None
+    version = _normalize_text(runtime.get("agent_version"))
+    last_seen = _to_int(host.get("last_seen_at") or host.get("timestamp"), default=0)
+    age = (now_ts - last_seen) if last_seen > 0 else None
+
+    inv_dead = _to_int(runtime.get("inventory_dead_letter_depth"), default=0)
+    scan_dead = _to_int(runtime.get("scan_dead_letter_depth"), default=0)
+    fs_dead_letter = _to_int((fs_info or {}).get("dead_letter"), default=0)
+    fs_pending = _to_int((fs_info or {}).get("pending"), default=0)
+    inv_queue = _to_int(runtime.get("inventory_queue_depth"), default=0)
+    scan_outbox = _to_int(runtime.get("scan_outbox_depth"), default=0)
+
+    issues: List[str] = []
+    if age is None or age > FLEET_SILENT_AFTER_SEC:
+        issues.append("silent")
+    if fs_info is not None and fs_info.get("enabled") and not fs_info.get("alive"):
+        issues.append("fs_dead")
+    if inv_dead + scan_dead + fs_dead_letter > 0:
+        issues.append("dead_letter")
+    if scan_info is not None and not scan_info.get("alive"):
+        issues.append("scan_down")
+    if inv_queue >= FLEET_QUEUE_BACKLOG or scan_outbox >= FLEET_QUEUE_BACKLOG or fs_pending >= FLEET_SPOOL_BACKLOG:
+        issues.append("backlog")
+    if version and _software_version_key(version) < latest_key:
+        issues.append("old_version")
+    if fs_info is None:
+        issues.append("no_egress")
+    return {
+        "issues": issues,
+        "agent_version": version,
+        "last_seen_at": last_seen or None,
+        "age_sec": age,
+        "dead_letter": {"inventory": inv_dead, "scan": scan_dead, "fs_egress": fs_dead_letter},
+        "pending": {"inventory": inv_queue, "scan": scan_outbox, "fs_egress": fs_pending},
+        "fs_egress_enabled": bool(fs_info.get("enabled")) if fs_info is not None else None,
+        "fs_egress_alive": bool(fs_info.get("alive")) if fs_info is not None else None,
+        "scan_alive": bool(scan_info.get("alive")) if scan_info is not None else None,
+    }
+
+
+@router.get("/computers/fleet/health")
+def get_fleet_health(
+    current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
+    db_id_selected: Optional[str] = Depends(get_current_database_id),
+    scope: str = Query("selected"),
+    limit: int = Query(500, ge=1, le=2000),
+):
+    """Состояние парка агентов: давность отчётов, версии, живость fs_egress/scan и очереди.
+
+    problems — компьютеры хотя бы с одной проблемой, самые тяжёлые сверху.
+    """
+    hosts, visible = _visible_host_payloads(current_user=current_user, db_id_selected=db_id_selected, scope=scope)
+    now_ts = int(time.time())
+
+    version_counts: Dict[str, int] = {}
+    for host in hosts:
+        runtime = host.get("agent_runtime") if isinstance(host.get("agent_runtime"), dict) else {}
+        version = _normalize_text(runtime.get("agent_version")) or ""
+        version_counts[version] = version_counts.get(version, 0) + 1
+    known_versions = [value for value in version_counts if value]
+    latest_version = max(known_versions, key=_software_version_key) if known_versions else ""
+    latest_key = _software_version_key(latest_version) if latest_version else ()
+
+    buckets = {"online": 0, "stale": 0, "offline_week": 0, "silent": 0}
+    issue_counts: Dict[str, int] = {code: 0 for code in FLEET_ISSUE_ORDER}
+    sidecars_summary = {
+        "fs_egress_reporting": 0,
+        "fs_egress_alive": 0,
+        "scan_reporting": 0,
+        "scan_alive": 0,
+        "dead_letter_total": 0,
+        "dead_letter_hosts": 0,
+    }
+    problems: List[Dict[str, Any]] = []
+    for host in hosts:
+        info = _fleet_host_issues(host, now_ts=now_ts, latest_key=latest_key)
+        age = info["age_sec"]
+        if age is None or age > FLEET_SILENT_AFTER_SEC:
+            buckets["silent"] += 1
+        elif age <= ONLINE_MAX_AGE_SECONDS:
+            buckets["online"] += 1
+        elif age <= STALE_MAX_AGE_SECONDS:
+            buckets["stale"] += 1
+        else:
+            buckets["offline_week"] += 1
+        if info["fs_egress_enabled"] is not None:
+            sidecars_summary["fs_egress_reporting"] += 1
+            if info["fs_egress_alive"]:
+                sidecars_summary["fs_egress_alive"] += 1
+        if info["scan_alive"] is not None:
+            sidecars_summary["scan_reporting"] += 1
+            if info["scan_alive"]:
+                sidecars_summary["scan_alive"] += 1
+        dead_total = sum(info["dead_letter"].values())
+        sidecars_summary["dead_letter_total"] += dead_total
+        if dead_total:
+            sidecars_summary["dead_letter_hosts"] += 1
+        for code in info["issues"]:
+            issue_counts[code] += 1
+        if not info["issues"]:
+            continue
+        mac_value = _normalize_mac(host.get("mac_address"))
+        record = visible.get(mac_value) or {}
+        problems.append(
+            {
+                **info,
+                "hostname": _normalize_text(host.get("hostname")),
+                "mac_address": mac_value,
+                "user_login": _normalize_text(host.get("user_login")),
+                "branch_name": _normalize_text(record.get("branch_name")),
+            }
+        )
+    problems.sort(
+        key=lambda row: (
+            min(FLEET_ISSUE_ORDER.index(code) for code in row["issues"]),
+            -sum(row["dead_letter"].values()),
+            row["hostname"].lower(),
+        )
+    )
+    versions = sorted(
+        ({"version": key, "count": value} for key, value in version_counts.items()),
+        key=lambda row: _software_version_key(row["version"]),
+        reverse=True,
+    )
+    return {
+        "generated_at": now_ts,
+        "computers_total": len(hosts),
+        "latest_version": latest_version,
+        "age_buckets": buckets,
+        "versions": versions,
+        "sidecars": sidecars_summary,
+        "issue_counts": issue_counts,
+        "problems": problems[:limit],
+        "problems_total": len(problems),
+        "truncated": len(problems) > limit,
+    }
+
+
 @router.get("/computers")
 def get_computers(
     request: Request = None,
@@ -3631,6 +4055,9 @@ def lookup_computers_by_inv_nos(
     except Exception as exc:
         logger.debug("Inventory inv-lookup equipment query skipped: %s", exc)
         rows = []
+    # An IT owner maps only equipment of his branches to live computers.
+    lookup_scope = it_object_branch_scope.branch_scope(current_user, _normalize_text(db_id) or None)
+    rows = it_object_branch_scope.filter_rows(rows, lookup_scope)
 
     mac_to_inv: Dict[str, str] = {}
     host_to_inv: Dict[str, str] = {}
@@ -3737,6 +4164,19 @@ def get_computer_detail(
     return payload
 
 
+def _ensure_computer_in_scope(current_user: User, mac_address: str) -> None:
+    """Hide/unhide/delete: an IT owner touches only computers of his branches (404 otherwise)."""
+    scope = it_object_branch_scope.computer_scope(current_user)
+    if scope is None:
+        return
+    _build_computer_detail_payload(
+        current_user=current_user,
+        mac_address=mac_address,
+        db_id_selected=it_object_branch_scope._objects_db_id(),
+        scope="selected",
+    )
+
+
 @router.post("/computers/{mac_address}/hide")
 def hide_computer(
     mac_address: str,
@@ -3745,6 +4185,7 @@ def hide_computer(
 ):
     """Soft-hide an inventory host for a Computers manager."""
     ensure_user_permission(current_user, PERM_COMPUTERS_MANAGE)
+    _ensure_computer_in_scope(current_user, mac_address)
     app_store = _get_inventory_app_store()
     if app_store is None:
         raise HTTPException(
@@ -3777,6 +4218,7 @@ def unhide_computer(
 ):
     """Restore a soft-hidden inventory host to the default list."""
     ensure_user_permission(current_user, PERM_COMPUTERS_MANAGE)
+    _ensure_computer_in_scope(current_user, mac_address)
     app_store = _get_inventory_app_store()
     if app_store is None:
         raise HTTPException(
@@ -3807,6 +4249,7 @@ def delete_computer(
     удаления используется hide (архив).
     """
     ensure_user_permission(current_user, PERM_COMPUTERS_MANAGE)
+    _ensure_computer_in_scope(current_user, mac_address)
     app_store = _get_inventory_app_store()
     if app_store is None:
         raise HTTPException(

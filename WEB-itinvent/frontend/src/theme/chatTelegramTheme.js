@@ -24,6 +24,8 @@ export const CHAT_TELEGRAM_SIDEBAR_LAYOUT = Object.freeze({
 export const CHAT_TELEGRAM_COLORS = Object.freeze({
   light: {
     accent: '#3390ec',
+    // Залитая активная строка: белый текст на #3390ec даёт ~3,3:1 и «сливается»; #2570c4 даёт ~5:1.
+    rowActive: '#2570c4',
     sidebarBg: '#ffffff',
     surfaceMuted: '#f4f4f5',
     secondaryText: '#707579',
@@ -108,7 +110,7 @@ export function applyChatTelegramSidebarTokens(ui, theme) {
     sidebarSearchBg: colors.surfaceMuted,
     sidebarSearchFocusBg: colors.surfaceMuted,
     sidebarRowHover: colors.rowHover,
-    sidebarRowActive: accent,
+    sidebarRowActive: colors.rowActive || accent,
     // В Telegram непрочитанная строка не заливается: акцент на бейдже и времени.
     sidebarRowUnread: 'transparent',
     sidebarRowUnreadBorder: 'transparent',
@@ -135,7 +137,7 @@ export function applyChatTelegramSidebarTokens(ui, theme) {
     accentText,
     accentSoft: alpha(accent, dark ? 0.2 : 0.1),
     sidebarSectionLabel: colors.secondaryText,
-    sidebarActiveSubtleText: 'rgba(255,255,255,0.82)',
+    sidebarActiveSubtleText: dark ? 'rgba(255,255,255,0.82)' : 'rgba(255,255,255,0.92)',
     sidebarDraftText: accentText,
     statusReadText: colors.readCheck,
     focusRing: alpha(accent, 0.32),

@@ -402,6 +402,72 @@ describe('AiRunFeedStatus in the message feed (AI4/AI5/AI9)', () => {
     expect(screen.getByText('Ищу в базе знаний')).toBeInTheDocument();
   });
 
+  it('shows tool steps in the «Думает» block and folds them when the answer starts typing', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-07T04:00:00.000Z'));
+    try {
+      const runningStatus = {
+        status: 'running',
+        stage: 'generating_answer',
+        status_text: 'Формирую ответ.',
+        updated_at: '2026-08-07T03:59:55.000Z',
+        server_now: '2026-08-07T04:00:00.000Z',
+        steps: [
+          { id: 's1', tool_id: 'itinvent.computers.search', label: 'Проверяю данные ITinvent', state: 'done', duration_ms: 1250 },
+          { id: 's2', tool_id: 'ad.users.get', label: 'Проверяю данные Active Directory', state: 'running' },
+        ],
+      };
+      const { rerender } = renderWithTheme(<ChatMessageList {...aiProps({ aiStatus: runningStatus })} />);
+
+      const steps = screen.getByTestId('chat-ai-run-steps');
+      expect(steps).toHaveTextContent('Проверяю данные ITinvent');
+      expect(steps).toHaveTextContent('itinvent.computers.search');
+      expect(steps).toHaveTextContent('1.3 с');
+      expect(screen.getByTestId('chat-ai-thinking-toggle')).toHaveAttribute('aria-expanded', 'true');
+
+      // Ответ начал печататься — шаги сворачиваются сами, пользователь может раскрыть вручную.
+      rerender(
+        <ChatMessageList {...aiProps({ aiStatus: { ...runningStatus, partial_text: 'Нашёл 3 устройства' } })} />,
+      );
+      expect(screen.getByTestId('ai-partial-response')).toHaveTextContent('Нашёл 3 устройства');
+      expect(screen.getByTestId('chat-ai-thinking-toggle')).toHaveAttribute('aria-expanded', 'false');
+      fireEvent.click(screen.getByTestId('chat-ai-thinking-toggle'));
+      expect(screen.getByTestId('chat-ai-thinking-toggle')).toHaveAttribute('aria-expanded', 'true');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('lists tool steps with durations in the completed «Выполнено N шагов» row', () => {
+    renderWithTheme(
+      <ChatMessageList
+        {...aiProps({
+          aiStatus: {
+            status: 'completed',
+            steps: [
+              { id: 's1', tool_id: 'itinvent.computers.search', label: 'Проверяю данные ITinvent', state: 'done', duration_ms: 320 },
+              { id: 's2', tool_id: 'ad.users.get', label: 'Проверяю данные Active Directory', state: 'error', duration_ms: 90 },
+            ],
+          },
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Выполнено 2 шага' }));
+    expect(screen.getByTestId('chat-ai-run-steps')).toHaveTextContent('320 мс');
+    expect(screen.getByTestId('chat-ai-run-steps')).toHaveTextContent('ad.users.get');
+  });
+
+  it('keeps the streamed preview after «completed» until the final message is in the feed', () => {
+    const status = { status: 'completed', run_id: 'run-1', partial_text: 'Нашёл 3 устройства.' };
+    const { rerender } = renderWithTheme(<ChatMessageList {...aiProps({ aiStatus: status })} />);
+    expect(screen.getByTestId('ai-partial-response')).toHaveTextContent('Нашёл 3 устройства.');
+
+    const answer = { ...buildMessages(1)[0], id: 'answer-1', is_own: false, client_message_id: 'ai-run:run-1', body: 'Нашёл 3 устройства.' };
+    rerender(<ChatMessageList {...aiProps({ aiStatus: status, messages: [...buildMessages(3), answer] })} />);
+    expect(screen.queryByTestId('ai-partial-response')).not.toBeInTheDocument();
+  });
+
   it('does not render the AI run status for non-AI conversations', () => {
     renderWithTheme(
       <ChatMessageList

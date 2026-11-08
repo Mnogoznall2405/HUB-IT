@@ -14,6 +14,7 @@ from backend.utils.security import decode_access_token
 from backend.utils.request_network import build_request_network_context
 from backend.services.app_settings_service import app_settings_service
 from backend.services.authorization_service import authorization_service
+from backend.services.it_object_owner_access import with_owner_permissions
 from backend.services.session_service import session_service
 from backend.services.session_auth_context_service import session_auth_context_service
 from backend.services.user_service import user_service
@@ -23,6 +24,16 @@ from backend.services.trusted_device_service import trusted_device_service
 
 security_optional = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
+
+
+def effective_public_permissions(public_user: dict[str, Any]) -> list[str]:
+    """Role/custom permissions plus the ones that follow from being an IT object owner."""
+    permissions = authorization_service.get_effective_permissions(
+        public_user.get("role"),
+        use_custom_permissions=bool(public_user.get("use_custom_permissions", False)),
+        custom_permissions=public_user.get("custom_permissions"),
+    )
+    return with_owner_permissions(permissions, public_user.get("id"))
 
 
 def _user_role(user: User | dict[str, Any] | None) -> str:
@@ -131,11 +142,7 @@ def _load_user_from_token(token: Optional[str]) -> User:
         session_service.touch_session(token_data.session_id)
 
     public_user = user_service.to_public_user(user_raw)
-    public_user["permissions"] = authorization_service.get_effective_permissions(
-        public_user.get("role"),
-        use_custom_permissions=bool(public_user.get("use_custom_permissions", False)),
-        custom_permissions=public_user.get("custom_permissions"),
-    )
+    public_user["permissions"] = effective_public_permissions(public_user)
     return User(**public_user)
 
 
@@ -149,11 +156,7 @@ def reload_active_user(user_id: int) -> Optional[User]:
     if not user_raw or not bool(user_raw.get("is_active", True)):
         return None
     public_user = user_service.to_public_user(user_raw)
-    public_user["permissions"] = authorization_service.get_effective_permissions(
-        public_user.get("role"),
-        use_custom_permissions=bool(public_user.get("use_custom_permissions", False)),
-        custom_permissions=public_user.get("custom_permissions"),
-    )
+    public_user["permissions"] = effective_public_permissions(public_user)
     return User(**public_user)
 
 
@@ -215,11 +218,7 @@ def _load_optional_user_from_token(token: Optional[str]) -> Optional[User]:
         session_service.touch_session(token_data.session_id)
 
     public_user = user_service.to_public_user(user_raw)
-    public_user["permissions"] = authorization_service.get_effective_permissions(
-        public_user.get("role"),
-        use_custom_permissions=bool(public_user.get("use_custom_permissions", False)),
-        custom_permissions=public_user.get("custom_permissions"),
-    )
+    public_user["permissions"] = effective_public_permissions(public_user)
     return User(**public_user)
 
 

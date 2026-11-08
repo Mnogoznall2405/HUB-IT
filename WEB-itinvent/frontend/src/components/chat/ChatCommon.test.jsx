@@ -474,8 +474,11 @@ describe('AttachmentCard', () => {
 
     expect(chatDirectoryAPI.saveAttachmentToMyFiles).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить в Мои файлы' }));
+    // Срок хранения выбирает пользователь, а не молчаливый «1 день» по умолчанию.
+    expect(chatDirectoryAPI.saveAttachmentToMyFiles).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('menuitem', { name: '7 дн.' }));
 
-    await waitFor(() => expect(chatDirectoryAPI.saveAttachmentToMyFiles).toHaveBeenCalledWith('message-ai-1', 'attachment-ai-1'));
+    await waitFor(() => expect(chatDirectoryAPI.saveAttachmentToMyFiles).toHaveBeenCalledWith('message-ai-1', 'attachment-ai-1', 7));
     expect(await screen.findByRole('button', { name: 'Файл отправлен на проверку и сохранение в Мои файлы' })).toBeDisabled();
   });
 

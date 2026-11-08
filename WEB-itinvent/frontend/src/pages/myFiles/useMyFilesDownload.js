@@ -1,16 +1,18 @@
 import { useCallback, useState } from 'react';
 
 import { myFilesAPI } from '../../api/myFiles';
+const alwaysCurrent = () => true;
 
-export function useMyFilesDownload({ notifyApiError, notifySuccess, notifyWarning }) {
+export function useMyFilesDownload({ notifyApiError, notifySuccess, notifyWarning, isCurrent = alwaysCurrent }) {
   const [downloadingFileId, setDownloadingFileId] = useState('');
 
   const downloadFile = useCallback(async (item) => {
     const fileId = String(item?.id || '').trim();
-    if (!fileId) return;
+    if (!fileId || !isCurrent()) return;
     setDownloadingFileId(fileId);
     try {
       const grant = await myFilesAPI.createDownloadGrant(fileId);
+      if (!isCurrent()) return;
       const downloadUrl = myFilesAPI.buildDownloadGrantUrl(grant?.download_path);
       if (!downloadUrl) {
         notifyWarning('Не удалось получить ссылку для скачивания.', { source: 'my-files-download', dedupeMode: 'none' });
@@ -22,11 +24,11 @@ export function useMyFilesDownload({ notifyApiError, notifySuccess, notifyWarnin
       }
       notifySuccess('Скачивание запущено — смотрите панель загрузок браузера.', { source: 'my-files-download', dedupeMode: 'none', durationMs: 4000 });
     } catch (error) {
-      notifyApiError(error, 'Не удалось скачать файл.', { dedupeMode: 'none' });
+      if (isCurrent()) notifyApiError(error, 'Не удалось скачать файл.', { dedupeMode: 'none' });
     } finally {
-      setDownloadingFileId('');
+      if (isCurrent()) setDownloadingFileId('');
     }
-  }, [notifyApiError, notifySuccess, notifyWarning]);
+  }, [isCurrent, notifyApiError, notifySuccess, notifyWarning]);
 
   return { downloadingFileId, downloadFile };
 }

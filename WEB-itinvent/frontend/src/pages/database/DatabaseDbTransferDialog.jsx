@@ -199,7 +199,7 @@ const DatabaseDbTransferDialog = memo(function DatabaseDbTransferDialog({
       document.body.appendChild(link);
       link.click();
       link.remove();
-      URL.revokeObjectURL(url);
+      window.setTimeout(() => URL.revokeObjectURL(url), 60000);
     } catch (e) {
       setDownloadError('Не удалось скачать PDF акта. Повторите скачивание.');
     }

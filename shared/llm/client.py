@@ -10,7 +10,8 @@ import random
 import re
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from types import SimpleNamespace
 from typing import Any, Optional, Union
 from urllib.parse import urlparse
 
@@ -24,6 +25,7 @@ from shared.llm.env import (
     read_env,
 )
 from shared.llm.errors import OpenRouterClientError
+from shared.llm.json_stream import extract_json_string_field
 from shared.llm.models import resolve_model
 
 try:
@@ -617,6 +619,80 @@ class OpenRouterClient:
 
         return _iterate()
 
+    def _complete_json_streaming(
+        self,
+        *,
+        request: Callable[[], Any],
+        model: str,
+        on_text_delta: Callable[[str], None],
+        text_field: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """Stream one JSON reply; ``None`` means "use the plain request instead"."""
+
+        class _CallbackFailure(Exception):
+            def __init__(self, original: BaseException) -> None:
+                super().__init__(str(original))
+                self.original = original
+
+        def _emit(text: str) -> None:
+            try:
+                on_text_delta(text)
+            except BaseException as exc:  # noqa: BLE001 - re-raised below as-is
+                raise _CallbackFailure(exc) from exc
+
+        stream = None
+        parts: list[str] = []
+        usage_obj: Any = None
+        last_emitted = ""
+        try:
+            stream = request()
+            for chunk in stream:
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage is not None:
+                    usage_obj = chunk_usage
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta = getattr(choices[0], "delta", None)
+                piece = getattr(delta, "content", None)
+                if not isinstance(piece, str) or not piece:
+                    continue
+                parts.append(piece)
+                decoded = extract_json_string_field("".join(parts), text_field)
+                if decoded is not None and decoded[0] != last_emitted:
+                    last_emitted = decoded[0]
+                    _emit(last_emitted)
+        except _CallbackFailure as failure:
+            raise failure.original from None
+        except Exception as exc:  # noqa: BLE001 - fall back to the plain request
+            logger.warning("RouterAI JSON stream failed; falling back: model=%s error=%s", model, exc)
+            if last_emitted:
+                try:
+                    on_text_delta("")
+                except BaseException:  # noqa: BLE001 - cancellation surfaces on the fallback path
+                    pass
+            return None
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001
+                    pass
+        text = "".join(parts).strip()
+        if not text:
+            return None
+        try:
+            payload = _extract_json_payload(text)
+        except OpenRouterClientError:
+            if last_emitted:
+                try:
+                    on_text_delta("")
+                except BaseException:  # noqa: BLE001
+                    pass
+            raise
+        return payload, _usage_dict(SimpleNamespace(usage=usage_obj), model=model)
+
     def complete_json(
         self,
         *,
@@ -633,12 +709,21 @@ class OpenRouterClient:
         response_healing: bool = True,
         thinking: bool | None = None,
         timeout: float | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
+        stream_text_field: str = "answer_markdown",
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Request one JSON object from the model.
+
+        With ``on_text_delta`` the reply is streamed and the callback receives the
+        decoded text of ``stream_text_field`` accumulated so far (an empty string
+        means "start over"). Any stream failure falls back to the plain request;
+        exceptions raised by the callback itself (e.g. cancellation) propagate.
+        """
         client = self._build_client(timeout=timeout)
         resolved_model = str(model or "").strip() or resolve_model(purpose)
         content = _normalize_user_content(user_prompt, user_content)
 
-        def _request(*, use_schema: bool, use_response_healing: bool):
+        def _request(*, use_schema: bool, use_response_healing: bool, stream: bool = False):
             request_kwargs: dict[str, Any] = {
                 "model": resolved_model,
                 "temperature": float(temperature),
@@ -660,10 +745,34 @@ class OpenRouterClient:
                 extra_body["thinking"] = {"type": "enabled" if thinking else "disabled"}
             if extra_body:
                 request_kwargs["extra_body"] = extra_body
+            if stream:
+                request_kwargs["stream"] = True
+                request_kwargs["stream_options"] = {"include_usage": True}
             return client.chat.completions.create(**request_kwargs)
 
         # The strict-JSON fallback below shares this budget with the first cycle.
         retry_deadline = time.monotonic() + max(1.0, DEFAULT_RETRY_WALL_BUDGET_SEC)
+
+        if on_text_delta is not None:
+            streamed = self._complete_json_streaming(
+                request=lambda: self._with_transient_retry(
+                    model=resolved_model,
+                    call=lambda: _request(
+                        use_schema=bool(response_schema) and not (
+                            resolved_model.lower().startswith("anthropic/")
+                            and _schema_has_open_objects(response_schema)
+                        ),
+                        use_response_healing=bool(response_healing),
+                        stream=True,
+                    ),
+                    deadline=retry_deadline,
+                ),
+                model=resolved_model,
+                on_text_delta=on_text_delta,
+                text_field=stream_text_field,
+            )
+            if streamed is not None:
+                return streamed
 
         def _request_with_transient_retry(*, use_schema: bool, use_response_healing: bool):
             return self._with_transient_retry(

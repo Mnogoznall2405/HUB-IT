@@ -28,6 +28,7 @@ from backend.database.employee_history_reads import get_employee_history as read
 from backend.database.connection import get_db
 from backend.database.equipment_db import get_equipment_data_version, invalidate_equipment_cache
 from backend.models.auth import User
+from backend.services import it_object_branch_scope
 from backend.services.authorization_service import (
     PERM_DATABASE_DELETE,
     PERM_DATABASE_DELETE_EQUIPMENT,
@@ -95,6 +96,7 @@ from backend.services.transfer_service import (
     generate_transfer_acts,
     generate_transfer_acts_without_move,
     get_act_record,
+    recover_act_record_from_disk,
     send_transfer_acts_email,
     send_binary_file_email,
 )
@@ -877,11 +879,104 @@ class EquipmentRecentActsListResponse(BaseModel):
     total: int = 0
 
 
+async def _branch_scope(user: User, db_id: Optional[str]) -> Optional[frozenset[int]]:
+    """Branches an IT owner may see in this database (``None`` — no restriction)."""
+    return await run_in_threadpool(it_object_branch_scope.branch_scope, user, db_id)
+
+
+def _scope_kwargs(scope: Optional[frozenset[int]]) -> dict[str, Any]:
+    return {} if scope is None else {"branch_nos": sorted(scope)}
+
+
+async def _ensure_inv_nos_in_scope(
+    inv_nos: List[str],
+    db_id: Optional[str],
+    scope: Optional[frozenset[int]],
+    *,
+    target_branch: Any = None,
+) -> None:
+    """Writes of an IT owner stay inside his branches: source items and the target branch."""
+    if scope is None:
+        return
+    forbidden = HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN, detail="Оборудование вне филиалов, назначенных вам как IT-владельцу"
+    )
+    if target_branch not in (None, "") and _to_int(target_branch) not in scope:
+        raise forbidden
+    rows = await run_in_threadpool(queries.get_equipment_items_by_inv_nos, list(inv_nos), db_id)
+    if any(not it_object_branch_scope.row_allowed(row, scope) for row in rows or []):
+        raise forbidden
+
+
+async def _allowed_item_ids(item_ids: List[int], db_id: Optional[str], scope: Optional[frozenset[int]]) -> List[int]:
+    """ITEMS.ID values (of those asked) that sit in an IT owner's branches."""
+    ids = [int(value) for value in item_ids]
+    if scope is None or not ids:
+        return ids
+    if not scope:
+        return []
+    id_marks = ", ".join("?" for _ in ids)
+    branch_marks = ", ".join("?" for _ in scope)
+    rows = await run_in_threadpool(
+        get_db(db_id).execute_query,
+        f"SELECT ID FROM ITEMS WHERE ID IN ({id_marks}) AND BRANCH_NO IN ({branch_marks})",
+        tuple(ids) + tuple(sorted(scope)),
+    )
+    return [int(row.get("ID", row.get("id"))) for row in rows or []]
+
+
+async def _ensure_item_in_scope(item_id: int, db_id: Optional[str], scope: Optional[frozenset[int]]) -> None:
+    if scope is not None and not await _allowed_item_ids([item_id], db_id, scope):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Equipment not found")
+
+
+async def _ensure_photo_item_in_scope(
+    item_id: int,
+    db_id: Optional[str] = Depends(get_request_scoped_database_id),
+    current_user: User = Depends(get_current_active_user),
+) -> None:
+    """Route dependency of the photo endpoints: an IT owner reaches photos of his branches only."""
+    await _ensure_item_in_scope(item_id, db_id, await _branch_scope(current_user, db_id))
+
+
+async def _ensure_doc_in_scope(doc_no: Any, db_id: Optional[str], scope: Optional[frozenset[int]]) -> None:
+    """Act file/inspect: the act must belong to an IT owner's branches (404 otherwise)."""
+    if scope is None:
+        return
+    from backend.database.equipment_act_history_reads import act_scope_sql
+
+    number = _to_int(doc_no)
+    denied = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Файл для выбранного акта не найден")
+    if number is None:
+        raise denied
+    scope_sql, scope_params = act_scope_sql(sorted(scope))
+    rows = await run_in_threadpool(
+        get_db(db_id).execute_query,
+        f"SELECT TOP 1 d.DOC_NO FROM DOCS d WHERE d.DOC_NO = ? AND {scope_sql}",
+        (number,) + scope_params,
+    )
+    if not rows:
+        raise denied
+
+
+async def _ensure_consumable_in_scope(
+    item_id: Optional[int], db_id: Optional[str], scope: Optional[frozenset[int]]
+) -> None:
+    """An IT owner changes only consumables of his branches; others look like missing ones."""
+    if scope is None:
+        return
+    if item_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="item_id is required")
+    row = await run_in_threadpool(queries.get_consumable_by_id, item_id, db_id)
+    if not row or not it_object_branch_scope.row_allowed(row, scope):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Consumable not found")
+
+
 @router.get("/search/serial", response_model=EquipmentSearchResponse)
 async def search_by_serial(
     q: str = Query(..., min_length=1, description="Serial number or inventory number to search"),
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user)
 ):
     """
     Search equipment by serial number, hardware serial, or inventory number.
@@ -895,11 +990,32 @@ async def search_by_serial(
     if not q or len(q.strip()) == 0:
         return EquipmentSearchResponse(found=False, equipment=[])
 
-    results = await run_in_threadpool(queries.search_equipment_by_serial, q, db_id)
+    scope = await _branch_scope(current_user, db_id)
+    results = await run_in_threadpool(
+        lambda: queries.search_equipment_by_serial(q, db_id, **_scope_kwargs(scope))
+    )
+
+    # The query selects INV_NO/SERIAL_NO/HW_SERIAL_NO/PART_NO in upper case
+    # (other consumers rely on that); the response model wants lower case.
+    equipment = []
+    for row in results:
+        item = dict(row)
+        for upper, lower in (
+            ("INV_NO", "inv_no"),
+            ("SERIAL_NO", "serial_no"),
+            ("HW_SERIAL_NO", "hw_serial_no"),
+            ("PART_NO", "part_no"),
+        ):
+            if lower not in item and upper in item:
+                item[lower] = item[upper]
+        if item.get("inv_no") is not None and not isinstance(item["inv_no"], str):
+            value = item["inv_no"]
+            item["inv_no"] = str(int(value)) if isinstance(value, (int, float)) and float(value).is_integer() else str(value)
+        equipment.append(item)
 
     return EquipmentSearchResponse(
-        found=len(results) > 0,
-        equipment=results
+        found=len(equipment) > 0,
+        equipment=equipment,
     )
 
 
@@ -911,7 +1027,7 @@ async def search_universal(
     type_no: Optional[int] = Query(None, description="Optional CI_TYPES.TYPE_NO filter"),
     field: Optional[str] = Query(None, description="Optional single-field search scope"),
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user)
 ):
     """
     Universal search across all equipment fields.
@@ -929,8 +1045,9 @@ async def search_universal(
     if (not q or len(q.strip()) == 0) and type_no is None:
         return {"equipment": [], "total": 0, "page": 1, "pages": 0}
 
+    scope = await _branch_scope(current_user, db_id)
     result = await run_in_threadpool(
-        queries.search_equipment_universal, q, page, limit, db_id, type_no, field
+        lambda: queries.search_equipment_universal(q, page, limit, db_id, type_no, field, **_scope_kwargs(scope))
     )
     if isinstance(result, dict):
         result["data_version"] = await run_in_threadpool(get_equipment_data_version, db_id)
@@ -1030,6 +1147,10 @@ async def get_employee_equipment(
             db_id,
         )
 
+    scope = await _branch_scope(current_user, db_id)
+    if scope is not None and not all_databases:
+        equipment = it_object_branch_scope.filter_rows(equipment, scope)
+
     return EquipmentSearchResponse(
         found=len(equipment) > 0,
         equipment=equipment,
@@ -1042,7 +1163,7 @@ async def get_all_equipment(
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(50, ge=1, le=200, description="Results per page"),
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user)
 ):
     """
     Get all equipment from database with pagination.
@@ -1054,7 +1175,11 @@ async def get_all_equipment(
     Returns:
         EquipmentListResponse with paginated equipment list
     """
+    scope = await _branch_scope(current_user, db_id)
     result = await run_in_threadpool(queries.get_all_equipment, page, limit, db_id)
+    if scope is not None:
+        # An IT owner: pages stay global (the working list uses all-grouped/search), rows are cut to his branches.
+        result = {**result, "equipment": it_object_branch_scope.filter_rows(result.get("equipment"), scope)}
 
     return EquipmentListResponse(**result)
 
@@ -1063,7 +1188,7 @@ async def get_all_equipment(
 async def get_equipment_by_inv_nos(
     payload: EquipmentByInvNosRequest,
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
     Batch load equipment cards by inventory numbers.
@@ -1083,6 +1208,8 @@ async def get_equipment_by_inv_nos(
         normalized_inv_nos,
         db_id,
     )
+    # Items outside an IT owner's branches are reported as not found, like missing ones.
+    rows = it_object_branch_scope.filter_rows(rows, await _branch_scope(current_user, db_id))
 
     def _match_key(value: object) -> str:
         token = queries._normalize_inv_no_token(value)
@@ -1397,14 +1524,14 @@ async def clear_one_c_mark(
 async def get_equipment_current_acts(
     payload: EquipmentCurrentActsRequest,
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """Lazy batch lookup of the current downloadable act for visible list rows.
 
     Kept off the list-page hot path: the grouped list returns rows without
     act enrich, and the UI calls this once per loaded batch.
     """
-    item_ids = list(payload.item_ids or [])
+    item_ids = await _allowed_item_ids(list(payload.item_ids or []), db_id, await _branch_scope(current_user, db_id))
     if not item_ids:
         return EquipmentCurrentActsResponse(items=[])
 
@@ -1592,7 +1719,7 @@ async def clear_recent_equipment_acts(
 async def get_branches(
     response: Response,
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user)
 ):
     """
     Get all available branches.
@@ -1602,7 +1729,13 @@ async def get_branches(
     """
     _set_dict_cache_headers(response)
     from backend.database.equipment_db import get_all_branches_cached
-    return await run_in_threadpool(get_all_branches_cached, db_id)
+    branches = await run_in_threadpool(get_all_branches_cached, db_id)
+    scope = await _branch_scope(current_user, db_id)
+    if scope is not None:
+        # Per-user result: keep it out of shared caches.
+        response.headers["Cache-Control"] = "private, no-store"
+        return it_object_branch_scope.filter_branch_directory(branches, scope)
+    return branches
 
 
 @router.get("/locations", response_model=list[Location])
@@ -1787,7 +1920,7 @@ async def get_all_equipment_grouped(
     limit: int = Query(1000, ge=1, le=10000),
     branch: Optional[str] = Query(None),
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user)
 ):
     """
     Get all equipment grouped by branch and location.
@@ -1804,7 +1937,38 @@ async def get_all_equipment_grouped(
     logger = logging.getLogger(__name__)
     logger.debug("get_all_equipment_grouped branch=%s db_id=%s", branch, db_id)
 
-    from backend.database.equipment_db import get_equipment_grouped, get_equipment_by_branch
+    from backend.database.equipment_db import get_equipment_grouped, get_equipment_by_branch, get_all_branches
+
+    scope = await _branch_scope(current_user, db_id)
+    if scope is not None:
+        # An IT owner: only his branches. Branch names are not unique, so rows are cut by branch number.
+        all_branches = await run_in_threadpool(get_all_branches, db_id)
+        names: list[str] = []
+        for item in it_object_branch_scope.filter_branch_directory(all_branches, scope):
+            name = str(item.get("name", item.get("BRANCH_NAME")) or "").strip()
+            if name and name not in names and (not branch or name == branch.strip()):
+                names.append(name)
+        grouped_scoped: dict[str, dict[str, list]] = {}
+        total_scoped = 0
+        pages_scoped = 0
+        data_version = 0
+        for name in names:
+            part = await run_in_threadpool(get_equipment_by_branch, name, page, limit, db_id)
+            rows = it_object_branch_scope.filter_rows(part.get("equipment"), scope)
+            total_scoped += len(rows) if int(part.get("pages") or 0) <= 1 else int(part.get("total") or 0)
+            pages_scoped = max(pages_scoped, int(part.get("pages") or 0))
+            data_version = part.get("data_version", data_version)
+            by_location = grouped_scoped.setdefault(name, {})
+            for row in rows:
+                by_location.setdefault(row.get("location") or "Не указано", []).append(row)
+        return {
+            "grouped": grouped_scoped,
+            "total": total_scoped,
+            "page": page,
+            "limit": limit,
+            "pages": pages_scoped,
+            "data_version": data_version,
+        }
 
     try:
         if branch:
@@ -1842,7 +2006,7 @@ async def get_all_consumables_grouped(
     page: int = Query(1, ge=1),
     limit: int = Query(1000, ge=1, le=10000),
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user)
 ):
     """
     Get consumables (CI_TYPE = 4) grouped by branch and location.
@@ -1854,7 +2018,18 @@ async def get_all_consumables_grouped(
     from backend.database.equipment_db import get_consumables_grouped
 
     try:
-        return await run_in_threadpool(get_consumables_grouped, page, limit, db_id)
+        payload = await run_in_threadpool(get_consumables_grouped, page, limit, db_id)
+        scope = await _branch_scope(current_user, db_id)
+        if scope is None or not isinstance(payload, dict):
+            return payload
+        # An IT owner: only consumables of his branches (rows carry branch_no).
+        grouped_scoped: dict[str, dict[str, list]] = {}
+        for branch_name, locations in (payload.get("grouped") or {}).items():
+            for location_name, items in (locations or {}).items():
+                kept = it_object_branch_scope.filter_rows(items, scope)
+                if kept:
+                    grouped_scoped.setdefault(branch_name, {})[location_name] = kept
+        return {**payload, "grouped": grouped_scoped}
     except Exception as e:
         logger.error(f"Error in get_all_consumables_grouped: {e}", exc_info=True)
         raise
@@ -1869,7 +2044,7 @@ async def get_consumables_lookup(
     only_positive_qty: bool = Query(True),
     limit: int = Query(300, ge=1, le=1000),
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """Lookup consumables with branch and location metadata."""
     import logging
@@ -1946,19 +2121,33 @@ async def get_consumables_lookup(
         loc_int = _to_int(loc_no)
         loc_value = loc_int if loc_int is not None else loc_no
 
+    scope = await _branch_scope(current_user, db_id)
+    if scope is not None:
+        # An IT owner: only his branches; a requested branch outside them gives nothing.
+        requested = _to_int(branch_value) if branch_value not in (None, "") else None
+        if requested is not None and requested not in scope:
+            return []
+        scope_branches = [requested] if requested is not None else sorted(scope)
+    else:
+        scope_branches = [branch_value]
+
     rows: List[dict] = []
     try:
-        lookup_rows = await run_in_threadpool(
-            queries.get_consumables_lookup,
-            db_id=db_id,
-            type_no=type_no,
-            model_name=(model_name or "").strip() or None,
-            branch_no=branch_value,
-            loc_no=loc_value,
-            only_positive_qty=only_positive_qty,
-            limit=limit,
-        )
-        rows = _normalize_rows(lookup_rows)
+        lookup_rows = []
+        for scoped_branch in scope_branches:
+            lookup_rows.extend(
+                await run_in_threadpool(
+                    queries.get_consumables_lookup,
+                    db_id=db_id,
+                    type_no=type_no,
+                    model_name=(model_name or "").strip() or None,
+                    branch_no=scoped_branch,
+                    loc_no=loc_value,
+                    only_positive_qty=only_positive_qty,
+                    limit=limit,
+                ) or []
+            )
+        rows = _normalize_rows(lookup_rows)[:limit]
     except Exception as exc:
         logger.warning("consumables_lookup primary query failed db_id=%s: %s", db_id, exc, exc_info=True)
 
@@ -1979,7 +2168,7 @@ async def get_consumables_lookup(
                 for items in locations.values():
                     if isinstance(items, list):
                         flat_rows.extend(items)
-        return _normalize_rows(flat_rows)
+        return it_object_branch_scope.filter_rows(_normalize_rows(flat_rows), scope)
     except Exception as exc:
         logger.error("consumables_lookup fallback failed db_id=%s: %s", db_id, exc, exc_info=True)
         return []
@@ -2006,6 +2195,10 @@ async def create_consumable(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="qty must be greater than 0")
     if model_no is None and not model_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="model_name is required when model_no is not provided")
+
+    scope = await _branch_scope(current_user, db_id)
+    if scope is not None and _to_int(branch_no) not in scope:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Филиал не назначен вам как IT-владельцу")
 
     branch_row = await run_in_threadpool(queries.get_branch_by_no, branch_no, db_id)
     if not branch_row:
@@ -2067,6 +2260,7 @@ async def consume_consumable(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="qty must be greater than 0")
     if item_id is None and not inv_no:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="item_id or inv_no is required")
+    await _ensure_consumable_in_scope(item_id, db_id, await _branch_scope(current_user, db_id))
 
     # Durable path: a supplied operation_id (and optionally a bundled works
     # record) runs through the resumable job machinery — a failed works write
@@ -2143,6 +2337,7 @@ async def update_consumable_qty(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="qty must be 0 or greater")
     if item_id is None and not inv_no:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="item_id or inv_no is required")
+    await _ensure_consumable_in_scope(item_id, db_id, await _branch_scope(current_user, db_id))
 
     changed_by = current_user.username if current_user else "IT-WEB"
     result = await run_in_threadpool(
@@ -2170,7 +2365,7 @@ async def delete_consumable(
     current_user: User = Depends(require_permission(PERM_DATABASE_DELETE)),
 ):
     """Hard-delete one consumable card from ITEMS (CI_TYPE=4)."""
-    del current_user
+    await _ensure_consumable_in_scope(item_id, db_id, await _branch_scope(current_user, db_id))
     result = await run_in_threadpool(queries.delete_consumable_by_id, item_id, db_id=db_id)
     if result.get("success"):
         await run_in_threadpool(invalidate_equipment_cache, db_id)
@@ -2191,10 +2386,12 @@ async def delete_consumable(
 async def get_consumable_by_id(
     item_id: int,
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """Get one consumable card (CI_TYPE=4) by ITEMS.ID — used by QR deep links."""
     row = await run_in_threadpool(queries.get_consumable_by_id, item_id, db_id)
+    if row and not it_object_branch_scope.row_allowed(row, await _branch_scope(current_user, db_id)):
+        row = None
     if not row:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -2207,7 +2404,7 @@ async def get_consumable_by_id(
 async def get_branches_list(
     response: Response,
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user)
 ):
     """
     Get list of all branches.
@@ -2221,6 +2418,10 @@ async def get_branches_list(
     logger.debug("Fetching branches for db_id=%s", db_id)
     from backend.database.equipment_db import get_all_branches
     branches = await run_in_threadpool(get_all_branches, db_id)
+    scope = await _branch_scope(current_user, db_id)
+    if scope is not None:
+        response.headers["Cache-Control"] = "private, no-store"
+        branches = it_object_branch_scope.filter_branch_directory(branches, scope)
     logger.debug("Found %s branches", len(branches))
     return branches
 
@@ -2254,6 +2455,15 @@ async def create_equipment(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="status_no is required")
     if model_no is None and not model_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="model_name is required when model_no is not provided")
+
+    try:
+        mac_address = equipment_quality_service.normalize_mac_address(payload.mac_address)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Некорректный MAC-адрес: нужно 12 шестнадцатеричных символов")
+
+    scope = await _branch_scope(current_user, db_id)
+    if scope is not None and _to_int(branch_no) not in scope:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Филиал не назначен вам как IT-владельцу")
 
     branch_row = await run_in_threadpool(queries.get_branch_by_no, branch_no, db_id)
     if not branch_row:
@@ -2301,6 +2511,8 @@ async def create_equipment(
         part_no=(payload.part_no or "").strip() or None,
         description=(payload.description or "").strip() or None,
         ip_address=(payload.ip_address or "").strip() or None,
+        mac_address=mac_address,
+        network_name=(payload.network_name or "").strip() or None,
         changed_by=changed_by,
         db_id=db_id,
     )
@@ -2333,12 +2545,29 @@ async def update_equipment_by_inv(
             detail="No fields provided for update",
         )
 
+    if updates.get("mac_address"):
+        # One MAC is stored as AA:BB:CC:DD:EE:FF; a field already holding several MACs stays as typed.
+        try:
+            updates["mac_address"] = equipment_quality_service.normalize_mac_address(
+                updates["mac_address"], allow_multiple=True
+            )
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Некорректный MAC-адрес: нужно 12 шестнадцатеричных символов",
+            )
+
     equipment = await run_in_threadpool(queries.get_equipment_by_inv, inv_no, db_id)
+    scope = await _branch_scope(current_user, db_id)
+    if equipment and not it_object_branch_scope.row_allowed(equipment, scope):
+        equipment = None
     if not equipment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Equipment with inventory number {inv_no} not found",
         )
+    if scope is not None and updates.get("branch_no") is not None and _to_int(updates["branch_no"]) not in scope:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Филиал не назначен вам как IT-владельцу")
 
     # Validate status
     if "status_no" in updates and updates["status_no"] is not None:
@@ -2464,6 +2693,7 @@ async def delete_equipment_by_inv(
     """Hard-delete one equipment card from ITEMS (blocked when acts or history exist unless with_history)."""
     if with_history:
         ensure_user_permission(current_user, PERM_DATABASE_DELETE_EQUIPMENT_HISTORY)
+    await _ensure_inv_nos_in_scope([inv_no], db_id, await _branch_scope(current_user, db_id))
     result = await run_in_threadpool(
         queries.delete_equipment_by_inv, inv_no, db_id=db_id, force=with_history
     )
@@ -2510,6 +2740,9 @@ async def transfer_equipment(
     inv_nos = _normalize_inv_nos(payload.inv_nos)
     if not inv_nos:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No inventory numbers provided")
+    await _ensure_inv_nos_in_scope(
+        inv_nos, db_id, await _branch_scope(current_user, db_id), target_branch=getattr(payload, "branch_no", None)
+    )
 
     job = await run_in_threadpool(
         _create_transfer_job_or_raise,
@@ -2547,6 +2780,9 @@ async def transfer_equipment_location(
     inv_nos = _normalize_inv_nos(payload.inv_nos)
     if not inv_nos:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No inventory numbers provided")
+    await _ensure_inv_nos_in_scope(
+        inv_nos, db_id, await _branch_scope(current_user, db_id), target_branch=getattr(payload, "branch_no", None)
+    )
 
     branch_no = payload.branch_no
     loc_no = payload.loc_no
@@ -2602,6 +2838,9 @@ async def create_transfer_act_without_move(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No inventory numbers provided",
         )
+    await _ensure_inv_nos_in_scope(
+        inv_nos, db_id, await _branch_scope(current_user, db_id), target_branch=getattr(payload, "branch_no", None)
+    )
 
     job = await run_in_threadpool(
         _create_transfer_job_or_raise,
@@ -2686,6 +2925,9 @@ async def transfer_equipment_to_db(
     inv_nos = _normalize_inv_nos(payload.inv_nos)
     if not inv_nos:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No inventory numbers provided")
+    await _ensure_inv_nos_in_scope(
+        inv_nos, db_id, await _branch_scope(current_user, db_id), target_branch=getattr(payload, "branch_no", None)
+    )
 
     target_db = str(payload.target_db or "").strip()
     if target_db not in (queries.get_available_databases() or {}):
@@ -3250,10 +3492,13 @@ async def send_uploaded_act_email(
 async def list_latest_equipment_acts(
     limit: int = Query(50, ge=1, le=100, description="Maximum number of newest documents to return"),
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """List newest act/transfer documents for the inventory Acts tab feed."""
-    payload = await run_in_threadpool(queries.list_latest_equipment_acts, limit=limit, db_id=db_id)
+    scope = await _branch_scope(current_user, db_id)
+    payload = await run_in_threadpool(
+        lambda: queries.list_latest_equipment_acts(limit=limit, db_id=db_id, **_scope_kwargs(scope))
+    )
     return EquipmentActSearchResponse(**payload)
 
 
@@ -3262,13 +3507,16 @@ async def search_equipment_acts(
     q: str = Query("", description="Search by act number or employee surname/name"),
     limit: int = Query(50, ge=1, le=50, description="Maximum number of documents to return"),
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
     Search act/transfer documents linked to equipment items.
     Empty/short query returns the latest-act feed.
     """
-    payload = await run_in_threadpool(queries.search_equipment_acts, q, limit=limit, db_id=db_id)
+    scope = await _branch_scope(current_user, db_id)
+    payload = await run_in_threadpool(
+        lambda: queries.search_equipment_acts(q, limit=limit, db_id=db_id, **_scope_kwargs(scope))
+    )
     return EquipmentActSearchResponse(**payload)
 
 
@@ -3287,6 +3535,7 @@ async def download_equipment_act_file(
     effective_db_id = db_id
     if current_user.role == "admin" and db_override and db_override.strip():
         effective_db_id = db_override.strip()
+    await _ensure_doc_in_scope(doc_no, effective_db_id, await _branch_scope(current_user, effective_db_id))
 
     payload = await run_in_threadpool(
         queries.get_equipment_act_file,
@@ -3351,11 +3600,12 @@ async def inspect_equipment_act_file(
     item_id: Optional[int] = Query(None, description="Optional ITEM_ID for precise file lookup"),
     inv_no: Optional[str] = Query(None, description="Optional INV_NO for fallback item lookup"),
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
     Debug endpoint: inspect FILES/DOCS storage for act/document.
     """
+    await _ensure_doc_in_scope(doc_no, db_id, await _branch_scope(current_user, db_id))
     return await run_in_threadpool(
         queries.inspect_equipment_act_storage,
         doc_no=doc_no,
@@ -3369,12 +3619,14 @@ async def inspect_equipment_act_file(
 async def get_equipment_acts(
     inv_no: str,
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
     Get acts/documents linked to an equipment item by inventory number.
     """
     equipment = await run_in_threadpool(queries.get_equipment_by_inv, inv_no, db_id)
+    if equipment and not it_object_branch_scope.row_allowed(equipment, await _branch_scope(current_user, db_id)):
+        equipment = None
     if not equipment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -3396,10 +3648,12 @@ async def get_equipment_acts(
 async def get_equipment_history(
     inv_no: str,
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """Get transfer history linked to an equipment item by inventory number."""
     equipment = await run_in_threadpool(queries.get_equipment_by_inv, inv_no, db_id)
+    if equipment and not it_object_branch_scope.row_allowed(equipment, await _branch_scope(current_user, db_id)):
+        equipment = None
     if not equipment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -3424,7 +3678,7 @@ async def download_transfer_act(
     """
     Download generated transfer act file by act_id.
     """
-    record = get_act_record(act_id)
+    record = get_act_record(act_id) or recover_act_record_from_disk(act_id)
     if not record:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -3453,7 +3707,7 @@ async def download_transfer_act(
     )
 
 
-@router.get("/{item_id}/photos", response_model=EquipmentPhotoListResponse)
+@router.get("/{item_id}/photos", response_model=EquipmentPhotoListResponse, dependencies=[Depends(_ensure_photo_item_in_scope)])
 async def list_equipment_photos(
     item_id: int,
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
@@ -3536,7 +3790,7 @@ async def list_equipment_photos(
     )
 
 
-@router.get("/{item_id}/photos/{file_no}/content")
+@router.get("/{item_id}/photos/{file_no}/content", dependencies=[Depends(_ensure_photo_item_in_scope)])
 async def get_equipment_photo_content(
     item_id: int,
     file_no: int,
@@ -3586,7 +3840,7 @@ def _photo_user_aliases(user: User) -> list[str]:
     ]
 
 
-@router.post("/{item_id}/photos/{file_no}/verify", response_model=EquipmentPhotoItem)
+@router.post("/{item_id}/photos/{file_no}/verify", response_model=EquipmentPhotoItem, dependencies=[Depends(_ensure_photo_item_in_scope)])
 async def verify_equipment_photo(
     item_id: int,
     file_no: int,
@@ -3628,7 +3882,7 @@ async def verify_equipment_photo(
     )
 
 
-@router.post("/{item_id}/photos/{file_no}/reject", response_model=EquipmentPhotoItem)
+@router.post("/{item_id}/photos/{file_no}/reject", response_model=EquipmentPhotoItem, dependencies=[Depends(_ensure_photo_item_in_scope)])
 async def reject_equipment_photo(
     item_id: int,
     file_no: int,
@@ -3691,7 +3945,7 @@ async def reject_equipment_photo(
     )
 
 
-@router.patch("/{item_id}/photos/{file_no}/reject", response_model=EquipmentPhotoItem)
+@router.patch("/{item_id}/photos/{file_no}/reject", response_model=EquipmentPhotoItem, dependencies=[Depends(_ensure_photo_item_in_scope)])
 async def update_equipment_photo_reject_reason(
     item_id: int,
     file_no: int,
@@ -3742,7 +3996,7 @@ async def update_equipment_photo_reject_reason(
     )
 
 
-@router.delete("/{item_id}/photos/{file_no}/verify", response_model=dict)
+@router.delete("/{item_id}/photos/{file_no}/verify", response_model=dict, dependencies=[Depends(_ensure_photo_item_in_scope)])
 async def unverify_equipment_photo(
     item_id: int,
     file_no: int,
@@ -3774,7 +4028,7 @@ async def unverify_equipment_photo(
     return {"ok": True, "changed": bool(changed)}
 
 
-@router.post("/{item_id}/photos/{file_no}/rotate", response_model=dict)
+@router.post("/{item_id}/photos/{file_no}/rotate", response_model=dict, dependencies=[Depends(_ensure_photo_item_in_scope)])
 async def rotate_equipment_photo(
     item_id: int,
     file_no: int,
@@ -3848,7 +4102,7 @@ async def _after_photo_inserted(
     )
 
 
-@router.post("/{item_id}/photos", response_model=EquipmentPhotoUploadResponse)
+@router.post("/{item_id}/photos", response_model=EquipmentPhotoUploadResponse, dependencies=[Depends(_ensure_photo_item_in_scope)])
 async def upload_equipment_photo(
     item_id: int,
     background_tasks: BackgroundTasks,
@@ -3905,7 +4159,7 @@ def _raise_photo_upload_error(exc: Exception) -> None:
     raise exc
 
 
-@router.post("/{item_id}/photo-uploads", response_model=EquipmentPhotoUploadSessionState)
+@router.post("/{item_id}/photo-uploads", response_model=EquipmentPhotoUploadSessionState, dependencies=[Depends(_ensure_photo_item_in_scope)])
 async def create_equipment_photo_upload(
     item_id: int,
     payload: EquipmentPhotoUploadSessionCreate,
@@ -4102,7 +4356,7 @@ async def abort_equipment_photo_upload(
     return {"ok": True}
 
 
-@router.delete("/{item_id}/photos/{file_no}", response_model=dict)
+@router.delete("/{item_id}/photos/{file_no}", response_model=dict, dependencies=[Depends(_ensure_photo_item_in_scope)])
 async def delete_equipment_photo(
     item_id: int,
     file_no: int,
@@ -4143,7 +4397,7 @@ async def delete_equipment_photo(
 async def get_equipment_by_inv(
     inv_no: str,
     db_id: Optional[str] = Depends(get_request_scoped_database_id),
-    _: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user)
 ):
     """
     Get detailed equipment information by inventory number.
@@ -4158,6 +4412,10 @@ async def get_equipment_by_inv(
         HTTPException 404 if equipment not found
     """
     equipment = await run_in_threadpool(queries.get_equipment_by_inv, inv_no, db_id)
+
+    # An IT owner opens only equipment of his branches; anything else looks like a missing item.
+    if equipment and not it_object_branch_scope.row_allowed(equipment, await _branch_scope(current_user, db_id)):
+        equipment = None
 
     if not equipment:
         raise HTTPException(

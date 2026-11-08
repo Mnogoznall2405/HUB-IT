@@ -23,6 +23,7 @@ from backend.appdb.models import (
     AppItObjectOwner,
     AppItObjectRoleAssignment,
 )
+from backend.services.it_object_owner_access import invalidate as invalidate_owner_cache
 from backend.services.construction_management_service import (
     OBJECT_ROLE_KEYS,
     _apply_role_updates,
@@ -177,8 +178,16 @@ class ItObjectsService:
         return {item.section: item.level for item in grants if item.section in SECTIONS}
 
     def list_objects(
-        self, *, user_id: int, query: str = "", only_mine: bool = False, only_hidden: bool = False, limit: int = 500
+        self,
+        *,
+        user_id: int,
+        query: str = "",
+        only_mine: bool = False,
+        only_hidden: bool = False,
+        limit: int = 500,
+        see_all: bool = True,
     ) -> list[dict[str, Any]]:
+        """``see_all=False``: only objects the user owns or has a section grant on."""
         needle = _text(query).casefold()
         source = self._source_objects()
         with app_session(self._database_url) as session:
@@ -215,7 +224,7 @@ class ItObjectsService:
                 owner = owners.get(entry.id) if entry is not None else None
                 is_owner = owner is not None and int(owner.user_id) == int(user_id)
                 sections = self._sections_for(is_owner, my_grants.get(entry.id, []) if entry is not None else [])
-                if only_mine and not sections:
+                if (only_mine or not see_all) and not sections:
                     continue
                 result.append(
                     {
@@ -258,6 +267,8 @@ class ItObjectsService:
             )
             my_grants = [grant for grant in grants if int(grant.user_id) == int(user_id)]
             can_manage_grants = bool(can_manage_owner or is_owner)
+            if not can_manage_owner and not is_owner and not my_grants:
+                raise ItObjectError("Объект не найден", 404)
             team_rows = (
                 session.scalars(
                     select(AppItObjectRoleAssignment)
@@ -452,6 +463,7 @@ class ItObjectsService:
                 self._audit(session, object_id=entry.id, action="owner_assigned", actor_id=int(actor_id), target_id=target_id)
 
         self._retry_once(_write)
+        invalidate_owner_cache()
         return {"object_ref": item["object_ref"]}
 
     def clear_owner(self, object_ref: str, *, actor_id: int) -> dict[str, Any]:
@@ -465,6 +477,7 @@ class ItObjectsService:
             self._audit(
                 session, object_id=entry.id, action="owner_cleared", actor_id=int(actor_id), target_id=int(current.user_id)
             )
+        invalidate_owner_cache()
         return {"object_ref": item["object_ref"]}
 
     def set_team(
@@ -766,6 +779,7 @@ class ItObjectsService:
                 )
 
         self._retry_once(_write)
+        invalidate_owner_cache()
         return {"object_ref": item["object_ref"]}
 
 

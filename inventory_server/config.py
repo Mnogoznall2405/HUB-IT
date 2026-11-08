@@ -39,6 +39,10 @@ class InventoryServerConfig:
     done_retention_days: int = 7
     dead_retention_days: int = 30
     cleanup_interval_sec: int = 3600
+    # Windows SelectorEventLoop can watch at most 512 sockets (select() FD_SETSIZE); above that the
+    # loop dies with "too many file descriptors in select()". Keep uvicorn's limit well below it:
+    # over the limit a request gets 503 + "Connection: close", the agent retries later.
+    limit_concurrency: int = 300
 
     @classmethod
     def from_env(cls) -> "InventoryServerConfig":
@@ -90,6 +94,9 @@ class InventoryServerConfig:
             done_retention_days=max(1, _to_int(os.getenv("INVENTORY_SERVER_DONE_RETENTION_DAYS", "7"), 7)),
             dead_retention_days=max(1, _to_int(os.getenv("INVENTORY_SERVER_DEAD_RETENTION_DAYS", "30"), 30)),
             cleanup_interval_sec=max(60, _to_int(os.getenv("INVENTORY_SERVER_CLEANUP_INTERVAL_SEC", "3600"), 3600)),
+            limit_concurrency=max(
+                2, min(400, _to_int(os.getenv("INVENTORY_SERVER_LIMIT_CONCURRENCY", "300"), 300))
+            ),
         )
 
 

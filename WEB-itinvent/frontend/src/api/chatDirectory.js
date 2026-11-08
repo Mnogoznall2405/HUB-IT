@@ -1,14 +1,20 @@
 import apiClient from './client';
 
+let chatConfigInFlight = null;
+
 export const chatDirectoryAPI = {
   getHealth: async () => {
     const response = await apiClient.get('/chat/health');
     return response.data;
   },
 
-  getConfig: async () => {
-    const response = await apiClient.get('/chat/config');
-    return response.data;
+  // Several chat hooks ask for the config while the page opens: they share one request in flight (nothing is kept afterwards).
+  getConfig: () => {
+    if (!chatConfigInFlight) {
+      chatConfigInFlight = (async () => (await apiClient.get('/chat/config')).data)()
+        .finally(() => { chatConfigInFlight = null; });
+    }
+    return chatConfigInFlight;
   },
 
   getUsers: async (params = {}) => {
@@ -99,9 +105,11 @@ export const chatDirectoryAPI = {
     return response.data;
   },
 
-  saveAttachmentToMyFiles: async (messageId, attachmentId) => {
+  saveAttachmentToMyFiles: async (messageId, attachmentId, retentionDays) => {
     const response = await apiClient.post(
       `/chat/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}/save-to-my-files`,
+      null,
+      retentionDays === undefined || retentionDays === null ? undefined : { params: { retention_days: retentionDays } },
     );
     return response.data;
   },

@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { Box } from '@mui/material';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 
-import MyFilesEditorShell from '../components/myFiles/MyFilesEditorShell';
+import MyFilesEditorWorkspace from '../components/myFiles/MyFilesEditorWorkspace';
+import { buildEditorRoute } from '../lib/myFilesEditorLink';
 import { useNotification } from '../contexts/NotificationContext';
 import { useMyFilesDownload } from './myFiles/useMyFilesDownload';
 
-/** The online editor on a page of its own: it opens in a new browser tab, so the list stays where it was. */
+/** Desktop route messages add documents to this workspace without replacing live editors. */
 export default function MyFilesEditor() {
   const { fileId = '' } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { notifySuccess, notifyWarning, notifyApiError } = useNotification();
   const { downloadFile } = useMyFilesDownload({ notifyApiError, notifySuccess, notifyWarning });
   const [title, setTitle] = useState('');
@@ -26,16 +27,7 @@ export default function MyFilesEditor() {
     if (!window.closed) navigate('/my-files', { replace: true });
   }, [navigate]);
 
-  return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100dvh', bgcolor: 'background.paper' }}>
-      <MyFilesEditorShell
-        fileId={fileId}
-        fileName={title || 'Документ'}
-        onTitle={setTitle}
-        onClose={handleClose}
-        closeLabel="Закрыть редактор"
-        onDownload={() => downloadFile({ id: fileId })}
-      />
-    </Box>
-  );
+  return <MyFilesEditorWorkspace fileId={fileId} requestKey={location.key} onTitle={setTitle} onCloseLast={handleClose}
+    onActiveDocumentChange={id => { if (id !== fileId) navigate(buildEditorRoute(id), { replace: true }); }}
+    onDownload={id => downloadFile({ id })} />;
 }

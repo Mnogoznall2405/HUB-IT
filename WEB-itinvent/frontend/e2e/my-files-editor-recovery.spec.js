@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
 
 const fixture = '/e2e/fixtures/my-files-editor-recovery-harness.html';
 const sdkPath = fileURLToPath(new URL('./fixtures/my-files-office-sdk.fixture.js', import.meta.url));
@@ -18,7 +19,9 @@ async function openEditor(page, state = {}, waitForDocument = true) {
   state.calls = 0;
   state.key ||= 'version-one';
   state.user ||= 1;
-  await page.route('**/e2e/fixtures/office-sdk/web-apps/apps/api/documents/api.js', (route) => route.fulfill({ path: sdkPath, contentType: 'text/javascript' }));
+  await page.route('**/e2e/fixtures/office-sdk/web-apps/apps/api/documents/api.js', (route) => route.fulfill({
+    ...(state.sdkSource ? { body: state.sdkSource } : { path: sdkPath }), contentType: 'text/javascript',
+  }));
   await page.route('**/my-files/recovery-file/office/config', async (route) => {
     state.calls += 1;
     if (state.handler) return state.handler(route, state);
@@ -239,6 +242,54 @@ test('a fatal SDK error fences an already pending version refresh', async ({ pag
   release();
   await expect(frameOf(page).getByLabel('Ключ документа')).toHaveText('version-one');
   await expect(page.getByText(/Не удалось продолжить работу/)).toBeVisible();
+});
+
+async function sdkWithRefreshFailure(mode) {
+  return `${await readFile(sdkPath, 'utf8')}
+    (() => {
+      const BaseEditor = window.DocsAPI.DocEditor;
+      window.DocsAPI.DocEditor = function (hostId, config) {
+        const editor = new BaseEditor(hostId, config);
+        const refresh = editor.refreshFile.bind(editor);
+        let attempts = 0;
+        editor.refreshFile = next => {
+          attempts++;
+          if (${JSON.stringify(mode)} === 'throw-once' && attempts === 1) throw new Error('Transient SDK refresh failure');
+          if (${JSON.stringify(mode)} === 'fatal') { config.events.onError({ data: { errorCode: -1 } }); return; }
+          return refresh(next);
+        };
+        return editor;
+      };
+    })();`;
+}
+
+test('a failed SDK refresh retries the same HUB version without replacing the document', async ({ page }) => {
+  const state = await openEditor(page, { sdkSource: await sdkWithRefreshFailure('throw-once') });
+  const instance = await page.locator('iframe').getAttribute('data-editor-instance');
+  await contentsOf(page).fill('Переданные правки перед восстановлением');
+  await frameOf(page).getByRole('button', { name: 'Отправить правки', exact: true }).click();
+  state.key = 'version-two';
+  await frameOf(page).getByRole('button', { name: 'Запросить новую версию', exact: true }).click();
+  await expect(frameOf(page).getByLabel('Ключ документа')).toHaveText('version-two', { timeout: 10000 });
+  await expect(contentsOf(page)).toHaveText('Переданные правки перед восстановлением');
+  await expect(page.locator('iframe')).toHaveAttribute('data-editor-instance', instance);
+  await expect(page.getByTestId('my-files-office-recovery')).toHaveCount(0);
+  expect(state.calls).toBe(3);
+});
+
+test('a synchronous fatal SDK error during refresh cannot report a ready document', async ({ page }) => {
+  const state = await openEditor(page, { sdkSource: await sdkWithRefreshFailure('fatal') });
+  const instance = await page.locator('iframe').getAttribute('data-editor-instance');
+  await contentsOf(page).fill('Текст перед ошибкой обновления');
+  await frameOf(page).getByRole('button', { name: 'Отправить правки', exact: true }).click();
+  state.key = 'version-two';
+  await frameOf(page).getByRole('button', { name: 'Запросить новую версию', exact: true }).click();
+  await expect(page.getByText(/Не удалось продолжить работу в редакторе/)).toBeVisible();
+  await expect(frameOf(page).getByLabel('Ключ документа')).toHaveText('version-one');
+  await expect(contentsOf(page)).toHaveText('Текст перед ошибкой обновления');
+  await expect(page.locator('iframe')).toHaveAttribute('data-editor-instance', instance);
+  await expect(page.getByRole('button', { name: 'Переоткрыть документ', exact: true })).toBeVisible();
+  expect(state.calls).toBe(2);
 });
 
 test('Escape in the fallback dialog also asks the editor before dropping unsent changes', async ({ page }) => {

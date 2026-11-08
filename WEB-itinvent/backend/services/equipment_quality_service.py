@@ -15,6 +15,10 @@ Rules
 - serial_odd_chars    spaces or symbols other than Latin letters, digits and . _ / -
 - duplicate_serial    the same serial on two or more items
 - duplicate_inv_no    the same inventory number on two or more items
+- ip_no_mac            IP address is set but MAC is empty
+- mac_invalid          MAC is not made of 12-hex-digit groups (several MACs in one field are fine)
+- duplicate_mac        the same MAC on two or more items
+- duplicate_ip         the same IP on two or more items
 - dismissed_owner     owner is a person (FIO-like name) missing from the address book
 - serial_photo_similar / serial_photo_mismatch
                       the serial read from the label photo (PostgreSQL ``equipment_photo_ocr``)
@@ -54,6 +58,11 @@ RULE_DUPLICATE_INV_NO = "duplicate_inv_no"
 RULE_DISMISSED_OWNER = "dismissed_owner"
 RULE_SERIAL_CYRILLIC = "serial_cyrillic"
 RULE_SERIAL_ODD_CHARS = "serial_odd_chars"
+RULE_IP_NO_MAC = "ip_no_mac"
+RULE_MAC_INVALID = "mac_invalid"
+RULE_DUPLICATE_MAC = "duplicate_mac"
+RULE_DUPLICATE_IP = "duplicate_ip"
+NETWORK_RULES = {RULE_IP_NO_MAC, RULE_MAC_INVALID, RULE_DUPLICATE_MAC, RULE_DUPLICATE_IP}
 RULE_SERIAL_PHOTO_SIMILAR = "serial_photo_similar"
 RULE_SERIAL_PHOTO_MISMATCH = "serial_photo_mismatch"
 _OCR_RULES = {
@@ -86,6 +95,44 @@ def _serial_filled(alias: str) -> str:
 def serial_filled_sql(alias: str) -> str:
     """Public twin of the "serial is really filled" predicate (used by the photo OCR batch)."""
     return _serial_filled(alias)
+
+
+_MAC_SEPARATORS = (":", "-", ".", ";", ",", " ")
+
+
+def _mac_clean_sql(alias: str) -> str:
+    """MAC without separators, upper-cased (T-SQL)."""
+    expr = f"UPPER(LTRIM(RTRIM({alias}.MAC_ADDRESS)))"
+    for sep in _MAC_SEPARATORS:
+        expr = f"REPLACE({expr}, '{sep}', '')"
+    return expr
+
+
+def _mac_filled(alias: str) -> str:
+    return f"({alias}.MAC_ADDRESS IS NOT NULL AND LTRIM(RTRIM({alias}.MAC_ADDRESS)) <> '')"
+
+
+def _ip_filled(alias: str) -> str:
+    return f"({alias}.IP_ADDRESS IS NOT NULL AND LTRIM(RTRIM({alias}.IP_ADDRESS)) <> '')"
+
+
+def normalize_mac_address(raw: Any, *, allow_multiple: bool = False) -> Optional[str]:
+    """``AA:BB:CC:DD:EE:FF`` for one MAC typed in any style; ``None`` for an empty value.
+
+    Raises ValueError when the value is not made of 12-hex-digit groups. With
+    ``allow_multiple`` a field that holds several MACs is accepted and returned as typed.
+    """
+    text = _text(raw)
+    if not text:
+        return None
+    if re.sub(r"[0-9A-Fa-f:.\-;,\s]", "", text):
+        raise ValueError("MAC address contains invalid characters")
+    digits = re.sub(r"[^0-9A-Fa-f]", "", text).upper()
+    if len(digits) == 12:
+        return ":".join(digits[i:i + 2] for i in range(0, 12, 2))
+    if allow_multiple and digits and len(digits) % 12 == 0:
+        return text
+    raise ValueError("MAC address must have 12 hexadecimal digits")
 
 
 def _part_no_pending_sql() -> str:
@@ -127,12 +174,25 @@ RULES: list[dict[str, str]] = [
      "description": "Один серийный номер у нескольких позиций.", "severity": "error"},
     {"rule": RULE_DUPLICATE_INV_NO, "title": "Дубли инвентарных номеров",
      "description": "Один инвентарный номер у нескольких позиций.", "severity": "error"},
+    {"rule": RULE_IP_NO_MAC, "title": "Есть IP, нет MAC",
+     "description": "IP-адрес указан, а MAC-адрес не заполнен — такую технику не найти по MAC "
+                    "и не сопоставить с мониторингом. MAC можно вписать прямо в строке.",
+     "severity": "warning"},
+    {"rule": RULE_MAC_INVALID, "title": "MAC в неверном формате",
+     "description": "MAC-адрес записан не двенадцатью шестнадцатеричными символами "
+                    "(лишние знаки, обрезан). Если символов ровно 12, формат можно исправить в один клик.",
+     "severity": "error"},
+    {"rule": RULE_DUPLICATE_MAC, "title": "Дубли MAC-адресов",
+     "description": "Один MAC-адрес у нескольких позиций.", "severity": "error"},
+    {"rule": RULE_DUPLICATE_IP, "title": "Дубли IP-адресов",
+     "description": "Один IP-адрес у нескольких позиций.", "severity": "warning"},
 ]
 _RULE_INDEX = {item["rule"]: item for item in RULES}
 _SQL_RULES = {
     RULE_NO_PHOTO, RULE_NO_PART_NO, RULE_NO_OWNER, RULE_NO_BRANCH_LOCATION,
     RULE_NO_SERIAL, RULE_DUPLICATE_SERIAL, RULE_DUPLICATE_INV_NO,
     RULE_SERIAL_CYRILLIC, RULE_SERIAL_ODD_CHARS,
+    *NETWORK_RULES,
 }
 
 
@@ -189,6 +249,28 @@ def _rule_where(rule: str) -> str:
             "(i.INV_NO IS NOT NULL AND i.INV_NO IN ("
             "SELECT d.INV_NO FROM ITEMS d WHERE d.CI_TYPE = 1 AND d.INV_NO IS NOT NULL "
             "GROUP BY d.INV_NO HAVING COUNT(1) > 1))"
+        )
+    if rule == RULE_IP_NO_MAC:
+        return f"({_ip_filled('i')} AND NOT {_mac_filled('i')})"
+    if rule == RULE_MAC_INVALID:
+        clean = _mac_clean_sql("i")
+        return (
+            f"({_mac_filled('i')} AND "
+            f"(LEN({clean}) % 12 <> 0 OR {clean} LIKE '%[^0-9A-F]%'))"
+        )
+    if rule == RULE_DUPLICATE_MAC:
+        return (
+            f"({_mac_filled('i')} AND {_mac_clean_sql('i')} IN ("
+            f"SELECT {_mac_clean_sql('d')} FROM ITEMS d "
+            f"WHERE d.CI_TYPE = 1 AND {_mac_filled('d')} "
+            f"GROUP BY {_mac_clean_sql('d')} HAVING COUNT(1) > 1))"
+        )
+    if rule == RULE_DUPLICATE_IP:
+        return (
+            f"({_ip_filled('i')} AND LTRIM(RTRIM(i.IP_ADDRESS)) IN ("
+            "SELECT LTRIM(RTRIM(d.IP_ADDRESS)) FROM ITEMS d "
+            f"WHERE d.CI_TYPE = 1 AND {_ip_filled('d')} "
+            "GROUP BY LTRIM(RTRIM(d.IP_ADDRESS)) HAVING COUNT(1) > 1))"
         )
     raise UnknownRuleError(rule)
 
@@ -440,8 +522,21 @@ def _public_issue(row: dict[str, Any]) -> dict[str, Any]:
         "employee_name": _text(pick("employee_name", "EMPLOYEE_NAME")),
         "branch_name": _text(pick("branch_name", "BRANCH_NAME")),
         "location_name": _text(pick("location_name", "LOCATION_NAME")),
+        "ip_address": _text(pick("ip_address", "IP_ADDRESS")),
+        "mac_address": _text(pick("mac_address", "MAC_ADDRESS")),
         "note": "",
     }
+
+
+def _network_note(rule: str, item: dict[str, Any]) -> str:
+    ip, mac = item.get("ip_address", ""), item.get("mac_address", "")
+    if rule == RULE_IP_NO_MAC:
+        return f"IP {ip}, MAC не заполнен"
+    if rule in (RULE_MAC_INVALID, RULE_DUPLICATE_MAC):
+        return f"MAC {mac}" + (f" · IP {ip}" if ip else "")
+    if rule == RULE_DUPLICATE_IP:
+        return f"IP {ip}" + (f" · MAC {mac}" if mac else "")
+    return ""
 
 
 def list_issues(
@@ -510,6 +605,11 @@ def list_issues(
         params.extend([pattern] * 4)
 
     where_sql = " AND ".join(where)
+    # IP/MAC columns are optional in some snapshots: only the network rules ask for them.
+    network_select = (
+        ",\n                i.IP_ADDRESS AS ip_address,\n                i.MAC_ADDRESS AS mac_address"
+        if rule in NETWORK_RULES else ""
+    )
     try:
         total = _first_value(
             db.execute_query(
@@ -527,7 +627,7 @@ def list_issues(
                 m.MODEL_NAME AS model_name,
                 o.OWNER_DISPLAY_NAME AS employee_name,
                 b.BRANCH_NAME AS branch_name,
-                l.DESCR AS location_name
+                l.DESCR AS location_name{network_select}
             {_ISSUE_FROM}
             WHERE {where_sql}
             ORDER BY i.INV_NO, i.ID
@@ -540,7 +640,9 @@ def list_issues(
         raise QualityUnavailableError("equipment database unavailable") from exc
     items = [_public_issue(row) for row in rows]
     for item in items:
-        item["note"] = photo_notes.get(item["item_id"], "")
+        item["note"] = (
+            _network_note(rule, item) if rule in NETWORK_RULES else photo_notes.get(item["item_id"], "")
+        )
     return {
         "rule": rule,
         "items": items,

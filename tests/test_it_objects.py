@@ -103,10 +103,11 @@ def _card(client, actor, object_ref=OBJECT_REF):
 
 
 def test_cards_come_from_objects_database_and_owner_gets_every_section(client):
-    listed = client.get(BASE, headers=_as(COLLEAGUE))
+    listed = client.get(BASE, headers=_as(ADMIN))
     assert listed.status_code == 200
     assert [item["name"] for item in listed.json()["items"]] == ["Объект Альфа", "Объект Бета"]
     assert all(item["owner"] is None and item["my_access"]["sections"] == {} for item in listed.json()["items"])
+    assert client.get(BASE, headers=_as(COLLEAGUE)).json()["items"] == []  # nothing is theirs yet
 
     assert _assign_owner(client).status_code == 200
 
@@ -119,6 +120,53 @@ def test_cards_come_from_objects_database_and_owner_gets_every_section(client):
     mine = client.get(BASE, params={"mine": "true"}, headers=_as(OWNER)).json()["items"]
     assert [item["object_ref"] for item in mine] == [OBJECT_REF]
     assert client.get(BASE, params={"mine": "true"}, headers=_as(COLLEAGUE)).json()["items"] == []
+
+
+def test_non_admins_see_and_open_only_their_own_objects(client):
+    assert _assign_owner(client, OBJECT_REF, OWNER).status_code == 200
+    assert _assign_owner(client, OTHER_REF, COLLEAGUE).status_code == 200
+
+    assert [item["object_ref"] for item in client.get(BASE, headers=_as(OWNER)).json()["items"]] == [OBJECT_REF]
+    assert [item["object_ref"] for item in client.get(BASE, headers=_as(COLLEAGUE)).json()["items"]] == [OTHER_REF]
+    assert client.get(f"{BASE}/{OTHER_REF}", headers=_as(OWNER)).status_code == 404
+
+    assert _grant(client, OWNER, section="passwords", actor=COLLEAGUE, object_ref=OTHER_REF).status_code == 200
+    assert [item["object_ref"] for item in client.get(BASE, headers=_as(OWNER)).json()["items"]] == [OBJECT_REF, OTHER_REF]
+    assert client.get(f"{BASE}/{OTHER_REF}", headers=_as(OWNER)).status_code == 200
+
+    assert [item["object_ref"] for item in client.get(BASE, headers=_as(ADMIN)).json()["items"]] == [OBJECT_REF, OTHER_REF]
+
+
+def test_an_it_owner_gets_the_objects_permission_whatever_the_role(service, monkeypatch):
+    from backend.api import deps
+    from backend.appdb.db import app_session
+    from backend.services import it_object_owner_access as access
+
+    monkeypatch.setattr(access, "is_app_database_configured", lambda: True)
+    monkeypatch.setattr(access, "app_session", lambda: app_session(service._database_url))
+    custom = {**USERS[VIEWER], "use_custom_permissions": True, "custom_permissions": []}
+
+    def has_read(user: dict) -> bool:
+        return "it_objects.read" in deps.effective_public_permissions(dict(user))
+
+    access.invalidate()
+    try:
+        assert not has_read(USERS[VIEWER]) and not has_read(custom)
+
+        service.assign_owner(OBJECT_REF, target=USERS[VIEWER], actor_id=ADMIN)
+        assert has_read(USERS[VIEWER]) and has_read(custom)
+        assert not has_read(USERS[COLLEAGUE]) or USERS[COLLEAGUE]["role"] == "operator"  # operators have it by role anyway
+
+        service.set_object_hidden(OBJECT_REF, hidden=True, actor_id=ADMIN)
+        assert not has_read(USERS[VIEWER])  # a deleted object gives nothing
+        service.set_object_hidden(OBJECT_REF, hidden=False, actor_id=ADMIN)
+        assert has_read(USERS[VIEWER])
+
+        service.clear_owner(OBJECT_REF, actor_id=ADMIN)
+        assert not has_read(USERS[VIEWER])
+    finally:
+        access._owner_ids = frozenset()
+        access.invalidate()
 
 
 def test_reassigning_the_owner_closes_the_previous_one(client, service):
@@ -154,7 +202,7 @@ def test_grant_gives_exactly_that_section_and_revoke_takes_effect_at_once(client
     )
     assert revoked.status_code == 200
     assert not service.can_access(OBJECT_REF, user_id=COLLEAGUE, section="passwords")
-    assert _card(client, COLLEAGUE)["my_access"]["sections"] == {}
+    assert client.get(f"{BASE}/{OBJECT_REF}", headers=_as(COLLEAGUE)).status_code == 404  # the object is no longer theirs
 
 
 def test_only_admin_or_the_objects_owner_can_hand_out_access_and_only_admin_to_themselves(client, service):
@@ -206,7 +254,7 @@ def test_one_call_sets_a_persons_access_to_all_sections_and_audits_only_real_cha
     assert _set_access(client, COLLEAGUE, {"passwords": None}).status_code == 200
     assert _card(client, COLLEAGUE)["my_access"]["sections"] == {"inventory": "manage"}
     assert _set_access(client, COLLEAGUE, {"passwords": None, "computers": None, "inventory": None}).status_code == 200
-    assert _card(client, COLLEAGUE)["my_access"]["sections"] == {}
+    assert client.get(f"{BASE}/{OBJECT_REF}", headers=_as(COLLEAGUE)).status_code == 404
 
 
 def test_batch_access_follows_the_same_rules_as_single_grants(client, service):
@@ -626,3 +674,383 @@ def test_unavailable_inventory_or_computers_source_answers_502_not_500(client, m
     assert client.get(f"{BASE}/{OBJECT_REF}/computers", headers=_as(OWNER)).status_code == 502
     assert client.get(f"{BASE}/{OBJECT_REF}/inventory", headers=_as(OWNER)).status_code == 502
     assert client.get(f"{BASE}/{OBJECT_REF}/computers", headers=_as(ADMIN)).status_code == 403
+
+
+def test_an_it_owner_sees_only_the_branches_of_his_objects_in_the_inventory(client, service, monkeypatch):
+    """Server-side branch scope of «Инвентарь»: search, list, branch directory and card. Admins and non-owners are untouched."""
+    from backend.api.v1 import equipment as equipment_api
+    from backend.appdb.db import app_session
+    from backend.database import equipment_db
+    from backend.services import it_object_branch_scope as scope
+    from backend.services import it_object_owner_access as access
+
+    for module in (access, scope):
+        monkeypatch.setattr(module, "is_app_database_configured", lambda: True)
+        monkeypatch.setattr(module, "app_session", lambda: app_session(service._database_url))
+    monkeypatch.setattr(scope, "_objects_db_id", lambda: "OBJ-ITINVENT")
+
+    calls: list[dict] = []
+
+    def fake_universal(q, page, limit, db_id, type_no, field, **kwargs):
+        calls.append(kwargs)
+        return {"equipment": [], "total": 0, "page": 1, "pages": 0}
+
+    items = {"1": {"inv_no": "1", "branch_no": 12}, "2": {"inv_no": "2", "branch_no": 13}}
+    directory = [{"id": 12, "name": "Альфа"}, {"id": 13, "name": "Бета"}]
+    monkeypatch.setattr(equipment_api.queries, "search_equipment_universal", fake_universal)
+    monkeypatch.setattr(equipment_api.queries, "get_equipment_by_inv", lambda inv_no, db_id=None: items.get(inv_no))
+    monkeypatch.setattr(equipment_api, "get_equipment_data_version", lambda db_id=None: 0)
+    monkeypatch.setattr(equipment_db, "get_all_branches_cached", lambda db_id=None: list(directory))
+    monkeypatch.setattr(equipment_db, "get_all_branches", lambda db_id=None: [{"BRANCH_NO": b["id"], "BRANCH_NAME": b["name"]} for b in directory])
+    monkeypatch.setattr(
+        equipment_db,
+        "get_equipment_by_branch",
+        lambda name, page=1, limit=1000, db_id=None: {
+            "equipment": [dict(row, location="Склад") for row in items.values() if row["branch_no"] == (12 if name == "Альфа" else 13)],
+            "total": 1, "page": 1, "limit": limit, "pages": 1, "branch": name, "data_version": 0,
+        },
+    )
+    app.dependency_overrides[deps.get_request_scoped_database_id] = lambda: "OBJ-ITINVENT"
+    access.invalidate()
+    try:
+        service.assign_owner(OBJECT_REF, target=USERS[OWNER], actor_id=ADMIN)
+        access.invalidate()
+
+        # IT owner: search is cut to branch 12 in SQL, the directory and the list hold only his branch, the card of another is 404.
+        assert client.get("/api/v1/equipment/search/universal", params={"q": "x"}, headers=_as(OWNER)).status_code == 200
+        assert calls[-1] == {"branch_nos": [12]}
+        assert client.get("/api/v1/equipment/branches", headers=_as(OWNER)).json() == [{"id": 12, "name": "Альфа"}]
+        assert [b["BRANCH_NO"] for b in client.get("/api/v1/equipment/branches-list", headers=_as(OWNER)).json()] == [12]
+        grouped = client.get("/api/v1/equipment/all-grouped", headers=_as(OWNER)).json()
+        assert list(grouped["grouped"]) == ["Альфа"] and grouped["total"] == 1
+        assert list(client.get("/api/v1/equipment/all-grouped", params={"branch": "Бета"}, headers=_as(OWNER)).json()["grouped"]) == []
+        assert client.get("/api/v1/equipment/1", headers=_as(OWNER)).status_code == 200
+        assert client.get("/api/v1/equipment/2", headers=_as(OWNER)).status_code == 404
+
+        # Admin and a colleague who owns nothing keep the full view.
+        for user_id in (ADMIN, COLLEAGUE):
+            client.get("/api/v1/equipment/search/universal", params={"q": "x"}, headers=_as(user_id))
+            assert calls[-1] == {}
+            assert len(client.get("/api/v1/equipment/branches", headers=_as(user_id)).json()) == 2
+            assert client.get("/api/v1/equipment/2", headers=_as(user_id)).status_code == 200
+    finally:
+        app.dependency_overrides.pop(deps.get_request_scoped_database_id, None)
+        access._owner_ids = frozenset()
+        access.invalidate()
+
+
+def test_the_branch_filter_is_injected_into_the_search_sql_with_its_params_first():
+    from backend.database.equipment_search_reads import search_equipment_by_serial, search_equipment_universal
+
+    class Db:
+        def __init__(self):
+            self.calls = []
+
+        def execute_query(self, query, params=()):
+            self.calls.append((query, tuple(params)))
+            return [{"total": 1}] if "COUNT(*)" in query else []
+
+    db = Db()
+    search_equipment_universal("ab", 1, 10, None, type_no=5, branch_nos=[12, 14], get_db_fn=lambda _: db)
+    select_sql, select_params = db.calls[-1]
+    assert "i.CI_TYPE = 1 AND i.BRANCH_NO IN (?, ?) AND i.TYPE_NO = ? AND" in select_sql
+    assert select_params[:3] == (12, 14, 5) and select_params[-2:] == (0, 10)
+
+    db = Db()
+    search_equipment_by_serial("77", None, branch_nos=[], get_db_fn=lambda _: db)
+    assert "1 = 0" in db.calls[-1][0]
+
+
+def test_an_it_owner_sees_only_the_mfu_of_his_branches(client, service, monkeypatch):
+    from backend.api.v1 import mfu as mfu_api
+    from backend.appdb.db import app_session
+    from backend.services import it_object_branch_scope as scope
+    from backend.services import it_object_owner_access as access
+
+    for module in (access, scope):
+        monkeypatch.setattr(module, "is_app_database_configured", lambda: True)
+        monkeypatch.setattr(module, "app_session", lambda: app_session(service._database_url))
+    monkeypatch.setattr(scope, "_objects_db_id", lambda: "OBJ-ITINVENT")
+
+    def printer(item_id, branch_no):
+        return {"ID": item_id, "INV_NO": str(item_id), "branch_no": branch_no, "branch_name": f"Ф{branch_no}",
+                "type_name": "МФУ", "model_name": "LaserJet", "ip_address": f"10.0.0.{item_id}", "location": "Офис"}
+
+    rows = [printer(1, 12), printer(2, 13)]
+    monkeypatch.setattr(mfu_api, "get_all_equipment_flat", lambda db_id=None, limit=5000: list(rows))
+    mfu_api._mfu_devices_cache.clear()
+    app.dependency_overrides[deps.get_current_database_id] = lambda: "OBJ-ITINVENT"
+    access.invalidate()
+    try:
+        service.assign_owner(OBJECT_REF, target=USERS[OWNER], actor_id=ADMIN)
+        access.invalidate()
+
+        def listed(user_id):
+            response = client.get("/api/v1/mfu/devices", headers=_as(user_id))
+            assert response.status_code == 200, response.text
+            return sorted(d["inv_no"] for locations in response.json()["grouped"].values() for items in locations.values() for d in items)
+
+        assert listed(OWNER) == ["1"]
+        assert listed(ADMIN) == ["1", "2"]
+        pages = lambda user_id, key: client.get("/api/v1/mfu/pages/monthly", params={"device_key": key}, headers=_as(user_id)).status_code
+        assert pages(OWNER, "OBJ-ITINVENT|1") == 200
+        assert pages(OWNER, "OBJ-ITINVENT|2") == 404
+        assert pages(ADMIN, "OBJ-ITINVENT|2") == 200
+    finally:
+        app.dependency_overrides.pop(deps.get_current_database_id, None)
+        mfu_api._mfu_devices_cache.clear()
+        access._owner_ids = frozenset()
+        access.invalidate()
+
+
+def test_an_it_owner_works_with_consumables_of_his_branches_only(client, service, monkeypatch):
+    from backend.api.v1 import equipment as equipment_api
+    from backend.appdb.db import app_session
+    from backend.database import equipment_db
+    from backend.services import it_object_branch_scope as scope
+    from backend.services import it_object_owner_access as access
+
+    for module in (access, scope):
+        monkeypatch.setattr(module, "is_app_database_configured", lambda: True)
+        monkeypatch.setattr(module, "app_session", lambda: app_session(service._database_url))
+    monkeypatch.setattr(scope, "_objects_db_id", lambda: "OBJ-ITINVENT")
+
+    cards = {1: {"id": 1, "branch_no": 12, "qty": 3}, 2: {"id": 2, "branch_no": 13, "qty": 5}}
+    lookups: list = []
+
+    def fake_lookup(**kwargs):
+        lookups.append(kwargs["branch_no"])
+        return [dict(card) for card in cards.values() if kwargs["branch_no"] in (None, card["branch_no"])]
+
+    monkeypatch.setattr(equipment_api.queries, "get_consumable_by_id", lambda item_id, db_id=None: cards.get(item_id))
+    monkeypatch.setattr(equipment_api.queries, "get_consumables_lookup", fake_lookup)
+    monkeypatch.setattr(equipment_api.queries, "get_branch_by_no", lambda branch_no, db_id=None: None)
+    monkeypatch.setattr(
+        equipment_api.queries, "consume_consumable_stock", lambda **kwargs: {"success": False, "message": "stub"}
+    )
+    monkeypatch.setattr(
+        equipment_db,
+        "get_consumables_grouped",
+        lambda page=1, limit=1000, db_id=None: {
+            "grouped": {"Альфа": {"Склад": [dict(cards[1])]}, "Бета": {"Склад": [dict(cards[2])]}},
+            "total": 2, "page": 1, "limit": limit, "pages": 1,
+        },
+    )
+    app.dependency_overrides[deps.get_request_scoped_database_id] = lambda: "OBJ-ITINVENT"
+    access.invalidate()
+    try:
+        service.assign_owner(OBJECT_REF, target=USERS[OWNER], actor_id=ADMIN)
+        access.invalidate()
+        base = "/api/v1/equipment/consumables"
+
+        grouped = client.get("/api/v1/equipment/consumables-grouped", headers=_as(OWNER)).json()["grouped"]
+        assert list(grouped) == ["Альфа"]
+        assert len(client.get("/api/v1/equipment/consumables-grouped", headers=_as(ADMIN)).json()["grouped"]) == 2
+
+        assert [row["id"] for row in client.get(f"{base}/lookup", headers=_as(OWNER)).json()] == [1]
+        assert lookups[-1] == 12
+        assert client.get(f"{base}/lookup", params={"branch_no": "13"}, headers=_as(OWNER)).json() == []
+        assert sorted(row["id"] for row in client.get(f"{base}/lookup", headers=_as(ADMIN)).json()) == [1, 2]
+
+        create = {"branch_no": 13, "loc_no": 1, "type_no": 1, "qty": 1, "model_name": "x"}
+        assert client.post(f"{base}/create", json=create, headers=_as(OWNER)).status_code == 403
+        assert client.post(f"{base}/create", json={**create, "branch_no": 12}, headers=_as(OWNER)).status_code == 400  # past the scope check
+        assert client.post(f"{base}/create", json=create, headers=_as(ADMIN)).status_code == 400
+
+        assert client.post(f"{base}/consume", json={"item_id": 2, "qty": 1}, headers=_as(OWNER)).status_code == 404
+        assert client.post(f"{base}/consume", json={"item_id": 1, "qty": 1}, headers=_as(OWNER)).status_code == 400
+        assert client.post(f"{base}/consume", json={"inv_no": "7", "qty": 1}, headers=_as(OWNER)).status_code == 400
+        assert client.patch(f"{base}/qty", json={"item_id": 2, "qty": 1}, headers=_as(OWNER)).status_code == 404
+        assert client.get(f"{base}/2", headers=_as(OWNER)).status_code == 404
+        assert client.get(f"{base}/2", headers=_as(ADMIN)).status_code != 404
+    finally:
+        app.dependency_overrides.pop(deps.get_request_scoped_database_id, None)
+        access._owner_ids = frozenset()
+        access.invalidate()
+
+
+def test_an_it_owner_sees_only_the_computers_of_his_branches(client, service, monkeypatch):
+    from backend.api.v1 import inventory as inventory_api
+    from backend.appdb.db import app_session
+    from backend.services import it_object_branch_scope as scope
+    from backend.services import it_object_owner_access as access
+
+    for module in (access, scope):
+        monkeypatch.setattr(module, "is_app_database_configured", lambda: True)
+        monkeypatch.setattr(module, "app_session", lambda: app_session(service._database_url))
+    monkeypatch.setattr(scope, "_objects_db_id", lambda: "OBJ-ITINVENT")
+
+    def host(mac, name, database_id, branch_no):
+        return {
+            "mac_address": mac, "hostname": name, "database_id": database_id, "branch_no": branch_no,
+            "assignment_source": "sql", "status": "online", "ip_primary": "10.0.0.1", "ip_list": [],
+        }
+
+    records = [
+        host("AA:00:00:00:00:01", "pc-own", "OBJ-ITINVENT", 12),
+        host("AA:00:00:00:00:02", "pc-other-branch", "OBJ-ITINVENT", 13),
+        host("AA:00:00:00:00:03", "pc-unassigned", "", None),
+        host("AA:00:00:00:00:04", "pc-other-db", "ITINVENT", 5),
+    ]
+    monkeypatch.setattr(inventory_api, "_collect_all_scoped_computer_records", lambda **kwargs: [dict(r) for r in records])
+    access.invalidate()
+    try:
+        service.assign_owner(OBJECT_REF, target=USERS[OWNER], actor_id=ADMIN)
+        access.invalidate()
+
+        def visible(user_id):
+            return sorted(r["hostname"] for r in inventory_api._collect_scoped_computer_records(current_user=User(**USERS[user_id])))
+
+        assert visible(OWNER) == ["pc-other-db", "pc-own"]
+        assert visible(ADMIN) == sorted(r["hostname"] for r in records)
+        assert visible(COLLEAGUE) == sorted(r["hostname"] for r in records)
+
+        # The card of a computer outside the scope is not reachable either.
+        owner_user = User(**USERS[OWNER])
+        assert scope.computer_allowed(records[0], scope.computer_scope(owner_user))
+        assert not scope.computer_allowed(records[1], scope.computer_scope(owner_user))
+        assert not scope.computer_allowed(records[2], scope.computer_scope(owner_user))
+        assert scope.computer_scope(User(**USERS[ADMIN])) is None
+    finally:
+        access._owner_ids = frozenset()
+        access.invalidate()
+
+
+def test_an_it_owner_cannot_create_change_move_or_delete_equipment_outside_his_branches(client, service, monkeypatch):
+    from backend.api.v1 import equipment as equipment_api
+    from backend.appdb.db import app_session
+    from backend.services import it_object_branch_scope as scope
+    from backend.services import it_object_owner_access as access
+
+    for module in (access, scope):
+        monkeypatch.setattr(module, "is_app_database_configured", lambda: True)
+        monkeypatch.setattr(module, "app_session", lambda: app_session(service._database_url))
+    monkeypatch.setattr(scope, "_objects_db_id", lambda: "OBJ-ITINVENT")
+
+    items = {"1": {"inv_no": "1", "branch_no": 12}, "2": {"inv_no": "2", "branch_no": 13}}
+    monkeypatch.setattr(equipment_api.queries, "get_equipment_by_inv", lambda inv_no, db_id=None: items.get(inv_no))
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "get_equipment_items_by_inv_nos",
+        lambda inv_nos, db_id=None: [items[i] for i in inv_nos if i in items],
+    )
+    monkeypatch.setattr(equipment_api.queries, "get_branch_by_no", lambda branch_no, db_id=None: None)
+    monkeypatch.setattr(equipment_api.queries, "get_status_by_no", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        equipment_api.queries, "delete_equipment_by_inv", lambda *args, **kwargs: {"success": False, "message": "stub"}
+    )
+    app.dependency_overrides[deps.get_request_scoped_database_id] = lambda: "OBJ-ITINVENT"
+    monkeypatch.setattr(equipment_api, "_run_transfer_job", lambda **kwargs: None)
+    access.invalidate()
+    try:
+        service.assign_owner(OBJECT_REF, target=USERS[OWNER], actor_id=ADMIN)
+        access.invalidate()
+        base = "/api/v1/equipment"
+
+        create = {"serial_no": "S", "employee_name": "Иван", "branch_no": 13, "loc_no": 1, "type_no": 1, "status_no": 1, "model_name": "m"}
+        assert client.post(f"{base}/create", json=create, headers=_as(OWNER)).status_code == 403
+        assert client.post(f"{base}/create", json={**create, "branch_no": 12}, headers=_as(OWNER)).status_code == 400  # past the scope check
+
+        assert client.patch(f"{base}/2", json={"status_no": 1}, headers=_as(OWNER)).status_code == 404
+        assert client.patch(f"{base}/1", json={"branch_no": 13}, headers=_as(OWNER)).status_code == 403
+        assert client.patch(f"{base}/1", json={"status_no": 1}, headers=_as(OWNER)).status_code == 400  # past the scope check
+
+        # delete needs a permission operators lack, so the guard it shares with transfers is checked directly
+        import asyncio
+
+        from fastapi import HTTPException
+
+        asyncio.run(equipment_api._ensure_inv_nos_in_scope(["1"], "OBJ-ITINVENT", frozenset({12})))
+        with pytest.raises(HTTPException) as denied:
+            asyncio.run(equipment_api._ensure_inv_nos_in_scope(["2"], "OBJ-ITINVENT", frozenset({12})))
+        assert denied.value.status_code == 403
+
+        move = {"operation_id": "op-scope-0001", "inv_nos": ["2"], "branch_no": 12, "loc_no": 1}
+        assert client.post(f"{base}/transfer/location", json=move, headers=_as(OWNER)).status_code == 403
+        assert client.post(f"{base}/transfer/location", json={**move, "inv_nos": ["1"], "branch_no": 13}, headers=_as(OWNER)).status_code == 403
+
+        assert client.get(f"{base}/2/history", headers=_as(OWNER)).status_code == 404
+        assert client.get(f"{base}/2/acts", headers=_as(OWNER)).status_code == 404
+    finally:
+        app.dependency_overrides.pop(deps.get_request_scoped_database_id, None)
+        access._owner_ids = frozenset()
+        access.invalidate()
+
+
+def test_an_it_owner_reaches_photos_and_acts_of_his_branches_only(client, service, monkeypatch):
+    from backend.api.v1 import equipment as equipment_api
+    from backend.appdb.db import app_session
+    from backend.database import equipment_current_act_reads
+    from backend.database.equipment_act_history_reads import list_latest_equipment_acts, search_equipment_acts
+    from backend.services import it_object_branch_scope as scope
+    from backend.services import it_object_owner_access as access
+
+    for module in (access, scope):
+        monkeypatch.setattr(module, "is_app_database_configured", lambda: True)
+        monkeypatch.setattr(module, "app_session", lambda: app_session(service._database_url))
+    monkeypatch.setattr(scope, "_objects_db_id", lambda: "OBJ-ITINVENT")
+
+    item_branch = {4: 12, 5: 13}
+    doc_branch = {1: 12, 2: 13}
+
+    class Db:
+        def __init__(self):
+            self.calls = []
+
+        def execute_query(self, query, params=()):
+            self.calls.append((" ".join(query.split()), tuple(params)))
+            params = tuple(params)
+            if "FROM ITEMS WHERE ID IN" in query:
+                return [{"ID": i} for i in item_branch if i in params and item_branch[i] in params]
+            if "FROM DOCS d WHERE d.DOC_NO" in query:
+                return [{"DOC_NO": params[0]}] if doc_branch.get(params[0]) in params[1:] else []
+            return []
+
+    db = Db()
+    monkeypatch.setattr(equipment_api, "get_db", lambda db_id=None: db)
+    monkeypatch.setattr(equipment_api.queries, "inspect_equipment_act_storage", lambda **kwargs: {"ok": True})
+    seen_items: list = []
+    monkeypatch.setattr(
+        equipment_current_act_reads, "lookup_current_acts", lambda item_ids, db_id, get_db_fn=None: seen_items.append(list(item_ids)) or {}
+    )
+    monkeypatch.setattr(equipment_api.equipment_photos, "lookup_equipment_photo_counts", lambda *args, **kwargs: {})
+    monkeypatch.setattr(equipment_api.equipment_photo_check_service, "lookup_mark_counts", lambda *args, **kwargs: {})
+    def photos_stub(item_id, db_id=None):
+        raise equipment_api.equipment_photos.PhotoValidationError("stub")  # 400: past the scope dependency
+
+    monkeypatch.setattr(equipment_api.equipment_photos, "list_equipment_photos", photos_stub)
+    app.dependency_overrides[deps.get_request_scoped_database_id] = lambda: "OBJ-ITINVENT"
+    access.invalidate()
+    try:
+        service.assign_owner(OBJECT_REF, target=USERS[OWNER], actor_id=ADMIN)
+        access.invalidate()
+        base = "/api/v1/equipment"
+
+        assert client.get(f"{base}/5/photos", headers=_as(OWNER)).status_code == 404
+        assert client.get(f"{base}/5/photos/1/content", headers=_as(OWNER)).status_code == 404
+        assert client.post(f"{base}/5/photo-uploads", json={}, headers=_as(OWNER)).status_code == 404
+        assert client.get(f"{base}/4/photos", headers=_as(OWNER)).status_code == 400  # the dependency lets the owner's item through
+
+        assert client.get(f"{base}/acts/2/inspect", headers=_as(OWNER)).status_code == 404
+        assert client.get(f"{base}/acts/1/inspect", headers=_as(OWNER)).status_code == 200
+        assert client.get(f"{base}/acts/2/inspect", headers=_as(ADMIN)).status_code == 200
+
+        client.post(f"{base}/current-acts", json={"item_ids": [4, 5]}, headers=_as(OWNER))
+        client.post(f"{base}/current-acts", json={"item_ids": [4, 5]}, headers=_as(ADMIN))
+        assert seen_items == [[4], [4, 5]]
+    finally:
+        app.dependency_overrides.pop(deps.get_request_scoped_database_id, None)
+        access._owner_ids = frozenset()
+        access.invalidate()
+
+    # The act feed and the act search carry the branch scope into SQL, params in placeholder order.
+    feed_db = Db()
+    list_latest_equipment_acts(limit=5, branch_nos=[12, 14], get_db_fn=lambda _: feed_db)
+    sql, params = feed_db.calls[0]
+    assert "d.BRANCH_NO IN (?, ?)" in sql and "iscope.BRANCH_NO IN (?, ?)" in sql and params == (12, 14, 12, 14)
+    search_db = Db()
+    search_equipment_acts("55", limit=5, branch_nos=[12], get_db_fn=lambda _: search_db)
+    assert search_db.calls[0][1][2:] == (55, 12, 12)
+    unscoped = Db()
+    list_latest_equipment_acts(limit=5, get_db_fn=lambda _: unscoped)
+    assert "iscope" not in unscoped.calls[0][0] and unscoped.calls[0][1] == ()

@@ -211,6 +211,8 @@ class EquipmentCreateRequest(BaseModel):
     part_no: Optional[str] = Field(None, description="Part number")
     description: Optional[str] = Field(None, description="Description")
     ip_address: Optional[str] = Field(None, description="IP address")
+    mac_address: Optional[str] = Field(None, description="MAC address (any separators; stored as AA:BB:CC:DD:EE:FF)")
+    network_name: Optional[str] = Field(None, description="Network (NetBIOS) name")
 
 
 class EquipmentCreateResponse(BaseModel):
@@ -779,6 +781,8 @@ class EquipmentQualityIssue(BaseModel):
     employee_name: str = ""
     branch_name: str = ""
     location_name: str = ""
+    ip_address: str = ""
+    mac_address: str = ""
     note: str = ""
 
 

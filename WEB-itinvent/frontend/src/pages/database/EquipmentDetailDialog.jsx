@@ -158,7 +158,7 @@ const EquipmentDetailGeneralTab = memo(function EquipmentDetailGeneralTab({
   const fieldSize = isMobile ? 'medium' : 'small';
   const vendorName = readFirst(data, ['VENDOR_NAME', 'vendor_name', 'MANUFACTURER', 'manufacturer'], '-');
 
-  const textField = (label, name) => (
+  const textField = (label, name, helperText) => (
     <TextField
       fullWidth
       size={fieldSize}
@@ -166,6 +166,7 @@ const EquipmentDetailGeneralTab = memo(function EquipmentDetailGeneralTab({
       value={form[name] ?? ''}
       onChange={(event) => onFormPatch?.({ [name]: event.target.value })}
       InputLabelProps={SHRUNK_LABEL_PROPS}
+      helperText={helperText}
     />
   );
 
@@ -279,7 +280,7 @@ const EquipmentDetailGeneralTab = memo(function EquipmentDetailGeneralTab({
                 </Typography>
                 <Grid container spacing={1.5}>
                   <Grid item xs={12} sm={6}>{textField('IP-адрес', 'ip_address')}</Grid>
-                  <Grid item xs={12} sm={6}>{textField('MAC-адрес', 'mac_address')}</Grid>
+                  <Grid item xs={12} sm={6}>{textField('MAC-адрес', 'mac_address', 'Если сетевых карт несколько, впишите все MAC в это поле через «; ». Пример: AA:BB:CC:DD:EE:01; AA:BB:CC:DD:EE:02. Новую карточку для второго MAC не создавайте.')}</Grid>
                   <Grid item xs={12} sm={6}>{textField('Имя компьютера', 'network_name')}</Grid>
                   <Grid item xs={12} sm={6}>
                     <ReadOnlyField label="Домен" value={form.domain_name} size={fieldSize} />

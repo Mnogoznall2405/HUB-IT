@@ -96,16 +96,22 @@ function MarkdownRenderer({ value, compact = false, variant = 'default', linkCol
         '& > *:first-of-type': { mt: 0 },
         '& > *:last-child': { mb: 0 },
         '& p': { my: isChat ? 0.55 : compact ? 0.4 : 1 },
-        '& ul, & ol': { pl: compact ? 2.2 : 2.5, my: isChat ? 0.55 : compact ? 0.45 : 1 },
-        '& li': { my: compact ? 0.12 : 0.2 },
+        // Глобальный сброс списков убирает маркеры — возвращаем их явно, иначе пункты читаются как сдвинутый текст.
+        '& ul, & ol': { pl: compact ? 2.2 : 2.5, my: isChat ? 0.55 : compact ? 0.45 : 1, listStylePosition: 'outside' },
+        '& ul': { listStyleType: 'disc' },
+        '& ol': { listStyleType: 'decimal' },
+        '& ul ul': { listStyleType: 'circle' },
+        '& li': { my: isChat ? 0.25 : compact ? 0.12 : 0.2, display: 'list-item', '&::marker': { opacity: 0.7 } },
         '& h1, & h2, & h3, & h4': {
-          mt: isChat ? 0.75 : compact ? 0.65 : 1.2,
-          mb: isChat ? 0.45 : compact ? 0.35 : 0.6,
+          mt: isChat ? 1.35 : compact ? 0.65 : 1.2,
+          mb: isChat ? 0.4 : compact ? 0.35 : 0.6,
           lineHeight: compact ? 1.25 : 1.3,
+          // Глобальный сброс делает h* обычным текстом: в ответах ассистента секции должны читаться как заголовки.
+          ...(isChat ? { fontWeight: 700, letterSpacing: '-0.005em' } : {}),
         },
-        '& h1': { fontSize: isChat ? '1.18em' : compact ? '1rem' : '1.4rem' },
-        '& h2': { fontSize: isChat ? '1.1em' : compact ? '0.95rem' : '1.2rem' },
-        '& h3': { fontSize: isChat ? '1.04em' : compact ? '0.9rem' : '1.05rem' },
+        '& h1': { fontSize: isChat ? '1.14em' : compact ? '1rem' : '1.4rem' },
+        '& h2': { fontSize: isChat ? '1.06em' : compact ? '0.95rem' : '1.2rem' },
+        '& h3': { fontSize: isChat ? '1.02em' : compact ? '0.9rem' : '1.05rem' },
         '& h4': { fontSize: isChat ? '1em' : compact ? '0.86rem' : '1rem' },
         '& pre': {
           p: compact ? 0.8 : 1,
@@ -130,8 +136,9 @@ function MarkdownRenderer({ value, compact = false, variant = 'default', linkCol
           bgcolor: 'transparent',
         },
         '& table': {
-          width: isChat ? 'max-content' : '100%',
-          minWidth: isChat ? 'max(560px, 100%)' : undefined,
+          // Таблица ответа занимает ширину пузыря и переносит текст; горизонтальный скролл остаётся только для очень широких.
+          width: '100%',
+          minWidth: isChat ? 'min(100%, 420px)' : undefined,
           maxWidth: isChat ? 'none' : undefined,
           borderCollapse: 'collapse',
           my: isChat ? 0 : compact ? 0.7 : 1,
@@ -147,8 +154,11 @@ function MarkdownRenderer({ value, compact = false, variant = 'default', linkCol
           whiteSpace: 'normal',
           wordBreak: 'normal',
           overflowWrap: 'break-word',
-          minWidth: isChat ? 112 : undefined,
+          minWidth: isChat ? 72 : undefined,
+          // Строки разделены только горизонтальными линиями: меньше визуального шума, чем полная сетка.
+          ...(isChat ? { borderLeft: 'none', borderRight: 'none' } : {}),
         },
+        ...(isChat ? { '& tbody tr:last-of-type td': { borderBottom: 'none' } } : {}),
         '& th': {
           fontWeight: 800,
           bgcolor: isChat ? alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.08 : 0.18) : undefined,

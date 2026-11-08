@@ -45,6 +45,7 @@ def main() -> None:
         host=config.host,
         port=config.port,
         reload=False,
+        limit_concurrency=config.limit_concurrency,
         loop="inventory_server.uvicorn_loops:windows_selector_loop_factory",
     )
 

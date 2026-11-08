@@ -33,6 +33,7 @@ from backend.ai_chat.tools.context import (
     ITINVENT_TOOL_EMPLOYEE_SEARCH,
     ITINVENT_TOOL_ENTITY_RESOLVE,
     ITINVENT_TOOL_EQUIPMENT_GET_CARD,
+    ITINVENT_TOOL_EQUIPMENT_EXPORT,
     ITINVENT_TOOL_EQUIPMENT_LIST_BY_BRANCH,
     ITINVENT_TOOL_EQUIPMENT_SEARCH,
     ITINVENT_TOOL_EQUIPMENT_SEARCH_UNIVERSAL,
@@ -890,6 +891,143 @@ class EquipmentSearchUniversalTool(AiTool):
                 },
                 "expanded_search_terms": expanded_terms,
                 "items": items,
+            },
+            sources=[_build_source(database_id)],
+        )
+
+
+EXPORT_MAX_ROWS = 5000
+EXPORT_PAGE_SIZE = 250
+EXPORT_COLUMNS: dict[str, tuple[str, str]] = {
+    "type": ("type_name", "Тип"),
+    "model": ("model_name", "Модель"),
+    "vendor": ("vendor_name", "Производитель"),
+    "inv_no": ("inv_no", "Инв. номер"),
+    "serial_no": ("serial_no", "Серийный номер"),
+    "owner": ("owner_name", "Сотрудник"),
+    "department": ("department", "Отдел"),
+    "status": ("status", "Статус"),
+    "branch": ("branch", "Филиал"),
+    "location": ("location", "Локация"),
+    "network_name": ("network_name", "Сетевое имя"),
+    "ip_address": ("ip_address", "IP"),
+    "mac_address": ("mac_address", "MAC"),
+    "description": ("description", "Описание"),
+}
+EXPORT_DEFAULT_COLUMNS = ["model", "inv_no", "serial_no", "owner", "status", "branch", "location"]
+
+
+class EquipmentExportArgs(BaseModel):
+    query: str = Field(..., min_length=1, max_length=120)
+    columns: list[Literal[tuple(EXPORT_COLUMNS)]] = Field(default_factory=lambda: list(EXPORT_DEFAULT_COLUMNS), max_length=len(EXPORT_COLUMNS))
+    format: Literal["xlsx", "csv"] = "xlsx"
+    file_name: str = Field(default="equipment_export", max_length=120)
+    title: str = Field(default="Выгрузка оборудования", max_length=200)
+    database_id: Optional[str] = Field(default=None, max_length=128)
+
+    @field_validator("query", "file_name", "title", mode="before")
+    @classmethod
+    def _normalize_strings(cls, value):
+        return _normalize_text(value)
+
+    @field_validator("database_id", mode="before")
+    @classmethod
+    def _normalize_database_id(cls, value):
+        return _normalize_text(value) or None
+
+
+def _fetch_universal_rows(query: str, database_id: str, *, max_rows: int) -> tuple[list[dict[str, Any]], int]:
+    """Read every page of the universal search on the server (the model never sees the rows)."""
+    rows: list[dict[str, Any]] = []
+    total = 0
+    page = 1
+    while len(rows) < max_rows:
+        chunk = queries.search_equipment_universal(query, page=page, limit=EXPORT_PAGE_SIZE, db_id=database_id)
+        batch = [row for row in list((chunk or {}).get("equipment") or []) if isinstance(row, dict)]
+        total = max(total, int((chunk or {}).get("total") or 0))
+        if not batch:
+            break
+        rows.extend(batch)
+        if len(rows) >= total or len(batch) < EXPORT_PAGE_SIZE:
+            break
+        page += 1
+    return rows[:max_rows], total
+
+
+class EquipmentExportTool(AiTool):
+    tool_id = ITINVENT_TOOL_EQUIPMENT_EXPORT
+    description = (
+        "Build an Excel (xlsx) or CSV file with ALL equipment matching a search phrase. The server reads every page and "
+        "writes the file itself, so use this INSTEAD of search + ai.files.report whenever the user asks for a file/Excel/table "
+        "export of equipment (any number of rows). query is a universal search phrase like 'телефонный аппарат Panasonic' or "
+        "'монитор Первомайская 21'. columns: type, model, vendor, inv_no, serial_no, owner, department, status, branch, "
+        "location, network_name, ip_address, mac_address, description (default: model, inv_no, serial_no, owner, status, "
+        "branch, location). Returns only a short summary; the file is attached to the chat automatically."
+    )
+    input_model = EquipmentExportArgs
+    stage = "generating_files"
+
+    def execute(self, *, context: AiToolExecutionContext, args: EquipmentExportArgs) -> AiToolResult:
+        if not bool(context.allow_generated_artifacts):
+            return AiToolResult(tool_id=self.tool_id, ok=False, error="Generated files are disabled for this bot.")
+        database_id = _resolve_tool_database_id(context, args)
+        if not database_id:
+            return _database_error(self.tool_id, getattr(args, "database_id", None))
+        raw_items, total = _fetch_universal_rows(args.query, database_id, max_rows=EXPORT_MAX_ROWS)
+        hints = _extract_equipment_search_hints(args.query)
+        if hints:
+            merged = {_equipment_row_key(row): row for row in raw_items}
+            if not any(_equipment_row_matches_hints(row, hints) for row in merged.values()):
+                for term in [hints.get("type_query"), hints.get("place_query")]:
+                    search_term = _normalize_text(term)
+                    if not search_term or search_term == args.query:
+                        continue
+                    extra, _ = _fetch_universal_rows(search_term, database_id, max_rows=EXPORT_MAX_ROWS)
+                    for row in extra:
+                        merged.setdefault(_equipment_row_key(row), row)
+            raw_items = [row for row in merged.values() if _equipment_row_matches_hints(row, hints)]
+            total = len(raw_items)
+        if not raw_items:
+            return AiToolResult(
+                tool_id=self.tool_id,
+                ok=False,
+                database_id=database_id,
+                error=f"Nothing found for '{args.query}', the file was not created.",
+                sources=[_build_source(database_id)],
+            )
+        items = [_normalize_equipment_item(row, database_id=database_id) for row in raw_items]
+        columns = list(dict.fromkeys(args.columns or EXPORT_DEFAULT_COLUMNS))
+        table = [[EXPORT_COLUMNS[key][1] for key in columns]]
+        table.extend([_normalize_text(item.get(EXPORT_COLUMNS[key][0])) for key in columns] for item in items)
+        base_name = re.sub(r"[^\w.-]+", "_", args.file_name or "equipment_export", flags=re.UNICODE).strip("_") or "equipment_export"
+        spec: dict[str, Any] = {
+            "format": args.format,
+            "file_name": base_name,
+            "title": args.title,
+            "metadata": {"report": True, "source": "itinvent.equipment.export", "query": args.query},
+        }
+        if args.format == "xlsx":
+            spec["sheets"] = [{"title": "Оборудование", "rows": table, "header_row_index": 1}]
+        else:
+            spec["rows"] = table
+        try:
+            from backend.ai_chat.artifact_generator import GeneratedFileError, normalize_generated_file_specs
+
+            files = normalize_generated_file_specs([spec])
+        except GeneratedFileError as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, database_id=database_id, error=str(exc))
+        return AiToolResult(
+            tool_id=self.tool_id,
+            ok=True,
+            database_id=database_id,
+            data={
+                "query": args.query,
+                "rows_exported": len(items),
+                "total_found": total,
+                "truncated": total > len(items) and not hints,
+                "columns": [EXPORT_COLUMNS[key][1] for key in columns],
+                "files": files,
+                "count": len(files),
             },
             sources=[_build_source(database_id)],
         )
@@ -2435,6 +2573,7 @@ for _tool in [
     EquipmentSearchUniversalTool(),
     EquipmentGetCardTool(),
     EquipmentListByBranchTool(),
+    EquipmentExportTool(),
     EmployeeSearchTool(),
     EmployeeListEquipmentTool(),
     ConsumablesSearchTool(),

@@ -46,6 +46,8 @@ describe('request ordering in page loaders', () => {
       setLoading: noop, setRefreshing: noop, setItems: set, setQuota: noop, notifyApiError: noop,
       setFolders: noop, setBreadcrumbs: noop, setAllFolders: noop,
       reconcileById: (_previous, next) => next,
+      libraryId: null, myFilesLibrariesAPI: { list: async () => null },
+      setLibraries: noop, setCanManageLibraries: noop, setLibraryInfo: noop,
       isTrashView: false, listView: 'all', currentFolderId: null, debouncedSearchQuery: '',
       activeLoadsRef: { current: 0 },
     };

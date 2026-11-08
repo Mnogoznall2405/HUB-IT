@@ -20,6 +20,7 @@ export default function BranchList({
   onBranchClick,
   onEditClick,
   onDeleteClick,
+  emptyHint = '',
 }) {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
@@ -27,7 +28,7 @@ export default function BranchList({
   if (!branches || branches.length === 0) {
     return (
       <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
-        Филиалы не найдены.
+        {emptyHint || 'Филиалы не найдены.'}
       </Typography>
     );
   }

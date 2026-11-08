@@ -35,6 +35,8 @@ describe('detailModel', () => {
       serial_number: '',
       part_no: '',
       ip_address: '',
+      mac_address: '',
+      network_name: '',
       description: '',
     });
   });
@@ -55,6 +57,13 @@ describe('detailModel', () => {
       branch_no: '12',
       status_no: '8',
     });
+
+    expect(buildAddEquipmentDefaults({
+      statusOptions: [
+        { status_no: 1, status_name: 'АРХИВ' },
+        { status_no: 2, status_name: 'В работе' },
+      ],
+    }).status_no).toBe('2');
 
     expect(buildAddEquipmentDefaults({
       selectedBranch: 'Неизвестный филиал',
@@ -150,6 +159,8 @@ describe('detailModel', () => {
         part_no: undefined,
         description: 'рабочее место',
         ip_address: undefined,
+        mac_address: undefined,
+        network_name: undefined,
         hw_serial_no: undefined,
       },
     });

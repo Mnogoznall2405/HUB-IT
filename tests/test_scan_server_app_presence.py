@@ -5,6 +5,8 @@ import importlib
 import json
 import sqlite3
 import time
+
+import pytest
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
@@ -768,3 +770,32 @@ def test_json_ingest_rejects_oversized_body_before_buffering_it(temp_dir, monkey
     assert declared.status_code == 413
     assert chunked.status_code == 413
     assert processed == []
+
+
+def test_json_ingest_answers_429_when_no_slot_frees_in_time(temp_dir, monkeypatch):
+    """Slots busy longer than the admission wait: 429 + Retry-After instead of a hang until the agent times out."""
+    store = _make_store(temp_dir)
+    monkeypatch.setattr(scan_app, "store", store)
+    monkeypatch.setattr(scan_app, "config", replace(scan_app.config, ingest_admission_wait_sec=0.2, ingest_retry_after_sec=45))
+    api_key = scan_app.config.api_keys[0]
+    payload = IngestPayload(agent_id="a", hostname="H", file_path=r"C:\Scan\x.txt", event_id="evt-busy")
+
+    async def scenario():
+        semaphore = scan_app._get_ingest_semaphore()
+        slots = max(1, int(scan_app.config.ingest_max_concurrency))
+        for _ in range(slots):
+            await semaphore.acquire()
+        try:
+            with pytest.raises(HTTPException) as busy:
+                await scan_app.ingest(_fake_request("10.105.0.18", payload), x_api_key=api_key)
+        finally:
+            for _ in range(slots):
+                semaphore.release()
+        # the slot count is intact afterwards: the next request goes through
+        ok = await scan_app.ingest(_fake_request("10.105.0.18", payload), x_api_key=api_key)
+        return busy.value, ok
+
+    busy, ok = asyncio.run(scenario())
+    assert busy.status_code == 429
+    assert busy.headers["Retry-After"] == "45"
+    assert ok["success"] is True

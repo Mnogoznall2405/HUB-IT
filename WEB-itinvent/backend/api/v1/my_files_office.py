@@ -24,6 +24,7 @@ from backend.models.my_files import MyFileBlankDocumentRequest, MyFileResponse
 from backend.services import onlyoffice_service as oo
 from backend.services.authorization_service import PERM_MY_FILES_READ, PERM_MY_FILES_SHARE, PERM_MY_FILES_WRITE
 from backend.services.my_files_collab_service import my_files_collab_service
+from backend.services.my_files_history_service import MAX_CHANGES_BYTES, MyFilesHistoryService, normalize_history
 from backend.services.my_files_copy_service import my_files_copy_service
 from backend.services.my_files_service import MyFilesNotFoundError, MyFilesRequestMeta, my_files_service
 
@@ -47,6 +48,7 @@ class OfficeEditorConfigResponse(BaseModel):
     public_path: str
     can_rename: bool = False
     can_manage_access: bool = False
+    can_view_history: bool = True
 
 
 class OfficeRenameRequest(BaseModel):
@@ -78,6 +80,10 @@ class OfficeCollaboratorsRequest(BaseModel):
 
 class OfficeCollaboratorsResponse(BaseModel):
     items: list[OfficeCollaborator] = Field(default_factory=list)
+    owner: OfficeCollaborator | None = None
+    owner_kind: str = "owner"
+    inherited_access: bool = False
+    library_name: str = ""
 
 
 class OfficePublicAccess(BaseModel):
@@ -254,19 +260,34 @@ def _save_from_callback(
     document_url: str,
     user_ids: list[int],
     meta: MyFilesRequestMeta,
+    history=None,
+    changes_url: str = "",
 ) -> str:
     spool_path = my_files_service.new_spool_path("office-edit.bin")
+    changes_path = None
     try:
         oo.fetch_document(settings, document_url, spool_path, max_bytes=_MAX_SAVED_DOCUMENT_BYTES)
+        if changes_url and normalize_history(history):
+            changes_path = my_files_service.new_spool_path("office-changes.zip")
+            try:
+                oo.fetch_document(settings, changes_url, changes_path, max_bytes=MAX_CHANGES_BYTES)
+            except Exception:
+                logger.warning("office.history_download_failed file_id=%s", file_id)
+                my_files_service._delete_spool_payload(changes_path)
+                changes_path = None
         return my_files_collab_service.save_version(
             file_id=file_id,
             document_key=document_key,
             spool_path=spool_path,
             editor_user_ids=user_ids,
             meta=meta,
+            history=history,
+            changes_path=changes_path,
         )
     finally:
         my_files_service._delete_spool_payload(spool_path)
+        if changes_path:
+            my_files_service._delete_spool_payload(changes_path)
 
 
 @router.post("/office/callback")
@@ -301,6 +322,8 @@ async def office_callback(request: Request, t: str = Query(..., min_length=10, m
             file_id=file_id,
             document_key=str(event.get("key") or ""),
             document_url=str(event.get("url") or ""),
+            history=event.get("history"),
+            changes_url=str(event.get("changesurl") or ""),
             user_ids=user_ids,
             meta=_request_meta(request),
         )
@@ -312,6 +335,53 @@ async def office_callback(request: Request, t: str = Query(..., min_length=10, m
         return {"error": 1}
     logger.info("office.callback file_id=%s status=%s result=%s", file_id, event_status, result)
     return {"error": 0}
+
+
+@router.get("/office/history/source")
+async def download_history_source(request: Request, t: str = Query(..., min_length=10, max_length=2048)):
+    settings = _settings_or_503()
+    try:
+        claims = oo.read_url_token(settings, t, "hist")
+        payload = await run_in_threadpool(MyFilesHistoryService(my_files_collab_service).resolve_asset,
+            file_id=str(claims.get("fid") or ""), user_id=int(claims.get("uid") or 0),
+            version_id=str(claims.get("vid") or ""), blob_id=str(claims.get("bid") or ""), kind=str(claims.get("kind") or ""))
+    except oo.OnlyOfficeAuthError as exc:
+        raise HTTPException(status_code=403, detail="Invalid token") from exc
+    except Exception as exc:
+        raise _service_error_to_secure_http(exc) from exc
+    response = _download_response(payload, request)
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+@router.get("/{file_id}/office/history")
+async def get_document_history(file_id: str, current_user: User = Depends(require_permission(PERM_MY_FILES_READ))):
+    try:
+        return await run_in_threadpool(MyFilesHistoryService(my_files_collab_service).list_history,
+            file_id=file_id, user_id=int(current_user.id))
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.get("/{file_id}/office/history/config")
+async def get_history_config(file_id: str, current_user: User = Depends(require_permission(PERM_MY_FILES_READ))):
+    settings = _settings_or_503()
+    try:
+        return await run_in_threadpool(MyFilesHistoryService(my_files_collab_service).viewer_config,
+            settings=settings, file_id=file_id, user_id=int(current_user.id), username=current_user.username)
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.get("/{file_id}/office/history/{version_no}")
+async def get_history_data(file_id: str, version_no: int, current_user: User = Depends(require_permission(PERM_MY_FILES_READ))):
+    settings = _settings_or_503()
+    try:
+        return await run_in_threadpool(MyFilesHistoryService(my_files_collab_service).history_data,
+            settings=settings, file_id=file_id, user_id=int(current_user.id), version_no=version_no)
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
 
 
 @router.get("/{file_id}/office/config", response_model=OfficeEditorConfigResponse)
@@ -337,7 +407,7 @@ async def get_office_editor_config(
         role=session["role"],
     )
     return {"config": config, "role": session["role"], "public_path": settings.public_path,
-            "can_rename": session["role"] == oo.ROLE_OWNER, "can_manage_access": session["is_owner"]}
+            "can_rename": session["role"] == oo.ROLE_OWNER, "can_manage_access": session["can_manage_access"]}
 
 
 @router.post("/{file_id}/office/rename", response_model=OfficeRenameResponse)
@@ -401,12 +471,11 @@ async def list_office_collaborators(
     current_user: User = Depends(require_permission(PERM_MY_FILES_SHARE)),
 ) -> dict:
     try:
-        items = await run_in_threadpool(
-            my_files_collab_service.list_collaborators, file_id=file_id, owner_user_id=int(current_user.id)
+        return await run_in_threadpool(
+            my_files_collab_service.collaborator_settings, file_id=file_id, user_id=int(current_user.id)
         )
     except Exception as exc:
         raise _service_error_to_http(exc) from exc
-    return {"items": items}
 
 
 @router.put("/{file_id}/office/collaborators", response_model=OfficeCollaboratorsResponse)

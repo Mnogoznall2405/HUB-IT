@@ -341,7 +341,8 @@ export default function UsersTab({
       </Box>
     </Box>
   ) : (
-    <Box sx={{ height: '100%', minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', px: 3 }}>
+    // The panel is as tall as the user table: top-aligned so the hint is in view instead of centred mid-table, off screen.
+    <Box sx={{ minHeight: 0, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', textAlign: 'center', px: 3, pt: 8 }}>
       <Stack spacing={0.75} sx={{ maxWidth: 260 }}>
         <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Редактор</Typography>
         <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.45 }}>
@@ -538,8 +539,10 @@ export default function UsersTab({
                 </TableHead>
                 <TableBody>
                   {loading ? (
-                    <TableRow>
-                      <TableCell colSpan={6} sx={{ py: 4, textAlign: 'center' }}>
+                    // Reserve the height of a full page of rows (~72px each): otherwise the page grows when the rows arrive,
+                    // a vertical scrollbar appears and the whole layout, incl. the editor panel, jumps (CLS ~0.27).
+                    <TableRow sx={{ height: rowsPerPage * 72 }}>
+                      <TableCell colSpan={6} sx={{ py: 4, textAlign: 'center', verticalAlign: 'top' }}>
                         <CircularProgress size={24} />
                       </TableCell>
                     </TableRow>

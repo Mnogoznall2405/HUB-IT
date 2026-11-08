@@ -43,6 +43,7 @@ from backend.ai_chat.tools.context import (
     AI_TOOL_FILES_CONVERT_DOCUMENT,
     AI_TOOL_FILES_CREATE,
     AI_TOOL_FILES_REPORT,
+    ITINVENT_TOOL_EQUIPMENT_EXPORT,
     AI_TOOL_GROUP_ITINVENT,
     AI_TOOL_GROUP_OFFICE,
     AI_TOOL_GROUP_FILES,
@@ -58,6 +59,8 @@ from backend.ai_chat.tools.context import (
     AI_TOOL_GROUPS_ALL,
     AiToolExecutionContext,
     DEFAULT_ITINVENT_TOOL_IDS,
+    ITINVENT_TOOL_COMPUTERS_GET,
+    ITINVENT_TOOL_COMPUTERS_SEARCH,
     KB_TOOL_ATTACHMENT_SEND,
     SELF_TOOL_FILES_ATTACH,
     get_available_database_options,
@@ -114,6 +117,7 @@ DEFAULT_BOT_DESCRIPTION = "Данные сотрудников, оборудов
 DEFAULT_BOT_PROMPT = (
     "Ты корпоративный AI-ассистент IT-команды. "
     "Отвечай по-русски: чётко, структурированно, по делу. "
+    "Заголовки таблиц, статусы и подписи тоже по-русски (например «в сети» / «не в сети», «Имя компьютера», «IP-адрес»), без английских online/offline. "
     "Опирайся ТОЛЬКО на: контекст из базы знаний, прикреплённые файлы и результаты вызовов инструментов. "
     "Не выдумывай факты. Если данных недостаточно — явно сообщи и предложи как уточнить запрос. "
     "Используй инструменты, когда вопрос требует живых данных (ITinvent, AD, почта, задачи, MFU/сеть). "
@@ -218,6 +222,7 @@ AI_CONTEXT_RENDERED_MESSAGE_WINDOW = max(1, min(20, int(os.environ.get("AI_CONTE
 AI_CONTEXT_ATTACHMENT_NAME_LIMIT = int(os.environ.get("AI_CONTEXT_ATTACHMENT_NAME_LIMIT", "3"))
 AI_FILE_CONTEXT_TEXT_LIMIT = int(os.environ.get("AI_FILE_CONTEXT_TEXT_LIMIT", "9000"))
 AI_INPUT_BUDGET_TOKENS = max(4096, min(32000, int(os.environ.get("AI_INPUT_BUDGET_TOKENS", "32000"))))
+AI_SUMMARY_MIN_BATCH = max(1, min(40, int(os.environ.get("AI_SUMMARY_MIN_BATCH", "8"))))
 AI_ROLLING_SUMMARY_TOKENS = max(128, min(1500, int(os.environ.get("AI_ROLLING_SUMMARY_TOKENS", "1500"))))
 AI_MEMORY_MARK_PREFIX = "Учтена личная память"
 AI_MEMORY_MAX_FACTS = max(1, min(20, int(os.environ.get("AI_MEMORY_MAX_FACTS", "20"))))
@@ -227,6 +232,10 @@ AI_PERSONAL_MEMORY_ENABLED = str(os.environ.get("AI_PERSONAL_MEMORY_ENABLED", "0
 }
 AI_TOOL_CALL_LIMIT = int(os.environ.get("AI_TOOL_CALL_LIMIT", "3"))
 AI_TOOL_ROUND_LIMIT = int(os.environ.get("AI_TOOL_ROUND_LIMIT", "6"))
+# Живой набор ответа (стриминг answer_markdown). Выключатель — AI_STREAM_ANSWER_ENABLED=0.
+AI_STREAM_ANSWER_ENABLED = os.environ.get("AI_STREAM_ANSWER_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+AI_PREVIEW_MIN_INTERVAL_SEC = float(os.environ.get("AI_PREVIEW_MIN_INTERVAL_SEC", "0.6"))
+AI_PREVIEW_MIN_GROWTH_CHARS = int(os.environ.get("AI_PREVIEW_MIN_GROWTH_CHARS", "40"))
 # AG-4/J2: at most this many extra tool groups the model may request per run.
 # J1: how many previous runs to scan for the last non-empty routed group set.
 AI_JEV_STICKY_LOOKBACK_RUNS = 3
@@ -240,6 +249,10 @@ AI_TOKEN_BUDGET_SAFETY_MARGIN = int(os.environ.get("AI_TOKEN_BUDGET_SAFETY_MARGI
 AI_TOOL_VALIDATION_RETRY_LIMIT = int(os.environ.get("AI_TOOL_VALIDATION_RETRY_LIMIT", "1"))
 # AG-3: v5 merges file tools (ai.files.*) into the existing corp-assistant bot.
 DEFAULT_BOT_LIVE_DATA_SEED_SETTING_KEY = "ai_chat.default_bot_live_data_seed_v5"
+# One-off: add only the computers.search/get tools to the already seeded default bot
+# (v5 seed ran earlier, so changing the defaults alone never reaches the existing bot).
+DEFAULT_BOT_COMPUTERS_TOOLS_SEED_SETTING_KEY = "ai_chat.default_bot_computers_tools_seed_v1"
+DEFAULT_BOT_COMPUTERS_TOOL_IDS = (ITINVENT_TOOL_COMPUTERS_SEARCH, ITINVENT_TOOL_COMPUTERS_GET)
 AI_ITINVENT_TOOL_ROUTING_GUIDE = (
     "Tool routing for live ITinvent requests:\n"
     "- ITinvent tools use the current selected database by default. If the user is admin and the bot is in admin_multi_db mode, "
@@ -438,7 +451,9 @@ AI_REQUEST_UNDERSTANDING_GUIDE = (
     "User request understanding and query coaching:\n"
     "- Users may write with typos, missing punctuation, mixed Russian/English terms, or short phrases. Infer the likely business intent from context and enabled tools.\n"
     "- If the intent is clear enough to act safely, silently normalize the request and use the right tools. Do not lecture the user about wording.\n"
-    "- If a required slot is missing or ambiguous, ask exactly one short clarifying question and include a small Russian section '\u041c\u043e\u0436\u043d\u043e \u043d\u0430\u043f\u0438\u0441\u0430\u0442\u044c \u0442\u0430\u043a:' with 2-3 ready-to-copy example requests.\n"
+    "- If a required slot is missing or ambiguous, ask exactly one short clarifying question and put 2-4 ready answers into quick_replies; the app shows them as buttons, so never repeat them in answer_markdown and never write a text section like '\u041c\u043e\u0436\u043d\u043e \u043d\u0430\u043f\u0438\u0441\u0430\u0442\u044c \u0442\u0430\u043a:'.\n"
+    "- quick_replies is a list of {label, reply}: label is the short button text (up to 40 characters, Russian), reply is the full request the employee would send, complete with the concrete values (inventory number, name, branch) you already know. "
+    "Use it for a clarifying question, and after an answer when 2-3 natural next steps exist. Leave it an empty list when there is nothing useful to offer or when the answer is a confirmation card.\n"
     "- For ITinvent examples, include concrete slots such as inventory number, employee, branch, location, type, status, period or database when relevant.\n"
     "- For file/report examples, include data scope, format, columns/grouping, and whether to send the generated file by email.\n"
     "- For mail/task examples, include recipient/task, subject/action, deadline/status, and attachment intent when relevant.\n"
@@ -501,25 +516,39 @@ AI_TOOL_CALLS_SCHEMA = {
         "additionalProperties": False,
     },
 }
+AI_QUICK_REPLIES_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string"},
+            "reply": {"type": "string"},
+        },
+        "required": ["label", "reply"],
+        "additionalProperties": False,
+    },
+}
 AI_CHAT_RESPONSE_SCHEMA_WITH_TOOLS = {
     "type": "object",
     "properties": {
         "answer_markdown": {"type": "string"},
+        "quick_replies": AI_QUICK_REPLIES_SCHEMA,
         "artifacts": AI_ARTIFACTS_SCHEMA,
         "kb_attachment_send": AI_KB_ATTACHMENT_SEND_SCHEMA,
         "tool_calls": AI_TOOL_CALLS_SCHEMA,
     },
-    "required": ["answer_markdown", "artifacts", "kb_attachment_send", "tool_calls"],
+    "required": ["answer_markdown", "quick_replies", "artifacts", "kb_attachment_send", "tool_calls"],
     "additionalProperties": False,
 }
 AI_CHAT_RESPONSE_SCHEMA_FINAL = {
     "type": "object",
     "properties": {
         "answer_markdown": {"type": "string"},
+        "quick_replies": AI_QUICK_REPLIES_SCHEMA,
         "artifacts": AI_ARTIFACTS_SCHEMA,
         "kb_attachment_send": AI_KB_ATTACHMENT_SEND_SCHEMA,
     },
-    "required": ["answer_markdown", "artifacts", "kb_attachment_send"],
+    "required": ["answer_markdown", "quick_replies", "artifacts", "kb_attachment_send"],
     "additionalProperties": False,
 }
 
@@ -1676,6 +1705,14 @@ def _handle_tool_group_expansion(
     return payload, trace
 
 
+def _unescape_literal_newlines(text: str) -> str:
+    # The reply travels as a JSON string field; some models double-escape it, so the
+    # markdown arrives as one line with literal "\n". Restore only when no real newline exists.
+    if "\\n" in text and "\n" not in text:
+        return text.replace("\\r\\n", "\n").replace("\\n", "\n")
+    return text
+
+
 def _truncate(value: object, limit: int = 12000) -> str:
     text = _normalize_text(value)
     return text[:limit]
@@ -1930,7 +1967,26 @@ def _format_tool_results_for_prompt(results: list[dict[str, Any]]) -> str:
     normalized = [item for item in list(results or []) if isinstance(item, dict)]
     if not normalized:
         return "No tool results."
-    return _json_dumps(normalized)
+    return _json_dumps([_without_file_bodies(item) for item in normalized])
+
+
+def _without_file_bodies(result: dict[str, Any]) -> dict[str, Any]:
+    """Generated files travel server-side; the model only needs their name and size, not every row."""
+    data = result.get("data")
+    files = data.get("files") if isinstance(data, dict) else None
+    if not isinstance(files, list) or not files:
+        return result
+    brief = []
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        brief.append({
+            "file_name": item.get("file_name"),
+            "format": item.get("format"),
+            "size_bytes": item.get("size_bytes"),
+            "attached_to_chat": True,
+        })
+    return {**result, "data": {**data, "files": brief}}
 
 
 def _schema_type_label(schema: dict[str, Any], defs: dict[str, Any]) -> str:
@@ -2171,7 +2227,12 @@ def _extract_generated_file_specs_from_tool_results(results: list[dict[str, Any]
         if not isinstance(result, dict):
             continue
         tool_id = _normalize_text(result.get("tool_id"))
-        if tool_id not in {AI_TOOL_FILES_CREATE, AI_TOOL_FILES_REPORT, AI_TOOL_FILES_CONVERT_DOCUMENT} or not bool(result.get("ok")):
+        if tool_id not in {
+            AI_TOOL_FILES_CREATE,
+            AI_TOOL_FILES_REPORT,
+            AI_TOOL_FILES_CONVERT_DOCUMENT,
+            ITINVENT_TOOL_EQUIPMENT_EXPORT,
+        } or not bool(result.get("ok")):
             continue
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
         if tool_id == AI_TOOL_FILES_CONVERT_DOCUMENT and bool(data.get("needs_format_choice")):
@@ -2903,6 +2964,13 @@ class AiChatService:
                                     len(merged) - len(current_enabled_tools),
                                 )
                             self._write_bool_setting(session, DEFAULT_BOT_LIVE_DATA_SEED_SETTING_KEY, True)
+                        elif not self._read_bool_setting(session, DEFAULT_BOT_COMPUTERS_TOOLS_SEED_SETTING_KEY):
+                            missing = [t for t in DEFAULT_BOT_COMPUTERS_TOOL_IDS if t not in current_enabled_tools]
+                            if missing:
+                                bot.enabled_tools_json = _json_dumps([*current_enabled_tools, *missing])
+                                bot.updated_at = _utc_now()
+                                logger.info("AI default bot: added computers tools %s", missing)
+                            self._write_bool_setting(session, DEFAULT_BOT_COMPUTERS_TOOLS_SEED_SETTING_KEY, True)
                     elif not seeded_once:
                         bot.enabled_tools_json = _json_dumps(default_enabled_tools)
                         bot.tool_settings_json = _json_dumps(default_tool_settings)
@@ -4629,8 +4697,11 @@ class AiChatService:
             is_typing=True,
         )
         try:
+            current_stage = {"value": AI_RUN_STAGE_ANALYZING_REQUEST}
+
             def report_stage(stage: str) -> None:
                 self._raise_if_run_cancelled(run.id)
+                current_stage["value"] = stage
                 self._set_run_progress(
                     run_id=run.id,
                     conversation_id=run.conversation_id,
@@ -4639,6 +4710,62 @@ class AiChatService:
                     status="running",
                     stage=stage,
                 )
+
+            def report_step(step: dict[str, Any]) -> None:
+                # Шаг инструмента для блока «Думает»: только название, состояние и
+                # длительность — без аргументов и без рассуждений модели.
+                try:
+                    self._publish_status_event(
+                        conversation_id=run.conversation_id,
+                        user_id=int(run.user_id),
+                        bot=bot,
+                        status="running",
+                        stage=current_stage["value"],
+                        run_id=run.id,
+                        step=step,
+                    )
+                except Exception:  # noqa: BLE001 - прогресс не должен ронять запуск
+                    logger.debug("AI run step publish failed: run_id=%s", run.id, exc_info=True)
+
+            report_stage.report_step = report_step  # type: ignore[attr-defined]
+
+            preview_state = {"at": 0.0, "length": 0, "shown": False, "text": ""}
+
+            def report_preview(text: str, *, force: bool = False) -> None:
+                # Живой набор ответа: публикуем накопленный текст не чаще раза в
+                # AI_PREVIEW_MIN_INTERVAL_SEC (каждая публикация — запись в outbox).
+                # Пустая строка сбрасывает превью (повтор запроса, раунд с инструментами).
+                cleaned = _unescape_literal_newlines(_truncate(text, limit=12000)) if text else ""
+                now = time.monotonic()
+                if cleaned:
+                    # Финальный досыл нужен только если превью уже шло (стриминг работал).
+                    if force and not preview_state["shown"]:
+                        return
+                    if cleaned == preview_state["text"]:
+                        return  # досыл не нужен: именно этот текст уже показан
+                    grew = len(cleaned) - preview_state["length"]
+                    if not force and (now - preview_state["at"] < AI_PREVIEW_MIN_INTERVAL_SEC
+                                      or grew < AI_PREVIEW_MIN_GROWTH_CHARS):
+                        return
+                elif not preview_state["shown"]:
+                    return
+                # Проверка отмены — SELECT в БД: только перед реальной публикацией, не на каждый чанк.
+                self._raise_if_run_cancelled(run.id)
+                preview_state.update(at=now, length=len(cleaned), shown=bool(cleaned), text=cleaned)
+                try:
+                    self._publish_status_event(
+                        conversation_id=run.conversation_id,
+                        user_id=int(run.user_id),
+                        bot=bot,
+                        status="running",
+                        stage=AI_RUN_STAGE_GENERATING_ANSWER,
+                        run_id=run.id,
+                        partial_text=cleaned,
+                    )
+                except Exception:  # noqa: BLE001 - превью не должно ронять запуск
+                    logger.debug("AI run preview publish failed: run_id=%s", run.id, exc_info=True)
+
+            report_stage.report_preview = report_preview  # type: ignore[attr-defined]
 
             # R34: the employee may have been deactivated while the run waited in the
             # queue; checked before the access check, which would only report «cancelled».
@@ -5066,14 +5193,29 @@ class AiChatService:
                     tool_id, call.get("args") or {}, tool_context.enabled_tools,
                 )
                 tool = ai_tool_registry.get(tool_id)
+                tool_stage = _normalize_text(getattr(tool, "stage", None)) or AI_RUN_STAGE_CHECKING_ITINVENT
                 if callable(report_stage):
-                    report_stage(_normalize_text(getattr(tool, "stage", None)) or AI_RUN_STAGE_CHECKING_ITINVENT)
+                    report_stage(tool_stage)
+                step_id = f"{tool_id}:{uuid4().hex[:8]}"
+                step_label = _resolve_run_status_text(status="running", stage=tool_stage).rstrip(".")
+                step_started_at = time.perf_counter()
+                report_step = getattr(report_stage, "report_step", None)
+                if callable(report_step):
+                    report_step({"id": step_id, "tool_id": tool_id, "label": step_label, "state": "running"})
                 result, audit_row = ai_tool_registry.execute(
                     tool_id=tool_id,
                     raw_args=prepared_args,
                     context=tool_context,
                 )
                 payload = result.to_payload()
+                if callable(report_step):
+                    report_step({
+                        "id": step_id,
+                        "tool_id": tool_id,
+                        "label": step_label,
+                        "state": "error" if _normalize_text(payload.get("error")) else "done",
+                        "duration_ms": int((time.perf_counter() - step_started_at) * 1000),
+                    })
                 payload_data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
                 diagnostic = payload_data.get("diagnostic") if isinstance(payload_data.get("diagnostic"), dict) else None
                 trace = {
@@ -5788,7 +5930,7 @@ class AiChatService:
                     _normalize_text(bot.system_prompt),
                     AI_JSON_OUTPUT_LOCK,
                     (
-                        "Return JSON only. Allowed top-level keys are answer_markdown, artifacts, "
+                        "Return JSON only. Allowed top-level keys are answer_markdown, quick_replies, artifacts, "
                         "kb_attachment_send, tool_calls. artifacts is optional. "
                         "kb_attachment_send must be null or an object with article_id and attachment_id chosen "
                         "only from the provided template candidates. tool_calls is optional and may contain up to "
@@ -6045,6 +6187,10 @@ class AiChatService:
                 current_user_prompt,
                 token_limit=AI_INPUT_BUDGET_TOKENS,
             )
+            report_preview = getattr(report_stage, "report_preview", None)
+            stream_kwargs: dict[str, Any] = {}
+            if AI_STREAM_ANSWER_ENABLED and callable(report_preview):
+                stream_kwargs["on_text_delta"] = report_preview
             for attempt in range(2):
                 try:
                     payload, usage = openrouter_client.complete_json(
@@ -6057,8 +6203,17 @@ class AiChatService:
                         response_schema=response_schema,
                         schema_name=schema_name,
                         response_healing=False,
+                        **stream_kwargs,
                     )
-                    return payload if isinstance(payload, dict) else {}, usage or {}
+                    payload = payload if isinstance(payload, dict) else {}
+                    if stream_kwargs:
+                        # Раунд с инструментами — черновой текст не ответ: сбросить превью;
+                        # иначе дослать полный текст, которого не хватило до троттлинга.
+                        if payload.get("tool_calls"):
+                            report_preview("")
+                        else:
+                            report_preview(_normalize_text(payload.get("answer_markdown")), force=True)
+                    return payload, usage or {}
                 except OpenRouterClientError as exc:
                     if attempt == 0 and "invalid json payload" in str(exc).lower():
                         # Retry only model formatting, never replay completed tools.
@@ -6223,7 +6378,7 @@ class AiChatService:
                         _normalize_text(bot.system_prompt),
                         AI_JSON_OUTPUT_LOCK,
                         (
-                            "Return JSON only. Allowed top-level keys are answer_markdown, artifacts, "
+                            "Return JSON only. Allowed top-level keys are answer_markdown, quick_replies, artifacts, "
                             "kb_attachment_send, tool_calls. artifacts is optional. "
                             f"tool_calls may contain up to {max_calls_per_round} objects with keys tool_id and args."
                         ),
@@ -6333,7 +6488,7 @@ class AiChatService:
                         _normalize_text(bot.system_prompt),
                         AI_JSON_OUTPUT_LOCK,
                         (
-                            "Return JSON only with keys answer_markdown, artifacts, kb_attachment_send. "
+                            "Return JSON only with keys answer_markdown, quick_replies, artifacts, kb_attachment_send. "
                             "Do not return tool_calls in this final pass."
                         ),
                         "Token budget exhausted. Answer the user's question from the available results. "
@@ -6394,7 +6549,7 @@ class AiChatService:
                         _normalize_text(bot.system_prompt),
                         AI_JSON_OUTPUT_LOCK,
                         (
-                            "Return JSON only with keys answer_markdown, artifacts, kb_attachment_send. "
+                            "Return JSON only with keys answer_markdown, quick_replies, artifacts, kb_attachment_send. "
                             "Do not return tool_calls in this final pass."
                         ),
                         AI_ANSWER_STYLE_GUIDE,
@@ -6442,7 +6597,7 @@ class AiChatService:
                     "artifacts": [],
                     "kb_attachment_send": None,
                 }
-        answer_markdown = _truncate(final_payload.get("answer_markdown"), limit=12000)
+        answer_markdown = _unescape_literal_newlines(_truncate(final_payload.get("answer_markdown"), limit=12000))
         lookup_answer = (render_employee_lookup(accumulated_tool_results, request_text=trigger_text_for_routing)
                          if not report_file_intent and not final_payload.get("artifacts") else None)
         if lookup_answer is not None:
@@ -6528,6 +6683,15 @@ class AiChatService:
                 answer_markdown = _build_report_choice_answer(report_choice_payload)
                 generated_file_specs = []
                 artifacts = []
+        if answer_markdown and not file_format_choice_created:
+            from backend.ai_chat.action_cards import build_quick_replies_card
+
+            build_quick_replies_card(
+                conversation_id=_normalize_text(run_payload.get("conversation_id")),
+                run_id=_normalize_text(run_payload.get("id")),
+                requester_user_id=int(run_payload.get("user_id") or 0),
+                replies=final_payload.get("quick_replies"),
+            )
         # J10: per-run tool-routing audit — which groups were routed/expanded
         # and which tools were actually used by the model.
         used_tool_ids = sorted(
@@ -6570,6 +6734,12 @@ class AiChatService:
         report_stage=None,
     ) -> dict[str, Any]:
         normalized_conversation_id = _normalize_text(conversation_id)
+        _lap_state = {"t": time.perf_counter()}
+
+        def _lap(stage: str) -> None:
+            _log_ai_run_timing(stage, _lap_state["t"], run_id=_normalize_text(trigger_message_id))
+            _lap_state["t"] = time.perf_counter()
+
         with chat_session() as initial_chat_db:
             initial_trigger = initial_chat_db.get(ChatMessage, _normalize_text(trigger_message_id))
             if initial_trigger is None or _normalize_text(initial_trigger.conversation_id) != normalized_conversation_id:
@@ -6579,6 +6749,7 @@ class AiChatService:
             memory_query = _normalize_text(initial_trigger.body)
             trigger_seq = int(initial_trigger.conversation_seq or 0)
             trigger_created_at = initial_trigger.created_at
+        _lap("ctx_initial_message")
         with app_session() as app_db:
             mapping = app_db.execute(
                 select(AppAiBotConversation).where(
@@ -6619,6 +6790,7 @@ class AiChatService:
                         "recipients": payload.get("to") or payload.get("recipient_user_id"),
                         "expires_at": _iso(action.expires_at)})
 
+        _lap("ctx_mapping_state")
         summary_append_lines: list[str] = []
         next_summary_until_seq = summary_until_seq
         with chat_session() as session:
@@ -6668,6 +6840,7 @@ class AiChatService:
                     if body:
                         summary_append_lines.append(f"{sender_label}: {_truncate_tokens(body, 300)}")
                 next_summary_until_seq = int(older_messages[-1].conversation_seq) if older_messages else summary_until_seq
+            _lap("ctx_messages")
             attachment_lookup_ids = {
                 _normalize_text(getattr(item, "id", None))
                 for item in [*messages, trigger_message, reply_message]
@@ -6708,6 +6881,7 @@ class AiChatService:
                                 extracted_text=extracted,
                             )
                         )
+            _lap("ctx_files")
             trigger_attachments = attachments_by_message.get(_normalize_text(trigger_message.id), [])
             trigger_text = _normalize_text(trigger_message.body) or _build_attachment_request_fallback(trigger_attachments)
             conversation_lines: list[str] = []
@@ -6747,6 +6921,7 @@ class AiChatService:
                         limit=5,
                         current_user=user_payload,
                     )
+        _lap("ctx_kb")
         if memory_enabled:
             memory_started_at = time.perf_counter()
             memory_result = smart_memory.prepare(user_id=int(user_payload["id"]),
@@ -6763,6 +6938,7 @@ class AiChatService:
             memory_status, memory_changed = memory_result["status"], memory_result["changed"]
             memory_usage = memory_result["usage"]
             _log_ai_run_timing("memory", memory_started_at, run_id=_normalize_text(trigger_message_id))
+        _lap("ctx_memory")
         if summary_append_lines:
             fallback_summary = _compact_head_tail(
                 "\n".join(part for part in [rolling_summary, *summary_append_lines] if part),
@@ -6770,7 +6946,13 @@ class AiChatService:
                 head_ratio=0.25,
             )
             summary_ready = True
-            if memory_enabled:
+            if memory_enabled and len(summary_append_lines) < AI_SUMMARY_MIN_BATCH:
+                # Небольшой хвост не сжимаем LLM-вызовом (~6 с на каждое сообщение):
+                # он попадает в промпт как есть, контрольная точка не двигается,
+                # а накопившийся пакет будет сжат одним вызовом.
+                summary_ready = False
+                rolling_summary = fallback_summary
+            elif memory_enabled:
                 try:
                     rolling_summary, summary_usage = smart_memory.summarize(rolling_summary,
                         summary_append_lines, model=memory_model)
@@ -6801,6 +6983,7 @@ class AiChatService:
                             updated_at=_utc_now(),
                         )
                     )
+        _lap("ctx_summary")
         with app_session() as app_db:
             current_mapping = app_db.execute(select(AppAiBotConversation).where(
                 AppAiBotConversation.conversation_id == normalized_conversation_id,
@@ -7410,6 +7593,7 @@ class AiChatService:
         updated_at: str | None = None,
         run_created_at: str | None = None,
         result_message_id: str | None = None,
+        step: dict[str, Any] | None = None,
     ) -> None:
         normalized_status = _normalize_text(status)
         normalized_stage = _normalize_text(stage) or normalized_status
@@ -7425,11 +7609,16 @@ class AiChatService:
             "status_text": resolved_status_text or None,
             "run_id": _normalize_text(run_id),
             "error_text": _normalize_text(error_text) or None,
-            "partial_text": _normalize_text(partial_text) or None,
             "updated_at": updated_at or _iso(_utc_now()),
             "run_created_at": run_created_at,
             "result_message_id": result_message_id,
         }
+        # partial_text только когда задан: прочие события (этапы, шаги, completed) не должны
+        # стирать уже показанный набор текста. Пустая строка — явный сброс превью.
+        if partial_text is not None:
+            payload["partial_text"] = _normalize_text(partial_text)
+        if isinstance(step, dict) and step:
+            payload["step"] = step
         self._enqueue_realtime_jobs([
             {
                 "event_type": "chat.ai.run.updated",

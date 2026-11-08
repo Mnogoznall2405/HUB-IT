@@ -80,3 +80,9 @@
 
 - По умолчанию 90 дней (`SCAN_RETENTION_DAYS`).
 - Worker раз в час чистит старые инциденты/задачи/артефакты.
+
+## Задачи агентам: self_update и install_package
+
+- `self_update` — агент скачивает собственный MSI (`GET /api/v1/scan/agent-package`, путь и SHA-256 из `SCAN_AGENT_PACKAGE_PATH`/`SCAN_AGENT_PACKAGE_SHA256`), ставит его `msiexec /qn` и после рестарта сверяет версию.
+- `install_package` (агент ≥ 1.4.15) — тихая установка стороннего ПО (например, HUB Desktop). Что ставить, определяет только сервер: реестр пакетов — JSON-файл `SCAN_INSTALL_MANIFEST_PATH` (`id → file, kind msi|exe, args, version, display_name, sha256?`). В теле задачи от вызывающего берётся только `package_id`; ссылка, хеш, тип и аргументы подставляются из реестра. Агент качает `GET /api/v1/scan/install-package?package_id=…` по API-ключу, проверяет SHA-256, запускает установщик (30 мин максимум), сверяет версию по `Uninstall` и возвращает `installed` / `already_installed` / `failed`. Абсолютные и чужие URL агент отвергает.
+- Массовая постановка по волнам: `python -I scripts/scan/rollout_install_package.py --package-id <id> [--apply]` (по умолчанию dry-run; останавливается при >5% сбоев или недоступности сервиса).

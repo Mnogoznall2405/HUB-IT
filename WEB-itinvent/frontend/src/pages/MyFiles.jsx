@@ -177,22 +177,24 @@ export default function MyFiles() {
     : '';
   const libraryRank = LIBRARY_ROLE_RANK[libraryRole] || 0;
   const canManageLibrary = isLibraryView && libraryRank >= LIBRARY_ROLE_RANK.manage;
-  // In a library the role decides: edit may change content, manage also owns the trash, links and the journal.
+  // Library roles govern editing and trash; individual sharing uses the server's author/admin capability.
   const canWrite = hasPermission('my_files.write')
     && (!isLibraryView || libraryRank >= (isTrashView ? LIBRARY_ROLE_RANK.manage : LIBRARY_ROLE_RANK.edit));
-  const canShare = hasPermission('my_files.share') && (!isLibraryView || canManageLibrary);
+  const canShare = hasPermission('my_files.share') && (!isLibraryView || authUser?.role === 'admin');
   const libraryName = String(activeLibrary?.name || (libraryInfo && String(libraryInfo.id) === String(libraryId) ? libraryInfo.name : '') || 'Общая папка');
   // "Недавние" and search results mix in rows of libraries the user belongs to: each one is gated by its own role.
   const entryAccess = (entry) => {
     const entryLibraryId = entry?.library_id ? String(entry.library_id) : '';
+    const fileShare = entry?.original_file_name !== undefined
+      ? hasPermission('my_files.share') && entry.can_manage_access === true : null;
     if (!entryLibraryId || entryLibraryId === String(libraryId || '')) {
-      return { library: isLibraryView, canWrite, canShare, canManage: canManageLibrary };
+      return { library: isLibraryView, canWrite, canShare: fileShare ?? canShare, canManage: canManageLibrary };
     }
     const rank = LIBRARY_ROLE_RANK[String(entry.my_role || '')] || 0;
     return {
       library: true,
       canWrite: hasPermission('my_files.write') && rank >= LIBRARY_ROLE_RANK.edit,
-      canShare: hasPermission('my_files.share') && rank >= LIBRARY_ROLE_RANK.manage,
+      canShare: fileShare ?? (hasPermission('my_files.share') && authUser?.role === 'admin'),
       canManage: rank >= LIBRARY_ROLE_RANK.manage,
     };
   };
@@ -359,9 +361,14 @@ export default function MyFiles() {
   // In the browser the editor gets a tab of its own, in HUB Desktop the second window of the app, so the first one stays
   // free to work in. Without either (an older Desktop, a blocked pop-up) it opens in a window over the list.
   const editorTabOpenedRef = useRef(false);
+  const lastEditorOpenRef = useRef({ fileId: '', at: 0 });
   const openOfficeEditor = useCallback(async (file) => {
     const fileId = String(file?.id || '');
     if (!fileId) return;
+    // Двойной клик по строке даёт два вызова подряд — без защиты открываются две вкладки редактора.
+    const now = Date.now();
+    if (lastEditorOpenRef.current.fileId === fileId && now - lastEditorOpenRef.current.at < 1500) return;
+    lastEditorOpenRef.current = { fileId, at: now };
     const route = buildEditorRoute(fileId);
     if (isNativeShellRuntime()) {
       const result = await requestDesktopEditorWindow(route);
@@ -2359,7 +2366,7 @@ export default function MyFiles() {
             onEditOnline={isOfficeEditable(fileActionsMenu.item) && (fileMenuAccess.canWrite || fileMenuAccess.library || fileActionsMenu.item.shared_with_me)
               ? () => openOfficeEditor(fileActionsMenu.item)
               : undefined}
-            onCollaborators={isOfficeEditable(fileActionsMenu.item) && fileMenuAccess.canShare && !fileMenuAccess.library && !fileActionsMenu.item.shared_with_me
+            onCollaborators={fileActionsMenu.item && fileMenuAccess.canShare && READY_STATUSES.has(String(fileActionsMenu.item.status || '').toLowerCase())
               ? () => setCollaboratorsFile(fileActionsMenu.item)
               : undefined}
             onVersions={isOfficeEditable(fileActionsMenu.item) && (fileMenuAccess.canWrite || fileActionsMenu.item.shared_with_me)
@@ -2377,10 +2384,10 @@ export default function MyFiles() {
             onCopyTo={fileActionsMenu.item && hasPermission('my_files.write') && !isTrashView && !fileActionsMenu.item.shared_with_me && READY_STATUSES.has(String(fileActionsMenu.item.status || '').toLowerCase())
               ? () => setCopyDialogFile(fileActionsMenu.item)
               : undefined}
-            onShare={fileActionsMenu.item && fileMenuAccess.canShare && !fileActionsMenu.item.shared_with_me && READY_STATUSES.has(String(fileActionsMenu.item.status || '').toLowerCase())
+            onShare={fileActionsMenu.item && fileMenuAccess.canShare && READY_STATUSES.has(String(fileActionsMenu.item.status || '').toLowerCase())
               ? () => { void handleShare(fileActionsMenu.item); }
               : undefined}
-            onRevokeShare={fileActionsMenu.item && fileMenuAccess.canShare && !fileActionsMenu.item.shared_with_me && fileActionsMenu.item.is_shared
+            onRevokeShare={fileActionsMenu.item && fileMenuAccess.canShare && fileActionsMenu.item.is_shared
               ? () => { void handleRevokeShare(fileActionsMenu.item); }
               : undefined}
             isShared={Boolean(fileActionsMenu.item?.is_shared)}

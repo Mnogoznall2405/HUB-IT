@@ -729,6 +729,31 @@ def test_existing_target_is_editable_after_its_registry_card_left_the_registry(e
     assert other.status_code == 400
 
 
+def test_ports_the_device_stopped_reporting_leave_the_card_only_after_a_complete_discovery(environment):
+    client, svc, device, now, user = environment
+    target = create_target(client)
+    path = f"/api/v1/monitoring/targets/{target['id']}"
+
+    def names():
+        return {item["name"] for item in client.get(path).json()["interfaces"]}
+
+    assert client.post(path + "/probe").status_code == 200
+    assert names() == {"ether1_wan", "ether8"}
+    gone = {**snapshot(), "interfaces": snapshot()["interfaces"][:1]}
+    now[0] += timedelta(seconds=60)
+    device.value = gone  # an incomplete discovery carries no "discovered_at" and must not prune
+    assert client.post(path + "/probe").status_code == 200
+    assert names() == {"ether1_wan", "ether8"}
+    now[0] += timedelta(seconds=60)
+    device.value = {**gone, "discovered_at": now[0].isoformat()}
+    assert client.post(path + "/probe").status_code == 200
+    assert names() == {"ether1_wan"}
+    now[0] += timedelta(seconds=60)
+    device.value = {**snapshot(), "discovered_at": now[0].isoformat()}
+    assert client.post(path + "/probe").status_code == 200
+    assert names() == {"ether1_wan", "ether8"}
+
+
 def test_one_registry_card_cannot_be_connected_twice_and_address_change_resets_baseline(environment):
     client, svc, device, now, user = environment
     target = create_target(client)

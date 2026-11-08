@@ -144,7 +144,8 @@ export function useTransferActJob({
       document.body.appendChild(link);
       link.click();
       link.remove();
-      URL.revokeObjectURL(url);
+      // Браузер читает blob асинхронно: немедленный revoke даёт пустой или битый файл в «Загрузках».
+      window.setTimeout(() => URL.revokeObjectURL(url), 60000);
     } catch (error) {
       console.error('Error downloading transfer act:', error);
       setActionError?.(ACT_DOWNLOAD_ERROR);

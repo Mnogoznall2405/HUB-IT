@@ -16,6 +16,16 @@ import {
   getOfficePanelSx,
 } from '../../theme/officeUiTokens';
 
+// The API sends ISO timestamps with microseconds and +00:00; show the viewer's local time instead.
+const formatAuditDate = (value) => {
+  if (!value) return '-';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return parsed.toLocaleString('ru-RU', {
+    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+};
+
 export default function AuditTab({ audit }) {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
@@ -72,7 +82,7 @@ export default function AuditTab({ audit }) {
         <TableBody>
           {audit.map((item, index) => (
             <TableRow key={`${item.created_at || 'audit'}-${item.id || item.entity_id || index}`}>
-              <TableCell sx={bodyCellSx}>{item.created_at || '-'}</TableCell>
+              <TableCell sx={bodyCellSx}>{formatAuditDate(item.created_at)}</TableCell>
               <TableCell sx={bodyCellSx}>{item.entity_type || '-'}</TableCell>
               <TableCell sx={bodyCellSx}>{item.action || '-'}</TableCell>
               <TableCell sx={bodyCellSx}>{item.entity_id || '-'}</TableCell>

@@ -7,6 +7,7 @@ import RefreshIcon from '@mui/icons-material/Refresh';
 import SearchIcon from '@mui/icons-material/Search';
 import {
   Box,
+  Button,
   Card,
   CardContent,
   Chip,
@@ -15,6 +16,8 @@ import {
   InputAdornment,
   LinearProgress,
   Stack,
+  Tab,
+  Tabs,
   Table,
   TableBody,
   TableCell,
@@ -30,6 +33,8 @@ import { myFilesAPI } from '../../../api/myFiles';
 import { authUserAdminAPI } from '../../../api/authUserAdmin';
 import { formatFileSize } from '../../../lib/myFilesPreview';
 import { useNotification } from '../../../contexts/NotificationContext';
+import { useAuth } from '../../../contexts/AuthContext';
+import MyFilesAdminBrowser from './MyFilesAdminBrowser';
 
 const QUOTA_MAX_GB = 400;
 
@@ -96,7 +101,7 @@ function QuotaEditor({ row, saving, onSave }) {
   );
 }
 
-export default function MyFilesAdminTab({ canManageUsers = false }) {
+function MyFilesStats({ canManageUsers = false, onOpenFiles }) {
   const { notifyApiError, notifySuccess } = useNotification();
   const [stats, setStats] = useState({ items: [], total: 0, totals: {} });
   const [loading, setLoading] = useState(true);
@@ -224,6 +229,7 @@ export default function MyFilesAdminTab({ canManageUsers = false }) {
                 <TableCell align="right">Папок</TableCell>
                 <TableCell align="right">Загрузки</TableCell>
                 <TableCell>Активность</TableCell>
+                {onOpenFiles ? <TableCell>Файлы</TableCell> : null}
               </TableRow>
             </TableHead>
             <TableBody>
@@ -273,6 +279,7 @@ export default function MyFilesAdminTab({ canManageUsers = false }) {
                     <TableCell>
                       <Typography variant="caption">{formatDateTime(row.last_activity_at)}</Typography>
                     </TableCell>
+                    {onOpenFiles ? <TableCell><Button size="small" onClick={() => onOpenFiles(row)}>Открыть файлы</Button></TableCell> : null}
                   </TableRow>
                 );
               })}
@@ -282,4 +289,24 @@ export default function MyFilesAdminTab({ canManageUsers = false }) {
       )}
     </Stack>
   );
+}
+
+export default function MyFilesAdminTab({ canManageUsers = false }) {
+  const { user } = useAuth();
+  const admin = String(user?.role || '').toLowerCase() === 'admin';
+  const [tab, setTab] = useState('stats');
+  const [owner, setOwner] = useState(null);
+  const openFiles = row => { setOwner(row); setTab('files'); };
+  return <Stack spacing={1.5} sx={{ minWidth: 0, maxWidth: '100%' }}>
+    {admin ? <Tabs value={tab} onChange={(_, value) => { setOwner(null); setTab(value); }} aria-label="Администрирование файлов">
+      <Tab label="Статистика" value="stats" id="files-admin-stats-tab" aria-controls="files-admin-stats-panel" />
+      <Tab label="Все файлы" value="files" id="files-admin-files-tab" aria-controls="files-admin-files-panel" />
+    </Tabs> : null}
+    {admin && tab === 'files' ? <Box role="tabpanel" id="files-admin-files-panel" aria-labelledby="files-admin-files-tab" sx={{ minWidth: 0 }}>
+      {owner ? <Button onClick={() => setOwner(null)} sx={{ mb: 1 }}>Показать файлы всех пользователей</Button> : null}
+      <MyFilesAdminBrowser key={`${user.id}:${owner?.user_id || 'all'}`} initialOwner={owner} />
+    </Box> : <Box role={admin ? 'tabpanel' : undefined} id="files-admin-stats-panel" aria-labelledby={admin ? 'files-admin-stats-tab' : undefined} sx={{ minWidth: 0 }}>
+      <MyFilesStats canManageUsers={canManageUsers} onOpenFiles={admin ? openFiles : undefined} />
+    </Box>}
+  </Stack>;
 }

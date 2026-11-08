@@ -71,6 +71,10 @@ class ScanServerConfig:
     ingest_max_pending_pdf_jobs: int
     ingest_max_pending_jobs: int
     ingest_max_concurrency: int
+    # How long a request may wait for a free ingest slot before it gets 429 + Retry-After.
+    # Must stay below the agent HTTP timeout (20 s): otherwise the agent drops the connection first
+    # (ClientDisconnect), counts a failure and the event slides towards the outbox dead-letter.
+    ingest_admission_wait_sec: float
     transient_max_gb: float
     ingest_retry_after_sec: int
     ingest_retry_after_max_sec: int
@@ -100,6 +104,8 @@ class ScanServerConfig:
     agent_package_path: str
     agent_package_url: str
     agent_package_sha256: str
+    # JSON registry of software that install_package tasks may roll out (see install_packages.py).
+    install_manifest_path: str
 
     @classmethod
     def from_env(cls) -> "ScanServerConfig":
@@ -210,6 +216,10 @@ class ScanServerConfig:
                 1,
                 min(32, _to_int(os.getenv("SCAN_INGEST_MAX_CONCURRENCY", "4"), 4)),
             ),
+            ingest_admission_wait_sec=max(
+                1.0,
+                min(18.0, _to_float(os.getenv("SCAN_INGEST_ADMISSION_WAIT_SEC", "10"), 10.0)),
+            ),
             transient_max_gb=max(
                 1.0,
                 _to_float(os.getenv("SCAN_TRANSIENT_MAX_GB", "80"), 80.0),
@@ -307,6 +317,7 @@ class ScanServerConfig:
             agent_package_path=str(os.getenv("SCAN_AGENT_PACKAGE_PATH", "") or "").strip(),
             agent_package_url=str(os.getenv("SCAN_AGENT_PACKAGE_URL", "") or "").strip(),
             agent_package_sha256=str(os.getenv("SCAN_AGENT_PACKAGE_SHA256", "") or "").strip().lower(),
+            install_manifest_path=str(os.getenv("SCAN_INSTALL_MANIFEST_PATH", "") or "").strip(),
         )
 
 

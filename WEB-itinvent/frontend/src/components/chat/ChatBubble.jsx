@@ -390,7 +390,14 @@ function AiResponseControls({ body, onRetry, ui, theme, compactMobile }) {
       direction="row"
       spacing={0.4}
       alignItems="center"
-      sx={{ mt: 0.55, color: ui.textSecondary }}
+      sx={{
+        mt: 0.7,
+        color: ui.textSecondary,
+        // Спокойные действия, как у Claude: приглушены, пока не наведёшь на ответ.
+        opacity: compactMobile ? 1 : 0.62,
+        transition: 'opacity 160ms ease',
+        '&:hover, &:focus-within': { opacity: 1 },
+      }}
     >
       <Tooltip title={copied ? 'Скопировано' : 'Копировать'}>
         <span>
@@ -597,6 +604,8 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
       setBusy('');
     }
   };
+  // Подсказки «Что дальше?» показывает лента над композером, а не пузырь.
+  if (isAiChoice && preview.kind === 'suggestions') return null;
   return (
     <Box
       data-testid="chat-ai-action-card"
@@ -962,7 +971,8 @@ function ChatBubbleMeta({
   // R51: у одиночного крупного эмодзи нет пузыря — время стоит под ним в маленькой полупрозрачной
   // плашке (как у медиа), а не поверх картинки. Цвета плашки не зависят от стороны и темы.
   const isEmojiLayout = layout === 'emoji';
-  const receiptColor = isEmojiLayout
+  // Плашка времени на вложении тоже всегда тёмная: текст на ней белый в любой теме (в светлой серый был нечитаем).
+  const receiptColor = isEmojiLayout || isMediaLayout
     ? (deliveryStatus === 'read' && !isSending ? '#8fd3ff' : 'rgba(255, 255, 255, 0.92)')
     : receiptColorProp;
   const density = ui.density || {};
@@ -991,7 +1001,8 @@ function ChatBubbleMeta({
         right: inFlow ? 'auto' : (isMediaLayout ? 10 : (isInlineLayout ? 10 : 12)),
         bottom: inFlow ? 'auto' : (
           isInlineLayout
-            ? Math.max(2, Math.round((density.bubblePy ?? 0.82) * 8 * 0.34))
+            // Низ строки времени = низ строки текста (отступ пузыря): иначе короткое сообщение «сползает» под текст.
+            ? Math.max(2, Math.round((density.bubblePy ?? 0.82) * 8))
             : (bottomOffset ?? (isMediaLayout ? 10 : 5))
         ),
         mt: inFlow ? (dense ? 0 : '2px') : 0,
@@ -1929,10 +1940,10 @@ export function ChatBubble({
           minWidth: isAiResponse ? 0 : undefined,
           ml: selectionMode && !message?.is_own ? { xs: 5, md: 4.2 } : 0,
           transform: swipeDx > 0 ? `translateX(-${swipeDx}px)` : undefined,
-          px: isAiResponse ? 1.4 : cardBubbleless ? 0 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.18 : (density.bubblePx || 1.18),
-          py: isAiResponse ? 1 : cardBubbleless ? 0 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.08 : (density.bubblePy || 0.82),
+          px: isAiResponse ? 1.8 : cardBubbleless ? 0 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.18 : (density.bubblePx || 1.18),
+          py: isAiResponse ? 1.25 : cardBubbleless ? 0 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.08 : (density.bubblePy || 0.82),
           // Ответ ассистента — карточка цвета «чужого» пузыря: без фона текст и таблицы сливались с обоями ленты.
-          borderRadius: isAiResponse ? '6px 18px 18px 18px' : emojiOnlyCount || cardBubbleless ? 0 : getBubbleRadius(Boolean(message?.is_own), groupedWithPrevious, groupedWithNext, compactMobile),
+          borderRadius: isAiResponse ? '8px 20px 20px 20px' : emojiOnlyCount || cardBubbleless ? 0 : getBubbleRadius(Boolean(message?.is_own), groupedWithPrevious, groupedWithNext, compactMobile),
           bgcolor: isAiResponse ? ui.bubbleOtherBg : emojiOnlyCount || bubblelessMessage ? 'transparent' : bubbleBg,
           color: bubbleText,
           boxShadow: isAiResponse
@@ -1952,6 +1963,7 @@ export function ChatBubble({
             outline: highlighted ? `2px solid ${alpha(theme.palette.primary.main, 0.42)}` : 'none',
           },
           transition: swipeDx > 0 ? 'none' : 'background-color 120ms ease, box-shadow 120ms ease, transform 120ms ease, outline-color 120ms ease',
+          '&:hover [data-testid="chat-ai-response-actions"]': { opacity: 1 },
           '&:hover .chat-bubble-actions, &.reaction-picker-open .chat-bubble-actions': {
             opacity: 1,
             transform: 'translateY(0)',

@@ -57,8 +57,8 @@ const renderDialog = (props = {}) => {
   return handlers;
 };
 
-const selectById = async (id, optionName) => {
-  fireEvent.mouseDown(document.getElementById(id));
+const selectChoice = async (label, optionName) => {
+  fireEvent.mouseDown(screen.getByRole('combobox', { name: label }));
   const listbox = await screen.findByRole('listbox');
   fireEvent.click(within(listbox).getByRole('option', { name: optionName }));
 };
@@ -91,9 +91,9 @@ describe('AddEquipmentDialog', () => {
     });
     expect(handlers.onEmployeeSelect).toHaveBeenCalledWith('Ivan Petrov');
 
-    await selectById('add-equipment-branch', 'Главный');
-    await selectById('add-equipment-type', 'Ноутбук');
-    await selectById('add-equipment-status', 'В работе');
+    await selectChoice('Филиал *', 'Главный');
+    await selectChoice('Тип оборудования *', 'Ноутбук');
+    await selectChoice('Статус *', 'В работе');
 
     expect(handlers.onFormPatch).toHaveBeenCalledWith({ branch_no: '10' });
     expect(handlers.onFormPatch).toHaveBeenCalledWith({ type_no: '2', model_name: '', model_no: null });
@@ -134,7 +134,16 @@ describe('AddEquipmentDialog', () => {
     expect(screen.getByText('Сотрудник Manual Owner не найден в списке и будет создан автоматически.')).toBeInTheDocument();
     expect(screen.getByText('Модель Manual Model не найдена в списке и будет создана автоматически.')).toBeInTheDocument();
     expect(screen.getByText('Заполните поля')).toBeInTheDocument();
-    expect(screen.getByText('Оборудование добавлено')).toBeInTheDocument();
+    expect(screen.getByText(/Оборудование добавлено/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Готово' })).toBeInTheDocument();
+  });
+
+  it('saves from the keyboard with Enter in a single-line field', () => {
+    const handlers = renderDialog();
+
+    fireEvent.keyDown(screen.getByRole('textbox', { name: /Серийный номер/ }), { key: 'Enter' });
+
+    expect(handlers.onSubmit).toHaveBeenCalledTimes(1);
   });
 
   it('disables actions while saving', () => {

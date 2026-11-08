@@ -4,14 +4,16 @@ import { myFilesAPI } from '../../api/myFiles';
 
 const EMPTY_FOLDER_SHARE = { open: false, folderId: '', folder: null, url: '', folderName: '', linkCopied: false };
 const EMPTY_FILE_SHARE = { open: false, fileId: '', item: null, url: '', expiresAt: null, fileName: '', linkCopied: false };
+const alwaysCurrent = () => true;
 
-export function useMyFilesShares({ onFileShareChanged, onFolderShareChanged, notifySuccess, notifyWarning, notifyApiError }) {
+export function useMyFilesShares({ onFileShareChanged, onFolderShareChanged, notifySuccess, notifyWarning, notifyApiError, isCurrent = alwaysCurrent }) {
   const [folderShareDialog, setFolderShareDialog] = useState(EMPTY_FOLDER_SHARE);
   const [shareDialog, setShareDialog] = useState(EMPTY_FILE_SHARE);
 
   const shareFile = useCallback(async (item, { rotate = false } = {}) => {
     try {
       const payload = await myFilesAPI.createShare(item.id, { rotate });
+      if (!isCurrent()) return;
       const publicUrl = myFilesAPI.buildPublicUrl(payload.token);
       let linkCopied = false;
       try {
@@ -20,6 +22,7 @@ export function useMyFilesShares({ onFileShareChanged, onFolderShareChanged, not
       } catch {
         notifyWarning('Ссылка создана. Скопируйте её из окна.', { source: 'my-files-share', dedupeMode: 'none' });
       }
+      if (!isCurrent()) return;
       setShareDialog({
         open: true,
         fileId: item.id,
@@ -34,19 +37,20 @@ export function useMyFilesShares({ onFileShareChanged, onFolderShareChanged, not
       }
       onFileShareChanged?.(item.id, true);
     } catch (error) {
-      notifyApiError(error, 'Не удалось создать публичную ссылку.', { dedupeMode: 'none' });
+      if (isCurrent()) notifyApiError(error, 'Не удалось создать публичную ссылку.', { dedupeMode: 'none' });
     }
-  }, [onFileShareChanged, notifyApiError, notifySuccess, notifyWarning]);
+  }, [isCurrent, onFileShareChanged, notifyApiError, notifySuccess, notifyWarning]);
 
   const revokeShare = useCallback(async (item) => {
     try {
       await myFilesAPI.revokeShare(item.id);
+      if (!isCurrent()) return;
       onFileShareChanged?.(item.id, false);
       notifySuccess('Публичная ссылка отключена.', { source: 'my-files-share', dedupeMode: 'none' });
     } catch (error) {
-      notifyApiError(error, 'Не удалось отключить ссылку.', { dedupeMode: 'none' });
+      if (isCurrent()) notifyApiError(error, 'Не удалось отключить ссылку.', { dedupeMode: 'none' });
     }
-  }, [onFileShareChanged, notifyApiError, notifySuccess]);
+  }, [isCurrent, onFileShareChanged, notifyApiError, notifySuccess]);
 
   const shareFolder = useCallback(async (folder, { rotate = false } = {}) => {
     try {

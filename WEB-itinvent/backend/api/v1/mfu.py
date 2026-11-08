@@ -9,13 +9,14 @@ from datetime import datetime, timezone
 from threading import RLock
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 
 from backend.api.deps import get_current_database_id, require_permission
 from backend.database.equipment_db import get_all_equipment_flat, get_equipment_grouped
 from backend.json_db.works import WorksManager
 from backend.models.auth import User
+from backend.services import it_object_branch_scope
 from backend.services.authorization_service import PERM_MFU_READ
 from backend.services.mfu_monitor_service import mfu_runtime_monitor
 from backend.services.mfu_device_rows import (
@@ -274,17 +275,23 @@ async def get_mfu_devices(
     recent_limit: int = Query(5, ge=0, le=50),
     limit: int = Query(5000, ge=1, le=10000),
     db_id: Optional[str] = Depends(get_current_database_id),
-    _: User = Depends(require_permission(PERM_MFU_READ)),
+    current_user: User = Depends(require_permission(PERM_MFU_READ)),
 ):
     """
     MFU/Printer/Plotter inventory with runtime status and maintenance history.
     """
-    cache_key = f"{db_id or ''}|{int(period_days)}|{int(recent_limit)}|{int(limit)}"
+    # An IT owner sees only the devices of his branches; the scope is part of the cache key.
+    scope = await run_in_threadpool(it_object_branch_scope.branch_scope, current_user, db_id)
+    scope_tag = "" if scope is None else ",".join(str(number) for number in sorted(scope))
+    cache_key = f"{db_id or ''}|{int(period_days)}|{int(recent_limit)}|{int(limit)}|{scope_tag}"
     cached_payload = _get_cached_mfu_devices_payload(cache_key)
     if cached_payload is not None:
         return cached_payload
 
     rows = get_all_equipment_flat(db_id=db_id, limit=max(1, limit))
+    rows_count = len(rows)
+    if scope is not None:
+        rows = it_object_branch_scope.filter_rows(rows, scope)
 
     normalized_devices: List[Dict[str, Any]] = []
     for row in rows[:limit]:
@@ -380,7 +387,7 @@ async def get_mfu_devices(
             "source_limit": int(limit),
             "raw_rows_count": len(rows),
             "matched_mfu_count": len(normalized_devices),
-            "source_maybe_truncated": len(rows) >= int(limit),
+            "source_maybe_truncated": rows_count >= int(limit),
         },
     })
 
@@ -389,12 +396,22 @@ async def get_mfu_devices(
 async def get_mfu_pages_monthly(
     device_key: str = Query(..., min_length=3, max_length=255),
     months: int = Query(12, ge=1, le=36),
-    _: User = Depends(require_permission(PERM_MFU_READ)),
+    current_user: User = Depends(require_permission(PERM_MFU_READ)),
 ):
     """
     Monthly printed pages summary for one MFU device key.
     """
     normalized_key = _normalize_text(device_key)
+    # The key is "<db>|<item id>": an IT owner may ask only for devices of his branches.
+    key_db, _sep, _item = normalized_key.partition("|")
+    key_db_id = None if key_db == "default" else key_db
+    scope = await run_in_threadpool(it_object_branch_scope.branch_scope, current_user, key_db_id)
+    if scope is not None:
+        rows = it_object_branch_scope.filter_rows(
+            await run_in_threadpool(get_all_equipment_flat, db_id=key_db_id, limit=5000), scope
+        )
+        if normalized_key not in {_normalize_device_row(row, key_db_id)["key"] for row in rows if isinstance(row, dict)}:
+            raise HTTPException(status_code=404, detail="Устройство не найдено")
     summary = mfu_runtime_monitor.get_monthly_page_summary(
         device_key=normalized_key,
         months=months,

@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Automation;
@@ -20,6 +21,7 @@ using Hub.Desktop.WebView;
 using Hub.Desktop.Workspace;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
+using MessageBox = System.Windows.MessageBox;
 
 namespace Hub.Desktop.Views;
 
@@ -56,6 +58,8 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
     private bool _hardReloadInProgress;
     private bool _screenCaptureProtectionApplied;
     private bool _screenCaptureDeferredLogged;
+    private bool _editorCloseApproved;
+    private bool _editorCloseCheckInProgress;
 
     public SecondaryHubWindow(
         DesktopOptions options,
@@ -103,6 +107,80 @@ public partial class SecondaryHubWindow : Window, IDesktopHubWindow
     }
 
     public string? CurrentSource => _webView?.CoreWebView2?.Source;
+
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        base.OnClosing(e);
+        if (e.Cancel || _editorCloseApproved)
+        {
+            return;
+        }
+
+        var core = _webView?.CoreWebView2;
+        if (core is null
+            || !DesktopWorkspaceRoutePolicy.TryGetSafeRoute(_options.BaseUri, core.Source, out var route)
+            || !DesktopBridgeProtocol.IsValidWorkspaceEditorRoute(route))
+        {
+            return;
+        }
+
+        // Disposing WebView2 bypasses the browser's normal beforeunload confirmation.
+        // Ask the trusted page without triggering unrelated beforeunload effects (e.g. leaving a call).
+        e.Cancel = true;
+        if (!_editorCloseCheckInProgress)
+        {
+            _ = CloseEditorWorkspaceAsync(core);
+        }
+    }
+
+    private async Task CloseEditorWorkspaceAsync(CoreWebView2 core)
+    {
+        _editorCloseCheckInProgress = true;
+        try
+        {
+            var source = core.Source;
+            var result = await core.ExecuteScriptAsync(
+                "window.dispatchEvent(new Event('hub:before-close', { cancelable: true }))")
+                .WaitAsync(TimeSpan.FromSeconds(3));
+            if (_shutdown.IsCancellationRequested
+                || !ReferenceEquals(core, _webView?.CoreWebView2)
+                || !string.Equals(source, core.Source, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (result is not ("true" or "false"))
+            {
+                throw new InvalidOperationException("The page did not confirm its close state.");
+            }
+
+            if (result == "false" && MessageBox.Show(this,
+                    "В открытых документах есть неотправленные изменения. Закрыть окно и потерять эти правки?",
+                    "Закрытие документов", MessageBoxButton.YesNo, MessageBoxImage.Warning,
+                    MessageBoxResult.No) != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            _editorCloseApproved = true;
+            Close();
+        }
+        catch (Exception)
+        {
+            if (_shutdown.IsCancellationRequested)
+            {
+                return;
+            }
+            DesktopLog.Warning("Secondary editor close state could not be checked");
+            MessageBox.Show(this,
+                "Не удалось проверить сохранение документов. Окно оставлено открытым. Закройте документы по вкладкам и повторите.",
+                "Закрытие документов", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            _editorCloseCheckInProgress = false;
+        }
+    }
 
     public void ShowAndActivate()
     {

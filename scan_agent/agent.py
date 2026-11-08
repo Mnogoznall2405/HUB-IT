@@ -109,6 +109,12 @@ SELF_UPDATE_STAGING_DIR = (
     Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "HUB-IT" / "AgentUpgrade" / "package"
 )
 SELF_UPDATE_MARKER_PATH = SELF_UPDATE_STAGING_DIR.parent / "pending_update.json"
+# install_package: third-party software rolled out by the server (HUB Desktop and similar).
+INSTALL_STAGING_DIR = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "HUB-IT" / "AgentInstall"
+INSTALL_SUCCESS_EXIT_CODES = frozenset({0, 1641, 3010})  # OK / reboot initiated / reboot required
+INSTALL_TIMEOUT_SEC = 30 * 60
+DOWNLOAD_ATTEMPTS = 5
+INSTALL_PACKAGE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 LEGACY_PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT-Invent"
 TEMP_DIR = Path(os.environ.get("TEMP", r"C:\Windows\Temp"))
 
@@ -596,6 +602,53 @@ def _prune_state(state: Dict[str, Any]) -> None:
 
 def _norm_path(path: Path) -> str:
     return str(path).lower()
+
+
+def _version_key(value: Any) -> Tuple[int, ...]:
+    parts: List[int] = []
+    for piece in str(value or "").replace("-", ".").split("."):
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
+def _installed_program_version(display_name: str) -> str:
+    """Highest DisplayVersion of an installed program whose name starts with ``display_name`` (empty if none)."""
+    needle = str(display_name or "").strip().lower()
+    if not needle or winreg is None:
+        return ""
+    best = ""
+    uninstall = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+    for view in (0, getattr(winreg, "KEY_WOW64_32KEY", 0)):
+        try:
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, uninstall, 0, winreg.KEY_READ | view)
+        except OSError:
+            continue
+        with key:
+            index = 0
+            while True:
+                try:
+                    sub = winreg.EnumKey(key, index)
+                except OSError:
+                    break
+                index += 1
+                try:
+                    with winreg.OpenKey(key, sub) as item:
+                        name = str(winreg.QueryValueEx(item, "DisplayName")[0] or "")
+                        if not name.lower().startswith(needle):
+                            continue
+                        version = str(winreg.QueryValueEx(item, "DisplayVersion")[0] or "")
+                except OSError:
+                    continue
+                if version and _version_key(version) > _version_key(best):
+                    best = version
+    return best
+
+
+def _build_install_command(kind: str, installer: Path, args: List[str], log_path: Path) -> List[str]:
+    if kind == "msi":
+        return ["msiexec.exe", "/i", str(installer), "/qn", "/norestart", "/l*v", str(log_path)]
+    return [str(installer), *args]
 
 
 def _sha256_file(path: Path) -> str:
@@ -2333,6 +2386,36 @@ class ScanAgent:
             return str(candidate)
         return "powershell.exe"
 
+    def _download_with_resume(self, open_stream: Any, destination: Path, attempts: int = DOWNLOAD_ATTEMPTS) -> None:
+        """Stream a package to ``destination``; a broken connection resumes with ``Range`` instead of starting over.
+
+        Over a slow or flaky WAN link a 45 MB package often breaks mid-transfer (IncompleteRead / read timeout).
+        The caller verifies SHA-256 afterwards, so a resumed file that is wrong is still rejected.
+        """
+        destination.unlink(missing_ok=True)
+        last_error: Optional[BaseException] = None
+        for attempt in range(1, max(1, int(attempts)) + 1):
+            have = destination.stat().st_size if destination.exists() else 0
+            headers = {"Range": f"bytes={have}-"} if have else {}
+            try:
+                with open_stream(headers) as response:
+                    if response.status_code == 416:  # nothing left to send
+                        return
+                    if response.status_code >= 300:
+                        raise RuntimeError(f"Package download failed status={response.status_code}")
+                    mode = "ab" if (have and response.status_code == 206) else "wb"
+                    with destination.open(mode) as handle:
+                        for chunk in response.iter_content(chunk_size=1024 * 1024):
+                            if chunk:
+                                handle.write(chunk)
+                return
+            except (requests.RequestException, OSError) as exc:
+                last_error = exc
+                logging.warning("Package download interrupted attempt=%s/%s have=%s: %s", attempt, attempts, have, exc)
+                if attempt < attempts:
+                    time.sleep(min(30, 2 ** attempt))
+        raise RuntimeError(f"Package download failed after {attempts} attempts: {last_error}")
+
     def _download_agent_package(self, msi_url: str, destination: Path) -> None:
         text = str(msi_url or "").strip()
         if not text:
@@ -2341,13 +2424,11 @@ class ScanAgent:
         # Relative path from scan API base (server injects "agent-package").
         if "://" not in text and not text.startswith("\\\\"):
             url = self._url(text)
-            with self._send("GET", url, stream=True, timeout=max(60, int(self.config["timeout"]))) as response:
-                if response.status_code >= 300:
-                    raise RuntimeError(f"Package download failed status={response.status_code}")
-                with destination.open("wb") as handle:
-                    for chunk in response.iter_content(chunk_size=1024 * 1024):
-                        if chunk:
-                            handle.write(chunk)
+            timeout = max(60, int(self.config["timeout"]))
+            self._download_with_resume(
+                lambda headers: self._send("GET", url, stream=True, timeout=timeout, headers=headers),
+                destination,
+            )
             return
 
         # UNC / local path copy.
@@ -2360,13 +2441,11 @@ class ScanAgent:
 
         parsed = urlparse(text)
         if parsed.scheme in {"http", "https"}:
-            with self.session.get(text, stream=True, timeout=max(60, int(self.config["timeout"]))) as response:
-                if response.status_code >= 300:
-                    raise RuntimeError(f"Package download failed status={response.status_code}")
-                with destination.open("wb") as handle:
-                    for chunk in response.iter_content(chunk_size=1024 * 1024):
-                        if chunk:
-                            handle.write(chunk)
+            timeout = max(60, int(self.config["timeout"]))
+            self._download_with_resume(
+                lambda headers: self.session.get(text, stream=True, timeout=timeout, headers=headers),
+                destination,
+            )
             return
 
         raise ValueError(f"Unsupported msi_url scheme: {text}")
@@ -2468,6 +2547,125 @@ class ScanAgent:
             "exit_code_path": str(exit_code_path),
         }
 
+    def run_disable_message_probes(self) -> Dict[str, Any]:
+        """Stop the Telegram/MAX probes (scheduled task + process) and keep them off across restarts.
+
+        One-directional by design: this agent build only turns the probes off, it has no command that
+        turns them back on remotely. Re-enabling is a local admin/MSI action, not a server task.
+        """
+        import agent_installer
+
+        stopped_tasks: List[str] = []
+        for task_name in (agent_installer.TELEGRAM_PROBE_TASK_NAME, agent_installer.MAX_PROBE_TASK_NAME):
+            try:
+                agent_installer.stop_scheduled_task(task_name)
+                stopped_tasks.append(task_name)
+            except Exception as exc:
+                logging.warning("Failed to stop scheduled task %s: %s", task_name, exc)
+
+        stopped_pids: List[int] = []
+        try:
+            stopped_pids = agent_installer.stop_agent_processes()
+        except Exception as exc:
+            logging.warning("Failed to stop probe processes: %s", exc)
+
+        persisted = False
+        try:
+            install_dir = agent_installer.resolve_install_dir("")
+            env_file_path = agent_installer.resolve_env_file_path(install_dir, "")
+            existing = agent_installer.read_runtime_env_map(env_file_path, install_dir)
+            existing["ITINV_TELEGRAM_PROBE_ENABLED"] = "0"
+            existing["ITINV_MAX_PROBE_ENABLED"] = "0"
+            agent_installer.upsert_env_file(env_file_path, existing)
+            persisted = True
+        except Exception as exc:
+            logging.warning("Failed to persist probe-disabled flag to env file: %s", exc)
+
+        logging.info(
+            "Message probes disabled: tasks=%s pids=%s persisted=%s", stopped_tasks, stopped_pids, persisted
+        )
+        return {
+            "phase": "disabled",
+            "stopped_tasks": stopped_tasks,
+            "stopped_pids": stopped_pids,
+            "persisted": persisted,
+        }
+
+    def run_install_package(self, payload: Dict[str, Any], *, task_id: str = "") -> Dict[str, Any]:
+        """Download, verify and silently install a server-approved package; returns the task result."""
+        package_id = str(payload.get("package_id") or "").strip().lower()
+        url = str(payload.get("url") or "").strip()
+        expected_sha = str(payload.get("sha256") or "").strip().lower()
+        kind = str(payload.get("kind") or "").strip().lower()
+        version = str(payload.get("version") or "").strip()
+        display_name = str(payload.get("display_name") or "").strip()
+        filename = str(payload.get("filename") or "").strip()
+        raw_args = payload.get("args") if isinstance(payload.get("args"), list) else []
+        args = [str(item) for item in raw_args if isinstance(item, str) and item.strip()]
+
+        if not INSTALL_PACKAGE_ID_RE.match(package_id):
+            raise ValueError("install_package: invalid package_id")
+        # Only the server-relative download path is accepted: the task can never point the agent elsewhere.
+        if not url.startswith("install-package?") or "://" in url or "\\" in url:
+            raise ValueError("install_package: url must be a server-relative install-package path")
+        if len(expected_sha) != 64 or any(ch not in "0123456789abcdef" for ch in expected_sha):
+            raise ValueError("install_package: missing valid sha256")
+        if kind not in {"msi", "exe"}:
+            raise ValueError("install_package: unsupported kind")
+
+        before = _installed_program_version(display_name) if display_name else ""
+        if version and before and _version_key(before) >= _version_key(version):
+            return {
+                "phase": "already_installed",
+                "package_id": package_id,
+                "installed_version": before,
+                "expected_version": version,
+                "verified": True,
+            }
+
+        INSTALL_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+        safe_name = re.sub(r"[^\w.\-]+", "_", filename) or f"{package_id}.{kind}"
+        installer = INSTALL_STAGING_DIR / safe_name
+        stamp = int(time.time())
+        log_path = INSTALL_STAGING_DIR / f"{package_id}-{stamp}.log"
+        logging.info("Install package start id=%s version=%s task=%s", package_id, version or "?", task_id)
+        try:
+            self._download_agent_package(url, installer)
+            actual_sha = self._sha256_file(installer)
+            if actual_sha != expected_sha:
+                raise RuntimeError(f"Package SHA256 mismatch: expected={expected_sha} actual={actual_sha}")
+            completed = subprocess.run(
+                _build_install_command(kind, installer, args, log_path),
+                capture_output=True,
+                timeout=INSTALL_TIMEOUT_SEC,
+                creationflags=CREATE_NO_WINDOW,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"Installer did not finish within {INSTALL_TIMEOUT_SEC}s") from exc
+        finally:
+            try:
+                installer.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        exit_code = int(completed.returncode)
+        after = _installed_program_version(display_name) if display_name else ""
+        verified = bool(version and after and _version_key(after) >= _version_key(version))
+        result = {
+            "phase": "installed" if exit_code in INSTALL_SUCCESS_EXIT_CODES else "failed",
+            "package_id": package_id,
+            "exit_code": exit_code,
+            "previous_version": before,
+            "installed_version": after,
+            "expected_version": version,
+            "verified": verified,
+            "reboot_required": exit_code in {1641, 3010},
+            "log_path": str(log_path) if kind == "msi" else "",
+        }
+        logging.info("Install package done id=%s exit=%s installed=%s", package_id, exit_code, after or "?")
+        return result
+
     def poll_tasks(self) -> None:
         try:
             response = self._send("GET", self._url("tasks/poll"), params={"agent_id": self.agent_id, "limit": 10})
@@ -2512,6 +2710,29 @@ class ScanAgent:
                 except Exception as exc:
                     logging.exception("Self-update failed task_id=%s", task_id)
                     _clear_update_marker()
+                    self._task_result(task_id, "failed", error_text=str(exc))
+                continue
+
+            if command == "disable_message_probes":
+                self._task_result(task_id, "acknowledged", result={"phase": "disabling"})
+                try:
+                    stats = self.run_disable_message_probes()
+                    self._task_result(task_id, "completed", result=stats)
+                except Exception as exc:
+                    logging.exception("Disable message probes failed task_id=%s", task_id)
+                    self._task_result(task_id, "failed", error_text=str(exc))
+                continue
+
+            if command == "install_package":
+                self._task_result(task_id, "acknowledged", result={"phase": "installing", "package_id": str(payload.get("package_id") or "")})
+                try:
+                    stats = self.run_install_package(payload, task_id=task_id)
+                    if stats.get("phase") == "failed":
+                        self._task_result(task_id, "failed", result=stats, error_text=f"installer_exit_{stats.get('exit_code')}")
+                    else:
+                        self._task_result(task_id, "completed", result=stats)
+                except Exception as exc:
+                    logging.exception("Install package failed task_id=%s", task_id)
                     self._task_result(task_id, "failed", error_text=str(exc))
                 continue
 

@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import select
 
 from test_e2e_ai_draft_reliability import agent
-from backend.ai_chat import action_cards, service as ai_module
+from backend.ai_chat import action_cards, memory as memory_module, service as ai_module
 from backend.appdb.db import app_session
 from backend.appdb.models import (AppAiBot, AppAiBotConversation, AppAiBotRun,
     AppAiMemoryEvent, AppAiUserMemory, AppUser)
@@ -29,6 +29,9 @@ def change(text, *, operation="remember", memory_id="", key="report_format"):
 @pytest.fixture
 def smart(agent, monkeypatch):
     monkeypatch.setattr(ai_module, "AI_PERSONAL_MEMORY_ENABLED", True)
+    # Общая настройка рантайма подменяет клиент в memory на заглушку «планировщик выключен»; здесь он нужен.
+    monkeypatch.setattr(memory_module, "openrouter_client", ai_module.openrouter_client)
+    monkeypatch.setattr(ai_module, "AI_SUMMARY_MIN_BATCH", 1)
     with app_session(agent.url) as db:
         db.get(AppAiBot, "agent").use_personal_memory = True
         mapping = db.execute(select(AppAiBotConversation)).scalar_one()
@@ -250,6 +253,24 @@ def test_long_conversation_compacts_middle_and_keeps_task_constraints(smart):
         assert mapping.summary_until_seq == 7
 
 
+def test_small_backlog_is_not_summarized_by_llm_but_stays_in_prompt(smart, monkeypatch):
+    monkeypatch.setattr(ai_module, "AI_SUMMARY_MIN_BATCH", 50)
+    goal = "Цель: подготовить письмо в бухгалтерию"
+    smart.chat.send_message(current_user_id=99, conversation_id="agent-conv", body=goal, defer_push_notifications=True)
+    for i in range(25):
+        smart.chat.send_message(current_user_id=99 if i % 2 else 39, conversation_id="agent-conv",
+                                body=f"Обсуждение шага {i}", defer_push_notifications=True)
+    def summary(prompt):
+        raise AssertionError("LLM-сжатие не должно вызываться для малого хвоста")
+    smart.summaries.append(summary)
+    smart.steps.append({"answer_markdown": "Продолжаем"})
+    smart.request("Продолжим эту задачу")
+    assert goal in smart.prompts[-1]["user_prompt"]
+    with app_session(smart.url) as db:
+        mapping = db.execute(select(AppAiBotConversation)).scalar_one()
+        assert mapping.summary_until_seq == 0 and mapping.rolling_summary == ""
+
+
 def test_summary_failure_does_not_advance_the_checkpoint(smart):
     for i in range(24):
         smart.chat.send_message(current_user_id=99, conversation_id="agent-conv", body=f"Контекст задачи {i}", defer_push_notifications=True)
@@ -280,6 +301,19 @@ def test_disabled_memory_does_not_call_the_planner_or_capture(smart, monkeypatch
     smart.steps.append({"answer_markdown": "Ответ"})
     smart.request("Я предпочитаю XLSX")
     assert smart.memory_prompts == [] and items(smart) == []
+
+
+def test_planner_is_skipped_only_when_memory_is_empty_and_message_is_impersonal(smart):
+    smart.steps.append({"answer_markdown": "Ответ"})
+    smart.request("Найди компьютер TMN-ENG-0040")
+    assert smart.memory_prompts == [] and items(smart) == []
+
+    remember(smart)
+    assert len(smart.memory_prompts) == 1
+    smart.steps.append({"answer_markdown": "Ответ"})
+    smart.request("Найди компьютер TMN-ENG-0041")
+    # Есть факты — вспоминать по смыслу может только планировщик, его вызов обязателен.
+    assert len(smart.memory_prompts) == 2
 
 
 def test_newer_parallel_correction_wins_over_late_older_planner(smart, monkeypatch):

@@ -1034,6 +1034,14 @@ class MfuRuntimeMonitor:
             except Exception:
                 pass
 
+    async def _persist_runtime_state_for_key_async(self, **kwargs: Any) -> None:
+        """Run the blocking DB upsert off the event loop (a slow commit used to freeze every request)."""
+        snapshot = kwargs.get("runtime_snapshot")
+        if snapshot is not None:
+            # The snapshot is sanitized in the worker thread while the loop keeps mutating the cache.
+            kwargs["runtime_snapshot"] = copy.deepcopy(snapshot)
+        await asyncio.to_thread(lambda: self._persist_runtime_state_for_key(**kwargs))
+
     def _clear_persisted_runtime_state(self, key: str) -> None:
         if not self.persist_runtime_state:
             return
@@ -1400,7 +1408,7 @@ class MfuRuntimeMonitor:
             ping_state["last_online_at"] = checked_at if is_online else prev_last_online
             snmp_state = runtime.setdefault("snmp", {})
             device_meta = self._known_devices.setdefault(key, {})
-            self._persist_runtime_state_for_key(
+            await self._persist_runtime_state_for_key_async(
                 key=key,
                 ip_address=str(device_meta.get("ip") or "").strip(),
                 timeout_total=int(device_meta.get("snmp_timeout_total") or snmp_state.get("timeout_total") or 0),
@@ -1485,7 +1493,8 @@ class MfuRuntimeMonitor:
                 else:
                     device_meta["snmp_no_data_until"] = None
                 if result_page_total is not None:
-                    self._upsert_page_snapshot(
+                    await asyncio.to_thread(
+                        self._upsert_page_snapshot,
                         device_key=key,
                         page_total=result_page_total,
                         page_oid=snmp_state.get("page_oid"),
@@ -1524,7 +1533,7 @@ class MfuRuntimeMonitor:
             snmp_state["timeout_streak"] = timeout_streak
             snmp_state["next_retry_at"] = device_meta.get("snmp_backoff_until")
             snmp_state["no_data_retry_at"] = device_meta.get("snmp_no_data_until")
-            self._persist_runtime_state_for_key(
+            await self._persist_runtime_state_for_key_async(
                 key=key,
                 ip_address=str(device_meta.get("ip") or "").strip(),
                 timeout_total=timeout_total,

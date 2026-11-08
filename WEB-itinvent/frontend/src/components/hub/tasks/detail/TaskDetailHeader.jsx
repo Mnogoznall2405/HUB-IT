@@ -349,9 +349,6 @@ export function TaskDetailHeader({
               <Typography sx={{ fontWeight: 900, fontSize: { xs: '1.05rem', md: '1.3rem' }, lineHeight: 1.18 }}>
                 {task?.title || 'Карточка задачи'}
               </Typography>
-              <Typography variant="body2" sx={{ color: ui.mutedText, mt: 0.25 }}>
-                Полная карточка задачи с обсуждением, файлами и историей статусов.
-              </Typography>
               {task?.parent ? (
                 <Box sx={{ mt: 0.5 }}>
                   <TaskParentLink parent={task.parent} onOpenParent={onOpenParent} ui={ui} />
