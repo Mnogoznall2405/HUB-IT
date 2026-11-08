@@ -816,6 +816,16 @@ class ScanStore:
         self._touch_throttle_sec = max(5.0, min(60.0, _env_float("SCAN_TOUCH_THROTTLE_SEC", 30.0)))
         self._touch_throttle_lock = threading.Lock()
         self._touch_last_mono: Dict[str, float] = {}
+        # Task expiry/requeue sweep runs at most once per interval per process instead of on every
+        # poll (~1 poll/min per agent); an empty poll then needs no write transaction at all.
+        self._maintain_interval_sec = max(1.0, min(60.0, _env_float("SCAN_TASK_MAINTENANCE_INTERVAL_SEC", 15.0)))
+        self._maintain_lock = threading.Lock()
+        self._maintain_last_mono = 0.0
+        # Heartbeat rewrites last_heartbeat_json; an unchanged heartbeat is persisted at most once per
+        # SCAN_HEARTBEAT_WRITE_MIN_SEC (0 disables). Online status uses a 30 min window, so this is safe.
+        self._heartbeat_write_min_sec = max(0.0, min(600.0, _env_float("SCAN_HEARTBEAT_WRITE_MIN_SEC", 120.0)))
+        self._heartbeat_write_lock = threading.Lock()
+        self._heartbeat_last_write: Dict[str, Tuple[float, str]] = {}
         if self.backend == "postgres":
             from .db import get_scan_engine
 
@@ -1829,8 +1839,34 @@ class ScanStore:
                 )
                 conn.commit()
 
+        if self._heartbeat_write_unchanged_recently(agent_id, payload):
+            return row
         self._run_write_transaction("upsert_agent_heartbeat", _write)
+        self._remember_heartbeat_write(agent_id, payload)
         return row
+
+    @staticmethod
+    def _heartbeat_fingerprint(payload: Dict[str, Any]) -> str:
+        stable = {key: value for key, value in payload.items() if key != "last_seen_at"}
+        return _json_dumps(stable)
+
+    def _heartbeat_write_unchanged_recently(self, agent_id: str, payload: Dict[str, Any]) -> bool:
+        if self._heartbeat_write_min_sec <= 0:
+            return False
+        fingerprint = self._heartbeat_fingerprint(payload)
+        with self._heartbeat_write_lock:
+            previous = self._heartbeat_last_write.get(agent_id)
+        if previous is None:
+            return False
+        written_at, written_fingerprint = previous
+        return written_fingerprint == fingerprint and (time.monotonic() - written_at) < self._heartbeat_write_min_sec
+
+    def _remember_heartbeat_write(self, agent_id: str, payload: Dict[str, Any]) -> None:
+        if self._heartbeat_write_min_sec <= 0:
+            return
+        fingerprint = self._heartbeat_fingerprint(payload)
+        with self._heartbeat_write_lock:
+            self._heartbeat_last_write[agent_id] = (time.monotonic(), fingerprint)
 
     def touch_agent_presence(
         self,
@@ -2117,17 +2153,46 @@ class ScanStore:
             (now_ts, now_ts, stale_before),
         )
 
+    def _task_maintenance_due(self) -> bool:
+        now_m = time.monotonic()
+        with self._maintain_lock:
+            if (now_m - self._maintain_last_mono) < self._maintain_interval_sec:
+                return False
+            self._maintain_last_mono = now_m
+            return True
+
+    def _has_deliverable_tasks(self, agent_id: str, now_ts: int) -> bool:
+        """Read-only probe so an empty poll skips the write transaction; any error falls back to the full path."""
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT 1 FROM scan_tasks
+                    WHERE agent_id=? AND status='queued' AND due_at <= ? AND next_attempt_at <= ? AND ttl_at > ?
+                    LIMIT 1
+                    """,
+                    (agent_id, now_ts, now_ts, now_ts),
+                ).fetchone()
+            return row is not None
+        except Exception:
+            logger.warning("poll_tasks read-only probe failed; using the full path", exc_info=True)
+            return True
+
     def poll_tasks(self, *, agent_id: str, limit: int) -> List[Dict[str, Any]]:
         aid = str(agent_id or "").strip()
         if not aid:
             return []
         request_limit = max(1, min(50, int(limit)))
         now_ts = _now_ts()
+        maintain = self._task_maintenance_due()
+        if not maintain and not self._has_deliverable_tasks(aid, now_ts):
+            return []
 
         def _write() -> List[Dict[str, Any]]:
             out: List[Dict[str, Any]] = []
             with self._lock, self._connect() as conn:
-                self._maintain_tasks(conn, now_ts)
+                if maintain:
+                    self._maintain_tasks(conn, now_ts)
                 select_sql = """
                     SELECT id, command, payload_json, attempt_count, created_at, ttl_at
                     FROM scan_tasks

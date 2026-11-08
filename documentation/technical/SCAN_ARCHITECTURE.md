@@ -75,6 +75,7 @@
 - При poll доставляются по FIFO.
 - TTL по умолчанию: 7 дней (`SCAN_TASK_TTL_DAYS`).
 - Повторная доставка: backoff до 15 минут при отсутствии результата.
+- Нагрузка от опроса (≈2 запроса в минуту на агента): `GET /tasks/poll` сначала делает read-only проверку и не открывает write-транзакцию, если для агента нет задач; sweep истечения/возврата `delivered → queued` выполняется не чаще раза в `SCAN_TASK_MAINTENANCE_INTERVAL_SEC` (15 с, 1–60) на процесс. `POST /heartbeat` без изменений в payload (кроме `last_seen_at`) пишется в БД не чаще раза в `SCAN_HEARTBEAT_WRITE_MIN_SEC` (120 с, 0 отключает); окно «онлайн» — `SCAN_SERVER_AGENT_ONLINE_TIMEOUT_SEC` (1800 с).
 
 ## Retention
 
