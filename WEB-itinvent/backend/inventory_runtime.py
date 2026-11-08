@@ -848,6 +848,10 @@ def _build_changes_index(changes: List[Dict[str, Any]], now_ts: int) -> Dict[str
     return index
 
 
+class InventoryPayloadError(ValueError):
+    """The report itself is unusable: retrying the same payload cannot succeed."""
+
+
 def build_inventory_dedupe_key(payload: Dict[str, Any]) -> str:
     normalized_mac = _normalize_mac(payload.get("mac_address"))
     timestamp = _to_int(payload.get("timestamp"), default=0)
@@ -866,7 +870,7 @@ def process_inventory_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     mac_key = _normalize_text(incoming_payload.get("mac_address"))
     if not mac_key:
-        raise ValueError("mac_address is required")
+        raise InventoryPayloadError("mac_address is required")
 
     app_store = _get_inventory_app_store()
     current_data = None if app_store is not None else _load_inventory_snapshot()

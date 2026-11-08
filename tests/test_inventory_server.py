@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import threading
 import time
 from pathlib import Path
@@ -226,6 +227,23 @@ def test_worker_moves_repeated_failures_to_dead_letter(temp_dir, monkeypatch):
     assert stats_after_retry["dead_letter_count"] == 0
     assert stats_after_dead["queue_depth"] == 0
     assert stats_after_dead["dead_letter_count"] == 1
+
+
+def test_report_without_mac_goes_straight_to_dead_letter(temp_dir):
+    # E2E through the real worker + real process_inventory_payload: a report that can never be stored
+    # must not be retried max_attempts times (it used to loop for hours with backoff).
+    store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
+    config = dataclasses.replace(_worker_config(temp_dir), max_attempts=20)
+    payload = _payload(timestamp=1_710_100_000)
+    payload["mac_address"] = ""
+    store.enqueue(payload, "no-mac-key")
+
+    worker = InventoryWorker(store=store, config=config, stop_event=threading.Event())
+    worker._handle_item(store.claim_next_batch(limit=1)[0])
+
+    stats = store.queue_stats()
+    assert stats["queue_depth"] == 0
+    assert stats["dead_letter_count"] == 1
 
 
 def test_worker_survives_claim_batch_exception(temp_dir):

@@ -46,7 +46,8 @@ class InventoryWorker(threading.Thread):
             inventory_runtime.process_inventory_payload(payload)
         except Exception as exc:
             error_text = str(exc or exc.__class__.__name__)[:4000]
-            if attempt_count >= int(self.config.max_attempts):
+            permanent = isinstance(exc, inventory_runtime.InventoryPayloadError)
+            if permanent or attempt_count >= int(self.config.max_attempts):
                 self.store.mark_dead(
                     queue_id,
                     error_text=error_text,

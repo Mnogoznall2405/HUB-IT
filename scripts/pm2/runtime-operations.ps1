@@ -84,10 +84,30 @@ function Convert-HubitPm2Snapshot {
     })
 }
 
+function Ensure-HubitIisPool {
+    # After the 07.11 reboot the IIS pool stayed Stopped (HTTP 503 for every client) with no WAS event explaining it.
+    # Start it only if it is Stopped; never touch a Started pool or any pool setting.
+    param([string]$PoolName = 'hubit', [scriptblock]$Log = { param($m) })
+    $appcmd = Join-Path $env:windir 'system32\inetsrv\appcmd.exe'
+    if (-not (Test-Path -LiteralPath $appcmd)) { return 'no-iis' }
+    $state = (Invoke-HubitCommand -Executable $appcmd -Arguments @('list', 'apppool', $PoolName, '/text:state') -TimeoutSeconds 30)
+    $current = ([string]$state.Output).Trim()
+    if ($state.ExitCode -ne 0 -or -not $current) { return 'unknown' }
+    if ($current -ne 'Stopped') { return $current }
+    & $Log "IIS app pool $PoolName is Stopped: starting it"
+    $start = Invoke-HubitCommand -Executable $appcmd -Arguments @('start', 'apppool', $PoolName) -TimeoutSeconds 60
+    if ($start.ExitCode -ne 0) { return 'start-failed' }
+    return 'started'
+}
+
 function Get-HubitExpectedApps {
     param([string]$ProjectRoot)
-    $result = Invoke-HubitCommand -Executable (Get-Command node).Source -Arguments @((Join-Path $ProjectRoot 'scripts\pm2\runtime-policy.js')) -TimeoutSeconds 20
-    if ($result.ExitCode -ne 0) { throw 'Cannot read ecosystem policy.' }
+    $result = Invoke-HubitCommand -Executable (Get-Command node).Source -Arguments @((Join-Path $ProjectRoot 'scripts\pm2\runtime-policy.js')) -TimeoutSeconds 90
+    # Cold node start on a loaded VM disk (right after pm2 resurrect) took more than the old 20 s: allow it one retry.
+    if ($result.TimedOut) {
+        $result = Invoke-HubitCommand -Executable (Get-Command node).Source -Arguments @((Join-Path $ProjectRoot 'scripts\pm2\runtime-policy.js')) -TimeoutSeconds 90
+    }
+    if ($result.ExitCode -ne 0) { throw ('Cannot read ecosystem policy (exit {0}, timed out: {1}).' -f $result.ExitCode, [bool]$result.TimedOut) }
     $apps = ConvertFrom-Json -InputObject $result.Output
     if (@($apps).Count -eq 0 -or @($apps | Where-Object { -not ($_.Name -is [string]) -or -not $_.Name -or $null -eq $_.Environment }).Count -gt 0) { throw 'Invalid ecosystem policy.' }
     return ,@($apps)

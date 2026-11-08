@@ -294,6 +294,9 @@ do {
     Start-Sleep -Seconds 5
 } while ($true)
 
+$poolResult = Ensure-HubitIisPool -Log { param($m) Write-BootLog $m }
+Write-BootLog "iis pool hubit: $poolResult"
+
 if ($SettleSeconds -gt 0) {
     Start-Sleep -Seconds $SettleSeconds
 }
