@@ -1158,6 +1158,36 @@ def test_send_data_sends_current_payload_before_backlog(monkeypatch, temp_dir):
     assert list(pending.glob("*.json")) == []
 
 
+def test_send_data_uses_backlog_slots_for_due_reports(monkeypatch, temp_dir):
+    pending, dead = _configure_inventory_queue(monkeypatch, temp_dir)
+    config = _make_inventory_config(inventory_queue_batch=1)
+    now_ts = 1000
+    monkeypatch.setattr(agent.time, "time", lambda: now_ts)
+
+    waiting = pending / "0000000900_waiting.json"
+    ready = pending / "0000000901_ready.json"
+    remaining = pending / "0000000902_remaining.json"
+    for path, next_attempt in ((waiting, 1100), (ready, 1000), (remaining, 0)):
+        path.write_text(
+            json.dumps({"created_at": 900, "next_attempt_at": next_attempt, "payload": {"host": path.stem}}),
+            encoding="utf-8",
+        )
+    original_waiting = waiting.read_bytes()
+    sent_payloads = []
+    monkeypatch.setattr(agent, "_post_payload", lambda payload, cfg: sent_payloads.append(payload["host"]) or True)
+
+    assert agent.send_data({"host": "current"}, config) is True
+    assert sent_payloads == ["current", ready.stem]
+    assert set(pending.glob("*.json")) == {waiting, remaining}
+    assert waiting.read_bytes() == original_waiting
+
+    now_ts = 1100
+    assert agent.send_data({"host": "next"}, config) is True
+    assert sent_payloads == ["current", ready.stem, "next", waiting.stem]
+    assert set(pending.glob("*.json")) == {remaining}
+    assert list(dead.glob("*.json")) == []
+
+
 def test_send_data_increments_attempts_and_next_attempt_at_on_failure(monkeypatch, temp_dir):
     pending, dead = _configure_inventory_queue(monkeypatch, temp_dir)
     config = _make_inventory_config()
@@ -1175,6 +1205,23 @@ def test_send_data_increments_attempts_and_next_attempt_at_on_failure(monkeypatc
     assert item["next_attempt_at"] == 1042
     assert item["last_error"] == "NET_TIMEOUT_OR_HTTP_ERROR"
     assert list(dead.glob("*.json")) == []
+
+
+def test_send_data_keeps_oversized_report_in_dead_letter(monkeypatch, temp_dir):
+    pending, dead = _configure_inventory_queue(monkeypatch, temp_dir)
+    config = _make_inventory_config(inventory_queue_max_total_mb=1)
+    payload = {"host": "pc-oversized", "data": "x" * (1024 * 1024)}
+    sent_payloads = []
+    monkeypatch.setattr(agent, "_post_payload", lambda payload, cfg: sent_payloads.append(payload) or True)
+
+    assert agent.send_data(payload, config) is False
+
+    assert sent_payloads == []
+    assert list(pending.glob("*.json")) == []
+    dead_file, = dead.glob("*.json")
+    item = json.loads(dead_file.read_text(encoding="utf-8"))
+    assert item["dropped_reason"] == "QUEUE_FULL_SIZE"
+    assert item["payload"] == payload
 
 
 def test_inventory_queue_prune_moves_corrupt_item_to_dead_letter(monkeypatch, temp_dir):

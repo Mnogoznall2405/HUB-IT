@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -46,11 +47,81 @@ def test_software_inventory_due_respects_interval(monkeypatch, tmp_path: Path):
 
     assert inventory_agent._software_inventory_due(1_000_000) is True
     state_path.write_text(json.dumps({"collected_at": 1_000_000 - 100}), encoding="utf-8")
+    assert inventory_agent._software_inventory_due(1_000_000) is True
+    state_path.write_text(
+        json.dumps({
+            "collected_at": 1_000_000 - 100,
+            "filter_version": inventory_agent.SOFTWARE_INVENTORY_FILTER_VERSION,
+        }),
+        encoding="utf-8",
+    )
     assert inventory_agent._software_inventory_due(1_000_000) is False
     assert inventory_agent._software_inventory_due(1_000_000 + 24 * 3600) is True
 
     monkeypatch.setenv("ITINV_SOFTWARE_INVENTORY_INTERVAL_HOURS", "0")
     assert inventory_agent._software_inventory_due(1_000_000 + 10**9) is False
+
+
+def test_software_inventory_excludes_system_entries_and_keeps_user_apps(monkeypatch, tmp_path):
+    uninstall = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+    sid = "S-1-5-21-42-42-42-1001"
+    entries = {
+        ("machine", uninstall): {
+            "hidden": {"DisplayName": "Python Test Suite", "SystemComponent": 1},
+            "child": {"DisplayName": "Office shared components", "ParentKeyName": "office"},
+            "update": {"DisplayName": "GDR for SQL Server", "ReleaseType": "Безопасность"},
+            "driver": {"DisplayName": "NVIDIA Graphics Driver 555.11"},
+            "runtime": {"DisplayName": "Microsoft Visual C++ 2015-2022 Redistributable (x64)"},
+            "office": {"DisplayName": "Microsoft 365 Apps", "Publisher": "Microsoft Corporation"},
+        },
+        ("users", f"{sid}\\{uninstall}"): {
+            "teams": {"DisplayName": "Microsoft Teams", "SystemComponent": 0},
+            "driver_utility": {"DisplayName": "Intel Driver & Support Assistant"},
+        },
+    }
+
+    def open_key(root, path):
+        if (root, path) in entries:
+            return nullcontext(entries[root, path])
+        base, _, child = path.rpartition("\\")
+        return nullcontext(entries[root, base][child])
+
+    monkeypatch.setattr(
+        inventory_agent,
+        "winreg",
+        SimpleNamespace(
+            HKEY_LOCAL_MACHINE="machine",
+            HKEY_USERS="users",
+            OpenKey=open_key,
+            QueryInfoKey=lambda key: (len(key),),
+            EnumKey=lambda key, index: list(key)[index],
+            QueryValueEx=lambda key, name: (key[name], None),
+        ),
+    )
+    monkeypatch.setattr(inventory_agent, "_enumerate_hku_user_sids", lambda: [sid])
+    monkeypatch.setenv("ITINV_SOFTWARE_STORE_APPS_ENABLED", "1")
+    monkeypatch.setenv("ITINV_SOFTWARE_INVENTORY_INTERVAL_HOURS", "24")
+    monkeypatch.setattr(inventory_agent, "_powershell_json", lambda *args, **kwargs: [
+        {"Name": "Microsoft.StorePurchaseApp", "Version": "1"},
+        {"Name": "Microsoft.XboxGameOverlay", "Version": "1"},
+        {"Name": "Microsoft.WindowsAppRuntime.1.8", "Version": "1"},
+        {"Name": "Microsoft.WindowsCalculator", "Version": "1"},
+        {"Name": "Contoso.WorkApp", "Version": "1"},
+    ])
+    state = tmp_path / "software_inventory_state.json"
+    monkeypatch.setattr(inventory_agent, "_software_inventory_state_path", lambda: state)
+
+    snapshot = inventory_agent.collect_software_inventory()
+
+    assert {item["display_name"]: item["scope"] for item in snapshot["items"]} == {
+        "Microsoft 365 Apps": "machine",
+        "Microsoft Teams": "user",
+        "Intel Driver & Support Assistant": "user",
+        "Microsoft.WindowsCalculator": "store",
+        "Contoso.WorkApp": "store",
+    }
+    assert snapshot["count"] == 5
+    assert inventory_agent._software_inventory_due(snapshot["collected_at"]) is False
 
 
 def test_failed_dead_letter_write_keeps_the_pending_inventory_report(monkeypatch, tmp_path: Path):

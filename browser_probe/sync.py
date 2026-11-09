@@ -9,13 +9,15 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Set
+from typing import Any, Collection, Dict, List, Set
 
 import requests
 
 logger = logging.getLogger("browser_probe.sync")
 
 MAX_BATCH_BYTES = 16 * 1024 * 1024
+CONFIRMED_SCREENSHOT_MAX_AGE_SEC = 7 * 86400
+CONFIRMED_SCREENSHOT_MAX_BYTES = 256 * 1024 * 1024
 _QUEUE_FIELDS = (
     ("visits", b',"visits":['),
     ("focus_events", b',"focus_events":['),
@@ -120,7 +122,7 @@ class BrowserProbeSync:
             if not force and time.monotonic() - self._last_sync < self.sync_interval_sec:
                 return
             try:
-                self._sync_pending()
+                self._sync_and_prune()
             except Exception as exc:
                 logger.warning("browser probe sync failed: %s", exc)
             self._last_sync = time.monotonic()
@@ -137,7 +139,7 @@ class BrowserProbeSync:
             return base
         return f"{base.rstrip('/')}/browser-probe"
 
-    def _encode_screenshot(self, shot: Any, sent_names: Set[str]) -> tuple[str, bytes] | None:
+    def _encode_screenshot(self, shot: Any, sent_names: Collection[str]) -> tuple[Path, bytes] | None:
         if not isinstance(shot, dict):
             return None
         rel = str(shot.get("file") or shot.get("path") or "").replace("\\", "/").strip()
@@ -161,9 +163,9 @@ class BrowserProbeSync:
             return None
         metadata = _json_bytes({"name": name, "content_type": "image/png"})
         encoded = b"".join((metadata[:-1], b',"content_base64":"', base64.b64encode(raw), b'"}'))
-        return name, encoded
+        return path, encoded
 
-    def _build_batch(self, pending: Dict[str, Any]) -> tuple[bytes, Dict[str, int], Set[str]]:
+    def _build_batch(self, pending: Dict[str, Any]) -> tuple[bytes, Dict[str, int], Dict[str, Path]]:
         identity = {
             "computer_name": str(pending.get("computer_name") or os.getenv("COMPUTERNAME", "")).strip(),
             "windows_user": str(pending.get("windows_user") or os.getenv("USERNAME", "")).strip(),
@@ -173,7 +175,7 @@ class BrowserProbeSync:
         size = empty_size = len(prefix) + sum(len(field) + 1 for _, field in _QUEUE_FIELDS) + 1
         parts: List[bytes] = [prefix]
         consumed = {key: 0 for key, _ in _QUEUE_FIELDS}
-        sent_names: Set[str] = set()
+        sent_files: Dict[str, Path] = {}
         full = False
         for key, field in _QUEUE_FIELDS:
             parts.append(field)
@@ -181,13 +183,13 @@ class BrowserProbeSync:
             for record in pending[key]:
                 if full:
                     break
-                name = None
+                media_path = None
                 if key == "screenshots":
-                    media = self._encode_screenshot(record, sent_names)
+                    media = self._encode_screenshot(record, sent_files)
                     if media is None:
                         consumed[key] += 1
                         continue
-                    name, encoded = media
+                    media_path, encoded = media
                 else:
                     encoded = _json_bytes(record)
                 record_size = len(encoded) + len(separator)
@@ -200,13 +202,13 @@ class BrowserProbeSync:
                 size += record_size
                 separator = b","
                 consumed[key] += 1
-                if name is not None:
-                    sent_names.add(name)
+                if media_path is not None:
+                    sent_files[media_path.name] = media_path
             parts.append(b"]")
         parts.append(b"}")
-        return b"".join(parts) if size > empty_size else b"", consumed, sent_names
+        return b"".join(parts) if size > empty_size else b"", consumed, sent_files
 
-    def _post_batch(self, url: str, body: bytes) -> None:
+    def _post_batch(self, url: str, body: bytes, media_count: int) -> None:
         resp = self._session.post(
             url,
             data=body,
@@ -221,10 +223,61 @@ class BrowserProbeSync:
             raise RuntimeError("browser-probe upload returned an invalid acknowledgement") from exc
         if not isinstance(ack, dict) or ack.get("success") is not True:
             raise RuntimeError("browser-probe upload was not acknowledged")
+        if media_count and ack.get("media") != media_count:
+            raise RuntimeError("browser-probe acknowledgement media count does not match the batch")
+
+    def _confirmed_screenshot_dir(self) -> Path:
+        directory = self.output_dir.resolve() / "screenshots" / "confirmed"
+        if directory.resolve() != directory:
+            raise OSError("confirmed screenshot directory points outside its expected path")
+        return directory
+
+    def _archive_confirmed_screenshots(self, files: Collection[Path]) -> None:
+        try:
+            directory = self._confirmed_screenshot_dir()
+            for path in files:
+                if path.suffix.lower() != ".png" or path.is_symlink() or path.parent.resolve() != directory.parent:
+                    continue
+                directory.mkdir(exist_ok=True)
+                destination = directory / path.name
+                if not destination.exists():
+                    path.rename(destination)
+        except OSError as exc:
+            logger.warning("Browser probe could not archive confirmed screenshots: %s", exc)
+
+    def _prune_confirmed_screenshots(self) -> None:
+        try:
+            directory = self._confirmed_screenshot_dir()
+            if not directory.is_dir():
+                return
+            entries = []
+            for path in directory.glob("*.png"):
+                if path.is_file() and not path.is_symlink():
+                    stat = path.stat()
+                    entries.append((stat.st_mtime, path, stat.st_size))
+            total_bytes = sum(size for _, _, size in entries)
+            expires_before = time.time() - CONFIRMED_SCREENSHOT_MAX_AGE_SEC
+            removed = 0
+            for modified, path, size in sorted(entries):
+                if modified >= expires_before and total_bytes <= CONFIRMED_SCREENSHOT_MAX_BYTES:
+                    break
+                path.unlink(missing_ok=True)
+                total_bytes -= size
+                removed += 1
+            if removed:
+                logger.info("Browser probe pruned %s confirmed screenshots; retained bytes=%s", removed, total_bytes)
+        except OSError as exc:
+            logger.warning("Browser probe could not prune confirmed screenshots: %s", exc)
 
     def sync_once(self) -> Dict[str, Any]:
         with self._sync_lock:
+            return self._sync_and_prune()
+
+    def _sync_and_prune(self) -> Dict[str, Any]:
+        try:
             return self._sync_pending()
+        finally:
+            self._prune_confirmed_screenshots()
 
     def _sync_pending(self) -> Dict[str, Any]:
         stats = {"visits": 0, "focus_events": 0, "media": 0}
@@ -240,22 +293,24 @@ class BrowserProbeSync:
                 break
             pending = self._read_queue(self._inflight_path)
             while any(pending[key] for key, _ in _QUEUE_FIELDS):
-                body, consumed, sent_names = self._build_batch(pending)
+                body, consumed, sent_files = self._build_batch(pending)
                 if body:
-                    self._post_batch(url, body)
-                if sent_names:
-                    self._uploaded_media.update(sent_names)
+                    self._post_batch(url, body, len(sent_files))
+                if sent_files:
+                    self._uploaded_media.update(sent_files)
                     self._save_cursor()
                 for key, count in consumed.items():
                     del pending[key][:count]
                 _write_queue_file(self._inflight_path, pending)
+                if sent_files:
+                    self._archive_confirmed_screenshots(sent_files.values())
                 stats["visits"] += consumed["visits"]
                 stats["focus_events"] += consumed["focus_events"]
-                stats["media"] += len(sent_names)
+                stats["media"] += len(sent_files)
                 if body:
                     logger.info(
                         "browser batch acknowledged bytes=%s visits=%s focus=%s media=%s",
-                        len(body), consumed["visits"], consumed["focus_events"], len(sent_names),
+                        len(body), consumed["visits"], consumed["focus_events"], len(sent_files),
                     )
                 del body
             self._inflight_path.unlink()

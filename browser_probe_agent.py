@@ -8,7 +8,12 @@ import logging
 import os
 import sys
 import threading
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+
+BROWSER_LOG_MAX_BYTES = 8 * 1024 * 1024
+BROWSER_LOG_BACKUP_COUNT = 2
 
 
 def _bootstrap_paths() -> Path:
@@ -47,12 +52,16 @@ def _default_output() -> Path:
     return Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "HUB-IT" / "BrowserProbe"
 
 
-def _configure_logging(verbose: bool) -> None:
-    log_dir = _default_output() / "Logs"
+def _configure_logging(verbose: bool, output_dir: Path) -> None:
+    log_dir = output_dir / "Logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "browser_probe.log"
     level = logging.DEBUG if verbose else logging.INFO
-    handlers: list[logging.Handler] = [logging.FileHandler(log_path, encoding="utf-8")]
+    handlers: list[logging.Handler] = [
+        RotatingFileHandler(
+            log_path, maxBytes=BROWSER_LOG_MAX_BYTES, backupCount=BROWSER_LOG_BACKUP_COUNT, encoding="utf-8",
+        )
+    ]
     if not getattr(sys, "frozen", False):
         handlers.append(logging.StreamHandler(sys.stdout))
     logging.basicConfig(
@@ -98,12 +107,7 @@ def main(argv: list[str] | None = None) -> int:
     _load_env_file(env_path)
 
     args = parse_args(argv)
-    _configure_logging(args.verbose)
     logger = logging.getLogger("browser_probe_agent")
-
-    if not _env_truthy("ITINV_BROWSER_PROBE_ENABLED", True):
-        logger.info("Browser probe disabled by ITINV_BROWSER_PROBE_ENABLED")
-        return 0
 
     output_dir = (args.output or _default_output()).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -117,6 +121,10 @@ def main(argv: list[str] | None = None) -> int:
         except OSError:
             logger.error("Browser probe cannot lock the queue. Check for another instance using this folder.")
             return 1
+        _configure_logging(args.verbose, output_dir)
+        if not _env_truthy("ITINV_BROWSER_PROBE_ENABLED", True):
+            logger.info("Browser probe disabled by ITINV_BROWSER_PROBE_ENABLED")
+            return 0
         return _run_probe(args, output_dir, logger)
 
 

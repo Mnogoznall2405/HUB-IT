@@ -2321,6 +2321,14 @@ class AppBrowserProbeVisit(AppBase):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
+class AppBrowserProbeFocusEvent(AppBase):
+    __tablename__ = "browser_probe_focus_events"
+    __table_args__ = {"schema": APP_SCHEMA}
+
+    event_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class AppBrowserProbeMedia(AppBase):
     __tablename__ = "browser_probe_media"
     __table_args__ = _table_args(
