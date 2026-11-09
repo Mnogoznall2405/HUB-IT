@@ -36,3 +36,20 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
+
+# Keep the helper in onedir mode so a timeout can terminate the PDF process
+# directly, without leaving a onefile bootloader child running.
+pdf = Analysis(
+    ['scan_agent/pdf_worker.py'],
+    pathex=[],
+    hiddenimports=['win32job'],
+)
+pdf_exe = EXE(
+    PYZ(pdf.pure),
+    pdf.scripts,
+    [],
+    exclude_binaries=True,
+    name='ITInventPdfWorker',
+    console=True,
+)
+pdf_dist = COLLECT(pdf_exe, pdf.binaries, pdf.datas, name='ITInventPdfWorker')

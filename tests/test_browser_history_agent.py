@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from browser_probe import history
 from browser_probe.history import (
     BrowserProfile,
     bootstrap_cursors,
@@ -94,3 +95,31 @@ def test_watcher_history_disabled_skips_poll(tmp_path: Path, monkeypatch):
     watcher = BrowserProbeWatcher(tmp_path / "bp")
     assert watcher.history_enabled is False
     assert watcher._poll_history() == []
+
+
+def test_watcher_reads_titles_and_visits_from_one_history_copy(tmp_path: Path, monkeypatch):
+    local_app_data = tmp_path / "Local"
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    history_db = local_app_data / "Google" / "Chrome" / "User Data" / "Default" / "History"
+    chromium_us = 13300000000000000
+    first = (5, chromium_us, "https://example.com/a", "Example A")
+    _make_history_db(history_db, [first])
+    copies = []
+    copy_history_db = history._copy_history_db
+
+    def count_copy(source, destination):
+        copies.append(source)
+        return copy_history_db(source, destination)
+
+    monkeypatch.setattr(history, "_copy_history_db", count_copy)
+    watcher = BrowserProbeWatcher(tmp_path / "bp", history_enabled=True)
+    assert watcher._poll_history() == []
+    assert copies == [history_db]
+
+    copies.clear()
+    _make_history_db(history_db, [first, (9, chromium_us + 1, "https://example.com/b", "Example B")])
+    assert [visit["visit_id"] for visit in watcher._poll_history()] == [9]
+    focus_event = {"browser": "chrome", "title": "Example B"}
+    watcher._enrich_focus_url(focus_event)
+    assert focus_event["url"] == "https://example.com/b"
+    assert copies == [history_db]

@@ -17,13 +17,13 @@ Scan-контур по умолчанию работает в on-demand режи
 
 ```powershell
 pip install -r scan_agent/requirements.txt
-python scan_agent/agent.py --once
+python -m scan_agent.agent --once
 ```
 
 Постоянный режим:
 
 ```powershell
-python scan_agent/agent.py
+python -m scan_agent.agent
 ```
 
 ## Переменные окружения
@@ -39,6 +39,12 @@ python scan_agent/agent.py
 - `SCAN_AGENT_WATCHDOG_BATCH_SIZE` — размер батча watchdog queue, по умолчанию `200`
 - `SCAN_AGENT_ROOTS_REFRESH_SEC` — refresh monitored roots, по умолчанию `300`
 - `SCAN_AGENT_BRANCH` — опциональная метка филиала
+
+PDF обрабатывается в отдельном процессе. Время на хеширование и разбор одного PDF ограничено
+20 секундами, память процесса — 256 МиБ. Отдельные лимиты составляют 256 МиБ для исходного
+PDF и 16 МиБ для OCR-среза. Проверяются первые 10 страниц текста (до 256 000 символов),
+а OCR-срез включает до 3 страниц. Превышение любого бюджета попадает в отчёт как
+`analysis_incomplete` с причиной.
 
 Если нужен старый режим:
 

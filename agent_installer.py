@@ -50,6 +50,7 @@ INSTALLER_MACHINE_ENV_KEYS = (
 AGENT_RUNTIME_PROCESS_NAMES = (
     "ITInventAgent",
     "ITInventScanAgent",
+    "ITInventPdfWorker",
     "ITInventOutlookProbe",
     "ITInventTelegramProbe",
     "ITInventMaxProbe",
