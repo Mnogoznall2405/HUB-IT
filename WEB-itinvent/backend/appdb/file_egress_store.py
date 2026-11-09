@@ -8,10 +8,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from backend.appdb.db import app_session, ensure_app_schema_initialized, is_app_database_configured
 from backend.appdb.models import (
+    AppBrowserProbeFocusEvent,
     AppBrowserProbeMedia,
     AppBrowserProbeVisit,
     AppFileLeftEvent,
@@ -21,6 +24,7 @@ from backend.appdb.models import (
     AppTelegramProbeMedia,
     AppTelegramProbeReport,
 )
+from shared.browser_focus import browser_focus_event_key
 
 
 def _utcnow() -> datetime:
@@ -433,12 +437,27 @@ class AppFileEgressStore:
         visits: List[Dict[str, Any]],
         focus_events: Optional[List[Dict[str, Any]]] = None,
     ) -> int:
+        if not visits and not focus_events:
+            return 0
         ensure_app_schema_initialized(self.database_url)
         now = _utcnow()
         host = str(computer_name or "").strip() or "unknown"
         user = str(windows_user or "").strip()
         count = 0
         with app_session(database_url=self.database_url) as session:
+            connection = session.connection()
+            is_postgres = connection.dialect.name == "postgresql"
+            if is_postgres:
+                # Serialize read/modify/write of the same host's aggregates across workers.
+                lock_key = int.from_bytes(
+                    hashlib.blake2b(host.encode("utf-8"), digest_size=8, person=b"browser-focus").digest(),
+                    "big",
+                    signed=True,
+                )
+                connection.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
+            else:
+                connection.exec_driver_sql("BEGIN IMMEDIATE")
+            insert_focus_event = postgres_insert if is_postgres else sqlite_insert
             for visit in visits or []:
                 if not isinstance(visit, dict):
                     continue
@@ -535,6 +554,17 @@ class AppFileEgressStore:
                 except (TypeError, ValueError):
                     ended_ts = time.time()
                 ended_dt = datetime.fromtimestamp(ended_ts, tz=timezone.utc)
+
+                event_key = browser_focus_event_key(host, user, event)
+                if event_key:
+                    accepted_key = session.execute(
+                        insert_focus_event(AppBrowserProbeFocusEvent)
+                        .values(event_key=event_key, received_at=now)
+                        .on_conflict_do_nothing(index_elements=["event_key"])
+                        .returning(AppBrowserProbeFocusEvent.event_key)
+                    ).scalar_one_or_none()
+                    if accepted_key is None:
+                        continue
 
                 # Attach dwell to History only when URL matches (never by title alone —
                 # SPA/background History must not steal focus from the real tab).

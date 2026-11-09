@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -237,6 +238,7 @@ class ForegroundTracker:
         if self._key and self._key != new_key and self._started is not None and self._snapshot is not None:
             dwell = max(0.0, now - self._started)
             closed = {
+                "event_id": uuid.uuid4().hex,
                 "browser": self._snapshot.browser,
                 "title": self._snapshot.page_title,
                 "window_title": self._snapshot.title,

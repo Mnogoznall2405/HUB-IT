@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 
@@ -25,9 +27,10 @@ def app_db_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     appdb_db._engines.clear()
     appdb_db._session_factories.clear()
     appdb_db._initialized_schema_urls.clear()
-    svc.get_egress_store.cache_clear()
+    clear_store_cache = svc.get_egress_store.cache_clear
+    clear_store_cache()
     yield url
-    svc.get_egress_store.cache_clear()
+    clear_store_cache()
     appdb_db._engines.clear()
     appdb_db._session_factories.clear()
     appdb_db._initialized_schema_urls.clear()
@@ -88,6 +91,79 @@ def test_merge_messages_reorders_same_capture_by_bbox():
     # Re-ingest reversed order must still normalize.
     merged2 = _merge_messages(merged, list(reversed(incoming)))
     assert [m["text"] for m in merged2] == ["earlier", "later"]
+
+
+@pytest.mark.parametrize("use_app_store", [True, False])
+def test_browser_focus_upload_retries_do_not_count_time_twice(app_db_url, tmp_path, monkeypatch, use_app_store):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from backend.api.v1 import fs_egress
+    from backend.appdb.file_egress_store import AppFileEgressStore
+    from inventory_server.egress_store import EgressEventStore
+
+    store = (
+        AppFileEgressStore(database_url=app_db_url)
+        if use_app_store
+        else EgressEventStore(db_path=tmp_path / "fallback_egress.sqlite")
+    )
+    monkeypatch.setattr(fs_egress.store, "get_egress_store", lambda: store)
+    monkeypatch.setenv("ITINV_AGENT_API_KEYS", "browser-fixture")
+    app = FastAPI()
+    app.include_router(fs_egress.router)
+    focus = {
+        "event_id": "capture-1",
+        "browser": "chrome",
+        "url": "https://example.com/work",
+        "title": "Work",
+        "ended_at": 1_700_000_000.25,
+        "dwell_sec": 10,
+    }
+    legacy = {**focus, "ended_at": 1_700_000_001.25, "dwell_sec": 4}
+    legacy.pop("event_id")
+
+    def send(events):
+        with TestClient(app, raise_server_exceptions=False) as client:
+            return client.post(
+                "/browser-probe",
+                headers={"X-API-Key": "browser-fixture"},
+                json={"computer_name": "PC-FOCUS", "windows_user": "alice", "focus_events": events},
+            )
+
+    # Force the batch to fail after claiming its first event. Both the claim
+    # and the accumulated time must roll back.
+    broken = send([focus, {**focus, "event_id": "broken", "ended_at": "NaN"}])
+    assert broken.status_code == 500
+    assert store.list_browser_visits(computer_name="PC-FOCUS") == []
+
+    barrier = Barrier(2)
+
+    def concurrent_upload(event):
+        barrier.wait(timeout=5)
+        return send([event])
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(concurrent_upload, focus) for _ in range(2)]
+        replies = [future.result(timeout=15) for future in futures]
+    assert [reply.status_code for reply in replies] == [200, 200]
+    assert sorted(reply.json()["visits"] for reply in replies) == [0, 1]
+
+    later = send([focus, {**focus, "event_id": "capture-2"}, legacy, legacy])
+    assert later.status_code == 200
+    assert later.json()["visits"] == 2
+    assert send([legacy]).json()["visits"] == 0
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(concurrent_upload, {**focus, "event_id": event_id})
+            for event_id in ("capture-3", "capture-4")
+        ]
+        replies = [future.result(timeout=15) for future in futures]
+    assert [reply.status_code for reply in replies] == [200, 200]
+    assert [reply.json()["visits"] for reply in replies] == [1, 1]
+    rows = store.list_browser_visits(computer_name="PC-FOCUS")
+    assert len(rows) == 1
+    assert rows[0]["dwell_sec"] == 44
 
 
 def test_web_service_prefers_postgres_when_configured(app_db_url: str):

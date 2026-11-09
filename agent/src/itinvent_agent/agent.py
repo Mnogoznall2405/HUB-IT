@@ -92,6 +92,7 @@ SOFTWARE_INVENTORY_STATE_FILE_NAME = "software_inventory_state.json"
 ENV_FILE_NAME = ".env"
 LOW_DISK_FREE_GB = 5.0
 DEFAULT_SOFTWARE_INVENTORY_INTERVAL_HOURS = 168
+SOFTWARE_INVENTORY_FILTER_VERSION = 1
 AGENT_TASK_NAME = "HUB-IT Agent"
 PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "HUB-IT"
 LEGACY_PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT-Invent"
@@ -2407,10 +2408,30 @@ def _software_inventory_due(now_ts: int) -> bool:
         return True
     try:
         data = json.loads(state_path.read_text(encoding="utf-8"))
-        last_at = int((data or {}).get("collected_at") or 0)
+        if data.get("filter_version") != SOFTWARE_INVENTORY_FILTER_VERSION:
+            return True
+        last_at = int(data.get("collected_at") or 0)
     except Exception:
         return True
     return (now_ts - last_at) >= interval_hours * 3600
+
+
+_SYSTEM_SOFTWARE_RELEASE_TYPES = frozenset({
+    "driver", "feature pack", "hotfix", "security update", "service pack", "update", "update rollup",
+    "безопасность", "драйвер", "исправление", "обновление", "обновление для системы безопасности",
+})
+_SYSTEM_SOFTWARE_NAME = re.compile(
+    r"^(?:"
+    r"(?:microsoft )?visual c\+\+ .*redistributable\b"
+    r"|(?:microsoft )?\.net (?:runtime|host)\b"
+    r"|(?:microsoft )?asp\.net core .*\b(?:runtime|shared framework)\b"
+    r"|(?:microsoft )?(?:edge webview2|windows desktop|windows app) runtime\b"
+    r"|microsoft (?:odbc driver \d+|ole db driver) for sql server\b"
+    r"|(?:microsoft )?update health tools\b"
+    r"|(?:security update|update|hotfix|gdr|обновление|исправление)\b.*\bkb\d{5,}\b"
+    r")|\b(?:drivers?|драйвер)(?:\s+v?\d[\w.-]*)?(?:\s+\((?:x64|x86|arm64|64-bit|32-bit)\))?$",
+    re.IGNORECASE,
+)
 
 
 def _read_uninstall_roots(roots: List[Tuple[Any, str]], scope: str, seen: Set[str]) -> List[Dict[str, str]]:
@@ -2434,17 +2455,25 @@ def _read_uninstall_roots(roots: List[Tuple[Any, str]], scope: str, seen: Set[st
                             return ""
 
                     display_name = _read("DisplayName")
-                    if not display_name:
+                    if (
+                        not display_name
+                        or _is_truthy(_read("SystemComponent"), default=False)
+                        or _read("ParentKeyName")
+                        or _read("ReleaseType").casefold() in _SYSTEM_SOFTWARE_RELEASE_TYPES
+                        or _SYSTEM_SOFTWARE_NAME.search(display_name)
+                    ):
                         continue
-                    dedupe_key = f"{display_name}|{_read('DisplayVersion')}|{_read('Publisher')}".lower()
+                    version = _read("DisplayVersion")
+                    publisher = _read("Publisher")
+                    dedupe_key = f"{display_name}|{version}|{publisher}".lower()
                     if dedupe_key in seen:
                         continue
                     seen.add(dedupe_key)
                     items.append(
                         {
                             "display_name": display_name,
-                            "display_version": _read("DisplayVersion"),
-                            "publisher": _read("Publisher"),
+                            "display_version": version,
+                            "publisher": publisher,
                             "install_date": _read("InstallDate"),
                             "scope": scope,
                         }
@@ -2455,9 +2484,28 @@ def _read_uninstall_roots(roots: List[Tuple[Any, str]], scope: str, seen: Set[st
 
 
 _STORE_APPS_SCRIPT = (
-    "Get-AppxPackage -AllUsers | Where-Object { -not $_.IsFramework -and -not $_.NonRemovable -and $_.SignatureKind -eq 'Store' } | "
+    "Get-AppxPackage -AllUsers | Where-Object { -not $_.IsFramework -and -not $_.IsResourcePackage "
+    "-and -not $_.NonRemovable -and $_.SignatureKind -eq 'Store' } | "
     "Select-Object -Property Name,Version,Publisher -Unique | ConvertTo-Json -Compress"
 )
+_SYSTEM_STORE_PACKAGES = frozenset({
+    "microsoft.desktopappinstaller",
+    "microsoft.gamingservices",
+    "microsoft.gethelp",
+    "microsoft.getstarted",
+    "microsoft.sechealthui",
+    "microsoft.storepurchaseapp",
+    "microsoft.widgetsplatformruntime",
+    "microsoft.windowsfeedbackhub",
+    "microsoft.windowsstore",
+    "microsoft.xbox.tcui",
+    "microsoft.xboxgameoverlay",
+    "microsoft.xboxgamingoverlay",
+    "microsoft.xboxidentityprovider",
+    "microsoft.xboxspeechtotextoverlay",
+    "microsoftwindows.client.webexperience",
+})
+_SYSTEM_STORE_PREFIXES = ("microsoft.net.native.", "microsoft.ui.xaml.", "microsoft.vclibs.", "microsoft.windowsappruntime.")
 
 
 def _publisher_common_name(value: Any) -> str:
@@ -2474,7 +2522,8 @@ def _iter_store_apps(seen: Set[str]) -> List[Dict[str, str]]:
         if not isinstance(row, dict):
             continue
         name = sanitize_text(row.get("Name"))
-        if not name:
+        normalized_name = name.casefold()
+        if not name or normalized_name in _SYSTEM_STORE_PACKAGES or normalized_name.startswith(_SYSTEM_STORE_PREFIXES):
             continue
         version = sanitize_text(row.get("Version"))
         publisher = _publisher_common_name(row.get("Publisher"))
@@ -2528,7 +2577,12 @@ def collect_software_inventory(*, limit: int = 2500) -> Dict[str, Any]:
         _atomic_write_text(
             _software_inventory_state_path(),
             json.dumps(
-                {"collected_at": collected_at, "snapshot_hash": digest, "count": len(items)},
+                {
+                    "collected_at": collected_at,
+                    "snapshot_hash": digest,
+                    "count": len(items),
+                    "filter_version": SOFTWARE_INVENTORY_FILTER_VERSION,
+                },
                 ensure_ascii=False,
             ),
             encoding="utf-8",
@@ -3764,11 +3818,12 @@ def _inventory_backoff_seconds(attempts: int) -> int:
     return max(5, int(base * jitter))
 
 
-def _inventory_queue_prune_limits(config: AgentConfig) -> None:
+def _inventory_queue_prune_limits(config: AgentConfig) -> Dict[Path, int]:
     now_ts = int(time.time())
     max_age_seconds = config.inventory_queue_max_age_days * 24 * 60 * 60
     max_total_size = config.inventory_queue_max_total_mb * 1024 * 1024
-    entries: List[Tuple[Path, Dict[str, Any], int]] = []
+    entries: List[Tuple[Path, int]] = []
+    retry_schedule: Dict[Path, int] = {}
 
     for path in _inventory_queue_paths():
         try:
@@ -3779,23 +3834,29 @@ def _inventory_queue_prune_limits(config: AgentConfig) -> None:
         if item is None:
             _inventory_queue_move_to_dead(path, None, "QUEUE_CORRUPT")
             continue
+        retry_schedule[path] = item["next_attempt_at"]
         if max_age_seconds > 0 and (now_ts - _to_int(item.get("created_at"), now_ts)) > max_age_seconds:
             logging.warning("Inventory queue item expired by age: %s", path.name)
             _inventory_queue_move_to_dead(path, item, "QUEUE_MAX_AGE")
             continue
-        entries.append((path, item, size_bytes))
+        entries.append((path, size_bytes))
 
-    while len(entries) > config.inventory_queue_max_items:
-        path, item, _ = entries.pop(0)
-        logging.warning("Inventory queue full by count, moving oldest to dead-letter: %s", path.name)
-        _inventory_queue_move_to_dead(path, item, "QUEUE_FULL_COUNT")
+    excess_count = len(entries) - config.inventory_queue_max_items
+    total_size = sum(size_bytes for _, size_bytes in entries)
+    for index, (path, size_bytes) in enumerate(entries):
+        if index < excess_count:
+            limit = "COUNT"
+        elif total_size > max_total_size:
+            limit = "SIZE"
+        else:
+            break
+        item = _inventory_queue_read(path)
+        if item is not None:
+            logging.warning("Inventory queue full by %s, moving oldest to dead-letter: %s", limit.lower(), path.name)
+            _inventory_queue_move_to_dead(path, item, f"QUEUE_FULL_{limit}")
+        total_size -= size_bytes
 
-    total_size = sum(max(0, size_bytes) for _, _, size_bytes in entries)
-    while entries and total_size > max_total_size:
-        path, item, size_bytes = entries.pop(0)
-        logging.warning("Inventory queue full by size, moving oldest to dead-letter: %s", path.name)
-        _inventory_queue_move_to_dead(path, item, "QUEUE_FULL_SIZE")
-        total_size -= max(0, size_bytes)
+    return retry_schedule
 
 
 def _inventory_queue_depth() -> int:
@@ -3849,27 +3910,27 @@ def send_data(payload: Dict[str, Any], config: AgentConfig) -> bool:
         logging.error("Inventory queue enqueue failed: %s", exc)
         return False
 
-    _inventory_queue_prune_limits(config)
+    retry_schedule = _inventory_queue_prune_limits(config)
     now_ts = int(time.time())
     sent_this_payload = False
     queue_paths = _inventory_queue_paths()
-    ordered_paths: List[Path] = [enqueued_path]
-    backlog_limit = max(0, int(config.inventory_queue_batch))
-    for path in queue_paths:
-        if path == enqueued_path:
-            continue
-        if len(ordered_paths) >= backlog_limit + 1:
-            break
-        ordered_paths.append(path)
+    if enqueued_path in queue_paths:
+        queue_paths.remove(enqueued_path)
+        queue_paths.insert(0, enqueued_path)
+    backlog_remaining = max(0, int(config.inventory_queue_batch))
 
-    for path in ordered_paths:
+    for path in queue_paths:
+        is_current = path == enqueued_path
+        if not is_current and backlog_remaining == 0:
+            break
+        if retry_schedule.get(path, 0) > now_ts:
+            continue
         item = _inventory_queue_read(path)
         if item is None:
             _inventory_queue_move_to_dead(path, None, "QUEUE_CORRUPT")
             continue
 
-        next_attempt_at = _to_int(item.get("next_attempt_at"), 0)
-        if next_attempt_at > now_ts:
+        if item["next_attempt_at"] > now_ts:
             continue
 
         payload_row = item.get("payload")
@@ -3877,12 +3938,14 @@ def send_data(payload: Dict[str, Any], config: AgentConfig) -> bool:
             _inventory_queue_move_to_dead(path, item, "QUEUE_INVALID_PAYLOAD")
             continue
 
+        if not is_current:
+            backlog_remaining -= 1
         if _post_payload(payload_row, config):
             try:
                 path.unlink(missing_ok=True)
             except Exception as exc:
                 logging.warning("Inventory queue delete after ACK failed (%s): %s", path, exc)
-            if path == enqueued_path:
+            if is_current:
                 sent_this_payload = True
             continue
 
@@ -3894,7 +3957,7 @@ def send_data(payload: Dict[str, Any], config: AgentConfig) -> bool:
             _inventory_queue_write(path, item)
         except Exception as exc:
             logging.warning("Inventory queue rewrite failed (%s): %s", path, exc)
-        if path == enqueued_path:
+        if is_current:
             break
 
     return sent_this_payload

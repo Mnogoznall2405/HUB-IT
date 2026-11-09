@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from shared.browser_focus import browser_focus_event_key
+
 
 class EgressEventStore:
     def __init__(self, *, db_path: Path) -> None:
@@ -112,6 +114,14 @@ class EgressEventStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_browser_visits_host
                 ON browser_probe_visits(computer_name, visited_at DESC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS browser_probe_focus_events (
+                    event_key TEXT PRIMARY KEY,
+                    received_at INTEGER NOT NULL
+                )
                 """
             )
             conn.execute(
@@ -372,11 +382,14 @@ class EgressEventStore:
         visits: List[Dict[str, Any]],
         focus_events: Optional[List[Dict[str, Any]]] = None,
     ) -> int:
+        if not visits and not focus_events:
+            return 0
         now = int(time.time())
         host = str(computer_name or "").strip() or "unknown"
         user = str(windows_user or "").strip()
         count = 0
         with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             for visit in visits or []:
                 if not isinstance(visit, dict):
                     continue
@@ -447,6 +460,18 @@ class EgressEventStore:
                 except (TypeError, ValueError):
                     ended_ts = time.time()
                 visited_at = datetime.fromtimestamp(ended_ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+                event_key = browser_focus_event_key(host, user, event)
+                if event_key:
+                    result = conn.execute(
+                        """
+                        INSERT INTO browser_probe_focus_events (event_key, received_at)
+                        VALUES (?, ?) ON CONFLICT(event_key) DO NOTHING
+                        """,
+                        (event_key, now),
+                    )
+                    if result.rowcount == 0:
+                        continue
 
                 if url:
                     hist = conn.execute(
