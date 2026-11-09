@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -13,15 +14,24 @@ from typing import Any, Dict, List
 from .classify import classify_visit, is_noise_visit
 from .foreground import ForegroundTracker
 from .history import (
-    bootstrap_cursors,
     discover_profiles,
+    profile_cursor_key,
+    read_history_cycle,
     read_recent_title_urls,
-    read_visits_since,
 )
 from .screenshot import capture_window
 from .sync import BrowserProbeSync
 
 log = logging.getLogger("browser_probe.watcher")
+_TITLE_CACHE_LIMIT = 2048
+_SCREENSHOT_CACHE_LIMIT = 512
+
+
+def _remember_recent(cache: OrderedDict[str, str], key: str, value: str, limit: int) -> None:
+    cache[key] = value
+    cache.move_to_end(key)
+    if len(cache) > limit:
+        cache.popitem(last=False)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -95,12 +105,11 @@ class BrowserProbeWatcher:
         self._last_history = 0.0
         self._last_shot_mono = 0.0
         self._last_shot_key = ""
-        self._last_shot_file = ""
-        self._shots_by_key: Dict[str, str] = {}
+        self._shots_by_key: OrderedDict[str, str] = OrderedDict()
         self._fg_key: str | None = None
         self._cursors: Dict[str, int] = {}
         # Recent History title→url for enriching focus when omnibox UIA is empty.
-        self._title_url_cache: Dict[str, str] = {}
+        self._title_url_cache: OrderedDict[str, str] = OrderedDict()
         self._load_state()
 
     def request_stop(self) -> None:
@@ -133,13 +142,10 @@ class BrowserProbeWatcher:
         }
         self.state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _ensure_cursors(self, profiles) -> None:
-        if self._cursors:
-            return
-        boot = bootstrap_cursors(profiles, work_dir=self.output_dir / "hist_tmp")
-        self._cursors.update(boot)
-        self._save_state()
-        log.info("browser probe cursors bootstrapped for %s profiles", len(boot))
+    def _remember_title_urls(self, browser: str, mapping: dict[str, str]) -> None:
+        browser = browser.strip().lower()
+        for title, url in reversed(mapping.items()):
+            _remember_recent(self._title_url_cache, f"{browser}|{title}", url, _TITLE_CACHE_LIMIT)
 
     def _warm_title_url_cache(self, profiles) -> None:
         for profile in profiles:
@@ -148,9 +154,7 @@ class BrowserProbeWatcher:
                 limit=300,
                 work_dir=self.output_dir / "hist_tmp",
             )
-            browser = str(profile.browser or "").strip().lower()
-            for title, url in mapping.items():
-                self._title_url_cache[f"{browser}|{title}"] = url
+            self._remember_title_urls(profile.browser, mapping)
 
     def _poll_history(self) -> List[Dict[str, Any]]:
         if not self.history_enabled:
@@ -158,38 +162,33 @@ class BrowserProbeWatcher:
         profiles = discover_profiles()
         if not profiles:
             return []
-        self._ensure_cursors(profiles)
-        self._warm_title_url_cache(profiles)
+        initialize = not self._cursors
         visits: List[Dict[str, Any]] = []
+        delta_titles: list[tuple[str, str]] = []
         for profile in profiles:
-            key = f"{profile.browser}|{profile.profile}"
+            key = profile_cursor_key(profile)
             since = int(self._cursors.get(key, 0) or 0)
-            rows = read_visits_since(
+            rows, hints, cursor = read_history_cycle(
                 profile,
-                since_visit_id=since,
-                limit=400,
+                since_visit_id=None if initialize else since,
                 work_dir=self.output_dir / "hist_tmp",
             )
-            if not rows:
-                continue
-            max_id = since
+            self._remember_title_urls(profile.browser, hints)
+            if initialize or cursor > since:
+                self._cursors[key] = cursor
             for row in rows:
-                cursor_id = int(row.get("_cursor_visit_id") or row.get("visit_id") or 0)
-                if cursor_id > max_id:
-                    max_id = cursor_id
                 if row.get("_noise_cursor_only"):
                     continue
                 row.pop("_cursor_visit_id", None)
                 visits.append(row)
-            if max_id > since:
-                self._cursors[key] = max_id
-            # Refresh title→url hints from the newest rows (even noise-filtered ones).
             for row in rows[-80:]:
                 t = str(row.get("title") or "").strip().lower()
                 u = str(row.get("url") or "").strip()
                 b = str(row.get("browser") or profile.browser or "").strip().lower()
                 if t and u and b:
-                    self._title_url_cache[f"{b}|{t}"] = u
+                    delta_titles.append((f"{b}|{t}", u))
+        for key, url in delta_titles:
+            _remember_recent(self._title_url_cache, key, url, _TITLE_CACHE_LIMIT)
         if self._cursors:
             self._save_state()
         return visits
@@ -222,15 +221,14 @@ class BrowserProbeWatcher:
         if (now - self._last_shot_mono) < self.screenshot_throttle_sec:
             return None
         prefix = f"{snap.browser}"
-        rel, _png, err = capture_window(snap.hwnd, self.screenshots_dir, prefix)
+        rel, err = capture_window(snap.hwnd, self.screenshots_dir, prefix)
         self._last_shot_mono = now
         self._last_shot_key = key
         if not rel:
             log.debug("screenshot skipped: %s", err)
             return None
         name = rel.split("/")[-1]
-        self._last_shot_file = name
-        self._shots_by_key[key] = name
+        _remember_recent(self._shots_by_key, key, name, _SCREENSHOT_CACHE_LIMIT)
         return {
             "file": rel,
             "browser": snap.browser,
@@ -319,8 +317,6 @@ class BrowserProbeWatcher:
                                 v["screenshot_file"] = shot_name
                         self._enqueue(visits=visits)
 
-                if self.syncer:
-                    self.syncer.maybe_sync(force=False)
             except Exception as exc:
                 log.exception("browser probe loop error: %s", exc)
             time.sleep(self.foreground_poll_sec)

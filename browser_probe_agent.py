@@ -107,6 +107,20 @@ def main(argv: list[str] | None = None) -> int:
 
     output_dir = (args.output or _default_output()).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    # The scheduled task and --sync-now can be started independently.
+    import msvcrt
+
+    with (output_dir / "probe.lock").open("a+b") as lock:
+        lock.seek(0)
+        try:
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            logger.error("Browser probe cannot lock the queue. Check for another instance using this folder.")
+            return 1
+        return _run_probe(args, output_dir, logger)
+
+
+def _run_probe(args: argparse.Namespace, output_dir: Path, logger: logging.Logger) -> int:
     sync_sec = int(os.getenv("ITINV_BROWSER_PROBE_SYNC_SEC", "120") or 120)
     server_url = _resolve_server_url()
     api_key = str(os.getenv("ITINV_AGENT_API_KEY", "") or os.getenv("SCAN_AGENT_API_KEY", "") or "").strip()
@@ -122,15 +136,20 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.sync_now:
-        syncer.sync_once()
+        try:
+            syncer.sync_once()
+        except Exception as exc:
+            logger.error("Browser probe sync failed: %s", exc)
+            return 1
         return 0
 
     watcher = BrowserProbeWatcher(output_dir=output_dir, syncer=syncer)
     stop = threading.Event()
 
     def _sync_loop() -> None:
-        while not stop.wait(5.0):
+        while not stop.is_set():
             syncer.maybe_sync(force=False)
+            stop.wait(5.0)
 
     thread = threading.Thread(target=_sync_loop, name="browser-probe-sync", daemon=True)
     thread.start()
@@ -141,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
         watcher.request_stop()
     finally:
         stop.set()
+        thread.join()
         try:
             syncer.maybe_sync(force=True)
         except Exception as exc:

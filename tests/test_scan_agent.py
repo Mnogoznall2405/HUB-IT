@@ -828,9 +828,9 @@ def test_pdf_with_usable_text_layer_always_builds_three_page_ocr_slice(monkeypat
     pdf_path = Path(temp_dir) / "document.pdf"
     pdf_path.write_bytes(b"%PDF-placeholder")
 
-    monkeypatch.setattr(scan_agent, "_extract_pdf_text", lambda path, max_pages=10: "ordinary text " * 30)
-    monkeypatch.setattr(scan_agent, "_first_pdf_pages_b64", lambda path, pages=3: "c2xpY2U=")
-    monkeypatch.setattr(scan_agent, "_pdf_pages_in_slice", lambda path, pages=3: 3)
+    monkeypatch.setattr(scan_agent, "analyze_pdf", lambda path: scan_agent.PdfAnalysis(
+        text="ordinary text " * 30, slice_b64="c2xpY2U=", pages=3,
+    ))
 
     payload = agent._analyze_file(pdf_path, "hash", pdf_path.stat())
 
@@ -849,9 +849,9 @@ def test_pdf_short_text_layer_is_still_checked_for_exact_dsp_phrase(monkeypatch,
     pdf_path = Path(temp_dir) / "short-stamp.pdf"
     pdf_path.write_bytes(b"%PDF-placeholder")
 
-    monkeypatch.setattr(scan_agent, "_extract_pdf_text", lambda path, max_pages=10: "Для служебного пользования")
-    monkeypatch.setattr(scan_agent, "_first_pdf_pages_b64", lambda path, pages=3: "c2xpY2U=")
-    monkeypatch.setattr(scan_agent, "_pdf_pages_in_slice", lambda path, pages=3: 3)
+    monkeypatch.setattr(scan_agent, "analyze_pdf", lambda path: scan_agent.PdfAnalysis(
+        text="Для служебного пользования", slice_b64="c2xpY2U=", pages=3,
+    ))
 
     payload = agent._analyze_file(pdf_path, "hash", pdf_path.stat())
 
@@ -868,10 +868,9 @@ def test_pdf_larger_than_upload_limit_is_still_analyzed_as_bounded_slice(monkeyp
     pdf_path.write_bytes(b"%PDF-placeholder")
     sent_payloads = []
 
-    monkeypatch.setattr(scan_agent, "_sha256_file", lambda path: "hash")
-    monkeypatch.setattr(scan_agent, "_extract_pdf_text", lambda path, max_pages=10: "ordinary text")
-    monkeypatch.setattr(scan_agent, "_first_pdf_pages_b64", lambda path, pages=3: "c2xpY2U=")
-    monkeypatch.setattr(scan_agent, "_pdf_pages_in_slice", lambda path, pages=3: 3)
+    monkeypatch.setattr(scan_agent, "analyze_pdf", lambda path: scan_agent.PdfAnalysis(
+        file_hash="hash", text="ordinary text", slice_b64="c2xpY2U=", pages=3,
+    ))
     monkeypatch.setattr(agent, "_send_ingest", lambda payload: sent_payloads.append(payload) or True)
 
     result = agent._scan_path(pdf_path, force_rescan=True)
@@ -880,6 +879,23 @@ def test_pdf_larger_than_upload_limit_is_still_analyzed_as_bounded_slice(monkeyp
     assert result["queued"] == 1
     assert sent_payloads[0]["source_kind"] == "pdf_slice"
     assert sent_payloads[0]["metadata"]["pages_in_slice"] == 3
+
+
+def test_scan_reports_pdf_timeout_and_oversized_input_without_attachment(monkeypatch, tmp_path):
+    agent = scan_agent.ScanAgent(_make_config())
+    pdf_path = tmp_path / "drawing.pdf"
+    pdf_path.write_bytes(b"%PDF-placeholder")
+    sent = []
+    monkeypatch.setattr(agent, "_send_ingest", lambda payload: sent.append(payload) or True)
+    monkeypatch.setattr(scan_agent, "analyze_pdf", lambda path: scan_agent.PdfAnalysis(reason="pdf_timeout"))
+    agent._scan_path(pdf_path, force_rescan=True)
+    monkeypatch.setattr(scan_agent, "MAX_PDF_INPUT_BYTES", 1)
+    agent._scan_path(pdf_path, force_rescan=True)
+
+    assert [item["metadata"]["analysis_incomplete_reason"] for item in sent] == [
+        "pdf_timeout", "pdf_input_too_large",
+    ]
+    assert all(item["source_kind"] == "analysis_incomplete" and not item["pdf_slice_b64"] for item in sent)
 
 
 def test_agent_pattern_selection_filters_local_text_matches(temp_dir):

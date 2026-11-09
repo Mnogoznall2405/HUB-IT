@@ -3,6 +3,8 @@
 import argparse
 import base64
 import codecs
+from collections import deque
+from dataclasses import dataclass
 import hashlib
 import json
 import logging
@@ -19,12 +21,17 @@ import threading
 import time
 import uuid
 import unicodedata
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 import requests
 import yaml
+
+if not __package__ and not getattr(sys, "frozen", False):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from agent_version import AGENT_VERSION, SCAN_ANALYSIS_VERSION, SCAN_OCR_PAGE_LIMIT, SCAN_TEXT_PAGE_LIMIT
+from scan_agent.pdf_worker import MAX_PDF_INPUT_BYTES, PdfAnalysis, analyze_pdf
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -32,11 +39,6 @@ try:
     import winreg  # type: ignore
 except Exception:  # pragma: no cover - non-Windows test environments
     winreg = None
-
-try:
-    import fitz  # type: ignore
-except Exception:
-    fitz = None
 
 try:
     from watchdog.events import FileSystemEventHandler  # type: ignore
@@ -890,44 +892,9 @@ def _looks_gibberish(text: str) -> bool:
     return letter_ratio < 0.35
 
 
-def _extract_pdf_text(path: Path, max_pages: int = PDF_TEXT_PAGE_LIMIT) -> str:
-    if fitz is None:
-        return ""
-    text_parts: List[str] = []
-    try:
-        with fitz.open(path) as doc:
-            total = min(max_pages, len(doc))
-            for idx in range(total):
-                text_parts.append(doc.load_page(idx).get_text("text") or "")
-    except Exception as exc:
-        logging.debug("PDF text extraction failed for %s: %s", path, exc)
-    return "\n".join(text_parts).strip()
-
-
-def _first_pdf_pages_b64(path: Path, pages: int = PDF_OCR_PAGE_LIMIT) -> str:
-    if fitz is None:
-        return ""
-    try:
-        with fitz.open(path) as src:
-            out = fitz.open()
-            total = min(pages, len(src))
-            for idx in range(total):
-                out.insert_pdf(src, from_page=idx, to_page=idx)
-            data = out.tobytes()
-        return base64.b64encode(data).decode("ascii")
-    except Exception as exc:
-        logging.warning("Failed to build PDF slice for %s: %s", path, exc)
-        return ""
-
-
-def _pdf_pages_in_slice(path: Path, pages: int = PDF_OCR_PAGE_LIMIT) -> int:
-    if fitz is None:
-        return 0
-    try:
-        with fitz.open(path) as doc:
-            return min(max(0, int(pages)), len(doc))
-    except Exception:
-        return 0
+def _metadata_file_hash(path: Path, stat_result: os.stat_result) -> str:
+    identity = f"{_norm_path(path)}|{int(stat_result.st_mtime)}|{int(stat_result.st_size)}"
+    return hashlib.sha256(identity.encode("utf-8", errors="ignore")).hexdigest()
 
 
 def _text_file_encoding(path: Path) -> str:
@@ -1083,6 +1050,14 @@ class _PathEventHandler(FileSystemEventHandler):
             self.agent.enqueue_path(Path(str(getattr(event, "dest_path", ""))))
 
 
+@dataclass(frozen=True)
+class _OutboxMetadata:
+    signature: tuple[int, int, int, int]
+    created_at: int | None
+    event_id: str
+    task_id: str
+
+
 class ScanAgent:
     def __init__(self, config: Dict[str, Any]) -> None:
         self.config = config
@@ -1095,6 +1070,7 @@ class ScanAgent:
 
         self._lock = threading.RLock()
         self._pending_paths: Set[str] = set()
+        self._outbox_metadata: dict[Path, _OutboxMetadata] = {}
         self._roots: List[Path] = list(_iter_target_roots(self.config.get("extra_roots", "")))
         self._observer: Optional[Any] = None
         self._state_dirty = False
@@ -1261,15 +1237,11 @@ class ScanAgent:
         normalized_task_id = str(task_id or "").strip()
         if not normalized_task_id:
             return []
-        matches: List[Path] = []
-        for path in self._outbox_paths():
-            if exclude is not None and path == exclude:
-                continue
-            item = self._outbox_read(path)
-            payload = item.get("payload") if isinstance(item, dict) else None
-            if isinstance(payload, dict) and str(payload.get("scan_task_id") or "").strip() == normalized_task_id:
-                matches.append(path)
-        return matches
+        return [
+            path
+            for path, _, metadata in self._outbox_entries(exclude=exclude)
+            if metadata is not None and metadata.task_id == normalized_task_id
+        ]
 
     def _attach_task_result_to_outbox(self, task_id: str, result: Dict[str, Any]) -> int:
         attached = 0
@@ -1359,7 +1331,7 @@ class ScanAgent:
             logging.info("Dead-letter requeued to outbox: count=%s", moved)
         return moved
 
-    def _outbox_read(self, path: Path) -> Optional[Dict[str, Any]]:
+    def _read_outbox_item(self, path: Path) -> Optional[Dict[str, Any]]:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
@@ -1367,9 +1339,51 @@ class ScanAgent:
             return None
         if not isinstance(data, dict):
             return None
-        payload = data.get("payload")
-        if not isinstance(payload, dict):
+        return data if isinstance(data.get("payload"), dict) else None
+
+    def _outbox_file_metadata(self, path: Path, stat: os.stat_result) -> _OutboxMetadata | None:
+        signature = (stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+        cached = self._outbox_metadata.get(path)
+        if cached is not None and cached.signature == signature:
+            return cached
+        item = self._read_outbox_item(path)
+        if item is None:
+            self._outbox_metadata.pop(path, None)
             return None
+        try:
+            created_at = int(item["created_at"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            created_at = None
+        payload = item["payload"]
+        metadata = _OutboxMetadata(
+            signature=signature,
+            created_at=created_at,
+            event_id=str(item.get("event_id") or payload.get("event_id") or ""),
+            task_id=str(payload.get("scan_task_id") or "").strip(),
+        )
+        self._outbox_metadata[path] = metadata
+        return metadata
+
+    def _outbox_entries(
+        self, *, exclude: Path | None = None,
+    ) -> Iterator[tuple[Path, int, _OutboxMetadata | None]]:
+        for path in self._outbox_paths():
+            if path == exclude:
+                continue
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                logging.warning("Outbox stat failed (%s): %s", path, exc)
+                continue
+            yield path, stat.st_size, self._outbox_file_metadata(path, stat)
+
+    def _outbox_read(self, path: Path) -> Optional[Dict[str, Any]]:
+        data = self._read_outbox_item(path)
+        if data is None:
+            return None
+        payload = data["payload"]
         data["id"] = str(data.get("id") or path.stem)
         data["created_at"] = _to_int(data.get("created_at"), int(time.time()))
         data["attempts"] = max(0, _to_int(data.get("attempts"), 0))
@@ -1396,19 +1410,18 @@ class ScanAgent:
             path.unlink(missing_ok=True)
         except Exception as exc:
             logging.warning("Outbox delete failed (%s): %s", path, exc)
+            return False
+        self._outbox_metadata.pop(path, None)
         return True
 
     def _outbox_has_event(self, event_id: str) -> bool:
         check_id = str(event_id or "").strip()
         if not check_id:
             return False
-        for path in self._outbox_paths():
-            item = self._outbox_read(path)
-            if not item:
-                continue
-            if str(item.get("event_id") or "") == check_id:
-                return True
-        return False
+        return any(
+            metadata is not None and metadata.event_id == check_id
+            for _, _, metadata in self._outbox_entries()
+        )
 
     def _outbox_enqueue(self, payload: Dict[str, Any], *, retry_after_sec: int = 0) -> Optional[Path]:
         event_id = str(payload.get("event_id") or "").strip()
@@ -1455,32 +1468,35 @@ class ScanAgent:
         now_ts = int(time.time())
         max_age_seconds = int(self.config["outbox_max_age_days"]) * 24 * 60 * 60
         max_total_size = int(self.config["outbox_max_total_mb"]) * 1024 * 1024
-        entries: List[Tuple[Path, Dict[str, Any], int]] = []
-        for path in self._outbox_paths():
-            try:
-                size_bytes = int(path.stat().st_size)
-            except Exception:
-                size_bytes = 0
-            item = self._outbox_read(path)
-            if not item:
+        max_items = int(self.config["outbox_max_items"])
+        kept_metadata: dict[Path, _OutboxMetadata] = {}
+        entries: deque[tuple[Path, int]] = deque()
+        total_size = 0
+        for path, size_bytes, metadata in self._outbox_entries():
+            if metadata is None:
                 self._outbox_move_to_dead(path, None, "OUTBOX_CORRUPT")
                 continue
-            if max_age_seconds > 0 and (now_ts - _to_int(item.get("created_at"), now_ts)) > max_age_seconds:
-                self._outbox_move_to_dead(path, item, "OUTBOX_MAX_AGE")
+            created_at = metadata.created_at
+            if (
+                max_age_seconds > 0
+                and created_at is not None
+                and now_ts - created_at > max_age_seconds
+                and self._outbox_move_to_dead(path, self._outbox_read(path), "OUTBOX_MAX_AGE")
+            ):
                 continue
-            entries.append((path, item, size_bytes))
+            kept_metadata[path] = metadata
+            entries.append((path, size_bytes))
+            total_size += size_bytes
 
-        while len(entries) > int(self.config["outbox_max_items"]):
-            path, item, _ = entries.pop(0)
-            logging.warning("Outbox full by count, moving oldest to dead-letter: %s", path.name)
-            self._outbox_move_to_dead(path, item, "OUTBOX_FULL_COUNT")
-
-        total_size = sum(max(0, size_bytes) for _, _, size_bytes in entries)
-        while entries and total_size > max_total_size:
-            path, item, size_bytes = entries.pop(0)
-            logging.warning("Outbox full by size, moving oldest to dead-letter: %s", path.name)
-            self._outbox_move_to_dead(path, item, "OUTBOX_FULL_SIZE")
-            total_size -= max(0, size_bytes)
+        while entries and (len(entries) > max_items or total_size > max_total_size):
+            reason = "OUTBOX_FULL_COUNT" if len(entries) > max_items else "OUTBOX_FULL_SIZE"
+            path, size_bytes = entries.popleft()
+            logging.warning("Moving oldest outbox entry to dead-letter (%s): %s", reason, path.name)
+            if not self._outbox_move_to_dead(path, self._outbox_read(path), reason):
+                break
+            kept_metadata.pop(path)
+            total_size -= size_bytes
+        self._outbox_metadata = kept_metadata
 
     def _register_scanned(
         self,
@@ -1591,6 +1607,7 @@ class ScanAgent:
         stat_result: os.stat_result,
         *,
         pattern_ids: Any = None,
+        pdf: PdfAnalysis | None = None,
     ) -> Optional[Dict[str, Any]]:
         ext = path.suffix.lower()
         normalized_pattern_ids = _normalize_pattern_ids(pattern_ids)
@@ -1617,7 +1634,8 @@ class ScanAgent:
             extraction_outcomes.append({"method": "agent_patterns", "outcome": "unavailable"})
         elif ext == ".pdf":
             source_kind = "pdf_slice"
-            text = _extract_pdf_text(path, max_pages=PDF_TEXT_PAGE_LIMIT)
+            pdf = pdf if pdf is not None else analyze_pdf(path)
+            text = pdf.text
             if text:
                 matches = scan_text(text, active_pattern_defs)
                 text_excerpt = text[:4000]
@@ -1627,12 +1645,14 @@ class ScanAgent:
                 })
             else:
                 extraction_outcomes.append({"method": "text_layer", "outcome": "no_usable_text"})
-            pages_in_slice = _pdf_pages_in_slice(path, pages=PDF_OCR_PAGE_LIMIT)
-            pdf_slice_b64 = _first_pdf_pages_b64(path, pages=PDF_OCR_PAGE_LIMIT)
+            pages_in_slice = pdf.pages
+            pdf_slice_b64 = pdf.slice_b64
             if not pdf_slice_b64 or pages_in_slice <= 0:
                 source_kind = "analysis_incomplete"
-                analysis_incomplete_reason = "pdf_slice_creation_failed"
-                extraction_outcomes.append({"method": "pdf_slice", "outcome": "failed"})
+                analysis_incomplete_reason = pdf.reason or "pdf_slice_creation_failed"
+                extraction_outcomes.append({
+                    "method": "pdf_slice", "outcome": "failed", "reason": analysis_incomplete_reason,
+                })
             else:
                 extraction_outcomes.append({"method": "pdf_slice", "outcome": "created", "pages": pages_in_slice})
         elif ext in TEXT_EXTENSIONS:
@@ -1891,6 +1911,7 @@ class ScanAgent:
                 self._register_scanned_from_payload(payload)
                 try:
                     path.unlink(missing_ok=True)
+                    self._outbox_metadata.pop(path, None)
                 except Exception as exc:
                     logging.warning("Outbox delete after ACK failed (%s): %s", path, exc)
                 sent_count += 1
@@ -1975,15 +1996,11 @@ class ScanAgent:
             return skip("unsupported_extension")
         if normalized_scan_extensions is not None and path.suffix.lower() not in set(normalized_scan_extensions):
             return skip("excluded_extension")
-        # Большой PDF не передаётся целиком: локально читаются только первые страницы
-        # текстового слоя и формируется ограниченный OCR-срез. Поэтому общий лимит
-        # upload payload не должен запрещать его анализ.
-        if stat_result.st_size > self.config["max_file_bytes"] and path.suffix.lower() != ".pdf":
-            pseudo_hash = hashlib.sha256(
-                f"{_norm_path(path)}|{int(stat_result.st_mtime)}|{int(stat_result.st_size)}".encode(
-                    "utf-8", errors="ignore"
-                )
-            ).hexdigest()
+        is_pdf = path.suffix.lower() == ".pdf"
+        max_input_bytes = MAX_PDF_INPUT_BYTES if is_pdf else self.config["max_file_bytes"]
+        if stat_result.st_size > max_input_bytes:
+            pseudo_hash = _metadata_file_hash(path, stat_result)
+            size_reason = "pdf_input_too_large" if is_pdf else "file_too_large"
             payload = {
                 "agent_id": self.agent_id,
                 "hostname": _hostname(),
@@ -2007,8 +2024,8 @@ class ScanAgent:
                     "agent_pattern_ids": normalized_pattern_ids,
                     "ocr_page_limit": PDF_OCR_PAGE_LIMIT,
                     "text_page_limit": PDF_TEXT_PAGE_LIMIT,
-                    "analysis_incomplete_reason": "file_too_large",
-                    "extraction_outcomes": [{"method": "agent", "outcome": "file_too_large"}],
+                    "analysis_incomplete_reason": size_reason,
+                    "extraction_outcomes": [{"method": "agent", "outcome": size_reason}],
                 },
             }
             normalized_task_id = str(scan_task_id or "").strip()
@@ -2024,6 +2041,8 @@ class ScanAgent:
             result["skipped"] += 1
             if include_reasons:
                 result["skipped_reasons"] = {"size_limit": 1}
+                if is_pdf:
+                    result["analysis_incomplete"] = 1
             ingest_result = self._normalize_ingest_result(self._send_ingest(payload))
             if ingest_result["success"]:
                 self._register_scanned(
@@ -2043,13 +2062,17 @@ class ScanAgent:
         if not force_rescan and self._already_scanned(path, stat_result, analysis_scope=analysis_scope):
             return skip("already_scanned")
 
-        try:
-            file_hash = _sha256_file(path)
-        except Exception:
-            return skip("hash_error")
+        pdf = analyze_pdf(path) if is_pdf else None
+        if pdf is not None:
+            file_hash = pdf.file_hash or _metadata_file_hash(path, stat_result)
+        else:
+            try:
+                file_hash = _sha256_file(path)
+            except Exception:
+                return skip("hash_error")
 
         result["scanned"] += 1
-        payload = self._analyze_file(path, file_hash, stat_result, pattern_ids=normalized_pattern_ids)
+        payload = self._analyze_file(path, file_hash, stat_result, pattern_ids=normalized_pattern_ids, pdf=pdf)
         if not payload:
             previous_event_id = str(previous_record.get("event_id") or "").strip()
             previous_hash = str(previous_record.get("hash") or "").strip()

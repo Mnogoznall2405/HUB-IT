@@ -7,10 +7,11 @@ import os
 import shutil
 import sqlite3
 import tempfile
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from .classify import classify_visit, is_noise_visit
 
@@ -125,70 +126,65 @@ def _copy_history_db(src: Path, dest_dir: Path) -> Path | None:
     return dest
 
 
-def read_visits_since(
+@contextmanager
+def _history_snapshot(
     profile: BrowserProfile,
-    *,
-    since_visit_id: int = 0,
-    limit: int = 400,
-    work_dir: Path | None = None,
-) -> list[dict[str, Any]]:
-    """Return visits with visit_id > since_visit_id, oldest first."""
-    tmp_root = Path(work_dir or tempfile.gettempdir()) / "hub_it_browser_hist"
-    tmp_dir = tmp_root / f"{profile.browser}_{profile.profile}"
-    copied = _copy_history_db(profile.history_path, tmp_dir)
-    if copied is None:
-        return []
+    work_dir: Path | None,
+) -> Iterator[sqlite3.Connection | None]:
+    root = Path(work_dir or tempfile.gettempdir()) / "hub_it_browser_hist"
+    root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=root) as directory:
+        copied = _copy_history_db(profile.history_path, Path(directory))
+        if copied is None:
+            yield None
+            return
+        with closing(sqlite3.connect(f"{copied.resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)) as conn:
+            conn.row_factory = sqlite3.Row
+            yield conn
 
+
+def _query_visits(
+    conn: sqlite3.Connection, profile: BrowserProfile, since_visit_id: int, limit: int,
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     max_seen_id = int(since_visit_id or 0)
-    try:
-        conn = sqlite3.connect(f"file:{copied.as_posix()}?mode=ro", uri=True, timeout=5.0)
-        try:
-            conn.row_factory = sqlite3.Row
-            cur = conn.execute(
-                """
-                SELECT
-                  v.id AS visit_id,
-                  v.visit_time AS visit_time,
-                  u.url AS url,
-                  u.title AS title,
-                  u.visit_count AS visit_count
-                FROM visits v
-                JOIN urls u ON u.id = v.url
-                WHERE v.id > ?
-                ORDER BY v.id ASC
-                LIMIT ?
-                """,
-                (int(since_visit_id or 0), int(limit)),
-            )
-            for row in cur.fetchall():
-                vid = int(row["visit_id"] or 0)
-                if vid > max_seen_id:
-                    max_seen_id = vid
-                url = str(row["url"] or "")
-                title = str(row["title"] or "")[:500]
-                if is_noise_visit(url, title):
-                    continue
-                domain, category = classify_visit(url, title)
-                rows.append(
-                    {
-                        "visit_id": vid,
-                        "browser": profile.browser,
-                        "profile": profile.profile,
-                        "url": url,
-                        "title": title,
-                        "domain": domain,
-                        "category": category,
-                        "visit_count": int(row["visit_count"] or 0),
-                        "visited_at": chromium_time_to_iso(row["visit_time"]),
-                        "_cursor_visit_id": max_seen_id,
-                    }
-                )
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        log.warning("history query failed %s: %s", profile.history_path, exc)
-        return []
+    cur = conn.execute(
+        """
+        SELECT
+          v.id AS visit_id,
+          v.visit_time AS visit_time,
+          u.url AS url,
+          u.title AS title,
+          u.visit_count AS visit_count
+        FROM visits v
+        JOIN urls u ON u.id = v.url
+        WHERE v.id > ?
+        ORDER BY v.id ASC
+        LIMIT ?
+        """,
+        (max_seen_id, int(limit)),
+    )
+    for row in cur:
+        vid = int(row["visit_id"] or 0)
+        max_seen_id = max(vid, max_seen_id)
+        url = str(row["url"] or "")
+        title = str(row["title"] or "")[:500]
+        if is_noise_visit(url, title):
+            continue
+        domain, category = classify_visit(url, title)
+        rows.append(
+            {
+                "visit_id": vid,
+                "browser": profile.browser,
+                "profile": profile.profile,
+                "url": url,
+                "title": title,
+                "domain": domain,
+                "category": category,
+                "visit_count": int(row["visit_count"] or 0),
+                "visited_at": chromium_time_to_iso(row["visit_time"]),
+            }
+        )
     # Even if all rows were noise, advance cursor via sentinel so watcher does not stall.
     if max_seen_id > int(since_visit_id or 0) and not rows:
         rows.append(
@@ -205,6 +201,42 @@ def read_visits_since(
     return rows
 
 
+def _query_recent_title_urls(conn: sqlite3.Connection, limit: int) -> dict[str, str]:
+    out: dict[str, str] = {}
+    cur = conn.execute(
+        """
+        SELECT u.url AS url, u.title AS title
+        FROM visits v
+        JOIN urls u ON u.id = v.url
+        ORDER BY v.id DESC
+        LIMIT ?
+        """,
+        (int(limit),),
+    )
+    for row in cur:
+        title = str(row["title"] or "").strip().lower()
+        url = str(row["url"] or "").strip()
+        if title and url and not is_noise_visit(url, title):
+            out.setdefault(title, url)
+    return out
+
+
+def read_visits_since(
+    profile: BrowserProfile,
+    *,
+    since_visit_id: int = 0,
+    limit: int = 400,
+    work_dir: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return visits with visit_id > since_visit_id, oldest first."""
+    try:
+        with _history_snapshot(profile, work_dir) as conn:
+            return _query_visits(conn, profile, since_visit_id, limit) if conn else []
+    except sqlite3.Error as exc:
+        log.warning("history query failed %s: %s", profile.history_path, exc)
+        return []
+
+
 def read_recent_title_urls(
     profile: BrowserProfile,
     *,
@@ -212,39 +244,40 @@ def read_recent_title_urls(
     work_dir: Path | None = None,
 ) -> dict[str, str]:
     """Map lower(title) → url from newest History rows (does not advance cursors)."""
-    tmp_root = Path(work_dir or tempfile.gettempdir()) / "hub_it_browser_hist"
-    tmp_dir = tmp_root / f"{profile.browser}_{profile.profile}"
-    copied = _copy_history_db(profile.history_path, tmp_dir)
-    if copied is None:
-        return {}
-    out: dict[str, str] = {}
     try:
-        conn = sqlite3.connect(f"file:{copied.as_posix()}?mode=ro", uri=True, timeout=5.0)
-        try:
-            conn.row_factory = sqlite3.Row
-            cur = conn.execute(
-                """
-                SELECT u.url AS url, u.title AS title
-                FROM visits v
-                JOIN urls u ON u.id = v.url
-                ORDER BY v.id DESC
-                LIMIT ?
-                """,
-                (int(limit),),
-            )
-            for row in cur.fetchall():
-                title = str(row["title"] or "").strip().lower()
-                url = str(row["url"] or "").strip()
-                if not title or not url or is_noise_visit(url, title):
-                    continue
-                # First (newest) wins.
-                if title not in out:
-                    out[title] = url
-        finally:
-            conn.close()
+        with _history_snapshot(profile, work_dir) as conn:
+            return _query_recent_title_urls(conn, limit) if conn else {}
     except sqlite3.Error as exc:
         log.debug("recent title urls failed %s: %s", profile.history_path, exc)
-    return out
+        return {}
+
+
+def _latest_visit_id(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM visits").fetchone()
+    return int(row[0] or 0) if row else 0
+
+
+def read_history_cycle(
+    profile: BrowserProfile, *, since_visit_id: int | None, work_dir: Path,
+) -> tuple[list[dict[str, Any]], dict[str, str], int]:
+    """Read title hints and visits from one snapshot. None initializes the cursor."""
+    since = int(since_visit_id or 0)
+    hints: dict[str, str] = {}
+    try:
+        with _history_snapshot(profile, work_dir) as conn:
+            if conn is not None:
+                try:
+                    hints = _query_recent_title_urls(conn, 300)
+                except sqlite3.Error as exc:
+                    log.debug("recent title urls failed %s: %s", profile.history_path, exc)
+                if since_visit_id is None:
+                    return [], hints, _latest_visit_id(conn)
+                rows = _query_visits(conn, profile, since, 400)
+                cursor = int(rows[-1].get("_cursor_visit_id") or rows[-1]["visit_id"]) if rows else since
+                return rows, hints, cursor
+    except sqlite3.Error as exc:
+        log.warning("history query failed %s: %s", profile.history_path, exc)
+    return [], hints, since
 
 
 def bootstrap_cursors(profiles: list[BrowserProfile], work_dir: Path | None = None) -> dict[str, int]:
@@ -252,19 +285,9 @@ def bootstrap_cursors(profiles: list[BrowserProfile], work_dir: Path | None = No
     cursors: dict[str, int] = {}
     for profile in profiles:
         key = profile_cursor_key(profile)
-        tmp_root = Path(work_dir or tempfile.gettempdir()) / "hub_it_browser_hist"
-        tmp_dir = tmp_root / f"{profile.browser}_{profile.profile}"
-        copied = _copy_history_db(profile.history_path, tmp_dir)
-        if copied is None:
-            cursors[key] = 0
-            continue
         try:
-            conn = sqlite3.connect(f"file:{copied.as_posix()}?mode=ro", uri=True, timeout=5.0)
-            try:
-                row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM visits").fetchone()
-                cursors[key] = int(row[0] or 0) if row else 0
-            finally:
-                conn.close()
+            with _history_snapshot(profile, work_dir) as conn:
+                cursors[key] = _latest_visit_id(conn) if conn else 0
         except sqlite3.Error:
             cursors[key] = 0
     return cursors

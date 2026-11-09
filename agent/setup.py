@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 AGENT_SRC = REPO_ROOT / "agent" / "src"
 AGENT_ENTRY = REPO_ROOT / "agent.py"
 SCAN_AGENT_ENTRY = REPO_ROOT / "scan_agent" / "agent.py"
+PDF_WORKER_ENTRY = REPO_ROOT / "scan_agent" / "pdf_worker.py"
 TELEGRAM_PROBE_ENTRY = REPO_ROOT / "telegram_probe_agent.py"
 MAX_PROBE_ENTRY = REPO_ROOT / "max_probe_agent.py"
 BROWSER_PROBE_ENTRY = REPO_ROOT / "browser_probe_agent.py"
@@ -40,6 +41,7 @@ from agent_installer import (
     BROWSER_PROBE_EXECUTABLE_NAME,
 )
 from agent_version import AGENT_VERSION
+from scan_agent.pdf_worker import PDF_WORKER_EXECUTABLE_NAME
 
 UPGRADE_CODE = "{A285621C-4B2F-4BE6-9AD3-799896D4F901}"
 EMBEDDED_MSI_PROPERTY_NAMES = (
@@ -128,6 +130,7 @@ executables = [
         base=base,
         target_name=SCAN_AGENT_EXECUTABLE_NAME,
     ),
+    Executable(str(PDF_WORKER_ENTRY), target_name=PDF_WORKER_EXECUTABLE_NAME),
     Executable(
         str(TELEGRAM_PROBE_ENTRY),
         base=base,
@@ -190,6 +193,7 @@ build_exe_options = {
     "includes": [
         "scan_agent.agent",
         "fitz",
+        "win32job",
         "watchdog.events",
         "watchdog.observers",
         "agent_installer",
@@ -340,7 +344,8 @@ def _build_upgrade_backup_custom_action_target() -> str:
         "Start-Process -FilePath 'schtasks.exe' "
         "-ArgumentList @('/End','/TN',$taskName) "
         "-WindowStyle Hidden -Wait|Out-Null};"
-        "foreach($processName in @('ITInventAgent','ITInventScanAgent','ITInventOutlookProbe','ITInventTelegramProbe','ITInventMaxProbe','ITInventBrowserProbe')){"
+        "foreach($processName in @('ITInventAgent','ITInventScanAgent','ITInventPdfWorker',"
+        "'ITInventOutlookProbe','ITInventTelegramProbe','ITInventMaxProbe','ITInventBrowserProbe')){"
         "Get-Process -Name $processName -ErrorAction SilentlyContinue|"
         "Stop-Process -Force -ErrorAction SilentlyContinue};"
         "New-Item -ItemType Directory -Force -Path $backup|Out-Null;"

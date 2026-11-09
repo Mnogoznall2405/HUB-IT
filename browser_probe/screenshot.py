@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageGrab
+from PIL import ImageGrab
 
 logger = logging.getLogger("browser_probe.screenshot")
 
@@ -35,11 +35,11 @@ def capture_window(
     hwnd: int,
     screenshots_dir: Path,
     prefix: str,
-) -> tuple[str | None, bytes | None, str | None]:
-    """Returns (relative_path, png_bytes, error_note)."""
+) -> tuple[str | None, str | None]:
+    """Save the screenshot and return its relative path or an error."""
     rect = _rect_from_handle(hwnd)
     if rect is None:
-        return None, None, "window_rect_unavailable"
+        return None, "window_rect_unavailable"
 
     left, top, right, bottom = rect
     try:
@@ -49,26 +49,27 @@ def capture_window(
             image = ImageGrab.grab(bbox=(left, top, right, bottom))
         except Exception as exc:  # noqa: BLE001
             logger.warning("screenshot failed: %s", exc)
-            return None, None, f"screenshot_failed: {exc}"
+            return None, f"screenshot_failed: {exc}"
     except Exception as exc:  # noqa: BLE001
         logger.warning("screenshot failed: %s", exc)
-        return None, None, f"screenshot_failed: {exc}"
-
-    if image.mode not in ("RGB", "RGBA"):
-        image = image.convert("RGB")
+        return None, f"screenshot_failed: {exc}"
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     filename = f"{prefix}_{stamp}.png"
     path = screenshots_dir / filename
     try:
-        screenshots_dir.mkdir(parents=True, exist_ok=True)
-        image.save(path, format="PNG", optimize=True)
-        png_bytes = path.read_bytes()
+        with image:
+            screenshots_dir.mkdir(parents=True, exist_ok=True)
+            if image.mode in ("RGB", "RGBA"):
+                image.save(path, format="PNG", optimize=True)
+            else:
+                with image.convert("RGB") as converted:
+                    converted.save(path, format="PNG", optimize=True)
         rel = str(Path("screenshots") / filename).replace("\\", "/")
-        return rel, png_bytes, None
+        return rel, None
     except Exception as exc:  # noqa: BLE001
         logger.warning("save screenshot failed: %s", exc)
-        return None, None, f"save_failed: {exc}"
+        return None, f"save_failed: {exc}"
 
 
 def window_info(hwnd: int) -> dict[str, Any]:

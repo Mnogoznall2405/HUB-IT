@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 
 import scan_agent.agent as scan_agent_module
@@ -31,6 +32,7 @@ def _make_agent(monkeypatch, tmp_path):
     agent._last_error = ""
     agent._last_dead_requeue_at = 0
     agent._server_queue_pending = 0
+    agent._outbox_metadata = {}
     return agent
 
 
@@ -169,3 +171,60 @@ def test_failed_dead_letter_write_keeps_the_pending_document(monkeypatch, tmp_pa
     assert agent._outbox_move_to_dead(path, item, "OUTBOX_MAX_AGE") is True
     assert not path.exists()
     assert len(list((tmp_path / "outbox" / "dead").glob("*.json"))) == 1
+
+
+def test_prune_reuses_metadata_and_expires_by_original_creation_time(monkeypatch, tmp_path):
+    agent = _make_agent(monkeypatch, tmp_path)
+    now = int(time.time())
+    expired = scan_agent_module.OUTBOX_PENDING_PATH / f"{now}_requeued.json"
+    expired.write_text(
+        json.dumps({"created_at": now - 31 * 86400, "payload": {"event_id": "requeued"}}),
+        encoding="utf-8",
+    )
+    kept = agent._outbox_enqueue({"event_id": "recent", "document_b64": "a" * (1024 * 1024)})
+    assert kept is not None
+    agent._outbox_prune_limits()
+    dead = scan_agent_module.OUTBOX_DEAD_PATH / expired.name
+    assert json.loads(dead.read_text(encoding="utf-8"))["dropped_reason"] == "OUTBOX_MAX_AGE"
+    assert not expired.exists()
+
+    def unexpected_read(path):
+        raise AssertionError(f"Prune reread unchanged attachment: {path.name}")
+
+    monkeypatch.setattr(agent, "_read_outbox_item", unexpected_read)
+    agent._outbox_prune_limits()
+    assert kept.is_file()
+
+
+def test_outbox_lookups_share_metadata_and_detect_rewritten_and_deleted_files(monkeypatch, tmp_path):
+    agent = _make_agent(monkeypatch, tmp_path)
+    path = scan_agent_module.OUTBOX_PENDING_PATH / "legacy.json"
+    path.write_text(
+        json.dumps({"payload": {"event_id": "legacy", "scan_task_id": "task-1", "document_b64": "a" * 1024}}),
+        encoding="utf-8",
+    )
+    reads = []
+    read_item = agent._read_outbox_item
+
+    def count_read(path):
+        reads.append(path)
+        return read_item(path)
+
+    monkeypatch.setattr(agent, "_read_outbox_item", count_read)
+    assert agent._outbox_has_event("legacy")
+    assert agent._outbox_paths_for_task("task-1") == [path]
+    assert agent._outbox_paths_for_task("task-1", exclude=path) == []
+    assert not agent._outbox_has_event("missing")
+    agent._outbox_prune_limits()
+    assert reads == [path]
+
+    agent._outbox_write(path, {"event_id": "replacement", "payload": {"scan_task_id": "task-2"}})
+    assert not agent._outbox_has_event("legacy")
+    assert agent._outbox_has_event("replacement")
+    assert agent._outbox_paths_for_task("task-2") == [path]
+    assert reads == [path, path]
+
+    path.unlink()
+    assert not agent._outbox_has_event("replacement")
+    assert agent._outbox_paths_for_task("task-2") == []
+    assert reads == [path, path]

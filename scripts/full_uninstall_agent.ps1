@@ -81,7 +81,7 @@ function Remove-PathIfExists {
 }
 
 function Stop-AgentProcesses {
-    $processNames = @("ITInventAgent", "ITInventScanAgent", "ITInventOutlookProbe")
+    $processNames = @("ITInventAgent", "ITInventScanAgent", "ITInventPdfWorker", "ITInventOutlookProbe")
     foreach ($name in $processNames) {
         $processes = Get-Process -Name $name -ErrorAction SilentlyContinue
         if ($null -eq $processes) {
