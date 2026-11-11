@@ -42,7 +42,7 @@ import {
 } from '../../lib/scanIncidentInbox';
 import HostDrawer from './HostDrawer';
 import AgentsSection from './AgentsSection';
-import DeploySection from './DeploySection';
+// HUB Desktop deploy moved to Администрирование → /admin/hub-desktop.
 import HostsSection from './HostsSection';
 import IncidentsInboxSection from './IncidentsInboxSection';
 import ReviewItemsSection from './ReviewItemsSection';
@@ -2185,7 +2185,6 @@ function ScanCenterPage() {
           onOpenHost={openHostDetails}
         />}
 
-        {activeSection === 'deploy' && <DeploySection canScanTasks={canScanTasks} />}
           </Box>
         </Box>
 

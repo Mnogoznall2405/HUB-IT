@@ -24,6 +24,7 @@ import AdUsers from '../AdUsers';
 import { AiBotsAdminSection } from './admin/AiBotsAdminSection';
 import { ChatGroupsAdminSection } from './admin/ChatGroupsAdminSection';
 import { FeedbackAdminSection } from './admin/FeedbackAdminSection';
+import HubDesktopDeploySection from './admin/HubDesktopDeploySection';
 import DepartmentsTab from './admin/DepartmentsTab';
 import ItinventReferencesTab from './admin/ItinventReferencesTab';
 import MyFilesAdminTab from './admin/MyFilesAdminTab';
@@ -155,6 +156,9 @@ function AccountWorkspace({ area = 'settings' }) {
     } else if (data.activeSection === 'feedback') {
       // Раздел уже отфильтрован по право feedback.manage (getAvailableAdminSections).
       adminContent = <FeedbackAdminSection />;
+    } else if (data.activeSection === 'hub-desktop') {
+      // Section is filtered by scan.tasks (getAvailableAdminSections).
+      adminContent = <HubDesktopDeploySection canScanTasks={data.canDeployHubDesktop} />;
     } else if (data.activeSection === 'chat-groups' && data.isAdmin) {
       adminContent = <ChatGroupsAdminSection />;
     } else if (data.activeSection === 'my-files' && data.canReadMyFilesAudit) {

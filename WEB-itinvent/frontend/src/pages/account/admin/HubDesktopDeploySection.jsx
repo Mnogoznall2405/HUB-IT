@@ -5,6 +5,7 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Collapse,
   Dialog,
   DialogActions,
   DialogContent,
@@ -21,18 +22,25 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import SearchIcon from '@mui/icons-material/Search';
-import { scanAgentsAPI } from '../../api/scanAgents';
-import { scanInstallPackagesAPI } from '../../api/scanInstallPackages';
-import { scanTasksAPI } from '../../api/scanTasks';
-import { computersSoftwareAPI } from '../../api/computersSoftware';
+import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
+import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore';
+import { scanAgentsAPI } from '../../../api/scanAgents';
+import { scanInstallPackagesAPI } from '../../../api/scanInstallPackages';
+import { scanTasksAPI } from '../../../api/scanTasks';
+import { computersSoftwareAPI } from '../../../api/computersSoftware';
 
 const HUB_DESKTOP_QUERY = 'HUB Desktop';
 // install_package exists on agents >= 1.4.15 (see scripts/scan/rollout_install_package.py).
 const MIN_INSTALL_AGENT_VERSION = '1.4.15';
 const ACTIVE_STATUSES = new Set(['queued', 'delivered', 'acknowledged']);
 const POLL_MS = 20_000;
+const EXPANDED_BRANCHES_KEY = 'hub_deploy_branches_expanded';
+const UNASSIGNED_BRANCH = 'Без филиала';
 
 const FILTERS = [
   { id: 'all', label: 'Все' },
@@ -106,6 +114,24 @@ function taskErrorText(task) {
   return parts.join(' · ');
 }
 
+function readExpandedBranches() {
+  try {
+    const raw = localStorage.getItem(EXPANDED_BRANCHES_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed.map((item) => String(item)) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeExpandedBranches(groups) {
+  try {
+    localStorage.setItem(EXPANDED_BRANCHES_KEY, JSON.stringify([...groups]));
+  } catch {
+    // localStorage may be unavailable (private mode) — expansion still works for the session.
+  }
+}
+
 function resolveRow(agent, pkg, installed, task) {
   const agentVersion = String(agent?.version || agent?.last_heartbeat?.metadata?.agent_version || '').trim();
   const online = Boolean(agent?.is_online);
@@ -127,7 +153,7 @@ function resolveRow(agent, pkg, installed, task) {
   return {
     agentId: String(agent?.agent_id || '').trim(),
     hostname: String(agent?.hostname || agent?.agent_id || '').trim(),
-    branch: String(agent?.branch || agent?.resolved_branch || '').trim(),
+    branch: String(agent?.branch || agent?.resolved_branch || '').trim() || UNASSIGNED_BRANCH,
     agentVersion,
     online,
     lastSeen: Number(agent?.last_seen_at) || 0,
@@ -140,7 +166,8 @@ function resolveRow(agent, pkg, installed, task) {
   };
 }
 
-export default function DeploySection({ canScanTasks }) {
+export default function HubDesktopDeploySection({ canScanTasks }) {
+  const theme = useTheme();
   const [pkg, setPkg] = useState(null);
   const [configured, setConfigured] = useState(true);
   const [configError, setConfigError] = useState('');
@@ -155,6 +182,7 @@ export default function DeploySection({ canScanTasks }) {
   const [busyIds, setBusyIds] = useState(() => new Set());
   const [bulk, setBulk] = useState(null);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [expandedBranches, setExpandedBranches] = useState(readExpandedBranches);
   const mountedRef = useRef(true);
 
   const load = useCallback(async ({ silent = false } = {}) => {
@@ -258,6 +286,50 @@ export default function DeploySection({ canScanTasks }) {
     });
   }, [rows, query, filter]);
 
+  const branchGroups = useMemo(() => {
+    const map = new Map();
+    for (const row of visibleRows) {
+      if (!map.has(row.branch)) map.set(row.branch, []);
+      map.get(row.branch).push(row);
+    }
+    const unassigned = new Set([UNASSIGNED_BRANCH, 'Неотсортированные']);
+    return [...map.entries()]
+      .map(([name, items]) => ({
+        name,
+        items,
+        online: items.filter((row) => row.online).length,
+        installing: items.filter((row) => row.status === 'installing').length,
+        failed: items.filter((row) => row.status === 'failed').length,
+      }))
+      .sort((a, b) => {
+        const ua = unassigned.has(a.name);
+        const ub = unassigned.has(b.name);
+        if (ua !== ub) return ua ? 1 : -1;
+        return a.name.localeCompare(b.name, 'ru');
+      });
+  }, [visibleRows]);
+
+  // Search or a status filter means "show me the matches" — expand everything found.
+  const forceExpand = query.trim() !== '' || filter !== 'all';
+  const allExpanded = branchGroups.length > 0 && branchGroups.every((group) => expandedBranches.has(group.name));
+
+  const toggleBranch = (name) => {
+    setExpandedBranches((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      writeExpandedBranches(next);
+      return next;
+    });
+  };
+
+  const setAllExpanded = (expanded) => {
+    setExpandedBranches(() => {
+      const next = expanded ? new Set(branchGroups.map((group) => group.name)) : new Set();
+      writeExpandedBranches(next);
+      return next;
+    });
+  };
+
   const deploy = useCallback(async (agentIds, label) => {
     const ids = agentIds.filter(Boolean);
     if (!ids.length || !pkg) return;
@@ -354,6 +426,49 @@ export default function DeploySection({ canScanTasks }) {
     );
   };
 
+  const rowFor = (row) => (
+    <TableRow key={row.agentId} hover>
+      <TableCell>
+        <Typography fontWeight={600}>{row.hostname}</Typography>
+        <Typography variant="caption" color="text.secondary">
+          {row.online ? 'в сети' : `офлайн · ${formatAgo(row.lastSeen)}`}
+        </Typography>
+      </TableCell>
+      <TableCell>
+        <Typography variant="body2" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+          {row.agentVersion || '—'}
+        </Typography>
+      </TableCell>
+      <TableCell>
+        {row.installedVersion ? (
+          <Tooltip title={row.installedAt ? `Инвентаризация: ${row.installedAt}` : ''}>
+            <Chip
+              size="small"
+              variant="outlined"
+              color={pkg && versionCmp(row.installedVersion, pkg.version) >= 0 ? 'success' : 'warning'}
+              label={row.installedVersion}
+            />
+          </Tooltip>
+        ) : (
+          <Typography variant="body2" color="text.secondary">—</Typography>
+        )}
+      </TableCell>
+      <TableCell>{statusChip(row)}</TableCell>
+      <TableCell>
+        {row.task ? (
+          <Tooltip title={taskErrorText(row.task) || ''}>
+            <Typography variant="body2" color={row.task.status === 'failed' ? 'error' : 'text.secondary'}>
+              {taskPhaseLabel(row.task)} · {formatAgo(row.task.updated_at || row.task.created_at)}
+            </Typography>
+          </Tooltip>
+        ) : (
+          <Typography variant="body2" color="text.secondary">—</Typography>
+        )}
+      </TableCell>
+      <TableCell align="right">{actionFor(row)}</TableCell>
+    </TableRow>
+  );
+
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>
       <Stack spacing={2}>
@@ -407,6 +522,15 @@ export default function DeploySection({ canScanTasks }) {
             }}
             sx={{ ml: 'auto', minWidth: 220 }}
           />
+          <Button
+            size="small"
+            variant="text"
+            startIcon={allExpanded ? <UnfoldLessIcon /> : <UnfoldMoreIcon />}
+            onClick={() => setAllExpanded(!allExpanded)}
+            sx={{ flexShrink: 0 }}
+          >
+            {allExpanded ? 'Свернуть все' : 'Развернуть все'}
+          </Button>
         </Stack>
 
         {canScanTasks && pkg ? (
@@ -423,73 +547,88 @@ export default function DeploySection({ canScanTasks }) {
         {loading ? (
           <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}><CircularProgress /></Box>
         ) : (
-          <Box sx={{ overflow: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Компьютер</TableCell>
-                  <TableCell>Агент</TableCell>
-                  <TableCell>HUB Desktop</TableCell>
-                  <TableCell>Статус</TableCell>
-                  <TableCell>Развёртывание</TableCell>
-                  <TableCell align="right" />
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {visibleRows.map((row) => (
-                  <TableRow key={row.agentId} hover>
-                    <TableCell>
-                      <Typography fontWeight={600}>{row.hostname}</Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        {[row.branch || '—', row.online ? 'в сети' : `офлайн · ${formatAgo(row.lastSeen)}`].join(' · ')}
-                      </Typography>
-                    </TableCell>
-                    <TableCell>
-                      <Typography variant="body2" sx={{ fontVariantNumeric: 'tabular-nums' }}>
-                        {row.agentVersion || '—'}
-                      </Typography>
-                    </TableCell>
-                    <TableCell>
-                      {row.installedVersion ? (
-                        <Tooltip title={row.installedAt ? `Инвентаризация: ${row.installedAt}` : ''}>
-                          <Chip
-                            size="small"
-                            variant="outlined"
-                            color={pkg && versionCmp(row.installedVersion, pkg.version) >= 0 ? 'success' : 'warning'}
-                            label={row.installedVersion}
-                          />
-                        </Tooltip>
-                      ) : (
-                        <Typography variant="body2" color="text.secondary">—</Typography>
-                      )}
-                    </TableCell>
-                    <TableCell>{statusChip(row)}</TableCell>
-                    <TableCell>
-                      {row.task ? (
-                        <Tooltip title={taskErrorText(row.task) || ''}>
-                          <Typography variant="body2" color={row.task.status === 'failed' ? 'error' : 'text.secondary'}>
-                            {taskPhaseLabel(row.task)} · {formatAgo(row.task.updated_at || row.task.created_at)}
-                          </Typography>
-                        </Tooltip>
-                      ) : (
-                        <Typography variant="body2" color="text.secondary">—</Typography>
-                      )}
-                    </TableCell>
-                    <TableCell align="right">{actionFor(row)}</TableCell>
-                  </TableRow>
-                ))}
-                {!visibleRows.length ? (
-                  <TableRow>
-                    <TableCell colSpan={6}>
-                      <Typography color="text.secondary" sx={{ py: 2 }}>
-                        {rows.length ? 'По фильтру ничего не найдено' : 'Агенты не найдены'}
-                      </Typography>
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-              </TableBody>
-            </Table>
-          </Box>
+          <Stack spacing={1.5}>
+            {branchGroups.map((group, groupIndex) => {
+              const expanded = forceExpand || expandedBranches.has(group.name);
+              const contentId = `hub-deploy-branch-${groupIndex}`;
+              return (
+                <Box
+                  key={group.name}
+                  sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, overflow: 'hidden' }}
+                >
+                  <Box
+                    component="button"
+                    type="button"
+                    aria-expanded={expanded}
+                    aria-controls={contentId}
+                    onClick={() => toggleBranch(group.name)}
+                    sx={{
+                      p: 1.2,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 1,
+                      cursor: 'pointer',
+                      width: '100%',
+                      border: 0,
+                      font: 'inherit',
+                      textAlign: 'left',
+                      backgroundColor: theme.palette.mode === 'dark' ? '#0f172a' : theme.palette.grey[100],
+                      '&:hover': {
+                        backgroundColor: theme.palette.mode === 'dark' ? '#1e293b' : theme.palette.grey[200],
+                      },
+                      '&:focus-visible': {
+                        outline: `2px solid ${theme.palette.primary.main}`,
+                        outlineOffset: -2,
+                      },
+                      color: theme.palette.mode === 'dark' ? '#ffffff' : 'inherit',
+                    }}
+                  >
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0 }}>
+                      {expanded ? <ExpandMoreIcon fontSize="small" /> : <ChevronRightIcon fontSize="small" />}
+                      <Typography variant="subtitle1" fontWeight={700} noWrap>{group.name}</Typography>
+                    </Box>
+                    <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap justifyContent="flex-end" sx={{ minWidth: 0 }}>
+                      <Chip size="small" variant="outlined" label={`${group.items.length} ПК`} />
+                      {group.online ? (
+                        <Chip size="small" color="success" variant="outlined" label={`в сети: ${group.online}`} />
+                      ) : null}
+                      {group.installing ? (
+                        <Chip size="small" color="info" variant="outlined" label={`ставится: ${group.installing}`} />
+                      ) : null}
+                      {group.failed ? (
+                        <Chip size="small" color="error" variant="outlined" label={`ошибок: ${group.failed}`} />
+                      ) : null}
+                    </Stack>
+                  </Box>
+                  <Collapse in={expanded} timeout="auto" unmountOnExit id={contentId}>
+                    <Box sx={{ overflow: 'auto', borderTop: '1px solid', borderColor: 'divider' }}>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Компьютер</TableCell>
+                            <TableCell>Агент</TableCell>
+                            <TableCell>HUB Desktop</TableCell>
+                            <TableCell>Статус</TableCell>
+                            <TableCell>Развёртывание</TableCell>
+                            <TableCell align="right" />
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {group.items.map(rowFor)}
+                        </TableBody>
+                      </Table>
+                    </Box>
+                  </Collapse>
+                </Box>
+              );
+            })}
+            {!branchGroups.length ? (
+              <Typography color="text.secondary" sx={{ py: 2 }}>
+                {rows.length ? 'По фильтру ничего не найдено' : 'Агенты не найдены'}
+              </Typography>
+            ) : null}
+          </Stack>
         )}
       </Stack>
 

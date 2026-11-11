@@ -1,21 +1,21 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import DeploySection from './DeploySection';
-import { scanAgentsAPI } from '../../api/scanAgents';
-import { scanInstallPackagesAPI } from '../../api/scanInstallPackages';
-import { scanTasksAPI } from '../../api/scanTasks';
-import { computersSoftwareAPI } from '../../api/computersSoftware';
+import HubDesktopDeploySection from './HubDesktopDeploySection';
+import { scanAgentsAPI } from '../../../api/scanAgents';
+import { scanInstallPackagesAPI } from '../../../api/scanInstallPackages';
+import { scanTasksAPI } from '../../../api/scanTasks';
+import { computersSoftwareAPI } from '../../../api/computersSoftware';
 
-vi.mock('../../api/scanAgents', () => ({
+vi.mock('../../../api/scanAgents', () => ({
   scanAgentsAPI: { getAgents: vi.fn() },
 }));
-vi.mock('../../api/scanInstallPackages', () => ({
+vi.mock('../../../api/scanInstallPackages', () => ({
   scanInstallPackagesAPI: { getPackages: vi.fn(), getDeployment: vi.fn() },
 }));
-vi.mock('../../api/scanTasks', () => ({
+vi.mock('../../../api/scanTasks', () => ({
   scanTasksAPI: { createTask: vi.fn() },
 }));
-vi.mock('../../api/computersSoftware', () => ({
+vi.mock('../../../api/computersSoftware', () => ({
   computersSoftwareAPI: { getSoftwarePresence: vi.fn() },
 }));
 
@@ -53,11 +53,14 @@ beforeEach(() => {
   scanTasksAPI.createTask.mockResolvedValue({ success: true, task: { id: 't1', status: 'queued' } });
 });
 
-describe('DeploySection', () => {
+describe('HubDesktopDeploySection', () => {
   it('shows per-host status from the software inventory and deploys a task', async () => {
-    render(<DeploySection canScanTasks />);
+    render(<HubDesktopDeploySection canScanTasks />);
 
     expect(await screen.findByText(/версия 0\.1\.50/)).toBeInTheDocument();
+    // Branch groups start collapsed like the DLP page — expand the branch first.
+    expect(screen.queryByText('PC-OK')).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: /Тюмень/ }));
     expect(await screen.findByText('PC-OK')).toBeInTheDocument();
 
     // Inventory rows drive the status: current / outdated / not installed.
@@ -80,7 +83,8 @@ describe('DeploySection', () => {
   });
 
   it('queues the package for every host without it via the bulk action', async () => {
-    render(<DeploySection canScanTasks />);
+    render(<HubDesktopDeploySection canScanTasks />);
+    fireEvent.click(await screen.findByRole('button', { name: /Курган/ }));
     await screen.findByText('PC-NONE');
 
     fireEvent.click(screen.getByRole('button', { name: 'Установить, где нет' }));

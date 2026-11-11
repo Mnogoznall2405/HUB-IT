@@ -2,6 +2,7 @@ import PaletteOutlinedIcon from '@mui/icons-material/PaletteOutlined';
 import NotificationsOutlinedIcon from '@mui/icons-material/NotificationsOutlined';
 import ShieldOutlinedIcon from '@mui/icons-material/ShieldOutlined';
 import InstallMobileOutlinedIcon from '@mui/icons-material/InstallMobileOutlined';
+import InstallDesktopOutlinedIcon from '@mui/icons-material/InstallDesktopOutlined';
 import GroupOutlinedIcon from '@mui/icons-material/GroupOutlined';
 import CorporateFareOutlinedIcon from '@mui/icons-material/CorporateFareOutlined';
 import AdminPanelSettingsOutlinedIcon from '@mui/icons-material/AdminPanelSettingsOutlined';
@@ -23,6 +24,7 @@ export const ADMIN_AREA_PERMISSIONS = [
   'my_files.stats.read',
   'database.references.manage',
   'feedback.manage',
+  'scan.tasks',
 ];
 
 export const PERSONAL_SETTINGS_SECTIONS = [
@@ -123,6 +125,13 @@ const ADMIN_SECTION_DEFINITIONS = [
     description: 'Идеи и замечания пользователей по порталу',
     icon: <LightbulbOutlinedIcon />,
     permission: 'feedback.manage',
+  },
+  {
+    key: 'hub-desktop',
+    label: 'HUB Desktop',
+    description: 'Установка приложения на компьютеры',
+    icon: <InstallDesktopOutlinedIcon />,
+    permission: 'scan.tasks',
   },
   {
     key: 'chat-groups',
