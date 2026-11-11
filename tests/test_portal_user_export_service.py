@@ -52,3 +52,27 @@ def test_export_file_never_substitutes_personal_phone(monkeypatch, tmp_path, wor
     assert rows[1][11] == "synthetic-export-test@zsgp.ru"
     assert personal_phone not in output.read_text(encoding="utf-8")
     assert summary["rows"] == summary["with_email"] == 1
+
+
+def test_deliver_without_ssh_target_fails_before_subprocess(monkeypatch):
+    monkeypatch.delenv("PORTAL_EXPORT_SSH_TARGET", raising=False)
+    calls = []
+    monkeypatch.setattr(export_module.subprocess, "run", lambda *a, **kw: calls.append(a[0]))
+
+    with pytest.raises(RuntimeError):
+        export_module.PortalUserExportService.deliver("x.csv")
+    assert calls == []
+
+
+def test_deliver_uses_batch_mode_and_env_target(monkeypatch):
+    monkeypatch.setenv("PORTAL_EXPORT_SSH_TARGET", "bitrix@host")
+    monkeypatch.delenv("PORTAL_EXPORT_REMOTE_PATH", raising=False)
+    calls = []
+    monkeypatch.setattr(export_module.subprocess, "run", lambda *a, **kw: calls.append(a[0]))
+
+    result = export_module.PortalUserExportService.deliver("x.csv")
+
+    assert calls[0][:3] == ["scp", "-o", "BatchMode=yes"]
+    assert calls[0][-1] == f"bitrix@host:{export_module.DEFAULT_REMOTE_PATH}.part"
+    assert calls[1][:4] == ["ssh", "-o", "BatchMode=yes", "bitrix@host"]
+    assert result["delivered_to"] == f"bitrix@host:{export_module.DEFAULT_REMOTE_PATH}"

@@ -15,7 +15,7 @@ local/php_interface/cron/import_users.php и доставляет его на п
     python -m scripts.export_portal_users
 
 Переменные окружения:
-    PORTAL_EXPORT_SSH_TARGET   — ssh-команда доставки (default root@10.103.0.230)
+    PORTAL_EXPORT_SSH_TARGET   — ssh-цель доставки, обязательно (например bitrix@10.103.0.230)
     PORTAL_EXPORT_REMOTE_PATH  — путь users.csv на портале
 """
 

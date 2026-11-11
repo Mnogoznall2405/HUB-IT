@@ -41,7 +41,8 @@ function Write-Step([string]$Message) {
 }
 
 function Invoke-Step {
-    param([string]$ScriptPath, [string[]]$Arguments = @())
+    # Hashtable splat: a string[] splat binds "-SaveState" positionally (to -ChatMode).
+    param([string]$ScriptPath, [hashtable]$Arguments = @{})
     # Do not check $LASTEXITCODE here: it leaks from the child's last native call
     # (robocopy exits 0-7 on success). Failures inside child scripts surface as
     # thrown errors, which $ErrorActionPreference='Stop' turns terminating.
@@ -78,7 +79,7 @@ if ($doBackend) {
         Invoke-Step -ScriptPath $restartBackendScript
     } else {
         Write-Step "Backend: restart-all.ps1 -SaveState -ChatMode $ChatMode"
-        Invoke-Step -ScriptPath $restartAllScript -Arguments @('-SaveState', '-ChatMode', $ChatMode)
+        Invoke-Step -ScriptPath $restartAllScript -Arguments @{ SaveState = $true; ChatMode = $ChatMode }
     }
 }
 

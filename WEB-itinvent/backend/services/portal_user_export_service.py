@@ -214,16 +214,20 @@ class PortalUserExportService:
     @staticmethod
     def deliver(local_path: str) -> dict[str, Any]:
         """Atomic delivery to the portal: scp to a temp name + remote mv."""
-        target = normalize_text(os.getenv("PORTAL_EXPORT_SSH_TARGET")) or "root@10.103.0.230"
+        target = normalize_text(os.getenv("PORTAL_EXPORT_SSH_TARGET"))
+        if not target:
+            raise RuntimeError(
+                "PORTAL_EXPORT_SSH_TARGET is not set (e.g. bitrix@10.103.0.230)"
+            )
         remote_path = normalize_text(os.getenv("PORTAL_EXPORT_REMOTE_PATH")) or DEFAULT_REMOTE_PATH
         remote_tmp = remote_path + ".part"
         subprocess.run(
-            ["scp", "-q", local_path, f"{target}:{remote_tmp}"],
+            ["scp", "-o", "BatchMode=yes", "-q", local_path, f"{target}:{remote_tmp}"],
             check=True,
             timeout=300,
         )
         subprocess.run(
-            ["ssh", target, f"mv {remote_tmp} {remote_path} && chown bitrix:bitrix {remote_path}"],
+            ["ssh", "-o", "BatchMode=yes", target, f"mv {remote_tmp} {remote_path} && chown bitrix:bitrix {remote_path}"],
             check=True,
             timeout=60,
         )
