@@ -29,11 +29,12 @@ const PACKAGE = {
   ok: true,
 };
 
+// Scan agents report an empty branch in production — the branch comes from the inventory presence payload.
 const AGENTS = [
-  { agent_id: 'PC-OK', hostname: 'PC-OK', version: '1.4.19', branch: 'Тюмень', is_online: true, last_seen_at: 1700000000 },
-  { agent_id: 'PC-OLD', hostname: 'PC-OLD', version: '1.4.19', branch: 'Тюмень', is_online: true, last_seen_at: 1700000000 },
-  { agent_id: 'PC-NONE', hostname: 'PC-NONE', version: '1.4.19', branch: 'Курган', is_online: true, last_seen_at: 1700000000 },
-  { agent_id: 'PC-LEGACY', hostname: 'PC-LEGACY', version: '1.4.11', branch: 'Курган', is_online: false, last_seen_at: 1690000000 },
+  { agent_id: 'PC-OK', hostname: 'PC-OK', version: '1.4.19', branch: '', is_online: true, last_seen_at: 1700000000 },
+  { agent_id: 'PC-OLD', hostname: 'PC-OLD', version: '1.4.19', branch: '', is_online: true, last_seen_at: 1700000000 },
+  { agent_id: 'PC-NONE', hostname: 'PC-NONE', version: '1.4.19', branch: '', is_online: true, last_seen_at: 1700000000 },
+  { agent_id: 'PC-LEGACY', hostname: 'PC-LEGACY', version: '1.4.11', branch: '', is_online: false, last_seen_at: 1690000000 },
 ];
 
 beforeEach(() => {
@@ -43,10 +44,10 @@ beforeEach(() => {
   scanAgentsAPI.getAgents.mockResolvedValue(AGENTS);
   computersSoftwareAPI.getSoftwarePresence.mockResolvedValue({
     items: [
-      { hostname: 'PC-OK', installed_version: '0.1.50', collected_at: '2026-11-11', has_software_inventory: true },
-      { hostname: 'PC-OLD', installed_version: '0.1.40', collected_at: '2026-11-11', has_software_inventory: true },
-      { hostname: 'PC-NONE', installed_version: null, collected_at: '2026-11-11', has_software_inventory: true },
-      // PC-LEGACY has no inventory row at all → "Старый агент" wins over "Нет данных".
+      { hostname: 'PC-OK', installed_version: '0.1.50', collected_at: '2026-11-11', has_software_inventory: true, branch_name: 'Тюмень' },
+      { hostname: 'PC-OLD', installed_version: '0.1.40', collected_at: '2026-11-11', has_software_inventory: true, branch_name: 'Тюмень' },
+      { hostname: 'PC-NONE', installed_version: null, collected_at: '2026-11-11', has_software_inventory: true, branch_name: 'Курган' },
+      { hostname: 'PC-LEGACY', installed_version: null, collected_at: null, has_software_inventory: false, branch_name: 'Курган' },
     ],
     total: 4,
   });

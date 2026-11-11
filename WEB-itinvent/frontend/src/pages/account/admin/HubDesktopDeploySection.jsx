@@ -153,7 +153,9 @@ function resolveRow(agent, pkg, installed, task) {
   return {
     agentId: String(agent?.agent_id || '').trim(),
     hostname: String(agent?.hostname || agent?.agent_id || '').trim(),
-    branch: String(agent?.branch || agent?.resolved_branch || '').trim() || UNASSIGNED_BRANCH,
+    // Scan agents don't report a branch (scan.scan_agents.branch is empty for the whole fleet);
+    // the resolved one lives in the inventory presence payload.
+    branch: String(agent?.branch || agent?.resolved_branch || installed?.branch_name || '').trim() || UNASSIGNED_BRANCH,
     agentVersion,
     online,
     lastSeen: Number(agent?.last_seen_at) || 0,
@@ -221,6 +223,7 @@ export default function HubDesktopDeploySection({ canScanTasks }) {
           version: String(item?.installed_version || '').trim(),
           collected_at: item?.collected_at || '',
           has_inventory: Boolean(item?.has_software_inventory),
+          branch_name: String(item?.branch_name || '').trim(),
         });
       }
       const tasks = deploymentData?.tasks && typeof deploymentData.tasks === 'object'
